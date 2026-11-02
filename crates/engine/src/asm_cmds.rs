@@ -151,7 +151,9 @@ impl Session {
         let resolved = self.workspace.resolve_read(path)?;
         // Beneath a root, an absolute path inside it is kept relative to
         // the root, as every other path there is.
-        if let crate::Access::Root(root) = &self.workspace.read
+        // (With several roots, a path beneath the first: relative paths
+        // are beneath that one.)
+        if let Some(root) = self.workspace.read.roots().first()
             && std::path::Path::new(path).is_absolute()
             && let Ok(inside) = resolved.strip_prefix(root)
         {
@@ -630,10 +632,8 @@ fn source_relative(
                 _ => path,
             }
         } else {
-            match read {
-                crate::Access::Root(root) => crate::workspace::spelled_root(root).join(p),
-                _ => return None,
-            }
+            // A relative path is beneath the first root.
+            crate::workspace::spelled_root(read.roots().first()?).join(p)
         };
         path.to_str().map(str::to_string)
     };

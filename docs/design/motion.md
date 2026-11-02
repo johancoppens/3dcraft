@@ -177,7 +177,9 @@ builder got), so its clock runs at real time and the window's thread does a solv
 only a placement, for a baked frame), never a regeneration. It keeps its clock unrounded and asks for `t` rounded to
 the frames of the last bake (`rounded_to_frames`, `MotionView::baked`), so a baked motion asks for nothing that is
 not made ahead; a motion that builds as it plays (a moment provisional, configurations building) is baked in the
-background at 120 frames, once. While it plays the viewport shows each moment as the quick first picture
+background at 120 frames, once, when its moments are quick to show, and offered by the bake hint when they are
+heavy (below; before 2026-11-02 it was baked at once, heavy or not). While it plays the viewport shows each
+moment as the quick first picture
 (`Shell::scene_quality`, not while recorded frame by frame or captured): one scene per moment instead of two, and no display meshes made and kept for moments gone
 the next frame; paused, the moment is refined as any picture is. While a moment is provisional or the builder works
 the window polls (`Session::poll_motion`) every 33 ms, so a paused provisional moment settles by itself. The GPU
@@ -185,6 +187,44 @@ viewport takes over the uploaded vertices of the parts that did not change (`Ons
 `PartsKey::reuse_from`: the same mesh at the same first face id, its faces looking the same; the material table,
 whose brushed directions follow the poses, is uploaded anew, also when only poses moved), and keeps the parts of
 the last upload of the other quality as a spare, so a moment in which one belt changed uploads that belt.
+
+**Lighter drawing while it plays** (2026-11-02, phase 2 of the player). While a motion plays and
+`timeline.playQuality` is `auto` (the default; `full` draws as when it stands still), the window draws the studio
+look with one frame instead of the frames a still picture averages, without depth of field (whose blur needs
+them), and without the screen-space passes that cost the most per frame on the developer's laptop: ambient
+occlusion, the reflections in glossy faces, the contact shadows and the key's shadow on the reflections
+(`player::light_look`, applied in `Shell::studio_with`, the look of the window's own paths: the direct path and
+the sharp images; measured in *Findings*, 2026-11-02). The light, the key's shadows, the ground, bloom and the
+tone mapping stay, so a moving part keeps its shading and the shadow that grounds it. `Shell::playing_light` is false whenever the window is captured or recorded (`exact_pictures`, and
+`Shell::set_recording`, which the desktop app sets while `ui.record` runs, in real time too), and
+`ui.screenshot`, `view.render` and `view.replay` never come through the window's look; `FrameKey::light` and the
+direct path's `Shown` (whose look differs) make the picture drawn lighter be drawn again at once when it stops,
+so the settle starts on the first frame after a pause (`crates/ui-egui/tests/play_light.rs`: on the direct path a
+playing moment is one frame, a frame-exact recorded one is pixel for pixel the paused full picture).
+
+**The bake hint** (`shell/bake_hint.rs`, 2026-11-02). The player weighs what each moment costs while it plays:
+the time the `view.motion` the playing player asked for took in the window's thread (`apply_timeline_requests`,
+on `std`'s clock natively and `web_time`'s in the browser), not the frame around it: a heavy picture is not a
+heavy moment and a bake would not help it (review of 2026-11-02, S1; the scene of the moment is not counted).
+Nothing is weighed while the window is captured or recorded, for a moment asked for by the slider or an agent, or
+across a pause, and a moment over 2 s (a machine that stood still) is left out. Over the last 15 moments (judged from 8) a motion is heavy when the median is 100 ms or
+more, and light again only when it is under 70 ms, so costs that wander around the threshold do not make it
+flicker. A heavy motion that is not baked (`baked` with nothing `building`) and whose hint was not dismissed for
+the document (by its id, for the session) shows *This motion is heavy — bake first?* under the caption
+(`Kit::banner`), with Bake and Not now. A motion that is not heavy but whose moments were at least half shown
+provisionally (configurations still built in the background, which only a bake makes ahead: an assembly whose
+configurations follow `t` asks for new ones at every unrounded moment) is baked by itself, once per document
+state and not once dismissed, as the player did since 2026-11-01, with the same progress bar (`baking.auto`). Bake queues `motion.bake {frames: 120, background: true,
+limit: 1}`: an assembly on the desktop hands it to the builder, and the progress bar (`Kit::progress`) follows
+`MotionView::work_left` against the most seen, never going back (`building` counted in steps of about equal
+work: a run of the grid as its grid points left, a run of a bake's frames as its 8 frames; zero exactly when
+`building` is; with `building` alone the router's bar stood at 99 % for the last 20 s); a part, or the browser, bakes in the window's thread a piece per
+frame, the next piece asked for while the last answered `done: false`, the bar following `remaining`. While a bake
+runs the window reads the motion's state every frame, also paused on an exact moment (whose poll says nothing
+changed), so the bar goes on to the end. When it is done the hint goes. A bake that did not finish (three pieces
+without progress, an error, another tab) leaves the document marked as not baked although its `baked` says
+frames, so it is offered, or baked by itself, again. An edit or another document forgets what was weighed and the bake (the engine lets go of it
+too); the dismissal stays. `ui.get` › `timeline.heavy` gives the same to agents.
 
 ### Assemblies (phase 2)
 
@@ -343,7 +383,7 @@ solved, and the solve reads the instance's geometry). What keeps that affordable
   (`AsmState::deferred`) are set for that placement only (`Sweep::with_deferred`, empty again on an error or a
   panic), so no grid point is solved with configurations skipped.
 - **Recordings in real time** (`ui.record` without `step`) record what the window shows as it plays, provisional
-  moments and quick pictures included; a frame-exact recording (`step: true`) and pictures (`ui.screenshot`) show
+  moments and quick pictures included (but never the lighter drawing of a play, 2026-11-02); a frame-exact recording (`step: true`) and pictures (`ui.screenshot`) show
   exact moments at full quality, and so do `ui.pick`, `ui.fit` and `ui.highlight`.
 - **A bake in the window never blocks it.** `motion.bake {background: true}` (the window's default,
   `Session::set_bake_in_background`) only hands the bake to the builder and returns within milliseconds (the
@@ -404,7 +444,14 @@ with a budget of one byte; a bake in pieces builds what one bake builds; a baked
 and collisions as unbaked; the refusals. In `asm.rs`: configurations built one after the other from the last
 one's cache equal a regeneration from nothing, feature for feature in their `Debug` (a hole driven by a parameter,
 two features rebuilt per configuration; the belt's pattern and unions), and the budget lets the least recently used
-go and the caches of sources with nothing kept.
+go and the caches of sources with nothing kept. `crates/ui-egui/tests/play_light.rs`: the window's look is light only
+while a motion plays with `playQuality` auto, full for captures, recordings (frame by frame and in real time),
+`full` and a pause; a screenshot while it plays is the still picture of that moment pixel for pixel; on the
+direct path (GPU) a playing moment is drawn in one frame, a frame-exact recorded one is the paused full picture
+pixel for pixel, and a pause starts the settle at once. `shell/bake_hint.rs`: the hint above the threshold and not
+below, a spike against the median, hysteresis against costs that wander around the threshold, provisional
+moments, progress from `building` and from `remaining`, the Bake button running `motion.bake` (a part baked in
+pieces until the hint goes), and a dismissal per document that outlives an edit.
 
 ## Findings and history
 
@@ -483,3 +530,20 @@ go and the caches of sources with nothing kept.
   all 176 bodies' edges each moment) and the moment's solve off the window's thread; resident memory is twice
   the live (glibc keeps what the builds freed); `built_bytes` counts bodies only (regeneration caches, meshes per
   configuration and the open assembly's own `AsmState` beside the sweep's are not in the budget).
+- 2026-11-02 (player phase 2): lighter drawing while a motion plays and the bake hint (*The player*). Measured
+  with `play_light_against_full_headless` (`apps/craft3d/src/app.rs`, ignored: a desk as the window plays, engine
+  thread, GPU viewport, a pass every 1/60 s, 1280 × 720 points) on the developer's laptop (Intel Meteor Lake
+  iGPU, release), in the studio look with a lens (f/2.8) and 16 frames averaged, each phase 15 s; GPU time from
+  the i915 driver's per-client counters (`/proc/self/fdinfo`), CPU from `/proc/self/stat`. The router baked at
+  120 frames: full 9.5 moments a second, 22.6 viewport frames drawn a second (the averaging restarts at every
+  moment, so most of them are thrown away), GPU 566 ms a second, CPU 98 %; light 13.2 moments a second, 13.2
+  frames, GPU 285 ms a second, CPU 79 % (then the window's thread is the limit: the plain look plays 13.8). In
+  a first run with a busier machine and the light look only one frame without a lens, full 5.7 → light 9.4
+  moments a second (GPU 909 → 573 ms a second); leaving out one pass more from there: the shadows 12.5 a second
+  (GPU 452), ambient occlusion 13.8 (288), the screen-space reflections with the contact and specular shadows
+  12.7 (269), the plain look 13.9 (250), hence the light look without ambient occlusion and the screen-space
+  passes; without the shadows as well it gains nothing more (13.8 a second, GPU 283), so they stay. A lighter
+  assembly (`axis.3dcraftasm`): full 23.9 moments a second (33 frames, GPU 572 ms a second, CPU 62 %), light 29.9
+  (the player's 30 a second; GPU 364, CPU 41 %). Standing still nothing is drawn (CPU 6-9 %). Unbaked, the
+  router's moments cost the window 126 ms each (300 ms in the busier run), all of them provisional: offered;
+  the axis's 48 ms, all provisional: baked by itself (10 s for 238 configurations).

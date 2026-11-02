@@ -12,6 +12,15 @@ pub enum Access {
     None,
     /// Paths beneath this directory only.
     Root(PathBuf),
+    /// Paths beneath any of these directories (2026-11-02: the desktop
+    /// app gives an agent its chosen folder and the open document's). A
+    /// relative path is beneath the first; an absolute one beneath the
+    /// first that holds it. Made with [`Access::from_roots`].
+    Roots(Vec<PathBuf>),
+    /// `base`, and this one file as well (2026-11-02: the person allowed it
+    /// once, for one request, `Workspace::with_file`). Only that absolute
+    /// path, spelled as given, with no link in its folder or as itself.
+    Grant { base: Box<Access>, file: PathBuf },
     /// Any path: for a trusted local user at the command line.
     Unrestricted,
     /// The session's own files in memory ([`crate::Session::put_file`],
@@ -19,6 +28,39 @@ pub enum Access {
     /// reach (the browser). A path is a relative name with the rules of a
     /// path beneath a root: no `..`, nothing absolute.
     Memory,
+}
+
+impl Access {
+    /// The directories it reaches, in order (the first takes relative
+    /// paths); none for no access, unrestricted access or memory.
+    pub fn roots(&self) -> Vec<&Path> {
+        match self {
+            Access::Root(root) => vec![root.as_path()],
+            Access::Roots(roots) => roots.iter().map(PathBuf::as_path).collect(),
+            Access::Grant { base, .. } => base.roots(),
+            Access::None | Access::Unrestricted | Access::Memory => Vec::new(),
+        }
+    }
+
+    /// Access beneath `roots`, in order: none for no root, [`Access::Root`]
+    /// for one, [`Access::Roots`] for more. A root that is the same
+    /// directory as an earlier one (in its canonical spelling) is left out.
+    pub fn from_roots(roots: Vec<PathBuf>) -> Access {
+        let mut kept: Vec<PathBuf> = Vec::new();
+        let mut seen: Vec<PathBuf> = Vec::new();
+        for root in roots {
+            let spelled = spelled_root(&root);
+            if !seen.contains(&spelled) {
+                seen.push(spelled);
+                kept.push(root);
+            }
+        }
+        match kept.len() {
+            0 => Access::None,
+            1 => kept.pop().map_or(Access::None, Access::Root),
+            _ => Access::Roots(kept),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -38,6 +80,26 @@ impl Workspace {
         Self {
             read: Access::Unrestricted,
             write: Access::Unrestricted,
+        }
+    }
+
+    /// This workspace with one more file, in one direction: what "Allow
+    /// this file once" gives the one request it was asked for.
+    pub fn with_file(&self, file: &Path, write: bool) -> Workspace {
+        let grant = |base: &Access| Access::Grant {
+            base: Box::new(base.clone()),
+            file: file.to_path_buf(),
+        };
+        if write {
+            Workspace {
+                read: self.read.clone(),
+                write: grant(&self.write),
+            }
+        } else {
+            Workspace {
+                read: grant(&self.read),
+                write: self.write.clone(),
+            }
         }
     }
 
@@ -167,33 +229,87 @@ pub(crate) fn spelled_root(root: &Path) -> PathBuf {
 /// root, a path is relative, or absolute and textually under the root (as
 /// the root is given, or in its canonical spelling, [`spelled_root`]); it
 /// has no `..`. Only the root's own spelling is resolved on the file
-/// system, never the requested path, and the path returned is always the
-/// root as given joined with the relative part checked here. (A symbolic
-/// link inside the root that points outside it is followed: roots are
-/// meant to be directories the user chose to share.)
+/// system for the comparison, and the path returned is always the root as
+/// given joined with the relative part checked here. Since 2026-11-02 a
+/// symbolic link beneath the root that leads outside it is refused too
+/// ([`leaves_root`]): before, it was followed. With several roots a
+/// relative path is beneath the first, an absolute one beneath the first
+/// that holds it.
 fn resolve(access: &Access, path: &str, direction: &str) -> Result<PathBuf, CommandError> {
     if path.is_empty() || path.contains('\0') {
         return Err(CommandError::new("a file path must not be empty"));
     }
-    // Names in memory resolve beneath nothing: the name itself.
-    let in_memory = PathBuf::new();
-    let root = match access {
-        Access::Unrestricted => return Ok(PathBuf::from(path)),
-        Access::None => {
-            return Err(CommandError::new(format!(
-                "this session has no {direction} access to files; start it with a {direction} root to allow `{path}`"
-            )));
+    match access {
+        Access::Unrestricted => Ok(PathBuf::from(path)),
+        Access::None => Err(CommandError::new(format!(
+            "this session has no {direction} access to files; start it with a {direction} root to allow `{path}`"
+        ))),
+        Access::Root(root) => beneath(root, path, direction),
+        Access::Grant { base, file } => {
+            if Path::new(path) == file.as_path() && granted_file(file) {
+                return Ok(file.clone());
+            }
+            resolve(base, path, direction)
         }
-        Access::Root(root) => root,
+        Access::Roots(roots) => {
+            let Some(first) = roots.first() else {
+                return Err(CommandError::new(format!(
+                    "this session has no {direction} access to files"
+                )));
+            };
+            if !Path::new(path).is_absolute() {
+                return beneath(first, path, direction);
+            }
+            let mut last = None;
+            for root in roots {
+                match beneath(root, path, direction) {
+                    Ok(resolved) => return Ok(resolved),
+                    Err(e) => last = Some(e),
+                }
+            }
+            let names: Vec<String> = roots
+                .iter()
+                .map(|root| format!("`{}`", root.display()))
+                .collect();
+            // One root's own reason (a link out, `..`) says more than
+            // "outside" when the path was under it.
+            match last {
+                Some(e) if roots.len() == 1 => Err(e),
+                _ => Err(CommandError::new(format!(
+                    "`{path}` is outside every {direction} root ({})",
+                    names.join(", ")
+                ))),
+            }
+        }
         Access::Memory => {
             if Path::new(path).has_root() {
                 return Err(CommandError::new(format!(
                     "`{path}` is an absolute path; a file in memory has a relative name"
                 )));
             }
-            &in_memory
+            checked_join(&PathBuf::new(), Path::new(path), path, direction)
         }
+    }
+}
+
+/// Whether a file granted once is still the file the person was shown:
+/// absolute, without `..`, its folder spelled as its resolved spelling (no
+/// link on the way) and not itself a link.
+fn granted_file(file: &Path) -> bool {
+    let plain = file.is_absolute()
+        && !file
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::CurDir));
+    let Some(folder) = file.parent() else {
+        return false;
     };
+    let folder_real = canonical(folder).is_ok_and(|real| real == folder);
+    let not_link = std::fs::symlink_metadata(file).map_or(true, |m| !m.file_type().is_symlink());
+    plain && folder_real && not_link
+}
+
+/// `path` beneath the one directory `root` ([`resolve`]).
+fn beneath(root: &Path, path: &str, direction: &str) -> Result<PathBuf, CommandError> {
     let requested = Path::new(path);
     let relative = if requested.is_absolute() {
         // A root given relative (or through a link) is compared in its
@@ -210,7 +326,25 @@ fn resolve(access: &Access, path: &str, direction: &str) -> Result<PathBuf, Comm
     } else {
         requested
     };
-    let mut resolved = root.clone();
+    let resolved = checked_join(root, relative, path, direction)?;
+    if leaves_root(root, &resolved) {
+        return Err(CommandError::new(format!(
+            "`{path}` leads outside the {direction} root `{}` through a symbolic link",
+            root.display()
+        )));
+    }
+    Ok(resolved)
+}
+
+/// `root` joined with `relative`, part by part: no `..`, no absolute
+/// part, no part Windows reads as another name, and not the root itself.
+fn checked_join(
+    root: &Path,
+    relative: &Path,
+    path: &str,
+    direction: &str,
+) -> Result<PathBuf, CommandError> {
+    let mut resolved = root.to_path_buf();
     let mut depth = 0_usize;
     for component in relative.components() {
         match component {
@@ -244,6 +378,28 @@ fn resolve(access: &Access, path: &str, direction: &str) -> Result<PathBuf, Comm
     Ok(resolved)
 }
 
+/// Whether `resolved` (the root joined with a checked relative path)
+/// leaves `root` on disk: the deepest part of it that exists, with its
+/// links resolved, is not beneath the root's own resolved spelling. A link
+/// that leads nowhere is taken to leave it (what it would create is not
+/// known to be inside). A root that does not exist has nothing on disk to
+/// leave it by.
+fn leaves_root(root: &Path, resolved: &Path) -> bool {
+    let Ok(real_root) = canonical(root) else {
+        return false;
+    };
+    let mut probe = resolved.to_path_buf();
+    while std::fs::symlink_metadata(&probe).is_err() {
+        if !probe.pop() {
+            return false;
+        }
+    }
+    match canonical(&probe) {
+        Ok(real) => !real.starts_with(&real_root),
+        Err(_) => true,
+    }
+}
+
 /// Writes a file so that a crash or a full disk leaves either the old file
 /// or the new one, never half of it: write a temporary file next to the
 /// target, sync it, rename it over the target.
@@ -261,8 +417,23 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CommandError
     temp_name.push(format!(".{}.tmp", std::process::id()));
     let temp = path.with_file_name(temp_name);
     let result = (|| {
-        let mut file =
-            std::fs::File::create(&temp).map_err(|e| fail("create a temporary file for", e))?;
+        // A new file, never through a link someone put there; a file
+        // left by an earlier run of this process id is taken away first
+        // (removing a link removes the link, not what it points to).
+        let open = || {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)
+        };
+        let mut file = match open() {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                std::fs::remove_file(&temp).map_err(|e| fail("create a temporary file for", e))?;
+                open()
+            }
+            other => other,
+        }
+        .map_err(|e| fail("create a temporary file for", e))?;
         file.write_all(bytes).map_err(|e| fail("write", e))?;
         file.sync_all().map_err(|e| fail("write", e))?;
         std::fs::rename(&temp, path).map_err(|e| fail("replace", e))
@@ -506,5 +677,135 @@ mod tests {
                 .unwrap(),
             PathBuf::from("/any/where")
         );
+    }
+
+    /// Several roots (2026-11-02): relative paths beneath the first, an
+    /// absolute path beneath whichever holds it, nothing outside all.
+    #[test]
+    fn several_roots_take_paths_beneath_any_and_nothing_else() {
+        let (first, _) = real_root("many-a");
+        let (second, _) = real_root("many-b");
+        let access = Access::from_roots(vec![first.clone(), second.clone(), first.clone()]);
+        assert_eq!(access, Access::Roots(vec![first.clone(), second.clone()]));
+        assert_eq!(access.roots(), [first.as_path(), second.as_path()]);
+        assert_eq!(
+            resolve(&access, "x.stl", "write").unwrap(),
+            first.join("x.stl")
+        );
+        let in_second = second.join("a.3dcraft");
+        assert_eq!(
+            resolve(&access, in_second.to_str().unwrap(), "read").unwrap(),
+            in_second
+        );
+        let outside = first.with_file_name("elsewhere").join("x");
+        let error = resolve(&access, outside.to_str().unwrap(), "read")
+            .unwrap_err()
+            .message()
+            .to_string();
+        assert!(error.contains("outside every read root"), "{error}");
+        for bad in ["../x", "", "."] {
+            assert!(resolve(&access, bad, "read").is_err(), "{bad}");
+        }
+        let up = format!("{}/../x", second.display());
+        assert!(resolve(&access, &up, "read").is_err());
+        assert_eq!(Access::from_roots(Vec::new()), Access::None);
+        assert_eq!(
+            Access::from_roots(vec![first.clone()]),
+            Access::Root(first.clone())
+        );
+        assert!(Access::Unrestricted.roots().is_empty());
+        let _ = std::fs::remove_dir_all(&first);
+        let _ = std::fs::remove_dir_all(&second);
+    }
+
+    /// A symbolic link beneath a root that leads outside it is refused,
+    /// to read through, to write through, and as a folder to go into; a
+    /// link that stays inside is fine (2026-11-02).
+    #[cfg(unix)]
+    #[test]
+    fn a_link_out_of_the_root_is_refused() {
+        let (root, _) = real_root("link-out");
+        let (outside, _) = real_root("link-target");
+        std::os::unix::fs::symlink(outside.join("a.3dcraft"), root.join("out.3dcraft")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("away")).unwrap();
+        std::os::unix::fs::symlink(outside.join("none"), root.join("dangling")).unwrap();
+        std::os::unix::fs::symlink(root.join("a.3dcraft"), root.join("in.3dcraft")).unwrap();
+        for access in [
+            Access::Root(root.clone()),
+            Access::from_roots(vec![root.clone(), outside.with_file_name("other")]),
+        ] {
+            for bad in ["out.3dcraft", "away/a.3dcraft", "away/new.stl", "dangling"] {
+                let error = resolve(&access, bad, "write").unwrap_err();
+                assert!(
+                    error.message().contains("symbolic link"),
+                    "{bad}: {error:?}"
+                );
+                let absolute = root.join(bad);
+                assert!(resolve(&access, absolute.to_str().unwrap(), "read").is_err());
+            }
+            assert_eq!(
+                resolve(&access, "in.3dcraft", "read").unwrap(),
+                root.join("in.3dcraft")
+            );
+            assert_eq!(
+                resolve(&access, "new/deeper.stl", "write").unwrap(),
+                root.join("new").join("deeper.stl")
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// A file allowed once: that file only, in that direction only.
+    #[test]
+    fn a_file_allowed_once_is_that_file_only() {
+        let (root, _) = real_root("once-root");
+        let (other, _) = real_root("once-other");
+        let file = other.join("part.stl");
+        let workspace = Workspace {
+            read: Access::Root(root.clone()),
+            write: Access::Root(root.clone()),
+        }
+        .with_file(&file, true);
+        assert_eq!(
+            workspace.resolve_write(file.to_str().unwrap()).unwrap(),
+            file
+        );
+        assert!(
+            workspace.resolve_read(file.to_str().unwrap()).is_err(),
+            "write only"
+        );
+        assert!(
+            workspace
+                .resolve_write(other.join("else.stl").to_str().unwrap())
+                .is_err()
+        );
+        assert!(
+            workspace
+                .resolve_write(&format!(
+                    "{}/../{}/part.stl",
+                    other.display(),
+                    other.file_name().unwrap().to_str().unwrap()
+                ))
+                .is_err()
+        );
+        assert_eq!(
+            workspace.resolve_write("x.stl").unwrap(),
+            root.join("x.stl"),
+            "the roots stay"
+        );
+        assert_eq!(workspace.write.roots(), [root.as_path()]);
+        #[cfg(unix)]
+        {
+            let link = other.join("link.stl");
+            std::os::unix::fs::symlink(root.join("a.3dcraft"), &link).unwrap();
+            let through = Workspace::none().with_file(&link, false);
+            assert!(
+                through.resolve_read(link.to_str().unwrap()).is_err(),
+                "a link is not the file"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&other);
     }
 }

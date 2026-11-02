@@ -1,0 +1,6 @@
+[
+ ["feature.block", {"name": "Base", "size": ["60 mm", "40 mm", "8 mm"]}],
+ {"command": "feature.cylinder", "params": {"name": "Peg", "position": ["15 mm", "10 mm", "8 mm"], "radius": "3 mm", "height": "12 mm"}, "agent": "Claude Code"},
+ {"command": "feature.edit", "params": {"feature": "Base", "size": ["64 mm", "40 mm", "8 mm"]}, "agent": "Claude Code"},
+ ["feature.block", {"name": "Lug", "position": ["50 mm", "30 mm", "8 mm"], "size": ["10 mm", "10 mm", "6 mm"]}]
+]

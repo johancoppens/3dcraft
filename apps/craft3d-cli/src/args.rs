@@ -83,6 +83,20 @@ impl Args {
 }
 
 /// A flag that takes no value was given one (`--help=yes`).
+impl Args {
+    /// The value of a flag whose value may be left out: the inline one, or
+    /// the next argument when it is not a flag.
+    pub fn optional_value(&mut self, inline: Option<String>) -> Option<String> {
+        if inline.is_some() {
+            return inline;
+        }
+        match self.rest.front() {
+            Some(next) if !next.starts_with('-') && !self.flags_ended => self.rest.pop_front(),
+            _ => None,
+        }
+    }
+}
+
 pub(crate) fn no_value(flag: &str, inline: Option<&String>) -> Result<(), CliError> {
     match inline {
         None => Ok(()),

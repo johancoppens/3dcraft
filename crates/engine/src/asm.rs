@@ -1408,6 +1408,8 @@ fn build_shown(
                     solid: 0,
                     data: Blob::new(Vec::new()),
                 }),
+                made_by: None,
+                last_changed_by: None,
             });
             if !instance.visible {
                 shown.hidden.push(id);

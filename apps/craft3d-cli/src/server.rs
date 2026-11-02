@@ -62,12 +62,66 @@ fn bridge_token(path: &str) -> Result<String, CliError> {
     })?;
     let token = text.trim();
     if token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        craft3d_automation::discovery::check_private(std::path::Path::new(path))
+            .map_err(|e| CliError::Failed(format!("`--control-token-file {path}`: {e}")))?;
         Ok(token.to_ascii_lowercase())
     } else {
         Err(CliError::Failed(format!(
             "`--control-token-file {path}`: the file does not hold a control token (64 hexadecimal characters)"
         )))
     }
+}
+
+/// What `--bridge` asks for: the window at a fixed address with the token
+/// file given, or one found through discovery in the state folder (on the
+/// port given, when one is).
+fn bridge_config(
+    address: Option<&str>,
+    token_file: Option<&str>,
+    state_dir: Option<&str>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<craft3d_automation::bridge::BridgeConfig, CliError> {
+    use craft3d_automation::bridge::BridgeConfig;
+    let address = address.map(bridge_address).transpose()?;
+    if let Some(token_file) = token_file {
+        let Some(address) = address else {
+            return Err(CliError::Usage(
+                "`--control-token-file` goes with `--bridge PORT`: the window's port and the token file it was started with".to_string(),
+            ));
+        };
+        if state_dir.is_some() {
+            return Err(CliError::Usage(
+                "`--state-dir` finds a window by discovery; with `--control-token-file` the window is the one at `--bridge PORT`: give one or the other".to_string(),
+            ));
+        }
+        return Ok(BridgeConfig::new(address, bridge_token(token_file)?));
+    }
+    let folder = match state_dir {
+        Some("") => {
+            return Err(CliError::Usage(
+                "`--state-dir` needs a directory".to_string(),
+            ));
+        }
+        Some(dir) => std::path::absolute(dir).map_err(|e| {
+            CliError::Failed(format!("`--state-dir {dir}`: cannot use this directory: {e}"))
+        })?,
+        None => match env("CRAFT3D_STATE_DIR").filter(|dir| !dir.is_empty()) {
+            Some(dir) => std::path::absolute(&dir).map_err(|e| {
+                CliError::Failed(format!(
+                    "CRAFT3D_STATE_DIR `{dir}`: cannot use this directory: {e}"
+                ))
+            })?,
+            None => craft3d_automation::discovery::default_state_folder(env).ok_or_else(|| {
+                CliError::Failed(
+                    "there is no state directory to find a 3DCraft window in (HOME is not set); give `--bridge PORT --control-token-file FILE`".to_string(),
+                )
+            })?,
+        },
+    };
+    Ok(BridgeConfig::discover(
+        folder,
+        address.map(|address| address.port()),
+    ))
 }
 
 /// How the session autosaves: not at all unless `--recovery-dir` names a
@@ -114,8 +168,9 @@ fn recovery(
 pub(crate) fn serve(mut args: Args, protocol: Protocol) -> Result<Parsed<()>, CliError> {
     let mut workspace = Workspace::none();
     let mut seen = (false, false);
-    let mut bridge = None;
+    let mut bridge: Option<Option<String>> = None;
     let mut token_file = None;
+    let mut state_dir = None;
     let mut recovery_dir = None;
     let mut interval = None;
     while let Some(arg) = args.next() {
@@ -150,9 +205,16 @@ pub(crate) fn serve(mut args: Args, protocol: Protocol) -> Result<Parsed<()>, Cl
                     }
                     *slot = Some(args.value(&name, inline)?);
                 }
-                "--bridge" | "--control-token-file" if matches!(protocol, Protocol::Mcp) => {
-                    let slot = if name == "--bridge" {
-                        &mut bridge
+                "--bridge" if matches!(protocol, Protocol::Mcp) => {
+                    if bridge.is_some() {
+                        return Err(CliError::Usage(format!("`{name}` was given twice")));
+                    }
+                    // The port may be left out: the window is found then.
+                    bridge = Some(args.optional_value(inline));
+                }
+                "--control-token-file" | "--state-dir" if matches!(protocol, Protocol::Mcp) => {
+                    let slot = if name == "--state-dir" {
+                        &mut state_dir
                     } else {
                         &mut token_file
                     };
@@ -172,10 +234,10 @@ pub(crate) fn serve(mut args: Args, protocol: Protocol) -> Result<Parsed<()>, Cl
     let recovery = recovery(recovery_dir.as_deref(), interval.as_deref())?;
     let input = std::io::stdin().lock();
     let output = std::io::stdout().lock();
-    if bridge.is_some() || token_file.is_some() {
-        let (Some(address), Some(token_file)) = (bridge, token_file) else {
+    if bridge.is_some() || token_file.is_some() || state_dir.is_some() {
+        let Some(address) = bridge else {
             return Err(CliError::Usage(
-                "`--bridge` and `--control-token-file` go together: the window's port and the token file it was started with".to_string(),
+                "`--control-token-file` and `--state-dir` go with `--bridge`: they say which window to pass the messages to".to_string(),
             ));
         };
         if seen.0 || seen.1 {
@@ -188,10 +250,13 @@ pub(crate) fn serve(mut args: Args, protocol: Protocol) -> Result<Parsed<()>, Cl
                 "with `--bridge` the documents are the window's, and so is their autosave: give `--recovery-dir` to `craft3d`, not here".to_string(),
             ));
         }
-        let config = craft3d_automation::bridge::BridgeConfig::new(
-            bridge_address(&address)?,
-            bridge_token(&token_file)?,
-        );
+        let env = |name: &str| std::env::var(name).ok();
+        let config = bridge_config(
+            address.as_deref(),
+            token_file.as_deref(),
+            state_dir.as_deref(),
+            &env,
+        )?;
         return finish(craft3d_automation::bridge::serve(&config, input, output));
     }
     let mut session = crate::session(workspace);

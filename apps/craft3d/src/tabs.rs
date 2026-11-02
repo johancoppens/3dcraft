@@ -784,6 +784,7 @@ mod tests {
             .send(crate::host::Request {
                 line: r#"{"id":1,"method":"engine.execute","params":{"command":"feature.sphere","params":{"radius":2}}}"#.to_string(),
                 reply,
+                origin: None,
             })
             .unwrap();
         let _ = desk.turn();
@@ -801,6 +802,7 @@ mod tests {
             .send(crate::host::Request {
                 line: line.to_string(),
                 reply,
+                origin: None,
             })
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(20);

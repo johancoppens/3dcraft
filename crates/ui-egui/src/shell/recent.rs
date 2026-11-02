@@ -141,9 +141,11 @@ fn roots_of(session: &Session) -> Option<Vec<PathBuf>> {
     for access in [&workspace.read, &workspace.write] {
         match access {
             Access::Unrestricted => return None,
-            Access::Root(root) => {
-                if let Ok(root) = std::path::absolute(root) {
-                    roots.push(root);
+            Access::Root(_) | Access::Roots(_) | Access::Grant { .. } => {
+                for root in access.roots() {
+                    if let Ok(root) = std::path::absolute(root) {
+                        roots.push(root);
+                    }
                 }
             }
             Access::None | Access::Memory => {}
@@ -237,7 +239,8 @@ impl Shell {
     }
 
     /// Notes the documents that came with a file since the last sync:
-    /// opened, or saved under a new name. The active one goes first. The
+    /// opened, or saved under a new name, by the person (an agent's files
+    /// are left out). The active one goes first. The
     /// file is the one on disk the engine reports
     /// ([`craft3d_engine::DocumentStatus::file`]), absolute, whichever
     /// root the request named it beneath.
@@ -251,6 +254,12 @@ impl Shell {
             let Some(file) = status.file.as_deref() else {
                 continue;
             };
+            // A file an agent opened or wrote is not the person's: left
+            // out, so opening it from the list later would not quietly
+            // give its folder to agents (2026-11-02).
+            if session.person_file_of(status.index).as_deref() != Some(file) {
+                continue;
+            }
             if !self.recent.open.contains(file) {
                 new.push((Some(status.index) == active, file.to_string()));
             }

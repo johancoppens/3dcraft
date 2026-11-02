@@ -221,6 +221,19 @@ features that use `t` are rebuilt for each moment, so a heavy model plays slower
 assembly has no history of its own, so it shows only **Motion**: its parts are moved, not rebuilt
 ([Assemblies](17-assemblies.md#motion)).
 
+While a motion plays, the view draws lighter so it keeps up: in the studio look it leaves out the frames a still
+picture averages, the depth of field, the ambient occlusion and the reflections (the shadows stay), and as soon as
+you pause or stop, the full look comes back and settles.
+Screenshots and recordings are always at full quality. To see the full look while it plays too, an agent sets
+`ui.set {"timeline": {"playQuality": "full"}}`.
+
+When the moments of a motion are slow to make (an assembly whose parts are rebuilt as it moves, a heavy part),
+the player says **This motion is heavy — bake first?** under the slider. **Bake** makes the moments of a play
+ahead (`motion.bake`) while it goes on playing, with a bar that shows how far it is; afterwards it plays
+smoothly. **Not now** hides the question for that document until you close 3DCraft. A motion that is quick to
+show but whose parts are rebuilt as it moves is baked by itself the first time it plays, with the same bar. An agent reads the same
+from `ui.get` › `timeline.heavy` (`msPerMoment`, `suggestBake`).
+
 An agent does the same with `view.motion {"t": 0.5, "collisions": true}`, draws a point's path with
 `view.trace` (`"grow": true` draws it only as far as the moment shown, so it grows while the motion plays;
 exported with `file.export {"path": "path.svg", "trace": "Trace 1"}`; in the window a trace is worked out in

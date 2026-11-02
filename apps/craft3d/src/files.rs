@@ -73,12 +73,26 @@ pub trait Dialogs: Send + Sync {
         let _ = suggested;
         None
     }
+    /// Asks for a folder (the agents' folder, Change…), starting in
+    /// `start`; none by default (a host without that dialog).
+    fn folder(&self, start: Option<&Path>) -> Option<PathBuf> {
+        let _ = start;
+        None
+    }
 }
 
 /// The dialogs of the desktop (the portal's on Linux).
 pub struct SystemDialogs;
 
 impl Dialogs for SystemDialogs {
+    fn folder(&self, start: Option<&Path>) -> Option<PathBuf> {
+        let mut dialog = rfd::FileDialog::new().set_title("Folder for AI agents");
+        if let Some(start) = start.filter(|start| start.is_dir()) {
+            dialog = dialog.set_directory(start);
+        }
+        dialog.pick_folder()
+    }
+
     fn open(&self) -> Option<PathBuf> {
         rfd::FileDialog::new()
             .set_title("Open")
@@ -141,6 +155,8 @@ pub enum Choice {
     Export(Box<ExportJob>),
     /// Where to publish the document as a Jig (`jig.export`).
     ExportJig(PathBuf),
+    /// The folder chosen for the agents' files (Change…).
+    Folder(PathBuf),
     /// The dialog was closed without a choice.
     Cancelled(&'static str),
 }
@@ -293,6 +309,15 @@ impl Picker {
                 .map_or(Choice::Cancelled("jig.export"), |path| {
                     Choice::ExportJig(with_jig_extension(path))
                 })
+        })
+    }
+
+    /// Opens the dialog for the agents' folder, in `start` when given.
+    pub fn ask_folder(&mut self, start: Option<PathBuf>) -> Result<(), String> {
+        self.ask("folder", move |dialogs| {
+            dialogs
+                .folder(start.as_deref())
+                .map_or(Choice::Cancelled("agents.folder"), Choice::Folder)
         })
     }
 
@@ -836,6 +861,8 @@ impl Host {
                     self.shell.sync(&mut self.session);
                 }
             }
+            // Only the agents' own picker asks for a folder.
+            Ok(Choice::Folder(_)) => {}
             Ok(Choice::Cancelled(label)) => {
                 self.close_after_save = false;
                 self.report(label, &Err("cancelled".to_string()));

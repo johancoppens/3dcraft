@@ -28,9 +28,12 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod bridge;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod discovery;
 mod fields;
 mod lines;
 pub mod mcp;
+pub mod proof;
 mod registry;
 pub mod rpc;
 

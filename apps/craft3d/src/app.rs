@@ -2,8 +2,9 @@
 //! the control channel's requests answered on the UI thread whenever that
 //! loop is woken for them, whether or not a frame is drawn.
 
+use crate::agents::{Agents, AgentsConfig};
 use crate::args::Options;
-use crate::control::{ControlConfig, ControlServer, Wake};
+use crate::control::Wake;
 use crate::files::{self, Choice, Picker, SystemDialogs};
 use crate::host::{Host, Request, Route, answer_on_engine, report, route};
 use crate::recording::{
@@ -12,7 +13,6 @@ use crate::recording::{
 };
 use crate::refine::{Poll, Refiner};
 use crate::tabs;
-use crate::token;
 use crate::worker::{Finished, Outcome, Run, Task, Worker};
 use craft3d_automation::rpc;
 use craft3d_engine::{Access, RecoveryOptions, Session, Workspace};
@@ -158,22 +158,18 @@ pub fn recovery(options: &Options, wake: Wake) -> Result<Option<RecoveryOptions>
     Ok(Some(recovery))
 }
 
-/// The control listener the options ask for, if any, with the channel its
-/// requests arrive on.
+/// The switch for AI agents the options ask for, listening from the start
+/// when `--control` asks for it or the person left it on, with the channel
+/// its requests arrive on. `env` names the person's folders.
 pub fn control(
     options: &Options,
     wake: Wake,
-) -> Result<(Option<ControlServer>, Receiver<Request>), String> {
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(Agents, Receiver<Request>), String> {
     let (requests, incoming) = mpsc::channel();
-    let Some(port) = options.control else {
-        return Ok((None, incoming));
-    };
-    let Some(token_file) = &options.token_file else {
-        return Err("`--control` needs `--control-token-file FILE`".to_string());
-    };
-    let token = token::load_or_create(token_file)?;
-    let server = ControlServer::start(ControlConfig::new(port, token), requests, wake)?;
-    Ok((Some(server), incoming))
+    let mut agents = Agents::new(AgentsConfig::from_options(options, env), requests, wake);
+    agents.start()?;
+    Ok((agents, incoming))
 }
 
 /// What the window works on, and what reaches it from outside a frame:
@@ -226,6 +222,15 @@ pub struct Desk {
     /// The window's frames painted offscreen: recordings, and pictures of
     /// a window that is not on screen (`recording.rs`).
     rec: Rec,
+    /// The switch Allow AI agents and the listener behind it (`agents.rs`);
+    /// `None` for a desk without one (tests).
+    agents: Option<Agents>,
+    /// The folder picker of the agents' Change….
+    agents_picker: Option<Picker>,
+    /// Requests that wait for the person's answer to a prompt, by its id
+    /// (`consent.rs`), and those whose answer came, until they run.
+    held: Vec<(u64, Request)>,
+    released: Vec<Request>,
 }
 
 /// A request for a picture of the window: it is answered once egui hands
@@ -319,6 +324,208 @@ impl Desk {
             wake: None,
             deadlines: None,
             rec: Rec::default(),
+            agents: None,
+            agents_picker: None,
+            held: Vec::new(),
+            released: Vec::new(),
+        }
+    }
+
+    /// Lets the switch Allow AI agents work, with `agents` behind it.
+    #[must_use]
+    pub fn with_agents(mut self, agents: Agents) -> Self {
+        self.agents = Some(agents);
+        self
+    }
+
+    /// The folder picker Change… opens.
+    #[must_use]
+    pub fn with_agents_picker(mut self, picker: Picker) -> Self {
+        self.agents_picker = Some(picker);
+        self
+    }
+
+    /// The switch and its listener, to change.
+    pub fn agents_mut(&mut self) -> Option<&mut Agents> {
+        self.agents.as_mut()
+    }
+
+    /// The switch and its listener.
+    pub fn agents(&self) -> Option<&Agents> {
+        self.agents.as_ref()
+    }
+
+    /// The window got the focus (the bridge prefers the window focused
+    /// last).
+    pub fn agents_focused(&mut self) {
+        if let Some(agents) = &mut self.agents {
+            agents.focused();
+        }
+    }
+
+    /// Does what the switch asked for, gives the session the roots it
+    /// changed once the session is on this thread, and tells the shell
+    /// how things stand. True when something changed.
+    fn pump_agents(&mut self) -> bool {
+        let Some(agents) = &mut self.agents else {
+            return false;
+        };
+        let mut changed = false;
+        if let Some(on) = self.host.shell.take_agents_switch() {
+            agents.allow(on);
+            changed = true;
+        }
+        if self.host.shell.take_agents_disconnect() {
+            agents.disconnect_all();
+            changed = true;
+        }
+        if let Some(on) = self.host.shell.take_agents_document_folder() {
+            agents.set_document_folder(on);
+            changed = true;
+        }
+        if self.host.shell.take_agents_folder()
+            && let Some(picker) = &mut self.agents_picker
+            && !picker.busy()
+            && let Err(e) = picker.ask_folder(agents.folder())
+        {
+            agents.note_error(format!("The folder picker could not be shown: {e}"));
+        }
+        if let Some(choice) = self.agents_picker.as_mut().and_then(Picker::poll) {
+            match choice {
+                // A folder that cannot be used says why itself.
+                Ok(files::Choice::Folder(folder)) => {
+                    let _ = agents.choose_folder(&folder);
+                }
+                Ok(_) => {}
+                Err(e) => agents.note_error(format!("The folder picker failed: {e}")),
+            }
+            changed = true;
+        }
+        if self.waiting.is_none() {
+            // The open document's folder follows the active tab: only for a
+            // document the person opened or saved and made active
+            // themselves, never one an agent opened, saved elsewhere or
+            // activated, nor a recovered one.
+            let path = self
+                .host
+                .session
+                .person_document_file()
+                .map(std::path::PathBuf::from);
+            agents.set_document(path.as_deref());
+        }
+        if let Some(folder) = self.host.shell.take_agents_revoke() {
+            agents.revoke(std::path::Path::new(&folder));
+            changed = true;
+        }
+        agents.ask_about_clients();
+        // The person's click on a prompt; and prompts nobody answered.
+        if let Some((id, answer)) = self.host.shell.take_agent_prompt_answer() {
+            let verdict = agents.answer(id, answer);
+            changed = true;
+            if let Some(index) = self.held.iter().position(|(held, _)| *held == id) {
+                let (_, request) = self.held.remove(index);
+                match verdict {
+                    Some(crate::agents::Verdict::Run) => self.released.push(request),
+                    Some(crate::agents::Verdict::Once { file, write }) => {
+                        let mut request = request;
+                        if let Some(origin) = &mut request.origin {
+                            origin.grant = Some((file, write));
+                        }
+                        self.released.push(request);
+                    }
+                    Some(crate::agents::Verdict::Refuse(why)) => {
+                        let _ = request
+                            .reply
+                            .send(Some(crate::consent::refusal(&request.line, &why)));
+                    }
+                    None => self.released.push(request),
+                }
+            }
+        }
+        self.expire_prompts(Instant::now());
+        let Some(agents) = &mut self.agents else {
+            return changed;
+        };
+        if self.waiting.is_none()
+            && let Some(workspace) = agents.take_workspace()
+        {
+            self.host.session.set_workspace(workspace);
+            changed = true;
+        }
+        // Released requests go first, in the order they came, once the
+        // session has the roots their answer gave.
+        if !self.released.is_empty() && self.waiting.is_none() {
+            for request in std::mem::take(&mut self.released).into_iter().rev() {
+                // Asked again: a batch may name another path outside.
+                if let Some(request) = self.screen(request) {
+                    self.queue.push_front(request);
+                }
+            }
+            changed = true;
+        }
+        let Some(agents) = &mut self.agents else {
+            return changed;
+        };
+        if self.host.shell.set_agents_status(agents.status()) {
+            changed = true;
+        }
+        changed
+    }
+
+    /// Refuses the requests whose prompt nobody answered by `now`.
+    pub fn expire_prompts(&mut self, now: Instant) {
+        let Some(agents) = &mut self.agents else {
+            return;
+        };
+        for (id, why) in agents.expire(now) {
+            if let Some(index) = self.held.iter().position(|(held, _)| *held == id) {
+                let (_, request) = self.held.remove(index);
+                let _ = request
+                    .reply
+                    .send(Some(crate::consent::refusal(&request.line, &why)));
+            }
+        }
+    }
+
+    /// A request as it comes in: on its way (`Some`), or held for the
+    /// person's answer, or refused at once, when it names a path outside
+    /// every root (`consent.rs`).
+    fn screen(&mut self, request: Request) -> Option<Request> {
+        let (Some(origin), Some(agents)) = (&request.origin, &mut self.agents) else {
+            return Some(request);
+        };
+        // The file allowed once for this request is asked about no more.
+        let granted = origin.grant.as_ref().map(|(file, _)| file.clone());
+        let wanted: Vec<crate::consent::Wanted> = crate::consent::wanted(&request.line)
+            .into_iter()
+            .filter(|want| granted.as_deref() != Some(std::path::Path::new(&want.path)))
+            .collect();
+        if wanted.is_empty() {
+            return Some(request);
+        }
+        match agents.screen(origin, &wanted) {
+            Ok(None) => Some(request),
+            Ok(Some(id)) => {
+                // Woken when it times out, frame or no frame.
+                if let Some(wake) = self.wake.clone() {
+                    let _ = std::thread::Builder::new()
+                        .name("craft3d-prompt-deadline".to_string())
+                        .spawn(move || {
+                            std::thread::sleep(
+                                crate::consent::PROMPT_WAIT + Duration::from_millis(50),
+                            );
+                            wake();
+                        });
+                }
+                self.held.push((id, request));
+                None
+            }
+            Err(why) => {
+                let _ = request
+                    .reply
+                    .send(Some(crate::consent::refusal(&request.line, &why)));
+                None
+            }
         }
     }
 
@@ -402,10 +609,13 @@ impl Desk {
     /// Needs no frame and no window.
     pub fn turn(&mut self) -> Turn {
         self.sync_exact_pictures();
+        let agents = self.pump_agents();
         if self.worker.is_none() {
-            let mut answered = self.settle_capture();
+            let mut answered = self.settle_capture() || agents;
             while let Ok(request) = self.requests.try_recv() {
-                self.queue.push_back(request);
+                if let Some(request) = self.screen(request) {
+                    self.queue.push_back(request);
+                }
             }
             let mut served = 0;
             while served < MAX_PER_TURN {
@@ -433,7 +643,7 @@ impl Desk {
                 quit: self.host.shell.quit_requested(),
             };
         }
-        let mut changed = self.collect();
+        let mut changed = self.collect() || agents;
         if self.settle_capture() {
             changed = true;
         }
@@ -519,12 +729,22 @@ impl Desk {
                         let label = request_label(&request.line);
                         let subject = request_subject(&request.line);
                         let line = request.line.clone();
+                        let actor = request.origin.as_ref().map(|origin| origin.name.clone());
+                        let grant = request.origin.as_ref().and_then(|o| o.grant.clone());
                         self.start_about(
                             Waiting::Request(request),
                             label,
                             subject,
                             Box::new(move |session| {
-                                Outcome::Reply(answer_on_engine(session, &line))
+                                // An agent's commands go into the agent log;
+                                // a file allowed once is this request's alone.
+                                // Both are put back also when it unwinds.
+                                let grant =
+                                    grant.as_ref().map(|(file, write)| (file.as_path(), *write));
+                                let reply = session.acting(actor.as_deref(), grant, |session| {
+                                    answer_on_engine(session, &line)
+                                });
+                                Outcome::Reply(reply)
                             }),
                         );
                     }
@@ -559,9 +779,12 @@ impl Desk {
             any = true;
             if self.away() && route(&request.line) == Route::Anytime {
                 self.show_work();
+                let viewer = request.origin.as_ref().map(|o| o.name.clone());
+                self.host.shell.set_agents_viewer(viewer.as_deref());
                 let reply = self.answer_away(&request.line);
+                self.host.shell.set_agents_viewer(None);
                 let _ = request.reply.send(reply);
-            } else {
+            } else if let Some(request) = self.screen(request) {
                 self.queue.push_back(request);
             }
         }
@@ -578,7 +801,10 @@ impl Desk {
         let queued = std::mem::take(&mut self.queue);
         for request in queued {
             if route(&request.line) == Route::Anytime {
+                let viewer = request.origin.as_ref().map(|o| o.name.clone());
+                self.host.shell.set_agents_viewer(viewer.as_deref());
                 let reply = self.answer_away(&request.line);
+                self.host.shell.set_agents_viewer(None);
                 let _ = request.reply.send(reply);
             } else {
                 self.queue.push_back(request);
@@ -1494,6 +1720,14 @@ impl Desk {
     /// depends on how far the motion's background builder got.
     fn sync_exact_pictures(&mut self) {
         self.host.shell.set_capturing(self.capture.is_some());
+        // A recording (in real time too) draws a playing motion at the
+        // full quality, never lighter (`Shell::playing_light`).
+        let recording = self
+            .rec
+            .recorder
+            .as_ref()
+            .is_some_and(|r| r.recording.is_some());
+        self.host.shell.set_recording(recording);
         if !self.away() {
             let live = !self.host.shell.exact_pictures();
             self.host.session.set_motion_live(live);
@@ -1904,8 +2138,8 @@ struct Viewer {
     mirror: Option<egui::TextureHandle>,
     /// The title the window has now.
     title: String,
-    /// Kept so the listener lives as long as the window.
-    _server: Option<ControlServer>,
+    /// Whether the window had the focus in the last frame.
+    focused: bool,
 }
 
 impl eframe::App for Viewer {
@@ -1921,6 +2155,11 @@ impl eframe::App for Viewer {
             // Show what changed, and look for more.
             ctx.request_repaint();
         }
+        let focused = ctx.input(|i| i.focused);
+        if focused && !self.focused {
+            desk.agents_focused();
+        }
+        self.focused = focused;
         // The window's close button (or the window manager): the window
         // stays and asks first when a document has unsaved changes.
         if ctx.input(|i| i.viewport().close_requested()) && !desk.window_close() {
@@ -2127,13 +2366,14 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
                 .map_or(0, |ctx| ctx.cumulative_pass_nr_for(egui::ViewportId::ROOT))
         },
     );
-    // The listener starts before the window, so a port that is taken is an
-    // error on the command line, not a window without a control channel.
-    let (server, requests) = control(options, Arc::clone(&wake))?;
-    if let (Some(server), Some(token_file)) = (&server, &options.token_file) {
+    let env = |name: &str| std::env::var(name).ok();
+    // The listener `--control` asks for starts before the window, so a port
+    // that is taken is an error on the command line, not a window without
+    // a control channel.
+    let (agents, requests) = control(options, Arc::clone(&wake), &env)?;
+    if let (Some(address), Some(token_file)) = (agents.address(), agents.token_file()) {
         announce(&format!(
-            "control channel on {} (token in {})",
-            server.address(),
+            "control channel on {address} (token in {})",
             token_file.display()
         ));
     }
@@ -2161,16 +2401,15 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
         .map(crate::places::read_recent)
         .unwrap_or_default();
     host.recent_baseline = recent.clone();
-    let env = |name: &str| std::env::var(name).ok();
     let data_folder = crate::places::data_folder(options, &env);
-    let agent = crate::places::agent_setup(
-        server.as_ref().map(|server| server.address().port()),
-        options.token_file.as_deref(),
-        &env,
-    );
+    let agent = crate::places::agent_setup(&env);
     let title = window_title(host.session.document_status().as_ref());
     let picker = Picker::new(Arc::new(SystemDialogs), Arc::clone(&wake));
-    let mut desk = Desk::new(host, requests, picker).with_engine_thread(Arc::clone(&wake));
+    let agents_picker = Picker::new(Arc::new(SystemDialogs), Arc::clone(&wake));
+    let mut desk = Desk::new(host, requests, picker)
+        .with_engine_thread(Arc::clone(&wake))
+        .with_agents(agents)
+        .with_agents_picker(agents_picker);
     if let Some([w, h]) = options.window_size {
         desk.set_window_points([w as f32, h as f32]);
     }
@@ -2210,7 +2449,7 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
                 mirror: None,
                 desk: for_viewer,
                 title,
-                _server: server,
+                focused: false,
             };
             // Requests that arrived before the window existed are waiting
             // in the channel; they are answered from here on.
@@ -3281,10 +3520,436 @@ mod tests {
         }
     }
 
+    /// The GPU time this process used so far, in nanoseconds, as the
+    /// kernel's DRM driver counts it per client (`/proc/self/fdinfo`,
+    /// `drm-engine-*`, each client once): Linux only, 0 elsewhere.
+    fn gpu_ns() -> u128 {
+        let mut seen = std::collections::BTreeMap::<String, u128>::new();
+        let Ok(dir) = std::fs::read_dir("/proc/self/fdinfo") else {
+            return 0;
+        };
+        for entry in dir.flatten() {
+            let Ok(text) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            let Some(client) = text
+                .lines()
+                .find_map(|l| l.strip_prefix("drm-client-id:"))
+                .map(|c| c.trim().to_string())
+            else {
+                continue;
+            };
+            let ns: u128 = text
+                .lines()
+                .filter(|l| l.starts_with("drm-engine-") && !l.starts_with("drm-engine-capacity"))
+                .filter_map(|l| l.split_whitespace().nth(1)?.parse::<u128>().ok())
+                .sum();
+            seen.insert(client, ns);
+        }
+        seen.values().sum()
+    }
+
+    /// Plays the documents at `CRAFT3D_PLAY_LIGHT` (paths separated by
+    /// `:`) in a desk as the window does (engine thread, GPU viewport, a
+    /// pass every 1/60 s), in the studio look with a lens and 16 frames
+    /// averaged, and prints for each phase of `CRAFT3D_PLAY_LIGHT_SECONDS`
+    /// (15) what a frame of the window cost: unbaked with the light
+    /// drawing (and what the bake hint weighed), then baked with
+    /// `timeline.playQuality` full, auto, and auto with shadows, ambient
+    /// occlusion or the reflections off besides. CPU from
+    /// `/proc/self/stat`, GPU from the DRM driver's counters, the passes'
+    /// wall time, frames drawn by the viewport and moments shown. Timings
+    /// only (docs/design/motion.md › *Findings*, 2026-11-02).
+    #[test]
+    #[ignore = "prints timings only"]
+    fn play_light_against_full_headless() {
+        let Some(paths) = std::env::var_os("CRAFT3D_PLAY_LIGHT") else {
+            println!("no documents (CRAFT3D_PLAY_LIGHT)");
+            return;
+        };
+        let seconds: f64 = std::env::var("CRAFT3D_PLAY_LIGHT_SECONDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(15.0);
+        let state = match craft3d_ui_egui::direct::headless_render_state() {
+            Ok(state) => state,
+            Err(e) => {
+                println!("SKIPPED: no graphics adapter: {e}");
+                return;
+            }
+        };
+        let cpu = || -> f64 {
+            let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
+            let fields: Vec<&str> = stat
+                .rsplit(')')
+                .next()
+                .unwrap_or_default()
+                .split_whitespace()
+                .collect();
+            let ticks = |i: usize| {
+                fields
+                    .get(i)
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0)
+            };
+            (ticks(11) + ticks(12)) / 100.0
+        };
+        for path in std::env::split_paths(&paths) {
+            let dir = path.parent().unwrap().to_path_buf();
+            let (requests, incoming) = mpsc::channel();
+            let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+            let host = Host::new(Session::new(Workspace {
+                read: Access::Root(dir.clone()),
+                write: Access::None,
+            }));
+            let mut desk = Desk::new(host, incoming, picker).with_engine_thread(Arc::new(|| {}));
+            desk.host.shell =
+                Shell::threaded_with_gpu(craft3d_ui_egui::RendererChoice::Auto, Some(&state));
+            desk.set_window_points([1280.0, 720.0]);
+            desk.attach_recorder(Some(&state));
+            let ctx = egui::Context::default();
+            let began = Instant::now();
+            let mut pass_ms: Vec<f64> = Vec::new();
+            let pass = |desk: &mut Desk, times: &mut Vec<f64>| {
+                let at = Instant::now();
+                desk.turn();
+                let time = began.elapsed().as_secs_f64();
+                let _ = desk.offscreen_pass(&ctx, time, Vec::new(), false);
+                times.push(at.elapsed().as_secs_f64() * 1000.0);
+            };
+            let id = std::cell::Cell::new(0u64);
+            let serve = |desk: &mut Desk, times: &mut Vec<f64>, method: &str, params: Value| {
+                id.set(id.get() + 1);
+                let line = json!({"id": id.get(), "method": method, "params": params}).to_string();
+                let answer = ask(&requests, &line);
+                for _ in 0..600_000 {
+                    pass(desk, times);
+                    if let Ok(reply) = answer.try_recv() {
+                        let got: Value = serde_json::from_str(&reply.unwrap()).unwrap();
+                        return got;
+                    }
+                    std::thread::sleep(Duration::from_millis(16));
+                }
+                panic!("no reply to {line}");
+            };
+            let execute =
+                |command: &str, params: Value| json!({"command": command, "params": params});
+            let opened = serve(
+                &mut desk,
+                &mut pass_ms,
+                "engine.execute",
+                execute("file.open", json!({"path": path.to_string_lossy()})),
+            );
+            assert_eq!(opened["ok"], true, "{opened}");
+            println!("LIGHT document {}", path.display());
+            let look = json!({"mode": "studio", "accumulate": 16,
+                              "dof": {"fstop": 2.8, "focus": "centre"}});
+            let set = serve(
+                &mut desk,
+                &mut pass_ms,
+                "ui.set",
+                json!({"look": look, "camera": {"autoFit": true}}),
+            );
+            assert_eq!(set["ok"], true, "{set}");
+            let phase = |desk: &mut Desk, name: &str, timeline: Value, look: Value| {
+                let mut times = Vec::new();
+                let set = serve(
+                    desk,
+                    &mut times,
+                    "ui.set",
+                    json!({"timeline": timeline, "look": look}),
+                );
+                assert_eq!(set["ok"], true, "{set}");
+                // A second to settle into the phase.
+                let warm = Instant::now();
+                while warm.elapsed().as_secs_f64() < 1.0 {
+                    pass(desk, &mut times);
+                    std::thread::sleep(Duration::from_millis(16));
+                }
+                let drawn = |desk: &Desk| desk.host.shell.render_count();
+                times.clear();
+                let (cpu0, gpu0, drawn0) = (cpu(), gpu_ns(), drawn(desk));
+                let start = Instant::now();
+                let mut moments = 0usize;
+                let mut last_t = None;
+                while start.elapsed().as_secs_f64() < seconds {
+                    pass(desk, &mut times);
+                    if !desk.away() {
+                        let t = desk.host.session.motion().map(|m| m.t.to_bits());
+                        if t != last_t {
+                            moments += 1;
+                            last_t = t;
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(16));
+                }
+                let wall = start.elapsed().as_secs_f64();
+                let (cpu1, gpu1, drawn1) = (cpu(), gpu_ns(), drawn(desk));
+                times.sort_by(f64::total_cmp);
+                let at = |q: f64| {
+                    times
+                        .get(((times.len() as f64 - 1.0) * q).round() as usize)
+                        .copied()
+                        .unwrap_or(0.0)
+                };
+                let got = serve(desk, &mut Vec::new(), "ui.get", json!({}));
+                let heavy = got["result"]["timeline"]["heavy"].clone();
+                let light = got["result"]["timeline"]["playingLight"].clone();
+                println!(
+                    "LIGHT {name}: playingLight {light}, CPU {:.0} %, GPU {:.1} ms/s, \
+                     viewport frames drawn {:.1}/s, moments {:.1}/s, pass median {:.1} ms, \
+                     p95 {:.1} ms, max {:.1} ms; heavy {heavy}",
+                    100.0 * (cpu1 - cpu0) / wall,
+                    (gpu1.saturating_sub(gpu0)) as f64 / 1e6 / wall,
+                    (drawn1.saturating_sub(drawn0)) as f64 / wall,
+                    moments as f64 / wall,
+                    at(0.5),
+                    at(0.95),
+                    at(1.0),
+                );
+            };
+            let play = |quality: &str| json!({"motion": true, "playing": true, "loop": true, "playQuality": quality});
+            let full_look = json!({"shadows": true, "ao": true, "reflections": true,
+                                   "contactShadows": true, "specularShadow": true});
+            phase(&mut desk, "unbaked auto", play("auto"), full_look.clone());
+            let baked = serve(
+                &mut desk,
+                &mut Vec::new(),
+                "engine.execute",
+                execute("motion.bake", json!({"frames": 120, "background": false})),
+            );
+            println!("LIGHT motion.bake: {}", baked["result"]);
+            phase(&mut desk, "baked full", play("full"), full_look.clone());
+            phase(&mut desk, "baked auto", play("auto"), full_look.clone());
+            phase(
+                &mut desk,
+                "baked auto, no shadows either",
+                play("auto"),
+                json!({"shadows": false}),
+            );
+            phase(
+                &mut desk,
+                "baked auto, plain look",
+                play("auto"),
+                json!({"mode": "plain", "shadows": true}),
+            );
+            phase(
+                &mut desk,
+                "standing still, studio",
+                json!({"playing": false}),
+                json!({"mode": "studio", "reflections": true, "contactShadows": true,
+                       "specularShadow": true}),
+            );
+        }
+    }
+
+    /// Pictures of the player's bake hint on the assembly at
+    /// `CRAFT3D_PLAY_HINT_ASM`, in a desk as the window plays it (engine
+    /// thread, GPU viewport, a pass every 1/60 s), the whole window as
+    /// `ui.screenshot {window: true}` paints it: the motion playing unbaked
+    /// until the hint offers the bake, its Bake button clicked, the bake
+    /// under way, and the motion playing after it. Written to
+    /// `target/evidence/ui/bake-hint-*.png`; what `ui.get` › `timeline.heavy`
+    /// said is printed. Pictures and timings only.
+    #[test]
+    #[ignore = "pictures and timings only"]
+    fn the_bake_hint_in_pictures() {
+        let Some(path) = std::env::var_os("CRAFT3D_PLAY_HINT_ASM").map(std::path::PathBuf::from)
+        else {
+            println!("no assembly (CRAFT3D_PLAY_HINT_ASM)");
+            return;
+        };
+        let state = match craft3d_ui_egui::direct::headless_render_state() {
+            Ok(state) => state,
+            Err(e) => {
+                println!("SKIPPED: no graphics adapter: {e}");
+                return;
+            }
+        };
+        let out =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/ui");
+        std::fs::create_dir_all(&out).unwrap();
+        let dir = path.parent().unwrap().to_path_buf();
+        let (requests, incoming) = mpsc::channel();
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        let host = Host::new(Session::new(Workspace {
+            read: Access::Root(dir.clone()),
+            write: Access::None,
+        }));
+        let mut desk = Desk::new(host, incoming, picker).with_engine_thread(Arc::new(|| {}));
+        desk.host.shell =
+            Shell::threaded_with_gpu(craft3d_ui_egui::RendererChoice::Auto, Some(&state));
+        desk.set_window_points([1440.0, 900.0]);
+        desk.attach_recorder(Some(&state));
+        let ctx = egui::Context::default();
+        let began = Instant::now();
+        let pass = |desk: &mut Desk, events: Vec<egui::Event>, read: bool| {
+            desk.turn();
+            let time = began.elapsed().as_secs_f64();
+            desk.offscreen_pass(&ctx, time, events, read).ok().flatten()
+        };
+        let save = |name: &str, frame: &craft3d_ui_egui::record::Frame| {
+            let file = out.join(format!("bake-hint-{name}.png"));
+            let mut encoder = png::Encoder::new(
+                std::io::BufWriter::new(std::fs::File::create(&file).unwrap()),
+                frame.width,
+                frame.height,
+            );
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&frame.rgb)
+                .unwrap();
+            println!("HINT picture {}", file.display());
+        };
+        let serve = |desk: &mut Desk, line: String| -> Value {
+            let answer = ask(&requests, &line);
+            for _ in 0..600_000 {
+                pass(desk, Vec::new(), false);
+                if let Ok(reply) = answer.try_recv() {
+                    return serde_json::from_str(&reply.unwrap()).unwrap();
+                }
+                std::thread::sleep(Duration::from_millis(16));
+            }
+            panic!("no reply to {line}");
+        };
+        let heavy = |desk: &Desk| -> Value {
+            if desk.away() {
+                return Value::Null;
+            }
+            desk.host.shell.timeline_json()["heavy"].clone()
+        };
+        let opened = serve(
+            &mut desk,
+            json!({"id": 1, "method": "engine.execute",
+                   "params": {"command": "file.open", "params": {"path": path.to_string_lossy()}}})
+            .to_string(),
+        );
+        assert_eq!(opened["ok"], true, "{opened}");
+        let played = serve(
+            &mut desk,
+            json!({"id": 2, "method": "ui.set", "params": {"timeline":
+                {"playing": true, "loop": true, "motion": true}}})
+            .to_string(),
+        );
+        assert_eq!(played["ok"], true, "{played}");
+        // Playing unbaked until the hint offers the bake.
+        let start = Instant::now();
+        let _offered = loop {
+            pass(&mut desk, Vec::new(), false);
+            if let Some(rect) = desk.host.shell.bake_hint_button() {
+                break rect;
+            }
+            assert!(
+                start.elapsed().as_secs_f64() < 120.0,
+                "no hint within 2 minutes: {}",
+                heavy(&desk)
+            );
+            std::thread::sleep(Duration::from_millis(16));
+        };
+        println!(
+            "HINT offered after {:.1} s: {}",
+            start.elapsed().as_secs_f64(),
+            heavy(&desk)
+        );
+        if let Some(frame) = pass(&mut desk, Vec::new(), true) {
+            save("offer", &frame);
+        }
+        // Its Bake button, clicked: in passes that draw the shell (not
+        // while the engine thread has the session), again until the bake
+        // runs.
+        let clicked = Instant::now();
+        loop {
+            let Some(at) = desk.host.shell.bake_hint_button().map(|r| r.center()) else {
+                pass(&mut desk, Vec::new(), false);
+                continue;
+            };
+            let click = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            while desk.away() {
+                pass(&mut desk, Vec::new(), false);
+                std::thread::sleep(Duration::from_millis(4));
+            }
+            pass(
+                &mut desk,
+                vec![egui::Event::PointerMoved(at), click(true)],
+                false,
+            );
+            while desk.away() {
+                pass(&mut desk, Vec::new(), false);
+                std::thread::sleep(Duration::from_millis(4));
+            }
+            pass(&mut desk, vec![click(false)], false);
+            pass(&mut desk, Vec::new(), false);
+            if !heavy(&desk)["baking"].is_null() || desk.host.shell.bake_hint_button().is_none() {
+                break;
+            }
+            assert!(
+                clicked.elapsed().as_secs_f64() < 30.0,
+                "the click never landed: {}",
+                heavy(&desk)
+            );
+        }
+        println!("HINT clicked: {}", heavy(&desk));
+        let baking = Instant::now();
+        let mut saved = false;
+        let mut last = Instant::now();
+        loop {
+            pass(&mut desk, Vec::new(), false);
+            let now = heavy(&desk);
+            if !saved && baking.elapsed().as_secs_f64() > 4.0 {
+                if let Some(frame) = pass(&mut desk, Vec::new(), true) {
+                    save("baking", &frame);
+                }
+                println!("HINT baking: {now}");
+                saved = true;
+            }
+            if last.elapsed().as_secs_f64() > 5.0 {
+                println!("HINT {:.0} s: {now}", baking.elapsed().as_secs_f64());
+                last = Instant::now();
+            }
+            if saved && now["baking"].is_null() && !now.is_null() {
+                break;
+            }
+            assert!(
+                baking.elapsed().as_secs_f64() < 600.0,
+                "the bake did not end: {now}"
+            );
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        println!(
+            "HINT baked in {:.1} s: {}",
+            baking.elapsed().as_secs_f64(),
+            heavy(&desk)
+        );
+        // Playing baked for a while.
+        let after = Instant::now();
+        while after.elapsed().as_secs_f64() < 6.0 {
+            pass(&mut desk, Vec::new(), false);
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        if let Some(frame) = pass(&mut desk, Vec::new(), true) {
+            save("after", &frame);
+        }
+        println!("HINT after the bake: {}", heavy(&desk));
+    }
+
     fn ask(requests: &mpsc::Sender<Request>, line: &str) -> Receiver<Option<String>> {
         let (reply, answer) = mpsc::channel();
         let line = line.to_string();
-        requests.send(Request { line, reply }).unwrap();
+        requests
+            .send(Request {
+                line,
+                reply,
+                origin: None,
+            })
+            .unwrap();
         answer
     }
 

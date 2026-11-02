@@ -429,7 +429,9 @@ dependencies = [
 name = "craft3d-automation"
 version = "0.1.0"
 dependencies = [
+ "craft3d-doc",
  "craft3d-engine",
+ "getrandom 0.4.3",
  "serde_json",
 ]
 

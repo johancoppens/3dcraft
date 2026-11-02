@@ -10,4 +10,10 @@ workspace = true
 
 [dependencies]
 craft3d-engine.workspace = true
+# SHA-256 for the bridge's challenge–response (`proof.rs`).
+craft3d-doc.workspace = true
 serde_json.workspace = true
+
+# The bridge's nonces; the bridge does not exist in the browser.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+getrandom.workspace = true

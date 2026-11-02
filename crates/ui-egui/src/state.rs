@@ -440,6 +440,123 @@ pub struct Closing {
     pub jig: bool,
 }
 
+/// Whether AI agents may drive this window, and who does: what the start
+/// screen's "Connect an AI agent" block, the Help menu's switch and the
+/// status bar show, and `ui.get` reports under `agents`. The host fills it
+/// in; it is read-only over the control channel: a request cannot turn the
+/// channel it came over off (that is the person's switch), and nothing can
+/// turn it on over a channel that is off. In the browser `available` is
+/// false.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AgentsStatus {
+    /// The host can let agents in (the desktop app).
+    pub available: bool,
+    /// The switch: agents are allowed, and the window listens.
+    pub allowed: bool,
+    /// Turned on by `--control PORT` on the command line.
+    pub forced: bool,
+    /// The port it listens on, while it does.
+    pub port: Option<u16>,
+    /// The clients connected now (an MCP bridge counts while it is heard
+    /// from, or until it says goodbye).
+    pub connected: usize,
+    /// Who they are and what they did last.
+    pub clients: Vec<AgentClient>,
+    /// The folder agents may read and write files in: the one chosen
+    /// with Change… (by default `Documents/3DCraft`), absolute; while the
+    /// switch is on and the command line gave no roots.
+    pub work_folder: Option<String>,
+    /// The command line gave the roots (`--automation-read-root`,
+    /// `--automation-write-root`): they win, Change… is off.
+    pub command_line: bool,
+    /// "Also the open document's folder" (on by default, remembered).
+    pub document_folder: bool,
+    /// The roots agents have now, in order (relative paths go beneath the
+    /// first), and where each came from.
+    pub roots: Vec<AgentRoot>,
+    /// The questions the window asks the person about agents, oldest
+    /// first: a client's working folder when it connects, a path outside
+    /// every root. Only the person's click answers them: nothing on the
+    /// control channel does (an agent approving its own access would
+    /// defeat them).
+    pub prompts: Vec<AgentPrompt>,
+    /// Why the switch could not be turned on, or what went wrong around it.
+    pub error: Option<String>,
+    /// The person's home folder, to write paths beneath it with `~`; not
+    /// reported.
+    #[serde(skip)]
+    pub home: Option<String>,
+}
+
+/// One client connected to the window.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AgentClient {
+    /// The name its MCP client gave (`Claude Code`), else the one it gave
+    /// when it authenticated (`MCP bridge (process 4242)`), else "control
+    /// connection".
+    pub name: String,
+    /// Since when, in milliseconds since the Unix epoch.
+    pub since_ms: u64,
+    /// The command it ran last (`feature.edit`), and when.
+    pub last_command: Option<String>,
+    pub last_ms: u64,
+    /// The folder it works in (its MCP client's working folder, which the
+    /// bridge sends), absolute.
+    pub cwd: Option<String>,
+}
+
+/// A question about an agent's access, waiting for the person.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AgentPrompt {
+    pub id: u64,
+    /// `connect` (the client's working folder), `read` or `write` (a path
+    /// a command wants, outside every root).
+    pub kind: String,
+    /// The client, by the name it gave.
+    pub client: String,
+    /// The full path: the folder for `connect`, the file otherwise.
+    pub path: String,
+    /// The folder: what "Always allow" grants (for `connect`, the path
+    /// itself); shown on a line of its own.
+    pub folder: String,
+    /// The file's name, shown on a line of its own (empty for `connect`).
+    pub file_name: String,
+    /// The command that asks (`file.save`), for `read` and `write`.
+    pub command: Option<String>,
+}
+
+/// The person's answer to an [`AgentPrompt`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PromptAnswer {
+    /// Allow the folder, remembered (connect), or allow this folder for
+    /// the agents from now on (a path).
+    Folder,
+    /// The folder for this run only (connect).
+    Session,
+    /// This one command only (a path).
+    Once,
+    /// No.
+    Deny,
+}
+
+/// One folder agents may read or write files in.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AgentRoot {
+    pub path: String,
+    /// `chosen` (the switch's folder), `allowed` (a folder the person
+    /// allowed, remembered), `session` (allowed for this run), `once` (for
+    /// one command), `document` (the open document's folder) or
+    /// `command line`.
+    pub from: String,
+    pub read: bool,
+    pub write: bool,
+}
+
 /// What the viewport draws besides the bodies' faces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
@@ -473,6 +590,9 @@ impl Default for Show {
 pub struct Dialogs {
     pub about: bool,
     pub shortcuts: bool,
+    /// The agents popover over the status bar's agents pill (2026-11-02):
+    /// the same panel as the start screen's "Connect an AI agent".
+    pub agents: bool,
 }
 
 /// The history player under the feature list: playing through the
@@ -506,6 +626,25 @@ pub struct Playback {
     /// With `motion`: the bodies that overlap at the `t` shown are drawn
     /// red (`view.motion {collisions}`).
     pub collisions: bool,
+    /// How the viewport draws while the motion plays: `auto` lighter (one
+    /// frame, no depth of field, no ambient occlusion or screen-space
+    /// reflections), `full` as when it stands
+    /// still. Pictures and recordings are full either way
+    /// (docs/design/motion.md › *The player*).
+    pub play_quality: PlayQuality,
+}
+
+/// How the viewport draws while a motion plays ([`Playback::play_quality`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlayQuality {
+    /// Lighter while it plays (the studio look in one frame, without its
+    /// depth of field, ambient occlusion and screen-space reflections);
+    /// full again once it stops.
+    #[default]
+    Auto,
+    /// The full quality while it plays too.
+    Full,
 }
 
 /// How long the motion takes from `t` = 0 to 1 at speed 1, in seconds.
@@ -527,6 +666,7 @@ impl Default for Playback {
             motion: false,
             bounce: false,
             collisions: false,
+            play_quality: PlayQuality::Auto,
         }
     }
 }
@@ -1610,6 +1750,8 @@ mod tests {
             dialogs: Dialogs {
                 about: true,
                 shortcuts: false,
+                // Added with the agents pill (2026-11-02).
+                agents: true,
             },
             // Added with the history player (2026-10-23).
             timeline: Playback {
@@ -1620,6 +1762,8 @@ mod tests {
                 motion: true,
                 bounce: true,
                 collisions: true,
+                // Added with the light drawing while playing (2026-11-02).
+                play_quality: PlayQuality::Full,
             },
             // Added with the Jigs' parameter form (2026-10-23).
             parameters: ParametersView {
@@ -1731,8 +1875,8 @@ mod tests {
                            "quality": "fine",
                            "drawing": {"view": "top", "perspective": false, "dashed": true},
                            "width": "600 mm", "gap": "", "name": "box.dxf"},
-                "dialogs": {"about": true, "shortcuts": false},
-                "timeline": {"playing": true, "speed": 2.0, "loop": true, "orbit": false, "motion": true, "bounce": true, "collisions": true},
+                "dialogs": {"about": true, "shortcuts": false, "agents": true},
+                "timeline": {"playing": true, "speed": 2.0, "loop": true, "orbit": false, "motion": true, "bounce": true, "collisions": true, "playQuality": "full"},
                 "look": {"mode": "studio", "environment": "workshop", "exposure": -0.5,
                          "rotation": 90.0, "ground": false, "ao": true, "shadows": false,
                          "tonemap": "aces", "light": [30.0, 45.0], "background": "plain",
