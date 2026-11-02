@@ -355,11 +355,15 @@ impl Imported {
 }
 
 /// The work one placed solid or sheet may take to read
-/// (`craft3d_geom::allowance` units: about one per freeform evaluation,
-/// one to three million a second): past it the body is refused, naming
-/// the stage and the entity where the work ran out (2026-11-02: ABC
-/// models of tens of thousands of edges took minutes to prove).
-pub const IMPORT_WORK: u64 = 4_000_000_000;
+/// (`craft3d_geom::allowance` units: one per freeform evaluation, four per
+/// piece of an edge's proof): past it the body is refused, naming the
+/// stage and the entity where the work ran out (2026-11-02: ABC models of
+/// tens of thousands of edges took minutes to prove). Set where no model
+/// of the ABC chunk that read within a minute before is refused: the
+/// count follows the time only within a factor of a thousand across
+/// models (much of an import's time, on analytic faces and in sewing, is
+/// not counted), so this bounds a runaway, not the minute.
+pub const IMPORT_WORK: u64 = 50_000_000_000;
 
 /// A parsed file with its items found.
 #[derive(Debug)]
