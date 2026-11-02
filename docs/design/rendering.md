@@ -609,7 +609,21 @@ colour in both renderers) covered the part the lens focused on, so its sharpness
 While the lens is on (`Shell::lens_on`: studio, a lens, no analysis, perspective) the selected faces
 keep their own colour and the selection is said by its outline over the picture alone; the entry of
 the "select other" list under the pointer and a face `ui.highlight` points at are still lit. The fill
-is left out of the `Highlight` both renderers take, so their parity is unchanged.
+is left out of the `Highlight` both renderers take, so their parity is unchanged. (Review, 2026-11-02:)
+a click's own light on the face it selected (`state.highlight`, set by the click) goes too, and a face
+`ui.highlight` points at is lit only when it is not selected; a selected face that gets no outline (no
+edge between it and another face or on its open border: a full sphere, a face bounded by a seam only,
+or an outline past `MAX_OUTLINE_SEGMENTS`) is still lit (`Selecting::bare`), or nothing would show it
+selected. `lens_on` means the picture is blurred: the environment prepared (the plain look is drawn
+until then) and `lens_focus` without `noBlur`, so a focus behind the camera keeps the fill.
+
+*A miss in the panel test* (2026-11-02): with the aperture's hint after its value the row was wider
+than the popover (its end cut off in the screenshots), so its `ScrollArea::both` could scroll
+sideways; most likely a control that takes the focus is
+scrolled into view, animated over frames, and the controls moved between the frame the test read
+their rects in and its click (a click on *Selection* after *Centre* missed). The hint is on a row of
+its own; `look_panel.rs` asserts every control lies inside the panel, and was run 20 times in one
+Check.
 
 *The f-number* must be positive: `look.dof.fstop` 0 or below is refused ("must be a positive
 f-number"), as a focus distance of 0 or below is; until 2026-11-02 it was clamped to 0.5. A positive
@@ -627,7 +641,7 @@ it is hidden and "gone" when it is deleted; an orthographic view and a focus beh
 `noBlur`; the selected faces are untinted under the lens and tinted without it; the picture focused on
 the selection is the picture focused on its centre given as a point, byte for byte; bad values refused
 with nothing changed (an unknown focus word, a capitalised one, 0, a negative distance, two
-coordinates, a string f-number, null) or clamped (f/0 and below to 0.5, above 64 to 64); the state
+coordinates, a string f-number, null, an f-number of 0 or below) or clamped (a positive f-number under 0.5 to 0.5, above 64 to 64); the state
 round trips through serde with every kind of focus. `look_panel.rs`: the slider's ends are f/1.4 and
 f/22 and its middle f/5.6, each focus choice, the distance slider appearing and moving the focus
 further. `engine` `look.rs`: parsing, the fallbacks, `no_blur`, a non-positive f-number refused;
@@ -637,9 +651,9 @@ orthographic; `craft3d-cli` `tests/cli.rs`: `--focus selection` and `picked` are
 
 *Secondary text* (2026-11-02, the same branch): the hints and notes of the whole interface were
 egui's small style (9 points) or ad hoc sizes; they are now one token, `Tokens::secondary_font`
-(13 points, the body's size), told apart by colour (`text_dim`, `plate_text_dim`, `chrome_text_dim`,
+(13 points; `Tokens::apply` sets egui's body text to the same token, so the two cannot drift apart), told apart by colour (`text_dim`, `plate_text_dim`, `chrome_text_dim`,
 each at 4.5:1 or more by `text_pairs`): `Tokens::secondary`, `plate_secondary` and `secondary_in`, and
-egui's `TextStyle::Small` set to it in `Tokens::apply`. Covered: the lens's notes, "No checks yet"
+egui's `TextStyle::Small` and `TextStyle::Body` set to it in `Tokens::apply`. Covered: the lens's notes, "No checks yet"
 under Assertions, a feature's and an assertion's message, the "when" mark, the mates' messages, the
 Parameters tab's notes, the joints' notes, the timeline's problem. `theme::tests` ›
 `secondary_text_is_one_legible_size`.

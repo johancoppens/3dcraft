@@ -456,3 +456,98 @@ fn the_selection_is_not_tinted_under_the_lens() {
         craft3d_render::Highlight::NONE
     );
 }
+
+/// A face picked by a click in the viewport is selected and pointed at;
+/// under the lens neither tints it (the outline says it), without the
+/// lens it is lit as ever.
+#[test]
+fn a_clicked_face_is_not_tinted_under_the_lens() {
+    let (mut session, mut shell, ctx) = two_cubes();
+    // The near cube's front face, seen at (70, 120) of a 320 x 240
+    // picture: its centre (50, -20, 0) is 100 ahead and 20 to the left,
+    // 20 / (100 tan 15° · 4/3) = 0.56 of the half width.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.pick",
+        json!({"x": 70, "y": 120, "width": 320, "height": 240, "select": true}),
+    );
+    frame(&ctx, &mut shell, &mut session);
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(got["selection"]["count"], 1, "{}", got["selection"]);
+    assert!(
+        got["state"]["highlight"].is_object(),
+        "the click points at it"
+    );
+    let scene = shell.shown_scene_arc();
+    assert!(shell.lens_on());
+    assert_eq!(
+        shell.face_highlight(scene.as_deref()),
+        craft3d_render::Highlight::NONE,
+        "under the lens"
+    );
+    // The face is the lens's focus: the centre of the front face.
+    at(&lens(&mut shell, &mut session), [50.0, -20.0, 0.0], 100.0);
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"look": {"dof": null}}),
+    );
+    assert_ne!(
+        shell.face_highlight(scene.as_deref()),
+        craft3d_render::Highlight::NONE,
+        "without the lens"
+    );
+}
+
+/// A selected face that gets no outline (a sphere's, bounded by its seam
+/// alone) is still lit under the lens, or nothing would say it is
+/// selected.
+#[test]
+fn a_face_without_an_outline_is_still_lit_under_the_lens() {
+    let (mut session, mut shell, ctx) = two_cubes();
+    run(
+        &mut session,
+        "feature.sphere",
+        json!({"name": "Ball", "radius": 5, "position": [0, 0, 0]}),
+    );
+    select(&mut session, "Ball");
+    frame(&ctx, &mut shell, &mut session);
+    let scene = shell.shown_scene_arc();
+    assert!(shell.lens_on());
+    assert_ne!(
+        shell.face_highlight(scene.as_deref()),
+        craft3d_render::Highlight::NONE
+    );
+    // A cube's faces have their outline: not lit.
+    select(&mut session, "Near");
+    frame(&ctx, &mut shell, &mut session);
+    assert_eq!(
+        shell.face_highlight(scene.as_deref()),
+        craft3d_render::Highlight::NONE
+    );
+}
+
+/// No lens drawn, no lens to say the selection by its outline alone: a
+/// focus behind the camera blurs nothing, so the selection is lit.
+#[test]
+fn the_selection_is_lit_when_the_lens_blurs_nothing() {
+    let (mut session, mut shell, ctx) = two_cubes();
+    select(&mut session, "Near");
+    frame(&ctx, &mut shell, &mut session);
+    assert!(shell.lens_on());
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"look": {"dof": {"focus": [400.0, 0.0, 0.0]}}}),
+    );
+    frame(&ctx, &mut shell, &mut session);
+    assert!(!shell.lens_on(), "the focus is behind the eye");
+    let scene = shell.shown_scene_arc();
+    assert_ne!(
+        shell.face_highlight(scene.as_deref()),
+        craft3d_render::Highlight::NONE
+    );
+}

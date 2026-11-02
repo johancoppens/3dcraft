@@ -145,13 +145,14 @@ pub struct Tokens {
     /// player's step caption under it, in points.
     pub notice_font: f32,
     pub caption_font: f32,
-    /// Size of secondary text, in points: hints, notes, a feature's or an
-    /// assertion's message, what a panel says while it is empty. One
-    /// size for the whole interface, as large as the body text, and told
-    /// apart by its colour (`text_dim` on a panel, `plate_text_dim` on a
-    /// plate, `chrome_text_dim` on a bar, each kept at 4.5:1 by
-    /// [`Tokens::text_pairs`]): egui's `TextStyle::Small` is set to it, so
-    /// `.small()` is this size too ([`Tokens::apply`]).
+    /// Size of the body text and of secondary text, in points: one token
+    /// for both, so a hint, a note, a feature's or an assertion's
+    /// message, what a panel says while it is empty is as large as the
+    /// text around it and told apart by its colour (`text_dim` on a panel,
+    /// `plate_text_dim` on a plate, `chrome_text_dim` on a bar, each kept
+    /// at 4.5:1 by [`Tokens::text_pairs`]). [`Tokens::apply`] sets egui's
+    /// `TextStyle::Body` and `TextStyle::Small` to it, so `.small()` is
+    /// this size too.
     pub secondary_font: f32,
     /// Width of sketch lines, in points.
     pub sketch_width: f32,
@@ -723,12 +724,12 @@ impl Tokens {
         } else {
             egui::Theme::Light
         });
-        let small = egui::FontId::proportional(self.secondary_font);
+        let text = egui::FontId::proportional(self.secondary_font);
         ctx.all_styles_mut(move |style| {
             style.visuals = visuals.clone();
-            style
-                .text_styles
-                .insert(egui::TextStyle::Small, small.clone());
+            for kind in [egui::TextStyle::Body, egui::TextStyle::Small] {
+                style.text_styles.insert(kind, text.clone());
+            }
         });
     }
 
@@ -1104,8 +1105,8 @@ mod tests {
         assert!(low.is_empty(), "{low:?}");
     }
 
-    /// Secondary text is one legible size, as large as the body text, and
-    /// egui's small text style is that size once the tokens are applied.
+    /// Secondary text is one legible size, the body text's: egui's body
+    /// and small text styles are both that token once it is applied.
     #[test]
     fn secondary_text_is_one_legible_size() {
         let tokens = Tokens::default();
@@ -1115,7 +1116,7 @@ mod tests {
         let body = style.text_styles[&egui::TextStyle::Body].size;
         let small = style.text_styles[&egui::TextStyle::Small].size;
         assert_eq!(small, tokens.secondary_font);
-        assert!(tokens.secondary_font >= body, "{small} < {body}");
+        assert_eq!(body, tokens.secondary_font, "{small} {body}");
         for tokens in [Tokens::default(), Tokens::default().touch()] {
             assert!(tokens.secondary_font >= 12.0);
         }

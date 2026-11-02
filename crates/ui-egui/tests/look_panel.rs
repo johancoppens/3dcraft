@@ -78,6 +78,20 @@ fn hit(shell: &Shell, name: &str) -> egui::Rect {
         })
 }
 
+/// Every control of the panel lies inside it: no option is wider than
+/// the popover. (One that is scrolls the panel's options sideways when it
+/// takes the focus, and the controls move under the next click: the aperture's
+/// hint after its value did, 2026-11-02.)
+fn all_inside(shell: &Shell) {
+    let panel = hit(shell, "panel");
+    for (name, rect) in shell.look_hits() {
+        assert!(
+            panel.contains_rect(*rect),
+            "{name}: {rect:?} outside the panel {panel:?}"
+        );
+    }
+}
+
 /// A click at `fraction` of the way along a slider's track.
 fn along(rect: egui::Rect, fraction: f32) -> Pos2 {
     pos2(rect.left() + rect.width() * fraction, rect.center().y)
@@ -172,6 +186,7 @@ fn every_control_of_the_studio_panel_drives_the_look_state() {
     window.frame(&mut shell, &mut session, Vec::new());
     // The hint and the note (nothing is selected) are inside the panel,
     // at the secondary text's size.
+    all_inside(&shell);
     let panel = hit(&shell, "panel");
     for name in ["apertureHint", "lensNote"] {
         let rect = hit(&shell, name);
@@ -210,6 +225,8 @@ fn every_control_of_the_studio_panel_drives_the_look_state() {
         .as_f64()
         .unwrap();
     assert!(distance > 0.0, "{distance}");
+    window.frame(&mut shell, &mut session, Vec::new());
+    all_inside(&shell);
     assert_eq!(look(&mut shell, &mut session)["dof"]["fstop"], 5.6);
     let at = along(hit(&shell, "focusDistance"), 0.95);
     window.click(&mut shell, &mut session, at);

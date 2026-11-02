@@ -1062,14 +1062,13 @@ impl Shell {
         }
     }
 
-    /// Whether the viewport draws the studio look with a lens: the studio
-    /// look, a lens, no analysis (drawn in the plain look) and a
-    /// perspective view (an orthographic one has no lens).
+    /// Whether the viewport's picture is blurred by the studio look's
+    /// lens: the studio look drawn (its environment prepared, else the
+    /// plain look is shown meanwhile), a lens, no analysis (drawn in the
+    /// plain look), and one that blurs something ([`Self::lens_focus`]:
+    /// not an orthographic view, not a focus behind the camera).
     pub fn lens_on(&self) -> bool {
-        self.state.look.is_studio()
-            && self.state.look.dof.is_some()
-            && !self.state.analysis.is_on()
-            && self.state.camera.projection == crate::state::ProjectionKind::Perspective
+        self.look_ready() && self.lens_focus().is_some_and(|lens| lens.no_blur.is_none())
     }
 
     /// The points the lens may focus on: the last click and the centre
@@ -1597,21 +1596,43 @@ impl Shell {
     /// The faces the viewport shows highlighted, as the renderers take
     /// them.
     ///
-    /// While the studio look's lens is on the selected faces keep their
-    /// own colour, so the part in focus shows its sharpness (the
-    /// selection is then said by its outline alone, drawn over the
-    /// picture); the entry of the "select other" list under the pointer
-    /// and the face `ui.highlight` points at are still lit.
+    /// While the studio look's lens blurs the picture ([`Self::lens_on`])
+    /// the selected faces keep their own colour, so the part in focus
+    /// shows its sharpness: the selection is then said by its outline,
+    /// drawn over the picture. A click's own light on what it selected
+    /// goes too. Still lit: selected faces that get no outline (a full
+    /// sphere, a face bounded by a seam only, an outline past its cap),
+    /// the entry of the "select other" list under the pointer, and a face
+    /// `ui.highlight` points at that is not selected.
     pub fn face_highlight(&self, scene: Option<&Scene>) -> Highlight {
-        let mut ids: Vec<u32> = if self.lens_on() {
-            self.select.hover.into_iter().collect()
+        let lens = self.lens_on();
+        let mut ids: Vec<u32> = if lens {
+            self.select
+                .bare
+                .iter()
+                .copied()
+                .chain(self.select.hover)
+                .collect()
         } else {
             self.selection_faces().collect()
         };
-        if let (Some(face), Some(scene)) = (&self.state.highlight, scene)
+        let pointed = if lens && self.click_lit() {
+            None
+        } else {
+            self.state.highlight.as_ref()
+        };
+        if let (Some(face), Some(scene)) = (pointed, scene)
             && let Ok(found) = scene.faces_named(face.feature.as_deref(), &face.face)
         {
-            ids.extend(found.ids);
+            // Under the lens a face pointed at that is selected is said
+            // by the selection's outline.
+            let selected = &self.select.faces;
+            ids.extend(
+                found
+                    .ids
+                    .into_iter()
+                    .filter(|id| !lens || selected.binary_search(id).is_err()),
+            );
         }
         if ids.is_empty() {
             return Highlight::NONE;

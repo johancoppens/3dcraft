@@ -55,6 +55,11 @@ pub(crate) struct Selecting {
     pub(crate) marks: Marks,
     /// Moves whenever what is drawn for the selection changes.
     pub(crate) drawn: u64,
+    /// The selected faces whose outline is not drawn (a full sphere or
+    /// torus, a face bounded by a seam only, an outline past
+    /// `MAX_OUTLINE_SEGMENTS`): lit even under the lens, which otherwise
+    /// says the selection by its outline alone.
+    pub(crate) bare: Vec<u32>,
     /// Where a lens focused on the selection focuses
     /// ([`craft3d_engine::Scene::items_focus`]), worked out with `faces`;
     /// `None` while nothing of it is shown.
@@ -113,10 +118,14 @@ pub(crate) struct Boxing {
 
 /// What `items` light up in `scene`: the face ids, and the outlines and
 /// marks drawn over the picture.
-fn drawn(scene: &Scene, items: &[SelectionItem]) -> (Vec<u32>, Marks) {
+fn drawn(scene: &Scene, items: &[SelectionItem]) -> (Vec<u32>, Marks, Vec<u32>) {
     let mut faces: BTreeSet<u32> = BTreeSet::new();
     let mut marks = Marks::default();
     let mut room = MAX_OUTLINE_SEGMENTS;
+    // The faces whose outline was drawn: at least one edge between them
+    // and another face (or on their open border), not a seam only, and
+    // not left out for want of room.
+    let mut outlined: BTreeSet<u32> = BTreeSet::new();
     // The ids of a body's faces run up to the next body's first.
     let last_id = scene
         .mesh
@@ -140,6 +149,7 @@ fn drawn(scene: &Scene, items: &[SelectionItem]) -> (Vec<u32>, Marks) {
             let Some(polyline) = body.edges.get(k) else {
                 continue;
             };
+            let mut drew = false;
             for pair in polyline.windows(2) {
                 if room == 0 {
                     return;
@@ -147,6 +157,20 @@ fn drawn(scene: &Scene, items: &[SelectionItem]) -> (Vec<u32>, Marks) {
                 if let [a, b] = *pair {
                     marks.lines.push([a, b]);
                     room -= 1;
+                    drew = true;
+                }
+            }
+            if !drew {
+                continue;
+            }
+            for &face in on.iter().filter(|&&face| wanted(face)) {
+                let bounds = on.len() == 1 || on.iter().any(|&other| other != face);
+                if bounds
+                    && let Some(id) = u32::try_from(face)
+                        .ok()
+                        .and_then(|f| body.first_face_id.checked_add(f))
+                {
+                    outlined.insert(id);
                 }
             }
         }
@@ -218,7 +242,8 @@ fn drawn(scene: &Scene, items: &[SelectionItem]) -> (Vec<u32>, Marks) {
             SelectionKind::Sketch | SelectionKind::Datum => {}
         }
     }
-    (faces.into_iter().collect(), marks)
+    let bare = faces.difference(&outlined).copied().collect();
+    (faces.into_iter().collect(), marks, bare)
 }
 
 /// The item a click on `found` points at: the vertex, else the edge, else
@@ -261,6 +286,12 @@ impl Shell {
     /// What is drawn for the selection: moves whenever it changes.
     pub(crate) fn selection_drawn(&self) -> u64 {
         self.select.drawn
+    }
+
+    /// Whether the highlight (`state.highlight*`) is what the last click
+    /// lit as it selected it.
+    pub(crate) fn click_lit(&self) -> bool {
+        self.select.lit
     }
 
     /// The marks of the selection, drawn over the picture.
@@ -325,8 +356,9 @@ impl Shell {
         }
         let key = (self.select.view.serial, scene.revision, scene.sampling());
         if self.select.drawn_for != Some(key) {
-            let (faces, marks) = drawn(scene, &self.select.view.items);
+            let (faces, marks, bare) = drawn(scene, &self.select.view.items);
             self.select.faces = faces;
+            self.select.bare = bare;
             self.select.marks = marks;
             self.select.drawn = self.select.drawn.wrapping_add(1);
             self.select.drawn_for = Some(key);
