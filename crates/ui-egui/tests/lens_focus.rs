@@ -81,6 +81,10 @@ fn two_cubes() -> (Session, Shell, egui::Context) {
                      "dof": {"fstop": 1.4, "focus": "selection"}},
         }),
     );
+    // The studio look is drawn once its environment is prepared (the
+    // window prepares it on a thread meanwhile): prepared here, so the
+    // lens blurs from the first frame.
+    shell.state.look.spec().unwrap().prepared().unwrap();
     frame(&ctx, &mut shell, &mut session);
     (session, shell, ctx)
 }
