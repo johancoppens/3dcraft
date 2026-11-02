@@ -349,19 +349,20 @@ fn over_budget(name: &str, stage: &str, at: Option<String>) -> Option<ImportErro
     })
 }
 
-/// An edge whose tolerance is at least this share of the body's largest
-/// is measured again near its gap ([`tighten_loosest`]).
-const NEAR_LARGEST: f64 = 0.5;
+/// The most edges of a body measured again near their gap
+/// ([`tighten_loosest`]).
+const MOST_TIGHTENED: usize = 32;
 
-/// The edges whose tolerance sets or comes near the body's largest (at
-/// least [`NEAR_LARGEST`] of it), which the kernel then works at, measured
-/// again near their gap (`topo::tighten_edge`), loosest first, until the
-/// next is below that share of the largest left; the rest keep the bound
-/// of the first proof (the developer, 2026-11-02: tighten where it
-/// matters, at the cost of the import's time elsewhere). Edges sewing
-/// gave a tolerance (`sewn`) are left. The vertices at an edge tightened
-/// lose what it raised them to; they are measured after. The report's
-/// count and largest follow.
+/// The edges that set the body's largest tolerance, which the kernel then
+/// works at, measured again near their gap (`topo::tighten_edge`):
+/// loosest first, as long as the next could still be the largest (its
+/// tolerance above what the edges tightened came to and above what
+/// sewing gave), at most [`MOST_TIGHTENED`]; the rest keep the bound of
+/// the first proof (the developer, 2026-11-02: tighten where it matters,
+/// the import's time kept near what it was). Edges sewing gave a
+/// tolerance (`sewn`) are left. The vertices at an edge tightened lose
+/// what it raised them to; they are measured after. The report's count
+/// and largest follow.
 fn tighten_loosest(
     body: &mut craft3d_topo::Body,
     sewn: &std::collections::BTreeSet<EdgeId>,
@@ -375,15 +376,14 @@ fn tighten_loosest(
         .filter(|(e, _)| !sewn.contains(e))
         .collect();
     loose.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    let sewn_largest = sewn
+        .iter()
+        .filter_map(|e| body.edge_tolerance(*e))
+        .fold(0.0_f64, f64::max);
     let mut largest_done = 0.0_f64;
-    for &(edge, had) in &loose {
-        // The largest there will be: what was tightened, this one as it
-        // is, and the edges sewing gave.
-        let left = sewn
-            .iter()
-            .filter_map(|e| body.edge_tolerance(*e))
-            .fold(largest_done.max(had), f64::max);
-        if had < NEAR_LARGEST * left {
+    for &(edge, had) in loose.iter().take(MOST_TIGHTENED) {
+        // Only an edge that could still be the largest.
+        if had <= largest_done.max(sewn_largest) {
             break;
         }
         let ends = body.edge(edge).map(|e| [e.start, e.end]);
