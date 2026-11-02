@@ -2752,6 +2752,13 @@ mod tests {
             // Still provisional on screen as the recording starts.
             assert!(!desk.host.session.motion().unwrap().exact);
         }
+        // The provisional desk starts its recording later on the wall
+        // clock (as a loaded machine may): the frames must not depend on
+        // it (a Gate run of 2026-11-02 caught the drawer of the narrow
+        // layout half slid in one of them).
+        if ready {
+            std::thread::sleep(Duration::from_millis(120));
+        }
         let start = r#"{"id":1,"method":"ui.record","params":{"path":"frames","step":true}}"#;
         assert_eq!(
             serve(&mut desk, "start", &ask(&requests, start))["ok"],
@@ -2761,6 +2768,7 @@ mod tests {
         let advance = r#"{"id":2,"method":"ui.advance","params":{"frames":1}}"#;
         let reply = serve(&mut desk, "advance", &ask(&requests, advance));
         assert_eq!(reply["result"]["frames"], 1, "{reply}");
+        println!("ADVANCE {name}: {reply}");
         // The moment shown while recording is the exact one, and not
         // because the builder delivered it: it is still waiting for a
         // thread.
@@ -2818,6 +2826,36 @@ mod tests {
         drop(frozen);
     }
 
+    /// Where two PNG frames differ: how many pixels, and their box.
+    fn frame_difference(a: &[u8], b: &[u8]) -> String {
+        let decode = |bytes: &[u8]| {
+            let mut reader = png::Decoder::new(std::io::Cursor::new(bytes.to_vec()))
+                .read_info()
+                .unwrap();
+            let mut buf = vec![0; reader.output_buffer_size()];
+            let info = reader.next_frame(&mut buf).unwrap();
+            (info.width, info.height, info.line_size, buf)
+        };
+        let (w, h, line, a) = decode(a);
+        let (w2, h2, _, b) = decode(b);
+        if (w, h) != (w2, h2) {
+            return format!("sizes {w}x{h} and {w2}x{h2}");
+        }
+        let px = line / w as usize;
+        let (mut n, mut lo, mut hi) = (0usize, (u32::MAX, u32::MAX), (0u32, 0u32));
+        for y in 0..h {
+            for x in 0..w {
+                let i = y as usize * line + x as usize * px;
+                if a.get(i..i + px) != b.get(i..i + px) {
+                    n += 1;
+                    lo = (lo.0.min(x), lo.1.min(y));
+                    hi = (hi.0.max(x), hi.1.max(y));
+                }
+            }
+        }
+        format!("{n} pixels differ, from {lo:?} to {hi:?} of {w}x{h}")
+    }
+
     #[test]
     fn a_step_recording_of_a_provisional_moment_records_the_exact_one() {
         let state = match craft3d_ui_egui::direct::headless_render_state() {
@@ -2829,9 +2867,15 @@ mod tests {
         };
         let exact = recorded_moment(&state, "exact", false);
         let ready = recorded_moment(&state, "ready", true);
+        if exact != ready {
+            // For whoever reads the log: both frames.
+            println!("EVIDENCE exact {}", craft3d_engine::encode_base64(&exact));
+            println!("EVIDENCE ready {}", craft3d_engine::encode_base64(&ready));
+        }
         assert!(
             exact == ready,
-            "the recorded frame shows the provisional moment"
+            "the recorded frame shows the provisional moment: {}",
+            frame_difference(&exact, &ready)
         );
     }
 

@@ -822,6 +822,19 @@ fn the_background_thread_writes_without_being_asked() {
         );
         std::thread::sleep(Duration::from_millis(5));
     }
+    // The thread may be writing a later change now (an atomic write's
+    // temporary file, a Gate run of 2026-11-02 saw it): its files once it
+    // is done. A temporary file that stays fails here.
+    // Done: no temporary file for five intervals of the thread in a row.
+    let mut quiet = 0;
+    while quiet < 20 && waited.elapsed() < Duration::from_secs(20) {
+        quiet = if kinds(&dir).iter().any(|k| k == "tmp") {
+            0
+        } else {
+            quiet + 1
+        };
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert_eq!(kinds(&dir), ["3dcraft", "json", "lock"]);
     let overview = s.recovery_overview();
     assert_eq!(overview.problem, None);
