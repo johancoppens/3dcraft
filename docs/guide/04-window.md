@@ -252,7 +252,7 @@ right opens and closes the look's options. Switching the look on opens them in a
 under the button row, with a small pointer toward the button and its right edge in line with the row's:
 the environment and how far it is turned, the exposure, the background, the ground and how much it
 reflects, the tone curve (AgX, ACES or Linear), shadows, ambient occlusion and reflections, bloom, and a
-lens that blurs what is out of focus. A change shows at once. While the popover is open the view cube
+lens that blurs what is out of focus (its f-number and where it focuses). A change shows at once. While the popover is open the view cube
 moves down under it, or hides where there is no room (on a phone), and comes back when it closes. Click
 the caret again, or press Escape, to close the options: the look stays on. Clicking the chip switches
 the look off. In a short window the options scroll inside the popover.
@@ -284,9 +284,17 @@ The studio look also has a second layer of polish, on by default:
   default).
 
 Depth of field is off until you ask for it: `dof` is a thin camera lens with an f-number (`fstop`,
-2.8 by default; smaller is more blur) focused on a point. `"focus": "picked"` focuses on the point you
-click last, so clicking a part brings it into focus; a number is a distance along the view, `[x, y,
-z]` a point, and without one the lens focuses on the model's centre. The blur follows the
+2.8 by default; smaller is more blur) focused on a point. In the Studio popover, **Lens** switches it
+on; **Aperture** is a slider of the usual f-stops, f/1.4 (most blur) to f/22 (nearly all sharp); **Focus**
+says where it focuses: **Selection** (the default when you switch it on) on what is selected, in the
+viewport or in the feature list, and it follows as you select something else; **Click** on the point
+you clicked last; **Centre** on the model's centre; **Distance** at a distance along the view, with a
+slider of its own. With nothing selected (or no click yet) the lens focuses on the centre, and the
+popover says so under the choice. To an agent these are `"focus": "selection"`, `"picked"`,
+`"centre"`, a number (a distance) or `[x, y, z]` (a point); `ui.get` says under `lens` where it
+focuses now. `view.render` focuses `selection` on the session's selection; `craft3d-cli render` has
+no selection or click, so give it the point (`--focus X,Y,Z`, from `select.get` or `ui.pick`), a
+distance, or `centre`. The blur follows the
 document's length unit, as a real camera would: a small part seen close up has a shallow depth of
 field. An orthographic view has no lens and stays sharp.
 
@@ -300,7 +308,7 @@ everywhere, as the plain look draws them, and `"edges": "off"` leaves them out o
 (the **Edges** toggle hides them in every look).
 
 ```text
-ui.set {"look": {"mode": "studio", "dof": {"fstop": 2, "focus": "picked"}, "edges": "soft"}}
+ui.set {"look": {"mode": "studio", "dof": {"fstop": 2, "focus": "selection"}, "edges": "soft"}}
 ui.set {"show": {"edges": false}}
 ```
 

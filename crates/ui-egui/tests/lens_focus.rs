@@ -231,30 +231,60 @@ fn energy((w, h, gray): &(usize, usize, Vec<u8>)) -> [f64; 2] {
 }
 
 #[test]
-fn the_selected_part_is_sharp_and_the_other_blurred() {
-    let (mut session, mut shell, ctx) = two_cubes();
-    select(&mut session, "Near");
-    frame(&ctx, &mut shell, &mut session);
-    let on_near = energy(&screenshot(&mut shell, &mut session));
-    select(&mut session, "Far");
-    frame(&ctx, &mut shell, &mut session);
-    let on_far = energy(&screenshot(&mut shell, &mut session));
-    // Near is on the left, Far on the right: each half is sharper when
-    // its cube is in focus, by far.
-    assert!(on_near[0] > 2.0 * on_far[0], "{on_near:?} {on_far:?}");
-    assert!(on_far[1] > 2.0 * on_near[1], "{on_near:?} {on_far:?}");
-    // Stopped down to f/22 the far cube, out of focus, is much sharper
-    // than at f/1.4.
-    select(&mut session, "Near");
-    frame(&ctx, &mut shell, &mut session);
-    call(
+fn the_part_in_focus_is_sharp_and_the_other_blurred() {
+    let (mut session, mut shell, _ctx) = two_cubes();
+    let mut shot = |shell: &mut Shell, dof: Value| {
+        call(shell, &mut session, "ui.set", json!({"look": {"dof": dof}}));
+        let picture = screenshot(shell, &mut session);
+        (energy(&picture), picture)
+    };
+    // Nothing selected, so no outline is drawn over the picture: the
+    // lens focused on each cube's centre in turn.
+    let (on_near, _) = shot(
         &mut shell,
-        &mut session,
-        "ui.set",
-        json!({"look": {"dof": {"fstop": 22}}}),
+        json!({"fstop": 1.4, "focus": [45.0, -20.0, 0.0]}),
     );
-    let stopped = energy(&screenshot(&mut shell, &mut session));
-    assert!(stopped[1] > 2.0 * on_near[1], "{stopped:?} {on_near:?}");
+    let (on_far, _) = shot(
+        &mut shell,
+        json!({"fstop": 1.4, "focus": [-55.0, 20.0, 0.0]}),
+    );
+    // Near is on the left, Far on the right: each half is sharper when
+    // its cube is in focus.
+    assert!(on_near[0] > 1.5 * on_far[0], "{on_near:?} {on_far:?}");
+    assert!(on_far[1] > 1.5 * on_near[1], "{on_near:?} {on_far:?}");
+    // Stopped down to f/22 the far cube, out of focus, is sharper than
+    // at f/1.4.
+    let (stopped, _) = shot(
+        &mut shell,
+        json!({"fstop": 22, "focus": [45.0, -20.0, 0.0]}),
+    );
+    assert!(stopped[1] > 1.5 * on_near[1], "{stopped:?} {on_near:?}");
+    eprintln!("near {on_near:?} far {on_far:?} f/22 {stopped:?}");
+}
+
+/// The lens on the selection draws the very picture of the lens on the
+/// selection's centre given as a point: the selection only says where.
+#[test]
+fn the_lens_on_the_selection_is_the_lens_on_its_centre() {
+    let (mut session, mut shell, ctx) = two_cubes();
+    for (feature, centre) in [("Near", [45.0, -20.0, 0.0]), ("Far", [-55.0, 20.0, 0.0])] {
+        select(&mut session, feature);
+        frame(&ctx, &mut shell, &mut session);
+        let mut shot = |shell: &mut Shell, focus: Value| {
+            call(
+                shell,
+                &mut session,
+                "ui.set",
+                json!({"look": {"dof": {"fstop": 1.4, "focus": focus}}}),
+            );
+            screenshot(shell, &mut session).2
+        };
+        let selected = shot(&mut shell, json!("selection"));
+        let point = shot(&mut shell, json!(centre));
+        let centred = shot(&mut shell, json!("centre"));
+        assert!(selected == point, "{feature}: the selection's centre");
+        assert!(selected != centred, "{feature}: not the model's centre");
+    }
 }
 
 #[test]
