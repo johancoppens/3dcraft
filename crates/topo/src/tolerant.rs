@@ -375,7 +375,7 @@ pub fn measure_curve(
 
 /// How many times a bound that will be recorded is proven again nearer
 /// the gap.
-const TIGHTEN: usize = 4;
+const TIGHTEN: usize = 8;
 
 /// A bound brought nearer the gap it holds before it is recorded: a
 /// proof's bound lies anywhere up to its target (twice the sampled gap
@@ -386,9 +386,11 @@ const TIGHTEN: usize = 4;
 /// tolerance (a tenth above them included), a proof at that tolerance
 /// first, which records nothing when it holds; then up to [`TIGHTEN`]
 /// proofs at targets halfway (geometrically) between the bound and a
-/// hundredth above the sampled gap, each allowed four times the pieces of the
-/// last that held (a proof that stopped early needs more to go nearer)
-/// and the last all of [`PROOF_PIECES`]; one that fails raises the floor.
+/// hundredth above the sampled gap, each allowed four times the pieces of
+/// the last that held (a proof that stopped early needs more to go
+/// nearer); one that fails so is tried again with all of
+/// [`PROOF_PIECES`], and only one that fails with them all raises the
+/// floor.
 /// Not for a bound within the document's tolerance, which records
 /// nothing.
 fn tighten(
@@ -407,23 +409,29 @@ fn tighten(
         return b.min(bound);
     }
     let mut floor = (1.01 * sampled).max(linear);
-    for attempt in 0..TIGHTEN {
-        if bound.is_nan() || bound <= 1.01 * floor {
-            break;
-        }
+    let mut attempts = 0;
+    while attempts < TIGHTEN && !bound.is_nan() && bound > 1.01 * floor {
         let target = (floor * bound).sqrt().max(floor);
-        let most = if attempt + 1 == TIGHTEN {
-            PROOF_PIECES
-        } else {
-            pieces.saturating_mul(4).clamp(256, PROOF_PIECES)
-        };
-        match prove(target, most) {
-            Some((b, p)) => {
+        let most = pieces.saturating_mul(4).clamp(256, PROOF_PIECES);
+        attempts += 1;
+        if let Some((b, p)) = prove(target, most) {
+            bound = b.min(bound);
+            pieces = p;
+            continue;
+        }
+        // Failed within the pieces given: that says nothing of the gap
+        // unless every piece was given; so once more with all of them
+        // before the floor rises (review of 2026-11-02: floors raised by
+        // a short budget left five ABC models looser than before).
+        if most < PROOF_PIECES {
+            attempts += 1;
+            if let Some((b, p)) = prove(target, PROOF_PIECES) {
                 bound = b.min(bound);
                 pieces = p;
+                continue;
             }
-            None => floor = target,
         }
+        floor = target;
     }
     bound
 }
@@ -769,15 +777,15 @@ mod tighten_tests {
     }
 
     /// Nearer targets need many more pieces than the proof that held
-    /// (it stopped early): the last attempt has them all, so the bound
-    /// still comes down (review of 2026-11-02: four times the pieces
-    /// alone left twenty ABC models looser than before).
+    /// (it stopped early): a proof that fails within the pieces given is
+    /// tried with every piece before the floor rises, so the bound still
+    /// comes down (review of 2026-11-02: floors raised by a short budget
+    /// left ABC models looser than before).
     #[test]
-    fn the_last_attempt_has_every_piece() {
+    fn a_short_budget_does_not_raise_the_floor() {
         let linear = 1e-6;
         let needs = |t: f64| if t < 1.6e-4 { PROOF_PIECES / 2 } else { 40 };
         let b = tighten(2e-4, 40, 1e-4, linear, prover(1e-4, needs));
-        // Without every piece at the last it stays at 1.69e-4.
-        assert!(b < 1.65e-4, "{b:e}");
+        assert!(b < 1.05e-4, "{b:e}");
     }
 }
