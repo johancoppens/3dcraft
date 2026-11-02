@@ -98,8 +98,11 @@ fn a_side_held_in_curvature_is_sewn_to_its_crown_where_a_union_refuses() {
     assert_eq!(seams.len(), 2, "{edges}");
     for seam in &seams {
         let c = run(&mut s, "measure.continuity", json!({"edge": seam}));
-        eprintln!("{seam}: {c}");
         assert_eq!(c["order"], "G2", "{seam}: {c}");
+        // Decided with work to spare: before 2026-11-02 the measure spent
+        // its allowance on these seams (1854 pieces) and could not decide.
+        assert_eq!(c["exhausted"], false, "{seam}: {c}");
+        assert!(c["pieces"].as_u64().unwrap() < 200, "{seam}: {c}");
     }
     // The sewing is saved as such and reopens to the same sheet.
     run(
@@ -223,7 +226,6 @@ fn the_finished_tank_measures_g2_along_both_seams() {
             "measure.continuity",
             json!({"edge": assertion["edge"]}),
         );
-        eprintln!("{}: {out}", assertion["edge"]);
         assert_eq!(out["order"], "G2", "{out}");
     }
     let doc = inspect(&mut s);

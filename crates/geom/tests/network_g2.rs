@@ -1127,7 +1127,9 @@ fn knotted(
 /// peaks just past the threshold among `b`'s single knots (at a knot for
 /// degree 3, between them for degree 4), with `b` run along the seam at
 /// another pace than `a` (the points compared up to a third of the
-/// tolerance apart, so the shift reaches across the breaks), is not
+/// tolerance apart: a window far too short for the break terms to weigh;
+/// they are weighed in `continuity.rs` ›
+/// `the_break_terms_cover_b_across_the_break_and_are_not_loose`), is not
 /// proven G2 but found beyond it, whether `b`'s rows are C¹ through its
 /// knots (degree 4: the expansion along `b` goes on into the neighbour,
 /// `Between::Smooth`, and no break is rough) or not (degree 3: its second

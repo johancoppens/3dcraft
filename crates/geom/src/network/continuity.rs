@@ -1316,9 +1316,11 @@ impl Piece {
     /// bound on the derivative along the edge, on either side of a break.
     fn len(&self) -> (f64, f64) {
         let h = (self.t1 - self.t0) * (self.root_b - self.root_a);
+        // Three roundings: the first piece's length, `1 ± skew` and the
+        // product (`t1 − t0`, a power of two, multiplies exactly).
         (
-            down(h * (1.0 - self.skew), 2).max(0.0),
-            up(h * (1.0 + self.skew), 2),
+            down(h * (1.0 - self.skew), 3).max(0.0),
+            up(h * (1.0 + self.skew), 3),
         )
     }
 
@@ -3945,6 +3947,172 @@ mod tests {
         assert!(seen, "no jump at the break: {lo:?} {:?}", info.plain);
         let c = continuity(&Surface::Nurbs(a), &Surface::Nurbs(b), &edge, tol, 1e-9).unwrap();
         assert!(c.order < Order::G2, "{c:?}");
+    }
+
+    /// The surfaces of [`a_knot_where_b_is_only_c1_is_covered_across_the_break`]
+    /// (`b` cubic with a double knot at ½ along, C¹ there, its curvature
+    /// along jumping; `a` its continuation across), `a` moved by `delta`
+    /// along the seam's normal (along it, `a`'s knot would move off `b`'s).
+    fn knotted_pair(delta: f64) -> (NurbsSurface, NurbsSurface) {
+        let knots_u = vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0];
+        let greville = [0.0, 1.0 / 6.0, 1.0 / 3.0, 2.0 / 3.0, 5.0 / 6.0, 1.0];
+        let lift = [0.0, 0.01, 0.0, 0.03, 0.01, 0.0];
+        let mut b_pts = Vec::new();
+        for k in 0..6 {
+            for j in 0..4 {
+                let fj = f64::from(j);
+                b_pts.push(Vec3::new(
+                    greville[k],
+                    0.3 * fj / 3.0,
+                    lift[k] + 0.1 * fj * fj / 9.0 + 0.02 * greville[k] * fj / 3.0,
+                ));
+            }
+        }
+        let blossom = |col: &[Vec3], args: &[f64]| -> Vec3 {
+            let mut d = col.to_vec();
+            for &u in args {
+                d = d.windows(2).map(|w| w[0] * (1.0 - u) + w[1] * u).collect();
+            }
+            d[0]
+        };
+        let mut a_pts = Vec::new();
+        for k in 0..6 {
+            let col: Vec<Vec3> = (0..4).map(|j| b_pts[k * 4 + j]).collect();
+            for j in 0..4 {
+                let mut args = vec![0.0; 3 - j];
+                args.extend(vec![-1.0; j]);
+                a_pts.push(blossom(&col, &args) + Vec3::new(0.0, 0.0, delta));
+            }
+        }
+        let kv = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+        let make = |pts: Vec<Vec3>| {
+            NurbsSurface::new(3, 3, knots_u.clone(), kv.clone(), 6, 4, pts, vec![1.0; 24]).unwrap()
+        };
+        (make(a_pts), make(b_pts))
+    }
+
+    /// Two pieces of `a` and `b` meeting at ½ along, the window of each
+    /// reaching into the other by a sizeable share of it, and the bounds
+    /// `combine` gives them, the kind of break it took, and for each piece
+    /// the largest gap sampled with `a` at `s` in it and `b` at any `s*`
+    /// within its window (in it or across the break; the rows evaluated
+    /// apart, lower bounds). Asserted: no sample is beyond its piece's
+    /// bound; and the bound is within `loose` times the largest sample, so
+    /// the break's terms are not covering by being absurd.
+    fn break_cover(
+        a: &NurbsSurface,
+        b: &NurbsSurface,
+        tol: f64,
+        smooth_expected: bool,
+        loose: f64,
+    ) {
+        let edge = iso_curve(b, true, 0.0).unwrap();
+        let origin = edge.control_points()[2];
+        let la = spline_rows(a, &edge, tol, origin, false).unwrap().unwrap();
+        let lb = spline_rows(b, &edge, tol, origin, false).unwrap().unwrap();
+        let mut per: Vec<Vec<P4>> = Vec::new();
+        for line in [&la, &lb] {
+            for row in &line.rows {
+                per.push(row_pieces(row, line, &[0.5]).unwrap());
+            }
+        }
+        let piece = |k: usize, a: f64, b: f64, id: u64| {
+            Piece::new(a, b, per.iter().map(|r| r[k].clone()).collect(), id, 0.0)
+        };
+        let pieces = [piece(0, 0.0, 0.5, 1), piece(1, 0.5, 1.0, 2)];
+        let work: Vec<(Piece, Info)> = pieces
+            .iter()
+            .map(|p| {
+                (
+                    p.clone(),
+                    piece_info(p, &Other::Spline, f64::INFINITY).unwrap(),
+                )
+            })
+            .collect();
+        let knots = b_knots_of(&lb);
+        assert_eq!(b_smooth_at(&knots, 0.5), smooth_expected);
+        let smooth = |x: f64| b_smooth_at(&knots, x);
+        let mut crosses = std::collections::BTreeMap::new();
+        let his = combine(&work, &Other::Spline, &mut crosses, &smooth).unwrap();
+        let kinds: Vec<bool> = crosses
+            .values()
+            .map(|b| matches!(b, Between::Smooth(..)))
+            .collect();
+        assert_eq!(kinds, vec![smooth_expected]);
+        // The rows of `b` at a parameter of the edge, from the piece it is in.
+        let b_at = |s: f64| -> Vec<P4> {
+            let (p, t) = if s < 0.5 {
+                (&pieces[0], s / 0.5)
+            } else {
+                (&pieces[1], (s - 0.5) / 0.5)
+            };
+            p.at(t.clamp(0.0, 1.0)).into_iter().skip(6).collect()
+        };
+        for (i, (p, (bound, window))) in pieces.iter().zip(&his).enumerate() {
+            // A window of a sizeable share of the piece (a twentieth of it
+            // at least), short of its reach.
+            assert!(
+                *window > 0.025 && *window < 0.5,
+                "piece {i}: window {window}"
+            );
+            let mut most = [0.0_f64; GAPS];
+            let mut across = 0;
+            for k in 0..=40 {
+                let t = f64::from(k) / 40.0;
+                let s = p.a + 0.5 * t;
+                for f in [-1.0, -0.75, -0.5, -0.25, 0.25, 0.5, 0.75, 1.0] {
+                    let star = (s + f * window).clamp(0.0, 1.0);
+                    if (s < 0.5) != (star < 0.5) {
+                        across += 1;
+                    }
+                    let mut mixed: Vec<P4> = p.at(t).into_iter().take(6).collect();
+                    mixed.extend(b_at(star));
+                    let lo = gaps(&mixed, &Other::Spline).unwrap().lo;
+                    for q in 1..GAPS {
+                        assert!(
+                            lo[q] <= bound[q],
+                            "piece {i}, gap {q}, s {s}, s* {star}: {:e} beyond {:e}",
+                            lo[q],
+                            bound[q]
+                        );
+                        most[q] = most[q].max(lo[q]);
+                    }
+                }
+            }
+            assert!(across > 0, "piece {i}: no sample across the break");
+            // Where something was sampled at all (a gap of rounding only
+            // says nothing of the terms).
+            for q in (2..GAPS).filter(|&q| most[q] > 1e-9) {
+                assert!(
+                    bound[q] <= loose * most[q],
+                    "piece {i}, gap {q}: bound {:e} more than {loose} times the largest sample {:e}",
+                    bound[q],
+                    most[q]
+                );
+            }
+        }
+    }
+
+    /// The break terms of `combine` cover `b` anywhere in a window that
+    /// reaches across the break by a sizeable share of the piece, and are
+    /// not absurdly loose doing so: where `b` is one polynomial through the
+    /// break (`Between::Smooth`, the expansion along `b` carried into the
+    /// neighbour) and where `b` is only C¹ there, its curvature along
+    /// jumping (`Between::Rough`, the break's cross terms). `a` is `b`
+    /// continued across the seam and moved by 0.03 at a tolerance of 0.1
+    /// (along the seam for the first, along its normal for the second: the
+    /// windows 0.035 to 0.06 of the edge, a fourteenth to an eighth of a
+    /// piece). Measured (2026-11-02): the rough bounds within 1.4 to 12.6
+    /// times the largest sample, the smooth ones within 26 to 148; there the
+    /// remainder `d² sup |∂²_τ G| / 2` from the rows' sizes is most of the
+    /// bound (its supremum, from sizes over both pieces, is loose), which at
+    /// a real seam's window (`d` about 1e-13 of the edge) is nothing.
+    #[test]
+    fn the_break_terms_cover_b_across_the_break_and_are_not_loose() {
+        let (a, b) = continued_pair(0.03);
+        break_cover(&a, &b, 0.1, true, 200.0);
+        let (a, b) = knotted_pair(0.03);
+        break_cover(&a, &b, 0.1, false, 20.0);
     }
 
     /// A NaN anywhere in a piece's bounds means nothing is known there: it
