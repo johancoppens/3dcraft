@@ -661,7 +661,14 @@ Parameters tab's notes, the joints' notes, the timeline's problem. `theme::tests
 *Found on the way.* A `ui.screenshot {window: true}` taken right after the studio look is first switched
 on in a process, before its environment is prepared (on a thread, `prepared_if_ready`), shows the
 plain look: the settling waits for the viewport's sharp picture and its averaging, not for the look.
-A second picture a moment later is right. Owed: wait for `look_ready` in `settled_frame`.
+A second picture a moment later is right. Fixed 2026-11-02 (r1-dof-followup): the offscreen picture
+prepares the environment first (`Shell::prepare_look`, waiting; a look that cannot be prepared is drawn
+plain, as on screen), and after its settled passes runs up to `FADE_PASSES` more, a pass apart on its
+clock, while `Shell::animating` (a popover or the drawer fading in, by egui's
+`AreaState::last_became_visible_at`, or the drawer sliding); the picture from a compositor frame counts
+`Shell::look_settling` as still averaging. `ui-egui/tests/look_settling.rs` drives frames at chosen
+times; the offscreen path itself needs a GPU and was checked by looking: the first studio picture of a
+fresh window at 760 × 900 shows the studio look with its popover opaque.
 
 ### Layer 3: materials (2026-10-30)
 
