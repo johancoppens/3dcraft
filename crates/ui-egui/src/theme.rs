@@ -556,7 +556,7 @@ impl Tokens {
             notice_radius: 6,
             notice_font: 17.0,
             caption_font: 15.0,
-            secondary_font: 12.5,
+            secondary_font: 13.0,
             sketch_width: 1.75,
             construction_width: 1.0,
             axis_width: 1.25,

@@ -637,7 +637,7 @@ orthographic; `craft3d-cli` `tests/cli.rs`: `--focus selection` and `picked` are
 
 *Secondary text* (2026-11-02, the same branch): the hints and notes of the whole interface were
 egui's small style (9 points) or ad hoc sizes; they are now one token, `Tokens::secondary_font`
-(12.5 points, the body's size), told apart by colour (`text_dim`, `plate_text_dim`, `chrome_text_dim`,
+(13 points, the body's size), told apart by colour (`text_dim`, `plate_text_dim`, `chrome_text_dim`,
 each at 4.5:1 or more by `text_pairs`): `Tokens::secondary`, `plate_secondary` and `secondary_in`, and
 egui's `TextStyle::Small` set to it in `Tokens::apply`. Covered: the lens's notes, "No checks yet"
 under Assertions, a feature's and an assertion's message, the "when" mark, the mates' messages, the
