@@ -367,6 +367,13 @@ fn an_edit_that_needs_the_bodies_is_made_where_they_are() {
                 json!({"name": "cube", "measure": "volume", "of": "B", "eq": format!("{cube} * (1 mm)^3"), "tol": format!("{} * (1 mm)^3", cube * 1e-6)}),
                 Some(true),
             ),
+            // Needs no bodies: done here at once (before a feature fails,
+            // which an edit's result then reports from a regeneration).
+            (
+                "feature.block",
+                json!({"size": [1, 1, 1], "name": "C"}),
+                Some(false),
+            ),
             // A datum plane on a face, which says where it lies.
             (
                 "datum.plane",
@@ -385,11 +392,6 @@ fn an_edit_that_needs_the_bodies_is_made_where_they_are() {
                 "feature.fillet",
                 json!({"edges": [[top, side]], "radius": format!("{} mm", s), "name": "Round"}),
                 None,
-            ),
-            (
-                "feature.block",
-                json!({"size": [1, 1, 1], "name": "C"}),
-                Some(false),
             ),
         ] {
             let want = alone
