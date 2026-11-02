@@ -112,6 +112,11 @@ impl Session {
     /// The active document's outline when it is an assembly, as the view
     /// shows it: placed at the moment of the motion shown, else at rest.
     pub fn assembly_outline(&mut self) -> Option<AssemblyOutline> {
+        // Placed elsewhere (the page's worker): as it was listed there,
+        // the last listing of the same state while a moment is made.
+        if let Some(facts) = self.remote_facts() {
+            return facts?.outline.clone();
+        }
         let open = self.documents.get_mut(self.active)?;
         let doc = Arc::clone(open.history.current());
         let assembly = doc.assembly.as_ref()?;
@@ -171,6 +176,9 @@ impl Session {
     /// world (by fixed mates, or held as the first of a floating
     /// assembly): it does not move.
     pub fn assembly_joint_of(&mut self, feature: &str) -> Option<JointHandle> {
+        if let Some(facts) = self.remote_facts() {
+            return facts?.joints.get(feature).cloned();
+        }
         let open = self.documents.get_mut(self.active)?;
         let doc = Arc::clone(open.history.current());
         let assembly = doc.assembly.as_ref()?;

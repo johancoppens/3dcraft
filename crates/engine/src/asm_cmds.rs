@@ -109,8 +109,12 @@ fn assembly_new(session: &mut Session, params: &Value) -> Run {
     doc.assembly = Some(Assembly::default());
     // The same tab: its number and the session's settings stay.
     let id = open.id;
+    let work = std::sync::Arc::clone(&open.work);
     *open = OpenDocument::new(doc, None);
     open.id = id;
+    // What it costs, and whether its view is made elsewhere, is the
+    // session's (`Session::work_here`).
+    open.work = work;
     if let Some(budget) = budget {
         open.cache.set_body_budget(budget);
     }
@@ -385,12 +389,19 @@ fn instance_json(placed: &Placed, instance: &Instance) -> Value {
 }
 
 fn mate_json(placed: &Placed, mate: &Mate) -> Value {
-    let st = placed.mates.iter().find(|m| m.name == mate.name);
+    mate_json_of(Some(placed), mate)
+}
+
+/// [`mate_json`]; without a placement (solved elsewhere) its solved
+/// state is not known: `status` is `pending`.
+fn mate_json_of(placed: Option<&Placed>, mate: &Mate) -> Value {
+    let st = placed.and_then(|p| p.mates.iter().find(|m| m.name == mate.name));
     let failed = st.and_then(|s| s.error.clone());
-    let status = match (&failed, &placed.solve_error) {
+    let status = match (&failed, placed.map(|p| &p.solve_error)) {
+        (_, None) => "pending",
         (Some(_), _) => "failed",
-        (None, Some(_)) => "unsolved",
-        (None, None) => "ok",
+        (None, Some(Some(_))) => "unsolved",
+        (None, Some(None)) => "ok",
     };
     json!({
         "name": mate.name,
@@ -1367,7 +1378,21 @@ fn joint_set(session: &mut Session, params: &Value) -> Run {
             }
         },
     )?;
-    let mut result = one_mate(session, &name)?;
+    // Placed elsewhere (the page's worker): what is solved comes with the
+    // scenes there; the page never solves for a slider's value.
+    let mut result = if session.regen_elsewhere() && !session.regenerated_here() {
+        let assembly = assembly_of(session, "mate")?;
+        let mate = assembly
+            .mate(&name)
+            .ok_or_else(|| CommandError::new(format!("there is no mate `{name}`")))?;
+        let mut unsolved = mate_json_of(None, mate);
+        if let Some(map) = unsolved.as_object_mut() {
+            map.insert("deferred".into(), true.into());
+        }
+        unsolved
+    } else {
+        one_mate(session, &name)?
+    };
     if let Some(map) = result.as_object_mut() {
         map.insert("variable".into(), var.into());
     }

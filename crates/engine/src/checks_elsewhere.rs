@@ -71,6 +71,7 @@ impl Session {
     /// Off again, the jobs not answered yet are measured here.
     pub fn set_checks_elsewhere(&mut self, elsewhere: bool) {
         self.checks_elsewhere = elsewhere;
+        self.sync_elsewhere();
     }
 
     pub fn checks_elsewhere(&self) -> bool {
@@ -115,8 +116,10 @@ impl Session {
     /// [`measure_checks`]. An error when no open document has that job
     /// waiting any more, or its document cannot be written.
     pub fn checks_request(&self, token: u64) -> Result<CheckRequest, String> {
-        if let Some((_, doc)) = self.state_job(token) {
-            let document = craft3d_format::to_bytes(&doc)
+        if let Some((at, doc)) = self.state_job(token) {
+            // An assembly goes with the sources this session read for it.
+            let sources = self.documents.get(at).and_then(|open| open.sources(&doc));
+            let document = crate::view_elsewhere::state_bytes(&doc, sources.as_ref())
                 .map_err(|e| format!("the document cannot be written out: {e}"))?;
             return Ok(CheckRequest {
                 token,
@@ -287,7 +290,7 @@ thread_local! {
 /// `{"error": why}`.
 fn measure_state(document: &[u8]) -> String {
     let measured = (|| -> Result<Value, String> {
-        let doc = craft3d_format::from_bytes(document)
+        let (doc, sources) = crate::view_elsewhere::read_state(document)
             .map_err(|e| format!("the document cannot be read: {e}"))?;
         STATES.with(|states| {
             let mut states = states
@@ -300,6 +303,9 @@ fn measure_state(document: &[u8]) -> String {
                 s
             });
             crate::regen_elsewhere::load_state(session, doc);
+            if let (Some(sources), Some(open)) = (sources, session.documents.get_mut(0)) {
+                crate::view_elsewhere::install(open, sources);
+            }
             let (checked, outputs) = session
                 .checks_and_outputs(Wait::All)
                 .map_err(|e| e.message().to_string())?;

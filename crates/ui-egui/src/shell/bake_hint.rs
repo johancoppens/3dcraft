@@ -268,6 +268,10 @@ pub(crate) struct BakeHint {
     /// What the `view.motion` of the moment asked for took, in
     /// milliseconds, once it ran.
     made: Option<f64>,
+    /// When ([`MomentClock::now`]) the moment asked for was handed to be
+    /// made elsewhere (the page's worker): it is weighed by the time until
+    /// it came, not by the command that asked for it.
+    elsewhere_since: Option<f64>,
     /// The clock moments are timed by ([`MomentClock`]).
     pub(crate) clock: MomentClock,
     /// The bake asked for from the hint, while it runs.
@@ -305,6 +309,27 @@ impl BakeHint {
     pub(crate) fn asked(&mut self) {
         self.asked = true;
         self.made = None;
+        self.elsewhere_since = None;
+    }
+
+    /// The `view.motion` of the moment asked for handed it to be made
+    /// elsewhere at `now` ([`MomentClock::now`]).
+    pub(crate) fn made_elsewhere_from(&mut self, now: f64) {
+        if self.asked {
+            self.elsewhere_since = Some(now);
+        }
+    }
+
+    /// The moment made elsewhere came at `now`: what it took is its cost.
+    pub(crate) fn came(&mut self, now: f64) {
+        if let Some(since) = self.elsewhere_since.take() {
+            self.made(now - since);
+        }
+    }
+
+    /// A moment made elsewhere is on its way.
+    pub(crate) fn coming(&self) -> bool {
+        self.elsewhere_since.is_some()
     }
 
     /// Whether the `view.motion` about to run is the playing player's,
@@ -334,6 +359,7 @@ impl BakeHint {
     pub(crate) fn not_weighed(&mut self) {
         self.asked = false;
         self.made = None;
+        self.elsewhere_since = None;
     }
 }
 
@@ -354,6 +380,18 @@ impl std::fmt::Debug for MomentClock {
 }
 
 impl MomentClock {
+    /// Milliseconds since a moment of its own (the first time asked),
+    /// for spans across frames.
+    pub(crate) fn now(&self) -> f64 {
+        match &self.0 {
+            Some(clock) => clock(),
+            None => {
+                static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+                EPOCH.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0
+            }
+        }
+    }
+
     /// Runs `work` and says how long it took, in milliseconds.
     pub(crate) fn time<R>(&self, work: impl FnOnce() -> R) -> (R, f64) {
         match &self.0 {

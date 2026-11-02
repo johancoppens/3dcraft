@@ -91,6 +91,8 @@ impl Timeline {
     /// Whether a moment of the motion waits to be shown.
     pub(super) fn motion_waiting(&self) -> bool {
         self.pending.iter().any(|(id, _)| *id == "view.motion")
+            // Made elsewhere (the page's worker) and not drawn yet.
+            || self.motion.as_ref().is_some_and(|m| m.pending)
     }
 
     /// The `t` the view shows, or will once what is queued has run.
@@ -188,6 +190,20 @@ impl Shell {
         self.timeline.rollback = rollback;
         self.timeline.motion = session.motion();
         self.timeline.has_timeline = session.timeline().is_ok();
+        if let Some(motion) = &self.timeline.motion
+            && !motion.pending
+        {
+            // A moment made elsewhere came: weighed by how long it took.
+            if self.player.hint.coming() {
+                let now = self.player.hint.clock.now();
+                self.player.hint.came(now);
+            }
+            // It could not be made there: said, and never waited for.
+            if let Some(why) = motion.error.clone() {
+                self.timeline.problem = Some(why);
+                self.stop_playing();
+            }
+        }
         self.sync_trace_states(session);
         let traces = session.traces();
         if !same_traces(&traces, &self.timeline.traces) {
@@ -428,10 +444,14 @@ impl Shell {
                 (session.execute(id, params), 0.0)
             };
             if timed {
-                if answer.is_ok() {
-                    self.player.hint.made(ms);
-                } else {
-                    self.player.hint.not_weighed();
+                match &answer {
+                    // Made elsewhere: weighed once it came.
+                    Ok(result) if result.get("pending") == Some(&Value::Bool(true)) => {
+                        let now = self.player.hint.clock.now();
+                        self.player.hint.made_elsewhere_from(now);
+                    }
+                    Ok(_) => self.player.hint.made(ms),
+                    Err(_) => self.player.hint.not_weighed(),
                 }
             }
             // The bake hint follows the bake it asked for by its answers
@@ -478,7 +498,7 @@ impl Shell {
         self.timeline
             .motion
             .as_ref()
-            .is_some_and(|m| !m.exact || m.building > 0)
+            .is_some_and(|m| !m.exact || m.building > 0 || m.pending)
             || self.timeline.tracing
     }
 

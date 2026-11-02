@@ -124,6 +124,11 @@ pub(crate) struct CommandJob {
     kind: JobKind,
     /// The document is a Jig in use (only its parameters change).
     jig_in_use: bool,
+    /// An assembly's sources as read when it was handed over.
+    sources: Option<crate::view_elsewhere::Sources>,
+    /// A read run on the moment of the motion shown elsewhere (`t`,
+    /// collisions): the other side shows it before it runs.
+    moment: Option<(f64, bool)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -272,6 +277,11 @@ impl Session {
             JobKind::Edit => asked.clone(),
             _ => params.clone(),
         };
+        let sources = open.sources(current);
+        let moment = match kind {
+            JobKind::Read => open.motion_t().map(|t| (t, open.motion_collisions())),
+            _ => None,
+        };
         self.commands.jobs.push(CommandJob {
             token,
             doc_id: open.id,
@@ -285,6 +295,8 @@ impl Session {
             camera,
             kind,
             jig_in_use: open.jig_in_use,
+            sources,
+            moment,
         });
         Trial::Deferred(json!({
             "deferred": true,
@@ -341,6 +353,8 @@ impl Session {
             camera,
             kind: JobKind::Host,
             jig_in_use: open.jig_in_use,
+            sources: open.sources(open.history.current()),
+            moment: None,
         });
         Some(token)
     }
@@ -455,8 +469,14 @@ impl Session {
             .find(|job| job.token == token)
             .ok_or_else(|| format!("no command {token} waits"))?;
         job.posted = true;
-        let document = craft3d_format::to_bytes(&job.doc)
+        let document = crate::view_elsewhere::state_bytes(&job.doc, job.sources.as_ref())
             .map_err(|e| format!("the document cannot be written out: {e}"))?;
+        let view = crate::view_elsewhere::ViewJob {
+            base: Arc::clone(&job.doc),
+            moment: job.moment,
+            sources: None,
+            bake: None,
+        };
         let work = json!({
             "command": job.command,
             "params": job.params,
@@ -464,6 +484,7 @@ impl Session {
             "follows": job.follows,
             "camera": job.camera,
             "jigInUse": job.jig_in_use,
+            "view": view.json(),
         });
         Ok(CommandRequest {
             token,

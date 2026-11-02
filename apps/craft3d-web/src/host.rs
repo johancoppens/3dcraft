@@ -2854,16 +2854,17 @@ mod tests {
         assert!(!host.fonts_failed.contains("serif"));
     }
 
-    /// An assembly on the page: regeneration elsewhere is refused for it
-    /// (its parts are placed from the files read for it, which a worker
-    /// does not have), so it is solved and placed on the page, a piece per
-    /// frame; `joint.set` and the motion over `t` move what the page shows,
-    /// and its tree lists the instances and mates.
+    /// An assembly on a page without the worker (none on the page,
+    /// `?pageregen`, or sent home: `Session::regen_elsewhere` is off): it
+    /// is solved and placed on the page, a piece per frame; `joint.set`
+    /// and the motion over `t` move what the page shows, and its tree
+    /// lists the instances and mates. With the worker it is placed there
+    /// (`beside_tests.rs` › `an_assembly_is_placed_and_played_in_the_worker`;
+    /// before 2026-11-03 an assembly was always placed on the page).
     #[test]
     fn an_assembly_is_solved_and_placed_on_the_page() {
         let mut host = host();
         host.set_stepwise(true);
-        host.session.set_regen_elsewhere(true);
         host.session.set_checks_elsewhere(true);
         let run = |host: &mut WebHost, id: &str, params: Value| {
             host.session

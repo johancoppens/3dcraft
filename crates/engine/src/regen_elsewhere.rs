@@ -39,6 +39,7 @@
 
 use crate::assert_cmds::Checked;
 use crate::output_cmds::Resolved;
+use crate::view_elsewhere::Sources;
 use crate::{CommandError, OpenDocument, SceneQuality, Session, Workspace};
 use craft3d_doc::Document;
 use serde_json::{Value, json};
@@ -65,6 +66,9 @@ pub(crate) struct SceneJob {
     /// The document state it builds the scenes of.
     pub doc: Arc<Document>,
     pub quality: SceneQuality,
+    /// When `doc` is the stand-in of a view made elsewhere (an assembly,
+    /// a moment of the motion: `view_elsewhere.rs`), that view.
+    pub view: Option<crate::view_elsewhere::ViewJob>,
 }
 
 /// The assertions and outputs of one state, measured elsewhere whole.
@@ -80,9 +84,15 @@ pub(crate) struct StateChecks {
 /// What a part of an answer is of.
 const PREVIEW: u8 = 0;
 const ASKED: u8 = 1;
+/// The view's facts (`view_elsewhere.rs`): the first part of the answer
+/// to a job with a view.
+const VIEW: u8 = 2;
+/// A piece of a bake made after the scenes: its answer.
+const BAKE: u8 = 3;
 /// What a part holds.
 const SCENE: u8 = b'S';
 const ERROR: u8 = b'E';
+const FACTS: u8 = b'F';
 
 impl Session {
     /// Has the active document regenerated and meshed elsewhere from now
@@ -97,23 +107,25 @@ impl Session {
         if !elsewhere {
             self.scene_job = None;
         }
+        self.sync_elsewhere();
+    }
+
+    /// Tells the documents whether their views are made elsewhere (an
+    /// assembly, a moment of the motion: `view_elsewhere.rs`): whenever
+    /// one of the flags [`Session::regen_elsewhere`] reads changes.
+    pub(crate) fn sync_elsewhere(&self) {
+        self.work
+            .set_elsewhere(self.regen_elsewhere && self.stepwise && self.checks_elsewhere);
     }
 
     /// True when the active document is regenerated elsewhere: asked for
     /// ([`Session::set_regen_elsewhere`]), with the long work done a
     /// piece at a time and the checks measured elsewhere (without those,
     /// the host has to regenerate to measure them: it regenerates
-    /// here). Never for an assembly: what it shows is placed from the
-    /// files read for it in this session, which a document sent elsewhere
-    /// does not carry, so it is built here a piece at a time.
+    /// here). An assembly too: its state goes with the source files this
+    /// session read for it (`view_elsewhere.rs`), and it is placed there.
     pub fn regen_elsewhere(&self) -> bool {
-        self.regen_elsewhere
-            && self.stepwise
-            && self.checks_elsewhere
-            && !self
-                .documents
-                .get(self.active)
-                .is_some_and(|open| open.history.current().is_assembly())
+        self.regen_elsewhere && self.stepwise && self.checks_elsewhere
     }
 
     /// True when the active document's current state is regenerated in
@@ -121,9 +133,17 @@ impl Session {
     /// command needed the bodies).
     pub fn regenerated_here(&self) -> bool {
         self.documents.get(self.active).is_some_and(|open| {
-            open.regen
-                .as_ref()
-                .is_some_and(|(at, _)| *at == open.history.revision())
+            let revision = open.history.revision();
+            // A moment of the motion made elsewhere is not here, whatever
+            // is of the document as it is.
+            if open.work.elsewhere() && open.motion_t().is_some() {
+                return false;
+            }
+            // An assembly's bodies are its placement's.
+            if open.history.current().is_assembly() {
+                return open.asm.is_placed(revision);
+            }
+            open.regen.as_ref().is_some_and(|(at, _)| *at == revision)
         })
     }
 
@@ -143,18 +163,25 @@ impl Session {
         let open = self.documents.get_mut(self.active)?;
         let shown = open.shown();
         let current = Arc::clone(open.history.current());
+        let remote = open.remote_wanted();
         // Scrubbed, with no scene of the document as it is: its first
         // picture first, which carries the datum planes a section lies on
         // while the view is scrubbed (`section.rs`), so that the page
-        // never regenerates to find them.
-        let (doc, quality) =
-            if !Arc::ptr_eq(&shown, &current) && self.kept_scene_of(&current).is_none() {
-                (current, SceneQuality::Preview)
-            } else {
-                (shown, quality)
-            };
-        let wanted =
-            !self.has_scene_of(&doc, SceneQuality::Preview) || !self.has_scene_of(&doc, quality);
+        // never regenerates to find them. Not for a view made elsewhere,
+        // whose stand-in is never the document as it is.
+        let (doc, quality) = if !remote
+            && !Arc::ptr_eq(&shown, &current)
+            && self.kept_scene_of(&current).is_none()
+        {
+            (current, SceneQuality::Preview)
+        } else {
+            (shown, quality)
+        };
+        let view = if remote { self.view_job(&doc) } else { None };
+        let bake = view.as_ref().and_then(|v| v.bake);
+        let wanted = !self.has_scene_of(&doc, SceneQuality::Preview)
+            || !self.has_scene_of(&doc, quality)
+            || bake.is_some();
         if !wanted {
             if self
                 .scene_job
@@ -168,6 +195,7 @@ impl Session {
         if let Some(job) = &self.scene_job
             && Arc::ptr_eq(&job.doc, &doc)
             && same_quality(job.quality, quality)
+            && job.view.as_ref().and_then(|v| v.bake) == bake
         {
             return Some(job.token);
         }
@@ -176,6 +204,7 @@ impl Session {
             token: self.scene_token,
             doc,
             quality,
+            view,
         });
         Some(self.scene_token)
     }
@@ -187,11 +216,23 @@ impl Session {
         let job = self
             .job_of_scenes(token)
             .ok_or_else(|| format!("no job of scenes {token} waits"))?;
-        let document = craft3d_format::to_bytes(&job.doc)
-            .map_err(|e| format!("the document cannot be written out: {e}"))?;
+        // A view made elsewhere: the state below it (with an assembly's
+        // sources) and the view itself.
+        let (document, view) = match &job.view {
+            Some(view) => (
+                crate::view_elsewhere::state_bytes(&view.base, view.sources.as_ref()),
+                view.json(),
+            ),
+            None => (
+                craft3d_format::to_bytes(&job.doc).map_err(|e| e.to_string()),
+                Value::Null,
+            ),
+        };
+        let document = document.map_err(|e| format!("the document cannot be written out: {e}"))?;
         let work = json!({
             "quality": quality_json(job.quality),
             "budget": self.scene_budget(),
+            "view": view,
         });
         Ok(SceneRequest {
             token,
@@ -223,9 +264,30 @@ impl Session {
             }
         };
         let (of, built) = match read_part(bytes) {
+            // The view's facts: kept for the stand-in; the scenes after
+            // them are read against the placed parts they name.
+            Ok((of @ (VIEW | BAKE), FACTS, payload)) => {
+                if let Err(why) = self.view_answered(&job.doc, of == BAKE, payload) {
+                    self.end_scene_job(
+                        &job,
+                        &format!(
+                            "internal error (a bug in 3DCraft, please report it): what was made off the page's thread cannot be read: {why}"
+                        ),
+                    );
+                }
+                return true;
+            }
+            Ok((VIEW | BAKE, _, _)) => {
+                self.end_scene_job(
+                    &job,
+                    "internal error (a bug in 3DCraft, please report it): a part of its answer is not the view's",
+                );
+                return true;
+            }
             Ok((of, SCENE, payload)) => {
                 let revision = self.scene_revision_now();
-                let scene = crate::scene_wire::decode(payload, &job.doc, revision)
+                let against = self.scenes_read_against(&job.doc);
+                let scene = crate::scene_wire::decode(payload, &against, revision)
                     .map(Arc::new)
                     .map_err(|why| {
                         CommandError::new(format!(
@@ -416,6 +478,7 @@ fn quality_from(value: &Value) -> Option<SceneQuality> {
 fn read_part(bytes: &[u8]) -> Result<(u8, u8, &[u8]), String> {
     match bytes {
         [of @ (PREVIEW | ASKED), what @ (SCENE | ERROR), rest @ ..] => Ok((*of, *what, rest)),
+        [of @ (VIEW | BAKE), what @ FACTS, rest @ ..] => Ok((*of, *what, rest)),
         _ => Err("a part of its answer is not a scene".into()),
     }
 }
@@ -466,7 +529,22 @@ struct Builder {
     /// handed over before that answer reached the host, so it runs on
     /// what the last one left, as it would have there.
     selected: Option<(u64, Value, Value)>,
+    /// The view of the job of scenes in hand (`view_elsewhere.rs`): the
+    /// moment shown, and the bake to make after its scenes. A command run
+    /// on another view puts it back.
+    view: Option<View>,
+    /// The quality the job of scenes in hand was asked for.
+    asked: Option<SceneQuality>,
+    /// Pieces of the bake in a row that left as much to do.
+    stalled: u32,
 }
+
+/// A view as a job's work asks for it ([`crate::view_elsewhere::view_of`]).
+type View = (Option<(f64, bool)>, Option<(u64, bool)>);
+
+/// Pieces of a bake in a row without progress after which the bake made
+/// beside the page stops (its budget is full).
+const BAKE_STALLED: u32 = 3;
 
 /// A digest of a document's bytes: which state a selection was left on.
 fn digest(bytes: &[u8]) -> u64 {
@@ -509,11 +587,12 @@ pub fn scene_begin(document: &[u8], work: &str) {
         let Ok(mut builder) = builder.try_borrow_mut() else {
             return;
         };
-        let read = (|| -> Result<(Document, SceneQuality, Option<usize>), String> {
-            let doc = craft3d_format::from_bytes(document)
+        let read = (|| -> Result<(Document, Option<Sources>, Option<View>, SceneQuality, Option<usize>), String> {
+            let (doc, sources) = crate::view_elsewhere::read_state(document)
                 .map_err(|e| format!("the document cannot be read: {e}"))?;
             let work: Value =
                 serde_json::from_str(work).map_err(|e| format!("the work cannot be read: {e}"))?;
+            let view = crate::view_elsewhere::view_of(&work);
             let quality = work
                 .get("quality")
                 .and_then(quality_from)
@@ -522,13 +601,16 @@ pub fn scene_begin(document: &[u8], work: &str) {
                 .get("budget")
                 .and_then(Value::as_u64)
                 .and_then(|b| usize::try_from(b).ok());
-            Ok((doc, quality, budget))
+            Ok((doc, sources, view, quality, budget))
         })();
         builder.left.clear();
         builder.refused = None;
         builder.scenes_of = None;
+        builder.view = None;
+        builder.stalled = 0;
+        let mut bake = false;
         let quality = match read {
-            Ok((doc, quality, budget)) => {
+            Ok((doc, sources, view, quality, budget)) => {
                 let same = builder.loaded.as_deref() == Some(document);
                 let session = builder.session.get_or_insert_with(builder_session);
                 if let Some(budget) = budget {
@@ -538,8 +620,21 @@ pub fn scene_begin(document: &[u8], work: &str) {
                 // scenes are there.
                 if !same {
                     load_state(session, doc);
+                    if let (Some(sources), Some(open)) = (sources, session.documents.get_mut(0)) {
+                        crate::view_elsewhere::install(open, sources);
+                    }
+                }
+                // A job without a view shows the state as it is (a moment
+                // shown for an earlier job is let go of).
+                show_view(session, view.unwrap_or((None, None)));
+                if let Some(view) = view {
+                    builder.left.push_back((VIEW, SceneQuality::Preview));
+                    bake = view.1.is_some();
+                }
+                if !same {
                     builder.loaded = Some(document.to_vec());
                 }
+                builder.view = view;
                 builder.scenes_of = Some(document.to_vec());
                 quality
             }
@@ -552,7 +647,50 @@ pub fn scene_begin(document: &[u8], work: &str) {
         if !same_quality(quality, SceneQuality::Preview) {
             builder.left.push_back((ASKED, quality));
         }
+        builder.asked = Some(quality);
+        if bake {
+            builder.left.push_back((BAKE, SceneQuality::Preview));
+        }
     });
+}
+
+/// Shows `view` in this side's session: the moment of the motion (or the
+/// document as it is), as `view.motion {t, collisions}` would.
+fn show_view(session: &mut Session, view: View) {
+    if let Some(open) = session.documents.get_mut(0) {
+        let (moment, _) = view;
+        open.set_motion_view(moment.map(|(t, _)| t), moment.is_some_and(|(_, c)| c));
+    }
+}
+
+/// A piece of the bake the view asks for: `motion.bake` a step at a
+/// time, its answer (an error once it makes no progress).
+fn bake_piece(
+    session: &mut Session,
+    (frames, collisions): (u64, bool),
+    stalled: &mut u32,
+) -> Value {
+    let answer = match session.execute(
+        "motion.bake",
+        &json!({"frames": frames, "collisions": collisions, "limit": 1, "background": false}),
+    ) {
+        Ok(answer) => answer,
+        Err(e) => return json!({"error": e.message()}),
+    };
+    let built = answer
+        .pointer("/configurations/built")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .saturating_add(answer.get("moments").and_then(Value::as_u64).unwrap_or(0));
+    *stalled = if built == 0 {
+        stalled.saturating_add(1)
+    } else {
+        0
+    };
+    if *stalled >= BAKE_STALLED && answer.get("done") != Some(&Value::Bool(true)) {
+        return json!({"error": "the bake cannot go on beside the page: its budget is full", "remaining": answer.get("remaining")});
+    }
+    answer
 }
 
 /// What [`scene_step`] did.
@@ -588,11 +726,38 @@ pub fn scene_step(stop: impl Fn() -> bool + Clone + 'static) -> SceneStep {
             builder.left.pop_front();
             return SceneStep::Part(part);
         }
-        let asked = builder.left.back().map_or(quality, |&(_, q)| q);
+        let asked = builder.asked.unwrap_or(quality);
+        let builder = &mut *builder;
         let Some(session) = builder.session.as_mut() else {
             builder.left.pop_front();
             return SceneStep::Part(error_part(of, "no document to show"));
         };
+        if of == VIEW {
+            // The state below the view first, a piece at a time (the
+            // moment's sweep starts from its regeneration), then the
+            // moment or the placement, made in one go.
+            if session.regenerate_some(stop.clone()).is_some() {
+                return SceneStep::Working;
+            }
+            builder.left.pop_front();
+            let mut part = vec![VIEW, FACTS];
+            part.extend(crate::view_elsewhere::facts_bytes(session, None, None));
+            return SceneStep::Part(part);
+        }
+        if of == BAKE {
+            let Some(wanted) = builder.view.and_then(|(_, bake)| bake) else {
+                builder.left.pop_front();
+                return SceneStep::Done;
+            };
+            let answer = bake_piece(session, wanted, &mut builder.stalled);
+            let finished = answer.get("done") != Some(&Value::Bool(false));
+            if finished {
+                builder.left.pop_front();
+            }
+            let mut part = vec![BAKE, FACTS];
+            part.extend(crate::view_elsewhere::bake_bytes(&answer));
+            return SceneStep::Part(part);
+        }
         let there = session
             .documents
             .get_mut(session.active)
@@ -687,11 +852,18 @@ pub fn run_on_state(
         let selection = crate::selection::Selection::from_wire(&wire, None).unwrap_or_default();
         let session = builder.session.get_or_insert_with(builder_session);
         if builder.loaded.as_deref() != Some(document) {
-            let doc = craft3d_format::from_bytes(document)
+            let (doc, sources) = crate::view_elsewhere::read_state(document)
                 .map_err(|e| format!("the document cannot be read: {e}"))?;
             load_state(session, doc);
+            if let (Some(sources), Some(open)) = (sources, session.documents.get_mut(0)) {
+                crate::view_elsewhere::install(open, sources);
+            }
             builder.loaded = Some(document.to_vec());
         }
+        // A read on a moment of the motion: shown here first (and the view
+        // of the scenes in hand shown again after it).
+        let moment = crate::view_elsewhere::view_of(&work).and_then(|(moment, _)| moment);
+        show_view(session, (moment, None));
         let open = session.documents.get_mut(0).ok_or("no document")?;
         open.selection = selection;
         open.jig_in_use = work.get("jigInUse") == Some(&Value::Bool(true));
@@ -772,13 +944,20 @@ pub fn run_on_state(
             // again, from the bytes, the next time.
             builder.loaded = None;
         }
-        // The scenes in hand are of the state they were asked for.
+        // The scenes in hand are of the state they were asked for, with
+        // their view.
         if let Some(scenes_of) = builder.scenes_of.clone()
             && builder.loaded.as_deref() != Some(&scenes_of[..])
-            && let Ok(doc) = craft3d_format::from_bytes(&scenes_of)
+            && let Ok((doc, sources)) = crate::view_elsewhere::read_state(&scenes_of)
         {
             load_state(session, doc);
+            if let (Some(sources), Some(open)) = (sources, session.documents.get_mut(0)) {
+                crate::view_elsewhere::install(open, sources);
+            }
             builder.loaded = Some(scenes_of);
+        }
+        if builder.scenes_of.is_some() {
+            show_view(session, builder.view.unwrap_or((None, None)));
         }
         Ok::<_, String>(crate::CommandAnswer {
             answer: crate::commands_elsewhere::answer_json(result, edited, selection, &steps),

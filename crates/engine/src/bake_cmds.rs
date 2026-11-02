@@ -48,6 +48,26 @@ fn motion_bake(session: &mut Session, params: &Value) -> Run {
     let base = open.scrubbed();
     let ts = frames_of(frames);
     let budget = open.asm.config_budget();
+    // Made elsewhere (the page's worker): baked there, a piece at a time
+    // after each moment it is asked for; what is left is followed as a
+    // bake in the background is (`view.motion`'s `building`).
+    if open.remote_wanted() {
+        let left = open.bake_left().map_or(0, |b| b.left());
+        if cancel {
+            open.want_bake(None, collisions);
+            return Ok(json!({ "cancelled": left }));
+        }
+        open.want_bake(Some(frames), collisions);
+        let building = open.bake_left().map_or(0, |b| b.left());
+        return Ok(json!({
+            "frames": frames,
+            "background": true,
+            "elsewhere": true,
+            "queued": frames.saturating_add(1),
+            "building": building,
+            "ms": Value::Null,
+        }));
+    }
     if cancel {
         let dropped = open.motion_cancel_background();
         return Ok(json!({ "cancelled": dropped }));

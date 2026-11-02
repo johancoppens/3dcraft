@@ -2287,6 +2287,14 @@ impl AsmState {
         }
     }
 
+    /// True when the placement of `revision` is kept (with the files as
+    /// they are): [`Self::placed`] answers it without placing.
+    pub(crate) fn is_placed(&self, revision: u64) -> bool {
+        self.placed
+            .as_ref()
+            .is_some_and(|(r, g, _)| *r == revision && *g == self.generation)
+    }
+
     /// The placement of `doc` at `revision`, from the cache when nothing
     /// changed since.
     pub(crate) fn placed(
