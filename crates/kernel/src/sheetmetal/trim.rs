@@ -292,6 +292,65 @@ pub fn trim(
     }))
 }
 
+/// The deepest cut a closed corner's end plane makes into bend `i`'s end
+/// `end` that the bend is not trimmed for. On each skin the plane reaches
+/// past the bend's square end by `cut(φ) = sign (u(φ) − u_end)`, a
+/// sinusoid in `φ`, so its largest value over `(0, θ]` is at `θ` or at a
+/// stationary angle `φ* = atan2(b, c) + kπ`, in closed form. At the
+/// parent's tangent line (`φ = 0`) the bend's end is the corner's own:
+/// two bends that reach a corner meet there at its point, as at an open
+/// corner, whatever the plane (a mitre's plane, shifted by half the gap,
+/// passes beside that point; the pattern check holds the pieces apart
+/// there). So a cut counts where it goes deeper than at the root, by more
+/// than the tolerance, or is positive at all: `cut(φ) > max(cut(0), 0) +
+/// tol` for some `φ` in `(0, θ]`. `None` when neither skin is cut so;
+/// else the skin, the angle and the depth. A plane that cuts the top skin
+/// only (a bend down whose outside is cut), or the middle of either skin
+/// while its ends stay clear, makes no trim this method builds (module
+/// documentation), and leaving the bend square there would make a part
+/// that runs through itself, so the caller refuses it.
+pub fn untrimmed_cut(
+    i: usize,
+    bend: &Bend,
+    parent: &Transform,
+    end: usize,
+    plane: (Vec3, Vec3),
+    tolerance: &Tolerance,
+) -> Result<Option<(&'static str, f64, f64)>, KernelError> {
+    let theta = bend.theta();
+    let len = super::distance(bend.start, bend.end);
+    let u_end = if end == 0 { 0.0 } else { len };
+    let sign = if end == 0 { 1.0 } else { -1.0 };
+    let (rb, rt) = radii(bend);
+    let mut deepest: Option<(&'static str, f64, f64)> = None;
+    for (r, skin) in [(rb, "bottom"), (rt, "top")] {
+        let (a, b, c) = sinusoid(i, bend, parent, plane, r, tolerance)?;
+        let cut = |phi: f64| {
+            let (s, co) = phi.psin_cos();
+            sign * (a + b * s + c * co - u_end)
+        };
+        let star = b.patan2(c);
+        let floor = cut(0.0).max(0.0) + tolerance.linear;
+        let mut angles = vec![theta];
+        for k in -2..=2 {
+            let phi = star + f64::from(k) * std::f64::consts::PI;
+            if phi > 0.0 && phi < theta {
+                angles.push(phi);
+            }
+        }
+        for phi in angles {
+            let depth = cut(phi);
+            if !depth.is_finite() {
+                return Err(refuse(Some(i), "a closed corner's end plane is not finite"));
+            }
+            if depth > floor && deepest.is_none_or(|(_, _, d)| depth > d) {
+                deepest = Some((skin, phi, depth));
+            }
+        }
+    }
+    Ok(deepest)
+}
+
 /// The strip's end at `end` in the pattern, in the outline's order (from
 /// the parent's tangent line to the flange's at the start, back at the
 /// end): the square piece up to `φ₁`, then the plane's cut as a cubic
@@ -383,4 +442,64 @@ pub fn far_point(bend: &Bend, t: &Trim) -> P2 {
         bend.start[0] + u * d[0] + bend.allowance * bend.across[0],
         bend.start[1] + u * d[1] + bend.allowance * bend.across[1],
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A hem (180 degrees, up) from `(0, 0)` to `(10, 0)`, `R = T = 1`,
+    /// its flange towards `−y`, cut at its end by the plane through
+    /// `(10 + δ, 0, 0)` with the normal `(1, −k, 0)`: `u(φ) = 10 + δ − k
+    /// r sin φ` on the skin of radius `r`, so both ends of the bend stay
+    /// clear by `δ` and the middle is cut by `k r − δ` at 90 degrees, the
+    /// bottom skin (`r = 2`) deepest. Square to the bend (`k = 0`) nothing
+    /// is cut.
+    #[test]
+    fn a_cut_through_the_middle_of_a_bend_only_is_found() {
+        for scale in [1e-3, 1.0, 1e6] {
+            let tol = Tolerance::new(1e-6 * scale, 1e-9).unwrap();
+            let bend = Bend {
+                parent: 0,
+                child: 1,
+                angle: std::f64::consts::PI,
+                radius: scale,
+                k: 0.4,
+                thickness: scale,
+                allowance: std::f64::consts::PI * 1.4 * scale,
+                start: [0.0, 0.0],
+                end: [10.0 * scale, 0.0],
+                across: [0.0, -1.0],
+                flat_length: 5.0 * scale,
+                trim: [None, None],
+            };
+            let delta = 0.2 * scale;
+            let plane = |k: f64| {
+                (
+                    Vec3::new(10.0 * scale + delta, 0.0, 0.0),
+                    Vec3::new(1.0, -k, 0.0).normalized().unwrap(),
+                )
+            };
+            let id = Transform::IDENTITY;
+            let (skin, phi, depth) = untrimmed_cut(0, &bend, &id, 1, plane(0.5), &tol)
+                .unwrap()
+                .expect("the middle of the bend is cut");
+            assert_eq!(skin, "bottom");
+            assert!((phi - std::f64::consts::FRAC_PI_2).abs() < 1e-12, "{phi}");
+            // u_end − u = k r sin φ − δ, the plane meeting the skin at
+            // u = a + b sin φ with b = −r k (the normal's slant), so
+            // the depth at 90 degrees is k r − δ.
+            let expected = 0.5 * 2.0 * scale - delta;
+            assert!(
+                (depth - expected).abs() <= 1e-12 * scale,
+                "{depth} {expected}"
+            );
+            // Neither end of the bend is cut: trim() makes no trim here.
+            assert_eq!(trim(0, &bend, &id, 1, plane(0.5), &tol).unwrap(), None);
+            assert_eq!(
+                untrimmed_cut(0, &bend, &id, 1, plane(0.0), &tol).unwrap(),
+                None
+            );
+        }
+    }
 }

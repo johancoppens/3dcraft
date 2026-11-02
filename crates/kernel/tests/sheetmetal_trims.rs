@@ -502,5 +502,19 @@ fn trims_refused_by_reason() {
         let (f, why) = refused(&with(1.5 * r), &tol);
         assert_eq!(f, Some(1));
         assert!(why.contains("parent's tangent line"), "{why}");
+        // The same corner bent down is the mirror image through the
+        // sheet's middle: the plane cuts the covered bend's top skin (its
+        // outside) and not its bottom one, so the flat is not cut back on
+        // the bottom skin and no trim is made; left square, the bend would
+        // run through the cover (review of 4116ed3e: built, a body
+        // through itself, no refusal).
+        let mut down = with(0.3 * r);
+        for f in &mut down.flanges {
+            f.direction = Direction::Down;
+        }
+        let (f, why) = refused(&down, &tol);
+        assert_eq!(f, Some(1));
+        assert!(why.contains("top skin"), "{why}");
+        assert!(why.contains("not supported"), "{why}");
     }
 }

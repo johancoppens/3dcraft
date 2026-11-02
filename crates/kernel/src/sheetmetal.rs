@@ -2733,6 +2733,17 @@ fn close_corners(
                 })?;
                 r.near_point = trim::far_point(b, &t);
                 r.trim = Some(t);
+            } else if let Some((skin, phi, depth)) =
+                trim::untrimmed_cut(x, b, &parent_tf, which, plane, tolerance)?
+            {
+                return Err(refuse(
+                    Some(x),
+                    format!(
+                        "the closed corner at its bend's {} has its end plane cut into the bend's {skin} skin by {depth} at {} degrees from the parent's tangent line, where the flange itself is not cut back (a bend down whose outside is cut, or a cut through the middle of the bend only): trimming such a bend is not supported (owed); give the corner a relief (or a larger one), mitre it, or open it",
+                        if which == 0 { "start" } else { "end" },
+                        phi.to_degrees()
+                    ),
+                ));
             }
         }
         // A side that carries flanges moves to the end with them: the end
