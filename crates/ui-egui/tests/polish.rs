@@ -13,7 +13,7 @@
 
 use craft3d_engine::{Access, Session, Workspace};
 use craft3d_ui_egui::{RendererChoice, Shell, StatusSlot, TabPart};
-use egui::{Event, PointerButton, Pos2, Rect, pos2, vec2};
+use egui::{Event, PointerButton, Pos2, Rect, vec2};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 

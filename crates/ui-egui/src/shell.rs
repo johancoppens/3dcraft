@@ -808,10 +808,7 @@ pub struct Shell {
     player_hits: Vec<(&'static str, egui::Rect)>,
     /// Who made each feature (an agent's name), for the document and
     /// revision it was read for: the ✦ of the feature list.
-    provenance: (
-        Option<(Option<u64>, u64)>,
-        std::collections::BTreeMap<String, String>,
-    ),
+    provenance: Provenance,
     player_shown_last: bool,
     /// The point a zoom at the pointer keeps in place, while the pointer
     /// and the camera stay as that zoom left them: one look at the model
@@ -1097,6 +1094,13 @@ fn status_text(state: FeatureState, is_sketch: bool, dof: Option<usize>) -> Stri
 
 /// A clock for timing a render (in the browser the page's own, since
 /// `std::time::Instant` has none there).
+/// Who made each feature (by id), and for which document and revision it
+/// was read.
+type Provenance = (
+    Option<(Option<u64>, u64)>,
+    std::collections::BTreeMap<String, String>,
+);
+
 /// Who made each feature of the active document, by its id: the agent
 /// that made it, or else the one that last changed it (the document's
 /// provenance, as `agent.log` gives it).

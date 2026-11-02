@@ -937,7 +937,10 @@ pub(crate) struct PlayerParts {
 
 /// The parts of the row for `width` points, with touch sizes or not.
 pub(crate) fn player_parts(width: f32, touch: bool) -> PlayerParts {
-    if touch && !(width >= PLAYER_TOUCH_FULL_WIDTH) {
+    let roomy = width
+        .partial_cmp(&PLAYER_TOUCH_FULL_WIDTH)
+        .is_some_and(|o| o.is_ge());
+    if touch && !roomy {
         PlayerParts {
             settings: false,
             orbit: false,
