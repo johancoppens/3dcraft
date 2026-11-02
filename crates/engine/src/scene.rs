@@ -556,7 +556,7 @@ impl Scene {
                 frame.add(*point);
             }
         }
-        frame
+        snapped(frame)
     }
 
     /// How the bodies were sampled: the chordal tolerance and the angle
@@ -941,6 +941,30 @@ fn preview_size(regen: &Regen, doc: &Document) -> f64 {
 /// is the coarser of the two ([`picture_tolerance`]): a chord error of half
 /// a pixel cannot be seen.
 pub const PICTURE_PIXEL_SHARE: f64 = 0.5;
+
+/// `frame` with its corners on a grid of a power of two near a billionth
+/// of its size: the B-rep box of a cylinder or a sphere reaches its round
+/// extremes to within a few units in the last place (19.999999999999574
+/// for 20), which a window would carry into its camera; on the grid it is
+/// the round number, the same for every sampling. Scaling by a power of
+/// two and rounding are exact, so the grid moves nothing else.
+fn snapped(frame: Bbox3) -> Bbox3 {
+    let Some((low, high)) = frame.corners() else {
+        return frame;
+    };
+    let fine = frame.diagonal() * 1e-9;
+    if !(fine.is_finite() && fine > f64::MIN_POSITIVE) {
+        return frame;
+    }
+    // The largest power of two not above it: its sign and exponent bits.
+    let step = f64::from_bits(fine.to_bits() & 0xFFF0_0000_0000_0000);
+    let snap = |v: f64| {
+        let on = (v / step).round() * step;
+        if on.is_finite() { on } else { v }
+    };
+    let snap3 = |p: Vec3| Vec3::new(snap(p.x), snap(p.y), snap(p.z));
+    Bbox3::from_corners(snap3(low), snap3(high))
+}
 
 /// The box around the bodies of `regen` that are not hidden in the view
 /// (`feature.visible`), from their B-rep (a face on a

@@ -389,18 +389,10 @@ fn a_script_builds_a_part_and_measures_the_closed_form_volume() {
     let state = client.ok("ui.get", json!({}));
     assert_eq!(state["scene"]["bodies"], 2);
     assert_eq!(state["features"].as_array().unwrap().len(), 2);
-    // Framed on the bodies' B-rep box (`Scene::frame_box`, 2026-11-02;
-    // before, the meshes' box), whose bounds carry the box's own rounding:
-    // the middle of the model, to a billionth.
-    let target = state["state"]["camera"]["target"].as_array().unwrap();
-    for (got, want) in target.iter().zip([30.0, 20.0, 19.0]) {
-        let got = got.as_f64().unwrap();
-        assert!(
-            (got - want).abs() <= 1e-9 * 60.0,
-            "camera target {target:?}"
-        );
-    }
-    assert_eq!(target.len(), 3);
+    assert_eq!(
+        state["state"]["camera"]["target"],
+        json!([30.0, 20.0, 19.0])
+    );
     assert_eq!(state["lastCommand"]["label"], "document.measure");
     assert_eq!(state["lastCommand"]["ok"], true);
 
