@@ -293,22 +293,33 @@ solved, and the solve reads the instance's geometry). What keeps that affordable
   {shapes: "ready"}` and the window's own viewport (`Session::set_motion_live`, which the shell sets each frame)
   show a provisional moment. Every command runs with it off (`Session::execute`), so `view.render`, `view.pick`,
   exports, assertions and a `view.motion` without `"ready"` see the exact moment, made where it is asked for if it
-  must be; so do `ui.screenshot` and a frame-exact recording (`ui.record {step: true}`), during which the shell
+  must be; so do `ui.screenshot`, `ui.pick`, `ui.fit`, `ui.highlight` and a frame-exact recording
+  (`ui.record {step: true}`), during which the shell
   keeps it off and the player asks with `"exact"`. Before, `"ready"` stayed on once the player had set it, and a
   render or a recorded frame showed whatever the builder had reached.
-- **The builder's budget** (2026-11-02). Its threads take their place from the process-wide pool
-  (`craft3d_math::pool`): a worker builds only while it holds one of the pool's `SHARED_THREADS` (7) and takes no
-  helpers (`work_alone`), so a regeneration it runs (a pattern's unions, `derive::in_order`) runs on that one
-  thread, and the background and the work someone waits for stay within the pool together. Freeform booleans
-  are bounded process-wide: at most `OPERATIONS_AT_ONCE` (3) hold their trees at once, two of them from
-  background threads (`craft3d_kernel` › `freeform::holding`; the slot is taken before an operation's first
-  freeform tree, so booleans of planes and quadrics never wait); each holds at most `HELD_BYTES` (2 GiB), so the
-  trees of the whole process stay below 6 GiB plus the shelf (768 MiB), whatever the builder does (before, the
-  2 GiB were per thread: three builder threads, the window's and the unions' helpers could each hold them). An
-  operation beyond the slots waits, which changes when it runs, never its answer. The builder's own memory: at
-  most `MAX_QUEUED` (256) configurations queued, each with a copy of its source document and of its source's
-  regeneration cache (bodies shared); per worker the regeneration caches of at most 4 sources (`MAX_CACHES`); the
-  configurations themselves within the configuration budget once taken in.
+- **The builder's budget** (2026-11-02, revised after a second review). Its threads take their place from the
+  process-wide pool (`craft3d_math::pool`): a worker builds only while it holds one of the pool's `SHARED_THREADS`
+  (7) and takes no helpers (`work_alone`), so a regeneration it runs (a pattern's unions, `derive::in_order`) runs
+  on that one thread, and the background and the work someone waits for stay within the pool together. The trees
+  of freeform booleans are bounded process-wide by bytes (`craft3d_kernel` › `freeform::HELD_TOGETHER`, 4 GiB):
+  an operation whose next tree would take the process over it waits until another lets go, unless every other
+  operation holding trees waits too; background threads (the builder, the assertions measured behind a command,
+  `pool::mark_background`, and the helpers they lease, `Lease::helper_starts`) wait already at half of it. Each
+  operation holds at most `HELD_BYTES` (2 GiB), so the process stays below 6 GiB of trees plus the shelf (768
+  MiB); waiting changes when an operation runs, never its answer, and a pattern's side by side unions run as
+  before (a count of operations at once, tried first, held them to three). The builder's own memory: at most
+  `MAX_QUEUED` (256) configurations queued, each with a copy of its source document and of its source's
+  regeneration cache (bodies shared); per worker the regeneration caches of at most 4 sources and 384 MiB
+  (`MAX_CACHES`, `CACHE_BYTES`, estimated as the configuration each was last used for), let go of as soon as the
+  epoch changes (a reset wakes idle workers); the configurations themselves within the configuration budget once
+  taken in. A configuration's build asks between features whether it was let go of
+  (`craft3d_regen::progress::with_stop`) and one cut short is never kept. What the builder hands in is collected
+  once and kept by kind until taken, and the configurations a provisional placement leaves to the builder
+  (`AsmState::deferred`) are set for that placement only (`Sweep::with_deferred`, empty again on an error or a
+  panic), so no grid point is solved with configurations skipped.
+- **Recordings in real time** (`ui.record` without `step`) record what the window shows as it plays, provisional
+  moments and quick pictures included; a frame-exact recording (`step: true`) and pictures (`ui.screenshot`) show
+  exact moments at full quality, and so do `ui.pick`, `ui.fit` and `ui.highlight`.
 - **A bake in the window never blocks it.** `motion.bake {background: true}` (the window's default,
   `Session::set_bake_in_background`) only hands the bake to the builder and returns within milliseconds (the
   rest grid point solved; the grid and the frames in runs); `building` in `view.motion` says what is left;

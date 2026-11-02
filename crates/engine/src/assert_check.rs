@@ -415,7 +415,10 @@ fn run(job: &Job) {
                 .filter_map(|_| {
                     std::thread::Builder::new()
                         .name("craft3d-assertions".into())
-                        .spawn_scoped(scope, || measure(job, || false))
+                        .spawn_scoped(scope, || {
+                            lease.helper_starts();
+                            measure(job, || false)
+                        })
                         .ok()
                 })
                 .collect();
@@ -452,7 +455,13 @@ fn start(job: Arc<Job>, stepwise: bool) {
         let for_thread = Arc::clone(&job);
         let spawned = std::thread::Builder::new()
             .name("craft3d-assertions".into())
-            .spawn(move || run(&for_thread));
+            .spawn(move || {
+                // Measured behind the command that changed the document:
+                // background work, which holds less of the process's
+                // freeform trees (`craft3d_math::pool::mark_background`).
+                craft3d_math::pool::mark_background();
+                run(&for_thread)
+            });
         if spawned.is_ok() {
             return;
         }

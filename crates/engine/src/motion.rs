@@ -639,16 +639,47 @@ impl Sweep {
         }
         let doc = at_t(&self.reference, t)?;
         // What the builder has already is neither worked out nor built
-        // here again.
+        // here again: for this placement only, given back whatever
+        // happens in it.
+        let in_flight = builder.in_flight().clone();
+        self.with_deferred(in_flight, |sweep| {
+            sweep.placed_ready_deferred(t, k, j, &doc, builder)
+        })
+    }
+
+    /// Runs `work` with `keys` as the configurations the builder has
+    /// ([`AsmState::deferred`]), which are empty again afterwards also when
+    /// `work` fails or panics: a grid point solved later with them still
+    /// set would skip their configurations and be kept so for good.
+    fn with_deferred<R>(&mut self, keys: BTreeSet<String>, work: impl FnOnce(&mut Self) -> R) -> R {
         if let Some(sweep) = self.assembly.as_mut() {
-            sweep.asm.deferred = builder.in_flight().clone();
+            sweep.asm.deferred = keys;
         }
-        let (own, subs) = self.asm_missing(std::slice::from_ref(&doc))?;
-        let waiting = self.asm_waiting(&doc)?;
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&mut *self)));
+        if let Some(sweep) = self.assembly.as_mut() {
+            sweep.asm.deferred.clear();
+        }
+        out.unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+    }
+
+    /// The rest of [`Self::placed_ready`], within [`Self::with_deferred`].
+    fn placed_ready_deferred(
+        &mut self,
+        t: f64,
+        k: i64,
+        j: i64,
+        doc: &Document,
+        builder: &mut crate::motion_build::Builder,
+    ) -> Result<Ready, String> {
+        let exact = |(placed, stuck): (Arc<Placed>, Option<Stuck>)| Ready {
+            placed,
+            stuck,
+            exact: true,
+        };
+        let t0 = self.t0;
+        let (own, subs) = self.asm_missing(std::slice::from_ref(doc))?;
+        let waiting = self.asm_waiting(doc)?;
         if j == k && own.is_empty() && !waiting {
-            if let Some(sweep) = self.assembly.as_mut() {
-                sweep.asm.deferred.clear();
-            }
             return self.placed_at(t).map(exact);
         }
         // Asked for first: this moment's configurations (the grid's are
@@ -667,9 +698,6 @@ impl Sweep {
         if subs {
             // A subassembly's configuration is built where it is asked
             // for: placed as usual.
-            if let Some(sweep) = self.assembly.as_mut() {
-                sweep.asm.deferred.clear();
-            }
             return self.placed_at(t).map(exact);
         }
         let substitutes = self.substitutes(t);
@@ -689,8 +717,7 @@ impl Sweep {
         sweep.asm.deferred = builder.in_flight().clone();
         let placed = sweep
             .asm
-            .place_ready(&doc, sweep.path.as_deref(), Some(&from), &substitutes);
-        sweep.asm.deferred.clear();
+            .place_ready(doc, sweep.path.as_deref(), Some(&from), &substitutes);
         self.note_configs(t, &placed);
         if let (Some(sweep), Some(carried)) = (self.assembly.as_mut(), placed.carried.clone()) {
             sweep.last_carried = Some((t, carried));

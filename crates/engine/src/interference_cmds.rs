@@ -392,6 +392,7 @@ pub(crate) fn in_order<T: Send>(
     }
     let next = AtomicUsize::new(0);
     let work = || -> Vec<(usize, Option<T>)> {
+        lease.helper_starts();
         let mut done = Vec::new();
         loop {
             let n = next.fetch_add(1, Ordering::Relaxed);

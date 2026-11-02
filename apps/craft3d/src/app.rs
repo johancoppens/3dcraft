@@ -2620,6 +2620,124 @@ mod tests {
         assert_eq!(file_stem("plate.step").as_deref(), Some("plate.step"));
     }
 
+    /// The frame of a frame-exact recording (`ui.record {step: true}`)
+    /// of a motion whose moment the viewport shows provisionally: the
+    /// desk turns the viewport's provisional moments off while it records
+    /// (`Desk::sync_exact_pictures`), so the frame is the one a desk that
+    /// showed the exact moment records (the review of 2026-11-02).
+    fn recorded_moment(state: &eframe::egui_wgpu::RenderState, name: &str, ready: bool) -> Vec<u8> {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../../target/tmp/craft3d-desk-moment-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = craft3d_engine::canonical(&dir).unwrap();
+        let mut session = Session::new(Workspace {
+            read: Access::Root(dir.clone()),
+            write: Access::Root(dir.clone()),
+        });
+        let mut run = |id: &str, params: Value| {
+            session
+                .execute(id, &params)
+                .unwrap_or_else(|e| panic!("{id}: {e}"));
+        };
+        run("file.new", json!({}));
+        run("variable.set", json!({"name": "len", "expr": "24 mm"}));
+        run(
+            "variable.publish",
+            json!({"name": "len", "min": "10 mm", "max": "500 mm"}),
+        );
+        run(
+            "feature.block",
+            json!({"name": "Bar", "size": ["len", 4, 2]}),
+        );
+        run(
+            "datum.axis",
+            json!({"name": "End1", "through": [[2, 2, 0], [2, 2, 1]]}),
+        );
+        run("file.save", json!({"path": "bar.3dcraft"}));
+        run("file.close", json!({}));
+        run("assembly.new", json!({}));
+        for (name, len, y) in [("Ground", "64 mm", 0), ("Belt", "30 mm + 20 mm * t", 20)] {
+            run(
+                "instance.add",
+                json!({"source": "bar.3dcraft", "name": name, "body": "Bar",
+                       "params": {"len": len}, "position": [0, y, 0]}),
+            );
+        }
+        run("variable.set", json!({"name": "t", "expr": "0"}));
+        run(
+            "mate.add",
+            json!({"kind": "fixed", "a": "world/z", "b": "Ground/End1", "name": "Base", "flip": true}),
+        );
+        run(
+            "mate.add",
+            json!({"kind": "fixed", "a": "world/z", "b": "Belt/End1", "name": "Hold", "flip": true}),
+        );
+        let shapes = if ready { "ready" } else { "exact" };
+        run("view.motion", json!({"t": 0.5, "shapes": shapes}));
+        session.set_motion_live(true);
+        if ready && craft3d_math::available_threads() >= 2 {
+            assert!(!session.motion().unwrap().exact, "provisional on screen");
+        }
+        let (requests, incoming) = mpsc::channel();
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        // With an engine thread, as the window has: the scene of the exact
+        // moment is built there.
+        let mut desk =
+            Desk::new(Host::new(session), incoming, picker).with_engine_thread(Arc::new(|| {}));
+        desk.set_window_points([320.0, 240.0]);
+        desk.attach_recorder(Some(state));
+        let ctx = egui::Context::default();
+        let serve = |desk: &mut Desk, what: &str, answer: &Receiver<Option<String>>| -> Value {
+            for _ in 0..10_000 {
+                desk.turn();
+                desk.drive(&ctx);
+                if let Ok(reply) = answer.try_recv() {
+                    return serde_json::from_str(&reply.unwrap()).unwrap();
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            panic!("no reply to {what}");
+        };
+        desk.offscreen_pass(&ctx, 0.0, Vec::new(), false).unwrap();
+        let start = r#"{"id":1,"method":"ui.record","params":{"path":"frames","step":true}}"#;
+        assert_eq!(
+            serve(&mut desk, "start", &ask(&requests, start))["ok"],
+            true
+        );
+        assert!(desk.host.shell.exact_pictures());
+        let advance = r#"{"id":2,"method":"ui.advance","params":{"frames":1}}"#;
+        let reply = serve(&mut desk, "advance", &ask(&requests, advance));
+        assert_eq!(reply["result"]["frames"], 1, "{reply}");
+        // The moment shown while recording is the exact one.
+        assert!(desk.host.session.motion().unwrap().exact);
+        let stop = r#"{"id":3,"method":"ui.record","params":{"stop":true}}"#;
+        assert_eq!(serve(&mut desk, "stop", &ask(&requests, stop))["ok"], true);
+        let mut frames: Vec<_> = std::fs::read_dir(dir.join("frames"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        frames.sort();
+        std::fs::read(frames.first().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_step_recording_of_a_provisional_moment_records_the_exact_one() {
+        let state = match craft3d_ui_egui::direct::headless_render_state() {
+            Ok(state) => state,
+            Err(e) => {
+                println!("SKIPPED: no graphics adapter: {e}");
+                return;
+            }
+        };
+        let exact = recorded_moment(&state, "exact", false);
+        let ready = recorded_moment(&state, "ready", true);
+        assert!(
+            exact == ready,
+            "the recorded frame shows the provisional moment"
+        );
+    }
+
     fn ask(requests: &mpsc::Sender<Request>, line: &str) -> Receiver<Option<String>> {
         let (reply, answer) = mpsc::channel();
         let line = line.to_string();

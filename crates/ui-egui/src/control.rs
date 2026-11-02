@@ -168,6 +168,23 @@ fn side(method: &str, map: Fields<'_>, key: &str) -> Result<Option<u32>, String>
 }
 
 impl Shell {
+    /// Runs `work` as a capture ([`Shell::exact_pictures`]): the session
+    /// shows the exact moment of a playing motion, and the viewport goes
+    /// back to what it was afterwards.
+    fn exactly<R>(
+        &mut self,
+        session: &mut Session,
+        work: impl FnOnce(&mut Self, &mut Session) -> R,
+    ) -> R {
+        let capturing = self.capturing;
+        self.set_capturing(true);
+        session.set_motion_live(false);
+        let out = work(self, session);
+        self.set_capturing(capturing);
+        session.set_motion_live(!self.exact_pictures());
+        out
+    }
+
     /// Runs a `ui.*` method. `None` when `method` is not one of them.
     /// Never panics, whatever the params hold.
     pub fn handle_method(
@@ -203,21 +220,14 @@ impl Shell {
         let result = match method {
             "ui.get" => self.ui_get(session, params),
             "ui.set" => self.ui_set(session, params),
-            "ui.fit" => self.ui_fit(session, params),
-            "ui.screenshot" => {
-                // The exact moment of a playing motion, at full quality:
-                // never the provisional moment or the quick picture the
-                // viewport shows while it plays.
-                let capturing = self.capturing;
-                self.set_capturing(true);
-                session.set_motion_live(false);
-                let shot = self.ui_screenshot(session, params);
-                self.set_capturing(capturing);
-                session.set_motion_live(!self.exact_pictures());
-                shot
-            }
-            "ui.pick" => self.ui_pick(session, params),
-            "ui.highlight" => self.ui_highlight(session, params),
+            // What an agent sees, picks, frames or highlights is the
+            // exact moment of a playing motion, at full quality: never the
+            // provisional moment (a face of a substitute configuration) or
+            // the quick picture the viewport shows while it plays.
+            "ui.fit" => self.exactly(session, |shell, s| shell.ui_fit(s, params)),
+            "ui.screenshot" => self.exactly(session, |shell, s| shell.ui_screenshot(s, params)),
+            "ui.pick" => self.exactly(session, |shell, s| shell.ui_pick(s, params)),
+            "ui.highlight" => self.exactly(session, |shell, s| shell.ui_highlight(s, params)),
             "ui.select" => self.ui_select(session, params),
             "ui.notice" => self.ui_notice(params),
             "ui.quit" => self.ui_quit(params),

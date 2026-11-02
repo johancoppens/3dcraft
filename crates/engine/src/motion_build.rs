@@ -122,6 +122,9 @@ pub(crate) struct Builder {
     seen_done: Vec<(f64, Vec<(String, String)>)>,
     /// A grid run of this epoch failed ([`Worked::failed`]), not taken yet.
     grid_failed: bool,
+    /// Configurations built and not taken yet: whatever call collects
+    /// them keeps them here until [`Self::take`].
+    parts_done: Vec<PartDone>,
     #[cfg(not(target_arch = "wasm32"))]
     running: Option<native::Running>,
 }
@@ -156,6 +159,7 @@ impl Builder {
         self.grid_done.clear();
         self.seen_done.clear();
         self.grid_failed = false;
+        self.parts_done.clear();
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(running) = &self.running {
             running.reset(self.epoch);
@@ -267,14 +271,16 @@ impl Builder {
         std::mem::take(&mut self.grid_done)
     }
 
-    /// Takes in what the workers finished for this epoch.
-    fn collect(&mut self) -> Vec<PartDone> {
+    /// Takes in what the workers finished for this epoch, each kind kept
+    /// until it is taken (a configuration collected by [`Self::take_grid`]
+    /// is not lost: the review of 2026-11-02 found one built twice).
+    fn collect(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let Some(running) = &self.running else {
-                return Vec::new();
+                return;
             };
-            let mut parts = Vec::new();
+            let parts = &mut self.parts_done;
             for done in running.finished(self.epoch) {
                 match done {
                     Done::Part(d) => {
@@ -300,18 +306,14 @@ impl Builder {
                     }
                 }
             }
-            parts
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            Vec::new()
         }
     }
 
     /// The configurations built since the last call for this epoch, sorted
     /// by key.
     pub(crate) fn take(&mut self) -> Vec<PartDone> {
-        let mut done = self.collect();
+        self.collect();
+        let mut done = std::mem::take(&mut self.parts_done);
         done.sort_by(|a, b| a.key.cmp(&b.key));
         done
     }
@@ -319,6 +321,22 @@ impl Builder {
     /// The keys queued or being built.
     pub(crate) fn in_flight(&self) -> &BTreeSet<String> {
         &self.in_flight
+    }
+
+    /// Regeneration caches the builder's workers hold now (tests of
+    /// their bound).
+    #[cfg(test)]
+    pub(crate) fn caches_held(&self) -> usize {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.running
+                .as_ref()
+                .map_or(0, native::Running::caches_held)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            0
+        }
     }
 
     /// How many configurations are queued or being built.
@@ -333,32 +351,69 @@ impl Builder {
 /// budget, docs/design/motion.md).
 const MAX_CACHES: usize = 4;
 
-/// A worker's regeneration caches by source, the one used last at the
-/// back.
+/// Most bytes of bodies a worker's caches hold together, estimated as the
+/// configuration each was last used for ([`crate::asm::regen_bytes`]): a
+/// cache over it is not kept (the next configuration of its source is
+/// regenerated from the session's cache, or from nothing). With three
+/// workers at most 3 × 384 MiB; the caches are let go of as soon as the
+/// motion they were for is (a new epoch), also by an idle worker.
+#[cfg(not(target_arch = "wasm32"))]
+const CACHE_BYTES: usize = 384 << 20;
+#[cfg(target_arch = "wasm32")]
+const CACHE_BYTES: usize = 64 << 20;
+
+/// A worker's regeneration caches by source with their estimated bytes,
+/// the one used last at the back.
 #[derive(Default)]
-struct Caches(Vec<(String, RegenCache)>);
+struct Caches(Vec<(String, RegenCache, usize)>);
 
 impl Caches {
     fn take(&mut self, source: &str) -> Option<RegenCache> {
-        let at = self.0.iter().position(|(s, _)| s == source)?;
+        let at = self.0.iter().position(|(s, _, _)| s == source)?;
         Some(self.0.remove(at).1)
     }
 
-    fn put(&mut self, source: String, cache: RegenCache) {
-        self.0.retain(|(s, _)| *s != source);
-        self.0.push((source, cache));
+    fn put(&mut self, source: String, cache: RegenCache, bytes: usize) {
+        self.0.retain(|(s, _, _)| *s != source);
+        self.0.push((source, cache, bytes));
         let over = self.0.len().saturating_sub(MAX_CACHES);
         self.0.drain(..over);
+        while self.bytes() > CACHE_BYTES && !self.0.is_empty() {
+            self.0.remove(0);
+        }
+    }
+
+    fn bytes(&self) -> usize {
+        self.0
+            .iter()
+            .fold(0usize, |sum, (_, _, bytes)| sum.saturating_add(*bytes))
     }
 
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn clear(&mut self) {
         self.0.clear();
     }
+
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    fn len(&self) -> usize {
+        self.0.len()
+    }
 }
 
-/// Builds one part's configuration as `asm` builds it.
-fn build(job: PartJob, caches: &mut Caches) -> PartDone {
+/// Builds one part's configuration as `asm` builds it. `stop` is asked
+/// between its features (`craft3d_regen::progress::with_stop`): when it
+/// says so the build ends there and gives nothing, so a configuration cut
+/// short is never kept as a result (`None`).
+fn build(
+    job: PartJob,
+    caches: &mut Caches,
+    stop: impl FnMut() -> bool + 'static,
+) -> Option<PartDone> {
     let PartJob {
         key,
         doc,
@@ -372,35 +427,42 @@ fn build(job: PartJob, caches: &mut Caches) -> PartDone {
         .or(cache)
         .unwrap_or_default();
     let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        craft3d_regen::regenerate_cached_needing(&doc, &mut cache, craft3d_regen::Need::All)
+        craft3d_regen::progress::with_stop(stop, || {
+            craft3d_regen::regenerate_cached_needing(&doc, &mut cache, craft3d_regen::Need::All)
+        })
     }));
     let built = match ran {
-        Ok(regen) => Ok(Arc::new(Built::Part {
-            doc: Arc::new(doc),
-            regen: Arc::new(if slim {
-                crate::asm::slimmed(regen)
-            } else {
-                regen
-            }),
-        })),
+        Ok((_, true)) => return None,
+        Ok((regen, false)) => {
+            let bytes = crate::asm::regen_bytes(&regen);
+            if let Some(source) = source {
+                caches.put(source, cache, bytes);
+            }
+            Ok(Arc::new(Built::Part {
+                doc: Arc::new(doc),
+                regen: Arc::new(if slim {
+                    crate::asm::slimmed(regen)
+                } else {
+                    regen
+                }),
+            }))
+        }
+        // The cache may hold half of what the panic interrupted: not kept.
         Err(_) => Err("its regeneration stopped".to_string()),
     };
-    if let Some(source) = source {
-        caches.put(source, cache);
-    }
-    PartDone {
+    Some(PartDone {
         key,
         built,
         slim,
         solved: false,
-    }
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     use super::{Caches, Done, Job, build};
     use std::collections::VecDeque;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::mpsc::{self, Receiver, Sender};
     use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
@@ -426,6 +488,8 @@ mod native {
         /// The builder was dropped: workers end, runs stop at their next
         /// point.
         stop: AtomicBool,
+        /// Regeneration caches the workers hold now, together.
+        cached: AtomicUsize,
     }
 
     fn lock(shared: &Shared) -> MutexGuard<'_, Queue> {
@@ -452,6 +516,7 @@ mod native {
                 ready: Condvar::new(),
                 epoch: AtomicU64::new(epoch),
                 stop: AtomicBool::new(false),
+                cached: AtomicUsize::new(0),
             });
             let (send, done) = mpsc::channel();
             // A quarter of the machine, at most three: the window's
@@ -464,7 +529,7 @@ mod native {
                 let (shared, send) = (Arc::clone(&shared), send.clone());
                 let spawned = std::thread::Builder::new()
                     .name(format!("craft3d-motion-{n}"))
-                    .spawn(move || work(&shared, &send));
+                    .spawn(move || work(shared, &send));
                 if spawned.is_ok() {
                     started += 1;
                 }
@@ -478,9 +543,17 @@ mod native {
             })
         }
 
+        /// Regeneration caches the workers hold now.
+        #[cfg(test)]
+        pub(super) fn caches_held(&self) -> usize {
+            self.shared.cached.load(Ordering::Acquire)
+        }
+
         pub(super) fn reset(&self, epoch: u64) {
             self.shared.epoch.store(epoch, Ordering::Release);
             lock(&self.shared).jobs.clear();
+            // Idle workers wake to let go of their caches.
+            self.shared.ready.notify_all();
         }
 
         pub(super) fn push(&self, epoch: u64, jobs: Vec<Job>, urgent: bool) {
@@ -519,16 +592,29 @@ mod native {
     /// while it holds a thread of the shared pool, keeping the
     /// regeneration caches of the last configurations it built
     /// ([`Caches`], let go of when the epoch changes).
-    fn work(shared: &Shared, send: &Sender<(u64, Done)>) {
+    fn work(shared: Arc<Shared>, send: &Sender<(u64, Done)>) {
         craft3d_math::pool::work_alone();
         let mut caches = Caches::default();
         let mut cached_for = shared.epoch.load(Ordering::Acquire);
         loop {
             let (epoch, job, _thread) = {
-                let mut queue = lock(shared);
+                let mut queue = lock(&shared);
                 loop {
                     if shared.stop.load(Ordering::Acquire) {
                         return;
+                    }
+                    // The motion they were for was let go of: so are the
+                    // caches, also by a worker with nothing to do.
+                    let now = shared.epoch.load(Ordering::Acquire);
+                    if cached_for != now {
+                        cached_for = now;
+                        if !caches.is_empty() {
+                            drop(queue);
+                            held(&shared, &caches, 0);
+                            caches.clear();
+                            queue = lock(&shared);
+                            continue;
+                        }
                     }
                     if queue.jobs.is_empty() {
                         queue = shared
@@ -553,19 +639,26 @@ mod native {
                     }
                 }
             };
-            let now = shared.epoch.load(Ordering::Acquire);
-            if epoch != now {
+            if epoch != cached_for {
                 continue;
             }
-            if cached_for != now {
-                caches.clear();
-                cached_for = now;
-            }
-            let let_go = || {
-                shared.stop.load(Ordering::Acquire) || shared.epoch.load(Ordering::Acquire) != epoch
+            let let_go = {
+                let shared = Arc::clone(&shared);
+                move || {
+                    shared.stop.load(Ordering::Acquire)
+                        || shared.epoch.load(Ordering::Acquire) != epoch
+                }
             };
+            let before = caches.len();
             let done = match job {
-                Job::Part(job) => Done::Part(build(*job, &mut caches)),
+                Job::Part(job) => match build(*job, &mut caches, let_go) {
+                    Some(done) => Done::Part(done),
+                    // Cut short: let go of, as its epoch is.
+                    None => {
+                        held_change(&shared, before, caches.len());
+                        continue;
+                    }
+                },
                 Job::Grid(job, grid) => Done::Grid(
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&let_go)))
                         .unwrap_or_else(|_| super::Worked {
@@ -575,10 +668,29 @@ mod native {
                     grid,
                 ),
             };
+            held_change(&shared, before, caches.len());
             if send.send((epoch, done)).is_err() {
                 return;
             }
         }
+    }
+
+    /// Counts a worker's caches going from `before` to `after`.
+    fn held_change(shared: &Shared, before: usize, after: usize) {
+        if after > before {
+            shared
+                .cached
+                .fetch_add(after.saturating_sub(before), Ordering::AcqRel);
+        } else {
+            shared
+                .cached
+                .fetch_sub(before.saturating_sub(after), Ordering::AcqRel);
+        }
+    }
+
+    /// Counts `caches` let go of (to `after` held).
+    fn held(shared: &Shared, caches: &Caches, after: usize) {
+        held_change(shared, caches.len(), after);
     }
 }
 
@@ -686,5 +798,112 @@ mod tests {
         assert!(stopped < 5_000, "{stopped}");
         assert!(builder.take_grid().is_empty());
         assert!(!builder.take_grid_failed());
+    }
+
+    /// A document of two blocks: a regeneration that can stop between
+    /// its features.
+    fn two_blocks() -> Document {
+        let mut s = crate::Session::new(crate::Workspace::none());
+        for (id, params) in [
+            ("file.new", serde_json::json!({})),
+            (
+                "feature.block",
+                serde_json::json!({"name": "A", "size": [1, 1, 1]}),
+            ),
+            (
+                "feature.block",
+                serde_json::json!({"name": "B", "size": [1, 1, 1], "position": [3, 0, 0]}),
+            ),
+        ] {
+            s.execute(id, &params).unwrap();
+        }
+        (**s.document().unwrap().history.current()).clone()
+    }
+
+    /// A configuration's build asks between features whether it was let
+    /// go of, and one cut short gives nothing (never a result); its cache
+    /// is not kept. One built to its end is kept with its cache.
+    #[test]
+    fn a_part_build_stops_between_features_and_keeps_nothing() {
+        let doc = two_blocks();
+        let job = |doc: &Document| PartJob {
+            key: "k".to_string(),
+            doc: doc.clone(),
+            source: Some("src".to_string()),
+            cache: None,
+            slim: false,
+        };
+        let mut caches = Caches::default();
+        assert!(build(job(&doc), &mut caches, || true).is_none());
+        assert!(caches.is_empty());
+        let done = build(job(&doc), &mut caches, || false).unwrap();
+        assert!(done.built.is_ok());
+        assert_eq!(caches.len(), 1);
+    }
+
+    /// The caches are bounded by bytes as well as by count.
+    #[test]
+    fn caches_are_bounded_by_bytes() {
+        let mut caches = Caches::default();
+        caches.put("a".into(), RegenCache::default(), CACHE_BYTES / 2);
+        caches.put("b".into(), RegenCache::default(), CACHE_BYTES / 2);
+        assert_eq!(caches.len(), 2);
+        caches.put("c".into(), RegenCache::default(), CACHE_BYTES / 2);
+        assert_eq!(caches.len(), 2, "the oldest went");
+        assert!(caches.take("a").is_none());
+        caches.put("huge".into(), RegenCache::default(), CACHE_BYTES + 1);
+        assert!(caches.is_empty(), "one over the budget is not kept");
+    }
+
+    /// A reset wakes idle workers, which let go of their caches.
+    #[test]
+    fn a_reset_lets_idle_workers_drop_their_caches() {
+        if !Builder::available() {
+            return;
+        }
+        let mut builder = Builder::default();
+        let job = PartJob {
+            key: "k".to_string(),
+            doc: two_blocks(),
+            source: Some("src".to_string()),
+            cache: None,
+            slim: false,
+        };
+        assert_eq!(builder.queue(vec![job], true), 1);
+        take_all(&mut builder, 1);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while builder.caches_held() == 0 {
+            assert!(Instant::now() < deadline, "no cache was kept");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        builder.reset();
+        while builder.caches_held() > 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the caches were kept after a reset"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// A configuration collected while the grid's results are taken is
+    /// kept for the next [`Builder::take`], not lost (the review of
+    /// 2026-11-02: it was built a second time).
+    #[test]
+    fn a_build_collected_with_the_grid_is_not_lost() {
+        if !Builder::available() {
+            return;
+        }
+        let mut builder = Builder::default();
+        assert_eq!(builder.queue(vec![job(1)], true), 1);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while builder.pending() > 0 {
+            assert!(builder.take_grid().is_empty());
+            assert!(Instant::now() < deadline, "never built");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let done = builder.take();
+        assert_eq!(done.len(), 1);
+        assert_eq!(done.first().map(|d| d.key.as_str()), Some("job-00001"));
     }
 }

@@ -26,18 +26,31 @@ pub const SHARED_THREADS: usize = 7;
 static FREE: AtomicUsize = AtomicUsize::new(SHARED_THREADS);
 
 /// Threads taken from the pool, given back when dropped.
-pub struct Lease(usize);
+pub struct Lease {
+    threads: usize,
+    /// Taken by a thread doing background work ([`background`]).
+    background: bool,
+}
 
 impl Lease {
     /// How many extra threads the holder may start.
     pub fn threads(&self) -> usize {
-        self.0
+        self.threads
+    }
+
+    /// Called by each thread started with the lease (and harmless on the
+    /// holder's own): a helper of background work is background work too
+    /// ([`mark_background`]).
+    pub fn helper_starts(&self) {
+        if self.background {
+            mark_background();
+        }
     }
 }
 
 impl Drop for Lease {
     fn drop(&mut self) {
-        FREE.fetch_add(self.0, Ordering::AcqRel);
+        FREE.fetch_add(self.threads, Ordering::AcqRel);
     }
 }
 
@@ -54,11 +67,24 @@ pub fn work_alone() {
     ALONE.with(|alone| alone.set(true));
 }
 
-/// True on a thread that called [`work_alone`]: background work, which
-/// also takes fewer of the slots of the kernel's freeform operations
-/// (`craft3d_kernel` › `freeform::holding`).
-pub fn alone() -> bool {
-    ALONE.with(std::cell::Cell::get)
+std::thread_local! {
+    /// This thread does background work ([`mark_background`]).
+    static BACKGROUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// From now on this thread does work no one is waiting on at this moment
+/// (the assertions measured behind a command): it may still take threads
+/// from the pool, but the kernel lets it hold less of the process's
+/// freeform trees (`craft3d_kernel` › `freeform::HELD_TOGETHER`), so the
+/// work someone waits for is not held up by it. A thread that works
+/// alone ([`work_alone`]) is background work too.
+pub fn mark_background() {
+    BACKGROUND.with(|b| b.set(true));
+}
+
+/// True on a thread that called [`mark_background`] or [`work_alone`].
+pub fn background() -> bool {
+    BACKGROUND.with(std::cell::Cell::get) || ALONE.with(std::cell::Cell::get)
 }
 
 /// One thread of the pool for a background worker itself (a motion's
@@ -73,7 +99,10 @@ pub fn lease_for_worker() -> Lease {
 /// Up to `wanted` extra threads, as many as are free now (none is fine).
 pub fn lease(wanted: usize) -> Lease {
     if ALONE.with(std::cell::Cell::get) {
-        return Lease(0);
+        return Lease {
+            threads: 0,
+            background: background(),
+        };
     }
     take(wanted)
 }
@@ -83,10 +112,18 @@ fn take(wanted: usize) -> Lease {
     loop {
         let take = wanted.min(free);
         if take == 0 {
-            return Lease(0);
+            return Lease {
+                threads: 0,
+                background: background(),
+            };
         }
         match FREE.compare_exchange_weak(free, free - take, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => return Lease(take),
+            Ok(_) => {
+                return Lease {
+                    threads: take,
+                    background: background(),
+                };
+            }
             Err(now) => free = now,
         }
     }

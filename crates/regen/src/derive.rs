@@ -732,6 +732,7 @@ fn in_order<I: Send, T: Send>(
     let slots: Vec<Mutex<Option<T>>> = (0..count).map(|_| Mutex::new(None)).collect();
     let next = AtomicUsize::new(0);
     let run = || {
+        lease.helper_starts();
         let before = craft3d_geom::allowance::spent();
         loop {
             let n = next.fetch_add(1, Ordering::Relaxed);

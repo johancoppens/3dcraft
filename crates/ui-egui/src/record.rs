@@ -16,13 +16,18 @@
 //! Two clocks:
 //!
 //! - real time (`ui.record {path, fps}`): the host runs a pass every
-//!   `1/fps` seconds of the wall clock, with the input the window got;
+//!   `1/fps` seconds of the wall clock, with the input the window got:
+//!   what the window shows, so a playing motion's provisional moments and
+//!   quick pictures too (docs/design/motion.md › *Shapes in the
+//!   background*);
 //! - frame-exact (`ui.record {path, step: true}`): nothing is drawn until
 //!   `ui.advance {frames, dt}`, and then each frame is a pass at a time
 //!   `dt` after the last one, run once what the window shows has settled
 //!   (no command running, the scene built, the viewport's picture done).
 //!   The history player, flights and the orbit follow egui's input time,
-//!   so an agent gets the same frames for the same requests.
+//!   so an agent gets the same frames for the same requests; a playing
+//!   motion is recorded at its exact moments and full quality
+//!   (`Shell::exact_pictures`), whatever the background has built.
 //!
 //! The frames go to a sequence of PNGs in a directory, or through a pipe
 //! to an external `ffmpeg` (`CRAFT3D_FFMPEG`, else the one on `PATH`) for

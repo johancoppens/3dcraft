@@ -14,7 +14,7 @@ pub mod below;
 mod blend;
 pub mod boolean;
 mod boxtree;
-pub use boolean::{OPERATIONS_AT_ONCE, operations_running, release_unused, shelf_size};
+pub use boolean::{HELD_TOGETHER, held_together, release_unused, shelf_size};
 pub mod chamfer;
 pub mod delete_face;
 pub mod developable;

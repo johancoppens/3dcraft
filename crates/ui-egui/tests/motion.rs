@@ -414,6 +414,32 @@ fn pictures_and_recorded_frames_of_a_provisional_moment_are_the_exact_one() {
     }
     assert_eq!(screenshot(&mut shell, &mut s, "motion-ready"), wanted);
 
+    // ui.pick, ui.fit and ui.highlight see the exact moment too.
+    let pick = json!({"x": 400, "y": 300});
+    let wanted_pick = call(&mut exact_shell, &mut exact, "ui.pick", pick.clone());
+    let mut p = stretching("picked");
+    let mut shell = Shell::new();
+    window.frame(&mut shell, &mut p, 0.0);
+    run(&mut p, "view.motion", json!({"t": 0.5, "shapes": "ready"}));
+    window.frame(&mut shell, &mut p, 0.0);
+    let got_pick = call(&mut shell, &mut p, "ui.pick", pick);
+    assert!(p.motion().unwrap().exact, "ui.pick made the moment exact");
+    assert_eq!(got_pick, wanted_pick);
+    for (method, params) in [
+        ("ui.fit", json!({})),
+        ("ui.highlight", json!({"face": "F1:face(0)"})),
+    ] {
+        let mut h = stretching(&format!("exact-{method}"));
+        let mut shell = Shell::new();
+        window.frame(&mut shell, &mut h, 0.0);
+        run(&mut h, "view.motion", json!({"t": 0.5, "shapes": "ready"}));
+        window.frame(&mut shell, &mut h, 0.0);
+        // Whether the face is there or not, the scene it is looked up
+        // in is the exact moment's.
+        let _ = shell.handle_method(&mut h, method, Some(&params));
+        assert!(h.motion().unwrap().exact, "{method} made the moment exact");
+    }
+
     // Recorded frame by frame: the viewport is not live, the moment exact.
     let mut r = stretching("recorded");
     let mut shell = Shell::new();

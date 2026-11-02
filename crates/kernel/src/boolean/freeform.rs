@@ -1895,69 +1895,100 @@ pub(super) const HELD_BYTES: usize = 512 << 20;
 /// [`HELD_BYTES`].
 pub(super) const TOO_MUCH_HELD: Reason = "the freeform faces it meets need more memory for their indexes than one operation may take (too many freeform faces, or faces of too many pieces)";
 
-/// Freeform operations (outermost [`holding`]s that ask for a tree of a
-/// freeform surface) that run at once in the whole process, at most (an
-/// operation on planes and quadrics alone takes no slot); a thread that works in the background
-/// (`craft3d_math::pool::alone`: a motion's builder) takes one fewer, so
-/// the work someone waits for always finds a slot. [`HELD_BYTES`] bounds
-/// one operation's trees, deterministically (it refuses the same whatever
-/// else runs); this bounds how many such budgets are held at once, so
-/// the trees of the whole process stay below `OPERATIONS_AT_ONCE ×
-/// HELD_BYTES` plus the shelf ([`SHELF_BYTES`]): 6.75 GiB natively. An
-/// operation beyond it waits for a slot, which changes when it runs,
-/// never what it answers. Before 2026-11-02 the budget was per thread
-/// only: a motion's three builder threads, the window's thread and the
-/// pattern unions' helpers could each hold 2 GiB (an independent review).
-/// No freeform operation waits for another thread while it holds a slot
-/// (none starts threads), so the slots cannot deadlock.
-pub const OPERATIONS_AT_ONCE: usize = 3;
+/// Bytes of trees the freeform operations of the whole process hold
+/// together before one that asks for another tree waits. [`HELD_BYTES`]
+/// bounds one operation's trees, deterministically (it refuses the same
+/// whatever else runs); this bounds them together: an operation whose next
+/// tree would take the process over it waits until others let go of
+/// theirs, which changes when it runs, never what it answers. A thread
+/// that works in the background (`craft3d_math::pool::background`: a
+/// motion's builder, the assertions measured behind a command) waits
+/// already at half of it, so it leaves the rest to the work someone waits
+/// for. So the side by side booleans of a pattern's unions, an
+/// interference or an assertion sweep run as before (their trees are far
+/// below it), and the process stays below `HELD_TOGETHER + HELD_BYTES`
+/// plus the shelf ([`SHELF_BYTES`]): an operation never waits when every
+/// other operation holding trees waits too (it is the one that goes on),
+/// so they cannot deadlock (no freeform operation waits for another
+/// thread), and the one that goes on adds at most its own [`HELD_BYTES`]
+/// beyond it. Before 2026-11-02 the budget was per thread only (a
+/// motion's builder threads, the window's thread and the unions' helpers
+/// could each hold 2 GiB); a count of operations at once, tried first,
+/// throttled the foreground's side by side booleans (both found by
+/// independent reviews).
+#[cfg(not(target_arch = "wasm32"))]
+pub const HELD_TOGETHER: usize = 4 << 30;
+#[cfg(target_arch = "wasm32")]
+pub const HELD_TOGETHER: usize = 512 << 20;
 
-struct Gate {
-    running: Mutex<usize>,
-    freed: std::sync::Condvar,
+/// The trees held by every operation, how many operations hold some, and
+/// how many of those wait.
+struct Together {
+    bytes: usize,
+    holders: usize,
+    waiting: usize,
 }
 
-static GATE: Gate = Gate {
-    running: Mutex::new(0),
-    freed: std::sync::Condvar::new(),
-};
+static TOGETHER: Mutex<Together> = Mutex::new(Together {
+    bytes: 0,
+    holders: 0,
+    waiting: 0,
+});
+static FREED: std::sync::Condvar = std::sync::Condvar::new();
 
-/// A slot of [`OPERATIONS_AT_ONCE`], given back when dropped.
-struct Slot;
+fn together() -> std::sync::MutexGuard<'static, Together> {
+    TOGETHER.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
-impl Slot {
-    /// Waits for a slot.
-    fn take() -> Self {
-        let limit = if craft3d_math::pool::alone() {
-            OPERATIONS_AT_ONCE.saturating_sub(1).max(1)
+/// One operation's share of [`HELD_TOGETHER`], given back when dropped.
+struct Share {
+    bytes: usize,
+}
+
+impl Share {
+    fn new() -> Self {
+        let mut t = together();
+        t.holders = t.holders.saturating_add(1);
+        Share { bytes: 0 }
+    }
+
+    /// Counts `size` more bytes, waiting while they would take the
+    /// process over its limit and another operation goes on.
+    fn add(&mut self, size: usize) {
+        let limit = if craft3d_math::pool::background() {
+            HELD_TOGETHER / 2
         } else {
-            OPERATIONS_AT_ONCE
+            HELD_TOGETHER
         };
-        let mut running = GATE.running.lock().unwrap_or_else(PoisonError::into_inner);
-        while *running >= limit {
-            running = GATE
-                .freed
-                .wait(running)
-                .unwrap_or_else(PoisonError::into_inner);
+        let mut t = together();
+        loop {
+            let others_going = t.holders.saturating_sub(t.waiting).saturating_sub(1);
+            if t.bytes.saturating_add(size) <= limit || others_going == 0 {
+                break;
+            }
+            t.waiting = t.waiting.saturating_add(1);
+            t = FREED.wait(t).unwrap_or_else(PoisonError::into_inner);
+            t.waiting = t.waiting.saturating_sub(1);
         }
-        *running = running.saturating_add(1);
-        Slot
+        t.bytes = t.bytes.saturating_add(size);
+        self.bytes = self.bytes.saturating_add(size);
     }
 }
 
-impl Drop for Slot {
+impl Drop for Share {
     fn drop(&mut self) {
-        let mut running = GATE.running.lock().unwrap_or_else(PoisonError::into_inner);
-        *running = running.saturating_sub(1);
-        drop(running);
-        GATE.freed.notify_all();
+        let mut t = together();
+        t.bytes = t.bytes.saturating_sub(self.bytes);
+        t.holders = t.holders.saturating_sub(1);
+        drop(t);
+        FREED.notify_all();
     }
 }
 
-/// How many freeform operations run now in the whole process (for tests
-/// of [`OPERATIONS_AT_ONCE`]).
-pub fn operations_running() -> usize {
-    *GATE.running.lock().unwrap_or_else(PoisonError::into_inner)
+/// The bytes of trees the operations of the whole process hold now
+/// ([`HELD_TOGETHER`]).
+pub fn held_together() -> usize {
+    together().bytes
 }
 
 thread_local! {
@@ -1990,8 +2021,8 @@ struct Held {
     /// that (a caller that takes a face it cannot outline for one that
     /// does not hold a point would otherwise answer wrongly).
     refused: bool,
-    /// Its slot of [`OPERATIONS_AT_ONCE`], taken before its first tree.
-    slot: Option<Slot>,
+    /// Its share of [`HELD_TOGETHER`], from its first tree on.
+    share: Option<Share>,
 }
 
 /// [`holding`] with a budget of `limit` bytes.
@@ -2015,9 +2046,11 @@ fn holding_within<T>(
             });
             if depth == 0 {
                 HELD.with(|held| {
-                    if let Ok(mut held) = held.try_borrow_mut() {
-                        *held = None;
-                    }
+                    // Nothing borrows it here (no code holds it across
+                    // `work`); were it borrowed, the operation's share
+                    // would stay counted until the thread's next one.
+                    let let_go = held.try_borrow_mut().map(|mut held| *held = None);
+                    debug_assert!(let_go.is_ok(), "the held trees were borrowed at the end");
                 });
             }
         }
@@ -2036,7 +2069,7 @@ fn holding_within<T>(
                     bytes: 0,
                     limit,
                     refused: false,
-                    slot: None,
+                    share: None,
                 });
             }
         });
@@ -2072,15 +2105,11 @@ fn held_within_budget(tree: Option<(u64, usize)>) -> Result<(), Reason> {
         let Some(held) = held.as_mut() else {
             return Ok(());
         };
-        if held.slot.is_none() {
-            // Before its first tree is built or found: waits while the
-            // process holds as many operations' trees as it may.
-            held.slot = Some(Slot::take());
-        }
         if let Some((id, size)) = tree
             && held.ids.insert(id)
         {
             held.bytes = held.bytes.saturating_add(size);
+            held.share.get_or_insert_with(Share::new).add(size);
         }
         if held.bytes > held.limit {
             held.refused = true;
@@ -3504,32 +3533,34 @@ mod tests {
     use craft3d_geom::BezierPatch;
     use craft3d_math::Frame;
 
-    /// At most [`OPERATIONS_AT_ONCE`] freeform operations run at once in
-    /// the whole process, and one fewer of those of background threads;
-    /// the others wait and then run; one that asks for no tree takes no
-    /// slot (2026-11-02).
+    /// The trees of the whole process's freeform operations stay within
+    /// [`HELD_TOGETHER`] (half of it for background threads): an
+    /// operation whose next tree would take them over waits until another
+    /// lets go, and then goes on; one without trees never waits
+    /// (2026-11-02). The tree ids here are made up, far from real ones.
     #[test]
-    fn freeform_operations_at_once_are_bounded_process_wide() {
+    fn trees_held_together_are_bounded_process_wide() {
         use std::sync::atomic::{AtomicUsize, Ordering};
-        for background in [false, true] {
-            let inside = AtomicUsize::new(0);
+        for (background, limit, size) in [
+            (false, HELD_TOGETHER, HELD_TOGETHER / 3),
+            (true, HELD_TOGETHER / 2, HELD_TOGETHER / 5),
+        ] {
+            let mine = AtomicUsize::new(0);
             let most = AtomicUsize::new(0);
-            let most_anywhere = AtomicUsize::new(0);
             let done = AtomicUsize::new(0);
             std::thread::scope(|scope| {
-                for _ in 0..8 {
-                    scope.spawn(|| {
+                for n in 0..8u64 {
+                    let (mine, most, done) = (&mine, &most, &done);
+                    scope.spawn(move || {
                         if background {
                             craft3d_math::pool::work_alone();
                         }
                         let ran = holding(|| {
-                            // As before a freeform face's tree: takes the slot.
-                            held_within_budget(None).unwrap();
-                            let now = inside.fetch_add(1, Ordering::SeqCst) + 1;
+                            held_within_budget(Some((u64::MAX - n, size))).unwrap();
+                            let now = mine.fetch_add(size, Ordering::SeqCst) + size;
                             most.fetch_max(now, Ordering::SeqCst);
-                            most_anywhere.fetch_max(operations_running(), Ordering::SeqCst);
                             std::thread::sleep(std::time::Duration::from_millis(20));
-                            inside.fetch_sub(1, Ordering::SeqCst);
+                            mine.fetch_sub(size, Ordering::SeqCst);
                             Ok(())
                         });
                         assert!(ran.is_ok());
@@ -3538,21 +3569,16 @@ mod tests {
                 }
             });
             assert_eq!(done.load(Ordering::SeqCst), 8);
-            let limit = if background {
-                OPERATIONS_AT_ONCE - 1
-            } else {
-                OPERATIONS_AT_ONCE
-            };
-            assert!(most.load(Ordering::SeqCst) <= limit, "{background}");
-            assert!(most.load(Ordering::SeqCst) >= 1);
-            assert!(most_anywhere.load(Ordering::SeqCst) <= OPERATIONS_AT_ONCE);
+            let most = most.load(Ordering::SeqCst);
+            assert!(most <= limit, "{background}: {most} > {limit}");
+            assert!(most >= size, "{background}");
         }
-        // Without a tree: no slot; with one, a slot.
-        let has_slot = || HELD.with(|h| h.borrow().as_ref().is_some_and(|h| h.slot.is_some()));
-        assert!(!holding(|| Ok(has_slot())).unwrap());
+        // Without a tree: no share, so nothing to wait for.
+        let has_share = || HELD.with(|h| h.borrow().as_ref().is_some_and(|h| h.share.is_some()));
+        assert!(!holding(|| Ok(has_share())).unwrap());
         let with_tree = holding(|| {
-            held_within_budget(None).unwrap();
-            Ok(has_slot())
+            held_within_budget(Some((u64::MAX - 100, 1))).unwrap();
+            Ok(has_share())
         });
         assert!(with_tree.unwrap());
     }
