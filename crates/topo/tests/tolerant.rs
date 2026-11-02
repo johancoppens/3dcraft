@@ -503,7 +503,7 @@ fn the_check_finds_feet_where_the_projection_lands_on_another_turn() {
             let d = q - p;
             let line = Line::new(p, d).unwrap();
             // The line's parameter is its own (`Line::project` of the end).
-            let end = Curve3::Line(line.clone()).project(q).unwrap();
+            let end = Curve3::Line(line).project(q).unwrap();
             (Curve3::Line(line), (0.0, end))
         };
         let e0 = body.add_edge(inner.clone(), (a, b), v[0], v[1]);
