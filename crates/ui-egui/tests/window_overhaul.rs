@@ -569,3 +569,52 @@ fn the_agent_tab_and_the_agents_mark() {
     assert!(shell.side_hits().agent_rows.is_empty());
     assert_ne!(shell.state.panels.side_tab, craft3d_ui_egui::SideTab::Agent);
 }
+
+/// An assembly's mates and checks keep their statuses in view: a name is
+/// cut to leave its status room, inside the panel, at 1400, 1024, 480 and
+/// 390 points (the drawer on the narrow ones).
+#[test]
+fn an_assemblys_mates_and_checks_stay_inside() {
+    for (width, height) in SIZES {
+        let mut session = gearbox();
+        // A check whose name is far wider than the panel.
+        session
+            .execute(
+                "assert.add",
+                &json!({"name": format!("A check with a name far wider than the panel {}", "x".repeat(60)),
+                        "measure": "volume", "min": 0}),
+            )
+            .unwrap();
+        let mut shell = Shell::new();
+        let mut window = Window::sized(width, height);
+        window.frames(&mut shell, &mut session, 3);
+        if width < 800.0 {
+            call(
+                &mut shell,
+                &mut session,
+                "ui.set",
+                json!({"panels": {"drawer": true}}),
+            );
+        }
+        window.frames(&mut shell, &mut session, 10);
+        assert!(!shell.assertion_rows().is_empty(), "the gearbox has checks");
+        let panel = shell.side_hits().panel.expect("the side panel");
+        let statuses = shell.side_hits().statuses.clone();
+        assert!(
+            statuses.len() > shell.assertion_rows().len(),
+            "{width}: mates and checks: {statuses:?}"
+        );
+        // Side to side inside the panel (the list scrolls up and down).
+        for status in &statuses {
+            assert!(
+                status.left() >= panel.left() - 0.5 && status.right() <= panel.right() + 0.5,
+                "{width}: {status:?} past the panel's sides {panel:?}"
+            );
+            assert!(
+                status.width() >= 8.0,
+                "{width}: a status with no room: {status:?}"
+            );
+        }
+        assert!(window.inside(panel), "{width}: {panel:?}");
+    }
+}

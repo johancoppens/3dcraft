@@ -18,7 +18,8 @@ pub struct Dialog<'a> {
     /// An icon before the title, in its own ink (a warning in the
     /// failure's red, an agent's question in the info ink).
     pub icon: Option<(Glyph, Rgb)>,
-    /// How wide it is, in points, at most the window less a margin.
+    /// How wide it is, in points, at most the window less a margin
+    /// (`Tokens::dialog_width` unless set).
     pub width: f32,
     /// Over a dimmed window, taking every click (`egui::Modal`), or
     /// floating in the middle without one.
@@ -33,7 +34,7 @@ impl<'a> Dialog<'a> {
             id,
             title,
             icon: None,
-            width: 420.0,
+            width: f32::INFINITY,
             modal: true,
             closable: true,
         }
@@ -78,7 +79,14 @@ impl Kit {
     pub fn dialog_width(&self, wanted: f32, screen: f32) -> f32 {
         let room = screen - 2.0 * self.t.inset;
         let room = if room.is_finite() { room } else { wanted };
-        wanted.min(room).max(160.0_f32.min(room.max(0.0)))
+        let wanted = if wanted.is_finite() {
+            wanted
+        } else {
+            self.t.dialog_width
+        };
+        wanted
+            .min(room)
+            .max(self.t.dialog_min_width.min(room.max(0.0)))
     }
 
     /// A dialog in the middle of the window: its title row, then

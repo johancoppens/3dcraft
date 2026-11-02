@@ -755,7 +755,7 @@ impl Shell {
             )
         };
         let dialog = crate::kit::Dialog::new(egui::Id::new("craft3d-closing"), &title)
-            .width(tokens.dialog_width + 40.0)
+            .width(tokens.dialog_wide_width)
             .closable(false);
         let shown = kit.dialog(ui.ctx(), dialog, |kit, ui| {
             kit.paragraph(ui, &body, true);

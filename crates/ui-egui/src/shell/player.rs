@@ -19,8 +19,8 @@
 //! one that drew it, so a heavy model never skips a step and a slow frame
 //! does not eat the dwell. Time is egui's input time, which the browser
 //! has too. At the last step it stops, or starts again
-//! at the first with `loop`; an edit of the document, another tab, "To
-//! end" or "Roll back here" stops it, and a failed scrub too. With orbit
+//! at the first with `loop`; an edit of the document, another tab, End
+//! stops it, and a failed scrub too. With orbit
 //! the camera of the tab turns slowly about the vertical while it plays
 //! (at most 30 frames a second, sharp unless a frame turns it more than a
 //! degree), and waits while a turn, a flight or a drag has the camera.
@@ -57,8 +57,8 @@ pub(crate) const FORWARD_KEY: egui::Key = egui::Key::ArrowRight;
 /// Home: the first step.
 pub(crate) const START_KEY: egui::Key = egui::Key::Home;
 /// End: the view at the end of the history (`view.scrub` with null). The
-/// view only: unlike the "To end" button it leaves the rollback marker
-/// where it is, for no bare key edits the document.
+/// view only: it leaves the rollback marker where it is, for no bare key
+/// edits the document (the roll-back bar's *Roll forward to end* does).
 pub(crate) const END_KEY: egui::Key = egui::Key::End;
 
 /// What the player keeps between frames besides its settings.
@@ -687,10 +687,25 @@ impl Shell {
         let parts = player_parts(ui.available_width(), kit.touch());
         let motion = self.playing_motion_mode();
         let mut hits = Vec::new();
+        // Out of reach at the ends of the timeline.
+        let (at_start, at_end) = if motion {
+            let t = self.timeline.motion_t().unwrap_or(0.0);
+            (t <= 0.0, t >= 1.0)
+        } else {
+            let steps = self.timeline.steps;
+            let shown = self.timeline.shown_step().clamp(1, steps.max(1));
+            (shown <= 1, shown >= steps)
+        };
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = PLAYER_GAP;
             let back = kit
-                .icon_button(ui, Glyph::Nav(Icon::StepBack), false, "Step back")
+                .icon_button_enabled(
+                    ui,
+                    Glyph::Nav(Icon::StepBack),
+                    false,
+                    "Step back",
+                    !at_start,
+                )
                 .on_hover_text(if motion {
                     "Back a little (←)"
                 } else {
@@ -703,7 +718,13 @@ impl Shell {
             let play = self.play_button(ui, kit);
             hits.push(("play", play.rect));
             let forward = kit
-                .icon_button(ui, Glyph::Nav(Icon::StepForward), false, "Step forward")
+                .icon_button_enabled(
+                    ui,
+                    Glyph::Nav(Icon::StepForward),
+                    false,
+                    "Step forward",
+                    !at_end,
+                )
                 .on_hover_text(if motion {
                     "Forward a little (→)"
                 } else {

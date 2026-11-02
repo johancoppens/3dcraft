@@ -2662,7 +2662,10 @@ impl Shell {
                     egui::Frame::new()
                         .fill(color(tokens.attention_fill))
                         .stroke(egui::Stroke::new(1.0, color(tokens.attention)))
-                        .inner_margin(egui::Margin::symmetric(10, 4)),
+                        .inner_margin(egui::Margin::symmetric(
+                            tokens.inset.clamp(0.0, 32.0) as i8,
+                            tokens.nav_spacing.clamp(0.0, 16.0) as i8,
+                        )),
                 )
                 .show(ui, |ui| {
                     ui.style_mut().visuals = tokens.panel_visuals();
@@ -3732,16 +3735,20 @@ impl Shell {
                                     ui.with_layout(leading, |ui| {
                                         // A long name is cut to the room left
                                         // (the whole name on hover), never
-                                        // widening the panel.
-                                        let label = ui
-                                            .add(
+                                        // widening the panel; the status
+                                        // keeps its room after it.
+                                        let status = format!("{} · {}", row.kind, row.status);
+                                        let (name_room, _) = name_and_status_room(ui, &status);
+                                        let label = in_room(ui, name_room, |ui| {
+                                            ui.add(
                                                 egui::Button::selectable(
                                                     row.selected || row.made_selection,
                                                     name,
                                                 )
                                                 .truncate(),
                                             )
-                                            .on_hover_text(&hover);
+                                        })
+                                        .on_hover_text(&hover);
                                         // A row of an instance inside a rigid
                                         // subassembly has no body of its own.
                                         let selectable = !row.id.is_empty();
@@ -3823,8 +3830,9 @@ impl Shell {
                                 });
                             }
                         }
+                        let mut statuses = Vec::new();
                         if let Some(outline) = &outline {
-                            mates_ui(ui, &tokens, outline);
+                            statuses = mates_ui(ui, &tokens, outline);
                         }
                         assertions_heading(ui, &tokens, self.assertion_rows.is_empty());
                         let mut pending = false;
@@ -3853,12 +3861,18 @@ impl Shell {
                             ui.horizontal(|ui| {
                                 ui.colored_label(color(tint), tree_mark(state))
                                     .on_hover_text(&row.message);
-                                ui.add(egui::Label::new(name).truncate())
-                                    .on_hover_text(&row.message);
-                                ui.add(
-                                    egui::Label::new(egui::RichText::new(status).color(dim))
-                                        .truncate(),
-                                );
+                                let (name_room, status_room) = name_and_status_room(ui, &status);
+                                in_room(ui, name_room, |ui| {
+                                    ui.add(egui::Label::new(name).truncate())
+                                        .on_hover_text(&row.message)
+                                });
+                                let shown = in_room(ui, status_room, |ui| {
+                                    ui.add(
+                                        egui::Label::new(egui::RichText::new(status).color(dim))
+                                            .truncate(),
+                                    )
+                                });
+                                statuses.push(shown.rect);
                             });
                             if matches!(row.status, A::Failed | A::Error | A::NotProven) {
                                 ui.indent(("craft3d-assertion", &row.name), |ui| {
@@ -3873,6 +3887,7 @@ impl Shell {
                                 });
                             }
                         }
+                        self.side.hits.statuses = statuses;
                         // Measured on another thread: look again soon.
                         if pending {
                             ui.ctx()
@@ -5017,7 +5032,12 @@ pub const NO_ASSERTIONS_HINT: &str = "No checks yet. Ask an AI agent, e.g. \u{20
 
 /// An assembly's mates under its instances: each with its mark, kind and
 /// value (or why it fails), then the degrees of freedom left.
-fn mates_ui(ui: &mut egui::Ui, tokens: &Tokens, outline: &craft3d_engine::AssemblyOutline) {
+fn mates_ui(
+    ui: &mut egui::Ui,
+    tokens: &Tokens,
+    outline: &craft3d_engine::AssemblyOutline,
+) -> Vec<egui::Rect> {
+    let mut statuses = Vec::new();
     let dim = color(tokens.text_dim);
     ui.add_space(tokens.inset * 0.5);
     ui.label(egui::RichText::new("Mates").strong());
@@ -5048,15 +5068,17 @@ fn mates_ui(ui: &mut egui::Ui, tokens: &Tokens, outline: &craft3d_engine::Assemb
             ui.colored_label(color(tint), tree_mark(state))
                 .on_hover_text(&hover);
             // Cut to the panel's width, never widening it; the whole
-            // text on hover.
-            ui.add(egui::Label::new(&mate.name).truncate())
-                .on_hover_text(&hover);
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(format!("{}{value}{driven}", mate.kind)).color(dim),
-                )
-                .truncate(),
-            );
+            // text on hover. The status keeps its room.
+            let status = format!("{}{value}{driven}", mate.kind);
+            let (name_room, status_room) = name_and_status_room(ui, &status);
+            in_room(ui, name_room, |ui| {
+                ui.add(egui::Label::new(&mate.name).truncate())
+                    .on_hover_text(&hover)
+            });
+            let shown = in_room(ui, status_room, |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(status).color(dim)).truncate())
+            });
+            statuses.push(shown.rect);
         });
         if let Some(error) = &mate.error {
             ui.indent(("craft3d-mate-error", &mate.name), |ui| {
@@ -5081,19 +5103,53 @@ fn mates_ui(ui: &mut egui::Ui, tokens: &Tokens, outline: &craft3d_engine::Assemb
                 )
                 .wrap(),
             );
-            return;
+            return statuses;
         }
         (None, Some(0)) => "Fully constrained (0 degrees of freedom left)".to_string(),
         (None, Some(1)) => "1 degree of freedom left".to_string(),
         (None, Some(n)) => format!("{n} degrees of freedom left"),
-        (None, None) => return,
+        (None, None) => return statuses,
     };
     ui.colored_label(dim, left)
         .on_hover_text(outline.free.join("\n"));
+    statuses
 }
 
 /// The "Assertions" heading of the feature panel, always there; with the
 /// hint while there are none.
+/// The room of a row's name and of its dim status after it, in a row
+/// with `room` points left: the status keeps its own width (at most half
+/// the row), the name the rest, so a long name is cut and the status
+/// still shows.
+fn name_and_status_room(ui: &egui::Ui, status: &str) -> (f32, f32) {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let natural = ui
+        .painter()
+        .layout_no_wrap(status.to_string(), font, egui::Color32::PLACEHOLDER)
+        .size()
+        .x
+        .ceil();
+    let room = ui.available_width().max(0.0);
+    let status = natural.min(room * 0.5);
+    let name = (room - status - ui.spacing().item_spacing.x).max(0.0);
+    (name, status + 1.0)
+}
+
+/// `add` in a room `width` points wide in a row: what it lays out is cut
+/// there.
+fn in_room<R>(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let height = ui.spacing().interact_size.y;
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, height),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_max_width(width);
+            add(ui)
+        },
+    )
+    .inner
+}
+
 fn assertions_heading(ui: &mut egui::Ui, tokens: &Tokens, empty: bool) {
     ui.add_space(tokens.inset * 0.5);
     ui.label(egui::RichText::new("Assertions").strong());

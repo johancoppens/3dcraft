@@ -164,7 +164,7 @@ view), its name, and its key value at the right, such as *Extrude 8 mm*, *R18 ×
 - **Drag a row by its grip** to move it in the history (`feature.move`). A place before what it is made from,
   or after what is made from it, is refused before you drop it: the indigo line does not show there.
 - **Right-click a row** for its menu: *Edit…*, *Rename*, *Show dependencies* (the hover's marks stay until
-  Escape), *Roll back to here*, *Suppress*, *Hide*, *Copy id* (for a message to an agent) and
+  Escape), *Roll back to here* (*Roll forward to end* on the last row), *Suppress*, *Hide*, *Copy id* (for a message to an agent) and
   *Delete*. Each is a command, so an agent can do the same and every one can be undone.
 
 **Checks** sit under the list: *Checks 7 · all pass*, then each check measured against its limit, such as
@@ -241,10 +241,11 @@ included, even while it is covered by other windows: `ui.record` with frame-exac
 gives a video in which every step is complete ([*A video of the window*](../development.md#watching-along)
 in the developer guide).
 
-**Roll back here** puts the *rollback marker* on the step shown: the design is then built only up to that
-step, and new features go in right after it, a way to insert something early in the history. Dragging the
-amber roll-back bar of the feature list to its end takes the marker away again. While you look back, clicks in
-the view do not select; press **End** first.
+The amber **roll-back bar** in the feature list is the *rollback marker*: drag it up to a step (or choose
+**Roll back to here** on a row's menu) and the design is built only up to that step, and new features go in
+right after it, a way to insert something early in the history. Drag it back to the end, or choose **Roll
+forward to end** (on the last row's menu, or a right click on the bar), to build the whole history again.
+While you look back, clicks in the view do not select; press **End** first.
 
 ### Playing a motion
 

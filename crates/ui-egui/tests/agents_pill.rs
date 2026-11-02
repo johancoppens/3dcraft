@@ -228,11 +228,13 @@ fn the_pill_and_the_popover_fit_small_windows() {
         }
         assert_eq!(shell.agents_pill_view().kind, PillKind::Active);
         let pill = shell.agents_pill_rect().unwrap();
-        // At the right, at most two fifths of the bar wide.
+        // At the right end, at most two fifths of the bar wide (cut with
+        // an ellipsis), so it starts past the bar's middle.
         assert!(
-            pill.right() <= width + 0.5 && pill.left() >= width * 0.5 - 1.0,
+            pill.right() <= width + 0.5 && pill.right() > width - 40.0,
             "{width}: {pill:?}"
         );
+        assert!(pill.width() <= width * 0.4 + 1.0, "{width}: {pill:?}");
         assert!(!shell.agents_popover_hits().is_empty());
         for (name, rect) in shell.agents_popover_hits() {
             assert!(

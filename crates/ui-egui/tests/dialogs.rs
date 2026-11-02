@@ -349,6 +349,28 @@ fn a_click_on_the_export_dialog_does_not_reach_the_viewport() {
     let selection = session.execute("select.get", &json!({})).unwrap();
     assert_eq!(selection["items"], json!([]), "{at:?} {selection}");
     let chosen = (shell.state.export.what == set).then_some(at);
+    // A sweep down the dialog's body: whatever a click there hits (a
+    // label, a control, the margin), it never reaches the model under it.
+    for y in (20..240).step_by(10) {
+        if shell.export_dialog().is_none() {
+            shell.open_export(&mut session).unwrap();
+            for _ in 0..3 {
+                step(&mut shell, &mut session, Vec::new());
+            }
+        }
+        let dialog = ctx
+            .memory(|m| m.area_rect(egui::Id::new("craft3d-export-dialog")))
+            .unwrap();
+        let at = dialog.left_top() + vec2(60.0, y as f32);
+        if !dialog.contains(at) {
+            continue;
+        }
+        for events in click(at) {
+            step(&mut shell, &mut session, events);
+        }
+        let selection = session.execute("select.get", &json!({})).unwrap();
+        assert_eq!(selection["items"], json!([]), "{at:?} {selection}");
+    }
     assert!(chosen.is_some(), "no click chose the set");
     assert_eq!(shell.state.export.format, ExportFormat::Dxf);
     assert_eq!(shell.state.export.name, "untitled.dxf");

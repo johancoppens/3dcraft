@@ -275,7 +275,7 @@ impl Shell {
     pub(super) fn help_menu(&mut self, ui: &mut egui::Ui) -> egui::Rect {
         use crate::kit::MenuItem;
         let tokens = self.tokens;
-        super::menus::kit_menu(ui, &tokens, "Help", 240.0, |kit, ui| {
+        super::menus::kit_menu(ui, &tokens, "Help", tokens.menu_widths[3], |kit, ui| {
             if kit.menu_item(ui, MenuItem::new("User guide")).clicked() {
                 self.open_external(ui.ctx(), External::Url(GUIDE_URL.to_string()));
                 ui.close();
@@ -438,10 +438,14 @@ impl Shell {
         let mac = ctx.os() == egui::os::OperatingSystem::Mac;
         let rows = shortcuts();
         let screen = ctx.content_rect();
-        let two = screen.width() >= 760.0;
-        let width = if two { 720.0 } else { 420.0 };
+        let two = screen.width() >= tokens.shortcuts_width + 2.0 * tokens.dialog_padding;
+        let width = if two {
+            tokens.shortcuts_width
+        } else {
+            tokens.dialog_width
+        };
         // As tall as the window allows, less room for the title.
-        let height = (screen.height() - 160.0).max(120.0);
+        let height = (screen.height() - 8.0 * tokens.dialog_padding).max(120.0);
         let dialog = Dialog::new(egui::Id::new("craft3d-shortcuts"), "Keyboard shortcuts")
             .icon(Glyph::Keyboard, tokens.text_dim)
             .width(width)

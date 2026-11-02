@@ -595,6 +595,24 @@ pub struct Tokens {
     pub header_icon: f32,
     pub about_icon: f32,
     pub card_badge: f32,
+    /// The narrowest a dialog gets on a small window, and the error
+    /// details' window (its width, and how high its report scrolls).
+    pub dialog_min_width: f32,
+    /// A dialog with buttons in a row of three (the questions, an error),
+    /// the export dialog, the shortcuts in their two columns.
+    pub dialog_wide_width: f32,
+    pub export_dialog_width: f32,
+    pub shortcuts_width: f32,
+    pub details_width: f32,
+    pub details_height: f32,
+    /// The menu bar's menus' widths: File, Edit, View, Help (board s4).
+    pub menu_widths: [f32; 4],
+    /// The Agent tab's time line: a dot's radius, the rail's width.
+    pub log_dot_radius: f32,
+    pub log_rail_width: f32,
+    /// The room a banner over the viewport keeps for its button (Back to
+    /// last good).
+    pub banner_button_room: f32,
 }
 
 /// The colours that change with the appearance (light or dark): the
@@ -1029,6 +1047,16 @@ impl Tokens {
             header_icon: 46.0,
             about_icon: 44.0,
             card_badge: 22.0,
+            dialog_min_width: 160.0,
+            dialog_wide_width: 460.0,
+            export_dialog_width: 500.0,
+            shortcuts_width: 720.0,
+            details_width: 560.0,
+            details_height: 320.0,
+            menu_widths: [250.0, 250.0, 230.0, 240.0],
+            log_dot_radius: 4.0,
+            log_rail_width: 2.0,
+            banner_button_room: 170.0,
         }
     }
 
@@ -1178,9 +1206,6 @@ impl Tokens {
         visuals
     }
 
-    /// The visuals of the chrome (the menu bar): egui's light or dark ones,
-    /// whichever `menu_fill` is, with `chrome_text` on it, so a dark menu
-    /// bar over light panels has light text and a hover that reads.
     /// The menus that drop from the chrome (board s4): the kit's plate,
     /// the popover's fill with its faint rim and shadow, `menu_radius`
     /// round, dark in both appearances.
@@ -1200,6 +1225,9 @@ impl Tokens {
         visuals
     }
 
+    /// The visuals of the chrome (the menu bar): egui's light or dark ones,
+    /// whichever `menu_fill` is, with `chrome_text` on it, so a dark menu
+    /// bar over light panels has light text and a hover that reads.
     pub fn chrome_visuals(&self) -> egui::Visuals {
         let mut visuals = if is_light(self.menu_fill) {
             egui::Visuals::light()

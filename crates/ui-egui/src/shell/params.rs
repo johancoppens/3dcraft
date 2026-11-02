@@ -1427,16 +1427,21 @@ impl Shell {
             let busy = self.params.busy();
             ui.horizontal(|ui| {
                 let any_off = list.params.iter().any(|p| !p.at_default);
-                let reset = ui
-                    .add_enabled(any_off, egui::Button::new("Reset all"))
+                let kit = crate::kit::Kit::panel(&self.tokens);
+                let reset = kit
+                    .button(
+                        ui,
+                        crate::kit::Button::secondary("Reset all")
+                            .icon(crate::kit::Glyph::Undo)
+                            .enabled(any_off),
+                    )
                     .on_hover_text("Every parameter back to its default (param.set reset)");
                 self.params.hits.push(("Reset all".to_string(), reset.rect));
                 if reset.clicked() {
                     self.params.ask(json!({ "reset": true }), None);
                 }
                 if busy {
-                    ui.add(egui::Spinner::new());
-                    ui.colored_label(dim, "Regenerating…");
+                    kit.spinner(ui, "Regenerating…");
                 }
             });
             // What went wrong with a commit that came from no field.
@@ -1621,7 +1626,11 @@ impl Shell {
                                 color(tokens.chrome_failed),
                                 &tokens,
                             );
-                            let button_room = if values.is_some() { 170.0 } else { 0.0 };
+                            let button_room = if values.is_some() {
+                                tokens.banner_button_room
+                            } else {
+                                0.0
+                            };
                             ui.allocate_ui(
                                 egui::vec2((ui.available_width() - button_room).max(80.0), 0.0),
                                 |ui| {

@@ -46,6 +46,7 @@ pub fn rows_of(log: &Value) -> Vec<LogRow> {
         .map(|entries| {
             entries
                 .iter()
+                .filter(|entry| entry.is_object())
                 .take(LOG_ROWS)
                 .map(|entry| LogRow {
                     client: text(entry, "client").unwrap_or_default(),
@@ -204,7 +205,8 @@ fn log_row(
         let (rail, _) =
             ui.allocate_exact_size(egui::vec2(gutter, t.row_height), egui::Sense::hover());
         let centre = egui::pos2(rail.left() + t.nav_icon_size * 0.5, rail.center().y);
-        ui.painter().circle_filled(centre, 4.0, color(dot_ink));
+        ui.painter()
+            .circle_filled(centre, t.log_dot_radius, color(dot_ink));
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
             let when = if row.client.is_empty() {
@@ -261,10 +263,13 @@ fn log_row(
     let x = rect.left() + t.nav_icon_size * 0.5;
     ui.painter().line_segment(
         [
-            egui::pos2(x, rect.top() + t.row_height * 0.5 + 6.0),
+            egui::pos2(x, rect.top() + t.row_height * 0.5 + 1.5 * t.log_dot_radius),
             egui::pos2(x, rect.bottom()),
         ],
-        egui::Stroke::new(2.0, crate::theme::color_alpha(s.info_bar, 70)),
+        egui::Stroke::new(
+            t.log_rail_width,
+            crate::theme::color_alpha(s.info_bar, t.divider_opacity),
+        ),
     );
     shown.response
 }
@@ -284,7 +289,8 @@ mod tests {
             "nonsense"
         ]});
         let rows = rows_of(&log);
-        assert_eq!(rows.len(), 3);
+        // What is no entry (a string) is left out.
+        assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].label, "Fillet");
         assert_eq!(rows[0].created, ["F24"]);
         assert_eq!(rows[0].intent.as_deref(), Some("Round the base"));
@@ -292,7 +298,6 @@ mod tests {
         assert_eq!(rows[1].label, "feature.edit");
         assert!(!rows[1].ok);
         assert_eq!(rows[1].message.as_deref(), Some("no such edge"));
-        assert_eq!(rows[2].label, "");
         assert!(rows_of(&json!({})).is_empty());
         assert!(rows_of(&json!({"entries": 3})).is_empty());
     }

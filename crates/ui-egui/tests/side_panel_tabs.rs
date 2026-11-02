@@ -1026,7 +1026,10 @@ fn the_menu_items_run_their_commands() {
     choose(&mut shell, &mut session, "Bored", "Roll back to here");
     let got = run(&mut session, "document.inspect", json!({"measures": false}));
     assert_eq!(got["rollback"], id_of(&shell, "Bored"));
-    run(&mut session, "history.rollback", json!({"feature": null}));
+    // The last row offers the way forward instead: the marker goes.
+    choose(&mut shell, &mut session, "Housing", "Roll forward to end");
+    let got = run(&mut session, "document.inspect", json!({"measures": false}));
+    assert_eq!(got["rollback"], serde_json::Value::Null);
     choose(&mut shell, &mut session, "Housing", "Delete");
     assert!(feature(&mut session, "Housing").is_none());
 }

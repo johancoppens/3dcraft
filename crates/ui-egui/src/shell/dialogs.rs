@@ -613,7 +613,7 @@ impl Shell {
         let mut copy = false;
         let dialog = Dialog::new(egui::Id::new("craft3d-error-dialog"), &error.title)
             .icon(Glyph::Warning, tokens.failed)
-            .width(tokens.dialog_width + 40.0);
+            .width(tokens.dialog_wide_width);
         let shown = kit.dialog(ctx, dialog, |kit, ui| {
             kit.paragraph(ui, &error.message, false);
             kit.dialog_footer(ui, |ui| {
@@ -658,7 +658,7 @@ impl Shell {
         let export = &mut self.state.export;
         let label_width = 100.0;
         let dialog = Dialog::new(egui::Id::new("craft3d-export-dialog"), "Export")
-            .width(tokens.dialog_width + 80.0);
+            .width(tokens.export_dialog_width);
         let shown = kit.dialog(ctx, dialog, |kit, ui| {
             // What: the choices this document offers, as a segmented
             // control while they fit, else one under the other.

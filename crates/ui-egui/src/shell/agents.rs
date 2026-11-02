@@ -359,7 +359,7 @@ impl Shell {
         let kit = Kit::panel(&tokens);
         let dialog = Dialog::new(egui::Id::new("craft3d-agent-prompt"), &title)
             .icon(icon.0, icon.1)
-            .width(tokens.dialog_width + 40.0)
+            .width(tokens.dialog_wide_width)
             .closable(false);
         let mut left_hits = Vec::new();
         kit.dialog(ctx, dialog, |kit, ui| {
@@ -375,6 +375,7 @@ impl Shell {
                 if response.clicked() {
                     chosen = Some(to);
                 }
+                response
             };
             kit.dialog_footer(ui, |ui| {
                 if connect {
@@ -414,6 +415,9 @@ impl Shell {
                             "Allow this folder",
                             Button::secondary("Allow this folder"),
                             PromptAnswer::Folder,
+                        )
+                        .on_hover_text(
+                            "Every agent may write in this folder from now on (all agents, remembered; the agent panel's Remove takes it back)",
                         );
                     }
                 });

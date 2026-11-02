@@ -1515,12 +1515,22 @@ Part B, as far as it went on 2026-11-02:
   latest agent command's time changes. *Undo to here* is not built: the log does not say which undo step an
   entry made (owed to an engine command). The Features tab's ✦ (`agent_mark`) is the document's provenance:
   `TreeRow::made_by` from `madeBy` (else `lastChangedBy`), cached per document and revision.
+- **Review round (2026-11-03)**: the roll-back bar is the one way to the marker: *Roll back here* under the
+  player is gone; the last row's menu and the bar's own (a right click on its grip) offer *Roll forward to end*,
+  and the grip's tooltip says so. The error details window is a kit dialog; Reset all a kit button with the kit's
+  spinner. A row of the assembly's tree, a mate or a check keeps its status in a room of its own (at most half
+  the row) and cuts the name instead (`name_and_status_room`). Sizes that were literals are tokens
+  (`dialog_min_width`, `dialog_wide_width`, `export_dialog_width`, `shortcuts_width`, `details_*`,
+  `menu_widths`, `log_dot_radius`, `log_rail_width`, `banner_button_room`). The player's step buttons are out of
+  reach at the timeline's ends.
 - **System on GNOME** (`apps/craft3d/src/desktop_theme.rs`): winit reports no theme on Linux, so the desktop app
   reads `org.gnome.desktop.interface color-scheme` (what the XDG portal's `org.freedesktop.appearance
   color-scheme` is made from) with `gsettings get`, then follows `gsettings monitor` on a thread of its own and
   asks for a frame when it changes; no crate is added. `Shell::set_desktop_theme` is the fallback under
   egui's `system_theme()`. Without `gsettings` (or `'default'`) System stays light. The monitor is killed when
-  the window goes.
+  the window goes, also when it goes while the monitor is being started (a `stopped` flag under the same lock).
+  Known limit: when 3DCraft dies without unwinding (SIGKILL, an abort) the `gsettings monitor` it started
+  lives on until the setting next changes and its write finds no reader.
 - **Not built in part B** (open): the Studio and Analysis popovers' restyle (s1) and the view and display bars
   with their compact form (s2, s2b) are as phase 1 left them; on the phone the Studio and Analysis bottom
   sheets, the agent sheet, the consent sheet and the Jig parameters as a half sheet (m4–m8, t1–t2).

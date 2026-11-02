@@ -109,6 +109,9 @@ pub struct SideHits {
     pub checks: Vec<(String, egui::Rect)>,
     /// The Agent tab's entries, newest first.
     pub agent_rows: Vec<egui::Rect>,
+    /// The statuses after the mates' and the checks' names (the
+    /// assembly's tree), each kept in room of its own.
+    pub statuses: Vec<egui::Rect>,
     /// Everything drawn that must lie inside the panel: the rows' texts'
     /// places included.
     pub drawn: Vec<egui::Rect>,

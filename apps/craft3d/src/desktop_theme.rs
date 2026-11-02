@@ -10,7 +10,10 @@
 //! waits for it and no crate is added (D-Bus would need one). Where
 //! `gsettings` is missing or says nothing, the theme stays unknown and
 //! System stays light, as before. The monitor is stopped when the window
-//! goes ([`Drop`]).
+//! goes ([`Drop`]), also when that happens while it is being started.
+//! Known limit: when 3DCraft is killed (a crash that does not unwind,
+//! SIGKILL) the `gsettings monitor` it started is left running until the
+//! setting next changes and its write finds no reader.
 
 use eframe::egui;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -32,7 +35,16 @@ pub fn parse_color_scheme(text: &str) -> Option<egui::Theme> {
 /// The desktop's theme as last read, shared with the reading thread.
 pub struct DesktopTheme {
     latest: Arc<Mutex<Option<egui::Theme>>>,
-    monitor: Arc<Mutex<Option<std::process::Child>>>,
+    monitor: Arc<Mutex<Monitor>>,
+}
+
+/// The `gsettings monitor` process, and whether the window has gone: set
+/// under the same lock, so a monitor spawned after the window went is
+/// stopped by the thread that spawned it.
+#[derive(Default)]
+struct Monitor {
+    child: Option<std::process::Child>,
+    stopped: bool,
 }
 
 impl DesktopTheme {
@@ -42,7 +54,7 @@ impl DesktopTheme {
     pub fn start(ctx: Option<egui::Context>) -> Self {
         let theme = Self {
             latest: Arc::new(Mutex::new(None)),
-            monitor: Arc::new(Mutex::new(None)),
+            monitor: Arc::new(Mutex::new(Monitor::default())),
         };
         if cfg!(target_os = "linux") {
             let latest = Arc::clone(&theme.latest);
@@ -66,7 +78,8 @@ impl DesktopTheme {
 impl Drop for DesktopTheme {
     fn drop(&mut self) {
         let mut monitor = self.monitor.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(mut child) = monitor.take() {
+        monitor.stopped = true;
+        if let Some(mut child) = monitor.child.take() {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -80,7 +93,7 @@ const KEY: &str = "color-scheme";
 /// it ends (the window killed it, or `gsettings` went away).
 fn read(
     latest: &Mutex<Option<egui::Theme>>,
-    monitor: &Mutex<Option<std::process::Child>>,
+    monitor: &Mutex<Monitor>,
     ctx: Option<&egui::Context>,
 ) {
     use std::io::{BufRead, Read};
@@ -120,7 +133,17 @@ fn read(
         let _ = child.wait();
         return;
     };
-    *monitor.lock().unwrap_or_else(PoisonError::into_inner) = Some(child);
+    {
+        let mut slot = monitor.lock().unwrap_or_else(PoisonError::into_inner);
+        if slot.stopped {
+            // The window went while it was being started: stopped here.
+            drop(slot);
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
+        }
+        slot.child = Some(child);
+    }
     // One line per change; a line far longer than any value is cut, so a
     // misbehaving program cannot grow it without bound.
     let mut reader = std::io::BufReader::new(stdout);

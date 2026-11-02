@@ -177,7 +177,7 @@ impl Shell {
     ) -> egui::Rect {
         let blocked = self.edit_blocked();
         let tokens = self.tokens;
-        super::menus::kit_menu(ui, &tokens, "Edit", 250.0, |kit, ui| {
+        super::menus::kit_menu(ui, &tokens, "Edit", tokens.menu_widths[1], |kit, ui| {
             for action in EditAction::ALL {
                 let shortcut = action
                     .shortcuts()

@@ -10,10 +10,6 @@ use super::{FileAction, Shell};
 use crate::kit::{Kit, MenuItem};
 use crate::state::Appearance;
 
-/// The widths of the menus, in points (board s4).
-const FILE_WIDTH: f32 = 250.0;
-const VIEW_WIDTH: f32 = 230.0;
-
 /// Ctrl+B: the side panel, shown or put away.
 pub fn side_panel_shortcut() -> egui::KeyboardShortcut {
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::B)
@@ -111,7 +107,7 @@ impl Shell {
     /// open documents.
     pub(super) fn file_menu(&mut self, ui: &mut egui::Ui, has_document: bool) -> egui::Rect {
         let tokens = self.tokens;
-        kit_menu(ui, &tokens, "File", FILE_WIDTH, |kit, ui| {
+        kit_menu(ui, &tokens, "File", tokens.menu_widths[0], |kit, ui| {
             for action in FileAction::ALL {
                 if action.starts_group() {
                     kit.menu_separator(ui);
@@ -146,7 +142,7 @@ impl Shell {
     /// appearance, full screen.
     pub(super) fn view_menu(&mut self, ui: &mut egui::Ui) -> egui::Rect {
         let tokens = self.tokens;
-        kit_menu(ui, &tokens, "View", VIEW_WIDTH, |kit, ui| {
+        kit_menu(ui, &tokens, "View", tokens.menu_widths[2], |kit, ui| {
             let ctrl_b = keys(ui, Some(side_panel_shortcut()));
             let item = MenuItem::new("Side panel")
                 .icon_room()

@@ -250,15 +250,35 @@ impl Kit {
     /// pointer, amber with the knob's ink when `on`. `label` names it for
     /// assistive technology (and is the tooltip a caller may show).
     pub fn icon_button(&self, ui: &mut Ui, glyph: Glyph, on: bool, label: &str) -> Response {
+        self.icon_button_enabled(ui, glyph, on, label, true)
+    }
+
+    /// [`Self::icon_button`] that is out of reach (the faint ink, no
+    /// click) unless `enabled`.
+    pub fn icon_button_enabled(
+        &self,
+        ui: &mut Ui,
+        glyph: Glyph,
+        on: bool,
+        label: &str,
+        enabled: bool,
+    ) -> Response {
         let t = &self.t;
         let s = &self.skin;
         let side = t.control_height;
         let hit = self.hit(side);
-        let (outer, response) = ui.allocate_exact_size(sane(vec2(hit, hit)), Sense::click());
+        let sense = if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
+        let (outer, response) = ui.allocate_exact_size(sane(vec2(hit, hit)), sense);
         if ui.is_rect_visible(outer) {
             let rect = Rect::from_center_size(outer.center(), vec2(side, side));
-            let hovered = response.hovered();
-            let (fill, ink) = if on {
+            let hovered = response.hovered() && enabled;
+            let (fill, ink) = if !enabled {
+                (None, s.faint)
+            } else if on {
                 (Some(t.accent), t.knob)
             } else if hovered {
                 (Some(s.hover), s.text)
@@ -278,8 +298,9 @@ impl Kit {
                 t,
             );
         }
-        response
-            .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, label));
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, on, label)
+        });
         response
     }
 
