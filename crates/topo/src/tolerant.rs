@@ -375,7 +375,7 @@ pub fn measure_curve(
 
 /// How many times a bound that will be recorded is proven again nearer
 /// the gap.
-const TIGHTEN: usize = 3;
+const TIGHTEN: usize = 4;
 
 /// A bound brought nearer the gap it holds before it is recorded: a
 /// proof's bound lies anywhere up to its target (twice the sampled gap
@@ -386,7 +386,7 @@ const TIGHTEN: usize = 3;
 /// tolerance (a tenth above them included), a proof at that tolerance
 /// first, which records nothing when it holds; then up to [`TIGHTEN`]
 /// proofs at targets halfway (geometrically) between the bound and a
-/// tenth above the sampled gap, each allowed four times the pieces of the
+/// hundredth above the sampled gap, each allowed four times the pieces of the
 /// last that held (a proof that stopped early needs more to go nearer)
 /// and the last all of [`PROOF_PIECES`]; one that fails raises the floor.
 /// Not for a bound within the document's tolerance, which records
@@ -406,7 +406,7 @@ fn tighten(
     {
         return b.min(bound);
     }
-    let mut floor = (1.1 * sampled).max(linear);
+    let mut floor = (1.01 * sampled).max(linear);
     for attempt in 0..TIGHTEN {
         if bound.is_nan() || bound <= 1.01 * floor {
             break;
@@ -777,6 +777,7 @@ mod tighten_tests {
         let linear = 1e-6;
         let needs = |t: f64| if t < 1.6e-4 { PROOF_PIECES / 2 } else { 40 };
         let b = tighten(2e-4, 40, 1e-4, linear, prover(1e-4, needs));
-        assert!(b < 1.6e-4, "{b:e}");
+        // Without every piece at the last it stays at 1.69e-4.
+        assert!(b < 1.65e-4, "{b:e}");
     }
 }
