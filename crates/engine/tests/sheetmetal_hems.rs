@@ -246,3 +246,57 @@ fn bad_hems_are_errors() {
         "{got}"
     );
 }
+
+/// A hem whose flat's far side is a spline: the pad would stand on the
+/// spline's control points, above the flat (an upper bound of its highest
+/// point, the wrong way for a clearance): refused by reason (review of
+/// 4116ed3e; before, the flatten stroke was checked with the pad too
+/// high).
+#[test]
+fn a_hem_with_a_spline_outline_is_not_pressed_flat() {
+    for k in SCALES {
+        let dir = workdir("sheetmetal-hems", &format!("spline-{k}"));
+        let mut s = session_in(&dir);
+        new_document(&mut s, k);
+        run(
+            &mut s,
+            "sketch.create",
+            json!({"plane": "xy", "name": "Base"}),
+        );
+        let made = run(
+            &mut s,
+            "sketch.rect",
+            json!({"sketch": "Base", "from": [0.0, 0.0], "to": [8.0 * k, 30.0 * k]}),
+        );
+        let right = made["lines"][1].as_str().unwrap().to_string();
+        run(
+            &mut s,
+            "sketch.create",
+            json!({"plane": "xy", "name": "Hem"}),
+        );
+        run(
+            &mut s,
+            "sketch.polyline",
+            json!({"sketch": "Hem", "points": scaled(&[[14.0, 30.0], [8.0, 30.0], [8.0, 0.0], [14.0, 0.0]], k)}),
+        );
+        run(
+            &mut s,
+            "sketch.spline",
+            json!({"sketch": "Hem", "control": scaled(&[[14.0, 0.0], [18.0, 8.0], [18.0, 22.0], [14.0, 30.0]], k)}),
+        );
+        built(
+            &mut s,
+            "feature.sheetMetal",
+            json!({"sketch": "Base", "name": "L", "thickness": mm(k), "radius": mm(k),
+                   "kFactor": 0.5,
+                   "flanges": [{"edge": right, "outline": "Hem", "angle": "180 deg"}]}),
+        );
+        let got = error(
+            &mut s,
+            "sheetMetal.bendSequence",
+            json!({"feature": "L", "punch": scaled(&NARROW, k), "die": scaled(&DIE, k),
+                   "hem": {"flanges": [0], "preBend": 120, "pad": pad(5.0, k)}}),
+        );
+        assert!(got.contains("spline"), "scale {k}: {got}");
+    }
+}

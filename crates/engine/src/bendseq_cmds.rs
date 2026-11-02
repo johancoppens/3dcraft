@@ -1149,6 +1149,19 @@ impl Check<'_> {
             .iter()
             .find(|p| p.what == Kind::Flat(x.child))
             .ok_or("a hem's flat is missing")?;
+        // The highest point is exact on lines and arcs; on a spline it is
+        // taken over the control points, which bounds it from above, so
+        // the pad would stand higher than the flat and keep further from
+        // the other pieces than it does (review of 4116ed3e): refused.
+        if part.flats.get(x.child).is_some_and(|f| {
+            f.outer
+                .iter()
+                .any(|seg| matches!(seg.shape, craft3d_kernel::profile::Shape::Spline(_)))
+        }) {
+            return Err(format!(
+                "hem {b}'s flat has a spline in its outline, so where the pad stands on it (its highest point) is known only from above, which would place the pad too high: pressing it flat is not supported (not proven); draw the hem's far side with lines and arcs, or check its bend as an air bend (leave it out of `hem`)"
+            ));
+        }
         let moved = self.moved(flat, &worlds)?;
         self.count()?;
         let top = -piece_lowest(part, PieceOf::Flat(x.child), |p| {
