@@ -39,28 +39,38 @@ use craft3d_topo::Body;
 use std::f64::consts::PI;
 
 /// A cylinder placed as a document places one: its axis, and the x axis
-/// `Frame::from_z` picks for it.
-fn cylinder(origin: Vec3, axis: Vec3, radius: f64, height: f64) -> Body {
+/// `Frame::from_z` picks for it, turned about the axis by `turn`.
+fn cylinder(origin: Vec3, axis: Vec3, radius: f64, height: f64, turn: f64) -> Body {
     let upright = Frame::from_z(origin, axis).unwrap();
-    let frame = Frame::new(origin, axis, upright.x()).unwrap();
+    let x = if turn == 0.0 {
+        upright.x()
+    } else {
+        upright.x() * turn.pcos() + upright.y() * turn.psin()
+    };
+    let frame = Frame::new(origin, axis, x).unwrap();
     primitives::cylinder(&frame, radius, height).unwrap()
 }
 
 /// The two operands at scale `k`, moved by `shift` (in model units of
-/// scale 1).
-fn operands(k: f64, shift: Vec3) -> (Body, Body) {
+/// scale 1), each turned about its own axis by `turns`. Unturned, the
+/// vertex of the small cylinder's end circle is the point where four faces
+/// meet; turned, no vertex of either operand is there, and the vertex is
+/// made from the cuts found there.
+fn operands_turned(k: f64, shift: Vec3, turns: [f64; 2]) -> (Body, Body) {
     (
         cylinder(
             (Vec3::new(17.5, 30.0, 7.5) + shift) * k,
             Vec3::X,
             5.0 * k,
             10.0 * k,
+            turns[0],
         ),
         cylinder(
             (Vec3::new(17.5, 30.0, 15.0) + shift) * k,
             Vec3::Y,
             12.5 * k,
             5.0 * k,
+            turns[1],
         ),
     )
 }
@@ -125,9 +135,9 @@ fn the_closed_form_is_what_a_grid_of_points_finds() {
 fn the_union_is_valid_meshed_and_found_clear_of_itself() {
     let expected = expected_volume();
     for k in SCALES {
-        for shift in SHIFTS {
-            let what = format!("scale {k}, moved by {shift:?}");
-            let (a, b) = operands(k, shift);
+        for (shift, turns) in SHIFTS.into_iter().flat_map(|s| TURNS.map(|t| (s, t))) {
+            let what = format!("scale {k}, moved by {shift:?}, turned by {turns:?}");
+            let (a, b) = operands_turned(k, shift, turns);
             // Valid, and held to the boolean's own check in full.
             let made = solve(&a, &b, Union, k);
             let body = &made.body;
@@ -168,6 +178,10 @@ fn the_union_is_valid_meshed_and_found_clear_of_itself() {
     }
 }
 
+/// Turns about the operands' own axes: none, and two that put no vertex of
+/// either operand where the faces meet.
+const TURNS: [[f64; 2]; 3] = [[0.0, 0.0], [0.7, 1.9], [2.3, -0.4]];
+
 #[test]
 fn every_edge_comes_nearest_its_vertices_at_its_ends() {
     // The cause itself: an edge that runs on past its vertex comes nearer
@@ -175,8 +189,8 @@ fn every_edge_comes_nearest_its_vertices_at_its_ends() {
     // where the walls meet began 0.09 tolerances from its vertex and passed
     // within 1e-4 tolerances of it a little way in.
     for k in SCALES {
-        for shift in SHIFTS {
-            let (a, b) = operands(k, shift);
+        for (shift, turns) in SHIFTS.into_iter().flat_map(|s| TURNS.map(|t| (s, t))) {
+            let (a, b) = operands_turned(k, shift, turns);
             let body = solve(&a, &b, Union, k).body;
             let slack = 1e-3 * tolerance(k).linear;
             for (index, edge) in body.edges.iter().enumerate() {
@@ -192,7 +206,7 @@ fn every_edge_comes_nearest_its_vertices_at_its_ends() {
                         let d = edge.curve.eval(t).distance(vertex);
                         assert!(
                             d >= at_end - slack,
-                            "scale {k}, moved by {shift:?}: edge {index} is {at_end:e} from its \
+                            "scale {k}, moved by {shift:?}, turned by {turns:?}: edge {index} is {at_end:e} from its \
                              vertex at its end and {d:e} a little way in"
                         );
                     }

@@ -1167,9 +1167,10 @@ fn clip(
         // by that much would leave the face it bounds and come back.
         let range = match ends {
             Some((at_start, at_end)) => {
+                let guard = vertices.guard;
                 let point = |v: usize| vertices.points.get(v).copied().ok_or(Stop::of(LOST));
-                let s = nearest_to_vertex(curve, (from, t0), at_start, point(start)?);
-                let e = nearest_to_vertex(curve, (to, t1), at_end, point(end)?);
+                let s = nearest_to_vertex(curve, (from, t0), at_start, point(start)?, guard);
+                let e = nearest_to_vertex(curve, (to, t1), at_end, point(end)?, guard);
                 if s < e { (s, e) } else { (t0, t1) }
             }
             None => (t0, t1),
@@ -1202,7 +1203,9 @@ type Span = (Cut, Cut, f64, f64, Option<(Room, Room)>);
 
 /// [`Room`] per cut, in the order of `cuts`. Round a closed curve the cut
 /// before the first is the last, a period back; a closed curve that is not
-/// periodic (a spline) is not left.
+/// periodic (a spline) is not left. A closed curve with one cut gets no
+/// neighbours (the stretch is the whole loop, from the cut back to it,
+/// and its ends are not moved: `clip` passes no room for it).
 fn rooms(
     cuts: &[Cut],
     (first, last): (f64, f64),
@@ -1241,13 +1244,33 @@ fn rooms(
 /// for the end of a stretch at `cut` (its parameter `at`, which may be the
 /// cut's a period on): `at` itself when the vertex is the cut's own point,
 /// or when no point of the curve there is nearer to it.
-fn nearest_to_vertex(curve: &Curve3, (cut, at): (Cut, f64), room: Room, vertex: Vec3) -> f64 {
+///
+/// The room is a stretch of parameters, not of space: a traced curve that
+/// returns near the vertex further along (a loop, a curve that crosses
+/// itself) may come nearer to it there. The nearer point is taken only on
+/// the same passage, where the curve stays within `guard` of the vertex
+/// between it and the cut (as [`ends_at_places`] tells a place found at an
+/// end of the curve).
+fn nearest_to_vertex(
+    curve: &Curve3,
+    (cut, at): (Cut, f64),
+    room: Room,
+    vertex: Vec3,
+    guard: f64,
+) -> f64 {
+    // Exactly the same point: the vertex was made from this cut (or
+    // happens to be its point to the last bit), and the stretch is left as
+    // it was before ends were moved, bit for bit.
     if vertex == cut.point {
         return at;
     }
     let here = curve.eval(at).distance(vertex);
     match nearest(curve, room, vertex) {
-        Some((t, d)) if d < here && t.is_finite() => t,
+        Some((t, d))
+            if d < here && t.is_finite() && curve.eval(0.5 * (at + t)).distance(vertex) < guard =>
+        {
+            t
+        }
         _ => at,
     }
 }
@@ -2137,6 +2160,41 @@ pub(super) mod tests {
     /// radius `r`, clamped where it starts and ends, as a trace of a
     /// closed meeting curve is) and the cut at parameter `t` of it, an
     /// edge's crossing (`a_edge` 7).
+    /// A stretch's end is moved only along the passage of its cut: a loop
+    /// that comes back to the vertex at its other end, nearer to it there,
+    /// does not give the start that parameter.
+    #[test]
+    fn an_end_is_moved_along_its_own_passage_only() {
+        for k in [1e-3, 1.0, 1e6] {
+            let (curve, _, cut) = loop_and_place(10.0 * k, 0.0);
+            let guard = 2e-6 * k;
+            // The vertex lies on the curve just before its end, where the
+            // loop comes back, and within the guard of the cut's point.
+            let vertex = curve.eval(1.0 - 1e-8);
+            assert!(vertex.distance(cut.point) < guard);
+            let at = nearest_to_vertex(&curve, (cut, 0.0), (0.0, 1.0), vertex, guard);
+            assert_eq!(at, 0.0, "scale {k}");
+            // On its own passage (the same curve with the cut at its end)
+            // the nearer point is taken.
+            let end = Cut {
+                t: 1.0 - 2e-8,
+                point: curve.eval(1.0 - 2e-8),
+                ..cut
+            };
+            let moved = nearest_to_vertex(&curve, (end, end.t), (0.5, 1.0), vertex, guard);
+            assert!(
+                curve.eval(moved).distance(vertex) < 1e-9 * k,
+                "scale {k}: {}",
+                curve.eval(moved).distance(vertex)
+            );
+            // The vertex at the cut's point: nothing moves.
+            assert!(end.point.distance(vertex) < guard);
+            assert!(end.point.distance(vertex) > 1e-9 * k);
+            let same = nearest_to_vertex(&curve, (end, end.t), (0.5, 1.0), end.point, guard);
+            assert_eq!(same, end.t);
+        }
+    }
+
     fn loop_and_place(r: f64, t: f64) -> (Curve3, (f64, f64), Cut) {
         let mut ctrl: Vec<Vec3> = (0..8)
             .map(|i| {
