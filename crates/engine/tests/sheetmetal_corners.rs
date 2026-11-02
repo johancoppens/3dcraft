@@ -274,10 +274,12 @@ fn bad_corner_treatments_are_errors_or_fail_the_part() {
     let made = run(
         &mut s,
         "feature.sheetMetal",
-        json!({"sketch": "Base", "thickness": "1 mm", "radius": "1 mm", "kFactor": 0.4,
+        json!({"sketch": "Base", "name": "Leaning", "thickness": "1 mm", "radius": "1 mm", "kFactor": 0.4,
                "flanges": leaning, "corner": {"kind": "miter", "gap": "0.2 mm"}}),
     );
     assert_eq!(made["status"], "ok", "{made}");
+    let found = body(&mut s, "Leaning");
+    assert_eq!(found["valid"], true, "{found}");
     let reason = failed(
         &mut s,
         "feature.sheetMetal",

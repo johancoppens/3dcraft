@@ -256,8 +256,11 @@ pub fn trim(
     // The Hermite steps: |u⁗| h⁴ / 384 ≤ tol / 8 with |u⁗| ≤ hypot(b, c) / ρ⁴.
     let m4 = b.phypot(c) / (rho * rho * rho * rho);
     let width = rho * (theta - phi);
+    // Nudged down by a relative 1e-12, more than the few roundings of the
+    // two square roots and the quotient, so the step taken is never above
+    // the one the bound allows.
     let h_max = if m4 > 0.0 {
-        (384.0 * 0.125 * tol / m4).sqrt().sqrt()
+        (384.0 * 0.125 * tol / m4).sqrt().sqrt() * (1.0 - 1e-12)
     } else {
         width
     };
@@ -271,7 +274,13 @@ pub fn trim(
         ));
     }
     // Rounding in evaluating the sinusoid and its spline must stay well
-    // inside the other eighth of the tolerance.
+    // inside the other eighth of the tolerance: each value is a few
+    // products and sums of numbers no larger than `scale` (the sinusoid's
+    // coefficients, the strip's width, the bend's length), with Portable's
+    // sine and cosine within a few ulps, so its error is below some tens
+    // of ulps of `scale`, about 1e-14 of it; 1e-13 of it holds that with a
+    // margin, and must be at most an eighth of the tolerance (else the
+    // part is too large for its tolerance and the trim is refused).
     let scale = a.abs() + b.abs() + c.abs() + width + len;
     if !(scale * 1e-13 <= 0.125 * tol) {
         return Err(refuse(

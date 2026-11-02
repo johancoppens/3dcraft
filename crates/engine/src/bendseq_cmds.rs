@@ -1631,6 +1631,11 @@ impl Check<'_> {
             for half in [-1.0, 1.0] {
                 let side = |p: Vec3| half * (moved.point(p) - point).dot(normal);
                 for tri in die {
+                    // Each half against each piece of the die is a lowest
+                    // point per direction: counted, so `maxWork` bounds
+                    // this proof's time too (review of 4116ed3e: it was
+                    // counted once per call, whatever the die's pieces).
+                    self.count()?;
                     let mut directions = vec![[0.0, 1.0]];
                     for k in 0..3 {
                         let (Some(a), Some(c)) = (tri.get(k), tri.get((k + 1) % 3)) else {
