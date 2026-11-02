@@ -175,6 +175,7 @@ fn system_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     #[cfg(target_arch = "wasm32")]
     use web_time::{SystemTime, UNIX_EPOCH};
+    // native clock: std's only off the browser (cfg above); there it is web_time's.
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))

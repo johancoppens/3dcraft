@@ -163,6 +163,7 @@ fn result_line(result: &Value) -> String {
 fn now_ms() -> u64 {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        // native clock: this block is cfg(not(wasm32)); the browser takes the 0 below.
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
