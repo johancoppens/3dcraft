@@ -170,6 +170,17 @@ fn every_control_of_the_studio_panel_drives_the_look_state() {
     assert_eq!(look(&mut shell, &mut session)["dof"]["fstop"], 2.8);
     assert_eq!(look(&mut shell, &mut session)["dof"]["focus"], "selection");
     window.frame(&mut shell, &mut session, Vec::new());
+    // The hint and the note (nothing is selected) are inside the panel,
+    // at the secondary text's size.
+    let panel = hit(&shell, "panel");
+    for name in ["apertureHint", "lensNote"] {
+        let rect = hit(&shell, name);
+        assert!(panel.contains_rect(rect), "{name}: {rect:?} in {panel:?}");
+        assert!(
+            rect.height() >= shell.tokens.secondary_font,
+            "{name}: {rect:?}"
+        );
+    }
     // The aperture slider stops at the full stops, f/1.4 at its left end
     // and f/22 at its right.
     for (fraction, want) in [(0.0, 1.4), (1.0, 22.0), (0.5, 5.6)] {
@@ -250,7 +261,7 @@ fn the_studio_panel_fits_a_small_window_and_closes_from_its_caret() {
         &mut shell,
         &mut session,
         "ui.set",
-        json!({"look": {"mode": "studio"}}),
+        json!({"look": {"mode": "studio", "dof": {"fstop": 2.8, "focus": "selection"}}}),
     );
     for _ in 0..4 {
         window.frame(&mut shell, &mut session, Vec::new());

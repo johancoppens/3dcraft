@@ -52,7 +52,8 @@ const DISTANCE_RANGE: [f64; 2] = [0.05, 4.0];
 /// and `focusDistance` for the sliders (their track only), `ground`,
 /// `shadows`, `ao`, `reflections` and `lens` for the toggles, `lensNote`
 /// for the lens's note (where it focuses instead, or why it blurs
-/// nothing), and `panel` for the whole panel.
+/// nothing), `apertureHint` for the line under the aperture, and `panel`
+/// for the whole panel.
 pub type LookHits = Vec<(String, Rect)>;
 
 /// What the lens rows need to know besides the look: where the lens
@@ -282,9 +283,14 @@ fn lens_rows(
                 changed = true;
             }
             ui.label(fstop_text(fstop));
-            ui.label(tokens.plate_secondary(APERTURE_HINT));
         });
     });
+    ui.end_row();
+    // Which way blurs more, under the slider: after its value it would
+    // not fit the popover's width.
+    ui.label("");
+    let hint = ui.label(tokens.plate_secondary(APERTURE_HINT));
+    hits.push(("apertureHint".to_string(), hint.rect));
     ui.end_row();
     ui.label("Focus");
     ui.add_enabled_ui(settable, |ui| {
@@ -375,8 +381,8 @@ fn lens_rows(
     }
 }
 
-/// What the aperture's value says after it: which way blurs more.
-pub const APERTURE_HINT: &str = "smaller = more blur";
+/// What the aperture's slider says under it: which way blurs more.
+pub const APERTURE_HINT: &str = "smaller f-number: more blur";
 
 /// A number to four significant digits, as the panel writes lengths.
 fn significant(x: f64) -> String {

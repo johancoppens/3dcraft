@@ -574,7 +574,7 @@ focus were reachable through `ui.set` alone. Now the popover's lens rows are (`s
 `lens_rows`): *Lens* (on and off; on is `{fstop: 2.8, focus: "selection"}`), *Aperture*, a slider over
 the full stops f/1.4 to f/22 (`FSTOPS`: each stop halves the light, so equal steps on the slider are
 equal steps of the f-number's logarithm; a value set by `ui.set` between stops is shown as it is and
-kept until the slider moves), with "smaller f-number: more blur" under it, and *Focus*: *Selection*,
+kept until the slider moves), with "smaller f-number: more blur" under it in the secondary text, and *Focus*: *Selection*,
 *Click* (`picked`), *Centre*, *Distance* (a logarithmic slider from 0.05 to 4 times the camera's
 distance to its target; choosing it starts at the distance the lens focuses at now, so the picture
 does not jump). A point set by `ui.set` is named under the choice; a fallback is said there too.
@@ -588,27 +588,61 @@ the view, which moves as the camera turns and would make the accumulated still r
 a lens focuses on a plane, so only the depth matters, and a part's middle keeps most of it sharp. The
 window works it out when the selection or the scene changes (`Selecting::focus`, beside the drawn
 selection), not per frame. Nothing shown selected: the model's centre, and `FocusSpec::fallback` says
-why ("nothing selected", "no point clicked yet"), which the popover shows and `ui.get` gives under
-`lens` (`{focus, point, distance, fallback}`, `Shell::lens_focus`). The focus points are passed to
-`LookSpec::resolved` as `FocusAt {picked, selection}` (it took `picked` alone). `view.render` focuses
+why: nothing selected, a selection none of which is shown (hidden with its eye, its feature
+suppressed), what was selected gone (dropped from the selection), no point clicked yet. The popover
+shows it and `ui.get` gives it under `lens` (`{focus, point, distance, fallback, noBlur}`,
+`Shell::lens_focus`); `noBlur` (`look::no_blur`) says when the lens blurs nothing at all: an
+orthographic view (the popover then greys out Aperture and Focus) or a focus behind the camera. The
+focus points are passed to `LookSpec::resolved` as `FocusAt {picked, selection, selected, gone}` (it
+took `picked` alone). `view.render` takes the selection's box from the picture's mesh (meshed for the
+picture's size) and the window from its display mesh, so on a curved part the two points can differ
+by the meshes' chordal deviation. `view.render` focuses
 `selection` on the session's selection (`select.get`) and reports the same `lens`; `view.replay` has
-none per frame (the centre); `craft3d-cli render` has no selection or click, so its `--focus` takes a
+none per frame (the centre, said under its result's `lens.fallback`); `craft3d-cli render` has no selection or click, so its `--focus` takes a
 distance, `X,Y,Z` or `centre` and refuses `selection` and `picked` with that reason.
 
 The selection resolves to a point, so the renderers see a `Focus::Point` as before: the CPU and GPU
 lens and their parity (`gpu/tests/polish.rs`) are unchanged.
 
+*The selection under the lens.* The selection's copper fill (`Highlight`, which replaces a face's
+colour in both renderers) covered the part the lens focused on, so its sharpness could not be seen.
+While the lens is on (`Shell::lens_on`: studio, a lens, no analysis, perspective) the selected faces
+keep their own colour and the selection is said by its outline over the picture alone; the entry of
+the "select other" list under the pointer and a face `ui.highlight` points at are still lit. The fill
+is left out of the `Highlight` both renderers take, so their parity is unchanged.
+
+*The f-number* must be positive: `look.dof.fstop` 0 or below is refused ("must be a positive
+f-number"), as a focus distance of 0 or below is; until 2026-11-02 it was clamped to 0.5. A positive
+one is still clamped to 0.5 to 64.
+
 *Tests.* `crates/ui-egui/tests/lens_focus.rs`: two cubes 105 and 205 ahead of the eye: the focus point
 and distance for nothing selected (the model's centre, 155, with the fallback), each body, the feature
-from the list, a face (its centre, 100), cleared, to 10⁻⁹; the CPU picture (16 frames, f/4) against
-the sharp one, half by half: the half of the cube in focus is more than 4 times nearer the sharp
-picture than with the other in focus, and f/22 more than twice nearer than f/4; the picture focused on
+from the list, a face (its centre, 100), cleared, to 10⁻⁹; the CPU picture (16 frames, f/4, 320 × 240)
+against the sharp one, half by half (the sums of the grey levels' differences): the half of the cube
+in focus is more than 4 times nearer the sharp picture than with the other in focus, and f/22 more than
+twice nearer than f/4. Measured: focused near [861, 3228] (left, right), focused far [8872, 126],
+f/22 focused near [46, 880], so the margins are 10× and 25× against 4×, and 3.7× against 2×; the
+focus follows an edit that moves the selected body, comes back with undo, and says "not shown" when
+it is hidden and "gone" when it is deleted; an orthographic view and a focus behind the eye say
+`noBlur`; the selected faces are untinted under the lens and tinted without it; the picture focused on
 the selection is the picture focused on its centre given as a point, byte for byte; bad values refused
 with nothing changed (an unknown focus word, a capitalised one, 0, a negative distance, two
 coordinates, a string f-number, null) or clamped (f/0 and below to 0.5, above 64 to 64); the state
 round trips through serde with every kind of focus. `look_panel.rs`: the slider's ends are f/1.4 and
 f/22 and its middle f/5.6, each focus choice, the distance slider appearing and moving the focus
-further. `engine` `look.rs`: parsing and the fallback.
+further. `engine` `look.rs`: parsing, the fallbacks, `no_blur`, a non-positive f-number refused;
+`engine/tests/studio_look.rs`: `view.render`'s `lens` on the selection of two blocks, cleared, hidden,
+orthographic; `craft3d-cli` `tests/cli.rs`: `--focus selection` and `picked` are usage errors,
+`--focus centre` renders.
+
+*Secondary text* (2026-11-02, the same branch): the hints and notes of the whole interface were
+egui's small style (9 points) or ad hoc sizes; they are now one token, `Tokens::secondary_font`
+(12.5 points, the body's size), told apart by colour (`text_dim`, `plate_text_dim`, `chrome_text_dim`,
+each at 4.5:1 or more by `text_pairs`): `Tokens::secondary`, `plate_secondary` and `secondary_in`, and
+egui's `TextStyle::Small` set to it in `Tokens::apply`. Covered: the lens's notes, "No checks yet"
+under Assertions, a feature's and an assertion's message, the "when" mark, the mates' messages, the
+Parameters tab's notes, the joints' notes, the timeline's problem. `theme::tests` ›
+`secondary_text_is_one_legible_size`.
 
 *Found on the way.* A `ui.screenshot {window: true}` taken right after the studio look is first switched
 on in a process, before its environment is prepared (on a thread, `prepared_if_ready`), shows the
