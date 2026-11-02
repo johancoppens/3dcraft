@@ -1247,7 +1247,34 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 next_flange_id,
                 bend_relief,
                 jogs,
+                formed_louvres,
             }) => manifest::FeatureKind::SheetMetal {
+                formed_louvres: formed_louvres
+                    .iter()
+                    .map(
+                        |doc::FormedLouvre {
+                             line,
+                             width,
+                             height,
+                             ends,
+                             direction,
+                             id,
+                         }| manifest::SheetFormedLouvre {
+                            line: line.0,
+                            width: expr_to_manifest(width),
+                            height: expr_to_manifest(height),
+                            ends: match ends {
+                                doc::HoodEnds::Closed => manifest::HoodEnds::Closed,
+                                doc::HoodEnds::Open => manifest::HoodEnds::Open,
+                            },
+                            direction: match direction {
+                                doc::BendDirection::Up => manifest::BendDirection::Up,
+                                doc::BendDirection::Down => manifest::BendDirection::Down,
+                            },
+                            id: *id,
+                        },
+                    )
+                    .collect(),
                 jogs: jogs
                     .iter()
                     .map(
@@ -3237,9 +3264,36 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 next_flange_id,
                 bend_relief,
                 jogs,
+                formed_louvres,
             } => doc::FeatureKind::SheetMetal({
                 let mut part = doc::SheetMetal {
                     next_flange_id: 0,
+                    formed_louvres: formed_louvres
+                        .into_iter()
+                        .map(
+                            |manifest::SheetFormedLouvre {
+                                 line,
+                                 width,
+                                 height,
+                                 ends,
+                                 direction,
+                                 id,
+                             }| doc::FormedLouvre {
+                                line: doc::EntityId(line),
+                                width: doc::Expr(width),
+                                height: doc::Expr(height),
+                                ends: match ends {
+                                    manifest::HoodEnds::Closed => doc::HoodEnds::Closed,
+                                    manifest::HoodEnds::Open => doc::HoodEnds::Open,
+                                },
+                                direction: match direction {
+                                    manifest::BendDirection::Up => doc::BendDirection::Up,
+                                    manifest::BendDirection::Down => doc::BendDirection::Down,
+                                },
+                                id,
+                            },
+                        )
+                        .collect(),
                     jogs: jogs
                         .into_iter()
                         .map(

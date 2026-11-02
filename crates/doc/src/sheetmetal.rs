@@ -302,6 +302,49 @@ pub struct Jog {
     pub id: u32,
 }
 
+/// How a formed louvre's hood ends (docs/design/sheetmetal.md › *Formed
+/// louvres*).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HoodEnds {
+    /// Turned a quarter about the vertical at each end of its middle:
+    /// closed and rounded.
+    Closed,
+    /// Lanced along both sides too: the section swept along the whole
+    /// lance.
+    Open,
+}
+
+impl HoodEnds {
+    pub fn name(self) -> &'static str {
+        match self {
+            HoodEnds::Closed => "closed",
+            HoodEnds::Open => "open",
+        }
+    }
+}
+
+/// A formed louvre: lanced along a line of a flat and stretched by a tool
+/// into a hood behind it (on the line's left), not developable, so the
+/// flat pattern carries only the lance and the tool's footprint as a mark
+/// (docs/design/sheetmetal.md › *Formed louvres*).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormedLouvre {
+    /// A line of the part's sketch (construction geometry), drawn where it
+    /// lies in the flat pattern: the lance.
+    pub line: EntityId,
+    /// How far back from the lance the hood reaches.
+    pub width: Expr,
+    /// The opening's height at the lip.
+    pub height: Expr,
+    pub ends: HoodEnds,
+    /// The side the hood rises to.
+    pub direction: BendDirection,
+    /// What its names are numbered by, from the flanges' ids
+    /// ([`SheetMetal::next_flange_id`] is past it).
+    pub id: u32,
+}
+
 /// A sheet-metal part.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SheetMetal {
@@ -343,6 +386,9 @@ pub struct SheetMetal {
     /// Jogs across its flats (format version 64).
     #[serde(default)]
     pub jogs: Vec<Jog>,
+    /// Formed louvres in its flats (format version 65).
+    #[serde(default)]
+    pub formed_louvres: Vec<FormedLouvre>,
 }
 
 /// The highest id a flange may have: its faces are named `face(2 · id −
@@ -394,6 +440,26 @@ impl SheetMetal {
                 return Some(format!(
                     "jog {g} takes the ids {} and {second}, which are not below the next id {}",
                     j.id, self.next_flange_id
+                ));
+            }
+        }
+        for (g, f) in self.formed_louvres.iter().enumerate() {
+            if f.id == 0 || f.id > MAX_FLANGE_ID {
+                return Some(format!(
+                    "formed louvre {g}'s id {} is 0 or past the highest",
+                    f.id
+                ));
+            }
+            if !seen.insert(f.id) {
+                return Some(format!(
+                    "formed louvre {g}'s id {} is a flange's, a jog's or another louvre's",
+                    f.id
+                ));
+            }
+            if f.id >= self.next_flange_id {
+                return Some(format!(
+                    "formed louvre {g}'s id {} is not below the next id {}",
+                    f.id, self.next_flange_id
                 ));
             }
         }
@@ -462,6 +528,10 @@ impl SheetMetal {
                 out.push((format!("jogs.{g}.kFactor"), k));
             }
         }
+        for (g, f) in self.formed_louvres.iter().enumerate() {
+            out.push((format!("formedLouvres.{g}.width"), &f.width));
+            out.push((format!("formedLouvres.{g}.height"), &f.height));
+        }
         out
     }
 
@@ -521,6 +591,10 @@ impl SheetMetal {
             if let Some(k) = &mut j.k_factor {
                 out.push(k);
             }
+        }
+        for f in &mut self.formed_louvres {
+            out.push(&mut f.width);
+            out.push(&mut f.height);
         }
         out
     }

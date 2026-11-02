@@ -1171,7 +1171,32 @@ pub enum FeatureKind {
         /// Jogs across its flats (format version 64).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         jogs: Vec<SheetJog>,
+        /// Formed louvres in its flats (format version 65).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        formed_louvres: Vec<SheetFormedLouvre>,
     },
+}
+
+/// How a formed louvre's hood ends (format version 65).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoodEnds {
+    Closed,
+    Open,
+}
+
+/// A formed louvre of a sheet-metal part: the line of the part's sketch
+/// that is its lance, the hood's width and height, how it ends, which
+/// side it rises to, and its id (format version 65).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SheetFormedLouvre {
+    pub line: u64,
+    pub width: String,
+    pub height: String,
+    pub ends: HoodEnds,
+    pub direction: BendDirection,
+    pub id: u32,
 }
 
 /// A jog across a flat of a sheet-metal part: the line of the part's

@@ -37,7 +37,7 @@ const STEPS: &[Step] = &[
     v34_to_v35, v35_to_v36, v36_to_v37, v37_to_v38, v38_to_v39, v39_to_v40, v40_to_v41, v41_to_v42,
     v42_to_v43, v43_to_v44, v44_to_v45, v45_to_v46, v46_to_v47, v47_to_v48, v48_to_v49, v49_to_v50,
     v50_to_v51, v51_to_v52, v52_to_v53, v53_to_v54, v54_to_v55, v55_to_v56, v56_to_v57, v57_to_v58,
-    v58_to_v59, v59_to_v60, v60_to_v61, v61_to_v62, v62_to_v63, v63_to_v64,
+    v58_to_v59, v59_to_v60, v60_to_v61, v61_to_v62, v62_to_v63, v63_to_v64, v64_to_v65,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -1137,6 +1137,15 @@ fn v62_to_v63(manifest: Value) -> Result<Value, String> {
 /// raised so that an older build says a newer 3DCraft is needed instead of
 /// refusing the field.
 fn v63_to_v64(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 65 adds `formed_louvres` to a sheet-metal part (a lance line, a
+/// hood's width, height, ends and direction, an id; docs/design/sheetmetal.md
+/// › *Formed louvres*). A file of an older version has none, so every part
+/// is built as it was: an identity step, raised so that an older build says
+/// a newer 3DCraft is needed instead of refusing the field.
+fn v64_to_v65(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 

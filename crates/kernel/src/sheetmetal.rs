@@ -63,6 +63,7 @@ use std::collections::BTreeMap;
 use std::f64::consts::{PI, TAU};
 
 mod cuts;
+pub mod formed;
 mod jog;
 mod later;
 pub mod sequence;

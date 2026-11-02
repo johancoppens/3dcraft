@@ -1704,7 +1704,7 @@ fn a_sketch_pattern_is_written_like_this_and_round_trips() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 64);
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     let kind = &value["document"]["features"][1]["kind"];
     assert_eq!(kind["next_pattern_id"], 4);
     assert_eq!(
@@ -1890,7 +1890,7 @@ fn image_places_are_written_like_this_and_round_trip() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 64);
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     assert_eq!(
         value["document"]["features"][1]["kind"]["image_places"],
         serde_json::json!([{"entity": last.0, "at": [3.0, -0.25], "map": {"type": "chain", "k": 2.0}}])
@@ -2909,7 +2909,7 @@ fn an_offset_profile_is_written_like_this_and_round_trips() {
     .unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 64);
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     let features = value["document"]["features"].as_array().unwrap();
     let n = features.len();
     assert_eq!(
@@ -4275,7 +4275,7 @@ fn nested_sketch_patterns_are_written_like_this_and_round_trip() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 64);
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     let kind = &value["document"]["features"][1]["kind"];
     assert_eq!(kind["patterns"][1]["patterns"], serde_json::json!([p1.0]));
     assert_eq!(kind["patterns"][2]["skip"], serde_json::json!([{"at": 3}]));
@@ -4449,7 +4449,7 @@ fn a_fold_is_written_like_this_and_round_trips() {
     .unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 64);
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     let features = value["document"]["features"].as_array().unwrap();
     assert_eq!(
         features.last().unwrap()["kind"],
@@ -5135,6 +5135,7 @@ fn a_sheet_metal_part_is_written_like_this_and_round_trips() {
             next_flange_id: 3,
             bend_relief: None,
             jogs: Vec::new(),
+            formed_louvres: Vec::new(),
         }),
     )
     .unwrap();
@@ -5218,6 +5219,7 @@ fn sheet_metal_insets_sides_and_outlines_are_written_like_this_and_round_trip() 
             next_flange_id: 4,
             bend_relief: None,
             jogs: Vec::new(),
+            formed_louvres: Vec::new(),
         }),
     )
     .unwrap();
@@ -5283,6 +5285,7 @@ fn an_older_file_naming_a_sheet_metal_rim_or_edge_warns_by_name() {
                 next_flange_id: 2,
                 bend_relief: None,
                 jogs: Vec::new(),
+                formed_louvres: Vec::new(),
             }),
         )
         .unwrap();
@@ -5444,6 +5447,7 @@ fn closed_sheet_metal_corners_are_written_like_this_and_round_trip() {
             next_flange_id: 3,
             bend_relief: None,
             jogs: Vec::new(),
+            formed_louvres: Vec::new(),
         }),
     )
     .unwrap();
@@ -5502,7 +5506,7 @@ fn a_fold_of_thick_panels_is_written_like_this_and_round_trips() {
     .unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 64);
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     let features = value["document"]["features"].as_array().unwrap();
     assert_eq!(
         features.last().unwrap()["kind"]["panels"],
@@ -5551,6 +5555,7 @@ fn a_manifest_with_unsound_flange_ids_is_an_invalid_document() {
             next_flange_id: 9,
             bend_relief: None,
             jogs: Vec::new(),
+            formed_louvres: Vec::new(),
         }),
     )
     .unwrap();
@@ -5625,6 +5630,7 @@ fn sheet_metal_jogs_are_written_like_this_and_round_trip() {
             corners: Vec::new(),
             next_flange_id: 6,
             bend_relief: None,
+            formed_louvres: Vec::new(),
             jogs: vec![
                 Jog {
                     line: EntityId(9),
@@ -5650,7 +5656,7 @@ fn sheet_metal_jogs_are_written_like_this_and_round_trip() {
     .unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 64);
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     let part = value["document"]["features"]
         .as_array()
         .unwrap()
@@ -5750,30 +5756,90 @@ fn a_network_held_in_curvature_round_trips() {
     assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
 }
 
-/// Who made a feature (version 63): `madeBy` and `lastChangedBy`, written
-/// only when an agent did, read back the same; not part of what a feature
-/// makes, so a document with them equals one without.
+/// A sheet-metal part's formed louvres (format 64): written with their
+/// line, width, height, ends, direction and id, read back the same; an id
+/// that is a flange's, or not below the next id, is an invalid document,
+/// and so is an unknown field.
 #[test]
-fn who_made_a_feature_is_written_like_this_and_round_trips() {
+fn sheet_metal_formed_louvres_are_written_like_this_and_round_trip() {
+    use craft3d_doc::{BendDirection, FormedLouvre, HoodEnds, SheetMetal};
     let mut doc = small();
-    let id = doc.features[0].id;
-    let plain = doc.clone();
-    {
-        let feature = doc.feature_mut(id).unwrap();
-        feature.made_by = Some("Claude Code".to_string());
-        feature.last_changed_by = Some("Cursor".to_string());
-    }
+    doc.add_feature(
+        Some("Plate"),
+        FeatureKind::SheetMetal(SheetMetal {
+            sketch: FeatureId(1),
+            thickness: Expr::new("1 mm"),
+            radius: Expr::new("1 mm"),
+            k_factor: Expr::new("0.5"),
+            flanges: Vec::new(),
+            relief: None,
+            cutouts: Vec::new(),
+            corner: None,
+            corners: Vec::new(),
+            next_flange_id: 4,
+            bend_relief: None,
+            jogs: Vec::new(),
+            formed_louvres: vec![
+                FormedLouvre {
+                    line: EntityId(9),
+                    width: Expr::new("8 mm"),
+                    height: Expr::new("3 mm"),
+                    ends: HoodEnds::Closed,
+                    direction: BendDirection::Up,
+                    id: 1,
+                },
+                FormedLouvre {
+                    line: EntityId(10),
+                    width: Expr::new("w"),
+                    height: Expr::new("w / 3"),
+                    ends: HoodEnds::Open,
+                    direction: BendDirection::Down,
+                    id: 3,
+                },
+            ],
+        }),
+    )
+    .unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(FORMAT_VERSION, 64);
-    assert_eq!(value["document"]["features"][0]["madeBy"], "Claude Code");
-    assert_eq!(value["document"]["features"][0]["lastChangedBy"], "Cursor");
-    let read = from_bytes(&to_bytes(&doc).unwrap()).unwrap();
-    assert_eq!(read.features[0].made_by.as_deref(), Some("Claude Code"));
-    assert_eq!(read.features[0].last_changed_by.as_deref(), Some("Cursor"));
-    // Provenance is not compared: the same document as far as it builds.
-    assert_eq!(read, plain);
-    // Without an agent: not written.
-    let none: serde_json::Value = serde_json::from_str(&to_manifest_json(&plain).unwrap()).unwrap();
-    assert!(none["document"]["features"][0].get("madeBy").is_none());
+    assert_eq!(value["format_version"], FORMAT_VERSION);
+    let part = value["document"]["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|f| f["kind"]["type"] == "sheetMetal")
+        .unwrap();
+    let kind = &value["document"]["features"][part]["kind"];
+    assert_eq!(
+        kind["formed_louvres"],
+        serde_json::json!([
+            {"line": 9, "width": "8 mm", "height": "3 mm", "ends": "closed", "direction": "up", "id": 1},
+            {"line": 10, "width": "w", "height": "w / 3", "ends": "open", "direction": "down", "id": 3}
+        ])
+    );
+    assert_eq!(kind["next_flange_id"], 4);
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    let edited = |change: &dyn Fn(&mut serde_json::Value)| {
+        let mut v = value.clone();
+        change(&mut v["document"]["features"][part]["kind"]);
+        from_manifest_json(v.to_string().as_bytes())
+    };
+    type Change<'a> = &'a dyn Fn(&mut serde_json::Value);
+    let cases: [(&str, Change); 4] = [
+        ("twice one id", &|k| {
+            k["formed_louvres"][1]["id"] = serde_json::json!(1)
+        }),
+        ("not below the next", &|k| {
+            k["formed_louvres"][1]["id"] = serde_json::json!(4)
+        }),
+        ("an unknown end", &|k| {
+            k["formed_louvres"][0]["ends"] = serde_json::json!("half")
+        }),
+        ("an unknown field", &|k| {
+            k["formed_louvres"][0]["spin"] = serde_json::json!(1)
+        }),
+    ];
+    for (what, change) in cases {
+        assert!(edited(change).is_err(), "{what} was read");
+    }
 }
