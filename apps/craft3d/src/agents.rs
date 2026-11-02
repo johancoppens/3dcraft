@@ -452,9 +452,9 @@ mod tests {
             started_at: 0,
         };
         discovery::write_entry(&state, &stale).unwrap();
-        let config = config(&state);
-        let first = config.first_port;
-        let (mut agents, _pump) = agents(config);
+        let start = config(&state);
+        let first = start.first_port;
+        let (mut agents, _pump) = agents(start);
         assert!(agents.address().is_none(), "off by default");
         assert!(!agents.status().allowed);
 
