@@ -315,7 +315,7 @@ pub fn measure_curve(
     cap: f64,
 ) -> Result<f64, f64> {
     let bounded = CurveBound::new(curve);
-    let (sampled, start) = walk(curve, range, surface);
+    let (sampled, start) = walk(curve, range, surface, cap);
     let mut target = (2.0 * sampled).max(tolerance.linear);
     let mut stopped = 0.5 * (range.0 + range.1);
     while target.is_finite() && target <= 2.0 * cap {
@@ -356,7 +356,7 @@ pub fn measure_curve(
 
 /// Places per quarter of a curve where its feet on a surface are walked
 /// from one to the next: at least eight, two per span of a spline curve,
-/// at most 1024.
+/// at most 256.
 fn walk_steps(curve: &Curve3) -> u32 {
     let spans = match curve {
         Curve3::Nurbs(n) => {
@@ -366,44 +366,134 @@ fn walk_steps(curve: &Curve3) -> u32 {
         }
         _ => 0,
     };
-    u32::try_from(spans / 2).unwrap_or(u32::MAX).clamp(8, 1024)
+    u32::try_from(spans / 2).unwrap_or(u32::MAX).clamp(8, 256)
+}
+
+/// The most values per direction of the grid [`nearest_foot`] looks at.
+const SEED_GRID: usize = 129;
+
+/// The values of a grid over a spline's parameter range: every distinct
+/// knot within the domain and the middle of every span, at most
+/// [`SEED_GRID`] (every so many of them when there are more).
+fn seed_values(knots: &[f64], (lo, hi): (f64, f64)) -> Vec<f64> {
+    let mut distinct: Vec<f64> = knots
+        .iter()
+        .copied()
+        .filter(|k| *k >= lo && *k <= hi && k.is_finite())
+        .collect();
+    distinct.dedup();
+    let mut all = Vec::with_capacity(2 * distinct.len());
+    for pair in distinct.windows(2) {
+        if let [a, b] = pair {
+            all.push(*a);
+            all.push(0.5 * (a + b));
+        }
+    }
+    if let Some(last) = distinct.last() {
+        all.push(*last);
+    }
+    if all.len() <= SEED_GRID {
+        return all;
+    }
+    let step = all.len().div_ceil(SEED_GRID);
+    all.into_iter().step_by(step.max(1)).collect()
+}
+
+/// The foot of `p` on `surface`, the nearest found: the surface's own
+/// projection, and for a spline surface the walks (`project_from`) from
+/// the four nearest points of a grid at its knots and the middles of its
+/// spans. The projection searches a grid of fixed size, which on a spline
+/// of many spans (a rational surface of 96 spans round, ABC 2026-11-01)
+/// may land in another dip of the distance, a millimetre or more away.
+/// `None` when nothing is found.
+pub fn nearest_foot(surface: &Surface, p: Vec3) -> Option<(f64, f64)> {
+    let off = |f: (f64, f64)| {
+        let d = surface.eval(f.0, f.1).distance(p);
+        if d.is_finite() { d } else { f64::INFINITY }
+    };
+    let mut best = surface.project(p).ok().map(|f| (off(f), f));
+    let (us, vs) = match surface {
+        Surface::Nurbs(n) => {
+            let (du, dv) = surface.domain();
+            (seed_values(n.knots_u(), du), seed_values(n.knots_v(), dv))
+        }
+        _ => return best.map(|(_, f)| f),
+    };
+    let mut near: Vec<(f64, (f64, f64))> = Vec::with_capacity(us.len() * vs.len());
+    for &u in &us {
+        for &v in &vs {
+            near.push((off((u, v)), (u, v)));
+        }
+    }
+    near.sort_by(|a, b| {
+        a.0.total_cmp(&b.0)
+            .then(a.1.0.total_cmp(&b.1.0))
+            .then(a.1.1.total_cmp(&b.1.1))
+    });
+    for &(_, seed) in near.iter().take(4) {
+        if let Ok(f) = surface.project_from(p, seed) {
+            let d = off(f);
+            if best.is_none_or(|(b, _)| d < b) {
+                best = Some((d, f));
+            }
+        }
+    }
+    best.map(|(_, f)| f)
 }
 
 /// The farthest of five places along `curve` over `range` from
-/// `surface`, and where the proof should start. Each foot is the nearer
-/// of the surface's own projection and the foot walked on from the place
-/// before (`project_from`): the projection searches the whole surface
-/// from a grid and on a spline of many spans may settle in another dip
-/// of the distance, far from the curve, and one such foot among the five
-/// made the first target larger than the cap, so the edge was never
-/// tried (2026-11-01, 140 ABC models on rational surfaces of 60 to 128
-/// spans). The start is `None` (the proof projects it, and steps off a
-/// seam or pole from there) unless the foot walked back from the end
-/// along the curve is nearer than the projection of the start.
-fn walk(curve: &Curve3, range: (f64, f64), surface: &Surface) -> (f64, Option<(f64, f64)>) {
+/// `surface`, and where the proof should start (`None`: the proof
+/// projects the start itself, and steps off a seam or pole from there).
+/// When the surface's own projection puts each of the five within `cap`,
+/// that is all (as before 2026-11-01). Otherwise a projection may have
+/// landed in another dip of the distance, far from the curve, which made
+/// the first target larger than the cap so that the edge was never tried
+/// (140 ABC models on rational surfaces of 60 to 128 spans): each of the
+/// five feet is then the nearest of [`nearest_foot`] and the foot walked
+/// on (`project_from`) from the place before, through places in between,
+/// and the start is the nearest of its own projection, [`nearest_foot`]
+/// and the foot walked back from the end.
+fn walk(
+    curve: &Curve3,
+    range: (f64, f64),
+    surface: &Surface,
+    cap: f64,
+) -> (f64, Option<(f64, f64)>) {
     let (t0, t1) = range;
-    let quarter = walk_steps(curve);
-    let all = 4 * quarter;
-    let at = |k: u32| curve.eval(t0 + (t1 - t0) * f64::from(k) / f64::from(all));
     let off = |p: Vec3, f: (f64, f64)| {
         let d = surface.eval(f.0, f.1).distance(p);
         if d.is_finite() { d } else { f64::INFINITY }
     };
+    let five: Vec<f64> = (0..=4)
+        .map(|k| {
+            let p = curve.eval(t0 + (t1 - t0) * f64::from(k) / 4.0);
+            surface.project(p).ok().map_or(f64::INFINITY, |f| off(p, f))
+        })
+        .collect();
+    let sampled = five.iter().copied().fold(0.0, f64::max);
+    if sampled <= cap {
+        return (sampled, None);
+    }
+    let quarter = walk_steps(curve);
+    let all = 4 * quarter;
+    let at = |k: u32| curve.eval(t0 + (t1 - t0) * f64::from(k) / f64::from(all));
     let nearer = |p: Vec3, a: Option<(f64, f64)>, b: Option<(f64, f64)>| match (a, b) {
         (Some(a), Some(b)) => Some(if off(p, b) < off(p, a) { b } else { a }),
         (a, b) => a.or(b),
     };
     let mut sampled = 0.0_f64;
     let mut last: Option<(f64, f64)> = None;
+    let mut first: Option<(f64, f64)> = None;
     for k in 0..=all {
         let p = at(k);
         let walked = last.and_then(|l| surface.project_from(p, l).ok());
-        // The surface's own projection (a search of the whole surface)
-        // only at the five places.
         if k % quarter == 0 {
-            let foot = nearer(p, surface.project(p).ok(), walked);
+            let foot = nearer(p, nearest_foot(surface, p), walked);
             sampled = sampled.max(foot.map_or(f64::INFINITY, |f| off(p, f)));
             last = foot;
+            if k == 0 {
+                first = foot;
+            }
         } else {
             last = walked.or(last);
         }
@@ -411,14 +501,14 @@ fn walk(curve: &Curve3, range: (f64, f64), surface: &Surface) -> (f64, Option<(f
     // Back from the end's foot to the start, a place at a time.
     let mut back = last;
     for k in (0..all).rev() {
-        let p = at(k);
-        back = back.and_then(|b| surface.project_from(p, b).ok());
+        back = back.and_then(|b| surface.project_from(at(k), b).ok());
     }
     let p = at(0);
     let own = surface.project(p).ok();
-    let start = match (own, back) {
-        (Some(o), Some(b)) if off(p, b) < off(p, o) => Some(b),
-        (None, b) => b,
+    let candidate = nearer(p, first, back);
+    let start = match (own, candidate) {
+        (Some(o), Some(c)) if off(p, c) < off(p, o) => Some(c),
+        (None, c) => c,
         _ => None,
     };
     (sampled, start)

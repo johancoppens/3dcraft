@@ -28,9 +28,16 @@ pub(crate) fn sampled(curve: &Curve3, range: (f64, f64), surface: &Surface) -> (
         let p = curve.eval(t0 + (t1 - t0) * s);
         let mut best = f64::INFINITY;
         let mut foot = None;
+        // The surface's own projection may land in another dip of the
+        // distance on a spline of many spans: a search by its spans
+        // every 64 places.
+        let seeded = (k % 64 == 0)
+            .then(|| craft3d_topo::nearest_foot(surface, p))
+            .flatten();
         for at in [
             last.and_then(|l| surface.project_from(p, l).ok()),
             surface.project(p).ok(),
+            seeded,
         ]
         .into_iter()
         .flatten()

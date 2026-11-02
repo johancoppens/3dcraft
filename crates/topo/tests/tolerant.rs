@@ -426,3 +426,37 @@ fn an_edge_whose_projection_lands_on_another_turn_is_measured() {
         );
     }
 }
+
+/// A short edge whose every place projects onto another turn of the
+/// ribbon (all five feet wrong, so walking from them stays wrong) is
+/// measured from feet found by the surface's spans
+/// (`topo::nearest_foot`): ABC models on rational surfaces of 96 spans,
+/// 2026-11-01.
+#[test]
+fn a_short_edge_whose_every_projection_is_wrong_is_measured() {
+    for scale in [1.0, 1e3, 1e-3] {
+        let t = tolerance(scale);
+        let cap = 1000.0 * t.linear;
+        let (surface, middle) = ribbon(16, scale);
+        let (lo, hi) = middle.domain();
+        let wrong = |c: f64| {
+            let p = middle.eval(c);
+            let (u, v) = surface.project(p).unwrap();
+            surface.eval(u, v).distance(p) > scale
+        };
+        // A piece a fiftieth of a span long all of whose places project
+        // wrong.
+        let centre = (0..2000)
+            .map(|k| lo + (hi - lo) * (f64::from(k) + 0.5) / 2000.0)
+            .find(|&c| (0..=4).all(|k| wrong(c - 0.01 + 0.005 * f64::from(k))))
+            .expect("a piece whose projections all go wrong");
+        let range = (centre - 0.01, centre + 0.01);
+        let foot = craft3d_topo::nearest_foot(&surface, middle.eval(centre)).unwrap();
+        assert!(surface.eval(foot.0, foot.1).distance(middle.eval(centre)) <= t.linear);
+        let measured = craft3d_topo::measure_curve(&middle, range, &surface, &t, cap);
+        assert!(
+            measured.is_ok_and(|d| d <= t.linear),
+            "{scale}: {measured:?}"
+        );
+    }
+}
