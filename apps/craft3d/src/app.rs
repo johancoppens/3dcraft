@@ -1539,11 +1539,10 @@ impl Desk {
         changed
     }
 
-    /// `frame`, painted at `time`, or a later one once no popover is
-    /// fading in any more: egui fades an area in over its animation time
-    /// once it becomes visible, and the passes of a picture are all at one
-    /// moment, so one opened by the request before it would be caught
-    /// half drawn. Further passes step the clock by a pass each, at most
+    /// `frame`, painted at `time`, or a later one once nothing moves into
+    /// place any more ([`Shell::animating`]: a popover fading in, the
+    /// drawer sliding): the passes of a picture are all at one moment, so
+    /// one opened by the request before it would be caught half drawn. Further passes step the clock by a pass each, at most
     /// [`FADE_PASSES`].
     fn faded_in(
         &mut self,
@@ -1555,7 +1554,7 @@ impl Desk {
         let mut frame = frame;
         let mut at = time;
         for _ in 0..FADE_PASSES {
-            if !self.host.shell.popover_fading(ctx, at) {
+            if !self.host.shell.animating(ctx, at) {
                 break;
             }
             at += f64::from(self.rec.pass_dt);

@@ -25,8 +25,18 @@ fn call(shell: &mut Shell, session: &mut Session, method: &str, params: Value) -
 }
 
 fn frame(ctx: &egui::Context, shell: &mut Shell, session: &mut Session, time: f64) {
+    frame_sized(ctx, shell, session, time, vec2(1280.0, 800.0));
+}
+
+fn frame_sized(
+    ctx: &egui::Context,
+    shell: &mut Shell,
+    session: &mut Session,
+    time: f64,
+    size: egui::Vec2,
+) {
     let input = egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))),
+        screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, size)),
         time: Some(time),
         ..Default::default()
     };
@@ -117,4 +127,47 @@ fn a_picture_waits_for_the_look_and_the_popover_to_settle() {
     frame(&ctx, &mut shell, &mut session, 5.0);
     assert!(shell.popover_fading(&ctx, 5.0));
     assert!(!shell.popover_fading(&ctx, 5.0 + fade));
+}
+
+/// The narrow layout's drawer slides in and out: a picture waits until it
+/// is in place.
+#[test]
+fn a_picture_waits_for_the_drawer_to_slide() {
+    let mut session = Session::new(Workspace::none());
+    session
+        .execute("file.new", &json!({"units": "mm"}))
+        .unwrap();
+    session
+        .execute("feature.block", &json!({"size": [20, 20, 10]}))
+        .unwrap();
+    let mut shell = Shell::new();
+    let ctx = egui::Context::default();
+    let phone = vec2(390.0, 844.0);
+    frame_sized(&ctx, &mut shell, &mut session, 1.0, phone);
+    frame_sized(&ctx, &mut shell, &mut session, 1.1, phone);
+    assert!(!shell.animating(&ctx, 1.1));
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"panels": {"drawer": true}}),
+    );
+    frame_sized(&ctx, &mut shell, &mut session, 1.2, phone);
+    frame_sized(&ctx, &mut shell, &mut session, 1.21, phone);
+    assert!(shell.animating(&ctx, 1.21), "sliding in");
+    frame_sized(&ctx, &mut shell, &mut session, 2.0, phone);
+    frame_sized(&ctx, &mut shell, &mut session, 2.1, phone);
+    assert!(!shell.animating(&ctx, 2.1), "in place");
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"panels": {"drawer": false}}),
+    );
+    frame_sized(&ctx, &mut shell, &mut session, 3.0, phone);
+    frame_sized(&ctx, &mut shell, &mut session, 3.01, phone);
+    assert!(shell.animating(&ctx, 3.01), "sliding out");
+    frame_sized(&ctx, &mut shell, &mut session, 4.0, phone);
+    frame_sized(&ctx, &mut shell, &mut session, 4.1, phone);
+    assert!(!shell.animating(&ctx, 4.1), "gone");
 }

@@ -789,6 +789,8 @@ pub struct Shell {
     /// Millimetres per length unit of the shown document (the lens of
     /// the studio look's depth of field).
     length_mm: f64,
+    /// The narrow layout's drawer was sliding in or out in the last frame.
+    drawer_sliding: bool,
     shown_status: Option<DocumentStatus>,
     /// The work being done on the host's engine thread, if any.
     work: Option<Work>,
@@ -1095,10 +1097,17 @@ impl Shell {
 
     /// Whether what the window shows is still on its way at egui's time
     /// `now`: the studio look's environment being prepared (the plain
-    /// look is drawn meanwhile), or a popover fading in. A picture of the
-    /// window waits for both.
+    /// look is drawn meanwhile), or something moving into place
+    /// ([`Self::animating`]). A picture of the window waits for both.
     pub fn look_settling(&self, ctx: &egui::Context, now: f64) -> bool {
-        !self.look_ready() || self.popover_fading(ctx, now)
+        !self.look_ready() || self.animating(ctx, now)
+    }
+
+    /// Whether the window's own animations are under way at egui's time
+    /// `now`: a popover fading in, the narrow layout's drawer sliding in
+    /// or out (as of the last frame).
+    pub fn animating(&self, ctx: &egui::Context, now: f64) -> bool {
+        self.popover_fading(ctx, now) || self.drawer_sliding
     }
 
     /// Whether the look can be drawn as asked now: the plain look, or the
@@ -1216,6 +1225,7 @@ impl Shell {
             analysis_problem: None,
             analysis_last: "zebra".to_string(),
             length_mm: 1.0,
+            drawer_sliding: false,
             shown_status: None,
             work: None,
             tabs: Vec::new(),
@@ -2266,6 +2276,8 @@ impl Shell {
     }
 
     fn ui_with(&mut self, ui: &mut egui::Ui, mut session: Option<&mut Session>) {
+        // Set again where the drawer is drawn.
+        self.drawer_sliding = false;
         if !self.themed {
             self.tokens.apply(ui.ctx());
             self.themed = true;
@@ -3056,6 +3068,8 @@ impl Shell {
             self.state.panels.drawer,
             tokens.drawer_seconds,
         );
+        let target = if self.state.panels.drawer { 1.0 } else { 0.0 };
+        self.drawer_sliding = shown.is_finite() && (shown - target).abs() > 1e-3;
         if shown <= 0.0 || !shown.is_finite() {
             self.tree_panel = None;
             return;
