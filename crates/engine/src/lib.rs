@@ -679,7 +679,10 @@ impl Session {
         craft3d_format::to_bytes(open.history.current()).ok()
     }
 
-    /// The command registry, in a fixed order.
+    /// The command registry, in a fixed order. A new command that puts
+    /// back features without anyone making them (a revert, a "back to the
+    /// last good state", a reopening) must also be listed in
+    /// `agent_log::NO_PROVENANCE`, or who made those features is rewritten.
     pub fn commands() -> &'static [CommandSpec] {
         static ALL: std::sync::OnceLock<Vec<CommandSpec>> = std::sync::OnceLock::new();
         ALL.get_or_init(|| {

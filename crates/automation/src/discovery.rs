@@ -224,42 +224,54 @@ fn port_answers(port: u16, timeout: Duration) -> bool {
 /// process `pid` (from `/proc/net/tcp`, `/proc/net/tcp6` and the
 /// process's open files). The window always listens on 127.0.0.1 (IPv4)
 /// only, so with `/proc` readable this fails closed: no 127.0.0.1 listener
-/// on the port, a listener on another address of it (`0.0.0.0`, any IPv6
-/// one: a squatter), or a process whose open files cannot be read
-/// (another user's, a recycled process id) is `Some(false)`. `None` only
-/// where it cannot be told at all (another system, no `/proc`).
+/// on the port, another listener that can take 127.0.0.1 connections on it
+/// (IPv4 `0.0.0.0`, IPv6 `[::]` dual-stack, `::ffff:127.0.0.1`: a
+/// squatter), or a process whose open files cannot be read (another
+/// user's, a recycled process id) is `Some(false)`. Listeners that cannot
+/// take a connection to 127.0.0.1 (`[::1]`, another address) are no
+/// concern. `None` only where it cannot be told at all (another system,
+/// no `/proc`).
+///
+/// A window in a sandbox with its own process ids (Flatpak, a container
+/// with its own pid namespace) is not found by its pid and is refused;
+/// toolbox and distrobox share the host's process ids and are fine.
 pub fn listener_belongs_to(pid: u32, port: u16) -> Option<bool> {
     if !cfg!(target_os = "linux") {
         return None;
     }
     let table = std::fs::read_to_string("/proc/net/tcp").ok()?;
-    let ours = format!("0100007F:{port:04X}");
-    let on_port = format!(":{port:04X}");
+    let listening = |table: &str| -> Vec<(String, String)> {
+        // Fields: sl local remote state ... uid timeout inode.
+        table
+            .lines()
+            .skip(1)
+            .filter_map(|line| {
+                let fields: Vec<&str> = line.split_whitespace().collect();
+                let (local, state, node) = (fields.get(1)?, fields.get(3)?, fields.get(9)?);
+                let (address, at) = local.rsplit_once(':')?;
+                let at = u16::from_str_radix(at, 16).ok()?;
+                (*state == "0A" && at == port)
+                    .then(|| (address.to_ascii_uppercase(), node.to_string()))
+            })
+            .collect()
+    };
     let mut inode = None;
-    // Fields: sl local remote state ... uid timeout inode.
-    for line in table.lines().skip(1) {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        let (Some(local), Some(state), Some(node)) = (fields.get(1), fields.get(3), fields.get(9))
-        else {
-            continue;
-        };
-        if *state != "0A" || !local.ends_with(&on_port) {
-            continue;
-        }
-        if *local == ours {
-            inode = Some(node.to_string());
-        } else {
-            return Some(false);
+    for (address, node) in listening(&table) {
+        match address.as_str() {
+            "0100007F" => inode = Some(node),
+            // Every IPv4 address, 127.0.0.1 among them.
+            "00000000" => return Some(false),
+            _ => {}
         }
     }
     if let Ok(table6) = std::fs::read_to_string("/proc/net/tcp6") {
-        let listening6 = table6.lines().skip(1).any(|line| {
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            matches!((fields.get(1), fields.get(3)), (Some(local), Some(state))
-                if *state == "0A" && local.ends_with(&on_port))
-        });
-        if listening6 {
-            return Some(false);
+        for (address, _) in listening(&table6) {
+            // `[::]` (dual-stack: takes IPv4 too) and `::ffff:127.0.0.1`.
+            if address == "00000000000000000000000000000000"
+                || address == "0000000000000000FFFF00000100007F"
+            {
+                return Some(false);
+            }
         }
     }
     let Some(inode) = inode else {
@@ -299,14 +311,16 @@ pub fn check_private(path: &Path) -> Result<(), String> {
             ));
         }
         // Who "this user" is: the process's own owner where /proc says it
-        // (Linux), else the owner of the folder the file is in (the state
-        // folder, for the default one; macOS).
+        // (Linux), else the owner of the home folder (macOS). On Windows
+        // there is no such check: the token file lives in %LOCALAPPDATA%,
+        // whose access list gives it to its user alone.
         let me = std::fs::metadata("/proc/self")
             .map(|m| m.uid())
             .ok()
             .or_else(|| {
-                path.parent()
-                    .and_then(|folder| std::fs::metadata(folder).ok())
+                // macOS and the like: the owner of the home folder.
+                std::env::var_os("HOME")
+                    .and_then(|home| std::fs::metadata(home).ok())
                     .map(|m| m.uid())
             });
         if let Some(me) = me
@@ -628,13 +642,23 @@ mod tests {
             listener_belongs_to(std::process::id(), any_port),
             Some(false)
         );
-        if let Ok(six) = TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0)) {
+        // Dual-stack `[::]` takes 127.0.0.1 connections: a squatter.
+        if let Ok(six) = TcpListener::bind((std::net::Ipv6Addr::UNSPECIFIED, 0)) {
             let six_port = six.local_addr().unwrap().port();
             assert_eq!(
                 listener_belongs_to(std::process::id(), six_port),
                 Some(false)
             );
         }
+        // A `[::1]` listener (a dev server) beside the window's 127.0.0.1
+        // one on the same port takes no 127.0.0.1 connection: the window
+        // is still the window.
+        let window = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let shared = window.local_addr().unwrap().port();
+        if let Ok(_dev) = TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, shared)) {
+            assert_eq!(listener_belongs_to(std::process::id(), shared), Some(true));
+        }
+        drop(window);
     }
 
     #[test]

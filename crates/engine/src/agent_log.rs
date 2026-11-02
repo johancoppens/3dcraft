@@ -192,7 +192,12 @@ const NOT_LOGGED: [&str; 10] = [
 
 /// Commands that bring back a document as it was (undo, redo, opening,
 /// recovering): they note no provenance; what they bring back keeps its
-/// own.
+/// own. **Keep this list complete:** a command that puts features back
+/// without the person (or an agent) making them anew (a revert, a "back to
+/// the last good state", `jig.edit` reopening a Jig's model, a recovery)
+/// must be listed here, or its features would be noted as made by
+/// whoever ran it. A command that switches to another document needs no
+/// entry (only a change within one document is noted).
 const NO_PROVENANCE: [&str; 7] = [
     "edit.undo",
     "edit.redo",
