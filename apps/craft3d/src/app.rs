@@ -2752,13 +2752,6 @@ mod tests {
             // Still provisional on screen as the recording starts.
             assert!(!desk.host.session.motion().unwrap().exact);
         }
-        // The provisional desk starts its recording later on the wall
-        // clock (as a loaded machine may): the frames must not depend on
-        // it (a Gate run of 2026-11-02 caught the drawer of the narrow
-        // layout half slid in one of them).
-        if ready {
-            std::thread::sleep(Duration::from_millis(120));
-        }
         let start = r#"{"id":1,"method":"ui.record","params":{"path":"frames","step":true}}"#;
         assert_eq!(
             serve(&mut desk, "start", &ask(&requests, start))["ok"],
@@ -2854,6 +2847,76 @@ mod tests {
             }
         }
         format!("{n} pixels differ, from {lo:?} to {hi:?} of {w}x{h}")
+    }
+
+    /// The step-recording test of a provisional moment over and over,
+    /// with the process busy as the Gate's is (other test binaries side
+    /// by side): threads that take and give back every thread of the
+    /// pool, sessions regenerating, and recordings of exact moments at
+    /// once. Fails on the first pair of frames that differ, with the
+    /// diagnostics. `CRAFT3D_STRESS_ROUNDS` rounds (100).
+    #[test]
+    #[ignore = "stress test: run by hand or on the Strix"]
+    fn step_recordings_of_provisional_moments_under_load() {
+        let state = match craft3d_ui_egui::direct::headless_render_state() {
+            Ok(state) => state,
+            Err(e) => {
+                println!("SKIPPED: no graphics adapter: {e}");
+                return;
+            }
+        };
+        let rounds: usize = std::env::var("CRAFT3D_STRESS_ROUNDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let stop = &stop;
+            // The pool taken and given back.
+            scope.spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let lease = craft3d_math::pool::lease(craft3d_math::pool::SHARED_THREADS);
+                    std::thread::sleep(Duration::from_millis(3));
+                    drop(lease);
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            });
+            // Sessions regenerating.
+            for k in 0..4 {
+                scope.spawn(move || {
+                    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join(format!("../../target/tmp/craft3d-stress-load-{k}"));
+                    let _ = std::fs::remove_dir_all(&dir);
+                    std::fs::create_dir_all(&dir).unwrap();
+                    let dir = craft3d_engine::canonical(&dir).unwrap();
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        let mut s = stretching_session(&dir);
+                        for t in [0.1, 0.3, 0.7] {
+                            let _ = s.execute("view.motion", &json!({"t": t}));
+                            let _ = s.scene_with(craft3d_engine::SceneQuality::display());
+                        }
+                    }
+                });
+            }
+            let mut failed = None;
+            for round in 0..rounds {
+                let exact = recorded_moment(&state, &format!("stress-exact-{}", round % 2), false);
+                let ready = recorded_moment(&state, &format!("stress-ready-{}", round % 2), true);
+                if exact != ready {
+                    println!("EVIDENCE exact {}", craft3d_engine::encode_base64(&exact));
+                    println!("EVIDENCE ready {}", craft3d_engine::encode_base64(&ready));
+                    failed = Some(format!(
+                        "round {round}: {}",
+                        frame_difference(&exact, &ready)
+                    ));
+                    break;
+                }
+            }
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            if let Some(why) = failed {
+                panic!("the recorded frame shows the provisional moment: {why}");
+            }
+        });
     }
 
     #[test]
