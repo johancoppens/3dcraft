@@ -910,29 +910,49 @@ fn clip(
         }
     }
 
-    // The stretches between the cuts.
-    let mut spans: Vec<(Cut, Cut, f64, f64)> = Vec::new();
+    // The stretches between the cuts, with the stretch of the curve each
+    // end may be moved within (`room`), when it is a cut of several.
+    let room = rooms(&cuts, (first, last), closed, periodic, period);
+    let mut spans: Vec<Span> = Vec::new();
     if closed {
         match cuts.as_slice() {
             [] => {
                 let seam = plain(first);
-                spans.push((seam, seam, first, first + period));
+                spans.push((seam, seam, first, first + period, None));
             }
             [first_cut, ..] => {
                 let after = cuts.iter().skip(1).chain(std::iter::once(first_cut));
-                for (from, to) in cuts.iter().zip(after) {
-                    let end = if to.t > from.t { to.t } else { to.t + period };
-                    spans.push((*from, *to, from.t, end));
+                for (k, (from, to)) in cuts.iter().zip(after).enumerate() {
+                    let (end, turn) = if to.t > from.t {
+                        (to.t, 0.0)
+                    } else {
+                        (to.t + period, period)
+                    };
+                    let ends = room.get(k).zip(room.get((k + 1) % cuts.len()));
+                    // A period on, and for a spline that closes without
+                    // a period still within its parameters (the end at
+                    // its seam then stays where it is).
+                    let on = |(lo, hi): Room| {
+                        let (lo, hi) = (lo + turn, hi + turn);
+                        if periodic {
+                            (lo, hi)
+                        } else {
+                            (lo.max(first).min(last), hi.max(first).min(last))
+                        }
+                    };
+                    let ends = ends.filter(|_| cuts.len() > 1).map(|(&a, &b)| (a, on(b)));
+                    spans.push((*from, *to, from.t, end, ends));
                 }
             }
         }
     } else {
-        for (from, to) in cuts.iter().zip(cuts.iter().skip(1)) {
-            spans.push((*from, *to, from.t, to.t));
+        for (k, (from, to)) in cuts.iter().zip(cuts.iter().skip(1)).enumerate() {
+            let ends = room.get(k).copied().zip(room.get(k + 1).copied());
+            spans.push((*from, *to, from.t, to.t, ends));
         }
     }
 
-    for (from, to, t0, t1) in spans {
+    for (from, to, t0, t1, ends) in spans {
         let rising = t1 > t0;
         if !rising {
             return Err(Stop::of(NEAR).at(&named));
@@ -1137,9 +1157,26 @@ fn clip(
                 }
             }
         }
+        // The edge runs between its vertices: where several cuts were
+        // one, the vertex is one of their points (or a vertex of an
+        // operand there), and the curve is taken to where it comes
+        // nearest that point, not to the parameter of whichever cut came
+        // first along it. A cut found where an edge runs onto a surface
+        // it is nearly tangent to is placed only to a fraction of the
+        // tolerance along the edge; a curve that ran on past its vertex
+        // by that much would leave the face it bounds and come back.
+        let range = match ends {
+            Some((at_start, at_end)) => {
+                let point = |v: usize| vertices.points.get(v).copied().ok_or(Stop::of(LOST));
+                let s = nearest_to_vertex(curve, (from, t0), at_start, point(start)?);
+                let e = nearest_to_vertex(curve, (to, t1), at_end, point(end)?);
+                if s < e { (s, e) } else { (t0, t1) }
+            }
+            None => (t0, t1),
+        };
         sections.stretches.push(Stretch {
             curve: curve.clone(),
-            range: (t0, t1),
+            range,
             start,
             end,
             fa,
@@ -1150,6 +1187,69 @@ fn clip(
         });
     }
     Ok(())
+}
+
+/// The parameters along a curve that the end of a stretch at a cut may be
+/// moved to: from halfway to the cut before to halfway to the cut after
+/// (or to where the curve starts or ends), so that it never passes a
+/// neighbouring cut and the two stretches that share a cut move their ends
+/// alike.
+type Room = (f64, f64);
+
+/// A stretch between two cuts: the cuts, the parameters it runs between,
+/// and the room of each end.
+type Span = (Cut, Cut, f64, f64, Option<(Room, Room)>);
+
+/// [`Room`] per cut, in the order of `cuts`. Round a closed curve the cut
+/// before the first is the last, a period back; a closed curve that is not
+/// periodic (a spline) is not left.
+fn rooms(
+    cuts: &[Cut],
+    (first, last): (f64, f64),
+    closed: bool,
+    periodic: bool,
+    period: f64,
+) -> Vec<Room> {
+    let n = cuts.len();
+    let t = |k: usize| cuts.get(k).map(|c| c.t);
+    (0..n)
+        .filter_map(|k| {
+            let here = t(k)?;
+            let before = match k.checked_sub(1) {
+                Some(j) => t(j),
+                None if closed && n > 1 => t(n - 1).map(|b| b - period),
+                None => None,
+            };
+            let after = match t(k + 1) {
+                Some(a) => Some(a),
+                None if closed && n > 1 => t(0).map(|a| a + period),
+                None => None,
+            };
+            let lo = before.map_or(first, |b| 0.5 * (b + here));
+            let hi = after.map_or(last, |a| 0.5 * (here + a));
+            let (lo, hi) = if periodic {
+                (lo, hi)
+            } else {
+                (lo.max(first), hi.min(last))
+            };
+            Some((lo.min(here), hi.max(here)))
+        })
+        .collect()
+}
+
+/// The parameter within `room` at which `curve` comes nearest `vertex`,
+/// for the end of a stretch at `cut` (its parameter `at`, which may be the
+/// cut's a period on): `at` itself when the vertex is the cut's own point,
+/// or when no point of the curve there is nearer to it.
+fn nearest_to_vertex(curve: &Curve3, (cut, at): (Cut, f64), room: Room, vertex: Vec3) -> f64 {
+    if vertex == cut.point {
+        return at;
+    }
+    let here = curve.eval(at).distance(vertex);
+    match nearest(curve, room, vertex) {
+        Some((t, d)) if d < here && t.is_finite() => t,
+        _ => at,
+    }
 }
 
 /// How far apart two faces on surfaces of one kind are where they are over
