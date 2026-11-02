@@ -971,19 +971,32 @@ impl<'a> SurfaceBound<'a> {
     }
 
     /// Whether `(u, v)` lies on a border of a spline's parameter range
-    /// (within a billionth of its width).
+    /// (within a billionth of its width) across which the surface closes
+    /// on itself (its two borders in that direction meet at this point):
+    /// a seam, where the same point has two names. A border the surface
+    /// does not close across (the side of a ruled surface, which an edge
+    /// may run along) is no seam (2026-11-01: an edge along it was taken
+    /// for one and its start never settled; ABC models).
     fn on_border(&self, (u, v): (f64, f64)) -> bool {
         let Form::Patches { us, vs, .. } = &self.form else {
             return false;
         };
-        let near = |x: f64, ranges: &[(f64, f64)]| match (ranges.first(), ranges.last()) {
-            (Some(&(lo, _)), Some(&(_, hi))) => {
-                let width = (hi - lo).abs();
-                (x - lo).abs() <= 1e-9 * width || (x - hi).abs() <= 1e-9 * width
-            }
-            _ => false,
+        let ends = |ranges: &[(f64, f64)]| match (ranges.first(), ranges.last()) {
+            (Some(&(lo, _)), Some(&(_, hi))) => Some((lo, hi)),
+            _ => None,
         };
-        near(u, us) || near(v, vs)
+        let near = |x: f64, (lo, hi): (f64, f64)| {
+            let width = (hi - lo).abs();
+            (x - lo).abs() <= 1e-9 * width || (x - hi).abs() <= 1e-9 * width
+        };
+        let meet = |a: Vec3, b: Vec3| a.distance(b) <= 1e-9 * (1.0 + a.length());
+        let across_u = ends(us).is_some_and(|e| {
+            near(u, e) && meet(self.surface.eval(e.0, v), self.surface.eval(e.1, v))
+        });
+        let across_v = ends(vs).is_some_and(|e| {
+            near(v, e) && meet(self.surface.eval(u, e.0), self.surface.eval(u, e.1))
+        });
+        across_u || across_v
     }
 
     /// Whether the parametrisation is singular at `(u, v)`: `∂u × ∂v` has
@@ -2256,6 +2269,33 @@ mod tests {
                     },
                 );
                 assert!(refused.is_err(), "{target:e} at {k}: {refused:?}");
+            }
+        }
+    }
+
+    /// An edge along the side of a ruled ring (a border of the spline's
+    /// range across which it does not close), starting on the ring's
+    /// seam, is proven: only a border the surface closes across is a seam
+    /// whose start must be stepped off (2026-11-01: the side was taken
+    /// for one, the start never settled and may have named the far end of
+    /// the seam; ABC models on rational rings).
+    #[test]
+    fn an_edge_along_the_side_of_a_ring_from_its_seam_is_proven() {
+        for k in [1e-3, 1.0, 1e3] {
+            for u in [0.0, 1.0] {
+                let (surface, side) = arcs(96, 2, k, 0.0, u);
+                let sb = SurfaceBound::new(&surface).unwrap();
+                let cb = CurveBound::new(&side);
+                let range = (0.0, 95.7);
+                // The start's foot named by the far end of the seam, as a
+                // projection may name it.
+                let start = sb.off_singular(&cb, range, (u, 96.0), true);
+                assert!(start.1 < 1.0, "{u} at {k}: {start:?}");
+                let proven = sb.curve_within(&cb, range, start, &[], 1e-6 * k, 1 << 14);
+                assert!(
+                    proven.is_ok_and(|p| p.bound <= 1e-6 * k),
+                    "{u} at {k}: {proven:?}"
+                );
             }
         }
     }
