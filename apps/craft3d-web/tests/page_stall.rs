@@ -21,7 +21,12 @@
 //! and documents are those the page makes itself.
 
 #![cfg(not(target_arch = "wasm32"))]
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 use craft3d_engine::{SceneStep, Session, Workspace, measure_checks, scene_begin, scene_step};
 use craft3d_ui_egui::FileAction;
