@@ -170,25 +170,34 @@ impl Shell {
     /// The Edit menu, after File: Undo and Redo with the step's name,
     /// greyed when there is nothing to undo or redo, and while
     /// [`Self::edit_blocked`].
-    pub(super) fn edit_menu(&mut self, ui: &mut egui::Ui, status: Option<&DocumentStatus>) {
+    pub(super) fn edit_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        status: Option<&DocumentStatus>,
+    ) -> egui::Rect {
         let blocked = self.edit_blocked();
-        ui.menu_button("Edit", |ui| {
+        let tokens = self.tokens;
+        super::menus::kit_menu(ui, &tokens, "Edit", 250.0, |kit, ui| {
             for action in EditAction::ALL {
                 let shortcut = action
                     .shortcuts()
                     .first()
                     .map(|shortcut| ui.ctx().format_shortcut(shortcut))
                     .unwrap_or_default();
-                let button = egui::Button::new(action.menu_text(status)).shortcut_text(shortcut);
+                let text = action.menu_text(status);
                 let enabled = !blocked && action.step(status).is_some();
-                if ui.add_enabled(enabled, button).clicked() {
+                let item = crate::kit::MenuItem::new(&text)
+                    .shortcut(&shortcut)
+                    .enabled(enabled);
+                if kit.menu_item(ui, item).clicked() {
                     if let Some(status) = status {
                         self.request_edit_action(action, status.id);
                     }
                     ui.close();
                 }
             }
-        });
+        })
+        .0
     }
 }
 

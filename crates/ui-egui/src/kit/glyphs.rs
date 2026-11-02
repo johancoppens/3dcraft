@@ -81,6 +81,14 @@ pub enum Glyph {
     Square,
     Menu,
     Folder,
+    /// An agent's connection (the question at connect).
+    Plug,
+    /// A question about a file (consent to write or read).
+    Shield,
+    /// Opens something outside the window (a folder, a page).
+    External,
+    /// The keyboard shortcuts.
+    Keyboard,
     /// One of the icons of the controls over the viewport
     /// (`shell/icons.rs`), so the kit and the bars share them.
     Nav(Icon),
@@ -194,7 +202,7 @@ impl Glyph {
     pub const DOCUMENTS: [Glyph; 3] = [Glyph::Part, Glyph::Assembly, Glyph::Jig];
 
     /// The controls' icons.
-    pub const CONTROLS: [Glyph; 17] = [
+    pub const CONTROLS: [Glyph; 21] = [
         Glyph::Search,
         Glyph::ChevronDown,
         Glyph::ChevronRight,
@@ -211,6 +219,10 @@ impl Glyph {
         Glyph::Square,
         Glyph::Menu,
         Glyph::Folder,
+        Glyph::Plug,
+        Glyph::Shield,
+        Glyph::External,
+        Glyph::Keyboard,
         Glyph::Nav(Icon::Studio),
     ];
 }
@@ -611,6 +623,56 @@ pub fn paint(painter: &egui::Painter, glyph: Glyph, place: Rect, ink: Color32, t
                 (1.5, 13.5),
             ],
         ),
+        Glyph::Plug => {
+            // Two prongs, the body, the cord.
+            line(s, &[(5.5, 1.5), (5.5, 5.0)]);
+            line(s, &[(10.5, 1.5), (10.5, 5.0)]);
+            line(
+                s,
+                &[
+                    (3.0, 5.0),
+                    (13.0, 5.0),
+                    (13.0, 8.0),
+                    (10.5, 11.0),
+                    (5.5, 11.0),
+                    (3.0, 8.0),
+                    (3.0, 5.0),
+                ],
+            );
+            line(s, &[(8.0, 11.0), (8.0, 14.5)]);
+        }
+        Glyph::Shield => closed(
+            s,
+            &[
+                (8.0, 1.5),
+                (13.5, 3.5),
+                (13.0, 8.5),
+                (8.0, 14.5),
+                (3.0, 8.5),
+                (2.5, 3.5),
+            ],
+        ),
+        Glyph::External => {
+            line(
+                s,
+                &[
+                    (7.0, 3.0),
+                    (3.0, 3.0),
+                    (3.0, 13.0),
+                    (13.0, 13.0),
+                    (13.0, 9.0),
+                ],
+            );
+            line(s, &[(9.0, 2.0), (14.0, 2.0), (14.0, 7.0)]);
+            line(s, &[(14.0, 2.0), (7.5, 8.5)]);
+        }
+        Glyph::Keyboard => {
+            closed(s, &[(1.5, 4.0), (14.5, 4.0), (14.5, 12.0), (1.5, 12.0)]);
+            for x in [4.5, 7.0, 9.5, 12.0] {
+                dot(s, x, 6.8, 0.7);
+            }
+            line(s, &[(5.0, 9.6), (11.0, 9.6)]);
+        }
         Glyph::Nav(_) => {}
     }
     painter.extend(shapes);

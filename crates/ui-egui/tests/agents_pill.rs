@@ -1,5 +1,5 @@
-//! The status bar's agents pill and its popover (2026-11-02): always at
-//! the bar's left, opened with a click or `ui.set {"dialogs": {"agents":
+//! The status bar's agents pill and its popover (2026-11-02): at the
+//! bar's right end (decision of 2026-11-02, board s3), opened with a click or `ui.set {"dialogs": {"agents":
 //! true}}`, with the same controls as the start screen's "Connect an AI
 //! agent" block, and inside the window at 1024 × 700 and on a phone.
 
@@ -109,15 +109,19 @@ fn the_pill_opens_the_popover_with_the_start_screens_controls() {
                 "document-folder",
                 "copy-command",
                 "copy-config",
+                "other-clients",
                 "disconnect-all",
             ]
             .contains(&name.as_str())
         })
         .collect();
-    assert_eq!(block.len(), 7, "{block:?}");
-    // The pill is at the status bar's left.
+    assert_eq!(block.len(), 8, "{block:?}");
+    // The pill is at the status bar's right end.
     let pill = shell.agents_pill_rect().unwrap();
-    assert!(pill.left() < 40.0 && pill.bottom() > 850.0, "{pill:?}");
+    assert!(
+        pill.right() > 1400.0 - 40.0 && pill.right() <= 1400.0 && pill.bottom() > 850.0,
+        "{pill:?}"
+    );
     assert_eq!(shell.agents_pill_view().kind, PillKind::Connected);
     assert!(shell.agents_popover_hits().is_empty());
     window.click(&mut shell, &mut session, pill.center());
@@ -191,7 +195,7 @@ fn off_the_pill_is_an_invitation_and_the_help_menu_opens_the_popover() {
     let view = shell.agents_pill_view();
     assert_eq!(
         (view.kind, view.label.as_str()),
-        (PillKind::Off, "Connect AI agent")
+        (PillKind::Off, "Agents off")
     );
     shell.show_agents_popover(true);
     window.frame(&mut shell, &mut session, Vec::new());
@@ -224,8 +228,9 @@ fn the_pill_and_the_popover_fit_small_windows() {
         }
         assert_eq!(shell.agents_pill_view().kind, PillKind::Active);
         let pill = shell.agents_pill_rect().unwrap();
+        // At the right, at most two fifths of the bar wide.
         assert!(
-            pill.left() >= 0.0 && pill.right() <= width * 0.5 + 1.0,
+            pill.right() <= width + 0.5 && pill.left() >= width * 0.5 - 1.0,
             "{width}: {pill:?}"
         );
         assert!(!shell.agents_popover_hits().is_empty());
@@ -266,16 +271,13 @@ fn a_question_takes_no_click_at_first_and_offers_no_first() {
     }
     let hits = shell.agent_prompt_hits().to_vec();
     let labels: Vec<&str> = hits.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(
-        labels,
-        [
-            "Deny",
-            "Allow this file once",
-            "Always allow this folder (all agents)"
-        ]
-    );
+    // "No" first at the left, the amber one last at the right (board s3).
+    assert_eq!(labels, ["Deny", "Allow this folder", "Allow once"]);
+    for pair in hits.windows(2) {
+        assert!(pair[0].1.left() < pair[1].1.left(), "{hits:?}");
+    }
     // At once: the click does nothing.
-    let once = hits[1].1.center();
+    let once = hits[2].1.center();
     window.click(&mut shell, &mut session, once);
     assert_eq!(shell.take_agent_prompt_answer(), None, "taken too early");
     // After the moment: it answers.
@@ -283,7 +285,7 @@ fn a_question_takes_no_click_at_first_and_offers_no_first() {
         window.frame(&mut shell, &mut session, Vec::new());
     }
     assert_eq!(
-        shell.agent_prompt_hits()[1].1.center(),
+        shell.agent_prompt_hits()[2].1.center(),
         once,
         "the same place"
     );
@@ -291,6 +293,95 @@ fn a_question_takes_no_click_at_first_and_offers_no_first() {
     assert_eq!(
         shell.take_agent_prompt_answer(),
         Some((7, PromptAnswer::Once))
+    );
+}
+
+/// The question at connect (decision of 2026-11-02): Refuse at the left,
+/// Only the work folder, then Allow this folder (amber) at the right;
+/// allowing is for this run, or remembered with "Remember for this
+/// folder"; refusing keeps the connection (the host's).
+#[test]
+fn the_question_at_connect_allows_for_the_run_or_remembers() {
+    use craft3d_ui_egui::{AgentPrompt, PromptAnswer};
+    for (remember, expected) in [(false, PromptAnswer::Session), (true, PromptAnswer::Folder)] {
+        let mut session = Session::new(Workspace::none());
+        let mut shell = Shell::new();
+        let mut status = on(Vec::new());
+        status.prompts = vec![AgentPrompt {
+            id: 9,
+            kind: "connect".to_string(),
+            client: "Claude Code".to_string(),
+            path: "/home/me/code/pillow-block".to_string(),
+            folder: "/home/me/code/pillow-block".to_string(),
+            ..AgentPrompt::default()
+        }];
+        shell.set_agents_status(status);
+        let mut window = Window::sized(1024.0, 700.0);
+        for _ in 0..60 {
+            window.frame(&mut shell, &mut session, Vec::new());
+        }
+        let hit = |shell: &Shell, name: &str| {
+            shell
+                .agent_prompt_hits()
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, r)| *r)
+                .unwrap_or_else(|| panic!("{name}: {:?}", shell.agent_prompt_hits()))
+        };
+        let names: Vec<String> = shell
+            .agent_prompt_hits()
+            .iter()
+            .map(|(n, _)| n.clone())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "Refuse",
+                "Only the work folder",
+                "Allow this folder",
+                "remember"
+            ]
+        );
+        // Every button inside the window.
+        for (name, rect) in shell.agent_prompt_hits() {
+            assert!(
+                rect.left() >= 0.0 && rect.right() <= 1024.0 && rect.bottom() <= 700.0,
+                "{name}: {rect:?}"
+            );
+        }
+        if remember {
+            let check = hit(&shell, "remember");
+            window.click(
+                &mut shell,
+                &mut session,
+                check.left_center() + vec2(6.0, 0.0),
+            );
+        }
+        let allow = hit(&shell, "Allow this folder").center();
+        window.click(&mut shell, &mut session, allow);
+        assert_eq!(shell.take_agent_prompt_answer(), Some((9, expected)));
+    }
+    // Refuse and Only the work folder both refuse the folder only.
+    let mut session = Session::new(Workspace::none());
+    let mut shell = Shell::new();
+    let mut status = on(Vec::new());
+    status.prompts = vec![AgentPrompt {
+        id: 10,
+        kind: "connect".to_string(),
+        client: "Claude Code".to_string(),
+        folder: "/tmp/x".to_string(),
+        ..AgentPrompt::default()
+    }];
+    shell.set_agents_status(status);
+    let mut window = Window::sized(1024.0, 700.0);
+    for _ in 0..60 {
+        window.frame(&mut shell, &mut session, Vec::new());
+    }
+    let refuse = shell.agent_prompt_hits()[0].1.center();
+    window.click(&mut shell, &mut session, refuse);
+    assert_eq!(
+        shell.take_agent_prompt_answer(),
+        Some((10, PromptAnswer::Deny))
     );
 }
 

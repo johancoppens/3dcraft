@@ -582,6 +582,19 @@ pub struct Tokens {
     pub shadow_opacity: u8,
     pub shadow_blur: u8,
     pub shadow_drop: i8,
+    /// The kit's dialog (s4–s6 of the plan): its title's size (17 Semi
+    /// Bold), the room around its parts, its corner radius, and the side
+    /// of the icon before its title.
+    pub dialog_title_font: f32,
+    pub dialog_padding: f32,
+    pub dialog_radius: u8,
+    pub dialog_icon: f32,
+    /// The app icon in the start screen's header and the About dialog's
+    /// (the plan's middle way: the original icon where 3DCraft shows
+    /// itself), and the badge on a Showcase card's thumbnail.
+    pub header_icon: f32,
+    pub about_icon: f32,
+    pub card_badge: f32,
 }
 
 /// The colours that change with the appearance (light or dark): the
@@ -1009,6 +1022,13 @@ impl Tokens {
             shadow_opacity: 64,
             shadow_blur: 12,
             shadow_drop: 3,
+            dialog_title_font: 17.0,
+            dialog_padding: 18.0,
+            dialog_radius: 8,
+            dialog_icon: 16.0,
+            header_icon: 46.0,
+            about_icon: 44.0,
+            card_badge: 22.0,
         }
     }
 
@@ -1161,6 +1181,25 @@ impl Tokens {
     /// The visuals of the chrome (the menu bar): egui's light or dark ones,
     /// whichever `menu_fill` is, with `chrome_text` on it, so a dark menu
     /// bar over light panels has light text and a hover that reads.
+    /// The menus that drop from the chrome (board s4): the kit's plate,
+    /// the popover's fill with its faint rim and shadow, `menu_radius`
+    /// round, dark in both appearances.
+    pub fn menu_visuals(&self) -> egui::Visuals {
+        let mut visuals = self.plate_visuals();
+        visuals.window_fill = color(self.popover_fill);
+        visuals.panel_fill = color(self.popover_fill);
+        visuals.window_stroke =
+            egui::Stroke::new(1.0, color_alpha(self.plate_rim, self.popover_rim_opacity));
+        visuals.menu_corner_radius = egui::CornerRadius::same(self.menu_radius);
+        visuals.popup_shadow = egui::Shadow {
+            offset: [0, self.shadow_drop],
+            blur: self.shadow_blur,
+            spread: 0,
+            color: color_alpha(self.view_cube_shadow, self.shadow_opacity),
+        };
+        visuals
+    }
+
     pub fn chrome_visuals(&self) -> egui::Visuals {
         let mut visuals = if is_light(self.menu_fill) {
             egui::Visuals::light()

@@ -960,7 +960,7 @@ impl Shell {
         match action {
             A::ExportJig => jig && !self.jig_in_use(),
             A::OpenForEditing => self.jig_in_use(),
-            A::New | A::Open | A::Save | A::SaveAs | A::Import | A::Export => true,
+            A::New | A::NewAssembly | A::Open | A::Save | A::SaveAs | A::Import | A::Export => true,
         }
     }
 
@@ -1588,37 +1588,82 @@ impl Shell {
         let width = (view.width() - 2.0 * tokens.inset).clamp(120.0, 560.0);
         let at = egui::pos2(view.center().x - width * 0.5, view.top() + tokens.inset);
         let mut back = None;
-        egui::Area::new(egui::Id::new("craft3d-param-trouble"))
+        let kit = crate::kit::Kit::plate(&tokens);
+        let shown = egui::Area::new(egui::Id::new("craft3d-param-trouble"))
             .order(egui::Order::Foreground)
             // Shown at once, in full: a fade would wait for frames an
             // idle window does not draw.
             .fade_in(false)
             .fixed_pos(at)
             .show(ui.ctx(), |ui| {
+                // Board s6: a dark plate with the failure's bar at its
+                // left, the warning and why in red, Back to last good,
+                // amber, at its right.
                 egui::Frame::new()
-                    .fill(color_alpha(tokens.notice_fill, tokens.notice_opacity))
+                    .fill(color(tokens.plate_fill))
                     .corner_radius(egui::CornerRadius::same(tokens.notice_radius))
-                    .inner_margin(egui::Margin::same(8))
+                    .inner_margin(egui::Margin {
+                        left: (tokens.inset + tokens.info_bar_width).clamp(0.0, 40.0) as i8,
+                        right: 10,
+                        top: 8,
+                        bottom: 8,
+                    })
                     .show(ui, |ui| {
                         ui.set_max_width(width);
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(format!(
-                                    "This value breaks the model: {}",
-                                    number_field::shortened(&trouble.message, 400)
-                                ))
-                                .color(color(tokens.chrome_failed)),
-                            )
-                            .wrap(),
-                        );
-                        if let Some(values) = values {
-                            let button = ui.button("Back to last good").on_hover_text(
-                                "Sets the parameters back to the last values that built",
+                        ui.horizontal(|ui| {
+                            let side = tokens.nav_icon_size;
+                            let (icon, _) = ui
+                                .allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+                            crate::kit::glyphs::paint(
+                                ui.painter(),
+                                crate::kit::Glyph::Warning,
+                                icon,
+                                color(tokens.chrome_failed),
+                                &tokens,
                             );
-                            back = Some((button.rect, button.clicked(), values));
-                        }
+                            let button_room = if values.is_some() { 170.0 } else { 0.0 };
+                            ui.allocate_ui(
+                                egui::vec2((ui.available_width() - button_room).max(80.0), 0.0),
+                                |ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(format!(
+                                                "This value breaks the model: {}",
+                                                number_field::shortened(&trouble.message, 400)
+                                            ))
+                                            .font(kit.font())
+                                            .color(color(tokens.chrome_failed)),
+                                        )
+                                        .wrap(),
+                                    );
+                                },
+                            );
+                            if let Some(values) = values {
+                                let button = kit
+                                    .button(
+                                        ui,
+                                        crate::kit::Button::primary("Back to last good")
+                                            .icon(crate::kit::Glyph::Undo),
+                                    )
+                                    .on_hover_text(
+                                        "Sets the parameters back to the last values that built",
+                                    );
+                                back = Some((button.rect, button.clicked(), values));
+                            }
+                        });
                     });
             });
+        let plate = shown.response.rect;
+        ui.ctx().layer_painter(shown.response.layer_id).rect_filled(
+            egui::Rect::from_min_size(plate.min, egui::vec2(tokens.info_bar_width, plate.height())),
+            egui::CornerRadius {
+                nw: tokens.notice_radius,
+                sw: tokens.notice_radius,
+                ne: 0,
+                se: 0,
+            },
+            color(tokens.chrome_failed),
+        );
         if let Some((rect, clicked, values)) = back {
             self.params.banner_hit = Some(rect);
             if clicked {

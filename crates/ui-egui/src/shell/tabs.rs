@@ -116,6 +116,21 @@ pub fn tab_name(path: Option<&str>) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+/// The line icon of a tab's document (the plan's middle way): a Jig's for
+/// a `.3dcraftjig` (in use, or a model of one), an assembly's for a
+/// `.3dcraftasm`, a part's otherwise.
+pub fn tab_glyph(tab: &DocTab) -> crate::kit::Glyph {
+    if tab.jig_in_use {
+        crate::kit::Glyph::Jig
+    } else if tab.assembly {
+        crate::kit::Glyph::Assembly
+    } else {
+        tab.path
+            .as_deref()
+            .map_or(crate::kit::Glyph::Part, super::recent::file_glyph)
+    }
+}
+
 /// The tabs for the open documents, in their order: named after their
 /// files, and `Untitled 1`, `Untitled 2`, … for the ones never saved,
 /// counted in the order of the row.
@@ -136,6 +151,10 @@ pub fn doc_tabs(statuses: &[DocumentStatus], active: Option<usize>) -> Vec<DocTa
                 active: active == Some(status.index),
                 asks_to_close: status.close_asks,
                 jig_in_use: status.jig_in_use,
+                assembly: status
+                    .path
+                    .as_deref()
+                    .is_some_and(|p| p.to_ascii_lowercase().ends_with(".3dcraftasm")),
             }
         })
         .collect()
@@ -330,7 +349,13 @@ impl Shell {
     /// any more, is dropped.
     pub(super) fn sync_tabs(&mut self, session: &Session) {
         let active = session.document_status().map(|status| status.index);
-        self.tabs = doc_tabs(&session.document_statuses(), active);
+        let statuses = session.document_statuses();
+        self.tabs = doc_tabs(&statuses, active);
+        self.assembly_docs
+            .retain(|id| statuses.iter().any(|status| status.id == *id));
+        for (tab, status) in self.tabs.iter_mut().zip(&statuses) {
+            tab.assembly = self.assembly_docs.contains(&status.id);
+        }
         if let Some(closing) = &self.closing {
             let same = self.tabs.iter().any(|tab| {
                 tab.document == closing.document
@@ -381,14 +406,18 @@ impl Shell {
 
     /// The open documents in the File menu, the active one checked, and
     /// Close.
-    pub(super) fn menu_documents(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn menu_documents(&mut self, ui: &mut egui::Ui, kit: &crate::kit::Kit) {
+        use crate::kit::MenuItem;
         let shortcut = ui.ctx().format_shortcut(&close_shortcut());
-        let close = egui::Button::new("Close").shortcut_text(shortcut);
         let active = self
             .active_tab()
             .and_then(|at| self.tabs.get(at))
             .map(|tab| tab.document);
-        if ui.add_enabled(active.is_some(), close).clicked() {
+        let close = MenuItem::new("Close")
+            .icon_room()
+            .shortcut(&shortcut)
+            .enabled(active.is_some());
+        if kit.menu_item(ui, close).clicked() {
             if let Some(document) = active {
                 self.request_close(document);
             }
@@ -397,7 +426,8 @@ impl Shell {
         if self.tabs.is_empty() {
             return;
         }
-        ui.separator();
+        kit.menu_separator(ui);
+        kit.menu_caption(ui, "Documents");
         let mut chosen = None;
         for tab in &self.tabs {
             let mark = if tab.dirty {
@@ -406,10 +436,10 @@ impl Shell {
                 String::new()
             };
             let label = format!("{}{mark}", tab.name);
-            if ui
-                .add(egui::Button::new(label).selected(tab.active))
-                .clicked()
-            {
+            let item = MenuItem::new(&label)
+                .icon(tab_glyph(tab))
+                .checked(tab.active);
+            if kit.menu_item(ui, item).clicked() {
                 chosen = Some(tab.document);
                 ui.close();
             }
@@ -519,29 +549,37 @@ impl Shell {
                                 );
                                 painter.rect_filled(line, 0.0, color(tokens.tab_accent));
                             }
-                            // The unsaved mark, then the name, cut to the room
-                            // left of the close button.
-                            let mut left = rect.left() + 8.0;
-                            if tab.dirty {
-                                let mark = painter.layout_no_wrap(
-                                    UNSAVED_MARK.to_string(),
-                                    egui::FontId::proportional(20.0),
-                                    color(tokens.chrome_attention),
-                                );
-                                let size = mark.size();
-                                painter.galley(
-                                    egui::pos2(left, rect.center().y - size.y * 0.5),
-                                    mark,
-                                    color(tokens.chrome_attention),
-                                );
-                                left += size.x + 4.0;
-                            }
-                            let room = (close_rect.left() - 4.0 - left).max(0.0);
+                            // The document's line icon, the name cut to the
+                            // room left, the "Jig" chip of a Jig in use; at
+                            // the right the close button, or the unsaved
+                            // mark until the pointer is on the tab (f2).
                             let text = if tab.active {
                                 tokens.chrome_text
                             } else {
                                 tokens.chrome_text_dim
                             };
+                            let side = tokens.nav_icon_size;
+                            let icon = egui::Rect::from_center_size(
+                                egui::pos2(rect.left() + 10.0 + side * 0.5, rect.center().y),
+                                egui::vec2(side, side),
+                            );
+                            crate::kit::glyphs::paint(
+                                &painter,
+                                tab_glyph(tab),
+                                icon,
+                                color(text),
+                                &tokens,
+                            );
+                            let left = icon.right() + tokens.nav_icon_gap;
+                            let chip = tab.jig_in_use.then(|| {
+                                painter.layout_no_wrap(
+                                    "Jig".to_string(),
+                                    egui::FontId::proportional(tokens.secondary_font - 2.0),
+                                    color(tokens.pill_wait_text),
+                                )
+                            });
+                            let chip_width = chip.as_ref().map_or(0.0, |c| c.size().x + 12.0 + 6.0);
+                            let room = (close_rect.left() - 4.0 - left - chip_width).max(0.0);
                             let mut job = egui::text::LayoutJob::simple_singleline(
                                 tab.name.clone(),
                                 font.clone(),
@@ -555,8 +593,26 @@ impl Shell {
                                 galley,
                                 color(text),
                             );
-                            // The close button: dim until the pointer is on
-                            // the tab, with a plate under the pointer.
+                            if let Some(chip) = chip {
+                                let chip_rect = egui::Rect::from_min_size(
+                                    egui::pos2(
+                                        left + size.x + 6.0,
+                                        rect.center().y - tokens.chip_height * 0.4,
+                                    ),
+                                    egui::vec2(chip.size().x + 12.0, tokens.chip_height * 0.8),
+                                );
+                                painter.rect_filled(
+                                    chip_rect,
+                                    egui::CornerRadius::same(tokens.pill_radius),
+                                    color(tokens.plate_info_fill),
+                                );
+                                painter.galley(
+                                    chip_rect.center() - chip.size() * 0.5,
+                                    chip,
+                                    color(tokens.pill_wait_text),
+                                );
+                            }
+                            let pointed = closer.hovered() || response.hovered();
                             if closer.hovered() {
                                 painter.rect_filled(
                                     close_rect,
@@ -564,18 +620,30 @@ impl Shell {
                                     color_alpha(tokens.chrome_text_dim, 60),
                                 );
                             }
-                            let tint = if closer.hovered() || response.hovered() || tab.active {
-                                tokens.chrome_text
+                            if tab.dirty && !pointed {
+                                painter.circle_filled(
+                                    close_rect.center(),
+                                    3.5,
+                                    color(tokens.chrome_attention),
+                                );
                             } else {
-                                tokens.chrome_text_dim
-                            };
-                            painter.text(
-                                close_rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                CLOSE_MARK,
-                                egui::FontId::proportional(15.0),
-                                color(tint),
-                            );
+                                let tint = if pointed || tab.active {
+                                    tokens.chrome_text
+                                } else {
+                                    tokens.chrome_text_dim
+                                };
+                                let side = side * 0.7;
+                                crate::kit::glyphs::paint(
+                                    &painter,
+                                    crate::kit::Glyph::Close,
+                                    egui::Rect::from_center_size(
+                                        close_rect.center(),
+                                        egui::vec2(side, side),
+                                    ),
+                                    color(tint),
+                                    &tokens,
+                                );
+                            }
                             let closer = closer.on_hover_text("Close");
                             hits.push((TabPart::Tab(tab.document), rect));
                             hits.push((TabPart::Close(tab.document), close_rect));
@@ -665,72 +733,78 @@ impl Shell {
             .count();
         let mut hits = Vec::new();
         let mut answer = None;
-        let modal = egui::Modal::new(egui::Id::new("craft3d-closing")).show(ui.ctx(), |ui| {
-            ui.set_max_width(380.0);
-            let (doing, done) = if closing.quitting {
-                ("quitting", "quit")
-            } else {
-                ("closing", "close")
-            };
-            if closing.jig {
-                // A Jig in use: its file stays as it is; the values set
-                // are kept only as a model.
-                ui.label(
-                    egui::RichText::new(format!(
-                        "You changed the parameters of \"{}\". Save the result as a model?",
-                        closing.name
-                    ))
-                    .strong(),
-                );
-                ui.add_space(tokens.inset * 0.4);
-                ui.colored_label(
-                    color(tokens.text_dim),
-                    format!("The Jig itself is not changed. The values you set are lost if you {done} without saving them."),
-                );
-            } else {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Save the changes to \"{}\" before {doing}?",
-                        closing.name
-                    ))
-                    .strong(),
-                );
-                ui.add_space(tokens.inset * 0.4);
-                ui.colored_label(
-                    color(tokens.text_dim),
-                    format!("The changes are lost if you {done} without saving."),
-                );
-            }
+        let kit = crate::kit::Kit::panel(&tokens);
+        let (doing, done) = if closing.quitting {
+            ("quitting", "quit")
+        } else {
+            ("closing", "close")
+        };
+        let (title, body) = if closing.jig {
+            // A Jig in use: its file stays as it is; the values set are
+            // kept only as a model.
+            (
+                format!("Save the parameters of \"{}\" as a model?", closing.name),
+                format!(
+                    "The Jig itself is not changed. The values you set are lost if you {done} without saving them."
+                ),
+            )
+        } else {
+            (
+                format!("Save the changes to \"{}\" before {doing}?", closing.name),
+                format!("The changes are lost if you {done} without saving."),
+            )
+        };
+        let dialog = crate::kit::Dialog::new(egui::Id::new("craft3d-closing"), &title)
+            .width(tokens.dialog_width + 40.0)
+            .closable(false);
+        let shown = kit.dialog(ui.ctx(), dialog, |kit, ui| {
+            kit.paragraph(ui, &body, true);
             if closing.quitting && more > 0 {
-                ui.colored_label(
-                    color(tokens.text_dim),
-                    if more == 1 {
-                        "1 more document has unsaved changes.".to_string()
-                    } else {
-                        format!("{more} more documents have unsaved changes.")
-                    },
-                );
+                let more = if more == 1 {
+                    "1 more document has unsaved changes.".to_string()
+                } else {
+                    format!("{more} more documents have unsaved changes.")
+                };
+                kit.paragraph(ui, &more, true);
             }
-            ui.add_space(tokens.inset);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Right to left: Cancel at the right edge.
-                for choice in CloseAnswer::ALL.iter().rev() {
-                    let label = match (closing.jig, choice) {
-                        (true, CloseAnswer::Save) => "Save as model…",
-                        (true, CloseAnswer::Discard) => "Close",
-                        _ => choice.label(),
+            kit.dialog_footer(ui, |ui| {
+                let label = |choice: CloseAnswer| match (closing.jig, choice) {
+                    (true, CloseAnswer::Save) => "Save as model…",
+                    (true, CloseAnswer::Discard) => "Close",
+                    _ => choice.label(),
+                };
+                // Don't Save at the left; Cancel, then Save (amber) last.
+                let mut add =
+                    |ui: &mut egui::Ui, choice: CloseAnswer, button: crate::kit::Button<'_>| {
+                        let response = kit.button(ui, button);
+                        hits.push((choice, response.rect));
+                        if response.clicked() {
+                            answer = Some(choice);
+                        }
                     };
-                    let response = ui.button(label);
-                    hits.push((*choice, response.rect));
-                    if response.clicked() {
-                        answer = Some(*choice);
-                    }
-                }
+                add(
+                    ui,
+                    CloseAnswer::Discard,
+                    crate::kit::Button::quiet(label(CloseAnswer::Discard)),
+                );
+                kit.footer_right(ui, |ui| {
+                    add(
+                        ui,
+                        CloseAnswer::Save,
+                        crate::kit::Button::primary(label(CloseAnswer::Save)),
+                    );
+                    add(
+                        ui,
+                        CloseAnswer::Cancel,
+                        crate::kit::Button::secondary(label(CloseAnswer::Cancel)),
+                    );
+                });
             });
         });
-        hits.reverse();
+        // In the order of `CloseAnswer::ALL`.
+        hits.sort_by_key(|(choice, _)| CloseAnswer::ALL.iter().position(|c| c == choice));
         self.closing_hits = hits;
-        if answer.is_none() && modal.should_close() {
+        if answer.is_none() && shown.close {
             answer = Some(CloseAnswer::Cancel);
         }
         if let Some(answer) = answer {

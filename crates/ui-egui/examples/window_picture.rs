@@ -35,7 +35,11 @@
 //! `--run FILE` runs the commands of FILE (a JSON array of `[id,
 //! {params}]` or `{"command": id, "params": {...}}`) after the documents
 //! are opened, as an agent would (a variable, a failing edit, a
-//! selection). `--dialog export:NAME` opens the export dialog as File › Export… does
+//! selection). `--agents FILE` sets how agents stand from FILE (an
+//! `AgentsStatus` as `ui.get` gives it under `agents`, with `home` for
+//! the `~`), so the pill, its popover and the questions show; the
+//! agents' clock is then the clients' latest command plus half a second.
+//! `--dialog export:NAME` opens the export dialog as File › Export… does
 //! (with what is selected, after `--set {"selectedFeature": …}`), in the
 //! format of NAME's extension when that holds what it chose, `--dialog
 //! error:TEXT` the error dialog. Then,
@@ -51,7 +55,7 @@ use serde_json::json;
 
 const DEFAULT_SIZE: [u32; 2] = [1280, 800];
 
-const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--dialog export:NAME|error:TEXT] [--recent FILE] [--subject NAME] [--run FILE] FILE.3dcraft [FILE.3dcraft | untitled | none ...] OUT.png";
+const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--dialog export:NAME|error:TEXT] [--recent FILE] [--subject NAME] [--run FILE] [--agents FILE] FILE.3dcraft [FILE.3dcraft | untitled | none ...] OUT.png";
 
 fn main() -> Result<(), String> {
     let mut idle = false;
@@ -70,6 +74,7 @@ fn main() -> Result<(), String> {
     let mut recent = None;
     let mut subject: Option<String> = None;
     let mut run: Option<String> = None;
+    let mut agents: Option<craft3d_ui_egui::AgentsStatus> = None;
     let mut paths = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -142,6 +147,21 @@ fn main() -> Result<(), String> {
             }
             "--run" => {
                 run = Some(args.next().ok_or(format!("--run takes a file; {USAGE}"))?);
+            }
+            "--agents" => {
+                let file = args
+                    .next()
+                    .ok_or(format!("--agents takes a file; {USAGE}"))?;
+                let text = std::fs::read_to_string(&file).map_err(|e| format!("--agents: {e}"))?;
+                let value: serde_json::Value =
+                    serde_json::from_str(&text).map_err(|e| format!("--agents: {e}"))?;
+                let mut status: craft3d_ui_egui::AgentsStatus =
+                    serde_json::from_value(value.clone()).map_err(|e| format!("--agents: {e}"))?;
+                status.home = value
+                    .get("home")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                agents = Some(status);
             }
             "--subject" => {
                 subject = Some(
@@ -231,6 +251,11 @@ fn main() -> Result<(), String> {
     shell.attach_gpu(&state)?;
     if let Some(recent) = recent {
         shell.set_recent_files(recent);
+    }
+    if let Some(status) = agents {
+        let latest = status.clients.iter().map(|c| c.last_ms).max().unwrap_or(0);
+        shell.set_agents_clock(Some(latest.saturating_add(500)));
+        shell.set_agents_status(status);
     }
     let ctx = egui::Context::default();
     ctx.set_pixels_per_point(scale);

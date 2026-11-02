@@ -96,6 +96,8 @@ pub enum ChipKind {
 pub enum Segment<'a> {
     Text(&'a str),
     Icon(Glyph),
+    /// A line icon before the words (the start screen's sections).
+    IconText(Glyph, &'a str),
 }
 
 /// A slider with its label and value: `text` is the value as shown
@@ -332,6 +334,12 @@ impl Kit {
                         self.galley(ui, *text, font.clone(), s.text).size().x + 2.0 * pad
                     }
                     Segment::Icon(_) => t.control_height + 2.0 * t.nav_segment_inset + 4.0,
+                    Segment::IconText(_, text) => {
+                        self.galley(ui, *text, font.clone(), s.text).size().x
+                            + 2.0 * pad
+                            + t.nav_icon_size
+                            + t.nav_icon_gap
+                    }
                 };
                 w.max(t.hit_min)
             })
@@ -355,7 +363,7 @@ impl Kit {
             let picked = *chosen == i;
             hit.widget_info(|| {
                 let label = match segment {
-                    Segment::Text(text) => (*text).to_string(),
+                    Segment::Text(text) | Segment::IconText(_, text) => (*text).to_string(),
                     Segment::Icon(glyph) => format!("{glyph:?}"),
                 };
                 egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, picked, label)
@@ -397,6 +405,30 @@ impl Kit {
                         Rect::from_center_size(face.center(), vec2(side, side)),
                         color(ink),
                         t,
+                    );
+                }
+                Segment::IconText(glyph, text) => {
+                    let galley = self.galley(ui, *text, font.clone(), ink);
+                    let side = t.nav_icon_size.min(face.height());
+                    let whole = side + t.nav_icon_gap + galley.size().x;
+                    let x0 = face.center().x - whole * 0.5;
+                    glyphs::paint(
+                        &painter,
+                        *glyph,
+                        Rect::from_center_size(
+                            pos2(x0 + side * 0.5, face.center().y),
+                            vec2(side, side),
+                        ),
+                        color(ink),
+                        t,
+                    );
+                    painter.galley(
+                        pos2(
+                            x0 + side + t.nav_icon_gap,
+                            face.center().y - galley.size().y * 0.5,
+                        ),
+                        galley,
+                        color(ink),
                     );
                 }
             }

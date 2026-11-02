@@ -15,7 +15,9 @@
 //! thumbnails), which a test keeps in step with the scripts.
 
 use super::{FileAction, Shell};
-use crate::theme::{Tokens, color, color_alpha};
+use crate::kit::status::BannerKind;
+use crate::kit::{AppIcon, Button, Glyph, Kit, Segment, brand};
+use crate::theme::color;
 use craft3d_engine::Session;
 use serde_json::{Value, json};
 
@@ -40,9 +42,20 @@ impl ExampleSection {
     pub const ALL: [ExampleSection; 4] = [
         ExampleSection::Parts,
         ExampleSection::Showcase,
-        ExampleSection::Jigs,
         ExampleSection::Assemblies,
+        ExampleSection::Jigs,
     ];
+
+    /// The line icon of its tab (the plan's middle way); none for the
+    /// Showcase, whose cards mix kinds and carry the app icon's badge.
+    pub fn glyph(self) -> Option<crate::kit::Glyph> {
+        match self {
+            ExampleSection::Parts => Some(crate::kit::Glyph::Part),
+            ExampleSection::Assemblies => Some(crate::kit::Glyph::Assembly),
+            ExampleSection::Jigs => Some(crate::kit::Glyph::Jig),
+            ExampleSection::Showcase => None,
+        }
+    }
 
     pub fn title(self) -> &'static str {
         match self {
@@ -261,6 +274,7 @@ pub const EXAMPLES: [Example; 19] = [
 ];
 
 /// The logo: the application's icon (`packaging/icons`).
+#[cfg(test)]
 const LOGO: &[u8] = include_bytes!("../../../../packaging/icons/craft3d-128.png");
 
 /// Largest side of a picture built into the program that is decoded.
@@ -305,7 +319,6 @@ pub fn decode_png(bytes: &[u8]) -> Option<egui::ColorImage> {
 
 /// The logo and thumbnails as textures, made once.
 pub(crate) struct Pictures {
-    logo: Option<egui::TextureHandle>,
     thumbs: Vec<Option<egui::TextureHandle>>,
 }
 
@@ -316,7 +329,6 @@ impl Pictures {
                 .map(|image| ctx.load_texture(name, image, egui::TextureOptions::LINEAR))
         };
         Self {
-            logo: texture("craft3d-logo".to_string(), LOGO),
             thumbs: EXAMPLES
                 .iter()
                 .map(|example| texture(format!("craft3d-example-{}", example.id), example.thumb))
@@ -415,7 +427,68 @@ pub fn shell_word(text: &str, windows: bool) -> String {
     }
 }
 
+/// An MCP client other than Claude Code, for which the agent panel copies
+/// a ready configuration (decision of 2026-11-02: Claude Code by its
+/// command, the others by their JSON).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum McpClient {
+    #[default]
+    ClaudeDesktop,
+    Cursor,
+    VsCode,
+    /// Any client that starts a server over stdio from a command and its
+    /// arguments.
+    Stdio,
+}
+
+impl McpClient {
+    pub const ALL: [McpClient; 4] = [
+        McpClient::ClaudeDesktop,
+        McpClient::Cursor,
+        McpClient::VsCode,
+        McpClient::Stdio,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            McpClient::ClaudeDesktop => "Claude Desktop",
+            McpClient::Cursor => "Cursor",
+            McpClient::VsCode => "VS Code",
+            McpClient::Stdio => "Other (stdio)",
+        }
+    }
+
+    /// Where the person pastes what is copied.
+    pub fn hint(self) -> &'static str {
+        match self {
+            McpClient::ClaudeDesktop => {
+                "Into claude_desktop_config.json (Settings › Developer › Edit Config), then restart Claude Desktop"
+            }
+            McpClient::Cursor => "Into ~/.cursor/mcp.json, or .cursor/mcp.json in a project",
+            McpClient::VsCode => "Into .vscode/mcp.json in a workspace, or the user's mcp.json",
+            McpClient::Stdio => {
+                "The server's command and arguments, for any client that starts an MCP server over stdio"
+            }
+        }
+    }
+}
+
 impl AgentSetup {
+    /// What to paste into `client`'s configuration: the `mcpServers`
+    /// entry for Claude Desktop and Cursor, the `servers` entry of VS
+    /// Code (with its `type`), or the bare command and arguments.
+    pub fn client_config(&self, client: McpClient) -> String {
+        let args: Vec<Value> = self.args().into_iter().map(Value::String).collect();
+        let config = match client {
+            McpClient::ClaudeDesktop | McpClient::Cursor => return self.mcp_config(),
+            McpClient::VsCode => serde_json::json!({
+                "servers": { MCP_SERVER_NAME: { "type": "stdio", "command": self.cli, "args": args } }
+            }),
+            McpClient::Stdio => serde_json::json!({ "command": self.cli, "args": args }),
+        };
+        serde_json::to_string_pretty(&config).unwrap_or_default()
+    }
+
     /// The arguments of the MCP server: `mcp --bridge`, after the prefix.
     fn args(&self) -> Vec<String> {
         let mut args = self.cli_prefix.clone();
@@ -472,47 +545,79 @@ pub(crate) struct StartMemory {
     layout: Option<StartLayout>,
 }
 
-/// How the card is laid out for the room the window gives it: roomy
-/// (a large logo, large thumbnails five to a row) or, below
-/// [`ROOMY_HEIGHT`], compact (a smaller logo, small thumbnails, also five
-/// to a row: two rows for the ten examples), so it fits without scrolling
-/// down to 1024 × 700 and 1366 × 768.
+/// How the start screen is laid out for the room the window gives it
+/// (board f1): roomy, with large thumbnails, or, below [`ROOMY_HEIGHT`],
+/// compact (a smaller header icon, smaller thumbnails, less space), so
+/// two rows of five fit without scrolling down to 1024 × 700 and
+/// 1366 × 768. On a phone the cards go two to a row.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StartLayout {
-    /// The card's width, in points.
+    /// The content's width, in points.
     pub width: f32,
+    /// The app icon in the header.
     pub logo: f32,
+    /// The largest a thumbnail is (4:3).
     pub thumb: egui::Vec2,
     pub per_row: usize,
-    /// The space between the card's parts, in units of `Tokens::inset`
+    /// The space between the screen's parts, in units of `Tokens::inset`
     /// (less in the compact layout).
     pub spacing: f32,
 }
 
-/// The least height (of the room for the card, in points) for the roomy
-/// layout.
+/// The least height (of the room for the start screen, in points) for the
+/// roomy layout.
 pub const ROOMY_HEIGHT: f32 = 760.0;
+
+/// The widest the start screen's content gets, in points (board f1).
+pub const START_WIDTH: f32 = 1000.0;
 
 impl StartLayout {
     /// The layout for room of `size` points.
     pub fn for_room(size: egui::Vec2) -> Self {
+        let width = if size.x.is_finite() {
+            size.x.clamp(0.0, START_WIDTH)
+        } else {
+            START_WIDTH
+        };
         if size.y >= ROOMY_HEIGHT {
             Self {
-                width: size.x.min(880.0),
-                logo: 64.0,
-                thumb: egui::vec2(128.0, 96.0),
+                width,
+                logo: 46.0,
+                // Five fill the 1000 points (184 × 138 each, board f1).
+                thumb: egui::vec2(200.0, 150.0),
                 per_row: 5,
                 spacing: 1.0,
             }
         } else {
             Self {
-                width: size.x.min(980.0),
-                logo: 40.0,
-                thumb: egui::vec2(96.0, 72.0),
+                width,
+                logo: 36.0,
+                thumb: egui::vec2(132.0, 99.0),
                 per_row: 5,
                 spacing: 0.6,
             }
         }
+    }
+
+    /// How many cards go to a row in `width` with `gap` between them, and
+    /// the thumbnail's size: at most `per_row`, at least one, each as
+    /// wide as the row allows up to `thumb`.
+    pub fn cards(&self, width: f32, gap: f32) -> (usize, egui::Vec2) {
+        let least = (self.thumb.x * 0.6).max(96.0);
+        let fit = ((width + gap) / (least + gap)).floor();
+        let per_row = if fit.is_finite() && fit >= 1.0 {
+            (fit as usize).min(self.per_row)
+        } else {
+            1
+        };
+        let n = per_row as f32;
+        let each = ((width - (n - 1.0) * gap) / n).min(self.thumb.x);
+        let each = if each.is_finite() {
+            each.max(24.0)
+        } else {
+            24.0
+        };
+        (per_row, egui::vec2(each, each * 0.75))
     }
 }
 
@@ -581,7 +686,10 @@ impl Shell {
         self.start.hits.clear();
     }
 
-    /// The start screen over the viewport `rect`.
+    /// The start screen over the viewport `rect` (boards f1 and w3): the
+    /// header with the app icon, New part, New assembly and Open…, the
+    /// examples by section, the recent files and how to connect an AI
+    /// agent, on the panel's ground.
     pub(super) fn start_screen(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         if !self.start.shown {
             // The recent files are looked at again as the screen comes up.
@@ -590,14 +698,17 @@ impl Shell {
         self.start.shown = true;
         self.start.hits.clear();
         let tokens = self.tokens;
-        let inner = rect.shrink(tokens.inset * 2.0);
+        ui.painter()
+            .rect_filled(rect, 0.0, color(tokens.panel_fill));
+        let margin = tokens.inset * if rect.width() < 600.0 { 1.6 } else { 2.0 };
+        let inner = rect.shrink(margin);
         if inner.width() < 120.0 || inner.height() < 80.0 {
             return;
         }
         let layout = StartLayout::for_room(inner.size());
         self.start.layout = Some(layout);
         let width = layout.width;
-        let top = (inner.center().y - self.start.height * 0.5).max(inner.top());
+        let top = inner.top() + tokens.inset * layout.spacing;
         let area = egui::Rect::from_min_max(
             egui::pos2(inner.center().x - width * 0.5, top),
             egui::pos2(inner.center().x + width * 0.5, inner.bottom()),
@@ -610,143 +721,142 @@ impl Shell {
         );
         child.style_mut().visuals = tokens.panel_visuals();
         let height = egui::ScrollArea::vertical()
-            .max_height(inner.height())
+            .max_height((inner.bottom() - top).max(0.0))
             .auto_shrink([false, true])
             .show(&mut child, |ui| self.start_card(ui, width))
             .content_size
             .y;
-        if (height - self.start.height).abs() > 0.5 {
-            self.start.height = height;
-            ui.ctx().request_repaint();
-        }
+        self.start.height = height;
     }
 
     fn start_card(&mut self, ui: &mut egui::Ui, width: f32) {
         let tokens = self.tokens;
-        let dim = color(tokens.text_dim);
-        let card = egui::Frame::new()
-            .fill(color(tokens.panel_fill))
-            .stroke(egui::Stroke::new(
-                1.0,
-                color_alpha(tokens.text_dim, tokens.plate_rim_opacity.saturating_mul(2)),
-            ))
-            .corner_radius(egui::CornerRadius::same(tokens.nav_radius))
-            .inner_margin(egui::Margin::same(24));
+        let kit = Kit::panel(&tokens);
         if self.start.pictures.is_none() {
             self.start.pictures = Some(Pictures::load(ui.ctx()));
         }
+        let layout = self
+            .start
+            .layout
+            .unwrap_or_else(|| StartLayout::for_room(egui::vec2(width, ROOMY_HEIGHT)));
         // Less space between the parts in the compact layout.
-        let space = tokens.inset * self.start.layout.map_or(1.0, |l| l.spacing);
-        let shown = card.show(ui, |ui| {
-            ui.set_width(width - 48.0);
-            ui.vertical_centered(|ui| {
-                let side = self.start.layout.map_or(64.0, |l| l.logo);
-                let logo = self.start.pictures.as_ref().and_then(|p| p.logo.as_ref());
-                if let Some(logo) = logo {
-                    ui.add(egui::Image::new((logo.id(), egui::vec2(side, side))));
-                }
-                ui.label(egui::RichText::new(super::PRODUCT).size(26.0).strong());
-                ui.colored_label(dim, format!("Version {}", super::help::VERSION));
-                ui.add_space(space * 0.4);
-                ui.colored_label(
-                    dim,
-                    "Parametric CAD built for AI. Start a document, open one, or let an agent model while you watch.",
+        let space = tokens.inset * layout.spacing;
+        let top = ui.cursor().top();
+        ui.set_width(width);
+        // The header: the app icon, the name and the version.
+        ui.horizontal(|ui| {
+            let side = layout.logo;
+            let (place, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+            brand::paint(ui, &tokens, AppIcon::Part, place, self.dark);
+            ui.add_space(tokens.inset * 0.6);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.label(
+                    egui::RichText::new(super::PRODUCT)
+                        .font(egui::FontId::new(
+                            if layout.spacing < 1.0 { 22.0 } else { 26.0 },
+                            heading_family(ui),
+                        ))
+                        .color(color(tokens.text)),
                 );
-                ui.add_space(space);
-                // Centred: the two buttons laid out in a row of their own width.
-                let size = egui::vec2(0.0, 30.0);
-                let gold = egui::Button::new(
-                    egui::RichText::new("New document").color(color(tokens.plate_fill)),
-                )
-                .fill(color(tokens.accent))
-                .min_size(size);
-                let open = egui::Button::new("Open…").min_size(size);
-                let row = egui::vec2(240.0, 30.0);
-                ui.allocate_ui_with_layout(
-                    row,
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        let new = ui.add(gold);
-                        self.start.hits.push(("new".to_string(), new.rect));
-                        if new.clicked() {
-                            self.request_file_action(FileAction::New);
-                        }
-                        let open = ui.add(open);
-                        self.start.hits.push(("open".to_string(), open.rect));
-                        if open.clicked() {
-                            self.request_file_action(FileAction::Open);
-                        }
-                    },
-                );
-            });
-            ui.add_space(space * 1.4);
-            self.section_row(ui);
-            ui.add_space(space * 0.4);
-            self.example_grid(ui);
-            ui.add_space(space * 1.4);
-            ui.separator();
-            ui.add_space(space * 0.6);
-            // Side by side; on a narrow card (a phone) one under the other,
-            // so nothing runs past the card's edge.
-            let stacked = width < tokens.start_stacked_width;
-            let left = if stacked {
-                ui.available_width()
-            } else {
-                200.0_f32.min(ui.available_width() * 0.3)
-            };
-            let row = if stacked {
-                egui::Layout::top_down(egui::Align::Min)
-            } else {
-                egui::Layout::left_to_right(egui::Align::Min)
-            };
-            ui.with_layout(row, |ui| {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(left, 0.0),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        ui.set_width(left);
-                        heading(ui, &tokens, "Recent");
-                        ui.add_space(tokens.inset * 0.3);
-                        if cfg!(target_arch = "wasm32") {
-                            ui.colored_label(dim, "The browser keeps no recent files.");
-                        } else {
-                            self.recent_links(ui);
-                        }
-                    },
-                );
-                ui.add_space(tokens.inset * if stacked { 0.8 } else { 1.5 });
-                // The agent block with the info accent's bar beside it.
-                let pad = (tokens.info_bar_width + tokens.inset * 0.9).round();
-                let block = egui::Frame::new()
-                    .inner_margin(egui::Margin {
-                        left: pad.clamp(0.0, 64.0) as i8,
-                        ..egui::Margin::ZERO
-                    })
-                    .show(ui, |ui| {
-                        ui.vertical(|ui| self.agent_block(ui));
-                    });
-                let rect = block.response.rect;
-                ui.painter().rect_filled(
-                    egui::Rect::from_min_size(
-                        rect.min,
-                        egui::vec2(tokens.info_bar_width, rect.height()),
-                    ),
-                    egui::CornerRadius::same(tokens.info_bar_radius),
-                    color(tokens.info_accent),
+                ui.label(
+                    egui::RichText::new(format!("Version {}", super::help::VERSION))
+                        .font(kit.font())
+                        .color(color(tokens.text_dim)),
                 );
             });
         });
-        // The whole card, for the test that it stays inside the window.
-        self.start
-            .hits
-            .push(("card".to_string(), shown.response.rect));
+        ui.add_space(space * 0.4);
+        kit.paragraph(
+            ui,
+            "Parametric CAD built for AI. Start a document, open one, or let an agent model while you watch.",
+            true,
+        );
+        ui.add_space(space * 0.4);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = tokens.nav_gap;
+            let new = kit.button(ui, Button::primary("New part").icon(Glyph::Part));
+            self.start.hits.push(("new".to_string(), new.rect));
+            if new.clicked() {
+                self.request_file_action(FileAction::New);
+            }
+            let assembly = kit.button(ui, Button::secondary("New assembly").icon(Glyph::Assembly));
+            self.start
+                .hits
+                .push(("new-assembly".to_string(), assembly.rect));
+            if assembly.clicked() {
+                self.request_file_action(FileAction::NewAssembly);
+            }
+            let open = kit.button(ui, Button::secondary("Open…").icon(Glyph::Folder));
+            self.start.hits.push(("open".to_string(), open.rect));
+            if open.clicked() {
+                self.request_file_action(FileAction::Open);
+            }
+        });
+        ui.add_space(space * 1.6);
+        self.section_row(ui, &kit, width);
+        ui.add_space(space * 0.6);
+        self.example_grid(ui, &kit, width);
+        ui.add_space(space * 1.2);
+        kit.divider(ui);
+        ui.add_space(space * 0.8);
+        // Side by side; on a narrow screen (a phone) one under the other.
+        let stacked = width < tokens.start_stacked_width;
+        let gap = tokens.inset * 4.0;
+        let left = if stacked {
+            width
+        } else {
+            ((width - gap) * 0.38).max(0.0)
+        };
+        let right = if stacked {
+            width
+        } else {
+            (width - gap - left).max(0.0)
+        };
+        let row = if stacked {
+            egui::Layout::top_down(egui::Align::Min)
+        } else {
+            egui::Layout::left_to_right(egui::Align::Min)
+        };
+        ui.with_layout(row, |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(left, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_width(left);
+                    kit.section_header(ui, "Recent");
+                    ui.add_space(tokens.nav_spacing);
+                    if cfg!(target_arch = "wasm32") {
+                        kit.paragraph(ui, "The browser keeps no recent files.", true);
+                    } else {
+                        self.recent_links(ui, &kit);
+                    }
+                },
+            );
+            ui.add_space(if stacked { space } else { gap });
+            ui.allocate_ui_with_layout(
+                egui::vec2(right, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_width(right);
+                    self.agent_block(ui, &kit);
+                },
+            );
+        });
+        ui.add_space(space);
+        // The whole screen's content, for the test that it stays inside
+        // the window.
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(ui.min_rect().left(), top),
+            egui::pos2(ui.min_rect().left() + width, ui.min_rect().bottom()),
+        );
+        self.start.hits.push(("card".to_string(), rect));
     }
 
-    /// "Examples" and the names of the sections that have examples, one
-    /// of them chosen; a click shows that section's cards. A single
-    /// section shows only the heading.
-    fn section_row(&mut self, ui: &mut egui::Ui) {
-        let tokens = self.tokens;
+    /// "Examples" and, at the right (under it on a phone), the sections
+    /// as a segmented control with their line icons; a click shows that
+    /// section's cards. A single section shows only the heading.
+    fn section_row(&mut self, ui: &mut egui::Ui, kit: &Kit, width: f32) {
         let sections: Vec<ExampleSection> = ExampleSection::ALL
             .into_iter()
             .filter(|section| EXAMPLES.iter().any(|e| e.section == *section))
@@ -754,55 +864,59 @@ impl Shell {
         if !sections.contains(&self.start.section) {
             self.start.section = sections.first().copied().unwrap_or_default();
         }
-        ui.horizontal_wrapped(|ui| {
-            heading(ui, &tokens, "Examples");
-            if sections.len() < 2 {
-                return;
-            }
-            ui.add_space(tokens.inset);
-            for section in sections {
-                let chosen = section == self.start.section;
-                let text = egui::RichText::new(section.title()).color(color(if chosen {
-                    tokens.text
-                } else {
-                    tokens.text_dim
-                }));
-                let response = ui.selectable_label(chosen, text);
+        let segments: Vec<Segment<'_>> = sections
+            .iter()
+            .map(|section| match section.glyph() {
+                Some(glyph) => Segment::IconText(glyph, section.title()),
+                None => Segment::Text(section.title()),
+            })
+            .collect();
+        let mut chosen = sections
+            .iter()
+            .position(|s| *s == self.start.section)
+            .unwrap_or(0);
+        let mut show = |ui: &mut egui::Ui| {
+            let choice = kit.segmented(ui, &mut chosen, &segments);
+            for (section, rect) in sections.iter().zip(&choice.items) {
                 self.start
                     .hits
-                    .push((format!("section:{}", section.word()), response.rect));
-                if response.clicked() {
-                    self.start.section = section;
-                }
+                    .push((format!("section:{}", section.word()), *rect));
             }
-        });
+        };
+        let narrow = width < self.tokens.start_stacked_width;
+        if sections.len() < 2 {
+            kit.section_header(ui, "Examples");
+        } else if narrow {
+            kit.section_header(ui, "Examples");
+            ui.add_space(self.tokens.nav_spacing);
+            show(ui);
+        } else {
+            ui.horizontal(|ui| {
+                kit.section_header(ui, "Examples");
+                // At the right: the control is one allocation.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), show);
+            });
+        }
+        if let Some(section) = sections.get(chosen) {
+            self.start.section = *section;
+        }
     }
 
-    /// The examples of the section shown as cards: the thumbnail and the
-    /// name; a click builds or opens it in a new document.
-    fn example_grid(&mut self, ui: &mut egui::Ui) {
+    /// The examples of the section shown as cards: the thumbnail, the
+    /// name and what it shows; in the Showcase (where kinds mix) the app
+    /// icon's badge at the thumbnail's corner. A click builds or opens it
+    /// in a new document.
+    fn example_grid(&mut self, ui: &mut egui::Ui, kit: &Kit, width: f32) {
         let tokens = self.tokens;
-        let gap = tokens.inset;
         let layout = self
             .start
             .layout
-            .unwrap_or_else(|| StartLayout::for_room(egui::vec2(760.0, ROOMY_HEIGHT)));
-        let thumb = layout.thumb;
-        let gap = if layout.thumb.x < 110.0 {
-            gap * 0.8
-        } else {
-            gap
-        };
-        let label_height = 20.0;
-        let card = egui::vec2(thumb.x, thumb.y + label_height);
-        let per_row = {
-            let fit = ((ui.available_width() + gap) / (card.x + gap)).floor();
-            if fit.is_finite() && fit >= 1.0 {
-                (fit as usize).min(layout.per_row)
-            } else {
-                1
-            }
-        };
+            .unwrap_or_else(|| StartLayout::for_room(egui::vec2(width, ROOMY_HEIGHT)));
+        let gap = tokens.inset * if layout.spacing < 1.0 { 1.4 } else { 2.0 };
+        let (per_row, thumb) = layout.cards(width, gap);
+        let compact = thumb.x < 150.0;
+        let text_height = if compact { 32.0 } else { 38.0 };
+        let card = egui::vec2(thumb.x, thumb.y + text_height);
         let thumbs: Vec<Option<egui::TextureId>> = self
             .start
             .pictures
@@ -814,19 +928,15 @@ impl Shell {
                     .collect()
             })
             .unwrap_or_default();
-        // The rows centred as a block: a short last row lines up with the
-        // others on the left.
-        let block = per_row as f32 * card.x + (per_row as f32 - 1.0) * gap;
-        let pad = ((ui.available_width() - block) * 0.5).max(0.0);
         let section = self.start.section;
+        let badge = section == ExampleSection::Showcase;
         let shown: Vec<&'static Example> =
             EXAMPLES.iter().filter(|e| e.section == section).collect();
         for (row, examples) in shown.chunks(per_row).enumerate() {
             if row > 0 {
-                ui.add_space(gap);
+                ui.add_space(gap * 0.6);
             }
             ui.horizontal(|ui| {
-                ui.add_space(pad);
                 ui.spacing_mut().item_spacing.x = gap;
                 for &example in examples {
                     let index = EXAMPLES.iter().position(|e| e.id == example.id);
@@ -834,7 +944,7 @@ impl Shell {
                     let response = response
                         .on_hover_text(format!("{}: {}", example.title, example.summary))
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
-                    let painter = ui.painter_at(rect.expand(2.0));
+                    let painter = ui.painter_at(rect.expand(3.0));
                     let image = egui::Rect::from_min_size(rect.min, thumb);
                     let radius = egui::CornerRadius::same(tokens.thumb_radius);
                     if let Some(Some(id)) = index.and_then(|i| thumbs.get(i)) {
@@ -843,6 +953,15 @@ impl Shell {
                             .paint_at(ui, image);
                     } else {
                         painter.rect_filled(image, radius, color(tokens.viewport_background));
+                    }
+                    if badge {
+                        let side = tokens.card_badge;
+                        let place = egui::Rect::from_min_size(
+                            image.min
+                                + egui::vec2(tokens.nav_spacing * 2.0, tokens.nav_spacing * 2.0),
+                            egui::vec2(side, side),
+                        );
+                        brand::paint(ui, &tokens, example_icon(example), place, false);
                     }
                     // The ring of the info accent: a click here opens, it
                     // does not act on the document.
@@ -854,26 +973,25 @@ impl Shell {
                             egui::StrokeKind::Outside,
                         );
                     }
-                    // One row, cut with an ellipsis at the card's width
-                    // (the whole title is in the tooltip).
-                    let mut job = egui::text::LayoutJob::single_section(
-                        example.title.to_string(),
-                        egui::TextFormat::simple(
-                            egui::FontId::proportional(if thumb.x < 110.0 { 12.0 } else { 13.0 }),
-                            color(if response.hovered() {
-                                tokens.text
-                            } else {
-                                tokens.text_dim
-                            }),
-                        ),
-                    );
-                    job.wrap =
-                        egui::text::TextWrapping::truncate_at_width((rect.width() - 2.0).max(1.0));
-                    painter.galley(
-                        egui::pos2(rect.min.x + 2.0, image.max.y + 3.0),
-                        painter.layout_job(job),
-                        egui::Color32::PLACEHOLDER,
-                    );
+                    // The name and what it shows, each on one row cut with
+                    // an ellipsis at the card's width.
+                    let mut y = image.max.y + 4.0;
+                    for (text, font, ink) in [
+                        (example.title, kit.font(), tokens.text),
+                        (example.summary, kit.small_font(), tokens.text_dim),
+                    ] {
+                        let mut job = egui::text::LayoutJob::single_section(
+                            text.to_string(),
+                            egui::TextFormat::simple(font, color(ink)),
+                        );
+                        job.wrap = egui::text::TextWrapping::truncate_at_width(
+                            (rect.width() - 2.0).max(1.0),
+                        );
+                        let galley = painter.layout_job(job);
+                        let h = galley.size().y;
+                        painter.galley(egui::pos2(rect.min.x + 2.0, y), galley, color(ink));
+                        y += h;
+                    }
                     self.start
                         .hits
                         .push((format!("example:{}", example.id), rect));
@@ -885,29 +1003,44 @@ impl Shell {
         }
     }
 
-    fn agent_block(&mut self, ui: &mut egui::Ui) {
-        let tokens = self.tokens;
-        heading(ui, &tokens, "Connect an AI agent");
-        let hits = self.agents_panel(ui);
+    /// "Connect an AI agent": the same panel as the popover over the pill
+    /// (switch, work folder, `claude mcp add …`, other clients); in the
+    /// browser a banner that says agents need the desktop app.
+    fn agent_block(&mut self, ui: &mut egui::Ui, kit: &Kit) {
+        if cfg!(target_arch = "wasm32") {
+            kit.banner(
+                ui,
+                BannerKind::Info,
+                None,
+                "In the browser an agent cannot drive 3DCraft yet. Use the desktop app to connect one.",
+                |_, _| {},
+            );
+            return;
+        }
+        let hits = self.agents_panel(ui, kit);
         self.start.hits.extend(hits);
     }
 }
 
-/// A heading of the start screen, with the info accent's bar before it.
-fn heading(ui: &mut egui::Ui, tokens: &Tokens, text: &str) {
-    ui.horizontal(|ui| {
-        let height = egui::TextStyle::Body.resolve(ui.style()).size;
-        let (bar, _) = ui.allocate_exact_size(
-            egui::vec2(tokens.info_bar_width, height),
-            egui::Sense::hover(),
-        );
-        ui.painter().rect_filled(
-            bar,
-            egui::CornerRadius::same(tokens.info_bar_radius),
-            color(tokens.info_accent),
-        );
-        ui.label(egui::RichText::new(text).strong());
-    });
+/// The kind of document an example opens as, for its badge.
+fn example_icon(example: &Example) -> AppIcon {
+    match example.source {
+        Source::File { name, .. } if name.ends_with(".3dcraftasm") => AppIcon::Assembly,
+        Source::File { name, .. } if name.ends_with(".3dcraftjig") => AppIcon::Jig,
+        _ => match example.section {
+            ExampleSection::Assemblies => AppIcon::Assembly,
+            ExampleSection::Jigs => AppIcon::Jig,
+            _ => AppIcon::Part,
+        },
+    }
+}
+
+/// The headings' family where the fonts in force have one (Semi Bold).
+fn heading_family(ui: &egui::Ui) -> egui::FontFamily {
+    ui.style()
+        .text_styles
+        .get(&egui::TextStyle::Heading)
+        .map_or(egui::FontFamily::Proportional, |font| font.family.clone())
 }
 
 #[cfg(test)]
@@ -961,8 +1094,18 @@ mod tests {
     #[test]
     fn a_short_window_gets_the_compact_layout() {
         let roomy = StartLayout::for_room(egui::vec2(1500.0, 900.0));
-        assert_eq!((roomy.per_row, roomy.logo), (5, 64.0));
-        assert_eq!(roomy.width, 880.0);
+        assert_eq!((roomy.per_row, roomy.logo), (5, 46.0));
+        assert_eq!(roomy.width, START_WIDTH);
+        // Five cards fill the content's width (board f1).
+        let (per_row, thumb) = roomy.cards(START_WIDTH, 20.0);
+        assert_eq!(per_row, 5);
+        assert!(
+            (thumb.x * 5.0 + 80.0 - START_WIDTH).abs() < 0.5,
+            "{thumb:?}"
+        );
+        // On a phone, two to a row.
+        let phone = StartLayout::for_room(egui::vec2(358.0, 780.0));
+        assert_eq!(phone.cards(358.0, 20.0).0, 2);
         for room in [
             egui::vec2(1240.0, 716.0),
             egui::vec2(1326.0, 684.0),
