@@ -461,7 +461,7 @@ fn the_shell_puts_the_gpu_picture_on_screen_and_says_so() {
     assert_eq!(got["render"]["renderer"], "cpu");
     assert_eq!(
         got["renderer"],
-        json!({"backend": "cpu", "adapter": Value::Null, "fallback": Value::Null, "direct": false, "msaa": 1})
+        json!({"backend": "cpu", "adapter": Value::Null, "fallback": Value::Null, "direct": false, "msaa": 1, "leftGpu": Value::Null})
     );
 }
 
