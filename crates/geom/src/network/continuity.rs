@@ -4107,6 +4107,16 @@ mod tests {
     /// remainder `d² sup |∂²_τ G| / 2` from the rows' sizes is most of the
     /// bound (its supremum, from sizes over both pieces, is loose), which at
     /// a real seam's window (`d` about 1e-13 of the edge) is nothing.
+    ///
+    /// What it pins (mutations of `combine` run on a throwaway branch,
+    /// 2026-11-02, Check 41405334166): the rough cross terms zeroed or
+    /// halved fail it (a sample of the curvature along 1.28 against 0.15
+    /// and 0.93 of bound), so the `Rough` terms are pinned. The smooth
+    /// term is not: the neighbour's `sup |∂²_τ G|` zeroed or halved, and
+    /// the whole expansion `d s₁ + d² s₂ / 2` halved, all still pass,
+    /// since the bound is 26 to 148 times the largest sample and the
+    /// samples stay below even half of it. Pinning it needs a remainder
+    /// tighter than the sizes give, not a different `b`.
     #[test]
     fn the_break_terms_cover_b_across_the_break_and_are_not_loose() {
         let (a, b) = continued_pair(0.03);
