@@ -1366,69 +1366,23 @@ impl Shell {
         Ok(self.ui_param_answer(&ask, &outcome))
     }
 
-    /// The header of the side panel: the Parameters and Features tabs
-    /// when a document is open, then the tab that is chosen.
+    /// The side panel (`shell/sidepanel`): its tabs, Parameters first
+    /// for a document with public parameters or an assembly with joints
+    /// to set.
     pub(super) fn side_panel(&mut self, ui: &mut egui::Ui, has_document: bool) {
-        let tokens = self.tokens;
-        ui.add_space(tokens.inset * 0.5);
         let jig = has_document && self.params.list.as_ref().is_some_and(|l| l.jig);
         // An assembly's joints that can be set by hand are sliders there.
         let joints = has_document && self.has_joint_sliders();
-        let tree_label = if self.is_assembly_shown() {
-            "Assembly"
-        } else {
-            "Features"
-        };
-        if jig || joints {
-            ui.horizontal(|ui| {
-                let open = self.state.parameters.open;
-                let mut label = egui::RichText::new("Parameters");
-                if open {
-                    label = label.strong();
-                }
-                if ui
-                    .selectable_label(open, label)
-                    .on_hover_text("The document's public parameters and an assembly's free joints: set them, the model follows")
-                    .clicked()
-                {
-                    self.state.parameters.open = true;
-                }
-                let mut label = egui::RichText::new(tree_label);
-                if !open {
-                    label = label.strong();
-                }
-                if ui
-                    .selectable_label(!open, label)
-                    .on_hover_text("The design history")
-                    .clicked()
-                {
-                    self.state.parameters.open = false;
-                }
-            });
-        } else {
-            let header = ui.label(egui::RichText::new(tree_label).strong());
-            if has_document {
-                // A document without public parameters has no
-                // Parameters tab: how it gets one.
-                header.on_hover_text(NO_PARAMETERS);
-            }
-        }
-        ui.separator();
-        if (jig || joints) && self.state.parameters.open {
-            if joints {
-                self.joints_ui(ui);
-            }
-            if jig {
-                self.parameters_tab(ui);
-            }
-        } else {
-            self.params.hits.clear();
-            self.tree(ui, has_document);
-        }
+        self.side_tabs(ui, has_document, jig, joints);
+    }
+
+    /// The Parameters tab is not shown: none of its fields are hit.
+    pub(super) fn parameters_hidden(&mut self) {
+        self.params.hits.clear();
     }
 
     /// The Parameters tab.
-    fn parameters_tab(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn parameters_tab(&mut self, ui: &mut egui::Ui) {
         let tokens = self.tokens;
         let dim = color(tokens.text_dim);
         let now = ui.input(|i| i.time);

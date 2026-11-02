@@ -1,0 +1,434 @@
+//! The checks under the feature list (plan of 2026-11-02, boards 01 and
+//! 12): a header that folds them (`Checks 7 · all pass`, `1 failing`),
+//! then a row per check, measured against its limit (`7 mm  ≥ 5 mm`) with
+//! a dot that carries a tick or a cross, so the state does not hang on
+//! colour alone. A failing check is a red row with its reason under it. A
+//! click on a check flies to what it measures. While something is
+//! selected the checks fold to their header, to make room for its
+//! properties.
+
+use super::Shell;
+use super::features::{Dot, status_dot};
+use crate::kit::Kit;
+use crate::shell::views::FlyTo;
+use craft3d_engine::AssertionStatus as A;
+use egui::{Rect, Sense, pos2, vec2};
+use serde_json::{Value, json};
+
+/// Most checks listed; the header counts them all.
+const MAX_LISTED: usize = 200;
+
+/// A check as the list shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckLine {
+    pub name: String,
+    /// What was measured (`7 mm`), or the state when nothing was.
+    pub measured: String,
+    /// What it must be (`≥ 5 mm`).
+    pub limit: String,
+    /// Passed; failed (or the measure could not be taken); not proven
+    /// either way; being measured; switched off.
+    pub status: CheckStatus,
+    /// Under a failing check: why.
+    pub note: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckStatus {
+    Passed,
+    Failed,
+    NotProven,
+    Pending,
+    Off,
+}
+
+impl Shell {
+    /// The checks as the list shows them, and the header's note
+    /// (`all pass`, `1 failing`).
+    pub fn side_checks(&self) -> (Vec<CheckLine>, String) {
+        let lines: Vec<CheckLine> =
+            self.assertion_rows
+                .iter()
+                .map(|a| {
+                    let status = match a.status {
+                        A::Passed => CheckStatus::Passed,
+                        A::Failed | A::Error => CheckStatus::Failed,
+                        A::NotProven => CheckStatus::NotProven,
+                        A::Pending => CheckStatus::Pending,
+                        A::Inactive => CheckStatus::Off,
+                    };
+                    CheckLine {
+                        name: a.name.clone(),
+                        measured: a.measured.as_deref().map(compact).unwrap_or_else(
+                            || match status {
+                                CheckStatus::Pending => "measuring".to_string(),
+                                CheckStatus::Off => "off".to_string(),
+                                _ => "—".to_string(),
+                            },
+                        ),
+                        limit: a.expected.clone(),
+                        status,
+                        // Which step made it fail is not known yet: its reason.
+                        note: matches!(status, CheckStatus::Failed | CheckStatus::NotProven)
+                            .then(|| a.message.clone()),
+                    }
+                })
+                .collect();
+        let failing = lines
+            .iter()
+            .filter(|l| l.status == CheckStatus::Failed)
+            .count();
+        let unproven = lines
+            .iter()
+            .filter(|l| l.status == CheckStatus::NotProven)
+            .count();
+        let pending = lines
+            .iter()
+            .filter(|l| l.status == CheckStatus::Pending)
+            .count();
+        let note = if lines.is_empty() {
+            String::new()
+        } else if failing > 0 {
+            format!("{failing} failing")
+        } else if unproven > 0 {
+            format!("{unproven} not proven")
+        } else if pending > 0 {
+            "measuring".to_string()
+        } else {
+            "all pass".to_string()
+        };
+        (lines, note)
+    }
+
+    /// How high the checks are drawn: the rule, the header and, open,
+    /// their rows (scrolled past a third of the window).
+    pub(super) fn checks_height(&self, ui: &egui::Ui, folded: bool) -> f32 {
+        let folded = folded && !self.side.checks_asked;
+        let kit = Kit::panel(&self.tokens);
+        let t = kit.t;
+        let mut h = t.nav_gap + 1.0 + kit.hit(t.row_height);
+        if self.assertion_rows.is_empty() {
+            let width = (ui.available_width() - f32::from(crate::shell::side_inset(&t))).max(40.0);
+            let hint = ui.painter().layout(
+                crate::shell::NO_ASSERTIONS_HINT.to_string(),
+                kit.small_font(),
+                kit.c(kit.skin.text_dim),
+                width,
+            );
+            return h + hint.size().y + t.nav_spacing * 2.0;
+        }
+        if self.state.side_panel.checks_open && !folded {
+            h += self.checks_rows_height().min(self.checks_max_height(ui));
+        }
+        h
+    }
+
+    fn checks_rows_height(&self) -> f32 {
+        let kit = Kit::panel(&self.tokens);
+        let t = kit.t;
+        let (lines, _) = self.side_checks();
+        lines
+            .iter()
+            .take(MAX_LISTED)
+            .map(|l| {
+                kit.hit(if l.note.is_some() {
+                    t.row_height + t.label_row_height
+                } else {
+                    t.row_height
+                })
+            })
+            .sum()
+    }
+
+    fn checks_max_height(&self, ui: &egui::Ui) -> f32 {
+        (ui.ctx().content_rect().height() * 0.3).max(self.tokens.row_height * 3.0)
+    }
+
+    /// The checks' header and, open, their rows.
+    pub(super) fn checks_ui(&mut self, ui: &mut egui::Ui, folded: bool) {
+        // Folded for room (something selected, a short panel) unless they
+        // were opened since by hand.
+        let folded = folded && !self.side.checks_asked;
+        let kit = Kit::panel(&self.tokens);
+        let t = kit.t;
+        let sk = kit.skin;
+        let (lines, note) = self.side_checks();
+        let note_ink = if lines.iter().any(|l| l.status == CheckStatus::Failed) {
+            sk.failed
+        } else if lines.iter().any(|l| l.status == CheckStatus::NotProven) {
+            sk.attention
+        } else {
+            sk.ok
+        };
+        kit.divider(ui);
+        let mut open = self.state.side_panel.checks_open && !folded;
+        let header = kit.fold_header(
+            ui,
+            &mut open,
+            "Checks",
+            Some(lines.len()),
+            Some((&note, note_ink)),
+        );
+        self.side
+            .hits
+            .targets
+            .push(("checks".to_string(), header.rect));
+        self.side.hits.drawn.push(header.rect);
+        if header.changed() {
+            self.state.side_panel.checks_open = open;
+            self.side.checks_asked = open;
+        }
+        if lines.is_empty() {
+            // How to add one.
+            let width = ui.available_width();
+            let hint = ui.painter().layout(
+                crate::shell::NO_ASSERTIONS_HINT.to_string(),
+                kit.small_font(),
+                kit.c(sk.text_dim),
+                width,
+            );
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(width, hint.size().y + t.nav_spacing * 2.0),
+                Sense::hover(),
+            );
+            self.side.hits.drawn.push(rect);
+            ui.painter().galley(rect.min, hint, kit.c(sk.text_dim));
+            return;
+        }
+        if !open {
+            return;
+        }
+        let max_height = self.checks_rows_height().min(self.checks_max_height(ui));
+        let mut fly: Option<String> = None;
+        let mut pending = false;
+        egui::ScrollArea::vertical()
+            .id_salt("craft3d-side-checks")
+            .max_height(max_height)
+            .min_scrolled_height(max_height)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for line in lines.iter().take(MAX_LISTED) {
+                    pending |= line.status == CheckStatus::Pending;
+                    let failing = line.status == CheckStatus::Failed;
+                    let height = if line.note.is_some() {
+                        t.row_height + t.label_row_height
+                    } else {
+                        t.row_height
+                    };
+                    let (rect, response) = ui.allocate_exact_size(
+                        vec2(ui.available_width(), kit.hit(height)),
+                        Sense::click(),
+                    );
+                    self.side.hits.checks.push((line.name.clone(), rect));
+                    self.side.hits.drawn.push(rect);
+                    let painter = ui.painter();
+                    if failing {
+                        painter.rect_filled(rect, 0.0, kit.c(sk.failed_fill));
+                        painter.rect_filled(
+                            Rect::from_min_size(rect.min, vec2(t.info_bar_width, rect.height())),
+                            0.0,
+                            kit.c(sk.failed),
+                        );
+                    } else if response.hovered() {
+                        painter.rect_filled(rect, kit.radius(), kit.c(sk.hover));
+                    }
+                    let y = rect.top() + t.row_height * 0.5;
+                    let r = t.nav_icon_size * 0.42;
+                    let dot = match line.status {
+                        CheckStatus::Passed => Dot::Ok,
+                        CheckStatus::Failed => Dot::Failed,
+                        CheckStatus::NotProven | CheckStatus::Pending | CheckStatus::Off => {
+                            Dot::Grey
+                        }
+                    };
+                    let x0 = rect.left() + t.nav_spacing * 2.0 + if failing { 4.0 } else { 0.0 };
+                    status_dot(painter, &kit, pos2(x0 + r, y), r, dot);
+                    let text_x = x0 + 2.0 * r + t.nav_icon_gap + 2.0;
+                    // At the right: the limit, and the measure before it.
+                    let limit = kit.galley(ui, line.limit.clone(), kit.font(), sk.text_dim);
+                    let limit_w = limit.size().x;
+                    let right = rect.right() - 2.0;
+                    painter.galley(
+                        pos2(right - limit_w, y - limit.size().y * 0.5),
+                        limit,
+                        kit.c(sk.text_dim),
+                    );
+                    let measured_ink = if failing { sk.failed } else { sk.text };
+                    let measured = kit.galley(ui, line.measured.clone(), kit.font(), measured_ink);
+                    let measured_x = right - limit_w - t.nav_icon_gap * 1.5 - measured.size().x;
+                    painter.galley(
+                        pos2(measured_x, y - measured.size().y * 0.5),
+                        measured,
+                        kit.c(measured_ink),
+                    );
+                    let mut job = egui::text::LayoutJob::simple_singleline(
+                        line.name.clone(),
+                        kit.font(),
+                        kit.c(sk.text),
+                    );
+                    job.wrap = egui::text::TextWrapping::truncate_at_width(
+                        (measured_x - t.nav_icon_gap - text_x).max(0.0),
+                    );
+                    let name = painter.layout_job(job);
+                    painter.galley(pos2(text_x, y - name.size().y * 0.5), name, kit.c(sk.text));
+                    if let Some(note) = &line.note {
+                        let mut job = egui::text::LayoutJob::simple_singleline(
+                            note.clone(),
+                            kit.font(),
+                            kit.c(sk.failed),
+                        );
+                        job.wrap =
+                            egui::text::TextWrapping::truncate_at_width((right - text_x).max(0.0));
+                        let note = painter.layout_job(job);
+                        let ny = rect.top() + t.row_height + t.label_row_height * 0.5;
+                        painter.galley(
+                            pos2(text_x, ny - note.size().y * 0.5),
+                            note,
+                            kit.c(sk.failed),
+                        );
+                    }
+                    if response.clicked() {
+                        fly = Some(line.name.clone());
+                    }
+                }
+            });
+        // Measured on another thread: look again soon.
+        if pending {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(250));
+        }
+        if let Some(name) = fly {
+            self.fly_to_check(&name);
+        }
+    }
+
+    /// Flies to what the check `name` measures: a feature or body it names,
+    /// else the faces or edges it names, selected.
+    fn fly_to_check(&mut self, name: &str) {
+        let subject = self
+            .side
+            .checks_list
+            .as_deref()
+            .and_then(|list| subject_of(list, name));
+        let Some(subject) = subject else {
+            // Nothing named: the whole model.
+            self.request_fly(FlyTo::Selection);
+            return;
+        };
+        if let Some(row) = self
+            .rows
+            .iter()
+            .find(|r| r.id == subject || r.name == subject)
+        {
+            let id = row.id.clone();
+            self.state.selected_feature = Some(id.clone());
+            self.queue_select(json!({"items": [{"kind": "feature", "feature": id}]}));
+            self.request_fly(FlyTo::Feature(id));
+            return;
+        }
+        self.queue_select(json!({ "names": [subject] }));
+        self.request_fly(FlyTo::Selection);
+    }
+}
+
+/// A measure as a row has room for: what comes before a parenthesis
+/// (`58 mm (at most 58.0036 mm)` is `58 mm`), its number to four
+/// significant digits (`0.302732308 kg` is `0.3027 kg`).
+pub fn compact(text: &str) -> String {
+    let head = text.split(" (").next().unwrap_or(text).trim();
+    let (number, rest) = head.split_once(' ').unwrap_or((head, ""));
+    let Ok(v) = number.parse::<f64>() else {
+        return head.to_string();
+    };
+    if !v.is_finite() {
+        return head.to_string();
+    }
+    let magnitude = if v == 0.0 { 0 } else { v.abs().log10_floor() };
+    let decimals = (3 - magnitude).clamp(0, 6) as usize;
+    let mut n = format!("{v:.decimals$}");
+    if n.contains('.') {
+        n = n.trim_end_matches('0').trim_end_matches('.').to_string();
+    }
+    if rest.is_empty() {
+        n
+    } else {
+        format!("{n} {rest}")
+    }
+}
+
+/// The power of ten of `v`'s first digit, without a float logarithm
+/// (`craft3d_math::Portable` keeps those for geometry): by counting.
+trait Log10Floor {
+    fn log10_floor(self) -> i32;
+}
+
+impl Log10Floor for f64 {
+    fn log10_floor(self) -> i32 {
+        let mut v = self;
+        let mut p = 0;
+        // Bounded: an f64 spans about 600 powers of ten.
+        while v >= 10.0 && p < 400 {
+            v /= 10.0;
+            p += 1;
+        }
+        while v < 1.0 && v > 0.0 && p > -400 {
+            v *= 10.0;
+            p -= 1;
+        }
+        p
+    }
+}
+
+/// What the check `name` of `assert.list` measures, when it names one
+/// thing: `of`, `face`, `edge` or `from`, as written.
+pub fn subject_of(list: &Value, name: &str) -> Option<String> {
+    let checks = list
+        .get("assertions")
+        .and_then(Value::as_array)
+        .or_else(|| list.as_array())?;
+    let check = checks
+        .iter()
+        .find(|c| c.get("name").and_then(Value::as_str) == Some(name))?;
+    let measure = check.get("measure")?;
+    for key in ["of", "face", "edge", "from"] {
+        match measure.get(key) {
+            Some(Value::String(s)) if !s.is_empty() => return Some(s.clone()),
+            Some(Value::Array(a)) => {
+                if let Some(Value::String(s)) = a.first() {
+                    return Some(s.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn measures_are_written_short() {
+        assert_eq!(compact("0.302732308 kg"), "0.3027 kg");
+        assert_eq!(compact("58 mm (at most 58.0035698 mm)"), "58 mm");
+        assert_eq!(compact("7 mm"), "7 mm");
+        assert_eq!(compact("22.0001 mm"), "22 mm");
+        assert_eq!(compact("true"), "true");
+        assert_eq!(compact("12345.6 mm"), "12346 mm");
+    }
+
+    #[test]
+    fn the_subject_of_a_check() {
+        let list = json!({"assertions": [
+            {"name": "Wall", "measure": {"measure": "thickness", "of": "Sleeve"}},
+            {"name": "Gap", "measure": {"measure": "distance", "from": ["F3:side(e1)"], "to": "x"}},
+            {"name": "Mass", "measure": {"measure": "mass"}}
+        ]});
+        assert_eq!(subject_of(&list, "Wall").as_deref(), Some("Sleeve"));
+        assert_eq!(subject_of(&list, "Gap").as_deref(), Some("F3:side(e1)"));
+        assert_eq!(subject_of(&list, "Mass"), None);
+        assert_eq!(subject_of(&list, "Nope"), None);
+    }
+}

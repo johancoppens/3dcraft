@@ -41,7 +41,7 @@ pub use brand::AppIcon;
 pub use controls::{Button, ButtonKind, ChipKind, Segment, Slider};
 pub use glyphs::Glyph;
 pub use overlays::MenuItem;
-pub use rows::{ListRow, Tab, ValueStyle};
+pub use rows::{Depends, ListRow, RowHits, RowMark, Tab, ValueStyle};
 pub use status::{BannerKind, PillState};
 
 use crate::theme::{Rgb, Tokens, blend, color};

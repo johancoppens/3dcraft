@@ -7,7 +7,7 @@
 //!
 //! ```sh
 //! cargo run --release -p craft3d-ui-egui --example window_picture -- \
-//!     [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--dialog export:NAME|error:TEXT] [--recent FILE] model.3dcraft [more.3dcraft | untitled | none ...] out.png
+//!     [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--dialog export:NAME|error:TEXT] [--recent FILE] [--run FILE] model.3dcraft [more.3dcraft | untitled | none ...] out.png
 //! ```
 //!
 //! The documents are opened in order (`untitled` is a new document with a
@@ -32,7 +32,10 @@
 //! there: `--click 20,10` opens the File menu. `--recent FILE` starts
 //! with the recent files kept in FILE (`{"recent": [path, ...]}`); `--subject
 //! NAME` names the file the work opens (`Opening NAME…`).
-//! `--dialog export:NAME` opens the export dialog as File › Export… does
+//! `--run FILE` runs the commands of FILE (a JSON array of `[id,
+//! {params}]` or `{"command": id, "params": {...}}`) after the documents
+//! are opened, as an agent would (a variable, a failing edit, a
+//! selection). `--dialog export:NAME` opens the export dialog as File › Export… does
 //! (with what is selected, after `--set {"selectedFeature": …}`), in the
 //! format of NAME's extension when that holds what it chose, `--dialog
 //! error:TEXT` the error dialog. Then,
@@ -48,7 +51,7 @@ use serde_json::json;
 
 const DEFAULT_SIZE: [u32; 2] = [1280, 800];
 
-const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--dialog export:NAME|error:TEXT] [--recent FILE] [--subject NAME] FILE.3dcraft [FILE.3dcraft | untitled | none ...] OUT.png";
+const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--dialog export:NAME|error:TEXT] [--recent FILE] [--subject NAME] [--run FILE] FILE.3dcraft [FILE.3dcraft | untitled | none ...] OUT.png";
 
 fn main() -> Result<(), String> {
     let mut idle = false;
@@ -66,6 +69,7 @@ fn main() -> Result<(), String> {
     let mut dialog: Option<String> = None;
     let mut recent = None;
     let mut subject: Option<String> = None;
+    let mut run: Option<String> = None;
     let mut paths = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -136,6 +140,9 @@ fn main() -> Result<(), String> {
                 let y: f32 = y.trim().parse().map_err(|_| format!("--click: {y}"))?;
                 click = Some(Pos2::new(x, y));
             }
+            "--run" => {
+                run = Some(args.next().ok_or(format!("--run takes a file; {USAGE}"))?);
+            }
             "--subject" => {
                 subject = Some(
                     args.next()
@@ -195,6 +202,29 @@ fn main() -> Result<(), String> {
             "file.activate",
             json!({ "document": document }),
         )?;
+    }
+    if let Some(file) = &run {
+        let text = std::fs::read_to_string(file).map_err(|e| format!("--run {file}: {e}"))?;
+        let steps: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("--run {file}: {e}"))?;
+        for step in steps
+            .as_array()
+            .ok_or(format!("--run {file}: not a list"))?
+        {
+            let (command, params) = match step {
+                serde_json::Value::Array(pair) => (pair.first(), pair.get(1)),
+                other => (other.get("command"), other.get("params")),
+            };
+            let command = command
+                .and_then(serde_json::Value::as_str)
+                .ok_or(format!("--run {file}: a step without a command"))?;
+            let params = params.cloned().unwrap_or(json!({}));
+            // A step may fail on purpose (an edit that breaks a feature):
+            // said, and the run goes on.
+            if let Err(e) = execute(&mut session, command, params) {
+                eprintln!("--run: {command}: {e}");
+            }
+        }
     }
     session.set_refine_elsewhere(first);
     let mut shell = Shell::new();

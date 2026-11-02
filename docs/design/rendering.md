@@ -1354,3 +1354,78 @@ set, the appearance switch and a component kit, without converting a screen yet.
   sets with and without touch sizes (nothing outside the window; every target 40 × 40 or more with touch sizes,
   buttons 24 and rows 22 without), clicks segments, a check box, a slider, buttons, a dropdown and a context menu,
   draws hostile values, keeps every icon in its place, and switches the appearance over `ui.set`.
+
+### The side panel (2026-11-02)
+
+Phase 2a of the UI overhaul (plan `plan/mockups/sidepanel`, boards 01–20, the developer's decisions of
+2026-11-02), built from the kit (`crates/ui-egui/src/shell/sidepanel/`):
+
+- **Tabs by document kind** (`sidepanel/mod.rs`, `tabs_for`): Features · Variables · Bodies for a part, Assembly
+  (the instances and mates as before) · Variables for an assembly, Parameters first for a document with public
+  parameters or an assembly with joints to set. Those that do not fit go behind ⋯ (the one shown always stays on
+  the bar). The tab is `state.panels.sideTab`; Parameters also follows `state.parameters.open`, which the window
+  keeps per document, so a Jig still opens on its form. The Agent tab's place is after Bodies (r1-mcp-connect).
+- **The history without regenerating** (`craft3d_engine::history_view`, `Session::history_view`): each feature's
+  key value from its parameters in the document's units (`Extrude 8 mm`, `R18 × 60 mm`, `3 × 22 mm`, `− Bore`,
+  `YZ · 0 mm`), the one value a click edits (`KeyEdit`: the parameter of `feature.edit`), what it is made from
+  (`FeatureKind::inputs`), a sketch's curves; each variable's value, formula and group (a public parameter's group,
+  else a prefix two or more share). It reads the document alone, so the browser, whose bodies are built in its
+  worker, lists it at once; the bodies' measures (`document.inspect`) are read only while the Bodies tab shows,
+  what is selected (`select.get` with context and the new `measures`, `document.measure`) only while something is,
+  and neither while the bodies are built elsewhere and not here (the page would build them all again on its one
+  thread). Everything is read again when the document's revision moves (`Shell::sync_side`).
+- **The Features list** (`sidepanel/features.rs`): `outline` nests a sketch under the first later feature made
+  from it when only sketches nested there lie between them (the history's order stays true), and folds two datums
+  or more in a row into a group in their place (decision 1). Rows are the kit's `ListRow`, extended for the panel
+  with a fold chevron, a grip, a struck eye for a hidden feature (the eye shows only on hover and when hidden,
+  decision 6), a mark after the name (the agent's ✦: the document does not record who made a feature yet, so the
+  hook draws none), the dependency tint with its arrow, the value drawn as a field, and the ⌖ that flies. The
+  pointer on a row (or `sidePanel.hover`) marks only its direct dependencies; a strip over the list's foot names
+  them and counts the rest (`dependencies`, a bounded walk).
+- **A failure is a reason, not a cascade** (decision 2, verified in `regen/src/cause.rs` and the extrude, datum
+  and derive reports): a feature whose input failed fails itself with "… failed; fix it first" before anything is
+  built, with `causedBy` naming the root, and a feature that does not depend on the failure is built as usual. So
+  the root is the red row (reason, Show where, Edit) and the rows with `causedBy` are dimmed, not red: they are
+  really not rebuilt. The old *caused by* link under them is gone with the dimming.
+- **Cost of a hover**: `features::Graph` indexes each feature's place and users once per revision of the history;
+  a hover walks what depends on the feature (`tests/side_panel_tabs.rs`: 200 hovers on a chain of 2000 features well
+  within a second), and the lines and the hovered row's dependencies are kept until what they are made from changes.
+  On the web the Bodies tab reads nothing while the worker builds the bodies, and asks for no frame for it; Measure
+  is off there (a command would be answered later, by the worker).
+- **Roll-back bar and reorder**: the gold bar sits before the first row past the rollback marker (or at the end);
+  its grip drags it (`history.rollback`, the last feature clears the marker). A row's grip drags it to another
+  place (`feature.move`); `move_allowed` refuses a place before what it uses or after what uses it, so the indigo
+  drop line does not show there. A drop lands only between top-level lines (a parent with its nested sketches and a
+  group with its datums stay whole; before a folded parent it goes before its sketch), and a drop outside the list
+  does nothing. The menu's items carry no key hints (no keys are bound to them yet); *Copy id* copies the feature's
+  id. A dimmed row says why on hover and in the strip ("Not rebuilt: Extrude1 failed").
+- **In place, one undo step each** (decision 7): a click on the selected row's value opens a field over it with
+  the expression as written (the first click on a row selects it, wherever it lands: a value often fills the
+  middle of a narrow panel, and the list's clicks select, `tests/views.rs`); Enter queues `feature.edit` (`Shell::side_queue`, run with the session at
+  `apply_side_requests` like the timeline's requests). The same for a variable (`variable.set`) and a rename. A
+  command's refusal is kept under the field's key and said under the row; an expression `variable.set` keeps but
+  that does not evaluate says why at its row.
+- **Checks under the list** (decision 5, `sidepanel/checks.rs`): a fold header with the count and *all pass* /
+  *N failing*, then each check measured against its limit with a dot that carries ✓ or ×; a failing one red with
+  its reason. Which step made a check fail is not known yet (owed: it needs the measure history), so no red dot
+  marks a step. A click flies to what the check measures (`assert.list`'s subject). They fold to their header
+  while something is selected, and when open checks would leave the list fewer than six rows; without checks
+  their heading stays with the hint that says how to add one. The card of what is selected shows only where the
+  list keeps six rows (the status bar names the selection anyway), so a short window's list does not jump. The foot's height
+  is worked out before it is drawn: a panel that measures itself is a frame late, and the first frame overlapped
+  the timeline.
+- **What is selected** (`sidepanel/props.rs`): a face's surface, area and normal or axis; an edge's curve, length,
+  the faces it lies between (from its name, else the body's facts) and the angle there (`measure.continuity`
+  where it compares the faces; two analytic faces it does not compare yet, so between two planes from their
+  normals and at a plane square to a cylinder's or a cone's axis a right angle); a body's volume, mass, area and
+  box. *Measure* runs `measure.thickness` on a face or `measure.distance` between the first two items.
+- **Bodies** (`sidepanel/bodies.rs`): result bodies with swatch, mass or volume and eye; the chosen body's card
+  with a preset dropdown (`material.preset`; *None* is `body.material {clear}`); totals; the bodies later
+  features used up behind *Tool bodies* (decision 3).
+- **Variables** (`sidepanel/variables.rs`): grouped, a formula on its own line in the info ink, the units folded at
+  the foot.
+- **Pictures** (`examples/window_picture.rs --run FILE`, commands run after opening): the housing showcase with
+  variables, a material and seven checks, light and dark, at 1400 × 900, 1024 × 700 and in the drawer at 390,
+  in `target/work-sidepanel/`. `tests/side_panel_tabs.rs` holds the tabs, the lines, the dependencies, the
+  failure, the checks, an edit as one undo step, the bodies and the selection's closed forms, and that every
+  target lies inside the panel at 1024 × 700 and at 390.
