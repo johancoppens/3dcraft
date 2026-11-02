@@ -236,6 +236,10 @@ pub struct Loosest {
     pub step: u64,
     pub tolerance: f64,
     pub from_edge: bool,
+    /// For a vertex: how far the ends of its edges are from it, and the
+    /// largest tolerance of an edge that ends at it.
+    pub ends: f64,
+    pub edge: f64,
 }
 
 impl Imported {
@@ -251,6 +255,8 @@ impl Imported {
                     step: id(&self.edge_ids, e.0),
                     tolerance: t,
                     from_edge: false,
+                    ends: 0.0,
+                    edge: t,
                 });
             }
         }
@@ -262,11 +268,28 @@ impl Imported {
                             self.body.edge_tolerance(craft3d_topo::EdgeId(k)) == Some(t)
                         })
                 });
+                let point = self.body.vertex(v).map(|x| x.point);
+                let (mut ends, mut edge) = (0.0_f64, 0.0_f64);
+                for (k, e) in self.body.edges.iter().enumerate() {
+                    for (end, at) in [(e.start, e.range.0), (e.end, e.range.1)] {
+                        if end == v
+                            && let Some(p) = point
+                        {
+                            ends = ends.max(e.curve.eval(at).distance(p));
+                            let own = u32::try_from(k)
+                                .ok()
+                                .and_then(|k| self.body.edge_tolerance(craft3d_topo::EdgeId(k)));
+                            edge = edge.max(own.unwrap_or(0.0));
+                        }
+                    }
+                }
                 best = Some(Loosest {
                     kind: "vertex",
                     step: id(&self.vertex_ids, v.0),
                     tolerance: t,
                     from_edge,
+                    ends,
+                    edge,
                 });
             }
         }

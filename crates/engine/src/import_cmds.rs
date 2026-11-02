@@ -137,6 +137,8 @@ pub(crate) fn import_bytes(
                 "step": format!("#{}", l.step),
                 "tolerance": l.tolerance,
                 "fromEdge": l.from_edge,
+                "ends": l.ends,
+                "edge": l.edge,
             })),
         }));
     }
