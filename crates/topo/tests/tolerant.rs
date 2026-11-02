@@ -491,7 +491,7 @@ fn a_gap_is_recorded_near_its_size() {
         let t = tolerance(scale);
         let cap = 1000.0 * t.linear;
         let plane = Surface::Plane(Plane::new(Frame::WORLD));
-        for share in [0.01, 0.1, 0.3] {
+        for share in [0.0003, 0.0008, 0.01, 0.1, 0.3] {
             let lift = share * cap;
             let points: Vec<Vec3> = (0..9)
                 .map(|k| {
@@ -511,10 +511,17 @@ fn a_gap_is_recorded_near_its_size() {
                 d >= gap * (1.0 - 1e-9),
                 "{scale} {share}: {d:e} below {gap:e}"
             );
-            assert!(
-                d <= 1.25 * gap,
-                "{scale} {share}: {d:e} for a gap of {gap:e}"
-            );
+            if gap * 1.1 <= t.linear {
+                // A gap within the document's tolerance is measured
+                // within it: no loose edge where there is no gap to hold
+                // (review of 2026-11-02).
+                assert!(d <= t.linear, "{scale} {share}: {d:e} above {:e}", t.linear);
+            } else {
+                assert!(
+                    d <= 1.25 * gap,
+                    "{scale} {share}: {d:e} for a gap of {gap:e}"
+                );
+            }
         }
     }
 }

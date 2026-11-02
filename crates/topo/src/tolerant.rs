@@ -382,11 +382,15 @@ const TIGHTEN: usize = 3;
 /// at first), and the tighter a piece's bound the earlier the proof stops
 /// halving it, so better bounds alone could record a looser tolerance
 /// (review of 2026-11-02: an ABC model's tolerance rose and tripped the
-/// boolean's tolerance rule). Up to [`TIGHTEN`] proofs at targets halfway
-/// (geometrically) between the bound and a tenth above the sampled gap,
-/// each allowed four times the pieces of the last that held; a failed one
-/// raises the floor. Not for a bound within the document's tolerance,
-/// which records nothing.
+/// boolean's tolerance rule). Where the samples lie within the document's
+/// tolerance (a tenth above them included), a proof at that tolerance
+/// first, which records nothing when it holds; then up to [`TIGHTEN`]
+/// proofs at targets halfway (geometrically) between the bound and a
+/// tenth above the sampled gap, each allowed four times the pieces of the
+/// last that held (a proof that stopped early needs more to go nearer)
+/// and the last all of [`PROOF_PIECES`]; one that fails raises the floor.
+/// Not for a bound within the document's tolerance, which records
+/// nothing.
 fn tighten(
     mut bound: f64,
     mut pieces: usize,
@@ -397,19 +401,27 @@ fn tighten(
     if bound.is_nan() || bound <= linear {
         return bound;
     }
+    if 1.1 * sampled <= linear
+        && let Some((b, _)) = prove(linear, PROOF_PIECES)
+    {
+        return b.min(bound);
+    }
     let mut floor = (1.1 * sampled).max(linear);
-    for _ in 0..TIGHTEN {
+    for attempt in 0..TIGHTEN {
         if bound.is_nan() || bound <= 1.01 * floor {
             break;
         }
         let target = (floor * bound).sqrt().max(floor);
-        let most = pieces.saturating_mul(4).clamp(64, PROOF_PIECES);
+        let most = if attempt + 1 == TIGHTEN {
+            PROOF_PIECES
+        } else {
+            pieces.saturating_mul(4).clamp(256, PROOF_PIECES)
+        };
         match prove(target, most) {
-            Some((b, p)) if b < bound => {
-                bound = b;
+            Some((b, p)) => {
+                bound = b.min(bound);
                 pieces = p;
             }
-            Some(_) => break,
             None => floor = target,
         }
     }
@@ -727,4 +739,44 @@ fn faces_of(body: &Body, edge: EdgeId) -> Vec<&crate::Face> {
 /// none of its own.
 pub fn default_loosest(linear: f64) -> f64 {
     DEFAULT_LOOSEST * linear
+}
+
+#[cfg(test)]
+mod tighten_tests {
+    use super::{PROOF_PIECES, tighten};
+
+    /// A prover that holds any target at or above `gap`, in as many
+    /// pieces as `needs(target)` says, and gives the target back as its
+    /// bound (the loosest a proof may be).
+    fn prover(
+        gap: f64,
+        needs: impl Fn(f64) -> usize,
+    ) -> impl Fn(f64, usize) -> Option<(f64, usize)> {
+        move |target, most| {
+            let n = needs(target);
+            (target >= gap && n <= most).then_some((target, n))
+        }
+    }
+
+    /// A gap within the document's tolerance is proven within it, so no
+    /// loose edge is recorded where the file has none (review of
+    /// 2026-11-02: one ABC model gained a loose edge at 1.3e-6).
+    #[test]
+    fn a_gap_within_the_tolerance_records_nothing() {
+        let linear = 1e-6;
+        let b = tighten(1.3e-6, 40, 0.8e-6, linear, prover(0.85e-6, |_| 30_000));
+        assert!(b <= linear, "{b:e}");
+    }
+
+    /// Nearer targets need many more pieces than the proof that held
+    /// (it stopped early): the last attempt has them all, so the bound
+    /// still comes down (review of 2026-11-02: four times the pieces
+    /// alone left twenty ABC models looser than before).
+    #[test]
+    fn the_last_attempt_has_every_piece() {
+        let linear = 1e-6;
+        let needs = |t: f64| if t < 1.6e-4 { PROOF_PIECES / 2 } else { 40 };
+        let b = tighten(2e-4, 40, 1e-4, linear, prover(1e-4, needs));
+        assert!(b < 1.6e-4, "{b:e}");
+    }
 }

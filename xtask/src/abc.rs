@@ -40,7 +40,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: cargo xtask abc [--chunk N] [--cache DIR] [--files DIR] [--limit N] \
+const USAGE: &str = "usage: cargo xtask abc [--chunk N] [--cache DIR] [--files DIR] [--limit N] [--only ID,ID] \
 [--jobs J] [--timeout SECONDS] [--memory SIZE] [--minutes M] [--booleans] [--boolean-limit N] \
 [--boolean-minutes M] [--boolean-timeout SECONDS] [--freecad N] [--total-minutes M] [--keep N] \
 [--min-free GB] [--out DIR] [--bin PATH] | cargo xtask abc --rescore DIR";
@@ -64,6 +64,9 @@ struct Config {
     cache: PathBuf,
     files: Option<PathBuf>,
     limit: Option<usize>,
+    /// Only these models (ids as the scorecard writes them, `00001054`,
+    /// `00006380/3`): to look again at a few without running the chunk.
+    only: Vec<String>,
     jobs: usize,
     timeout: u64,
     memory: String,
@@ -99,6 +102,7 @@ fn parse(args: &[String]) -> Result<Config, String> {
         cache: home.join("3dcraft-abc"),
         files: None,
         limit: None,
+        only: Vec::new(),
         jobs: 4,
         timeout: 60,
         memory: "3G".to_string(),
@@ -141,6 +145,14 @@ fn parse(args: &[String]) -> Result<Config, String> {
             "--cache" => c.cache = PathBuf::from(value),
             "--files" => c.files = Some(PathBuf::from(value)),
             "--limit" => c.limit = Some(count()?),
+            "--only" => {
+                c.only = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+                    .collect();
+            }
             "--jobs" => c.jobs = count()?.clamp(1, MAX_JOBS),
             "--timeout" => c.timeout = number()?.max(1),
             "--memory" => {
@@ -1217,6 +1229,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let total = files.len();
     if total == 0 {
         return Err("no STEP files found".to_string());
+    }
+    if !c.only.is_empty() {
+        files.retain(|f| c.only.contains(&model_id(f)));
+        if files.is_empty() {
+            return Err(format!(
+                "none of the models {} is in the chunk",
+                c.only.join(", ")
+            ));
+        }
     }
     if let Some(limit) = c.limit {
         files.truncate(limit);
