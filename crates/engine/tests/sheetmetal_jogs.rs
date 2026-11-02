@@ -162,7 +162,7 @@ fn a_plate_jogged_by_command() {
         let check = run(
             &mut s,
             "sheetMetal.bendSequence",
-            json!({"feature": "Plate", "punch": [[-1.0 * k, 0.0], [1.0 * k, 0.0], [1.0 * k, 50.0 * k], [-1.0 * k, 50.0 * k]],
+            json!({"feature": "Plate", "punch": [[-k, 0.0], [1.0 * k, 0.0], [1.0 * k, 50.0 * k], [-k, 50.0 * k]],
                    "die": [[-10.0 * k, 0.0], [10.0 * k, 0.0], [10.0 * k, -10.0 * k], [-10.0 * k, -10.0 * k]]}),
         );
         assert_eq!(check["feasible"], true, "scale {k}: {check}");
