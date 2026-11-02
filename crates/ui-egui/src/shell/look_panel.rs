@@ -12,6 +12,7 @@
 use super::Shell;
 use crate::state::LookState;
 use crate::theme::Tokens;
+use craft3d_math::Portable;
 use egui::Rect;
 
 /// The environments a person can choose (`look.environment`).
@@ -204,11 +205,11 @@ pub fn fstop_text(fstop: f64) -> String {
 /// The full stop ([`FSTOPS`]) nearest to `fstop` on the slider's
 /// logarithmic scale, as its index.
 pub fn nearest_stop(fstop: f64) -> usize {
-    let log = fstop.max(1e-3).ln();
+    let log = fstop.max(1e-3).pln();
     FSTOPS
         .iter()
         .enumerate()
-        .min_by(|(_, a), (_, b)| (a.ln() - log).abs().total_cmp(&(b.ln() - log).abs()))
+        .min_by(|(_, a), (_, b)| (a.pln() - log).abs().total_cmp(&(b.pln() - log).abs()))
         .map_or(0, |(i, _)| i)
 }
 
@@ -330,7 +331,7 @@ fn lens_rows(
                     focus = FocusSpec::Distance(d);
                     changed = true;
                 }
-                ui.label(format!("{}", significant(d)));
+                ui.label(significant(d));
             });
         });
         ui.end_row();
@@ -359,7 +360,7 @@ fn significant(x: f64) -> String {
     if !x.is_finite() || x == 0.0 {
         return format!("{x}");
     }
-    let digits = (3 - x.abs().log10().floor() as i32).clamp(0, 6) as usize;
+    let digits = (3 - x.abs().plog10().floor() as i32).clamp(0, 6) as usize;
     format!("{x:.digits$}")
 }
 
