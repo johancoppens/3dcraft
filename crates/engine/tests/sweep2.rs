@@ -180,6 +180,16 @@ fn a_circle_between_two_rails_is_a_cone_that_follows_an_edit_and_a_file() {
             json!({"feature": "Horn", "rail": null}),
         );
         assert_eq!(edited["status"], "failed", "{edited}");
+        // A scaling is for two rails only.
+        let why = refused(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Horn", "scale": "width"}),
+        );
+        assert!(
+            why.contains("`scale` is for a sweep along two rails"),
+            "{why}"
+        );
     }
 }
 

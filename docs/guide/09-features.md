@@ -68,7 +68,10 @@ whose hole tapers with it:
 
 Where both rails are parallel lines of the same length the faces are exact planes and cylinders.
 Elsewhere they are spline surfaces, and the result says under `path` how far they are from the true
-sweep at most (`deviation`): a bound that is proven, never more than half the document's tolerance. A
+sweep at most (`deviation`): a bound that is proven, never more than half the document's tolerance (a face
+within an eighth of the tolerance of a plane is made that plane, and a profile drawn a little off its
+plane is laid into it, which moves it by at most the tolerance). A tolerance finer than 4096 units in the
+last place of the model's size is refused: below that, rounding is not bounded. A
 face is named after the curve of the profile and the curves of the two rails it runs between
 (`F4:side(e2,e3,e3)`), so a rail can be redrawn without losing what is built on the faces. Refused, with
 the place: a rail that does not start on the profile, rails that meet or cross, rails that start at one

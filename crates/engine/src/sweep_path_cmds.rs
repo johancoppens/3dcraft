@@ -58,11 +58,6 @@ fn feature_sweep(session: &mut Session, params: &Value) -> Run {
         scale: SweepScale::Uniform,
     };
     edit_rails(doc, &p, &mut sweep)?;
-    if p.get("scale").is_some() && sweep.rail.is_none() {
-        return fail(format!(
-            "{ID}: `scale` is for a sweep along two rails; give `rail` too"
-        ));
-    }
     let combine = combine_param(doc, &p, ID)?;
     let kind = FeatureKind::Sweep(sweep);
     add_sweep(session, ID, p.str("name")?, kind, combine)
@@ -85,7 +80,11 @@ pub(crate) fn edit_rails(
 ) -> Result<(), CommandError> {
     let command = p.command();
     match p.get("rail") {
-        None if p.has("rail") => sweep.rail = None,
+        // Along one path again; its scaling means nothing there.
+        None if p.has("rail") => {
+            sweep.rail = None;
+            sweep.scale = SweepScale::Uniform;
+        }
         None => {}
         Some(_) => {
             let rail = feature_ref(doc, p, command, "rail")?;
@@ -115,6 +114,11 @@ pub(crate) fn edit_rails(
                 "{command}: `scale` must be \"uniform\" or \"width\""
             ));
         }
+    }
+    if p.get("scale").is_some() && sweep.rail.is_none() {
+        return fail(format!(
+            "{command}: `scale` is for a sweep along two rails; give `rail` too"
+        ));
     }
     Ok(())
 }

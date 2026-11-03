@@ -1648,6 +1648,18 @@ impl Builder {
         station: &Station,
         every_edge: bool,
     ) -> Result<Ring, KernelError> {
+        self.ring_scaled(loops, station, every_edge, None)
+    }
+
+    /// [`Builder::ring`] at a station that scales the profile across
+    /// (along `b`) by `across`: the sweep along two rails.
+    pub(crate) fn ring_scaled(
+        &mut self,
+        loops: &[Vec<Element>],
+        station: &Station,
+        every_edge: bool,
+        across: Option<f64>,
+    ) -> Result<Ring, KernelError> {
         let mut ring = Ring {
             vertices: Vec::with_capacity(loops.len()),
             edges: Vec::with_capacity(loops.len()),
@@ -1663,7 +1675,7 @@ impl Builder {
                 edges.push(if element.flat && !every_edge {
                     None
                 } else {
-                    Some(self.ring_edge(element, station, here, there)?)
+                    Some(self.ring_edge(element, station, here, there, across)?)
                 });
             }
             ring.vertices.push(vertices);
@@ -1680,6 +1692,7 @@ impl Builder {
         station: &Station,
         here: VertexId,
         there: VertexId,
+        scale: Option<f64>,
     ) -> Result<(EdgeId, bool), KernelError> {
         let against = element.against();
         let (first, last) = if against {
@@ -1697,13 +1710,8 @@ impl Builder {
                 let frame = Frame::new(station.at(center), station.forward()?, station.u)
                     .ok_or_else(internal)?;
                 // A station of the sweep along two rails scales the
-                // profile: `b` is then longer or shorter than a unit.
-                let across = station.b.length();
-                let across = if (across - 1.0).abs() <= 1e-12 {
-                    radius
-                } else {
-                    radius * across
-                };
+                // profile across by `scale`.
+                let across = scale.map_or(radius, |s| radius * s);
                 let curve = if station.square {
                     Curve3::Circle(Circle::new(frame, across)?)
                 } else {

@@ -126,6 +126,17 @@ const PLANS: [(usize, usize); 10] = [
 /// Most samples the proof of one plan of one leg takes.
 const MAX_SAMPLES: usize = 1 << 20;
 
+/// Most samples one sweep takes in all, over every leg and plan and the
+/// grids that bound the chord and the fold.
+const MAX_TOTAL_SAMPLES: usize = 1 << 23;
+
+/// The finest tolerance a sweep takes, in units in the last place of its
+/// size (how far from the origin its points reach, the profile's reach
+/// included): below it the rounding of the band's sums and of the
+/// surface's evaluation, which the proof bounds by `256 ε` times the
+/// size, would not be at most a sixteenth of the tolerance.
+const FINEST: f64 = 4096.0;
+
 /// Most boxes the search for where the rails come nearest takes.
 const MAX_BOXES: usize = 1 << 20;
 
@@ -180,6 +191,9 @@ enum Course {
 #[derive(Clone, Debug)]
 struct Piece {
     source: u64,
+    /// Which piece of its sketch curve ([`Segment::piece`]): a spline
+    /// with corners is several.
+    part: u32,
     course: Course,
     length: f64,
     from: f64,
@@ -462,6 +476,7 @@ fn rail_of(
         lengths.push(length);
         pieces.push(Piece {
             source: segment.source,
+            part: segment.piece,
             course,
             length,
             from: 0.0,
@@ -616,7 +631,7 @@ fn crossing_speed(leg: &Leg, sigma: f64, p: &Placed, set: &Setting) -> f64 {
 /// Proves along the leg that the chord keeps a length, stays off the up
 /// direction and the profile crosses its station's plane, and returns the
 /// bounds the proof of the deviation needs.
-fn leg_bounds(leg: &Leg, set: &Setting) -> Result<Bounds, KernelError> {
+fn leg_bounds(leg: &Leg, set: &Setting, spent: &mut usize) -> Result<Bounds, KernelError> {
     let (ra, rb) = (leg.a.speed(), leg.b.speed());
     let (ka, kb) = (leg.a.bend(), leg.b.bend());
     let lc = ra + rb;
@@ -625,6 +640,7 @@ fn leg_bounds(leg: &Leg, set: &Setting) -> Result<Bounds, KernelError> {
     let sources = [leg.a.source, leg.b.source];
     let mut n = 64_usize;
     loop {
+        spend(spent, n + 1, leg)?;
         let h = width / n as f64;
         let mut r_min = f64::INFINITY;
         let mut r_max: f64 = 0.0;
@@ -764,13 +780,41 @@ struct Followed {
     deviation: f64,
 }
 
+/// What following a leg at one plan gave.
+enum Outcome {
+    /// Plainly too coarse: a quick look found the faces too far off.
+    Coarse,
+    /// Its proof would take more than [`MAX_SAMPLES`] samples.
+    Costly,
+    Made(Followed),
+}
+
+/// Takes `count` samples from what the sweep may spend in all, or
+/// refuses with the place.
+fn spend(spent: &mut usize, count: usize, leg: &Leg) -> Result<(), KernelError> {
+    *spent = spent.saturating_add(count);
+    if *spent > MAX_TOTAL_SAMPLES {
+        return Err(refuse(
+            &[leg.a.source, leg.b.source],
+            format!(
+                "the sweep cannot be shown to lie within the tolerance in {MAX_TOTAL_SAMPLES} samples in all; it ran out along e{} and e{} near {}; give the document a coarser tolerance or the rails fewer curves",
+                leg.a.source,
+                leg.b.source,
+                point_text(leg.a.at(leg.from))
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn follow(
     leg: &Leg,
     first: &Station,
     set: &Setting,
     bounds: &Bounds,
     (parts, degree): (usize, usize),
-) -> Result<Option<Followed>, KernelError> {
+    spent: &mut usize,
+) -> Result<Outcome, KernelError> {
     let within = stations_of(degree);
     let width = leg.to - leg.from;
     let part_width = width / parts as f64;
@@ -827,7 +871,7 @@ fn follow(
                 let truth = exact(sigma_at(part as f64 + t))?;
                 let (go, gu, gb) = gap((bezier(&o, t), bezier(&u, t), bezier(&b, t)), &truth);
                 if go + set.x * gu + set.y * gb > set.tol / 2.0 {
-                    return Ok(None);
+                    return Ok(Outcome::Coarse);
                 }
             }
         }
@@ -854,13 +898,7 @@ fn follow(
         let count = if h_most.is_finite() && h_most > 0.0 {
             let wanted = (part_width / h_most).ceil();
             if !(wanted.is_finite() && wanted < MAX_SAMPLES as f64) {
-                return Err(refuse(
-                    &[leg.a.source, leg.b.source],
-                    format!(
-                        "the sweep along e{} and e{} cannot be shown to lie within the tolerance in {MAX_SAMPLES} samples; give the document a coarser tolerance",
-                        leg.a.source, leg.b.source
-                    ),
-                ));
+                return Ok(Outcome::Costly);
             }
             (wanted as usize).max(1)
         } else {
@@ -868,14 +906,9 @@ fn follow(
         };
         samples = samples.saturating_add(count);
         if samples > MAX_SAMPLES {
-            return Err(refuse(
-                &[leg.a.source, leg.b.source],
-                format!(
-                    "the sweep along e{} and e{} cannot be shown to lie within the tolerance in {MAX_SAMPLES} samples; give the document a coarser tolerance",
-                    leg.a.source, leg.b.source
-                ),
-            ));
+            return Ok(Outcome::Costly);
         }
+        spend(spent, count, leg)?;
         let h = part_width / count as f64;
         let mut before: Option<(f64, f64, f64)> = None;
         for j in 0..=count {
@@ -895,12 +928,14 @@ fn follow(
     // The first station is the one the leg before ended with, to the bit;
     // the gap from the exact one was in the samples at the start. The
     // rounding of the sums of the band and of the surface's own
-    // evaluation, generously.
+    // evaluation (a few dozen operations, each off by half a unit in the
+    // last place of the size): 256 ε times the size, which [`FINEST`]
+    // keeps at most a sixteenth of the tolerance.
     deviation += 256.0 * f64::EPSILON * size;
     if !deviation.is_finite() {
         return Err(internal());
     }
-    Ok(Some(Followed {
+    Ok(Outcome::Made(Followed {
         stations,
         band,
         deviation,
@@ -1106,6 +1141,33 @@ pub fn sweep_two_rails(
     };
     let home = set.station(&first);
 
+    // How far the sweep reaches from the origin, at most: every point of
+    // a rail lies in the hull of its pieces' ends, centres and radii and
+    // control points; the chord is at most twice that, so `U` and a
+    // uniform `B` are at most that over `|b − a|`. Below [`FINEST`] units
+    // in the last place of it the rounding is not bounded by the proof.
+    let reach = rail_a
+        .pieces
+        .iter()
+        .chain(&rail_b.pieces)
+        .map(|p| match &p.course {
+            Course::Line { from, to } => from.length().max(to.length()),
+            Course::Arc { center, radius, .. } => center.length() + radius,
+            Course::Spline { curve, .. } => largest(curve.control_points()),
+        })
+        .fold(0.0, f64::max);
+    let across = 2.0 * reach / d_ref;
+    let size = reach + x_reach * across + y_reach * across.max(1.0);
+    if !(size.is_finite() && tol >= FINEST * f64::EPSILON * size) {
+        return Err(refuse(
+            &[first_a, first_b],
+            format!(
+                "the tolerance {tol} is too fine for a sweep that reaches {size} from the origin: below {} (4096 units in the last place) its rounding is not bounded; give the document a coarser tolerance or model nearer the origin",
+                FINEST * f64::EPSILON * size
+            ),
+        ));
+    }
+
     // A profile that leans off the plane of the chord and up is laid into
     // it when that moves it by no more than the tolerance (measured at
     // the corners of its box, which bound an affine movement).
@@ -1195,13 +1257,23 @@ pub fn sweep_two_rails(
         faces: Vec::new(),
         tol,
     };
-    let first_ring = b.ring(&loops, &home, true)?;
+    // The profile's circles are scaled across with the profile, said
+    // explicitly; scaled only along the chord they keep their height.
+    let across = |scale: f64| match scaling {
+        Scaling::Uniform => Some(scale),
+        Scaling::Width => None,
+    };
+    let mut scale = first.r / d_ref;
+    let first_ring = b.ring_scaled(&loops, &home, true, across(scale))?;
     let mut ring = first_ring.clone();
     let mut station = home;
     let mut shell: Vec<FaceId> = Vec::new();
+    // Per side, the pieces of the rails' curves it runs between.
+    let mut parts: Vec<(u32, u32)> = Vec::new();
     let (mut deviation, mut stations) = (0.0_f64, 1_usize);
+    let mut spent = 0_usize;
     for leg in &legs {
-        let bounds = leg_bounds(leg, &set)?;
+        let bounds = leg_bounds(leg, &set, &mut spent)?;
         let (motion, next, reached) = match translation(leg, &station, &set, &bounds) {
             Some((shift, bound)) => {
                 let along = shift.normalized().ok_or_else(internal)?;
@@ -1213,13 +1285,27 @@ pub fn sweep_two_rails(
             }
             None => {
                 let mut followed = None;
+                let mut costly = false;
                 for plan in PLANS {
-                    if let Some(made) = follow(leg, &station, &set, &bounds, plan)?
-                        && made.deviation <= tol / 2.0
-                    {
-                        followed = Some(made);
-                        break;
+                    match follow(leg, &station, &set, &bounds, plan, &mut spent)? {
+                        Outcome::Made(made) if made.deviation <= tol / 2.0 => {
+                            followed = Some(made);
+                            break;
+                        }
+                        Outcome::Costly => costly = true,
+                        Outcome::Made(_) | Outcome::Coarse => {}
                     }
+                }
+                if followed.is_none() && costly {
+                    return Err(refuse(
+                        &[leg.a.source, leg.b.source],
+                        format!(
+                            "the sweep along e{} and e{} near {} cannot be shown to lie within the tolerance in {MAX_SAMPLES} samples at any plan; give the document a coarser tolerance",
+                            leg.a.source,
+                            leg.b.source,
+                            point_text(leg.a.at(leg.from))
+                        ),
+                    ));
                 }
                 let Some(followed) = followed else {
                     return Err(refuse(
@@ -1234,6 +1320,7 @@ pub fn sweep_two_rails(
                 };
                 stations += followed.stations.len().saturating_sub(1);
                 let next = *followed.stations.last().ok_or_else(internal)?;
+                scale = leg.placed(leg.to, set.up).ok_or_else(internal)?.r / d_ref;
                 (
                     Motion::Follow {
                         stations: followed.stations,
@@ -1245,7 +1332,7 @@ pub fn sweep_two_rails(
             }
         };
         deviation = deviation.max(reached);
-        let next_ring = b.ring(&loops, &next, true)?;
+        let next_ring = b.ring_scaled(&loops, &next, true, across(scale))?;
         for (l, elements) in loops.iter().enumerate() {
             let (Some(from), Some(to), Some(low_edges), Some(high_edges)) = (
                 ring.vertices.get(l),
@@ -1289,6 +1376,7 @@ pub fn sweep_two_rails(
                     Role::Side,
                     vec![element.source, leg.a.source, leg.b.source],
                 ));
+                parts.push((leg.a.part, leg.b.part));
             }
         }
         station = next;
@@ -1333,12 +1421,28 @@ pub fn sweep_two_rails(
     }
     b.body.add_shell(shell);
 
-    let mut seen: BTreeMap<(Role, Vec<u64>), u32> = BTreeMap::new();
+    // A side's number says which pieces of the rails' curves it runs
+    // between (a spline with corners is several), and then counts the
+    // faces those give (the quarters of a circle): `k + 4 (b + 1024 a)`,
+    // so a corner added to one rail renumbers only the legs on the
+    // pieces after it of that rail. Caps are numbered in order.
+    let mut seen: BTreeMap<(Role, Vec<u64>, u32, u32), u32> = BTreeMap::new();
+    let mut sides = parts.iter();
     for origin in &mut b.faces {
+        let (a, bp) = if origin.role == Role::Side {
+            sides.next().copied().ok_or_else(internal)?
+        } else {
+            (0, 0)
+        };
         let number = seen
-            .entry((origin.role, origin.sources.clone()))
+            .entry((origin.role, origin.sources.clone(), a, bp))
             .or_insert(0);
-        origin.piece = *number;
+        origin.piece = if origin.role == Role::Side {
+            let packed = u64::from(*number) + 4 * (u64::from(bp) + 1024 * u64::from(a));
+            u32::try_from(packed).map_err(|_| internal())?
+        } else {
+            *number
+        };
         *number = number.saturating_add(1);
     }
     let faces: Vec<Origin> = b.faces;
@@ -1375,7 +1479,7 @@ fn rails_apart(a: &Rail, b: &Rail, tol: f64) -> Result<f64, KernelError> {
             return Err(internal());
         };
         let d = p.distance(q);
-        if d.is_nan() || d <= tol {
+        if d.is_nan() || d <= 4.0 * tol {
             let source = [
                 a.piece_at(sc).map_or(0, |x| x.source),
                 b.piece_at(tc).map_or(0, |x| x.source),
@@ -1383,7 +1487,7 @@ fn rails_apart(a: &Rail, b: &Rail, tol: f64) -> Result<f64, KernelError> {
             return Err(refuse(
                 &source,
                 format!(
-                    "the rails meet or cross near {} (e{} and e{}); two rails have to stay apart",
+                    "the rails meet or cross near {} (e{} and e{}), or come within four tolerances of each other; two rails have to stay apart",
                     point_text(p),
                     source[0],
                     source[1]
@@ -1413,6 +1517,10 @@ fn rails_apart(a: &Rail, b: &Rail, tol: f64) -> Result<f64, KernelError> {
             stack.push((s0, s1, tc, t1));
         }
     }
+    // Ends of curves within the tolerance of each other are one joint
+    // and are not moved onto each other: a rail may be that much off its
+    // curves as drawn.
+    let least = least - tol;
     if !(least.is_finite() && least > 0.0) {
         return Err(internal());
     }

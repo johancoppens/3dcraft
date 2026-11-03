@@ -495,3 +495,235 @@ fn the_same_input_gives_the_same_body_to_the_bit() {
     assert_eq!(format!("{:?}", one.body), format!("{:?}", two.body));
     assert_eq!(one.deviation.to_bits(), two.deviation.to_bits());
 }
+
+/// The point at `t` of the Bézier curve on `points` (de Casteljau), the
+/// test's own.
+fn casteljau(points: &[[f64; 2]], t: f64) -> [f64; 2] {
+    let mut d = points.to_vec();
+    for r in 1..d.len() {
+        for i in 0..d.len() - r {
+            d[i] = [
+                d[i][0] + (d[i + 1][0] - d[i][0]) * t,
+                d[i][1] + (d[i + 1][1] - d[i][1]) * t,
+            ];
+        }
+    }
+    d[0]
+}
+
+/// The distance from `p` to the Bézier curve on `points`: the nearest of
+/// 4000 samples, then narrowed by golden sections round it.
+fn to_bezier(points: &[[f64; 2]], p: [f64; 2]) -> f64 {
+    let dist = |t: f64| {
+        let q = casteljau(points, t);
+        (q[0] - p[0]).phypot(q[1] - p[1])
+    };
+    let n = 4000;
+    let best = (0..=n)
+        .map(|i| f64::from(i) / f64::from(n))
+        .min_by(|a, b| dist(*a).total_cmp(&dist(*b)))
+        .unwrap();
+    let (mut lo, mut hi) = (
+        (best - 1.0 / f64::from(n)).max(0.0),
+        (best + 1.0 / f64::from(n)).min(1.0),
+    );
+    for _ in 0..100 {
+        let (a, b) = (lo + (hi - lo) * 0.382, lo + (hi - lo) * 0.618);
+        if dist(a) < dist(b) {
+            hi = b;
+        } else {
+            lo = a;
+        }
+    }
+    dist(0.5 * (lo + hi)).min(dist(best))
+}
+
+#[test]
+fn a_spline_section_along_curved_spline_rails_is_within_the_proven_bound() {
+    for k in SCALES {
+        // Rail B is rail A moved across by d: every station is the
+        // section moved along rail A, square to y. Rail A's y runs
+        // linearly from 0 to 30 (its control points' y are even), so a
+        // slice y = c is the section moved to A(c / 30): by Cavalieri the
+        // volume is the section's area times 30, and a point of a face
+        // lies within the bound of the section moved to its own y (and
+        // within 1.3 of it in the slice: x moves 0.3 per unit of y at
+        // most along A).
+        let d = 6.0 * k;
+        let rail: Vec<[f64; 2]> = [[0.0, 0.0], [3.0, 10.0], [-3.0, 20.0], [0.0, 30.0]]
+            .iter()
+            .map(|p| [p[0] * k, p[1] * k])
+            .collect();
+        let moved: Vec<[f64; 2]> = rail.iter().map(|p| [p[0] + d, p[1]]).collect();
+        let cubic = |id: u64, control: &[[f64; 2]]| SketchCurve {
+            id,
+            curve: Curve2::Spline(Spline2 {
+                degree: 3,
+                knots: knots(3, 4),
+                control: control.to_vec(),
+            }),
+        };
+        let arch: Vec<[f64; 2]> = vec![[d, 0.0], [d, 4.5 * k], [0.0, 4.5 * k], [0.0, 0.0]];
+        let section = [line(1, [0.0, 0.0], [d, 0.0]), cubic(2, &arch)];
+        let swept = sweep(
+            &section,
+            &[cubic(10, &rail)],
+            &[cubic(20, &moved)],
+            Scaling::Uniform,
+            k,
+        )
+        .unwrap();
+        let t = tol(k).linear;
+        assert!(swept.deviation > 0.0 && swept.deviation <= t / 2.0);
+        let (volume, area, points) = sound(&swept, k);
+        // The area under the arch by Gauss–Legendre on its own
+        // polynomial: ∫ z (−dx/dt) dt, exact for this degree.
+        let gauss = craft3d_math::quadrature::gauss_legendre(8);
+        let mut under = 0.0;
+        for (x, w) in gauss {
+            let s = 0.5 * (x + 1.0);
+            let h = 1e-6;
+            let (a, b) = (casteljau(&arch, s - h), casteljau(&arch, s + h));
+            let dx = (b[0] - a[0]) / (2.0 * h);
+            under += 0.5 * w * casteljau(&arch, s)[1] * -dx;
+        }
+        within(volume, under * 30.0 * k, area * t + 1e-8 * volume);
+        let mut worst: f64 = 0.0;
+        for p in points {
+            if p.y <= t || p.y >= 30.0 * k - t {
+                continue;
+            }
+            let at = casteljau(&rail, p.y / (30.0 * k));
+            let local = [p.x - at[0], p.z];
+            let bottom = if local[0] < 0.0 {
+                local[0].phypot(local[1])
+            } else if local[0] > d {
+                (local[0] - d).phypot(local[1])
+            } else {
+                local[1].abs()
+            };
+            worst = worst.max(bottom.min(to_bezier(&arch, local)));
+        }
+        assert!(worst > 0.0);
+        assert!(
+            worst <= 1.3 * swept.deviation + 1e-12 * k,
+            "a point is {worst} off the section, more than the bound {}",
+            swept.deviation
+        );
+    }
+}
+
+#[test]
+fn rails_in_different_planes_tilt_the_section() {
+    for k in SCALES {
+        // Rail A along y on the xy plane, rail B on the plane x = d,
+        // rising by h over the same run: the chord at height y runs from
+        // (0, y, 0) to (d, y, h y / l), and the circle on it has half its
+        // length as radius: V = π/4 (d² l + h² l / 3).
+        let (d, h, l) = (4.0 * k, 3.0 * k, 20.0 * k);
+        let side = Frame::new(Vec3::new(d, 0.0, 0.0), Vec3::X, Vec3::Y).unwrap();
+        let swept = sweep_two_rails(
+            &profile(&[circle(1, [d / 2.0, 0.0], d / 2.0)], k),
+            &front(),
+            &[line(10, [0.0, 0.0], [0.0, l])],
+            &Frame::WORLD,
+            &[line(20, [0.0, 0.0], [l, h])],
+            &side,
+            Scaling::Uniform,
+            &tol(k),
+        )
+        .unwrap();
+        let (volume, area, _) = sound(&swept, k);
+        within(
+            volume,
+            PI / 4.0 * (d * d * l + h * h * l / 3.0),
+            area * tol(k).linear,
+        );
+    }
+}
+
+#[test]
+fn a_fold_in_the_middle_of_a_leg_is_refused() {
+    for k in SCALES {
+        // Rail B is half a circle: half way along it runs straight across,
+        // along the section's own plane.
+        let (d, r) = (4.0 * k, 10.0 * k);
+        let why = refusal(sweep(
+            &[circle(1, [d / 2.0, 0.0], d / 2.0)],
+            &[line(10, [0.0, 0.0], [0.0, 40.0 * k])],
+            &[arc(20, [d + r, 0.0], [d + 2.0 * r, 0.0], [d, 0.0])],
+            Scaling::Uniform,
+            k,
+        ));
+        assert!(why.contains("fold"), "{why}");
+        assert!(!why.contains("(0, 0, 0)"), "{why}");
+    }
+}
+
+#[test]
+fn a_corner_added_to_one_rail_renames_only_the_legs_after_it() {
+    let polyline = |id: u64, points: &[[f64; 2]]| SketchCurve {
+        id,
+        curve: Curve2::Spline(Spline2 {
+            degree: 1,
+            knots: knots(1, points.len()),
+            control: points.to_vec(),
+        }),
+    };
+    let sides = |swept: &Swept| -> Vec<(Vec<u64>, u32)> {
+        swept
+            .faces
+            .iter()
+            .filter(|o| o.role == Role::Side)
+            .map(|o| (o.sources.clone(), o.piece))
+            .collect()
+    };
+    let section = [circle(1, [2.0, 0.0], 2.0)];
+    let a = [polyline(10, &[[0.0, 0.0], [0.0, 10.0], [-2.0, 20.0]])];
+    let straight = sweep(
+        &section,
+        &a,
+        &[line(20, [4.0, 0.0], [4.0, 20.0])],
+        Scaling::Uniform,
+        1.0,
+    )
+    .unwrap();
+    let bent = sweep(
+        &section,
+        &a,
+        &[polyline(20, &[[4.0, 0.0], [4.0, 15.0], [5.0, 20.0]])],
+        Scaling::Uniform,
+        1.0,
+    )
+    .unwrap();
+    let (before, after) = (sides(&straight), sides(&bent));
+    // The first piece of rail A with the first of rail B: the same four
+    // quarters, numbered 0 to 3, before and after.
+    assert_eq!(before[..4], after[..4]);
+    assert!(before[..4].iter().all(|(s, n)| *s == [1, 10, 20] && *n < 4));
+    // Rail A's second piece with rail B's first: 4096 on in both.
+    let second: Vec<u32> = before[4..].iter().map(|(_, n)| *n).collect();
+    assert_eq!(second, [4096, 4097, 4098, 4099]);
+    assert_eq!(
+        after[4..8].iter().map(|(_, n)| *n).collect::<Vec<_>>(),
+        second
+    );
+    // And the leg on rail B's second piece is new.
+    let last: Vec<u32> = after[8..].iter().map(|(_, n)| *n).collect();
+    assert_eq!(last, [4100, 4101, 4102, 4103]);
+}
+
+#[test]
+fn a_tolerance_too_fine_for_the_size_is_refused() {
+    let why = refusal(sweep_two_rails(
+        &profile(&[circle(1, [2.0e6, 0.0], 2.0e6)], 1e6),
+        &front(),
+        &[line(10, [0.0, 0.0], [0.0, 3.0e7])],
+        &Frame::WORLD,
+        &[line(20, [4.0e6, 0.0], [3.0e6, 3.0e7])],
+        &Frame::WORLD,
+        Scaling::Uniform,
+        &Tolerance::new(1e-9, 1e-9).unwrap(),
+    ));
+    assert!(why.contains("too fine"), "{why}");
+}
