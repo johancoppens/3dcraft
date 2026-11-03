@@ -48,9 +48,127 @@ impl Kit {
     /// The agent's pill on the status bar (chrome: the same in both
     /// appearances). A working pill asks for the next frame, its arc turns.
     pub fn pill(&self, ui: &mut Ui, state: PillState, text: &str) -> Response {
+        self.pill_within(ui, state, text, f32::INFINITY)
+    }
+
+    /// The pill's width for `text`, at most `most` (its words cut with an
+    /// ellipsis to fit): what a bar keeps for it.
+    pub fn pill_width(&self, ui: &Ui, state: PillState, text: &str, most: f32) -> f32 {
+        let (_, _, mark, ink) = self.pill_inks(state);
+        let (fixed, _) = self.pill_fixed(mark.is_some());
+        let galley = self.pill_galley(ui, text, ink, most - fixed);
+        fixed + galley.size().x
+    }
+
+    /// The pill at most `most` wide: its words cut with an ellipsis (the
+    /// whole of them is the caller's tooltip).
+    pub fn pill_within(&self, ui: &mut Ui, state: PillState, text: &str, most: f32) -> Response {
         let t = &self.t;
         let h = t.pill_height;
-        let (fill, rim, mark, ink) = match state {
+        let (fill, rim, mark, ink) = self.pill_inks(state);
+        let (fixed, dot) = self.pill_fixed(mark.is_some());
+        let galley = self.pill_galley(ui, text, ink, most - fixed);
+        let pad = h * 0.5;
+        let width = fixed + galley.size().x;
+        let (outer, response) = ui.allocate_exact_size(
+            sane(vec2(width.max(t.hit_min), self.hit(h))),
+            Sense::click(),
+        );
+        if !ui.is_rect_visible(outer) {
+            return response;
+        }
+        let rect = Rect::from_center_size(outer.center(), vec2(width, h));
+        let painter = ui.painter();
+        let radius = CornerRadius::same(super::controls::radius_of(h));
+        let hovered = response.hovered();
+        if let Some(fill) = fill {
+            let fill = if hovered {
+                self.hovered_fill(fill)
+            } else {
+                fill
+            };
+            painter.rect_filled(rect, radius, color(fill));
+        }
+        if let Some(rim) = rim {
+            painter.rect_stroke(
+                rect,
+                radius,
+                Stroke::new(if hovered { 1.5 } else { 1.0 }, color(rim)),
+                egui::StrokeKind::Inside,
+            );
+        }
+        let mut x = rect.left() + pad;
+        if let Some(mark) = mark {
+            let c = pos2(x + dot, rect.center().y);
+            match state {
+                PillState::Waiting => {
+                    painter.circle_stroke(c, dot, Stroke::new(1.5, color(mark)));
+                }
+                PillState::Working => {
+                    painter.circle_stroke(c, dot, Stroke::new(1.5, color_alpha(mark, 90)));
+                    // Still where animations are off (reduced motion).
+                    if ui.style().animation_time > 0.0 {
+                        let turn = (ui.input(|i| i.time) * 4.0) as f32;
+                        painter.add(arc(c, dot, turn, turn + 4.0, Stroke::new(1.5, color(mark))));
+                        ui.ctx().request_repaint();
+                    } else {
+                        painter.add(arc(c, dot, 0.0, 4.0, Stroke::new(1.5, color(mark))));
+                    }
+                }
+                _ => {
+                    painter.circle_filled(c, dot, color(mark));
+                }
+            }
+            x += 2.0 * dot + t.nav_icon_gap;
+        }
+        painter.galley(
+            pos2(x, rect.center().y - galley.size().y * 0.5),
+            galley,
+            color(ink),
+        );
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
+        response
+    }
+
+    /// The room a pill takes besides its words (its ends and its mark),
+    /// and its mark's radius.
+    fn pill_fixed(&self, marked: bool) -> (f32, f32) {
+        let h = self.t.pill_height;
+        let dot = h * 0.18;
+        let mark_room = if marked {
+            2.0 * dot + self.t.nav_icon_gap
+        } else {
+            0.0
+        };
+        (h + mark_room, dot)
+    }
+
+    /// The pill's words, cut with an ellipsis at `room`.
+    fn pill_galley(
+        &self,
+        ui: &Ui,
+        text: &str,
+        ink: Rgb,
+        room: f32,
+    ) -> std::sync::Arc<egui::Galley> {
+        let mut job =
+            egui::text::LayoutJob::simple_singleline(text.to_string(), self.font(), color(ink));
+        if room.is_finite() {
+            job.wrap = egui::text::TextWrapping {
+                max_width: room.max(24.0),
+                max_rows: 1,
+                break_anywhere: true,
+                overflow_character: Some('…'),
+            };
+        }
+        ui.painter().layout_job(job)
+    }
+
+    /// A pill's fill, rim, mark and ink: the chrome's, the same in both
+    /// appearances.
+    pub fn pill_inks(&self, state: PillState) -> (Option<Rgb>, Option<Rgb>, Option<Rgb>, Rgb) {
+        let t = &self.t;
+        match state {
             PillState::Off => (None, Some(t.pill_off_rim), None, t.chrome_text_dim),
             PillState::Waiting => (
                 None,
@@ -82,63 +200,21 @@ impl Kit {
                 Some(t.chrome_failed),
                 t.chrome_failed,
             ),
-        };
-        let galley = self.galley(ui, text, self.font(), ink);
-        let dot = h * 0.18;
-        let pad = h * 0.5;
-        let mark_room = if mark.is_some() {
-            2.0 * dot + t.nav_icon_gap
-        } else {
-            0.0
-        };
-        let width = pad * 2.0 + mark_room + galley.size().x;
-        let (outer, response) = ui.allocate_exact_size(
-            sane(vec2(width.max(t.hit_min), self.hit(h))),
-            Sense::click(),
-        );
-        if !ui.is_rect_visible(outer) {
-            return response;
         }
-        let rect = Rect::from_center_size(outer.center(), vec2(width, h));
-        let painter = ui.painter();
-        let radius = CornerRadius::same(super::controls::radius_of(h));
-        if let Some(fill) = fill {
-            painter.rect_filled(rect, radius, color(fill));
-        }
-        if let Some(rim) = rim {
-            painter.rect_stroke(
-                rect,
-                radius,
-                Stroke::new(1.0, color(rim)),
-                egui::StrokeKind::Inside,
-            );
-        }
-        let mut x = rect.left() + pad;
-        if let Some(mark) = mark {
-            let c = pos2(x + dot, rect.center().y);
-            match state {
-                PillState::Waiting => {
-                    painter.circle_stroke(c, dot, Stroke::new(1.5, color(mark)));
-                }
-                PillState::Working => {
-                    painter.circle_stroke(c, dot, Stroke::new(1.5, color_alpha(mark, 90)));
-                    let turn = (ui.input(|i| i.time) * 4.0) as f32;
-                    painter.add(arc(c, dot, turn, turn + 4.0, Stroke::new(1.5, color(mark))));
-                    ui.ctx().request_repaint();
-                }
-                _ => {
-                    painter.circle_filled(c, dot, color(mark));
-                }
-            }
-            x += 2.0 * dot + t.nav_icon_gap;
-        }
-        painter.galley(
-            pos2(x, rect.center().y - galley.size().y * 0.5),
-            galley,
-            color(ink),
-        );
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
-        response
+    }
+
+    /// Whether a banner `width` wide holds `title` on its one line, beside
+    /// its bar, its icon and its padding: a caller whose title would not
+    /// fit puts it in the body instead, so the banner never widens what
+    /// holds it (the bake hint in a narrow panel).
+    pub fn banner_title_fits(&self, ui: &Ui, title: &str, width: f32) -> bool {
+        let t = &self.t;
+        let around = 2.0 * (t.inset + 2.0) + t.info_bar_width + t.nav_icon_size + t.nav_icon_gap;
+        let wide = self
+            .galley(ui, title, self.medium_font(ui), self.skin.text)
+            .size()
+            .x;
+        wide + around <= width
     }
 
     /// A banner across the width there is: the bar of its kind at the
@@ -290,8 +366,15 @@ impl Kit {
         let s = &self.skin;
         let galley = self.galley(ui, text, self.font(), s.text);
         let side = t.work_spinner.max(4.0);
+        // Without words, the arc and half a gap (the status bar's words
+        // follow in a label of their own).
+        let gap = if text.is_empty() {
+            side * 0.5
+        } else {
+            t.nav_icon_gap
+        };
         let (rect, response) = ui.allocate_exact_size(
-            sane(vec2(side + t.nav_icon_gap + galley.size().x, t.row_height)),
+            sane(vec2(side + gap + galley.size().x, t.row_height)),
             Sense::hover(),
         );
         let c = pos2(rect.left() + side * 0.5, rect.center().y);
@@ -309,7 +392,7 @@ impl Kit {
         ui.ctx().request_repaint();
         ui.painter().galley(
             pos2(
-                rect.left() + side + t.nav_icon_gap,
+                rect.left() + side + gap,
                 rect.center().y - galley.size().y * 0.5,
             ),
             galley,

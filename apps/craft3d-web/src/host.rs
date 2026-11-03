@@ -1090,6 +1090,10 @@ impl WebHost {
                 let made = self.run("file.new", &json!({}));
                 self.finish("file.new", &made);
             }
+            FileAction::NewAssembly => {
+                let made = self.run("assembly.new", &json!({}));
+                self.finish("assembly.new", &made);
+            }
             FileAction::Open => outcome.ask = Some(Ask::Open),
             FileAction::Import => outcome.ask = Some(Ask::Import),
             FileAction::Save | FileAction::SaveAs => {

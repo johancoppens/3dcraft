@@ -8,7 +8,7 @@
 //! flat area grows by `2 w (BA + L)`, the volume by `2 (T w L + θ w ((R +
 //! T)² − R²)/2)`, the gap at every corner is still the gap, every face
 //! name of the tray without tabs but the tip's rim is kept; a flange on a
-//! side its closed corner replaces is refused by reason; with bend reliefs
+//! side its closed corner replaces moves with the corner's end; with bend reliefs
 //! the tabs' four notches come off the flat area.
 
 #![allow(
@@ -170,32 +170,58 @@ fn a_closed_corner_of_a_wall_with_screw_tabs_on_its_tip() {
     }
 }
 
+/// A tab on the bottom wall's side at its start, where the corner is
+/// closed by overlap with the bottom wall covering: the side moves to the
+/// left wall's outside with the tab (until 2026-11-02 refused: the side
+/// became the corner's end). The covering swaps nothing in the flat area
+/// (each wall's reach is the other's of before), so against the same
+/// tray without the tab the flat area grows by the tab's `w (BA + L)`
+/// and, at K = ½ with square ends, the volume by `T` times that.
 #[test]
-fn a_flange_on_a_side_a_closed_corner_replaces_is_refused() {
+fn a_flange_on_a_side_moves_with_its_closed_corners_end() {
     for k in SCALES {
         let dir = workdir("sheetmetal-closed-tabs", &format!("side-{k}"));
         let mut s = session_in(&dir);
         new_document(&mut s, k);
         let lines = base(&mut s, k);
+        let part = |list: Vec<Value>| {
+            json!({"sketch": "Base", "name": "Tray", "thickness": mm(k), "radius": mm(k),
+                   "kFactor": 0.5, "relief": {"shape": "round", "size": mm(3.0 * k)},
+                   "corner": {"kind": "overlap", "gap": mm(0.25 * k)},
+                   "corners": [{"flanges": [3, 0], "kind": "overlap", "over": 0}],
+                   "flanges": list})
+        };
+        built(
+            &mut s,
+            "feature.sheetMetal",
+            part(flanges(k, &lines, false)),
+        );
+        let plain = body(&mut s, "Tray");
+        assert_eq!(plain["valid"], true, "{plain}");
+        let (v0, a0) = (number(&plain["volume"]), flat_area(&mut s));
         let mut list = flanges(k, &lines, false);
-        // A tab on the bottom wall's side at its start: its corner there
-        // is closed, so that side is the corner's end.
         list.push(
             json!({"side": {"flange": 0, "end": "start"}, "length": mm(5.0 * k),
                          "angle": "90 deg"}),
         );
         let made = run(
             &mut s,
-            "feature.sheetMetal",
-            json!({"sketch": "Base", "name": "Tray", "thickness": mm(k), "radius": mm(k),
-                   "kFactor": 0.5, "relief": {"shape": "round", "size": mm(3.0 * k)},
-                   "corner": {"kind": "overlap", "gap": mm(0.25 * k)}, "flanges": list}),
+            "sheetMetal.edit",
+            json!({"feature": "Tray", "flanges": list}),
         );
-        let why = made["error"].as_str().unwrap_or_default().to_string();
-        assert_eq!(made["status"], "failed", "{made}");
+        assert_ne!(made["status"], "failed", "scale {k}: {made}");
+        let tabbed = body(&mut s, "Tray");
+        assert_eq!(tabbed["valid"], true, "{tabbed}");
+        let grow = 10.0 * k * (FRAC_PI_2 * 1.5 * k + 5.0 * k);
+        let a1 = flat_area(&mut s);
         assert!(
-            why.contains("the corner's end") && why.contains("carries flange 4"),
-            "scale {k}: {why}"
+            (a1 - a0 - grow).abs() <= 1e-9 * a1,
+            "scale {k}: {a1} - {a0}"
+        );
+        let v1 = number(&tabbed["volume"]);
+        assert!(
+            (v1 - v0 - k * grow).abs() <= 1e-8 * v1,
+            "scale {k}: {v1} - {v0}"
         );
     }
 }

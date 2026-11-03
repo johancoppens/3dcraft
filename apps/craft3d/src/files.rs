@@ -759,6 +759,12 @@ impl Host {
                 self.shell.sync(&mut self.session);
                 return;
             }
+            FileAction::NewAssembly => {
+                let outcome = self.run("assembly.new", &json!({}));
+                self.report("assembly.new", &outcome);
+                self.shell.sync(&mut self.session);
+                return;
+            }
             FileAction::Open => picker.ask_open().map_err(|e| ("file.open", e)),
             FileAction::Import => picker.ask_import().map_err(|e| ("file.import", e)),
             // The export dialog first (what, the format, the options);

@@ -10,6 +10,13 @@
 //!   where its skin touches tangentially, `−(R + T)` from the axis, where
 //!   the hull's tangent apexes lie below it;
 //! - an arched flat's lowest point is the least of the arc's samples.
+//! - the lowest point of the part of a flat or a bend on one side of a
+//!   plane (the proof of material past a bend line, *Past the bend
+//!   line*): a D cut across its arch, exact where the plane is square to
+//!   the flat and the half widened by the plane's lean otherwise; a bend
+//!   cut along its length;
+//! - a die cut into triangles: as many as its points less two, each
+//!   counter-clockwise, their areas adding up to the die's.
 
 #![allow(
     clippy::unwrap_used,
@@ -19,7 +26,9 @@
 )]
 
 use craft3d_kernel::profile::{Curve2, Profile, SketchCurve, detect_profiles};
-use craft3d_kernel::sheetmetal::sequence::{PieceOf, final_worlds, piece_lowest, piece_points};
+use craft3d_kernel::sheetmetal::sequence::{
+    PieceOf, final_worlds, piece_lowest, piece_lowest_within, piece_points, simple, triangles,
+};
 use craft3d_kernel::sheetmetal::{
     Closing, Direction, FlangeSpec, LengthFrom, On, Part, Spec, build,
 };
@@ -80,6 +89,7 @@ fn part(base: Profile, t: f64, flanges: Vec<FlangeSpec>, k: f64) -> Part {
             corner: Closing::OPEN,
             corners: Vec::new(),
             cutouts: Vec::new(),
+            jogs: Vec::new(),
             ids: Vec::new(),
         },
         &tolerance(k),
@@ -381,5 +391,320 @@ fn the_hull_holds_arcs_either_way_round_and_whole_circles() {
             let p = [c[0] + r * a.pcos(), c[1] + r * a.psin()];
             assert!(in_convex(&hull, p, 1e-9 * k), "scale {k}: {p:?} outside");
         }
+    }
+}
+
+/// The D of `an_arched_flats_lowest_point_is_its_arcs_least` (width `w`,
+/// height `h` to the arch's springing, the arch a half circle).
+fn d_shape(k: f64) -> (Vec<SketchCurve>, f64, f64) {
+    let (w, h) = (20.0 * k, 10.0 * k);
+    let line = |id, start, end| SketchCurve {
+        id,
+        curve: Curve2::Line { start, end },
+    };
+    let curves = vec![
+        line(1, [0.0, 0.0], [w, 0.0]),
+        line(2, [w, 0.0], [w, h]),
+        SketchCurve {
+            id: 3,
+            curve: Curve2::Arc {
+                center: [0.5 * w, h],
+                start: [w, h],
+                end: [0.0, h],
+            },
+        },
+        line(4, [0.0, h], [0.0, 0.0]),
+    ];
+    (curves, w, h)
+}
+
+/// The least of `−(cos β x + sin β y)` over the D cut to `x ≥ c`, in
+/// closed form: at the cut rectangle's corners, the arch's end on the
+/// right, where the cut meets the arch, and the arch's point facing
+/// `−(cos β, sin β)` when it lies in the half kept.
+fn d_least(w: f64, h: f64, c: f64, beta: f64) -> f64 {
+    let f = |x: f64, y: f64| -(beta.pcos() * x + beta.psin() * y);
+    let r = 0.5 * w;
+    let meet = ((c - r) / r).clamp(-1.0, 1.0).pacos();
+    let mut least = f(c, 0.0).min(f(w, 0.0)).min(f(w, h));
+    least = least.min(f(r + r * meet.pcos(), h + r * meet.psin()));
+    // On the arch (angles 0 to `meet` from its centre) the function is
+    // least at the angle β.
+    let b = beta.rem_euclid(2.0 * PI);
+    if b <= meet {
+        least = least.min(f(r + r * b.pcos(), h + r * b.psin()));
+    }
+    least
+}
+
+#[test]
+fn a_flats_half_past_a_plane_has_its_own_least() {
+    for k in SCALES {
+        let (curves, w, h) = d_shape(k);
+        let t = 1.0 * k;
+        let mut f = flange(1, 1.0 * k);
+        f.length = 5.0 * k;
+        let p = part(one(&curves, k), t, vec![f], k);
+        let back = final_worlds(&p)[0].inverse().unwrap();
+        for (beta, c) in [(0.4_f64, 0.7), (1.1, 0.3), (2.0, 0.55), (2.9, 0.8)] {
+            let c = c * w;
+            let height = |x: Vec3| {
+                let q = back.point(x);
+                -(beta.pcos() * q.x + beta.psin() * q.y) + 0.25 * q.z
+            };
+            // Square to the flat: exact.
+            let side = |x: Vec3| back.point(x).x - c;
+            let got = piece_lowest_within(&p, PieceOf::Flat(0), height, side).unwrap();
+            let exact = d_least(w, h, c, beta);
+            assert!(
+                (got - exact).abs() <= 1e-12 * k * 50.0,
+                "scale {k}, β {beta}, c {c}: {got} against {exact}"
+            );
+            // The other half: the least of the whole D is the less of the
+            // two halves'.
+            let other = piece_lowest_within(&p, PieceOf::Flat(0), height, |x| -side(x)).unwrap();
+            let whole = piece_lowest(&p, PieceOf::Flat(0), height).unwrap();
+            assert!(
+                (other.min(got) - whole).abs() <= 1e-12 * k * 50.0,
+                "scale {k}, β {beta}: halves {other}, {got}, whole {whole}"
+            );
+            // Leaning across the thickness by `λ`: the half kept widened
+            // to every point where `x − c + λ z ≥ 0` at some level, so
+            // `x ≥ c − λ T`.
+            let lambda = 0.5;
+            let leaning = |x: Vec3| {
+                let q = back.point(x);
+                q.x - c + lambda * q.z
+            };
+            let got = piece_lowest_within(&p, PieceOf::Flat(0), height, leaning).unwrap();
+            let exact = d_least(w, h, c - lambda * t, beta);
+            assert!(
+                (got - exact).abs() <= 1e-12 * k * 50.0,
+                "scale {k}, β {beta}, leaning: {got} against {exact}"
+            );
+            // Nothing past a plane beyond the D.
+            let none =
+                piece_lowest_within(&p, PieceOf::Flat(0), height, |x| back.point(x).x - 2.0 * w)
+                    .unwrap();
+            assert_eq!(none, f64::INFINITY, "scale {k}");
+        }
+    }
+}
+
+#[test]
+fn a_bends_half_past_a_plane_square_to_its_axis() {
+    for k in SCALES {
+        let (t, r) = (1.0 * k, 2.0 * k);
+        let mut f = flange(2, r);
+        f.length = 10.0 * k;
+        let p = part(
+            one(
+                &lines(&[[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]], k),
+                k,
+            ),
+            t,
+            vec![f],
+            k,
+        );
+        let b = p.bends[0];
+        let back = final_worlds(&p)[b.parent].inverse().unwrap();
+        let zc = t + b.radius;
+        let len = (b.end[0] - b.start[0]).phypot(b.end[1] - b.start[1]);
+        let d = [(b.end[0] - b.start[0]) / len, (b.end[1] - b.start[1]) / len];
+        let along = |q: Vec3| (q.x - b.start[0]) * d[0] + (q.y - b.start[1]) * d[1];
+        for (alpha, cut) in [(0.3_f64, 0.25), (0.7, 0.5), (1.2, 0.9)] {
+            let a0 = cut * len;
+            // The skin touching a plane at the angle α, rising along the
+            // axis by a tenth: least `−(R + T)` at the cut's end.
+            let height = |x: Vec3| {
+                let q = back.point(x);
+                let u = (q.x - b.start[0]) * b.across[0] + (q.y - b.start[1]) * b.across[1];
+                alpha.pcos() * (q.z - zc) - alpha.psin() * u + 0.1 * along(q)
+            };
+            let side = |x: Vec3| along(back.point(x)) - a0;
+            let got = piece_lowest_within(&p, PieceOf::Bend(0), height, side).unwrap();
+            let exact = -(b.radius + t) + 0.1 * a0;
+            assert!(
+                (got - exact).abs() <= 1e-12 * k * 50.0,
+                "scale {k}, α {alpha}: {got} against {exact}"
+            );
+            // The half before the cut: least at the bend's start.
+            let other = piece_lowest_within(&p, PieceOf::Bend(0), height, |x| -side(x)).unwrap();
+            assert!(
+                (other + (b.radius + t)).abs() <= 1e-12 * k * 50.0,
+                "scale {k}, α {alpha}: {other}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_die_cut_into_triangles_adds_up_to_its_area() {
+    let area = |p: &[[f64; 2]]| -> f64 {
+        0.5 * (0..p.len())
+            .map(|i| {
+                let (a, b) = (p[i], p[(i + 1) % p.len()]);
+                a[0] * b[1] - b[0] * a[1]
+            })
+            .sum::<f64>()
+    };
+    for k in SCALES {
+        let v_die: Vec<[f64; 2]> = [
+            [-20.0, -20.0],
+            [20.0, -20.0],
+            [20.0, 0.0],
+            [8.0, 0.0],
+            [0.0, -8.0],
+            [-8.0, 0.0],
+            [-20.0, 0.0],
+        ]
+        .iter()
+        .map(|p| [p[0] * k, p[1] * k])
+        .collect();
+        // Clockwise too.
+        let reversed: Vec<[f64; 2]> = v_die.iter().rev().copied().collect();
+        for die in [&v_die, &reversed] {
+            let cut = triangles(die).unwrap();
+            assert_eq!(cut.len(), die.len() - 2, "scale {k}");
+            let mut sum = 0.0;
+            for tri in &cut {
+                let a = area(tri);
+                assert!(a > 0.0, "scale {k}: {tri:?}");
+                sum += a;
+            }
+            let whole = area(die).abs();
+            assert!(
+                (sum - whole).abs() <= 1e-12 * whole,
+                "scale {k}: {sum} against {whole}"
+            );
+        }
+        // A bow tie crosses itself: no area to cut, refused.
+        let bow = [[0.0, 0.0], [k, k], [k, 0.0], [0.0, k]];
+        assert!(triangles(&bow).is_none(), "scale {k}");
+        // A polygon whose third side dips across its first (as a round
+        // shoulder's tangent apex can cross a V's flank) has an area and
+        // ears to clip, but is no region: refused, never cut (review of
+        // 4116ed3e).
+        let crossed: Vec<[f64; 2]> = [
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 10.0],
+            [6.0, -1.0],
+            [0.0, 10.0],
+        ]
+        .iter()
+        .map(|p| [p[0] * k, p[1] * k])
+        .collect();
+        assert!(!simple(&crossed), "scale {k}");
+        assert!(triangles(&crossed).is_none(), "scale {k}");
+        // Touching itself at a corner is not simple either; the V die is.
+        let touching: Vec<[f64; 2]> = [[0.0, 0.0], [10.0, 0.0], [5.0, 0.0], [5.0, 5.0]]
+            .iter()
+            .map(|p| [p[0] * k, p[1] * k])
+            .collect();
+        assert!(!simple(&touching), "scale {k}");
+        assert!(simple(&v_die), "scale {k}");
+    }
+}
+
+/// A tool's outline with arcs: the arc through three points, its top,
+/// the polygon that holds it, its mirror image and whether it is its own
+/// (sheetmetal.md › *Bend sequence* › *Arcs in the tools*).
+#[test]
+fn a_tools_arcs_are_circles_through_their_points() {
+    use craft3d_kernel::sheetmetal::sequence::{Tool, circle_through};
+    for k in SCALES {
+        // A punch with a round tip of radius 2 about the origin and
+        // straight flanks 50 high.
+        let r = 2.0 * k;
+        let punch = Tool {
+            corners: vec![[-r, 50.0 * k], [-r, 0.0], [r, 0.0], [r, 50.0 * k]],
+            through: vec![None, Some([0.0, -r]), None, None],
+        };
+        let (c, radius, ccw) = circle_through([-r, 0.0], [0.0, -r], [r, 0.0]).unwrap();
+        assert!(c[0].abs() <= 1e-15 * k && c[1].abs() <= 1e-15 * k, "{c:?}");
+        assert!((radius - r).abs() <= 1e-15 * k, "{radius}");
+        assert!(ccw);
+        // Its curves: the tip an arc about the origin, counter-clockwise
+        // from its left end to its right (as the outline runs).
+        let curves = punch.curves().unwrap();
+        assert!(matches!(
+            curves[1].curve,
+            Curve2::Arc { start, end, .. } if start == [-r, 0.0] && end == [r, 0.0]
+        ));
+        assert!(punch.symmetric(), "scale {k}");
+        assert!(punch.mirrored().symmetric());
+        // Its top is its flanks', the tip below them.
+        assert_eq!(punch.top(), 50.0 * k);
+        // The polygon holding it: the tip by its tangents' meeting
+        // points, (−r, −r) and (r, −r).
+        let held = punch.enclosing().unwrap();
+        for corner in [[-r, -r], [r, -r]] {
+            assert!(
+                held.iter().any(|p| (p[0] - corner[0]).abs() <= 1e-12 * k
+                    && (p[1] - corner[1]).abs() <= 1e-12 * k),
+                "scale {k}: {held:?}"
+            );
+        }
+        let cut = triangles(&held).unwrap();
+        let area: f64 = cut
+            .iter()
+            .map(|t| {
+                0.5 * ((t[1][0] - t[0][0]) * (t[2][1] - t[0][1])
+                    - (t[1][1] - t[0][1]) * (t[2][0] - t[0][0]))
+            })
+            .sum();
+        // The flanks' rectangle and the square under it.
+        let exact = 2.0 * r * 50.0 * k + 2.0 * r * r;
+        assert!(
+            (area - exact).abs() <= 1e-9 * exact,
+            "scale {k}: {area} against {exact}"
+        );
+
+        // A die with a shoulder bulging above its top: its top is the
+        // circle's, `c + r` over the arc.
+        let die = Tool {
+            corners: vec![
+                [-10.0 * k, -10.0 * k],
+                [10.0 * k, -10.0 * k],
+                [10.0 * k, 0.0],
+                [-10.0 * k, 0.0],
+            ],
+            through: vec![None, None, Some([0.0, 1.0 * k]), None],
+        };
+        let (c, radius, _) = circle_through([10.0 * k, 0.0], [0.0, k], [-10.0 * k, 0.0]).unwrap();
+        assert!(
+            (die.top() - (c[1] + radius)).abs() <= 1e-12 * k,
+            "scale {k}"
+        );
+        assert!((die.top() - k).abs() <= 1e-12 * k, "scale {k}");
+        // An arc that bulges into the region is held by its chord: a die
+        // with a round notch keeps its straight top.
+        let notched = Tool {
+            corners: vec![
+                [-10.0 * k, -10.0 * k],
+                [10.0 * k, -10.0 * k],
+                [10.0 * k, 0.0],
+                [-10.0 * k, 0.0],
+            ],
+            through: vec![None, None, Some([0.0, -k]), None],
+        };
+        assert_eq!(notched.enclosing().unwrap().len(), 4, "scale {k}");
+        assert_eq!(notched.top(), 0.0);
+        // An asymmetric arc: not its own mirror image; mirrored twice it
+        // is itself.
+        let leaning = Tool {
+            corners: vec![[-r, 50.0 * k], [-r, 0.0], [r, 0.0], [r, 50.0 * k]],
+            through: vec![None, Some([0.5 * r, -0.8 * r]), None, None],
+        };
+        assert!(!leaning.symmetric(), "scale {k}");
+        assert_eq!(leaning.mirrored().mirrored(), leaning);
+        // Through points in a line with the side's ends: no arc.
+        let flat = Tool {
+            corners: vec![[-r, 50.0 * k], [-r, 0.0], [r, 0.0], [r, 50.0 * k]],
+            through: vec![None, Some([0.0, 0.0]), None, None],
+        };
+        assert!(flat.curves().unwrap_err().to_string().contains("in a line"));
+        assert!(circle_through([0.0, 0.0], [k, 0.0], [2.0 * k, 0.0]).is_none());
     }
 }

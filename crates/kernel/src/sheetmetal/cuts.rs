@@ -49,11 +49,13 @@ pub struct Cut {
     pub named: String,
 }
 
-/// A tangent line: segment `seg` of flat `flat`'s outline, which bend
-/// `bend`'s strip continues, from `a` to `b` in the flat's direction.
+/// A tangent line: segment `seg` of flat `flat`'s outline (or of its hole
+/// `hole`: a flange on a hole's edge), which bend `bend`'s strip
+/// continues, from `a` to `b` in the flat's direction.
 #[derive(Clone, Copy, Debug)]
 struct Tangent {
     flat: usize,
+    hole: Option<usize>,
     seg: usize,
     bend: usize,
     a: P2,
@@ -83,6 +85,47 @@ impl Tangent {
         };
         dot(e, sub(p, self.a))
     }
+
+    /// The vertex where the loop it is a segment of reaches its start
+    /// (`next` false) or leaves its end (`next` true).
+    fn vertex(&self, flats: &[Flat], next: bool) -> VRef {
+        let step = |n: usize| {
+            if next {
+                (self.seg + 1) % n.max(1)
+            } else {
+                self.seg
+            }
+        };
+        match self.hole {
+            None => {
+                let n = flats.get(self.flat).map_or(0, |f| f.outer.len());
+                VRef::Outline(self.flat, step(n))
+            }
+            Some(h) => {
+                let n = flats
+                    .get(self.flat)
+                    .and_then(|f| f.holes.get(h))
+                    .map_or(0, Vec::len);
+                VRef::Hole(self.flat, h, step(n))
+            }
+        }
+    }
+
+    /// The edge it is when no cut crosses it, and its piece `i` when one
+    /// does.
+    fn whole(&self) -> ERef {
+        match self.hole {
+            None => ERef::Outline(self.flat, self.seg),
+            Some(h) => ERef::Hole(self.flat, h, self.seg),
+        }
+    }
+
+    fn piece(&self, i: usize) -> ERef {
+        match self.hole {
+            None => ERef::Sub(self.flat, self.seg, i),
+            Some(h) => ERef::SubHole(self.flat, h, self.seg, i),
+        }
+    }
 }
 
 /// A vertex of the folded sheet, by what it is in the pattern.
@@ -107,6 +150,9 @@ enum ERef {
     /// line), counted along the flat's direction.
     Sub(usize, usize, usize),
     Hole(usize, usize, usize),
+    /// Piece `i` of segment `j` of hole `h` of flat `f` (a crossed tangent
+    /// line of a flange on the hole's edge).
+    SubHole(usize, usize, usize, usize),
     /// The arc at the start (0) or the end (1) of bend `b`.
     Arc(usize, usize),
     /// Piece `i` of segment `j` of cut `c`.
@@ -290,15 +336,10 @@ fn tangents(flats: &[Flat], bends: &[Bend]) -> Result<Vec<Tangent>, KernelError>
     let mut out = Vec::with_capacity(2 * bends.len());
     for (i, b) in bends.iter().enumerate() {
         let seat = super::seat_of(flats, i, b)?;
-        if seat.hole.is_some() {
-            return Err(refuse(
-                Some(i),
-                "a hole across a bend in a part with a flange on a hole's edge is not supported (owed: the tangent lines of such a bend are a hole's, which the cells do not trace)",
-            ));
-        }
         let k = seat.seg;
         out.push(Tangent {
             flat: b.parent,
+            hole: seat.hole,
             seg: k,
             bend: i,
             a: b.start,
@@ -307,6 +348,7 @@ fn tangents(flats: &[Flat], bends: &[Bend]) -> Result<Vec<Tangent>, KernelError>
         let (a0, a1) = b.far_line();
         out.push(Tangent {
             flat: b.child,
+            hole: None,
             seg: 0,
             bend: i,
             a: a1,
@@ -493,14 +535,13 @@ fn analyse(
     // The tangent lines' pieces outside every cut.
     let mut lines: Vec<Vec<Piece>> = Vec::with_capacity(tangents.len());
     for (li, tangent) in tangents.iter().enumerate() {
-        let n = flats.get(tangent.flat).map_or(0, |f| f.outer.len());
-        let start = VRef::Outline(tangent.flat, tangent.seg);
-        let end = VRef::Outline(tangent.flat, (tangent.seg + 1) % n.max(1));
+        let start = tangent.vertex(flats, false);
+        let end = tangent.vertex(flats, true);
         let mut points = on_line.get(li).cloned().unwrap_or_default();
         if points.is_empty() {
             lines.push(vec![Piece {
                 seg: line(tangent.a, tangent.b),
-                edge: ERef::Outline(tangent.flat, tangent.seg),
+                edge: tangent.whole(),
                 forward: true,
                 from: start,
                 to: end,
@@ -540,7 +581,7 @@ fn analyse(
             if !inside {
                 kept.push(Piece {
                     seg: line(*p, *q),
-                    edge: ERef::Sub(tangent.flat, tangent.seg, i),
+                    edge: tangent.piece(i),
                     forward: true,
                     from: *vp,
                     to: *vq,
@@ -551,8 +592,16 @@ fn analyse(
     }
 
     // The cells' own boundaries.
-    let line_of =
-        |flat: usize, seg: usize| tangents.iter().position(|t| t.flat == flat && t.seg == seg);
+    let line_of = |flat: usize, seg: usize| {
+        tangents
+            .iter()
+            .position(|t| t.flat == flat && t.hole.is_none() && t.seg == seg)
+    };
+    let hole_line_of = |flat: usize, hole: usize, seg: usize| {
+        tangents
+            .iter()
+            .position(|t| t.flat == flat && t.hole == Some(hole) && t.seg == seg)
+    };
     for (f, flat) in flats.iter().enumerate() {
         let n = flat.outer.len();
         let mut own = Vec::new();
@@ -571,13 +620,16 @@ fn analyse(
         for (h, hole) in flat.holes.iter().enumerate() {
             let len = hole.len();
             for (j, seg) in hole.iter().enumerate() {
-                own.push(Piece {
-                    seg: seg.clone(),
-                    edge: ERef::Hole(f, h, j),
-                    forward: true,
-                    from: VRef::Hole(f, h, j),
-                    to: VRef::Hole(f, h, (j + 1) % len),
-                });
+                match hole_line_of(f, h, j) {
+                    Some(li) => own.extend(lines.get(li).cloned().unwrap_or_default()),
+                    None => own.push(Piece {
+                        seg: seg.clone(),
+                        edge: ERef::Hole(f, h, j),
+                        forward: true,
+                        from: VRef::Hole(f, h, j),
+                        to: VRef::Hole(f, h, (j + 1) % len),
+                    }),
+                }
             }
         }
         let cell = cells.entry(Cell::Flat(f)).or_default();
@@ -598,13 +650,12 @@ fn analyse(
         let (Some(tp), Some(_)) = (tangents.get(lp), tangents.get(lf)) else {
             return Err(refuse(Some(b), "a bend lost its tangent lines"));
         };
-        let n = flats.get(bend.parent).map_or(1, |f| f.outer.len().max(1));
         let (a0, a1) = bend.far_line();
         let mut own = vec![Piece {
             seg: line(bend.start, a0),
             edge: ERef::Arc(b, 0),
             forward: true,
-            from: VRef::Outline(tp.flat, tp.seg),
+            from: tp.vertex(flats, false),
             to: VRef::Outline(bend.child, 1),
         }];
         own.extend(
@@ -618,7 +669,7 @@ fn analyse(
             edge: ERef::Arc(b, 1),
             forward: false,
             from: VRef::Outline(bend.child, 0),
-            to: VRef::Outline(tp.flat, (tp.seg + 1) % n),
+            to: tp.vertex(flats, true),
         });
         own.extend(
             lines
@@ -652,12 +703,17 @@ fn cell_of(flats: &[Flat], bends: &[Bend], p: P2) -> Option<Cell> {
             found.push(Cell::Strip(b));
         }
     }
+    // A flat's region is inside its outline and outside its holes (a
+    // flange on a hole's edge, its strip and its flat lie in the hole).
     for (f, flat) in flats.iter().enumerate() {
-        let around = Loop2 {
-            segments: flat.outer.clone(),
-        }
-        .winding_about(p);
-        if around != 0.0 {
+        let around = |segs: &[Segment]| {
+            Loop2 {
+                segments: segs.to_vec(),
+            }
+            .winding_about(p)
+                != 0.0
+        };
+        if around(&flat.outer) && !flat.holes.iter().any(|h| around(h)) {
             found.push(Cell::Flat(f));
         }
     }
@@ -1128,7 +1184,13 @@ pub(super) fn folded_sheet(
                             // A flat's own edge is carried by that flat,
                             // whichever face meets it first (a further face
                             // of the flat comes after the bends).
-                            (ERef::Outline(f, ..) | ERef::Sub(f, ..) | ERef::Hole(f, ..), _)
+                            (
+                                ERef::Outline(f, ..)
+                                | ERef::Sub(f, ..)
+                                | ERef::Hole(f, ..)
+                                | ERef::SubHole(f, ..),
+                                _,
+                            )
                             | (ERef::Cut(..), Cell::Flat(f)) => {
                                 b.segment(&seg, &w_of(f)?, (from, to))?
                             }
@@ -1191,6 +1253,12 @@ pub(super) fn folded_sheet(
             ERef::Outline(flat, seg) => super::outline_key(flats, flat, seg),
             ERef::Sub(flat, seg, piece) => EdgeKey::Split { flat, seg, piece },
             ERef::Hole(flat, hole, seg) => EdgeKey::Hole { flat, hole, seg },
+            ERef::SubHole(flat, hole, seg, piece) => EdgeKey::SplitHole {
+                flat,
+                hole,
+                seg,
+                piece,
+            },
             ERef::Arc(bend, end) => EdgeKey::Arc { bend, end },
             ERef::Cut(cut, seg, piece) => EdgeKey::Cut { cut, seg, piece },
         };

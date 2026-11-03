@@ -1097,7 +1097,8 @@ fn the_file_shortcuts_ask_the_host_and_do_nothing_themselves() {
     assert_eq!(
         labels,
         [
-            "New",
+            "New Part",
+            "New Assembly",
             "Open…",
             "Open for editing",
             "Save",
@@ -1114,7 +1115,7 @@ fn the_file_shortcuts_ask_the_host_and_do_nothing_themselves() {
         .filter_map(|a| a.shortcut())
         .map(|s| format!("{s:?}"))
         .collect();
-    assert_eq!(shortcuts.len(), 6);
+    assert_eq!(shortcuts.len(), 7, "with New Assembly's Ctrl+Shift+N");
     shortcuts.push(format!(
         "{:?}",
         egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::W)
@@ -1155,7 +1156,7 @@ fn clicking_file_then_an_entry_asks_for_that_action() {
     // opening the menu and clicking the rows down it, one at a time (a
     // click anywhere in the menu, a separator too, closes it).
     let mut found = Vec::new();
-    for row in 0..18 {
+    for row in 0..32 {
         click(&mut window, &mut shell, &mut session, pos2(20.0, 10.0));
         let at = pos2(40.0, 30.0 + 10.0 * row as f32);
         click(&mut window, &mut shell, &mut session, at);

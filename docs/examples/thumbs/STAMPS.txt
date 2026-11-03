@@ -16,7 +16,7 @@ fin bf4b1e83f8f6dd9a
 shade 73159e7358f198ee
 tank 1d540095afd62d6b
 mouse 565b7fedf6074d76
-chassis 43d0c3325bbd4357
+chassis e53ce94ca7b332ac
 jig-planetary 9dce4f43ae494005
 jig-reducer 9416b985b05a0724
 jig-strandbeest a354d4e0760def89

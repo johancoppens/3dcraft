@@ -37,6 +37,10 @@ pub struct SheetMetalPart {
     pub tolerance: Tolerance,
     /// The base's sketch, for messages.
     pub sketch: String,
+    /// The formed louvres, placed in their flats, and their ids
+    /// (docs/design/sheetmetal.md › *Formed louvres*).
+    pub formed: Vec<sheetmetal::formed::Formed>,
+    pub formed_ids: Vec<u64>,
 }
 
 /// The name of a face of the folded bottom skin: the base `F9:face(0)`,
@@ -58,8 +62,14 @@ pub fn sheet_face_name(feature: FeatureId, part: &Part, face: SheetFace) -> Opti
     Some(PersistentName::new(feature, NameRole::Face, vec![number]))
 }
 
-fn explain(error: KernelError) -> String {
+/// A kernel error as the feature's: a flange's under its parameter, a
+/// jog's bends (`flanges` and on, two per jog) under the jog's.
+fn explain(error: KernelError, flanges: usize) -> String {
     match error {
+        KernelError::SheetMetal {
+            flange: Some(i),
+            reason,
+        } if i >= flanges => format!("jogs.{}: {reason}", (i - flanges) / 2),
         KernelError::SheetMetal {
             flange: Some(i),
             reason,
@@ -358,6 +368,49 @@ pub(crate) fn analyse(
             closing: closing(&format!("corners.{i}"), &c.kind, gap, c.over)?,
         });
     }
+    // The jogs: each line's ends as the sketch solved them, in the base's
+    // axes (the part's own sketch), drawn as if every bend had no width.
+    let mut jogs = Vec::with_capacity(made.jogs.len());
+    for (g, j) in made.jogs.iter().enumerate() {
+        let param = |what: &str| format!("jogs.{g}.{what}");
+        let entity = drawn
+            .sketch
+            .entity(j.line)
+            .map_err(|_| format!("{}: sketch `{name}` has no {}", param("line"), j.line))?;
+        let craft3d_doc::Geometry::Line { start, end } = entity.geometry else {
+            return Err(format!(
+                "{}: {} of sketch `{name}` is not a line; a jog is drawn as a line across a flat",
+                param("line"),
+                j.line
+            ));
+        };
+        let point = |p| {
+            drawn
+                .solved
+                .point(p)
+                .map(|(x, y)| [x, y])
+                .ok_or_else(|| format!("{}: {p} has no solved position", param("line")))
+        };
+        let jog = sheetmetal::JogSpec {
+            line: [point(start)?, point(end)?],
+            offset: length(doc, variables, &param("offset"), &j.offset)?,
+            angle: angle(doc, variables, &param("angle"), &j.angle)?,
+            direction: match j.direction {
+                BendDirection::Up => Direction::Up,
+                BendDirection::Down => Direction::Down,
+            },
+            radius: match &j.radius {
+                Some(expr) => length(doc, variables, &param("radius"), expr)?,
+                None => radius,
+            },
+            k: match &j.k_factor {
+                Some(expr) => number(variables, &param("kFactor"), expr)?,
+                None => k,
+            },
+            ids: [u64::from(j.id), u64::from(j.id) + 1],
+        };
+        jogs.push(jog);
+    }
     let spec = Spec {
         base,
         plane: drawn.plane,
@@ -369,12 +422,60 @@ pub(crate) fn analyse(
         corners,
         cutouts,
         ids: made.flanges.iter().map(|f| u64::from(f.id)).collect(),
+        jogs,
     };
-    let part = sheetmetal::build(&spec, &tol).map_err(explain)?;
+    let part = sheetmetal::build(&spec, &tol).map_err(|e| explain(e, made.flanges.len()))?;
+    // The formed louvres: each line's ends as the sketch solved them, in
+    // the base's axes, drawn where the lance lies in the flat pattern.
+    let mut louvres = Vec::with_capacity(made.formed_louvres.len());
+    for (g, f) in made.formed_louvres.iter().enumerate() {
+        let param = |what: &str| format!("formedLouvres.{g}.{what}");
+        let entity = drawn
+            .sketch
+            .entity(f.line)
+            .map_err(|_| format!("{}: sketch `{name}` has no {}", param("line"), f.line))?;
+        let craft3d_doc::Geometry::Line { start, end } = entity.geometry else {
+            return Err(format!(
+                "{}: {} of sketch `{name}` is not a line; a formed louvre's lance is a line",
+                param("line"),
+                f.line
+            ));
+        };
+        let point = |p| {
+            drawn
+                .solved
+                .point(p)
+                .map(|(x, y)| [x, y])
+                .ok_or_else(|| format!("{}: {p} has no solved position", param("line")))
+        };
+        louvres.push(sheetmetal::formed::FormedSpec {
+            lance: [point(start)?, point(end)?],
+            width: length(doc, variables, &param("width"), &f.width)?,
+            height: length(doc, variables, &param("height"), &f.height)?,
+            ends: match f.ends {
+                craft3d_doc::HoodEnds::Closed => sheetmetal::formed::HoodEnds::Closed,
+                craft3d_doc::HoodEnds::Open => sheetmetal::formed::HoodEnds::Open,
+            },
+            up: f.direction == BendDirection::Up,
+        });
+    }
+    let formed = sheetmetal::formed::place(&part, &louvres, &tol).map_err(|e| match e {
+        KernelError::SheetMetal {
+            flange: Some(g),
+            reason,
+        } => format!("formedLouvres.{g}: {reason}"),
+        other => other.to_string(),
+    })?;
     Ok(SheetMetalPart {
         part,
         tolerance: tol,
         sketch: name,
+        formed,
+        formed_ids: made
+            .formed_louvres
+            .iter()
+            .map(|f| u64::from(f.id))
+            .collect(),
     })
 }
 
@@ -578,7 +679,120 @@ pub(crate) fn build(
         "flanges that run into each other or into the base when bent: ",
         &tolerance,
     )?;
-    Ok((part.solid.body.clone(), names, Arc::new(built)))
+    let (body, names) = form_louvres(doc, id, &built, part.solid.body.clone(), names)?;
+    Ok((body, names, Arc::new(built)))
+}
+
+/// The name of the face of role `role` of a formed louvre's footprint
+/// prism (`what` 0) or of its hood (`what` 1): `F9:face(15, id, what,
+/// role)`, by the louvre's id and the face's role (`formed::bodies`: the
+/// piece and the curve that swept it), so adding, deleting or moving
+/// another louvre or a flange renames none of them, and a change of width
+/// or height keeps each name on the face of the same role
+/// (docs/design/sheetmetal.md › *Formed louvres*).
+pub fn formed_face_name(feature: FeatureId, id: u64, what: u64, role: u64) -> PersistentName {
+    PersistentName::new(feature, NameRole::Face, vec![FORMED_TAG, id, what, role])
+}
+
+/// What a formed louvre's face names start with: no sheet face's name
+/// has four numbers, and this marks them apart from any other.
+pub const FORMED_TAG: u64 = 15;
+
+/// The part with each formed louvre's footprint taken out through the
+/// thickness and its hood put in, by booleans after the fold; a face keeps
+/// the name of the face it is (a piece of) and answers to the others it
+/// was merged from; a boolean that fails, or a face left in two, fails the
+/// part naming the louvre.
+fn form_louvres(
+    doc: &Document,
+    id: FeatureId,
+    built: &SheetMetalPart,
+    mut body: Body,
+    mut names: Names,
+) -> Result<(Body, Names), String> {
+    use craft3d_doc::BooleanOp;
+    let tolerance = built.tolerance;
+    for (g, (formed, louvre)) in built.formed.iter().zip(&built.formed_ids).enumerate() {
+        let what = |e: String| format!("formedLouvres.{g}: {e}");
+        let ((prism, prism_roles), (hood, hood_roles)) =
+            sheetmetal::formed::bodies(&built.part, formed, &tolerance)
+                .map_err(|e| what(format!("its hood could not be made: {e}")))?;
+        for (op, tool, which, roles, verb) in [
+            (
+                BooleanOp::Subtract,
+                &prism,
+                0u64,
+                &prism_roles,
+                "taking its footprint out of the part",
+            ),
+            (
+                BooleanOp::Union,
+                &hood,
+                1u64,
+                &hood_roles,
+                "joining its hood to the part",
+            ),
+        ] {
+            let made = crate::boolean::combine(
+                &body,
+                tool,
+                op,
+                &tolerance,
+                doc.tolerance.loosest_linear(),
+                [Some(&names), None],
+            )
+            .map_err(|e| what(format!("{verb} failed: {e}")))?;
+            let mut faces = Vec::with_capacity(made.contributors.len());
+            let mut aliases = std::collections::BTreeMap::new();
+            for (index, sources) in made.contributors.iter().enumerate() {
+                let name_of = |&(operand, face): &(u64, usize)| -> Option<PersistentName> {
+                    if operand == 0 {
+                        names.faces.get(face).cloned()
+                    } else {
+                        roles
+                            .get(face)
+                            .map(|&role| formed_face_name(id, *louvre, which, role))
+                    }
+                };
+                let mut all = sources.iter().filter_map(name_of);
+                let first = all
+                    .next()
+                    .ok_or_else(|| what(format!("{verb} left a face without a name")))?;
+                let rest: Vec<PersistentName> = all.collect();
+                if !rest.is_empty() {
+                    aliases.insert(index, rest);
+                }
+                faces.push(first);
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            if let Some(twice) = faces.iter().find(|n| !seen.insert((*n).clone())) {
+                return Err(what(format!(
+                    "{verb} left the face {twice} in more than one piece (not supported): move the louvre"
+                )));
+            }
+            let mut next = Names {
+                faces,
+                aliases,
+                ..Names::default()
+            };
+            let none_e = vec![None; made.body.edges.len()];
+            let none_v = vec![None; made.body.vertices.len()];
+            next.name_entities(id, &made.body, tolerance.linear, &none_e, &none_v, |_| None)?;
+            body = made.body;
+            names = next;
+        }
+    }
+    if !built.formed.is_empty() {
+        face_ops::not_through_itself(
+            &body,
+            &names.faces,
+            "formed louvres",
+            "sheet-metal part",
+            "a formed louvre's hood runs into the part: ",
+            &tolerance,
+        )?;
+    }
+    Ok((body, names))
 }
 
 fn part_of(doc: &Document, id: FeatureId) -> Result<&SheetMetal, String> {

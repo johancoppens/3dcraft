@@ -4,7 +4,7 @@
 
 use super::glyphs::{self, Glyph};
 use super::{Choice, Ground, Kit, centred_left, sane};
-use crate::theme::{Rgb, blend, color};
+use crate::theme::{Rgb, blend, color, color_alpha};
 use egui::epaint::RectShape;
 use egui::{
     Align, CornerRadius, Frame, Id, Margin, Rect, Response, Sense, Shape, Stroke, StrokeKind, Ui,
@@ -36,6 +36,9 @@ pub struct Button<'a> {
     pub enabled: bool,
     /// Drawn as under the pointer (the gallery shows the state).
     pub shown_hovered: bool,
+    /// As wide as the room there is, its words in the middle (a phone's
+    /// stacked buttons, board m7).
+    pub wide: bool,
 }
 
 impl<'a> Button<'a> {
@@ -46,6 +49,7 @@ impl<'a> Button<'a> {
             icon: None,
             enabled: true,
             shown_hovered: false,
+            wide: false,
         }
     }
     pub fn primary(text: &'a str) -> Self {
@@ -78,6 +82,11 @@ impl<'a> Button<'a> {
         self.shown_hovered = hovered;
         self
     }
+    #[must_use]
+    pub fn wide(mut self, wide: bool) -> Self {
+        self.wide = wide;
+        self
+    }
 }
 
 /// A chip's meaning.
@@ -96,6 +105,8 @@ pub enum ChipKind {
 pub enum Segment<'a> {
     Text(&'a str),
     Icon(Glyph),
+    /// A line icon before the words (the start screen's sections).
+    IconText(Glyph, &'a str),
 }
 
 /// A slider with its label and value: `text` is the value as shown
@@ -187,7 +198,12 @@ impl Kit {
             }
         };
         let galley = self.galley(ui, button.text, font, ink);
-        let width = galley.size().x + 2.0 * pad + icon.unwrap_or(0.0);
+        let natural = galley.size().x + 2.0 * pad + icon.unwrap_or(0.0);
+        let width = if button.wide {
+            natural.max(ui.available_width())
+        } else {
+            natural
+        };
         let visual = vec2(width, t.control_height);
         let sense = if button.enabled {
             Sense::click()
@@ -219,7 +235,7 @@ impl Kit {
                 stroke.map_or(Stroke::NONE, |c| Stroke::new(1.0, color(c))),
                 StrokeKind::Inside,
             ));
-            let mut x = rect.left() + pad;
+            let mut x = rect.left() + pad + (width - natural) * 0.5;
             if let Some(glyph) = button.icon {
                 let place = centred_left(
                     Rect::from_min_max(pos2(x, rect.top()), rect.max),
@@ -248,15 +264,35 @@ impl Kit {
     /// pointer, amber with the knob's ink when `on`. `label` names it for
     /// assistive technology (and is the tooltip a caller may show).
     pub fn icon_button(&self, ui: &mut Ui, glyph: Glyph, on: bool, label: &str) -> Response {
+        self.icon_button_enabled(ui, glyph, on, label, true)
+    }
+
+    /// [`Self::icon_button`] that is out of reach (the faint ink, no
+    /// click) unless `enabled`.
+    pub fn icon_button_enabled(
+        &self,
+        ui: &mut Ui,
+        glyph: Glyph,
+        on: bool,
+        label: &str,
+        enabled: bool,
+    ) -> Response {
         let t = &self.t;
         let s = &self.skin;
         let side = t.control_height;
         let hit = self.hit(side);
-        let (outer, response) = ui.allocate_exact_size(sane(vec2(hit, hit)), Sense::click());
+        let sense = if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
+        let (outer, response) = ui.allocate_exact_size(sane(vec2(hit, hit)), sense);
         if ui.is_rect_visible(outer) {
             let rect = Rect::from_center_size(outer.center(), vec2(side, side));
-            let hovered = response.hovered();
-            let (fill, ink) = if on {
+            let hovered = response.hovered() && enabled;
+            let (fill, ink) = if !enabled {
+                (None, s.faint)
+            } else if on {
                 (Some(t.accent), t.knob)
             } else if hovered {
                 (Some(s.hover), s.text)
@@ -276,8 +312,9 @@ impl Kit {
                 t,
             );
         }
-        response
-            .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, label));
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, on, label)
+        });
         response
     }
 
@@ -318,13 +355,13 @@ impl Kit {
         response
     }
 
-    /// A segmented control: one of `segments`, the chosen one amber.
-    pub fn segmented(&self, ui: &mut Ui, chosen: &mut usize, segments: &[Segment<'_>]) -> Choice {
+    /// The widths of a segmented control's segments.
+    fn segment_widths(&self, ui: &Ui, segments: &[Segment<'_>]) -> Vec<f32> {
         let t = &self.t;
         let s = &self.skin;
         let pad = t.field_inset;
         let font = self.font();
-        let widths: Vec<f32> = segments
+        segments
             .iter()
             .map(|segment| {
                 let w = match segment {
@@ -332,11 +369,59 @@ impl Kit {
                         self.galley(ui, *text, font.clone(), s.text).size().x + 2.0 * pad
                     }
                     Segment::Icon(_) => t.control_height + 2.0 * t.nav_segment_inset + 4.0,
+                    Segment::IconText(_, text) => {
+                        self.galley(ui, *text, font.clone(), s.text).size().x
+                            + 2.0 * pad
+                            + t.nav_icon_size
+                            + t.nav_icon_gap
+                    }
                 };
                 w.max(t.hit_min)
             })
-            .collect();
+            .collect()
+    }
+
+    /// How wide a segmented control of `segments` is, in points.
+    pub fn segmented_width(&self, ui: &Ui, segments: &[Segment<'_>]) -> f32 {
+        self.segment_widths(ui, segments).iter().sum::<f32>() + 2.0 * self.t.nav_segment_inset
+    }
+
+    /// A segmented control: one of `segments`, the chosen one amber.
+    pub fn segmented(&self, ui: &mut Ui, chosen: &mut usize, segments: &[Segment<'_>]) -> Choice {
+        self.segmented_in(ui, chosen, segments, false)
+    }
+
+    /// [`Self::segmented`] across the width there is, the segments
+    /// sharing it (a sheet's tabs, board m4).
+    pub fn segmented_full(
+        &self,
+        ui: &mut Ui,
+        chosen: &mut usize,
+        segments: &[Segment<'_>],
+    ) -> Choice {
+        self.segmented_in(ui, chosen, segments, true)
+    }
+
+    fn segmented_in(
+        &self,
+        ui: &mut Ui,
+        chosen: &mut usize,
+        segments: &[Segment<'_>],
+        full: bool,
+    ) -> Choice {
+        let t = &self.t;
+        let s = &self.skin;
+        let font = self.font();
+        let mut widths = self.segment_widths(ui, segments);
         let inset = t.nav_segment_inset;
+        let natural: f32 = widths.iter().sum::<f32>() + 2.0 * inset;
+        let room = ui.available_width();
+        if full && room.is_finite() && room > natural && !widths.is_empty() {
+            let more = (room - natural) / widths.len() as f32;
+            for w in &mut widths {
+                *w += more;
+            }
+        }
         let total: f32 = widths.iter().sum::<f32>() + 2.0 * inset;
         let (outer, mut response) = ui.allocate_exact_size(
             sane(vec2(total, self.hit(t.control_height))),
@@ -355,7 +440,7 @@ impl Kit {
             let picked = *chosen == i;
             hit.widget_info(|| {
                 let label = match segment {
-                    Segment::Text(text) => (*text).to_string(),
+                    Segment::Text(text) | Segment::IconText(_, text) => (*text).to_string(),
                     Segment::Icon(glyph) => format!("{glyph:?}"),
                 };
                 egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, picked, label)
@@ -399,9 +484,48 @@ impl Kit {
                         t,
                     );
                 }
+                Segment::IconText(glyph, text) => {
+                    let galley = self.galley(ui, *text, font.clone(), ink);
+                    let side = t.nav_icon_size.min(face.height());
+                    let whole = side + t.nav_icon_gap + galley.size().x;
+                    let x0 = face.center().x - whole * 0.5;
+                    glyphs::paint(
+                        &painter,
+                        *glyph,
+                        Rect::from_center_size(
+                            pos2(x0 + side * 0.5, face.center().y),
+                            vec2(side, side),
+                        ),
+                        color(ink),
+                        t,
+                    );
+                    painter.galley(
+                        pos2(
+                            x0 + side + t.nav_icon_gap,
+                            face.center().y - galley.size().y * 0.5,
+                        ),
+                        galley,
+                        color(ink),
+                    );
+                }
             }
         }
         Choice { response, items }
+    }
+
+    /// A sheet's grabber: a short rounded bar across the middle of a row.
+    pub fn grabber(&self, ui: &mut Ui) {
+        let t = &self.t;
+        let (row, _) = ui.allocate_exact_size(
+            sane(vec2(ui.available_width(), t.nav_spacing * 2.0)),
+            Sense::hover(),
+        );
+        let [w, h] = t.grabber_size;
+        ui.painter().rect_filled(
+            Rect::from_center_size(row.center(), vec2(w, h)),
+            CornerRadius::same(radius_of(h)),
+            color_alpha(self.skin.text_dim, t.grabber_opacity),
+        );
     }
 
     /// A check box with its label.

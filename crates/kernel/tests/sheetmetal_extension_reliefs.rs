@@ -107,6 +107,7 @@ fn tray(k: f64, wall: f64, r: f64, corner: f64, inset: [f64; 2], bend: Option<Re
         },
         corners: Vec::new(),
         cutouts: Vec::new(),
+        jogs: Vec::new(),
         ids: Vec::new(),
     }
 }

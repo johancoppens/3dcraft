@@ -13,7 +13,7 @@
 
 use craft3d_engine::{Access, Session, Workspace};
 use craft3d_ui_egui::{RendererChoice, Shell, StatusSlot, TabPart};
-use egui::{Event, PointerButton, Pos2, Rect, pos2, vec2};
+use egui::{Event, PointerButton, Pos2, Rect, vec2};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -339,13 +339,14 @@ fn a_phone_has_a_compact_player() {
         }
     }
     assert!(plate.bottom() <= layout.bar.unwrap().top());
-    // The third of the five buttons plays.
-    let pad = shell.tokens.nav_padding;
-    let side = plate.height() - 2.0 * pad;
-    let play = pos2(
-        plate.left() + pad + 2.0 * (side + 2.0) + side * 0.5,
-        plate.center().y,
-    );
+    // The round play button, the second of the three (board s8).
+    let play = shell
+        .player_hits()
+        .iter()
+        .find(|(part, _)| *part == "play")
+        .map(|(_, rect)| rect.center())
+        .expect("the play button");
+    assert!(plate.contains(play), "{play:?} on {plate:?}");
     window.click(&mut shell, &mut session, play);
     assert!(shell.state.timeline.playing);
     window.click(&mut shell, &mut session, play);

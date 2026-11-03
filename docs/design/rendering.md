@@ -1430,3 +1430,122 @@ Phase 2a of the UI overhaul (plan `plan/mockups/sidepanel`, boards 01–20, the 
   in `target/work-sidepanel/`. `tests/side_panel_tabs.rs` holds the tabs, the lines, the dependencies, the
   failure, the checks, an edit as one undo step, the bodies and the selection's closed forms, and that every
   target lies inside the panel at 1024 × 700 and at 390.
+
+### The window's chrome, start screen, menus, tabs and dialogs (2026-11-02)
+
+Phase 2b of the UI overhaul, part A (plan `plan/mockups/ui-overhaul`, boards s3, s4, s5, s6, f1, f2, w3, w4; the
+developer's decisions of 2026-11-02), on the kit:
+
+- **The status bar** (`shell.rs` `status_bar`, `shell/agents.rs`): the agents pill is the bar's last item, at its
+  right end, and the kit's (`Kit::pill_within`, cut with an ellipsis to two fifths of the bar; `kit::PillState`
+  from the window's `PillKind`, `None` in the browser, where the bar has no pill). Its room is kept out of what the
+  other items get, so they elide and drop as before and never run into it. The work indicator is the kit's spinner
+  on the plate's inks. The agent popover is a kit plate (`Kit::popover_frame_pointing`, the pointer at the bottom
+  pointing down at the pill), its right edge in line with the pill's, scrolling on a short window.
+- **One agent panel** (`Shell::agents_panel(ui, kit)`) on two grounds: the popover's plate and the start screen's
+  panel. The heading carries the switch (`Kit::toggle`; the shell's own toggle is gone), then the work folder as a
+  read-only field with Change… and Open folder, *Connect*: the `claude mcp add …` code line (`Kit::code_line`),
+  Copy command (amber), Copy MCP configuration and *Other clients*, a menu that copies a ready configuration for
+  Claude Desktop, Cursor, VS Code or any stdio client (`start::McpClient`, `AgentSetup::client_config`); then who is
+  connected, as cards, and Disconnect all. No token is shown: the bridge reads it itself.
+- **The consent prompts** are kit dialogs (`kit/dialog.rs`): the plug in the info ink or the shield in amber
+  before the title, the question, the folder or file on a code line, *Remember for this folder* at connect; "no"
+  at the left (Refuse quiet, Deny as a danger button), the amber answer last at the right. At connect Refuse and
+  Only the work folder answer `deny` (the connection stays, decision 6); Allow this folder answers `session`, or
+  `folder` with the box ticked. The buttons still take no click for `PROMPT_ARMING` seconds.
+- **The dialog layout** (`Kit::dialog`, `dialog_footer`, `footer_right`): a 17-point title (`dialog_title_font`)
+  with an optional icon and a close ×, the body, then the footer: quiet Copy actions at the left, the buttons at
+  the right laid out from the right so the amber one is last. Modal ones use `egui::Modal` with the kit's frame
+  (a click beside or Escape closes them, as before); About and the shortcuts float without a backdrop. The error
+  dialog (warning in red, Copy details, OK), the question before closing (Don't Save at the left, Cancel, Save),
+  About (the app icon, the facts in two columns, Copy system info, Close), the shortcuts (keycaps, the groups in two
+  columns from 760 points) and the export dialog (a label column; What as a segmented control while the offered
+  choices fit, else one per row; Format and View as dropdowns; Quality, Projection and Hidden lines segmented;
+  `Shell::export_what_hits` says where each choice of What is) all use it.
+- **The recovery bar** is the attention banner (`attention_fill`, Recover amber with the undo icon, Later quiet,
+  Discard all as a danger button); **Back to last good** is a dark plate with the failure's bar, the warning and
+  why in red and the amber button with the undo icon.
+- **The start screen** (`shell/start.rs`, board f1): on the panel's ground across the viewport, at most
+  `START_WIDTH` (1000) wide, from the top: the app icon (`kit::brand`, with its rim in the dark appearance), the
+  name and version, the line that says what 3DCraft is, **New part** (amber, `file.new`), **New assembly**
+  (`FileAction::NewAssembly`, `assembly.new`) and **Open…**; *Examples* with the sections as a segmented control at
+  the right (Parts, Showcase, Assemblies, Jigs; the line icons of the plan's middle way, none for the Showcase);
+  the cards with their name and summary, the app icon's badge only in the Showcase (where kinds mix); *Recent*
+  with the documents' line icons and how long ago each file changed (its modification time, read natively); and
+  the agent panel. Five cards to a row from 900 points, three on a tablet, two on a phone (`StartLayout::cards`).
+  In the browser the Connect block is an info banner: agents need the desktop app.
+- **The menus** (`shell/menus.rs`): File · Edit · View · Help are kit plates (`Tokens::menu_visuals`, applied to
+  egui's menu popups through the menu bar's `MenuConfig`) with kit items (`Kit::menu_item`, `menu_caption`,
+  `MenuItem::icon_room` so labels line up). File › New Part and New Assembly carry the documents' line icons, Open
+  recent › is a submenu (`egui::containers::menu::SubMenu` on a kit item) with each file's icon, and the open
+  documents are listed under *Documents*. The new **View** menu: Side panel (Ctrl+B), Status bar, *Appearance*
+  System / Light / Dark, Full screen (F11, the desktop's `ViewportCommand::Fullscreen`). `Shell::menu_titles` and
+  `menu_items` say where they were drawn.
+- **The tabs** (`shell/tabs.rs`): each tab starts with its document's line icon (`tab_glyph`: a Jig in use, an
+  assembly — a `.3dcraftasm` or one seen to be while active, `DocTab::assembly` — else by the file's extension);
+  a Jig in use has the indigo *Jig* chip after its name; the unsaved mark is an amber dot where the close × is, the
+  × under the pointer.
+- **Tests**: `tests/window_overhaul.rs` (the pill last and inside at 1400 × 900, 1024 × 700, 480 and 390; the start
+  screen inside at those sizes and New assembly asking for an assembly; the View menu's items, Dark from the menu,
+  Light through `ui.set`, the status bar put away, Ctrl+B; File › New Assembly; the amber button last in the
+  question before closing at 1024 and 390; the tabs' icons and `ui.get` › `tabs[].assembly`),
+  `tests/agents_pill.rs` (the pill at the right, the popover's controls, the two questions' buttons in order and
+  what each answers, Remember for this folder), the unit tests of `agents.rs` and `start.rs`.
+
+Part B, as far as it went on 2026-11-02:
+
+- **The player** (`shell/player.rs`, board s8, decisions 4 and 5): one timeline and one row. History or Motion
+  is a kit segmented control (a document with both); the slider is the one of the mode chosen; the row is step
+  back, the round amber play button (`control_height` across, the knob's ink; `kit.hit` with touch sizes),
+  step forward, where it is (`3 / 10`, `t 0.35`), then at the right the speed chip, Loop and Orbit (kit icon
+  buttons, amber while on). No ⏮/⏭: Home and End and the timeline's ends do that (*To end*, which also took
+  the rollback marker away, is gone with it; the roll-back bar's drag to the end does that). `player_parts`:
+  orbit goes under `PLAYER_FULL_WIDTH` (220), and with touch sizes under `PLAYER_TOUCH_FULL_WIDTH` (380) only
+  the three buttons and the position stay. In Motion the step buttons move `t` by 0.05; Back and forth and
+  Collisions are chips under the row, with the bake hint, which asks the kit whether its title fits
+  (`Kit::banner_title_fits`, review N4). The phone's strip over the viewport keeps a motion's play, slider and
+  `t`, a history's three buttons and step. `Shell::player_hits` says where the parts are;
+  `tests/window_overhaul.rs` › `the_player_fits_at_every_size` plays a history and the planetary gearbox at
+  1400, 1024, 480 and 390 points, in the panel, the drawer and the strip: every part inside the window and the
+  panel, none over another.
+- **The Agent tab** (`shell/sidepanel/agent.rs`, board 06 of the side panel): offered on the desktop while
+  agents are allowed or the document has a log; the connection card, then `Session::agent_log_json(100)`
+  newest first (when and who, the label, what it made by name, a failure's reason in red, the intent in
+  italics), on a rail of indigo dots (red for a failure). Read again when the document, its revision or the
+  latest agent command's time changes. *Undo to here* is not built: the log does not say which undo step an
+  entry made (owed to an engine command). The Features tab's ✦ (`agent_mark`) is the document's provenance:
+  `TreeRow::made_by` from `madeBy` (else `lastChangedBy`), cached per document and revision.
+- **Review round (2026-11-03)**: the roll-back bar is the one way to the marker: *Roll back here* under the
+  player is gone; the last row's menu and the bar's own (a right click on its grip) offer *Roll forward to end*,
+  and the grip's tooltip says so. The error details window is a kit dialog; Reset all a kit button with the kit's
+  spinner. A row of the assembly's tree, a mate or a check keeps its status in a room of its own (at most half
+  the row) and cuts the name instead (`name_and_status_room`). Sizes that were literals are tokens
+  (`dialog_min_width`, `dialog_wide_width`, `export_dialog_width`, `shortcuts_width`, `details_*`,
+  `menu_widths`, `log_dot_radius`, `log_rail_width`, `banner_button_room`). The player's step buttons are out of
+  reach at the timeline's ends.
+- **System on GNOME** (`apps/craft3d/src/desktop_theme.rs`): winit reports no theme on Linux, so the desktop app
+  reads `org.gnome.desktop.interface color-scheme` (what the XDG portal's `org.freedesktop.appearance
+  color-scheme` is made from) with `gsettings get`, then follows `gsettings monitor` on a thread of its own and
+  asks for a frame when it changes; no crate is added. `Shell::set_desktop_theme` is the fallback under
+  egui's `system_theme()`. Without `gsettings` (or `'default'`) System stays light. The monitor is killed when
+  the window goes, also when it goes while the monitor is being started (a `stopped` flag under the same lock).
+  Known limit: when 3DCraft dies without unwinding (SIGKILL, an abort) the `gsettings monitor` it started
+  lives on until the setting next changes and its write finds no reader.
+- **The Studio and Analysis popovers** (board s1, `look_panel.rs`, `layout.rs` › `analysis_options`): the kit's
+  plate (`popover_fill`, its rim), grouped by section headers: *Light* (Environment, Rotation, Exposure, Tone
+  curve, Shadows/AO/Reflections, Bloom), *Scene* (Background, Ground as a switch, Reflection), *Lens* (its switch
+  in the heading, Aperture with the hint under it, Focus as a full-width segmented row with its note); *Surface
+  analysis* (the kind as a segmented control, its rows) and *Combs*. Rows are a label column
+  (`popover_label_width`) and the kit's control; sliders are `Kit::slider` (their hit is the track, as egui's
+  was, so `look_hits` keep their meaning). Studio is drawn off while an analysis is on (s2b).
+- **Bottom sheets on a phone or small tablet** (the narrow layout; m4, m5): the same options as a dark sheet
+  across the viewport (`popover::sheet_place`: its lower `sheet_share`, never over the camera plate), with a
+  grabber, the title and ×; Studio splits into Light | Scene | Lens tabs (`sheet.light` …). The bars under it
+  wait until it closes. The questions about access are a light bottom sheet with the answers stacked full
+  width, the amber one first (`Dialog::sheet`, `Button::wide`, m7). A Jig in use on a phone has its parameters
+  as a half sheet under the model (`Shell::parameters_sheet`, `half_sheet_share`, m8); on a tablet from
+  `docked_min_window` (600) the side panel docks beside it at `docked_panel_width` (300) with no drawer (t2).
+- **The view and display bars** (s2, s2b) were already the kit's shape from phase 1; their compact form is the
+  layout's own (icons only where the names do not fit), not a fixed 1000-point switch.
+- **Pictures**: the window pictures (`window_picture`) draw the plain look: the studio look's environment needs
+  the window's settled GPU frames, so w1's model is plain while its popover is the studio's.

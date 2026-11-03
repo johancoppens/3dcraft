@@ -1,0 +1,410 @@
+{
+  "format_version": 65,
+  "written_by": "70abee51f5384196b0672b3822ed1c28cdb70e15",
+  "how": "the engine of that commit (on the Strix, Check run 41520236045, by a temporary test, crates/engine/tests/zz_write_fixture_v65.rs, that ran v65.steps.json in a session as craft3d-cli run --new '{\"units\": \"mm\"}' --script v65.steps.json --out v65.3dcraft does, printed the file and what document.inspect said of it opened again); a panel 80 x 40 with a wall 12 mm on its right edge and two formed louvres: one closed and up (lance from (15, 12) to (45, 12), 6 wide by the variable w, 2 high), one open and down (lance from (60, 32) to (20, 32), 2.5 high): the formed_louvres field of format 65; its formed louvres' face names re-read on 3d7d900d, which names the hood's and the footprint's faces by role instead of by their place in the tool body (review of cc7b9228; the file itself and every other value as written)",
+  "rollback": null,
+  "features": [
+    {
+      "dof": 0,
+      "id": "F1",
+      "name": "Base",
+      "params": {
+        "constraints": [
+          {
+            "id": 1,
+            "kind": {
+              "point": 1,
+              "type": "x",
+              "value": "0 mm"
+            }
+          },
+          {
+            "id": 2,
+            "kind": {
+              "point": 1,
+              "type": "y",
+              "value": "0 mm"
+            }
+          },
+          {
+            "id": 3,
+            "kind": {
+              "point": 2,
+              "type": "x",
+              "value": "80 mm"
+            }
+          },
+          {
+            "id": 4,
+            "kind": {
+              "point": 2,
+              "type": "y",
+              "value": "40 mm"
+            }
+          },
+          {
+            "id": 5,
+            "kind": {
+              "a": 5,
+              "b": null,
+              "type": "horizontal"
+            }
+          },
+          {
+            "id": 6,
+            "kind": {
+              "a": 6,
+              "b": null,
+              "type": "vertical"
+            }
+          },
+          {
+            "id": 7,
+            "kind": {
+              "a": 7,
+              "b": null,
+              "type": "horizontal"
+            }
+          },
+          {
+            "id": 8,
+            "kind": {
+              "a": 8,
+              "b": null,
+              "type": "vertical"
+            }
+          },
+          {
+            "id": 9,
+            "kind": {
+              "point": 9,
+              "type": "x",
+              "value": "15 mm"
+            }
+          },
+          {
+            "id": 10,
+            "kind": {
+              "point": 9,
+              "type": "y",
+              "value": "12 mm"
+            }
+          },
+          {
+            "id": 11,
+            "kind": {
+              "point": 10,
+              "type": "x",
+              "value": "45 mm"
+            }
+          },
+          {
+            "id": 12,
+            "kind": {
+              "point": 10,
+              "type": "y",
+              "value": "12 mm"
+            }
+          },
+          {
+            "id": 13,
+            "kind": {
+              "point": 12,
+              "type": "x",
+              "value": "60 mm"
+            }
+          },
+          {
+            "id": 14,
+            "kind": {
+              "point": 12,
+              "type": "y",
+              "value": "32 mm"
+            }
+          },
+          {
+            "id": 15,
+            "kind": {
+              "point": 13,
+              "type": "x",
+              "value": "20 mm"
+            }
+          },
+          {
+            "id": 16,
+            "kind": {
+              "point": 13,
+              "type": "y",
+              "value": "32 mm"
+            }
+          }
+        ],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 80.0,
+              "y": 40.0
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 80.0,
+              "y": 0.0
+            },
+            "id": 3
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 40.0
+            },
+            "id": 4
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 3,
+              "start": 1,
+              "type": "line"
+            },
+            "id": 5
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 2,
+              "start": 3,
+              "type": "line"
+            },
+            "id": 6
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 4,
+              "start": 2,
+              "type": "line"
+            },
+            "id": 7
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 1,
+              "start": 4,
+              "type": "line"
+            },
+            "id": 8
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 15.0,
+              "y": 12.0
+            },
+            "id": 9
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 45.0,
+              "y": 12.0
+            },
+            "id": 10
+          },
+          {
+            "construction": true,
+            "geometry": {
+              "end": 10,
+              "start": 9,
+              "type": "line"
+            },
+            "id": 11
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 60.0,
+              "y": 32.0
+            },
+            "id": 12
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 20.0,
+              "y": 32.0
+            },
+            "id": 13
+          },
+          {
+            "construction": true,
+            "geometry": {
+              "end": 13,
+              "start": 12,
+              "type": "line"
+            },
+            "id": 14
+          }
+        ],
+        "next_constraint_id": 17,
+        "next_entity_id": 15,
+        "plane": {
+          "offset": "0",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F2",
+      "name": "Panel",
+      "params": {
+        "bend_relief": null,
+        "corner": null,
+        "corners": [],
+        "cutouts": [],
+        "flanges": [
+          {
+            "angle": "90 deg",
+            "direction": "up",
+            "from": "tangent",
+            "id": 1,
+            "inset_end": null,
+            "inset_start": null,
+            "k_factor": null,
+            "length": "12 mm",
+            "on": {
+              "base": 6
+            },
+            "outline": null,
+            "radius": null
+          }
+        ],
+        "formed_louvres": [
+          {
+            "direction": "up",
+            "ends": "closed",
+            "height": "2 mm",
+            "id": 2,
+            "line": 11,
+            "width": "w"
+          },
+          {
+            "direction": "down",
+            "ends": "open",
+            "height": "2.5 mm",
+            "id": 3,
+            "line": 14,
+            "width": "w"
+          }
+        ],
+        "jogs": [],
+        "k_factor": "0.4",
+        "next_flange_id": 4,
+        "radius": "1.5 mm",
+        "relief": null,
+        "sketch": 1,
+        "thickness": "t",
+        "type": "sheetMetal"
+      },
+      "status": "ok",
+      "suppressed": false
+    }
+  ],
+  "bodies": [
+    {
+      "area": 8110.233530517036,
+      "bbox": [
+        [
+          0.0,
+          0.0,
+          -2.5
+        ],
+        [
+          82.5,
+          40.0,
+          14.5
+        ]
+      ],
+      "bboxTolerance": 0.09005683500166457,
+      "centroid": [
+        46.56187922624831,
+        20.045157836950207,
+        1.4727359947113765
+      ],
+      "edges": 90,
+      "faceNames": [
+        "F2:copy(0)/F2:face(0)",
+        "F2:copy(1)/F2:face(0)",
+        "F2:copy(0)/F2:face(2)",
+        "F2:copy(1)/F2:face(2)",
+        "F2:copy(0)/F2:face(1)",
+        "F2:copy(1)/F2:face(1)",
+        "F2:rim(171611877714595)/F2:face(0)",
+        "F2:rim(120696848820181)/F2:face(0)",
+        "F2:rim(8597451088834)/F2:face(0)",
+        "F2:rim(267043590482537)/F2:face(2)",
+        "F2:rim(49299854401754)/F2:face(2)",
+        "F2:rim(196598618499583)/F2:face(2)",
+        "F2:rim(76614016223795)/F2:face(1)",
+        "F2:rim(256933923395254)/F2:face(1)",
+        "F2:face(15,2,0,1)",
+        "F2:face(15,2,1,1)",
+        "F2:face(15,2,1,6)",
+        "F2:face(15,2,1,4)",
+        "F2:face(15,2,1,3)",
+        "F2:face(15,2,1,2)",
+        "F2:face(15,2,1,17)",
+        "F2:face(15,2,1,22)",
+        "F2:face(15,2,1,20)",
+        "F2:face(15,2,1,19)",
+        "F2:face(15,2,1,33)",
+        "F2:face(15,2,1,38)",
+        "F2:face(15,2,1,36)",
+        "F2:face(15,2,1,35)",
+        "F2:face(15,3,0,1)",
+        "F2:face(15,3,0,2)",
+        "F2:face(15,3,0,4)",
+        "F2:face(15,3,1,1)",
+        "F2:face(15,3,1,6)",
+        "F2:face(15,3,1,4)",
+        "F2:face(15,3,1,3)",
+        "F2:face(15,3,1,2)",
+        "F2:face(15,3,1,8)",
+        "F2:face(15,3,1,7)"
+      ],
+      "faces": 38,
+      "feature": "F2",
+      "kind": "solid",
+      "name": "Panel",
+      "shells": 1,
+      "valid": true,
+      "vertices": 54,
+      "volume": 3844.6909157969703
+    }
+  ]
+}

@@ -23,6 +23,9 @@ pub struct MenuItem<'a> {
     pub enabled: bool,
     /// Drawn as under the pointer (the gallery shows the state).
     pub shown_hovered: bool,
+    /// Keeps the icon's column when it has none, so its label lines up
+    /// with the labels of items that have one (View › Light, Dark).
+    pub icon_room: bool,
 }
 
 impl<'a> MenuItem<'a> {
@@ -36,6 +39,7 @@ impl<'a> MenuItem<'a> {
             submenu: false,
             enabled: true,
             shown_hovered: false,
+            icon_room: false,
         }
     }
     #[must_use]
@@ -71,6 +75,11 @@ impl<'a> MenuItem<'a> {
     #[must_use]
     pub fn hovered(mut self, hovered: bool) -> Self {
         self.shown_hovered = hovered;
+        self
+    }
+    #[must_use]
+    pub fn icon_room(mut self) -> Self {
+        self.icon_room = true;
         self
     }
 }
@@ -153,10 +162,24 @@ impl Kit {
         pointer_x: Option<f32>,
         add: impl FnOnce(&mut Ui) -> R,
     ) -> InnerResponse<R> {
+        self.popover_frame_pointing(ui, width, pointer_x, false, add)
+    }
+
+    /// [`Self::popover_frame`] with its pointer at the top (`down` false:
+    /// the popover hangs under what opened it) or at the bottom (`down`:
+    /// it stands over it, as the agent's popover over the status bar).
+    pub fn popover_frame_pointing<R>(
+        &self,
+        ui: &mut Ui,
+        width: f32,
+        pointer_x: Option<f32>,
+        down: bool,
+        add: impl FnOnce(&mut Ui) -> R,
+    ) -> InnerResponse<R> {
         let t = self.t;
         let plate = Kit::new(&t, Ground::Plate);
         let tip = t.popover_pointer;
-        if pointer_x.is_some() {
+        if pointer_x.is_some() && !down {
             ui.add_space(tip);
         }
         let pad = t.inset + 2.0;
@@ -181,14 +204,18 @@ impl Kit {
             let Some(x) = super::clamped(rect.left() + x, lo, hi) else {
                 return inner;
             };
-            let top = rect.top();
-            if !top.is_finite() {
+            let (edge, sign) = if down {
+                (rect.bottom(), -1.0)
+            } else {
+                (rect.top(), 1.0)
+            };
+            if !edge.is_finite() {
                 return inner;
             }
             let points = vec![
-                pos2(x - half, top + 0.5),
-                pos2(x, top - tip),
-                pos2(x + half, top + 0.5),
+                pos2(x - half, edge + 0.5 * sign),
+                pos2(x, edge - tip * sign),
+                pos2(x + half, edge + 0.5 * sign),
             ];
             ui.painter().add(Shape::convex_polygon(
                 points.clone(),
@@ -196,6 +223,9 @@ impl Kit {
                 Stroke::NONE,
             ));
             ui.painter().add(Shape::line(points, plate.rim()));
+        }
+        if pointer_x.is_some() && down {
+            ui.add_space(tip);
         }
         inner
     }
@@ -303,6 +333,8 @@ impl Kit {
                 t,
             );
             x += side + t.nav_icon_gap;
+        } else if item.icon_room {
+            x += side + t.nav_icon_gap;
         }
         let label = self.galley(ui, item.label, self.font(), ink);
         painter.galley(
@@ -337,6 +369,22 @@ impl Kit {
             )
         });
         response
+    }
+
+    /// A group's caption in a menu (Appearance, Documents): the dim ink,
+    /// not a target.
+    pub fn menu_caption(&self, ui: &mut Ui, text: &str) {
+        let t = &self.t;
+        let width = ui.available_width();
+        let galley = self.galley(ui, text, self.small_font(), self.skin.text_dim);
+        let (rect, _) =
+            ui.allocate_exact_size(sane(vec2(width, t.menu_item_height * 0.85)), Sense::hover());
+        let pad = t.field_text_pad + 2.0 - t.nav_padding;
+        ui.painter().galley(
+            pos2(rect.left() + pad, rect.center().y - galley.size().y * 0.5),
+            galley,
+            color(self.skin.text_dim),
+        );
     }
 
     /// A rule between groups of a menu.
