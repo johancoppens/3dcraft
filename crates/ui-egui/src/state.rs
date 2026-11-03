@@ -204,6 +204,8 @@ pub enum SideTab {
     Bodies,
     Parameters,
     Assembly,
+    /// What agents did to the document, newest first (the desktop app).
+    Agent,
 }
 
 impl SideTab {
@@ -215,6 +217,7 @@ impl SideTab {
             SideTab::Bodies => "Bodies",
             SideTab::Parameters => "Parameters",
             SideTab::Assembly => "Assembly",
+            SideTab::Agent => "Agent",
         }
     }
 }
@@ -415,6 +418,9 @@ pub struct DocTab {
     /// A published Jig opened to be used (`.3dcraftjig`): closing it after
     /// its parameters changed asks whether to save them as a model.
     pub jig_in_use: bool,
+    /// An assembly (a `.3dcraftasm`, or one seen to be while it was the
+    /// active document): the tab's icon says so.
+    pub assembly: bool,
 }
 
 /// The question the window asks before it closes a document with unsaved

@@ -22,7 +22,8 @@
 //!   (`feature.move`); a place before what it is made from, or after what
 //!   is made from it, is refused before the drop.
 //! - A right click opens the row's menu: Edit, Rename, Show dependencies,
-//!   Roll back to here, Suppress, Hide, Copy id, Delete, each a command.
+//!   Roll back to here (Roll forward to end on the last row, and on the
+//!   bar's own menu), Suppress, Hide, Copy id, Delete, each a command.
 
 use super::{Drag, Editing, Filter, SideTab, matches};
 use crate::kit::{Button, Depends, Glyph, Ground, Kit, ListRow, MenuItem, RowMark};
@@ -1105,7 +1106,34 @@ impl Shell {
             let grip =
                 Rect::from_min_size(bar.min, vec2(tokens.control_height * 1.6, bar.height()));
             self.side.hits.targets.push(("rollback".to_string(), grip));
-            let drag = ui.interact(grip, egui::Id::new("craft3d-side-rollback"), Sense::drag());
+            let drag = ui
+                .interact(
+                    grip,
+                    egui::Id::new("craft3d-side-rollback"),
+                    Sense::click_and_drag(),
+                )
+                .on_hover_text(
+                    "The roll-back bar: the model is built up to here, and new features go in \
+                     after it. Drag it to another step, or to the end (right-click: Roll \
+                     forward to end) to build the whole history again.",
+                );
+            let rolled_back = self.timeline.rollback.is_some();
+            let mut forward = false;
+            kit.context_menu(ui, &drag, |plate, ui| {
+                let item = plate.menu_item(
+                    ui,
+                    crate::kit::MenuItem::new(ROLL_FORWARD).enabled(rolled_back && !in_use),
+                );
+                self.side
+                    .hits
+                    .targets
+                    .push((format!("menu:{ROLL_FORWARD}"), item.rect));
+                forward = item.clicked();
+                forward
+            });
+            if forward {
+                self.side_queue("history.rollback", json!({"feature": null}), None);
+            }
             if drag.hovered() || drag.dragged() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
             }
@@ -1377,6 +1405,8 @@ impl Shell {
             .and_then(|v| v.features.iter().find(|f| f.id == id))
             .and_then(|f| f.edit.clone());
         let suppressed = row.state == FeatureState::Suppressed;
+        let is_last = self.rows.last().is_some_and(|r| r.id == row.id);
+        let rolled_back = self.timeline.rollback.is_some();
         let mut chosen: Option<&'static str> = None;
         let mut items_drawn: Vec<(String, Rect)> = Vec::new();
         let area = egui::Area::new(egui::Id::new("craft3d-side-menu"))
@@ -1407,7 +1437,13 @@ impl Shell {
                     item(ui, "Rename", None, !in_use, false);
                     item(ui, "Show dependencies", None, true, false);
                     plate.menu_separator(ui);
-                    item(ui, "Roll back to here", None, !in_use, false);
+                    // On the last row the marker can only go: forward,
+                    // to the end (none where there is no marker).
+                    if is_last {
+                        item(ui, ROLL_FORWARD, None, !in_use && rolled_back, false);
+                    } else {
+                        item(ui, "Roll back to here", None, !in_use, false);
+                    }
                     item(
                         ui,
                         if suppressed { "Unsuppress" } else { "Suppress" },
@@ -1458,6 +1494,9 @@ impl Shell {
                 self.state.side_panel.hover = Some(id);
                 self.side.hover_by_pointer = false;
             }
+            Some(ROLL_FORWARD) => {
+                self.side_queue("history.rollback", json!({"feature": null}), None);
+            }
             Some("Roll back to here") => {
                 let last = self.rows.last().map(|r| r.id.clone());
                 let feature = if Some(&id) == last.as_ref() {
@@ -1482,11 +1521,10 @@ impl Shell {
     }
 }
 
-/// The agent's mark on a row of a feature an agent made. The document
-/// does not keep who made a feature yet (r1-mcp-connect adds it): the
-/// hook is here, no row is marked.
-fn agent_mark(_row: Option<&TreeRow>) -> Option<RowMark> {
-    None
+/// The agent's mark (✦) on a row of a feature an agent made or last
+/// changed: the document's provenance (`madeBy`, `lastChangedBy`).
+fn agent_mark(row: Option<&TreeRow>) -> Option<RowMark> {
+    row.and_then(|r| r.made_by.as_ref()).map(|_| RowMark::Agent)
 }
 
 /// A sketch's key value: its curves and its degrees of freedom.
@@ -1665,6 +1703,9 @@ fn rollback_bar(ui: &mut egui::Ui, kit: &Kit, at: usize, of: usize) -> Rect {
     rect
 }
 
+/// The menu item that takes the rollback marker away.
+const ROLL_FORWARD: &str = "Roll forward to end";
+
 /// The amber pill with the grip's dots, at the left of `row`.
 fn grip_pill(painter: &egui::Painter, kit: &Kit, row: Rect) -> Rect {
     let t = kit.t;
@@ -1830,6 +1871,7 @@ mod tests {
             passes: None,
             instance: None,
             depth: 0,
+            made_by: None,
         }
     }
 

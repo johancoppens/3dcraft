@@ -960,7 +960,7 @@ impl Shell {
         match action {
             A::ExportJig => jig && !self.jig_in_use(),
             A::OpenForEditing => self.jig_in_use(),
-            A::New | A::Open | A::Save | A::SaveAs | A::Import | A::Export => true,
+            A::New | A::NewAssembly | A::Open | A::Save | A::SaveAs | A::Import | A::Export => true,
         }
     }
 
@@ -1382,6 +1382,133 @@ impl Shell {
     }
 
     /// The Parameters tab.
+    /// The Jig's parameters as a half sheet under the model, on a phone
+    /// (board m8): the form, as the Parameters tab has it, over the lower
+    /// half of the viewport, so every change shows at once above it.
+    pub(super) fn parameters_sheet(&mut self, ui: &mut egui::Ui) {
+        let tokens = self.tokens;
+        let Some(viewport) = self.rect else {
+            self.params_sheet_rect = None;
+            return;
+        };
+        let height = (viewport.height() * tokens.half_sheet_share)
+            .max(4.0 * tokens.touch_target)
+            .min(viewport.height());
+        let place = egui::Rect::from_min_max(
+            egui::pos2(viewport.left(), viewport.bottom() - height),
+            viewport.max,
+        );
+        let pad = tokens.dialog_padding;
+        let r = tokens.dialog_radius.saturating_mul(2);
+        let shown = egui::Area::new(egui::Id::new("craft3d-params-sheet"))
+            .order(egui::Order::Middle)
+            .fixed_pos(place.min)
+            .constrain(false)
+            .show(ui.ctx(), |ui| {
+                ui.set_min_size(place.size());
+                ui.set_max_size(place.size());
+                ui.style_mut().visuals = tokens.panel_visuals();
+                egui::Frame::new()
+                    .fill(color(tokens.panel_fill))
+                    .stroke(egui::Stroke::new(1.0, color(tokens.divider)))
+                    .corner_radius(egui::CornerRadius {
+                        nw: r,
+                        ne: r,
+                        sw: 0,
+                        se: 0,
+                    })
+                    .inner_margin(egui::Margin::same(pad.clamp(0.0, 32.0) as i8))
+                    .show(ui, |ui| {
+                        ui.set_width((place.width() - 2.0 * pad).max(0.0));
+                        ui.set_height((place.height() - 2.0 * pad).max(0.0));
+                        crate::kit::Kit::panel(&tokens).grabber(ui);
+                        // The tab's own header says Parameters; its
+                        // fields scroll under it.
+                        self.parameters_tab(ui);
+                    });
+            });
+        self.params_sheet_rect = Some(shown.response.rect.intersect(place));
+    }
+
+    /// Where the Jig's parameters' half sheet was drawn in the last frame
+    /// (a phone), `None` without it.
+    pub fn parameters_sheet_rect(&self) -> Option<egui::Rect> {
+        self.params_sheet_rect
+    }
+
+    /// The compact form's header: "Parameters", whether the model built
+    /// with them (Valid) or not, the Jig's title and description behind
+    /// an (i), Reset all, and the spinner while a value is applied.
+    fn compact_parameters_header(&mut self, ui: &mut egui::Ui, list: &ParamList) {
+        let kit = crate::kit::Kit::panel(&self.tokens);
+        let s = kit.skin;
+        let broke = self.params.trouble.as_ref().is_some_and(|t| t.broke);
+        let busy = self.params.busy();
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Parameters")
+                    .font(kit.medium_font(ui))
+                    .color(color(s.text)),
+            );
+            let (state, ink) = if busy {
+                ("· applying…", s.text_dim)
+            } else if broke {
+                ("· breaks the model", s.failed)
+            } else {
+                ("· Valid", s.ok)
+            };
+            ui.label(
+                egui::RichText::new(state)
+                    .font(kit.font())
+                    .color(color(ink)),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let any_off = list.params.iter().any(|p| !p.at_default);
+                let reset = kit
+                    .icon_button_enabled(ui, crate::kit::Glyph::Undo, false, "Reset all", any_off)
+                    .on_hover_text(
+                        "Reset all: every parameter back to its default (param.set reset)",
+                    );
+                self.params.hits.push(("Reset all".to_string(), reset.rect));
+                if reset.clicked() {
+                    self.params.ask(json!({ "reset": true }), None);
+                }
+                let about = [list.info.title.as_str(), list.info.description.as_str()]
+                    .into_iter()
+                    .filter(|t| !t.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                if !about.is_empty() {
+                    let info = kit
+                        .icon_button(ui, crate::kit::Glyph::Info, false, "About this Jig")
+                        .on_hover_text(about);
+                    self.params.hits.push(("about".to_string(), info.rect));
+                }
+            });
+        });
+        if let Some(trouble) = self.params.trouble.clone()
+            && trouble.name.is_none()
+        {
+            self.trouble_line(ui, &trouble);
+        }
+    }
+
+    /// Open for editing: a model of its own of the Jig in use.
+    fn open_for_editing_button(&mut self, ui: &mut egui::Ui) {
+        let kit = crate::kit::Kit::panel(&self.tokens);
+        let label = crate::shell::FileAction::OpenForEditing.label();
+        let edit = kit
+            .button(
+                ui,
+                crate::kit::Button::quiet(label).icon(crate::kit::Glyph::External),
+            )
+            .on_hover_text("A new untitled model of it, as it is set, to edit (jig.edit)");
+        self.params.hits.push((label.to_string(), edit.rect));
+        if edit.clicked() {
+            self.request_file_action(crate::shell::FileAction::OpenForEditing);
+        }
+    }
+
     pub(super) fn parameters_tab(&mut self, ui: &mut egui::Ui) {
         let tokens = self.tokens;
         let dim = color(tokens.text_dim);
@@ -1398,7 +1525,18 @@ impl Shell {
         // The form keeps clear of the split on its right as it does of
         // the panel's edge on its left.
         let room = crate::shell::side_inset(&tokens);
+        // On a phone's half sheet and a tablet's docked panel (boards m8,
+        // t2) the fields come first: one header line with the state, the
+        // description behind (i) and Reset all, Open for editing after
+        // the fields.
+        let compact = self.narrow();
+        if compact {
+            self.compact_parameters_header(ui, &list);
+        }
         ui.scope(|ui| {
+            if compact {
+                return;
+            }
             ui.set_max_width((ui.available_width() - f32::from(room)).max(40.0));
             if !list.info.title.is_empty() {
                 ui.label(egui::RichText::new(&list.info.title).heading());
@@ -1427,16 +1565,21 @@ impl Shell {
             let busy = self.params.busy();
             ui.horizontal(|ui| {
                 let any_off = list.params.iter().any(|p| !p.at_default);
-                let reset = ui
-                    .add_enabled(any_off, egui::Button::new("Reset all"))
+                let kit = crate::kit::Kit::panel(&self.tokens);
+                let reset = kit
+                    .button(
+                        ui,
+                        crate::kit::Button::secondary("Reset all")
+                            .icon(crate::kit::Glyph::Undo)
+                            .enabled(any_off),
+                    )
                     .on_hover_text("Every parameter back to its default (param.set reset)");
                 self.params.hits.push(("Reset all".to_string(), reset.rect));
                 if reset.clicked() {
                     self.params.ask(json!({ "reset": true }), None);
                 }
                 if busy {
-                    ui.add(egui::Spinner::new());
-                    ui.colored_label(dim, "Regenerating…");
+                    kit.spinner(ui, "Regenerating…");
                 }
             });
             // What went wrong with a commit that came from no field.
@@ -1518,6 +1661,10 @@ impl Shell {
                                 });
                             }
                         }
+                        if compact && self.jig_in_use() {
+                            ui.add_space(tokens.inset * 0.5);
+                            self.open_for_editing_button(ui);
+                        }
                         let footer: Vec<&str> =
                             [list.info.author.as_str(), list.info.licence.as_str()]
                                 .into_iter()
@@ -1588,37 +1735,86 @@ impl Shell {
         let width = (view.width() - 2.0 * tokens.inset).clamp(120.0, 560.0);
         let at = egui::pos2(view.center().x - width * 0.5, view.top() + tokens.inset);
         let mut back = None;
-        egui::Area::new(egui::Id::new("craft3d-param-trouble"))
+        let kit = crate::kit::Kit::plate(&tokens);
+        let shown = egui::Area::new(egui::Id::new("craft3d-param-trouble"))
             .order(egui::Order::Foreground)
             // Shown at once, in full: a fade would wait for frames an
             // idle window does not draw.
             .fade_in(false)
             .fixed_pos(at)
             .show(ui.ctx(), |ui| {
+                // Board s6: a dark plate with the failure's bar at its
+                // left, the warning and why in red, Back to last good,
+                // amber, at its right.
                 egui::Frame::new()
-                    .fill(color_alpha(tokens.notice_fill, tokens.notice_opacity))
+                    .fill(color(tokens.plate_fill))
                     .corner_radius(egui::CornerRadius::same(tokens.notice_radius))
-                    .inner_margin(egui::Margin::same(8))
+                    .inner_margin(egui::Margin {
+                        left: (tokens.inset + tokens.info_bar_width).clamp(0.0, 40.0) as i8,
+                        right: 10,
+                        top: 8,
+                        bottom: 8,
+                    })
                     .show(ui, |ui| {
                         ui.set_max_width(width);
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(format!(
-                                    "This value breaks the model: {}",
-                                    number_field::shortened(&trouble.message, 400)
-                                ))
-                                .color(color(tokens.chrome_failed)),
-                            )
-                            .wrap(),
-                        );
-                        if let Some(values) = values {
-                            let button = ui.button("Back to last good").on_hover_text(
-                                "Sets the parameters back to the last values that built",
+                        ui.horizontal(|ui| {
+                            let side = tokens.nav_icon_size;
+                            let (icon, _) = ui
+                                .allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+                            crate::kit::glyphs::paint(
+                                ui.painter(),
+                                crate::kit::Glyph::Warning,
+                                icon,
+                                color(tokens.chrome_failed),
+                                &tokens,
                             );
-                            back = Some((button.rect, button.clicked(), values));
-                        }
+                            let button_room = if values.is_some() {
+                                tokens.banner_button_room
+                            } else {
+                                0.0
+                            };
+                            ui.allocate_ui(
+                                egui::vec2((ui.available_width() - button_room).max(80.0), 0.0),
+                                |ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(format!(
+                                                "This value breaks the model: {}",
+                                                number_field::shortened(&trouble.message, 400)
+                                            ))
+                                            .font(kit.font())
+                                            .color(color(tokens.chrome_failed)),
+                                        )
+                                        .wrap(),
+                                    );
+                                },
+                            );
+                            if let Some(values) = values {
+                                let button = kit
+                                    .button(
+                                        ui,
+                                        crate::kit::Button::primary("Back to last good")
+                                            .icon(crate::kit::Glyph::Undo),
+                                    )
+                                    .on_hover_text(
+                                        "Sets the parameters back to the last values that built",
+                                    );
+                                back = Some((button.rect, button.clicked(), values));
+                            }
+                        });
                     });
             });
+        let plate = shown.response.rect;
+        ui.ctx().layer_painter(shown.response.layer_id).rect_filled(
+            egui::Rect::from_min_size(plate.min, egui::vec2(tokens.info_bar_width, plate.height())),
+            egui::CornerRadius {
+                nw: tokens.notice_radius,
+                sw: tokens.notice_radius,
+                ne: 0,
+                se: 0,
+            },
+            color(tokens.chrome_failed),
+        );
         if let Some((rect, clicked, values)) = back {
             self.params.banner_hit = Some(rect);
             if clicked {

@@ -560,8 +560,6 @@ impl Shell {
 
     /// The hint under the motion's caption: the offer with its buttons,
     /// or the bake's progress.
-    // Review of 2026-11-02, N4: the hint's place and look are restyled with
-    // the player in the UI overhaul's phase 2b; kept small until then.
     pub(crate) fn bake_hint_ui(&mut self, ui: &mut egui::Ui) {
         let kit = Kit::panel(&self.tokens);
         match self.bake_hint() {
@@ -575,15 +573,9 @@ impl Shell {
                     ms.round()
                 );
                 // The title does not wrap: in a narrow panel the question
-                // opens the body instead, so the banner never widens it.
-                let t = &kit.t;
-                let around =
-                    2.0 * (t.inset + 2.0) + t.info_bar_width + t.nav_icon_size + t.nav_icon_gap;
-                let wide = kit
-                    .galley(ui, question, kit.medium_font(ui), kit.skin.text)
-                    .size()
-                    .x;
-                let (title, body) = if wide + around <= ui.available_width() {
+                // opens the body instead, so the banner never widens it
+                // (the kit says what fits, review N4 of 2026-11-02).
+                let (title, body) = if kit.banner_title_fits(ui, question, ui.available_width()) {
                     (Some(question), reason)
                 } else {
                     (None, format!("{question} {reason}"))

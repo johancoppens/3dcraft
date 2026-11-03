@@ -2138,6 +2138,8 @@ struct Viewer {
     mirror: Option<egui::TextureHandle>,
     /// The title the window has now.
     title: String,
+    /// The desktop's light or dark setting where winit reports none.
+    desktop_theme: crate::desktop_theme::DesktopTheme,
     /// Whether the window had the focus in the last frame.
     focused: bool,
 }
@@ -2155,6 +2157,7 @@ impl eframe::App for Viewer {
             // Show what changed, and look for more.
             ctx.request_repaint();
         }
+        desk.host.shell.set_desktop_theme(self.desktop_theme.get());
         let focused = ctx.input(|i| i.focused);
         if focused && !self.focused {
             desk.agents_focused();
@@ -2450,6 +2453,9 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
                 desk: for_viewer,
                 title,
                 focused: false,
+                desktop_theme: crate::desktop_theme::DesktopTheme::start(Some(
+                    creation.egui_ctx.clone(),
+                )),
             };
             // Requests that arrived before the window existed are waiting
             // in the channel; they are answered from here on.
