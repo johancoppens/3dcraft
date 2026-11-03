@@ -298,15 +298,64 @@ impl Skin {
         tol: f64,
         inset: f64,
     ) -> Option<bool> {
-        let o = self.o;
         let (u, v) = (
             (self.u.0 + inset, self.u.1 - inset),
             (self.v.0 + inset, self.v.1 - inset),
         );
+        self.apart_in(piece, flats, bends, t, tol, u, v)
+    }
+
+    /// [`Skin::apart`] from the rectangle over `u` × `v`.
+    #[allow(clippy::too_many_arguments)]
+    fn apart_in(
+        &self,
+        piece: Piece,
+        flats: &[Flat],
+        bends: &[Bend],
+        t: f64,
+        tol: f64,
+        u: (f64, f64),
+        v: (f64, f64),
+    ) -> Option<bool> {
+        self.apart_along(piece, flats, bends, t, tol, u, v, &[])
+    }
+
+    /// [`Skin::apart_in`] trying, besides the rectangle's own normals, the
+    /// directions `c1 e1 + c2 e2` given (unit or not: each is made unit).
+    #[allow(clippy::too_many_arguments)]
+    fn apart_along(
+        &self,
+        piece: Piece,
+        flats: &[Flat],
+        bends: &[Bend],
+        t: f64,
+        tol: f64,
+        u: (f64, f64),
+        v: (f64, f64),
+        more: &[(f64, f64)],
+    ) -> Option<bool> {
+        let o = self.o;
         if u.0 > u.1 || v.0 > v.1 {
             return Some(true);
         }
         for (axis, (lo, hi)) in [(self.n, (0.0, 0.0)), (self.e1, u), (self.e2, v)] {
+            let (a, b) = piece.range(flats, bends, t, |q| axis.dot(q - o))?;
+            if b < lo - tol || a > hi + tol {
+                return Some(true);
+            }
+        }
+        for &(c1, c2) in more {
+            let norm = c1.phypot(c2);
+            if !(norm > 0.0) {
+                continue;
+            }
+            let (c1, c2) = (c1 / norm, c2 / norm);
+            let axis = self.e1 * c1 + self.e2 * c2;
+            // The rectangle's range along it: at its corners.
+            let at = |x: f64, y: f64| c1 * x + c2 * y;
+            let corners = [at(u.0, v.0), at(u.0, v.1), at(u.1, v.0), at(u.1, v.1)];
+            let lo = corners.iter().copied().fold(f64::INFINITY, f64::min);
+            let hi = corners.iter().copied().fold(f64::NEG_INFINITY, f64::max);
             let (a, b) = piece.range(flats, bends, t, |q| axis.dot(q - o))?;
             if b < lo - tol || a > hi + tol {
                 return Some(true);
@@ -334,6 +383,12 @@ impl Skin {
 /// tangent line's end (the neighbour at a corner, which meets the skin
 /// along the corner's line below the axis). Anything else not proven
 /// apart refuses the part, naming both.
+///
+/// The neighbour is proven apart from the whole skin but the square
+/// [`SLIVER_TOLERANCES`] tolerances on a side at the corner it shares
+/// (re-verification of d8ecd192): from the skin less a strip that wide
+/// along the shared end, and from the skin less a strip that wide along
+/// the axis.
 pub(super) fn clear(
     flats: &[Flat],
     bends: &[Bend],
@@ -396,13 +451,16 @@ pub(super) fn clear(
         let child = skin_of(b.child, far, d, b.across).ok_or_else(lost)?;
         let parent =
             skin_of(b.parent, b.start, d, [-b.across[0], -b.across[1]]).ok_or_else(lost)?;
-        let joined_here = |j: usize| {
-            bends.get(j).is_some_and(|x| {
-                x.parent == b.parent
-                    && [x.start, x.end]
-                        .iter()
-                        .any(|p| [b.start, b.end].iter().any(|q| distance(*p, *q) <= tol))
-            })
+        // The end of this bend's tangent line (0 its start, 1 its end) a
+        // bend of the same parent has an end on.
+        let joined_at = |j: usize| -> Option<usize> {
+            let x = bends.get(j)?;
+            if x.parent != b.parent {
+                return None;
+            }
+            [b.start, b.end]
+                .iter()
+                .position(|q| [x.start, x.end].iter().any(|p| distance(*p, *q) <= tol))
         };
         let pieces: Vec<Piece> = if hoods.is_empty() {
             (0..flats.len())
@@ -436,12 +494,36 @@ pub(super) fn clear(
             let whole = skin
                 .apart(piece, flats, bends, t, tol, 0.0)
                 .ok_or_else(lost)?;
+            // A neighbour joined at a corner: apart from the whole skin but
+            // the m × m square at that corner (the union of the skin less a
+            // strip m wide along the shared end and the skin less a strip m
+            // wide along the axis), where it meets the skin along the
+            // corner's line below the axis.
             let along_edge = || -> Result<bool, KernelError> {
-                let joined = !ours && matches!(piece, Piece::Bend(j) if joined_here(j));
-                Ok(joined
-                    && skin
-                        .apart(piece, flats, bends, t, tol, m)
-                        .ok_or_else(lost)?)
+                let Piece::Bend(j) = piece else {
+                    return Ok(false);
+                };
+                let Some(end) = joined_at(j).filter(|_| !ours) else {
+                    return Ok(false);
+                };
+                let (u, v) = (skin.u, skin.v);
+                let beside = if end == 0 {
+                    (u.0 + m, u.1)
+                } else {
+                    (u.0, u.1 - m)
+                };
+                let off_end = skin
+                    .apart_in(piece, flats, bends, t, tol, beside, v)
+                    .ok_or_else(lost)?;
+                // Off the axis, the neighbour leaves the corner's line
+                // outward and upward: the directions out of the shared end
+                // tilted down the skin separate it (one is enough).
+                let out = if end == 0 { -1.0 } else { 1.0 };
+                let tilted = [(out, -0.5), (out, -1.0), (out, -2.0), (out, -4.0)];
+                let off_axis = skin
+                    .apart_along(piece, flats, bends, t, tol, u, (v.0 + m, v.1), &tilted)
+                    .ok_or_else(lost)?;
+                Ok(off_end && off_axis)
             };
             if !whole && !along_edge()? {
                 let named = piece.named(flanges);
