@@ -548,14 +548,17 @@ fn jogs_are_refused_with_the_reason() {
                 spec(
                     profile(
                         &[[0.0, 0.0], [100.0, 0.0], [100.0, 40.0], [0.0, 40.0]],
-                        &[([50.0, 20.0], 5.0)],
+                        // A hole across the line is built
+                        // (sheetmetal_holes_more.rs); one the line only
+                        // touches is refused.
+                        &[([55.0, 20.0], 5.0)],
                         k,
                     ),
                     t,
                     Vec::new(),
                     vec![at([50.0, -5.0], [50.0, 30.0], 9.0 * k, PI / 3.0)],
                 ),
-                "hole",
+                "touches the circle",
             ),
         ];
         for (s, why) in cases {

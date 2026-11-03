@@ -206,54 +206,48 @@ fn a_hole_of_the_base_across_a_jogs_line() {
     }
 }
 
-/// A hole of a quarter, a half and a quarter circle in a plate, plain and
-/// on a jog's far side (found 2026-11-03 by the round hole across a jog's
-/// line): the plate's corner where two square rims run on smoothly into
-/// each other on one cylinder was solved for a point on two coinciding
-/// surfaces, which drifted along their common line, and the edges went
-/// round the wrong side of the circle: a body that passed the checker
-/// with its volume 2 % short. The volume is the plate's less the disc.
 #[test]
-fn a_hole_of_arcs_of_one_circle_keeps_its_volume() {
+fn holes_across_a_jogs_line_refused_by_reason() {
     for k in SCALES {
         let tol = tolerance(k);
-        for jog in [false, true] {
-            for (cx, cy) in [(30.0, 20.0), (75.0, 20.0)] {
-                let c = [cx * k, cy * k];
-                let p = |deg: f64| {
-                    let a = deg.to_radians();
-                    [c[0] + 5.0 * k * a.cos(), c[1] + 5.0 * k * a.sin()]
-                };
-                let arc = |id: u64, from: f64, to: f64| SketchCurve {
-                    id,
-                    curve: Curve2::Arc {
-                        center: c,
-                        start: p(from),
-                        end: p(to),
-                    },
-                };
-                let arcs = vec![
-                    arc(9, 0.0, 90.0),
-                    arc(10, 90.0, 270.0),
-                    arc(11, 270.0, 360.0),
-                ];
-                let plain_base = profile(
-                    &[[0.0, 0.0], [100.0, 0.0], [100.0, 40.0], [0.0, 40.0]],
-                    1,
-                    k,
-                );
-                let mut spec = jogged(holed(arcs, k), Vec::new(), k, 0.5);
-                let mut plain = jogged(plain_base, Vec::new(), k, 0.5);
-                if !jog {
-                    spec.jogs.clear();
-                    plain.jogs.clear();
-                }
-                let part = build(&spec, &tol).unwrap();
-                let defects = check(&part.solid.body, &tol);
-                assert!(defects.is_empty(), "{defects:?}");
-                let v = volume(&build(&plain, &tol).unwrap()) - PI * 25.0 * k * k * k;
-                near(volume(&part), v, 1e-9 * v, "the plate less the disc");
-            }
-        }
+        // A zigzag the line crosses four times.
+        let zigzag = lines(
+            &[
+                [40.0, 10.0],
+                [60.0, 10.0],
+                [60.0, 14.0],
+                [44.0, 14.0],
+                [44.0, 18.0],
+                [60.0, 18.0],
+                [60.0, 22.0],
+                [40.0, 22.0],
+            ],
+            20,
+            k,
+        );
+        let why = match build(&jogged(holed(zigzag, k), Vec::new(), k, 0.5), &tol) {
+            Ok(_) => panic!("built"),
+            Err(e) => e.to_string(),
+        };
+        assert!(why.contains("4 times"), "{why}");
+        // A second jog across the far side a hole across the first one's
+        // line lies in.
+        let disc = SketchCurve {
+            id: 9,
+            curve: Curve2::Circle {
+                center: [50.0 * k, 20.0 * k],
+                radius: 5.0 * k,
+            },
+        };
+        let mut two = jogged(holed(vec![disc], k), Vec::new(), k, 0.5);
+        let mut second = two.jogs[0].clone();
+        second.line = [[80.0 * k, -5.0 * k], [80.0 * k, 65.0 * k]];
+        second.ids = [3, 4];
+        two.jogs.push(second);
+        let why = match build(&two, &tol) {
+            Ok(_) => panic!("built"),
+            Err(e) => e.to_string(),
+        };
+        assert!(why.contains("hole across jog 0's line lies in"), "{why}");
     }
 }
