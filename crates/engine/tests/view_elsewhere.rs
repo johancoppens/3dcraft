@@ -20,7 +20,7 @@ use common::plain::run;
 use common::{session_in, workdir};
 use craft3d_engine::{
     SceneQuality, Session, Workspace, measure_checks, run_command, scene_begin, scene_bytes,
-    scene_next,
+    scene_next, scene_side_work,
 };
 use serde_json::{Value, json};
 use std::path::Path;
@@ -211,6 +211,29 @@ fn facts_that_do_not_read_are_errors_of_that_moment() {
     }
     let shown = page.scene_with(SceneQuality::Preview);
     assert!(shown.is_err(), "the moment's scene says what went wrong");
+    // At the same t: not pending any more, and the error said (a player
+    // waiting on it would wait for ever).
+    let failed = page.motion().unwrap();
+    assert!(!failed.pending, "the failed moment is not waited for");
+    assert!(failed.error.is_some());
+    let answer = run(&mut page, "view.motion", json!({}));
+    assert_eq!(answer["pending"], false);
+    assert!(answer["error"].is_string(), "{answer}");
+    assert!(page.scene_job(SceneQuality::display()).is_none());
+    // The other ways a job ends without its facts: the worker stopped,
+    // the deadline.
+    for (t, end) in [(0.4, 0), (0.45, 1)] {
+        run(&mut page, "view.motion", json!({"t": t}));
+        let token = page.scene_job(SceneQuality::display()).unwrap();
+        if end == 0 {
+            page.scene_answered(token, Err("the worker stopped (out of memory)"));
+        } else {
+            page.scene_failed(token, "it took longer than 30 minutes");
+        }
+        let motion = page.motion().unwrap();
+        assert!(!motion.pending && motion.error.is_some(), "{t}");
+        assert!(page.scene_job(SceneQuality::display()).is_none(), "{t}");
+    }
     run(&mut page, "view.motion", json!({"t": 0.6}));
     answer_scenes(&mut page, SceneQuality::display());
     assert!(page.scene_with(SceneQuality::Preview).unwrap().is_some());
@@ -223,12 +246,16 @@ fn facts_that_do_not_read_are_errors_of_that_moment() {
 fn a_bake_is_made_beside_the_page() {
     let mut page = page_of(Session::new(Workspace::memory()));
     slider(&mut page, 1.0);
-    run(&mut page, "view.motion", json!({"t": 0.0}));
+    run(
+        &mut page,
+        "view.motion",
+        json!({"t": 0.0, "collisions": true}),
+    );
     answer_scenes(&mut page, SceneQuality::display());
     let asked = run(
         &mut page,
         "motion.bake",
-        json!({"frames": 8, "background": true, "limit": 1}),
+        json!({"frames": 8, "collisions": true, "background": true, "limit": 1}),
     );
     assert_eq!(asked["background"], true);
     assert!(asked["building"].as_u64().unwrap() > 0);
@@ -238,16 +265,55 @@ fn a_bake_is_made_beside_the_page() {
     let view = page.motion().unwrap();
     assert_eq!((view.work_left, view.building), (0, 0));
     assert_eq!(view.baked, Some(8));
+    assert!(view.bake_error.is_none());
     let mut here = Session::new(Workspace::memory());
     slider(&mut here, 1.0);
-    run(&mut here, "motion.bake", json!({"frames": 8}));
-    for k in 0..=8 {
-        let t = f64::from(k) / 8.0;
-        run(&mut page, "view.motion", json!({"t": t}));
-        answer_scenes(&mut page, SceneQuality::display());
-        run(&mut here, "view.motion", json!({"t": t}));
-        assert_eq!(scenes(&mut page), scenes(&mut here), "{t}");
+    run(
+        &mut here,
+        "motion.bake",
+        json!({"frames": 8, "collisions": true}),
+    );
+    // The worker shows the frames from what it baked: once each is
+    // meshed, showing them all again meshes nothing (unbaked, a frame
+    // shown after others rebuilds the slider, a new body to mesh, as the
+    // unbaked t = 0.3 at the end shows).
+    let mut baked = scene_side_work().unwrap();
+    for pass in 0..2 {
+        if pass == 1 {
+            baked = scene_side_work().unwrap();
+        }
+        for k in 0..=8 {
+            let t = f64::from(k) / 8.0;
+            run(
+                &mut page,
+                "view.motion",
+                json!({"t": t, "collisions": true}),
+            );
+            answer_scenes(&mut page, SceneQuality::display());
+            let mine = run(
+                &mut here,
+                "view.motion",
+                json!({"t": t, "collisions": true}),
+            );
+            assert_eq!(scenes(&mut page), scenes(&mut here), "{t}");
+            let theirs = run(&mut page, "view.motion", json!({}));
+            assert_eq!(theirs["collisions"], mine["collisions"], "{t}");
+        }
     }
+    let again = scene_side_work().unwrap().meshes;
+    assert_eq!(again, baked.meshes, "frames meshed again");
+    for t in [0.3, 0.7, 0.3] {
+        run(
+            &mut page,
+            "view.motion",
+            json!({"t": t, "collisions": true}),
+        );
+        answer_scenes(&mut page, SceneQuality::display());
+    }
+    assert!(
+        scene_side_work().unwrap().meshes > again + 2,
+        "unbaked moments mesh"
+    );
     assert_eq!(page.work_here(), before);
     // Cancelled: nothing is asked for any more.
     run(
@@ -414,6 +480,16 @@ fn an_assembly_is_placed_and_played_beside_the_page() {
         (&set["status"], &set["deferred"]),
         (&json!("pending"), &json!(true))
     );
+    // Until the worker answers, the tree shows the last one
+    // (provisionally), never nothing.
+    assert!(page.assembly_outline().is_some());
+    // The sources were handed over once: this job names them by digest,
+    // a worker started again gets them in full.
+    let token = page.scene_job(SceneQuality::display()).unwrap();
+    let named = page.scene_request(token).unwrap().document.len();
+    page.scene_worker_restarted();
+    let full = page.scene_request(token).unwrap().document.len();
+    assert!(named < full, "{named} {full}");
     run(
         &mut here,
         "joint.set",
@@ -422,6 +498,18 @@ fn an_assembly_is_placed_and_played_beside_the_page() {
     answer_scenes(&mut page, SceneQuality::display());
     assert_eq!(scenes(&mut page), scenes(&mut here));
     assert_eq!(page.assembly_outline(), here.assembly_outline());
+    // The crank can be dragged now (its joint holds a value); a drag's
+    // next value keeps the handle while the worker places it.
+    let handle = page.assembly_joint_of("F2");
+    assert!(handle.is_some());
+    assert_eq!(handle, here.assembly_joint_of("F2"));
+    run(
+        &mut page,
+        "joint.set",
+        json!({"mate": "Drive", "value": "40 deg", "merge": true}),
+    );
+    assert_eq!(page.assembly_joint_of("F2"), handle);
+    answer_scenes(&mut page, SceneQuality::display());
     assert_eq!(page.work_here(), before, "the page placed or regenerated");
 }
 

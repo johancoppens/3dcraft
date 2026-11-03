@@ -212,15 +212,23 @@ impl Session {
     /// The job numbered `token` ([`Session::scene_job`]), written out for
     /// [`scene_begin`]. An error when it does not wait any more, or its
     /// document cannot be written.
-    pub fn scene_request(&self, token: u64) -> Result<SceneRequest, String> {
+    pub fn scene_request(&mut self, token: u64) -> Result<SceneRequest, String> {
         let job = self
             .job_of_scenes(token)
-            .ok_or_else(|| format!("no job of scenes {token} waits"))?;
+            .ok_or_else(|| format!("no job of scenes {token} waits"))?
+            .clone();
         // A view made elsewhere: the state below it (with an assembly's
-        // sources) and the view itself.
+        // sources, in full the first time, by their digest after it) and
+        // the view itself.
+        let digest = job
+            .view
+            .as_ref()
+            .and_then(|v| v.sources.as_ref())
+            .map(crate::view_elsewhere::sources_digest);
+        let sent = digest.is_some() && digest == self.sources_sent;
         let (document, view) = match &job.view {
             Some(view) => (
-                crate::view_elsewhere::state_bytes(&view.base, view.sources.as_ref()),
+                crate::view_elsewhere::state_bytes(&view.base, view.sources.as_ref(), sent),
                 view.json(),
             ),
             None => (
@@ -229,6 +237,9 @@ impl Session {
             ),
         };
         let document = document.map_err(|e| format!("the document cannot be written out: {e}"))?;
+        if digest.is_some() {
+            self.sources_sent = digest;
+        }
         let work = json!({
             "quality": quality_json(job.quality),
             "budget": self.scene_budget(),
@@ -296,6 +307,18 @@ impl Session {
                     });
                 (of, scene)
             }
+            // The worker had not been handed the sources this job names
+            // (it was started again unseen): the job goes again, with them
+            // in full; nothing of it is kept.
+            Ok((_, ERROR, payload))
+                if String::from_utf8_lossy(payload)
+                    .contains(crate::view_elsewhere::SOURCES_MISSING)
+                    && self.sources_sent.is_some() =>
+            {
+                self.sources_sent = None;
+                self.scene_job = None;
+                return true;
+            }
             Ok((of, _, payload)) => (
                 of,
                 Err(CommandError::new(
@@ -335,6 +358,13 @@ impl Session {
         true
     }
 
+    /// The worker that builds the scenes was ended and is started again
+    /// (or the work went home): the next job hands an assembly's sources
+    /// over in full.
+    pub fn scene_worker_restarted(&mut self) {
+        self.sources_sent = None;
+    }
+
     /// Job `token` could not be built, for a reason that is no bug (it took
     /// too long, the document cannot be written out): every scene of the
     /// job not there yet is an error that says `why` as it is. False when
@@ -359,6 +389,12 @@ impl Session {
             if !self.has_scene_of(&job.doc, quality) {
                 self.keep_scene_of(&job.doc, quality, Err(CommandError::new(why)));
             }
+        }
+        // A view that never got its facts (the worker stopped, the deadline,
+        // facts that do not read): its moment is not waited for any more,
+        // and says why; a bake still wanted for it ends with the same error.
+        if job.view.is_some() {
+            self.view_failed(&job.doc, why);
         }
         self.scene_job = None;
     }
@@ -535,8 +571,9 @@ struct Builder {
     view: Option<View>,
     /// The quality the job of scenes in hand was asked for.
     asked: Option<SceneQuality>,
-    /// Pieces of the bake in a row that left as much to do.
-    stalled: u32,
+    /// Pieces of the bake in a row that left as much to do, and what the
+    /// last one left.
+    stalled: (u32, Option<u64>),
 }
 
 use crate::view_elsewhere::View;
@@ -616,7 +653,7 @@ pub fn scene_begin(document: &[u8], work: &str) {
         builder.refused = None;
         builder.scenes_of = None;
         builder.view = None;
-        builder.stalled = 0;
+        builder.stalled = (0, None);
         let mut bake = false;
         let quality = match read {
             Ok((doc, sources, view, quality, budget)) => {
@@ -677,27 +714,35 @@ fn show_view(session: &mut Session, view: View) {
 fn bake_piece(
     session: &mut Session,
     (frames, collisions): (u64, bool),
-    stalled: &mut u32,
+    stalled: &mut (u32, Option<u64>),
 ) -> Value {
     let answer = match session.execute(
         "motion.bake",
         &json!({"frames": frames, "collisions": collisions, "limit": 1, "background": false}),
     ) {
         Ok(answer) => answer,
-        Err(e) => return json!({"error": e.message()}),
+        Err(e) => {
+            return json!({"error": format!("the bake beside the page failed: {}", e.message())});
+        }
     };
-    let built = answer
-        .pointer("/configurations/built")
-        .and_then(Value::as_u64)
-        .unwrap_or(0)
-        .saturating_add(answer.get("moments").and_then(Value::as_u64).unwrap_or(0));
-    *stalled = if built == 0 {
-        stalled.saturating_add(1)
-    } else {
-        0
+    if answer.get("done") == Some(&Value::Bool(true)) {
+        return answer;
+    }
+    // Progress is what is left going down: a piece that leaves as much
+    // as the one before it made none.
+    let remaining = answer.get("remaining").and_then(Value::as_u64);
+    let (count, before) = *stalled;
+    let none = match (before, remaining) {
+        (Some(before), Some(now)) => now >= before,
+        (_, None) => true,
+        (None, Some(_)) => false,
     };
-    if *stalled >= BAKE_STALLED && answer.get("done") != Some(&Value::Bool(true)) {
-        return json!({"error": "the bake cannot go on beside the page: its budget is full", "remaining": answer.get("remaining")});
+    *stalled = (if none { count.saturating_add(1) } else { 0 }, remaining);
+    if stalled.0 >= BAKE_STALLED {
+        return json!({
+            "error": format!("the bake beside the page stopped: {BAKE_STALLED} pieces in a row left as much to make (the budget for what it keeps is likely full)"),
+            "remaining": remaining,
+        });
     }
     answer
 }
@@ -763,6 +808,18 @@ pub fn scene_step(stop: impl Fn() -> bool + Clone + 'static) -> SceneStep {
             if finished {
                 builder.left.pop_front();
             }
+            // The last piece goes with the view's facts made again (the
+            // moment now says it is baked); the others with the bake's
+            // answer alone.
+            if finished {
+                let mut part = vec![VIEW, FACTS];
+                part.extend(crate::view_elsewhere::facts_bytes(
+                    session,
+                    None,
+                    Some(answer),
+                ));
+                return SceneStep::Part(part);
+            }
             let mut part = vec![BAKE, FACTS];
             part.extend(crate::view_elsewhere::bake_bytes(&answer));
             return SceneStep::Part(part);
@@ -795,6 +852,19 @@ pub fn scene_next() -> Option<Vec<u8>> {
             SceneStep::Done => return None,
         }
     }
+}
+
+/// What this side's session did itself ([`Session::work_here`]): how a
+/// test sees that a moment baked here is shown without meshing again.
+pub fn scene_side_work() -> Option<crate::WorkCount> {
+    BUILDER.with(|builder| {
+        builder
+            .try_borrow()
+            .ok()?
+            .session
+            .as_ref()
+            .map(Session::work_here)
+    })
 }
 
 /// Lets go of everything this side built: what a worker that was ended
@@ -871,8 +941,19 @@ pub fn run_on_state(
         }
         // A read on a moment of the motion: shown here first (and the view
         // of the scenes in hand shown again after it).
-        let moment = crate::view_elsewhere::view_of(&work).and_then(|(moment, _)| moment);
-        show_view(session, (moment, None));
+        // Only a read carries a view; any other job leaves the one shown
+        // (and the bake made for it) as it is.
+        let shown_before = session
+            .documents
+            .first()
+            .map(|open| (open.motion_t(), open.motion_collisions()));
+        let asked = crate::view_elsewhere::view_of(&work).map(|(moment, _)| moment);
+        let moved = asked.is_some_and(|moment| {
+            shown_before != Some((moment.map(|(t, _)| t), moment.is_some_and(|(_, c)| c)))
+        });
+        if let (true, Some(moment)) = (moved, asked) {
+            show_view(session, (moment, None));
+        }
         let open = session.documents.get_mut(0).ok_or("no document")?;
         open.selection = selection;
         open.jig_in_use = work.get("jigInUse") == Some(&Value::Bool(true));
@@ -965,7 +1046,7 @@ pub fn run_on_state(
             }
             builder.loaded = Some(scenes_of);
         }
-        if builder.scenes_of.is_some() {
+        if moved && builder.scenes_of.is_some() {
             show_view(session, builder.view.unwrap_or((None, None)));
         }
         Ok::<_, String>(crate::CommandAnswer {

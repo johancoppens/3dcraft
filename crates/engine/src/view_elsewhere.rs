@@ -121,7 +121,45 @@ const MAX_ROWS: usize = 4_096;
 /// What the bytes of a state with its files start with.
 const STATE_MAGIC: &[u8; 8] = b"C3DSTATE";
 /// The form's version.
-const STATE_VERSION: u8 = 1;
+const STATE_VERSION: u8 = 2;
+/// The sources follow in full, with their digest.
+const SOURCES_FULL: u8 = 0;
+/// Only the digest of sources handed over before.
+const SOURCES_SENT: u8 = 1;
+/// How many sets of sources the other side keeps, by digest.
+const SOURCES_KEPT: usize = 4;
+/// What a state whose sources were never handed over is answered with:
+/// the host hands them over again in full.
+pub(crate) const SOURCES_MISSING: &str = "the assembly's sources were not handed to this worker";
+
+thread_local! {
+    /// The sources handed over in full, by digest, most recent last: a
+    /// state that names them by digest finds them here.
+    static SENT: std::cell::RefCell<Vec<([u8; 32], Sources)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The digest of `sources`: their path, folder and every file (by the
+/// SHA-256 of its bytes, or why it could not be read).
+pub(crate) fn sources_digest(sources: &Sources) -> [u8; 32] {
+    let mut text = String::new();
+    text.push_str(sources.path.as_deref().unwrap_or("\u{0}none"));
+    text.push('\n');
+    text.push_str(&sources.base);
+    text.push('\n');
+    for (path, read) in &sources.files {
+        text.push_str(path);
+        text.push('\u{0}');
+        match read {
+            Ok(blob) => text.push_str(&blob.sha256()),
+            Err(why) => {
+                text.push_str("error ");
+                text.push_str(why);
+            }
+        }
+        text.push('\n');
+    }
+    craft3d_doc::sha256(text.as_bytes())
+}
 
 /// An assembly's sources as this session read them: what a state handed
 /// elsewhere carries so that the other side places it from the same
@@ -208,15 +246,9 @@ impl OpenDocument {
             let _ = doc.set_variable(crate::motion::TIMELINE, &crate::motion::literal(t));
         }
         let doc = Arc::new(doc);
-        // Facts of another state below are of no use any more.
-        if self
-            .remote
-            .last
-            .as_ref()
-            .is_some_and(|(b, g, _)| !Arc::ptr_eq(b, &base) || *g != generation)
-        {
-            self.remote.last = None;
-        }
+        // The last facts stay, of this state or one before it (an edit, a
+        // joint set by hand): the tree and the drag's handles show them,
+        // provisionally, until the new ones come, rather than nothing.
         if self
             .remote
             .bake
@@ -250,6 +282,41 @@ impl OpenDocument {
             return Some(facts);
         }
         self.remote.last.as_ref().map(|(_, _, f)| Arc::clone(f))
+    }
+
+    /// The stand-in `doc`'s job ended without its facts: the view says
+    /// `why` (not pending for ever), and a bake still wanted for it ends
+    /// with that error.
+    fn view_failed_here(&mut self, doc: &Arc<Document>, why: &str) -> bool {
+        let Some(view) = self.remote.view.as_mut() else {
+            return false;
+        };
+        if !Arc::ptr_eq(&view.doc, doc) {
+            return false;
+        }
+        if view.facts.is_none() {
+            view.facts = Some(Arc::new(ViewFacts {
+                error: Some(why.to_string()),
+                ..ViewFacts::default()
+            }));
+        }
+        if let Some(wanted) = self.remote.bake.as_mut()
+            && Arc::ptr_eq(&wanted.base, &view.base)
+            && !wanted.finished()
+        {
+            wanted.answer = Some(json!({ "error": why }));
+        }
+        self.remote.fresh = true;
+        true
+    }
+
+    /// Why the bake made elsewhere for the view shown stopped, when it did.
+    pub(crate) fn bake_error(&mut self) -> Option<String> {
+        self.bake_left()?
+            .answer?
+            .get("error")?
+            .as_str()
+            .map(str::to_string)
     }
 
     /// Takes the note that facts came since the last call.
@@ -405,6 +472,16 @@ impl Session {
         Ok(())
     }
 
+    /// The job of the stand-in `doc` ended without its facts
+    /// ([`OpenDocument::view_failed_here`]).
+    pub(crate) fn view_failed(&mut self, doc: &Arc<Document>, why: &str) {
+        for open in &mut self.documents {
+            if open.view_failed_here(doc, why) {
+                break;
+            }
+        }
+    }
+
     /// The document the scenes of the stand-in `doc` are read against:
     /// the placed part the other side showed (an assembly), else `doc`.
     pub(crate) fn scenes_read_against(&self, doc: &Arc<Document>) -> Arc<Document> {
@@ -459,16 +536,33 @@ pub(crate) fn facts_bytes(
     }
     let mut shown = Vec::new();
     if is_assembly {
-        if let Some(outline) = session.assembly_outline() {
-            facts.insert("outline".into(), outline_json(&outline));
-        }
+        let outline = session.assembly_outline();
         let placed = session
             .documents
             .get_mut(session.active)
             .map(OpenDocument::shown);
-        if let Some(placed) = placed {
+        // Never cut short: an assembly whose lists pass what crosses says
+        // so, by number.
+        let rows = outline.as_ref().map_or(0, |o| {
+            let lists = o.instances.iter().map(|i| i.features.len());
+            let lists = lists.chain(o.mates.iter().map(|m| m.variables.len()));
+            lists
+                .chain([o.instances.len(), o.mates.len(), o.free.len()])
+                .max()
+                .unwrap_or(0)
+        });
+        let bodies = placed.as_ref().map_or(0, |p| p.features.len());
+        if rows > MAX_ROWS || bodies > MAX_ROWS {
+            error = Some(format!(
+                "the assembly lists {} rows and places {bodies} bodies; at most {MAX_ROWS} of each cross to the page",
+                rows
+            ));
+        } else if let Some(outline) = outline {
+            facts.insert("outline".into(), outline_json(&outline));
+        }
+        if let Some(placed) = placed.filter(|_| rows <= MAX_ROWS && bodies <= MAX_ROWS) {
             let mut joints = Map::new();
-            for feature in placed.features.iter().take(MAX_ROWS) {
+            for feature in &placed.features {
                 let id = feature.id.to_string();
                 if let Some(joint) = session.assembly_joint_of(&id) {
                     joints.insert(id, joint_json(&joint));
@@ -530,7 +624,10 @@ pub(crate) fn decode_facts(bytes: &[u8]) -> Result<(ViewFacts, Option<Value>), S
         facts.outline = Some(outline_from(outline).ok_or("the assembly's outline cannot be read")?);
     }
     if let Some(joints) = value.get("joints").and_then(Value::as_object) {
-        for (feature, joint) in joints.iter().take(MAX_ROWS) {
+        if joints.len() > MAX_ROWS {
+            return Err("the assembly's joints are more than cross".into());
+        }
+        for (feature, joint) in joints {
             let joint = joint_from(joint).ok_or("a joint of the assembly cannot be read")?;
             facts.joints.insert(feature.clone(), joint);
         }
@@ -557,7 +654,7 @@ fn from_bits(value: &Value) -> Option<f64> {
 
 fn outline_json(o: &AssemblyOutline) -> Value {
     json!({
-        "instances": o.instances.iter().take(MAX_ROWS).map(|i| json!({
+        "instances": o.instances.iter().map(|i| json!({
             "name": i.name,
             "label": i.label,
             "depth": i.depth,
@@ -568,7 +665,7 @@ fn outline_json(o: &AssemblyOutline) -> Value {
             "own": i.own,
             "features": i.features,
         })).collect::<Vec<_>>(),
-        "mates": o.mates.iter().take(MAX_ROWS).map(|m| json!({
+        "mates": o.mates.iter().map(|m| json!({
             "name": m.name,
             "kind": m.kind,
             "status": m.status,
@@ -599,11 +696,11 @@ fn opt_text(value: &Value, key: &str) -> Option<Option<String>> {
 }
 
 fn texts(value: &Value, key: &str) -> Option<Vec<String>> {
-    value
-        .get(key)?
-        .as_array()?
-        .iter()
-        .take(MAX_ROWS)
+    let list = value.get(key)?.as_array()?;
+    if list.len() > MAX_ROWS {
+        return None;
+    }
+    list.iter()
         .map(|v| v.as_str().map(str::to_string))
         .collect()
 }
@@ -651,7 +748,12 @@ fn outline_from(value: &Value) -> Option<AssemblyOutline> {
         unit: text(value, "unit")?,
         ..AssemblyOutline::default()
     };
-    for i in value.get("instances")?.as_array()?.iter().take(MAX_ROWS) {
+    let instances = value.get("instances")?.as_array()?;
+    let mates = value.get("mates")?.as_array()?;
+    if instances.len() > MAX_ROWS || mates.len() > MAX_ROWS {
+        return None;
+    }
+    for i in instances {
         out.instances.push(OutlineInstance {
             name: text(i, "name")?,
             label: text(i, "label")?,
@@ -664,7 +766,7 @@ fn outline_from(value: &Value) -> Option<AssemblyOutline> {
             features: texts(i, "features")?,
         });
     }
-    for m in value.get("mates")?.as_array()?.iter().take(MAX_ROWS) {
+    for m in mates {
         out.mates.push(OutlineMate {
             name: text(m, "name")?,
             kind: kind_name(m.get("kind")?.as_str()?)?,
@@ -732,7 +834,14 @@ fn joint_from(value: &Value) -> Option<JointHandle> {
 /// assembly that file with the sources this session read for it (its
 /// path and folder, each file read or why it could not be), so the other
 /// side places it from the same bytes.
-pub(crate) fn state_bytes(doc: &Document, sources: Option<&Sources>) -> Result<Vec<u8>, String> {
+///
+/// With `sent`, sources the other side was handed before (in full, by
+/// this function) are named by their digest only ([`sources_digest`]).
+pub(crate) fn state_bytes(
+    doc: &Document,
+    sources: Option<&Sources>,
+    sent: bool,
+) -> Result<Vec<u8>, String> {
     let file = craft3d_format::to_bytes(doc).map_err(|e| e.to_string())?;
     let Some(sources) = sources else {
         return Ok(file);
@@ -740,6 +849,12 @@ pub(crate) fn state_bytes(doc: &Document, sources: Option<&Sources>) -> Result<V
     let mut out = Vec::new();
     out.extend(STATE_MAGIC);
     out.push(STATE_VERSION);
+    out.push(if sent { SOURCES_SENT } else { SOURCES_FULL });
+    out.extend(sources_digest(sources));
+    if sent {
+        out.extend(file);
+        return Ok(out);
+    }
     let text = |out: &mut Vec<u8>, s: &str| {
         out.extend((s.len() as u64).to_le_bytes());
         out.extend(s.as_bytes());
@@ -782,6 +897,27 @@ pub(crate) fn read_state(bytes: &[u8]) -> Result<(Document, Option<Sources>), St
     if r.u8()? != STATE_VERSION {
         return Err("the state is of another form".into());
     }
+    let mode = r.u8()?;
+    let (digest, rest) = r
+        .bytes
+        .split_first_chunk::<32>()
+        .ok_or("the state is cut short")?;
+    let digest = *digest;
+    r.bytes = rest;
+    if mode == SOURCES_SENT {
+        let found = SENT.with(|sent| {
+            sent.borrow()
+                .iter()
+                .find(|(d, _)| *d == digest)
+                .map(|(_, s)| s.clone())
+        });
+        let sources = found.ok_or(SOURCES_MISSING)?;
+        let doc = craft3d_format::from_bytes(r.bytes).map_err(|e| e.to_string())?;
+        return Ok((doc, Some(sources)));
+    }
+    if mode != SOURCES_FULL {
+        return Err("the state's sources cannot be read".into());
+    }
     let path = match r.u8()? {
         0 => None,
         1 => Some(r.text()?),
@@ -803,7 +939,18 @@ pub(crate) fn read_state(bytes: &[u8]) -> Result<(Document, Option<Sources>), St
         files.insert(name, read);
     }
     let doc = craft3d_format::from_bytes(r.bytes).map_err(|e| e.to_string())?;
-    Ok((doc, Some(Sources { path, base, files })))
+    let sources = Sources { path, base, files };
+    if sources_digest(&sources) != digest {
+        return Err("the state's sources do not match their digest".into());
+    }
+    SENT.with(|sent| {
+        let mut sent = sent.borrow_mut();
+        sent.retain(|(d, _)| *d != digest);
+        sent.push((digest, sources.clone()));
+        let over = sent.len().saturating_sub(SOURCES_KEPT);
+        sent.drain(..over);
+    });
+    Ok((doc, Some(sources)))
 }
 
 struct Reader<'a> {
@@ -872,10 +1019,10 @@ mod tests {
             base: String::new(),
             files,
         };
-        let bytes = state_bytes(&doc, Some(&sources)).unwrap();
+        let bytes = state_bytes(&doc, Some(&sources), false).unwrap();
         let (back, read) = read_state(&bytes).unwrap();
         assert_eq!(back, doc);
-        assert_eq!(read, Some(sources));
+        assert_eq!(read.as_ref(), Some(&sources));
         // Every prefix is an error, never a panic.
         for end in 0..bytes.len() {
             assert!(read_state(&bytes[..end]).is_err(), "{end}");
@@ -883,12 +1030,25 @@ mod tests {
         // A count beyond what the bytes hold is refused before anything
         // is made.
         let mut huge = STATE_MAGIC.to_vec();
-        huge.extend([STATE_VERSION, 0]);
+        huge.extend([STATE_VERSION, SOURCES_FULL]);
+        huge.extend([0; 32]);
+        huge.push(0);
         huge.extend(0u64.to_le_bytes());
         huge.extend(u64::MAX.to_le_bytes());
         assert!(read_state(&huge).is_err());
         // A plain file is a state without sources.
-        let plain = state_bytes(&doc, None).unwrap();
+        let plain = state_bytes(&doc, None, false).unwrap();
+        // Named by digest once handed over in full (the read above), and
+        // refused when it was not.
+        let named = state_bytes(&doc, Some(&sources), true).unwrap();
+        assert!(named.len() < bytes.len());
+        assert_eq!(read_state(&named).unwrap().1, Some(sources.clone()));
+        let other = Sources {
+            base: "elsewhere".into(),
+            ..sources
+        };
+        let unknown = state_bytes(&doc, Some(&other), true).unwrap();
+        assert_eq!(read_state(&unknown).unwrap_err(), SOURCES_MISSING);
         assert!(matches!(read_state(&plain), Ok((d, None)) if d == doc));
     }
 

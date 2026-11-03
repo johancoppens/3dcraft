@@ -144,7 +144,7 @@ pub use recovery::{
 };
 pub use regen_elsewhere::{
     SceneRequest, SceneStep, run_command, run_on_state, scene_begin, scene_bytes, scene_forget,
-    scene_next, scene_step,
+    scene_next, scene_side_work, scene_step,
 };
 pub use report::{
     FailedCommand, MAX_REPORT_FIELD_CHARS, VERSION, bug_report, build_commit, platform,
@@ -581,6 +581,11 @@ pub struct Session {
     pub(crate) scene_job: Option<regen_elsewhere::SceneJob>,
     /// The last number a job of scenes was handed out under.
     pub(crate) scene_token: u64,
+    /// The digest of the assembly sources last handed to the worker that
+    /// builds the scenes in full (`view_elsewhere::sources_digest`): the
+    /// next job names them by it. Forgotten when that worker is started
+    /// again ([`Session::scene_worker_restarted`]).
+    pub(crate) sources_sent: Option<[u8; 32]>,
     /// The host's renderer besides the CPU's (`pictures.rs`).
     pub(crate) pictures: pictures::Hosted<dyn pictures::PictureRenderer>,
     /// The host's video encoder for `view.replay` (`pictures.rs`).
@@ -628,6 +633,7 @@ impl Session {
             regen_elsewhere: false,
             scene_job: None,
             scene_token: 0,
+            sources_sent: None,
             pictures: pictures::Hosted::default(),
             video: pictures::Hosted::default(),
             commands: commands_elsewhere::Commands::default(),

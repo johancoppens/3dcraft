@@ -204,6 +204,15 @@ impl Shell {
                 self.stop_playing();
             }
         }
+        // A bake made elsewhere that stopped: said; the motion still plays.
+        if let Some(why) = self
+            .timeline
+            .motion
+            .as_ref()
+            .and_then(|m| m.bake_error.clone())
+        {
+            self.timeline.problem = Some(why);
+        }
         self.sync_trace_states(session);
         let traces = session.traces();
         if !same_traces(&traces, &self.timeline.traces) {

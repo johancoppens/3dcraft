@@ -469,7 +469,7 @@ impl Session {
             .find(|job| job.token == token)
             .ok_or_else(|| format!("no command {token} waits"))?;
         job.posted = true;
-        let document = crate::view_elsewhere::state_bytes(&job.doc, job.sources.as_ref())
+        let document = crate::view_elsewhere::state_bytes(&job.doc, job.sources.as_ref(), false)
             .map_err(|e| format!("the document cannot be written out: {e}"))?;
         let view = crate::view_elsewhere::ViewJob {
             base: Arc::clone(&job.doc),
@@ -484,7 +484,9 @@ impl Session {
             "follows": job.follows,
             "camera": job.camera,
             "jigInUse": job.jig_in_use,
-            "view": view.json(),
+            // A read is run on the moment shown; any other job leaves the
+            // other side's view as it is.
+            "view": if job.kind == JobKind::Read { view.json() } else { Value::Null },
         });
         Ok(CommandRequest {
             token,

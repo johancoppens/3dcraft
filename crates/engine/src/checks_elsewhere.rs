@@ -119,7 +119,7 @@ impl Session {
         if let Some((at, doc)) = self.state_job(token) {
             // An assembly goes with the sources this session read for it.
             let sources = self.documents.get(at).and_then(|open| open.sources(&doc));
-            let document = crate::view_elsewhere::state_bytes(&doc, sources.as_ref())
+            let document = crate::view_elsewhere::state_bytes(&doc, sources.as_ref(), false)
                 .map_err(|e| format!("the document cannot be written out: {e}"))?;
             return Ok(CheckRequest {
                 token,

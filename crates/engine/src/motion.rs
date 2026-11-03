@@ -2190,6 +2190,8 @@ pub struct MotionView {
     /// Why the moment asked for could not be made elsewhere: the motion
     /// was let go of, as `view.motion` fails where it is made here.
     pub error: Option<String>,
+    /// Why the bake made elsewhere stopped before it was done.
+    pub bake_error: Option<String>,
 }
 
 /// A trace as a viewer draws it ([`Session::traces`]).
@@ -2286,6 +2288,7 @@ impl Session {
             work_left,
             pending: false,
             error: None,
+            bake_error: None,
         })
     }
 
@@ -2299,15 +2302,8 @@ impl Session {
             return Some(None);
         };
         let pending = open.remote_view().is_none_or(|view| view.facts.is_none());
-        let bake = open.bake_left();
-        let left = bake.as_ref().map_or(0, |b| b.left());
-        // Baked there: its frames, as `view.motion` there says once a
-        // moment is made after it.
-        let baked_there = bake.filter(|b| {
-            b.answer
-                .as_ref()
-                .is_some_and(|a| a.get("done") == Some(&Value::Bool(true)))
-        });
+        let bake_error = open.bake_error();
+        let left = open.bake_left().map_or(0, |b| b.left());
         let motion = facts.as_ref().and_then(|f| f.motion.clone());
         let error = facts.as_ref().and_then(|f| f.error.clone());
         let count = |key: &str| {
@@ -2359,15 +2355,16 @@ impl Session {
                 .unwrap_or(true),
             stale,
             building: left,
-            baked: baked_there.map(|b| b.frames).or_else(|| {
-                motion
-                    .as_ref()
-                    .and_then(|m| m.get("baked"))
-                    .and_then(Value::as_u64)
-            }),
+            // What the moment made there says: a bake lost there is not
+            // reported as made.
+            baked: motion
+                .as_ref()
+                .and_then(|m| m.get("baked"))
+                .and_then(Value::as_u64),
             work_left: left,
             pending,
             error: if pending { None } else { error },
+            bake_error,
         }))
     }
 
