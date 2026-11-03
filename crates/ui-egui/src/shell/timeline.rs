@@ -663,6 +663,106 @@ mod tests {
         output.textures_delta.clear();
     }
 
+    /// A moment made elsewhere (the page's worker) is waited for: the
+    /// playing player asks for one, and asks for the next only once the
+    /// worker made it, however many frames go by meanwhile; its cost for
+    /// the bake hint is the time until it came.
+    #[test]
+    fn the_player_waits_for_a_moment_made_elsewhere() {
+        use craft3d_engine::{scene_begin, scene_next};
+        let mut session = Session::new(Workspace::memory());
+        session.set_stepwise(true);
+        session.set_checks_elsewhere(true);
+        session.set_regen_elsewhere(true);
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            ("variable.set", json!({"name": "t", "expr": "0"})),
+            (
+                "feature.block",
+                json!({"size": [10, 10, 10], "position": ["20 mm * t", 0, 0], "name": "Box"}),
+            ),
+        ] {
+            session.execute(id, &params).unwrap();
+        }
+        let answer = |session: &mut Session| {
+            let quality = craft3d_engine::SceneQuality::display();
+            let mut jobs = 0;
+            while let Some(token) = session.scene_job(quality) {
+                jobs += 1;
+                let request = session.scene_request(token).unwrap();
+                scene_begin(&request.document, &request.work);
+                while let Some(part) = scene_next() {
+                    session.scene_answered(token, Ok(&part));
+                }
+                session.scene_done(token);
+            }
+            jobs
+        };
+        answer(&mut session);
+        let start = session.work_here();
+        let ctx = egui::Context::default();
+        let mut shell = Shell::new();
+        let clock = std::sync::Arc::new(std::sync::Mutex::new(0.0_f64));
+        let for_hint = std::sync::Arc::clone(&clock);
+        shell.set_moment_clock(Some(std::sync::Arc::new(move || {
+            *for_hint
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        })));
+        let mut at = 0.0;
+        let mut tick = |ctx: &egui::Context, shell: &mut Shell, session: &mut Session| {
+            at += 0.1;
+            *clock.lock().unwrap() = at * 1000.0;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, 700.0),
+                )),
+                time: Some(at),
+                ..Default::default()
+            };
+            // As the page draws: as it was while the scene shown is not
+            // there (`WebHost::prepare`), never building it here.
+            let away = !session.scene_ready(shell.scene_quality());
+            let mut output = ctx.run_ui(input, |ui| {
+                if away {
+                    shell.ui_away(ui);
+                } else {
+                    shell.ui(ui, session);
+                }
+            });
+            output.textures_delta.clear();
+        };
+        tick(&ctx, &mut shell, &mut session);
+        shell.state.timeline.motion = true;
+        shell.state.timeline.playing = true;
+        tick(&ctx, &mut shell, &mut session);
+        tick(&ctx, &mut shell, &mut session);
+        let asked = session.motion().expect("a moment asked for");
+        assert!(asked.pending);
+        // Frames go by: the same moment waits, no other is asked for.
+        for _ in 0..10 {
+            tick(&ctx, &mut shell, &mut session);
+            assert_eq!(session.motion().unwrap().t, asked.t);
+        }
+        assert!(answer(&mut session) > 0);
+        let mut moved = false;
+        for _ in 0..5 {
+            tick(&ctx, &mut shell, &mut session);
+            let now = session.motion().unwrap();
+            if now.t != asked.t {
+                moved = true;
+                break;
+            }
+        }
+        assert!(moved, "the player asked for the next moment once it came");
+        // Weighed by the time it waited (1 s and more, not the command's
+        // few microseconds).
+        assert!(shell.player.hint.heavy.last_ms().unwrap_or(0.0) >= 1000.0);
+        // The page's thread made no moment itself.
+        assert_eq!(session.work_here(), start);
+    }
+
     /// While an edit made where the bodies are waits for its answer (the
     /// page's worker), an eye clicked and a click that selects wait too:
     /// neither runs on the state before the edit (which would have the

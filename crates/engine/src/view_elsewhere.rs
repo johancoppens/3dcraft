@@ -92,6 +92,9 @@ pub(crate) struct Remote {
     pub(crate) bake: Option<BakeWanted>,
     /// Facts came since the host last polled ([`Session::poll_motion`]).
     fresh: bool,
+    /// Whether the state below the view has a timeline, for that state:
+    /// asked many times a frame, worked out once per state.
+    timeline_of: Option<(Arc<Document>, bool)>,
 }
 
 /// What the other side said of a view.
@@ -159,7 +162,18 @@ impl OpenDocument {
         if self.history.current().is_assembly() {
             return true;
         }
-        self.motion_t().is_some() && crate::motion::timeline(&self.scrubbed()).is_ok()
+        if self.motion_t().is_none() {
+            return false;
+        }
+        let base = self.scrubbed();
+        if let Some((of, ok)) = &self.remote.timeline_of
+            && Arc::ptr_eq(of, &base)
+        {
+            return *ok;
+        }
+        let ok = crate::motion::timeline(&base).is_ok();
+        self.remote.timeline_of = Some((base, ok));
+        ok
     }
 
     /// The stand-in the view's scenes are kept under, made when the view
@@ -188,6 +202,9 @@ impl OpenDocument {
         // features of the moment (its scenes read against them).
         let mut doc = (*base).clone();
         if let Some((t, _)) = moment {
+            // A timeline that cannot be set leaves the copy as it is: it
+            // is still a state of its own, and the other side says why
+            // the moment cannot be made (`ViewFacts::error`).
             let _ = doc.set_variable(crate::motion::TIMELINE, &crate::motion::literal(t));
         }
         let doc = Arc::new(doc);

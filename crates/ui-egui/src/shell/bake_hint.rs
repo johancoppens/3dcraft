@@ -88,6 +88,12 @@ impl Heavy {
         self.judge();
     }
 
+    /// The cost of the moment weighed last.
+    #[cfg(test)]
+    pub(crate) fn last_ms(&self) -> Option<f64> {
+        self.moments.back().map(|(ms, _)| *ms)
+    }
+
     /// The median cost of the moments weighed, in milliseconds, once
     /// there are enough to judge.
     pub(crate) fn median(&self) -> Option<f64> {

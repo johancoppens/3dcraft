@@ -51,9 +51,11 @@ reference's own solution (below), regenerated with the sweep's cache. Hence:
   settled from the one shown before it, so a state depended on the path and, in the window, on frame timing.
 - **The window and frame timing.** The picture at a `t` does not depend on timing: frame timing only decides which
   values of `t` the player asks for (below); each is the state at its `t`.
-- **On the calling thread.** `view.motion` makes its state in the command, on the calling thread, also in the web
-  build, where the document's own regeneration and checks run elsewhere (`regen_elsewhere.rs`): a moment costs its
-  driven features' regeneration there, synchronously. Playing heavy motions in the web build is phase 2's worker.
+- **On the calling thread.** `view.motion` makes its state in the command, on the calling thread; in the web build
+  (since 2026-11-03) the moment is made in the page's worker instead: the page keeps `t` and a stand-in, the command
+  answers `pending: true` until the worker's facts and scenes came, and the player waits for that before it asks for
+  the next moment ([`engine.md`](engine.md) › *Motion and assemblies in the worker*). A bake asked for there
+  (`motion.bake`) is made by the worker a piece at a time after each moment, followed as a bake in the background is.
 - An edit keeps the motion: the next `shown` sees another base and makes the state again from the edited document
   (a fresh sweep). An edit that takes the timeline away (renamed, given a unit) lets go of the motion.
 
