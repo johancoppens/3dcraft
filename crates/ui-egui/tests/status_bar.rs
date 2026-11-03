@@ -594,3 +594,131 @@ fn a_frame_exact_recording_holds_nothing_from_the_frames_before_it() {
         "the recording's frame says what the frames before it held: {first:?}"
     );
 }
+
+/// The triangles the status bar says in a frame of a frame-exact
+/// recording are those of the picture in that frame. The bar is laid out
+/// before the viewport draws, so it said the numbers of the picture drawn
+/// before: on a curved model the quick first picture's when the sharp
+/// scene arrived in between, a count that depended on when the refinement
+/// came in. On the direct path (the picture drawn in the pass).
+#[test]
+fn a_recorded_frame_says_the_triangles_of_its_own_picture() {
+    let state = craft3d_ui_egui::direct::headless_render_state().unwrap_or_else(|e| {
+        panic!(
+            "the direct path cannot be tested: {e}; {}",
+            craft3d_gpu::ADAPTER_HINT
+        )
+    });
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(&mut session, "feature.sphere", json!({"radius": 10}));
+    session.set_refine_elsewhere(true);
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    shell.attach_gpu(&state).unwrap();
+    assert!(shell.draws_directly());
+    let ctx = egui::Context::default();
+    let step = 1.0 / 60.0;
+    let mut now = 0.0_f64;
+    let frame = |shell: &mut Shell, session: &mut Session, now: &mut f64| {
+        *now += step;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))),
+            time: Some(*now),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| shell.ui(ui, session));
+        output.textures_delta.clear();
+    };
+    let said = |shell: &Shell| -> Option<usize> {
+        let text = shell.status_shown(StatusSlot::Render)?;
+        let (before, _) = text.split_once(" triangles")?;
+        before.rsplit(' ').next()?.parse().ok()
+    };
+    // The quick first picture, drawn and said.
+    for _ in 0..3 {
+        frame(&mut shell, &mut session, &mut now);
+    }
+    let quick = shell.render_stats().expect("a picture was drawn").triangles;
+    assert_eq!(
+        said(&shell),
+        Some(quick),
+        "{:?}",
+        shell.status_shown(StatusSlot::Render)
+    );
+    // The sharp scene arrives, and the recording starts.
+    let job = session
+        .refinement(shell.scene_quality())
+        .expect("a refinement is wanted");
+    let refined = job.run(&std::sync::atomic::AtomicBool::new(false));
+    assert!(session.accept_refined(refined));
+    shell.set_frame_exact(true);
+    frame(&mut shell, &mut session, &mut now);
+    let sharp = shell.render_stats().expect("a picture was drawn").triangles;
+    assert_ne!(
+        quick, sharp,
+        "the quick and the sharp picture differ in triangles"
+    );
+    assert_eq!(
+        said(&shell),
+        Some(sharp),
+        "the frame says the triangles of the picture before it: {:?}",
+        shell.status_shown(StatusSlot::Render)
+    );
+    shell.set_frame_exact(false);
+}
+
+/// A frame-exact recording that ran ahead of the wall clock (its frames
+/// 1/30 s apart, drawn as fast as the window could) leaves nothing held
+/// in the future: once it ends, the status bar follows the window's
+/// frames again at once, not when the wall clock catches up.
+#[test]
+fn after_a_recording_ahead_of_the_clock_the_status_bar_moves_on() {
+    use craft3d_ui_egui::Tokens;
+    let hold = f64::from(Tokens::default().status_hold_seconds);
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(&mut session, "feature.block", json!({"size": [10, 10, 10]}));
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let ctx = egui::Context::default();
+    let frame = |shell: &mut Shell, session: &mut Session, now: f64| {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))),
+            time: Some(now),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| shell.ui(ui, session));
+        output.textures_delta.clear();
+    };
+    let report = |label: &str| CommandReport {
+        label: label.to_string(),
+        ok: true,
+        text: "done".to_string(),
+    };
+    frame(&mut shell, &mut session, 0.0);
+    // Recorded: 300 frames on the recording's clock, 10 s, the last
+    // command said in its last frame.
+    shell.set_frame_exact(true);
+    let mut at = 0.0;
+    for k in 0..300 {
+        at += 1.0 / 30.0;
+        if k == 299 {
+            shell.last_command = Some(report("view.fit"));
+        }
+        frame(&mut shell, &mut session, at);
+    }
+    assert_eq!(shell.status_shown(StatusSlot::Command), Some("view.fit"));
+    shell.set_frame_exact(false);
+    // The window's frames go on at the wall clock, a second in: a new
+    // command is said within the hold.
+    shell.last_command = Some(report("view.motion"));
+    let mut now = 1.0;
+    while now < 1.0 + hold + 0.05 {
+        frame(&mut shell, &mut session, now);
+        now += 1.0 / 60.0;
+    }
+    assert_eq!(
+        shell.status_shown(StatusSlot::Command),
+        Some("view.motion"),
+        "the status bar stood still after the recording"
+    );
+}
