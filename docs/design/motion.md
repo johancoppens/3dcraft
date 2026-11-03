@@ -549,3 +549,7 @@ pieces until the hint goes), and a dismissal per document that outlives an edit.
   (the player's 30 a second; GPU 364, CPU 41 %). Standing still nothing is drawn (CPU 6-9 %). Unbaked, the
   router's moments cost the window 126 ms each (300 ms in the busier run), all of them provisional: offered;
   the axis's 48 ms, all provisional: baked by itself (10 s for 238 configurations).
+- 2026-11-03: the intermittent failure of `a_step_recording_of_a_provisional_moment_records_the_exact_one` was
+  not a provisional moment recorded: both frames showed the exact moment, and one said `refining` in its status
+  bar, a text held from a pass before the recording on the wall clock ([`engine.md`](engine.md) › *A recorded
+  frame that said "refining"*). A frame-exact recording now starts with nothing held in the status bar.

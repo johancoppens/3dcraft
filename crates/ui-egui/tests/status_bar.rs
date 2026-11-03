@@ -527,3 +527,70 @@ fn the_status_bar_never_shows_raw_json() {
         Some("Activated strandbeest-leg")
     );
 }
+
+/// A frame-exact recording's first frame shows what is so at its own
+/// moment, not a text the status bar held from the frames before it,
+/// which ran on the wall clock. The interleaving a Gate run caught
+/// (2026-11-03): the quick first picture shown (the bar says
+/// `refining`), the display scene accepted, and the recording's first
+/// frame less than `Tokens::status_hold_seconds` later. Held, the bar
+/// still said `refining` over the sharp picture, so whether the frame
+/// said it depended on how long the window took to start the recording.
+#[test]
+fn a_frame_exact_recording_holds_nothing_from_the_frames_before_it() {
+    use craft3d_ui_egui::Tokens;
+    let hold = f64::from(Tokens::default().status_hold_seconds);
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(&mut session, "feature.block", json!({"size": [10, 10, 10]}));
+    // The display scene is built elsewhere, as the window builds it: the
+    // quick first picture is shown until it is accepted.
+    session.set_refine_elsewhere(true);
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let ctx = egui::Context::default();
+    let step = 1.0 / 60.0;
+    let mut now = 0.0_f64;
+    let frame = |shell: &mut Shell, session: &mut Session, now: &mut f64| {
+        *now += step;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))),
+            time: Some(*now),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| shell.ui(ui, session));
+        output.textures_delta.clear();
+    };
+    let render = |shell: &Shell| shell.status_shown(StatusSlot::Render).map(str::to_string);
+    let refining =
+        |text: &Option<String>| text.as_deref().is_some_and(|t| t.starts_with("refining"));
+    // The quick first picture, said in the bar.
+    for _ in 0..600 {
+        frame(&mut shell, &mut session, &mut now);
+        if refining(&render(&shell)) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(refining(&render(&shell)), "{:?}", render(&shell));
+    let said_at = now;
+    // The display scene arrives.
+    let quality = shell.scene_quality();
+    let job = session.refinement(quality).expect("a refinement is wanted");
+    let refined = job.run(&std::sync::atomic::AtomicBool::new(false));
+    assert!(session.accept_refined(refined));
+    // Without a recording the bar holds the text a while: calm.
+    frame(&mut shell, &mut session, &mut now);
+    assert!(now - said_at < hold);
+    assert!(refining(&render(&shell)), "{:?}", render(&shell));
+    // A frame-exact recording starts, its first frame well within the
+    // hold: the bar says what is so, the sharp picture.
+    shell.set_frame_exact(true);
+    frame(&mut shell, &mut session, &mut now);
+    assert!(now - said_at < hold);
+    let first = render(&shell);
+    assert!(first.as_deref().is_some_and(|t| !t.is_empty()), "{first:?}");
+    assert!(
+        !refining(&first),
+        "the recording's frame says what the frames before it held: {first:?}"
+    );
+}
