@@ -539,8 +539,17 @@ struct Builder {
     stalled: u32,
 }
 
-/// A view as a job's work asks for it ([`crate::view_elsewhere::view_of`]).
-type View = (Option<(f64, bool)>, Option<(u64, bool)>);
+use crate::view_elsewhere::View;
+
+/// A job of scenes as read: the state, an assembly's sources, the view,
+/// the quality and the scene budget.
+type ReadJob = (
+    Document,
+    Option<Sources>,
+    Option<View>,
+    SceneQuality,
+    Option<usize>,
+);
 
 /// Pieces of a bake in a row without progress after which the bake made
 /// beside the page stops (its budget is full).
@@ -587,7 +596,7 @@ pub fn scene_begin(document: &[u8], work: &str) {
         let Ok(mut builder) = builder.try_borrow_mut() else {
             return;
         };
-        let read = (|| -> Result<(Document, Option<Sources>, Option<View>, SceneQuality, Option<usize>), String> {
+        let read = (|| -> Result<ReadJob, String> {
             let (doc, sources) = crate::view_elsewhere::read_state(document)
                 .map_err(|e| format!("the document cannot be read: {e}"))?;
             let work: Value =

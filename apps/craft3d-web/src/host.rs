@@ -577,7 +577,12 @@ impl WebHost {
         // the deadline now and then (`page.rs`).
         if self.session.regen_elsewhere() {
             self.away = !self.session.scene_ready(quality);
-            if self.session.scene_job(quality).is_none() {
+            // A moment of the motion on its way: the player says it plays
+            // (`Playing`), and the next one is asked for as soon as it
+            // came, so the work never ends while it plays; not said as
+            // work, as the desktop does not for a moment's short job.
+            let moment = self.session.motion().is_some_and(|m| m.pending);
+            if moment || self.session.scene_job(quality).is_none() {
                 self.about = None;
                 self.shell.set_work(None);
                 return false;

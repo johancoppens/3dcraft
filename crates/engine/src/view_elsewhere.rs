@@ -342,9 +342,13 @@ impl ViewJob {
     }
 }
 
+/// A view as a job's work asks for it: the moment (`t` and collisions)
+/// and the bake (frames and collisions).
+pub(crate) type View = (Option<(f64, bool)>, Option<(u64, bool)>);
+
 /// The view a job's work asks for: the moment (`t` read back from its
 /// bits) and the bake. `None` for a job without a view.
-pub(crate) fn view_of(work: &Value) -> Option<(Option<(f64, bool)>, Option<(u64, bool)>)> {
+pub(crate) fn view_of(work: &Value) -> Option<View> {
     let view = work.get("view")?.as_object()?;
     let t = view
         .get("t")
