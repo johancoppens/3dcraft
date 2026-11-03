@@ -58,6 +58,64 @@ fn curves_of(path: &Path, next: &mut u64, out: &mut Vec<SketchCurve>) -> Result<
     Ok(())
 }
 
+/// Per segment of a chain, in the order [`curves_of`] numbers them:
+/// whether it is an arc that meets both its neighbours tangentially (G1),
+/// a fillet. A whole circle is no fillet.
+fn fillets_of(path: &Path, out: &mut Vec<bool>) {
+    let Path::Chain {
+        start, segments, ..
+    } = path
+    else {
+        out.push(false);
+        return;
+    };
+    let unit = |v: [f64; 2]| {
+        let l = v[0].phypot(v[1]);
+        if l > 0.0 {
+            [v[0] / l, v[1] / l]
+        } else {
+            [0.0, 0.0]
+        }
+    };
+    // The tangents (unit, in the loop's direction) at each segment's start
+    // and end; an elliptic arc or a spline is never offset (refused before).
+    let mut ends = Vec::with_capacity(segments.len());
+    let mut at = *start;
+    for segment in segments {
+        let to = segment.end();
+        let tangents = match segment {
+            Segment::Arc { center, ccw, .. } => {
+                let along = |p: [f64; 2]| {
+                    let r = [p[0] - center[0], p[1] - center[1]];
+                    let t = unit([-r[1], r[0]]);
+                    if *ccw { t } else { [-t[0], -t[1]] }
+                };
+                (along(at), along(to), true)
+            }
+            _ => {
+                let t = unit([to[0] - at[0], to[1] - at[1]]);
+                (t, t, false)
+            }
+        };
+        ends.push(tangents);
+        at = to;
+    }
+    let n = ends.len();
+    // Tangent within 1e-9 rad: the joint of a fillet drawn as such.
+    let smooth = |a: [f64; 2], b: [f64; 2]| {
+        (a[0] * b[1] - a[1] * b[0]).abs() <= 1e-9 && a[0] * b[0] + a[1] * b[1] > 0.0
+    };
+    for (i, (first, last, arc)) in ends.iter().enumerate() {
+        let before = ends.get((i + n - 1) % n.max(1)).map(|e| e.1);
+        let after = ends.get((i + 1) % n.max(1)).map(|e| e.0);
+        out.push(
+            *arc && n > 1
+                && before.is_some_and(|b| smooth(b, *first))
+                && after.is_some_and(|a| smooth(*last, a)),
+        );
+    }
+}
+
 /// A loop of the kernel's back as a path.
 fn path_of(lp: &Loop2) -> Result<Path, String> {
     if let [only] = lp.segments.as_slice()
@@ -127,6 +185,10 @@ pub fn kerf(shape: &Shape, k: f64, tolerance: &Tolerance) -> Result<(Shape, Vec<
             labels.push(format!("segment {n} of {whose}"));
         }
     }
+    let mut fillets = Vec::with_capacity(curves.len());
+    for path in std::iter::once(&shape.outline).chain(&shape.holes) {
+        fillets_of(path, &mut fillets);
+    }
     let profiles = detect_profiles(&curves, tolerance)
         .map_err(|e| format!("the outline does not read as one region with holes: {e}"))?;
     match profiles.as_slice() {
@@ -154,9 +216,11 @@ pub fn kerf(shape: &Shape, k: f64, tolerance: &Tolerance) -> Result<(Shape, Vec<
     // does not cut it: a notch or slot narrower than the beam, filled; an
     // inner round of a smaller radius than the kerf.
     // An inner round of a smaller radius than the kerf is the exception:
-    // the beam cannot follow it, as it cannot follow a sharp inner corner,
-    // and both come out rounded at the kerf's radius; it is said, not
-    // refused.
+    // a fillet (an arc tangent to both its neighbours, concave since its
+    // offset vanished) that the beam cannot follow, as it cannot follow a
+    // sharp inner corner; both come out rounded at the kerf's radius, and
+    // it is said, not refused. An arc that meets its neighbours at a
+    // corner (a bite, a relief) would vanish from the part: refused.
     let mut notes = Vec::new();
     for (id, label) in labels.iter().enumerate() {
         let pieces = out
@@ -165,6 +229,7 @@ pub fn kerf(shape: &Shape, k: f64, tolerance: &Tolerance) -> Result<(Shape, Vec<
             .filter(|o| o.source == OffsetSource::Curve(id as u64))
             .count();
         if pieces == 0
+            && fillets.get(id).copied().unwrap_or(false)
             && let Some(r) = curves.get(id).and_then(|c| inner_round(c, k, tolerance))
         {
             notes.push(format!(
@@ -202,9 +267,9 @@ pub fn kerf(shape: &Shape, k: f64, tolerance: &Tolerance) -> Result<(Shape, Vec<
     ))
 }
 
-/// The radius of `curve` when it is an arc the kerf `k` shrinks to
-/// nothing (an inner round of radius at most `k`): such an arc has no
-/// offset, and the path turns about it at radius `k`.
+/// The radius of `curve` when it is an arc of radius at most `k`: with no
+/// offset piece and tangent to both neighbours (`fillets_of`), an inner
+/// round the path turns about at radius `k`.
 fn inner_round(curve: &SketchCurve, k: f64, tolerance: &Tolerance) -> Option<f64> {
     let Curve2::Arc { center, start, .. } = curve.curve else {
         return None;
@@ -215,7 +280,7 @@ fn inner_round(curve: &SketchCurve, k: f64, tolerance: &Tolerance) -> Option<f64
 
 /// Whether the kerf `k` keeps one offset piece of every curve and every
 /// loop.
-fn keeps_all(curves: &[SketchCurve], k: f64, tolerance: &Tolerance) -> bool {
+fn keeps_all(curves: &[SketchCurve], fillets: &[bool], k: f64, tolerance: &Tolerance) -> bool {
     let Ok(profiles) = detect_profiles(curves, tolerance) else {
         return false;
     };
@@ -230,7 +295,10 @@ fn keeps_all(curves: &[SketchCurve], k: f64, tolerance: &Tolerance) -> bool {
                 .iter()
                 .filter(|o| o.source == OffsetSource::Curve(id as u64))
                 .count();
-            pieces == 1 || (pieces == 0 && inner_round(curve, k, tolerance).is_some())
+            pieces == 1
+                || (pieces == 0
+                    && fillets.get(id).copied().unwrap_or(false)
+                    && inner_round(curve, k, tolerance).is_some())
         })
 }
 
@@ -239,8 +307,10 @@ fn keeps_all(curves: &[SketchCurve], k: f64, tolerance: &Tolerance) -> bool {
 fn largest_keeping(shape: &Shape, k: f64, tolerance: &Tolerance, labels: &[String]) -> Option<f64> {
     let mut curves = Vec::new();
     let mut next = 0_u64;
+    let mut fillets = Vec::new();
     for path in std::iter::once(&shape.outline).chain(&shape.holes) {
         curves_of(path, &mut next, &mut curves).ok()?;
+        fillets_of(path, &mut fillets);
     }
     if curves.len() != labels.len() {
         return None;
@@ -248,7 +318,7 @@ fn largest_keeping(shape: &Shape, k: f64, tolerance: &Tolerance, labels: &[Strin
     let (mut lo, mut hi) = (0.0, k);
     for _ in 0..12 {
         let mid = 0.5 * (lo + hi);
-        if keeps_all(&curves, mid, tolerance) {
+        if keeps_all(&curves, &fillets, mid, tolerance) {
             lo = mid;
         } else {
             hi = mid;

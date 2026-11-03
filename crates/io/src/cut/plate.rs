@@ -181,44 +181,135 @@ fn side_fault(
             ));
         }
         Surface::Bezier(_) | Surface::Nurbs(_) => {
-            // A freeform side wall must be a ruled extrusion along the
-            // axis: every point of its edges carried along the axis to
-            // seven levels between the top and the bottom lies on the
-            // surface (within ten tolerances), and the normal there is
-            // square to the axis (within the angular tolerance). A wall
-            // that bulges between its edges fails at the levels inside.
-            let square = tolerance.angular;
-            let on = 10.0 * tolerance.linear;
-            for p in edge_points(body, face) {
-                let level = axis.dot(p);
-                for j in 0..=8 {
-                    let q = p + axis * (lo + (hi - lo) * f64::from(j) / 8.0 - level);
-                    let found = f.surface.project(q).ok().and_then(|(u, v)| {
-                        Some(((f.surface.eval(u, v) - q).length(), f.surface.normal(u, v)?))
-                    });
-                    match found {
-                        Some((d, n)) if d <= on && n.dot(axis).abs() <= square * n.length() => {}
-                        Some((d, _)) if d > on => {
-                            return Some(format!(
-                                "face {what} is a freeform face that is no straight wall: it leaves the line square to the plate through its edge by {d}"
-                            ));
-                        }
-                        Some(_) => {
-                            return Some(format!(
-                                "face {what} is a freeform face not square to the plate"
-                            ));
-                        }
-                        None => {
-                            return Some(format!(
-                                "face {what} is a freeform face whose normal could not be found"
-                            ));
-                        }
-                    }
-                }
+            // Accepted only on a certificate: the control net is an
+            // extrusion along the axis. Otherwise refused; samples only
+            // say how it fails.
+            if !extruded_along(&f.surface, axis, tolerance) {
+                return Some(not_a_wall(
+                    body,
+                    face,
+                    &f.surface,
+                    axis,
+                    (lo, hi),
+                    tolerance,
+                    &what,
+                ));
             }
         }
     }
     None
+}
+
+/// Whether the freeform `surface` lies on the cylinder over a curve along
+/// `axis`: in one parameter direction every row of control points
+/// projects to one point of the plate's plane (within ten tolerances) and
+/// the weights factor (`w_ij = a_i b_j`, within 1e-12). Then every point
+/// of the surface, `Σ N_i N_j w_ij P_ij / Σ N_i N_j w_ij`, projects to the
+/// rational curve of the projected rows with the weights `a_i`, whatever
+/// the other parameter: the wall is square to the plate. A certificate,
+/// not a sample.
+fn extruded_along(surface: &Surface, axis: Vec3, tolerance: &Tolerance) -> bool {
+    let (nu, nv, point): (
+        usize,
+        usize,
+        Box<dyn Fn(usize, usize) -> Option<(Vec3, f64)>>,
+    ) = match surface {
+        Surface::Nurbs(n) => {
+            let (nu, nv) = n.counts();
+            let (ctrl, weights) = (n.control_points(), n.weights());
+            (
+                nu,
+                nv,
+                Box::new(move |i, j| {
+                    let k = i.checked_mul(nv)?.checked_add(j)?;
+                    Some((*ctrl.get(k)?, *weights.get(k)?))
+                }),
+            )
+        }
+        Surface::Bezier(b) => (
+            b.degree_u() + 1,
+            b.degree_v() + 1,
+            Box::new(move |i, j| Some((b.control_point(i, j)?, 1.0))),
+        ),
+        _ => return false,
+    };
+    if nu == 0 || nv == 0 {
+        return false;
+    }
+    let flat = |p: Vec3| p - axis * axis.dot(p);
+    let on = 10.0 * tolerance.linear;
+    let factor = |i: usize, j: usize| -> Option<bool> {
+        let (_, w) = point(i, j)?;
+        let (_, w00) = point(0, 0)?;
+        let (_, wi0) = point(i, 0)?;
+        let (_, w0j) = point(0, j)?;
+        let (x, y) = (w * w00, wi0 * w0j);
+        Some((x - y).abs() <= 1e-12 * x.abs().max(y.abs()))
+    };
+    // Rows along v (i fixed) or along u (j fixed) to one point each.
+    let rows = |along_v: bool| -> bool {
+        let (outer, inner) = if along_v { (nu, nv) } else { (nv, nu) };
+        (0..outer).all(|a| {
+            let at = |b: usize| if along_v { (a, b) } else { (b, a) };
+            let Some((first, _)) = point(at(0).0, at(0).1) else {
+                return false;
+            };
+            (0..inner).all(|b| {
+                let (i, j) = at(b);
+                point(i, j).is_some_and(|(p, _)| (flat(p) - flat(first)).length() <= on)
+                    && factor(i, j) == Some(true)
+            })
+        })
+    };
+    rows(true) || rows(false)
+}
+
+/// Why the freeform `surface` of `face`, whose control net is no
+/// extrusion along `axis`, is no wall square to the plate: where points of
+/// its edges carried along the axis leave it (each measured against the
+/// edge point's own distance from the surface, so an edge held to a
+/// looser tolerance is not counted against it), or where its normal is
+/// not square to the axis; else that it is not proven.
+fn not_a_wall(
+    body: &Body,
+    face: FaceId,
+    surface: &Surface,
+    axis: Vec3,
+    (lo, hi): (f64, f64),
+    tolerance: &Tolerance,
+    what: &str,
+) -> String {
+    let on = 10.0 * tolerance.linear;
+    let distance = |q: Vec3| {
+        surface
+            .project(q)
+            .ok()
+            .map(|(u, v)| ((surface.eval(u, v) - q).length(), surface.normal(u, v)))
+    };
+    for p in edge_points(body, face) {
+        let Some((own, _)) = distance(p) else {
+            continue;
+        };
+        let level = axis.dot(p);
+        for j in 0..=8 {
+            let q = p + axis * (lo + (hi - lo) * f64::from(j) / 8.0 - level);
+            match distance(q) {
+                Some((d, _)) if d - own > on => {
+                    return format!(
+                        "face {what} is a freeform face that is no straight wall: it leaves the line square to the plate through its edge by {}",
+                        d - own
+                    );
+                }
+                Some((_, Some(n))) if n.dot(axis).abs() > tolerance.angular * n.length() => {
+                    return format!("face {what} is a freeform face not square to the plate");
+                }
+                _ => {}
+            }
+        }
+    }
+    format!(
+        "face {what} is a freeform face not proven square to the plate: its control net is no extrusion along the plate's normal"
+    )
 }
 
 /// Why face `face` has a corner between the plate's top at `hi` and its

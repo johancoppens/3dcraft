@@ -159,9 +159,13 @@ fn furthest(spline: &Spline, axis: usize, sign: f64) -> f64 {
     let upper = |c: &[[f64; 3]]| c.iter().map(value).fold(f64::NEG_INFINITY, f64::max);
     let mut splits = 0;
     let mut left_over = f64::NEG_INFINITY;
+    let mut pruned = false;
     while let Some(c) = stack.pop() {
         let top = upper(&c);
         if top.partial_cmp(&(best + eps)) != Some(std::cmp::Ordering::Greater) {
+            // Within eps of the best point found, not above it: the bound
+            // returned has to cover it.
+            pruned |= top > best;
             continue;
         }
         if splits >= MAX_SPLITS {
@@ -198,7 +202,8 @@ fn furthest(spline: &Spline, axis: usize, sign: f64) -> f64 {
         stack.push(left);
         stack.push(right);
     }
-    best.max(left_over)
+    let bound = if pruned { best + eps } else { best };
+    bound.max(left_over)
 }
 
 /// The convex hull of `points` (Andrew's monotone chain), counter-clockwise.

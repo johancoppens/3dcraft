@@ -508,3 +508,38 @@ fn an_inner_round_smaller_than_the_kerf_comes_out_at_the_kerf() {
     // A kerf of 0.5 follows the round.
     assert!(kerf(&s, 0.5, &tolerance(1.0)).unwrap().1.is_empty());
 }
+
+#[test]
+fn a_bite_smaller_than_the_kerf_is_refused_not_rounded() {
+    // A bend relief: a half circle of radius 0.5 bitten straight into the
+    // top edge of a 100 × 50 plate. A kerf of 0.8 would join the lines'
+    // offsets across it, and the bite would vanish from the part.
+    let bitten = Path::Chain {
+        start: [0.0, 0.0],
+        segments: vec![
+            Segment::Line { to: [100.0, 0.0] },
+            Segment::Line { to: [100.0, 50.0] },
+            Segment::Line { to: [50.5, 50.0] },
+            Segment::Arc {
+                to: [49.5, 50.0],
+                center: [50.0, 50.0],
+                radius: 0.5,
+                ccw: false,
+            },
+            Segment::Line { to: [0.0, 50.0] },
+            Segment::Line { to: [0.0, 0.0] },
+        ],
+        closed: true,
+    };
+    let s = Shape::from_loops(vec![bitten], Vec::new()).unwrap();
+    let e = kerf(&s, 0.8, &tolerance(1.0)).unwrap_err();
+    assert!(
+        e.contains("segment 3 of the outline") && e.contains("largest"),
+        "{e}"
+    );
+    let largest: f64 = e.rsplit(' ').next().unwrap().parse().unwrap();
+    assert!(largest > 0.0 && largest <= 0.5, "{e}");
+    // A kerf below it follows the bite.
+    let (_, notes) = kerf(&s, 0.4, &tolerance(1.0)).unwrap();
+    assert!(notes.is_empty(), "{notes:?}");
+}
