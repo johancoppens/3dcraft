@@ -409,6 +409,16 @@ pub struct RenderStats {
     pub msaa: u32,
 }
 
+/// What the status bar says of a picture, its time left out: the
+/// renderer, the size and the triangles.
+type RenderKey = (Backend, u32, u32, usize);
+
+impl RenderStats {
+    fn key(&self) -> RenderKey {
+        (self.renderer, self.width, self.height, self.triangles)
+    }
+}
+
 /// F pressed without Ctrl, Alt, Shift or Cmd, by the key's own event:
 /// Ctrl+F and the like are other shortcuts, not Fit.
 fn plain_f(input: &egui::InputState) -> bool {
@@ -671,6 +681,11 @@ pub struct Shell {
     /// measured on the wall clock is drawn (a picture's milliseconds in
     /// the status bar), so the same requests give the same window.
     frame_exact: bool,
+    /// The renderer's numbers the status bar was laid out with in this
+    /// pass ([`RenderKey`]): in a frame-exact recording the pass is laid
+    /// out again when the viewport drew a picture with other numbers.
+    /// `None` while the bar was not laid out in this pass.
+    status_render: Option<Option<RenderKey>>,
     /// A picture of the window is being taken (`ui.screenshot`): like a
     /// frame-exact recording, it shows the exact moment of a motion at
     /// full quality ([`Self::exact_pictures`]).
@@ -1288,6 +1303,7 @@ impl Shell {
             state: UiState::default(),
             side: sidepanel::SideMemory::default(),
             frame_exact: false,
+            status_render: None,
             capturing: false,
             recording: false,
             light_while_moving: false,
@@ -1556,10 +1572,13 @@ impl Shell {
     /// indicator's wait, the widths kept for texts of one shape): those
     /// frames ran on the wall clock, so what is held would depend on how
     /// long ago they were. The recording's first frame shows what is so
-    /// at its own moment, and later frames hold on the recording's clock
+    /// at its own moment, and later frames hold on the recording's clock.
+    /// As one ends, likewise: a recording that ran ahead of the wall
+    /// clock left its holds in the future of the window's frames, and the
+    /// bar would stand still until the wall clock caught up
     /// (docs/design/engine.md › *A recorded frame that said "refining"*).
     pub fn set_frame_exact(&mut self, exact: bool) {
-        if exact && !self.frame_exact {
+        if exact != self.frame_exact {
             self.calm.start_afresh();
         }
         self.frame_exact = exact;
@@ -2635,6 +2654,7 @@ impl Shell {
         }
         self.fonts.update(ui);
         self.player_shown_last = std::mem::take(&mut self.player_shown);
+        self.status_render = None;
         self.player_hits.clear();
         // A finger was seen: touch sizes from now on, at any width.
         if ui.input(egui::InputState::any_touches) {
@@ -2774,6 +2794,18 @@ impl Shell {
             self.tree_panel = None;
         }
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui, scene.as_ref()));
+        // The status bar is laid out before the viewport draws: its
+        // renderer's numbers are of the picture drawn before. In a
+        // frame-exact recording the frame says those of its own picture
+        // (the quick first picture and the sharp one differ in their
+        // triangles): the pass is laid out again with them.
+        if self.frame_exact
+            && let Some(said) = self.status_render
+            && self.stats.as_ref().map(RenderStats::key) != said
+        {
+            ui.ctx()
+                .request_discard("the status bar says the numbers of this frame's picture");
+        }
         // The side panel's split, over the viewport's edge: interacted
         // after it, so a drag there resizes the panel and does not orbit.
         if let Some(panel) = self.tree_panel.filter(|_| !self.narrow) {
@@ -3220,6 +3252,7 @@ impl Shell {
                 ..StatusItem::elided(StatusSlot::Work, text, color(tokens.chrome_text))
             });
         }
+        self.status_render = Some(self.stats.as_ref().map(RenderStats::key));
         if let Some(stats) = self.stats {
             // How long the picture took is the wall clock's: not drawn
             // while a frame-exact recording keeps the clock.
@@ -3247,7 +3280,9 @@ impl Shell {
                     stats.triangles
                 )
             };
-            let (text, wait) = self.calm.render.frame(now, &text, false, every);
+            // In a frame-exact recording they are of the frame's own
+            // picture, never held from another one.
+            let (text, wait) = self.calm.render.frame(now, &text, self.frame_exact, every);
             let text = text.to_string();
             soon(wait);
             let width = self.calm.render_width.width(&text, measure(&text).ceil());
