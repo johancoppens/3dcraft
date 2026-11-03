@@ -720,3 +720,49 @@ fn material_on_a_sharp_walls_inner_skin_is_refused_by_one_proof() {
         assert!(why.contains("not proven clear"), "89.9999 at {k}: {why}");
     }
 }
+
+/// Proven against the whole of a sharp wall's inner skin, not only away
+/// from its edges (re-review of bae58281): a rounded wall (R = 2) on the
+/// bottom edge leaning in by just enough that its flat's end reaches two
+/// tolerances past the plane of a sharp square wall's inner skin on the
+/// right edge, near that wall's start, is refused (bae58281 built it,
+/// the band along the skin's edge left out); square, the neighbour meets
+/// the skin only along the corner below the axis and is built. A formed
+/// louvre's hood near a sharp wall is bounded by its footprint's box and
+/// refused where the box reaches the wall's inner skin, built a little
+/// further off.
+#[test]
+fn a_hair_past_a_sharp_walls_inner_skin_and_a_hood_beside_it() {
+    use craft3d_kernel::sheetmetal::formed::{FormedSpec, HoodEnds, place};
+    for k in SCALES {
+        let tol = tolerance(k);
+        let (t, r, l) = (1.0 * k, 2.0 * k, 20.0 * k);
+        let e = 2.0 * tol.linear;
+        let hypot = r.phypot(l);
+        let delta = r.patan2(l) + (e / hypot).pasin();
+        let sharp = flange(On::Base(2), 30.0 * k, FRAC_PI_2, Direction::Up, 0.0, 0.4);
+        let leaning = flange(On::Base(1), l, FRAC_PI_2 + delta, Direction::Up, r, 0.4);
+        let s = spec(base(40.0, 30.0, k), t, vec![leaning, sharp.clone()], None);
+        let (_, why) = refused(&s, &tol);
+        assert!(
+            why.contains("not proven clear"),
+            "a hair past at {k}: {why}"
+        );
+
+        let wall = flange(On::Base(1), 20.0 * k, FRAC_PI_2, Direction::Up, 0.0, 0.4);
+        let part = build(&spec(base(40.0, 30.0, k), t, vec![wall], None), &tol).unwrap();
+        let hood = |y: f64| FormedSpec {
+            lance: [[30.0 * k, y * k], [10.0 * k, y * k]],
+            width: 3.0 * k,
+            height: 1.5 * k,
+            ends: HoodEnds::Closed,
+            up: true,
+        };
+        assert!(place(&part, &[hood(5.0)], &tol).is_ok());
+        let why = place(&part, &[hood(4.0)], &tol).unwrap_err().to_string();
+        assert!(
+            why.contains("formed louvre 0's hood"),
+            "a hood at {k}: {why}"
+        );
+    }
+}

@@ -16,7 +16,7 @@
 )]
 
 use craft3d_kernel::profile::{Curve2, Profile, SketchCurve, detect_profiles};
-use craft3d_kernel::sheetmetal::{Closing, Direction, JogSpec, Spec, build};
+use craft3d_kernel::sheetmetal::{Closing, Direction, JogSpec, Spec, build, web_length};
 use craft3d_math::{Frame, Portable, Tolerance};
 use craft3d_topo::{check, mass_properties};
 use std::f64::consts::PI;
@@ -101,8 +101,19 @@ fn a_hole_of_arcs_of_one_circle_keeps_its_volume() {
                 let part = build(&spec(holed, k, jog), &tol).unwrap();
                 let defects = check(&part.solid.body, &tol);
                 assert!(defects.is_empty(), "{defects:?}");
-                let plain = build(&spec(plate(k, Vec::new()), k, jog), &tol).unwrap();
-                let v = mass_properties(&plain.solid.body).unwrap().volume - PI * 25.0 * k * k * k;
+                // The plate in closed form: 100 × 40 × T, jogged the near
+                // side, the web and the far side plus the two bends'
+                // ring sectors `α 40 T (R + T/2)` (R = T = 1).
+                let alpha = PI / 3.0;
+                let plain = if jog {
+                    let w = web_length(8.0, alpha, 1.0, 1.0).unwrap();
+                    40.0 * (100.0 + w) + 2.0 * alpha * 40.0 * 1.5
+                } else {
+                    4000.0
+                } * k
+                    * k
+                    * k;
+                let v = plain - PI * 25.0 * k * k * k;
                 let got = mass_properties(&part.solid.body).unwrap().volume;
                 assert!(
                     (got - v).abs() <= 1e-9 * v,

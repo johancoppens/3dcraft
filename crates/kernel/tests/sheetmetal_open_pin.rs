@@ -291,16 +291,33 @@ fn open_parts_are_built_bit_for_bit_as_before_closed_corners() {
     assert_eq!(PINS.len(), parts().len());
 }
 
-/// The pinned box-none and z by their closed forms (R = 1, T = 1, K = 0.4,
+/// Every pinned part by its closed form (R = 1, T = 1, K = 0.4,
 /// flanges 10 up): the slabs and per bend the quarter ring `θ w T (R + T/2)`
 /// (sheetmetal.md › *Volume*), less the hole.
 #[test]
 fn the_pinned_parts_have_their_closed_form_volumes() {
+    use std::f64::consts::PI;
     let quarter = |w: f64| FRAC_PI_2 * w * 1.5;
+    // A box 60 × 40 with a hole of radius 3, four flanges 10 high, each
+    // edge short of its corners by the relief's size s, a notch of area
+    // `notch` cut at each corner.
+    let tray = |s: f64, notch: f64| {
+        let edges = 200.0 - 8.0 * s;
+        60.0 * 40.0 - PI * 9.0 - 4.0 * notch + edges * 10.0 + quarter(edges)
+    };
     for (name, part) in parts() {
         let want = match name.as_str() {
-            "box-none" => 60.0 * 40.0 - std::f64::consts::PI * 9.0 + 200.0 * 10.0 + quarter(200.0),
+            "box-none" => tray(0.0, 0.0),
+            "box-rect" => tray(3.0, 9.0),
+            "box-round" => tray(3.0, PI * 9.0 / 4.0),
+            "box-tear" => tray(3.0, 9.0 + 0.75 * PI * 9.0),
             "z" => 40.0 * 30.0 + 2.0 * 40.0 * 10.0 + 2.0 * quarter(40.0),
+            // Two flanges on edges of 60 and 40 meeting at one corner with
+            // a round relief of 3, a vent of radius 2 in the first's flat.
+            "cutout" => {
+                60.0 * 40.0 - PI * 9.0 / 4.0 + (57.0 + 37.0) * 10.0 - PI * 4.0
+                    + quarter(57.0 + 37.0)
+            }
             _ => continue,
         };
         let got = mass_properties(&part.solid.body).unwrap().volume;

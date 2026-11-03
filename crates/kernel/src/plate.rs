@@ -1392,11 +1392,10 @@ fn build(
                 }
             }
             let mut starts: Vec<Vec3> = Vec::new();
+            let mut at_rim_surfaces: Vec<&Surface> = Vec::new();
             for edge in &at_rims {
-                if let Some((rim, _)) = rims.get(edge)
-                    && !smooth
-                {
-                    surfaces.push(rim);
+                if let Some((rim, _)) = rims.get(edge) {
+                    at_rim_surfaces.push(rim);
                 }
                 let (Some(t), Some(e)) = (traced.get(edge), body.edge(*edge)) else {
                     continue;
@@ -1411,6 +1410,14 @@ fn build(
                 if e.end == *vertex {
                     starts.push(row.eval(t.own.1));
                 }
+            }
+            // The rows decide the corner only where they agree on it (each
+            // within the share of the tolerance of its rim's true line, so
+            // within twice that of each other): a local proof; otherwise
+            // it is solved against the rims as at any other corner.
+            let agree = matches!(starts.as_slice(), [a, b] if a.distance(*b) <= 2.0 * SHARE * tol);
+            if !(smooth && agree) {
+                surfaces.extend(at_rim_surfaces);
             }
             let start = if starts.is_empty() {
                 let f = around

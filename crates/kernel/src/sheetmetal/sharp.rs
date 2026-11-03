@@ -196,17 +196,21 @@ pub(super) fn refused(
     Ok(())
 }
 
-/// A piece of the folded part: a flat (by its index) or a bend (by its
-/// index), and its material's range of a linear function.
+/// A piece of the folded part: a flat or a bend (by its index), or a box
+/// in a flat's axes that holds a formed louvre's hood (added by booleans
+/// after the part is built, so no flat or bend of it).
 #[derive(Clone, Copy)]
-enum Piece {
+pub(super) enum Piece {
     Flat(usize),
     Bend(usize),
+    /// The louvre's place, its flat, the box's `[x0, y0, x1, y1]` in the
+    /// pattern and its `z` range in the flat's axes.
+    Hood(usize, usize, [f64; 4], (f64, f64)),
 }
 
 impl Piece {
     /// The least and the most of `f` over the piece's material (lower and
-    /// upper bounds: `flat_least`, `bend_least`).
+    /// upper bounds: `flat_least`, `bend_least`, a box's corners).
     fn range(
         self,
         flats: &[Flat],
@@ -230,14 +234,40 @@ impl Piece {
                     -super::bend_least(x, &tr, |q| -f(q))?,
                 ))
             }
+            Piece::Hood(_, flat, [x0, y0, x1, y1], (z0, z1)) => {
+                let tr = flats.get(flat)?.transform;
+                let mut out = (f64::INFINITY, f64::NEG_INFINITY);
+                for x in [x0, x1] {
+                    for y in [y0, y1] {
+                        for z in [z0, z1] {
+                            let v = f(tr.point(Vec3::new(x, y, z)));
+                            out = (out.0.min(v), out.1.max(v));
+                        }
+                    }
+                }
+                (out.0.is_finite() && out.1.is_finite()).then_some(out)
+            }
         }
     }
 
-    fn named(self) -> String {
+    /// The piece in the words the part's errors use (`flanges` the
+    /// flanges' count: the bends past it are jogs', two each, and their
+    /// flats a web and a far side).
+    fn named(self, flanges: usize) -> String {
+        let jog = |k: usize| ((k - flanges) / 2, (k - flanges) % 2);
         match self {
             Piece::Flat(0) => "the base".to_string(),
-            Piece::Flat(f) => format!("flange {}'s flat", f - 1),
-            Piece::Bend(b) => format!("flange {b}'s bend"),
+            Piece::Flat(f) if f - 1 < flanges => format!("flange {}'s flat", f - 1),
+            Piece::Flat(f) => match jog(f - 1) {
+                (g, 0) => format!("jog {g}'s web"),
+                (g, _) => format!("jog {g}'s far side"),
+            },
+            Piece::Bend(b) if b < flanges => format!("flange {b}'s bend"),
+            Piece::Bend(b) => match jog(b) {
+                (g, 0) => format!("jog {g}'s first bend"),
+                (g, _) => format!("jog {g}'s second bend"),
+            },
+            Piece::Hood(g, ..) => format!("formed louvre {g}'s hood"),
         }
     }
 }
@@ -256,8 +286,9 @@ struct Skin {
 
 impl Skin {
     /// Whether the piece is proven more than `tol` from the skin's
-    /// rectangle: wholly past one of its six bounding planes by `tol`
-    /// (a separating axis; failing that, not proven).
+    /// rectangle taken `inset` in from its edges: wholly past one of its
+    /// six bounding planes by `tol` (a separating axis; failing that, not
+    /// proven).
     fn apart(
         &self,
         piece: Piece,
@@ -265,9 +296,17 @@ impl Skin {
         bends: &[Bend],
         t: f64,
         tol: f64,
+        inset: f64,
     ) -> Option<bool> {
         let o = self.o;
-        for (axis, (lo, hi)) in [(self.n, (0.0, 0.0)), (self.e1, self.u), (self.e2, self.v)] {
+        let (u, v) = (
+            (self.u.0 + inset, self.u.1 - inset),
+            (self.v.0 + inset, self.v.1 - inset),
+        );
+        if u.0 > u.1 || v.0 > v.1 {
+            return Some(true);
+        }
+        for (axis, (lo, hi)) in [(self.n, (0.0, 0.0)), (self.e1, u), (self.e2, v)] {
             let (a, b) = piece.range(flats, bends, t, |q| axis.dot(q - o))?;
             if b < lo - tol || a > hi + tol {
                 return Some(true);
@@ -287,13 +326,22 @@ impl Skin {
 /// its flat's outline along and across the axis, a superset of the face)
 /// must be proven more than the tolerance from every piece on the other
 /// side (all but the child's subtree, the parent and the bend), and the
-/// parent's inner skin from every piece of the child's side. Both
-/// rectangles are taken [`SLIVER_TOLERANCES`] tolerances in from their
-/// edges: what is joined to a skin along its edge (the bend itself, a
-/// neighbour meeting at the axis's end, a flange on the flat's edge)
-/// touches it only there, and two sharp walls meeting there are refused by
-/// their own rule. A piece not proven apart refuses the part, naming both.
-pub(super) fn clear(flats: &[Flat], bends: &[Bend], t: f64, tol: f64) -> Result<(), KernelError> {
+/// parent's inner skin from every piece of the child's side but the child
+/// flat. Proven against the whole rectangle; a piece proven apart only
+/// from the rectangle taken [`SLIVER_TOLERANCES`] tolerances in from its
+/// edges (it reaches the skin only along an edge) is accepted only when it
+/// is joined there: a bend of the same parent with an end on this bend's
+/// tangent line's end (the neighbour at a corner, which meets the skin
+/// along the corner's line below the axis). Anything else not proven
+/// apart refuses the part, naming both.
+pub(super) fn clear(
+    flats: &[Flat],
+    bends: &[Bend],
+    flanges: usize,
+    hoods: &[Piece],
+    t: f64,
+    tol: f64,
+) -> Result<(), KernelError> {
     let m = SLIVER_TOLERANCES * tol;
     for (i, b) in bends.iter().enumerate() {
         if !b.sharp() {
@@ -339,8 +387,8 @@ pub(super) fn clear(flats: &[Flat], bends: &[Bend], t: f64, tol: f64) -> Result<
                 n: tr.vector(Vec3::Z) * sign,
                 e1: tr.vector(lift(along)),
                 e2: tr.vector(lift(across)),
-                u: (u.0 + m, u.1 - m),
-                v: (v.0.max(0.0) + m, v.1 - m),
+                u,
+                v: (v.0.max(0.0), v.1),
             })
         };
         let lost = || refuse(Some(i), "a sharp bend's flats are missing");
@@ -348,12 +396,25 @@ pub(super) fn clear(flats: &[Flat], bends: &[Bend], t: f64, tol: f64) -> Result<
         let child = skin_of(b.child, far, d, b.across).ok_or_else(lost)?;
         let parent =
             skin_of(b.parent, b.start, d, [-b.across[0], -b.across[1]]).ok_or_else(lost)?;
-        let pieces = (0..flats.len())
-            .map(Piece::Flat)
-            .chain((0..bends.len()).map(Piece::Bend));
+        let joined_here = |j: usize| {
+            bends.get(j).is_some_and(|x| {
+                x.parent == b.parent
+                    && [x.start, x.end]
+                        .iter()
+                        .any(|p| [b.start, b.end].iter().any(|q| distance(*p, *q) <= tol))
+            })
+        };
+        let pieces: Vec<Piece> = if hoods.is_empty() {
+            (0..flats.len())
+                .map(Piece::Flat)
+                .chain((0..bends.len()).map(Piece::Bend))
+                .collect()
+        } else {
+            hoods.to_vec()
+        };
         for piece in pieces {
             let ours = match piece {
-                Piece::Flat(f) => side.contains(&f),
+                Piece::Flat(f) | Piece::Hood(_, f, ..) => side.contains(&f),
                 Piece::Bend(j) => carried.contains(&j),
             };
             // The parent and the child meet the other's skin only along
@@ -362,6 +423,7 @@ pub(super) fn clear(flats: &[Flat], bends: &[Bend], t: f64, tol: f64) -> Result<
             let skip = match piece {
                 Piece::Flat(f) => f == b.parent || f == b.child,
                 Piece::Bend(j) => j == i,
+                Piece::Hood(..) => false,
             };
             if skip {
                 continue;
@@ -371,22 +433,69 @@ pub(super) fn clear(flats: &[Flat], bends: &[Bend], t: f64, tol: f64) -> Result<
             } else {
                 (&child, "its inner skin")
             };
-            if skin.u.0 > skin.u.1 || skin.v.0 > skin.v.1 {
-                continue;
-            }
-            let apart = skin.apart(piece, flats, bends, t, tol).ok_or_else(lost)?;
-            if !apart {
-                return Err(refuse(
-                    Some(i),
-                    format!(
-                        "its bend is sharp (inner radius 0), and {} is not proven clear of {whose} (the plane through its tangent line, where a radius would keep material away): touching it, or within the tolerance, which one solid cannot hold; give the bend a radius, or move what comes near it",
-                        piece.named()
-                    ),
-                ));
+            let whole = skin
+                .apart(piece, flats, bends, t, tol, 0.0)
+                .ok_or_else(lost)?;
+            let along_edge = || -> Result<bool, KernelError> {
+                let joined = !ours && matches!(piece, Piece::Bend(j) if joined_here(j));
+                Ok(joined
+                    && skin
+                        .apart(piece, flats, bends, t, tol, m)
+                        .ok_or_else(lost)?)
+            };
+            if !whole && !along_edge()? {
+                let named = piece.named(flanges);
+                let reason = format!(
+                    "flange {i}'s bend is sharp (inner radius 0), and {named} is not proven clear of {whose} (the plane through that bend's tangent line, where a radius would keep material away): touching it, or within the tolerance, which one solid cannot hold; give the bend a radius, or move what comes near it"
+                );
+                return Err(match piece {
+                    Piece::Hood(g, ..) => refuse(Some(g), reason),
+                    _ => refuse(Some(i), reason),
+                });
             }
         }
     }
     Ok(())
+}
+
+/// [`clear`] for the hoods of formed louvres, each bounded by the box of
+/// its footprint grown by the thickness, from its flat's skin to `h + T`
+/// beyond it (the hood's skins lie within: the section rises to `h`, its
+/// other skin `T` further along its normal).
+pub(super) fn clear_hoods(
+    part: &super::Part,
+    formed: &[super::formed::Formed],
+    tol: f64,
+) -> Result<(), KernelError> {
+    if !part.bends.iter().any(Bend::sharp) {
+        return Ok(());
+    }
+    let t = part.thickness;
+    let mut hoods = Vec::with_capacity(formed.len());
+    for (g, f) in formed.iter().enumerate() {
+        let (mut x, mut y) = (
+            (f64::INFINITY, f64::NEG_INFINITY),
+            (f64::INFINITY, f64::NEG_INFINITY),
+        );
+        for seg in &f.footprint.outer.segments {
+            let (a, c) = super::reach_along(seg, [0.0, 0.0], [1.0, 0.0]);
+            x = (x.0.min(a), x.1.max(c));
+            let (a, c) = super::reach_along(seg, [0.0, 0.0], [0.0, 1.0]);
+            y = (y.0.min(a), y.1.max(c));
+        }
+        let h = f.spec.height;
+        let z = if f.spec.up { (0.0, h + t) } else { (-h, t) };
+        hoods.push(Piece::Hood(
+            g,
+            f.flat,
+            [x.0 - t, y.0 - t, x.1 + t, y.1 + t],
+            z,
+        ));
+    }
+    if hoods.is_empty() {
+        return Ok(());
+    }
+    clear(&part.flats, &part.bends, part.flanges, &hoods, t, tol)
 }
 
 /// A face joined to the plates at a sharp bend.

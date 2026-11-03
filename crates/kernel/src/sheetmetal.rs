@@ -1463,7 +1463,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         .collect();
     let solid = if bends.iter().any(Bend::sharp) {
         sharp::refused(&bends, &corners, &cuts, tol)?;
-        sharp::clear(&flats, &bends, t, tol)?;
+        sharp::clear(&flats, &bends, nf, &[], t, tol)?;
         sharp::plate(
             &sheet,
             &sheet_faces,
