@@ -1048,6 +1048,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         nf,
         thickness: t,
         tolerance,
+        cuts: Vec::new(),
     };
     jogs.apply(
         &mut flats,
@@ -1406,6 +1407,10 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
             ),
         ));
     }
+    let jog_cuts: Vec<Cut> = std::mem::take(&mut jogs.cuts)
+        .into_iter()
+        .map(|(_, _, cut)| cut)
+        .collect();
     // A flat a jog cuts is no longer its rectangle: a closed corner of its
     // flange (which runs the rectangle on) is not built.
     for c in &corners {
@@ -1448,7 +1453,10 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
     }
     bend_reliefs_fit(&flats, &bends, &bend_ends, tolerance)?;
     let done: Vec<bool> = placed.iter().map(Option::is_some).collect();
-    let across = place_cutouts(&mut flats, &spec.cutouts, &done, tolerance)?;
+    let mut across = place_cutouts(&mut flats, &spec.cutouts, &done, tolerance)?;
+    // The holes jogs' lines cross, after the cut-outs (so theirs keep
+    // their numbers).
+    across.extend(jog_cuts);
     pattern_clear(&flats, &bends, &[], &corners, tolerance)?;
     let cuts = place_cuts(&flats, &bends, &across, tolerance)?;
     let (sheet, sheet_faces, ends, edge_keys) =
@@ -1578,6 +1586,9 @@ struct Jogs<'a> {
     nf: usize,
     thickness: f64,
     tolerance: &'a Tolerance,
+    /// The holes jogs' lines cross, as cuts across their bends: the jog,
+    /// its near side's and far side's flats, the cut.
+    cuts: Vec<(usize, [usize; 2], Cut)>,
 }
 
 impl Jogs<'_> {
@@ -1640,9 +1651,20 @@ impl Jogs<'_> {
                     flange_number(self.marks, first).ok_or_else(unmarked)?,
                     flange_number(self.marks, first + 1).ok_or_else(unmarked)?,
                 ];
+                // A hole across an earlier jog's line is a cut laid out in
+                // the pattern as the flats lie now: a jog that cuts one of
+                // its flats again would move a piece of it from under it.
+                if let Some((h, _, _)) = self.cuts.iter().find(|(_, f, _)| f.contains(&q)) {
+                    return Err(refuse(
+                        Some(first),
+                        format!(
+                            "jog {g}: it crosses a flat that a hole across jog {h}'s line lies in; a jog across a flat a hole across another jog's line lies in is not built (owed): move the hole or one of the lines"
+                        ),
+                    ));
+                }
                 let flat = flats.get(q).ok_or_else(unmarked)?;
                 let lift = lifts.get(q).copied().ok_or_else(unmarked)?;
-                let made = jog::split(
+                let mut made = jog::split(
                     g,
                     jog,
                     q,
@@ -1660,6 +1682,9 @@ impl Jogs<'_> {
                         format!("jog {g}: a slot of the part is missing"),
                     )
                 };
+                for cut in std::mem::take(&mut made.across) {
+                    self.cuts.push((g, [q, first + 2], cut));
+                }
                 *flats.get_mut(q).ok_or_else(lost)? = made.near;
                 *flats.get_mut(first + 1).ok_or_else(lost)? = made.web;
                 *flats.get_mut(first + 2).ok_or_else(lost)? = made.far;

@@ -66,6 +66,9 @@ pub(super) struct Made {
     pub chord: usize,
     pub web_lift: P2,
     pub far_lift: P2,
+    /// The holes the line crosses, each as the cut across the jog's bends
+    /// it makes in the flat pattern ([`hole_across`]).
+    pub across: Vec<super::Cut>,
 }
 
 /// The web's flat length `w` for a step `h` at angle `α` with inner
@@ -509,17 +512,24 @@ pub(super) fn split(
     let mut near_hole_ids = Vec::new();
     let mut far_holes = Vec::new();
     let mut far_hole_ids = Vec::new();
-    for (h, hole) in flat.holes.iter().enumerate() {
+    let mut across = Vec::new();
+    'holes: for (h, hole) in flat.holes.iter().enumerate() {
         let mut sides = Vec::new();
         for s in hole {
             // The least and the most of σ over the curve (exact for lines,
             // arcs and circles, by the control points for a spline).
             let lo_hi = super::reach_along(s, a, u);
             if lo_hi.0 <= tol && lo_hi.1 >= -tol {
-                return Err(no(format!(
-                    "jog {g}: its line crosses or comes within the tolerance of hole {h} of the flat it lies across (curve {}); a hole across a jog's line is not built (owed): move the hole or the line",
-                    s.source
-                )));
+                // Across the line: a cut across the jog's bends.
+                let segments = hole_across(g, h, hole, a, d, u, shift, tol).map_err(no)?;
+                across.push(super::Cut {
+                    segments,
+                    named: format!(
+                        "hole {h} of the flat jog {g} crosses ({})",
+                        super::curves_named(&hole.iter().map(|s| s.source).collect::<Vec<_>>())
+                    ),
+                });
+                continue 'holes;
             }
             sides.push(lo_hi.0 > 0.0);
         }
@@ -600,5 +610,143 @@ pub(super) fn split(
         chord,
         web_lift: add(lift, scale(u, allowance)),
         far_lift: add(lift, shift),
+        across,
     })
+}
+
+/// A hole of the flat that the jog's line `o + s d` crosses, as the loop
+/// it cuts in the flat pattern (docs/design/sheetmetal.md › *Jogs across a
+/// flat*): its pieces on the near side where they are, those on the far
+/// side carried by `shift` with the far side, joined where the hole
+/// crosses the line by lines along `û` across the two strips and the web,
+/// as the outline's edges are joined by the strips' ends. Refused: a hole
+/// crossed other than twice, a corner of it within the tolerance of the
+/// line, a curve that touches it, a spline near it, and pieces shorter
+/// than [`SLIVER_TOLERANCES`] tolerances.
+#[allow(clippy::too_many_arguments)]
+fn hole_across(
+    g: usize,
+    h: usize,
+    hole: &[Segment],
+    o: P2,
+    d: P2,
+    u: P2,
+    shift: P2,
+    tol: f64,
+) -> Result<Vec<Segment>, String> {
+    let sigma = |p: P2| dot(sub(p, o), u);
+    let mut pieces: Vec<(Segment, bool)> = Vec::new();
+    let mut count = 0usize;
+    for s in hole {
+        let points = match &s.shape {
+            &Shape::Circle { center, radius } => {
+                // A whole circle: its two crossings in the order the loop
+                // runs from its start, the pieces arcs.
+                let delta = sigma(center);
+                if !((delta.abs() - radius).abs() > tol) {
+                    return Err(format!(
+                        "jog {g}: its line touches the circle curve {} of hole {h} (within the tolerance); move it so that it crosses the hole cleanly",
+                        s.source
+                    ));
+                }
+                if delta.abs() > radius {
+                    Vec::new()
+                } else {
+                    let half = (radius * radius - delta * delta).max(0.0).sqrt();
+                    let foot = sub(center, scale(u, delta));
+                    let along = |p: P2| {
+                        let (v, w) = (sub(s.start, center), sub(p, center));
+                        let turn = (v[0] * w[1] - v[1] * w[0]).patan2(v[0] * w[0] + v[1] * w[1]);
+                        let turn = if s.reversed { -turn } else { turn };
+                        turn.rem_euclid(std::f64::consts::TAU)
+                    };
+                    let mut found = vec![add(foot, scale(d, half)), sub(foot, scale(d, half))];
+                    found.sort_by(|x, y| along(*x).total_cmp(&along(*y)));
+                    if !(sigma(s.start).abs() > tol) {
+                        return Err(format!(
+                            "jog {g}: its line passes within the tolerance of where circle curve {} of hole {h} starts; move it",
+                            s.source
+                        ));
+                    }
+                    found
+                }
+            }
+            _ => {
+                if !(sigma(s.start).abs() > tol) {
+                    return Err(format!(
+                        "jog {g}: its line passes within the tolerance of a corner of hole {h} (at {:?}); move it so that it crosses edges, not corners",
+                        s.start
+                    ));
+                }
+                crossings(g, s, o, d, u, tol)?
+            }
+        };
+        count += points.len();
+        let circle = matches!(s.shape, Shape::Circle { .. });
+        let as_piece = |from: P2, to: P2| -> Segment {
+            let mut piece = super::piece(s, from, to);
+            if let Shape::Circle { center, radius } = piece.shape {
+                piece.shape = Shape::Arc { center, radius };
+            }
+            piece
+        };
+        let mut far = sigma(s.start) > 0.0;
+        if let (true, [p, q]) = (circle, points.as_slice()) {
+            // A circle in two arcs, split at its crossings only: split at
+            // its start too, two arcs of one circle would meet at a smooth
+            // corner whose rims lie on one cylinder, which the plate
+            // cannot find a corner of.
+            pieces.push((as_piece(*p, *q), !far));
+            pieces.push((as_piece(*q, *p), far));
+            continue;
+        }
+        let mut from = s.start;
+        for p in points {
+            pieces.push((as_piece(from, p), far));
+            far = !far;
+            from = p;
+        }
+        if circle && from == s.start {
+            pieces.push((s.clone(), far));
+        } else {
+            pieces.push((as_piece(from, s.end), far));
+        }
+    }
+    if count != 2 {
+        return Err(format!(
+            "jog {g}: its line crosses hole {h} {count} times; a hole across a jog's line is crossed by it exactly twice"
+        ));
+    }
+    let floor = SLIVER_TOLERANCES * tol;
+    let length = |seg: &Segment| match &seg.shape {
+        Shape::Line => distance(seg.start, seg.end),
+        &Shape::Arc { radius, .. } => seg.angles().map_or(0.0, |(_, sweep)| radius * sweep.abs()),
+        Shape::Circle { .. } | Shape::Spline(_) => f64::INFINITY,
+    };
+    if let Some((short, _)) = pieces.iter().find(|(s, _)| !(length(s) > floor)) {
+        return Err(format!(
+            "jog {g}: its line crosses curve {} of hole {h} within {floor} ({SLIVER_TOLERANCES} tolerances) of its end; move it so that it crosses the hole clear of its corners",
+            short.source
+        ));
+    }
+    // The loop: each piece where its side puts it, a line across the
+    // bends where the side changes.
+    let n = pieces.len();
+    let mut out = Vec::with_capacity(n + 2);
+    for k in 0..n {
+        let (Some((seg, far)), Some((_, next))) = (pieces.get(k), pieces.get((k + 1) % n)) else {
+            return Err(format!("jog {g}: hole {h} lost a piece"));
+        };
+        out.push(if *far {
+            shifted(seg, shift)
+        } else {
+            seg.clone()
+        });
+        if far != next {
+            let p = seg.end;
+            let q = add(p, shift);
+            out.push(if *far { line(q, p) } else { line(p, q) });
+        }
+    }
+    Ok(out)
 }
