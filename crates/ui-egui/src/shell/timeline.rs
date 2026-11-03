@@ -3,11 +3,13 @@
 //! The timeline is a slider over the steps of the history: dragging it
 //! shows the model as it was after that step (`view.scrub`), which is view
 //! state only: the document, its rollback marker and its undo history stay
-//! as they are. "Roll back here" moves the real marker there
-//! (`history.rollback`), so new features go in after it; "To end" takes
-//! the marker away and shows the document as it is. The rows after the
-//! step shown are greyed in the list. Under the slider sits the player
-//! (`shell/player.rs`), which plays the steps one after the other.
+//! as they are. The real rollback marker is the feature list's amber bar
+//! (`shell/sidepanel/features.rs`): dragging it, or a row's *Roll back to
+//! here*, moves it (`history.rollback`), so new features go in after it;
+//! dragging it to the end, or *Roll forward to end*, takes it away. The
+//! rows after the step shown are greyed in the list. Under the slider sits
+//! the player (`shell/player.rs`), which plays the steps one after the
+//! other.
 //!
 //! The eye of a row hides the feature's body, sketch or datum in the view
 //! (`feature.visible`), and shows it again.
@@ -488,24 +490,21 @@ impl Shell {
     pub(crate) fn timeline_ui(&mut self, ui: &mut egui::Ui) {
         let tokens = self.tokens;
         let steps = self.timeline.steps;
-        if steps == 0 {
-            // An assembly has no history of its own, but its motion
-            // plays (docs/design/motion.md › *Assemblies*).
-            if self.timeline.has_timeline {
-                self.motion_ui(ui);
-                if self.playing_motion() {
-                    self.player_controls(ui);
-                }
-            }
+        if steps == 0 && !self.timeline.has_timeline {
             return;
         }
+        // One timeline and one row (board s8): History or Motion, the
+        // slider of the one chosen, the player's row.
+        self.player_mode(ui);
+        if self.playing_motion_mode() {
+            self.motion_slider(ui);
+            self.player_controls(ui);
+            self.motion_extras(ui);
+            return;
+        }
+        let _ = tokens;
         let shown = self.timeline.shown_step().clamp(1, steps);
         let mut step = shown;
-        let name = self
-            .rows
-            .get(step.saturating_sub(1))
-            .map(|row| row.name.clone())
-            .unwrap_or_default();
         ui.horizontal(|ui| {
             ui.spacing_mut().slider_width = (ui.available_width() - 8.0).max(40.0);
             let slider = egui::Slider::new(&mut step, 1..=steps)
@@ -520,40 +519,7 @@ impl Shell {
             self.go_to_step(step);
             ui.ctx().request_repaint();
         }
-        let scrubbed = self.timeline.position.clone();
-        self.motion_ui(ui);
         self.player_controls(ui);
-        ui.horizontal(|ui| {
-            let text = format!("Step {shown}/{steps}  {name}");
-            let label = if scrubbed.is_some() || self.state.timeline.playing {
-                egui::RichText::new(text).color(color(tokens.attention))
-            } else {
-                egui::RichText::new(text).color(color(tokens.text_dim))
-            };
-            ui.label(label);
-        });
-        ui.horizontal(|ui| {
-            let here = ui
-                // A Jig in use is looked at and played, not changed.
-                .add_enabled(
-                    scrubbed.is_some() && !self.jig_in_use(),
-                    egui::Button::new("Roll back here"),
-                )
-                .on_hover_text(
-                    "Move the rollback marker to this step: the model is built up to here, \
-                     and new features go in after it.",
-                );
-            if here.clicked()
-                && let Some(position) = &scrubbed
-            {
-                self.stop_playing();
-                self.timeline.queue(
-                    "history.rollback",
-                    json!({"feature": position.feature.clone()}),
-                );
-                self.timeline.queue("view.scrub", json!({"feature": null}));
-            }
-        });
         if let Some(problem) = &self.timeline.problem {
             ui.add(
                 egui::Label::new(

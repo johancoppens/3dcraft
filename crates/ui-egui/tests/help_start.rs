@@ -157,17 +157,26 @@ fn the_start_screen_is_up_while_no_document_is_open() {
         true
     );
     // The feature list is put away: the viewport, and the welcome centred
-    // in it, take the whole width of the window.
+    // in it, take the whole width of the window. The content is a column
+    // in the middle (board f1), its header and buttons at its left.
     assert_eq!(shell.viewport_rect().unwrap().left(), 0.0);
-    let new = shell
-        .start_hits()
-        .iter()
-        .find(|(name, _)| name == "new")
-        .map(|(_, rect)| rect.center().x)
-        .unwrap();
+    let hit = |name: &str| {
+        shell
+            .start_hits()
+            .iter()
+            .find(|(hit, _)| hit == name)
+            .map(|(_, rect)| *rect)
+            .unwrap()
+    };
+    let column = hit("card");
     assert!(
-        (new - 550.0).abs() < 120.0,
-        "the buttons near the middle: {new}"
+        (column.center().x - 550.0).abs() < 2.0,
+        "the column in the middle: {column:?}"
+    );
+    let new = hit("new");
+    assert!(
+        (new.left() - column.left()).abs() < 2.0,
+        "New part at the column's left: {new:?} in {column:?}"
     );
     // A card for each example of the section shown (the parts first),
     // and the sections to choose from.

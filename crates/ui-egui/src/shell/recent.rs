@@ -92,6 +92,9 @@ pub struct RecentEntry {
     pub name: String,
     /// False when there is no such file any more: shown, but not offered.
     pub exists: bool,
+    /// When the file was last changed, in seconds since the Unix epoch
+    /// (none in the browser or when the file system does not say).
+    pub modified: Option<u64>,
 }
 
 /// The shell's part: the list, and what follows from it.
@@ -131,6 +134,48 @@ fn exists(path: &str) -> bool {
 #[cfg(target_arch = "wasm32")]
 fn exists(_path: &str) -> bool {
     false
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn modified(path: &str) -> Option<u64> {
+    let at = std::fs::metadata(path).ok()?.modified().ok()?;
+    // native clock: a file's time, read off the browser only (cfg above).
+    let since = at.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(since.as_secs())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn modified(_path: &str) -> Option<u64> {
+    None
+}
+
+/// How long ago `at` was at `now` (seconds since the epoch), as the start
+/// screen's recent files say it: "2 min ago", "1 h ago", "yesterday",
+/// "4 days ago"; empty without a time.
+pub fn ago(at: Option<u64>, now: Option<u64>) -> String {
+    let (Some(at), Some(now)) = (at, now) else {
+        return String::new();
+    };
+    let age = now.saturating_sub(at);
+    match age {
+        0..60 => "just now".to_string(),
+        60..3600 => format!("{} min ago", age / 60),
+        3600..86_400 => format!("{} h ago", age / 3600),
+        86_400..172_800 => "yesterday".to_string(),
+        _ => format!("{} days ago", age / 86_400),
+    }
+}
+
+/// The line icon of a file's kind of document, by its extension.
+pub fn file_glyph(path: &str) -> crate::kit::Glyph {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".3dcraftasm") {
+        crate::kit::Glyph::Assembly
+    } else if lower.ends_with(".3dcraftjig") {
+        crate::kit::Glyph::Jig
+    } else {
+        crate::kit::Glyph::Part
+    }
 }
 
 /// The roots of `session`'s workspace, absolute; `None` when one way is
@@ -175,6 +220,7 @@ impl Shell {
                     path: path.clone(),
                     name: file_name(path),
                     exists: exists(path),
+                    modified: modified(path),
                 })
                 .collect(),
         );
@@ -276,12 +322,18 @@ impl Shell {
         self.recent.open = open;
     }
 
-    /// File, Recent files: the list, and Clear. Not in the browser.
-    pub(super) fn recent_menu(&mut self, ui: &mut egui::Ui) {
+    /// File › Open recent: the files with their documents' line icons,
+    /// and Clear recent. Not in the browser.
+    pub(super) fn recent_menu(&mut self, ui: &mut egui::Ui, kit: &crate::kit::Kit) {
+        use crate::kit::MenuItem;
         if cfg!(target_arch = "wasm32") {
             return;
         }
-        ui.menu_button("Recent files", |ui| {
+        let item = kit.menu_item(ui, MenuItem::new("Open recent").icon_room().submenu());
+        egui::containers::menu::SubMenu::new().show(ui, &item, |ui| {
+            ui.style_mut().visuals = kit.t.plate_visuals();
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.set_width(kit.t.menu_width + 80.0);
             // Looked at again when the menu opens.
             let pass = ui.ctx().cumulative_pass_nr();
             if self
@@ -294,47 +346,113 @@ impl Shell {
             self.recent.menu_pass = Some(pass);
             let entries = self.recent_files();
             if entries.is_empty() {
-                ui.add_enabled(false, egui::Button::new("No recent files"));
+                kit.menu_item(ui, MenuItem::new("No recent files").enabled(false));
                 return;
             }
             for entry in &entries {
-                let button = egui::Button::new(&entry.name);
-                let response = ui.add_enabled(entry.exists, button);
+                let item = MenuItem::new(&entry.name)
+                    .icon(file_glyph(&entry.path))
+                    .enabled(entry.exists);
                 let hover = if entry.exists {
                     entry.path.clone()
                 } else {
                     format!("{} (not there any more)", entry.path)
                 };
-                if response.on_hover_text(hover).clicked() {
+                if kit.menu_item(ui, item).on_hover_text(hover).clicked() {
                     self.choose_recent(entry.path.clone());
                     ui.close();
                 }
             }
-            ui.separator();
-            if ui.button("Clear recent").clicked() {
+            kit.menu_separator(ui);
+            if kit
+                .menu_item(ui, MenuItem::new("Clear recent").icon_room())
+                .clicked()
+            {
                 self.clear_recent_files();
                 ui.close();
             }
         });
     }
 
-    /// The recent files on the start screen: a link each, a missing one
-    /// dimmed.
-    pub(super) fn recent_links(&mut self, ui: &mut egui::Ui) {
-        let dim = color(self.tokens.text_dim);
+    /// The recent files on the start screen (board f1): the document's
+    /// line icon, the name as a link and how long ago it changed at the
+    /// right; a missing one dimmed.
+    pub(super) fn recent_links(&mut self, ui: &mut egui::Ui, kit: &crate::kit::Kit) {
+        let t = kit.t;
+        let s = kit.skin;
         let entries = self.recent_files();
         if entries.is_empty() {
-            ui.colored_label(dim, "Files you open or save show up here.");
+            kit.paragraph(ui, "Files you open or save show up here.", true);
             return;
         }
+        let now = super::epoch_now();
         for entry in entries.iter().take(6) {
-            if entry.exists {
-                if ui.link(&entry.name).on_hover_text(&entry.path).clicked() {
-                    self.choose_recent(entry.path.clone());
-                }
+            let width = ui.available_width();
+            let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(width.max(0.0), kit.hit(t.row_height + 4.0)),
+                if entry.exists {
+                    egui::Sense::click()
+                } else {
+                    egui::Sense::hover()
+                },
+            );
+            let painter = ui.painter();
+            if response.hovered() && entry.exists {
+                painter.rect_filled(rect, kit.radius(), color(s.hover));
+            }
+            let side = t.nav_icon_size;
+            let icon = egui::Rect::from_center_size(
+                egui::pos2(rect.left() + 4.0 + side * 0.5, rect.center().y),
+                egui::vec2(side, side),
+            );
+            crate::kit::glyphs::paint(
+                painter,
+                file_glyph(&entry.path),
+                icon,
+                color(s.text_dim),
+                &t,
+            );
+            let when = ago(entry.modified, now);
+            let when = kit.galley(ui, when, kit.small_font(), s.text_dim);
+            let when_x = rect.right() - 4.0 - when.size().x;
+            let x = icon.right() + t.nav_icon_gap + 2.0;
+            let ink = if entry.exists { s.info_ink } else { s.text_dim };
+            let mut job = egui::text::LayoutJob::simple_singleline(
+                entry.name.clone(),
+                kit.font(),
+                color(ink),
+            );
+            job.wrap = egui::text::TextWrapping::truncate_at_width((when_x - x - 8.0).max(1.0));
+            let name = painter.layout_job(job);
+            let name_size = name.size();
+            painter.galley(
+                egui::pos2(x, rect.center().y - name_size.y * 0.5),
+                name,
+                color(ink),
+            );
+            if response.hovered() && entry.exists {
+                let y = rect.center().y + name_size.y * 0.5 - 1.0;
+                painter.line_segment(
+                    [egui::pos2(x, y), egui::pos2(x + name_size.x, y)],
+                    egui::Stroke::new(1.0, color(ink)),
+                );
+            }
+            painter.galley(
+                egui::pos2(when_x, rect.center().y - when.size().y * 0.5),
+                when,
+                color(s.text_dim),
+            );
+            let hover = if entry.exists {
+                entry.path.clone()
             } else {
-                ui.colored_label(dim, &entry.name)
-                    .on_hover_text(format!("{} (not there any more)", entry.path));
+                format!("{} (not there any more)", entry.path)
+            };
+            if response
+                .on_hover_text(hover)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                self.choose_recent(entry.path.clone());
             }
         }
     }

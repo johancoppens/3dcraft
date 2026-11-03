@@ -227,7 +227,7 @@ fn the_tabs_are_the_open_documents_in_order_named_marked_and_in_ui_get() {
         got["tabs"][1],
         json!({"document": 1, "name": "bracket", "path": "parts/bracket.3dcraft",
                "dirty": true, "active": false, "asksToClose": true,
-               "jigInUse": false}),
+               "jigInUse": false, "assembly": false}),
         "{got}"
     );
     assert_eq!(got["tabs"].as_array().unwrap().len(), 4);
@@ -477,7 +477,7 @@ fn the_file_menu_lists_the_documents_and_a_click_activates_one() {
     // Down the open File menu, row by row: the documents come after the
     // file actions and Close, in their order.
     let mut found = Vec::new();
-    for row in 0..36 {
+    for row in 0..60 {
         window.click(&mut shell, &mut session, pos2(20.0, 10.0));
         let at = pos2(40.0, 30.0 + 8.0 * row as f32);
         window.click(&mut shell, &mut session, at);
