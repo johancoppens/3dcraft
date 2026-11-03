@@ -137,31 +137,45 @@ impl Shell {
         } else {
             "This was copied to the clipboard."
         };
-        let mut open = true;
+        let tokens = self.tokens;
+        let kit = crate::kit::Kit::panel(&tokens);
         let mut close = false;
-        egui::Window::new(DETAILS_TITLE)
-            .collapsible(false)
-            .resizable(true)
-            .default_width(560.0)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.label(note);
-                ui.label(
-                    "It contains file paths and the values the command was given: read it before you post it publicly.",
-                );
-                ui.add_space(4.0);
-                egui::ScrollArea::vertical()
-                    .max_height(320.0)
-                    .show(ui, |ui| {
-                        let mut text = report.as_str();
-                        ui.add(
-                            egui::TextEdit::multiline(&mut text)
-                                .font(egui::TextStyle::Monospace)
-                                .desired_width(f32::INFINITY),
-                        );
-                    });
-                close = ui.button("Close").clicked();
+        let mut copy = false;
+        // Board s6's layout: the title, what it is, the report, Copy at the
+        // left and Close at the right. Not modal: the window stays usable.
+        let dialog = crate::kit::Dialog::new(egui::Id::new("craft3d-error-details"), DETAILS_TITLE)
+            .width(tokens.details_width)
+            .modal(false);
+        let shown = kit.dialog(ctx, dialog, |kit, ui| {
+            kit.paragraph(ui, note, false);
+            kit.paragraph(
+                ui,
+                "It contains file paths and the values the command was given: read it before you post it publicly.",
+                true,
+            );
+            egui::ScrollArea::vertical()
+                .max_height(tokens.details_height)
+                .show(ui, |ui| {
+                    let mut text = report.as_str();
+                    ui.add(
+                        egui::TextEdit::multiline(&mut text)
+                            .font(egui::TextStyle::Monospace)
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+            kit.dialog_footer(ui, |ui| {
+                copy = kit
+                    .button(ui, crate::kit::Button::quiet("Copy again").icon(crate::kit::Glyph::Copy))
+                    .clicked();
+                kit.footer_right(ui, |ui| {
+                    close = kit.button(ui, crate::kit::Button::secondary("Close")).clicked();
+                });
             });
+        });
+        if copy {
+            ctx.copy_text(report.clone());
+        }
+        let open = !shown.close;
         self.report.open = open && !close;
     }
 }

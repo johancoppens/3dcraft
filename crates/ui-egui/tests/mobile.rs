@@ -263,7 +263,9 @@ fn a_phone_gets_a_drawer_and_controls_a_finger_hits() {
     let chip = shell.controls_layout().unwrap().section_toggle.unwrap();
     window.click(&mut shell, &mut session, chip.center());
     assert!(!shell.state.section.on);
-    // The Studio popover fits the screen and keeps clear of the controls.
+    // The Studio options are a bottom sheet (board m4): inside the
+    // screen, down to the viewport's foot, clear of the camera plate whose
+    // chip opened them; the bars under it wait until it closes.
     let chip = shell.controls_layout().unwrap().studio.unwrap();
     let chip = craft3d_ui_egui::shell::split_chip(chip, &tokens).0;
     window.click(&mut shell, &mut session, chip.center());
@@ -272,10 +274,27 @@ fn a_phone_gets_a_drawer_and_controls_a_finger_hits() {
         .iter()
         .find(|(n, _)| n == "panel")
         .map(|(_, r)| *r)
-        .expect("the studio popover");
+        .expect("the studio sheet");
     assert!(viewport.contains_rect(panel), "{panel:?}");
-    for (name, part) in shell.controls_layout().unwrap().parts() {
-        assert!(!part.intersects(panel), "over the {name}");
+    assert!(
+        (panel.bottom() - viewport.bottom()).abs() < 0.5,
+        "{panel:?}"
+    );
+    let plate = shell.controls_layout().unwrap().camera_plate.unwrap();
+    assert!(!plate.intersects(panel), "over the camera plate");
+    // Its tabs: Light, Scene, Lens, each a finger's target.
+    for tab in ["sheet.light", "sheet.scene", "sheet.lens"] {
+        let rect = shell
+            .look_hits()
+            .iter()
+            .find(|(n, _)| n == tab)
+            .map(|(_, r)| *r)
+            .unwrap_or_else(|| panic!("no {tab}"));
+        assert!(panel.contains_rect(rect), "{tab}: {rect:?}");
+        assert!(
+            rect.height() >= tokens.touch_target - 0.01,
+            "{tab}: {rect:?}"
+        );
     }
     window.click(&mut shell, &mut session, chip.center());
     // The drawer: its button opens it over the viewport, again closes it.

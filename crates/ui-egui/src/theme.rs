@@ -385,6 +385,9 @@ pub struct Tokens {
     pub popover_pointer: f32,
     /// The one width of the sliders in a popover, in points.
     pub popover_slider_width: f32,
+    /// The popovers' rows (board s1): the label's column, the value's.
+    pub popover_label_width: f32,
+    pub popover_value_width: f32,
     /// A popover's fill: `plate_fill` at this opacity (0 to 255), more
     /// opaque than a plate's so its rows read over any model.
     pub popover_opacity: u8,
@@ -582,6 +585,49 @@ pub struct Tokens {
     pub shadow_opacity: u8,
     pub shadow_blur: u8,
     pub shadow_drop: i8,
+    /// The kit's dialog (s4–s6 of the plan): its title's size (17 Semi
+    /// Bold), the room around its parts, its corner radius, and the side
+    /// of the icon before its title.
+    pub dialog_title_font: f32,
+    pub dialog_padding: f32,
+    pub dialog_radius: u8,
+    pub dialog_icon: f32,
+    /// The app icon in the start screen's header and the About dialog's
+    /// (the plan's middle way: the original icon where 3DCraft shows
+    /// itself), and the badge on a Showcase card's thumbnail.
+    pub header_icon: f32,
+    pub about_icon: f32,
+    pub card_badge: f32,
+    /// The narrowest a dialog gets on a small window, and the error
+    /// details' window (its width, and how high its report scrolls).
+    pub dialog_min_width: f32,
+    /// A dialog with buttons in a row of three (the questions, an error),
+    /// the export dialog, the shortcuts in their two columns.
+    pub dialog_wide_width: f32,
+    pub export_dialog_width: f32,
+    pub shortcuts_width: f32,
+    pub details_width: f32,
+    pub details_height: f32,
+    /// The menu bar's menus' widths: File, Edit, View, Help (board s4).
+    pub menu_widths: [f32; 4],
+    /// The Agent tab's time line: a dot's radius, the rail's width.
+    pub log_dot_radius: f32,
+    pub log_rail_width: f32,
+    /// The room a banner over the viewport keeps for its button (Back to
+    /// last good).
+    pub banner_button_room: f32,
+    /// A bottom sheet's share of the viewport's height (Studio and
+    /// Analysis on a phone, m4 and m5), and of the window's for the Jig's
+    /// parameters (m8).
+    pub sheet_share: f32,
+    /// A sheet's grabber: its size and how strong its ink is.
+    pub grabber_size: [f32; 2],
+    pub grabber_opacity: u8,
+    pub half_sheet_share: f32,
+    /// The side panel docked beside a Jig's model on a tablet (t2), and
+    /// the narrowest window that docks it.
+    pub docked_panel_width: f32,
+    pub docked_min_window: f32,
 }
 
 /// The colours that change with the appearance (light or dark): the
@@ -915,6 +961,8 @@ impl Tokens {
             touch_caret_width: 30.0,
             popover_pointer: 6.0,
             popover_slider_width: 130.0,
+            popover_label_width: 96.0,
+            popover_value_width: 56.0,
             popover_opacity: 242,
             popover_widget_opacity: 110,
             narrow_width: 800.0,
@@ -1009,6 +1057,29 @@ impl Tokens {
             shadow_opacity: 64,
             shadow_blur: 12,
             shadow_drop: 3,
+            dialog_title_font: 17.0,
+            dialog_padding: 18.0,
+            dialog_radius: 8,
+            dialog_icon: 16.0,
+            header_icon: 46.0,
+            about_icon: 44.0,
+            card_badge: 22.0,
+            dialog_min_width: 160.0,
+            dialog_wide_width: 460.0,
+            export_dialog_width: 500.0,
+            shortcuts_width: 720.0,
+            details_width: 560.0,
+            details_height: 320.0,
+            menu_widths: [250.0, 250.0, 230.0, 240.0],
+            log_dot_radius: 4.0,
+            log_rail_width: 2.0,
+            banner_button_room: 170.0,
+            sheet_share: 0.5,
+            grabber_size: [36.0, 4.0],
+            grabber_opacity: 160,
+            half_sheet_share: 0.5,
+            docked_panel_width: 300.0,
+            docked_min_window: 600.0,
         }
     }
 
@@ -1155,6 +1226,25 @@ impl Tokens {
         visuals.widgets.active.bg_fill = color_alpha(self.plate_text, press);
         visuals.extreme_bg_color = color_alpha(self.plate_text_dim, rest);
         self.round(&mut visuals);
+        visuals
+    }
+
+    /// The menus that drop from the chrome (board s4): the kit's plate,
+    /// the popover's fill with its faint rim and shadow, `menu_radius`
+    /// round, dark in both appearances.
+    pub fn menu_visuals(&self) -> egui::Visuals {
+        let mut visuals = self.plate_visuals();
+        visuals.window_fill = color(self.popover_fill);
+        visuals.panel_fill = color(self.popover_fill);
+        visuals.window_stroke =
+            egui::Stroke::new(1.0, color_alpha(self.plate_rim, self.popover_rim_opacity));
+        visuals.menu_corner_radius = egui::CornerRadius::same(self.menu_radius);
+        visuals.popup_shadow = egui::Shadow {
+            offset: [0, self.shadow_drop],
+            blur: self.shadow_blur,
+            spread: 0,
+            color: color_alpha(self.view_cube_shadow, self.shadow_opacity),
+        };
         visuals
     }
 

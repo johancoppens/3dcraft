@@ -996,7 +996,12 @@ impl Shell {
         if let Some(plate) = layout.player_plate {
             self.compact_player(ui, plate.shrink(tokens.nav_padding));
         }
-        let popover = super::popover_place(rect, &layout, &tokens);
+        // On a phone or a tablet the popovers are bottom sheets.
+        let popover = if self.narrow() {
+            super::popover::sheet_place(rect, &layout, &tokens)
+        } else {
+            super::popover_place(rect, &layout, &tokens)
+        };
         self.nav_camera(ui, &layout, named, scene);
         self.nav_look(ui, &layout, named, popover);
         self.nav_analysis(ui, &layout, named, popover);
@@ -1106,7 +1111,9 @@ impl Shell {
                 label: "Studio",
                 named,
             },
-            lit,
+            // Greyed while an analysis is on (board s2b): the view is
+            // drawn plainly then.
+            lit && !blocked,
             &self.tokens,
         )
         .on_hover_text(
@@ -1226,8 +1233,10 @@ impl Shell {
         let tokens = self.tokens;
         let legend = self.analysis_view.clone();
         let problem = self.analysis_problem.clone();
+        let mut hits = Vec::new();
+        let sheet = self.narrow();
         let panel = self.popover(ui, "analysis-options", popover, place, |shell, ui| {
-            analysis_options(ui, &mut shell.state.analysis);
+            analysis_options(ui, &tokens, &mut shell.state.analysis, &mut hits, sheet);
             if let Some(view) = legend.as_deref() {
                 analysis_legend(ui, view, &tokens);
             }
@@ -1240,7 +1249,8 @@ impl Shell {
                 );
             }
         });
-        self.analysis_hits = vec![("panel".to_string(), panel)];
+        hits.push(("panel".to_string(), panel));
+        self.analysis_hits = hits;
         if self.state.analysis != before {
             ui.ctx().request_repaint();
         }
@@ -1421,139 +1431,232 @@ impl Shell {
 }
 
 /// The options of the analysis that is on, as number fields.
-fn analysis_options(ui: &mut egui::Ui, a: &mut crate::state::AnalysisState) {
-    egui::Grid::new("analysis-grid")
-        .num_columns(2)
-        .spacing([8.0, 4.0])
-        .show(ui, |ui| {
-            ui.label("Analysis");
-            egui::ComboBox::from_id_salt("analysis-mode")
-                .selected_text(a.mode.clone())
-                .show_ui(ui, |ui| {
-                    for mode in ["zebra", "highlight", "curvature", "draft", "none"] {
-                        ui.selectable_value(&mut a.mode, mode.to_string(), mode);
-                    }
-                });
-            ui.end_row();
-            match a.mode.as_str() {
-                "zebra" | "highlight" => {
-                    ui.label("Stripes");
-                    ui.add(
-                        egui::DragValue::new(&mut a.stripes)
-                            .range(1.0..=512.0)
-                            .speed(0.5),
-                    );
-                    ui.end_row();
-                    ui.label("Direction");
-                    ui.add(
-                        egui::DragValue::new(&mut a.direction)
-                            .range(0.0..=360.0)
-                            .suffix("°"),
-                    );
-                    ui.end_row();
-                    ui.label("Width");
-                    ui.add(
-                        egui::DragValue::new(&mut a.width)
-                            .range(0.0..=1.0)
-                            .speed(0.01),
-                    );
-                    ui.end_row();
-                    ui.label("Offset");
-                    ui.add(
-                        egui::DragValue::new(&mut a.offset)
-                            .range(0.0..=1.0)
-                            .speed(0.01),
-                    );
-                    ui.end_row();
-                }
-                "curvature" => {
-                    ui.label("Curvature");
-                    egui::ComboBox::from_id_salt("analysis-curvature")
-                        .selected_text(a.curvature.clone())
-                        .show_ui(ui, |ui| {
-                            for kind in ["gaussian", "mean", "max"] {
-                                ui.selectable_value(&mut a.curvature, kind.to_string(), kind);
-                            }
-                        });
-                    ui.end_row();
-                    let mut fixed = a.range.is_some();
-                    ui.label("Range");
-                    ui.checkbox(&mut fixed, "fixed");
-                    ui.end_row();
-                    if fixed {
-                        let [mut lo, mut hi] = a.range.unwrap_or([-1.0, 1.0]);
-                        ui.label("Low");
-                        ui.add(egui::DragValue::new(&mut lo).speed(0.001));
-                        ui.end_row();
-                        ui.label("High");
-                        ui.add(egui::DragValue::new(&mut hi).speed(0.001));
-                        ui.end_row();
-                        a.range = (lo < hi).then_some([lo, hi]).or(a.range);
-                        if a.range.is_none() {
-                            a.range = Some([-1.0, 1.0]);
-                        }
-                    } else {
-                        a.range = None;
-                    }
-                }
-                "draft" => {
-                    ui.label("Pull");
-                    ui.horizontal(|ui| {
-                        for c in &mut a.pull {
-                            ui.add(egui::DragValue::new(c).speed(0.01));
-                        }
-                    });
-                    ui.end_row();
-                    ui.label("Least draft");
-                    ui.add(
-                        egui::DragValue::new(&mut a.min_draft)
-                            .range(0.0..=90.0)
-                            .speed(0.1)
-                            .suffix("°"),
-                    );
-                    ui.end_row();
-                }
-                _ => {}
-            }
-            let mut combs = a.combs.is_some();
-            ui.label("Combs");
-            ui.checkbox(&mut combs, "on edges");
-            ui.end_row();
-            match (combs, a.combs.is_some()) {
-                (true, false) => a.combs = Some(serde_json::json!({"edges": true})),
-                (false, true) => a.combs = None,
-                _ => {}
-            }
-            if let Some(serde_json::Value::Object(c)) = &mut a.combs {
-                let mut density = c
-                    .get("density")
-                    .and_then(serde_json::Value::as_f64)
-                    .unwrap_or(40.0);
-                ui.label("Density");
-                if ui
-                    .add(egui::DragValue::new(&mut density).range(2.0..=400.0))
-                    .changed()
+/// The analysis' options (board s1): *Surface analysis* with its kind as
+/// a segmented control and its rows, then *Combs*. A row is a label and
+/// the kit's control; the numbers are drag fields on the plate.
+/// A number of the analysis' options: a drag field at a desk, steppers a
+/// finger hits (−, the value, +) in a phone's sheet (board m5). `step` is
+/// what a stepper adds, `digits` how the value is written.
+#[allow(clippy::too_many_arguments)]
+fn number(
+    ui: &mut egui::Ui,
+    kit: &crate::kit::Kit,
+    sheet: bool,
+    value: &mut f64,
+    step: f64,
+    range: std::ops::RangeInclusive<f64>,
+    suffix: &str,
+    digits: usize,
+) {
+    if !sheet {
+        let speed = if digits == 0 { 0.5 } else { step * 0.2 };
+        ui.add(
+            egui::DragValue::new(value)
+                .range(range)
+                .speed(speed)
+                .suffix(suffix),
+        );
+        return;
+    }
+    let (lo, hi) = (*range.start(), *range.end());
+    let minus = kit.button(ui, crate::kit::Button::secondary("−").enabled(*value > lo));
+    let text = format!("{:.*}{suffix}", digits, *value);
+    let galley = kit.galley(ui, text, kit.font(), kit.skin.text);
+    let (place, _) = ui.allocate_exact_size(
+        egui::vec2(
+            galley.size().x.max(kit.t.popover_value_width),
+            kit.hit(kit.t.control_height),
+        ),
+        egui::Sense::hover(),
+    );
+    ui.painter().galley(
+        place.center() - galley.size() * 0.5,
+        galley,
+        color(kit.skin.text),
+    );
+    let plus = kit.button(ui, crate::kit::Button::secondary("+").enabled(*value < hi));
+    if minus.clicked() {
+        *value = (*value - step).max(lo);
+    }
+    if plus.clicked() {
+        *value = (*value + step).min(hi);
+    }
+}
+
+fn analysis_options(
+    ui: &mut egui::Ui,
+    tokens: &crate::theme::Tokens,
+    a: &mut crate::state::AnalysisState,
+    hits: &mut Vec<(String, Rect)>,
+    sheet: bool,
+) {
+    let kit = crate::kit::Kit::plate(tokens);
+    let t = kit.t;
+    ui.spacing_mut().item_spacing.y = t.nav_spacing;
+    let row = |ui: &mut egui::Ui, label: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
+        ui.horizontal(|ui| {
+            let galley = kit.galley(ui, label, kit.font(), kit.skin.text);
+            let (place, _) = ui.allocate_exact_size(
+                egui::vec2(t.popover_label_width, kit.hit(t.control_height)),
+                egui::Sense::hover(),
+            );
+            ui.painter().galley(
+                egui::pos2(place.left(), place.center().y - galley.size().y * 0.5),
+                galley,
+                color(kit.skin.text),
+            );
+            add(ui);
+        });
+    };
+    // As a sheet its title says it already.
+    if !sheet {
+        kit.section_header(ui, "Surface analysis");
+    }
+    const MODES: [(&str, &str); 4] = [
+        ("zebra", "Zebra"),
+        ("highlight", "Highlight"),
+        ("curvature", "Curvature"),
+        ("draft", "Draft"),
+    ];
+    let segments: Vec<crate::kit::Segment<'_>> = MODES
+        .iter()
+        .map(|(_, shown)| crate::kit::Segment::Text(shown))
+        .collect();
+    let mut chosen = MODES
+        .iter()
+        .position(|(name, _)| a.mode == *name)
+        .unwrap_or(usize::MAX);
+    let was = chosen;
+    let choice = kit.segmented(ui, &mut chosen, &segments);
+    for ((name, _), rect) in MODES.iter().zip(&choice.items) {
+        hits.push((format!("mode.{name}"), *rect));
+    }
+    if chosen != was
+        && let Some((name, _)) = MODES.get(chosen)
+    {
+        a.mode = (*name).to_string();
+    }
+    match a.mode.as_str() {
+        "zebra" | "highlight" => {
+            row(ui, "Stripes", &mut |ui| {
+                number(
+                    ui,
+                    &kit,
+                    sheet,
+                    &mut a.stripes,
+                    1.0,
+                    1.0..=512.0,
+                    " / turn",
+                    0,
+                );
+            });
+            row(ui, "Direction", &mut |ui| {
+                number(ui, &kit, sheet, &mut a.direction, 5.0, 0.0..=360.0, "°", 0);
+            });
+            row(ui, "Width", &mut |ui| {
+                number(ui, &kit, sheet, &mut a.width, 0.05, 0.0..=1.0, "", 2);
+            });
+            row(ui, "Offset", &mut |ui| {
+                number(ui, &kit, sheet, &mut a.offset, 0.05, 0.0..=1.0, "", 2);
+            });
+            ui.label(
+                egui::RichText::new("Stripes kink at a G1 seam, run on at G2")
+                    .font(kit.small_font())
+                    .color(color(kit.skin.text_dim)),
+            );
+        }
+        "curvature" => {
+            const KINDS: [(&str, &str); 3] =
+                [("gaussian", "Gaussian"), ("mean", "Mean"), ("max", "Max")];
+            row(ui, "Kind", &mut |ui| {
+                let segments: Vec<crate::kit::Segment<'_>> = KINDS
+                    .iter()
+                    .map(|(_, shown)| crate::kit::Segment::Text(shown))
+                    .collect();
+                let mut chosen = KINDS
+                    .iter()
+                    .position(|(name, _)| a.curvature == *name)
+                    .unwrap_or(usize::MAX);
+                let was = chosen;
+                kit.segmented(ui, &mut chosen, &segments);
+                if chosen != was
+                    && let Some((name, _)) = KINDS.get(chosen)
                 {
-                    c.insert("density".into(), serde_json::json!(density.round()));
+                    a.curvature = (*name).to_string();
                 }
-                ui.end_row();
-                let mut scale = c.get("scale").and_then(serde_json::Value::as_f64);
-                let mut fixed = scale.is_some();
-                ui.label("Scale");
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut fixed, "");
-                    if fixed {
-                        let mut v = scale.unwrap_or(1.0);
-                        ui.add(egui::DragValue::new(&mut v).range(1e-9..=1e9).speed(0.01));
-                        scale = Some(v);
-                    } else {
-                        scale = None;
-                    }
+            });
+            let mut fixed = a.range.is_some();
+            row(ui, "Range", &mut |ui| {
+                kit.checkbox(ui, &mut fixed, "Fixed");
+            });
+            if fixed {
+                let [mut lo, mut hi] = a.range.unwrap_or([-1.0, 1.0]);
+                row(ui, "Low", &mut |ui| {
+                    ui.add(egui::DragValue::new(&mut lo).speed(0.001));
                 });
-                c.insert("scale".into(), serde_json::json!(scale));
-                ui.end_row();
+                row(ui, "High", &mut |ui| {
+                    ui.add(egui::DragValue::new(&mut hi).speed(0.001));
+                });
+                a.range = (lo < hi).then_some([lo, hi]).or(a.range);
+                if a.range.is_none() {
+                    a.range = Some([-1.0, 1.0]);
+                }
+            } else {
+                a.range = None;
+            }
+        }
+        "draft" => {
+            row(ui, "Pull", &mut |ui| {
+                for c in &mut a.pull {
+                    ui.add(egui::DragValue::new(c).speed(0.01));
+                }
+            });
+            row(ui, "Least draft", &mut |ui| {
+                number(ui, &kit, sheet, &mut a.min_draft, 0.5, 0.0..=90.0, "°", 1);
+            });
+        }
+        _ => {}
+    }
+    ui.add_space(t.nav_spacing);
+    kit.section_header(ui, "Combs");
+    let mut combs = a.combs.is_some();
+    row(ui, "Edges", &mut |ui| {
+        let response = kit.checkbox(ui, &mut combs, "on edges");
+        hits.push(("combs".to_string(), response.rect));
+    });
+    match (combs, a.combs.is_some()) {
+        (true, false) => a.combs = Some(serde_json::json!({"edges": true})),
+        (false, true) => a.combs = None,
+        _ => {}
+    }
+    if let Some(serde_json::Value::Object(c)) = &mut a.combs {
+        let mut density = c
+            .get("density")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(40.0);
+        let mut changed = false;
+        row(ui, "Density", &mut |ui| {
+            changed = ui
+                .add(egui::DragValue::new(&mut density).range(2.0..=400.0))
+                .changed();
+        });
+        if changed {
+            c.insert("density".into(), serde_json::json!(density.round()));
+        }
+        let mut scale = c.get("scale").and_then(serde_json::Value::as_f64);
+        let mut fixed = scale.is_some();
+        row(ui, "Scale", &mut |ui| {
+            kit.checkbox(ui, &mut fixed, "");
+            if fixed {
+                let mut v = scale.unwrap_or(1.0);
+                ui.add(egui::DragValue::new(&mut v).range(1e-9..=1e9).speed(0.01));
+                scale = Some(v);
+            } else {
+                scale = None;
             }
         });
+        c.insert("scale".into(), serde_json::json!(scale));
+    }
 }
 
 /// The legend of the analysis shown: its title, and the ramp or the

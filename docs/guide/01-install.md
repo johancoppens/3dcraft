@@ -145,19 +145,21 @@ watching**.
 
 ### Bridged to the window (recommended)
 
-1. **Allow AI agents.** Click **Connect AI agent** at the bottom left of the window (the indigo pill
-   in the status bar; on the start screen the same panel is under **Connect an AI agent**) and turn on
-   **Allow AI agents**. 3DCraft remembers your choice for the next start. The pill then says
-   **Agents on — waiting**.
-2. **Add 3DCraft to your AI tool, once.** With the switch on, the block shows what to copy:
+1. **Allow AI agents.** Click the agent pill at the right end of the status bar (it says **Agents
+   off**; on the start screen the same panel is under **Connect an AI agent**, and **Help › Connect an
+   AI agent…** opens it too) and turn on the switch beside **Connect an AI agent**. 3DCraft remembers
+   your choice for the next start. The pill then says **Waiting for an agent**.
+2. **Add 3DCraft to your AI tool, once.** With the switch on, the panel shows what to copy, under
+   **Connect**:
    - for **Claude Code**, click **Copy command** and paste the line into a terminal:
 
      ```sh
      claude mcp add 3dcraft -- /full/path/to/craft3d-cli mcp --bridge
      ```
 
-   - for **Claude Desktop** and other tools configured with JSON, click **Copy MCP configuration** and
-     paste it into the tool's configuration (Claude Desktop calls it `claude_desktop_config.json`):
+   - for **Claude Desktop**, **Cursor** and other tools configured with JSON, click **Copy MCP
+     configuration** and paste it into the tool's configuration (Claude Desktop calls it
+     `claude_desktop_config.json`, Cursor `~/.cursor/mcp.json`):
 
      ```text
      {
@@ -170,16 +172,20 @@ watching**.
      }
      ```
 
+   - **Other clients** has a ready configuration for each of **Claude Desktop**, **Cursor**, **VS Code**
+     (its `.vscode/mcp.json` takes `"servers"` with `"type": "stdio"`) and **Other (stdio)**, the bare
+     command and its arguments for any client that starts a server over stdio; choosing one copies it.
+
    The path is filled in for your computer (on Linux with the AppImage, the AppImage itself, followed
    by `cli`). Nothing secret is in it: there is no password to copy or keep.
 3. **Ask the agent something** ([chapter 3](03-agent.md)): "Make a 40 × 20 × 10 mm block in 3DCraft".
-   The block appears in the window. The pill turns into **Claude Code connected** with a green dot,
-   and while the agent works it names each command it runs (**Claude Code · feature.block**), so you
-   always see when it acts. Click the pill to see who is connected and since when, to **Disconnect
-   all**, or to turn agents off.
+   The block appears in the window. The pill turns indigo, **Claude Code connected**, and while the
+   agent works it names each command it runs, with a turning mark (**Claude Code · feature.block**),
+   so you always see when it acts. Click the pill to see who is connected and since when, to
+   **Disconnect all**, or to turn agents off.
 
-> **Which files can the agent touch?** Only the folders the panel names: **Agents can read and write
-> files in:** `~/Documents/3DCraft` (made the first time; **Change…** picks another folder, which
+> **Which files can the agent touch?** Only the folders the panel names: the **Work folder**,
+> `~/Documents/3DCraft` (made the first time; **Change…** picks another folder, which
 > 3DCraft remembers, **Open folder** shows it), and, while **Also the open document's folder** is on,
 > the folder of the document you have open, so the agent can export next to it. `file.open`,
 > `file.save`, `file.export`, `file.import` and `view.render` refuse any other path, also through a
@@ -187,16 +193,18 @@ watching**.
 > the File menu stays yours to choose.
 
 **3DCraft asks you first.** When your AI tool connects from a project folder (Claude Code opened in
-`~/projects/bracket`, say), 3DCraft asks: *"Claude Code is connected and works in ~/projects/bracket.
-May it read and write files there?"*, with the folder underneath. **Always allow (all agents)** remembers that
-folder for every agent (it appears in the panel, where **Remove** takes it back), **This session only**
-allows it until you close 3DCraft, **No** keeps it out. The buttons wait a moment before they take a click,
-so a click meant for something else never answers.
+`~/projects/bracket`, say), the pill turns amber and 3DCraft asks: *"Claude Code wants to connect. It is
+working in this folder. 3DCraft can let it read and write files there, besides the work folder"*, with the
+folder underneath. **Allow this folder** allows it until you close 3DCraft, or for every agent from now
+on when **Remember for this folder** is ticked (it then appears in the panel, where **Remove** takes it
+back); **Only the work folder** and **Refuse** keep it out, and the agent stays connected with the work
+folder only. The buttons wait a moment before they take a click, so a click meant for something else
+never answers.
 Then "make a new document with a 10 mm cube and save it in our folder" just works. When the agent wants
-a file anywhere else, 3DCraft shows the folder and the file's name, *"Claude Code wants to save a file"*,
-with **Deny**, **Allow this file once** (that file, for that one request) and **Always allow this folder
-(all agents)**; the agent waits for you (up to two minutes) and is told when
-you say no. Only you can answer these questions: the agent cannot answer them for itself. 3DCraft never
+a file anywhere else, 3DCraft shows the file, *"Claude Code asks to write a file"*, with **Deny**,
+**Allow this folder** (for every agent from now on) and **Allow once** (that file, for that one request);
+the agent waits for you (up to two minutes) and is told when you say no. Only you can answer these
+questions: the agent cannot answer them for itself. 3DCraft never
 offers your home folder itself, the folders of your keys, settings and programs, or the system's folders.
 The folder of the document you have open counts only for a document you opened or saved yourself.
 

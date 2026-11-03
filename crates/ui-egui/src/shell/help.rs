@@ -16,6 +16,7 @@
 use super::{
     EditAction, FileAction, Shell, close_shortcut, next_shortcut, player, previous_shortcut,
 };
+use crate::kit::{Button, Dialog, Glyph, Kit};
 use crate::theme::color;
 use std::path::PathBuf;
 
@@ -124,7 +125,8 @@ pub fn shortcuts() -> Vec<Shortcut> {
         .iter()
         .filter_map(|action| {
             let what = match action {
-                FileAction::New => "New document",
+                FileAction::New => "New part",
+                FileAction::NewAssembly => "New assembly",
                 FileAction::Open => "Open a document",
                 FileAction::Save => "Save",
                 FileAction::SaveAs => "Save as",
@@ -166,6 +168,16 @@ pub fn shortcuts() -> Vec<Shortcut> {
             "Fold the Studio or Analysis options, else clear the selection",
         ),
         keys(View, help_shortcut(), "Show these shortcuts"),
+        keys(
+            View,
+            super::menus::side_panel_shortcut(),
+            "Show or put away the side panel",
+        ),
+        keys(
+            View,
+            super::menus::full_screen_shortcut(),
+            "Full screen (the desktop app)",
+        ),
         keys(History, bare(player::PLAY_KEY), "Play or pause the history"),
         keys(History, bare(player::BACK_KEY), "A step back"),
         keys(History, bare(player::FORWARD_KEY), "A step forward"),
@@ -259,40 +271,45 @@ impl Shell {
         }
     }
 
-    /// The Help menu, after File.
-    pub(super) fn help_menu(&mut self, ui: &mut egui::Ui) {
-        ui.menu_button("Help", |ui| {
-            if ui.button("User guide").clicked() {
+    /// The Help menu, after View.
+    pub(super) fn help_menu(&mut self, ui: &mut egui::Ui) -> egui::Rect {
+        use crate::kit::MenuItem;
+        let tokens = self.tokens;
+        super::menus::kit_menu(ui, &tokens, "Help", tokens.menu_widths[3], |kit, ui| {
+            if kit.menu_item(ui, MenuItem::new("User guide")).clicked() {
                 self.open_external(ui.ctx(), External::Url(GUIDE_URL.to_string()));
                 ui.close();
             }
             let f1 = ui.ctx().format_shortcut(&help_shortcut());
-            if ui
-                .add(egui::Button::new("Keyboard shortcuts").shortcut_text(f1))
+            if kit
+                .menu_item(ui, MenuItem::new("Keyboard shortcuts").shortcut(&f1))
                 .clicked()
             {
                 self.state.dialogs.shortcuts = true;
                 ui.close();
             }
             #[cfg(not(target_arch = "wasm32"))]
-            self.agents_menu_item(ui);
+            self.agents_menu_item(ui, kit);
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(folder) = self.help.data_folder.clone() {
-                let item = ui.button("Open data folder").on_hover_text(format!(
-                    "Autosaves, crash recovery and the recent files: {}",
-                    folder.display()
-                ));
+                let item = kit
+                    .menu_item(ui, MenuItem::new("Open data folder"))
+                    .on_hover_text(format!(
+                        "Autosaves, crash recovery and the recent files: {}",
+                        folder.display()
+                    ));
                 if item.clicked() {
                     self.open_external(ui.ctx(), External::Folder(folder));
                     ui.close();
                 }
             }
-            ui.separator();
-            if ui.button("About 3DCraft").clicked() {
+            kit.menu_separator(ui);
+            if kit.menu_item(ui, MenuItem::new("About 3DCraft")).clicked() {
                 self.state.dialogs.about = true;
                 ui.close();
             }
-        });
+        })
+        .0
     }
 
     /// The Help menu's windows, those that are open; and a frame soon
@@ -316,116 +333,200 @@ impl Shell {
         self.agent_prompt(ui.ctx());
     }
 
+    /// About 3DCraft (board s4): the app icon, the name and what it is,
+    /// the facts in two columns, Copy system info at the left and Close at
+    /// the right.
     fn about_window(&mut self, ctx: &egui::Context) {
         let tokens = self.tokens;
-        let dim = color(tokens.text_dim);
+        let kit = Kit::panel(&tokens);
         let report = self.renderer_report();
         let commit = craft3d_engine::build_commit().unwrap_or("unknown");
-        let mut open = true;
+        let dark = self.dark;
         let mut go = None;
         let mut copy = false;
-        egui::Window::new("About 3DCraft")
-            .id(egui::Id::new("craft3d-about"))
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.set_width(420.0);
-                ui.label(egui::RichText::new(super::PRODUCT).size(22.0).strong());
-                ui.colored_label(dim, format!("Version {VERSION} (commit {commit})"));
-                ui.add_space(tokens.inset * 0.6);
-                ui.label("A parametric 3D CAD modeller built for AI: every action is a command, for the window, the command line and agents over MCP.");
-                ui.add_space(tokens.inset * 0.6);
-                egui::Grid::new("craft3d-about-facts")
-                    .num_columns(2)
-                    .spacing([tokens.inset, tokens.inset * 0.4])
-                    .show(ui, |ui| {
-                        ui.colored_label(dim, "Licence");
-                        ui.label(LICENCE);
-                        ui.end_row();
-                        ui.colored_label(dim, "Platform");
-                        ui.label(craft3d_engine::platform());
-                        ui.end_row();
-                        ui.colored_label(dim, "Renderer");
-                        ui.add(egui::Label::new(report.describe()).wrap());
-                        ui.end_row();
-                        ui.colored_label(dim, "User guide");
-                        if ui.link(GUIDE_URL).clicked() {
-                            go = Some(GUIDE_URL);
-                        }
-                        ui.end_row();
-                        ui.colored_label(dim, "Source");
-                        if ui.link(REPO_URL).clicked() {
-                            go = Some(REPO_URL);
-                        }
-                        ui.end_row();
-                    });
-                ui.add_space(tokens.inset * 0.6);
-                copy = ui
-                    .button("Copy system info")
+        let mut close = false;
+        let dialog = Dialog::new(egui::Id::new("craft3d-about"), "About 3DCraft")
+            .width(tokens.dialog_width)
+            .modal(false);
+        let shown = kit.dialog(ctx, dialog, |kit, ui| {
+            ui.horizontal(|ui| {
+                let side = tokens.about_icon;
+                let (place, _) =
+                    ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+                crate::kit::brand::paint(ui, &tokens, crate::kit::AppIcon::Part, place, dark);
+                ui.add_space(tokens.nav_icon_gap * 2.0);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.label(
+                        egui::RichText::new(super::PRODUCT)
+                            .font(egui::FontId::new(20.0, kit.medium_font(ui).family))
+                            .color(color(tokens.text)),
+                    );
+                    ui.label(
+                        egui::RichText::new("Parametric CAD built for AI")
+                            .font(kit.font())
+                            .color(color(tokens.text_dim)),
+                    );
+                });
+            });
+            let label = 96.0;
+            let value = |ui: &mut egui::Ui, text: &str| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(text)
+                            .font(kit.font())
+                            .color(color(tokens.text)),
+                    )
+                    .wrap(),
+                );
+            };
+            kit.dialog_row(ui, "Version", label, |ui| {
+                value(ui, &format!("{VERSION} (commit {commit})"));
+            });
+            kit.dialog_row(ui, "Platform", label, |ui| {
+                value(ui, &craft3d_engine::platform())
+            });
+            kit.dialog_row(ui, "Renderer", label, |ui| value(ui, &report.describe()));
+            kit.dialog_row(ui, "Licence", label, |ui| value(ui, LICENCE));
+            kit.dialog_row(ui, "Guide", label, |ui| {
+                if kit
+                    .button(ui, Button::link("User guide"))
+                    .on_hover_text(GUIDE_URL)
+                    .clicked()
+                {
+                    go = Some(GUIDE_URL);
+                }
+            });
+            kit.dialog_row(ui, "Source", label, |ui| {
+                let shown = REPO_URL.trim_start_matches("https://");
+                if kit
+                    .button(ui, Button::link(shown))
+                    .on_hover_text(REPO_URL)
+                    .clicked()
+                {
+                    go = Some(REPO_URL);
+                }
+            });
+            kit.dialog_footer(ui, |ui| {
+                copy = kit
+                    .button(ui, Button::quiet("Copy system info").icon(Glyph::Copy))
                     .on_hover_text(
                         "The version, commit, platform and graphics, to paste into a bug report",
                     )
                     .clicked();
+                kit.footer_right(ui, |ui| {
+                    close = kit.button(ui, Button::secondary("Close")).clicked();
+                });
             });
+        });
         if copy {
             ctx.copy_text(self.system_info());
         }
         if let Some(url) = go {
             self.open_external(ctx, External::Url(url.to_string()));
         }
-        if !open {
+        if close || shown.close {
             self.state.dialogs.about = false;
         }
     }
 
+    /// The keyboard shortcuts (F1, board s4): the groups in two columns,
+    /// each key on a keycap at the left and what it does at the right.
     fn shortcuts_window(&mut self, ctx: &egui::Context) {
         let tokens = self.tokens;
-        let dim = color(tokens.text_dim);
+        let kit = Kit::panel(&tokens);
         let mac = ctx.os() == egui::os::OperatingSystem::Mac;
         let rows = shortcuts();
+        let screen = ctx.content_rect();
+        let two = screen.width() >= tokens.shortcuts_width + 2.0 * tokens.dialog_padding;
+        let width = if two {
+            tokens.shortcuts_width
+        } else {
+            tokens.dialog_width
+        };
         // As tall as the window allows, less room for the title.
-        let height = (ctx.content_rect().height() - 120.0).max(120.0);
-        let mut open = true;
-        egui::Window::new("Keyboard shortcuts")
-            .id(egui::Id::new("craft3d-shortcuts"))
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                // One grid, so the columns line up across the groups.
-                egui::ScrollArea::vertical()
-                    .max_height(height)
-                    .min_scrolled_height(height)
-                    .show(ui, |ui| {
-                        egui::Grid::new("craft3d-shortcuts-grid")
-                            .num_columns(2)
-                            .spacing([tokens.inset * 2.0, tokens.inset * 0.3])
-                            .show(ui, |ui| {
-                                for (index, group) in ShortcutGroup::ALL.into_iter().enumerate() {
-                                    // An empty row between the groups
-                                    // (a grid takes no spacing).
-                                    if index > 0 {
-                                        ui.label("");
-                                        ui.end_row();
-                                    }
-                                    ui.label(egui::RichText::new(group.title()).strong());
-                                    ui.end_row();
-                                    for row in rows.iter().filter(|row| row.group == group) {
-                                        ui.colored_label(dim, row.input_text(mac));
-                                        ui.label(row.action);
-                                        ui.end_row();
-                                    }
-                                }
-                            });
+        let height = (screen.height() - 8.0 * tokens.dialog_padding).max(120.0);
+        let dialog = Dialog::new(egui::Id::new("craft3d-shortcuts"), "Keyboard shortcuts")
+            .icon(Glyph::Keyboard, tokens.text_dim)
+            .width(width)
+            .modal(false);
+        let group_ui = |ui: &mut egui::Ui, group: ShortcutGroup| {
+            kit.section_header(ui, group.title());
+            for row in rows.iter().filter(|row| row.group == group) {
+                ui.horizontal(|ui| {
+                    keycap(ui, &kit, &row.input_text(mac));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(row.action)
+                                    .font(kit.font())
+                                    .color(color(tokens.text_dim)),
+                            )
+                            .truncate(),
+                        );
                     });
-            });
-        if !open {
+                });
+            }
+            ui.add_space(tokens.nav_spacing * 2.0);
+        };
+        let shown = kit.dialog(ctx, dialog, |_, ui| {
+            egui::ScrollArea::vertical()
+                .max_height(height)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    let (left, right): (Vec<ShortcutGroup>, Vec<ShortcutGroup>) =
+                        ShortcutGroup::ALL.into_iter().partition(|g| {
+                            matches!(
+                                g,
+                                ShortcutGroup::Files | ShortcutGroup::Edit | ShortcutGroup::View
+                            )
+                        });
+                    if two {
+                        ui.columns(2, |columns| {
+                            if let [a, b] = columns {
+                                a.spacing_mut().item_spacing.y = 2.0;
+                                b.spacing_mut().item_spacing.y = 2.0;
+                                for group in &left {
+                                    group_ui(a, *group);
+                                }
+                                for group in &right {
+                                    group_ui(b, *group);
+                                }
+                            }
+                        });
+                    } else {
+                        for group in ShortcutGroup::ALL {
+                            group_ui(ui, group);
+                        }
+                    }
+                });
+        });
+        if shown.close {
             self.state.dialogs.shortcuts = false;
         }
     }
+}
+
+/// A key or a mouse gesture on a keycap: the field's fill, its rim, the
+/// text in the small font.
+fn keycap(ui: &mut egui::Ui, kit: &Kit, text: &str) {
+    let t = kit.t;
+    let s = kit.skin;
+    let galley = kit.galley(ui, text, kit.small_font(), s.text);
+    let size = egui::vec2(galley.size().x + 12.0, t.chip_height + 2.0);
+    let (outer, _) =
+        ui.allocate_exact_size(egui::vec2(size.x, t.row_height + 4.0), egui::Sense::hover());
+    let rect = egui::Rect::from_center_size(outer.center(), size);
+    ui.painter().rect(
+        rect,
+        egui::CornerRadius::same(t.radius),
+        color(s.field),
+        egui::Stroke::new(1.0, color(s.field_stroke)),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter()
+        .galley(rect.center() - galley.size() * 0.5, galley, color(s.text));
 }
 
 #[cfg(test)]

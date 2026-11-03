@@ -33,10 +33,12 @@
 
 use super::Shell;
 use crate::files::{
-    DrawingPlan, DrawingView, ExportChoices, ExportFormat, ExportKind, ExportPlan, ExportQuality,
-    ExportWhat, MAX_EXPORT_TEXT, export_choices, export_file_name, plain_message,
-    suggested_export_name, what_hint,
+    DrawingView, ExportChoices, ExportFormat, ExportKind, ExportPlan, ExportQuality, ExportWhat,
+    MAX_EXPORT_TEXT, export_choices, export_file_name, plain_message, suggested_export_name,
+    what_hint,
 };
+use crate::kit::{Button, Dialog, Glyph, Kit, Segment};
+use crate::theme::color;
 use craft3d_engine::Session;
 use serde_json::{Value, json};
 
@@ -109,6 +111,9 @@ pub(super) struct Dialogs {
     /// next opening honours them (what, when the document offers it; the
     /// sheet's width and gap; the name).
     preset: Preset,
+    /// Where the export dialog's choices of *What* were drawn in the last
+    /// frame, each with what it chooses.
+    what_hits: Vec<(ExportWhat, egui::Rect)>,
 }
 
 /// What `ui.set` chose for the next opening of the export dialog.
@@ -595,77 +600,116 @@ impl Shell {
         }
     }
 
+    /// The error dialog (board s6): the failure's red warning before its
+    /// title, why, then Copy details at the left and OK, amber, at the
+    /// right. Enter is OK; Escape or a click beside it closes it too.
     fn error_dialog_ui(&mut self, ctx: &egui::Context) {
         let Some(mut error) = self.dialogs.error.take() else {
             return;
         };
         let tokens = self.tokens;
+        let kit = Kit::panel(&tokens);
         let mut ok = false;
-        let modal = egui::Modal::new(egui::Id::new("craft3d-error-dialog")).show(ctx, |ui| {
-            ui.set_max_width(tokens.dialog_width);
-            ui.heading(error.title.as_str());
-            ui.add_space(tokens.inset * 0.4);
-            ui.add(egui::Label::new(error.message.as_str()).wrap());
-            ui.add_space(tokens.inset * 0.8);
-            ui.horizontal(|ui| {
-                ok = ui.button("OK").clicked();
+        let mut copy = false;
+        let dialog = Dialog::new(egui::Id::new("craft3d-error-dialog"), &error.title)
+            .icon(Glyph::Warning, tokens.failed)
+            .width(tokens.dialog_wide_width);
+        let shown = kit.dialog(ctx, dialog, |kit, ui| {
+            kit.paragraph(ui, &error.message, false);
+            kit.dialog_footer(ui, |ui| {
                 let label = if error.copied {
                     super::report::COPIED
                 } else {
                     super::report::COPY_DETAILS
                 };
-                if ui
-                    .small_button(label)
+                copy = kit
+                    .button(ui, Button::quiet(label).icon(Glyph::Copy))
                     .on_hover_text(super::report::COPY_TOOLTIP)
-                    .clicked()
-                {
-                    ctx.copy_text(error.report.clone());
-                    error.copied = true;
-                }
+                    .clicked();
+                kit.footer_right(ui, |ui| {
+                    ok = kit.button(ui, Button::primary("OK")).clicked();
+                });
             });
             ok |= ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         });
-        if !(ok || modal.should_close()) {
+        if copy {
+            ctx.copy_text(error.report.clone());
+            error.copied = true;
+        }
+        if !(ok || shown.close) {
             self.dialogs.error = Some(error);
         }
     }
 
+    /// The export dialog (board s5): a label and its control on each row
+    /// (What, Format, File name, then the format's options), Cancel and
+    /// Export, amber, at the right. Enter exports, Escape cancels.
     fn export_dialog_ui(&mut self, ctx: &egui::Context) {
         let Some(ask) = self.dialogs.export.take() else {
             return;
         };
         let tokens = self.tokens;
+        let kit = Kit::panel(&tokens);
         let names_file = self.dialogs.names_file;
         let mut answer: Option<bool> = None;
         let mut chose: Option<ExportWhat> = None;
         let mut format: Option<ExportFormat> = None;
+        let mut what_hits = Vec::new();
         let export = &mut self.state.export;
-        let modal = egui::Modal::new(egui::Id::new("craft3d-export-dialog")).show(ctx, |ui| {
-            ui.set_max_width(tokens.dialog_width);
-            ui.heading("Export");
-            ui.add_space(tokens.inset * 0.4);
-            ui.label("What:");
-            ui.indent("craft3d-export-what", |ui| {
-                for what in ask.choices.whats() {
-                    let offered = ask.choices.offers(&what);
-                    let mut response = ui
-                        .add_enabled(
-                            offered,
-                            egui::RadioButton::new(export.what == what, ask.choices.label(&what)),
-                        )
-                        .on_hover_text(what_hint(&what));
-                    if let (false, Some(problem)) = (
-                        offered,
-                        ask.choices
-                            .selection
-                            .as_ref()
-                            .and_then(|s| s.problem.as_ref()),
-                    ) {
-                        response = response.on_disabled_hover_text(problem.as_str());
+        let label_width = 100.0;
+        let dialog = Dialog::new(egui::Id::new("craft3d-export-dialog"), "Export")
+            .width(tokens.export_dialog_width);
+        let shown = kit.dialog(ctx, dialog, |kit, ui| {
+            // What: the choices this document offers, as a segmented
+            // control while they fit, else one under the other.
+            let whats: Vec<ExportWhat> = ask
+                .choices
+                .whats()
+                .into_iter()
+                .filter(|what| ask.choices.offers(what))
+                .collect();
+            let labels: Vec<String> = whats
+                .iter()
+                .map(|what| short_what(&ask.choices.label(what)))
+                .collect();
+            let room = ui.available_width() - label_width;
+            let wide: f32 = labels
+                .iter()
+                .map(|l| {
+                    kit.galley(ui, l.as_str(), kit.font(), tokens.text).size().x
+                        + 2.0 * tokens.field_inset
+                })
+                .sum();
+            row(ui, kit, "What", label_width, |ui| {
+                let mut chosen = whats
+                    .iter()
+                    .position(|w| *w == export.what)
+                    .unwrap_or(usize::MAX);
+                if wide + 8.0 <= room {
+                    let segments: Vec<Segment<'_>> =
+                        labels.iter().map(|l| Segment::Text(l.as_str())).collect();
+                    let before = chosen;
+                    let choice = kit.segmented(ui, &mut chosen, &segments);
+                    for (what, rect) in whats.iter().zip(&choice.items) {
+                        what_hits.push((what.clone(), *rect));
                     }
-                    if response.clicked() {
-                        chose = Some(what);
+                    if chosen != before {
+                        chose = whats.get(chosen).cloned();
                     }
+                } else {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        for (index, (what, label)) in whats.iter().zip(&labels).enumerate() {
+                            let mut on = index == chosen;
+                            let response = kit
+                                .checkbox(ui, &mut on, label)
+                                .on_hover_text(what_hint(what));
+                            what_hits.push((what.clone(), response.rect));
+                            if response.clicked() {
+                                chose = Some(what.clone());
+                            }
+                        }
+                    });
                 }
             });
             if let Some(problem) = ask
@@ -674,57 +718,64 @@ impl Shell {
                 .as_ref()
                 .and_then(|s| s.problem.as_ref())
             {
-                ui.add(egui::Label::new(egui::RichText::new(problem.as_str()).weak()).wrap());
+                hint(ui, kit, label_width, problem);
             }
-            ui.add_space(tokens.inset * 0.4);
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Format:");
-                for offered in ask.choices.formats(&export.what) {
-                    if ui
-                        .selectable_label(export.format == offered, offered.label())
-                        .clicked()
-                    {
-                        format = Some(offered);
-                    }
+            // Format: those that hold what is chosen.
+            let formats = ask.choices.formats(&export.what);
+            row(ui, kit, "Format", label_width, |ui| {
+                let labels: Vec<&str> = formats.iter().map(|f| f.label()).collect();
+                let mut chosen = formats
+                    .iter()
+                    .position(|f| *f == export.format)
+                    .unwrap_or(0);
+                let before = chosen;
+                kit.dropdown(ui, "craft3d-export-format", &mut chosen, &labels, 200.0);
+                if chosen != before {
+                    format = formats.get(chosen).copied();
                 }
             });
-            ui.add_space(tokens.inset * 0.4);
-            options_ui(ui, export);
-            ui.add_space(tokens.inset * 0.4);
-            if names_file {
-                ui.horizontal(|ui| {
-                    ui.label("File name:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut export.name)
-                            .char_limit(MAX_EXPORT_TEXT)
-                            .desired_width(220.0),
+            row(ui, kit, "File name", label_width, |ui| {
+                if names_file {
+                    kit.text_field(ui, "craft3d-export-name", &mut export.name, "", None, 280.0);
+                } else {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}: the folder and the name are chosen next",
+                            export_file_name(&export.name, export.format)
+                        ))
+                        .font(kit.font())
+                        .color(color(tokens.text_dim)),
                     );
-                });
-            } else {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{}: the folder and the name are chosen next",
-                        export_file_name(&export.name, export.format)
-                    ))
-                    .weak(),
-                );
+                }
+            });
+            options_ui(ui, kit, label_width, export);
+            // What is typed is held to its limit, as the fields were.
+            for text in [&mut export.name, &mut export.width, &mut export.gap] {
+                if text.chars().count() > MAX_EXPORT_TEXT {
+                    *text = text.chars().take(MAX_EXPORT_TEXT).collect();
+                }
             }
-            ui.add_space(tokens.inset * 0.6);
-            ui.horizontal(|ui| {
-                if ui.button(export_verb(names_file)).clicked() {
-                    answer = Some(true);
-                }
-                if ui.button("Cancel").clicked() {
-                    answer = Some(false);
-                }
+            kit.dialog_footer(ui, |ui| {
+                kit.footer_right(ui, |ui| {
+                    if kit
+                        .button(ui, Button::primary(export_verb(names_file)))
+                        .clicked()
+                    {
+                        answer = Some(true);
+                    }
+                    if kit.button(ui, Button::secondary("Cancel")).clicked() {
+                        answer = Some(false);
+                    }
+                });
             });
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
                 answer = Some(true);
             }
         });
-        if answer.is_none() && modal.should_close() {
+        if answer.is_none() && shown.close {
             answer = Some(false);
         }
+        self.dialogs.what_hits = what_hits;
         self.dialogs.export = Some(ask);
         if let Some(what) = chose {
             let _ = self.set_export_what(what);
@@ -736,70 +787,131 @@ impl Shell {
             self.answer_export(answer);
         }
     }
+
+    /// Where the export dialog's choices of *What* were drawn in the last
+    /// frame, each with what it chooses (empty while it is closed).
+    pub fn export_what_hits(&self) -> &[(ExportWhat, egui::Rect)] {
+        &self.dialogs.what_hits
+    }
+}
+
+/// What a choice of *What* says in the dialog: the model's "All bodies",
+/// the selection without its summary (in its tooltip), the rest as they
+/// are.
+fn short_what(label: &str) -> String {
+    match label {
+        "The model" => "All bodies".to_string(),
+        l if l.starts_with("The selection") => "Selection".to_string(),
+        l => l.to_string(),
+    }
+}
+
+/// A row of the dialog: the label dim at the left, the control after it.
+fn row(ui: &mut egui::Ui, kit: &Kit, label: &str, width: f32, add: impl FnOnce(&mut egui::Ui)) {
+    kit.dialog_row(ui, label, width, |ui| {
+        ui.horizontal_wrapped(|ui| add(ui));
+    });
+}
+
+/// A hint under the controls, in the dim ink and the small font.
+fn hint(ui: &mut egui::Ui, kit: &Kit, indent: f32, text: &str) {
+    ui.horizontal(|ui| {
+        ui.add_space(indent + ui.spacing().item_spacing.x);
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(text)
+                    .font(kit.small_font())
+                    .color(color(kit.skin.text_dim)),
+            )
+            .wrap(),
+        );
+    });
 }
 
 /// The options of what is chosen in the format chosen: a mesh's quality,
 /// a drawing's view, projection and hidden lines, a sheet's width and gap.
-fn options_ui(ui: &mut egui::Ui, export: &mut crate::state::ExportState) {
+fn options_ui(ui: &mut egui::Ui, kit: &Kit, label: f32, export: &mut crate::state::ExportState) {
     if export.format.is_mesh() {
-        ui.horizontal(|ui| {
-            ui.label("Quality:");
-            for quality in ExportQuality::ALL {
-                ui.radio_value(&mut export.quality, quality, quality.label())
-                    .on_hover_text(quality.hint());
+        row(ui, kit, "Quality", label, |ui| {
+            let segments: Vec<Segment<'_>> = ExportQuality::ALL
+                .iter()
+                .map(|q| Segment::Text(q.label()))
+                .collect();
+            let mut chosen = ExportQuality::ALL
+                .iter()
+                .position(|q| *q == export.quality)
+                .unwrap_or(1);
+            kit.segmented(ui, &mut chosen, &segments);
+            if let Some(quality) = ExportQuality::ALL.get(chosen) {
+                export.quality = *quality;
             }
         });
+        hint(ui, kit, label, export.quality.hint());
     }
     if export.what == ExportWhat::Model && export.format.kind() == ExportKind::Outline {
-        drawing_options_ui(ui, &mut export.drawing);
+        let drawing = &mut export.drawing;
+        row(ui, kit, "View", label, |ui| {
+            let labels: Vec<&str> = DrawingView::ALL.iter().map(|v| v.label()).collect();
+            let mut chosen = DrawingView::ALL
+                .iter()
+                .position(|v| *v == drawing.view)
+                .unwrap_or(0);
+            kit.dropdown(ui, "craft3d-export-view", &mut chosen, &labels, 200.0);
+            if let Some(view) = DrawingView::ALL.get(chosen) {
+                drawing.view = *view;
+            }
+        });
+        row(ui, kit, "Projection", label, |ui| {
+            let mut chosen = usize::from(drawing.perspective);
+            kit.segmented(
+                ui,
+                &mut chosen,
+                &[Segment::Text("Orthographic"), Segment::Text("Perspective")],
+            );
+            drawing.perspective = chosen == 1;
+        });
+        row(ui, kit, "Hidden lines", label, |ui| {
+            let mut chosen = usize::from(!drawing.dashed);
+            kit.segmented(
+                ui,
+                &mut chosen,
+                &[Segment::Text("Dashed"), Segment::Text("Leave out")],
+            );
+            drawing.dashed = chosen == 0;
+        });
+        hint(
+            ui,
+            kit,
+            label,
+            if drawing.perspective {
+                "As the eye sees it, for an illustration: not to scale"
+            } else {
+                "To scale: one unit in the file is one unit of the model"
+            },
+        );
     }
     if export.what.has_sheet() {
-        ui.horizontal(|ui| {
-            ui.label("Sheet width:");
-            ui.add(
-                egui::TextEdit::singleline(&mut export.width)
-                    .hint_text("no limit")
-                    .char_limit(MAX_EXPORT_TEXT)
-                    .desired_width(90.0),
+        row(ui, kit, "Sheet width", label, |ui| {
+            kit.text_field(
+                ui,
+                "craft3d-export-width",
+                &mut export.width,
+                "no limit",
+                None,
+                140.0,
             )
             .on_hover_text("Rows wrap at this width: 600 mm, 24 in; empty for one row");
-            ui.label("Gap:");
-            ui.add(
-                egui::TextEdit::singleline(&mut export.gap)
-                    .hint_text("5 mm")
-                    .char_limit(MAX_EXPORT_TEXT)
-                    .desired_width(70.0),
+        });
+        row(ui, kit, "Gap", label, |ui| {
+            kit.text_field(
+                ui,
+                "craft3d-export-gap",
+                &mut export.gap,
+                "5 mm",
+                None,
+                140.0,
             )
             .on_hover_text("Space between two outlines");
         });
     }
-}
-
-/// The choices of a drawing of the model as seen: from which view, to
-/// scale or in perspective, and what becomes of the hidden lines.
-fn drawing_options_ui(ui: &mut egui::Ui, drawing: &mut DrawingPlan) {
-    ui.label("A drawing of the model as seen: its edges and outlines.");
-    ui.horizontal(|ui| {
-        ui.label("View:");
-        egui::ComboBox::from_id_salt("craft3d-export-view")
-            .selected_text(drawing.view.label())
-            .show_ui(ui, |ui| {
-                for view in DrawingView::ALL {
-                    ui.selectable_value(&mut drawing.view, view, view.label());
-                }
-            });
-    });
-    ui.horizontal(|ui| {
-        ui.label("Projection:");
-        ui.radio_value(&mut drawing.perspective, false, "Orthographic")
-            .on_hover_text("To scale: one unit in the file is one unit of the model");
-        ui.radio_value(&mut drawing.perspective, true, "Perspective")
-            .on_hover_text("As the eye sees it, for an illustration: not to scale");
-    });
-    ui.horizontal(|ui| {
-        ui.label("Hidden lines:");
-        ui.radio_value(&mut drawing.dashed, false, "Leave out");
-        ui.radio_value(&mut drawing.dashed, true, "Dashed")
-            .on_hover_text("Lines behind a face drawn dashed, on a layer of their own");
-    });
 }
