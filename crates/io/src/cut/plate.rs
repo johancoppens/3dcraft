@@ -200,6 +200,9 @@ fn side_fault(
     None
 }
 
+/// A control point of a net and its weight, by its indices along u and v.
+type NetPoint<'a> = Box<dyn Fn(usize, usize) -> Option<(Vec3, f64)> + 'a>;
+
 /// Whether the freeform `surface` lies on the cylinder over a curve along
 /// `axis`: in one parameter direction every row of control points
 /// projects to one point of the plate's plane (within ten tolerances) and
@@ -209,11 +212,7 @@ fn side_fault(
 /// the other parameter: the wall is square to the plate. A certificate,
 /// not a sample.
 fn extruded_along(surface: &Surface, axis: Vec3, tolerance: &Tolerance) -> bool {
-    let (nu, nv, point): (
-        usize,
-        usize,
-        Box<dyn Fn(usize, usize) -> Option<(Vec3, f64)>>,
-    ) = match surface {
+    let (nu, nv, point): (usize, usize, NetPoint<'_>) = match surface {
         Surface::Nurbs(n) => {
             let (nu, nv) = n.counts();
             let (ctrl, weights) = (n.control_points(), n.weights());
