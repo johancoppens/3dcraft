@@ -23,10 +23,14 @@ use craft3d_topo::{Body, BodyKind, Coedge, VertexId};
 /// What a trimmed face made beside its body.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Trimmed {
-    /// The largest distance found between an edge and the projection of
-    /// its curve (at the midpoints between samples); 0 for curves given
-    /// in parameter space or projected onto a plane, which are exact.
+    /// The largest proven distance between an edge and the true
+    /// projection of its curve, over the whole edge (not only at
+    /// samples); 0 for curves given in parameter space or projected onto
+    /// a plane, which are exact.
     pub deviation: f64,
+    /// The largest distance found at the midpoints between samples (at
+    /// most `deviation`; what was reported before it was proven).
+    pub sampled: f64,
     /// The highest degree of an edge (`d (p + q)` on a spline surface).
     pub degree: usize,
     /// Edges per loop, outer first.
@@ -399,6 +403,10 @@ pub(crate) fn build_trim(
         _ => false,
     };
     let mut deviation = 0.0_f64;
+    let mut sampled = 0.0_f64;
+    // One allowance of proof work for the whole face; an analytic face's
+    // rational form joins C1 across its knot lines by construction.
+    let mut budget = craft3d_geom::projection_proof::MAX_TRIM_PROOF_WORK;
     let mut degree = 0usize;
     // Each loop: its pieces, and its points in the surface's parameters
     // (for its turning).
@@ -447,17 +455,19 @@ pub(crate) fn build_trim(
                         let uv = match feature.space {
                             TrimSpace::Parameter => curve.clone(),
                             TrimSpace::Model => {
-                                let (uv, gap) = trim::project_points(
-                                    &Surface::Nurbs(s.clone()),
-                                    &Curve3::Nurbs(curve.clone()),
-                                    curve.domain(),
+                                let made = trim::project_proven(
+                                    s,
+                                    curve,
                                     how,
                                     0.5 * tol.linear,
                                     tol.linear,
+                                    analytic,
+                                    &mut budget,
                                 )
                                 .map_err(|e| format!("{what}: {e}"))?;
-                                deviation = deviation.max(gap);
-                                uv
+                                deviation = deviation.max(made.proven);
+                                sampled = sampled.max(made.sampled);
+                                made.uv
                             }
                         };
                         let space = trim::compose(s, &uv).map_err(|e| format!("{what}: {e}"))?;
@@ -593,6 +603,7 @@ pub(crate) fn build_trim(
         names,
         Trimmed {
             deviation,
+            sampled,
             degree,
             loops: sizes,
         },

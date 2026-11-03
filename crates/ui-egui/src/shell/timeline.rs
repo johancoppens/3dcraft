@@ -3,11 +3,13 @@
 //! The timeline is a slider over the steps of the history: dragging it
 //! shows the model as it was after that step (`view.scrub`), which is view
 //! state only: the document, its rollback marker and its undo history stay
-//! as they are. "Roll back here" moves the real marker there
-//! (`history.rollback`), so new features go in after it; "To end" takes
-//! the marker away and shows the document as it is. The rows after the
-//! step shown are greyed in the list. Under the slider sits the player
-//! (`shell/player.rs`), which plays the steps one after the other.
+//! as they are. The real rollback marker is the feature list's amber bar
+//! (`shell/sidepanel/features.rs`): dragging it, or a row's *Roll back to
+//! here*, moves it (`history.rollback`), so new features go in after it;
+//! dragging it to the end, or *Roll forward to end*, takes it away. The
+//! rows after the step shown are greyed in the list. Under the slider sits
+//! the player (`shell/player.rs`), which plays the steps one after the
+//! other.
 //!
 //! The eye of a row hides the feature's body, sketch or datum in the view
 //! (`feature.visible`), and shows it again.
@@ -91,6 +93,8 @@ impl Timeline {
     /// Whether a moment of the motion waits to be shown.
     pub(super) fn motion_waiting(&self) -> bool {
         self.pending.iter().any(|(id, _)| *id == "view.motion")
+            // Made elsewhere (the page's worker) and not drawn yet.
+            || self.motion.as_ref().is_some_and(|m| m.pending)
     }
 
     /// The `t` the view shows, or will once what is queued has run.
@@ -188,6 +192,29 @@ impl Shell {
         self.timeline.rollback = rollback;
         self.timeline.motion = session.motion();
         self.timeline.has_timeline = session.timeline().is_ok();
+        if let Some(motion) = &self.timeline.motion
+            && !motion.pending
+        {
+            // A moment made elsewhere came: weighed by how long it took.
+            if self.player.hint.coming() {
+                let now = self.player.hint.clock.now();
+                self.player.hint.came(now);
+            }
+            // It could not be made there: said, and never waited for.
+            if let Some(why) = motion.error.clone() {
+                self.timeline.problem = Some(why);
+                self.stop_playing();
+            }
+        }
+        // A bake made elsewhere that stopped: said; the motion still plays.
+        if let Some(why) = self
+            .timeline
+            .motion
+            .as_ref()
+            .and_then(|m| m.bake_error.clone())
+        {
+            self.timeline.problem = Some(why);
+        }
         self.sync_trace_states(session);
         let traces = session.traces();
         if !same_traces(&traces, &self.timeline.traces) {
@@ -428,10 +455,14 @@ impl Shell {
                 (session.execute(id, params), 0.0)
             };
             if timed {
-                if answer.is_ok() {
-                    self.player.hint.made(ms);
-                } else {
-                    self.player.hint.not_weighed();
+                match &answer {
+                    // Made elsewhere: weighed once it came.
+                    Ok(result) if result.get("pending") == Some(&Value::Bool(true)) => {
+                        let now = self.player.hint.clock.now();
+                        self.player.hint.made_elsewhere_from(now);
+                    }
+                    Ok(_) => self.player.hint.made(ms),
+                    Err(_) => self.player.hint.not_weighed(),
                 }
             }
             // The bake hint follows the bake it asked for by its answers
@@ -478,7 +509,7 @@ impl Shell {
         self.timeline
             .motion
             .as_ref()
-            .is_some_and(|m| !m.exact || m.building > 0)
+            .is_some_and(|m| !m.exact || m.building > 0 || m.pending)
             || self.timeline.tracing
     }
 
@@ -488,24 +519,21 @@ impl Shell {
     pub(crate) fn timeline_ui(&mut self, ui: &mut egui::Ui) {
         let tokens = self.tokens;
         let steps = self.timeline.steps;
-        if steps == 0 {
-            // An assembly has no history of its own, but its motion
-            // plays (docs/design/motion.md › *Assemblies*).
-            if self.timeline.has_timeline {
-                self.motion_ui(ui);
-                if self.playing_motion() {
-                    self.player_controls(ui);
-                }
-            }
+        if steps == 0 && !self.timeline.has_timeline {
             return;
         }
+        // One timeline and one row (board s8): History or Motion, the
+        // slider of the one chosen, the player's row.
+        self.player_mode(ui);
+        if self.playing_motion_mode() {
+            self.motion_slider(ui);
+            self.player_controls(ui);
+            self.motion_extras(ui);
+            return;
+        }
+        let _ = tokens;
         let shown = self.timeline.shown_step().clamp(1, steps);
         let mut step = shown;
-        let name = self
-            .rows
-            .get(step.saturating_sub(1))
-            .map(|row| row.name.clone())
-            .unwrap_or_default();
         ui.horizontal(|ui| {
             ui.spacing_mut().slider_width = (ui.available_width() - 8.0).max(40.0);
             let slider = egui::Slider::new(&mut step, 1..=steps)
@@ -520,40 +548,7 @@ impl Shell {
             self.go_to_step(step);
             ui.ctx().request_repaint();
         }
-        let scrubbed = self.timeline.position.clone();
-        self.motion_ui(ui);
         self.player_controls(ui);
-        ui.horizontal(|ui| {
-            let text = format!("Step {shown}/{steps}  {name}");
-            let label = if scrubbed.is_some() || self.state.timeline.playing {
-                egui::RichText::new(text).color(color(tokens.attention))
-            } else {
-                egui::RichText::new(text).color(color(tokens.text_dim))
-            };
-            ui.label(label);
-        });
-        ui.horizontal(|ui| {
-            let here = ui
-                // A Jig in use is looked at and played, not changed.
-                .add_enabled(
-                    scrubbed.is_some() && !self.jig_in_use(),
-                    egui::Button::new("Roll back here"),
-                )
-                .on_hover_text(
-                    "Move the rollback marker to this step: the model is built up to here, \
-                     and new features go in after it.",
-                );
-            if here.clicked()
-                && let Some(position) = &scrubbed
-            {
-                self.stop_playing();
-                self.timeline.queue(
-                    "history.rollback",
-                    json!({"feature": position.feature.clone()}),
-                );
-                self.timeline.queue("view.scrub", json!({"feature": null}));
-            }
-        });
         if let Some(problem) = &self.timeline.problem {
             ui.add(
                 egui::Label::new(
@@ -641,6 +636,106 @@ mod tests {
         };
         let mut output = ctx.run_ui(input, |ui| shell.ui(ui, session));
         output.textures_delta.clear();
+    }
+
+    /// A moment made elsewhere (the page's worker) is waited for: the
+    /// playing player asks for one, and asks for the next only once the
+    /// worker made it, however many frames go by meanwhile; its cost for
+    /// the bake hint is the time until it came.
+    #[test]
+    fn the_player_waits_for_a_moment_made_elsewhere() {
+        use craft3d_engine::{scene_begin, scene_next};
+        let mut session = Session::new(Workspace::memory());
+        session.set_stepwise(true);
+        session.set_checks_elsewhere(true);
+        session.set_regen_elsewhere(true);
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            ("variable.set", json!({"name": "t", "expr": "0"})),
+            (
+                "feature.block",
+                json!({"size": [10, 10, 10], "position": ["20 mm * t", 0, 0], "name": "Box"}),
+            ),
+        ] {
+            session.execute(id, &params).unwrap();
+        }
+        let answer = |session: &mut Session| {
+            let quality = craft3d_engine::SceneQuality::display();
+            let mut jobs = 0;
+            while let Some(token) = session.scene_job(quality) {
+                jobs += 1;
+                let request = session.scene_request(token).unwrap();
+                scene_begin(&request.document, &request.work);
+                while let Some(part) = scene_next() {
+                    session.scene_answered(token, Ok(&part));
+                }
+                session.scene_done(token);
+            }
+            jobs
+        };
+        answer(&mut session);
+        let start = session.work_here();
+        let ctx = egui::Context::default();
+        let mut shell = Shell::new();
+        let clock = std::sync::Arc::new(std::sync::Mutex::new(0.0_f64));
+        let for_hint = std::sync::Arc::clone(&clock);
+        shell.set_moment_clock(Some(std::sync::Arc::new(move || {
+            *for_hint
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        })));
+        let mut at = 0.0;
+        let mut tick = |ctx: &egui::Context, shell: &mut Shell, session: &mut Session| {
+            at += 0.1;
+            *clock.lock().unwrap() = at * 1000.0;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, 700.0),
+                )),
+                time: Some(at),
+                ..Default::default()
+            };
+            // As the page draws: as it was while the scene shown is not
+            // there (`WebHost::prepare`), never building it here.
+            let away = !session.scene_ready(shell.scene_quality());
+            let mut output = ctx.run_ui(input, |ui| {
+                if away {
+                    shell.ui_away(ui);
+                } else {
+                    shell.ui(ui, session);
+                }
+            });
+            output.textures_delta.clear();
+        };
+        tick(&ctx, &mut shell, &mut session);
+        shell.state.timeline.motion = true;
+        shell.state.timeline.playing = true;
+        tick(&ctx, &mut shell, &mut session);
+        tick(&ctx, &mut shell, &mut session);
+        let asked = session.motion().expect("a moment asked for");
+        assert!(asked.pending);
+        // Frames go by: the same moment waits, no other is asked for.
+        for _ in 0..10 {
+            tick(&ctx, &mut shell, &mut session);
+            assert_eq!(session.motion().unwrap().t, asked.t);
+        }
+        assert!(answer(&mut session) > 0);
+        let mut moved = false;
+        for _ in 0..5 {
+            tick(&ctx, &mut shell, &mut session);
+            let now = session.motion().unwrap();
+            if now.t != asked.t {
+                moved = true;
+                break;
+            }
+        }
+        assert!(moved, "the player asked for the next moment once it came");
+        // Weighed by the time it waited (1 s and more, not the command's
+        // few microseconds).
+        assert!(shell.player.hint.heavy.last_ms().unwrap_or(0.0) >= 1000.0);
+        // The page's thread made no moment itself.
+        assert_eq!(session.work_here(), start);
     }
 
     /// While an edit made where the bodies are waits for its answer (the

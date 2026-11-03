@@ -88,6 +88,12 @@ impl Heavy {
         self.judge();
     }
 
+    /// The cost of the moment weighed last.
+    #[cfg(test)]
+    pub(crate) fn last_ms(&self) -> Option<f64> {
+        self.moments.back().map(|(ms, _)| *ms)
+    }
+
     /// The median cost of the moments weighed, in milliseconds, once
     /// there are enough to judge.
     pub(crate) fn median(&self) -> Option<f64> {
@@ -268,6 +274,10 @@ pub(crate) struct BakeHint {
     /// What the `view.motion` of the moment asked for took, in
     /// milliseconds, once it ran.
     made: Option<f64>,
+    /// When ([`MomentClock::now`]) the moment asked for was handed to be
+    /// made elsewhere (the page's worker): it is weighed by the time until
+    /// it came, not by the command that asked for it.
+    elsewhere_since: Option<f64>,
     /// The clock moments are timed by ([`MomentClock`]).
     pub(crate) clock: MomentClock,
     /// The bake asked for from the hint, while it runs.
@@ -305,6 +315,27 @@ impl BakeHint {
     pub(crate) fn asked(&mut self) {
         self.asked = true;
         self.made = None;
+        self.elsewhere_since = None;
+    }
+
+    /// The `view.motion` of the moment asked for handed it to be made
+    /// elsewhere at `now` ([`MomentClock::now`]).
+    pub(crate) fn made_elsewhere_from(&mut self, now: f64) {
+        if self.asked {
+            self.elsewhere_since = Some(now);
+        }
+    }
+
+    /// The moment made elsewhere came at `now`: what it took is its cost.
+    pub(crate) fn came(&mut self, now: f64) {
+        if let Some(since) = self.elsewhere_since.take() {
+            self.made(now - since);
+        }
+    }
+
+    /// A moment made elsewhere is on its way.
+    pub(crate) fn coming(&self) -> bool {
+        self.elsewhere_since.is_some()
     }
 
     /// Whether the `view.motion` about to run is the playing player's,
@@ -334,6 +365,7 @@ impl BakeHint {
     pub(crate) fn not_weighed(&mut self) {
         self.asked = false;
         self.made = None;
+        self.elsewhere_since = None;
     }
 }
 
@@ -354,6 +386,18 @@ impl std::fmt::Debug for MomentClock {
 }
 
 impl MomentClock {
+    /// Milliseconds since a moment of its own (the first time asked),
+    /// for spans across frames.
+    pub(crate) fn now(&self) -> f64 {
+        match &self.0 {
+            Some(clock) => clock(),
+            None => {
+                static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+                EPOCH.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0
+            }
+        }
+    }
+
     /// Runs `work` and says how long it took, in milliseconds.
     pub(crate) fn time<R>(&self, work: impl FnOnce() -> R) -> (R, f64) {
         match &self.0 {
@@ -516,8 +560,6 @@ impl Shell {
 
     /// The hint under the motion's caption: the offer with its buttons,
     /// or the bake's progress.
-    // Review of 2026-11-02, N4: the hint's place and look are restyled with
-    // the player in the UI overhaul's phase 2b; kept small until then.
     pub(crate) fn bake_hint_ui(&mut self, ui: &mut egui::Ui) {
         let kit = Kit::panel(&self.tokens);
         match self.bake_hint() {
@@ -531,15 +573,9 @@ impl Shell {
                     ms.round()
                 );
                 // The title does not wrap: in a narrow panel the question
-                // opens the body instead, so the banner never widens it.
-                let t = &kit.t;
-                let around =
-                    2.0 * (t.inset + 2.0) + t.info_bar_width + t.nav_icon_size + t.nav_icon_gap;
-                let wide = kit
-                    .galley(ui, question, kit.medium_font(ui), kit.skin.text)
-                    .size()
-                    .x;
-                let (title, body) = if wide + around <= ui.available_width() {
+                // opens the body instead, so the banner never widens it
+                // (the kit says what fits, review N4 of 2026-11-02).
+                let (title, body) = if kit.banner_title_fits(ui, question, ui.available_width()) {
                     (Some(question), reason)
                 } else {
                     (None, format!("{question} {reason}"))

@@ -35,7 +35,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("coupling.delete", "Delete Coupling", r#"{"name": string}"#,
         "Removes a coupling (one undo step).", doc: true, coupling_delete),
     spec!("joint.set", "Set Joint", r#"{"mate": string, "value": expr or null, "which": "angle|distance|x|y" = the mate's main free motion, "merge": boolean = false}"#,
-        "Drives a mate's free motion (one undo step): sets the assembly variable <mate>_<which> to value (an angle or a length expression), creating it, so it can be used in formulas and published as a parameter (variable.publish); null removes the variable and leaves the motion free. merge folds this change into the last undo step when that was a joint.set of the same variable (a slider or a part being dragged: one undo step for the whole drag). Returns the mate with its status.", doc: true, joint_set),
+        "Drives a mate's free motion (one undo step): sets the assembly variable <mate>_<which> to value (an angle or a length expression), creating it, so it can be used in formulas and published as a parameter (variable.publish); null removes the variable and leaves the motion free. merge folds this change into the last undo step when that was a joint.set of the same variable (a slider or a part being dragged: one undo step for the whole drag). Returns the mate with its status. Where the assembly is placed beside the host (the browser's worker), the mate is returned unsolved: status \"pending\", value null and deferred: true; what it solves to comes with the view (the tree, view.motion).", doc: true, joint_set),
     spec!("assembly.solve", "Solve Assembly", r#"{}"#,
         "Solves the active assembly as it is and says how: ok, each mate's status and the value of its main free motion, the instances solved, the degrees of freedom left and each free motion in words (\"Bar[3] can still turn about z …\"), floating when no mate reaches the world (the first instance is then held where it is placed), and the error that names the mates that contradict each other.", doc: true, assembly_solve),
     spec!("assembly.inspect", "Inspect Assembly", r#"{"measures": boolean = false}"#,
@@ -109,8 +109,12 @@ fn assembly_new(session: &mut Session, params: &Value) -> Run {
     doc.assembly = Some(Assembly::default());
     // The same tab: its number and the session's settings stay.
     let id = open.id;
+    let work = std::sync::Arc::clone(&open.work);
     *open = OpenDocument::new(doc, None);
     open.id = id;
+    // What it costs, and whether its view is made elsewhere, is the
+    // session's (`Session::work_here`).
+    open.work = work;
     if let Some(budget) = budget {
         open.cache.set_body_budget(budget);
     }
@@ -385,12 +389,19 @@ fn instance_json(placed: &Placed, instance: &Instance) -> Value {
 }
 
 fn mate_json(placed: &Placed, mate: &Mate) -> Value {
-    let st = placed.mates.iter().find(|m| m.name == mate.name);
+    mate_json_of(Some(placed), mate)
+}
+
+/// [`mate_json`]; without a placement (solved elsewhere) its solved
+/// state is not known: `status` is `pending`.
+fn mate_json_of(placed: Option<&Placed>, mate: &Mate) -> Value {
+    let st = placed.and_then(|p| p.mates.iter().find(|m| m.name == mate.name));
     let failed = st.and_then(|s| s.error.clone());
-    let status = match (&failed, &placed.solve_error) {
+    let status = match (&failed, placed.map(|p| &p.solve_error)) {
+        (_, None) => "pending",
         (Some(_), _) => "failed",
-        (None, Some(_)) => "unsolved",
-        (None, None) => "ok",
+        (None, Some(Some(_))) => "unsolved",
+        (None, Some(None)) => "ok",
     };
     json!({
         "name": mate.name,
@@ -1367,7 +1378,21 @@ fn joint_set(session: &mut Session, params: &Value) -> Run {
             }
         },
     )?;
-    let mut result = one_mate(session, &name)?;
+    // Placed elsewhere (the page's worker): what is solved comes with the
+    // scenes there; the page never solves for a slider's value.
+    let mut result = if session.regen_elsewhere() && !session.regenerated_here() {
+        let assembly = assembly_of(session, "mate")?;
+        let mate = assembly
+            .mate(&name)
+            .ok_or_else(|| CommandError::new(format!("there is no mate `{name}`")))?;
+        let mut unsolved = mate_json_of(None, mate);
+        if let Some(map) = unsolved.as_object_mut() {
+            map.insert("deferred".into(), true.into());
+        }
+        unsolved
+    } else {
+        one_mate(session, &name)?
+    };
     if let Some(map) = result.as_object_mut() {
         map.insert("variable".into(), var.into());
     }

@@ -14,7 +14,9 @@
 use crate::checks::{Reply, Transport};
 use crate::host::{Download, Outcome, Pick, WebHost};
 use crate::scenes::{COMMAND_TOO_LONG, DEADLINE_MS, Scenes};
-use craft3d_engine::{Session, Workspace, measure_checks, scene_begin, scene_next};
+use craft3d_engine::{
+    SceneQuality, Session, Workspace, measure_checks, scene_begin, scene_bytes, scene_next,
+};
 use craft3d_ui_egui::FileAction;
 use craft3d_ui_egui::files::{ExportFormat, ExportWhat};
 use craft3d_ui_egui::shell::Shell;
@@ -647,4 +649,57 @@ fn an_export_answered_during_an_edit_follows_it() {
     want.session.execute("assert.add", &add).unwrap();
     let want = wanted(&mut want, &ExportWhat::Model, ExportFormat::Stl);
     assert_eq!(files(&got.downloads), files(&want));
+}
+
+/// The published planetary gearbox (a packed assembly) on the page: placed
+/// in the worker, and its motion's moments made there as the person plays
+/// it, frame by frame; each is drawn as a page that places it itself
+/// draws it, the tree lists its mates, and the page's own thread never
+/// places, solves or regenerates.
+#[test]
+fn an_assembly_is_placed_and_played_in_the_worker() {
+    let bytes = include_bytes!("../../../docs/examples/published/planetary-gearbox.3dcraftasm");
+    let mut page = Page::new(false);
+    page.host
+        .session
+        .open_bytes("planetary-gearbox.3dcraftasm", bytes)
+        .unwrap();
+    page.settle();
+    let before = page.host.session.work_here();
+    let mut here = Session::new(Workspace::memory());
+    here.open_bytes("planetary-gearbox.3dcraftasm", bytes)
+        .unwrap();
+    let same = |page: &mut Page, here: &mut Session| {
+        for quality in [SceneQuality::Preview, SceneQuality::display()] {
+            assert_eq!(
+                scene_bytes(&page.host.session.scene_with(quality).unwrap().unwrap()),
+                scene_bytes(&here.scene_with(quality).unwrap().unwrap()),
+            );
+        }
+    };
+    same(&mut page, &mut here);
+    page.host.shell.sync(&mut page.host.session);
+    assert_eq!(
+        page.host.shell.assembly_outline().map(|o| o.mates.len()),
+        here.assembly_outline().map(|o| o.mates.len())
+    );
+    for t in [0.05, 0.1, 0.4] {
+        page.host
+            .session
+            .execute("view.motion", &serde_json::json!({"t": t}))
+            .unwrap();
+        // Asked for, not made on the page: pending until the worker
+        // answers.
+        assert!(page.host.session.motion().unwrap().pending);
+        page.settle();
+        assert!(!page.host.session.motion().unwrap().pending);
+        here.execute("view.motion", &serde_json::json!({"t": t}))
+            .unwrap();
+        same(&mut page, &mut here);
+        assert_eq!(
+            page.host.session.assembly_outline(),
+            here.assembly_outline()
+        );
+    }
+    assert_eq!(page.host.session.work_here(), before);
 }

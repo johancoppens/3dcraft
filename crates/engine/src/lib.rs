@@ -113,6 +113,7 @@ mod verify;
 mod verify_bound;
 mod verify_cmds;
 mod view_curves;
+mod view_elsewhere;
 mod view_export;
 mod visibility_cmds;
 mod when_cmds;
@@ -143,7 +144,7 @@ pub use recovery::{
 };
 pub use regen_elsewhere::{
     SceneRequest, SceneStep, run_command, run_on_state, scene_begin, scene_bytes, scene_forget,
-    scene_next, scene_step,
+    scene_next, scene_side_work, scene_step,
 };
 pub use report::{
     FailedCommand, MAX_REPORT_FIELD_CHARS, VERSION, bug_report, build_commit, platform,
@@ -288,6 +289,9 @@ pub(crate) struct OpenDocument {
     /// What regenerating it cost this session: shared with the session
     /// that holds it ([`Session::work_here`]).
     pub(crate) work: Arc<WorkHere>,
+    /// Its assembly and the moments of its motion as made elsewhere
+    /// (`view_elsewhere.rs`): view state, not saved and not undone.
+    pub(crate) remote: view_elsewhere::Remote,
 }
 
 /// How often a session regenerated a document and meshed a body itself,
@@ -299,12 +303,35 @@ pub(crate) struct OpenDocument {
 #[derive(Debug, Default)]
 pub(crate) struct WorkHere {
     regenerations: std::sync::atomic::AtomicU64,
+    /// The session shows its views from elsewhere
+    /// ([`Session::regen_elsewhere`] as asked for, without the active
+    /// document's kind): a document's assembly and moments of its motion
+    /// are then made by the other side too (`view_elsewhere.rs`).
+    elsewhere: std::sync::atomic::AtomicBool,
+    /// Assemblies placed here (a placement solved and its bodies placed,
+    /// not one kept): what a host that has them placed elsewhere checks
+    /// never moves.
+    placements: std::sync::atomic::AtomicU64,
 }
 
 impl WorkHere {
     pub(crate) fn regenerated(&self) {
         self.regenerations
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub(crate) fn placed(&self) {
+        self.placements
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub(crate) fn set_elsewhere(&self, elsewhere: bool) {
+        self.elsewhere
+            .store(elsewhere, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub(crate) fn elsewhere(&self) -> bool {
+        self.elsewhere.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -316,6 +343,8 @@ impl WorkHere {
 pub struct WorkCount {
     pub regenerations: u64,
     pub meshes: u64,
+    /// Assemblies placed (solved and their bodies placed) here.
+    pub placements: u64,
 }
 
 /// A regeneration cache with the budget of bodies the environment asks
@@ -368,6 +397,7 @@ impl OpenDocument {
             person_file: None,
             forbid_regen: None,
             work: Arc::default(),
+            remote: view_elsewhere::Remote::default(),
         }
     }
 
@@ -389,6 +419,16 @@ impl OpenDocument {
             return None;
         }
         let revision = self.history.revision();
+        // Placed elsewhere and not here: a command tried without the
+        // bodies asked for them (`commands_elsewhere.rs`), and runs where
+        // they are.
+        if self.forbid_regen.is_some() && self.work.elsewhere() && !self.asm.is_placed(revision) {
+            self.forbid_regen = Some(true);
+            return None;
+        }
+        if !self.asm.is_placed(revision) {
+            self.work.placed();
+        }
         Some(self.asm.placed(&doc, self.path.as_deref(), revision))
     }
 
@@ -541,6 +581,11 @@ pub struct Session {
     pub(crate) scene_job: Option<regen_elsewhere::SceneJob>,
     /// The last number a job of scenes was handed out under.
     pub(crate) scene_token: u64,
+    /// The digest of the assembly sources last handed to the worker that
+    /// builds the scenes in full (`view_elsewhere::sources_digest`): the
+    /// next job names them by it. Forgotten when that worker is started
+    /// again ([`Session::scene_worker_restarted`]).
+    pub(crate) sources_sent: Option<[u8; 32]>,
     /// The host's renderer besides the CPU's (`pictures.rs`).
     pub(crate) pictures: pictures::Hosted<dyn pictures::PictureRenderer>,
     /// The host's video encoder for `view.replay` (`pictures.rs`).
@@ -588,6 +633,7 @@ impl Session {
             regen_elsewhere: false,
             scene_job: None,
             scene_token: 0,
+            sources_sent: None,
             pictures: pictures::Hosted::default(),
             video: pictures::Hosted::default(),
             commands: commands_elsewhere::Commands::default(),
@@ -605,6 +651,7 @@ impl Session {
         WorkCount {
             regenerations: self.work.regenerations.load(Relaxed),
             meshes: self.scene.meshes.made(),
+            placements: self.work.placements.load(Relaxed),
         }
     }
 

@@ -35,7 +35,12 @@
 //! `--run FILE` runs the commands of FILE (a JSON array of `[id,
 //! {params}]` or `{"command": id, "params": {...}}`) after the documents
 //! are opened, as an agent would (a variable, a failing edit, a
-//! selection). `--dialog export:NAME` opens the export dialog as File › Export… does
+//! selection); with `--actor NAME` they run as that agent's, each with the
+//! `intent` its step gives, so the Agent tab and the ✦ show. `--agents FILE` sets how agents stand from FILE (an
+//! `AgentsStatus` as `ui.get` gives it under `agents`, with `home` for
+//! the `~`), so the pill, its popover and the questions show; the
+//! agents' clock is then the clients' latest command plus half a second.
+//! `--dialog export:NAME` opens the export dialog as File › Export… does
 //! (with what is selected, after `--set {"selectedFeature": …}`), in the
 //! format of NAME's extension when that holds what it chose, `--dialog
 //! error:TEXT` the error dialog. Then,
@@ -51,7 +56,7 @@ use serde_json::json;
 
 const DEFAULT_SIZE: [u32; 2] = [1280, 800];
 
-const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--dialog export:NAME|error:TEXT] [--recent FILE] [--subject NAME] [--run FILE] FILE.3dcraft [FILE.3dcraft | untitled | none ...] OUT.png";
+const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--dialog export:NAME|error:TEXT] [--recent FILE] [--subject NAME] [--run FILE] [--actor NAME] [--agents FILE] FILE.3dcraft [FILE.3dcraft | untitled | none ...] OUT.png";
 
 fn main() -> Result<(), String> {
     let mut idle = false;
@@ -70,6 +75,8 @@ fn main() -> Result<(), String> {
     let mut recent = None;
     let mut subject: Option<String> = None;
     let mut run: Option<String> = None;
+    let mut agents: Option<craft3d_ui_egui::AgentsStatus> = None;
+    let mut actor: Option<String> = None;
     let mut paths = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -142,6 +149,27 @@ fn main() -> Result<(), String> {
             }
             "--run" => {
                 run = Some(args.next().ok_or(format!("--run takes a file; {USAGE}"))?);
+            }
+            "--actor" => {
+                actor = Some(
+                    args.next()
+                        .ok_or(format!("--actor takes a name; {USAGE}"))?,
+                );
+            }
+            "--agents" => {
+                let file = args
+                    .next()
+                    .ok_or(format!("--agents takes a file; {USAGE}"))?;
+                let text = std::fs::read_to_string(&file).map_err(|e| format!("--agents: {e}"))?;
+                let value: serde_json::Value =
+                    serde_json::from_str(&text).map_err(|e| format!("--agents: {e}"))?;
+                let mut status: craft3d_ui_egui::AgentsStatus =
+                    serde_json::from_value(value.clone()).map_err(|e| format!("--agents: {e}"))?;
+                status.home = value
+                    .get("home")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                agents = Some(status);
             }
             "--subject" => {
                 subject = Some(
@@ -219,6 +247,9 @@ fn main() -> Result<(), String> {
                 .and_then(serde_json::Value::as_str)
                 .ok_or(format!("--run {file}: a step without a command"))?;
             let params = params.cloned().unwrap_or(json!({}));
+            // As an agent, with the intent a step gives (`--actor`).
+            session.set_actor(actor.as_deref());
+            session.set_intent(step.get("intent").and_then(serde_json::Value::as_str));
             // A step may fail on purpose (an edit that breaks a feature):
             // said, and the run goes on.
             if let Err(e) = execute(&mut session, command, params) {
@@ -226,11 +257,18 @@ fn main() -> Result<(), String> {
             }
         }
     }
+    session.set_actor(None);
     session.set_refine_elsewhere(first);
     let mut shell = Shell::new();
     shell.attach_gpu(&state)?;
     if let Some(recent) = recent {
         shell.set_recent_files(recent);
+    }
+    let asks = agents.as_ref().is_some_and(|a| !a.prompts.is_empty());
+    if let Some(status) = agents {
+        let latest = status.clients.iter().map(|c| c.last_ms).max().unwrap_or(0);
+        shell.set_agents_clock(Some(latest.saturating_add(500)));
+        shell.set_agents_status(status);
     }
     let ctx = egui::Context::default();
     ctx.set_pixels_per_point(scale);
@@ -279,7 +317,16 @@ fn main() -> Result<(), String> {
     for frame in 0..frames {
         // The last frame half a second later: the work indicator shows
         // only for work that has run a while (`Tokens::work_after_seconds`).
+        // With questions waiting (`--agents`), the last frames a second
+        // on: the questions' buttons take clicks by then, as a person
+        // sees them.
+        let armed = if asks && frame + 2 >= frames {
+            1.0
+        } else {
+            0.0
+        };
         let time = frame as f64 * 0.1
+            + armed
             + if frame + 1 == frames && !idle {
                 0.5
             } else {

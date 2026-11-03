@@ -434,12 +434,12 @@ fn a_scrubbed_state_built_elsewhere_is_the_one_built_here() {
     }
 }
 
-/// An assembly is never handed to a worker: what it shows is placed from
-/// the source files this session read, which the document sent elsewhere
-/// does not carry. A host that regenerates elsewhere builds it here, a
-/// piece at a time, and shows its placed bodies, following its joints.
+/// An assembly is handed to the worker with the source files this
+/// session read for it (since 2026-11-03, `view_elsewhere.rs`; before, it
+/// was built here a piece at a time): placed there, its placed bodies
+/// shown here, following its joints, and the host never places it.
 #[test]
-fn an_assembly_is_built_here_by_a_host_that_regenerates_elsewhere() {
+fn an_assembly_is_placed_by_the_worker_with_its_files() {
     use craft3d_engine::Access;
     let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("regen-elsewhere-asm");
     let _ = std::fs::remove_dir_all(&dir);
@@ -485,7 +485,8 @@ fn an_assembly_is_built_here_by_a_host_that_regenerates_elsewhere() {
         "mate.add",
         json!({ "kind": "revolute", "a": "Base/F1:face(1)", "b": "Arm/F1:face(0)", "name": "Hinge" }),
     );
-    assert!(!session.regen_elsewhere());
+    assert!(session.regen_elsewhere());
+    let placed = session.work_here().placements;
     let mut boxes = Vec::new();
     for angle in ["0 deg", "90 deg"] {
         run(
@@ -493,15 +494,18 @@ fn an_assembly_is_built_here_by_a_host_that_regenerates_elsewhere() {
             "joint.set",
             json!({ "mate": "Hinge", "value": angle }),
         );
-        assert_eq!(session.scene_job(SceneQuality::display()), None);
-        for _ in 0..1000 {
-            if session
-                .prepare_some(SceneQuality::display(), || false)
-                .is_none()
-            {
-                break;
-            }
+        // Nothing is placed here a piece at a time: the worker places it.
+        assert_eq!(
+            session.prepare_some(SceneQuality::display(), || false),
+            None
+        );
+        let token = session.scene_job(SceneQuality::display()).unwrap();
+        let request = session.scene_request(token).unwrap();
+        scene_begin(&request.document, &request.work);
+        while let Some(part) = scene_next() {
+            assert!(session.scene_answered(token, Ok(&part)));
         }
+        session.scene_done(token);
         for quality in [SceneQuality::Preview, SceneQuality::display()] {
             let scene = session.scene_with(quality).unwrap().unwrap();
             assert_eq!(scene.bodies.len(), 2, "{angle} {quality:?}");
@@ -517,4 +521,5 @@ fn an_assembly_is_built_here_by_a_host_that_regenerates_elsewhere() {
             "the drawn box did not move: {boxes:?}"
         );
     }
+    assert_eq!(session.work_here().placements, placed);
 }
