@@ -387,6 +387,40 @@ pub fn one_sided_derivatives(
     (su, sv, suu, suv, svv)
 }
 
+/// The knot spans of a spline surface at `(u, v)` (as its evaluation
+/// takes them: at a knot, the span after it); `None` for other kinds.
+/// For [`derivatives_in_spans`]: a curve integrated over a piece between
+/// knots takes its spans from the piece's middle, so its ends, which may
+/// round an ulp past a knot, are still taken in the piece's own spans.
+pub fn spans_at(surface: &Surface, u: f64, v: f64) -> Option<[usize; 2]> {
+    let Surface::Nurbs(s) = surface else {
+        return None;
+    };
+    let ((pu, pv), (nu, nv)) = (s.degrees(), s.counts());
+    Some([
+        span_of(s.knots_u(), pu, nu, u),
+        span_of(s.knots_v(), pv, nv, v),
+    ])
+}
+
+/// `(S_u, S_v, S_uu, S_uv, S_vv)` at `(u, v)` from the polynomial pieces
+/// of the knot spans `spans` ([`spans_at`]), which `(u, v)` may lie at the
+/// border of or just past (the piece continued); the surface's own
+/// derivatives for `None` or a surface that is not a spline.
+pub fn derivatives_in_spans(
+    surface: &Surface,
+    u: f64,
+    v: f64,
+    spans: Option<[usize; 2]>,
+) -> (Vec3, Vec3, Vec3, Vec3, Vec3) {
+    if let (Surface::Nurbs(s), Some([span_u, span_v])) = (surface, spans) {
+        return nurbs_in_spans(s, u, v, span_u, span_v);
+    }
+    let (_, su, sv) = surface.derivatives(u, v);
+    let (suu, suv, svv) = second_derivatives(surface, u, v);
+    (su, sv, suu, suv, svv)
+}
+
 /// `(S_uu, S_uv, S_vv)` of a NURBS surface: the derivatives of the
 /// homogeneous surface `A = Σ N_i N_j w_ij P_ij`, `w = Σ N_i N_j w_ij`,
 /// then the quotient rule.
@@ -720,6 +754,15 @@ mod tests {
         assert!(near(below.0, above.0), "C1 at the knot");
         assert!(near(below.2, left.2) && near(above.2, right.2));
         assert!((below.2 - above.2).length() > 1.0, "S_uu jumps");
+        // The spans of a point inside each piece, at the knot (and an ulp
+        // past it): that piece's limits.
+        let left_spans = spans_at(&s, 0.25, 0.3);
+        let right_spans = spans_at(&s, 0.75, 0.3);
+        for x in [0.5, 0.5 + f64::EPSILON, 0.5 - f64::EPSILON] {
+            let l = derivatives_in_spans(&s, x, 0.3, left_spans);
+            let r = derivatives_in_spans(&s, x, 0.3, right_spans);
+            assert!(near(l.2, below.2) && near(r.2, above.2), "{x}");
+        }
         let (_, su, _) = s.derivatives(0.25, 0.3);
         let (suu, _, _) = second_derivatives(&s, 0.25, 0.3);
         for side in [true, false] {

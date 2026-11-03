@@ -442,7 +442,9 @@ fn planar_image(surface: &Surface, outward: bool, p: P2, q: P2) -> P2 {
     cuts.sort_by(f64::total_cmp);
     cuts.dedup();
     // Bounded: a face with more knots than an image may cross is refused
-    // before it is laid ([`too_many_knots`]); this guards the work.
+    // before it is laid ([`too_many_knots`]), so this is not reached; it
+    // guards the work, and the NaN it gives is refused wherever a layout
+    // or a map is checked.
     if cuts.len() > MAX_IMAGE_PIECES + 1 {
         return [f64::NAN, f64::NAN];
     }
@@ -453,7 +455,11 @@ fn planar_image(surface: &Surface, outward: bool, p: P2, q: P2) -> P2 {
         if b <= a {
             continue;
         }
-        let (piece, turn) = planar_image_piece(surface, outward, at(*a), at(*b));
+        // The piece's spans from its middle, so its ends (which may round
+        // an ulp past a knot) are taken in its own.
+        let middle = at(0.5 * (a + b));
+        let spans = craft3d_geom::curvature::spans_at(surface, middle[0], middle[1]);
+        let (piece, turn) = planar_image_piece(surface, outward, at(*a), at(*b), spans);
         let (sin, cos) = theta.psin_cos();
         end = [
             end[0] + cos * piece[0] - sin * piece[1],
@@ -465,19 +471,25 @@ fn planar_image(surface: &Surface, outward: bool, p: P2, q: P2) -> P2 {
 }
 
 /// Where the curve stands still at an end of a piece of [`planar_image`]
-/// (`|c'|` is 0 there, at a corner where the surface's row stands still,
-/// and the turning has only a limit), its rate is taken this share of the
-/// piece inside it: that limit.
+/// (`|c'|` is at most this share of its speed at the piece's middle, at a
+/// corner where the surface's row stands still, and the turning has only
+/// a limit), its rate is taken this share of the piece inside it: that
+/// limit.
 const STILL_INSET: f64 = 1e-9;
 
-/// Most pieces (knot spans crossed) of one [`planar_image`].
-const MAX_IMAGE_PIECES: usize = 1024;
+/// Most knot spans of a face's surface in u: a developable's fitted face
+/// has a knot at each of its rulings (`developable::MAX_RULINGS`, 8192),
+/// and the grid's cells are made to hold at most [`KNOTS_PER_CELL`] of
+/// them.
+const MAX_SPANS_U: usize = 1 << 14;
 
-/// Most knot spans of a face's surface across the region the unfold lays,
-/// in either parameter: the grid's cells are made to hold at most
-/// [`KNOTS_PER_CELL`] of them, and an image across the face (from an
-/// apex row) crosses all of them.
-const MAX_FACE_SPANS: usize = MAX_IMAGE_PIECES;
+/// Most knot spans in v, across which an image from an apex row runs
+/// whole.
+const MAX_SPANS_V: usize = 1024;
+
+/// Most pieces (knot spans crossed) of one [`planar_image`]: more than a
+/// face that is laid has in both parameters together, so not reached.
+const MAX_IMAGE_PIECES: usize = MAX_SPANS_U + MAX_SPANS_V;
 
 /// Most knots inside one cell of the first grid ([`lay_face`]).
 const KNOTS_PER_CELL: usize = 8;
@@ -503,13 +515,14 @@ fn inner_knots(surface: &Surface, k: usize, (lo, hi): (f64, f64)) -> Vec<f64> {
 }
 
 /// Whether the surface of face `face` has more knot spans across `u` or
-/// `v` than an image may cross ([`MAX_FACE_SPANS`]): its reason.
+/// `v` than the unfold lays ([`MAX_SPANS_U`], [`MAX_SPANS_V`]): its
+/// reason.
 fn too_many_knots(face: FaceId, surface: &Surface, u: (f64, f64), v: (f64, f64)) -> Option<String> {
-    for (k, range, name) in [(0, u, "u"), (1, v, "v")] {
+    for (k, range, name, most) in [(0, u, "u", MAX_SPANS_U), (1, v, "v", MAX_SPANS_V)] {
         let spans = inner_knots(surface, k, range).len() + 1;
-        if spans > MAX_FACE_SPANS {
+        if spans > most {
             return Some(format!(
-                "face {} has {spans} knot spans across it in {name}; the unfold lays a face of at most {MAX_FACE_SPANS} (its images are integrated span by span)",
+                "face {} has {spans} knot spans across it in {name}; the unfold lays a face of at most {most} (its images are integrated span by span)",
                 face.0
             ));
         }
@@ -569,7 +582,13 @@ fn kinked_knot(face: FaceId, surface: &Surface, u: (f64, f64), v: (f64, f64)) ->
 
 /// One piece of [`planar_image`], within one span of the surface: its end
 /// and the angle its image has turned by there.
-fn planar_image_piece(surface: &Surface, outward: bool, p: P2, q: P2) -> (P2, f64) {
+fn planar_image_piece(
+    surface: &Surface,
+    outward: bool,
+    p: P2,
+    q: P2,
+    spans: Option<[usize; 2]>,
+) -> (P2, f64) {
     // The steps doubled until two results agree to 1e-12 of the segment's
     // length (a curve whose turning varies quickly, as a fitted face's
     // rows between close rulings, is followed as finely as it needs), and
@@ -580,10 +599,10 @@ fn planar_image_piece(surface: &Surface, outward: bool, p: P2, q: P2) -> (P2, f6
     // them far below the tolerance over its length; at 1e-10 its layouts
     // stopped converging at 5e-7.
     let mut steps = 8;
-    let mut last = planar_image_steps(surface, outward, p, q, steps);
+    let mut last = planar_image_steps(surface, outward, p, q, steps, spans);
     while steps < MAX_IMAGE_STEPS {
         steps *= 2;
-        let next = planar_image_steps(surface, outward, p, q, steps);
+        let next = planar_image_steps(surface, outward, p, q, steps, spans);
         let change = len2(sub2(next.0, last.0));
         let turned = (next.1 - last.1).abs();
         last = next;
@@ -602,23 +621,23 @@ const MAX_IMAGE_STEPS: usize = 256;
 /// spans (one-sided at a knot, so they do not depend on which span the
 /// knot's value rounds into), and [`STILL_INSET`] inside where the curve
 /// stands still there.
-fn planar_image_steps(surface: &Surface, outward: bool, p: P2, q: P2, steps: usize) -> (P2, f64) {
+fn planar_image_steps(
+    surface: &Surface,
+    outward: bool,
+    p: P2,
+    q: P2,
+    steps: usize,
+    spans: Option<[usize; 2]>,
+) -> (P2, f64) {
     let steps = steps.max(1);
     let d = sub2(q, p);
     let mut last_normal: Option<Vec3> = None;
-    // The speed and the turning at `t` along the line; at an end of the
-    // piece, from the spans on the piece's side.
+    // The speed and the turning at `t` along the line, from the piece's
+    // own spans (at its ends too).
     let mut rate = |t: f64| -> (f64, f64) {
         let (u, v) = (p[0] + t * d[0], p[1] + t * d[1]);
-        let (su, sv, suu, suv, svv) = if t == 0.0 {
-            craft3d_geom::curvature::one_sided_derivatives(surface, u, v, [d[0] < 0.0, d[1] < 0.0])
-        } else if t == 1.0 {
-            craft3d_geom::curvature::one_sided_derivatives(surface, u, v, [d[0] > 0.0, d[1] > 0.0])
-        } else {
-            let (_, su, sv) = surface.derivatives(u, v);
-            let (suu, suv, svv) = craft3d_geom::curvature::second_derivatives(surface, u, v);
-            (su, sv, suu, suv, svv)
-        };
+        let (su, sv, suu, suv, svv) =
+            craft3d_geom::curvature::derivatives_in_spans(surface, u, v, spans);
         let c1 = su * d[0] + sv * d[1];
         let c2 = suu * (d[0] * d[0]) + suv * (2.0 * d[0] * d[1]) + svv * (d[1] * d[1]);
         let n = surface
@@ -633,11 +652,17 @@ fn planar_image_steps(surface: &Surface, outward: bool, p: P2, q: P2, steps: usi
         };
         (s2.sqrt(), turn)
     };
-    // An end where the curve stands still: the turning's limit, a little
-    // inside.
+    // An end where the curve stands still (its speed a billionth of the
+    // piece's middle's or less, where the turning is the rounding of a
+    // vanishing `c'`): the turning's limit, a little inside.
+    let middle = rate(0.5).0;
     let mut at_end = |t: f64, inside: f64| {
         let r = rate(t);
-        if r.0 > 0.0 { r } else { rate(inside) }
+        if r.0 > STILL_INSET * middle {
+            r
+        } else {
+            rate(inside)
+        }
     };
     let h = 1.0 / steps as f64;
     let (mut theta, mut end) = (0.0_f64, [0.0, 0.0]);
@@ -854,7 +879,7 @@ pub fn develop(
             let (motion, worst) = Motion2::fit(&mine, &theirs)
                 .ok_or_else(|| refused(format!("edge {} has no points", edge.0)))?;
             map_error = map_error.max(worst);
-            if worst > tol {
+            if worst.is_nan() || worst > tol {
                 return Err(refused(format!(
                     "faces {} and {} do not lie flat as one piece: edge {} bends differently on its two sides, so its two images in the plane are up to {worst} apart (more than the tolerance {tol}); unfold them as separate pieces",
                     neighbour.0, face.0, edge.0
@@ -950,6 +975,13 @@ pub fn develop(
     } else {
         0.0
     };
+    // Every number the development reports is one: a NaN that reached
+    // them (an image that could not be laid) is a refusal, not a pattern.
+    if !(map_error.is_finite() && length_change.is_finite() && area_change.is_finite()) {
+        return Err(refused(format!(
+            "the development could not be measured: its map error {map_error}, length change {length_change} and area change {area_change} are not all numbers"
+        )));
+    }
     Ok(Development {
         placed: list,
         curves,
@@ -1528,6 +1560,12 @@ fn lay_face(
                 let v = v0 + (v1 - v0) * j as f64 / (2 * nv) as f64;
                 if let Some(b) = fine.flat.get(i * (2 * nv + 1) + j) {
                     let off = len2(sub2(motion.apply(coarse.at(&surface, outward, u, v)), *b));
+                    if !off.is_finite() {
+                        return Err(refused(format!(
+                            "face {} could not be laid flat: a point of its layout is not a number (at ({u}, {v}) in its parameters)",
+                            face.0
+                        )));
+                    }
                     error = error.max(off);
                     if i % 2 == 0 && j % 2 == 0 {
                         at_nodes = at_nodes.max(off);
@@ -2276,7 +2314,7 @@ fn developed(
         let images: Vec<P2> = samples.iter().map(|(_, uv)| p.flat(*uv)).collect();
         let (motion, residual) = Motion2::fit(&at_samples, &images)
             .ok_or_else(|| refused(format!("an edge of {} has no points", what())))?;
-        if residual > 0.5 * tol {
+        if residual.is_nan() || residual > 0.5 * tol {
             // Finer steps first: an edge whose geodesic curvature varies
             // within a step (a fitted curve's knots closer than its
             // samples) is integrated finer before it is refused.
