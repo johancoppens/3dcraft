@@ -550,7 +550,7 @@ fn a_frame_exact_recording_holds_nothing_from_the_frames_before_it() {
     let ctx = egui::Context::default();
     let step = 1.0 / 60.0;
     let mut now = 0.0_f64;
-    let mut frame = |shell: &mut Shell, session: &mut Session, now: &mut f64| {
+    let frame = |shell: &mut Shell, session: &mut Session, now: &mut f64| {
         *now += step;
         let input = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))),
