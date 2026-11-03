@@ -7,8 +7,9 @@
 //! 18(7), 1975). The outline's convex hull is taken of its points (every
 //! segment's ends and 32 steps along each curved piece), the directions of
 //! the hull's edges are tried, and in each the outline's extent is
-//! measured exactly (lines, arcs, circles and ellipses; a spline's
-//! furthest point by sampling refined by a ternary search). For an outline whose hull has straight
+//! measured exactly (lines, arcs, circles and ellipses; a spline to
+//! within 1e-9 of its size, never below its extent: its Bézier pieces
+//! halved where their control points reach further than the curve). For an outline whose hull has straight
 //! sides (any polygon, a rounded rectangle, a slot) the rectangle is the
 //! least one exactly; where the hull is round there, it is the least over
 //! the directions of the hull's chords.
@@ -97,42 +98,107 @@ pub(super) fn extent(outline: &Path, d: Point) -> Result<[f64; 4], String> {
     Ok(b)
 }
 
-/// The largest `sign × p[axis]` over the spline: sampled (16 steps per
-/// control point, at most 4096), then refined by a ternary search about
-/// the best sample (60 steps: to rounding where the curve is smooth).
+/// Most halvings of Bézier pieces one spline's extreme may take.
+const MAX_SPLITS: usize = 512;
+
+/// An upper bound of `sign × p[axis]` over the spline, within 1e-9 of the
+/// spline's size of the true largest value: the spline's Bézier pieces
+/// halved by de Casteljau's algorithm (on the weighted points, for a
+/// rational one) where their control points (which hold the curve, the
+/// weights being positive) reach further than any point found on the curve
+/// by more than that. Never below the curve's extreme: when the halvings run
+/// out, the largest control point left counts.
 fn furthest(spline: &Spline, axis: usize, sign: f64) -> f64 {
-    let f = |t: f64| {
+    let value = |p: &[f64; 3]| sign * p.get(axis).copied().unwrap_or(0.0) / p[2];
+    let all = || {
         spline
-            .eval(t)
-            .ok()
-            .and_then(|p| p.get(axis).copied())
-            .map_or(f64::NEG_INFINITY, |v| sign * v)
+            .control_points()
+            .iter()
+            .filter_map(|p| p.get(axis).map(|v| sign * v))
+            .fold(f64::NEG_INFINITY, f64::max)
     };
-    let (lo, hi) = spline.domain();
-    let n = spline
-        .control_points()
-        .len()
-        .saturating_mul(16)
-        .clamp(16, 4096);
-    let step = (hi - lo) / n as f64;
-    let mut best = (f(lo), lo);
-    for i in 1..=n {
-        let t = lo + step * i as f64;
-        let v = f(t);
-        if v > best.0 {
-            best = (v, t);
+    let Ok(pieces) = spline.beziers() else {
+        // The B-spline's control points hold it too.
+        return all();
+    };
+    let size = {
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for p in spline.control_points() {
+            for v in p {
+                lo = lo.min(*v);
+                hi = hi.max(*v);
+            }
         }
-    }
-    let (mut a, mut b) = ((best.1 - step).max(lo), (best.1 + step).min(hi));
-    for _ in 0..60 {
-        let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
-        if f(m1) < f(m2) {
-            a = m1;
-        } else {
-            b = m2;
+        (hi - lo).abs()
+    };
+    let eps = 1e-9 * size;
+    let mut best = f64::NEG_INFINITY;
+    let mut stack: Vec<Vec<[f64; 3]>> = Vec::new();
+    for piece in &pieces {
+        let w = |i: usize| {
+            piece
+                .weights
+                .as_ref()
+                .and_then(|w| w.get(i).copied())
+                .unwrap_or(1.0)
+        };
+        let homogeneous: Vec<[f64; 3]> = piece
+            .control
+            .iter()
+            .enumerate()
+            .map(|(i, p)| [p[0] * w(i), p[1] * w(i), w(i)])
+            .collect();
+        for end in [homogeneous.first(), homogeneous.last()]
+            .into_iter()
+            .flatten()
+        {
+            best = best.max(value(end));
         }
+        stack.push(homogeneous);
     }
-    best.0.max(f(0.5 * (a + b)))
+    let upper = |c: &[[f64; 3]]| c.iter().map(value).fold(f64::NEG_INFINITY, f64::max);
+    let mut splits = 0;
+    let mut left_over = f64::NEG_INFINITY;
+    while let Some(c) = stack.pop() {
+        let top = upper(&c);
+        if !(top > best + eps) {
+            continue;
+        }
+        if splits >= MAX_SPLITS {
+            left_over = left_over.max(top);
+            continue;
+        }
+        splits += 1;
+        // De Casteljau at 1/2: the left half's points are the first of
+        // each row, the right half's the last, reversed.
+        let mut row = c.clone();
+        let mut left = Vec::with_capacity(c.len());
+        let mut right = Vec::with_capacity(c.len());
+        while let Some(first) = row.first() {
+            left.push(*first);
+            if let Some(last) = row.last() {
+                right.push(*last);
+            }
+            row = row
+                .windows(2)
+                .map(|w| match w {
+                    [a, b] => [
+                        0.5 * (a[0] + b[0]),
+                        0.5 * (a[1] + b[1]),
+                        0.5 * (a[2] + b[2]),
+                    ],
+                    _ => [0.0, 0.0, 1.0],
+                })
+                .collect();
+        }
+        right.reverse();
+        if let Some(mid) = left.last() {
+            best = best.max(value(mid));
+        }
+        stack.push(left);
+        stack.push(right);
+    }
+    best.max(left_over)
 }
 
 /// The convex hull of `points` (Andrew's monotone chain), counter-clockwise.
@@ -194,8 +260,16 @@ pub fn bounding_rect(shape: &Shape) -> Result<Rect, String> {
     // In the first quadrant the angle grows with the sine.
     directions.sort_by(|a, b| a[1].total_cmp(&b[1]));
     directions.dedup_by(|a, b| (a[1] - b[1]).abs() <= 1e-12 && (a[0] - b[0]).abs() <= 1e-12);
-    if directions.len() > MAX_DIRECTIONS {
-        let step = directions.len().div_ceil(MAX_DIRECTIONS);
+    // A spline's extent costs halvings in each direction: fewer of them.
+    let splines = matches!(&shape.outline, Path::Chain { segments, .. }
+        if segments.iter().any(|s| matches!(s, Segment::Spline(_))));
+    let most = if splines {
+        MAX_DIRECTIONS / 8
+    } else {
+        MAX_DIRECTIONS
+    };
+    if directions.len() > most {
+        let step = directions.len().div_ceil(most);
         directions = directions.into_iter().step_by(step).collect();
     }
     let mut best: Option<(f64, Point, [f64; 4])> = None;

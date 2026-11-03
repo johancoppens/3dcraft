@@ -454,8 +454,34 @@ fn bodies_that_are_no_plates_are_refused_with_the_face() {
             [100.0 * k, 50.0 * k, 6.0 * k],
             [0.0, 800.0 * k, 0.0],
         );
+        // A barrel: a loft through rounded squares of half-width 20, 25
+        // and 20, its top and bottom flat and parallel, its corners only
+        // in them, its freeform wall bulging between: no plate.
+        for (i, (z, h)) in [(0.0, 20.0), (3.0, 25.0), (6.0, 20.0)].iter().enumerate() {
+            let name = format!("Barrel {i}");
+            run(
+                &mut s,
+                "sketch.create",
+                json!({"plane": "xy", "offset": z * k, "name": name}),
+            );
+            run(
+                &mut s,
+                "sketch.rect",
+                json!({"sketch": name, "from": [(500.0 - h) * k, -h * k], "to": [(500.0 + h) * k, h * k]}),
+            );
+        }
+        run(
+            &mut s,
+            "feature.loft",
+            json!({"sections": ["Barrel 0", "Barrel 1", "Barrel 2"], "name": "Barrel"}),
+        );
         let list = run(&mut s, "cut.list", json!({}));
         assert_eq!(list["parts"], 2, "{list}");
+        let barrel = refused(&list, "Barrel");
+        assert!(
+            barrel["reason"].as_str().unwrap().contains("freeform"),
+            "{barrel}"
+        );
         let (group, bar) = part(&list, "Bar edge");
         close(
             &group["thickness"],
@@ -492,12 +518,12 @@ fn bodies_that_are_no_plates_are_refused_with_the_face() {
         // The CSV lists them with their reasons.
         let csv = run(&mut s, "cut.list", json!({"format": "csv"}));
         let text = csv["csv"].as_str().unwrap();
-        assert_eq!(text.lines().count(), 1 + 2 + 3, "{text}");
+        assert_eq!(text.lines().count(), 1 + 2 + 4, "{text}");
         assert!(text.contains(",not a plate,"), "{text}");
         // The export draws the plate and lists the rest.
         let out = run(&mut s, "cut.export", json!({"path": "parts.svg"}));
         assert_eq!(out["parts"].as_array().unwrap().len(), 2, "{out}");
-        assert_eq!(out["notPlates"].as_array().unwrap().len(), 3, "{out}");
+        assert_eq!(out["notPlates"].as_array().unwrap().len(), 4, "{out}");
     }
 }
 
@@ -880,4 +906,16 @@ fn the_shelf_of_the_guide_gives_the_cut_list_it_prints() {
     let evidence = root.join("target/evidence/cut");
     std::fs::create_dir_all(&evidence).unwrap();
     std::fs::write(evidence.join("shelf.svg"), &svg).unwrap();
+}
+
+#[test]
+fn a_name_like_a_formula_is_not_a_formula_in_the_csv() {
+    let dir = workdir("cut", "formula");
+    let mut s = session_in(&dir);
+    new_document(&mut s, 1.0);
+    block(&mut s, "=1+1", [100.0, 50.0, 6.0], [0.0; 3]);
+    let csv = run(&mut s, "cut.list", json!({"format": "csv"}));
+    let row = csv["csv"].as_str().unwrap().lines().nth(1).unwrap().to_string();
+    assert!(row.contains(",'=1+1,1,"), "{row}");
+    assert!(row.ends_with(",plate,'=1+1,"), "{row}");
 }

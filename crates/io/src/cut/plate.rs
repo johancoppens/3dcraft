@@ -25,7 +25,7 @@ use craft3d_topo::{Body, BodyKind, FaceId};
 /// faces on both sides is refused.
 const MAX_AXES: usize = 4096;
 /// Most axes tested in full (the thinnest first).
-const MAX_TESTED: usize = 64;
+const MAX_TESTED: usize = 1024;
 
 /// A plate: its thickness, its top and bottom, and its outline and holes
 /// drawn in the top's drawing frame (`frame`: seen from outside, y up the
@@ -139,7 +139,7 @@ fn side_fault(
     body: &Body,
     face: FaceId,
     axis: Vec3,
-    hi: f64,
+    (lo, hi): (f64, f64),
     tolerance: &Tolerance,
     name: &dyn Fn(FaceId) -> String,
 ) -> Option<String> {
@@ -181,24 +181,38 @@ fn side_fault(
             ));
         }
         Surface::Bezier(_) | Surface::Nurbs(_) => {
-            // Square to the axis along every edge: a freeform side wall.
+            // A freeform side wall must be a ruled extrusion along the
+            // axis: every point of its edges carried along the axis to
+            // seven levels between the top and the bottom lies on the
+            // surface (within ten tolerances), and the normal there is
+            // square to the axis (within the angular tolerance). A wall
+            // that bulges between its edges fails at the levels inside.
+            let square = tolerance.angular;
+            let on = 10.0 * tolerance.linear;
             for p in edge_points(body, face) {
-                let normal = f
-                    .surface
-                    .project(p)
-                    .ok()
-                    .and_then(|(u, v)| f.surface.normal(u, v));
-                match normal {
-                    Some(n) if n.dot(axis).abs() <= 1e-7 * n.length() => {}
-                    Some(_) => {
-                        return Some(format!(
-                            "face {what} is a freeform face not square to the plate"
-                        ));
-                    }
-                    None => {
-                        return Some(format!(
-                            "face {what} is a freeform face whose normal could not be found along its edges"
-                        ));
+                let level = axis.dot(p);
+                for j in 0..=8 {
+                    let q = p + axis * (lo + (hi - lo) * f64::from(j) / 8.0 - level);
+                    let found = f.surface.project(q).ok().and_then(|(u, v)| {
+                        Some(((f.surface.eval(u, v) - q).length(), f.surface.normal(u, v)?))
+                    });
+                    match found {
+                        Some((d, n)) if d <= on && n.dot(axis).abs() <= square * n.length() => {}
+                        Some((d, _)) if d > on => {
+                            return Some(format!(
+                                "face {what} is a freeform face that is no straight wall: it leaves the line square to the plate through its edge by {d}"
+                            ));
+                        }
+                        Some(_) => {
+                            return Some(format!(
+                                "face {what} is a freeform face not square to the plate"
+                            ));
+                        }
+                        None => {
+                            return Some(format!(
+                                "face {what} is a freeform face whose normal could not be found"
+                            ));
+                        }
                     }
                 }
             }
@@ -295,7 +309,7 @@ fn plate_along(
         .filter(|f| *f != top && *f != bottom)
         .collect();
     for face in &sides {
-        if let Some(reason) = side_fault(body, *face, axis, hi, &tolerance, name) {
+        if let Some(reason) = side_fault(body, *face, axis, (lo, hi), &tolerance, name) {
             return Err(not(reason, vec![*face]));
         }
     }

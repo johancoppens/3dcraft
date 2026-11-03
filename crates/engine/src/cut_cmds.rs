@@ -37,7 +37,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "cut.export",
         "Export Cut Parts",
         r#"{"path": string, "format": "dxf|svg" = from the extension, "bodies": [id or name of the feature that made the body] = every body, "layout": "sheet|each" = "sheet", "copies": boolean = false, "kerf": expr = 0, "gap": expr = 5 mm, "width": expr = no limit, "stroke": number = 0.01 (SVG line width in mm)}"#,
-        "Writes the outlines of the parts cut.list finds to DXF or SVG under the write root (changes nothing in the document), at true size in the document's unit, each part in its own frame (its length along x), every curve as it is (lines, arcs, circles, ellipses and splines; nothing becomes a polyline). Each part is on a layer named after it (its body's feature; DXF layer, SVG path id layer-...): its outline, its holes and its cut marks; a sheet-metal part's bend lines go on bendUp (blue, dashed) and bendDown (red, dash-dot), a louvre's footprint on form. One part of each kind is drawn, or with copies every body; the result says how many of each to cut. layout sheet puts them on one file side by side, left to right in the order of cut.list, gap apart, in rows of at most width (a new row above the last); a row layout, not nesting. layout each writes one file per part, its name the path's with the layer's after a dash (parts.dxf: parts-Side.dxf). kerf (a length: the distance from the part's edge to the beam's centre, half the width the beam cuts away) offsets every outline out and every hole in by it, its corners rounded with arcs of radius kerf (the path of a round beam); lines stay lines and arcs arcs. Refused, naming the part: a kerf with which the beam cannot cut a curve of the part (a slot, notch or inner corner narrower than it: the largest kerf that fits is given), one that closes a hole or splits a loop, and a kerf on a part with an ellipse or a spline (not built). Bodies that are not parts are not drawn and are listed under notPlates with the reason. The result has path (or files, for each), format, unit, layout, kerf, parts (name, layer, count, file, at: where the part's frame origin lies on the sheet, bbox), rows, notPlates, length, bytes.",
+        "Writes the outlines of the parts cut.list finds to DXF or SVG under the write root (changes nothing in the document), at true size in the document's unit, each part in its own frame (its length along x), every curve as it is (lines, arcs, circles, ellipses and splines; nothing becomes a polyline). Each part is on a layer named after it (its body's feature; DXF layer, SVG path id layer-...): its outline, its holes and its cut marks; a sheet-metal part's bend lines go on bendUp (blue, dashed) and bendDown (red, dash-dot), a louvre's footprint on form. One part of each kind is drawn, or with copies every body; the result says how many of each to cut. layout sheet puts them on one file side by side, left to right in the order of cut.list, gap apart, in rows of at most width (a new row above the last); a row layout, not nesting. layout each writes one file per part, its name the path's with the layer's after a dash (parts.dxf: parts-Side.dxf). kerf (a length: the distance from the part's edge to the beam's centre, half the width the beam cuts away) offsets every outline out and every hole in by it, its corners rounded with arcs of radius kerf (the path of a round beam); lines stay lines and arcs arcs. Refused, naming the part: a kerf with which the beam cannot cut a line of the part (a slot or notch narrower than it: the largest kerf that fits is given; an inner round of a smaller radius than the kerf is not refused but comes out at the kerf's radius, as a sharp inner corner does, and the part's notes say so), one that closes a hole or splits a loop, and a kerf on a part with an ellipse or a spline (not built). Bodies that are not parts are not drawn and are listed under notPlates with the reason. The result has path (or files, for each), format, unit, layout, kerf, parts (name, layer, count, file, at: where the part's frame origin lies on the sheet, bbox, thickness, material, notes), rows, notPlates, length, bytes.",
         doc: true,
         cut_export
     ),
@@ -291,6 +291,7 @@ fn found(session: &mut Session, p: &Params, command: &str) -> Result<Found, Comm
 
 /// The parts by thickness and material, the same parts together.
 fn grouped(parts: &[Part], tolerance: Tolerance) -> (Vec<Group>, Vec<String>) {
+    let prepared: Vec<cut::Prepared> = parts.iter().map(|p| cut::prepare(&p.shape)).collect();
     let mut groups: Vec<Group> = Vec::new();
     let mut uncompared = Vec::new();
     let mut work = MAX_WORK;
@@ -317,13 +318,20 @@ fn grouped(parts: &[Part], tolerance: Tolerance) -> (Vec<Group>, Vec<String>) {
         let tol = (16.0 * tolerance.linear).max(1e-9 * size);
         let mut joined = false;
         for d in &mut group.distinct {
-            let Some(first) = d.members.first().and_then(|&f| parts.get(f)) else {
+            let Some((first, ready)) = d
+                .members
+                .first()
+                .and_then(|&f| Some((parts.get(f)?, prepared.get(f)?)))
+            else {
+                continue;
+            };
+            let Some(mine) = prepared.get(i) else {
                 continue;
             };
             if first.kind != part.kind {
                 continue;
             }
-            match cut::same_part(&first.shape, &part.shape, tol, &mut work) {
+            match cut::same_part(ready, mine, tol, &mut work) {
                 Some(true) => {
                     d.members.push(i);
                     joined = true;
@@ -466,11 +474,18 @@ fn refused_json(r: &Refused) -> Value {
 
 /// A CSV field: quoted when it holds a comma, a quote or a line break
 /// (RFC 4180).
+/// A text that starts like a formula (`=`, `+`, `-`, `@`) gets a `'` in
+/// front, so a spreadsheet shows it rather than runs it.
 fn csv_field(text: &str) -> String {
+    let text = if text.starts_with(['=', '+', '-', '@']) {
+        format!("'{text}")
+    } else {
+        text.to_string()
+    };
     if text.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", text.replace('"', "\"\""))
     } else {
-        text.to_string()
+        text
     }
 }
 
@@ -713,25 +728,32 @@ fn cut_export(session: &mut Session, params: &Value) -> Run {
     // Each part: its layer and its shape with the kerf.
     let mut shapes = Vec::with_capacity(drawn.len());
     for (part, count) in &drawn {
-        let shape = cut::kerf(&part.shape, kerf, &tolerance)
+        let (shape, notes) = cut::kerf(&part.shape, kerf, &tolerance)
             .map_err(|e| CommandError::new(format!("{ID}: part `{}`: {e}", part.name)))?;
         let bbox = shape.bbox().ok_or_else(|| {
             CommandError::new(format!("{ID}: part `{}` has nothing to draw", part.name))
         })?;
         let layer = crate::drawing_cmds::layer_name(&part.name, &taken);
         taken.push(layer.clone());
-        shapes.push((*part, *count, shape, bbox, layer));
+        shapes.push((*part, *count, shape, bbox, layer, notes));
     }
     let slack = tolerance.linear;
     let mut placed: Vec<(usize, [f64; 2])> = Vec::with_capacity(shapes.len());
     let mut rows = 0_usize;
     if each {
-        for (i, (_, _, _, b, _)) in shapes.iter().enumerate() {
+        for (i, (part, _, _, b, _, _)) in shapes.iter().enumerate() {
+            let reach = (b[2] - b[0]).max(b[3] - b[1]);
+            if !(reach.is_finite() && reach * f64::EPSILON <= slack) {
+                return fail(format!(
+                    "{ID}: part `{}` reaches {reach}, where a coordinate cannot be held to the document's tolerance {slack}",
+                    part.name
+                ));
+            }
             placed.push((i, [-b[0], -b[1]]));
         }
     } else {
         let (mut x, mut y, mut row_height, mut in_row) = (0.0_f64, 0.0_f64, 0.0_f64, 0_usize);
-        for (i, (part, _, _, b, _)) in shapes.iter().enumerate() {
+        for (i, (part, _, _, b, _, _)) in shapes.iter().enumerate() {
             let (w, h) = (b[2] - b[0], b[3] - b[1]);
             if let Some(width) = width {
                 if w > width + slack {
@@ -766,7 +788,7 @@ fn cut_export(session: &mut Session, params: &Value) -> Run {
         let mut marks: BTreeMap<MarkKind, Vec<DrawingPath>> = BTreeMap::new();
         let mut size = 0.0_f64;
         for (i, at) in which {
-            let Some((_, _, shape, b, layer)) = shapes.get(*i) else {
+            let Some((_, _, shape, b, layer, _)) = shapes.get(*i) else {
                 continue;
             };
             size = size.max((b[2] - b[0]).phypot(b[3] - b[1]));
@@ -826,7 +848,7 @@ fn cut_export(session: &mut Session, params: &Value) -> Run {
             .to_string();
         let extension = format.name();
         for place in &placed {
-            let Some((_, _, _, _, layer)) = shapes.get(place.0) else {
+            let Some((_, _, _, _, layer, _)) = shapes.get(place.0) else {
                 continue;
             };
             let name = base.with_file_name(format!("{stem}-{layer}.{extension}"));
@@ -840,7 +862,11 @@ fn cut_export(session: &mut Session, params: &Value) -> Run {
     }
     let mut bytes_total = 0_usize;
     let mut length_total = 0.0;
-    let mut written = Vec::with_capacity(files.len());
+    // Every file is made and every path resolved before any is written,
+    // so a part that cannot be drawn or a path outside the root writes
+    // nothing; a disk that fails half way can still leave the files
+    // written before it (each one whole: written atomically).
+    let mut encoded = Vec::with_capacity(files.len());
     for (name, drawing) in &files {
         let (bytes, _) =
             craft3d_io::encode_drawing_stroked(drawing, format, tolerance.linear, stroke)
@@ -848,13 +874,17 @@ fn cut_export(session: &mut Session, params: &Value) -> Run {
         let resolved = session.workspace.resolve_write(name)?;
         bytes_total = bytes_total.saturating_add(bytes.len());
         length_total += drawing.length();
+        encoded.push((name.clone(), resolved, bytes));
+    }
+    let mut written = Vec::with_capacity(encoded.len());
+    for (name, resolved, bytes) in encoded {
         session.write_resolved(&resolved, bytes)?;
-        written.push(name.clone());
+        written.push(name);
     }
     let parts: Vec<Value> = placed
         .iter()
         .filter_map(|(i, at)| {
-            let (part, count, _, b, layer) = shapes.get(*i)?;
+            let (part, count, _, b, layer, notes) = shapes.get(*i)?;
             let file = if each {
                 written.get(*i).cloned()
             } else {
@@ -869,6 +899,7 @@ fn cut_export(session: &mut Session, params: &Value) -> Run {
                 "bbox": [b[0] + at[0], b[1] + at[1], b[2] + at[0], b[3] + at[1]],
                 "thickness": part.thickness,
                 "material": part.material,
+                "notes": notes,
             }))
         })
         .collect();

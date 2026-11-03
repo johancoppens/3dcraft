@@ -158,7 +158,7 @@ after it: side by side on one sheet (`width` and `gap` as for a sheet of faces; 
 not nest), or one file per part (`"layout": "each"`). One of each part is drawn and the result says how many
 to cut; `"copies": true` draws every body. `kerf` moves the cut off the part by that distance (half the width
 the beam cuts away): the outline out, the holes in, the outside corners rounded as a round beam goes round
-them. A kerf the beam cannot follow (a slot narrower than the beam) is refused with the largest that fits.
+them. A kerf the beam cannot follow (a slot narrower than the beam) is refused with the largest that fits; an inner round smaller than the kerf comes out at the kerf's radius, as a sharp inner corner does, and the result says so.
 
 ### A cut list: a small shelf
 

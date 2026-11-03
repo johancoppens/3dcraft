@@ -9,7 +9,7 @@ use super::Shape;
 use craft3d_drawing::{Path, Segment};
 use craft3d_kernel::offset_profile::{Corners, OffsetSource, offset_profiles};
 use craft3d_kernel::profile::{Curve2, Loop2, Shape as Along, SketchCurve, detect_profiles};
-use craft3d_math::Tolerance;
+use craft3d_math::{Portable, Tolerance};
 
 /// The curves of a loop, numbered on from `next`.
 fn curves_of(path: &Path, next: &mut u64, out: &mut Vec<SketchCurve>) -> Result<(), String> {
@@ -94,17 +94,19 @@ fn path_of(lp: &Loop2) -> Result<Path, String> {
 /// `shape` offset by `k` (the distance from the part's edge to the beam's
 /// centre: half the width the beam cuts away): the outline `k` out, each
 /// hole `k` in, the corners the beam goes round arcs of radius `k`. The
-/// marks stay where they are. `k = 0` is the shape itself. Refused, with
+/// marks stay where they are. `k = 0` is the shape itself. An inner round
+/// of radius at most `k` comes out at radius `k`, as a sharp inner corner
+/// does: it is said in the notes returned. Refused, with
 /// the reason: a negative or infinite `k`, an ellipse or a spline in a
 /// loop (not built), and a kerf that changes the loops (a hole that
 /// closes, a slot or a notch narrower than `2 k` that closes, a loop that
 /// splits), with the largest kerf that keeps them.
-pub fn kerf(shape: &Shape, k: f64, tolerance: &Tolerance) -> Result<Shape, String> {
+pub fn kerf(shape: &Shape, k: f64, tolerance: &Tolerance) -> Result<(Shape, Vec<String>), String> {
     if !(k.is_finite() && k >= 0.0) {
         return Err(format!("the kerf {k} must be a length of 0 or more"));
     }
     if k == 0.0 {
-        return Ok(shape.clone());
+        return Ok((shape.clone(), Vec::new()));
     }
     let mut curves = Vec::new();
     let mut next = 0_u64;
@@ -151,13 +153,25 @@ pub fn kerf(shape: &Shape, k: f64, tolerance: &Tolerance) -> Result<Shape, Strin
     // Every curve of the part has its one offset on the path, or the beam
     // does not cut it: a notch or slot narrower than the beam, filled; an
     // inner round of a smaller radius than the kerf.
+    // An inner round of a smaller radius than the kerf is the exception:
+    // the beam cannot follow it, as it cannot follow a sharp inner corner,
+    // and both come out rounded at the kerf's radius; it is said, not
+    // refused.
+    let mut notes = Vec::new();
     for (id, label) in labels.iter().enumerate() {
-        let id = id as u64;
         let pieces = out
             .origins
             .iter()
-            .filter(|o| o.source == OffsetSource::Curve(id))
+            .filter(|o| o.source == OffsetSource::Curve(id as u64))
             .count();
+        if pieces == 0
+            && let Some(r) = curves.get(id).and_then(|c| inner_round(c, k, tolerance))
+        {
+            notes.push(format!(
+                "{label}, an inner round of radius {r}, comes out at the kerf's radius {k}"
+            ));
+            continue;
+        }
         if pieces != 1 {
             let fits = largest_keeping(shape, k, tolerance, &labels)
                 .map(|d| format!("; the largest kerf that cuts every curve is {d}"))
@@ -178,11 +192,25 @@ pub fn kerf(shape: &Shape, k: f64, tolerance: &Tolerance) -> Result<Shape, Strin
             out.profiles.len()
         ));
     };
-    Ok(Shape {
-        outline: path_of(&region.outer)?,
-        holes: region.holes.iter().map(path_of).collect::<Result<_, _>>()?,
-        marks: shape.marks.clone(),
-    })
+    Ok((
+        Shape {
+            outline: path_of(&region.outer)?,
+            holes: region.holes.iter().map(path_of).collect::<Result<_, _>>()?,
+            marks: shape.marks.clone(),
+        },
+        notes,
+    ))
+}
+
+/// The radius of `curve` when it is an arc the kerf `k` shrinks to
+/// nothing (an inner round of radius at most `k`): such an arc has no
+/// offset, and the path turns about it at radius `k`.
+fn inner_round(curve: &SketchCurve, k: f64, tolerance: &Tolerance) -> Option<f64> {
+    let Curve2::Arc { center, start, .. } = curve.curve else {
+        return None;
+    };
+    let r = (start[0] - center[0]).phypot(start[1] - center[1]);
+    (r <= k + tolerance.linear).then_some(r)
 }
 
 /// Whether the kerf `k` keeps one offset piece of every curve and every
@@ -196,12 +224,13 @@ fn keeps_all(curves: &[SketchCurve], k: f64, tolerance: &Tolerance) -> bool {
     };
     out.loops_after == out.loops_before
         && out.regions_after == out.regions_before
-        && (0..curves.len() as u64).all(|id| {
-            out.origins
+        && curves.iter().enumerate().all(|(id, curve)| {
+            let pieces = out
+                .origins
                 .iter()
-                .filter(|o| o.source == OffsetSource::Curve(id))
-                .count()
-                == 1
+                .filter(|o| o.source == OffsetSource::Curve(id as u64))
+                .count();
+            pieces == 1 || (pieces == 0 && inner_round(curve, k, tolerance).is_some())
         })
 }
 

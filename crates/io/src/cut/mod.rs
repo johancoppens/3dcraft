@@ -18,7 +18,7 @@ mod same;
 pub use kerf::kerf;
 pub use plate::{NotPlate, Plate, plate_of};
 pub use rect::{Rect, bounding_rect, own_frame};
-pub use same::same_part;
+pub use same::{Prepared, prepare, same_part};
 
 use craft3d_drawing::{Color, Drawing, Layer, Path, Point, Segment, Spline, Unit};
 use craft3d_math::Portable;
