@@ -243,7 +243,7 @@ impl Segment {
 
     /// The segment in its own direction as pieces that can be boxed and
     /// cut in two, for comparing it with a spline.
-    fn parts(&self) -> Vec<Part> {
+    pub(crate) fn parts(&self) -> Vec<Part> {
         let (from, to) = self.own_ends();
         match &self.shape {
             Shape::Line => vec![Part::line(from, to)],

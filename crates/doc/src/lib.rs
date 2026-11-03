@@ -495,14 +495,37 @@ pub struct OffsetProfile {
 }
 
 /// The solid one closed profile sweeps out as it is carried along a path
-/// in a plane, staying square to it.
+/// in a plane, staying square to it; or, with a second rail, carried so
+/// that two of its points follow `path` and `rail`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sweep {
     /// The sketch feature whose one closed profile is carried.
     pub sketch: FeatureId,
     /// The sketch feature whose curves are the path: one chain of lines,
-    /// arcs and splines, open or closed, or a circle.
+    /// arcs and splines, open or closed, or a circle. With `rail`, the
+    /// first rail: one open chain.
     pub path: FeatureId,
+    /// The second rail, a sketch of one open chain: the profile is then
+    /// placed at each station so that the points where the rails start
+    /// on it follow `path` and `rail` (format version 66).
+    #[serde(default)]
+    pub rail: Option<FeatureId>,
+    /// How a sweep along two rails scales the profile between them.
+    #[serde(default)]
+    pub scale: SweepScale,
+}
+
+/// How a sweep along two rails scales the profile as the rails part or
+/// close in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SweepScale {
+    /// The same both ways, by the ratio of the distance between the rails
+    /// to where they start on the profile: a circle stays a circle.
+    #[default]
+    Uniform,
+    /// Only along the line between the rails; the height stays as drawn.
+    Width,
 }
 
 fn zero3() -> [Expr; 3] {
@@ -1645,7 +1668,11 @@ impl FeatureKind {
                 }
                 out
             }
-            FeatureKind::Sweep(s) => vec![s.sketch, s.path],
+            FeatureKind::Sweep(s) => {
+                let mut out = vec![s.sketch, s.path];
+                out.extend(s.rail);
+                out
+            }
             FeatureKind::OffsetProfile(o) => vec![o.sketch],
             FeatureKind::Fill(f) => vec![f.sketch],
             FeatureKind::Fold(f) => vec![f.sketch],

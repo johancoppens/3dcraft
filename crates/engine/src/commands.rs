@@ -2450,7 +2450,7 @@ fn symmetric_fits(end: &ExtrudeEnd, symmetric: bool, command: &str) -> Result<()
 /// The parameters of a thread that `feature.edit` takes as null.
 const THREAD_NULLS: [&str; 2] = ["size", "pitch"];
 
-const EDITABLE: [&str; 62] = [
+const EDITABLE: [&str; 64] = [
     "sketch",
     "sections",
     "ruled",
@@ -2513,6 +2513,8 @@ const EDITABLE: [&str; 62] = [
     "curves",
     "inner",
     "rise",
+    "rail",
+    "scale",
 ];
 
 fn feature_edit(session: &mut Session, params: &Value) -> Run {
@@ -2837,7 +2839,12 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         ),
         FeatureKind::Sweep(_) => (
             "sweep",
-            vec![("sketch", Slot::Elsewhere), ("path", Slot::Elsewhere)],
+            vec![
+                ("sketch", Slot::Elsewhere),
+                ("path", Slot::Elsewhere),
+                ("rail", Slot::Elsewhere),
+                ("scale", Slot::Elsewhere),
+            ],
         ),
         FeatureKind::Fill(_) => ("fill", vec![("sketch", Slot::Elsewhere)]),
         // Its creases and fixed point are changed by fold.edit.
@@ -3231,6 +3238,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         FeatureKind::Sweep(sweep) => {
             sweep.sketch = new_sketch.unwrap_or(sweep.sketch);
             sweep.path = new_path.unwrap_or(sweep.path);
+            crate::sweep_path_cmds::edit_rails(session.document()?.history.current(), &p, sweep)?;
             if sweep.sketch == sweep.path {
                 return fail(
                     "feature.edit: `sketch` and `path` are the same sketch; the path is drawn in a sketch of its own",

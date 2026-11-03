@@ -1696,10 +1696,18 @@ impl Builder {
                 let (begin, span) = element.angles().ok_or_else(internal)?;
                 let frame = Frame::new(station.at(center), station.forward()?, station.u)
                     .ok_or_else(internal)?;
-                let curve = if station.square {
-                    Curve3::Circle(Circle::new(frame, radius)?)
+                // A station of the sweep along two rails scales the
+                // profile: `b` is then longer or shorter than a unit.
+                let across = station.b.length();
+                let across = if (across - 1.0).abs() <= 1e-12 {
+                    radius
                 } else {
-                    Curve3::Ellipse(Ellipse::new(frame, radius * station.u.length(), radius)?)
+                    radius * across
+                };
+                let curve = if station.square {
+                    Curve3::Circle(Circle::new(frame, across)?)
+                } else {
+                    Curve3::Ellipse(Ellipse::new(frame, radius * station.u.length(), across)?)
                 };
                 (curve, (begin, begin + span))
             }

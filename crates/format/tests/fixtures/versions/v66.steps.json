@@ -1,0 +1,10 @@
+[
+ ["sketch.create", {"plane": "zx", "name": "Section"}],
+ ["sketch.circle", {"sketch": "Section", "center": [0, 3], "radius": 3}],
+ ["sketch.create", {"plane": "xy", "name": "RailA"}],
+ ["sketch.polyline", {"sketch": "RailA", "points": [[0, 0], [1.5, 20]]}],
+ ["sketch.create", {"plane": "xy", "name": "RailB"}],
+ ["sketch.polyline", {"sketch": "RailB", "points": [[6, 0], [4.5, 20]]}],
+ ["feature.sweep", {"sketch": "Section", "path": "RailA", "rail": "RailB", "name": "Horn"}],
+ ["feature.sweep", {"sketch": "Section", "path": "RailA", "rail": "RailB", "scale": "width", "name": "Flat"}]
+]
