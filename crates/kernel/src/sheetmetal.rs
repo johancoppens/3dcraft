@@ -1462,7 +1462,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         .map(|(edge, surface)| (*edge, crate::plate::Joint::Onto(surface)))
         .collect();
     let solid = if bends.iter().any(Bend::sharp) {
-        sharp::refused(&bends, &corners, &cuts)?;
+        sharp::refused(&bends, &corners, &cuts, tol, tolerance.angular)?;
         sharp::plate(
             &sheet,
             &sheet_faces,
@@ -2362,9 +2362,6 @@ fn check_flange(
             ),
         ));
     }
-    if f.radius <= tol {
-        sharp::check(i, f.angle, f.k, t, tol, angular)?;
-    }
     if !(f.k.is_finite() && (0.0..=1.0).contains(&f.k)) {
         return Err(refuse(
             Some(i),
@@ -2373,6 +2370,10 @@ fn check_flange(
                 f.k
             ),
         ));
+    }
+    // After the K-factor's range, so a bad one is refused for what it is.
+    if f.radius <= tol {
+        sharp::check(i, f.angle, f.k, t, tol, angular)?;
     }
     Ok(())
 }

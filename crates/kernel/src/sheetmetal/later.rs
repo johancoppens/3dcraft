@@ -433,6 +433,40 @@ fn bbox(points: &[P2]) -> [f64; 4] {
     )
 }
 
+/// The sharp bends (their indices) whose outer skin or end sector a later
+/// feature changed: a face of `body` on the surface of one of those faces
+/// with a vertex that is no vertex of the part's faces on that surface
+/// (within the tolerance), or with another number of loops (a hole).
+fn sharp_cut(part: &Part, body: &Body, tol: f64) -> Vec<usize> {
+    let vertices = |b: &Body, f: &craft3d_topo::Face| -> Vec<Vec3> {
+        f.loops
+            .iter()
+            .filter_map(|l| b.loop_(*l))
+            .flat_map(|l| l.coedges.iter())
+            .filter_map(|c| b.coedge_ends(*c))
+            .filter_map(|(v, _)| b.vertex(v).map(|v| v.point))
+            .collect()
+    };
+    let mut bends = std::collections::BTreeSet::new();
+    for face in &body.faces {
+        for (own, made) in part.solid.body.faces.iter().zip(&part.solid.faces) {
+            let Made::Joined(code) = made else { continue };
+            if own.surface != face.surface {
+                continue;
+            }
+            let theirs = vertices(&part.solid.body, own);
+            let changed = face.loops.len() != own.loops.len()
+                || vertices(body, face)
+                    .iter()
+                    .any(|p| !theirs.iter().any(|q| q.distance(*p) <= tol));
+            if changed {
+                bends.insert(super::sharp::joined(*code).0);
+            }
+        }
+    }
+    bends.into_iter().collect()
+}
+
 /// The holes `body` (a later feature's body made from the part) has in the
 /// part's skins, laid flat (see the module documentation).
 ///
@@ -450,6 +484,11 @@ pub fn later_cuts(
     let (bottom, open_b) = chain(bottom, reach);
     let (top, open_t) = chain(top, reach);
     let mut found = LaterCuts::default();
+    for bend in sharp_cut(part, body, tol) {
+        found.not_carried.push(format!(
+            "a cut or pocket in the outer skin or an end of flange {bend}'s sharp bend (inner radius 0), which is not laid flat onto the pattern (owed: its inner skin is a line, so a hole through it has no one outline across the strip); draw it in the part's sketch or a cutouts sketch, or give the bend a radius"
+        ));
+    }
     if open_b + open_t > 0 {
         found.not_carried.push(format!(
             "{} cut(s) reach the edge of the part or of a hole and change its outline, which is not carried onto the flat pattern (owed); draw them in the part's sketch or a cutouts sketch",

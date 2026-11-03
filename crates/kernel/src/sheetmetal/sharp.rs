@@ -25,12 +25,12 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use super::{
-    Bend, Corner, CornerKind, Cut, EdgeKey, Flat, SLIVER_TOLERANCES, SheetFace, lift, outline_key,
-    refuse, seat_of, unit, world,
+    Bend, Corner, CornerKind, Cut, EdgeKey, Flat, P2, SLIVER_TOLERANCES, SheetFace, lift,
+    outline_key, refuse, seat_of, unit, world,
 };
 use crate::KernelError;
 use crate::plate::{Joint, Made, Plate, Side};
-use crate::profile::{distance, sub};
+use crate::profile::{cross, distance, dot, sub};
 use craft3d_geom::{Circle, Curve3, Cylinder, Plane, Surface};
 use craft3d_math::{Frame, Portable, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId};
@@ -46,7 +46,8 @@ pub(super) fn snapped(radius: f64, tol: f64) -> f64 {
 /// onto the parent's inner skin, the two touching all over: a closed hem,
 /// which one solid cannot hold), and an allowance `θ K T` within
 /// [`SLIVER_TOLERANCES`] tolerances of 0 (at `K = 0` the strip has no
-/// width and the two tangent lines would be one line in the pattern).
+/// width and the two tangent lines would be one line in the pattern). The
+/// outer skin's arcs, `θ T` long, are then longer still (`K ≤ 1`).
 pub(super) fn check(
     i: usize,
     angle: f64,
@@ -73,50 +74,139 @@ pub(super) fn check(
     Ok(())
 }
 
-/// What the parts with a sharp bend do not build yet, each refused with
-/// the reason: a hole across a bend (the cells of a strip with no face of
-/// its own), a trimmed sharp bend, and two sharp bends turning the same
-/// way that meet at an open corner without a relief, whose walls would
-/// touch along a piece of the corner's vertical (each wall's inner skin
-/// runs through its bend's axis, so square walls share that line, and one
-/// leaning out reaches over it: not one solid). Bent opposite ways the
-/// walls lie on either side of the base and meet only at its corner.
-pub(super) fn refused(bends: &[Bend], corners: &[Corner], cuts: &[Cut]) -> Result<(), KernelError> {
+/// What the parts with a sharp bend do not build, each refused with the
+/// reason (docs/design/sheetmetal.md › *Sharp bends*).
+///
+/// At `R = 0` a wall's inner skin is the plane through its tangent line,
+/// and the parent's inner skin runs into the same line, so material that a
+/// radius kept `R` away from either now touches it; the checker does not
+/// see two pieces that only touch (review of d88ec622). What can touch
+/// that way is refused, each by a rule that holds for any part:
+///
+/// - **Two bends that meet** (an end of one tangent line on an end of the
+///   other's, on one parent, turning the same way) where one is sharp and
+///   the other sharp too: each wall's inner skin runs through the meeting
+///   point, so the walls share a piece of a line there. Unless their
+///   corner is closed (the flats end on planes a gap apart) or relieved
+///   (then the tangent lines do not meet).
+/// - **A wall's end face on a sharp square wall's inner skin**: a sharp
+///   bend at 90 degrees has its inner skin square to the parent through
+///   its tangent line, the plane every flange square to it and ending on
+///   that line ends on; a flange that leans in over the parent (more than
+///   90 degrees) puts its end face on it over an area.
+/// - **A flange on an edge of a flat that starts at a sharp bend's far
+///   tangent line, or a sharp one on an edge that starts at its parent's
+///   bend's**: the edge's end lies on the parent's inner skin (sharp) or
+///   the sharp flange's inner skin through it, so the flange's rim along
+///   it lies on the other's skin (a tab on a side of a sharp wall).
+/// - **Folded flat**: the far end of a sharp bend's flat no more than the
+///   tolerance from the parent's inner skin (`L sin θ`), touching it.
+/// - A hole across a bend in the part, and a trimmed sharp bend (owed).
+pub(super) fn refused(
+    bends: &[Bend],
+    corners: &[Corner],
+    cuts: &[Cut],
+    tol: f64,
+    angular: f64,
+) -> Result<(), KernelError> {
     if let Some(i) = bends.iter().position(Bend::sharp)
         && !cuts.is_empty()
     {
         return Err(refuse(
-            Some(i),
-            "its bend is sharp (inner radius 0), and the part has a hole across a bend: a hole across a bend in a part with a sharp bend is not built (owed); give the bends a radius, or keep the holes inside the flats",
+            None,
+            format!(
+                "the part has a hole across a bend and flange {i}'s bend is sharp (inner radius 0): a hole across a bend in a part with a sharp bend is not built (owed); give the sharp bends a radius, or keep the holes inside the flats"
+            ),
         ));
     }
     for (i, b) in bends.iter().enumerate() {
-        if b.sharp() && b.trim.iter().any(Option::is_some) {
+        if !b.sharp() {
+            continue;
+        }
+        if b.trim.iter().any(Option::is_some) {
             return Err(refuse(
                 Some(i),
                 "its bend is sharp (inner radius 0) and a closed corner's end plane cuts it: trimming a sharp bend is not built (owed); give the corner a relief, or the bend a radius",
             ));
         }
+        let gap = b.flat_length * b.theta().psin();
+        if !(gap > tol) {
+            return Err(refuse(
+                Some(i),
+                format!(
+                    "a sharp bend (inner radius 0) folds its flat to {gap} from the parent's inner skin (its length times the sine of the angle), within the tolerance: touching it (a closed hem), which one solid cannot hold; give the bend the radius the hem is pressed to, or a smaller angle"
+                ),
+            ));
+        }
     }
-    for c in corners {
-        let [a, b] = c.bends;
-        let (Some(ba), Some(bb)) = (bends.get(a), bends.get(b)) else {
+    let closed = |x: usize, y: usize| {
+        corners
+            .iter()
+            .any(|c| c.closing.kind != CornerKind::Open && (c.bends == [x, y] || c.bends == [y, x]))
+    };
+    let ends = |b: &Bend| [b.start, b.end];
+    let on_segment = |p: P2, a: P2, e: P2| {
+        let Some(d) = unit(sub(e, a)) else {
+            return false;
+        };
+        let s = dot(sub(p, a), d);
+        let off = cross(d, sub(p, a)).abs();
+        off <= tol && s >= -tol && s <= distance(a, e) + tol
+    };
+    for (i, s) in bends.iter().enumerate() {
+        if !s.sharp() {
+            continue;
+        }
+        let ds = unit(sub(s.end, s.start)).unwrap_or([0.0, 0.0]);
+        let square = (s.theta() - 0.5 * PI).abs() <= angular;
+        for (j, o) in bends.iter().enumerate() {
+            if j == i || o.parent != s.parent || (o.angle > 0.0) != (s.angle > 0.0) {
+                continue;
+            }
+            let meet = ends(s)
+                .iter()
+                .any(|p| ends(o).iter().any(|q| distance(*p, *q) <= tol));
+            if meet && o.sharp() && !closed(i, j) {
+                return Err(refuse(
+                    Some(i.max(j)),
+                    format!(
+                        "it and flange {} meet with sharp bends (inner radius 0) turning the same way, open and without a relief: each wall's inner skin runs through the point where their bends meet, so the two walls would touch along a line there, which one solid cannot hold; give the part a relief, close the corner, or give a bend a radius",
+                        i.min(j)
+                    ),
+                ));
+            }
+            // A flange square to the sharp wall, ending on its tangent
+            // line (extended), leaning in over the parent.
+            let do_ = unit(sub(o.end, o.start)).unwrap_or([0.0, 0.0]);
+            let across = dot(ds, do_).abs() <= angular.psin();
+            let on_line = ends(o)
+                .iter()
+                .any(|p| cross(ds, sub(*p, s.start)).abs() <= tol);
+            if square && across && on_line && o.theta() > 0.5 * PI + angular && !closed(i, j) {
+                return Err(refuse(
+                    Some(j),
+                    format!(
+                        "it leans in over its parent and ends on the line of flange {i}'s sharp bend (inner radius 0), which stands square: its end face would lie on flange {i}'s inner skin (the plane through that bend's tangent line), touching it over an area, which one solid cannot hold; give flange {i}'s bend a radius, inset this flange from the corner, or close the corner"
+                    ),
+                ));
+            }
+        }
+    }
+    // A flange on an edge of a flat that starts where the flat's own bend
+    // ends, when either bend is sharp.
+    for (j, o) in bends.iter().enumerate() {
+        let Some((w, wb)) = bends.iter().enumerate().find(|(_, w)| w.child == o.parent) else {
             continue;
         };
-        // Bent opposite ways the walls part at the corner (one stands above
-        // the base, the other below it); bent the same way each wall's
-        // inner skin runs through the corner's point at the bends' axes.
-        let same_way = (ba.angle > 0.0) == (bb.angle > 0.0);
-        if c.closing.kind == CornerKind::Open
-            && c.relief.is_none()
-            && ba.sharp()
-            && bb.sharp()
-            && same_way
-        {
+        if !(o.sharp() || wb.sharp()) {
+            continue;
+        }
+        let (fa, fe) = wb.far_line();
+        if ends(o).iter().any(|p| on_segment(*p, fa, fe)) {
             return Err(refuse(
-                Some(b),
+                Some(j),
                 format!(
-                    "it and flange {a} meet at a corner with sharp bends (inner radius 0), open and without a relief: each wall's inner skin runs through its bend's axis, so the two walls would touch along the corner's line, which one solid cannot hold; give the part a relief, close the corner, or give a bend a radius"
+                    "it sits on an edge of flange {w}'s flat that starts at that flange's bend (a side), and one of the two bends is sharp (inner radius 0): the edge's end lies on the other's inner skin, so this flange's rim would touch it, which one solid cannot hold; give the bends a radius, or inset this flange from the bend"
                 ),
             ));
         }
@@ -266,7 +356,9 @@ fn id32(n: usize) -> Result<u32, KernelError> {
 }
 
 /// Puts plate `p`'s body after what `body` has, its faces' origins after
-/// `made`'s.
+/// `made`'s. The plates' tables of loose tolerances are not carried: a
+/// plate the kernel builds records none (`Body::tolerances` is empty for
+/// every body it makes), so there is nothing to carry.
 fn append(body: &mut Body, made: &mut Vec<Made>, p: &Plate) -> Result<(), KernelError> {
     let (v0, e0, l0) = (
         id32(body.vertices.len())?,

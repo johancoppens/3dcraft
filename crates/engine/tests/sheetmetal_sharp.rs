@@ -249,5 +249,48 @@ fn sharp_refusals_fail_the_feature() {
                "flanges": [{"edge": lines[0], "length": "5 mm", "angle": "90 deg"},
                            {"edge": lines[1], "length": "5 mm", "angle": "90 deg"}]}),
     );
-    assert!(reason.contains("touch along the corner"), "{reason}");
+    assert!(reason.contains("touch along a line"), "{reason}");
+}
+
+/// A later cut through a sharp bend and a pocket in its outer skin are not
+/// carried onto the flat pattern, and the export says so (review of
+/// d88ec622: they were left out without a word).
+#[test]
+fn a_later_cut_across_a_sharp_bend_is_listed_not_carried() {
+    for k in SCALES {
+        for (what, size, position) in [
+            ("through", [10.0, 8.0, 6.0], [15.0, -5.0, -1.0]),
+            ("pocket", [4.0, 1.3, 1.4], [18.0, -2.5, -0.5]),
+        ] {
+            let dir = workdir("sheetmetal-sharp", &format!("later-{what}-{k}"));
+            let mut s = session_in(&dir);
+            new_document(&mut s, k);
+            let lines = rect(&mut s, "Base", 40.0 * k, 30.0 * k);
+            built(
+                &mut s,
+                "feature.sheetMetal",
+                json!({"sketch": "Base", "name": "L", "thickness": mm(2.0 * k), "radius": "0 mm",
+                       "kFactor": 0.4,
+                       "flanges": [{"edge": lines[0], "length": mm(25.0 * k), "angle": "90 deg"}]}),
+            );
+            let scaled = |v: [f64; 3]| [mm(v[0] * k), mm(v[1] * k), mm(v[2] * k)];
+            run(
+                &mut s,
+                "feature.block",
+                json!({"name": "Cutter", "size": scaled(size), "position": scaled(position)}),
+            );
+            built(
+                &mut s,
+                "feature.boolean",
+                json!({"op": "subtract", "target": "L", "tool": "Cutter", "name": "Cut"}),
+            );
+            let out = run(
+                &mut s,
+                "file.export",
+                json!({"path": "l.dxf", "sheetMetal": "L"}),
+            );
+            let listed = out["notCarried"].to_string();
+            assert!(listed.contains("sharp bend"), "{what} at {k}: {out}");
+        }
+    }
 }

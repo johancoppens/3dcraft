@@ -519,6 +519,13 @@ fn sharp_refusals_by_reason() {
         let (f, why) = refused(&one(PI, 0.4, 0.0), &tol);
         assert_eq!(f, Some(0));
         assert!(why.contains("closed hem"), "{why}");
+        // Short of 180 degrees by less than the tolerance allows across
+        // the flat's length: folded onto the parent all the same.
+        let (_, why) = refused(&one(PI - 1.5e-9, 0.4, 0.0), &tol);
+        assert!(why.contains("sine of the angle"), "{why}");
+        // A K-factor out of range is refused for that, also when sharp.
+        let (_, why) = refused(&one(FRAC_PI_2, -0.5, 0.0), &tol);
+        assert!(why.contains("K-factor is the neutral fibre"), "{why}");
         let (_, why) = refused(&one(FRAC_PI_2, 0.0, 0.0), &tol);
         assert!(why.contains("K-factor above 0"), "{why}");
         // Within the tolerance of 0: sharp.
@@ -542,7 +549,7 @@ fn sharp_refusals_by_reason() {
         );
         let (f, why) = refused(&corner, &tol);
         assert_eq!(f, Some(1));
-        assert!(why.contains("touch along the corner"), "{why}");
+        assert!(why.contains("touch along a line"), "{why}");
         // Bent opposite ways the walls part: built, the sum of the pieces.
         let mut apart = corner.clone();
         apart.flanges[1].direction = Direction::Down;
@@ -555,7 +562,82 @@ fn sharp_refusals_by_reason() {
         let mut across = one(FRAC_PI_2, 0.4, 0.0);
         across.cutouts = circles(&[([20.0, 0.0], 2.0)], k);
         let (f, why) = refused(&across, &tol);
-        assert_eq!(f, Some(0));
+        // The part's, not one flange's: the hole and the sharp bend may be
+        // anywhere.
+        assert_eq!(f, None);
         assert!(why.contains("hole across a bend"), "{why}");
+    }
+}
+
+/// Where a sharp wall's inner skin (the plane through its tangent line)
+/// would touch other material that a radius kept `R` away from it, the
+/// part is refused with the reason (review of d88ec622): each of these
+/// built a solid that touches itself, which the checker does not see.
+///
+/// 1. An open corner without a relief: flange 0 (R = 2) leaning in at 120
+///    degrees beside flange 1 sharp and square: flange 0's end face lies
+///    on flange 1's inner skin over an area. The same with flange 1 inset
+///    at the corner (no corner of the part): flange 0's end face still
+///    lies on the plane of flange 1's inner skin, reaching it.
+/// 2. Two sharp flanges meeting where no corner of the part is, a tab on
+///    a wall's tip and one on its side (both on the wall's flat, their
+///    tangent lines ending at its corner): their walls touch along a line.
+/// 3. A sharp flange on a side of a sharp wall: the side's end lies on the
+///    base's inner skin, and the flange's rim along it with it.
+#[test]
+fn sharp_walls_that_would_touch_are_refused() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let (t, l) = (1.0 * k, 20.0 * k);
+        let leaning = |inset: f64| {
+            let mut sharp = flange(On::Base(2), l, FRAC_PI_2, Direction::Up, 0.0, 0.4);
+            sharp.inset = [inset * k, 0.0];
+            spec(
+                base(40.0, 30.0, k),
+                t,
+                vec![
+                    flange(On::Base(1), l, 2.0 * PI / 3.0, Direction::Up, 2.0 * k, 0.4),
+                    sharp,
+                ],
+                None,
+            )
+        };
+        for inset in [0.0, 5.0] {
+            let (_, why) = refused(&leaning(inset), &tol);
+            assert!(why.contains("inner skin"), "inset {inset} at {k}: {why}");
+        }
+        // Square instead of leaning in: no face of flange 0 reaches flange
+        // 1's inner skin; built.
+        let mut square = leaning(0.0);
+        square.flanges[0].angle = FRAC_PI_2;
+        let part = build(&square, &tol).unwrap();
+        healthy(&part, &tol);
+
+        let tip_side = spec(
+            base(40.0, 30.0, k),
+            t,
+            vec![
+                flange(On::Base(1), l, FRAC_PI_2, Direction::Up, 2.0 * k, 0.4),
+                flange(On::Tip(0), 5.0 * k, FRAC_PI_2, Direction::Up, 0.0, 0.4),
+                flange(On::Side(0, 1), 5.0 * k, FRAC_PI_2, Direction::Up, 0.0, 0.4),
+            ],
+            None,
+        );
+        let (_, why) = refused(&tip_side, &tol);
+        assert!(why.contains("touch"), "tip and side at {k}: {why}");
+        for direction in [Direction::Up, Direction::Down] {
+            let side = spec(
+                base(40.0, 30.0, k),
+                t,
+                vec![
+                    flange(On::Base(1), l, FRAC_PI_2, Direction::Up, 0.0, 0.4),
+                    flange(On::Side(0, 1), 5.0 * k, FRAC_PI_2, direction, 0.0, 0.4),
+                ],
+                None,
+            );
+            let (f, why) = refused(&side, &tol);
+            assert_eq!(f, Some(1), "{why}");
+            assert!(why.contains("side"), "side {direction:?} at {k}: {why}");
+        }
     }
 }
