@@ -915,7 +915,13 @@ fn a_name_like_a_formula_is_not_a_formula_in_the_csv() {
     new_document(&mut s, 1.0);
     block(&mut s, "=1+1", [100.0, 50.0, 6.0], [0.0; 3]);
     let csv = run(&mut s, "cut.list", json!({"format": "csv"}));
-    let row = csv["csv"].as_str().unwrap().lines().nth(1).unwrap().to_string();
+    let row = csv["csv"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .nth(1)
+        .unwrap()
+        .to_string();
     assert!(row.contains(",'=1+1,1,"), "{row}");
     assert!(row.ends_with(",plate,'=1+1,"), "{row}");
 }

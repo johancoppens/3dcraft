@@ -161,7 +161,7 @@ fn furthest(spline: &Spline, axis: usize, sign: f64) -> f64 {
     let mut left_over = f64::NEG_INFINITY;
     while let Some(c) = stack.pop() {
         let top = upper(&c);
-        if !(top > best + eps) {
+        if top.partial_cmp(&(best + eps)) != Some(std::cmp::Ordering::Greater) {
             continue;
         }
         if splits >= MAX_SPLITS {

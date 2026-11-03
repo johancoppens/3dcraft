@@ -613,7 +613,7 @@ pub fn same_part(a: &Prepared, b: &Prepared, tol: f64, work: &mut usize) -> Opti
         },
     );
     *work = work.checked_sub(pb.len())?;
-    let index = Index::new(&pb, 4.0 * tol);
+    let index = Index::new(pb, 4.0 * tol);
     let turn_over = !(a.formed || b.formed);
     let mirrors: &[bool] = if turn_over { &[false, true] } else { &[false] };
     match reference.filter(|(r, _)| *r > tol) {
