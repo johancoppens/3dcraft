@@ -18,6 +18,7 @@
 //!   boxes, switches, sliders, number and text fields, dropdowns;
 //! - [`rows`]: section and fold headers, label/value rows, list rows, the
 //!   tab bar, captions;
+//! - [`dialog`]: the one layout of every dialog (title, body, footer);
 //! - [`overlays`]: tooltips, popovers with a pointer, menus and context
 //!   menus;
 //! - [`status`]: the agent's status pill, banners, progress and spinners;
@@ -29,6 +30,7 @@
 
 pub mod brand;
 pub mod controls;
+pub mod dialog;
 // Pictures and tests only: not in the browser build.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod gallery;
@@ -39,6 +41,7 @@ pub mod status;
 
 pub use brand::AppIcon;
 pub use controls::{Button, ButtonKind, ChipKind, Segment, Slider};
+pub use dialog::{Dialog, DialogShown};
 pub use glyphs::Glyph;
 pub use overlays::MenuItem;
 pub use rows::{Depends, ListRow, RowHits, RowMark, Tab, ValueStyle};

@@ -483,11 +483,21 @@ limits by name), and the instances then stay where they are placed.
 
 ### Regeneration elsewhere
 
-A host that regenerates elsewhere (the web page's worker, `Session::set_regen_elsewhere`) never gets an assembly's
-jobs: `regen_elsewhere()` is false while the active document is an assembly, because what it shows is placed from the
-source files this session read, which the document sent to a worker does not carry. The page then builds it here a
-piece at a time, as a host without a worker does. Shipping the assembly with the files it read is the alternative,
-owed if placing a large assembly on the page's thread is too slow.
+A host that regenerates elsewhere (the web page's worker, `Session::set_regen_elsewhere`) has an assembly placed there
+too (since 2026-11-03; before, `regen_elsewhere()` was false for an assembly and the page placed it a piece at a time).
+The state crosses with the sources this session read for it (`view_elsewhere::state_bytes`: the `.3dcraft` file, the
+assembly's path and folder, and each file of `AsmState::files` with its bytes or why it could not be read; a packed
+assembly carries its sources in the file), and the other side installs them in its own `AsmState` as reading them would
+have (`view_elsewhere::install`), so it places from the same bytes: the same configurations, poses and scenes, bit for
+bit. Its motion's moments are made there as well, and its bake. The host keeps a stand-in per view for the scenes, and
+reads the outline and the joints a drag moves from what the other side said of the view (`ViewFacts`); while the next
+moment is made the tree lists the last one of the same state. `joint.set` there answers without solving (`status:
+"pending"`, `deferred: true`); the checking worker measures the assertions of the assembly's state with its sources;
+a read that needs the placement and was not placed on the page runs in the worker. What still places on the page: an
+edit run there that reports what it solved (`instance.add`, `mate.add`, `variable.set`, `assembly.solve`,
+`assembly.inspect`), and `view.trace` and `motion.check`, which make their own sweep. Without the worker (none, or
+`?pageregen`) the page places it a piece at a time, as before ([`engine.md`](engine.md) › *Motion and assemblies in
+the worker*).
 
 ### Tests (track A)
 
@@ -546,7 +556,7 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
   *Revolute between these*, *Fixed*, *Slider*, *Cylindrical*, *Planar* and *Ball* above *Select other*; one issues
   `mate.add` with the faces named through their instances.
 - **The web build** is the same shell: the tree, the sliders and the motion work on the page; an assembly is solved
-  and placed there (regeneration elsewhere is refused for it, *Regeneration elsewhere* above), a piece per frame.
+  and placed in the page's worker, its moments made there (*Regeneration elsewhere* above, since 2026-11-03).
 - `.3dcraftasm` is among the extensions Open offers, on the desktop and the page.
 
 ### Findings and history (track A)

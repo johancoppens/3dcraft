@@ -223,6 +223,10 @@ pub enum Made {
     Back(FaceId),
     /// The rim along this boundary edge of the input.
     Rim(EdgeId),
+    /// A face the plate's caller joined to it, numbered by the caller
+    /// (sheet metal's sharp bends: docs/design/sheetmetal.md › *Sharp
+    /// bends*); [`plate`] itself makes none.
+    Joined(u32),
 }
 
 /// A plate and what each of its faces was made from (`faces[i]` for face
@@ -1370,6 +1374,16 @@ fn build(
                 ),
             ));
         }
+        // Where the boundary runs on smoothly through the vertex between two
+        // square rims, both rims hold the normal there and are tangent to
+        // each other along it (on one cylinder, for two arcs of one
+        // circle): where they meet is no point but that line, and a solve
+        // for one drifts along it (found 2026-11-03: a hole of a quarter,
+        // a half and a quarter circle left its edges round the wrong side
+        // of the circle, a valid body of the wrong volume). There the
+        // corner is where the rims' own rows reach the vertex, put on the
+        // skins alone.
+        let smooth = smooth_square(body, *vertex, &at_rims, joints, tolerance.angular);
         for level in 0..2 {
             let mut surfaces: Vec<&Surface> = Vec::new();
             for f in around {
@@ -1378,9 +1392,10 @@ fn build(
                 }
             }
             let mut starts: Vec<Vec3> = Vec::new();
+            let mut at_rim_surfaces: Vec<&Surface> = Vec::new();
             for edge in &at_rims {
                 if let Some((rim, _)) = rims.get(edge) {
-                    surfaces.push(rim);
+                    at_rim_surfaces.push(rim);
                 }
                 let (Some(t), Some(e)) = (traced.get(edge), body.edge(*edge)) else {
                     continue;
@@ -1395,6 +1410,14 @@ fn build(
                 if e.end == *vertex {
                     starts.push(row.eval(t.own.1));
                 }
+            }
+            // The rows decide the corner only where they agree on it (each
+            // within the share of the tolerance of its rim's true line, so
+            // within twice that of each other): a local proof; otherwise
+            // it is solved against the rims as at any other corner.
+            let agree = matches!(starts.as_slice(), [a, b] if a.distance(*b) <= 2.0 * SHARE * tol);
+            if !(smooth && agree) {
+                surfaces.extend(at_rim_surfaces);
             }
             let start = if starts.is_empty() {
                 let f = around
@@ -1766,6 +1789,50 @@ fn connected(layered: &[Layered<'_>], kinds: &BTreeMap<EdgeId, Use>) -> Result<(
         ));
     }
     Ok(())
+}
+
+/// Whether the two boundary edges at `vertex` both end square (no joint
+/// given, or [`Joint::Square`]) and run on smoothly through it: their
+/// tangents there parallel, the same way round the boundary, within the
+/// angular tolerance.
+fn smooth_square(
+    body: &Body,
+    vertex: VertexId,
+    at_rims: &[EdgeId],
+    joints: &BTreeMap<EdgeId, Joint<'_>>,
+    angular: f64,
+) -> bool {
+    let [a, b] = at_rims else { return false };
+    if [a, b]
+        .iter()
+        .any(|e| !matches!(joints.get(e), None | Some(Joint::Square)))
+    {
+        return false;
+    }
+    // Each edge's tangent at the vertex, pointing away from it.
+    let away = |e: &EdgeId| -> Option<Vec3> {
+        let edge = body.edge(*e)?;
+        if edge.start == edge.end {
+            return None;
+        }
+        if edge.start == vertex {
+            edge.curve.derivatives(edge.range.0).1.normalized()
+        } else if edge.end == vertex {
+            edge.curve
+                .derivatives(edge.range.1)
+                .1
+                .normalized()
+                .map(|d| -d)
+        } else {
+            None
+        }
+    };
+    match (away(a), away(b)) {
+        // Running on: the two point away from the vertex in opposite
+        // directions.
+        (Some(da), Some(db)) => da.dot(db) <= -angular.pcos(),
+        _ => false,
+    }
 }
 
 /// Points an edge between two faces is looked at for a crease before the

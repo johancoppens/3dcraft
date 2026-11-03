@@ -188,6 +188,20 @@ fn spec(
 /// maths): every count, area and flat area kept its bits; the vertex
 /// hashes moved, and the volumes of box-round and z by one ulp and of
 /// cutout by two. The same bits on the Strix and on a laptop.
+///
+/// Re-pinned 2026-11-03 (an expectation change, logged): the plate's
+/// corner where two square rims run on smoothly into each other (a bend's
+/// arc into a flange's side, arcs of one circle in a hole) was solved for
+/// a point on surfaces that are tangent there, where the solve has no one
+/// answer and can drift along their common line; on a hole of a quarter,
+/// a half and a quarter circle it drifted so far that the edges went round
+/// the wrong side and the body, valid to the checker, was 2 % short of its
+/// volume (`plate_smooth_corners.rs`). Such a corner is now where the
+/// rims' own rows reach the vertex, put on the skins alone. Here these
+/// parts were right before and after: every count, area and flat area
+/// kept its bits, z's volume moved by one ulp, and the vertex hashes moved
+/// (the corners' last bits). What the bits stand for is held apart from
+/// the code by the closed-form volumes of box-none and z checked below.
 const PINS: &[(&str, Pin)] = &[
     (
         "box-none",
@@ -198,7 +212,7 @@ const PINS: &[(&str, Pin)] = &[
             39,
             79,
             42,
-            0xebc19837d77d4da8,
+            0x69c2ef85ade01ea6,
         ),
     ),
     (
@@ -210,7 +224,7 @@ const PINS: &[(&str, Pin)] = &[
             47,
             103,
             58,
-            0xb2971b90b56a148c,
+            0xbd71963ceb800c7e,
         ),
     ),
     (
@@ -222,7 +236,7 @@ const PINS: &[(&str, Pin)] = &[
             43,
             91,
             50,
-            0xc1aac69eec97e2d7,
+            0x34b90a8d9dc61ee9,
         ),
     ),
     (
@@ -234,19 +248,19 @@ const PINS: &[(&str, Pin)] = &[
             43,
             91,
             50,
-            0xfe8dc17af2168a87,
+            0x5ca053aef4dcaa20,
         ),
     ),
     (
         "z",
         (
-            0x40a118fdb9effea8,
+            0x40a118fdb9effea7,
             0x40b1d66a782f9838,
             0x40a0ffdbbe9bba77,
             22,
             44,
             24,
-            0x9c9a2ef0d1a2aad8,
+            0x565b8e8d8b4c12f9,
         ),
     ),
     (
@@ -258,7 +272,7 @@ const PINS: &[(&str, Pin)] = &[
             24,
             50,
             28,
-            0x584f6e43edc2b4f5,
+            0x8d6baed9d4779403,
         ),
     ),
 ];
@@ -275,4 +289,41 @@ fn open_parts_are_built_bit_for_bit_as_before_closed_corners() {
         assert_eq!(p, *want, "{name}");
     }
     assert_eq!(PINS.len(), parts().len());
+}
+
+/// Every pinned part by its closed form (R = 1, T = 1, K = 0.4,
+/// flanges 10 up): the slabs and per bend the quarter ring `θ w T (R + T/2)`
+/// (sheetmetal.md › *Volume*), less the hole.
+#[test]
+fn the_pinned_parts_have_their_closed_form_volumes() {
+    use std::f64::consts::PI;
+    let quarter = |w: f64| FRAC_PI_2 * w * 1.5;
+    // A box 60 × 40 with a hole of radius 3, four flanges 10 high, each
+    // edge short of its corners by the relief's size s, a notch of area
+    // `notch` cut at each corner.
+    let tray = |s: f64, notch: f64| {
+        let edges = 200.0 - 8.0 * s;
+        60.0 * 40.0 - PI * 9.0 - 4.0 * notch + edges * 10.0 + quarter(edges)
+    };
+    for (name, part) in parts() {
+        let want = match name.as_str() {
+            "box-none" => tray(0.0, 0.0),
+            "box-rect" => tray(3.0, 9.0),
+            "box-round" => tray(3.0, PI * 9.0 / 4.0),
+            "box-tear" => tray(3.0, 9.0 + 0.75 * PI * 9.0),
+            "z" => 40.0 * 30.0 + 2.0 * 40.0 * 10.0 + 2.0 * quarter(40.0),
+            // Two flanges on edges of 60 and 40 meeting at one corner with
+            // a round relief of 3, a vent of radius 2 in the first's flat.
+            "cutout" => {
+                60.0 * 40.0 - PI * 9.0 / 4.0 + (57.0 + 37.0) * 10.0 - PI * 4.0
+                    + quarter(57.0 + 37.0)
+            }
+            _ => continue,
+        };
+        let got = mass_properties(&part.solid.body).unwrap().volume;
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "{name}: {got} against {want}"
+        );
+    }
 }

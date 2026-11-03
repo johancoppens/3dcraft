@@ -15,6 +15,7 @@ pub mod network;
 mod nurbs;
 pub mod offset;
 pub mod pole;
+pub mod projection_proof;
 pub mod refine;
 pub mod support;
 mod surface;

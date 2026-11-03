@@ -565,6 +565,9 @@ fn plate_of(
             Made::Front(_) if out => Ok(Kind::End),
             Made::Back(_) if !out => Ok(Kind::End),
             Made::Front(_) | Made::Back(_) => Ok(Kind::Start),
+            Made::Joined(_) => Err(refuse(
+                "the plate made a face it did not make (a kernel bug)",
+            )),
             Made::Rim(e) => match parts.edges.get(e) {
                 Some(&(c, p, b, bp)) => Ok(Kind::Rim(c, p, b, bp)),
                 None => Err(refuse(

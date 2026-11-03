@@ -34,6 +34,7 @@ pub mod app;
 pub mod args;
 pub mod consent;
 pub mod control;
+pub mod desktop_theme;
 pub mod files;
 pub mod host;
 pub mod places;

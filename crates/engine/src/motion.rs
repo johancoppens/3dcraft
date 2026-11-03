@@ -52,7 +52,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "view.motion",
         "Show Motion",
         r#"{"t": number from 0 to 1 or null, "collisions": boolean = as before (false), "shapes": "exact" or "ready" = "exact"}"#,
-        "Shows the model in the view at a moment t of its motion, without changing the document: not its variables, its undo history or its dirty state (view state, as view.scrub). The timeline is the document's variable t when it is a plain number (no unit): formulas of t drive the motion (a crank angle 360 deg * t). Only the features that depend on t are regenerated, and only their bodies are meshed again; each state is a function of t alone: its sketches are carried from the document's own solution to t in fixed steps of t (1/128), so a linkage solved in a sketch stays on its branch, and a moment reached by a jump is the one a play reaches. collisions: true draws the bodies that overlap at t red (in the scene, so view.render, the window and view.replay show it) and lists the pairs. t null shows the document as it is again. The viewport, view.render, view.pick and screenshots show the state; document.inspect, measures and exports still see the document itself. An edit keeps the motion (the state is made again from the edited document); a document whose t is gone or has a unit lets go of it. Without parameters it changes nothing. Returns t (null when not shown), the timeline (its variable and its value in the document), rebuilt (the features whose bodies differ from the document's at this t) and collisions ([{a, aName, b, bName, volume}], or unknown pairs with a reason) when asked for. An assembly plays t too: drivers are formulas of t for its joint variables (Drive_angle = 360 deg * t), each moment is a solve carried along the branch from the assembly at rest (never a regeneration), and where the mechanism cannot go further the result has deadPoint {t, why}: the t it stopped at, the parts shown where they stopped. shapes: \"ready\" (for a viewer that plays the motion; for this call only) answers an assembly's moment at once: an instance whose parameters follow t and whose configuration at t is not built yet is shown with the configuration of its own built nearest in t (listed in stale), the solve carried from the nearest fixed step that is solved, while the configurations it lacks are built in the background (natively; in a browser the moment is made exactly, as without it); the result then has exact: false, and the moment settles, the same as with shapes: \"exact\", once what it lacks is built (the next view.motion, or a viewer's poll, takes it in). Only that answer and the window's own viewport show a provisional moment: view.render, view.pick, screenshots, recordings, exports and every later command show the exact moment. Also returned: exact, stale (the instances shown with another configuration of theirs), building (configurations being built in the background) and baked (the frames of the last motion.bake, which a player rounds its t to, or null).",
+        "Shows the model in the view at a moment t of its motion, without changing the document: not its variables, its undo history or its dirty state (view state, as view.scrub). The timeline is the document's variable t when it is a plain number (no unit): formulas of t drive the motion (a crank angle 360 deg * t). Only the features that depend on t are regenerated, and only their bodies are meshed again; each state is a function of t alone: its sketches are carried from the document's own solution to t in fixed steps of t (1/128), so a linkage solved in a sketch stays on its branch, and a moment reached by a jump is the one a play reaches. collisions: true draws the bodies that overlap at t red (in the scene, so view.render, the window and view.replay show it) and lists the pairs. t null shows the document as it is again. The viewport, view.render, view.pick and screenshots show the state; document.inspect, measures and exports still see the document itself. An edit keeps the motion (the state is made again from the edited document); a document whose t is gone or has a unit lets go of it. Without parameters it changes nothing. Returns t (null when not shown), the timeline (its variable and its value in the document), rebuilt (the features whose bodies differ from the document's at this t) and collisions ([{a, aName, b, bName, volume}], or unknown pairs with a reason) when asked for. An assembly plays t too: drivers are formulas of t for its joint variables (Drive_angle = 360 deg * t), each moment is a solve carried along the branch from the assembly at rest (never a regeneration), and where the mechanism cannot go further the result has deadPoint {t, why}: the t it stopped at, the parts shown where they stopped. shapes: \"ready\" (for a viewer that plays the motion; for this call only) answers an assembly's moment at once: an instance whose parameters follow t and whose configuration at t is not built yet is shown with the configuration of its own built nearest in t (listed in stale), the solve carried from the nearest fixed step that is solved, while the configurations it lacks are built in the background (natively; in a browser the moment is made exactly, as without it); the result then has exact: false, and the moment settles, the same as with shapes: \"exact\", once what it lacks is built (the next view.motion, or a viewer's poll, takes it in). Only that answer and the window's own viewport show a provisional moment: view.render, view.pick, screenshots, recordings, exports and every later command show the exact moment. Also returned: exact, stale (the instances shown with another configuration of theirs), building (configurations being built in the background) and baked (the frames of the last motion.bake, which a player rounds its t to, or null). Where the view is made beside the host (the browser's worker), the moment is made there: the answer has elsewhere: true and pending: true until it came (then what view.motion answered there), and error when it could not be made there.",
         doc: true,
         view_motion
     ),
@@ -1794,6 +1794,31 @@ impl OpenDocument {
         }
     }
 
+    /// The `t` the view shows, when it shows the motion.
+    pub(crate) fn motion_t(&self) -> Option<f64> {
+        self.motion.t
+    }
+
+    /// Whether the moments shown are drawn with their collisions.
+    pub(crate) fn motion_collisions(&self) -> bool {
+        self.motion.collisions
+    }
+
+    /// Shows the moment `t` (with its collisions when asked), or the
+    /// document as it is, as `view.motion {t, collisions}` does: what a
+    /// session that makes the view for another one is told
+    /// (`view_elsewhere.rs`).
+    pub(crate) fn set_motion_view(&mut self, t: Option<f64>, collisions: bool) {
+        if t.is_none() && self.motion.t.is_some() {
+            self.motion.state = None;
+            self.motion.sweep = None;
+            self.reset_builder("the motion was let go of (view.motion {t: null})");
+            self.motion.memo = PairMemo::default();
+        }
+        self.motion.t = t;
+        self.motion.collisions = collisions;
+    }
+
     /// Lets go of the motion's sweep and its state (what was made ahead
     /// with it too); the next moment shown makes them again.
     pub(crate) fn motion_forget_sweep(&mut self) {
@@ -2026,6 +2051,10 @@ impl OpenDocument {
     /// the state it is scrubbed to (`view.scrub`), or that at the `t` of
     /// its motion (`view.motion`).
     pub(crate) fn shown(&mut self) -> Arc<Document> {
+        // Made elsewhere: the stand-in its scenes are kept under.
+        if let Some(stand_in) = self.remote_shown() {
+            return stand_in;
+        }
         if let Some(state) = self.motion_state() {
             return state.doc;
         }
@@ -2039,6 +2068,9 @@ impl OpenDocument {
     /// For an assembly: its placement as the view shows it, at the moment
     /// of its motion when one is shown, else at rest.
     pub(crate) fn shown_placed(&mut self) -> Option<Arc<Placed>> {
+        if self.tried_without_view() {
+            return None;
+        }
         if let Some(placed) = self.motion_state().and_then(|state| state.placed) {
             return Some(placed);
         }
@@ -2047,6 +2079,9 @@ impl OpenDocument {
 
     /// The regeneration of [`Self::shown`].
     pub(crate) fn shown_regen(&mut self) -> Arc<Regen> {
+        if self.tried_without_view() {
+            return Arc::new(Regen::default());
+        }
         if let Some(state) = self.motion_state() {
             return state.regen;
         }
@@ -2054,6 +2089,18 @@ impl OpenDocument {
             return Arc::clone(&placed.regen);
         }
         self.scrubbed_regen()
+    }
+
+    /// A command tried without the bodies (`commands_elsewhere.rs`) asks
+    /// for the view, which is made elsewhere: it runs there instead
+    /// (noted), and is handed nothing here. False everywhere else: a
+    /// command run here makes the view here, as it always did.
+    fn tried_without_view(&mut self) -> bool {
+        if self.forbid_regen.is_some() && self.remote_wanted() {
+            self.forbid_regen = Some(true);
+            return true;
+        }
+        false
     }
 
     /// Takes in the traces worked out in the background; true when one
@@ -2136,6 +2183,15 @@ pub struct MotionView {
     /// grid as its grid points left, a run of a bake's frames as its
     /// frames): for a progress bar. Zero exactly when `building` is.
     pub work_left: usize,
+    /// The moment `t` is being made elsewhere (the page's worker,
+    /// `view_elsewhere.rs`) and is not drawn yet: a player waits for it
+    /// before it asks for the next.
+    pub pending: bool,
+    /// Why the moment asked for could not be made elsewhere: the motion
+    /// was let go of, as `view.motion` fails where it is made here.
+    pub error: Option<String>,
+    /// Why the bake made elsewhere stopped before it was done.
+    pub bake_error: Option<String>,
 }
 
 /// A trace as a viewer draws it ([`Session::traces`]).
@@ -2190,6 +2246,9 @@ impl Session {
     /// The `t` the view of the active document shows (`view.motion`), with
     /// the pairs it draws red; `None` when it shows no motion.
     pub fn motion(&mut self) -> Option<MotionView> {
+        if let Some(view) = self.remote_motion() {
+            return view;
+        }
         let open = self.documents.get_mut(self.active)?;
         let state = open.motion_state()?;
         let name = |id: FeatureId| {
@@ -2227,7 +2286,86 @@ impl Session {
             building,
             baked,
             work_left,
+            pending: false,
+            error: None,
+            bake_error: None,
         })
+    }
+
+    /// [`Self::motion`] while the view is made elsewhere: what the other
+    /// side said of the moment shown (pending until it did), and the bake
+    /// it makes. `None` when the view is made here.
+    fn remote_motion(&mut self) -> Option<Option<MotionView>> {
+        let facts = self.remote_facts()?;
+        let open = self.documents.get_mut(self.active)?;
+        let Some(t) = open.motion_t() else {
+            return Some(None);
+        };
+        let pending = open.remote_view().is_none_or(|view| view.facts.is_none());
+        let bake_error = open.bake_error();
+        let left = open.bake_left().map_or(0, |b| b.left());
+        let motion = facts.as_ref().and_then(|f| f.motion.clone());
+        let error = facts.as_ref().and_then(|f| f.error.clone());
+        let count = |key: &str| {
+            motion
+                .as_ref()
+                .and_then(|m| m.get(key))
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len)
+        };
+        let collisions = motion
+            .as_ref()
+            .and_then(|m| m.get("collisions"))
+            .and_then(Value::as_array)
+            .map(|found| {
+                found
+                    .iter()
+                    .filter(|c| c.get("volume").is_some())
+                    .filter_map(|c| {
+                        Some((
+                            c.get("aName")?.as_str()?.to_string(),
+                            c.get("bName")?.as_str()?.to_string(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let stale = motion
+            .as_ref()
+            .and_then(|m| m.get("stale"))
+            .and_then(Value::as_array)
+            .map(|s| {
+                s.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some(Some(MotionView {
+            t,
+            collisions,
+            rebuilt: count("rebuilt"),
+            dead_point: motion
+                .as_ref()
+                .and_then(|m| m.pointer("/deadPoint/t"))
+                .and_then(Value::as_f64),
+            exact: motion
+                .as_ref()
+                .and_then(|m| m.get("exact"))
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+            stale,
+            building: left,
+            // What the moment made there says: a bake lost there is not
+            // reported as made.
+            baked: motion
+                .as_ref()
+                .and_then(|m| m.get("baked"))
+                .and_then(Value::as_u64),
+            work_left: left,
+            pending,
+            error: if pending { None } else { error },
+            bake_error,
+        }))
     }
 
     /// Takes in what was built in the background for the motion of the
@@ -2236,9 +2374,14 @@ impl Session {
     /// shows it again ([`Self::motion`], the scene). A viewer that shows a
     /// provisional moment calls this every frame or so.
     pub fn poll_motion(&mut self) -> bool {
-        self.documents
-            .get_mut(self.active)
-            .is_some_and(OpenDocument::poll_motion)
+        let Some(open) = self.documents.get_mut(self.active) else {
+            return false;
+        };
+        // Made elsewhere: what came since (a moment, a bake's piece).
+        if open.remote_wanted() {
+            return open.remote_fresh();
+        }
+        open.poll_motion()
     }
 
     /// True while a trace of the active document is worked out in the
@@ -2400,6 +2543,11 @@ fn view_motion(session: &mut Session, params: &Value) -> Run {
     if let Some(collisions) = collisions {
         open.motion.collisions = collisions;
     }
+    // Made elsewhere (the page's worker): the moment is asked for there;
+    // what is known of it now is the answer (`pending` until it came).
+    if open.remote_wanted() {
+        return remote_motion_answer(session, rest);
+    }
     // For this command only: every other picture is of the exact moment.
     open.motion.ready = ready;
     let state = moment_of_command(open);
@@ -2455,6 +2603,40 @@ fn view_motion(session: &mut Session, params: &Value) -> Run {
         "building": open.motion_building(),
         "baked": open.motion.sweep.as_ref().and_then(|(_, _, sweep)| sweep.bake_frames()),
     }))
+}
+
+/// `view.motion`'s answer while the view is made elsewhere: the moment
+/// asked for, `pending: true` until the other side made it, then what it
+/// said of it (the answer `view.motion` gives there).
+fn remote_motion_answer(session: &mut Session, rest: Result<f64, String>) -> Run {
+    let timeline_json = match &rest {
+        Ok(value) => json!({"variable": TIMELINE, "value": value}),
+        Err(why) => json!({"variable": TIMELINE, "error": why}),
+    };
+    let Some(view) = session.motion() else {
+        return Ok(json!({"t": Value::Null, "timeline": timeline_json, "collisions": Value::Null}));
+    };
+    let facts = session
+        .remote_facts()
+        .flatten()
+        .filter(|_| !view.pending)
+        .and_then(|f| f.motion.clone());
+    let mut answer = facts.unwrap_or_else(|| {
+        json!({
+            "t": view.t,
+            "timeline": timeline_json,
+            "collisions": Value::Null,
+        })
+    });
+    if let Some(map) = answer.as_object_mut() {
+        map.insert("pending".into(), view.pending.into());
+        map.insert("elsewhere".into(), true.into());
+        map.insert("building".into(), view.building.into());
+        if let Some(why) = &view.error {
+            map.insert("error".into(), why.clone().into());
+        }
+    }
+    Ok(answer)
 }
 
 /// A point to trace.

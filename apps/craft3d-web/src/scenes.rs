@@ -140,6 +140,11 @@ impl<T: Transport> Scenes<T> {
             match reply {
                 Reply::Part { token, bytes } => {
                     self.answered_once = true;
+                    // It answers: a job that goes on (a bake made a piece
+                    // at a time after its scenes) is given its time again.
+                    if self.busy == Some(token) {
+                        self.posted_at = now;
+                    }
                     if session.scene_answered(token, Ok(&bytes)) {
                         done.parts.push(token);
                     }
@@ -167,6 +172,7 @@ impl<T: Transport> Scenes<T> {
                     // it was given since goes to the next one.
                     self.busy = None;
                     self.transport.stop();
+                    session.scene_worker_restarted();
                     let why = answer.err().unwrap_or_else(|| {
                         "the worker answered as the checking worker does".to_string()
                     });
@@ -179,6 +185,7 @@ impl<T: Transport> Scenes<T> {
                 }
                 Reply::Failed(why) => {
                     self.transport.stop();
+                    session.scene_worker_restarted();
                     let busy = self.busy.take();
                     if !self.answered_once {
                         // No worker on this page: regenerated here, as before.
@@ -200,6 +207,7 @@ impl<T: Transport> Scenes<T> {
             && now - self.posted_at > DEADLINE_MS
         {
             self.transport.stop();
+            session.scene_worker_restarted();
             self.busy = None;
             done.timed_out = Some(busy);
             session.scene_failed(busy, TOO_LONG);
@@ -214,6 +222,7 @@ impl<T: Transport> Scenes<T> {
             && now - since > DEADLINE_MS
         {
             self.transport.stop();
+            session.scene_worker_restarted();
             self.commands_since = None;
             if let Some(busy) = self.busy.take() {
                 done.timed_out = Some(busy);
@@ -250,6 +259,7 @@ impl<T: Transport> Scenes<T> {
                     }
                     Err(why) => {
                         self.transport.stop();
+                        session.scene_worker_restarted();
                         if self.answered_once {
                             session.scene_answered(token, Err(&why));
                         } else {
@@ -293,6 +303,7 @@ impl<T: Transport> Scenes<T> {
     /// scene it was building is posted again to that one).
     pub fn restart(&mut self, session: &mut Session) -> Vec<Answered> {
         self.transport.stop();
+        session.scene_worker_restarted();
         self.busy = None;
         self.commands_since = None;
         session.commands_dropped(RESTARTED)

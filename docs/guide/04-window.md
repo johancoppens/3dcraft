@@ -12,7 +12,7 @@ open, save, import and export files, and let you look, play, click and select.
 
 | | Part | What it is for |
 |---|---|---|
-| 1 | **File**, **Edit** and **Help** menus | Files, recent files, Jigs; Undo and Redo; the guide, the keys, About |
+| 1 | **File**, **Edit**, **View** and **Help** menus | Files, recent files, Jigs; Undo and Redo; panels and light or dark; the guide, the keys, About |
 | 2 | **Tabs** | One per open document |
 | 3 | **Feature list** | The history of the design, in order, with each step's status |
 | 4 | **Eye** | Hides a feature's body, sketch or datum in the view |
@@ -32,31 +32,43 @@ opened file has something to show, the middle of the viewport says *Opening weld
 of the status bar change at most a few times a second; while a motion plays it says *Playing* and the
 moment's `t`. An error shows at once and stays.
 
+At the right end of the status bar is the **agent pill**: its colour says how agents stand. Outlined
+grey, *Agents off*; outlined indigo, *Waiting for an agent*; indigo, *Claude Code connected*; with a
+turning mark, what the agent does at this moment (*Claude Code · feature.fillet*); amber, when an agent
+asks you something (*Claude Code asks for a folder*). Click it for the agent panel
+([chapter 1](01-install.md#connect-an-ai-agent-over-mcp)). The browser has no pill: agents drive the
+desktop app only.
+
 ## The start screen
 
 Without a document, the window shows the **start screen** (picture in [chapter 2](02-first-steps.md)):
 
-- **New document** and **Open…**;
+- **New part**, **New assembly** and **Open…**;
 - **Examples**, in four sections you pick above the cards: **Parts**, ten of the [example
   models](../examples/README.md), each built in a new tab by a click from the same command script an agent
   would send; **Showcase**, parts that show what the surfacing can do (a class-A fuel tank and a class-A
-  mouse whose seams are proven G2), built the same way; **Jigs**, three published Jigs (a planetary gearbox, a gear reducer, a Jansen linkage leg, after the mechanism of Theo Jansen's Strandbeests) that
-  open on their **Parameters** tab ([chapter 5](05-jigs.md)); and **Assemblies**, three assemblies (the
-  same gearbox and reducer, and a Jansen linkage walker of four legs) that open ready to play their motion
-  ([chapter 17](17-assemblies.md#motion)). These six come from the [3DCraft Jigs
-  collection](https://github.com/johancoppens/3dcraft-jigs), under CC BY 4.0;
-- **Recent**: the files you opened or saved last;
-- **Connect an AI agent**: the two command lines that connect an agent to this window, with this window's
-  own port and token file when it listens (it was started with `--control`). **Copy configuration** puts
-  the MCP configuration on the clipboard, **Copy for Claude Code** the `claude mcp add` line, and **How it
-  works** opens the part of this guide that explains it. In the browser, the start screen says that an
-  agent cannot drive 3DCraft there yet.
+  mouse whose seams are proven G2), built the same way, each card with the 3DCraft icon of its kind;
+  **Assemblies**, three assemblies (the same gearbox and reducer, and a Jansen linkage walker of four
+  legs) that open ready to play their motion ([chapter 17](17-assemblies.md#motion)); and **Jigs**,
+  three published Jigs (a planetary gearbox, a gear reducer, a Jansen linkage leg, after the mechanism
+  of Theo Jansen's Strandbeests) that open on their **Parameters** tab ([chapter 5](05-jigs.md)). These
+  six come from the [3DCraft Jigs collection](https://github.com/johancoppens/3dcraft-jigs), under CC BY
+  4.0;
+- **Recent**: the files you opened or saved last, each with the icon of its kind and how long ago it
+  changed;
+- **Connect an AI agent**: the same panel as the agent pill's ([chapter
+  1](01-install.md#connect-an-ai-agent-over-mcp)): the **Allow AI agents** switch, the work folder, the
+  `claude mcp add` line with **Copy command**, **Copy MCP configuration**, and **Other clients** with a
+  ready configuration for Claude Desktop, Cursor, VS Code or any client that starts a server over stdio.
+  In the browser, the start screen says that an agent cannot drive 3DCraft there yet.
 
 The start screen comes back when you close the last tab.
 
 ## Menus and tabs
 
-**Tabs** along the top, one per open document; a dot marks unsaved changes. **Ctrl+Tab** goes to the next
+**Tabs** along the top, one per open document, each with a small icon of its kind (a part, an assembly,
+a Jig); a Jig opened to be used also says **Jig**. An amber dot at the tab's right marks unsaved changes
+(the close × takes its place under the pointer). **Ctrl+Tab** goes to the next
 tab and **Ctrl+Shift+Tab** to the previous one; **Ctrl+W** closes one, asking first when it has unsaved
 changes (**Save**, **Don't Save**, **Cancel**). On a Mac, ⌘ takes the place of Ctrl.
 
@@ -64,7 +76,8 @@ The **File** menu:
 
 | Item | Keys | Does |
 |---|---|---|
-| **New** | Ctrl+N | A new, empty document in a new tab |
+| **New Part** | Ctrl+N | A new, empty part in a new tab |
+| **New Assembly** | Ctrl+Shift+N | A new, empty assembly in a new tab ([chapter 17](17-assemblies.md)) |
 | **Open…** | Ctrl+O | Opens a `.3dcraft` document or a `.3dcraftjig` Jig (a STEP file is imported with Import…) |
 | **Open for editing** | | For a Jig in use: a new untitled model of it, to change as you like ([chapter 5](05-jigs.md)) |
 | **Save** | Ctrl+S | Saves to the document's file (asks for a name the first time) |
@@ -72,7 +85,7 @@ The **File** menu:
 | **Import…** | Ctrl+I | Reads a STEP file or a FreeCAD document into the document |
 | **Export…** | Ctrl+E | Writes STEP, STL, 3MF, OBJ, DXF or SVG ([chapter 12](12-files.md)) |
 | **Export as Jig…** | | Publishes a document with parameters as a `.3dcraftjig` ([chapter 5](05-jigs.md)) |
-| **Recent files** | | The last ten files opened or saved, by you or by an agent, newest first; **Clear recent** empties the list |
+| **Open recent** | | The last ten files opened or saved, by you or by an agent, newest first, each with the icon of its kind; **Clear recent** empties the list |
 | **Close** | Ctrl+W | Closes the active tab |
 
 Under them, the open documents: click one to switch to it.
@@ -92,12 +105,26 @@ An item is greyed out when there is nothing to undo or redo, and while a paramet
 or an agent over MCP. While you type into a field, Ctrl+Z undoes your typing instead. In a Jig in use
 the only changes are those of its parameters, so Undo takes back the last parameter you set.
 
+The **View** menu:
+
+| Item | Keys | Does |
+|---|---|---|
+| **Side panel** | Ctrl+B | Shows or puts away the panel on the left |
+| **Status bar** | | Shows or puts away the bar at the bottom |
+| **System**, **Light**, **Dark** | | The **Appearance**: the panels and dialogs light or dark. **System** (the default) follows your desktop's setting, and in the browser the browser's |
+| **Full screen** | F11 | The window over the whole screen (the desktop app) |
+
+The appearance changes the panels, the start screen and the dialogs; the menu bar, the tabs, the status
+bar, the menus and the popovers stay dark, and the model's view stays as it is, so pictures look the same
+whichever you choose. An agent can switch it too: `ui.set {"appearance": "dark"}`.
+
 The **Help** menu:
 
 - **User guide** opens this guide in your browser.
 - **Keyboard shortcuts** (also **F1**) lists every key and mouse action ([chapter 15](15-reference.md#keys-and-mouse)).
 - **Open data folder** shows 3DCraft's folder: the autosaves, what can be recovered after a crash, and the
   recent files (not in the browser).
+- **Connect an AI agent…** opens the agent panel over the pill (not in the browser).
 - **About 3DCraft** gives the version and the commit it was built from, the platform, the licence (MIT),
   links to the guide and the source, and the renderer in use. **Copy system info** copies those lines
   for a bug report.
@@ -105,7 +132,7 @@ The **Help** menu:
 ## The side panel
 
 The left panel has tabs, chosen by the kind of document: a part has **Features**, **Variables** and
-**Bodies**; an assembly has **Assembly** (its instances and mates) and **Variables**; a document with public
+**Bodies** (and **Agent**, below); an assembly has **Assembly** (its instances and mates) and **Variables**; a document with public
 parameters (a Jig) has **Parameters** first. When the tabs do not fit, the rest are behind **⋯**. Drag the
 panel's right edge to make it wider or narrower; it keeps that width whatever it shows.
 
@@ -137,7 +164,7 @@ view), its name, and its key value at the right, such as *Extrude 8 mm*, *R18 ×
 - **Drag a row by its grip** to move it in the history (`feature.move`). A place before what it is made from,
   or after what is made from it, is refused before you drop it: the indigo line does not show there.
 - **Right-click a row** for its menu: *Edit…*, *Rename*, *Show dependencies* (the hover's marks stay until
-  Escape), *Roll back to here*, *Suppress*, *Hide*, *Copy id* (for a message to an agent) and
+  Escape), *Roll back to here* (*Roll forward to end* on the last row), *Suppress*, *Hide*, *Copy id* (for a message to an agent) and
   *Delete*. Each is a command, so an agent can do the same and every one can be undone.
 
 **Checks** sit under the list: *Checks 7 · all pass*, then each check measured against its limit, such as
@@ -168,6 +195,23 @@ foot. The bodies that booleans used up are folded under *Tool bodies*; open it t
 
 **A Jig** opens on **Parameters** (its form); its other tabs are there to look at.
 
+
+### On a phone or a tablet
+
+In a narrow window (a phone, a tablet, the browser on a small screen) the Studio and Analysis options open as a
+sheet from the bottom of the view, with **Light**, **Scene** and **Lens** as tabs for the studio look; × or the
+chip closes it. A Jig in use shows its parameters as a sheet under the model on a phone, so every change shows
+at once above it; on a tablet the side panel stays docked beside the model. A question about an agent's access
+comes as a sheet with the answers one under the other.
+
+### The Agent tab
+
+While agents are allowed, or once an agent has worked on the document, the side panel has an **Agent** tab:
+who is connected, then what agents did to this document, newest first: when and which agent, the command in
+words, the features it made, why a command failed, and in italics what the agent said it meant to do. A
+feature an agent made (or last changed) carries a small indigo ✦ after its name in the Features tab. The
+desktop app only: in the browser agents cannot connect.
+
 ## The history player
 
 ![The history player](images/player.png)
@@ -176,20 +220,22 @@ At the foot of the side panel is the **timeline**: drag it to see the design as 
 of its history. Features after that step are greyed, and the step is named at the top of the view, such as
 `Step 3/6  Join`. Looking back never changes the document.
 
-Under the timeline is a **player**, like a video player's:
+Under the timeline is the **player**, one row like a video player's: the round amber button plays and
+pauses, and where you are is beside it (`3 / 6`).
 
 | Button | Key | Does |
 |---|---|---|
-| ⏮ First step | Home | Shows the first step |
-| ⏴ Step back | ← | One step back |
+| Step back | ← | One step back |
 | ▶ Play / ⏸ Pause | Space | Plays the history step by step, or pauses |
-| ⏵ Step forward | → | One step forward |
-| ⏭ To end | End | Back to the whole design |
+| Step forward | → | One step forward |
+| | Home | Shows the first step (the timeline's start) |
+| | End | Back to the whole design (the timeline's end) |
 | **1×** | | The speed: 0.5×, 1× or 2× (click to change) |
 | Loop | | Starts again at the first step after the last |
 | Orbit | | Turns the camera slowly while it plays |
 
-In a narrow feature panel the speed, Loop and Orbit move to a second row, under the other five.
+In a narrow feature panel Orbit is left out, and on a phone or a tablet only the three buttons and where
+you are stay; the timeline's ends and Home and End take you to the first step and the last.
 
 The keys work while the pointer is over the view or the feature list and you are not typing in a field.
 Each step is shown once its model is built, and for at least 0.8 s at 1×, so a heavy model never skips a
@@ -203,9 +249,11 @@ included, even while it is covered by other windows: `ui.record` with frame-exac
 gives a video in which every step is complete ([*A video of the window*](../development.md#watching-along)
 in the developer guide).
 
-**Roll back here** puts the *rollback marker* on the step shown: the design is then built only up to that
-step, and new features go in right after it, a way to insert something early in the history. **To end**
-takes the marker away again. While you look back, clicks in the view do not select; go **To end** first.
+The amber **roll-back bar** in the feature list is the *rollback marker*: drag it up to a step (or choose
+**Roll back to here** on a row's menu) and the design is built only up to that step, and new features go in
+right after it, a way to insert something early in the history. Drag it back to the end, or choose **Roll
+forward to end** (on the last row's menu, or a right click on the bar), to build the whole history again.
+While you look back, clicks in the view do not select; press **End** first.
 
 ### Playing a motion
 
@@ -214,8 +262,8 @@ from 0 to 1 (`variable.set {"name": "t", "expr": "0"}`); formulas of `t` move th
 `360 deg * t`. A `t` with a unit (a thickness called `t`) is not a timeline: rename it first.
 
 With a timeline, **History** and **Motion** appear above the player. In Motion the slider runs over `t`, and the
-player plays it: from 0 to 1 in 4 s at 1×, **Loop** starts again at 0, **Back and forth** turns round at the
-end, and **Collisions** draws the parts that overlap in red. The view names the moment, such as
+player plays it: from 0 to 1 in 4 s at 1×, the step buttons move `t` by 0.05, **Loop** starts again at 0, and
+under the row **Back and forth** turns round at the end and **Collisions** draws the parts that overlap in red. The view names the moment, such as
 `t = 0.500 · collision: Wall and Crank`. As with the history, nothing in the document changes; only the
 features that use `t` are rebuilt for each moment, so a heavy model plays slower rather than skipping. An
 assembly has no history of its own, so it shows only **Motion**: its parts are moved, not rebuilt

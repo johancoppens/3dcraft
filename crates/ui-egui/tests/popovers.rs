@@ -160,6 +160,24 @@ fn placed_well(shell: &Shell, which: Which, size: egui::Vec2) -> Rect {
         "{which:?} at {size:?}: {panel:?} in {viewport:?}"
     );
     let layout = shell.controls_layout().unwrap();
+    if shell.narrow() {
+        // On a phone or a small tablet a bottom sheet (boards m4, m5):
+        // across the viewport, down to its foot, over the display bar and
+        // the player, clear of the camera plate.
+        assert!(
+            (panel.left() - viewport.left()).abs() < 0.5
+                && (panel.right() - viewport.right()).abs() < 0.5
+                && (panel.bottom() - viewport.bottom()).abs() < 0.5,
+            "{which:?} at {size:?}: a sheet {panel:?} in {viewport:?}"
+        );
+        if let Some(plate) = layout.camera_plate {
+            assert!(
+                !plate.intersects(panel),
+                "{which:?} at {size:?}: {panel:?} over {plate:?}"
+            );
+        }
+        return panel;
+    }
     for (name, part) in layout.parts() {
         assert!(
             !part.intersects(panel),
