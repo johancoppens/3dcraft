@@ -17,7 +17,7 @@
 
 use craft3d_kernel::profile::{Curve2, Profile, SketchCurve, detect_profiles};
 use craft3d_kernel::sheetmetal::{Closing, Direction, JogSpec, Spec, build};
-use craft3d_math::{Frame, Tolerance};
+use craft3d_math::{Frame, Portable, Tolerance};
 use craft3d_topo::{check, mass_properties};
 use std::f64::consts::PI;
 
@@ -79,7 +79,7 @@ fn a_hole_of_arcs_of_one_circle_keeps_its_volume() {
                 let c = [cx * k, 20.0 * k];
                 let p = |deg: f64| {
                     let a = deg.to_radians();
-                    [c[0] + 5.0 * k * a.cos(), c[1] + 5.0 * k * a.sin()]
+                    [c[0] + 5.0 * k * a.pcos(), c[1] + 5.0 * k * a.psin()]
                 };
                 let arc = |id: u64, from: f64, to: f64| SketchCurve {
                     id,

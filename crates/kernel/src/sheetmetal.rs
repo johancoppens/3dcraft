@@ -1462,7 +1462,8 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         .map(|(edge, surface)| (*edge, crate::plate::Joint::Onto(surface)))
         .collect();
     let solid = if bends.iter().any(Bend::sharp) {
-        sharp::refused(&bends, &corners, &cuts, tol, tolerance.angular)?;
+        sharp::refused(&bends, &corners, &cuts, tol)?;
+        sharp::clear(&flats, &bends, t, tol)?;
         sharp::plate(
             &sheet,
             &sheet_faces,
