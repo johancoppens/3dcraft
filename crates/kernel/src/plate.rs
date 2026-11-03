@@ -1374,6 +1374,16 @@ fn build(
                 ),
             ));
         }
+        // Where the boundary runs on smoothly through the vertex between two
+        // square rims, both rims hold the normal there and are tangent to
+        // each other along it (on one cylinder, for two arcs of one
+        // circle): where they meet is no point but that line, and a solve
+        // for one drifts along it (found 2026-11-03: a hole of a quarter,
+        // a half and a quarter circle left its edges round the wrong side
+        // of the circle, a valid body of the wrong volume). There the
+        // corner is where the rims' own rows reach the vertex, put on the
+        // skins alone.
+        let smooth = smooth_square(body, *vertex, &at_rims, joints, tolerance.angular);
         for level in 0..2 {
             let mut surfaces: Vec<&Surface> = Vec::new();
             for f in around {
@@ -1383,7 +1393,9 @@ fn build(
             }
             let mut starts: Vec<Vec3> = Vec::new();
             for edge in &at_rims {
-                if let Some((rim, _)) = rims.get(edge) {
+                if let Some((rim, _)) = rims.get(edge)
+                    && !smooth
+                {
                     surfaces.push(rim);
                 }
                 let (Some(t), Some(e)) = (traced.get(edge), body.edge(*edge)) else {
@@ -1770,6 +1782,50 @@ fn connected(layered: &[Layered<'_>], kinds: &BTreeMap<EdgeId, Use>) -> Result<(
         ));
     }
     Ok(())
+}
+
+/// Whether the two boundary edges at `vertex` both end square (no joint
+/// given, or [`Joint::Square`]) and run on smoothly through it: their
+/// tangents there parallel, the same way round the boundary, within the
+/// angular tolerance.
+fn smooth_square(
+    body: &Body,
+    vertex: VertexId,
+    at_rims: &[EdgeId],
+    joints: &BTreeMap<EdgeId, Joint<'_>>,
+    angular: f64,
+) -> bool {
+    let [a, b] = at_rims else { return false };
+    if [a, b]
+        .iter()
+        .any(|e| !matches!(joints.get(e), None | Some(Joint::Square)))
+    {
+        return false;
+    }
+    // Each edge's tangent at the vertex, pointing away from it.
+    let away = |e: &EdgeId| -> Option<Vec3> {
+        let edge = body.edge(*e)?;
+        if edge.start == edge.end {
+            return None;
+        }
+        if edge.start == vertex {
+            edge.curve.derivatives(edge.range.0).1.normalized()
+        } else if edge.end == vertex {
+            edge.curve
+                .derivatives(edge.range.1)
+                .1
+                .normalized()
+                .map(|d| -d)
+        } else {
+            None
+        }
+    };
+    match (away(a), away(b)) {
+        // Running on: the two point away from the vertex in opposite
+        // directions.
+        (Some(da), Some(db)) => da.dot(db) <= -angular.pcos(),
+        _ => false,
+    }
 }
 
 /// Points an edge between two faces is looked at for a crease before the
