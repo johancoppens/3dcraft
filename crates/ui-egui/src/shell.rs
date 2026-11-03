@@ -377,6 +377,19 @@ struct Calm {
     last: Vec<(StatusSlot, String)>,
 }
 
+impl Calm {
+    /// Lets go of every hold (texts, the work indicator, kept widths),
+    /// so the next frame shows what is wanted then; the count of changes
+    /// and the last frame's texts stay, as they describe frames drawn.
+    fn start_afresh(&mut self) {
+        *self = Self {
+            changes: self.changes,
+            last: std::mem::take(&mut self.last),
+            ..Self::default()
+        };
+    }
+}
+
 /// How the image in the viewport was last rendered.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderStats {
@@ -1537,8 +1550,18 @@ impl Shell {
     }
 
     /// A frame-exact recording keeps the clock (`record.rs`): while it
-    /// does, nothing measured on the wall clock is drawn.
+    /// does, nothing measured on the wall clock is drawn. As one starts,
+    /// the status bar lets go of what it holds from the frames before
+    /// (a text held for `Tokens::status_hold_seconds`, the work
+    /// indicator's wait, the widths kept for texts of one shape): those
+    /// frames ran on the wall clock, so what is held would depend on how
+    /// long ago they were. The recording's first frame shows what is so
+    /// at its own moment, and later frames hold on the recording's clock
+    /// (docs/design/engine.md › *A recorded frame that said "refining"*).
     pub fn set_frame_exact(&mut self, exact: bool) {
+        if exact && !self.frame_exact {
+            self.calm.start_afresh();
+        }
         self.frame_exact = exact;
     }
 
