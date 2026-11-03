@@ -1,0 +1,256 @@
+{
+  "format_version": 66,
+  "written_by": "764fcd185c0e732f9d2e04415a713b2382673e64",
+  "how": "the engine of that commit (on the Strix, Check run 41564884296, by a temporary test, crates/engine/tests/zz_write_fixture_v66.rs, that ran v66.steps.json in a session as craft3d-cli run --new '{\"units\": \"mm\"}' --script v66.steps.json --out v66.3dcraft does, printed the file and what document.inspect said of it opened again); a circle of radius 3 on the zx plane swept along two rails on the xy plane that close in from 6 to 3 apart over 20: once scaled uniformly (Horn, a cone) and once only across (Flat, ellipses): the rail and scale fields of a sweep, format 66",
+  "rollback": null,
+  "features": [
+    {
+      "dof": 3,
+      "id": "F1",
+      "name": "Section",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 3.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "center": 1,
+              "radius": 3.0,
+              "type": "circle"
+            },
+            "id": 2
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 3,
+        "plane": {
+          "offset": "0",
+          "plane": "zx",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 4,
+      "id": "F2",
+      "name": "RailA",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 1.5,
+              "y": 20.0
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 2,
+              "start": 1,
+              "type": "line"
+            },
+            "id": 3
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 4,
+        "plane": {
+          "offset": "0",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 4,
+      "id": "F3",
+      "name": "RailB",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 6.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 4.5,
+              "y": 20.0
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 2,
+              "start": 1,
+              "type": "line"
+            },
+            "id": 3
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 4,
+        "plane": {
+          "offset": "0",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F4",
+      "name": "Horn",
+      "params": {
+        "path": 2,
+        "rail": 3,
+        "scale": "uniform",
+        "sketch": 1,
+        "type": "sweep"
+      },
+      "path": {
+        "closed": false,
+        "deviation": 1.2500010280403916e-07,
+        "length": 20.05617112013158,
+        "stations": 6
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F5",
+      "name": "Flat",
+      "params": {
+        "path": 2,
+        "rail": 3,
+        "scale": "width",
+        "sketch": 1,
+        "type": "sweep"
+      },
+      "path": {
+        "closed": false,
+        "deviation": 1.2500058973021748e-07,
+        "length": 20.05617112013158,
+        "stations": 6
+      },
+      "status": "ok",
+      "suppressed": false
+    }
+  ],
+  "bodies": [
+    {
+      "area": 318.8803566785383,
+      "bbox": [
+        [
+          0.0,
+          0.0,
+          -3.0
+        ],
+        [
+          6.0,
+          20.0,
+          3.0
+        ]
+      ],
+      "bboxTolerance": 0.026344017896165563,
+      "centroid": [
+        2.9999999999999996,
+        7.857142857142856,
+        -1.292415870562953e-16
+      ],
+      "edges": 12,
+      "faceNames": [
+        "F4:side(e2,e3,e3)",
+        "F4:piece(1)/F4:side(e2,e3,e3)",
+        "F4:piece(2)/F4:side(e2,e3,e3)",
+        "F4:piece(3)/F4:side(e2,e3,e3)",
+        "F4:startCap(e2)",
+        "F4:endCap(e2)"
+      ],
+      "faces": 6,
+      "feature": "F4",
+      "kind": "solid",
+      "name": "Horn",
+      "shells": 1,
+      "valid": true,
+      "vertices": 8,
+      "volume": 329.8672286269283
+    },
+    {
+      "area": 375.1269222349531,
+      "bbox": [
+        [
+          0.0,
+          0.0,
+          -3.0
+        ],
+        [
+          6.0,
+          20.0,
+          3.0
+        ]
+      ],
+      "bboxTolerance": 0.026344017896165563,
+      "centroid": [
+        2.9999999999999996,
+        8.888888888888888,
+        -2.6805662500564945e-16
+      ],
+      "edges": 12,
+      "faceNames": [
+        "F5:side(e2,e3,e3)",
+        "F5:piece(1)/F5:side(e2,e3,e3)",
+        "F5:piece(2)/F5:side(e2,e3,e3)",
+        "F5:piece(3)/F5:side(e2,e3,e3)",
+        "F5:startCap(e2)",
+        "F5:endCap(e2)"
+      ],
+      "faces": 6,
+      "feature": "F5",
+      "kind": "solid",
+      "name": "Flat",
+      "shells": 1,
+      "valid": true,
+      "vertices": 8,
+      "volume": 424.1150082346221
+    }
+  ]
+}

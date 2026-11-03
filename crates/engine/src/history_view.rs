@@ -428,7 +428,13 @@ fn key_value(shown: &Shown<'_>, kind: &FeatureKind) -> (String, Option<KeyEdit>)
             edit("length", "Length", &t.length),
         ),
         FeatureKind::Loft(l) => (format!("{} sections", l.sections.len()), None),
-        FeatureKind::Sweep(s) => (format!("Along {}", shown.name(s.path)), None),
+        FeatureKind::Sweep(s) => match s.rail {
+            Some(rail) => (
+                format!("Along {} and {}", shown.name(s.path), shown.name(rail)),
+                None,
+            ),
+            None => (format!("Along {}", shown.name(s.path)), None),
+        },
         FeatureKind::Transform(t) => (format!("Move {}", shown.name(t.source)), None),
         FeatureKind::DatumPlane(datum) => match &datum.by {
             PlaneBy::Offset { from, distance } => (
