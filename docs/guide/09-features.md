@@ -27,11 +27,52 @@ numbers other than 0 (`[1, "25 mm", 0]`: give all as lengths or all as numbers).
   `angle` defaults to a full turn. Example: [bushing](../examples/bushing.json).
 - **Sweep** (`feature.sweep`): a profile carried along a `path`, a sketch of lines, arcs and splines end to
   end, square to the profile's plane at its start, or a helix (`datum.helix`). Examples:
-  [pipe](../examples/pipe.json), [spring](../examples/spring.json).
+  [pipe](../examples/pipe.json), [spring](../examples/spring.json). With a second `rail` it is a sweep
+  along two rails (below).
 - **Loft** (`feature.loft`): through two or more profiles on planes one after the other; smooth, or
   `ruled` (straight from each to the next). Example: [hopper](../examples/hopper.json).
 - **Offset profile** (`feature.offsetProfile`): every loop of a sketch grown or shrunk by a distance;
   extrude it, or export it as a laser's path with its kerf.
+
+## Sweep along two rails
+
+`feature.sweep` with `rail` carries the profile along two curves at once: two of its points follow the
+two rails, so it grows and shrinks as they part and close in. `path` and `rail` are each a sketch of one
+open chain (lines, arcs and splines end to end), and each starts on the outline of the profile. The two
+are walked together by the fraction of each one's length, the profile's x axis along the line between
+them and its y axis as near to the normal of the `path`'s sketch as that allows: for rails drawn in one
+plane, the sections stand square to it, so draw the profile on the plane through both rails' starts
+that stands square to theirs. `scale` is `"uniform"` (the default: a circle stays a circle) or
+`"width"` (only along the line between the rails; the height stays as drawn). A tapering spout, a ring
+whose hole tapers with it:
+
+```json
+[
+ ["variable.set", {"name": "r0", "expr": "15 mm"}],
+ ["variable.set", {"name": "r1", "expr": "6 mm"}],
+ ["variable.set", {"name": "ri", "expr": "12 mm"}],
+ ["variable.set", {"name": "len", "expr": "60 mm"}],
+ ["sketch.create", {"name": "Mouth", "plane": "zx"}],
+ ["sketch.circle", {"sketch": "Mouth", "center": [0, "r0"], "radius": "r0"}],
+ ["sketch.circle", {"sketch": "Mouth", "center": [0, "r0"], "radius": "ri"}],
+ ["sketch.create", {"name": "Left", "plane": "xy"}],
+ ["sketch.polyline", {"sketch": "Left", "points": [[0, 0], ["r0 - r1", "len"]]}],
+ ["sketch.create", {"name": "Right", "plane": "xy"}],
+ ["sketch.polyline", {"sketch": "Right", "points": [["2 * r0", 0], ["r0 + r1", "len"]]}],
+ ["feature.sweep", {"sketch": "Mouth", "path": "Left", "rail": "Right", "name": "Spout"}],
+ ["assert.add", {"name": "volume", "measure": "volume", "of": "Spout", "eq": "pi * len / 3 * (r0^2 + r0 * r1 + r1^2) * (1 - (ri / r0)^2)"}]
+]
+```
+
+![The spout: a ring between two rails that close in](images/two-rail-spout.png)
+
+Where both rails are parallel lines of the same length the faces are exact planes and cylinders.
+Elsewhere they are spline surfaces, and the result says under `path` how far they are from the true
+sweep at most (`deviation`): a bound that is proven, never more than half the document's tolerance. A
+face is named after the curve of the profile and the curves of the two rails it runs between
+(`F4:side(e2,e3,e3)`), so a rail can be redrawn without losing what is built on the faces. Refused, with
+the place: a rail that does not start on the profile, rails that meet or cross, rails that start at one
+point, and a sweep that would fold or pass through itself.
 
 ## Text
 

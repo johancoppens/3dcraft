@@ -2738,6 +2738,8 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                 || (circular && *key == "step" && p.has(key))
                 // A network's acrossDegree as null: the default again.
                 || (is_network && *key == "acrossDegree" && p.has(key))
+                // A sweep's second rail as null: along one path again.
+                || (*key == "rail" && p.has(key))
         })
         .collect();
     if given.is_empty() {

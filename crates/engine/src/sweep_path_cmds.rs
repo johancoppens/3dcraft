@@ -85,8 +85,8 @@ pub(crate) fn edit_rails(
 ) -> Result<(), CommandError> {
     let command = p.command();
     match p.get("rail") {
+        None if p.has("rail") => sweep.rail = None,
         None => {}
-        Some(Value::Null) => sweep.rail = None,
         Some(_) => {
             let rail = feature_ref(doc, p, command, "rail")?;
             doc.sketch(rail).map_err(doc_error(command))?;
