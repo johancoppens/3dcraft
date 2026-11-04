@@ -1271,7 +1271,12 @@ fn blend_one(
         // face, as it did before it was carried: which `fit` reads as no
         // room.
         BlendError::Refused {
-            reason: Reason::FreeSurface | Reason::FreeApproximation | Reason::NotTangent,
+            reason:
+                Reason::FreeSurface
+                | Reason::FreeApproximation
+                | Reason::NotTangent
+                | Reason::NoNormal
+                | Reason::MeetsWithinAngle,
             ..
         } => refuse(
             edge,
@@ -1428,7 +1433,7 @@ fn blend_open(
                 .zip(&moved.feet)
                 .all(|(p, q)| p.distance(*q) <= 0.25 * tol);
             if !(same && feet) {
-                return Err(refuse(edge, None, Reason::NotTangent));
+                return Err(refuse(edge, None, Reason::MeetsWithinAngle));
             }
             tagged.push((b, next, moved));
             piece = next;
@@ -1984,7 +1989,7 @@ fn tangent_along(
                 let p = data.curve.eval(t);
                 let normal = |f: FaceId| super::outward(body, f, p).ok();
                 let (Some(a), Some(b)) = (normal(blend_face), normal(face)) else {
-                    return Err(refuse(edge, Some(face), Reason::NotTangent));
+                    return Err(refuse(edge, Some(face), Reason::NoNormal));
                 };
                 if !(a.cross(b).length() <= limit && a.dot(b) > 0.0) {
                     return Err(refuse(edge, Some(face), Reason::NotTangent));

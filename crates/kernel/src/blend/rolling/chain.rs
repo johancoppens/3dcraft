@@ -1332,7 +1332,7 @@ fn smooth_joints(
         for k in 1..8 {
             let v = f64::from(k) / 8.0;
             let (Some(m), Some(q)) = (normal(*a, 1.0, v), normal(*b, 0.0, v)) else {
-                return Err(refuse(edge, None, Reason::NotTangent));
+                return Err(refuse(edge, None, Reason::NoNormal));
             };
             if !(m.cross(q).length() <= limit && m.dot(q) > 0.0) {
                 return Err(refuse(edge, None, Reason::NotTangent));

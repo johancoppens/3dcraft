@@ -54,7 +54,10 @@ const TIE: f64 = 1e-3;
 const APART: f64 = 4.0;
 
 const TANGENT: Reason = "two curves leave a point in the same direction and stay together (tangent contact of higher order)";
-const LOST: Reason = craft3d_math::bug_text!("an imprinted face could not be divided into regions");
+/// Reached by ordinary geometry (docs/design/booleans.md, the tube
+/// clusters; the fuzz seeds of `pairs_that_once_went_wrong`), so a refusal
+/// that says what is not built, not a bug report.
+const LOST: Reason = "an imprinted face could not be divided into regions: where the curves cut into it meet, their order about the point could not be read (curves within the tolerance of each other over a stretch, or touching at a high order), which the boolean does not build yet; move one body a little";
 const UNBOUNDED: Reason = "a piece of a face is not closed off by its boundary";
 
 fn wrap(a: f64) -> f64 {
@@ -703,5 +706,17 @@ mod tests {
         let (regions, dropped) = build(&[4, 5]);
         assert_eq!(regions.len(), 2);
         assert_eq!(dropped, BTreeSet::from([5]));
+    }
+}
+
+#[cfg(test)]
+mod lost_tests {
+    /// A face that cannot be divided is refused as what is not built yet,
+    /// with a way out, not reported as a bug: ordinary geometry reaches it.
+    #[test]
+    fn an_undivided_face_is_an_honest_refusal() {
+        assert!(!super::LOST.contains(craft3d_math::BUG), "{}", super::LOST);
+        assert!(super::LOST.contains("not build yet"), "{}", super::LOST);
+        assert!(super::LOST.contains("; move one body"), "{}", super::LOST);
     }
 }

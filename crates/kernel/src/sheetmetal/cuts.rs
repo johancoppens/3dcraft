@@ -35,7 +35,6 @@ use super::{
 use crate::KernelError;
 use crate::profile::{Loop2, distance};
 use craft3d_geom::{Circle, Curve3, Cylinder, Plane, Surface};
-use craft3d_math::BUG;
 use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId};
@@ -566,7 +565,7 @@ fn analyse(
                 refuse(
                     None,
                     format!(
-                        "{BUG}: {named}: a piece of it near ({}, {}) lies in no one flat or bend of the flat pattern",
+                        "{named}: a piece of it near ({}, {}) lies in no one flat or bend of the flat pattern (where two bends' strips overlap at a corner, or beside a trimmed bend's end), which a hole across a bend is not cut through; move the hole clear of there",
                         mid[0], mid[1]
                     ),
                 )

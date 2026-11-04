@@ -85,6 +85,8 @@ fn sized(error: &BlendError) -> bool {
                 | Reason::InPieces
                 | Reason::EndsBadly
                 | Reason::NotTangent
+                | Reason::NoNormal
+                | Reason::MeetsWithinAngle
                 | Reason::FreeTooLarge
                 | Reason::FreeRunsOver
                 | Reason::FreeFolds
