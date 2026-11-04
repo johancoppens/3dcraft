@@ -882,6 +882,36 @@ fn an_undo_that_breaks_the_model_is_said_as_a_commit_would_be() {
     window.idle(&mut shell, &mut session, 4);
     assert_eq!(value(&mut session, "r"), 2.0);
     assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
+    // Back to last good over the control channel: refused while nothing
+    // breaks; after an undo that breaks it, it sets r back.
+    let refused = shell
+        .handle_method(&mut session, "ui.param", Some(&json!({"lastGood": true})))
+        .unwrap()
+        .unwrap_err();
+    assert!(refused.contains("nothing breaks"), "{refused}");
+    run(&mut session, "edit.undo", json!({}));
+    window.idle(&mut shell, &mut session, 4);
+    let answer = shell
+        .handle_method(&mut session, "ui.param", Some(&json!({"lastGood": true})))
+        .unwrap()
+        .unwrap();
+    assert_eq!(answer["sent"], json!({"r": 2.0}), "{answer}");
+    window.idle(&mut shell, &mut session, 4);
+    assert_eq!(value(&mut session, "r"), 2.0);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
+    // Wrong shapes are refused, never a panic.
+    for bad in [
+        json!({"lastGood": 1}),
+        json!({"lastGood": true, "name": "r"}),
+    ] {
+        assert!(
+            shell
+                .handle_method(&mut session, "ui.param", Some(&bad))
+                .unwrap()
+                .is_err(),
+            "{bad}"
+        );
+    }
 }
 
 /// A long Jig title never runs over the status at the form's head (the

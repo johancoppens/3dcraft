@@ -1265,15 +1265,28 @@ impl Shell {
             Some(Value::Object(map)) => map,
             _ => {
                 return Err(format!(
-                    "{method}: give {{\"name\": string, \"value\": ...}}"
+                    "{method}: give {{\"name\": string, \"value\": ...}} or {{\"lastGood\": true}}"
                 ));
             }
         };
-        if let Some(unknown) = map.keys().find(|k| *k != "name" && *k != "value") {
+        if let Some(unknown) = map
+            .keys()
+            .find(|k| *k != "name" && *k != "value" && *k != "lastGood")
+        {
             let unknown: String = unknown.chars().take(40).collect();
             return Err(format!(
-                "{method}: unknown parameter `{unknown}`; its parameters are: name, value"
+                "{method}: unknown parameter `{unknown}`; its parameters are: name, value, or lastGood"
             ));
+        }
+        match map.get("lastGood") {
+            None | Some(Value::Bool(false)) => {}
+            Some(Value::Bool(true)) if map.len() == 1 => return self.ui_param_last_good(session),
+            Some(Value::Bool(true)) => {
+                return Err(format!(
+                    "{method}: give `lastGood: true` alone, or `name` and `value`"
+                ));
+            }
+            Some(_) => return Err(format!("{method}: `lastGood` must be true or false")),
         }
         let Some(name) = map.get("name").and_then(Value::as_str) else {
             return Err(format!("{method}: `name` must be a parameter's name"));
@@ -1341,6 +1354,61 @@ impl Shell {
             command: clamping(command),
             sent,
             note: settled.note,
+        })
+    }
+
+    /// Of the last good `values`, those that differ from the values set
+    /// now: what Back to last good sets.
+    fn last_good_changes(&self, values: Map<String, Value>) -> Map<String, Value> {
+        values
+            .into_iter()
+            .filter(|(name, good)| {
+                let now = self.params.list.as_ref().and_then(|l| l.param(name));
+                now.is_none_or(|p| match p.value {
+                    Some(value) if p.takes_numbers() => sent_value(p, value) != *good,
+                    _ => Value::String(p.expr.clone()) != *good,
+                })
+            })
+            .collect()
+    }
+
+    /// `ui.param {lastGood: true}`: Back to last good, as the banner's
+    /// button does, while a value breaks the model.
+    fn ui_param_last_good(&mut self, session: &mut Session) -> Result<ParamAsk, String> {
+        let method = "ui.param";
+        self.sync(session);
+        if !self.params.trouble.as_ref().is_some_and(|t| t.broke) {
+            return Err(format!(
+                "{method}: lastGood: nothing breaks the model now; there is no last good state to go back to"
+            ));
+        }
+        let Some(values) = self
+            .params
+            .last_good
+            .as_ref()
+            .map(|g| g.values.clone())
+            .filter(|v| !v.is_empty())
+        else {
+            return Err(format!(
+                "{method}: lastGood: the model has not built with these parameters since it was opened"
+            ));
+        };
+        let changed = self.last_good_changes(values);
+        if changed.is_empty() {
+            return Err(format!(
+                "{method}: lastGood: the parameters already have their last good values"
+            ));
+        }
+        let sent = Value::Object(changed.clone());
+        let (command, field) = self.params.joined_with(changed);
+        self.params.in_flight = Some(InFlight {
+            doc: self.params.doc,
+            field,
+        });
+        Ok(ParamAsk {
+            command: clamping(command),
+            sent,
+            note: None,
         })
     }
 
@@ -1870,17 +1938,7 @@ impl Shell {
         if let Some((rect, clicked, values)) = back {
             self.params.banner_hit = Some(rect);
             if clicked {
-                // Only what differs from the values set now.
-                let changed: Map<String, Value> = values
-                    .into_iter()
-                    .filter(|(name, good)| {
-                        let now = self.params.list.as_ref().and_then(|l| l.param(name));
-                        now.is_none_or(|p| match p.value {
-                            Some(value) if p.takes_numbers() => sent_value(p, value) != *good,
-                            _ => Value::String(p.expr.clone()) != *good,
-                        })
-                    })
-                    .collect();
+                let changed = self.last_good_changes(values);
                 if !changed.is_empty() {
                     self.params.ask(json!({ "values": changed }), None);
                 }
