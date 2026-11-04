@@ -825,7 +825,9 @@ impl WebHost {
         // then said done (the status bar said "Opened" while the page
         // still showed "Opening…", 2026-11-04). A failure is said at once.
         if self.stepwise && !self.session.scene_ready(self.shell.scene_quality()) {
-            if outcome.is_ok() {
+            // Only an open or an import waits: another edit (a parameter
+            // set) is said done when it is made, its picture following.
+            if outcome.is_ok() && matches!(label, "file.open" | "file.import") {
                 self.last_answer = outcome.as_ref().ok().cloned();
                 self.held_report = Some((label.to_string(), outcome.clone()));
             } else {
