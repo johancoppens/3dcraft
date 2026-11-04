@@ -30,7 +30,7 @@
 
 mod common;
 
-use common::{arc, circle, line};
+use common::{arc, circle, line, rectangle};
 use craft3d_kernel::KernelError;
 use craft3d_kernel::extrude::Role;
 use craft3d_kernel::profile::{Profile, SketchCurve, detect_profiles};
@@ -255,6 +255,48 @@ fn a_ring_with_the_up_direction_leaning_has_the_elliptic_integral_volume() {
         within(volume, exact, area * t);
         // Not the torus: the lean takes volume away.
         assert!(exact < 2.0 * PI * centre * PI * minor * minor * 0.99);
+    }
+}
+
+/// `K(k)` with `k = sin α`, from `cos α`: `π / (2 AGM(1, cos α))`.
+fn elliptic_k(cos: f64) -> f64 {
+    let (mut a, mut g) = (1.0_f64, cos);
+    for _ in 0..40 {
+        (a, g) = (0.5 * (a + g), (a * g).sqrt());
+    }
+    PI / (2.0 * a)
+}
+
+#[test]
+fn a_tall_band_round_rings_with_a_leaning_up_needs_the_sharper_proof() {
+    // The terms in y integrate to zero over a whole turn whatever the
+    // section (`w'·(e × w) = sin α cos α cos θ / (1 − sin² α cos² θ)`,
+    // odd under θ → θ + π), so the volume is `A R_c cos α · 4 K(sin α)`
+    // with `R_c` the radius of the section's centroid. The cruder proof
+    // (the chord's speed as the rails' added) asks for more than 2²⁰
+    // samples here.
+    for k in SCALES {
+        let (r1, r2, h) = (38.0 * k, 42.0 * k, 12.0 * k);
+        let section = profile(&rectangle(1, 1, (r1, r2), (0.0, h)), k);
+        let band = sweep_two_rails_up(
+            &section,
+            &front(),
+            &[circle(10, [0.0, 0.0], r1)],
+            &Frame::WORLD,
+            &[circle(20, [0.0, 0.0], r2)],
+            &Frame::WORLD,
+            Scaling::Uniform,
+            Some(Vec3::new(0.5, 0.0, 1.0)),
+            &tol(k),
+        )
+        .unwrap();
+        let t = tol(k).linear;
+        assert!(band.closed);
+        assert!(band.deviation <= t / 2.0);
+        let (volume, area, _) = sound(&band, k);
+        let cos = 1.0 / 1.25_f64.sqrt();
+        let exact = (r2 - r1) * h * 0.5 * (r1 + r2) * cos * 4.0 * elliptic_k(cos);
+        within(volume, exact, area * t);
     }
 }
 

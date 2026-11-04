@@ -632,12 +632,13 @@ fn the_spout_of_the_features_chapter_meets_its_volume() {
 
 /// The rings and the up direction of the features chapter (`09-features.md`
 /// › *Sweep along two rails*) run as written: the torus round two rings
-/// meets its volume (Pappus), the band with a leaning up direction is
-/// built, and both pass the deep check.
+/// meets its volume (Pappus), the wall with a leaning up direction its
+/// (section times run times the cosine of the lean), and both pass the
+/// deep check.
 #[test]
 fn the_rings_of_the_features_chapter_are_built() {
     let text = read_text(&docs().join("guide/09-features.md"));
-    for (marker, asserted) in [("\"rail\": \"Outer\"", 1), ("\"up\": \"Lean\"", 0)] {
+    for marker in ["\"rail\": \"Outer\"", "\"up\": \"Lean\""] {
         let block = json_blocks(&text)
             .into_iter()
             .find(|b| b.contains(marker))
@@ -651,7 +652,7 @@ fn the_rings_of_the_features_chapter_are_built() {
         }
         let assertions = run(&mut s, "assert.list", json!({}));
         assert_eq!(assertions["ok"], true, "{assertions}");
-        assert_eq!(assertions["passed"], asserted, "{assertions}");
+        assert_eq!(assertions["passed"], 1, "{assertions}");
         let inspect = run(&mut s, "document.inspect", json!({}));
         let closed = inspect["bodies"]
             .as_array()

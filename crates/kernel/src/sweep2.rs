@@ -1005,18 +1005,20 @@ fn rates(leg: &Leg, sigma: f64, p: &Placed, set: &Setting) -> (Vec3, Vec3, Vec3)
     (va, du, db)
 }
 
-/// The least speed across its station's plane of the profile's box
-/// corners at `σ`.
-fn crossing_speed(leg: &Leg, sigma: f64, p: &Placed, set: &Setting) -> f64 {
+/// The least speed across its station's plane of the corners of a box
+/// round the profile at `σ`: the profile's own box when `sharp`, else the
+/// box of its reach both ways, `±x` by `±y` (the cruder first proof).
+/// The speed is affine in the point, so it is least at a corner.
+fn crossing_speed(leg: &Leg, sigma: f64, p: &Placed, set: &Setting, sharp: bool) -> f64 {
     let (vo, vu, vb) = rates(leg, sigma, p, set);
     let forward = p.e.cross(p.w);
+    let (xs, ys) = if sharp {
+        (set.xs, set.ys)
+    } else {
+        ((-set.x, set.x), (-set.y, set.y))
+    };
     let mut least = f64::INFINITY;
-    for (x, y) in [
-        (set.xs.0, set.ys.0),
-        (set.xs.0, set.ys.1),
-        (set.xs.1, set.ys.0),
-        (set.xs.1, set.ys.1),
-    ] {
+    for (x, y) in [(xs.1, ys.1), (xs.1, ys.0), (xs.0, ys.1), (xs.0, ys.0)] {
         least = least.min((vo + vu * x + vb * y).dot(forward));
     }
     least
@@ -1025,10 +1027,24 @@ fn crossing_speed(leg: &Leg, sigma: f64, p: &Placed, set: &Setting) -> f64 {
 /// Proves along the leg that the chord keeps a length, stays off the up
 /// direction and the profile crosses its station's plane, and returns the
 /// bounds the proof of the deviation needs.
-fn leg_bounds(leg: &Leg, set: &Setting, spent: &mut usize) -> Result<Bounds, KernelError> {
+///
+/// Two ways, tried in this order by the caller. The cruder (`sharp`
+/// false) bounds the chord's speed by the sum of the rails' and the
+/// crossing speed at the corners of the box of the profile's reach both
+/// ways; it is what format 66 built with, so what it proves is built as
+/// it was, and where it proves nothing (`None`: a corner of that box that
+/// does not cross, or no grid fine enough) the sharper one is tried. The
+/// sharper bounds the chord's speed by its largest value on the grid
+/// plus `|c''| h / 2` and takes the profile's own box; what it cannot
+/// prove is refused.
+fn leg_bounds(
+    leg: &Leg,
+    set: &Setting,
+    spent: &mut usize,
+    sharp: bool,
+) -> Result<Option<Bounds>, KernelError> {
     let (ra, rb) = (leg.a.speed(), leg.b.speed());
     let (ka, kb) = (leg.a.bend(), leg.b.bend());
-    let lc = ra + rb;
     let kc = ka + kb;
     let width = leg.to - leg.from;
     let sources = [leg.a.source, leg.b.source];
@@ -1041,6 +1057,7 @@ fn leg_bounds(leg: &Leg, set: &Setting, spent: &mut usize) -> Result<Bounds, Ker
         let mut g_min = f64::INFINITY;
         let mut cross_min = f64::INFINITY;
         let mut worst_at = leg.from;
+        let mut chord_speed: f64 = 0.0;
         for j in 0..=n {
             let sigma = if j == n {
                 leg.to
@@ -1065,7 +1082,14 @@ fn leg_bounds(leg: &Leg, set: &Setting, spent: &mut usize) -> Result<Bounds, Ker
                 g_min = p.g;
                 worst_at = sigma;
             }
-            let speed = crossing_speed(leg, sigma, &p, set);
+            if sharp {
+                let dc = leg.b.velocity(sigma) - leg.a.velocity(sigma);
+                chord_speed = chord_speed.max(dc.length());
+            }
+            let speed = crossing_speed(leg, sigma, &p, set, sharp);
+            if !sharp && (speed.is_nan() || speed <= 0.0) {
+                return Ok(None);
+            }
             if speed.is_nan() || speed <= 0.0 {
                 return Err(refuse(
                     &sources,
@@ -1080,6 +1104,13 @@ fn leg_bounds(leg: &Leg, set: &Setting, spent: &mut usize) -> Result<Bounds, Ker
             }
             cross_min = cross_min.min(speed);
         }
+        // |c'| at most: the rails' speeds added, or (sharp) its largest
+        // value on the grid and what |c''| allows between.
+        let lc = if sharp {
+            (chord_speed + kc * h / 2.0).min(ra + rb)
+        } else {
+            ra + rb
+        };
         let r_lo = (r_min - lc * h / 2.0).max(set.apart);
         let e1 = lc / r_lo;
         let g_lo = g_min - 2.0 * e1 * h / 2.0;
@@ -1117,7 +1148,10 @@ fn leg_bounds(leg: &Leg, set: &Setting, spent: &mut usize) -> Result<Bounds, Ker
                 .iter()
                 .all(|v| v.is_finite())
         {
-            return Ok(bounds);
+            return Ok(Some(bounds));
+        }
+        if n >= MAX_GRID && !sharp {
+            return Ok(None);
         }
         if n >= MAX_GRID {
             let at = leg.a.at(worst_at);
@@ -1525,7 +1559,7 @@ pub fn sweep_two_rails_up(
     let (mut up, up_text) = match up {
         None => (
             plane_a.z(),
-            "the normal of the first rail's sketch".to_string(),
+            "the up direction (the normal of the first rail's sketch)".to_string(),
         ),
         Some(given) => {
             let unit = given
@@ -1540,7 +1574,7 @@ pub fn sweep_two_rails_up(
                     ),
                 ));
             };
-            (unit, format!("the up direction {}", point_text(unit)))
+            (unit, format!("the up direction {} given", point_text(unit)))
         }
     };
     let e0 = (b0 - a0).normalized().ok_or_else(internal)?;
@@ -1789,8 +1823,17 @@ pub fn sweep_two_rails_up(
         // Round closed rails the last leg ends where the first began.
         let closing = closed && index + 1 == leg_count;
         let end = closing.then_some(&start);
-        let bounds = leg_bounds(leg, &set, &mut spent)?;
-        let (motion, next, reached) = match translation(leg, &station, &set, &bounds) {
+        // The cruder proof first (what format 66 built with), the sharper
+        // where it proves nothing.
+        let crude = leg_bounds(leg, &set, &mut spent, false)?;
+        let mut sharp: Option<Bounds> = None;
+        if crude.is_none() {
+            sharp = leg_bounds(leg, &set, &mut spent, true)?;
+        }
+        let Some(bounds) = crude.as_ref().or(sharp.as_ref()) else {
+            return Err(internal());
+        };
+        let (motion, next, reached) = match translation(leg, &station, &set, bounds) {
             Some((shift, bound)) => {
                 let along = shift.normalized().ok_or_else(internal)?;
                 let next = Station {
@@ -1802,15 +1845,25 @@ pub fn sweep_two_rails_up(
             None => {
                 let mut followed = None;
                 let mut costly = false;
-                for plan in PLANS {
-                    match follow(leg, &station, end, &set, &bounds, plan, &mut spent)? {
-                        Outcome::Made(made) if made.deviation <= tol / 2.0 => {
-                            followed = Some(made);
-                            break;
+                let mut tried_sharp = sharp.is_some();
+                let mut bounds = bounds;
+                loop {
+                    for plan in PLANS {
+                        match follow(leg, &station, end, &set, bounds, plan, &mut spent)? {
+                            Outcome::Made(made) if made.deviation <= tol / 2.0 => {
+                                followed = Some(made);
+                                break;
+                            }
+                            Outcome::Costly => costly = true,
+                            Outcome::Made(_) | Outcome::Coarse => {}
                         }
-                        Outcome::Costly => costly = true,
-                        Outcome::Made(_) | Outcome::Coarse => {}
                     }
+                    if followed.is_some() || tried_sharp {
+                        break;
+                    }
+                    tried_sharp = true;
+                    sharp = leg_bounds(leg, &set, &mut spent, true)?;
+                    bounds = sharp.as_ref().ok_or_else(internal)?;
                 }
                 if followed.is_none() && costly {
                     return Err(refuse(

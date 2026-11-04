@@ -97,26 +97,32 @@ without ends (`closed` in the result). A circle carried round two concentric cir
 ]
 ```
 
+![A circle carried round two rings: a torus](images/two-rail-ring.png)
+
 **The up direction.** `up` sets the direction the profile stands in with the line between the rails,
 instead of the normal of the `path`'s sketch: `"x"`, `"y"`, `"z"`, two face names for the straight edge
 between them, or a datum axis (which way it points does not matter; `null` in `feature.edit` goes back
-to the default). Draw the profile on the plane through both rails' starts that holds it. A flat band
-round two rings, standing along an axis that leans 27° from z, leans forwards and back as it goes round:
+to the default). Draw the profile on the plane through both rails' starts that holds it. A wall that
+leans back by 30° along two straight rails, drawn on a plane tilted as much and standing along the
+line where that plane meets the yz plane, has the volume of its section times its run times cos 30°:
 
 ```json
 [
- ["sketch.create", {"name": "Blade", "plane": "zx"}],
- ["sketch.rect", {"sketch": "Blade", "from": [0, 38], "to": [12, 42]}],
- ["sketch.create", {"name": "Inside", "plane": "xy"}],
- ["sketch.circle", {"sketch": "Inside", "center": [0, 0], "radius": 38}],
- ["sketch.create", {"name": "Outside", "plane": "xy"}],
- ["sketch.circle", {"sketch": "Outside", "center": [0, 0], "radius": 42}],
- ["datum.axis", {"through": [[0, 0, 0], [0.5, 0, 1]], "name": "Lean"}],
- ["feature.sweep", {"sketch": "Blade", "path": "Inside", "rail": "Outside", "up": "Lean", "name": "Band"}]
+ ["variable.set", {"name": "h", "expr": "30 mm"}],
+ ["datum.plane", {"from": "zx", "angle": "30 deg", "about": "x", "name": "Tilt"}],
+ ["datum.axis", {"planes": ["Tilt", "yz"], "name": "Lean"}],
+ ["sketch.create", {"name": "Blade", "plane": "Tilt"}],
+ ["sketch.rect", {"sketch": "Blade", "from": [0, 0], "to": ["h", 20]}],
+ ["sketch.create", {"name": "Near", "plane": "xy"}],
+ ["sketch.polyline", {"sketch": "Near", "points": [[0, 0], [0, 60]]}],
+ ["sketch.create", {"name": "Far", "plane": "xy"}],
+ ["sketch.polyline", {"sketch": "Far", "points": [[20, 0], [20, 60]]}],
+ ["feature.sweep", {"sketch": "Blade", "path": "Near", "rail": "Far", "up": "Lean", "name": "Wall"}],
+ ["assert.add", {"name": "wall", "measure": "volume", "of": "Wall", "eq": "20 mm * h * 60 mm * cos(30 deg)"}]
 ]
 ```
 
-![A band round two rings, leaning with the up direction](images/two-rail-lean.png)
+![A wall leaning along two straight rails with the up direction](images/two-rail-lean.png)
 
 An up direction along the rails would lay the profile into their course; that is refused as the fold
 it makes.
