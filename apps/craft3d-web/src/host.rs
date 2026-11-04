@@ -320,6 +320,17 @@ pub fn received_kind(name: &str) -> Option<Received> {
     }
 }
 
+/// The report of an open done a piece per frame, held until its picture
+/// is shown ([`WebHost::release_report`]): with the document it opened and
+/// what the status bar said when it was held.
+#[derive(Clone, Debug)]
+struct HeldReport {
+    label: String,
+    outcome: Result<Value, String>,
+    document: Option<u64>,
+    before: Option<CommandReport>,
+}
+
 /// A dialog's answer kept while an edit made where the bodies are waits.
 #[derive(Clone, Debug)]
 enum HeldAnswer {
@@ -374,7 +385,7 @@ pub struct WebHost {
     about: Option<(String, Option<String>)>,
     /// What an open done a piece per frame answered, said once its scene
     /// is there ([`WebHost::release_report`]).
-    held_report: Option<(String, Result<Value, String>)>,
+    held_report: Option<HeldReport>,
     /// A file named in the page's address is being fetched.
     fetching: Option<String>,
     /// The address of a published example to fetch, for the page.
@@ -827,9 +838,14 @@ impl WebHost {
         if self.stepwise && !self.session.scene_ready(self.shell.scene_quality()) {
             // Only an open or an import waits: another edit (a parameter
             // set) is said done when it is made, its picture following.
-            if outcome.is_ok() && matches!(label, "file.open" | "file.import") {
+            if outcome.is_ok() && matches!(label, "file.open" | "file.import" | "example") {
                 self.last_answer = outcome.as_ref().ok().cloned();
-                self.held_report = Some((label.to_string(), outcome.clone()));
+                self.held_report = Some(HeldReport {
+                    label: label.to_string(),
+                    outcome: outcome.clone(),
+                    document: self.session.document_status().map(|s| s.id),
+                    before: self.shell.last_command.clone(),
+                });
             } else {
                 self.report(label, outcome);
             }
@@ -842,11 +858,22 @@ impl WebHost {
 
     /// The report of a file opened a piece per frame, once its scene is
     /// there ([`Self::finish`]).
+    /// Said only if nothing was said since (a later open that failed, a
+    /// close, a parameter set: those are newer and stay) and the document
+    /// it opened is still the one shown; else it is dropped.
     fn release_report(&mut self) {
+        let Some(held) = self.held_report.as_ref() else {
+            return;
+        };
+        let shown = self.session.document_status().map(|s| s.id);
+        if self.shell.last_command != held.before || shown != held.document {
+            self.held_report = None;
+            return;
+        }
         if !self.away
-            && let Some((label, outcome)) = self.held_report.take()
+            && let Some(held) = self.held_report.take()
         {
-            self.report(&label, &outcome);
+            self.report(&held.label, &held.outcome);
         }
     }
 
@@ -1468,7 +1495,7 @@ impl WebHost {
         let kit = Kit::panel(&tokens);
         let dialog =
             Dialog::new(egui::Id::new("craft3d-web-companion"), "Material library").closable(false);
-        let shown = kit.dialog(ctx, dialog, |kit, ui| {
+        kit.dialog(ctx, dialog, |kit, ui| {
             kit.paragraph(
                 ui,
                 &format!(
@@ -1488,9 +1515,8 @@ impl WebHost {
                 });
             });
         });
-        if shown.close && answer.is_none() {
-            answer = Some(false);
-        }
+        // Only its buttons decide (a click beside it or Escape would drop
+        // the file unseen).
         match answer {
             Some(true) => Some(file),
             Some(false) => {
@@ -2104,6 +2130,106 @@ mod tests {
             )
             .unwrap();
         host
+    }
+
+    /// The material library's question is answered by its buttons only:
+    /// Escape or a click beside it keeps the file waiting (the review of
+    /// a6670ee3: it was dropped unseen).
+    #[test]
+    fn the_material_library_waits_for_a_button() {
+        let mut host = self::host();
+        host.companion = Some(Download::export(
+            "plate.mtl".to_string(),
+            b"newmtl a".to_vec(),
+        ));
+        let ctx = egui::Context::default();
+        for events in [
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            vec![egui::Event::PointerButton {
+                pos: egui::pos2(5.0, 5.0),
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            vec![egui::Event::PointerButton {
+                pos: egui::pos2(5.0, 5.0),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        ] {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 760.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut got = None;
+            let mut output = ctx.run_ui(input, |ui| got = host.companion_ui(ui.ctx()));
+            output.textures_delta.clear();
+            assert!(got.is_none());
+            assert!(host.companion.is_some(), "kept waiting");
+        }
+    }
+
+    /// A held "Opened" never replaces what was said after it (the review
+    /// of a6670ee3): a later open that failed, a close of the tab, a
+    /// parameter set; a document no longer shown is not said opened.
+    #[test]
+    fn a_held_open_report_gives_way_to_newer_ones() {
+        let bytes = modelled().save_as("a.3dcraft", None).remove(0).bytes;
+        let last = |host: &WebHost| host.shell.last_command.clone();
+        let settle = |host: &mut WebHost| {
+            let mut frames = 0;
+            while host.prepare(|| true) && frames < 60 {
+                frames += 1;
+            }
+        };
+        // (a) A, then B that fails: the failure stays.
+        let mut host = self::host();
+        host.set_stepwise(true);
+        host.receive("a.3dcraft", bytes.clone(), None).unwrap();
+        assert!(
+            host.receive("b.3dcraft", b"not a document".to_vec(), None)
+                .is_err()
+        );
+        let failed = last(&host);
+        assert!(failed.as_ref().is_some_and(|c| !c.ok), "{failed:?}");
+        settle(&mut host);
+        assert_eq!(last(&host), failed);
+        // (b) A, then its tab closed: "Closed" stays, A is not said opened.
+        let mut host = self::host();
+        host.set_stepwise(true);
+        host.session.execute("file.new", &json!({})).unwrap();
+        host.receive("a.3dcraft", bytes.clone(), None).unwrap();
+        let shown = host.session.document_status().unwrap().index;
+        host.doc_action(DocAction::Close {
+            document: shown,
+            discard: true,
+        });
+        let closed = last(&host);
+        settle(&mut host);
+        assert_eq!(last(&host), closed);
+        assert!(
+            last(&host).is_none_or(|c| c.label != "file.open"),
+            "{:?}",
+            last(&host)
+        );
+        // (c) A, then a note said while it loads: the note stays.
+        let mut host = self::host();
+        host.set_stepwise(true);
+        host.receive("a.3dcraft", bytes, None).unwrap();
+        host.note("param.set", true, "Set w".to_string());
+        settle(&mut host);
+        assert_eq!(last(&host).map(|c| c.text), Some("Set w".to_string()));
     }
 
     /// What the page shows, frame by frame, while a file it was handed
