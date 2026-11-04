@@ -187,13 +187,7 @@ fn flange_value(
         expr(key)?
             .ok_or_else(|| CommandError::new(format!("{id}: flanges.{index} needs its `{key}`")))
     };
-    let direction = match map.get("direction") {
-        None => BendDirection::Up,
-        Some(Value::String(s)) => BendDirection::from_name(s).ok_or_else(|| {
-            CommandError::new(format!("{id}: flanges.{index}.direction is up or down"))
-        })?,
-        Some(_) => return fail(format!("{id}: flanges.{index}.direction is up or down")),
-    };
+    let direction = direction_of(map, id, &format!("flanges.{index}"))?;
     let from = match map.get("from") {
         None => FlangeFrom::Tangent,
         Some(Value::String(s)) => FlangeFrom::from_name(s).ok_or_else(|| {
@@ -237,6 +231,21 @@ fn flange_value(
         k_factor: expr("kFactor")?,
         from,
     })
+}
+
+/// The `direction` of the flange, jog or formed louvre `at` (such as
+/// `flanges.2`): up when it is not given (or null), else up or down.
+fn direction_of(
+    map: &Map<String, Value>,
+    id: &str,
+    at: &str,
+) -> Result<BendDirection, CommandError> {
+    match map.get("direction") {
+        None | Some(Value::Null) => Ok(BendDirection::Up),
+        Some(Value::String(s)) => BendDirection::from_name(s)
+            .ok_or_else(|| CommandError::new(format!("{id}: {at}.direction is up or down"))),
+        Some(_) => fail(format!("{id}: {at}.direction is up or down")),
+    }
 }
 
 const JOG_KEYS: [&str; 7] = [
@@ -290,13 +299,7 @@ fn jogs_value(p: &Params) -> Result<Option<Vec<Jog>>, CommandError> {
             .get("line")
             .ok_or_else(|| CommandError::new(format!("{id}: jogs.{g} needs its `line`")))?;
         let line = crate::sketch_cmds::entity_id(id, &format!("jogs.{g}.line"), line)?;
-        let direction = match map.get("direction") {
-            None => BendDirection::Up,
-            Some(Value::String(s)) => BendDirection::from_name(s).ok_or_else(|| {
-                CommandError::new(format!("{id}: jogs.{g}.direction is up or down"))
-            })?,
-            Some(_) => return fail(format!("{id}: jogs.{g}.direction is up or down")),
-        };
+        let direction = direction_of(map, id, &format!("jogs.{g}"))?;
         let jog_id = match map.get("id") {
             None | Some(Value::Null) => 0,
             Some(v) => v
@@ -442,13 +445,7 @@ fn formed_value(p: &Params) -> Result<Option<Vec<FormedLouvre>>, CommandError> {
             CommandError::new(format!("{id}: formedLouvres.{g} needs its `line`"))
         })?;
         let line = crate::sketch_cmds::entity_id(id, &format!("formedLouvres.{g}.line"), line)?;
-        let direction = match map.get("direction") {
-            None => BendDirection::Up,
-            Some(Value::String(s)) => BendDirection::from_name(s).ok_or_else(|| {
-                CommandError::new(format!("{id}: formedLouvres.{g}.direction is up or down"))
-            })?,
-            Some(_) => return fail(format!("{id}: formedLouvres.{g}.direction is up or down")),
-        };
+        let direction = direction_of(map, id, &format!("formedLouvres.{g}"))?;
         let ends = match map.get("ends") {
             None => HoodEnds::Closed,
             Some(Value::String(s)) if s == "closed" => HoodEnds::Closed,
@@ -2501,6 +2498,38 @@ mod on_key_tests {
             inset_start: None,
             inset_end: None,
             outline: None,
+        }
+    }
+
+    /// A direction not given or null is up, as for every other key that
+    /// has a default; anything but up or down is refused, naming where.
+    #[test]
+    fn a_direction_is_up_unless_down_and_refused_by_place_otherwise() {
+        let map = |v: Option<Value>| {
+            let mut m = Map::new();
+            if let Some(v) = v {
+                m.insert("direction".into(), v);
+            }
+            m
+        };
+        for given in [None, Some(Value::Null), Some(json!("up"))] {
+            assert_eq!(
+                direction_of(&map(given), "x", "jogs.0").unwrap(),
+                BendDirection::Up
+            );
+        }
+        assert_eq!(
+            direction_of(&map(Some(json!("down"))), "x", "jogs.0").unwrap(),
+            BendDirection::Down
+        );
+        for bad in [json!("sideways"), json!(1), json!([])] {
+            let why = direction_of(&map(Some(bad)), "x", "flanges.3")
+                .unwrap_err()
+                .to_string();
+            assert!(
+                why.contains("x: flanges.3.direction is up or down"),
+                "{why}"
+            );
         }
     }
 
