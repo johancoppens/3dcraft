@@ -844,7 +844,7 @@ impl Session {
 /// played (the hook for that: a motion's states handed over as a job of
 /// their own, the motion's view state kept here).
 fn edits_elsewhere(id: &str) -> bool {
-    const FAMILIES: [&str; 16] = [
+    const FAMILIES: [&str; 17] = [
         "feature.",
         "sketch.",
         "datum.",
@@ -852,6 +852,8 @@ fn edits_elsewhere(id: &str) -> bool {
         "variable.",
         "param.",
         "body.",
+        // A preset fitted to the body (a wood's grain to its box).
+        "material.",
         "face.",
         "set.",
         "table.",

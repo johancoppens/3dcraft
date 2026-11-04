@@ -385,7 +385,33 @@ pub struct WebHost {
     /// The whole answer of the last action reported, which the status bar
     /// says in words (`answer::summary`).
     last_answer: Option<Value>,
+    /// An example from the start screen being built, a step at a time.
+    example_run: Option<ExampleRun>,
 }
+
+/// An example from the start screen being built a step at a time
+/// ([`WebHost::pump`]): each step is run as a command the person asked
+/// for (`Session::execute_deferrable`), so that a step that needs the
+/// bodies (a feature's status, a measure, an assertion) is made in the
+/// regenerating worker, never on the page's one thread, and the steps
+/// after it wait for its answer, as edits asked for while one waits do.
+/// Before 2026-11-04 the whole script ran on the page at once: the fuel
+/// tank's shell and its measures kept the page from drawing for minutes.
+struct ExampleRun {
+    example: &'static craft3d_ui_egui::shell::Example,
+    /// Its commands and their params, in order.
+    steps: Vec<(String, Value)>,
+    /// The next step to run.
+    next: usize,
+    /// The document it is built in (`file.new`).
+    doc: u64,
+    /// The step handed to the worker, by its job's number, and its index.
+    waiting: Option<(u64, usize)>,
+}
+
+/// Most steps of an example run on the page in one frame, when none of
+/// them needs the bodies (each that does is handed to the worker).
+const EXAMPLE_STEPS_A_FRAME: usize = 8;
 
 /// The budget of scenes the page keeps (`Session::set_scene_budget`),
 /// where the desktop's default is 1.5 GiB: the scenes of other documents
@@ -440,6 +466,7 @@ impl WebHost {
             fonts_failed: BTreeSet::new(),
             away: false,
             last_answer: None,
+            example_run: None,
         }
     }
 
@@ -977,7 +1004,10 @@ impl WebHost {
         // An example from the start screen, built in a new document; a
         // published Jig or assembly is fetched from beside the page first
         // (the page reads `take_example_fetch`) and opened as a file is.
-        if let Some(name) = self.shell.peek_example().and_then(|e| e.to_fetch()) {
+        // One being built goes on (another chosen meanwhile waits).
+        if self.example_run.is_some() {
+            self.build_example();
+        } else if let Some(name) = self.shell.peek_example().and_then(|e| e.to_fetch()) {
             let _ = self.shell.take_example();
             self.fetching(name);
             self.example_fetch = Some(format!("examples/{name}"));
@@ -986,6 +1016,12 @@ impl WebHost {
         {
             // Its texts' fonts are being fetched: it runs once they are
             // here (a frame after `font_fetched`).
+        } else if let Some(example) = self.shell.peek_example()
+            && let Some(steps) = craft3d_ui_egui::shell::example_steps(example)
+        {
+            let _ = self.shell.take_example();
+            self.example_fonts = None;
+            self.start_example(example, steps);
         } else if let Some(example) = self.shell.take_example() {
             self.example_fonts = None;
             let session = &mut self.session;
@@ -1023,7 +1059,21 @@ impl WebHost {
     /// the page.
     pub fn waiting_ui(&mut self, ctx: &egui::Context) -> Outcome {
         let now = ctx.input(|i| i.time);
-        let Some(command) = self.session.edit_waiting().map(str::to_string) else {
+        // An example being built shows the window from its first step to
+        // its last, with the step it is at.
+        let building = self.example_progress().and_then(|(step, of)| {
+            let run = self.example_run.as_ref()?;
+            Some(format!(
+                "the example {}: step {step} of {of}",
+                run.example.title
+            ))
+        });
+        let Some(command) = self
+            .session
+            .edit_waiting()
+            .map(str::to_string)
+            .or_else(|| building.clone())
+        else {
             self.edit_since = None;
             return Outcome::default();
         };
@@ -1032,7 +1082,10 @@ impl WebHost {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
             return Outcome::default();
         }
-        let label = Session::command(&command).map_or(command.as_str(), |spec| spec.label);
+        let label = match &building {
+            Some(building) => building.as_str(),
+            None => Session::command(&command).map_or(command.as_str(), |spec| spec.label),
+        };
         let mut cancel = false;
         egui::Window::new("Working")
             .title_bar(false)
@@ -1062,7 +1115,134 @@ impl WebHost {
         // and the next job starts a new one ([`Self::take_worker_restart`]).
         self.worker_restart |= self.session.edit_posted();
         let answered = self.session.edits_failed(CANCELLED);
-        self.answered(answered)
+        let outcome = self.answered(answered);
+        // An example between two steps: not built further.
+        if let Some(run) = &self.example_run {
+            let next = run.next;
+            let command = run
+                .steps
+                .get(next)
+                .map_or_else(String::new, |(command, _)| command.clone());
+            self.example_failed(next, &command, CANCELLED);
+        }
+        outcome
+    }
+
+    /// Starts building `example` from its script's `steps`, in a new
+    /// document in millimetres ([`ExampleRun`]).
+    fn start_example(
+        &mut self,
+        example: &'static craft3d_ui_egui::shell::Example,
+        steps: Result<Vec<(String, Value)>, String>,
+    ) {
+        let steps = match steps {
+            Ok(steps) => steps,
+            Err(why) => return self.finish("example", &Err(why)),
+        };
+        self.about = Some(("example".to_string(), Some(example.title.to_string())));
+        if let Err(why) = self.run("file.new", &json!({ "units": "mm" })) {
+            return self.finish("example", &Err(format!("file.new: {why}")));
+        }
+        let Some(doc) = self.session.document_status().map(|status| status.id) else {
+            return self.finish("example", &Err("file.new: no document".to_string()));
+        };
+        self.example_run = Some(ExampleRun {
+            example,
+            steps,
+            next: 0,
+            doc,
+            waiting: None,
+        });
+        self.build_example();
+    }
+
+    /// The steps of the example being built that can run now: until one
+    /// is handed to the worker (the rest wait for its answer), one made
+    /// work on the page (a page that regenerates itself: a frame between
+    /// two such steps), or [`EXAMPLE_STEPS_A_FRAME`] of them. Done, it is
+    /// reported as the example; a step that fails closes its document
+    /// again, as [`craft3d_ui_egui::shell::run_example`] does.
+    fn build_example(&mut self) {
+        for _ in 0..EXAMPLE_STEPS_A_FRAME {
+            let Some(run) = &self.example_run else {
+                return;
+            };
+            if run.waiting.is_some() {
+                return;
+            }
+            let (example, index, total, doc) = (run.example, run.next, run.steps.len(), run.doc);
+            if self.session.document_status().map(|status| status.id) != Some(doc) {
+                self.example_run = None;
+                let why = format!(
+                    "example {}: its document was closed, or another one shown, before it was built",
+                    example.id
+                );
+                return self.finish("example", &Err(why));
+            }
+            let Some((command, params)) = run.steps.get(index).cloned() else {
+                self.example_run = None;
+                let built = json!({ "example": example.id, "steps": total });
+                return self.finish("example", &Ok(built));
+            };
+            let work = self.session.work_here();
+            match self.run(&command, &params) {
+                Ok(result) => {
+                    let handed = deferred(&result);
+                    if let Some(run) = &mut self.example_run {
+                        run.next = index.saturating_add(1);
+                        run.waiting = handed.map(|token| (token, index));
+                    }
+                    if handed.is_some() || self.session.work_here() != work {
+                        return self.example_shown();
+                    }
+                }
+                Err(why) => return self.example_failed(index, &command, &why),
+            }
+        }
+        self.example_shown();
+    }
+
+    /// The example being built, as far as it is: its document shown, and
+    /// the step it is at in the status bar.
+    fn example_shown(&mut self) {
+        let Some((step, of)) = self.example_progress() else {
+            return;
+        };
+        let title = self
+            .example_run
+            .as_ref()
+            .map_or("", |run| run.example.title);
+        self.note(
+            "example",
+            true,
+            format!("Building {title}: step {step} of {of}"),
+        );
+        self.forget_files();
+        if !(self.stepwise && !self.session.scene_ready(self.shell.scene_quality())) {
+            self.shell.sync(&mut self.session);
+        }
+    }
+
+    /// Step `index` of the example being built failed with `why`: its
+    /// document is closed again and the failure said.
+    fn example_failed(&mut self, index: usize, command: &str, why: &str) {
+        let Some(run) = self.example_run.take() else {
+            return;
+        };
+        if self.session.document_status().map(|status| status.id) == Some(run.doc) {
+            let _ = self.run("file.close", &json!({ "discard": true }));
+        }
+        let message = craft3d_ui_egui::shell::example_step_failed(run.example, index, command, why);
+        self.finish("example", &Err(message));
+    }
+
+    /// The step of the example being built (from 1) and how many it has;
+    /// `None` when none is being built.
+    pub fn example_progress(&self) -> Option<(usize, usize)> {
+        self.example_run.as_ref().map(|run| {
+            let at = run.waiting.map_or(run.next, |(_, index)| index);
+            (at.saturating_add(1).min(run.steps.len()), run.steps.len())
+        })
     }
 
     /// Keeps a dialog's answer until the edit that waits is applied: in
@@ -1505,6 +1685,19 @@ impl WebHost {
     pub fn answered(&mut self, answered: Vec<craft3d_engine::Answered>) -> Outcome {
         let mut outcome = Outcome::default();
         for answer in answered {
+            // A step of the example being built, made in the worker: the
+            // next steps run now (a failure ends the example).
+            if let Some(run) = &mut self.example_run
+                && let Some((token, index)) = run.waiting
+                && token == answer.token
+            {
+                run.waiting = None;
+                match &answer.result {
+                    Ok(_) => self.example_shown(),
+                    Err(why) => self.example_failed(index, &answer.command, why),
+                }
+                continue;
+            }
             if let Some((token, document)) = self.export_choices
                 && token == answer.token
             {
@@ -2795,10 +2988,14 @@ mod tests {
         let mut host = host();
         let example = &craft3d_ui_egui::shell::EXAMPLES[0];
         host.shell.choose_example(example);
+        // Built a few steps a frame (`build_example`).
         host.pump();
+        while host.example_progress().is_some() {
+            host.pump();
+        }
         assert_eq!(host.session.document_statuses().len(), 1);
         let report = host.shell.last_command.as_ref().unwrap();
-        assert!(report.ok, "{}", report.text);
+        assert!(report.ok && report.label == "example", "{}", report.text);
         // Nothing is left in memory, and nothing is recent in the browser.
         assert!(host.session.file_names().is_empty());
         assert!(host.shell.recent_files().is_empty());
@@ -2846,9 +3043,12 @@ mod tests {
             host.font_fetched("sans", craft3d_engine::fonts::register("sans", &bytes));
         }
         host.pump();
+        while host.example_progress().is_some() {
+            host.pump();
+        }
         assert_eq!(host.session.document_statuses().len(), 1);
         let report = host.shell.last_command.as_ref().unwrap();
-        assert!(report.ok, "{}", report.text);
+        assert!(report.ok && report.label == "example", "{}", report.text);
     }
 
     /// A font that cannot be fetched is not waited for: the example runs

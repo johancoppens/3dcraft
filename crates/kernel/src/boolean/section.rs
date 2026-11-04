@@ -1439,6 +1439,8 @@ pub(super) fn section(
     // lies on the other is imprinted on it from the edge itself, once
     // every pair has been met (`lying_edges`).
     let mut coincident: Vec<(usize, usize)> = Vec::new();
+    #[cfg(not(target_arch = "wasm32"))]
+    warm_meetings(a, b, tolerance);
     for (fa, box_a) in a.boxes.iter().enumerate() {
         // The faces of B whose boxes meet this one's, in the order of B's
         // faces: the pairs, and their order, of testing every face of B.
@@ -1631,6 +1633,113 @@ pub(super) fn section(
         }
     }
     Ok(sections)
+}
+
+/// The pairs of faces [`section`] will meet numerically, met ahead on as
+/// many threads as the machine has, so that the section finds each on
+/// the shelf of numeric intersections (`craft3d_geom::intersect`) where
+/// it would have marched it: the fuel tank's shell met three freeform
+/// faces with their own offsets one after the other, six seconds each
+/// (2026-11-04).
+///
+/// **Nothing changes but the time.** A numeric intersection is a function
+/// of the two surfaces, the box and the tolerance alone, and what the
+/// shelf answers is what marching gives, refusals included; a hit charges
+/// the work the march took ([`craft3d_geom::allowance`]), so the count of
+/// the section is what it was. The pairs are picked by the section's own
+/// tests (boxes, hulls, covers), worked out here on this thread with
+/// their work left uncharged (`allowance::cost_of` within `uncounted`:
+/// what they make is kept as always, only the count is put back), so
+/// that the section, which tests them again, counts what it did. The
+/// faces' trees and covers they make are kept for the section (each is
+/// made once whoever asks first). A pair the section does not reach (it
+/// stops at a refusal before) was met for nothing. Not under a bound on
+/// the work (`allowance::scope`): there an operation's count depends on
+/// what it asked before (`allowance::once`), which the helper threads do
+/// not see; the section then meets its pairs on this thread as always.
+#[cfg(not(target_arch = "wasm32"))]
+fn warm_meetings(a: &Solid, b: &Solid, tolerance: &Tolerance) {
+    use craft3d_geom::allowance;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let machine = craft3d_math::available_threads();
+    // Analytic faces meet in closed form, quickly: nothing to meet ahead.
+    let freeform = |solid: &Solid| solid.body.faces.iter().any(|f| is_freeform(&f.surface));
+    if machine < 2 || allowance::scope().is_some() || !(freeform(a) || freeform(b)) {
+        return;
+    }
+    let tol = tolerance.linear;
+    // The pairs the section meets, in its order, while the tests can be
+    // told; at the first a test cannot tell (the section stops there with
+    // the reason) no more are picked.
+    let planned: Vec<(&Surface, &Surface, Bbox3)> = allowance::uncounted(|| {
+        allowance::cost_of(|| {
+            let mut planned = Vec::new();
+            for (fa, box_a) in a.boxes.iter().enumerate() {
+                for fb in b.candidates(|box_b| boxes_meet(box_a, box_b, 2.0 * tol)) {
+                    let Some(box_b) = b.boxes.get(fb) else {
+                        return planned;
+                    };
+                    if !boxes_meet(box_a, box_b, 2.0 * tol) {
+                        continue;
+                    }
+                    let room = 16.0 * tol + 0.013 * box_a.diagonal().max(box_b.diagonal());
+                    let Some(within) = overlap(box_a, box_b, room) else {
+                        continue;
+                    };
+                    let (Some(hull_a), Some(hull_b)) = (a.hulls.get(fa), b.hulls.get(fb)) else {
+                        return planned;
+                    };
+                    let (Ok(oa), Ok(ob)) = (a.outline(fa), b.outline(fb)) else {
+                        return planned;
+                    };
+                    if clear_of(oa.sheet(), hull_b, 2.0 * tol)
+                        || clear_of(ob.sheet(), hull_a, 2.0 * tol)
+                    {
+                        continue;
+                    }
+                    let apart = APART * tol;
+                    let meet = match (a.cover(fa, tol), b.cover(fb, tol)) {
+                        (Some((ca, of_a)), Some((cb, of_b))) => ca.meets(of_a, cb, of_b, apart),
+                        (Some((ca, of_a)), None) => {
+                            ca.reaches(of_a, box_b, Some(&ob.surface), apart)
+                        }
+                        (None, Some((cb, of_b))) => {
+                            cb.reaches(of_b, box_a, Some(&oa.surface), apart)
+                        }
+                        (None, None) => true,
+                    };
+                    if meet && (is_freeform(&oa.surface) || is_freeform(&ob.surface)) {
+                        planned.push((&oa.surface, &ob.surface, within));
+                    }
+                }
+            }
+            planned
+        })
+        .0
+    });
+    let threads = machine.min(planned.len());
+    if threads < 2 {
+        return;
+    }
+    let next = AtomicUsize::new(0);
+    let meet = || {
+        while let Some((sa, sb, within)) = planned.get(next.fetch_add(1, Ordering::Relaxed)) {
+            // Kept on the shelf; the section takes it from there.
+            let _ = meet_surfaces(sa, sb, within, tolerance);
+        }
+    };
+    std::thread::scope(|scope| {
+        let helpers: Vec<_> = (1..threads)
+            .filter_map(|_| std::thread::Builder::new().spawn_scoped(scope, meet).ok())
+            .collect();
+        // This thread meets its share uncharged: the section charges each
+        // pair when it takes it from the shelf.
+        allowance::uncounted(|| allowance::cost_of(meet));
+        for helper in helpers {
+            // A helper that failed leaves its pairs to the section.
+            let _ = helper.join();
+        }
+    });
 }
 
 /// Which edges of a pair of faces [`lying_edges`] looks at.

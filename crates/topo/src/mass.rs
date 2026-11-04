@@ -4118,40 +4118,65 @@ thread_local! {
 static BUSY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// `work(0..count)`, in that order, shared out over as many threads as
-/// the machine has (within shared-out work already: as many as are idle),
-/// one item at a time, with at least `each` items a thread; each result
-/// goes to its own slot, so the results are the same however the items
-/// were shared out. Where no thread can be started (wasm, a machine out
-/// of threads) the items are done one after the other on this thread.
+/// the machine has (within shared-out work already: as many as are idle,
+/// and more as other threads become idle while it runs), one item at a
+/// time, with at least `each` items a thread; each result goes to its own
+/// slot, so the results are the same however the items were shared out.
+/// Where no thread can be started (wasm, a machine out of threads) the
+/// items are done one after the other on this thread.
+///
+/// **Threads that become idle are taken up** (2026-11-04). Within
+/// shared-out work the threads were counted once, when it began: the
+/// panels of the fuel tank's slowest face, started while the other
+/// faces still had every thread, ran on one thread for 18 s after the
+/// others were done. Now the thread that shares the items out starts
+/// another helper, between its own items, whenever a thread of the
+/// machine is idle and enough items are left.
 fn in_order<T: Send>(count: usize, each: usize, work: impl Fn(usize) -> T + Sync) -> Vec<T> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::{Mutex, PoisonError};
         let machine = craft3d_math::available_threads();
-        let room = if SHARING.with(std::cell::Cell::get) {
-            // This thread, and the idle ones.
-            machine
-                .saturating_sub(BUSY.load(Ordering::Relaxed))
-                .saturating_add(1)
-        } else {
-            machine
-        };
-        let threads = room.min(count / each.max(1) + 1).min(count);
+        let nested = SHARING.with(std::cell::Cell::get);
+        let each = each.max(1);
+        let threads = machine.min(count / each + 1).min(count);
         if threads > 1 {
             let next = AtomicUsize::new(0);
             let slots: Vec<Mutex<Option<T>>> = (0..count).map(|_| Mutex::new(None)).collect();
+            // A thread of the machine for one more helper within shared-out
+            // work: counted busy here, before it starts, so that two
+            // sharers do not both take the last idle one.
+            let admit = || {
+                let mut busy = BUSY.load(Ordering::Relaxed);
+                while busy < machine {
+                    match BUSY.compare_exchange_weak(
+                        busy,
+                        busy.saturating_add(1),
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => return true,
+                        Err(now) => busy = now,
+                    }
+                }
+                false
+            };
+            // The items left are worth another thread.
+            let more = || count.saturating_sub(next.load(Ordering::Relaxed)) > each;
             // Each helper's count of work (`craft3d_geom::allowance`) is
             // added to this thread's when it is joined, so the count is the
-            // same however the items were shared out.
-            let run = || {
+            // same however the items were shared out. `admitted`: it was
+            // counted busy when it was let in.
+            let run = |admitted: bool, grow: &dyn Fn()| {
                 let before = craft3d_geom::allowance::spent();
                 let was = SHARING.with(|sharing| sharing.replace(true));
-                if !was {
+                if !was && !admitted {
                     BUSY.fetch_add(1, Ordering::Relaxed);
                 }
                 let _back = Restore(was);
                 loop {
+                    grow();
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some(slot) = slots.get(index) else {
                         break;
@@ -4162,12 +4187,46 @@ fn in_order<T: Send>(count: usize, each: usize, work: impl Fn(usize) -> T + Sync
                 craft3d_geom::allowance::spent().saturating_sub(before)
             };
             std::thread::scope(|scope| {
+                let run = &run;
+                let helpers = Mutex::new(Vec::new());
+                let started = AtomicUsize::new(1);
+                let start = |admitted: bool| {
+                    let helper = std::thread::Builder::new()
+                        .spawn_scoped(scope, move || run(admitted, &|| {}))
+                        .ok();
+                    match helper {
+                        Some(helper) => {
+                            started.fetch_add(1, Ordering::Relaxed);
+                            helpers
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .push(helper);
+                        }
+                        // Not started: the thread let in is not busy.
+                        None if admitted => {
+                            BUSY.fetch_sub(1, Ordering::Relaxed);
+                        }
+                        None => {}
+                    }
+                };
                 // This thread works too; helpers that cannot be started
-                // leave more for it.
-                let helpers: Vec<_> = (1..threads)
-                    .filter_map(|_| std::thread::Builder::new().spawn_scoped(scope, run).ok())
-                    .collect();
-                let _ = run();
+                // leave more for it. Within shared-out work, as many as
+                // are idle now, and one more whenever another thread
+                // becomes idle while items are left.
+                for _ in 1..threads {
+                    if nested && !admit() {
+                        break;
+                    }
+                    start(nested);
+                }
+                let grow = || {
+                    if nested && started.load(Ordering::Relaxed) < threads && more() && admit() {
+                        start(true);
+                    }
+                };
+                let _ = run(false, &grow);
+                let helpers =
+                    std::mem::take(&mut *helpers.lock().unwrap_or_else(PoisonError::into_inner));
                 for helper in helpers {
                     // A panic on a helper leaves its face's slot empty;
                     // that face is done again below, where the panic
