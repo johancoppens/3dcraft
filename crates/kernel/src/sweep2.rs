@@ -110,8 +110,8 @@ use crate::loft::Band;
 use crate::profile::{Curve2, Profile, Segment, Shape, SketchCurve, chain};
 use crate::spline2::{Spline2, distance_to};
 use crate::sweep::{
-    Builder, Form, Map2, Motion, P2, Station, Swept, coedge, part_band, profile_loops, quarters,
-    refuse, stations_of,
+    Builder, Form, Map2, Motion, P2, Station, Swept, coedge, part_band, point_text, profile_loops,
+    quarters, refuse, stations_of,
 };
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::NurbsCurve;
@@ -176,10 +176,6 @@ fn internal() -> KernelError {
         &[],
         "the sweep along two rails lost track of a curve; this is a bug",
     )
-}
-
-fn point_text(p: Vec3) -> String {
-    format!("({}, {}, {})", p.x, p.y, p.z)
 }
 
 /// A direction as the caller gave it, short whatever its size: three
