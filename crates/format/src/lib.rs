@@ -506,7 +506,7 @@ pub fn from_bytes_noted(bytes: &[u8]) -> Result<(Document, Vec<String>), FormatE
     let manifest = entries
         .iter()
         .find(|entry| entry.name == MANIFEST_NAME)
-        .ok_or(FormatError::MissingManifest)?;
+        .ok_or_else(|| foreign(bytes).unwrap_or(FormatError::MissingManifest))?;
     // The bytes of the entries that may be imported files, by hash; only
     // those the manifest names are hashed and read (`read_manifest`).
     let mut raw: BTreeMap<String, (&str, &[u8])> = BTreeMap::new();
@@ -551,15 +551,96 @@ fn foreign(bytes: &[u8]) -> Option<FormatError> {
                    as bodies; 3DCraft writes STEP with `file.export`",
         });
     }
+    const MESH_HINT: &str = "reading meshes into a document is not built yet; \
+                             3DCraft writes STL, 3MF and OBJ with `file.export`";
     if text.starts_with("solid") && text.contains("facet") {
         return Some(FormatError::Foreign {
             kind: "an STL mesh",
-            hint: "reading meshes into a document is not built yet; \
-                   3DCraft writes STL with `file.export`",
+            hint: MESH_HINT,
+        });
+    }
+    // A binary STL: an 80-byte header, a triangle count, 50 bytes per
+    // triangle (2026-11-04: before, it was called a broken ZIP archive).
+    if let Some(count) = bytes.get(80..84) {
+        let count = u32::from_le_bytes([
+            count.first().copied().unwrap_or(0),
+            count.get(1).copied().unwrap_or(0),
+            count.get(2).copied().unwrap_or(0),
+            count.get(3).copied().unwrap_or(0),
+        ]);
+        let expected = u64::from(count).saturating_mul(50).saturating_add(84);
+        if count > 0 && u64::try_from(bytes.len()).ok() == Some(expected) {
+            return Some(FormatError::Foreign {
+                kind: "an STL mesh",
+                hint: MESH_HINT,
+            });
+        }
+    }
+    // A ZIP archive of another program's: a 3MF mesh, a FreeCAD document.
+    if bytes.starts_with(b"PK\x03\x04") {
+        let has = |name: &[u8]| bytes.windows(name.len()).take(1 << 20).any(|w| w == name);
+        if has(b"3D/3dmodel.model") {
+            return Some(FormatError::Foreign {
+                kind: "a 3MF mesh",
+                hint: MESH_HINT,
+            });
+        }
+        if has(b"Document.xml") {
+            return Some(FormatError::Foreign {
+                kind: "a FreeCAD document",
+                hint: "import it into a document with `file.import`, which reads its \
+                       solids as bodies",
+            });
+        }
+        return None;
+    }
+    let lines = || text.lines().map(str::trim).filter(|l| !l.is_empty());
+    if lines()
+        .take(40)
+        .any(|l| l.starts_with("v ") || l.starts_with("f "))
+        && lines().take(40).all(|l| {
+            l.starts_with('#')
+                || l.split_whitespace()
+                    .next()
+                    .is_some_and(|w| OBJ_WORDS.contains(&w))
+        })
+    {
+        return Some(FormatError::Foreign {
+            kind: "an OBJ mesh",
+            hint: MESH_HINT,
+        });
+    }
+    if text.starts_with("<?xml") || text.starts_with("<svg") {
+        if text.contains("<svg") {
+            return Some(FormatError::Foreign {
+                kind: "an SVG drawing",
+                hint: "3DCraft writes SVG with `file.export`; to draw from one, trace it \
+                       in a sketch",
+            });
+        }
+        return None;
+    }
+    let mut first = lines();
+    if first.next() == Some("0") && first.next() == Some("SECTION") {
+        return Some(FormatError::Foreign {
+            kind: "a DXF drawing",
+            hint: "3DCraft writes DXF with `file.export`; to draw from one, trace it \
+                   in a sketch",
+        });
+    }
+    if bytes.starts_with(b"\x89PNG") {
+        return Some(FormatError::Foreign {
+            kind: "a PNG picture",
+            hint: "open a .3dcraft, .3dcraftjig or .3dcraftasm file",
         });
     }
     None
 }
+
+/// The first words of the lines of an OBJ file.
+const OBJ_WORDS: &[&str] = &[
+    "v", "vt", "vn", "vp", "f", "l", "p", "o", "g", "s", "mtllib", "usemtl",
+];
 
 /// A short description of a JSON value for an error message: hostile files
 /// do not get to put megabytes into it.

@@ -73,7 +73,9 @@ mod verify;
 pub use contact::{
     Contact, ContactKind, Interference, MAX_CONTACT_POINTS, common_volume, contact, interference,
 };
-pub use freeform::{HELD_TOGETHER, held_together, release_unused, shelf_size};
+pub use freeform::{
+    HELD_TOGETHER, held_keys, held_together, release_unheld, release_unused, shelf_size,
+};
 pub(crate) use hits::speed_bound;
 pub use knit::sew_sheets;
 pub use verify::{Verification, VerifyOptions, Violation, VolumeRule, Volumes, verify};

@@ -14,7 +14,9 @@ pub mod below;
 mod blend;
 pub mod boolean;
 mod boxtree;
-pub use boolean::{HELD_TOGETHER, held_together, release_unused, shelf_size};
+pub use boolean::{
+    HELD_TOGETHER, held_keys, held_together, release_unheld, release_unused, shelf_size,
+};
 pub mod chamfer;
 pub mod delete_face;
 pub mod developable;
@@ -730,6 +732,12 @@ fn short(value: f64) -> String {
     } else {
         text
     }
+}
+
+/// A number as a message to a person says it (see `short`): at most nine
+/// significant digits, so 0.7999999999999998 reads 0.8.
+pub fn short_number(value: f64) -> String {
+    short(value)
 }
 
 /// What [`KernelError::FilletSpindle`] says, its sizes followed by
