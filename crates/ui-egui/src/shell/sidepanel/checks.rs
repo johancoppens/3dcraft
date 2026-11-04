@@ -1,6 +1,7 @@
 //! The checks under the feature list (plan of 2026-11-02, boards 01 and
 //! 12): a header that folds them (`Checks 7 · all pass`, `1 failing`),
-//! then a row per check, measured against its limit (`7 mm  ≥ 5 mm`) with
+//! then a row per check with its measure (`7 mm`; the limit beside it, `≥ 5 mm`,
+//! while it does not pass, and in the tooltip) and
 //! a dot that carries a tick or a cross, so the state does not hang on
 //! colour alone. A failing check is a red row with its reason under it. A
 //! click on a check flies to what it measures. While something is
@@ -46,34 +47,34 @@ impl Shell {
     /// The checks as the list shows them, and the header's note
     /// (`all pass`, `1 failing`).
     pub fn side_checks(&self) -> (Vec<CheckLine>, String) {
-        let lines: Vec<CheckLine> =
-            self.assertion_rows
-                .iter()
-                .map(|a| {
-                    let status = match a.status {
-                        A::Passed => CheckStatus::Passed,
-                        A::Failed | A::Error => CheckStatus::Failed,
-                        A::NotProven => CheckStatus::NotProven,
-                        A::Pending => CheckStatus::Pending,
-                        A::Inactive => CheckStatus::Off,
-                    };
-                    CheckLine {
-                        name: a.name.clone(),
-                        measured: a.measured.as_deref().map(compact).unwrap_or_else(
-                            || match status {
-                                CheckStatus::Pending => "measuring".to_string(),
-                                CheckStatus::Off => "off".to_string(),
-                                _ => "—".to_string(),
-                            },
-                        ),
-                        limit: a.expected.clone(),
-                        status,
-                        // Which step made it fail is not known yet: its reason.
-                        note: matches!(status, CheckStatus::Failed | CheckStatus::NotProven)
-                            .then(|| a.message.clone()),
-                    }
-                })
-                .collect();
+        let lines: Vec<CheckLine> = self
+            .assertion_rows
+            .iter()
+            .map(|a| {
+                let status = match a.status {
+                    A::Passed => CheckStatus::Passed,
+                    A::Failed | A::Error => CheckStatus::Failed,
+                    A::NotProven => CheckStatus::NotProven,
+                    A::Pending => CheckStatus::Pending,
+                    A::Inactive => CheckStatus::Off,
+                };
+                CheckLine {
+                    name: a.name.clone(),
+                    measured: a.measured.as_deref().map(measured_text).unwrap_or_else(|| {
+                        match status {
+                            CheckStatus::Pending => "measuring".to_string(),
+                            CheckStatus::Off => "off".to_string(),
+                            _ => "—".to_string(),
+                        }
+                    }),
+                    limit: pretty_units(&compact_all(&a.expected)),
+                    status,
+                    // Which step made it fail is not known yet: its reason.
+                    note: matches!(status, CheckStatus::Failed | CheckStatus::NotProven)
+                        .then(|| a.message.clone()),
+                }
+            })
+            .collect();
         let failing = lines
             .iter()
             .filter(|l| l.status == CheckStatus::Failed)
@@ -245,47 +246,77 @@ impl Shell {
                     let x0 = rect.left() + t.nav_spacing * 2.0 + if failing { 4.0 } else { 0.0 };
                     status_dot(painter, &kit, pos2(x0 + r, y), r, dot);
                     let text_x = x0 + 2.0 * r + t.nav_icon_gap + 2.0;
-                    // At the right: the limit, and the measure before it,
-                    // each cut to its share of the row so the name keeps
-                    // room of its own (a long expected value never runs
-                    // over the name and the icon).
+                    // At the right the measure, whole; the limit beside
+                    // it only while the check does not pass (in the
+                    // tooltip always). The name gives way first, down to
+                    // a share of its own; only then is the measure cut.
                     let right = rect.right() - 2.0;
                     let room = (right - text_x).max(0.0);
-                    let cut = |text: String, ink, share: f32| {
+                    let galley =
+                        |text: String, ink| painter.layout_no_wrap(text, kit.font(), kit.c(ink));
+                    let measured_ink = if failing { sk.failed } else { sk.text };
+                    let show_limit = !line.limit.is_empty()
+                        && matches!(line.status, CheckStatus::Failed | CheckStatus::NotProven);
+                    let gap = t.nav_icon_gap * 1.5;
+                    let widths = check_columns(
+                        room,
+                        gap,
+                        galley(line.name.clone(), sk.text).size().x,
+                        galley(line.measured.clone(), measured_ink).size().x,
+                        if show_limit {
+                            galley(line.limit.clone(), sk.text_dim).size().x
+                        } else {
+                            0.0
+                        },
+                    );
+                    let cut = |text: String, ink, width: f32| {
                         let mut job =
                             egui::text::LayoutJob::simple_singleline(text, kit.font(), kit.c(ink));
-                        job.wrap =
-                            egui::text::TextWrapping::truncate_at_width((room * share).max(1.0));
+                        job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(1.0));
                         painter.layout_job(job)
                     };
-                    let limit = cut(compact_all(&line.limit), sk.text_dim, 0.32);
-                    let limit_w = limit.size().x;
+                    let mut x = right;
+                    if widths.limit > 0.0 {
+                        let limit = cut(line.limit.clone(), sk.text_dim, widths.limit);
+                        x -= limit.size().x;
+                        painter.galley(
+                            pos2(x, y - limit.size().y * 0.5),
+                            limit,
+                            kit.c(sk.text_dim),
+                        );
+                        x -= gap;
+                    }
+                    let measured = cut(line.measured.clone(), measured_ink, widths.measured);
+                    x -= measured.size().x;
                     painter.galley(
-                        pos2(right - limit_w, y - limit.size().y * 0.5),
-                        limit,
-                        kit.c(sk.text_dim),
-                    );
-                    let measured_ink = if failing { sk.failed } else { sk.text };
-                    let measured = cut(line.measured.clone(), measured_ink, 0.26);
-                    let measured_x = right - limit_w - t.nav_icon_gap * 1.5 - measured.size().x;
-                    painter.galley(
-                        pos2(measured_x, y - measured.size().y * 0.5),
+                        pos2(x, y - measured.size().y * 0.5),
                         measured,
                         kit.c(measured_ink),
                     );
-                    let mut job = egui::text::LayoutJob::simple_singleline(
-                        line.name.clone(),
-                        kit.font(),
-                        kit.c(sk.text),
-                    );
-                    job.wrap = egui::text::TextWrapping::truncate_at_width(
-                        (measured_x - t.nav_icon_gap - text_x).max(0.0),
-                    );
-                    let name = painter.layout_job(job);
+                    let name = cut(line.name.clone(), sk.text, widths.name);
                     painter.galley(pos2(text_x, y - name.size().y * 0.5), name, kit.c(sk.text));
+                    let mut tip = line.name.clone();
+                    tip.push_str(": ");
+                    tip.push_str(&line.measured);
+                    if !line.limit.is_empty() {
+                        tip.push_str(&format!(" (must be {})", line.limit));
+                    }
                     if let Some(note) = &line.note {
+                        tip.push('\n');
+                        tip.push_str(note);
+                    }
+                    let response = response.on_hover_text(tip);
+                    if let Some(note) = &line.note {
+                        // The limit that had no room beside the measure
+                        // goes under it, where the reason would repeat the
+                        // measure (the reason is in the tooltip).
+                        let note = if widths.limit == 0.0 && !line.limit.is_empty() {
+                            format!("must be {}", line.limit)
+                        } else {
+                            note.clone()
+                        };
                         let mut job = egui::text::LayoutJob::simple_singleline(
-                            note.clone(),
+                            note,
                             kit.font(),
                             kit.c(sk.failed),
                         );
@@ -368,6 +399,72 @@ pub fn compact(text: &str) -> String {
     }
 }
 
+/// A check's measure as its row shows it, whole: what comes before a
+/// parenthesis, to five significant digits and at most four decimals
+/// (`6491.20578 mm^3` is `6491.2 mm³`, `0.302732308 kg` is `0.3027 kg`),
+/// powers of units written as superscripts.
+pub fn measured_text(text: &str) -> String {
+    let head = text.split(" (").next().unwrap_or(text).trim();
+    let (number, rest) = head.split_once(' ').unwrap_or((head, ""));
+    let Ok(v) = number.parse::<f64>() else {
+        return pretty_units(head);
+    };
+    if !v.is_finite() {
+        return pretty_units(head);
+    }
+    let magnitude = if v == 0.0 { 0 } else { v.abs().log10_floor() };
+    let decimals = (4 - magnitude).clamp(0, 4) as usize;
+    let mut n = format!("{v:.decimals$}");
+    if n.contains('.') {
+        n = n.trim_end_matches('0').trim_end_matches('.').to_string();
+    }
+    if n == "-0" {
+        n = "0".to_string();
+    }
+    if rest.is_empty() {
+        n
+    } else {
+        format!("{n} {}", pretty_units(rest))
+    }
+}
+
+/// Unit powers as superscripts: `mm^3` is `mm³`, `kg mm^2` is `kg mm²`.
+pub fn pretty_units(text: &str) -> String {
+    text.replace("^2", "²")
+        .replace("^3", "³")
+        .replace("^-1", "⁻¹")
+}
+
+/// How wide each part of a check's row may be drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CheckColumns {
+    pub name: f32,
+    pub measured: f32,
+    pub limit: f32,
+}
+
+/// The widths of a check's row in `room` (parts `gap` apart) for a name,
+/// a measure and a limit (0: none) of these natural widths: the measure
+/// and the limit whole while they fit beside at least a share of the
+/// name; else the limit goes first, then the measure is cut, the name
+/// keeping its share. The name takes what is left.
+pub fn check_columns(room: f32, gap: f32, name: f32, measured: f32, limit: f32) -> CheckColumns {
+    let room = room.max(0.0);
+    // The least the name keeps before the numbers give way.
+    let name_least = name.min(room * 0.4);
+    let mut limit = limit;
+    if limit > 0.0 && measured + gap + limit + gap + name_least > room {
+        limit = 0.0;
+    }
+    let measured = measured.min((room - gap - name_least).max(0.0));
+    let used = (measured + if limit > 0.0 { gap + limit } else { 0.0 }).min(room);
+    CheckColumns {
+        name: (room - used - gap).max(0.0),
+        measured,
+        limit,
+    }
+}
+
 /// Every number of `text` written short as [`compact`] writes a measure
 /// (`491.20578 mm^3 ± 0.00649120578` is `491.2 mm^3 ± 0.006491`).
 pub fn compact_all(text: &str) -> String {
@@ -443,6 +540,39 @@ mod tests {
         assert_eq!(compact("22.0001 mm"), "22 mm");
         assert_eq!(compact("true"), "true");
         assert_eq!(compact("12345.6 mm"), "12346 mm");
+    }
+
+    #[test]
+    fn a_check_shows_its_measure_whole_to_five_digits() {
+        assert_eq!(measured_text("6491.20578 mm^3"), "6491.2 mm³");
+        assert_eq!(measured_text("7 mm"), "7 mm");
+        assert_eq!(measured_text("5.5 mm"), "5.5 mm");
+        assert_eq!(measured_text("0.302732308 kg"), "0.3027 kg");
+        assert_eq!(measured_text("123456.7 mm"), "123457 mm");
+        assert_eq!(measured_text("58 mm (at most 58.0035698 mm)"), "58 mm");
+        assert_eq!(measured_text("true"), "true");
+        assert_eq!(measured_text("-0.00001 mm"), "0 mm");
+    }
+
+    #[test]
+    fn a_check_row_cuts_the_name_before_the_measure() {
+        // Room for all: each whole.
+        let c = check_columns(230.0, 6.0, 60.0, 70.0, 0.0);
+        assert_eq!((c.measured, c.limit), (70.0, 0.0));
+        assert!(c.name >= 60.0);
+        // A long name gives way; the measure stays whole.
+        let c = check_columns(230.0, 6.0, 200.0, 70.0, 0.0);
+        assert_eq!(c.measured, 70.0);
+        assert!((c.name - (230.0 - 70.0 - 6.0)).abs() < 1e-3);
+        // A failing check's limit goes before the measure is cut.
+        let c = check_columns(230.0, 6.0, 120.0, 70.0, 120.0);
+        assert_eq!((c.measured, c.limit), (70.0, 0.0));
+        let c = check_columns(230.0, 6.0, 40.0, 70.0, 90.0);
+        assert_eq!((c.measured, c.limit), (70.0, 90.0));
+        // Only a measure wider than the room less the name's share is cut.
+        let c = check_columns(100.0, 6.0, 80.0, 90.0, 0.0);
+        assert!((c.measured - (100.0 - 6.0 - 40.0)).abs() < 1e-3);
+        assert!(c.name >= 39.0);
     }
 
     #[test]
