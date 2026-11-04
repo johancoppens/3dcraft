@@ -351,7 +351,7 @@ fn holes_across_the_bends_of_a_part_with_a_trimmed_bend() {
             } else {
                 (len - 3.0 * k, len - 1.5 * k)
             };
-            let (s0, s1) = (-1.0 * k, ba + 1.0 * k);
+            let (s0, s1) = (-k, ba + k);
             cutouts.push(quad(
                 30,
                 [at(b, u0, s0), at(b, u1, s0), at(b, u1, s1), at(b, u0, s1)],

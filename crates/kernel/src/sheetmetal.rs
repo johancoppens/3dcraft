@@ -4459,6 +4459,17 @@ type Ends = Vec<(EdgeId, Surface)>;
 
 /// The folded bottom skin: a planar face per flat, a cylindrical one per
 /// bend, sharing the tangent lines' edges; and the extensions' ends.
+/// The folded sheet: its body, per face what it is, the extensions' ends
+/// (with the planes their rims lie on), per edge what it is, and the holes'
+/// pieces straight across sharp bends.
+type SheetOut = (
+    Body,
+    Vec<SheetFace>,
+    Ends,
+    Vec<EdgeKey>,
+    Vec<sharp::SharpSide>,
+);
+
 fn folded_sheet(
     spec: &Spec,
     flats: &[Flat],
@@ -4466,16 +4477,7 @@ fn folded_sheet(
     cuts: &[Cut],
     tolerance: &Tolerance,
     checked: bool,
-) -> Result<
-    (
-        Body,
-        Vec<SheetFace>,
-        Ends,
-        Vec<EdgeKey>,
-        Vec<sharp::SharpSide>,
-    ),
-    KernelError,
-> {
+) -> Result<SheetOut, KernelError> {
     if !cuts.is_empty() {
         return cuts::folded_sheet(&spec.plane, flats, bends, cuts, tolerance, checked);
     }

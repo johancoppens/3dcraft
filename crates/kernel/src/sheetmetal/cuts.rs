@@ -1093,16 +1093,7 @@ pub(super) fn folded_sheet(
     cuts: &[Cut],
     tolerance: &Tolerance,
     checked: bool,
-) -> Result<
-    (
-        Body,
-        Vec<SheetFace>,
-        Ends,
-        Vec<EdgeKey>,
-        Vec<super::sharp::SharpSide>,
-    ),
-    KernelError,
-> {
+) -> Result<super::SheetOut, KernelError> {
     let tol = tolerance.linear;
     let mut found = analyse(flats, bends, cuts, tolerance)?;
     let sides = std::mem::take(&mut found.sides);

@@ -459,10 +459,8 @@ fn sharp_cut(part: &Part, body: &Body, tol: f64) -> Vec<usize> {
                 || vertices(body, face)
                     .iter()
                     .any(|p| !theirs.iter().any(|q| q.distance(*p) <= tol));
-            if changed {
-                if let Some((b, _)) = part.joined_face(*code) {
-                    bends.insert(b);
-                }
+            if changed && let Some((b, _)) = part.joined_face(*code) {
+                bends.insert(b);
             }
         }
     }
