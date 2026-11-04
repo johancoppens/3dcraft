@@ -293,3 +293,31 @@ fn finished(
     };
     Ok((swept.body, names, report))
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    /// Every kernel error of a sweep comes back after the same prefix,
+    /// the path's sketch named, whatever its kind: a sweep's own refusal
+    /// and any other error alike (before, any other said only `path: `).
+    #[test]
+    fn every_kernel_error_of_a_sweep_names_its_path() {
+        let ids = CurveIds::default();
+        let prefix = "path: sketch `Route`: ";
+        let own = KernelError::Sweep {
+            curves: vec![],
+            reason: "the bend is too tight".into(),
+        };
+        assert_eq!(
+            reason_of(&own, prefix, &ids),
+            "path: sketch `Route`: the bend is too tight"
+        );
+        let other = KernelError::NoProfile;
+        assert_eq!(
+            reason_of(&other, prefix, &ids),
+            format!("path: sketch `Route`: {other}")
+        );
+    }
+}
