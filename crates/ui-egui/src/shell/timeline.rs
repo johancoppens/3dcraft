@@ -21,9 +21,8 @@
 
 use super::Shell;
 use super::views::FlyTo;
-use crate::theme::{Tokens, color};
+use crate::theme::color;
 use craft3d_engine::{MotionView, Scene, ScrubPosition, Session};
-use egui::{Color32, Pos2, Sense, Shape, Stroke, vec2};
 use serde_json::{Value, json};
 
 /// The status of a row after the step the scrubbed view shows.
@@ -566,63 +565,6 @@ impl Shell {
                 .wrap(),
             );
         }
-    }
-}
-
-/// The eye of a row: open while the feature is shown, struck through while
-/// it is hidden. Clicked to switch.
-pub(crate) fn eye(ui: &mut egui::Ui, hidden: bool, tokens: &Tokens) -> egui::Response {
-    let side = ui.spacing().interact_size.y.max(12.0);
-    let (rect, response) = ui.allocate_exact_size(vec2(side, side), Sense::click());
-    let ink = if response.hovered() {
-        color(tokens.text)
-    } else if hidden {
-        color(tokens.inactive)
-    } else {
-        color(tokens.text_dim)
-    };
-    paint_eye(ui.painter(), rect, ink, hidden, tokens);
-    response.on_hover_text(if hidden {
-        "Hidden in the view: click to show it"
-    } else {
-        "Click to hide it in the view (the model does not change)"
-    })
-}
-
-/// An eye in `rect`: two arcs and a pupil, and a stroke across it when
-/// `hidden`.
-fn paint_eye(
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    ink: Color32,
-    hidden: bool,
-    tokens: &Tokens,
-) {
-    let half = rect.width().min(rect.height()) * 0.42;
-    if !(half.is_finite() && half > 0.0) {
-        return;
-    }
-    let c = rect.center();
-    let p = |x: f32, y: f32| -> Pos2 { c + vec2(x, y) * half };
-    let stroke = Stroke::new(tokens.nav_icon_width.max(1.0), ink);
-    // The lids: arcs through the corners at (±1, 0), as polylines.
-    let lid = |sign: f32| -> Vec<Pos2> {
-        (0..=12)
-            .map(|k| {
-                let x = -1.0 + 2.0 * (k as f32) / 12.0;
-                p(x, sign * 0.55 * (1.0 - x * x))
-            })
-            .collect()
-    };
-    painter.add(Shape::line(lid(-1.0), stroke));
-    painter.add(Shape::line(lid(1.0), stroke));
-    if hidden {
-        painter.add(Shape::line_segment(
-            [p(-0.85, 0.75), p(0.85, -0.75)],
-            stroke,
-        ));
-    } else {
-        painter.add(Shape::circle_filled(c, half * 0.28, ink));
     }
 }
 

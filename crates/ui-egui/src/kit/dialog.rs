@@ -148,8 +148,8 @@ impl Kit {
             }
             ui.spacing_mut().item_spacing.y = t.nav_spacing * 2.0;
             // The title row: icon, title, ×.
-            let title_font = egui::FontId::new(t.dialog_title_font, heading_family(ui));
-            let galley = kit.galley(ui, dialog.title, title_font, s.text);
+            let title_font = kit.title_font(ui);
+            let galley = kit.galley(ui, dialog.title, title_font.clone(), s.text);
             let height = galley.size().y.max(t.control_height);
             let (row, _) =
                 ui.allocate_exact_size(sane(vec2(ui.available_width(), height)), Sense::hover());
@@ -172,7 +172,7 @@ impl Kit {
             let shown = if galley.size().x > room {
                 let mut job = egui::text::LayoutJob::simple_singleline(
                     dialog.title.to_string(),
-                    egui::FontId::new(t.dialog_title_font, heading_family(ui)),
+                    title_font.clone(),
                     color(s.text),
                 );
                 job.wrap = egui::text::TextWrapping::truncate_at_width(room.max(1.0));
@@ -353,12 +353,4 @@ impl Kit {
             .inner
             .on_hover_text(text)
     }
-}
-
-/// The headings' family where the fonts in force have one (Semi Bold).
-fn heading_family(ui: &Ui) -> egui::FontFamily {
-    ui.style()
-        .text_styles
-        .get(&egui::TextStyle::Heading)
-        .map_or(egui::FontFamily::Proportional, |font| font.family.clone())
 }

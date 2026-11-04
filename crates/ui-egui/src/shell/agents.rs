@@ -1072,6 +1072,7 @@ mod tests {
             last_command: command.map(str::to_string),
             last_ms: at,
             cwd: None,
+            key: None,
         }
     }
 

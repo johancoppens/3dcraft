@@ -3252,9 +3252,11 @@ impl Shell {
                 width: Some(label_width),
                 ..StatusItem::fixed(StatusSlot::Command, label, color(tint))
             });
+            // A failure's message in the failure's ink too (board s3).
+            let answer_ink = if ok { dim } else { color(tokens.chrome_failed) };
             items.push(StatusItem {
                 width: Some(answer_width),
-                ..StatusItem::elided(StatusSlot::Answer, answer, dim)
+                ..StatusItem::elided(StatusSlot::Answer, answer, answer_ink)
             });
         }
         if let Some(text) = self.calm.work_shown.clone() {
@@ -3357,7 +3359,7 @@ impl Shell {
             .is_some_and(|r| !r.ok)
             .then(|| self.copy_label());
         let copy_width = copy.map_or(0.0, |label| {
-            measure(label) + 2.0 * ui.spacing().button_padding.x + tokens.status_gap
+            measure(label) + tokens.chip_height + tokens.status_gap
         });
         let widths = fit_status((available - copy_width).max(0.0), tokens.status_gap, &fits);
         // The items on the right, with the gaps between them: the room
@@ -3381,8 +3383,9 @@ impl Shell {
             let mut copy_button = |ui: &mut egui::Ui, used: &mut f32| {
                 if let Some(label) = copy {
                     ui.add_space(tokens.status_gap);
-                    let response = ui
-                        .add(egui::Button::new(label))
+                    // A dark chip of the kit on the black bar (board s3).
+                    let response = crate::kit::Kit::plate(&tokens)
+                        .chip(ui, label, crate::kit::ChipKind::Plain)
                         .on_hover_text(report::COPY_TOOLTIP);
                     copy_clicked |= response.clicked();
                     copy_rect = Some(response.rect);
@@ -3715,180 +3718,147 @@ impl Shell {
                         bottom: 0,
                     })
                     .show(ui, |ui| {
-                        for row in &self.rows {
-                            let tint = match row.state {
-                                FeatureState::Ok => tokens.ok,
-                                FeatureState::Failed => tokens.failed,
+                        // Boards w2 and t1: a status row, then sections
+                        // that fold, with their counts, of the kit's rows.
+                        let kit = crate::kit::Kit::panel(&tokens);
+                        if let Some(outline) = &outline {
+                            assembly_status(ui, &kit, outline);
+                        }
+                        let title = if outline.is_some() {
+                            "Instances"
+                        } else {
+                            "Features"
+                        };
+                        let mut open = !self.state.side_panel.is_open("instances-folded");
+                        if kit
+                            .fold_header(ui, &mut open, title, Some(self.rows.len()), None)
+                            .changed()
+                        {
+                            self.state.side_panel.set_open("instances-folded", !open);
+                        }
+                        for row in self.rows.iter().filter(|_| open) {
+                            let failed = row.state == FeatureState::Failed;
+                            let dimmed = matches!(
+                                row.state,
                                 FeatureState::Suppressed
-                                | FeatureState::Inactive
-                                | FeatureState::RolledBack => tokens.inactive,
+                                    | FeatureState::Inactive
+                                    | FeatureState::RolledBack
+                            );
+                            let hover = match &row.error {
+                                Some(error) => error.clone(),
+                                None => format!("{} · {}", row.kind, row.status),
                             };
-                            let mark = tree_mark(row.state);
-                            let mut name = egui::RichText::new(&row.name);
-                            match row.state {
-                                FeatureState::Ok => {}
-                                FeatureState::Failed => name = name.color(color(tokens.failed)),
-                                FeatureState::Suppressed => {
-                                    name = name.color(color(tokens.inactive)).strikethrough();
+                            let icon = match row.kind {
+                                "subassembly" => crate::kit::Glyph::Assembly,
+                                "instance" => crate::kit::Glyph::Part,
+                                kind => crate::kit::Glyph::for_feature(kind, None),
+                            };
+                            let row_hovered = ui.rect_contains_pointer(egui::Rect::from_min_size(
+                                ui.cursor().min,
+                                egui::vec2(ui.available_width(), kit.hit(tokens.row_height)),
+                            ));
+                            // The eye of an instance of the assembly's own,
+                            // or of a feature (not in a Jig in use).
+                            let eye = if outline.is_some() {
+                                row.instance.is_some()
+                            } else {
+                                !in_use
+                            };
+                            let hits_of = kit.list_row_hits(
+                                ui,
+                                crate::kit::ListRow::new(&row.name)
+                                    .icon(icon)
+                                    .value(&row.status)
+                                    .selected(row.selected || row.made_selection)
+                                    .failed(failed)
+                                    .dimmed(dimmed)
+                                    .indent(row.depth.min(8) as u8)
+                                    .eye(eye && (row.hidden || row_hovered))
+                                    .hidden(row.hidden)
+                                    .zoom(row.zoomable && row_hovered),
+                            );
+                            let label = hits_of.response.clone().on_hover_text(&hover);
+                            // Open: its source in a tab of its own, a quiet
+                            // icon before the eye, under the pointer.
+                            if let Some(instance) = &row.instance {
+                                let side = kit.hit(tokens.row_height);
+                                let right =
+                                    hits_of.eye.map_or(label.rect.right(), |eye| eye.left()) - 2.0;
+                                let place = egui::Rect::from_min_max(
+                                    egui::pos2(right - side, label.rect.top()),
+                                    egui::pos2(right, label.rect.bottom()),
+                                );
+                                if row_hovered {
+                                    let open = ui
+                                        .scope_builder(
+                                            egui::UiBuilder::new().max_rect(place),
+                                            |ui| {
+                                                kit.icon_button(
+                                                    ui,
+                                                    crate::kit::Glyph::External,
+                                                    false,
+                                                    "Open",
+                                                )
+                                            },
+                                        )
+                                        .inner
+                                        .on_hover_text("Open its source in a tab of its own");
+                                    if open.clicked() {
+                                        open_instance = Some(instance.clone());
+                                    }
                                 }
-                                // Off by its condition: greyed, not struck
-                                // through (nobody switched it off by hand).
-                                FeatureState::Inactive => {
-                                    name = name.color(color(tokens.inactive));
-                                }
-                                FeatureState::RolledBack => {
-                                    name = name.color(color(tokens.inactive)).italics()
+                                instance_drawn.push((instance.clone(), "open", place));
+                                if let Some(eye) = hits_of.eye {
+                                    instance_drawn.push((instance.clone(), "eye", eye));
                                 }
                             }
-                            // What it passes on, from the regeneration: a
-                            // body, or none and why, and what it left out.
-                            let passes = row.passes.as_deref().unwrap_or("");
-                            let hover = match (&row.error, row.state) {
-                                (Some(error), _) => error.clone(),
-                                (None, FeatureState::Suppressed) => {
-                                    format!("Suppressed: not built. {passes}")
-                                        .trim_end()
-                                        .to_string()
-                                }
-                                (None, FeatureState::Inactive) => format!(
-                                    "Inactive: its condition {} is 0; not built. {passes}",
-                                    row.when.as_deref().unwrap_or("")
-                                )
-                                .trim_end()
-                                .to_string(),
-                                (None, FeatureState::Ok) if !passes.is_empty() => {
-                                    format!("{} · {} · {passes}", row.kind, row.status)
-                                }
-                                (None, FeatureState::RolledBack)
-                                    if row.status == timeline::AFTER_SCRUB =>
-                                {
-                                    "After the step the timeline shows: not shown now.".to_string()
-                                }
-                                (None, FeatureState::RolledBack) => {
-                                    "Rolled back: after the rollback marker, not built.".to_string()
-                                }
-                                (None, _) => format!("{} · {}", row.kind, row.status),
-                            };
-                            ui.horizontal(|ui| {
-                                // Nested in its subassembly.
-                                if row.depth > 0 {
-                                    ui.add_space(row.depth.min(8) as f32 * tokens.inset);
-                                }
-                                ui.colored_label(color(tint), mark).on_hover_text(&hover);
-                                // The eye, Open and the zoom icon against the
-                                // right edge, laid out first so a long name
-                                // never pushes them out of the panel.
-                                let row_hovered = ui.rect_contains_pointer(ui.max_rect());
-                                let trailing = egui::Layout::right_to_left(egui::Align::Center);
-                                ui.with_layout(trailing, |ui| {
-                                    // A Jig in use is looked at, not changed.
-                                    if outline.is_some() {
-                                        // An assembly's own instance: shown or
-                                        // hidden, and opened in a tab of its own.
-                                        if let Some(instance) = &row.instance {
-                                            let open = ui.small_button("Open").on_hover_text(
-                                                "Open its source in a tab of its own",
-                                            );
-                                            instance_drawn.push((
-                                                instance.clone(),
-                                                "open",
-                                                open.rect,
-                                            ));
-                                            if open.clicked() {
-                                                open_instance = Some(instance.clone());
-                                            }
-                                            let eye = timeline::eye(ui, row.hidden, &tokens);
-                                            instance_drawn.push((
-                                                instance.clone(),
-                                                "eye",
-                                                eye.rect,
-                                            ));
-                                            if eye.clicked() {
-                                                instance_eye = Some((instance.clone(), row.hidden));
-                                            }
-                                        }
-                                    } else if !in_use
-                                        && timeline::eye(ui, row.hidden, &tokens).clicked()
-                                    {
-                                        eye_clicked = Some((row.id.clone(), row.hidden));
-                                    }
-                                    if let Some(icon) =
-                                        views::zoom_icon(ui, row.zoomable, row_hovered, &tokens)
-                                    {
-                                        zooms_drawn.push((row.id.clone(), icon.rect));
-                                        if icon.clicked() {
-                                            double = Some(row.id.clone());
-                                        }
-                                    }
-                                    let leading = egui::Layout::left_to_right(egui::Align::Center);
-                                    ui.with_layout(leading, |ui| {
-                                        // A long name is cut to the room left
-                                        // (the whole name on hover), never
-                                        // widening the panel; the status
-                                        // keeps its room after it.
-                                        let status = format!("{} · {}", row.kind, row.status);
-                                        let (name_room, _) = name_and_status_room(ui, &status);
-                                        let label = in_room(ui, name_room, |ui| {
-                                            ui.add(
-                                                egui::Button::selectable(
-                                                    row.selected || row.made_selection,
-                                                    name,
-                                                )
-                                                .truncate(),
-                                            )
-                                        })
-                                        .on_hover_text(&hover);
-                                        // A row of an instance inside a rigid
-                                        // subassembly has no body of its own.
-                                        let selectable = !row.id.is_empty();
-                                        if selectable {
-                                            rows_drawn.push((row.id.clone(), label.rect));
-                                        }
-                                        // The second click of a double click is a
-                                        // click too: the double click wins, and
-                                        // does nothing on a row that cannot be
-                                        // flown to.
-                                        if !selectable {
-                                        } else if label.double_clicked() {
-                                            if row.zoomable {
-                                                double = Some(row.id.clone());
-                                            }
-                                        } else if label.clicked() {
-                                            clicked = Some(row.id.clone());
-                                        }
-                                        if scroll_to.as_deref() == Some(row.id.as_str()) {
-                                            // Only as far as it takes (a row in
-                                            // view stays), and at once: the list
-                                            // follows a click in the viewport, it
-                                            // does not glide.
-                                            label.scroll_to_me_animation(
-                                                None,
-                                                egui::style::ScrollAnimation::none(),
-                                            );
-                                        }
-                                        ui.add(
-                                            egui::Label::new(
-                                                egui::RichText::new(format!(
-                                                    "{} · {}",
-                                                    row.kind, row.status
-                                                ))
-                                                .color(dim),
-                                            )
-                                            .truncate(),
-                                        );
-                                        // A condition: a small mark, the
-                                        // expression on hover.
-                                        if let Some(when) = &row.when {
-                                            ui.colored_label(
-                                                dim,
-                                                egui::RichText::new("when")
-                                                    .size(tokens.secondary_font),
-                                            )
-                                            .on_hover_text(format!("Built when {when} is not 0"));
-                                        }
-                                    });
-                                });
+                            let eye_hit = hits_of.eye.is_some_and(|eye| {
+                                label.clicked()
+                                    && label
+                                        .interact_pointer_pos()
+                                        .is_some_and(|p| eye.contains(p))
                             });
+                            let zoom_hit = hits_of.zoom.is_some_and(|zoom| {
+                                label.clicked()
+                                    && label
+                                        .interact_pointer_pos()
+                                        .is_some_and(|p| zoom.contains(p))
+                            });
+                            if let Some(zoom) = hits_of.zoom {
+                                zooms_drawn.push((row.id.clone(), zoom));
+                            }
+                            if eye_hit {
+                                if let Some(instance) = &row.instance {
+                                    instance_eye = Some((instance.clone(), row.hidden));
+                                } else {
+                                    eye_clicked = Some((row.id.clone(), row.hidden));
+                                }
+                                continue;
+                            }
+                            if zoom_hit {
+                                double = Some(row.id.clone());
+                                continue;
+                            }
+                            // A row of an instance inside a rigid
+                            // subassembly has no body of its own.
+                            let selectable = !row.id.is_empty();
+                            if selectable {
+                                rows_drawn.push((row.id.clone(), label.rect));
+                            }
+                            if !selectable {
+                            } else if label.double_clicked() {
+                                if row.zoomable {
+                                    double = Some(row.id.clone());
+                                }
+                            } else if label.clicked() {
+                                clicked = Some(row.id.clone());
+                            }
+                            if scroll_to.as_deref() == Some(row.id.as_str()) {
+                                label.scroll_to_me_animation(
+                                    None,
+                                    egui::style::ScrollAnimation::none(),
+                                );
+                            }
                             if let Some((cause, cause_name)) = &row.caused_by {
                                 ui.indent(("craft3d-cause", &row.id), |ui| {
                                     ui.horizontal(|ui| {
@@ -3921,54 +3891,78 @@ impl Shell {
                         }
                         let mut statuses = Vec::new();
                         if let Some(outline) = &outline {
-                            statuses = mates_ui(ui, &tokens, outline);
+                            let mut open = !self.state.side_panel.is_open("mates-folded");
+                            statuses = mates_ui(ui, &kit, outline, &mut open);
+                            self.state.side_panel.set_open("mates-folded", !open);
                         }
-                        assertions_heading(ui, &tokens, self.assertion_rows.is_empty());
+                        let (lines, note) = self.side_checks();
+                        let note_ink = if lines.iter().any(|l| {
+                            l.status == crate::shell::sidepanel::checks::CheckStatus::Failed
+                        }) {
+                            tokens.failed
+                        } else {
+                            tokens.ok
+                        };
+                        let mut open = !self.state.side_panel.is_open("assertions-folded");
+                        if kit
+                            .fold_header(
+                                ui,
+                                &mut open,
+                                "Assertions",
+                                Some(self.assertion_rows.len()),
+                                (!note.is_empty()).then_some((note.as_str(), note_ink)),
+                            )
+                            .changed()
+                        {
+                            self.state.side_panel.set_open("assertions-folded", !open);
+                        }
+                        if self.assertion_rows.is_empty() {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(NO_ASSERTIONS_HINT)
+                                        .font(kit.small_font())
+                                        .color(color(tokens.text_dim)),
+                                )
+                                .wrap(),
+                            );
+                        }
                         let mut pending = false;
-                        for row in &self.assertion_rows {
+                        for row in self.assertion_rows.iter().filter(|_| open) {
                             use craft3d_engine::AssertionStatus as A;
-                            // Passed: built; failed or in error: failed; not proven
-                            // either way: needs attention; being measured: inactive.
-                            let (state, tint) = match row.status {
-                                A::Passed => (FeatureState::Ok, tokens.ok),
-                                A::Failed | A::Error => (FeatureState::Failed, tokens.failed),
-                                A::NotProven => (FeatureState::Failed, tokens.attention),
-                                A::Pending => (FeatureState::RolledBack, tokens.inactive),
-                                // Switched off by its condition, as a
-                                // feature by its when.
-                                A::Inactive => (FeatureState::Inactive, tokens.inactive),
-                            };
                             pending |= row.status == A::Pending;
-                            let mut name = egui::RichText::new(&row.name);
-                            if row.status != A::Passed {
-                                name = name.color(color(tint));
-                            }
-                            let status = match &row.measured {
-                                Some(measured) => format!("{} · {}", row.measure, measured),
-                                None => format!("{} · {}", row.measure, row.status.name()),
+                            let (glyph, ink) = match row.status {
+                                A::Passed => (crate::kit::Glyph::Check, tokens.ok),
+                                A::Failed | A::Error => (crate::kit::Glyph::Warning, tokens.failed),
+                                A::NotProven => (crate::kit::Glyph::Warning, tokens.attention),
+                                A::Pending | A::Inactive => {
+                                    (crate::kit::Glyph::Check, tokens.inactive)
+                                }
                             };
-                            ui.horizontal(|ui| {
-                                ui.colored_label(color(tint), tree_mark(state))
-                                    .on_hover_text(&row.message);
-                                let (name_room, status_room) = name_and_status_room(ui, &status);
-                                in_room(ui, name_room, |ui| {
-                                    ui.add(egui::Label::new(name).truncate())
-                                        .on_hover_text(&row.message)
-                                });
-                                let shown = in_room(ui, status_room, |ui| {
-                                    ui.add(
-                                        egui::Label::new(egui::RichText::new(status).color(dim))
-                                            .truncate(),
-                                    )
-                                });
-                                statuses.push(shown.rect);
-                            });
+                            let status = match &row.measured {
+                                Some(measured) => {
+                                    crate::shell::sidepanel::checks::compact(measured)
+                                }
+                                None => row.status.name().to_string(),
+                            };
+                            let shown = kit
+                                .list_row_hits(
+                                    ui,
+                                    crate::kit::ListRow::new(&row.name)
+                                        .icon(glyph)
+                                        .icon_ink(ink)
+                                        .value(&status)
+                                        .failed(matches!(row.status, A::Failed | A::Error))
+                                        .dimmed(matches!(row.status, A::Pending | A::Inactive)),
+                                )
+                                .response
+                                .on_hover_text(format!("{} · {}", row.measure, row.message));
+                            statuses.push(shown.rect);
                             if matches!(row.status, A::Failed | A::Error | A::NotProven) {
                                 ui.indent(("craft3d-assertion", &row.name), |ui| {
                                     ui.add(
                                         egui::Label::new(
                                             egui::RichText::new(&row.message)
-                                                .color(color(tint))
+                                                .color(color(ink))
                                                 .size(tokens.secondary_font),
                                         )
                                         .wrap(),
@@ -5119,29 +5113,86 @@ fn named_edge(feature: &str, name: Option<&str>, faces: &[String]) -> Option<Edg
 /// none: what they are for, and how to get one.
 pub const NO_ASSERTIONS_HINT: &str = "No checks yet. Ask an AI agent, e.g. \u{201c}check that the wall is at least 2 mm\u{201d}, or use assert.add.";
 
-/// An assembly's mates under its instances: each with its mark, kind and
-/// value (or why it fails), then the degrees of freedom left.
+/// An assembly's status at the top of its tab (boards w2, t1): solved
+/// and its degrees of freedom left, or why it is not solved.
+fn assembly_status(
+    ui: &mut egui::Ui,
+    kit: &crate::kit::Kit,
+    outline: &craft3d_engine::AssemblyOutline,
+) {
+    let s = kit.skin;
+    let (glyph, ink, text) = match (&outline.solve_error, outline.dof) {
+        (Some(_), _) => (
+            crate::kit::Glyph::Warning,
+            s.failed,
+            "Not solved".to_string(),
+        ),
+        (None, Some(n)) => (crate::kit::Glyph::Check, s.ok, format!("Solved · {n} DOF")),
+        (None, None) => (crate::kit::Glyph::Check, s.ok, "Solved".to_string()),
+    };
+    let hover = match (&outline.solve_error, outline.dof) {
+        (Some(why), _) => format!("Not solved: {why}"),
+        (None, Some(0)) => "Fully constrained (0 degrees of freedom left)".to_string(),
+        (None, Some(1)) => format!("1 degree of freedom left: {}", outline.free.join(", ")),
+        (None, Some(n)) => format!("{n} degrees of freedom left: {}", outline.free.join(", ")),
+        (None, None) => String::new(),
+    };
+    let response = ui
+        .horizontal(|ui| {
+            ui.set_min_height(kit.hit(kit.t.row_height));
+            let side = kit.t.nav_icon_size * 0.875;
+            let (place, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+            crate::kit::glyphs::paint(ui.painter(), glyph, place, color(ink), &kit.t);
+            ui.label(
+                egui::RichText::new(text)
+                    .font(kit.font())
+                    .color(color(s.text)),
+            );
+        })
+        .response;
+    if !hover.is_empty() {
+        response.on_hover_text(hover);
+    }
+    if let Some(why) = &outline.solve_error {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(format!("Not solved: {why}"))
+                    .font(kit.small_font())
+                    .color(color(s.failed)),
+            )
+            .wrap(),
+        );
+    }
+}
+
+/// An assembly's mates under its instances, a section that folds with
+/// its count: each a kit row with its state as its icon, its name, and
+/// its kind and value at the right (or why it fails under it).
 fn mates_ui(
     ui: &mut egui::Ui,
-    tokens: &Tokens,
+    kit: &crate::kit::Kit,
     outline: &craft3d_engine::AssemblyOutline,
+    open: &mut bool,
 ) -> Vec<egui::Rect> {
     let mut statuses = Vec::new();
-    let dim = color(tokens.text_dim);
-    ui.add_space(tokens.inset * 0.5);
-    ui.label(egui::RichText::new("Mates").strong());
-    ui.separator();
+    let t = kit.t;
+    let s = kit.skin;
+    kit.fold_header(ui, open, "Mates", Some(outline.mates.len()), None);
+    if !*open {
+        return statuses;
+    }
     if outline.mates.is_empty() {
-        ui.colored_label(
-            dim,
-            egui::RichText::new("No mates yet.").size(tokens.secondary_font),
+        ui.label(
+            egui::RichText::new("No mates yet.")
+                .font(kit.small_font())
+                .color(color(s.text_dim)),
         );
     }
     for mate in &outline.mates {
-        let (state, tint) = match mate.status {
-            "ok" => (FeatureState::Ok, tokens.ok),
-            "unsolved" => (FeatureState::Failed, tokens.attention),
-            _ => (FeatureState::Failed, tokens.failed),
+        let (glyph, ink) = match mate.status {
+            "ok" => (crate::kit::Glyph::Check, s.ok),
+            "unsolved" => (crate::kit::Glyph::Warning, s.attention),
+            _ => (crate::kit::Glyph::Warning, s.failed),
         };
         let value = match mate.value {
             Some((v, true)) => format!(" · {:.1}°", v.to_degrees()),
@@ -5149,92 +5200,37 @@ fn mates_ui(
             None => String::new(),
         };
         let driven = if mate.driven { " · driven" } else { "" };
+        let status = format!("{}{value}{driven}", mate.kind);
         let hover = mate
             .error
             .clone()
             .unwrap_or_else(|| format!("{} · {}", mate.kind, mate.status));
-        ui.horizontal(|ui| {
-            ui.colored_label(color(tint), tree_mark(state))
-                .on_hover_text(&hover);
-            // Cut to the panel's width, never widening it; the whole
-            // text on hover. The status keeps its room.
-            let status = format!("{}{value}{driven}", mate.kind);
-            let (name_room, status_room) = name_and_status_room(ui, &status);
-            in_room(ui, name_room, |ui| {
-                ui.add(egui::Label::new(&mate.name).truncate())
-                    .on_hover_text(&hover)
-            });
-            let shown = in_room(ui, status_room, |ui| {
-                ui.add(egui::Label::new(egui::RichText::new(status).color(dim)).truncate())
-            });
-            statuses.push(shown.rect);
-        });
+        let shown = kit
+            .list_row_hits(
+                ui,
+                crate::kit::ListRow::new(&mate.name)
+                    .icon(glyph)
+                    .icon_ink(ink)
+                    .value(&status)
+                    .failed(mate.status != "ok" && mate.status != "unsolved"),
+            )
+            .response
+            .on_hover_text(hover);
+        statuses.push(shown.rect);
         if let Some(error) = &mate.error {
             ui.indent(("craft3d-mate-error", &mate.name), |ui| {
                 ui.add(
                     egui::Label::new(
                         egui::RichText::new(error)
-                            .color(color(tint))
-                            .size(tokens.secondary_font),
+                            .color(color(ink))
+                            .size(t.secondary_font),
                     )
                     .wrap(),
                 );
             });
         }
     }
-    let left = match (&outline.solve_error, outline.dof) {
-        (Some(why), _) => {
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(format!("Not solved: {why}"))
-                        .color(color(tokens.failed))
-                        .size(tokens.secondary_font),
-                )
-                .wrap(),
-            );
-            return statuses;
-        }
-        (None, Some(0)) => "Fully constrained (0 degrees of freedom left)".to_string(),
-        (None, Some(1)) => "1 degree of freedom left".to_string(),
-        (None, Some(n)) => format!("{n} degrees of freedom left"),
-        (None, None) => return statuses,
-    };
-    ui.colored_label(dim, left)
-        .on_hover_text(outline.free.join("\n"));
     statuses
-}
-
-/// The room of a row's name and of its dim status after it, in a row
-/// with `room` points left: the status keeps its own width (at most half
-/// the row), the name the rest, so a long name is cut and the status
-/// still shows.
-fn name_and_status_room(ui: &egui::Ui, status: &str) -> (f32, f32) {
-    let font = egui::TextStyle::Body.resolve(ui.style());
-    let natural = ui
-        .painter()
-        .layout_no_wrap(status.to_string(), font, egui::Color32::PLACEHOLDER)
-        .size()
-        .x
-        .ceil();
-    let room = ui.available_width().max(0.0);
-    let status = natural.min(room * 0.5);
-    let name = (room - status - ui.spacing().item_spacing.x).max(0.0);
-    (name, status + 1.0)
-}
-
-/// `add` in a room `width` points wide in a row: what it lays out is cut
-/// there.
-fn in_room<R>(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    let height = ui.spacing().interact_size.y;
-    ui.allocate_ui_with_layout(
-        egui::vec2(width, height),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            ui.set_max_width(width);
-            add(ui)
-        },
-    )
-    .inner
 }
 
 /// The "Assertions" heading of the feature panel, always there; with the

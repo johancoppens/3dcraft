@@ -225,6 +225,21 @@ impl Kit {
         FontId::new(self.t.secondary_font, family)
     }
 
+    /// Dialog and sheet titles: `dialog_title_font` (17) in the semi-bold
+    /// weight where the fonts in force have it, else the headings'.
+    pub fn title_font(&self, ui: &Ui) -> FontId {
+        let semibold = FontFamily::Name(Arc::from(crate::fonts::SEMIBOLD));
+        let family = if ui
+            .ctx()
+            .fonts(|f| f.definitions().families.contains_key(&semibold))
+        {
+            semibold
+        } else {
+            self.medium_font(ui).family
+        };
+        FontId::new(self.t.dialog_title_font, family)
+    }
+
     /// The height a target takes: what it looks, at least `hit_min`.
     pub fn hit(&self, visual: f32) -> f32 {
         visual.max(self.t.hit_min)

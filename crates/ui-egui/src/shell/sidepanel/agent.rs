@@ -126,10 +126,21 @@ impl Shell {
             .and_then(|log| log.get("total"))
             .and_then(Value::as_u64)
             .unwrap_or(0);
+        let inset = crate::shell::side_inset(&tokens);
         egui::ScrollArea::vertical()
             .id_salt("craft3d-agent-tab")
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                // Clear of the split on the right as of the panel's edge
+                // on the left, as the other tabs.
+                egui::Frame::new()
+                    .inner_margin(egui::Margin {
+                        left: 0,
+                        right: inset,
+                        top: 0,
+                        bottom: 0,
+                    })
+                    .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = tokens.nav_spacing;
                 // Who is connected, on the info card.
                 let (title, detail) = match status.clients.as_slice() {
@@ -184,6 +195,7 @@ impl Shell {
                     hits.push(response.rect);
                 }
                 self.side.hits.agent_rows = hits;
+                    });
             });
     }
 }

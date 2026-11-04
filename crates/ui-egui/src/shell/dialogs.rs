@@ -378,9 +378,11 @@ impl Shell {
         let mut state = std::mem::replace(&mut self.state.export, ask.committed.clone());
         state.open = false;
         if !export {
+            // Cancelled is the person's choice, not a failure: said, not
+            // in red and without Copy details.
             self.last_command = Some(crate::CommandReport {
                 label: "file.export".to_string(),
-                ok: false,
+                ok: true,
                 text: "cancelled".to_string(),
             });
             return;
