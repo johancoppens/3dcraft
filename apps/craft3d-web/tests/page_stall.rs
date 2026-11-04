@@ -519,6 +519,7 @@ fn the_page_stays_free_while_the_fuel_tank_is_built() {
         let work = page.host.session.work_here();
         let started = Instant::now();
         page.host.shell.choose_example(tank);
+        page.frame();
         while page.host.example_progress().is_some() || !page.idle() {
             let frame = Instant::now();
             page.frame();
