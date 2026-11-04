@@ -3366,8 +3366,6 @@ const TRACE_WAIT_WINDOW: std::time::Duration = std::time::Duration::from_secs(2)
 /// own, used once.
 const TRACE_CONFIG_BUDGET: usize = 256 << 20;
 
-/// The name a new trace gets: the one given, else `Trace <n>` free (of
-/// the traces kept and those being worked out).
 /// Refuses a trace named `name` when [`MAX_TRACES`] others are kept or
 /// being worked out already (one of the same name is replaced).
 fn room_for_trace(open: &mut OpenDocument, name: &str) -> Result<(), CommandError> {
@@ -3386,6 +3384,8 @@ fn room_for_trace(open: &mut OpenDocument, name: &str) -> Result<(), CommandErro
     Ok(())
 }
 
+/// The name a new trace gets: the one given, else `Trace <n>` free (of
+/// the traces kept and those being worked out).
 fn trace_name(open: &mut OpenDocument, given: Option<String>) -> String {
     let jobs: Vec<String> = open
         .motion

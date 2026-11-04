@@ -188,13 +188,7 @@ fn flange_value(
             .ok_or_else(|| CommandError::new(format!("{id}: flanges.{index} needs its `{key}`")))
     };
     let direction = direction_of(map, id, &format!("flanges.{index}"))?;
-    let from = match map.get("from") {
-        None => FlangeFrom::Tangent,
-        Some(Value::String(s)) => FlangeFrom::from_name(s).ok_or_else(|| {
-            CommandError::new(format!("{id}: flanges.{index}.from is tangent or mould"))
-        })?,
-        Some(_) => return fail(format!("{id}: flanges.{index}.from is tangent or mould")),
-    };
+    let from = from_of(map, id, &format!("flanges.{index}"))?;
     if outline.is_some() && map.contains_key("length") {
         return fail(format!(
             "{id}: flanges.{index} has an outline of its own, which gives its size: give no `length`"
@@ -233,19 +227,60 @@ fn flange_value(
     })
 }
 
-/// The `direction` of the flange, jog or formed louvre `at` (such as
-/// `flanges.2`): up when it is not given (or null), else up or down.
-fn direction_of(
+/// The choice under `key` of the object `at` of a list (such as
+/// `flanges.2`): `default` when it is not given or null, as every key
+/// with a default; else a name `parse` reads, and anything else refused
+/// with the names (`names`, such as "up or down").
+pub(crate) fn choice_of<T>(
+    map: &Map<String, Value>,
+    id: &str,
+    at: &str,
+    key: &str,
+    default: T,
+    names: &str,
+    parse: impl Fn(&str) -> Option<T>,
+) -> Result<T, CommandError> {
+    let wrong = || CommandError::new(format!("{id}: {at}.{key} is {names}"));
+    match map.get(key) {
+        None | Some(Value::Null) => Ok(default),
+        Some(Value::String(s)) => parse(s).ok_or_else(wrong),
+        Some(_) => Err(wrong()),
+    }
+}
+
+/// The `direction` of the flange, jog or louvre `at`: up unless given.
+pub(crate) fn direction_of(
     map: &Map<String, Value>,
     id: &str,
     at: &str,
 ) -> Result<BendDirection, CommandError> {
-    match map.get("direction") {
-        None | Some(Value::Null) => Ok(BendDirection::Up),
-        Some(Value::String(s)) => BendDirection::from_name(s)
-            .ok_or_else(|| CommandError::new(format!("{id}: {at}.direction is up or down"))),
-        Some(_) => fail(format!("{id}: {at}.direction is up or down")),
-    }
+    choice_of(
+        map,
+        id,
+        at,
+        "direction",
+        BendDirection::Up,
+        "up or down",
+        BendDirection::from_name,
+    )
+}
+
+/// The `from` of the flange `at` (where its length is measured from):
+/// the tangent line unless given.
+pub(crate) fn from_of(
+    map: &Map<String, Value>,
+    id: &str,
+    at: &str,
+) -> Result<FlangeFrom, CommandError> {
+    choice_of(
+        map,
+        id,
+        at,
+        "from",
+        FlangeFrom::Tangent,
+        "tangent or mould",
+        FlangeFrom::from_name,
+    )
 }
 
 const JOG_KEYS: [&str; 7] = [
@@ -446,12 +481,19 @@ fn formed_value(p: &Params) -> Result<Option<Vec<FormedLouvre>>, CommandError> {
         })?;
         let line = crate::sketch_cmds::entity_id(id, &format!("formedLouvres.{g}.line"), line)?;
         let direction = direction_of(map, id, &format!("formedLouvres.{g}"))?;
-        let ends = match map.get("ends") {
-            None => HoodEnds::Closed,
-            Some(Value::String(s)) if s == "closed" => HoodEnds::Closed,
-            Some(Value::String(s)) if s == "open" => HoodEnds::Open,
-            Some(_) => return fail(format!("{id}: formedLouvres.{g}.ends is closed or open")),
-        };
+        let ends = choice_of(
+            map,
+            id,
+            &format!("formedLouvres.{g}"),
+            "ends",
+            HoodEnds::Closed,
+            "closed or open",
+            |s| match s {
+                "closed" => Some(HoodEnds::Closed),
+                "open" => Some(HoodEnds::Open),
+                _ => None,
+            },
+        )?;
         let louvre_id = match map.get("id") {
             None | Some(Value::Null) => 0,
             Some(v) => v
@@ -2562,6 +2604,45 @@ mod on_key_tests {
             inset_end: None,
             outline: None,
         }
+    }
+
+    /// Every choice with a default (a flange's direction and from, a
+    /// louvre's ends) takes it when not given or null, as every other key
+    /// with a default does; a wrong value is refused, naming where.
+    #[test]
+    fn a_choice_not_given_or_null_is_its_default() {
+        let at = |key: &str, v: Option<Value>| {
+            let mut m = Map::new();
+            if let Some(v) = v {
+                m.insert(key.into(), v);
+            }
+            m
+        };
+        for given in [None, Some(Value::Null)] {
+            assert_eq!(
+                from_of(&at("from", given.clone()), "x", "flanges.0").unwrap(),
+                FlangeFrom::Tangent
+            );
+            let ends = choice_of(
+                &at("ends", given),
+                "x",
+                "formedLouvres.0",
+                "ends",
+                HoodEnds::Closed,
+                "closed or open",
+                |_| None,
+            )
+            .unwrap();
+            assert_eq!(ends, HoodEnds::Closed);
+        }
+        assert_eq!(
+            from_of(&at("from", Some(json!("mould"))), "x", "flanges.0").unwrap(),
+            FlangeFrom::Mould
+        );
+        let why = from_of(&at("from", Some(json!(3))), "x", "flanges.1")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(why, "x: flanges.1.from is tangent or mould");
     }
 
     /// A direction not given or null is up, as for every other key that
