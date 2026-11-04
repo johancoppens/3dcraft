@@ -196,6 +196,25 @@ fn a_trace_and_a_check_over_the_motion_are_made_beside_the_page() {
             .map_err(|e| e.message().to_string());
         assert_eq!(got, want, "{k}");
         assert!(got.is_err());
+        // Nothing is kept or pending for it, as on the desktop.
+        assert_eq!(page.trace_states(), here.trace_states(), "{k}");
+        // Requests wrong in themselves: refused alike.
+        for (id, params) in [
+            ("motion.check", json!({"assertions": ["Nobody"]})),
+            ("motion.check", json!({"measure": {"name": "x"}})),
+            ("motion.check", json!({"measure": 3})),
+            ("motion.check", json!({"assertions": "Apart"})),
+            (
+                "motion.check",
+                json!({"measure": {"measure": "nonsense"}, "samples": 3}),
+            ),
+        ] {
+            let (got, _) = on_page(&mut page, id, &params);
+            let want = here
+                .execute(id, &params)
+                .map_err(|e| e.message().to_string());
+            assert_eq!(got, want, "{id} {params} at {k}");
+        }
         assert_eq!(page.work_here(), work, "the page regenerated ({k})");
         settle(&mut page);
         assert_eq!(page.work_here(), work, "the page regenerated ({k})");
@@ -454,6 +473,130 @@ fn a_trace_and_a_check_of_an_assembly_are_made_beside_the_page() {
     let (got, handed) = on_page(&mut page, "motion.check", &check);
     assert!(handed);
     assert_eq!(got.unwrap(), run(&mut here, "motion.check", check));
+    let trace = json!({"point": "Crank/End2", "samples": 5, "name": "Tip", "background": false});
+    let (got, handed) = on_page(&mut page, "view.trace", &trace);
+    assert!(handed);
+    assert_eq!(got.unwrap(), run(&mut here, "view.trace", trace));
+    assert_eq!(page.traces(), here.traces());
+    // A point named with a feature in an assembly: refused on the page at
+    // once, as on the desktop; nothing pending.
+    let wrong = json!({"point": "Crank/End2", "feature": "F1", "background": false});
+    let (got, handed) = on_page(&mut page, "view.trace", &wrong);
+    let want = here
+        .execute("view.trace", &wrong)
+        .map_err(|e| e.message().to_string());
+    assert!(!handed, "{got:?} {want:?}");
+    assert_eq!(got, want);
+    assert_eq!(page.trace_states(), here.trace_states());
+    assert_eq!(page.work_here(), work);
+}
+
+/// A source file changed on disk since the page read it, added again: the
+/// page takes the bytes the edit read (as the desktop does), so the next
+/// placement uses them.
+#[test]
+fn review_instance_add_of_a_changed_source_takes_its_new_bytes() {
+    let dir = workdir("sweeps-elsewhere", "changed-source");
+    let (mut page, mut here) = assembly_pair(&dir);
+    settle(&mut page);
+    // bar.3dcraft saved again, 7 high.
+    let mut other = session_in(&dir);
+    run(&mut other, "file.new", json!({}));
+    run(
+        &mut other,
+        "variable.set",
+        json!({ "name": "len", "expr": "24 mm" }),
+    );
+    run(
+        &mut other,
+        "variable.publish",
+        json!({ "name": "len", "min": "10 mm", "max": "500 mm" }),
+    );
+    run(
+        &mut other,
+        "feature.block",
+        json!({ "name": "Bar", "size": ["len", 4, 7] }),
+    );
+    run(
+        &mut other,
+        "datum.axis",
+        json!({ "name": "End1", "through": [[2, 2, 0], [2, 2, 1]] }),
+    );
+    run(
+        &mut other,
+        "datum.axis",
+        json!({ "name": "End2", "through": [["len - 2 mm", 2, 0], ["len - 2 mm", 2, 1]] }),
+    );
+    run(
+        &mut other,
+        "file.save",
+        json!({ "path": "bar.3dcraft", "overwrite": true }),
+    );
+    let work = page.work_here();
+    let add = bar("Tail", 30.0, [60.0, 30.0], 0.0);
+    let want = here
+        .execute("instance.add", &add)
+        .map_err(|e| e.message().to_string());
+    let (got, handed) = on_page(&mut page, "instance.add", &add);
+    assert!(handed);
+    assert_eq!(got, want);
+    assert_eq!(page.document_bytes(), here.document_bytes());
+    settle(&mut page);
+    assert_eq!(scenes(&mut page), scenes(&mut here));
+    assert_eq!(page.assembly_outline(), here.assembly_outline());
+    assert_eq!(page.work_here(), work);
+}
+
+/// A new source file in a folder of its own, added on the page: it goes
+/// with the edit to the worker, and is the page's afterwards, so the next
+/// placement there has it.
+#[test]
+fn an_instance_of_a_new_source_in_a_folder_is_added_beside_the_page() {
+    let dir = workdir("sweeps-elsewhere", "new-source");
+    let (mut page, mut here) = assembly_pair(&dir);
+    settle(&mut page);
+    std::fs::create_dir_all(dir.join("parts")).unwrap();
+    let mut other = session_in(&dir);
+    run(&mut other, "file.new", json!({}));
+    run(
+        &mut other,
+        "feature.block",
+        json!({ "name": "Rod", "size": [30, 3, 3] }),
+    );
+    run(
+        &mut other,
+        "datum.axis",
+        json!({ "name": "End1", "through": [[1.5, 1.5, 0], [1.5, 1.5, 1]] }),
+    );
+    run(
+        &mut other,
+        "file.save",
+        json!({ "path": "parts/rod.3dcraft" }),
+    );
+    let work = page.work_here();
+    for (id, params) in [
+        (
+            "instance.add",
+            json!({"source": "parts/rod.3dcraft", "name": "Rod", "position": [0, 40, 0]}),
+        ),
+        (
+            "mate.add",
+            json!({"kind": "revolute", "a": "Rocker/End2", "b": "Rod/End1", "name": "RodPin", "flip": true}),
+        ),
+        ("assembly.inspect", json!({})),
+    ] {
+        let want = here
+            .execute(id, &params)
+            .map_err(|e| e.message().to_string());
+        let (got, handed) = on_page(&mut page, id, &params);
+        assert!(handed, "{id}");
+        assert_eq!(got, want, "{id}");
+        assert!(got.is_ok(), "{id}: {got:?}");
+        assert_eq!(page.document_bytes(), here.document_bytes(), "{id}");
+        settle(&mut page);
+        assert_eq!(scenes(&mut page), scenes(&mut here), "{id}");
+        assert_eq!(page.assembly_outline(), here.assembly_outline(), "{id}");
+    }
     assert_eq!(page.work_here(), work);
 }
 

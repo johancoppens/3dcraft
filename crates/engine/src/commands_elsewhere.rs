@@ -576,6 +576,12 @@ impl Session {
             .iter()
             .find(|open| open.id == job.doc_id)
             .map(|open| open.history.revision());
+        // The command itself failed there (a wrong point): as where it
+        // runs here, no trace is kept or pending; any other failure (the
+        // worker stopped, the state changed) is the pending trace's error.
+        let refused = answer.as_ref().is_ok_and(|a| {
+            serde_json::from_str::<Value>(&a.answer).is_ok_and(|r| r.get("error").is_some())
+        });
         let result = self.take_answer(&job, answer);
         // A trace made there: kept here, or why it could not be made (a
         // worker that stopped, a state the document left), never pending
@@ -592,7 +598,7 @@ impl Session {
                     Err(why) => Err(why.clone()),
                 };
                 if let Some(open) = self.documents.iter_mut().find(|o| o.id == job.doc_id) {
-                    open.trace_came(name, *serial, made.clone());
+                    open.trace_came(name, *serial, made.clone(), refused);
                 }
                 match (result, made) {
                     (Ok((mut value, files)), Ok(_)) => {
@@ -803,14 +809,16 @@ impl Session {
         {
             open.selection = selection;
         }
-        // The files an assembly's edit read there (an instance's source)
-        // are this session's now, as when it read them itself.
+        // The files an assembly's edit read (an instance's source, read
+        // again when it changed on disk) are this session's now, as when
+        // the edit runs here: each one as the edit read it, over what was
+        // read before.
         if let Some(sources) = &job.sources
             && open.history.current().is_assembly()
         {
             let mut files = open.asm.files.clone();
             for (path, read) in &sources.files {
-                files.entry(path.clone()).or_insert_with(|| read.clone());
+                files.insert(path.clone(), read.clone());
             }
             if files != open.asm.files {
                 open.asm.files = files;

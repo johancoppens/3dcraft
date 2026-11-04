@@ -2221,7 +2221,15 @@ impl OpenDocument {
     /// its points, kept as a trace made here is, or why it could not be
     /// made. Only the one last asked for its name is taken, and only for
     /// the document as it is.
-    pub(crate) fn trace_came(&mut self, name: &str, serial: u64, made: Result<TraceWire, String>) {
+    /// `refused`: the command itself failed there (as where it runs here,
+    /// nothing is kept: no trace, none pending).
+    pub(crate) fn trace_came(
+        &mut self,
+        name: &str,
+        serial: u64,
+        made: Result<TraceWire, String>,
+        refused: bool,
+    ) {
         self.check_trace_base();
         let Some(job) = self.motion.trace_jobs.get(name) else {
             return;
@@ -2232,6 +2240,10 @@ impl OpenDocument {
         let (base, generation) = (Arc::clone(&job.base), job.generation);
         let wire = match made {
             Ok(wire) => wire,
+            Err(_) if refused => {
+                self.motion.trace_jobs.remove(name);
+                return;
+            }
             Err(why) => {
                 if let Some(job) = self.motion.trace_jobs.get_mut(name) {
                     job.error = Some(why);
@@ -3102,9 +3114,30 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
     // Tried without the bodies (the page): sampled where they are, on
     // the document as it is (not while the view is scrubbed, whose state
     // the other side does not have), under the name given here.
+    // What is wrong with the request itself is said here, as where it
+    // runs here (the point itself is found there, at the first `t`).
+    if open.forbid_regen.is_some()
+        && base.is_assembly()
+        && !matches!(point, PointRef::Vertex { feature: None, .. })
+    {
+        return fail(format!(
+            "{ID}: in an assembly the point is named through its instance, as a mate names it (`Coupler/End2`, `Foot/F1:vertex(2)`), without `feature`"
+        ));
+    }
     if open.scrubbed_to().is_none() && open.sweep_elsewhere() {
         let name = trace_name(open, given_name);
-        let others = open.traces().iter().filter(|t| t.name != name).count();
+        let others = open
+            .traces()
+            .iter()
+            .filter(|t| t.name != name)
+            .count()
+            .saturating_add(
+                open.motion
+                    .trace_jobs
+                    .iter()
+                    .filter(|(n, job)| **n != name && job.pending())
+                    .count(),
+            );
         if others >= MAX_TRACES {
             return fail(format!(
                 "{ID}: {MAX_TRACES} traces are kept or being worked out already; remove some with clear"
@@ -3579,6 +3612,59 @@ struct Over {
     samples: Vec<(f64, crate::assert_cmds::AssertionStatus, Value, String)>,
 }
 
+/// What `motion.check` refuses in its request before it measures (the
+/// shape of `measure`, the names in `assertions`), with the errors it
+/// gives where it measures: said by a host that has the check made
+/// elsewhere before it hands it over. The measure itself is read there.
+fn check_request(id: &str, doc: &Document, p: &Params) -> Result<(), CommandError> {
+    let measured = match p.get("measure") {
+        None => false,
+        Some(Value::Object(map)) if map.contains_key("name") => {
+            return fail(format!(
+                "{id}: `measure` has no name; it is checked here only"
+            ));
+        }
+        Some(Value::Object(_)) => true,
+        Some(other) => {
+            return fail(format!(
+                "{id}: `measure` is an assertion as assert.add takes it, without its name, got {}",
+                short(other)
+            ));
+        }
+    };
+    match p.get("assertions") {
+        None | Some(Value::Null) if !measured && doc.assertions.is_empty() => fail(format!(
+            "{id}: the document has no assertions; give `measure` (an assertion as assert.add takes it) or add some with assert.add"
+        )),
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::Array(items)) => {
+            for item in items {
+                let Some(name) = item.as_str() else {
+                    return fail(format!(
+                        "{id}: `assertions` is a list of assertion names, got {}",
+                        short(item)
+                    ));
+                };
+                // The measure's own name is given there.
+                if doc.assertion(name).is_none() && !(measured && name.starts_with("overMotion")) {
+                    return fail(format!(
+                        "{id}: there is no assertion `{}`",
+                        name.chars().take(80).collect::<String>()
+                    ));
+                }
+            }
+            if items.is_empty() && !measured {
+                return fail(format!("{id}: `assertions` names none"));
+            }
+            Ok(())
+        }
+        Some(other) => fail(format!(
+            "{id}: `assertions` is a list of assertion names, got {}",
+            short(other)
+        )),
+    }
+}
+
 fn motion_check(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "motion.check";
     use crate::assert_cmds::AssertionStatus as S;
@@ -3593,7 +3679,11 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
     let open = session.document_mut()?;
     let base = Document::clone(open.history.current());
     timeline(&base).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
-    // Tried without the bodies (the page): sampled where they are.
+    // Tried without the bodies (the page): sampled where they are, once
+    // what is wrong with the request itself is said here.
+    if open.forbid_regen.is_some() {
+        check_request(ID, &base, &p)?;
+    }
     if open.sweep_elsewhere() {
         return fail(format!("{ID}: sampled where the bodies are"));
     }
