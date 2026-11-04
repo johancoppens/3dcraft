@@ -551,6 +551,18 @@ fn foreign(bytes: &[u8]) -> Option<FormatError> {
                    as bodies; 3DCraft writes STEP with `file.export`",
         });
     }
+    // A command script, as the guide's examples are (`[["variable.set",
+    // {...}], ...]`): a list of steps.
+    if let Some(rest) = text.strip_prefix('[')
+        && (rest.trim_start().starts_with('[') || rest.trim_start().starts_with('{'))
+        && rest.contains("\"")
+    {
+        return Some(FormatError::Foreign {
+            kind: "a JSON command script",
+            hint: "run its steps in a document: `craft3d-cli run --new '{\"units\": \"mm\"}' \
+                   --script FILE --out part.3dcraft` (the guide's examples are such scripts)",
+        });
+    }
     const MESH_HINT: &str = "reading meshes into a document is not built yet; \
                              3DCraft writes STL, 3MF and OBJ with `file.export`";
     if text.starts_with("solid") && text.contains("facet") {

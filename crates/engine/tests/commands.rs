@@ -558,12 +558,12 @@ fn files_stay_inside_the_roots() {
         "file.open",
         json!({"path": "missing.3dcraft"}),
     );
-    assert!(
-        missing.contains("cannot open `missing.3dcraft`"),
-        "{missing}"
-    );
-    // Said once (2026-11-04: "cannot open `x`: cannot open `x`: …").
+    // Said once, in plain words: not the path twice ("cannot open `x`:
+    // cannot open `x`: …", 2026-11-04) and not the system's
+    // `No such file or directory (os error 2)`.
     assert_eq!(missing.matches("cannot open").count(), 1, "{missing}");
+    assert!(missing.contains("there is no such file"), "{missing}");
+    assert_eq!(missing.matches("missing.3dcraft").count(), 1, "{missing}");
     assert!(error(&mut session, "file.save", json!({})).contains("give a `path`"));
     // Saving into a directory that does not exist fails cleanly.
     assert!(
@@ -573,6 +573,15 @@ fn files_stay_inside_the_roots() {
             json!({"path": "no/such/dir/a.3dcraft"})
         )
         .contains("cannot save")
+    );
+    let no_folder = error(
+        &mut session,
+        "file.save",
+        json!({"path": "no/such/dir/a.3dcraft"}),
+    );
+    assert!(
+        no_folder.contains("its folder does not exist"),
+        "{no_folder}"
     );
     assert_eq!(
         std::fs::read_dir(&dir).unwrap().count(),

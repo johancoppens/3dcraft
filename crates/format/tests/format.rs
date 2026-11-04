@@ -819,6 +819,21 @@ fn meshes_drawings_and_pictures_opened_as_a_document_say_what_they_are() {
 }
 
 #[test]
+fn a_command_script_opened_as_a_document_says_how_to_run_it() {
+    for script in [
+        &b"[\n [\"variable.set\", {\"name\": \"w\", \"expr\": \"40 mm\"}]\n]"[..],
+        b"[{\"command\": \"feature.block\", \"params\": {}}]",
+    ] {
+        let error = from_bytes(script).unwrap_err();
+        assert!(matches!(error, FormatError::Foreign { .. }), "{error}");
+        assert!(error.to_string().contains("--script"), "{error}");
+    }
+    // A list that is no script stays just not a ZIP archive.
+    let error = from_bytes(b"[1, 2]").unwrap_err();
+    assert!(matches!(error, FormatError::Zip(_)), "{error}");
+}
+
+#[test]
 fn something_that_is_not_a_zip_is_an_error_that_says_what_the_file_should_be() {
     for bytes in [&b""[..], b"hello", b"{\"format\": \"3dcraft\"}", &[0; 100]] {
         let error = from_bytes(bytes).unwrap_err();
