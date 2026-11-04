@@ -1,0 +1,11 @@
+[
+ ["sketch.create", {"plane": "xy", "name": "Ring"}],
+ ["sketch.spline", {"sketch": "Ring", "through": [[12, 0], [8, 5], [0, 7], [-6, 5], [-8, 0], [-6, -5], [0, -7], [8, -5]], "closed": true}],
+ ["feature.extrude", {"sketch": "Ring", "distance": "5 mm", "name": "Disc"}],
+ ["sketch.create", {"plane": "xy", "name": "Cage", "offset": "20 mm"}],
+ ["sketch.spline", {"sketch": "Cage", "control": [[10, -10], [10, 10], [-10, 10], [-10, -10], [5, -15]], "closed": true}],
+ ["feature.extrude", {"sketch": "Cage", "distance": "4 mm", "name": "Pad"}],
+ ["sketch.create", {"plane": "xy", "name": "Drop", "offset": "40 mm"}],
+ ["sketch.spline", {"sketch": "Drop", "control": [[0, 0], [10, 6], [14, 14], [6, 12]], "closed": true, "periodic": false}],
+ ["feature.extrude", {"sketch": "Drop", "distance": "3 mm", "name": "Tear"}]
+]

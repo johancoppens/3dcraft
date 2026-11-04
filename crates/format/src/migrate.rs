@@ -38,7 +38,7 @@ const STEPS: &[Step] = &[
     v42_to_v43, v43_to_v44, v44_to_v45, v45_to_v46, v46_to_v47, v47_to_v48, v48_to_v49, v49_to_v50,
     v50_to_v51, v51_to_v52, v52_to_v53, v53_to_v54, v54_to_v55, v55_to_v56, v56_to_v57, v57_to_v58,
     v58_to_v59, v59_to_v60, v60_to_v61, v61_to_v62, v62_to_v63, v63_to_v64, v64_to_v65, v65_to_v66,
-    v66_to_v67, v67_to_v68,
+    v66_to_v67, v67_to_v68, v68_to_v69,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -1178,6 +1178,15 @@ fn v66_to_v67(manifest: Value) -> Result<Value, String> {
 /// raised so that an older build says a newer 3DCraft is needed instead of
 /// refusing the field.
 fn v67_to_v68(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 69 adds `periodic` to a sketch spline: a closed spline kept
+/// smooth where it closes (docs/design/sweeps.md › *Closed splines are
+/// periodic*). A file of an older version has none, so every spline loads
+/// as it was saved, clamped: an identity step, raised so that an older
+/// build says a newer 3DCraft is needed instead of refusing the field.
+fn v68_to_v69(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 

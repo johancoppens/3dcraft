@@ -2674,6 +2674,13 @@ impl Sketch {
                     if let Some(fault) = Geometry::spline_fault(*degree, control) {
                         return invalid(format!("{id}: {fault}"));
                     }
+                    if matches!(entity.geometry, Geometry::Spline { periodic: true, .. })
+                        && (control.len() < 3 || control.first() != control.last())
+                    {
+                        return invalid(format!(
+                            "{id}: a periodic spline closes: its first control point is also its last"
+                        ));
+                    }
                 }
                 Geometry::Formula { .. } => {
                     if let Some(fault) = self.formula_fault(&entity.geometry) {
