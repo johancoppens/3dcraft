@@ -14,7 +14,9 @@ pub mod below;
 mod blend;
 pub mod boolean;
 mod boxtree;
-pub use boolean::{HELD_TOGETHER, held_together, release_unused, shelf_size};
+pub use boolean::{
+    HELD_TOGETHER, held_keys, held_together, release_unheld, release_unused, shelf_size,
+};
 pub mod chamfer;
 pub mod delete_face;
 pub mod developable;

@@ -72,6 +72,7 @@ pub use craft3d_kernel::profile::{Curve2, SketchCurve as PatternCurve};
 /// the engine lets go of those no open document holds.
 pub use craft3d_kernel::release_unused as release_unused_trees;
 pub use craft3d_kernel::thread::{coarse_pitch, no_coarse_pitch, nominal_diameter};
+pub use craft3d_kernel::{held_keys as held_tree_keys, release_unheld as release_unheld_trees};
 pub use datum::{Datum, EdgeReference, References, references};
 pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
