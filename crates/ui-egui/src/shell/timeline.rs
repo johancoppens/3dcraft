@@ -451,6 +451,11 @@ impl Shell {
             let (answer, ms) = if timed {
                 let clock = self.player.hint.clock.clone();
                 clock.time(|| session.execute(id, params))
+            } else if *id == "mate.add" {
+                // A mate made from the viewport's menu, asked for by the
+                // person: solved where the assembly is placed (the page's
+                // worker) and reported when its answer comes.
+                (session.execute_deferrable(id, params), 0.0)
             } else {
                 (session.execute(id, params), 0.0)
             };

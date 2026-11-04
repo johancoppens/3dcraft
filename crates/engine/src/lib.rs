@@ -1001,7 +1001,7 @@ impl Session {
         // Not regenerated here while the host has it regenerated
         // elsewhere: a command that turns out to need the bodies is run
         // where they are (`commands_elsewhere.rs`).
-        let trial = self.try_without_bodies();
+        let trial = self.try_without_bodies(id);
         let mut outcome =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(self, &params)));
         if let Some(snapshot) = trial {
