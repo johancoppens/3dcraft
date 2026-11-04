@@ -5319,8 +5319,8 @@ fn mates_ui(
             _ => (crate::kit::Glyph::Warning, s.failed),
         };
         let value = match mate.value {
-            Some((v, true)) => format!(" · {:.1}°", v.to_degrees()),
-            Some((v, false)) => format!(" · {v:.3}"),
+            Some((v, true)) => format!(" · {}°", crate::kit::slider::fixed(v.to_degrees(), 1)),
+            Some((v, false)) => format!(" · {}", crate::kit::slider::fixed(v, 3)),
             None => String::new(),
         };
         let driven = if mate.driven { " · driven" } else { "" };

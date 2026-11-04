@@ -98,6 +98,14 @@ pub fn stepped(value: f64, steps: i32, step: f64, range: [f64; 2]) -> f64 {
     if out.is_finite() { out } else { value }
 }
 
+/// A typed whole number held to `range`; `None` for a value or a range
+/// that is not a number, or a range whose ends are the wrong way round.
+pub fn held_whole(typed: f64, range: [f64; 2]) -> Option<f64> {
+    let [lo, hi] = range;
+    (typed.is_finite() && lo.is_finite() && hi.is_finite() && hi >= lo)
+        .then(|| typed.round().clamp(lo, hi))
+}
+
 /// A round number near `rough`: 1, 2 or 5 times a power of ten, at
 /// least `rough`.
 fn round_up(rough: f64) -> Option<f64> {
@@ -162,14 +170,23 @@ fn decimals_of_step(step: f64) -> usize {
     9
 }
 
+/// `v` to `decimals` places, never a negative zero (`-0.00001` to one
+/// place is `0.0`, not `-0.0`).
+pub fn fixed(v: f64, decimals: usize) -> String {
+    let text = format!("{v:.decimals$}");
+    match text.strip_prefix('-') {
+        Some(rest) if rest.chars().all(|c| c == '0' || c == '.') => rest.to_string(),
+        _ => text,
+    }
+}
+
 /// How a field shows its value: `decimals` places and the unit.
 pub fn shown(value: f64, scale: f64, decimals: usize, unit: &str) -> String {
-    let v = value * scale;
-    let v = if v == 0.0 { 0.0 } else { v };
+    let v = fixed(value * scale, decimals);
     if unit.is_empty() {
-        format!("{v:.decimals$}")
+        v
     } else {
-        format!("{v:.decimals$} {unit}")
+        format!("{v} {unit}")
     }
 }
 
@@ -1423,14 +1440,18 @@ impl Kit {
                     i.key_pressed(egui::Key::Escape),
                 )
             });
+            let away = edit.lost_focus() && !enter;
             if escape && !fresh {
                 typing = None;
-            } else if !fresh && (enter || edit.lost_focus()) {
+            } else if !fresh && (enter || away) {
                 match typed_plain(&state.text, "", 1.0) {
                     Some(typed) => {
-                        new = typed.round().clamp(range[0], range[1]);
+                        new = held_whole(typed, range).unwrap_or(v);
                         typing = None;
                     }
+                    // A click elsewhere lets the field go, what was typed
+                    // with it; Enter keeps it open, ringed in red.
+                    None if away => typing = None,
                     None => {
                         state.error = Some("type a whole number".to_string());
                         state.focused = false;
@@ -1499,6 +1520,25 @@ pub fn knob_centre(value: f64, range: [f64; 2], rail: Rect) -> Pos2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_typed_whole_number_is_held_to_a_range_that_makes_sense() {
+        assert_eq!(held_whole(4.6, [0.0, 4.0]), Some(4.0));
+        assert_eq!(held_whole(-2.2, [0.0, 4.0]), Some(0.0));
+        // Never a panic: ends the wrong way round, or not numbers.
+        assert_eq!(held_whole(3.0, [5.0, 1.0]), None);
+        assert_eq!(held_whole(3.0, [f64::NAN, 1.0]), None);
+        assert_eq!(held_whole(f64::INFINITY, [0.0, 1.0]), None);
+    }
+
+    #[test]
+    fn no_value_is_shown_as_a_negative_zero() {
+        assert_eq!(super::fixed(-0.00001, 1), "0.0");
+        assert_eq!(super::fixed(-0.0, 2), "0.00");
+        assert_eq!(super::fixed(-0.06, 1), "-0.1");
+        assert_eq!(super::fixed(3.25, 0), "3");
+        assert_eq!(shown(-1e-9, 1.0, 2, "mm"), "0.00 mm");
+    }
 
     #[test]
     fn a_drag_across_the_rail_is_the_range_shift_finer_ctrl_in_steps() {
