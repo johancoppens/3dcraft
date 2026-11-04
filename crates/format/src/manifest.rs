@@ -878,7 +878,18 @@ pub enum FeatureKind {
     /// A solid the one closed profile of sketch `sketch` sweeps along the
     /// curves of sketch `path` (format version 10), or along the datum
     /// helix `path` (format version 13).
-    Sweep { sketch: u64, path: u64 },
+    Sweep {
+        sketch: u64,
+        path: u64,
+        /// The second rail of a sweep along two rails (format version
+        /// 66). Written only when there is one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rail: Option<u64>,
+        /// How a sweep along two rails scales its profile (format version
+        /// 66). Written only when it is not uniform.
+        #[serde(default, skip_serializing_if = "SweepScale::is_uniform")]
+        scale: SweepScale,
+    },
     /// The body of feature `source`, turned by `angle` about the line
     /// through `pivot` along `axis` (three plain numbers), then shifted by
     /// `translate`. With `keep` the source keeps its own body.
@@ -1532,6 +1543,21 @@ fn all_free(holds: &[EdgeHold]) -> bool {
 pub enum Rail {
     Sketch(u64),
     Edges(Vec<Name>),
+}
+
+/// How a sweep along two rails scales its profile.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SweepScale {
+    #[default]
+    Uniform,
+    Width,
+}
+
+impl SweepScale {
+    fn is_uniform(&self) -> bool {
+        *self == SweepScale::Uniform
+    }
 }
 
 /// How an offset profile goes round a corner where its curves part.

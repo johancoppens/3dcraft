@@ -206,6 +206,11 @@ fn a_spline_cylinder_trimmed_three_ways_has_the_area_on_the_cylinder() {
             json!({"face": wall, "outer": "Window", "along": [-1, 0, 0], "name": "Along"}),
         );
         assert!(number(&along["trim"]["deviation"]) <= 0.5e-6 * k, "{along}");
+        // The deviation is the proven bound: at least the gap sampled.
+        assert!(
+            number(&along["trim"]["sampled"]) <= number(&along["trim"]["deviation"]),
+            "{along}"
+        );
         let a = body(&mut s, "Along");
         assert_eq!(a["valid"], true, "{a}");
         let angle = (y1 / r).pasin() - (y0 / r).pasin();
@@ -599,6 +604,10 @@ fn analytic_faces_are_trimmed_exactly_by_their_rational_forms() {
             json!({"face": can, "outer": "Window", "along": [0, -1, 0], "name": "OnCan"}),
         );
         assert!(number(&made["trim"]["deviation"]) <= 0.5e-6 * k, "{made}");
+        assert!(
+            number(&made["trim"]["sampled"]) <= number(&made["trim"]["deviation"]),
+            "{made}"
+        );
         let on = body(&mut s, "OnCan");
         assert_eq!(on["valid"], true, "{on}");
         let angle = (x1 / r).pasin() - (x0 / r).pasin();

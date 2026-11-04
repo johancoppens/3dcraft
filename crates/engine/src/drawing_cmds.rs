@@ -786,7 +786,7 @@ const MAX_SHEET_FACES: usize = 10_000;
 /// `name` as a layer name: every run of characters other than letters,
 /// digits and `-` becomes one `_`, at most 31 characters, and not one of
 /// `taken` (any case): then `-2`, `-3`, … at its end.
-fn layer_name(name: &str, taken: &[String]) -> String {
+pub(crate) fn layer_name(name: &str, taken: &[String]) -> String {
     let mut base = String::new();
     for c in name.chars() {
         if c.is_ascii_alphanumeric() || c == '-' {

@@ -487,6 +487,35 @@ impl Session {
         let regen_elsewhere = self.regen_elsewhere();
         let elsewhere = regen_elsewhere && !matches!(wait, Wait::All);
         let open = self.document_mut()?;
+        // Regenerated and measured elsewhere, a state at a time
+        // (`regen_elsewhere.rs`), an assembly placed there too: its
+        // answer once it is there (every check measured: what waits for
+        // all of them takes it too), pending until then. Only what waits
+        // for every answer before it is there regenerates (on the page: is
+        // handed to the worker that has the bodies,
+        // `commands_elsewhere.rs`); nothing else places an assembly here.
+        if regen_elsewhere {
+            let current = Arc::clone(open.history.current());
+            if current.assertions.is_empty() && current.outputs.is_empty() {
+                return Ok((Vec::new(), Arc::new(Resolved::default())));
+            }
+            if let Some((of, checked, outputs)) = &open.state_checks.answer
+                && Arc::ptr_eq(of, &current)
+            {
+                return Ok((checked.clone(), Arc::clone(outputs)));
+            }
+            if elsewhere {
+                let outputs = current
+                    .outputs
+                    .iter()
+                    .map(|o| (o.name.clone(), OutputValue::Pending))
+                    .collect();
+                return Ok((
+                    current.assertions.iter().map(pending).collect(),
+                    Arc::new(Resolved::from_entries(outputs)),
+                ));
+            }
+        }
         // An assembly is measured on its placed bodies, named after their
         // instances (`asm.rs`).
         let placed = open.placed();
@@ -496,29 +525,6 @@ impl Session {
         };
         if doc.assertions.is_empty() && doc.outputs.is_empty() {
             return Ok((Vec::new(), Arc::new(Resolved::default())));
-        }
-        // Regenerated and measured elsewhere, a state at a time
-        // (`regen_elsewhere.rs`): its answer once it is there (every
-        // check measured: what waits for all of them takes it too),
-        // pending until then. Only what waits for every answer before it
-        // is there regenerates (on the page: is handed to the worker that
-        // has the bodies, `commands_elsewhere.rs`).
-        if regen_elsewhere
-            && let Some((of, checked, outputs)) = &open.state_checks.answer
-            && Arc::ptr_eq(of, &doc)
-        {
-            return Ok((checked.clone(), Arc::clone(outputs)));
-        }
-        if elsewhere {
-            let outputs = doc
-                .outputs
-                .iter()
-                .map(|o| (o.name.clone(), OutputValue::Pending))
-                .collect();
-            return Ok((
-                doc.assertions.iter().map(pending).collect(),
-                Arc::new(Resolved::from_entries(outputs)),
-            ));
         }
         let revision = open.history.revision();
         let regen = open.regen();

@@ -289,3 +289,51 @@ fn the_file_of_every_format_version_regenerates_to_what_its_build_made() {
     }
     assert!(found.is_empty(), "{}", found.join("\n"));
 }
+
+/// What pins v61's sphere cap besides its fixture (whose `bbox` is a
+/// tessellation's, inside the true box by at most `bboxTolerance`, so it
+/// moves when the cap's edge is written differently: 2026-11-03, the
+/// projected trim's proof fits a circle quarter by quarter). The cap is a
+/// sphere of radius 20 about (150, 0, 0) cut by the circle of radius 8
+/// about x = 150, z = 0 projected along −y: its true box is x in
+/// [142, 158], y in [√336, 20], z in [−8, 8], its area `2π R h` with
+/// `h = 20 − √336`, and its edge lies at y = √336 within the tolerance.
+#[test]
+fn the_v61_cap_is_the_sphere_cap_of_its_closed_form() {
+    let dir = workdir("format-versions", "v61-cap");
+    std::fs::copy(fixtures().join("v61.3dcraft"), dir.join("v61.3dcraft")).unwrap();
+    let mut s = session_in(&dir);
+    run(&mut s, "file.open", json!({"path": "v61.3dcraft"}));
+    let inspect = run(&mut s, "document.inspect", json!({}));
+    let cap = inspect["bodies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["feature"] == "F7")
+        .unwrap_or_else(|| panic!("no F7 in {inspect}"));
+    let num = |v: &Value| v.as_f64().unwrap_or_else(|| panic!("not a number: {v}"));
+    let rim = 336.0_f64.sqrt();
+    let tol = 1e-6 * 20.0;
+    let chord = num(&cap["bboxTolerance"]);
+    let lo = [142.0, rim, -8.0];
+    let hi = [158.0, 20.0, 8.0];
+    for axis in 0..3 {
+        let (got_lo, got_hi) = (num(&cap["bbox"][0][axis]), num(&cap["bbox"][1][axis]));
+        // Inside the true box (the edge within the tolerance of it), and
+        // short of it by at most the tessellation's tolerance.
+        assert!(
+            got_lo >= lo[axis] - tol && got_lo <= lo[axis] + chord,
+            "axis {axis}: {cap}"
+        );
+        assert!(
+            got_hi <= hi[axis] + tol && got_hi >= hi[axis] - chord,
+            "axis {axis}: {cap}"
+        );
+    }
+    let area = 2.0 * std::f64::consts::PI * 20.0 * (20.0 - rim);
+    assert!(
+        (num(&cap["area"]) - area).abs() <= 1e-6 * area,
+        "area {} vs {area}",
+        cap["area"]
+    );
+}

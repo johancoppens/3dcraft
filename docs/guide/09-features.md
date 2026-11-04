@@ -27,11 +27,55 @@ numbers other than 0 (`[1, "25 mm", 0]`: give all as lengths or all as numbers).
   `angle` defaults to a full turn. Example: [bushing](../examples/bushing.json).
 - **Sweep** (`feature.sweep`): a profile carried along a `path`, a sketch of lines, arcs and splines end to
   end, square to the profile's plane at its start, or a helix (`datum.helix`). Examples:
-  [pipe](../examples/pipe.json), [spring](../examples/spring.json).
+  [pipe](../examples/pipe.json), [spring](../examples/spring.json). With a second `rail` it is a sweep
+  along two rails (below).
 - **Loft** (`feature.loft`): through two or more profiles on planes one after the other; smooth, or
   `ruled` (straight from each to the next). Example: [hopper](../examples/hopper.json).
 - **Offset profile** (`feature.offsetProfile`): every loop of a sketch grown or shrunk by a distance;
   extrude it, or export it as a laser's path with its kerf.
+
+## Sweep along two rails
+
+`feature.sweep` with `rail` carries the profile along two curves at once: two of its points follow the
+two rails, so it grows and shrinks as they part and close in. `path` and `rail` are each a sketch of one
+open chain (lines, arcs and splines end to end), and each starts on the outline of the profile. The two
+are walked together by the fraction of each one's length, the profile's x axis along the line between
+them and its y axis as near to the normal of the `path`'s sketch as that allows: for rails drawn in one
+plane, the sections stand square to it, so draw the profile on the plane through both rails' starts
+that stands square to theirs. `scale` is `"uniform"` (the default: a circle stays a circle) or
+`"width"` (only along the line between the rails; the height stays as drawn). A tapering spout, a ring
+whose hole tapers with it:
+
+```json
+[
+ ["variable.set", {"name": "r0", "expr": "15 mm"}],
+ ["variable.set", {"name": "r1", "expr": "6 mm"}],
+ ["variable.set", {"name": "ri", "expr": "12 mm"}],
+ ["variable.set", {"name": "len", "expr": "60 mm"}],
+ ["sketch.create", {"name": "Mouth", "plane": "zx"}],
+ ["sketch.circle", {"sketch": "Mouth", "center": [0, "r0"], "radius": "r0"}],
+ ["sketch.circle", {"sketch": "Mouth", "center": [0, "r0"], "radius": "ri"}],
+ ["sketch.create", {"name": "Left", "plane": "xy"}],
+ ["sketch.polyline", {"sketch": "Left", "points": [[0, 0], ["r0 - r1", "len"]]}],
+ ["sketch.create", {"name": "Right", "plane": "xy"}],
+ ["sketch.polyline", {"sketch": "Right", "points": [["2 * r0", 0], ["r0 + r1", "len"]]}],
+ ["feature.sweep", {"sketch": "Mouth", "path": "Left", "rail": "Right", "name": "Spout"}],
+ ["assert.add", {"name": "volume", "measure": "volume", "of": "Spout", "eq": "pi * len / 3 * (r0^2 + r0 * r1 + r1^2) * (1 - (ri / r0)^2)"}]
+]
+```
+
+![The spout: a ring between two rails that close in](images/two-rail-spout.png)
+
+Where both rails are parallel lines of the same length the faces are exact planes and cylinders.
+Elsewhere they are spline surfaces, and the result says under `path` how far they are from the true
+sweep at most (`deviation`): a bound that is proven, never more than half the document's tolerance (a face
+within an eighth of the tolerance of a plane is made that plane, and a profile drawn a little off its
+plane is laid into it, which moves it by at most the tolerance). A tolerance finer than 4096 units in the
+last place of the model's size is refused: below that, rounding is not bounded. A
+face is named after the curve of the profile and the curves of the two rails it runs between
+(`F4:side(e2,e3,e3)`), so a rail can be redrawn without losing what is built on the faces. Refused, with
+the place: a rail that does not start on the profile, rails that meet or cross, rails that start at one
+point, and a sweep that would fold or pass through itself.
 
 ## Text
 
@@ -532,7 +576,7 @@ so a fillet, a colour or a set on it stays with it whatever else you add, delete
 with the flange in `sheetMetal.edit`; a flange sent back unchanged keeps its id without it, and one changed
 without it is a new flange (its old names then name nothing, an error where used). `tip`, `side` and `corners` name
 flanges by their places in the list you send; corners you do not send again are kept and follow their
-flanges by id to their new places (one whose flange you deleted is refused, naming it). A `radius` of 0 is a **sharp bend**: a sharp inside corner (the inner skin is the line on the bend's axis) and an outside rounded to the thickness, with the bend allowance angle × kFactor × thickness, so the flat pattern and the volume follow the same rules as any bend; its faces are those of the bend with a radius less its inner skin, so a radius set to 0 and back keeps every other name. A sharp bend is refused at or near 180 degrees (a closed hem), at a kFactor of 0, where another wall would touch its inner skin (two sharp flanges meeting at an open corner without a relief, a wall leaning in beside a sharp square wall, a flange on a side of a sharp wall), trimmed by a closed corner, and in a part with a hole across a bend; a cut made later through a sharp bend is not carried onto the exported flat pattern (the export lists it under notCarried). Refused, with the flange: a radius below zero, a K-factor
+flanges by id to their new places (one whose flange you deleted is refused, naming it). A `radius` of 0 is a **sharp bend**: a sharp inside corner (the inner skin is the line on the bend's axis) and an outside rounded to the thickness, with the bend allowance angle × kFactor × thickness, so the flat pattern and the volume follow the same rules as any bend; its faces are those of the bend with a radius less its inner skin, so a radius set to 0 and back keeps every other name. A sharp bend is refused at or near 180 degrees (a closed hem), at a kFactor of 0, where another wall would touch its inner skin (two sharp flanges meeting at an open corner without a relief, a wall leaning in beside a sharp square wall, a flange on a side of a sharp wall), trimmed by a closed corner, and in a part with a hole across a bend; a cut made later through a sharp bend is not carried onto the exported flat pattern (the export lists it under notCarried). A formed louvre whose hood comes within about the thickness of a sharp bend's inside is refused too: its hood is checked by a box round it, which errs on the safe side. Refused, with the flange: a radius below zero, a K-factor
 outside 0 to 1, an angle outside 0 to 180 degrees, an edge that is not a straight line of the base's
 outline (a flange on a curved edge is a formed flange, not a bend: it has no flat pattern that keeps
 lengths), flanged edges meeting at an inside corner, a relief that does not fit, and flanges that run into

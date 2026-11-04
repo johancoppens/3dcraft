@@ -23,6 +23,7 @@ impl Session {
     pub fn set_stepwise(&mut self, stepwise: bool) {
         self.stepwise = stepwise;
         self.set_refine_elsewhere(stepwise);
+        self.sync_elsewhere();
     }
 
     /// True when the host does the long work a piece at a time
@@ -153,7 +154,10 @@ impl Session {
     /// The regeneration of the active document, a piece of it: `None`
     /// once it is there. A document scrubbed to an earlier state shows
     /// that state, which is regenerated in one go.
-    fn regenerate_some(&mut self, stop: impl Fn() -> bool + 'static) -> Option<Progress> {
+    pub(crate) fn regenerate_some(
+        &mut self,
+        stop: impl Fn() -> bool + 'static,
+    ) -> Option<Progress> {
         let open = self.documents.get_mut(self.active)?;
         let revision = open.history.revision();
         if open.regen.as_ref().is_some_and(|(at, _)| *at == revision) {

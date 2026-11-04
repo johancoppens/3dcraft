@@ -35,6 +35,7 @@ pub(crate) mod icons;
 mod joints;
 mod layout;
 pub mod look_panel;
+mod menus;
 pub mod number_field;
 mod params;
 mod player;
@@ -59,10 +60,10 @@ pub use params::{
 };
 pub use popover::{cube_out_of_the_way, popover_place, split_chip};
 pub use recent::{MAX_RECENT, RecentEntry, RecentFiles};
-pub use start::{AgentSetup, EXAMPLES, Example, ExampleSection, run_example};
+pub use start::{AgentSetup, EXAMPLES, Example, ExampleSection, McpClient, run_example};
 pub use tabs::{
     CLOSE_MARK, CloseAnswer, DocAction, TabPart, UNSAVED_MARK, close_shortcut, doc_tabs,
-    next_shortcut, previous_shortcut, tab_name,
+    next_shortcut, previous_shortcut, tab_glyph, tab_name,
 };
 pub(crate) use views::FlyTo;
 pub use views::{FLY_SECONDS, MIN_FLY_CONTEXT, ZOOM_TOOLTIP, zoomable};
@@ -121,7 +122,10 @@ pub const PRODUCT: &str = "3DCraft";
 /// `file.export`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileAction {
+    /// A new part (`file.new`).
     New,
+    /// A new assembly (`assembly.new`).
+    NewAssembly,
     Open,
     /// To the document's own file; like `SaveAs` when it has none.
     Save,
@@ -140,8 +144,9 @@ pub enum FileAction {
 
 impl FileAction {
     /// In menu order.
-    pub const ALL: [FileAction; 8] = [
+    pub const ALL: [FileAction; 9] = [
         FileAction::New,
+        FileAction::NewAssembly,
         FileAction::Open,
         FileAction::OpenForEditing,
         FileAction::Save,
@@ -153,7 +158,8 @@ impl FileAction {
 
     pub fn label(self) -> &'static str {
         match self {
-            FileAction::New => "New",
+            FileAction::New => "New Part",
+            FileAction::NewAssembly => "New Assembly",
             FileAction::Open => "Open…",
             FileAction::Save => "Save",
             FileAction::SaveAs => "Save As…",
@@ -175,6 +181,7 @@ impl FileAction {
             FileAction::SaveAs => (command | egui::Modifiers::SHIFT, egui::Key::S),
             FileAction::Import => (command, egui::Key::I),
             FileAction::Export => (command, egui::Key::E),
+            FileAction::NewAssembly => (command | egui::Modifiers::SHIFT, egui::Key::N),
             FileAction::ExportJig | FileAction::OpenForEditing => return None,
         };
         Some(egui::KeyboardShortcut::new(modifiers, key))
@@ -195,7 +202,20 @@ impl FileAction {
 
     /// The menu draws a line above it.
     fn starts_group(self) -> bool {
-        self == FileAction::Import
+        matches!(
+            self,
+            FileAction::Open | FileAction::Save | FileAction::Import
+        )
+    }
+
+    /// The line icon beside it in the File menu: the kind of document a
+    /// New makes (the plan's middle way).
+    pub fn glyph(self) -> Option<crate::kit::Glyph> {
+        match self {
+            FileAction::New => Some(crate::kit::Glyph::Part),
+            FileAction::NewAssembly => Some(crate::kit::Glyph::Assembly),
+            _ => None,
+        }
     }
 }
 
@@ -297,6 +317,9 @@ pub struct TreeRow {
     /// In an assembly's tree: the instance the row is, when it is the
     /// assembly's own (its eye and its Open act on it).
     pub instance: Option<String>,
+    /// The agent that made it (the document's provenance, `madeBy`), or
+    /// last changed it; `None` for the person's: its row carries the ✦.
+    pub made_by: Option<String>,
     /// In an assembly's tree: how deep in subassemblies the row is.
     pub depth: usize,
 }
@@ -354,6 +377,19 @@ struct Calm {
     last: Vec<(StatusSlot, String)>,
 }
 
+impl Calm {
+    /// Lets go of every hold (texts, the work indicator, kept widths),
+    /// so the next frame shows what is wanted then; the count of changes
+    /// and the last frame's texts stay, as they describe frames drawn.
+    fn start_afresh(&mut self) {
+        *self = Self {
+            changes: self.changes,
+            last: std::mem::take(&mut self.last),
+            ..Self::default()
+        };
+    }
+}
+
 /// How the image in the viewport was last rendered.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderStats {
@@ -371,6 +407,16 @@ pub struct RenderStats {
     pub renderer: Backend,
     /// Samples per pixel: 1 without multisampling.
     pub msaa: u32,
+}
+
+/// What the status bar says of a picture, its time left out: the
+/// renderer, the size and the triangles.
+type RenderKey = (Backend, u32, u32, usize);
+
+impl RenderStats {
+    fn key(&self) -> RenderKey {
+        (self.renderer, self.width, self.height, self.triangles)
+    }
 }
 
 /// F pressed without Ctrl, Alt, Shift or Cmd, by the key's own event:
@@ -635,6 +681,11 @@ pub struct Shell {
     /// measured on the wall clock is drawn (a picture's milliseconds in
     /// the status bar), so the same requests give the same window.
     frame_exact: bool,
+    /// The renderer's numbers the status bar was laid out with in this
+    /// pass ([`RenderKey`]): in a frame-exact recording the pass is laid
+    /// out again when the viewport drew a picture with other numbers.
+    /// `None` while the bar was not laid out in this pass.
+    status_render: Option<Option<RenderKey>>,
     /// A picture of the window is being taken (`ui.screenshot`): like a
     /// frame-exact recording, it shows the exact moment of a motion at
     /// full quality ([`Self::exact_pictures`]).
@@ -781,6 +832,13 @@ pub struct Shell {
     /// The player drew its `t` this frame, and in the last one: the
     /// caption over the viewport leaves it to the player then.
     player_shown: bool,
+    /// Where the Jig's parameters' half sheet was drawn (a phone, m8).
+    params_sheet_rect: Option<egui::Rect>,
+    /// Where the player's row drew its parts (`player.rs`).
+    player_hits: Vec<(&'static str, egui::Rect)>,
+    /// Who made each feature (an agent's name), for the document and
+    /// revision it was read for: the ✦ of the feature list.
+    provenance: Provenance,
     player_shown_last: bool,
     /// The point a zoom at the pointer keeps in place, while the pointer
     /// and the camera stay as that zoom left them: one look at the model
@@ -802,6 +860,9 @@ pub struct Shell {
     /// The system's preference as the last frame saw it (`None`: it said
     /// none), so `ui.get` resolves a change of the state at once.
     system_theme: Option<egui::Theme>,
+    /// The desktop's light or dark setting as the host read it, for when
+    /// the windowing library reports none.
+    desktop_theme: Option<egui::Theme>,
     /// The interface's fonts: Inter and JetBrains Mono once they are here
     /// (`crate::fonts`).
     fonts: crate::fonts::UiFonts,
@@ -850,6 +911,11 @@ pub struct Shell {
     work: Option<Work>,
     /// The open documents as of the last sync: the row of tabs.
     tabs: Vec<crate::state::DocTab>,
+    /// The open documents (by `DocumentStatus::id`) seen to be assemblies
+    /// while they were the active one: their tabs' icon.
+    assembly_docs: std::collections::BTreeSet<u64>,
+    /// Where the menus were drawn (`shell/menus.rs`).
+    menu_hits: menus::MenuHits,
     /// The question before closing a document, while it is asked.
     closing: Option<crate::state::Closing>,
     /// What a tab, the File menu or a shortcut asked for, until the host
@@ -1058,6 +1124,37 @@ fn status_text(state: FeatureState, is_sketch: bool, dof: Option<usize>) -> Stri
 
 /// A clock for timing a render (in the browser the page's own, since
 /// `std::time::Instant` has none there).
+/// Who made each feature (by id), and for which document and revision it
+/// was read.
+type Provenance = (
+    Option<(Option<u64>, u64)>,
+    std::collections::BTreeMap<String, String>,
+);
+
+/// Who made each feature of the active document, by its id: the agent
+/// that made it, or else the one that last changed it (the document's
+/// provenance, as `agent.log` gives it).
+fn provenance(session: &Session) -> std::collections::BTreeMap<String, String> {
+    session
+        .agent_log_json(0)
+        .get("features")
+        .and_then(serde_json::Value::as_array)
+        .map(|features| {
+            features
+                .iter()
+                .filter_map(|f| {
+                    let id = f.get("id")?.as_str()?.to_string();
+                    let by = f
+                        .get("madeBy")
+                        .and_then(serde_json::Value::as_str)
+                        .or_else(|| f.get("changedBy").and_then(serde_json::Value::as_str))?;
+                    Some((id, by.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn stopwatch() -> impl FnOnce() -> Option<f64> {
     #[cfg(not(target_arch = "wasm32"))]
     // native clock: the line above is cfg(not(target_arch = "wasm32")).
@@ -1206,6 +1303,7 @@ impl Shell {
             state: UiState::default(),
             side: sidepanel::SideMemory::default(),
             frame_exact: false,
+            status_render: None,
             capturing: false,
             recording: false,
             light_while_moving: false,
@@ -1272,6 +1370,9 @@ impl Shell {
             drawer_button: None,
             touch_gesture: false,
             player_shown: false,
+            player_hits: Vec::new(),
+            params_sheet_rect: None,
+            provenance: (None, std::collections::BTreeMap::new()),
             player_shown_last: false,
             cause_hits: Vec::new(),
             section_cache: None,
@@ -1280,6 +1381,7 @@ impl Shell {
             themed: false,
             dark: false,
             system_theme: None,
+            desktop_theme: None,
             fonts: crate::fonts::UiFonts::default(),
             quit: false,
             quit_discards: false,
@@ -1303,6 +1405,8 @@ impl Shell {
             shown_status: None,
             work: None,
             tabs: Vec::new(),
+            assembly_docs: std::collections::BTreeSet::new(),
+            menu_hits: menus::MenuHits::default(),
             closing: None,
             doc_action: None,
             edit_actions: std::collections::VecDeque::new(),
@@ -1462,8 +1566,21 @@ impl Shell {
     }
 
     /// A frame-exact recording keeps the clock (`record.rs`): while it
-    /// does, nothing measured on the wall clock is drawn.
+    /// does, nothing measured on the wall clock is drawn. As one starts,
+    /// the status bar lets go of what it holds from the frames before
+    /// (a text held for `Tokens::status_hold_seconds`, the work
+    /// indicator's wait, the widths kept for texts of one shape): those
+    /// frames ran on the wall clock, so what is held would depend on how
+    /// long ago they were. The recording's first frame shows what is so
+    /// at its own moment, and later frames hold on the recording's clock.
+    /// As one ends, likewise: a recording that ran ahead of the wall
+    /// clock left its holds in the future of the window's frames, and the
+    /// bar would stand still until the wall clock caught up
+    /// (docs/design/engine.md › *A recorded frame that said "refining"*).
     pub fn set_frame_exact(&mut self, exact: bool) {
+        if exact != self.frame_exact {
+            self.calm.start_afresh();
+        }
         self.frame_exact = exact;
     }
 
@@ -2392,10 +2509,19 @@ impl Shell {
                 .find(|f| f.id == id)
                 .map_or_else(|| id.to_string(), |f| f.name.clone())
         };
+        // Who made each feature, from the document's provenance (an agent's
+        // name; none for the person's own): read again when the document
+        // or its revision changes, not every frame.
+        let key = (session.document_status().map(|s| s.id), scene.revision);
+        if self.provenance.0 != Some(key) {
+            self.provenance = (Some(key), provenance(session));
+        }
+        let made = &self.provenance.1;
         self.rows = scene
             .features
             .iter()
             .map(|f| TreeRow {
+                made_by: made.get(&f.id).cloned(),
                 id: f.id.clone(),
                 name: f.name.clone(),
                 kind: f.kind,
@@ -2416,6 +2542,16 @@ impl Shell {
         // An assembly lists its instances, nested by subassembly, and its
         // mates (docs/design/assemblies.md › *The tree*).
         self.outline = session.assembly_outline();
+        if let Some(status) = session.document_status() {
+            if self.outline.is_some() {
+                self.assembly_docs.insert(status.id);
+            } else {
+                self.assembly_docs.remove(&status.id);
+            }
+            if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.active) {
+                tab.assembly = self.outline.is_some();
+            }
+        }
         if let Some(outline) = &self.outline {
             self.rows = outline
                 .instances
@@ -2446,6 +2582,7 @@ impl Shell {
                         passes: None,
                         instance: i.own.then(|| i.name.clone()),
                         depth: i.depth,
+                        made_by: None,
                     }
                 })
                 .collect();
@@ -2506,7 +2643,9 @@ impl Shell {
         }
         // The appearance: the panels' colours follow the state's choice,
         // or the system's (`Appearance::System`), from this frame on.
-        self.system_theme = ui.ctx().system_theme();
+        // The desktop's own setting where the windowing library has none
+        // (Linux: the host reads it, `apps/craft3d/src/desktop_theme.rs`).
+        self.system_theme = ui.ctx().system_theme().or(self.desktop_theme);
         let dark = self.state.appearance.is_dark(self.system_theme);
         if !self.themed || dark != self.dark {
             self.set_appearance(dark);
@@ -2515,6 +2654,8 @@ impl Shell {
         }
         self.fonts.update(ui);
         self.player_shown_last = std::mem::take(&mut self.player_shown);
+        self.status_render = None;
+        self.player_hits.clear();
         // A finger was seen: touch sizes from now on, at any width.
         if ui.input(egui::InputState::any_touches) {
             self.touch_seen = true;
@@ -2540,6 +2681,7 @@ impl Shell {
         self.file_shortcuts(ui, status.is_some());
         self.edit_shortcuts(ui, status.as_ref());
         self.tab_shortcuts(ui);
+        self.view_shortcuts(ui);
         self.help_keys(ui);
         // The next step of the history player, when it is time.
         self.advance_player(ui.ctx());
@@ -2561,7 +2703,20 @@ impl Shell {
         if self.state.panels.recovery && !self.recovery.found.is_empty() {
             let clicked = egui::Panel::top("craft3d-recovery")
                 .resizable(false)
-                .show(ui, |ui| self.recovery_bar(ui))
+                .show_separator_line(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(color(tokens.attention_fill))
+                        .stroke(egui::Stroke::new(1.0, color(tokens.attention)))
+                        .inner_margin(egui::Margin::symmetric(
+                            tokens.inset.clamp(0.0, 32.0) as i8,
+                            tokens.nav_spacing.clamp(0.0, 16.0) as i8,
+                        )),
+                )
+                .show(ui, |ui| {
+                    ui.style_mut().visuals = tokens.panel_visuals();
+                    self.recovery_bar(ui)
+                })
                 .inner;
             if let (Some(action), Some(session)) = (clicked, session.as_deref_mut()) {
                 self.recovery_act(session, action);
@@ -2598,11 +2753,21 @@ impl Shell {
                     ui.style_mut().visuals = tokens.chrome_visuals();
                     self.status_bar(ui, status.as_ref());
                 });
+        } else {
+            // No status bar, no pill (its popover opens from the Help menu).
+            self.agents.pill = None;
+            self.status_hits.clear();
         }
         self.cause_hits.clear();
         // Put away while the welcome shows (`start.rs`).
-        let drawer = self.narrow && self.state.panels.tree && !self.welcome();
-        if self.state.panels.tree && !self.welcome() && !self.narrow {
+        // A Jig in use on a phone: its form is a half sheet under the model
+        // (board m8); on a tablet the side panel docks beside it (t2).
+        let window = ui.ctx().content_rect().width();
+        let jig = self.jig_in_use() && !self.welcome();
+        let docked = self.narrow && jig && window >= tokens.docked_min_window;
+        let half_sheet = self.narrow && jig && !docked;
+        let drawer = self.narrow && !docked && self.state.panels.tree && !self.welcome();
+        if self.state.panels.tree && !self.welcome() && (!self.narrow || docked) {
             // No margin on the right: the list's scroll bar lies against
             // the panel's edge, the split it is resized by.
             let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin {
@@ -2614,11 +2779,11 @@ impl Shell {
             // The width is the person's: exact, so a long row is cut or
             // wrapped inside it and never widens it; only the split,
             // dragged, changes it (`tree_split`).
-            let width = tree_width(
-                &tokens,
-                self.state.panels.tree_width,
-                ui.ctx().content_rect().width(),
-            );
+            let width = if docked {
+                tokens.docked_panel_width.min(window * 0.5)
+            } else {
+                tree_width(&tokens, self.state.panels.tree_width, window)
+            };
             let panel = egui::Panel::left("craft3d-tree")
                 .resizable(false)
                 .exact_size(width)
@@ -2629,6 +2794,18 @@ impl Shell {
             self.tree_panel = None;
         }
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui, scene.as_ref()));
+        // The status bar is laid out before the viewport draws: its
+        // renderer's numbers are of the picture drawn before. In a
+        // frame-exact recording the frame says those of its own picture
+        // (the quick first picture and the sharp one differ in their
+        // triangles): the pass is laid out again with them.
+        if self.frame_exact
+            && let Some(said) = self.status_render
+            && self.stats.as_ref().map(RenderStats::key) != said
+        {
+            ui.ctx()
+                .request_discard("the status bar says the numbers of this frame's picture");
+        }
         // The side panel's split, over the viewport's edge: interacted
         // after it, so a drag there resizes the panel and does not orbit.
         if let Some(panel) = self.tree_panel.filter(|_| !self.narrow) {
@@ -2636,10 +2813,18 @@ impl Shell {
         }
         // In the narrow layout the side panel is a drawer over the
         // viewport, opened by the button in the menu bar.
-        if drawer {
+        if drawer && !half_sheet {
             self.drawer(ui, status.is_some());
-        } else if self.narrow {
+        } else if self.narrow && !docked {
             self.tree_panel = None;
+        }
+        if half_sheet && !self.state.panels.drawer {
+            self.parameters_sheet(ui);
+        } else {
+            self.params_sheet_rect = None;
+        }
+        if half_sheet && self.state.panels.drawer {
+            self.drawer(ui, status.is_some());
         }
         // A parameter's value that broke the model, and the way back.
         self.trouble_banner(ui);
@@ -2708,6 +2893,7 @@ impl Shell {
             FileAction::SaveAs,
             FileAction::Save,
             FileAction::Open,
+            FileAction::NewAssembly,
             FileAction::New,
             FileAction::Import,
             FileAction::Export,
@@ -2722,9 +2908,19 @@ impl Shell {
     }
 
     fn menu_bar(&mut self, ui: &mut egui::Ui, status: Option<&DocumentStatus>) {
-        let has_document = status.is_some();
-        let drawer = self.narrow && self.state.panels.tree && !self.welcome();
-        egui::MenuBar::new().ui(ui, |ui| {
+        // No drawer where a Jig's panel is docked (a tablet, t2).
+        let docked =
+            self.jig_in_use() && ui.ctx().content_rect().width() >= self.tokens.docked_min_window;
+        let drawer = self.narrow && !docked && self.state.panels.tree && !self.welcome();
+        // The menus are the kit's plates, whatever the panels' appearance.
+        let menus = self.tokens.menu_visuals();
+        let config =
+            egui::containers::menu::MenuConfig::new().style(move |style: &mut egui::Style| {
+                egui::containers::menu::menu_style(style);
+                style.visuals = menus.clone();
+                style.spacing.menu_margin = egui::Margin::same(4);
+            });
+        egui::MenuBar::new().config(config).ui(ui, |ui| {
             // The narrow layout's drawer: the side panel, behind a button.
             self.drawer_button = None;
             if drawer {
@@ -2762,29 +2958,7 @@ impl Shell {
                 }
                 self.drawer_button = Some(rect);
             }
-            ui.menu_button("File", |ui| {
-                for action in FileAction::ALL {
-                    if action.starts_group() {
-                        ui.separator();
-                    }
-                    let shortcut = action
-                        .shortcut()
-                        .map(|shortcut| ui.ctx().format_shortcut(&shortcut))
-                        .unwrap_or_default();
-                    let button = egui::Button::new(action.label()).shortcut_text(shortcut);
-                    let enabled = (has_document || !action.needs_document())
-                        && self.file_action_available(action);
-                    if ui.add_enabled(enabled, button).clicked() {
-                        self.file_action = Some(action);
-                        ui.close();
-                    }
-                }
-                self.recent_menu(ui);
-                ui.separator();
-                self.menu_documents(ui);
-            });
-            self.edit_menu(ui, status);
-            self.help_menu(ui);
+            self.menus(ui, status);
         });
     }
 
@@ -2851,15 +3025,19 @@ impl Shell {
     }
 
     /// The bar under the menu that offers what a crashed 3DCraft left
-    /// behind. Returns the button that was clicked.
+    /// behind (board s6): the attention colour, since it waits for a
+    /// decision; Later, Discard all and, for each document, Recover (the
+    /// amber action) and Discard. Returns the button that was clicked.
     fn recovery_bar(&mut self, ui: &mut egui::Ui) -> Option<RecoveryAction> {
+        use crate::kit::{Button, Glyph, Kit};
         let tokens = self.tokens;
+        let kit = Kit::panel(&tokens);
         let dim = color(tokens.text_dim);
         let now = epoch_now();
         let mut hits = Vec::new();
         let mut clicked = None;
-        let mut button = |ui: &mut egui::Ui, action: RecoveryAction, label: &str, enabled: bool| {
-            let response = ui.add_enabled(enabled, egui::Button::new(label));
+        let mut button = |ui: &mut egui::Ui, action: RecoveryAction, b: Button<'_>| {
+            let response = kit.button(ui, b);
             if response.clicked() {
                 clicked = Some(action.clone());
             }
@@ -2867,8 +3045,17 @@ impl Shell {
         };
         let armed = |action: &RecoveryAction| self.discard_armed.as_ref() == Some(action);
         let count = self.recovery.found.len();
-        ui.add_space(tokens.inset * 0.3);
+        ui.add_space(tokens.inset * 0.2);
         ui.horizontal(|ui| {
+            let side = tokens.nav_icon_size;
+            let (icon, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+            crate::kit::glyphs::paint(
+                ui.painter(),
+                Glyph::Warning,
+                icon,
+                color(tokens.attention),
+                &tokens,
+            );
             let what = if count == 1 {
                 "an unsaved document was".to_string()
             } else {
@@ -2878,27 +3065,29 @@ impl Shell {
                 egui::RichText::new(format!(
                     "3DCraft did not close properly: {what} autosaved and can be recovered."
                 ))
-                .strong()
-                .color(color(tokens.attention)),
+                .font(kit.medium_font(ui))
+                .color(color(tokens.text)),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                button(ui, RecoveryAction::Later, "Later", true);
                 let all = RecoveryAction::DiscardAll;
                 let label = if armed(&all) {
                     "Discard all for good?"
                 } else {
                     "Discard all"
                 };
-                button(ui, all, label, true);
+                button(ui, all, Button::danger(label));
+                button(ui, RecoveryAction::Later, Button::quiet("Later"));
             });
         });
         for found in self.recovery.found.iter().take(RECOVERY_ROWS) {
             ui.horizontal(|ui| {
+                ui.add_space(tokens.nav_icon_size + ui.spacing().item_spacing.x);
                 button(
                     ui,
                     RecoveryAction::Open(found.id.clone()),
-                    "Recover",
-                    found.openable,
+                    Button::primary("Recover")
+                        .icon(Glyph::Undo)
+                        .enabled(found.openable),
                 );
                 let discard = RecoveryAction::Discard(found.id.clone());
                 let label = if armed(&discard) {
@@ -2906,8 +3095,12 @@ impl Shell {
                 } else {
                     "Discard"
                 };
-                button(ui, discard, label, true);
-                ui.label(egui::RichText::new(&found.name).strong());
+                button(ui, discard, Button::quiet(label));
+                ui.label(
+                    egui::RichText::new(&found.name)
+                        .font(kit.medium_font(ui))
+                        .color(color(tokens.text)),
+                );
                 let detail = recoverable_text(found, now);
                 ui.add(egui::Label::new(egui::RichText::new(detail).color(dim)).truncate());
             });
@@ -2921,7 +3114,7 @@ impl Shell {
                 ),
             );
         }
-        ui.add_space(tokens.inset * 0.3);
+        ui.add_space(tokens.inset * 0.2);
         self.recovery_hits = hits;
         clicked
     }
@@ -3059,6 +3252,7 @@ impl Shell {
                 ..StatusItem::elided(StatusSlot::Work, text, color(tokens.chrome_text))
             });
         }
+        self.status_render = Some(self.stats.as_ref().map(RenderStats::key));
         if let Some(stats) = self.stats {
             // How long the picture took is the wall clock's: not drawn
             // while a frame-exact recording keeps the clock.
@@ -3086,7 +3280,9 @@ impl Shell {
                     stats.triangles
                 )
             };
-            let (text, wait) = self.calm.render.frame(now, &text, false, every);
+            // In a frame-exact recording they are of the frame's own
+            // picture, never held from another one.
+            let (text, wait) = self.calm.render.frame(now, &text, self.frame_exact, every);
             let text = text.to_string();
             soon(wait);
             let width = self.calm.render_width.width(&text, measure(&text).ceil());
@@ -3131,12 +3327,17 @@ impl Shell {
                 }
             })
             .collect();
-        // The agents pill at the far left, always (`shell/agents.rs`): its
-        // room, at most two fifths of the bar, is kept out of what the
-        // items get.
+        // The agents pill at the right end (decision of 2026-11-02,
+        // `shell/agents.rs`; none in the browser): its room, at most two
+        // fifths of the bar, is kept out of what the items get.
         let pill_most = (ui.available_width() * 0.4).max(80.0);
         let pill_width = self.agents_pill_width(ui, pill_most);
-        let available = (ui.available_width() - pill_width - tokens.status_gap).max(0.0);
+        let pill_room = if pill_width > 0.0 {
+            pill_width + tokens.status_gap
+        } else {
+            0.0
+        };
+        let available = (ui.available_width() - pill_room).max(0.0);
         // "Copy details" after the answer of a command that failed
         // (`shell/report.rs`): its room is kept out of what the items get.
         let copy = self
@@ -3164,8 +3365,6 @@ impl Shell {
         let mut copy_rect = None;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            self.agents_pill(ui, pill_most);
-            ui.add_space(tokens.status_gap);
             let mut used = 0.0;
             let mut first = true;
             let mut copy_button = |ui: &mut egui::Ui, used: &mut f32| {
@@ -3231,13 +3430,9 @@ impl Shell {
                 );
                 inside.set_clip_rect(slot.intersect(ui.clip_rect()));
                 if item.slot == StatusSlot::Work {
-                    // The work indicator: a small spinner before the words.
-                    inside.add(
-                        egui::Spinner::new()
-                            .size(tokens.work_spinner)
-                            .color(color(tokens.chrome_work)),
-                    );
-                    inside.add_space(tokens.work_spinner * 0.5);
+                    // The work indicator: the kit's spinner (on the
+                    // chrome, the plate's inks) before the words.
+                    crate::kit::Kit::plate(&tokens).spinner(&mut inside, "");
                 }
                 let response = inside.add(label);
                 hits.push((item.slot, response.rect));
@@ -3253,6 +3448,12 @@ impl Shell {
             }
             if !copy_shown {
                 copy_button(ui, &mut used);
+            }
+            if pill_width > 0.0 {
+                ui.add_space((available - used).max(0.0) + tokens.status_gap);
+                self.agents_pill(ui, pill_most);
+            } else {
+                self.agents.pill = None;
             }
         });
         self.status_hits = hits;
@@ -3288,6 +3489,13 @@ impl Shell {
         if let Some((tokens, _)) = self.wide.as_mut() {
             *tokens = tokens.with_palette(palette);
         }
+    }
+
+    /// The desktop's light or dark setting, as the host read it where the
+    /// windowing library reports none (GNOME on Linux); `None` for no
+    /// preference. Appearance › System follows it.
+    pub fn set_desktop_theme(&mut self, theme: Option<egui::Theme>) {
+        self.desktop_theme = theme;
     }
 
     /// Whether the panels have the dark appearance now (as drawn by the
@@ -3605,16 +3813,20 @@ impl Shell {
                                     ui.with_layout(leading, |ui| {
                                         // A long name is cut to the room left
                                         // (the whole name on hover), never
-                                        // widening the panel.
-                                        let label = ui
-                                            .add(
+                                        // widening the panel; the status
+                                        // keeps its room after it.
+                                        let status = format!("{} · {}", row.kind, row.status);
+                                        let (name_room, _) = name_and_status_room(ui, &status);
+                                        let label = in_room(ui, name_room, |ui| {
+                                            ui.add(
                                                 egui::Button::selectable(
                                                     row.selected || row.made_selection,
                                                     name,
                                                 )
                                                 .truncate(),
                                             )
-                                            .on_hover_text(&hover);
+                                        })
+                                        .on_hover_text(&hover);
                                         // A row of an instance inside a rigid
                                         // subassembly has no body of its own.
                                         let selectable = !row.id.is_empty();
@@ -3696,8 +3908,9 @@ impl Shell {
                                 });
                             }
                         }
+                        let mut statuses = Vec::new();
                         if let Some(outline) = &outline {
-                            mates_ui(ui, &tokens, outline);
+                            statuses = mates_ui(ui, &tokens, outline);
                         }
                         assertions_heading(ui, &tokens, self.assertion_rows.is_empty());
                         let mut pending = false;
@@ -3726,12 +3939,18 @@ impl Shell {
                             ui.horizontal(|ui| {
                                 ui.colored_label(color(tint), tree_mark(state))
                                     .on_hover_text(&row.message);
-                                ui.add(egui::Label::new(name).truncate())
-                                    .on_hover_text(&row.message);
-                                ui.add(
-                                    egui::Label::new(egui::RichText::new(status).color(dim))
-                                        .truncate(),
-                                );
+                                let (name_room, status_room) = name_and_status_room(ui, &status);
+                                in_room(ui, name_room, |ui| {
+                                    ui.add(egui::Label::new(name).truncate())
+                                        .on_hover_text(&row.message)
+                                });
+                                let shown = in_room(ui, status_room, |ui| {
+                                    ui.add(
+                                        egui::Label::new(egui::RichText::new(status).color(dim))
+                                            .truncate(),
+                                    )
+                                });
+                                statuses.push(shown.rect);
                             });
                             if matches!(row.status, A::Failed | A::Error | A::NotProven) {
                                 ui.indent(("craft3d-assertion", &row.name), |ui| {
@@ -3746,6 +3965,7 @@ impl Shell {
                                 });
                             }
                         }
+                        self.side.hits.statuses = statuses;
                         // Measured on another thread: look again soon.
                         if pending {
                             ui.ctx()
@@ -4890,7 +5110,12 @@ pub const NO_ASSERTIONS_HINT: &str = "No checks yet. Ask an AI agent, e.g. \u{20
 
 /// An assembly's mates under its instances: each with its mark, kind and
 /// value (or why it fails), then the degrees of freedom left.
-fn mates_ui(ui: &mut egui::Ui, tokens: &Tokens, outline: &craft3d_engine::AssemblyOutline) {
+fn mates_ui(
+    ui: &mut egui::Ui,
+    tokens: &Tokens,
+    outline: &craft3d_engine::AssemblyOutline,
+) -> Vec<egui::Rect> {
+    let mut statuses = Vec::new();
     let dim = color(tokens.text_dim);
     ui.add_space(tokens.inset * 0.5);
     ui.label(egui::RichText::new("Mates").strong());
@@ -4921,15 +5146,17 @@ fn mates_ui(ui: &mut egui::Ui, tokens: &Tokens, outline: &craft3d_engine::Assemb
             ui.colored_label(color(tint), tree_mark(state))
                 .on_hover_text(&hover);
             // Cut to the panel's width, never widening it; the whole
-            // text on hover.
-            ui.add(egui::Label::new(&mate.name).truncate())
-                .on_hover_text(&hover);
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(format!("{}{value}{driven}", mate.kind)).color(dim),
-                )
-                .truncate(),
-            );
+            // text on hover. The status keeps its room.
+            let status = format!("{}{value}{driven}", mate.kind);
+            let (name_room, status_room) = name_and_status_room(ui, &status);
+            in_room(ui, name_room, |ui| {
+                ui.add(egui::Label::new(&mate.name).truncate())
+                    .on_hover_text(&hover)
+            });
+            let shown = in_room(ui, status_room, |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(status).color(dim)).truncate())
+            });
+            statuses.push(shown.rect);
         });
         if let Some(error) = &mate.error {
             ui.indent(("craft3d-mate-error", &mate.name), |ui| {
@@ -4954,15 +5181,49 @@ fn mates_ui(ui: &mut egui::Ui, tokens: &Tokens, outline: &craft3d_engine::Assemb
                 )
                 .wrap(),
             );
-            return;
+            return statuses;
         }
         (None, Some(0)) => "Fully constrained (0 degrees of freedom left)".to_string(),
         (None, Some(1)) => "1 degree of freedom left".to_string(),
         (None, Some(n)) => format!("{n} degrees of freedom left"),
-        (None, None) => return,
+        (None, None) => return statuses,
     };
     ui.colored_label(dim, left)
         .on_hover_text(outline.free.join("\n"));
+    statuses
+}
+
+/// The room of a row's name and of its dim status after it, in a row
+/// with `room` points left: the status keeps its own width (at most half
+/// the row), the name the rest, so a long name is cut and the status
+/// still shows.
+fn name_and_status_room(ui: &egui::Ui, status: &str) -> (f32, f32) {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let natural = ui
+        .painter()
+        .layout_no_wrap(status.to_string(), font, egui::Color32::PLACEHOLDER)
+        .size()
+        .x
+        .ceil();
+    let room = ui.available_width().max(0.0);
+    let status = natural.min(room * 0.5);
+    let name = (room - status - ui.spacing().item_spacing.x).max(0.0);
+    (name, status + 1.0)
+}
+
+/// `add` in a room `width` points wide in a row: what it lays out is cut
+/// there.
+fn in_room<R>(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let height = ui.spacing().interact_size.y;
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, height),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_max_width(width);
+            add(ui)
+        },
+    )
+    .inner
 }
 
 /// The "Assertions" heading of the feature panel, always there; with the

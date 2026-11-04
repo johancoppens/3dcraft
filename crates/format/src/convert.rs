@@ -1493,9 +1493,16 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
             doc::FeatureKind::Sweep(doc::Sweep {
                 sketch: doc::FeatureId(sketch),
                 path: doc::FeatureId(path),
+                rail,
+                scale,
             }) => manifest::FeatureKind::Sweep {
                 sketch: *sketch,
                 path: *path,
+                rail: rail.map(|r| r.0),
+                scale: match scale {
+                    doc::SweepScale::Uniform => manifest::SweepScale::Uniform,
+                    doc::SweepScale::Width => manifest::SweepScale::Width,
+                },
             },
             doc::FeatureKind::OffsetProfile(doc::OffsetProfile {
                 sketch: doc::FeatureId(sketch),
@@ -3513,9 +3520,19 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                     .cloned()
                     .unwrap_or_else(|| doc::Blob::new(Vec::new())),
             }),
-            manifest::FeatureKind::Sweep { sketch, path } => doc::FeatureKind::Sweep(doc::Sweep {
+            manifest::FeatureKind::Sweep {
+                sketch,
+                path,
+                rail,
+                scale,
+            } => doc::FeatureKind::Sweep(doc::Sweep {
                 sketch: doc::FeatureId(sketch),
                 path: doc::FeatureId(path),
+                rail: rail.map(doc::FeatureId),
+                scale: match scale {
+                    manifest::SweepScale::Uniform => doc::SweepScale::Uniform,
+                    manifest::SweepScale::Width => doc::SweepScale::Width,
+                },
             }),
             manifest::FeatureKind::OffsetProfile {
                 sketch,

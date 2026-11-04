@@ -1,0 +1,328 @@
+//! The outline a cutter's beam centre follows: the part offset by the
+//! kerf, the outline outwards and the holes inwards, by the kernel's one
+//! offset of closed profiles (`craft3d_kernel::offset_profile`, the same
+//! that `feature.offsetProfile` uses), with round corners: every point of
+//! the path at the kerf's distance from the part, as a round beam cuts.
+//! Lines stay lines and arcs arcs about the same centre.
+
+use super::Shape;
+use craft3d_drawing::{Path, Segment};
+use craft3d_kernel::offset_profile::{Corners, OffsetSource, offset_profiles};
+use craft3d_kernel::profile::{Curve2, Loop2, Shape as Along, SketchCurve, detect_profiles};
+use craft3d_math::{Portable, Tolerance};
+
+/// The curves of a loop, numbered on from `next`.
+fn curves_of(path: &Path, next: &mut u64, out: &mut Vec<SketchCurve>) -> Result<(), String> {
+    let mut push = |curve: Curve2| {
+        out.push(SketchCurve { id: *next, curve });
+        *next = next.saturating_add(1);
+    };
+    match path {
+        Path::Circle { center, radius } => push(Curve2::Circle {
+            center: *center,
+            radius: *radius,
+        }),
+        Path::Ellipse { .. } => {
+            return Err(
+                "a kerf offset of an ellipse is not built (the offset of an ellipse is no ellipse); export it without a kerf".into(),
+            );
+        }
+        Path::Chain {
+            start, segments, ..
+        } => {
+            let mut at = *start;
+            for segment in segments {
+                let to = segment.end();
+                match segment {
+                    Segment::Line { .. } => push(Curve2::Line { start: at, end: to }),
+                    Segment::Arc { center, ccw, .. } => {
+                        // A curve of the kernel's runs counter-clockwise.
+                        let (start, end) = if *ccw { (at, to) } else { (to, at) };
+                        push(Curve2::Arc {
+                            center: *center,
+                            start,
+                            end,
+                        });
+                    }
+                    Segment::EllipticArc { .. } => {
+                        return Err("a kerf offset of an elliptic arc is not built (its offset is no ellipse); export it without a kerf".into());
+                    }
+                    Segment::Spline(_) => {
+                        return Err("a kerf offset of a spline is not built (its offset is no spline of the same kind); export it without a kerf".into());
+                    }
+                }
+                at = to;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Per segment of a chain, in the order [`curves_of`] numbers them:
+/// whether it is an arc that meets both its neighbours tangentially (G1),
+/// a fillet. A whole circle is no fillet.
+fn fillets_of(path: &Path, out: &mut Vec<bool>) {
+    let Path::Chain {
+        start, segments, ..
+    } = path
+    else {
+        out.push(false);
+        return;
+    };
+    let unit = |v: [f64; 2]| {
+        let l = v[0].phypot(v[1]);
+        if l > 0.0 {
+            [v[0] / l, v[1] / l]
+        } else {
+            [0.0, 0.0]
+        }
+    };
+    // The tangents (unit, in the loop's direction) at each segment's start
+    // and end; an elliptic arc or a spline is never offset (refused before).
+    let mut ends = Vec::with_capacity(segments.len());
+    let mut at = *start;
+    for segment in segments {
+        let to = segment.end();
+        let tangents = match segment {
+            Segment::Arc { center, ccw, .. } => {
+                let along = |p: [f64; 2]| {
+                    let r = [p[0] - center[0], p[1] - center[1]];
+                    let t = unit([-r[1], r[0]]);
+                    if *ccw { t } else { [-t[0], -t[1]] }
+                };
+                (along(at), along(to), true)
+            }
+            _ => {
+                let t = unit([to[0] - at[0], to[1] - at[1]]);
+                (t, t, false)
+            }
+        };
+        ends.push(tangents);
+        at = to;
+    }
+    let n = ends.len();
+    // Tangent within 1e-9 rad: the joint of a fillet drawn as such.
+    let smooth = |a: [f64; 2], b: [f64; 2]| {
+        (a[0] * b[1] - a[1] * b[0]).abs() <= 1e-9 && a[0] * b[0] + a[1] * b[1] > 0.0
+    };
+    for (i, (first, last, arc)) in ends.iter().enumerate() {
+        let before = ends.get((i + n - 1) % n.max(1)).map(|e| e.1);
+        let after = ends.get((i + 1) % n.max(1)).map(|e| e.0);
+        out.push(
+            *arc && n > 1
+                && before.is_some_and(|b| smooth(b, *first))
+                && after.is_some_and(|a| smooth(*last, a)),
+        );
+    }
+}
+
+/// A loop of the kernel's back as a path.
+fn path_of(lp: &Loop2) -> Result<Path, String> {
+    if let [only] = lp.segments.as_slice()
+        && let Along::Circle { center, radius } = only.shape
+    {
+        return Ok(Path::Circle { center, radius });
+    }
+    let first = lp
+        .segments
+        .first()
+        .ok_or_else(|| "the kerf left an empty loop".to_string())?;
+    let mut segments = Vec::with_capacity(lp.segments.len());
+    for s in &lp.segments {
+        segments.push(match &s.shape {
+            Along::Line => Segment::Line { to: s.end },
+            Along::Arc { center, radius } => Segment::Arc {
+                to: s.end,
+                center: *center,
+                radius: *radius,
+                ccw: !s.reversed,
+            },
+            Along::Circle { .. } | Along::Spline(_) => {
+                return Err("the kerf left a curve an outline cannot hold".into());
+            }
+        });
+    }
+    Ok(Path::Chain {
+        start: first.start,
+        segments,
+        closed: true,
+    })
+}
+
+/// `shape` offset by `k` (the distance from the part's edge to the beam's
+/// centre: half the width the beam cuts away): the outline `k` out, each
+/// hole `k` in, the corners the beam goes round arcs of radius `k`. The
+/// marks stay where they are. `k = 0` is the shape itself. An inner round
+/// of radius at most `k` comes out at radius `k`, as a sharp inner corner
+/// does: it is said in the notes returned. Refused, with
+/// the reason: a negative or infinite `k`, an ellipse or a spline in a
+/// loop (not built), and a kerf that changes the loops (a hole that
+/// closes, a slot or a notch narrower than `2 k` that closes, a loop that
+/// splits), with the largest kerf that keeps them.
+pub fn kerf(shape: &Shape, k: f64, tolerance: &Tolerance) -> Result<(Shape, Vec<String>), String> {
+    if !(k.is_finite() && k >= 0.0) {
+        return Err(format!("the kerf {k} must be a length of 0 or more"));
+    }
+    if k == 0.0 {
+        return Ok((shape.clone(), Vec::new()));
+    }
+    let mut curves = Vec::new();
+    let mut next = 0_u64;
+    // What each curve is, for a message: the loop and its place in it.
+    let mut labels: Vec<String> = Vec::new();
+    for (i, path) in std::iter::once(&shape.outline)
+        .chain(&shape.holes)
+        .enumerate()
+    {
+        let before = curves.len();
+        curves_of(path, &mut next, &mut curves)?;
+        let whose = if i == 0 {
+            "the outline".to_string()
+        } else {
+            format!("hole {i}")
+        };
+        for n in 0..curves.len() - before {
+            labels.push(format!("segment {n} of {whose}"));
+        }
+    }
+    let mut fillets = Vec::with_capacity(curves.len());
+    for path in std::iter::once(&shape.outline).chain(&shape.holes) {
+        fillets_of(path, &mut fillets);
+    }
+    let profiles = detect_profiles(&curves, tolerance)
+        .map_err(|e| format!("the outline does not read as one region with holes: {e}"))?;
+    match profiles.as_slice() {
+        [one] if one.holes.len() == shape.holes.len() => {}
+        _ => {
+            return Err(format!(
+                "the outline does not read as one region with {} holes",
+                shape.holes.len()
+            ));
+        }
+    }
+    let out = offset_profiles(&profiles, k, Corners::Round, tolerance)
+        .map_err(|e| format!("the kerf {k}: {e}"))?;
+    if out.loops_after != out.loops_before || out.regions_after != out.regions_before {
+        let fits = out
+            .whole_up_to
+            .map(|d| format!("; the largest kerf that keeps every loop is {d}"))
+            .unwrap_or_default();
+        return Err(format!(
+            "the kerf {k} turns {} loops into {} (a slot, notch or gap narrower than twice the kerf closes, or a hole splits){fits}",
+            out.loops_before, out.loops_after
+        ));
+    }
+    // Every curve of the part has its one offset on the path, or the beam
+    // does not cut it: a notch or slot narrower than the beam, filled; an
+    // inner round of a smaller radius than the kerf.
+    // An inner round of a smaller radius than the kerf is the exception:
+    // a fillet (an arc tangent to both its neighbours, concave since its
+    // offset vanished) that the beam cannot follow, as it cannot follow a
+    // sharp inner corner; both come out rounded at the kerf's radius, and
+    // it is said, not refused. An arc that meets its neighbours at a
+    // corner (a bite, a relief) would vanish from the part: refused.
+    let mut notes = Vec::new();
+    for (id, label) in labels.iter().enumerate() {
+        let pieces = out
+            .origins
+            .iter()
+            .filter(|o| o.source == OffsetSource::Curve(id as u64))
+            .count();
+        if pieces == 0
+            && fillets.get(id).copied().unwrap_or(false)
+            && let Some(r) = curves.get(id).and_then(|c| inner_round(c, k, tolerance))
+        {
+            notes.push(format!(
+                "{label}, an inner round of radius {r}, comes out at the kerf's radius {k}"
+            ));
+            continue;
+        }
+        if pieces != 1 {
+            let fits = largest_keeping(shape, k, tolerance, &labels)
+                .map(|d| format!("; the largest kerf that cuts every curve is {d}"))
+                .unwrap_or_default();
+            return Err(format!(
+                "the kerf {k} does not follow {label} ({}): a notch, a slot or an inner corner narrower than the beam, which the beam cannot cut{fits}",
+                if pieces == 0 {
+                    "it is left out"
+                } else {
+                    "it falls apart"
+                }
+            ));
+        }
+    }
+    let [region] = out.profiles.as_slice() else {
+        return Err(format!(
+            "the kerf {k} leaves {} regions, not one",
+            out.profiles.len()
+        ));
+    };
+    Ok((
+        Shape {
+            outline: path_of(&region.outer)?,
+            holes: region.holes.iter().map(path_of).collect::<Result<_, _>>()?,
+            marks: shape.marks.clone(),
+        },
+        notes,
+    ))
+}
+
+/// The radius of `curve` when it is an arc of radius at most `k`: with no
+/// offset piece and tangent to both neighbours (`fillets_of`), an inner
+/// round the path turns about at radius `k`.
+fn inner_round(curve: &SketchCurve, k: f64, tolerance: &Tolerance) -> Option<f64> {
+    let Curve2::Arc { center, start, .. } = curve.curve else {
+        return None;
+    };
+    let r = (start[0] - center[0]).phypot(start[1] - center[1]);
+    (r <= k + tolerance.linear).then_some(r)
+}
+
+/// Whether the kerf `k` keeps one offset piece of every curve and every
+/// loop.
+fn keeps_all(curves: &[SketchCurve], fillets: &[bool], k: f64, tolerance: &Tolerance) -> bool {
+    let Ok(profiles) = detect_profiles(curves, tolerance) else {
+        return false;
+    };
+    let Ok(out) = offset_profiles(&profiles, k, Corners::Round, tolerance) else {
+        return false;
+    };
+    out.loops_after == out.loops_before
+        && out.regions_after == out.regions_before
+        && curves.iter().enumerate().all(|(id, curve)| {
+            let pieces = out
+                .origins
+                .iter()
+                .filter(|o| o.source == OffsetSource::Curve(id as u64))
+                .count();
+            pieces == 1
+                || (pieces == 0
+                    && fillets.get(id).copied().unwrap_or(false)
+                    && inner_round(curve, k, tolerance).is_some())
+        })
+}
+
+/// The largest kerf below `k` that keeps every curve, to a thousandth of
+/// `k`, by bisection (at most 12 offsets).
+fn largest_keeping(shape: &Shape, k: f64, tolerance: &Tolerance, labels: &[String]) -> Option<f64> {
+    let mut curves = Vec::new();
+    let mut next = 0_u64;
+    let mut fillets = Vec::new();
+    for path in std::iter::once(&shape.outline).chain(&shape.holes) {
+        curves_of(path, &mut next, &mut curves).ok()?;
+        fillets_of(path, &mut fillets);
+    }
+    if curves.len() != labels.len() {
+        return None;
+    }
+    let (mut lo, mut hi) = (0.0, k);
+    for _ in 0..12 {
+        let mid = 0.5 * (lo + hi);
+        if keeps_all(&curves, &fillets, mid, tolerance) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    (lo > 0.0).then_some(lo)
+}

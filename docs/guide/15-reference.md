@@ -8,7 +8,7 @@ The full description of any command, with every value it takes and what it refus
 
 ## Commands
 
-3DCraft 0.1.0 has 170 commands. A command's id is its family and its name: `feature.fillet`.
+3DCraft 0.1.0 has 172 commands. A command's id is its family and its name: `feature.fillet`.
 
 ### Documents and files
 
@@ -19,6 +19,7 @@ The full description of any command, with every value it takes and what it refus
 | `file.list`, `file.activate` | List the open documents, switch to one |
 | `file.import` | Read a STEP file into the document |
 | `file.export` | Write STEP, STL, 3MF, OBJ, DXF or SVG ([chapter 12](12-files.md)) |
+| `cut.list`, `cut.export` | The cut list of the plates and sheet-metal parts (JSON or CSV), their outlines to DXF or SVG with a kerf ([chapter 12](12-files.md#cut-lists-the-plates-of-a-design)) |
 | `edit.undo`, `edit.redo` | Undo and redo, one change at a time |
 | `recovery.list`, `recovery.open`, `recovery.discard` | What was autosaved before a crash |
 | `session.report` | A bug report of the last failed command |

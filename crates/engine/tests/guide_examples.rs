@@ -605,3 +605,27 @@ fn the_field_test_tasks_two_and_four_are_as_the_page_says() {
     );
     assert_eq!(thin(&mut s), "failed");
 }
+
+/// The sweep along two rails of the features chapter (`09-features.md` ›
+/// *Sweep along two rails*) runs as written: the spout is built, meets
+/// its volume (a hollow frustum of a cone in closed form) and passes the
+/// deep check.
+#[test]
+fn the_spout_of_the_features_chapter_meets_its_volume() {
+    let text = read_text(&docs().join("guide/09-features.md"));
+    let block = json_blocks(&text)
+        .into_iter()
+        .find(|b| b.contains("\"rail\": \"Right\""))
+        .expect("the chapter has the spout");
+    let steps = steps(&serde_json::from_str(&block).unwrap()).unwrap();
+    let mut s = common::session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    for (id, params) in steps {
+        run(&mut s, &id, params);
+    }
+    let assertions = run(&mut s, "assert.list", json!({}));
+    assert_eq!(assertions["ok"], true, "{assertions}");
+    assert_eq!(assertions["passed"], 1, "{assertions}");
+    let check = run(&mut s, "document.check", json!({"deep": true}));
+    assert_eq!(check["ok"], true, "{check}");
+}

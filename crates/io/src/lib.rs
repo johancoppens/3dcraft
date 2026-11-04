@@ -5,6 +5,7 @@
 //! outline of a sketch or of a flat face goes to DXF and SVG through
 //! `craft3d-drawing`: see [`drawing`].
 
+pub mod cut;
 pub mod drawing;
 pub mod step;
 pub mod step_assembly;

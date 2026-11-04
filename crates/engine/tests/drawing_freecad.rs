@@ -734,3 +734,101 @@ fn freecad_reads_the_outline_of_text() {
         }
     }
 }
+
+/// The cut parts of `cut.export` with a kerf (docs/design/cutting.md):
+/// a 100 × 50 plate with a round hole and a slot and a 60 × 40 plate,
+/// side by side, 0.2 off the parts. FreeCAD reads the DXF and the SVG
+/// with our length, the sheet's box (the kerf around both parts), and
+/// four closed wires (two outlines, two holes).
+#[test]
+#[ignore = "needs FreeCAD: set CRAFT3D_FREECAD and run with --ignored"]
+fn freecad_reads_cut_parts_with_a_kerf() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("drawing-freecad-cut");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::new(Workspace {
+        read: Access::Root(dir.clone()),
+        write: Access::Root(dir.clone()),
+    });
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "sketch.create", json!({"plane": "xy", "name": "P"}));
+    run(
+        &mut s,
+        "sketch.rect",
+        json!({"sketch": "P", "from": [0, 0], "to": [100, 50]}),
+    );
+    run(
+        &mut s,
+        "sketch.circle",
+        json!({"sketch": "P", "center": [20, 25], "radius": 5}),
+    );
+    run(
+        &mut s,
+        "sketch.path",
+        json!({"sketch": "P", "start": [50, 21], "segments": [
+            {"line": [80, 21]}, {"arc": [80, 29], "tangent": true},
+            {"line": [50, 29], "tangent": true}, {"arc": "start", "tangent": true}]}),
+    );
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "P", "distance": 6, "name": "Holed"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [60, 40, 6], "position": [0, 200, 0], "name": "Small"}),
+    );
+    let k = 0.2;
+    let length = (300.0 + 2.0 * PI * k)
+        + 2.0 * PI * (5.0 - k)
+        + (60.0 + 2.0 * PI * (4.0 - k))
+        + (200.0 + 2.0 * PI * k);
+    let mut cases = Vec::new();
+    for format in ["dxf", "svg"] {
+        let file = format!("cut.{format}");
+        let result = run(
+            &mut s,
+            "cut.export",
+            json!({"path": file, "kerf": format!("{k} mm"), "gap": "5 mm"}),
+        );
+        assert!(
+            near(result["length"].as_f64().unwrap(), length, 1e-12),
+            "{result}"
+        );
+        cases.push((file, result));
+    }
+    let reports = freecad_reads(&dir);
+    assert_eq!(reports.len(), cases.len());
+    // Both parts placed by their kerfed boxes from (0, 0), 5 apart.
+    let want = [
+        0.0,
+        0.0,
+        100.0 + 2.0 * k + 5.0 + 60.0 + 2.0 * k,
+        50.0 + 2.0 * k,
+    ];
+    for (file, ours) in &cases {
+        let report = &reports[file];
+        let number = |key: &str| -> f64 { report[key].parse().unwrap() };
+        println!(
+            "{file}: length {} (ours {}), bbox {}, wires {}, {} edges ({})",
+            report["length"],
+            ours["length"],
+            report["bbox"],
+            report.get("closed").map_or("?", String::as_str),
+            report["edges"],
+            report["kinds"]
+        );
+        assert!(near(number("length"), length, 1e-9), "{file}");
+        let bbox: Vec<f64> = report["bbox"]
+            .split(' ')
+            .map(|v| v.parse().unwrap())
+            .collect();
+        for (got, expected) in bbox.iter().zip(want) {
+            assert!((got - expected).abs() <= 1e-9 * 200.0, "{file}: {bbox:?}");
+        }
+        if let Some(closed) = report.get("closed") {
+            assert_eq!(closed.parse::<u64>().unwrap(), 4, "{file}");
+        }
+    }
+}

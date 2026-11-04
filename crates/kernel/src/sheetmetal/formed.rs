@@ -317,6 +317,9 @@ pub fn place(
             lance,
         });
     }
+    // A hood near a sharp bend's inner skins: proven clear or refused
+    // (sheetmetal.md › *Sharp bends* › *Touching*).
+    super::sharp::clear_hoods(part, &out, tol)?;
     Ok(out)
 }
 

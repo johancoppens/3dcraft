@@ -641,3 +641,128 @@ fn sharp_walls_that_would_touch_are_refused() {
         }
     }
 }
+
+/// A quadrilateral base, its edges curves 1 to 4 from its first point.
+fn quad(points: [[f64; 2]; 4], k: f64) -> Profile {
+    let curves: Vec<SketchCurve> = (0..4)
+        .map(|i| {
+            let (a, b) = (points[i], points[(i + 1) % 4]);
+            line(i as u64 + 1, [a[0] * k, a[1] * k], [b[0] * k, b[1] * k])
+        })
+        .collect();
+    detect_profiles(&curves, &tolerance(k)).unwrap().remove(0)
+}
+
+/// Material from anywhere in the part on a sharp wall's inner skin is
+/// refused by one proof, not by a rule per case (re-review of 8449951d;
+/// each case below built a solid touching itself on 8449951d): a wall on
+/// the bottom edge (R = 2, up 90 degrees) with a lip turned in over the
+/// base on its tip, or a hem folded back down inside it, beside a sharp
+/// wall on the right edge, open and without a relief: the lip's or the
+/// hem's end lies on the sharp wall's inner skin; a wall leaning in beside
+/// a sharp wall at 90 degrees and a hair (more than the angular
+/// tolerance), and beside a sharp square wall at a base corner of
+/// 89.9999 degrees: its end face within the tolerance of that skin near
+/// the corner. The same walls with a relief are built.
+#[test]
+fn material_on_a_sharp_walls_inner_skin_is_refused_by_one_proof() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let (t, r) = (1.0 * k, 2.0 * k);
+        let sharp = flange(On::Base(2), 30.0 * k, FRAC_PI_2, Direction::Up, 0.0, 0.4);
+        let wall = flange(On::Base(1), 20.0 * k, FRAC_PI_2, Direction::Up, r, 0.4);
+        for (what, tip) in [
+            (
+                "lip",
+                flange(On::Tip(0), 10.0 * k, FRAC_PI_2, Direction::Up, 1.0 * k, 0.4),
+            ),
+            (
+                "hem",
+                flange(On::Tip(0), 8.0 * k, PI, Direction::Up, 1.0 * k, 0.4),
+            ),
+        ] {
+            let mut s = spec(
+                base(40.0, 30.0, k),
+                t,
+                vec![wall.clone(), tip, sharp.clone()],
+                None,
+            );
+            let (f, why) = refused(&s, &tol);
+            assert_eq!(f, Some(2), "{what} at {k}: {why}");
+            assert!(why.contains("not proven clear"), "{what} at {k}: {why}");
+            s.relief = Some(Relief {
+                kind: ReliefKind::Rect,
+                size: 3.0 * k,
+            });
+            let part = build(&s, &tol).unwrap_or_else(|e| panic!("{what} relieved at {k}: {e}"));
+            healthy(&part, &tol);
+        }
+        let leaning = flange(On::Base(1), 20.0 * k, 2.0 * PI / 3.0, Direction::Up, r, 0.4);
+        let mut hair = sharp.clone();
+        hair.angle = FRAC_PI_2 + 2.0 * tol.angular;
+        let s = spec(base(40.0, 30.0, k), t, vec![leaning.clone(), hair], None);
+        let (_, why) = refused(&s, &tol);
+        assert!(
+            why.contains("not proven clear"),
+            "90 and a hair at {k}: {why}"
+        );
+        let off = 30.0 * (1e-4_f64).to_radians().ptan();
+        let s = spec(
+            quad(
+                [[0.0, 0.0], [40.0, 0.0], [40.0 + off, 30.0], [0.0, 30.0]],
+                k,
+            ),
+            t,
+            vec![leaning, sharp],
+            None,
+        );
+        let (_, why) = refused(&s, &tol);
+        assert!(why.contains("not proven clear"), "89.9999 at {k}: {why}");
+    }
+}
+
+/// Proven against the whole of a sharp wall's inner skin, not only away
+/// from its edges (re-review of bae58281): a rounded wall (R = 2) on the
+/// bottom edge leaning in by just enough that its flat's end reaches two
+/// tolerances past the plane of a sharp square wall's inner skin on the
+/// right edge, near that wall's start, is refused (bae58281 built it,
+/// the band along the skin's edge left out); square, the neighbour meets
+/// the skin only along the corner below the axis and is built. A formed
+/// louvre's hood near a sharp wall is bounded by its footprint's box and
+/// refused where the box reaches the wall's inner skin, built a little
+/// further off.
+#[test]
+fn a_hair_past_a_sharp_walls_inner_skin_and_a_hood_beside_it() {
+    use craft3d_kernel::sheetmetal::formed::{FormedSpec, HoodEnds, place};
+    for k in SCALES {
+        let tol = tolerance(k);
+        let (t, r, l) = (1.0 * k, 2.0 * k, 20.0 * k);
+        let e = 2.0 * tol.linear;
+        let hypot = r.phypot(l);
+        let delta = r.patan2(l) + (e / hypot).pasin();
+        let sharp = flange(On::Base(2), 30.0 * k, FRAC_PI_2, Direction::Up, 0.0, 0.4);
+        let leaning = flange(On::Base(1), l, FRAC_PI_2 + delta, Direction::Up, r, 0.4);
+        let s = spec(base(40.0, 30.0, k), t, vec![leaning, sharp.clone()], None);
+        let (_, why) = refused(&s, &tol);
+        assert!(
+            why.contains("not proven clear"),
+            "a hair past at {k}: {why}"
+        );
+
+        let wall = flange(On::Base(1), 20.0 * k, FRAC_PI_2, Direction::Up, 0.0, 0.4);
+        let part = build(&spec(base(40.0, 30.0, k), t, vec![wall], None), &tol).unwrap();
+        let hood = |y: f64| FormedSpec {
+            lance: [[30.0 * k, y * k], [10.0 * k, y * k]],
+            width: 3.0 * k,
+            height: 1.5 * k,
+            ends: HoodEnds::Closed,
+            up: true,
+        };
+        assert!(place(&part, &[hood(5.0)], &tol).is_ok());
+        let why = place(&part, &[hood(4.0)], &tol).unwrap_err().to_string();
+        assert!(
+            why.contains("formed louvre 0's hood"),
+            "a hood at {k}: {why}"
+        );
+    }
+}

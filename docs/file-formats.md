@@ -276,6 +276,10 @@ Written from the DXF Reference (Autodesk publishes one per release: the group co
 
 **Not built.** Import of either format. Text, dimensions, hatches.
 
+### Cut parts
+
+`cut.export` (2026-11-03) writes the outlines of the parts `cut.list` finds (plates recognised from their faces, sheet-metal parts by their flat patterns) with the same writers: each part in its own frame (its length along x, its rectangle's corner at the origin) on a layer named after it, holes and cut marks with it, bend lines on `bendUp` and `bendDown`; on one sheet in rows (`gap`, `width`) or one file per part (`layout: "each"`, `name-Layer.dxf`); with `kerf` the outline offset out and the holes in by the kernel's offset of closed profiles, round corners, lines and arcs kept. The method, the limits and the tests: [`design/cutting.md`](design/cutting.md).
+
 ### Projected views
 
 **As built (2026-10-23).** `file.export` to `.dxf` or `.svg` **without** `sketch`, `face` or `faces` is a drawing of the model as seen: `{view: "iso|front|back|left|right|top|bottom|current" = iso, projection: "orthographic|perspective" = orthographic, hidden: "omit|dashed" = omit, tolerance}`. `current` is the camera of the window's viewport: the window tells the session its camera at every sync, for the document it shows (`Session::set_window_camera`); for another document (one made active since, in a batch) or without a window `current` is the iso view, and the result says so in `note`. The window's Export… with nothing selected shows the export dialog with the drawing's options (`crates/ui-egui/src/files.rs` › `DrawingPlan`: view, *As in the viewport* by default, orthographic or perspective, hidden lines left out or dashed; the last choice offered again), on the desktop and in the browser. Code: `crates/engine/src/view_export.rs`; the writers' dashed layers in `crates/drawing` (`Layer::dash`).

@@ -109,6 +109,7 @@ const FROZEN: &[(u32, usize, u64)] = &[
     // A sheet-metal panel with a wall and two formed louvres
     // (formed_louvres), one closed and up, one open and down.
     (65, 7845, 0xe7a4_3eda_4716_4089),
+    (66, 3783, 0x425d_25d7_11cd_be5c),
 ];
 
 fn dir() -> PathBuf {

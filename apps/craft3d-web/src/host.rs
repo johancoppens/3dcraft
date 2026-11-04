@@ -577,7 +577,12 @@ impl WebHost {
         // the deadline now and then (`page.rs`).
         if self.session.regen_elsewhere() {
             self.away = !self.session.scene_ready(quality);
-            if self.session.scene_job(quality).is_none() {
+            // A moment of the motion on its way: the player says it plays
+            // (`Playing`), and the next one is asked for as soon as it
+            // came, so the work never ends while it plays; not said as
+            // work, as the desktop does not for a moment's short job.
+            let moment = self.session.motion().is_some_and(|m| m.pending);
+            if moment || self.session.scene_job(quality).is_none() {
                 self.about = None;
                 self.shell.set_work(None);
                 return false;
@@ -1089,6 +1094,10 @@ impl WebHost {
             FileAction::New => {
                 let made = self.run("file.new", &json!({}));
                 self.finish("file.new", &made);
+            }
+            FileAction::NewAssembly => {
+                let made = self.run("assembly.new", &json!({}));
+                self.finish("assembly.new", &made);
             }
             FileAction::Open => outcome.ask = Some(Ask::Open),
             FileAction::Import => outcome.ask = Some(Ask::Import),
@@ -2854,16 +2863,17 @@ mod tests {
         assert!(!host.fonts_failed.contains("serif"));
     }
 
-    /// An assembly on the page: regeneration elsewhere is refused for it
-    /// (its parts are placed from the files read for it, which a worker
-    /// does not have), so it is solved and placed on the page, a piece per
-    /// frame; `joint.set` and the motion over `t` move what the page shows,
-    /// and its tree lists the instances and mates.
+    /// An assembly on a page without the worker (none on the page,
+    /// `?pageregen`, or sent home: `Session::regen_elsewhere` is off): it
+    /// is solved and placed on the page, a piece per frame; `joint.set`
+    /// and the motion over `t` move what the page shows, and its tree
+    /// lists the instances and mates. With the worker it is placed there
+    /// (`beside_tests.rs` › `an_assembly_is_placed_and_played_in_the_worker`;
+    /// before 2026-11-03 an assembly was always placed on the page).
     #[test]
     fn an_assembly_is_solved_and_placed_on_the_page() {
         let mut host = host();
         host.set_stepwise(true);
-        host.session.set_regen_elsewhere(true);
         host.session.set_checks_elsewhere(true);
         let run = |host: &mut WebHost, id: &str, params: Value| {
             host.session
