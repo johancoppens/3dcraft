@@ -675,12 +675,13 @@ fn cut_export(session: &mut Session, params: &Value) -> Run {
         Some(k) if k.is_finite() && k >= 0.0 => k,
         Some(k) => {
             return fail(format!(
-                "{ID}: `kerf` must be a length of 0 or more, not {k} {u}"
+                "{ID}: `kerf` must be a length of 0 or more, not {}",
+                crate::drawing_cmds::short_length(k, u)
             ));
         }
     };
     let (gap, width) = crate::drawing_cmds::sheet_gap_width(session, &p, ID)?;
-    if each && (p.has("gap") || p.has("width")) {
+    if each && (p.get("gap").is_some() || p.get("width").is_some()) {
         return fail(format!(
             "{ID}: `gap` and `width` lay parts out on one sheet; with layout each every part has a file of its own"
         ));

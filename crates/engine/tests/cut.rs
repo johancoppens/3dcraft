@@ -929,3 +929,110 @@ fn a_name_like_a_formula_is_not_a_formula_in_the_csv() {
     assert!(row.contains(",'=1+1,1,"), "{row}");
     assert!(row.ends_with(",plate,'=1+1,"), "{row}");
 }
+
+/// gap and width are read alike by every command that lays parts out in
+/// rows (cut.export, file.export of faces and of flat patterns): an
+/// infinite or not-a-number length is refused, a huge one is given short
+/// (not 309 digits), and null is not given (also for layout each, which
+/// takes no gap).
+#[test]
+fn layout_lengths_are_finite_short_and_null_is_not_given() {
+    let dir = workdir("cut", "layout-lengths");
+    let mut s = session_in(&dir);
+    new_document(&mut s, 1.0);
+    holed_plate(&mut s, "Holed", 1.0, 6.0);
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "xy", "name": "Base"}),
+    );
+    let made = run(
+        &mut s,
+        "sketch.rect",
+        json!({"sketch": "Base", "from": [200.0, 0.0], "to": [240.0, 30.0]}),
+    );
+    let edge = made["lines"][0].as_str().unwrap().to_string();
+    run(
+        &mut s,
+        "feature.sheetMetal",
+        json!({"sketch": "Base", "name": "Bracket", "thickness": "2 mm", "radius": "3 mm",
+               "kFactor": "0.4", "flanges": [{"edge": edge, "length": "25 mm", "angle": "90 deg"}]}),
+    );
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "huge", "expr": "1e300 mm"}),
+    );
+    let inspect = run(&mut s, "document.inspect", json!({}));
+    let top = inspect["bodies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["name"] == "Holed")
+        .and_then(|b| b["faceNames"].as_array())
+        .and_then(|f| f.iter().find(|n| n.as_str().unwrap().contains("endCap")))
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_string();
+    let commands = [
+        ("cut.export", json!({"path": "a.dxf"})),
+        ("file.export", json!({"path": "b.dxf", "faces": [top]})),
+        (
+            "file.export",
+            json!({"path": "c.dxf", "sheetMetal": ["Bracket"]}),
+        ),
+    ];
+    for (id, base) in &commands {
+        let with = |key: &str, value: Value| {
+            let mut p = base.clone();
+            p[key] = value;
+            p
+        };
+        for (key, value) in [
+            ("gap", json!("huge * 1e300")),
+            ("width", json!("huge * 1e300")),
+            ("gap", json!("-huge")),
+        ] {
+            let params = with(key, value);
+            let e = s
+                .execute(id, &params)
+                .expect_err(&params.to_string())
+                .to_string();
+            assert!(!e.contains("internal error"), "{id} {params}: {e}");
+            assert!(e.contains(&format!("`{key}`")), "{id} {params}: {e}");
+            assert!(e.len() < 400, "{id} {params}: a short message: {e}");
+            assert!(!e.contains("000000000000"), "{id} {params}: {e}");
+        }
+        let minus = s
+            .execute(id, &with("gap", json!("-huge")))
+            .unwrap_err()
+            .to_string();
+        assert!(minus.contains("not -1e300 mm"), "{id}: {minus}");
+        // null is not given: the default gap, no limit of width.
+        let null = with("gap", Value::Null);
+        let null = {
+            let mut p = null;
+            p["width"] = Value::Null;
+            p
+        };
+        run(&mut s, id, null);
+    }
+    // layout each takes no gap or width; null is not giving one.
+    run(
+        &mut s,
+        "cut.export",
+        json!({"path": "each.dxf", "layout": "each", "gap": null, "width": null}),
+    );
+    let e = s
+        .execute(
+            "cut.export",
+            &json!({"path": "each.dxf", "layout": "each", "gap": 3}),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains("`gap` and `width` lay parts out on one sheet"),
+        "{e}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

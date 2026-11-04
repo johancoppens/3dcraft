@@ -751,7 +751,7 @@ fn moved(paths: Vec<DrawingPath>, d: [f64; 2]) -> Vec<DrawingPath> {
 
 /// The outline of one flat face, in its drawing frame.
 fn one_face(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
-    let only = if p.has("feature") {
+    let only = if p.get("feature").is_some() {
         Some(feature_ref(
             session.document()?.history.current(),
             p,
@@ -1144,6 +1144,25 @@ pub(crate) fn stroke(p: &Params, format: DrawingFormat) -> Result<Option<f64>, C
     Ok(Some(width))
 }
 
+/// A length as a message gives it, short: `5 mm`, `1e308 mm` (not 309
+/// digits), `infinite`, `not a number`.
+pub(crate) fn short_length(x: f64, unit: &str) -> String {
+    if x.is_nan() {
+        "not a number".to_string()
+    } else if x.is_infinite() {
+        if x > 0.0 {
+            "infinite"
+        } else {
+            "minus infinite"
+        }
+        .to_string()
+    } else if x != 0.0 && !(1e-6..1e15).contains(&x.abs()) {
+        format!("{x:e} {unit}")
+    } else {
+        format!("{x} {unit}")
+    }
+}
+
 /// The `gap` between parts laid out on one sheet and the sheet's `width`
 /// (rows of at most it), each a length as every other (an expression,
 /// "3 mm", or a number in the document's unit): the gap 5 mm unless
@@ -1169,7 +1188,8 @@ pub(crate) fn sheet_gap_width(
         Some(g) if g.is_finite() && g >= 0.0 => g,
         Some(g) => {
             return fail(format!(
-                "{id}: `gap` must be a length of 0 or more, not {g} {u}"
+                "{id}: `gap` must be a length of 0 or more, not {}",
+                short_length(g, u)
             ));
         }
         // 5 mm in the document's unit.
@@ -1179,7 +1199,8 @@ pub(crate) fn sheet_gap_width(
         Some(w) if w.is_finite() && w > 0.0 => Some(w),
         Some(w) => {
             return fail(format!(
-                "{id}: `width` must be a length above 0, not {w} {u}"
+                "{id}: `width` must be a length above 0, not {}",
+                short_length(w, u)
             ));
         }
         None => None,
