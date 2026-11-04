@@ -73,7 +73,7 @@ fn dome(s: &mut Session, k: f64) -> (Vec<String>, String) {
 fn pappus(a: f64, eps: f64, theta: f64, r: f64, t: f64, l: f64) -> f64 {
     let ro = r + t;
     let area = theta * (ro * ro - r * r) / 2.0 + l * t;
-    let mx = (1.0 - theta.pcos()) * (ro.powi(3) - r.powi(3)) / 3.0
+    let mx = (1.0 - theta.pcos()) * (ro.ppowi(3) - r.ppowi(3)) / 3.0
         + theta.psin() * l * (ro * ro - r * r) / 2.0
         + theta.pcos() * t * l * l / 2.0;
     a * area + eps * mx

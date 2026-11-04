@@ -2272,7 +2272,9 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
                     let mut l = c.flat_length;
                     if mould {
                         let half = 0.5 * c.theta();
-                        if !(half < 0.5 * std::f64::consts::PI - built.tolerance.angular) {
+                        if half >= 0.5 * std::f64::consts::PI - built.tolerance.angular
+                            || half.is_nan()
+                        {
                             return Err(format!(
                                 "`{fname}`: curved flange {} is bent 180 degrees, which has no mould line",
                                 c.id

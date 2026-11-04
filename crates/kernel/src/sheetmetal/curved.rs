@@ -549,7 +549,7 @@ fn continues(
     let tol = tolerance.linear;
     let radial = {
         let d = [p[0] - center[0], p[1] - center[1]];
-        let n = d[0].hypot(d[1]);
+        let n = d[0].phypot(d[1]);
         (n > 0.0).then(|| [grows * d[0] / n, grows * d[1] / n])?
     };
     let signed = match f.direction {
@@ -557,7 +557,7 @@ fn continues(
         Direction::Down => -theta,
     };
     bends.iter().position(|b| {
-        let at = |q: P2| (q[0] - p[0]).hypot(q[1] - p[1]) <= tol;
+        let at = |q: P2| (q[0] - p[0]).phypot(q[1] - p[1]) <= tol;
         b.parent == 0
             && (at(b.start) || at(b.end))
             && (b.across[0] * radial[1] - b.across[1] * radial[0]).abs() <= tolerance.angular
@@ -575,7 +575,7 @@ fn continues(
 
 /// Whether `s` is curved flange `c`'s edge in the pattern.
 fn is_edge(s: &Segment, c: &Curved, tol: f64) -> bool {
-    let same = |p: P2, q: P2| (p[0] - q[0]).hypot(p[1] - q[1]) <= tol;
+    let same = |p: P2, q: P2| (p[0] - q[0]).phypot(p[1] - q[1]) <= tol;
     s.source == c.edge
         && match s.shape {
             Shape::Arc { center, radius } | Shape::Circle { center, radius } => {
@@ -758,6 +758,11 @@ fn at(c: &Curved, e: Vec3, x: f64, z: f64) -> Vec3 {
     Vec3::new(c.center[0], c.center[1], z) + e * rho
 }
 
+/// An end of a curved flange's arc: the vertex on the base, at the far
+/// tangent line and at the tip, and a joined straight flange's bend end
+/// arc and side there.
+type End = (VertexId, VertexId, VertexId, Option<(EdgeId, EdgeId)>);
+
 /// Adds every curved flange's two faces of the folded bottom skin to the
 /// sheet (the bend's torus and the flat's cone, cylinder or plane), on
 /// the base's edge; their edges' keys and the faces' roles.
@@ -858,7 +863,7 @@ pub(super) fn add_to_sheet(
         // the bend and the flat's line there; a joined end takes the
         // straight flange's own (its bend's arc and its flat's side).
         let tol = tolerance.linear;
-        let mut ends: Vec<(VertexId, VertexId, VertexId, Option<(EdgeId, EdgeId)>)> = Vec::new();
+        let mut ends: Vec<End> = Vec::new();
         for (j, (e, vb)) in [(e0, edge.start), (e1, edge.end)].into_iter().enumerate() {
             let (p1, p2) = (world(at(c, e, xe, ze)), world(at(c, e, xt, zt)));
             let Some(bend) = c.joined.get(j).copied().flatten() else {

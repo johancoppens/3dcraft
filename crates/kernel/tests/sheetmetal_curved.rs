@@ -200,7 +200,7 @@ fn near(actual: f64, expected: f64, slack: f64, what: &str) {
 fn pappus(a: f64, eps: f64, theta: f64, r: f64, t: f64, l: f64) -> f64 {
     let ro = r + t;
     let bend_area = theta * (ro * ro - r * r) / 2.0;
-    let bend_mx = (1.0 - theta.pcos()) * (ro.powi(3) - r.powi(3)) / 3.0;
+    let bend_mx = (1.0 - theta.pcos()) * (ro.ppowi(3) - r.ppowi(3)) / 3.0;
     let flat_area = l * t;
     let flat_mx = theta.psin() * l * (ro * ro - r * r) / 2.0 + theta.pcos() * t * l * l / 2.0;
     a * (bend_area + flat_area) + eps * (bend_mx + flat_mx)
@@ -548,7 +548,13 @@ fn the_limit_passes_a_flange_within_it() {
     let k = 1.0;
     let tol = tolerance(k);
     let c = curved(3, 10.0, FRAC_PI_2, true, 2.0, 0.5);
-    let part = build_with(&spec(dome(k), 1.0), &[c.clone()], Some(0.3), &tol).unwrap();
+    let part = build_with(
+        &spec(dome(k), 1.0),
+        std::slice::from_ref(&c),
+        Some(0.3),
+        &tol,
+    )
+    .unwrap();
     let largest = part.curved[0].strain.largest();
     assert!(largest > 0.05 && largest < 0.3, "{largest}");
     // A limit just under it refuses.
