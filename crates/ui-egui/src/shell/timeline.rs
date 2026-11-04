@@ -205,6 +205,20 @@ impl Shell {
                 self.stop_playing();
             }
         }
+        // One truth for the collisions: what the moment shown was asked
+        // with (the session's, which a click on Collisions and `ui.set`
+        // change by asking for the moment again, and an agent's
+        // `view.motion {collisions}` too). The chip shows it once nothing
+        // the shell asked for is on its way.
+        if let Some(checks) = self
+            .timeline
+            .motion
+            .as_ref()
+            .and_then(|m| m.checks_collisions)
+            && !self.timeline.motion_waiting()
+        {
+            self.state.timeline.collisions = checks;
+        }
         // A bake made elsewhere that stopped: said; the motion still plays.
         if let Some(why) = self
             .timeline

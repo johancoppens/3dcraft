@@ -540,6 +540,15 @@ impl Shell {
                 self.state.selected_feature = None;
             }
         }
+        // Collisions switched while a moment of the motion is shown: that
+        // moment is asked for again with them (as a click on the chip
+        // does), so the view draws what the chip says. Asked before the sync,
+        // which shows the chip what the moment shown was asked with.
+        if self.state.timeline.collisions != before.timeline.collisions
+            && let Some(t) = self.shown_t()
+        {
+            self.go_to_t(t);
+        }
         // A selection that names no feature is dropped here, not later.
         let scene = self.sync(session);
         // Nothing to play: refused, and nothing has changed.
