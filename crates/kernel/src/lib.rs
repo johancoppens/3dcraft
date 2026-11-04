@@ -732,6 +732,12 @@ fn short(value: f64) -> String {
     }
 }
 
+/// A number as a message to a person says it (see `short`): at most nine
+/// significant digits, so 0.7999999999999998 reads 0.8.
+pub fn short_number(value: f64) -> String {
+    short(value)
+}
+
 /// What [`KernelError::FilletSpindle`] says, its sizes followed by
 /// `unit` (" mm"; empty for numbers alone).
 pub fn spindle_text(radius: f64, below: f64, own: f64, unit: &str) -> String {

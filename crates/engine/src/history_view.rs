@@ -398,7 +398,12 @@ fn key_value(shown: &Shown<'_>, kind: &FeatureKind) -> (String, Option<KeyEdit>)
             (format!("{count}{step}"), edit("count", "Count", &p.count))
         }
         FeatureKind::Fillet(f) => (
-            format!("R{} · {} edges", shown.length(&f.radius), f.edges.len()),
+            format!(
+                "R{} · {} edge{}",
+                shown.length(&f.radius),
+                f.edges.len(),
+                if f.edges.len() == 1 { "" } else { "s" }
+            ),
             edit("radius", "Radius", &f.radius),
         ),
         FeatureKind::Chamfer(c) => match &c.size {
@@ -692,6 +697,32 @@ mod tests {
         assert!(by_name("wall").formula);
         assert_eq!(by_name("wall").value.as_deref(), Some("5 mm"));
         assert_eq!(by_name("oil").value.as_deref(), Some("30°"));
+    }
+
+    /// One edge is "1 edge", not "1 edges" (seen in the feature list,
+    /// 2026-11-04).
+    #[test]
+    fn a_fillet_of_one_edge_says_edge() {
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": "Base", "size": [40, 30, 10]}),
+        );
+        run(
+            &mut s,
+            "feature.fillet",
+            json!({"name": "One", "radius": 2, "edges": [["F1:face(1)", "F1:face(2)"]]}),
+        );
+        run(
+            &mut s,
+            "feature.fillet",
+            json!({"name": "Two", "radius": 1, "edges": [["F1:face(1)", "F1:face(3)"], ["F1:face(1)", "F1:face(4)"]]}),
+        );
+        let view = s.history_view().unwrap();
+        assert_eq!(key(&view, "One"), "R2 mm · 1 edge");
+        assert_eq!(key(&view, "Two"), "R1 mm · 2 edges");
     }
 
     /// A variable that does not evaluate says why, and the features keep

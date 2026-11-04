@@ -298,6 +298,16 @@ fn commands_that_fail_change_nothing_and_say_why() {
     let before = run(&mut session, "document.inspect", json!({}));
     let cases = [
         ("feature.blok", json!({}), "did you mean `feature.block`"),
+        // A verb of the same meaning in the id's own area, and a common
+        // id spelled otherwise here (2026-11-04: `assert.remove` was
+        // offered `set.remove`, `measure.volume` `measure.clearance`).
+        ("assert.remove", json!({}), "did you mean `assert.delete`"),
+        ("set.delete", json!({}), "did you mean `set.remove`"),
+        (
+            "measure.volume",
+            json!({}),
+            "did you mean `document.measure`",
+        ),
         ("nonsense", json!({}), "unknown command `nonsense`"),
         (
             "feature.block",
@@ -543,14 +553,17 @@ fn files_stay_inside_the_roots() {
             "`{path}`"
         );
     }
-    assert!(
-        error(
-            &mut session,
-            "file.open",
-            json!({"path": "missing.3dcraft"})
-        )
-        .contains("cannot open `missing.3dcraft`")
+    let missing = error(
+        &mut session,
+        "file.open",
+        json!({"path": "missing.3dcraft"}),
     );
+    assert!(
+        missing.contains("cannot open `missing.3dcraft`"),
+        "{missing}"
+    );
+    // Said once (2026-11-04: "cannot open `x`: cannot open `x`: …").
+    assert_eq!(missing.matches("cannot open").count(), 1, "{missing}");
     assert!(error(&mut session, "file.save", json!({})).contains("give a `path`"));
     // Saving into a directory that does not exist fails cleanly.
     assert!(

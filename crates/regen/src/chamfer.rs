@@ -56,9 +56,11 @@ fn explain(
                 _ => "size.distance",
             };
             format!(
-                "{parameter}: too large for {}: the cut line, {distance} {unit} from the edge along the face {}, leaves that face; the largest distance that fits there is below {largest} {unit}",
+                "{parameter}: too large for {}: the cut line, {} {unit} from the edge along the face {}, leaves that face; the largest distance that fits there is below {} {unit}",
                 role(edge),
-                face_name(face)
+                craft3d_kernel::short_number(distance),
+                face_name(face),
+                craft3d_kernel::short_number(largest)
             )
         }
         KernelError::Chamfer { edge, face, reason } => {
