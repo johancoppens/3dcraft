@@ -1,0 +1,9 @@
+[
+ ["sketch.create", {"plane": "xy", "name": "Base"}],
+ ["sketch.line", {"sketch": "Base", "from": [0, 0], "to": [100, 0]}],
+ ["sketch.line", {"sketch": "Base", "from": [100, 0], "to": [100, 60]}],
+ ["sketch.arc", {"sketch": "Base", "center": [50, 60], "start": [100, 60], "end": [0, 60]}],
+ ["sketch.line", {"sketch": "Base", "from": [0, 60], "to": [0, 0]}],
+ ["sketch.circle", {"sketch": "Base", "center": [50, 40], "radius": 15}],
+ ["feature.sheetMetal", {"sketch": "Base", "name": "Dome", "thickness": "1 mm", "radius": "2 mm", "kFactor": 0.4, "maxStrain": "1", "flanges": [{"edge": "e3", "length": "10 mm", "angle": "90 deg", "direction": "down"}], "curvedFlanges": [{"edge": "e10", "length": "10 mm", "angle": "60 deg"}, {"edge": "e15", "length": "5 mm", "angle": "90 deg", "direction": "down", "radius": "1.5 mm", "kFactor": 0.5}]}]
+]
