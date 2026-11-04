@@ -788,7 +788,7 @@ fn meshes_drawings_and_pictures_opened_as_a_document_say_what_they_are() {
     stl.extend_from_slice(&2_u32.to_le_bytes());
     stl.extend_from_slice(&[0; 100]);
     let mut three_mf = b"PK\x03\x04".to_vec();
-    three_mf.extend_from_slice(b"\x14\0\0\0\x08\03D/3dmodel.model deflated...");
+    three_mf.extend_from_slice(b"\x14\0\0\0\x08\x003D/3dmodel.model deflated...");
     let stored_3mf = write_stored(&[("3D/3dmodel.model", b"<model/>".as_slice())]).unwrap();
     let fcstd = write_stored(&[("Document.xml", b"<Document/>".as_slice())]).unwrap();
     let obj = b"# 3DCraft\no Part\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
