@@ -385,3 +385,71 @@ fn the_page_stalls_on_the_turbofan() {
         );
     }
 }
+
+/// The planetary gearbox, the assembly the web build opens with: the
+/// commands that sample its motion or solve it (`motion.check`,
+/// `view.trace`, `assembly.solve`, `assembly.inspect`, `mate.add`, a
+/// joint's variable set and waited for), each from a new state the page
+/// has not placed, with the page doing them itself (as before
+/// 2026-11-04) and with the worker.
+///
+/// `cargo test --release -p craft3d-web --test page_stall gearbox -- --ignored --nocapture`
+#[test]
+#[ignore = "timings: run in release with --ignored --nocapture"]
+fn the_page_stalls_on_the_planetary_gearbox() {
+    let bytes = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/examples/published/planetary-gearbox.3dcraftasm"),
+    )
+    .unwrap();
+    let willis = "Carrier turns as Willis' formula says (sun on housing / carrier = 1 + Zr / Zs)";
+    let actions = [
+        ("assembly.solve", json!({})),
+        ("assembly.inspect", json!({"measures": true})),
+        (
+            "motion.check",
+            json!({"assertions": [willis], "samples": 17}),
+        ),
+        (
+            "view.trace",
+            json!({"point": "Planet1/F7:copy(0)/F4:startEdge(e15)", "samples": 33, "name": "Planet"}),
+        ),
+        (
+            "mate.add",
+            json!({"kind": "revolute", "a": "world/z", "b": "Sun/F2:startEdge(e15)", "name": "Extra"}),
+        ),
+        (
+            "variable.set",
+            json!({"name": "SunOnCarrier_angle", "expr": "360 deg * t + 10 deg", "wait": true}),
+        ),
+    ];
+    let mut answers: Vec<Vec<Value>> = Vec::new();
+    for worker in [false, true] {
+        let mut page = Page::new();
+        page.host
+            .receive("planetary-gearbox.3dcraftasm", bytes.clone(), None)
+            .unwrap();
+        page.settle();
+        page.take_frames();
+        page.host.session.set_commands_elsewhere(worker);
+        let mut mine = Vec::new();
+        for (n, (id, params)) in actions.iter().enumerate() {
+            // A new state the page has not placed: what each starts from.
+            page.run(
+                "variable.set",
+                &json!({"name": "pageStall", "expr": format!("{n}")}),
+            );
+            page.take_frames();
+            let work = page.host.session.work_here();
+            let started = Instant::now();
+            let now = page.run(id, params);
+            report(id, worker, &mut page, started.elapsed());
+            if worker {
+                assert_eq!(page.host.session.work_here(), work, "{id} on the page");
+            }
+            mine.push(now);
+        }
+        answers.push(mine);
+    }
+    let _ = answers;
+}
