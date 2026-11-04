@@ -386,6 +386,9 @@ struct Calm {
     changes: u64,
     /// The texts of the last frame, to count the changes by.
     last: Vec<(StatusSlot, String)>,
+    /// The steady texts of the last frame (units, path, autosave,
+    /// selection), for [`Shell::status_shown`].
+    steady: Vec<(StatusSlot, String)>,
 }
 
 impl Calm {
@@ -396,6 +399,7 @@ impl Calm {
         *self = Self {
             changes: self.changes,
             last: std::mem::take(&mut self.last),
+            steady: std::mem::take(&mut self.steady),
             ..Self::default()
         };
     }
@@ -2751,9 +2755,10 @@ impl Shell {
             self.recovery_hits.clear();
             self.discard_armed = None;
         }
-        if self.narrow && !self.tabs.is_empty() {
+        if self.narrow {
             // The top bar names the document and lists the others (its
-            // ▾): no tab row on a phone or a tablet (boards m2, t1).
+            // ▾), or 3DCraft on the start screen: no tab row on a phone or
+            // a tablet (boards m1, m2, t1).
         } else if self.tabs.is_empty() {
             self.tab_hits.clear();
         } else {
@@ -3423,6 +3428,19 @@ impl Shell {
             self.calm.changes = self.calm.changes.saturating_add(1);
             self.calm.last = texts;
         }
+        self.calm.steady = items
+            .iter()
+            .filter(|i| {
+                matches!(
+                    i.slot,
+                    StatusSlot::Units
+                        | StatusSlot::Path
+                        | StatusSlot::Autosave
+                        | StatusSlot::Selection
+                )
+            })
+            .map(|i| (i.slot, i.text.clone()))
+            .collect();
         let fits: Vec<StatusFit> = items
             .iter()
             .map(|item| {
@@ -4208,12 +4226,15 @@ impl Shell {
         self.calm.changes
     }
 
-    /// What the status bar showed in the last frame for the last command
-    /// (or `Playing`), its answer, the work and the renderer's numbers.
+    /// What the status bar showed in the last frame in `slot`: the last
+    /// command (or `Playing`), its answer, the work, the renderer's
+    /// numbers, the units (or what stands there without a document), the
+    /// path, autosave and the selection.
     pub fn status_shown(&self, slot: StatusSlot) -> Option<&str> {
         self.calm
             .last
             .iter()
+            .chain(&self.calm.steady)
             .find(|(s, _)| *s == slot)
             .map(|(_, text)| text.as_str())
     }
