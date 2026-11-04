@@ -211,7 +211,7 @@ pub(super) enum Piece {
 impl Piece {
     /// The least and the most of `f` over the piece's material (lower and
     /// upper bounds: `flat_least`, `bend_least`, a box's corners).
-    fn range(
+    pub(super) fn range(
         self,
         flats: &[Flat],
         bends: &[Bend],

@@ -36,8 +36,9 @@
 use super::{Bend, KernelError, P2, refuse};
 use crate::profile::{Segment, Shape};
 use crate::spline2::Spline2;
+use craft3d_geom::{Curve3, Plane, Surface};
 use craft3d_math::Portable;
-use craft3d_math::{Tolerance, Transform, Vec3};
+use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 
 /// The most Hermite steps a trimmed strip's end is drawn with.
 /// (A cubic B-spline of `n` steps with double inner knots has `2n + 2`
@@ -454,6 +455,68 @@ pub fn strip_end(bend: &Bend, end: usize) -> Vec<Segment> {
     } else {
         vec![spline, super::line(knee, corner)]
     }
+}
+
+/// Where a trimmed end leaves the square end for the plane on the bottom
+/// skin: the point at `φ₁` of the skin's circle `f` (its frame at the
+/// end, `x` towards the parent's tangent line) of radius `rb`.
+pub fn knee(f: &Frame, rb: f64, t: &Trim) -> Vec3 {
+    let (s1, c1) = t.phi.psin_cos();
+    f.origin() + (f.x() * c1 + f.y() * s1) * rb
+}
+
+/// The plane's cut of bend `i`'s bottom skin at a trimmed end, in the
+/// world: the ellipse centred where the axis meets the plane, semi-axes
+/// `rb / |n·D|` along the axis's projection and `rb` square to it, its
+/// frame turned so that its eccentric angle runs with `φ`; its range from
+/// `φ₁` to `θ`; and the plane its rim lies on. `wp` is the parent flat's
+/// motion into the world, `plane` the part's, `f` the frame of the skin's
+/// circle at that end (as [`knee`] takes it).
+pub fn ellipse(
+    i: usize,
+    bend: &Bend,
+    wp: &Transform,
+    plane: &Frame,
+    f: &Frame,
+    rb: f64,
+    t: &Trim,
+) -> Result<(Curve3, (f64, f64), Surface), KernelError> {
+    let to_world = Transform::from_frame(plane);
+    let (zc, _) = axis(bend);
+    let d = lift(
+        super::unit(super::sub(bend.end, bend.start))
+            .ok_or_else(|| refuse(Some(i), "no length"))?,
+    );
+    let axis_world = wp.vector(d);
+    let n = to_world
+        .vector(t.normal)
+        .normalized()
+        .ok_or_else(|| refuse(Some(i), "a trim's plane has no normal"))?;
+    let dir = axis_world
+        .normalized()
+        .ok_or_else(|| refuse(Some(i), "a bend's axis is not finite"))?;
+    let cos = n.dot(dir);
+    let centre = wp.point(Vec3::new(bend.start[0], bend.start[1], zc) + d * t.a);
+    let x = (dir - n * cos)
+        .normalized()
+        .ok_or_else(|| refuse(Some(i), "a trim's plane runs along the bend"))?;
+    let x_flat = (x - dir * x.dot(dir))
+        .normalized()
+        .ok_or_else(|| refuse(Some(i), "a trim's plane runs along the bend"))?;
+    let (al, be) = (x_flat.dot(f.x()), x_flat.dot(f.y()));
+    let want = f.x() * (-be) + f.y() * al;
+    let z = if n.cross(x).dot(want) > 0.0 { n } else { -n };
+    let ef =
+        Frame::new(centre, z, x).ok_or_else(|| refuse(Some(i), "a trim's ellipse has no frame"))?;
+    let ellipse = Curve3::Ellipse(craft3d_geom::Ellipse::new(ef, rb / cos.abs(), rb)?);
+    let phase = be.patan2(al);
+    let onto = Frame::from_z(to_world.point(t.point), n)
+        .ok_or_else(|| refuse(Some(i), "a trim's plane is not finite"))?;
+    Ok((
+        ellipse,
+        (t.phi - phase, bend.theta() - phase),
+        Surface::Plane(Plane::new(onto)),
+    ))
 }
 
 /// The point where the trimmed end meets the flange's tangent line, in

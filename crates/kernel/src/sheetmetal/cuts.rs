@@ -139,6 +139,9 @@ enum VRef {
     Cross(usize),
     /// Where segment `j` of cut `c` starts.
     Cut(usize, usize),
+    /// Where the trimmed end `end` of bend `b` leaves its square end for
+    /// the plane (`φ₁` on the bottom skin).
+    Knee(usize, usize),
 }
 
 /// An edge of the folded sheet, by what it is in the pattern.
@@ -157,6 +160,9 @@ enum ERef {
     Arc(usize, usize),
     /// Piece `i` of segment `j` of cut `c`.
     Cut(usize, usize, usize),
+    /// The plane's cut of the trimmed end `end` of bend `b` (the arc
+    /// `Arc(b, end)` runs only to its knee then).
+    Trim(usize, usize),
 }
 
 /// What a face of the folded sheet is cut from.
@@ -345,7 +351,7 @@ fn tangents(flats: &[Flat], bends: &[Bend]) -> Result<Vec<Tangent>, KernelError>
             a: b.start,
             b: b.end,
         });
-        let (a0, a1) = b.far_line();
+        let (a0, a1) = far_ends(b);
         out.push(Tangent {
             flat: b.child,
             hole: None,
@@ -356,6 +362,19 @@ fn tangents(flats: &[Flat], bends: &[Bend]) -> Result<Vec<Tangent>, KernelError>
         });
     }
     Ok(out)
+}
+
+/// The flange's tangent line's ends at the bend's start and end: the far
+/// line's, or where a trimmed end meets it (`u(θ)`).
+fn far_ends(b: &Bend) -> (P2, P2) {
+    let (mut a0, mut a1) = b.far_line();
+    if let Some(t) = b.trim.first().copied().flatten() {
+        a0 = super::trim::far_point(b, &t);
+    }
+    if let Some(t) = b.trim.get(1).copied().flatten() {
+        a1 = super::trim::far_point(b, &t);
+    }
+    (a0, a1)
 }
 
 fn flange_name(bend: usize) -> String {
@@ -650,27 +669,71 @@ fn analyse(
         let (Some(tp), Some(_)) = (tangents.get(lp), tangents.get(lf)) else {
             return Err(refuse(Some(b), "a bend lost its tangent lines"));
         };
-        let (a0, a1) = bend.far_line();
-        let mut own = vec![Piece {
-            seg: line(bend.start, a0),
-            edge: ERef::Arc(b, 0),
-            forward: true,
-            from: tp.vertex(flats, false),
-            to: VRef::Outline(bend.child, 1),
-        }];
+        // The strip's ends: lines across it, or a trimmed end's line to
+        // its knee and the plane's curve on (`trim::strip_end`, in the
+        // outline's order: from the parent's tangent line at the start,
+        // towards it at the end).
+        let mut own = Vec::new();
+        let start = super::trim::strip_end(bend, 0);
+        match start.as_slice() {
+            [across] => own.push(Piece {
+                seg: across.clone(),
+                edge: ERef::Arc(b, 0),
+                forward: true,
+                from: tp.vertex(flats, false),
+                to: VRef::Outline(bend.child, 1),
+            }),
+            [across, curve] => {
+                own.push(Piece {
+                    seg: across.clone(),
+                    edge: ERef::Arc(b, 0),
+                    forward: true,
+                    from: tp.vertex(flats, false),
+                    to: VRef::Knee(b, 0),
+                });
+                own.push(Piece {
+                    seg: curve.clone(),
+                    edge: ERef::Trim(b, 0),
+                    forward: true,
+                    from: VRef::Knee(b, 0),
+                    to: VRef::Outline(bend.child, 1),
+                });
+            }
+            _ => return Err(refuse(Some(b), "a bend's end is missing")),
+        }
         own.extend(
             lines
                 .get(lf)
                 .map(|l| l.iter().rev().map(Piece::reversed).collect::<Vec<_>>())
                 .unwrap_or_default(),
         );
-        own.push(Piece {
-            seg: line(a1, bend.end),
-            edge: ERef::Arc(b, 1),
-            forward: false,
-            from: VRef::Outline(bend.child, 0),
-            to: tp.vertex(flats, true),
-        });
+        let end = super::trim::strip_end(bend, 1);
+        match end.as_slice() {
+            [across] => own.push(Piece {
+                seg: across.clone(),
+                edge: ERef::Arc(b, 1),
+                forward: false,
+                from: VRef::Outline(bend.child, 0),
+                to: tp.vertex(flats, true),
+            }),
+            [curve, across] => {
+                own.push(Piece {
+                    seg: curve.clone(),
+                    edge: ERef::Trim(b, 1),
+                    forward: false,
+                    from: VRef::Outline(bend.child, 0),
+                    to: VRef::Knee(b, 1),
+                });
+                own.push(Piece {
+                    seg: across.clone(),
+                    edge: ERef::Arc(b, 1),
+                    forward: false,
+                    from: VRef::Knee(b, 1),
+                    to: tp.vertex(flats, true),
+                });
+            }
+            _ => return Err(refuse(Some(b), "a bend's end is missing")),
+        }
         own.extend(
             lines
                 .get(lp)
@@ -699,7 +762,18 @@ fn cell_of(flats: &[Flat], bends: &[Bend], p: P2) -> Option<Cell> {
         };
         let u = dot(sub(p, bend.start), d);
         let s = dot(sub(p, bend.start), bend.across);
-        if u > 0.0 && u < distance(bend.start, bend.end) && s > 0.0 && s < bend.allowance {
+        let len = distance(bend.start, bend.end);
+        // A trimmed end takes away what lies past the plane's cut `u(s/ρ)`
+        // beyond `φ₁` (the pattern's spline holds it within a quarter of
+        // the tolerance, and a cut keeps clear of the outline by more).
+        let kept = |end: usize| match bend.trim.get(end).copied().flatten() {
+            Some(t) if s > bend.neutral() * t.phi => {
+                let cut = t.u(s / bend.neutral());
+                if end == 0 { u > cut } else { u < cut }
+            }
+            _ => true,
+        };
+        if u > 0.0 && u < len && s > 0.0 && s < bend.allowance && kept(0) && kept(1) {
             found.push(Cell::Strip(b));
         }
     }
@@ -796,13 +870,16 @@ impl Skin {
             + (self.frame.y() * phi.pcos() - self.frame.x() * phi.psin()) * (self.radius * dphi)
     }
 
+    /// The frame of the skin's circle `u` along the axis.
+    fn frame_at(&self, u: f64) -> Result<Frame, KernelError> {
+        self.frame
+            .at(self.frame.origin() + self.axis * u)
+            .ok_or_else(|| refuse(None, "a bend's axis is not finite"))
+    }
+
     /// The circle of the skin `u` along the axis.
     fn circle(&self, u: f64) -> Result<Circle, KernelError> {
-        let f = self
-            .frame
-            .at(self.frame.origin() + self.axis * u)
-            .ok_or_else(|| refuse(None, "a bend's axis is not finite"))?;
-        Ok(Circle::new(f, self.radius)?)
+        Ok(Circle::new(self.frame_at(u)?, self.radius)?)
     }
 }
 
@@ -1093,6 +1170,32 @@ pub(super) fn folded_sheet(
     };
     let mut vertices: BTreeMap<VRef, VertexId> = BTreeMap::new();
     let mut edges: BTreeMap<ERef, (EdgeId, bool)> = BTreeMap::new();
+    // Where along the axis bend `bend`'s end `end` is.
+    let shift_of = |bend: usize, end: usize| {
+        if end == 0 {
+            0.0
+        } else {
+            bends.get(bend).map_or(0.0, |x| distance(x.start, x.end))
+        }
+    };
+    // A trimmed end's bend, trim, skin and parent motion.
+    let trimmed = |bend: usize,
+                   end: usize|
+     -> Result<(&Bend, super::trim::Trim, &Skin, Transform), KernelError> {
+        let x = bends
+            .get(bend)
+            .ok_or_else(|| refuse(Some(bend), "a bend is missing"))?;
+        let t = x
+            .trim
+            .get(end)
+            .copied()
+            .flatten()
+            .ok_or_else(|| refuse(Some(bend), "a trimmed end has no trim"))?;
+        let skin = skins
+            .get(bend)
+            .ok_or_else(|| refuse(Some(bend), "a bend is missing"))?;
+        Ok((x, t, skin, w_of(x.parent)?))
+    };
     let position = |v: VRef| -> Result<Vec3, KernelError> {
         let lost = || refuse(None, "a vertex of the flat pattern is missing");
         match v {
@@ -1129,10 +1232,19 @@ pub(super) fn folded_sheet(
                     Cell::Strip(s) => Ok(skins.get(s).ok_or_else(lost)?.point(p)),
                 }
             }
+            VRef::Knee(bend, end) => {
+                let (_, t, skin, _) = trimmed(bend, end)?;
+                Ok(super::trim::knee(
+                    &skin.frame_at(shift_of(bend, end))?,
+                    skin.radius,
+                    &t,
+                ))
+            }
         }
     };
     let mut faces: Vec<FaceId> = Vec::with_capacity(order.len());
     let mut roles: Vec<SheetFace> = Vec::with_capacity(order.len());
+    let mut trim_ends: Vec<(EdgeId, Surface)> = Vec::new();
     for (r, role) in &order {
         let Some((cell, rings)) = regions.get(*r) else {
             continue;
@@ -1167,13 +1279,22 @@ pub(super) fn folded_sheet(
                                 let skin = skins
                                     .get(bend)
                                     .ok_or_else(|| refuse(Some(bend), "a bend is missing"))?;
-                                let shift = if end == 0 {
-                                    0.0
-                                } else {
-                                    bends.get(bend).map_or(0.0, |x| distance(x.start, x.end))
-                                };
-                                let circle = Curve3::Circle(skin.circle(shift)?);
-                                (b.body.add_edge(circle, (0.0, skin.theta), from, to), false)
+                                let circle = Curve3::Circle(skin.circle(shift_of(bend, end))?);
+                                // A trimmed end's arc runs to its knee.
+                                let reach = bends
+                                    .get(bend)
+                                    .and_then(|x| x.trim.get(end).copied().flatten())
+                                    .map_or(skin.theta, |t| t.phi);
+                                (b.body.add_edge(circle, (0.0, reach), from, to), false)
+                            }
+                            (ERef::Trim(bend, end), _) => {
+                                let (x, t, skin, wp) = trimmed(bend, end)?;
+                                let f = skin.frame_at(shift_of(bend, end))?;
+                                let (curve, range, onto) =
+                                    super::trim::ellipse(bend, x, &wp, plane, &f, skin.radius, &t)?;
+                                let e = b.body.add_edge(curve, range, from, to);
+                                trim_ends.push((e, onto));
+                                (e, false)
                             }
                             (ERef::Cut(..), Cell::Strip(bend)) => {
                                 let skin = skins
@@ -1245,6 +1366,8 @@ pub(super) fn folded_sheet(
             ends.push((edge, Surface::Plane(Plane::new(frame))));
         }
     }
+    // A trimmed end's rim lies on its plane.
+    ends.extend(trim_ends);
 
     // What each edge is.
     let mut keys: Vec<Option<EdgeKey>> = vec![None; b.body.edges.len()];
@@ -1261,6 +1384,7 @@ pub(super) fn folded_sheet(
             },
             ERef::Arc(bend, end) => EdgeKey::Arc { bend, end },
             ERef::Cut(cut, seg, piece) => EdgeKey::Cut { cut, seg, piece },
+            ERef::Trim(bend, end) => EdgeKey::Trim { bend, end },
         };
         if let Some(slot) = usize::try_from(edge.0).ok().and_then(|e| keys.get_mut(e)) {
             *slot = Some(key);
