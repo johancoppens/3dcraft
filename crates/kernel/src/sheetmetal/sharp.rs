@@ -1005,6 +1005,23 @@ impl Join {
                 "its bend is sharp, and the pieces a hole across it leaves of its two tangent lines do not pair up along the bend",
             ));
         }
+        // Every stretch, and every hole between two, at least a sliver
+        // floor wide: a narrower one is a rim face the plate and the
+        // self-check cannot tell from a degenerate one (as an inset).
+        let floor = SLIVER_TOLERANCES * tol;
+        let narrow = parents.iter().any(|p| !(p.1 - p.0 >= floor))
+            || parents.windows(2).any(|w| match w {
+                [a, b] => !(b.0 - a.1 >= floor),
+                _ => false,
+            });
+        if narrow {
+            return Err(refuse(
+                Some(i),
+                format!(
+                    "its bend is sharp, and a hole straight across it leaves a stretch of the bend, or is itself, narrower than {floor} ({SLIVER_TOLERANCES} tolerances) along it: a sliver; widen it or move the hole"
+                ),
+            ));
+        }
         let n = parents.len();
         for (j, (p, c)) in parents.iter().zip(&children).enumerate() {
             // The sector at each end of the stretch: the bend's own end,

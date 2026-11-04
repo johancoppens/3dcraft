@@ -683,6 +683,15 @@ fn a_mitre_of_unlike_walls_is_kept_only_where_the_other_wall_is_clear() {
         assert!(r > 1.0 * k && r < 2.0 * k && q[0] > axis[0] && q[1] < axis[1]);
         assert!(q[0] > 60.0 * k + rb && q[0] < 60.0 * k + rb + t);
         assert!(q[0] + q[1] > 60.0 * k + rb - ra + g / 2f64.sqrt());
+        // And by the kernel's point classification: the point, at a height
+        // both reach, lies in the part without the tab (in the other
+        // wall's extension).
+        let w = Vec3::new(q[0], q[1], 8.0 * k);
+        assert_eq!(
+            craft3d_kernel::boolean::contains_points(&part.solid.body, &[w], &tol).unwrap(),
+            vec![Some(true)],
+            "scale {k}: the point is in the other wall"
+        );
         // The wall of radius 1 leaning in at 120 degrees, the other square
         // with radius 3: the plane cuts the square wall's bend at its root
         // by about 2, and the leaning wall's flat comes back over that

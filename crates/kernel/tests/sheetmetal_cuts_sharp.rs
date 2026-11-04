@@ -362,7 +362,8 @@ fn a_hole_across_a_rounded_bend_beside_a_sharp_one() {
 
 /// What a hole across a sharp bend does not build, by reason: a round
 /// hole whose centre is on the tangent line, a slot across the bend at a
-/// slant, a round hole inside the strip.
+/// slant, a round hole inside the strip; a stretch left between two
+/// slots narrower than the sliver floor.
 #[test]
 fn holes_over_a_sharp_bend_other_than_straight_across_are_refused() {
     for k in SCALES {
@@ -382,5 +383,19 @@ fn holes_over_a_sharp_bend_other_than_straight_across_are_refused() {
             assert!(why.contains("sharp"), "{why}");
             assert!(why.contains("straight across"), "{why}");
         }
+        // Two slots straight across, the stretch of the bend between them
+        // 2 tolerances wide: a sliver, refused (review of 6e1f3a30: built).
+        let gap = 2e-6;
+        let slots = vec![
+            polygon(20, &[[15.0, 3.0], [15.0, y1], [21.0, y1], [21.0, 3.0]], k),
+            polygon(
+                30,
+                &[[21.0 + gap, 3.0], [21.0 + gap, y1], [25.0, y1], [25.0, 3.0]],
+                k,
+            ),
+        ];
+        let (f, why) = refused(&spec(k, vec![wall.clone()], slots), &tol);
+        assert_eq!(f, Some(0), "scale {k}: {why}");
+        assert!(why.contains("sliver"), "scale {k}: {why}");
     }
 }

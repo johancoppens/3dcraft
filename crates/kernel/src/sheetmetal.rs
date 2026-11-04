@@ -3604,7 +3604,10 @@ fn apart_from_bend(
         let w = across * cs + normal * sn;
         axes.push(w);
         for c in [0.5, 1.0, 2.0, 4.0] {
-            axes.push(w + dir * c);
+            // Unit, so "apart by more than the tolerance" is a length.
+            if let Some(a) = (w + dir * c).normalized() {
+                axes.push(a);
+            }
         }
     }
     let (subtree, carried) = subtree_of(bends, other)?;

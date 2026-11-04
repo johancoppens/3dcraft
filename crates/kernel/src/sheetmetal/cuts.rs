@@ -795,6 +795,9 @@ fn sharp_side(
         && on(s0)
         && on(s1)
         && (s1 - s0).abs() > tol;
+    // The stretches it leaves of the bend, and its own width along the
+    // bend, are held to the sliver floor where they are paired
+    // (`sharp::Join::bend`).
     if !across {
         return Err(refuse(
             None,
