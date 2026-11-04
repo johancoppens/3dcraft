@@ -182,6 +182,12 @@ fn point_text(p: Vec3) -> String {
     format!("({}, {}, {})", p.x, p.y, p.z)
 }
 
+/// A direction as the caller gave it, short whatever its size: three
+/// significant digits each.
+fn direction_text(d: Vec3) -> String {
+    format!("({:.3e}, {:.3e}, {:.3e})", d.x, d.y, d.z)
+}
+
 /// What a piece of a rail runs along, in the direction of travel.
 #[derive(Clone, Debug)]
 enum Course {
@@ -926,6 +932,11 @@ struct Setting {
     up: Vec3,
     /// What the up direction is, for messages.
     up_text: String,
+    /// The up direction was given (not the first rail's sketch normal).
+    up_given: bool,
+    /// A loop of the profile has an arc or a circle: a slide at a slant
+    /// would carry it into an elliptic cylinder.
+    round: bool,
     /// The distance from `a` to `b` in the profile, which the chord's
     /// length is measured against.
     d_ref: f64,
@@ -1094,11 +1105,18 @@ fn leg_bounds(
                 return Err(refuse(
                     &sources,
                     format!(
-                        "the rails carry the section along its own plane near {} (on e{} and e{}): the sweep would fold over itself (the section stands in the plane of the chord and {}, so an up direction along the rails lays it into their course)",
+                        "the rails carry the section along its own plane near {} (on e{} and e{}): the sweep would fold over itself{}",
                         point_text(p.a),
                         leg.a.source,
                         leg.b.source,
-                        set.up_text
+                        if set.up_given {
+                            format!(
+                                " (the section stands in the plane of the chord and {}: an up direction along the rails lays it into their course)",
+                                set.up_text
+                            )
+                        } else {
+                            String::new()
+                        }
                     ),
                 ));
             }
@@ -1394,12 +1412,16 @@ fn translation(leg: &Leg, start: &Station, set: &Setting, bounds: &Bounds) -> Op
     }
     let da = leg.a.at(leg.to) - leg.a.at(leg.from);
     let db = leg.b.at(leg.to) - leg.b.at(leg.from);
-    // Square to the section only: a slide at a slant carries a circle
-    // into an elliptic cylinder, which is followed instead (the up
-    // direction or a chord at a slant to the rails).
-    let square_on = da.normalized()?.dot(start.forward().ok()?).abs();
-    if !(square_on.is_finite() && 1.0 - square_on <= 1e-12) {
-        return None;
+    // A profile with an arc or a circle slides only square to its
+    // plane: at a slant a circle sweeps an elliptic cylinder, not the
+    // round one a slide makes, so that leg is followed instead. Lines
+    // (planes) and splines (ruled between the two stations) slide
+    // exactly at any slant.
+    if set.round {
+        let square_on = da.normalized()?.dot(start.forward().ok()?).abs();
+        if !(square_on.is_finite() && 1.0 - square_on <= 1e-12) {
+            return None;
+        }
     }
     let off = (db - da).length();
     // The chord moves by at most `off`; the placement follows it.
@@ -1556,6 +1578,7 @@ pub fn sweep_two_rails_up(
 
     // The up direction: the one given, or the normal of rail A's sketch;
     // turned round when the rails leave the profile against it.
+    let up_given = up.is_some();
     let (mut up, up_text) = match up {
         None => (
             plane_a.z(),
@@ -1570,11 +1593,17 @@ pub fn sweep_two_rails_up(
                     &[first_a, first_b],
                     format!(
                         "the up direction {} has no direction; give a direction that is not zero",
-                        point_text(given)
+                        direction_text(given)
                     ),
                 ));
             };
-            (unit, format!("the up direction {} given", point_text(unit)))
+            (
+                unit,
+                format!(
+                    "the up direction ({:.6}, {:.6}, {:.6}) given",
+                    unit.x, unit.y, unit.z
+                ),
+            )
         }
     };
     let e0 = (b0 - a0).normalized().ok_or_else(internal)?;
@@ -1661,6 +1690,11 @@ pub fn sweep_two_rails_up(
     let set = Setting {
         up,
         up_text: up_text.clone(),
+        up_given,
+        round: loops
+            .iter()
+            .flatten()
+            .any(|e| matches!(e.form, Form::Arc { .. } | Form::Circle { .. })),
         d_ref,
         scaling,
         x: x_reach,
@@ -1862,6 +1896,9 @@ pub fn sweep_two_rails_up(
                         break;
                     }
                     tried_sharp = true;
+                    // The sharper round says for itself whether it ran
+                    // out of samples.
+                    costly = false;
                     sharp = leg_bounds(leg, &set, &mut spent, true)?;
                     bounds = sharp.as_ref().ok_or_else(internal)?;
                 }
