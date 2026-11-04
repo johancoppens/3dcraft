@@ -2816,6 +2816,10 @@ impl Sketch {
     }
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3928,8 +3932,4 @@ mod tests {
         }
         assert!(damaged.validate().is_err());
     }
-}
-
-fn is_false(b: &bool) -> bool {
-    !*b
 }
