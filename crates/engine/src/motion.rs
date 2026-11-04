@@ -3126,23 +3126,7 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
     }
     if open.scrubbed_to().is_none() && open.sweep_elsewhere() {
         let name = trace_name(open, given_name);
-        let others = open
-            .traces()
-            .iter()
-            .filter(|t| t.name != name)
-            .count()
-            .saturating_add(
-                open.motion
-                    .trace_jobs
-                    .iter()
-                    .filter(|(n, job)| **n != name && job.pending())
-                    .count(),
-            );
-        if others >= MAX_TRACES {
-            return fail(format!(
-                "{ID}: {MAX_TRACES} traces are kept or being worked out already; remove some with clear"
-            ));
-        }
+        room_for_trace(open, &name)?;
         session.commands.note_trace(name);
         return fail(format!("{ID}: sampled where the bodies are"));
     }
@@ -3196,23 +3180,7 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
             .set_config_budget(TRACE_CONFIG_BUDGET.min(asm.asm.config_budget()));
     }
     let name = trace_name(open, given_name);
-    let others = open
-        .traces()
-        .iter()
-        .filter(|t| t.name != name)
-        .count()
-        .saturating_add(
-            open.motion
-                .trace_jobs
-                .iter()
-                .filter(|(n, job)| **n != name && job.pending())
-                .count(),
-        );
-    if others >= MAX_TRACES {
-        return fail(format!(
-            "{ID}: {MAX_TRACES} traces are kept or being worked out already; remove some with clear"
-        ));
-    }
+    room_for_trace(open, &name)?;
     open.motion.trace_serial = open.motion.trace_serial.wrapping_add(1);
     let serial = open.motion.trace_serial;
     let run = TraceRun {
@@ -3400,6 +3368,24 @@ const TRACE_CONFIG_BUDGET: usize = 256 << 20;
 
 /// The name a new trace gets: the one given, else `Trace <n>` free (of
 /// the traces kept and those being worked out).
+/// Refuses a trace named `name` when [`MAX_TRACES`] others are kept or
+/// being worked out already (one of the same name is replaced).
+fn room_for_trace(open: &mut OpenDocument, name: &str) -> Result<(), CommandError> {
+    let kept = open.traces().iter().filter(|t| t.name != name).count();
+    let pending = open
+        .motion
+        .trace_jobs
+        .iter()
+        .filter(|(n, job)| n.as_str() != name && job.pending())
+        .count();
+    if kept.saturating_add(pending) >= MAX_TRACES {
+        return fail(format!(
+            "view.trace: {MAX_TRACES} traces are kept or being worked out already; remove some with clear"
+        ));
+    }
+    Ok(())
+}
+
 fn trace_name(open: &mut OpenDocument, given: Option<String>) -> String {
     let jobs: Vec<String> = open
         .motion
