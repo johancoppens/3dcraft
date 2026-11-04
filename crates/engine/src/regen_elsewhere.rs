@@ -967,6 +967,14 @@ pub fn run_on_state(
             session.take_file(&name);
         }
         session.check_selection();
+        // An instance's edit reads its source as a file, here as where it
+        // was asked: the files read for the assembly there are files here
+        // for that command (taken out again before what it wrote is).
+        let inputs = if command.starts_with("instance.") {
+            source_inputs(session)
+        } else {
+            Vec::new()
+        };
         let before = session.documents.first().map(|o| o.selection.to_wire());
         session.edit_log = Some(Vec::new());
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -977,6 +985,30 @@ pub fn run_on_state(
                 "{command}: internal error (a bug in 3DCraft, please report it)"
             )))
         });
+        for name in &inputs {
+            session.take_file(name);
+        }
+        // A trace made here for the host: it goes with the answer, bit for
+        // bit, and is not kept here (the host keeps its traces).
+        let result = match result {
+            Ok(mut value) if command == "view.trace" => {
+                let name = value
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let wire = name.and_then(|name| {
+                    session
+                        .documents
+                        .first_mut()
+                        .and_then(|open| open.take_trace_wire(&name))
+                });
+                if let (Some(wire), Some(map)) = (wire, value.as_object_mut()) {
+                    map.insert("trace".into(), wire);
+                }
+                Ok(value)
+            }
+            other => other,
+        };
         let mut steps = session.edit_log.take().unwrap_or_default();
         let edited = session.documents.len() != 1
             || session
@@ -1067,6 +1099,29 @@ pub fn run_on_state(
         files: Vec::new(),
         documents: Vec::new(),
     })
+}
+
+/// The files read for the active assembly, put in this side's memory
+/// under their paths so a command reads them as the host's session did;
+/// the names put there.
+fn source_inputs(session: &mut Session) -> Vec<String> {
+    let files: Vec<(String, Vec<u8>)> = session
+        .documents
+        .first()
+        .map(|open| {
+            open.asm
+                .files
+                .iter()
+                .filter_map(|(path, read)| {
+                    Some((path.clone(), read.as_ref().ok()?.bytes().to_vec()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    files
+        .into_iter()
+        .filter_map(|(path, bytes)| session.put_file(&path, bytes).ok().map(|()| path))
+        .collect()
 }
 
 /// This side's session: the long work a piece at a time
