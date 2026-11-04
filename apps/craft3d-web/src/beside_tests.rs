@@ -703,3 +703,113 @@ fn an_assembly_is_placed_and_played_in_the_worker() {
     }
     assert_eq!(page.host.session.work_here(), before);
 }
+
+/// A slider that runs into a wall for part of the turn of `t`.
+fn slider(s: &mut Session) {
+    for (id, params) in [
+        ("file.new", json!({"units": "mm"})),
+        ("variable.set", json!({"name": "t", "expr": "0"})),
+        (
+            "feature.block",
+            json!({"name": "Wall", "size": [10, 10, 10], "position": [-10, 0, 0]}),
+        ),
+        (
+            "feature.block",
+            json!({"name": "Slider", "size": [10, 10, 10],
+                   "position": ["15 mm + 20 mm * cos(360 deg * t)", "0 mm", "0 mm"]}),
+        ),
+        (
+            "assert.add",
+            json!({"name": "Apart", "measure": "overlap", "of": ["Wall", "Slider"], "is": false}),
+        ),
+    ] {
+        s.execute(id, &params)
+            .unwrap_or_else(|e| panic!("{id}: {}", e.message()));
+    }
+}
+
+/// `view.trace` and `motion.check` asked for on the page: sampled in the
+/// worker, frame by frame; the trace is pending in the window until it
+/// came, then drawn as a session that samples it itself draws it, and
+/// the check reported with the desktop's answer; the page's thread
+/// regenerates nothing.
+#[test]
+fn a_trace_and_a_check_over_the_motion_are_made_in_the_worker() {
+    let mut page = Page::new(false);
+    slider(&mut page.host.session);
+    page.settle();
+    let work = page.host.session.work_here();
+    let mut here = Session::new(Workspace::memory());
+    slider(&mut here);
+    let edges = here
+        .execute("document.edges", &json!({"feature": "Slider"}))
+        .unwrap();
+    let vertex = edges["vertices"][0]["name"].as_str().unwrap().to_string();
+    let trace = json!({"point": vertex, "samples": 9, "name": "Foot"});
+    let now = page
+        .host
+        .session
+        .execute_deferrable("view.trace", &trace)
+        .unwrap();
+    assert_eq!(
+        (&now["deferred"], &now["pending"]),
+        (&json!(true), &json!(true))
+    );
+    page.host.shell.sync(&mut page.host.session);
+    assert_eq!(page.host.shell.traces_json()[0]["pending"], true);
+    page.settle();
+    page.host.shell.sync(&mut page.host.session);
+    assert_eq!(page.host.shell.traces_json()[0]["pending"], false);
+    let mut asked = trace.clone();
+    asked["background"] = false.into();
+    let mine = here.execute("view.trace", &asked).unwrap();
+    assert_eq!(page.host.session.traces(), here.traces());
+    let report = page.host.shell.last_command.clone().unwrap();
+    assert!(report.ok, "{report:?}");
+    let summary: String = craft3d_ui_egui::answer::summary("view.trace", &mine)
+        .chars()
+        .take(160)
+        .collect();
+    assert_eq!(report.text, summary);
+    let check = json!({"samples": 5});
+    let now = page
+        .host
+        .session
+        .execute_deferrable("motion.check", &check)
+        .unwrap();
+    assert_eq!(now["deferred"], true);
+    page.settle();
+    let mine = here.execute("motion.check", &check).unwrap();
+    let report = page.host.shell.last_command.clone().unwrap();
+    let summary: String = craft3d_ui_egui::answer::summary("motion.check", &mine)
+        .chars()
+        .take(160)
+        .collect();
+    assert_eq!(
+        (report.label.as_str(), report.text),
+        ("motion.check", summary)
+    );
+    // A worker that dies with a trace on it: an error the window says,
+    // never a trace pending for ever.
+    page.host
+        .session
+        .execute_deferrable("view.trace", &json!({"point": vertex, "name": "Lost"}))
+        .unwrap();
+    *page.worker.dies.borrow_mut() = true;
+    page.settle();
+    page.host.shell.sync(&mut page.host.session);
+    let lost = page.host.shell.traces_json();
+    let lost = lost
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "Lost")
+        .unwrap()
+        .clone();
+    assert_eq!(lost["pending"], false, "{lost}");
+    assert!(
+        lost["error"].as_str().unwrap().contains("stopped"),
+        "{lost}"
+    );
+    assert_eq!(page.host.session.work_here(), work);
+}

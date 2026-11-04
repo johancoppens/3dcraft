@@ -129,6 +129,9 @@ pub(crate) struct CommandJob {
     /// A read run on the moment of the motion shown elsewhere (`t`,
     /// collisions): the other side shows it before it runs.
     moment: Option<(f64, bool)>,
+    /// A trace (`view.trace`) made there: its name and serial here, under
+    /// which it waits as pending ([`crate::OpenDocument::trace_came`]).
+    trace: Option<(String, u64)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -151,6 +154,18 @@ pub(crate) struct Commands {
     /// over. A host's own reads (what the export dialog offers, how many
     /// are selected) need their answer now.
     deferrable: bool,
+    /// The name a trace tried here takes (`view.trace` names it here,
+    /// where the traces kept are, and it is made there under that name).
+    trace_name: Option<String>,
+}
+
+impl Commands {
+    /// A trace tried here is made there under `name` ([`Session::after_trial`]).
+    pub(crate) fn note_trace(&mut self, name: String) {
+        if self.busy {
+            self.trace_name = Some(name);
+        }
+    }
 }
 
 /// Most commands waiting for their answers at once; past that a command
@@ -183,13 +198,16 @@ impl Session {
     /// Before a command runs: a copy of the session to go back to when the
     /// command turns out to need the bodies, with the active document
     /// told to note that. `None` when it runs here as always.
-    pub(crate) fn try_without_bodies(&mut self) -> Option<Session> {
+    /// A command that samples the motion (`view.trace`, `motion.check`)
+    /// is tried even when the state is regenerated here: it regenerates
+    /// every sample, which the state regenerated here does not spare.
+    pub(crate) fn try_without_bodies(&mut self, id: &str) -> Option<Session> {
         if !self.commands.enabled
             || !self.commands.deferrable
             || self.commands.busy
             || self.commands.jobs.len() >= MAX_JOBS
             || !self.regen_elsewhere()
-            || self.regenerated_here()
+            || (self.regenerated_here() && !sweeps(id))
         {
             return None;
         }
@@ -211,6 +229,7 @@ impl Session {
         asked: &Value,
     ) -> Trial {
         self.commands.busy = false;
+        let trace_name = self.commands.trace_name.take();
         let tried = snapshot.documents.get(snapshot.active).map(|open| open.id);
         let mut wanted = false;
         for open in &mut self.documents {
@@ -243,6 +262,14 @@ impl Session {
                     now.id != was.id
                         || (at != self.active && now.history.revision() != was.history.revision())
                 });
+        // The files an edit of an assembly read (`instance.add` reads its
+        // source here): they go with it, and are this session's once its
+        // edit is applied.
+        let trial_files = self
+            .documents
+            .get(self.active)
+            .filter(|open| open.history.current().is_assembly())
+            .map(|open| open.asm.files.clone());
         self.restore(snapshot);
         let kind = if answered_elsewhere(id) && !edited {
             JobKind::Read
@@ -273,36 +300,61 @@ impl Session {
             .as_ref()
             .filter(|(id, _)| *id == open.id)
             .map(|(_, camera)| camera_wire(camera));
-        let params = match kind {
+        let mut params = match kind {
             JobKind::Edit => asked.clone(),
             _ => params.clone(),
         };
-        let sources = open.sources(current);
+        let mut sources = open.sources(current);
+        if let (JobKind::Edit, Some(sources), Some(files)) = (kind, sources.as_mut(), trial_files) {
+            sources.files = files;
+        }
         let moment = match kind {
             JobKind::Read => open.motion_t().map(|t| (t, open.motion_collisions())),
             _ => None,
         };
+        // A trace is made there under the name it took here, worked out
+        // in the command there, and waits here as pending.
+        let trace_name = trace_name.filter(|_| id == "view.trace" && kind == JobKind::Read);
+        if let (Some(name), Some(map)) = (&trace_name, params.as_object_mut()) {
+            map.insert("name".into(), name.clone().into());
+            map.insert("background".into(), false.into());
+            map.insert("wait".into(), false.into());
+        }
+        let doc_id = open.id;
+        let doc = Arc::clone(current);
+        let selection = open.selection.to_wire();
+        let jig_in_use = open.jig_in_use;
+        let trace = match (&trace_name, self.documents.get_mut(self.active)) {
+            (Some(name), Some(open)) => Some((name.clone(), open.trace_handed_over(name))),
+            _ => None,
+        };
+        let mut result = json!({
+            "deferred": true,
+            "job": token,
+            "summary": format!("{id} runs where the bodies are; its answer follows"),
+        });
+        if let (Some(name), Some(map)) = (&trace_name, result.as_object_mut()) {
+            map.insert("name".into(), name.clone().into());
+            map.insert("pending".into(), true.into());
+        }
         self.commands.jobs.push(CommandJob {
             token,
-            doc_id: open.id,
-            doc: Arc::clone(open.history.current()),
+            doc_id,
+            doc,
             command: id.to_string(),
             params,
-            selection: open.selection.to_wire(),
+            selection,
             serial,
             posted: false,
             follows,
             camera,
             kind,
-            jig_in_use: open.jig_in_use,
+            jig_in_use,
             sources,
             moment,
+            trace,
         });
-        Trial::Deferred(json!({
-            "deferred": true,
-            "job": token,
-            "summary": format!("{id} runs where the bodies are; its answer follows"),
-        }))
+        Trial::Deferred(result)
     }
 
     /// An edit of the active document can be made where the bodies are
@@ -355,6 +407,7 @@ impl Session {
             jig_in_use: open.jig_in_use,
             sources: open.sources(open.history.current()),
             moment: None,
+            trace: None,
         });
         Some(token)
     }
@@ -523,7 +576,42 @@ impl Session {
             .iter()
             .find(|open| open.id == job.doc_id)
             .map(|open| open.history.revision());
+        // The command itself failed there (a wrong point): as where it
+        // runs here, no trace is kept or pending; any other failure (the
+        // worker stopped, the state changed) is the pending trace's error.
+        let refused = answer.as_ref().is_ok_and(|a| {
+            serde_json::from_str::<Value>(&a.answer).is_ok_and(|r| r.get("error").is_some())
+        });
         let result = self.take_answer(&job, answer);
+        // A trace made there: kept here, or why it could not be made (a
+        // worker that stopped, a state the document left), never pending
+        // for ever.
+        let result = match (&job.trace, result) {
+            (Some((name, serial)), result) => {
+                let made = match &result {
+                    Ok((value, _)) => value
+                        .get("trace")
+                        .and_then(crate::motion::TraceWire::from_json)
+                        .ok_or_else(|| {
+                            format!("{}: internal error (a bug in 3DCraft, please report it): its trace did not come or cannot be read", job.command)
+                        }),
+                    Err(why) => Err(why.clone()),
+                };
+                if let Some(open) = self.documents.iter_mut().find(|o| o.id == job.doc_id) {
+                    open.trace_came(name, *serial, made.clone(), refused);
+                }
+                match (result, made) {
+                    (Ok((mut value, files)), Ok(_)) => {
+                        if let Some(map) = value.as_object_mut() {
+                            map.remove("trace");
+                        }
+                        Ok((value, files))
+                    }
+                    (Ok(_), Err(why)) | (Err(why), _) => Err(why),
+                }
+            }
+            (None, result) => result,
+        };
         if let Err(why) = &result
             && record
         {
@@ -721,6 +809,22 @@ impl Session {
         {
             open.selection = selection;
         }
+        // The files an assembly's edit read (an instance's source, read
+        // again when it changed on disk) are this session's now, as when
+        // the edit runs here: each one as the edit read it, over what was
+        // read before.
+        if let Some(sources) = &job.sources
+            && open.history.current().is_assembly()
+        {
+            let mut files = open.asm.files.clone();
+            for (path, read) in &sources.files {
+                files.insert(path.clone(), read.clone());
+            }
+            if files != open.asm.files {
+                open.asm.files = files;
+                open.asm.invalidate();
+            }
+        }
         self.recovery_sync(false);
         Some(match reply.get("error") {
             Some(error) => Err(error.as_str().unwrap_or("failed").to_string()),
@@ -740,7 +844,7 @@ impl Session {
 /// played (the hook for that: a motion's states handed over as a job of
 /// their own, the motion's view state kept here).
 fn edits_elsewhere(id: &str) -> bool {
-    const FAMILIES: [&str; 13] = [
+    const FAMILIES: [&str; 16] = [
         "feature.",
         "sketch.",
         "datum.",
@@ -754,6 +858,11 @@ fn edits_elsewhere(id: &str) -> bool {
         "output.",
         "fold.",
         "unfold.",
+        // An assembly's edits that report what they solved: the files
+        // they read go with them (`instance.add`'s source).
+        "instance.",
+        "mate.",
+        "coupling.",
     ];
     FAMILIES.iter().any(|family| id.starts_with(family))
         && !matches!(id, "sketch.text" | "sketch.textEdit" | "sketch.textOnCurve")
@@ -770,9 +879,12 @@ fn edits_elsewhere(id: &str) -> bool {
 fn answered_elsewhere(id: &str) -> bool {
     id.starts_with("measure.")
         || id.starts_with("select.")
+        || sweeps(id)
         || matches!(
             id,
             "file.export"
+                | "assembly.solve"
+                | "assembly.inspect"
                 | "assert.list"
                 | "document.check"
                 | "document.inspect"
@@ -780,6 +892,14 @@ fn answered_elsewhere(id: &str) -> bool {
                 | "document.measure"
                 | "document.interference"
         )
+}
+
+/// The commands that sample the motion, regenerating or solving a state
+/// per sample: run where the bodies are whatever is regenerated here.
+/// `view.trace` only reads the document (its trace is view state, kept
+/// here from the answer: [`crate::OpenDocument::trace_came`]).
+fn sweeps(id: &str) -> bool {
+    matches!(id, "view.trace" | "motion.check")
 }
 
 /// The result of a command run on the other side, as
