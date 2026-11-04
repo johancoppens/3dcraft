@@ -413,6 +413,23 @@ impl Shell {
             .active_tab()
             .and_then(|at| self.tabs.get(at))
             .map(|tab| tab.document);
+        if self.tabs.is_empty() {
+            // The phone's start screen: what to begin with.
+            for (label, action) in [
+                ("New part", crate::FileAction::New),
+                ("New assembly", crate::FileAction::NewAssembly),
+                ("Open…", crate::FileAction::Open),
+            ] {
+                if kit
+                    .menu_item(ui, MenuItem::new(label).icon_room())
+                    .clicked()
+                {
+                    self.request_file_action(action);
+                    ui.close();
+                }
+            }
+            return;
+        }
         let close = MenuItem::new("Close")
             .icon_room()
             .shortcut(&shortcut)

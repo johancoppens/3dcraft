@@ -3001,10 +3001,12 @@ impl Shell {
                 }
                 self.drawer_button = Some(rect);
             }
-            if self.narrow && !self.tabs.is_empty() {
-                // The phone's and the tablet's top bar (boards m2, t1): the
-                // document's name with its menu of the open documents
-                // (the tab row's All), and ⋯ with File, Edit, View, Help.
+            if self.narrow {
+                // The phone's and the tablet's top bar (boards m1, m2,
+                // t1): the document's name with its menu of the open
+                // documents (the tab row's All), and ⋯ with File, Edit,
+                // View, Help. On the start screen it says 3DCraft, its
+                // menu offers a new part or assembly and Open….
                 let tokens = self.tokens;
                 let name = self
                     .active_tab()
@@ -3267,6 +3269,13 @@ impl Shell {
                     ));
                 }
             }
+            // The phone's start screen (board m1): the program and its
+            // version.
+            None if self.narrow => items.push(StatusItem::fixed(
+                StatusSlot::Units,
+                format!("{PRODUCT} {}", help::VERSION),
+                dim,
+            )),
             None => items.push(StatusItem::fixed(
                 StatusSlot::Units,
                 "no document".to_string(),
