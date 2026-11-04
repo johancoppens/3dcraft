@@ -1,7 +1,8 @@
 //! The checks under the feature list (plan of 2026-11-02, boards 01 and
 //! 12): a header that folds them (`Checks 7 · all pass`, `1 failing`),
-//! then a row per check with its measure (`7 mm`; the limit beside it, `≥ 5 mm`,
-//! while it does not pass, and in the tooltip) and
+//! then a row per check with its measure (`7 mm`; under a check that does
+//! not pass, what it must be, `must be ≥ 5 mm`, and why; all of it in the
+//! tooltip) and
 //! a dot that carries a tick or a cross, so the state does not hang on
 //! colour alone. A failing check is a red row with its reason under it. A
 //! click on a check flies to what it measures. While something is
@@ -43,6 +44,23 @@ pub enum CheckStatus {
     Off,
 }
 
+impl CheckLine {
+    /// The lines under a check that does not pass: what it must be, then
+    /// why (both on the row: a phone has no tooltip).
+    pub fn under(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if matches!(self.status, CheckStatus::Failed | CheckStatus::NotProven) {
+            if !self.limit.is_empty() {
+                lines.push(format!("must be {}", self.limit));
+            }
+            if let Some(note) = &self.note {
+                lines.push(note.clone());
+            }
+        }
+        lines
+    }
+}
+
 impl Shell {
     /// The checks as the list shows them, and the header's note
     /// (`all pass`, `1 failing`).
@@ -67,7 +85,7 @@ impl Shell {
                             _ => "—".to_string(),
                         }
                     }),
-                    limit: pretty_units(&compact_all(&a.expected)),
+                    limit: measured_text(&a.expected),
                     status,
                     // Which step made it fail is not known yet: its reason.
                     note: matches!(status, CheckStatus::Failed | CheckStatus::NotProven)
@@ -131,13 +149,7 @@ impl Shell {
         lines
             .iter()
             .take(MAX_LISTED)
-            .map(|l| {
-                kit.hit(if l.note.is_some() {
-                    t.row_height + t.label_row_height
-                } else {
-                    t.row_height
-                })
-            })
+            .map(|l| kit.hit(t.row_height + t.label_row_height * l.under().len() as f32))
             .sum()
     }
 
@@ -212,11 +224,8 @@ impl Shell {
                 for line in lines.iter().take(MAX_LISTED) {
                     pending |= line.status == CheckStatus::Pending;
                     let failing = line.status == CheckStatus::Failed;
-                    let height = if line.note.is_some() {
-                        t.row_height + t.label_row_height
-                    } else {
-                        t.row_height
-                    };
+                    let under = line.under();
+                    let height = t.row_height + t.label_row_height * under.len() as f32;
                     let (rect, response) = ui.allocate_exact_size(
                         vec2(ui.available_width(), kit.hit(height)),
                         Sense::click(),
@@ -246,28 +255,22 @@ impl Shell {
                     let x0 = rect.left() + t.nav_spacing * 2.0 + if failing { 4.0 } else { 0.0 };
                     status_dot(painter, &kit, pos2(x0 + r, y), r, dot);
                     let text_x = x0 + 2.0 * r + t.nav_icon_gap + 2.0;
-                    // At the right the measure, whole; the limit beside
-                    // it only while the check does not pass (in the
-                    // tooltip always). The name gives way first, down to
-                    // a share of its own; only then is the measure cut.
+                    // At the right the measure, whole (the limit and the
+                    // reason go under a check that does not pass). The name
+                    // gives way first, down to a share of its own; only
+                    // then is the measure cut.
                     let right = rect.right() - 2.0;
                     let room = (right - text_x).max(0.0);
                     let galley =
                         |text: String, ink| painter.layout_no_wrap(text, kit.font(), kit.c(ink));
                     let measured_ink = if failing { sk.failed } else { sk.text };
-                    let show_limit = !line.limit.is_empty()
-                        && matches!(line.status, CheckStatus::Failed | CheckStatus::NotProven);
                     let gap = t.nav_icon_gap * 1.5;
                     let widths = check_columns(
                         room,
                         gap,
                         galley(line.name.clone(), sk.text).size().x,
                         galley(line.measured.clone(), measured_ink).size().x,
-                        if show_limit {
-                            galley(line.limit.clone(), sk.text_dim).size().x
-                        } else {
-                            0.0
-                        },
+                        0.0,
                     );
                     let cut = |text: String, ink, width: f32| {
                         let mut job =
@@ -276,16 +279,6 @@ impl Shell {
                         painter.layout_job(job)
                     };
                     let mut x = right;
-                    if widths.limit > 0.0 {
-                        let limit = cut(line.limit.clone(), sk.text_dim, widths.limit);
-                        x -= limit.size().x;
-                        painter.galley(
-                            pos2(x, y - limit.size().y * 0.5),
-                            limit,
-                            kit.c(sk.text_dim),
-                        );
-                        x -= gap;
-                    }
                     let measured = cut(line.measured.clone(), measured_ink, widths.measured);
                     x -= measured.size().x;
                     painter.galley(
@@ -306,27 +299,19 @@ impl Shell {
                         tip.push_str(note);
                     }
                     let response = response.on_hover_text(tip);
-                    if let Some(note) = &line.note {
-                        // The limit that had no room beside the measure
-                        // goes under it, where the reason would repeat the
-                        // measure (the reason is in the tooltip).
-                        let note = if widths.limit == 0.0 && !line.limit.is_empty() {
-                            format!("must be {}", line.limit)
-                        } else {
-                            note.clone()
-                        };
+                    for (k, text) in under.iter().enumerate() {
                         let mut job = egui::text::LayoutJob::simple_singleline(
-                            note,
+                            text.clone(),
                             kit.font(),
                             kit.c(sk.failed),
                         );
                         job.wrap =
                             egui::text::TextWrapping::truncate_at_width((right - text_x).max(0.0));
-                        let note = painter.layout_job(job);
-                        let ny = rect.top() + t.row_height + t.label_row_height * 0.5;
+                        let galley = painter.layout_job(job);
+                        let ny = rect.top() + t.row_height + t.label_row_height * (k as f32 + 0.5);
                         painter.galley(
-                            pos2(text_x, ny - note.size().y * 0.5),
-                            note,
+                            pos2(text_x, ny - galley.size().y * 0.5),
+                            galley,
                             kit.c(sk.failed),
                         );
                     }
@@ -400,39 +385,99 @@ pub fn compact(text: &str) -> String {
 }
 
 /// A check's measure as its row shows it, whole: what comes before a
-/// parenthesis, to five significant digits and at most four decimals
-/// (`6491.20578 mm^3` is `6491.2 mm³`, `0.302732308 kg` is `0.3027 kg`),
-/// powers of units written as superscripts.
+/// parenthesis, every number in it as [`number_text`] writes it
+/// (`6491.20578 mm^3` is `6491.2 mm³`, `0.000000153 mm` is `1.53e-7 mm`),
+/// powers of units written as superscripts. A check's limit is written the
+/// same way, so the two compare as they read.
 pub fn measured_text(text: &str) -> String {
     let head = text.split(" (").next().unwrap_or(text).trim();
-    let (number, rest) = head.split_once(' ').unwrap_or((head, ""));
-    let Ok(v) = number.parse::<f64>() else {
-        return pretty_units(head);
-    };
-    if !v.is_finite() {
-        return pretty_units(head);
-    }
-    let magnitude = if v == 0.0 { 0 } else { v.abs().log10_floor() };
-    let decimals = (4 - magnitude).clamp(0, 4) as usize;
-    let mut n = format!("{v:.decimals$}");
-    if n.contains('.') {
-        n = n.trim_end_matches('0').trim_end_matches('.').to_string();
-    }
-    if n == "-0" {
-        n = "0".to_string();
-    }
-    if rest.is_empty() {
-        n
-    } else {
-        format!("{n} {}", pretty_units(rest))
-    }
+    pretty_units(
+        &head
+            .split(' ')
+            .map(|word| match word.parse::<f64>() {
+                Ok(v) if v.is_finite() => number_text(v),
+                _ => word.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
-/// Unit powers as superscripts: `mm^3` is `mm³`, `kg mm^2` is `kg mm²`.
+/// A number to five significant digits at any size: plainly from 1e-4 to
+/// below 1e9 (`6491.2`, `0.30273`, `123457`), in scientific notation
+/// beyond (`1.5e-7`, `-1e-5`, `1.2346e12`); trailing zeros dropped, never
+/// a negative zero.
+pub fn number_text(v: f64) -> String {
+    if !v.is_finite() {
+        return format!("{v}");
+    }
+    if v == 0.0 {
+        return "0".to_string();
+    }
+    let magnitude = v.abs().log10_floor();
+    let trim = |n: String| {
+        if n.contains('.') {
+            n.trim_end_matches('0').trim_end_matches('.').to_string()
+        } else {
+            n
+        }
+    };
+    if !(-4..9).contains(&magnitude) {
+        // d.dddde±x: the mantissa to five digits.
+        let text = format!("{v:.4e}");
+        let (mantissa, exponent) = text.split_once('e').unwrap_or((text.as_str(), "0"));
+        return format!("{}e{exponent}", trim(mantissa.to_string()));
+    }
+    let decimals = (4 - magnitude).clamp(0, 8) as usize;
+    let n = trim(format!("{v:.decimals$}"));
+    if n == "-0" { "0".to_string() } else { n }
+}
+
+/// Unit powers as superscripts: `mm^3` is `mm³`, `kg mm^2` is `kg mm²`,
+/// `m^-2` is `m⁻²`, any whole power.
 pub fn pretty_units(text: &str) -> String {
-    text.replace("^2", "²")
-        .replace("^3", "³")
-        .replace("^-1", "⁻¹")
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        let power = c == '^'
+            && chars
+                .peek()
+                .is_some_and(|n| n.is_ascii_digit() || *n == '-');
+        if !power {
+            out.push(c);
+            continue;
+        }
+        let mut digits = String::new();
+        if chars.peek() == Some(&'-') {
+            chars.next();
+            digits.push('⁻');
+        }
+        let mut any = false;
+        while let Some(d) = chars.peek().copied().filter(char::is_ascii_digit) {
+            chars.next();
+            any = true;
+            digits.push(match d {
+                '0' => '⁰',
+                '1' => '¹',
+                '2' => '²',
+                '3' => '³',
+                '4' => '⁴',
+                '5' => '⁵',
+                '6' => '⁶',
+                '7' => '⁷',
+                '8' => '⁸',
+                _ => '⁹',
+            });
+        }
+        if any {
+            out.push_str(&digits);
+        } else {
+            // `^-` without a digit: as it was.
+            out.push('^');
+            out.push('-');
+        }
+    }
+    out
 }
 
 /// How wide each part of a check's row may be drawn.
@@ -547,11 +592,53 @@ mod tests {
         assert_eq!(measured_text("6491.20578 mm^3"), "6491.2 mm³");
         assert_eq!(measured_text("7 mm"), "7 mm");
         assert_eq!(measured_text("5.5 mm"), "5.5 mm");
-        assert_eq!(measured_text("0.302732308 kg"), "0.3027 kg");
+        assert_eq!(measured_text("0.302732308 kg"), "0.30273 kg");
         assert_eq!(measured_text("123456.7 mm"), "123457 mm");
         assert_eq!(measured_text("58 mm (at most 58.0035698 mm)"), "58 mm");
         assert_eq!(measured_text("true"), "true");
-        assert_eq!(measured_text("-0.00001 mm"), "0 mm");
+        // Small values keep their digits (the review: 5e-5 mm read 0 mm).
+        assert_eq!(measured_text("0.00005 mm"), "5e-5 mm");
+        assert_eq!(measured_text("1.5e-7 mm"), "1.5e-7 mm");
+        assert_eq!(measured_text("-0.00001 mm"), "-1e-5 mm");
+        assert_eq!(measured_text("0.000123456 mm"), "0.00012346 mm");
+        assert_eq!(measured_text("-0.0 deg"), "0 deg");
+        assert_eq!(measured_text("2.5e12 mm"), "2.5e12 mm");
+        // The limit the same way as the measure.
+        assert_eq!(measured_text("≥ 0.00001 mm"), "≥ 1e-5 mm");
+        assert_eq!(
+            measured_text("491.20578 mm^3 ± 0.00649120578"),
+            "491.21 mm³ ± 0.0064912"
+        );
+    }
+
+    #[test]
+    fn a_check_that_does_not_pass_says_its_limit_and_why_on_the_row() {
+        let line = |status, note: Option<&str>| CheckLine {
+            name: "wall".to_string(),
+            measured: "1 mm".to_string(),
+            limit: "≥ 1.5 mm".to_string(),
+            status,
+            note: note.map(str::to_string),
+        };
+        assert_eq!(
+            line(CheckStatus::Failed, Some("too thin")).under(),
+            vec!["must be ≥ 1.5 mm".to_string(), "too thin".to_string()]
+        );
+        assert_eq!(
+            line(CheckStatus::NotProven, Some("sampled")).under().len(),
+            2
+        );
+        assert!(line(CheckStatus::Passed, None).under().is_empty());
+    }
+
+    #[test]
+    fn unit_powers_are_superscripts() {
+        assert_eq!(pretty_units("mm^4"), "mm⁴");
+        assert_eq!(pretty_units("m^-2"), "m⁻²");
+        assert_eq!(pretty_units("kg mm^2"), "kg mm²");
+        assert_eq!(pretty_units("x^12"), "x¹²");
+        assert_eq!(pretty_units("a ^ b"), "a ^ b");
+        assert_eq!(pretty_units("^-"), "^-");
     }
 
     #[test]
