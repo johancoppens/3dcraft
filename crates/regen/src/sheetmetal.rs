@@ -58,6 +58,10 @@ pub fn sheet_face_name(feature: FeatureId, part: &Part, face: SheetFace) -> Opti
         SheetFace::Bend(i) => 2 * part.flange_number(i)? + 1,
         SheetFace::FlatPiece(f, j) => 2 * part.flat_number(f)? + ((j as u64) << 32),
         SheetFace::BendPiece(i, j) => 2 * part.flange_number(i)? + 1 + ((j as u64) << 32),
+        // A curved flange's, by its id as a flange's (one id from the
+        // flanges' counter).
+        SheetFace::CurvedBend(c) => 2 * part.curved.get(c)?.id.checked_sub(1)? + 1,
+        SheetFace::CurvedFlat(c) => 2 * part.curved.get(c)?.id,
     };
     Some(PersistentName::new(feature, NameRole::Face, vec![number]))
 }
@@ -121,6 +125,11 @@ pub(crate) fn analyse(
                 None
             }
         })
+        .chain(
+            made.curved_flanges
+                .iter()
+                .filter_map(|f| profiles.iter().position(|p| holds(p, f.edge.0))),
+        )
         .collect();
     on.sort_unstable();
     on.dedup();
@@ -424,7 +433,54 @@ pub(crate) fn analyse(
         ids: made.flanges.iter().map(|f| u64::from(f.id)).collect(),
         jogs,
     };
-    let part = sheetmetal::build(&spec, &tol).map_err(|e| explain(e, made.flanges.len()))?;
+    // The curved flanges (docs/design/sheetmetal.md › *Curved bends*).
+    let mut curved = Vec::with_capacity(made.curved_flanges.len());
+    for (g, f) in made.curved_flanges.iter().enumerate() {
+        let param = |what: &str| format!("curvedFlanges.{g}.{what}");
+        let entity = drawn
+            .sketch
+            .entity(f.edge)
+            .map_err(|_| format!("{}: sketch `{name}` has no {}", param("edge"), f.edge))?;
+        if !matches!(
+            entity.geometry,
+            craft3d_doc::Geometry::Arc { .. } | craft3d_doc::Geometry::Circle { .. }
+        ) {
+            return Err(format!(
+                "{}: {} of sketch `{name}` is not an arc or a circle; a flange on a line is one of `flanges`",
+                param("edge"),
+                f.edge
+            ));
+        }
+        curved.push(sheetmetal::curved::CurvedSpec {
+            edge: f.edge.0,
+            length: length(doc, variables, &param("length"), &f.length)?,
+            angle: angle(doc, variables, &param("angle"), &f.angle)?,
+            direction: match f.direction {
+                BendDirection::Up => Direction::Up,
+                BendDirection::Down => Direction::Down,
+            },
+            radius: match &f.radius {
+                Some(expr) => length(doc, variables, &param("radius"), expr)?,
+                None => radius,
+            },
+            k: match &f.k_factor {
+                Some(expr) => number(variables, &param("kFactor"), expr)?,
+                None => k,
+            },
+            from: match f.from {
+                FlangeFrom::Tangent => LengthFrom::Tangent,
+                FlangeFrom::Mould => LengthFrom::Mould,
+            },
+            id: u64::from(f.id),
+        });
+    }
+    let max_strain = made
+        .max_strain
+        .as_ref()
+        .map(|e| number(variables, "maxStrain", e))
+        .transpose()?;
+    let part = sheetmetal::build_with(&spec, &curved, max_strain, &tol)
+        .map_err(|e| explain(e, made.flanges.len()))?;
     // The formed louvres: each line's ends as the sketch solved them, in
     // the base's axes, drawn where the lance lies in the flat pattern.
     let mut louvres = Vec::with_capacity(made.formed_louvres.len());

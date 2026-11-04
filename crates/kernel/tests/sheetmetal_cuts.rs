@@ -285,6 +285,9 @@ fn round_trip(part: &Part, tol: &Tolerance) {
                         let q = [foot[0] + s * b.across[0], foot[1] + s * b.across[1]];
                         on_pattern(q, "a bend's edge");
                     }
+                    SheetFace::CurvedBend(_) | SheetFace::CurvedFlat(_) => {
+                        panic!("no curved flange in these parts")
+                    }
                 }
             }
         }

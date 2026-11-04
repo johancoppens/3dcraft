@@ -700,7 +700,7 @@ impl Outcome {
 }
 
 /// The measures, by name: what `assert.add` takes under `measure`.
-pub(crate) const MEASURES: [&str; 52] = [
+pub(crate) const MEASURES: [&str; 53] = [
     "volume",
     "cavity",
     "area",
@@ -739,6 +739,7 @@ pub(crate) const MEASURES: [&str; 52] = [
     "flatExtent",
     "flatArea",
     "louvreStretch",
+    "bendStrain",
     "floatingOffset",
     "floatingHeel",
     "floatingTrim",
@@ -774,7 +775,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
         | "floatingStable" => crate::below_cmds::measure(ctx, name, p),
         "curvature" | "developable" => crate::develop_cmds::take(ctx, name, p),
         "bendRadius" | "flangeLength" | "holeToBend" | "relief" | "cornerGap" | "flatExtent"
-        | "flatArea" | "louvreStretch" => crate::sheetmetal_cmds::take(ctx, name, p),
+        | "flatArea" | "louvreStretch" | "bendStrain" => crate::sheetmetal_cmds::take(ctx, name, p),
         "kawasakiFails" | "maekawaFails" | "flatFoldable" => crate::fold_cmds::take(ctx, name, p),
         "bendable" => crate::bendseq_cmds::take(ctx, p),
         "draft" => crate::analysis::draft_measure(ctx, p),

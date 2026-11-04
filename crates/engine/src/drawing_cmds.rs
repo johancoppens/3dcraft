@@ -179,6 +179,13 @@ pub(crate) fn export(
         (_, None) => doc.tolerance.linear,
     };
     let unit = doc.units.length;
+    // A flat pattern that is approximated (curved bends) says so in the
+    // file itself, so the file alone tells its reader.
+    let note = source
+        .json
+        .get("approximationNote")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let mut layers = source.layers;
     for (name, color, paths) in [
         ("outline", Color::Black, source.paths),
@@ -201,6 +208,10 @@ pub(crate) fn export(
     let (bytes, report) =
         craft3d_io::encode_drawing_stroked(&drawing, format, tolerance, stroke(p, format)?)
             .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
+    let bytes = match &note {
+        Some(note) => crate::sheetmetal_curved::with_note(bytes, format, note),
+        None => bytes,
+    };
     let size = bytes.len();
     session.write_resolved(resolved, bytes)?;
     let counts = drawing.counts();
