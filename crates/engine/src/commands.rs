@@ -1184,7 +1184,7 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
         open.history
             .rewrite_all(|doc| crate::asm_cmds::rebased(doc, old_base, new_base));
     }
-    open.saved_revision = Some(open.history.revision());
+    open.mark_saved();
     let kept = crate::workspace::kept_path(&access, &path, &resolved);
     open.path = Some(kept.clone());
     open.disk = file_stamp(in_memory, &resolved);
