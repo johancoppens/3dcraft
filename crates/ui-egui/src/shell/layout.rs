@@ -1565,6 +1565,14 @@ fn drag_field(
     });
 }
 
+/// The stripes' and the combs' density's slider ends: the useful span, so
+/// the knob of the default (16 stripes, 40 teeth) sits well inside the
+/// rail instead of at its left end (on a rail of 1 to 512, 16 is 3 % of
+/// the way); `ui.set` and the phone's steppers still reach 512 and 400
+/// (the knob then stays at the right end).
+const STRIPES_MOST: f64 = 64.0;
+const DENSITY_MOST: f64 = 120.0;
+
 fn analysis_options(
     ui: &mut egui::Ui,
     tokens: &crate::theme::Tokens,
@@ -1630,7 +1638,7 @@ fn analysis_options(
                     "Stripes",
                     &mut a.stripes,
                     1.0,
-                    1.0..=512.0,
+                    1.0..=if sheet { 512.0 } else { STRIPES_MOST },
                     "/ turn",
                     0,
                 ),
@@ -1776,7 +1784,7 @@ fn analysis_options(
             "Density",
             &mut density,
             1.0,
-            2.0..=400.0,
+            2.0..=if sheet { 400.0 } else { DENSITY_MOST },
             "",
             0,
         );

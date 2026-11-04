@@ -1552,7 +1552,10 @@ impl Shell {
         });
         // The footer (board s7): Reset all, and Open for editing for a Jig
         // in use, under the fields whatever their length.
-        let footer = kit.hit(tokens.control_height) + tokens.inset;
+        // The footer's full height: the divider and its spacing, the
+        // buttons, and the room under them above the status bar.
+        let spacing = ui.spacing().item_spacing.y;
+        let footer = kit.hit(tokens.control_height) + 1.0 + 3.0 * spacing + tokens.inset;
         let fields_height = (ui.available_height() - footer).max(kit.hit(tokens.row_height) * 2.0);
         egui::ScrollArea::vertical()
             .id_salt(("craft3d-params", self.viewing))
@@ -1678,6 +1681,7 @@ impl Shell {
                     });
                 }
             });
+            ui.add_space(tokens.inset * 0.5);
         });
         // A drag that ended: its last value goes now.
         if self.params.memory.drag.is_none()
