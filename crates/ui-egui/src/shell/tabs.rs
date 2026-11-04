@@ -447,7 +447,7 @@ impl Shell {
         kit.menu_caption(ui, "Documents");
         let mut chosen = None;
         for tab in &self.tabs {
-            let mark = if tab.dirty {
+            let mark = if tab.marked() {
                 format!(" {UNSAVED_MARK}")
             } else {
                 String::new()
@@ -637,7 +637,7 @@ impl Shell {
                                     color_alpha(tokens.chrome_text_dim, 60),
                                 );
                             }
-                            if tab.dirty && !pointed {
+                            if tab.marked() && !pointed {
                                 painter.circle_filled(
                                     close_rect.center(),
                                     3.5,
@@ -692,7 +692,7 @@ impl Shell {
                     |kit, ui| {
                         kit.menu_caption(ui, "Documents");
                         for tab in tabs {
-                            let mark = if tab.dirty {
+                            let mark = if tab.marked() {
                                 format!(" {UNSAVED_MARK}")
                             } else {
                                 String::new()

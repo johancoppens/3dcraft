@@ -423,6 +423,15 @@ pub struct DocTab {
     pub assembly: bool,
 }
 
+impl DocTab {
+    /// The tab carries the unsaved mark: changes not on disk, or a close
+    /// that asks first (a Jig in use whose parameters changed is never
+    /// `dirty`, as it is not saved over, but closing it asks).
+    pub fn marked(&self) -> bool {
+        self.dirty || self.asks_to_close
+    }
+}
+
 /// The question the window asks before it closes a document with unsaved
 /// changes from its tab: Save, Discard or Cancel. In `ui.get` under
 /// `closing` while it is asked; the person answers it in the window.
