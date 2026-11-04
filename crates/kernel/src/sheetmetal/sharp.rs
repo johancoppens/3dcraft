@@ -239,7 +239,7 @@ impl Piece {
     /// The piece in the words the part's errors use (`flanges` the
     /// flanges' count: the bends past it are jogs', two each, and their
     /// flats a web and a far side).
-    fn named(self, flanges: usize) -> String {
+    pub(super) fn named(self, flanges: usize) -> String {
         let jog = |k: usize| ((k - flanges) / 2, (k - flanges) % 2);
         match self {
             Piece::Flat(0) => "the base".to_string(),

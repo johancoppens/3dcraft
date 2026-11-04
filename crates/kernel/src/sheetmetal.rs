@@ -1464,7 +1464,9 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
     // The bends a closed corner's end plane cuts into where they are not
     // trimmed, proven clear of the other flange as folded (after the
     // refold, so a subtree moved to a corner's end is where it will be).
-    uncut_clear(&flats, &bends, &uncut, moved, t, tolerance)?;
+    uncut_clear(&flats, &bends, &uncut, t, tolerance)?;
+    // What a flange carries kept clear of the other wall at each corner.
+    corners_clear(&flats, &bends, &corners, nf, t, tolerance)?;
     bend_reliefs_fit(&flats, &bends, &bend_ends, tolerance)?;
     let done: Vec<bool> = placed.iter().map(Option::is_some).collect();
     let mut across = place_cutouts(&mut flats, &spec.cutouts, &done, tolerance)?;
@@ -3355,7 +3357,6 @@ fn uncut_clear(
     flats: &[Flat],
     bends: &[Bend],
     uncut: &[Uncut],
-    moved: bool,
     t: f64,
     tolerance: &Tolerance,
 ) -> Result<(), KernelError> {
@@ -3365,7 +3366,7 @@ fn uncut_clear(
             .get(x)
             .ok_or_else(|| refuse(Some(x), "a corner's flange is missing"))?;
         let clear = c.other.is_some_and(|o| {
-            apart_from_bend(flats, bends, b, c.which, o, moved, t, tolerance.linear) == Some(true)
+            apart_from_bend(flats, bends, b, c.which, o, t, tolerance.linear) == Some(true)
         });
         if !clear {
             return Err(refuse(
@@ -3381,6 +3382,159 @@ fn uncut_clear(
         }
     }
     Ok(())
+}
+
+/// At every corner of the base where two flanges meet, open or closed,
+/// what either flange carries (the flats and bends of its subtree: a
+/// return on its tip, a tab on its side, moved to a closed corner's end or
+/// not) is proven apart from everything of the other flange's side (its
+/// flat, extension included, its bend, and what it carries), and the
+/// other way round (docs/design/sheetmetal.md › *Closed corners* › *What
+/// a wall carries*). The two walls' own flats and bends are the corner's
+/// to close, and are left out. Each pair by separating axes
+/// ([`pieces_apart`]); a pair none separates refuses the part, naming
+/// both: nothing else looks at what a wall carries against its
+/// neighbour (a tab on the side at a mitred corner, turned in, ran into
+/// the other wall's extension and built a body through itself until
+/// 2026-11-04).
+fn corners_clear(
+    flats: &[Flat],
+    bends: &[Bend],
+    corners: &[Corner],
+    flanges: usize,
+    t: f64,
+    tolerance: &Tolerance,
+) -> Result<(), KernelError> {
+    let tol = tolerance.linear;
+    let side = |x: usize| -> Option<Vec<sharp::Piece>> {
+        let (flats_of, carried) = subtree_of(bends, x)?;
+        Some(
+            flats_of
+                .into_iter()
+                .map(sharp::Piece::Flat)
+                .chain(std::iter::once(sharp::Piece::Bend(x)))
+                .chain(carried.into_iter().map(sharp::Piece::Bend))
+                .collect(),
+        )
+    };
+    for c in corners {
+        let [fa, fb] = c.bends;
+        let lost = || refuse(Some(fa), "a corner's flange is missing");
+        let (a, b) = (side(fa).ok_or_else(lost)?, side(fb).ok_or_else(lost)?);
+        let own = |p: sharp::Piece, x: usize| match p {
+            sharp::Piece::Flat(f) => f == x + 1,
+            sharp::Piece::Bend(i) => i == x,
+            sharp::Piece::Hood(..) => false,
+        };
+        for &pa in &a {
+            for &pb in &b {
+                if own(pa, fa) && own(pb, fb) {
+                    continue;
+                }
+                if pieces_apart(flats, bends, pa, pb, t, tol) == Some(true) {
+                    continue;
+                }
+                let (carrier, carried, other) = if own(pa, fa) {
+                    (fb, pb, pa)
+                } else {
+                    (fa, pa, pb)
+                };
+                return Err(refuse(
+                    Some(carrier),
+                    format!(
+                        "at its corner with flange {}, {} is not proven clear of {} (they run into each other, or come within the tolerance), which one solid cannot hold; move or shorten what the wall carries (an inset, a shorter flange), turn it the other way, or open the corner wider with a relief",
+                        if carrier == fa { fb } else { fa },
+                        carried.named(flanges),
+                        other.named(flanges)
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The directions a piece offers as separating axes, and its edges'
+/// directions: a flat its normal and, per line of its outline, the line's
+/// direction and the normal to it in the flat's plane; a bend its axis
+/// and the directions square to it every 15 degrees.
+fn piece_axes(flats: &[Flat], bends: &[Bend], p: sharp::Piece) -> Option<(Vec<Vec3>, Vec<Vec3>)> {
+    let mut normals = Vec::new();
+    let mut edges = Vec::new();
+    match p {
+        sharp::Piece::Flat(f) => {
+            let flat = flats.get(f)?;
+            let tr = flat.transform;
+            let n = tr.vector(Vec3::Z);
+            normals.push(n);
+            edges.push(n);
+            for seg in &flat.outer {
+                if !matches!(seg.shape, Shape::Line) {
+                    continue;
+                }
+                let Some(e) = unit(sub(seg.end, seg.start)) else {
+                    continue;
+                };
+                let e = tr.vector(lift(e));
+                normals.push(n.cross(e));
+                edges.push(e);
+            }
+        }
+        sharp::Piece::Bend(i) => {
+            let b = bends.get(i)?;
+            let tr = flats.get(b.parent)?.transform;
+            let d = tr.vector(lift(unit(sub(b.end, b.start))?));
+            let across = tr.vector(lift(b.across));
+            let up = tr.vector(Vec3::Z);
+            normals.push(d);
+            edges.push(d);
+            for k in 0..24 {
+                let (sn, cs) = (f64::from(k) * std::f64::consts::PI / 12.0).psin_cos();
+                normals.push(across * cs + up * sn);
+            }
+        }
+        sharp::Piece::Hood(..) => return None,
+    }
+    Some((normals, edges))
+}
+
+/// Whether two pieces of the part are proven more than `tol` apart: some
+/// axis along which their ranges ([`sharp::Piece::range`], lower and
+/// upper bounds over the material) are disjoint by more than `tol`, among
+/// both pieces' own axes and the cross products of their edges'
+/// directions ([`piece_axes`]). `Some(false)` when none is found (not
+/// proven), `None` when a piece is missing or not finite.
+fn pieces_apart(
+    flats: &[Flat],
+    bends: &[Bend],
+    a: sharp::Piece,
+    b: sharp::Piece,
+    t: f64,
+    tol: f64,
+) -> Option<bool> {
+    let (na, ea) = piece_axes(flats, bends, a)?;
+    let (nb, eb) = piece_axes(flats, bends, b)?;
+    let mut axes = na;
+    axes.extend(nb);
+    for x in &ea {
+        for y in &eb {
+            if let Some(c) = x.cross(*y).normalized() {
+                axes.push(c);
+            }
+        }
+    }
+    for axis in &axes {
+        let f = |q: Vec3| axis.dot(q);
+        let (alo, ahi) = a.range(flats, bends, t, f)?;
+        let (blo, bhi) = b.range(flats, bends, t, f)?;
+        if !(alo.is_finite() && ahi.is_finite() && blo.is_finite() && bhi.is_finite()) {
+            return None;
+        }
+        if ahi < blo - tol || bhi < alo - tol {
+            return Some(true);
+        }
+    }
+    Some(false)
 }
 
 /// The other flange's subtree for [`past_the_end`] and
@@ -3420,20 +3574,14 @@ fn subtree_of(bends: &[Bend], other: usize) -> Option<(Vec<usize>, Vec<usize>)> 
 /// wall beside it), and those tilted out of the end (`w + c dir`, `c` ½,
 /// 1, 2, 4). One separating axis is a proof; a piece no axis separates is
 /// not proven, and `Some(false)` refuses the part. `None` when a piece is
-/// missing or not finite, and when `moved` (flanges were moved with a
-/// side to a closed corner's end) and the other flange carries any: a
-/// subtree moved to the corner's end lies beside the corner's other wall,
-/// which this proof does not look at (only the bend), so it is not taken
-/// as proven (a tab on the side at the corner turned in runs into the
-/// other wall's extension).
-#[allow(clippy::too_many_arguments)]
+/// missing or not finite. What the other flange carries is kept clear of
+/// the corner's other wall by [`corners_clear`].
 fn apart_from_bend(
     flats: &[Flat],
     bends: &[Bend],
     b: &Bend,
     which: usize,
     other: usize,
-    moved: bool,
     t: f64,
     tol: f64,
 ) -> Option<bool> {
@@ -3457,9 +3605,6 @@ fn apart_from_bend(
         }
     }
     let (subtree, carried) = subtree_of(bends, other)?;
-    if moved && !carried.is_empty() {
-        return None;
-    }
     let pieces = subtree
         .iter()
         .map(|&f| sharp::Piece::Flat(f))
