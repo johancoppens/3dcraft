@@ -128,8 +128,15 @@ impl Kit {
         } else {
             CornerRadius::same(t.dialog_radius)
         };
+        // A dialog is a layer above the panels: in the dark set one step
+        // lighter than them, as the popovers are.
+        let fill = if crate::theme::is_light(t.panel_fill) {
+            s.fill
+        } else {
+            t.popover_fill
+        };
         let frame = Frame::new()
-            .fill(color(s.fill))
+            .fill(color(fill))
             .stroke(egui::Stroke::new(1.0, color(s.field_stroke)))
             .corner_radius(round)
             .inner_margin(Margin::same(pad.clamp(0.0, 64.0) as i8))

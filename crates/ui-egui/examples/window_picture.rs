@@ -26,7 +26,7 @@
 //! cube's facet for that side (`1,-1,0`: the edge between front and
 //! right), as it is drawn under the pointer; `--point NAME` puts it on the
 //! middle of that control (`see-through`, `offset`, `fit`, ...: the names
-//! of `ControlsLayout::controls`), and `--type NAME=TEXT` double-clicks
+//! of `ControlsLayout::controls`), and `--type NAME=TEXT` clicks (a slider: its value)
 //! that number field and types TEXT into it, without Enter; `--click X,Y`
 //! clicks the window at that point (in points), and leaves the pointer
 //! there: `--click 20,10` opens the File menu. `--recent FILE` starts
@@ -391,8 +391,19 @@ fn main() -> Result<(), String> {
         {
             events.push(egui::Event::PointerMoved(at));
         }
+        // A slider of the display bar types into its value (a click on
+        // it); anything else is clicked in its middle.
+        let typing_at = |name: &str| {
+            shell
+                .slider_hits()
+                .into_iter()
+                .find(|(n, _, _)| *n == name)
+                .and_then(|(_, _, value)| value)
+                .map(|value| value.center())
+                .or_else(|| control(&shell, name))
+        };
         if let Some((name, text)) = &typed
-            && let Some(at) = control(&shell, name)
+            && let Some(at) = typing_at(name)
         {
             let button = |pressed| egui::Event::PointerButton {
                 pos: at,

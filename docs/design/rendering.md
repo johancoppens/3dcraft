@@ -1321,8 +1321,16 @@ set, the appearance switch and a component kit, without converting a screen yet.
   sets `hit_min`, the least side of any kit target.
 - **The dark set:** `theme::Palette` is the colours that change with the appearance (the panels, their text, the
   kit's fills, the popovers' step); `Palette::light()` is Mission's, `Palette::dark()` the plan's dark set
-  (`panel_fill` #1C1B19, `text` #EDEAE4, `selection_fill` #5C4220, `info_ink` #A9B3EC, popovers #262523 one step
-  lighter, …). `Tokens::dark()` is Mission with the dark palette; `with_palette` swaps the colours and keeps every
+  made the darkest variant by the developer on 2026-11-04: `panel_fill` the plates' #161514 and every layer above
+  it one step lighter (`field_fill` #1F1E1C, `row_hover_fill` #22211F, `divider` #2A2826, `chip_fill` #2A2927;
+  popovers, menus and dialogs one step, #201F1D, their fields #2A2927, hover #2E2D2A), `text` #EDEAE4,
+  `selection_fill` #5C4220, `info_ink` #A9B3EC, …). The menus of the menu bar take the context menu's plate
+  (`Tokens::menu_visuals`), so dark mode has one menu colour; every egui widget still drawn on a panel (scroll
+  bars, separators, text edits) takes the kit's fills (`Tokens::panel_visuals`), never egui's greys. Contrast
+  (WCAG 2, worked out by hand): `text` on the panel 15.19, `text_dim` 6.85, `text_dim` on `row_hover_fill` 6.04,
+  `info_ink` 8.99, `failed` 5.90, `ok` 8.29, `accent` 8.61, `info_accent` 5.60 (graphics), `inactive` 3.99
+  (graphics); on a popover or dialog (#201F1D) `plate_text` 14.74, `plate_text_dim` 6.57, `info_code` 8.11,
+  `chrome_failed` 5.33, `plate_ok` 7.48; on a popover's field (#2A2927) `plate_text_dim` 5.73. `Tokens::dark()` is Mission with the dark palette; `with_palette` swaps the colours and keeps every
   size, so touch sizes survive a switch. The chrome, the plates over the viewport and **the viewport are not themed**
   (the developer's decision): its background, bodies, sketches, datums and the selection's copper on it are the same
   in both, so `view.render`, `ui.screenshot`, the guide's and the tests' pictures stay as they were
@@ -1338,8 +1346,8 @@ set, the appearance switch and a component kit, without converting a screen yet.
 - **The kit** (`crates/ui-egui/src/kit/`): each component a method of `kit::Kit` (tokens plus a `Ground`: `Panel`,
   light or dark with the appearance, or `Plate`, the dark popovers, menus and bars, a step lighter in the dark set),
   painted from the tokens alone and returning its `Response`: buttons (primary, secondary, quiet, link, danger, with
-  an icon, disabled), icon buttons, chips, segmented controls (text or icons), check boxes, switches, sliders with
-  label, value and hint, number fields with a unit and an error ring, text fields with a hint and an icon, dropdowns
+  an icon, disabled), icon buttons, chips, segmented controls (text or icons), check boxes, switches, **the one
+  slider** (`kit::slider`, below), a stepper for small whole numbers, number fields with a unit and an error ring, text fields with a hint and an icon, dropdowns
   (a menu under the field), captions, section and fold headers, label/value rows, list rows (icon, value, hover,
   selected in copper with the value in `text`, failed, dimmed, indented, eye), the panel's tab bar, tooltips
   (`hover_tip` after egui's delay), popovers with a pointer (`popover_frame`, `popover` under an anchor), menus and
@@ -1349,6 +1357,26 @@ set, the appearance switch and a component kit, without converting a screen yet.
   documents' simplified icons (part, assembly, Jig: the plan's middle way inside the UI), the controls' icons, and
   the viewport bars' own (`Glyph::Nav`). **The app icon** (`kit::brand`) is the installers' PNGs built in (16 from
   the drawing for 16 px, 32, 64, 128), with the faint rim on dark grounds, for where 3DCraft shows itself.
+- **One slider for the whole app** (`kit::slider`, the developer's decision of 2026-11-04): the design's look (a
+  rail in `track`, the part up to the value in `accent`, a round knob of `knob_size`, white with `knob_rim` on a
+  panel and `plate_text` on a plate, 24 with touch sizes) with the precision of the old Blender-style number field
+  (which it replaces; its arithmetic moved into the kit and `shell::number_field` re-exports it). A press on the rail
+  puts the knob there and a press on the knob takes it where it is; the drag that follows moves the value by the share
+  of the rail the pointer travels, on a fine grid of round numbers (`fine_step`: about a hundredth of the range, 1, 2
+  or 5 times a power of ten, never coarser than the step), with Shift ten times finer (the pace and the grid; pressing
+  or letting go of Shift goes on from the value reached, no jump), with Ctrl on whole steps. Focused (clicked or
+  dragged), the arrow keys and the wheel step it, ten steps with Shift; a press elsewhere takes the focus away, and the
+  wheel over a slider that has no focus scrolls or zooms as before. A click on the value, or Enter with the pointer
+  over the slider, types into it: an expression with units where the caller evaluates it (the Jig form, See-through,
+  Offset: with the document's variables), a plain number otherwise; Escape gives up; the reason a text is no value
+  shows over the field. A double click on the knob sets the default. Four forms: **form** (label and a number field
+  with the unit, the rail under them, the range under that: the Jig form), **row** (label, rail, value: the Studio
+  and Analysis popovers, See-through and Offset on the display bar, the joints), **rail** (the history and motion
+  players), **drag** (a number field a horizontal drag changes, for a value without a range: a Jig parameter without
+  both ends, the curvature's fixed ends, the pull, the combs' scale). A caller that evaluates typed text keeps the
+  slider's memory itself (`SliderState`: the drag, the focus, the typing); the others leave it in egui's memory.
+  Tests: the arithmetic in `kit::slider`'s unit tests, the display bar in `tests/number_fields.rs`, the Jig form in
+  `tests/parameters.rs`, the popovers in `tests/look_panel.rs`.
 - **The gallery** (`kit::gallery`, `examples/kit_gallery.rs`): the boards c1 (light, panel and plate), c3 (dark),
   c2 (menus, popover, tooltips, pills) in both sets, the icons, and the components at 390 points with touch sizes,
   painted offscreen to `target/work-uikit/`. `tests/kit.rs` draws every board at 1024 × 700 and 390 × 844 in both
