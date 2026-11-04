@@ -1221,18 +1221,25 @@ impl PersistentName {
     /// `face` (see [`NameRole::Rim`]): `F9:rim(h)/F5:face(0)` with `h` the
     /// FNV-1a hash of the edge's name as written, in 48 bits.
     pub fn rim(feature: FeatureId, edge: &PersistentName, face: PersistentName) -> Self {
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-        for byte in edge.to_string().bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
         Self {
             feature,
             role: NameRole::Rim,
-            sources: vec![hash & 0xffff_ffff_ffff],
+            sources: vec![edge.hash48()],
             of: Some(Arc::new(face)),
             by: None,
         }
+    }
+
+    /// The FNV-1a hash of the name as written, in 48 bits: what a rim along
+    /// an edge of this name is numbered by ([`PersistentName::rim`]), and
+    /// what else is known by an edge's name.
+    pub fn hash48(&self) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in self.to_string().bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash & 0xffff_ffff_ffff
     }
 
     /// Entity number `piece` of those `of` would name in its own feature
@@ -1915,6 +1922,18 @@ impl TryFrom<String> for PersistentName {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rim's number is the FNV-1a hash of its edge's name as written,
+    /// in 48 bits: pinned, since saved names hold it.
+    #[test]
+    fn a_rim_is_numbered_by_the_hash_of_its_edges_name() {
+        let edge = PersistentName::new(FeatureId(9), NameRole::Edge, vec![3]);
+        assert_eq!(edge.to_string(), "F9:edge(3)");
+        assert_eq!(edge.hash48(), 200_681_548_416_345);
+        let face = PersistentName::new(FeatureId(5), NameRole::Face, vec![0]);
+        let rim = PersistentName::rim(FeatureId(9), &edge, face);
+        assert_eq!(rim.to_string(), "F9:rim(200681548416345)/F5:face(0)");
+    }
 
     #[test]
     fn glyph_contours_of_a_text_are_names_that_read_back() {

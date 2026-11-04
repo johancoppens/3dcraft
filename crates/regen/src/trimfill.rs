@@ -53,16 +53,9 @@ type TrimLoop = (Vec<Piece>, Vec<(f64, f64)>);
 pub(crate) fn key(rail: &DocRail) -> u64 {
     match rail {
         DocRail::Sketch(id) => id.0,
-        // The FNV-1a hash of the first edge's name, in 48 bits (as a rim's
-        // name has it): two curves of edges of one body differ.
-        DocRail::Edges(edges) => edges.first().map_or(0, |e| {
-            let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-            for byte in e.to_string().bytes() {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-            }
-            hash & 0xffff_ffff_ffff
-        }),
+        // The first edge's name's hash, as a rim's name has it: two curves
+        // of edges of one body differ.
+        DocRail::Edges(edges) => edges.first().map_or(0, PersistentName::hash48),
     }
 }
 
