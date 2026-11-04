@@ -345,7 +345,7 @@ pub struct FormedLouvre {
     pub id: u32,
 }
 
-/// A curved flange (format version 67): bent along an arc or a circle of
+/// A curved flange (format version 68): bent along an arc or a circle of
 /// the base's outline or of a hole of it. Its bend is a piece of a torus,
 /// which is not developable, so its flat pattern is approximated (the
 /// radial development) and the strain along the edge that implies is
@@ -413,12 +413,12 @@ pub struct SheetMetal {
     /// Formed louvres in its flats (format version 65).
     #[serde(default)]
     pub formed_louvres: Vec<FormedLouvre>,
-    /// Curved flanges on arcs and circles of the base (format version 67).
+    /// Curved flanges on arcs and circles of the base (format version 68).
     #[serde(default)]
     pub curved_flanges: Vec<CurvedFlange>,
     /// The most a curved flange's approximated flat pattern may stretch or
     /// compress the material along its edge (a strain: 0.05 is 5 per cent;
-    /// `None`: no limit but the geometry's), format version 67.
+    /// `None`: no limit but the geometry's), format version 68.
     #[serde(default)]
     pub max_strain: Option<Expr>,
 }

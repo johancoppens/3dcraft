@@ -1191,7 +1191,7 @@ pub enum FeatureKind {
         formed_louvres: Vec<SheetFormedLouvre>,
         /// Curved flanges on arcs and circles of the base, and the most
         /// strain their approximated flat pattern may imply (format
-        /// version 67).
+        /// version 68).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         curved_flanges: Vec<SheetCurvedFlange>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1202,7 +1202,7 @@ pub enum FeatureKind {
 /// A curved flange of a sheet-metal part: the arc or circle of the part's
 /// sketch it is bent from, its length, angle and direction, its radius
 /// and K-factor (absent: the part's), where its length is measured from,
-/// and its id (format version 67).
+/// and its id (format version 68).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SheetCurvedFlange {
