@@ -698,3 +698,90 @@ fn a_wall_unlike_its_corner_is_refused() {
         other => panic!("{other:?}"),
     }
 }
+
+/// An oval of four tangent arcs (radius 20 at the ends about (±40, 0),
+/// 80 at the top and bottom about (0, ∓√2000)), a curved flange on each,
+/// alike: each continues the next (two tori tangent along their common
+/// meridian), so the oval is one wall all round. The volume is the base's
+/// slab and each corner's Pappus, the flat area the base's and each
+/// annular sector, the outline the four tip arcs.
+#[test]
+fn an_oval_of_arcs_flanged_all_round_is_one_wall() {
+    for k in SCALES {
+        for (up, kk) in [(true, 0.4), (false, 0.5)] {
+            let tol = tolerance(k);
+            let e = 2000.0f64.sqrt();
+            let unit = |v: [f64; 2]| {
+                let n = v[0].phypot(v[1]);
+                [v[0] / n, v[1] / n]
+            };
+            // The tangent points, on the line from a large centre through
+            // a small one, 80 from the large centre.
+            let at = |big: [f64; 2], small: [f64; 2]| {
+                let d = unit([small[0] - big[0], small[1] - big[1]]);
+                [big[0] + 80.0 * d[0], big[1] + 80.0 * d[1]]
+            };
+            let (top, bottom) = ([0.0, -e], [0.0, e]);
+            let (right, left) = ([40.0, 0.0], [-40.0, 0.0]);
+            let tr = at(top, right);
+            let tl = at(top, left);
+            let br = at(bottom, right);
+            let bl = at(bottom, left);
+            let base = profile(
+                &[
+                    arc(1, s(right, k), s(br, k), s(tr, k)),
+                    arc(2, s(top, k), s(tr, k), s(tl, k)),
+                    arc(3, s(left, k), s(tl, k), s(bl, k)),
+                    arc(4, s(bottom, k), s(bl, k), s(br, k)),
+                ],
+                k,
+            );
+            let base_area = base.area();
+            let (t, r, l) = (1.0 * k, 2.0 * k, 8.0 * k);
+            let specs: Vec<CurvedSpec> = (1..=4)
+                .map(|e| CurvedSpec {
+                    id: e,
+                    ..curved(e, l, FRAC_PI_2, up, r, kk)
+                })
+                .collect();
+            let part = build_with(&spec(base, t), &specs, None, &tol)
+                .unwrap_or_else(|err| panic!("scale {k}: refused: {err}"));
+            let defects = check(&part.solid.body, &tol);
+            assert!(defects.is_empty(), "scale {k}: {defects:?}");
+            for c in &part.curved {
+                assert!(
+                    c.joined.iter().all(Option::is_some),
+                    "scale {k}: not joined"
+                );
+            }
+            let theta = FRAC_PI_2;
+            let ba = theta * (r + kk * t);
+            let (mut want, mut area) = (base_area * t, base_area);
+            for c in &part.curved {
+                let a = c.edge_radius;
+                want += c.sweep * pappus(a, 1.0, theta, r, t, l);
+                let tip = a + ba + l;
+                area += 0.5 * c.sweep * (tip * tip - a * a);
+            }
+            let sweeps: f64 = part.curved.iter().map(|c| c.sweep).sum();
+            near(sweeps, TAU, 1e-12, "the arcs turn once round");
+            let v = mass_properties(&part.solid.body).unwrap().volume;
+            near(v, want, 1e-7 * want, "oval volume");
+            near(flat_area(&part), area, 1e-9 * area, "oval flat area");
+            let chains = outline(&part, &tol);
+            assert_eq!(chains.len(), 1, "scale {k}");
+            assert_eq!(chains[0].len(), 4, "scale {k}: the four tip arcs");
+        }
+    }
+}
+
+#[test]
+fn an_angle_within_the_angular_tolerance_is_refused() {
+    refused(
+        dome(1.0),
+        curved(3, 10.0, 1e-300, true, 2.0, 0.5),
+        None,
+        1.0,
+        "within the angular tolerance of 0",
+    );
+}

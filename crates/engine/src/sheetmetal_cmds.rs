@@ -1750,6 +1750,7 @@ fn pattern_sheet(
     let (mut x, mut y, mut row_height, mut rows, mut in_row) =
         (0.0_f64, 0.0_f64, 0.0_f64, 0_usize, 0_usize);
     let mut area = 0.0;
+    let mut notes: Vec<String> = Vec::new();
     for id in ids {
         let source = one_pattern(session, id, command)?;
         let name = source
@@ -1794,6 +1795,9 @@ fn pattern_sheet(
             }
         }
         let mut json = source.json;
+        if let Some(n) = json.get("approximationNote").and_then(Value::as_str) {
+            notes.push(format!("{name}: {n}"));
+        }
         area += json.get("flatArea").and_then(Value::as_f64).unwrap_or(0.0);
         if let Some(map) = json.as_object_mut() {
             map.insert("at".into(), json!(at));
@@ -1818,6 +1822,7 @@ fn pattern_sheet(
             "bendsUp": count("bendUp"),
             "bendsDown": count("bendDown"),
             "flatArea": area,
+            "approximationNote": (!notes.is_empty()).then(|| notes.join(" ")),
         }),
         layers: placed,
         paths: Vec::new(),
@@ -2006,19 +2011,24 @@ pub(crate) fn one_pattern(
             });
         }
     }
+    let mut json = json!({
+        "sheetMetal": id.to_string(),
+        "name": name,
+        "bendsUp": counts.0,
+        "bendsDown": counts.1,
+        "flatArea": flat_area(part) + later_area,
+        "changedBy": changed_by,
+        "laterCuts": later.holes.len(),
+        "notCarried": later.not_carried,
+        "formedLouvres": built.formed.len(),
+    });
+    if let Some(map) = json.as_object_mut() {
+        for (key, value) in crate::sheetmetal_curved::export_fields(part) {
+            map.insert(key.into(), value);
+        }
+    }
     Ok(crate::drawing_cmds::Source {
-        json: json!({
-            "sheetMetal": id.to_string(),
-            "name": name,
-            "bendsUp": counts.0,
-            "bendsDown": counts.1,
-            "flatArea": flat_area(part) + later_area,
-            "changedBy": changed_by,
-            "laterCuts": later.holes.len(),
-            "notCarried": later.not_carried,
-            "formedLouvres": built.formed.len(),
-            "approximation": crate::sheetmetal_curved::export_json(part),
-        }),
+        json,
         layers,
         paths: Vec::new(),
         construction: Vec::new(),

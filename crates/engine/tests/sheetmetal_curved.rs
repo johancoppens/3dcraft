@@ -144,10 +144,27 @@ fn a_curved_flange_by_command() {
             "file.export",
             json!({"path": "pan.dxf", "sheetMetal": "Pan"}),
         );
-        assert_eq!(out["approximation"]["approximated"], true, "{out}");
+        assert_eq!(out["patternExact"], false, "{out}");
         assert_eq!(
-            out["approximation"]["curvedFlanges"][0]["strain"]["largest"],
+            out["curvedFlanges"][0]["strain"]["largest"],
             row["strain"]["largest"]
+        );
+        // The file itself says so (a DXF comment, an SVG comment).
+        let text = std::fs::read_to_string(dir.join("pan.dxf")).unwrap();
+        assert!(
+            text.starts_with("999\n3DCraft: this flat pattern is APPROXIMATED"),
+            "scale {k}"
+        );
+        let svg = run(
+            &mut s,
+            "file.export",
+            json!({"path": "pan.svg", "sheetMetal": "Pan"}),
+        );
+        assert_eq!(svg["patternExact"], false, "{svg}");
+        let text = std::fs::read_to_string(dir.join("pan.svg")).unwrap();
+        assert!(
+            text.contains("<!-- 3DCraft: this flat pattern is APPROXIMATED"),
+            "scale {k}"
         );
         assert_eq!(out["bendsUp"], 1, "{out}");
         assert!(
@@ -387,4 +404,76 @@ fn bad_curved_flanges_are_errors() {
         json!({"name": "none", "measure": "bendStrain", "of": "Pan", "max": "0.3"}),
     );
     assert_eq!(check["status"], "error", "{check}");
+}
+
+/// A later cut through the base of a part with a curved flange is carried
+/// back onto the flat pattern (the curved flange's skins are passed over),
+/// and one through the curved flange is refused, naming it: its pattern is
+/// approximated, so the cut has no one place in the flat.
+#[test]
+fn a_later_cut_beside_a_curved_flange_is_carried_and_one_through_it_refused() {
+    for k in SCALES {
+        let dir = workdir("sheetmetal-curved", &format!("later-{k}"));
+        let mut s = session_in(&dir);
+        new_document(&mut s, k);
+        let (_, arc) = dome(&mut s, k);
+        built(
+            &mut s,
+            "feature.sheetMetal",
+            json!({"sketch": "Base", "name": "Pan", "thickness": mm(k), "radius": mm(2.0 * k),
+                   "kFactor": 0.4,
+                   "curvedFlanges": [{"edge": arc, "length": mm(10.0 * k), "angle": "90 deg"}]}),
+        );
+        let plain = run(
+            &mut s,
+            "file.export",
+            json!({"path": "plain.dxf", "sheetMetal": "Pan"}),
+        );
+        let area = number(&plain["flatArea"]);
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"name": "Drill", "radius": mm(3.0 * k), "height": mm(3.0 * k),
+                   "position": [mm(30.0 * k), mm(20.0 * k), mm(-k)]}),
+        );
+        built(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "subtract", "target": "Pan", "tool": "Drill", "name": "Drilled"}),
+        );
+        let out = run(
+            &mut s,
+            "file.export",
+            json!({"path": "drilled.dxf", "sheetMetal": "Pan"}),
+        );
+        assert_eq!(out["laterCuts"], 1, "scale {k}: {out}");
+        let hole = PI * 9.0 * k * k;
+        assert!(
+            (number(&out["flatArea"]) - (area - hole)).abs() <= 1e-6 * area,
+            "scale {k}: {out}"
+        );
+        // A drill across the rim's wall (at 90 degrees the rim stands
+        // 52 to 53 from the arc's centre (50, 60), up to 13 high).
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"name": "Across", "radius": mm(2.0 * k), "height": mm(20.0 * k),
+                   "axis": [0, 1, 0],
+                   "position": [mm(50.0 * k), mm(100.0 * k), mm(9.0 * k)]}),
+        );
+        built(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "subtract", "target": "Drilled", "tool": "Across", "name": "Holed"}),
+        );
+        let why = error(
+            &mut s,
+            "file.export",
+            json!({"path": "holed.dxf", "sheetMetal": "Pan"}),
+        );
+        assert!(
+            why.contains("curvedFlanges.0") && why.contains("approximated"),
+            "scale {k}: {why}"
+        );
+    }
 }

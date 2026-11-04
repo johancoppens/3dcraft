@@ -28,7 +28,7 @@
 //! functions of `d`, monotone, so its extremes lie at the flat's two ends;
 //! on the bend (`x = r sin φ`, `s = (R + K T) φ`) it is bounded by interval
 //! arithmetic on halved intervals of `φ` (branch and bound) until the
-//! bound is within a millionth of the largest value found.
+//! bound is within a billionth of the largest value found.
 
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
@@ -111,7 +111,17 @@ pub struct Curved {
     /// direction, radius, K-factor, flat length): the bend of that flange.
     /// Joined, the two are one wall: no side between them in the part or
     /// in the flat pattern.
-    pub joined: [Option<usize>; 2],
+    pub joined: [Option<Join>; 2],
+}
+
+/// What a curved flange continues at an end of its arc.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Join {
+    /// The straight flange of this bend.
+    Straight(usize),
+    /// The curved flange at this place in [`super::Part::curved`], on the
+    /// next arc of the outline, tangent to this one there.
+    Curved(usize),
 }
 
 impl Curved {
@@ -158,6 +168,39 @@ impl Curved {
             self.thickness,
             self.flat_length,
         ) * self.sweep
+    }
+
+    /// Its two tangent lines in the flat pattern: the base's arc and the
+    /// strip's far arc (circles for a whole circle), counter-clockwise.
+    pub fn tangent_lines(&self) -> Vec<Segment> {
+        [self.edge_radius, self.pattern_radius(self.allowance)]
+            .into_iter()
+            .map(|r| {
+                let at = |a: f64| {
+                    let (s, k) = a.psin_cos();
+                    [self.center[0] + r * k, self.center[1] + r * s]
+                };
+                let (start, end) = (at(self.begin), at(self.begin + self.sweep));
+                Segment {
+                    source: self.edge,
+                    piece: 0,
+                    reversed: false,
+                    start,
+                    end: if self.whole() { start } else { end },
+                    shape: if self.whole() {
+                        Shape::Circle {
+                            center: self.center,
+                            radius: r,
+                        }
+                    } else {
+                        Shape::Arc {
+                            center: self.center,
+                            radius: r,
+                        }
+                    },
+                }
+            })
+            .collect()
     }
 
     /// The bend line in the flat pattern: the arc across the middle of the
@@ -356,6 +399,12 @@ pub(super) fn lay_out(
                 f.angle.to_degrees()
             )));
         }
+        if f.angle <= tolerance.angular {
+            return Err(no(format!(
+                "a bend's angle within the angular tolerance of 0 bends nothing (got {} degrees): give an angle above it",
+                f.angle.to_degrees()
+            )));
+        }
         if !(f.k.is_finite() && (0.0..=1.0).contains(&f.k)) {
             return Err(no(format!(
                 "a K-factor is the neutral fibre's place across the thickness, from 0 to 1, got {}",
@@ -497,6 +546,7 @@ pub(super) fn lay_out(
                 flat_length,
                 tolerance,
             )
+            .map(Join::Straight)
         });
         if sweep >= TAU && joined.iter().any(Option::is_some) {
             return Err(no("a whole circle meets no other flange".to_string()));
@@ -524,7 +574,78 @@ pub(super) fn lay_out(
             strain,
         });
     }
+    join_curved(&mut out, tolerance);
     Ok(out)
+}
+
+/// Joins curved flanges on two arcs that meet tangent at a point and grow
+/// to the same side there, alike in angle and direction, radius, K-factor
+/// and flat length: their sections there are one, so the two tori are
+/// tangent along the common meridian and the two cones along the common
+/// side, and they are one wall (an oval of arcs, flanged all round).
+fn join_curved(out: &mut [Curved], tolerance: &Tolerance) {
+    let tol = tolerance.linear;
+    // Per flange and end: the point and the unit direction it grows to.
+    let ends: Vec<[(P2, P2); 2]> = out
+        .iter()
+        .map(|c| {
+            [0.0, c.sweep].map(|d| {
+                let (sn, cs) = (c.begin + d).psin_cos();
+                (
+                    [
+                        c.center[0] + c.edge_radius * cs,
+                        c.center[1] + c.edge_radius * sn,
+                    ],
+                    [c.grows * cs, c.grows * sn],
+                )
+            })
+        })
+        .collect();
+    for n in 0..out.len() {
+        for m in n + 1..out.len() {
+            let (Some(a), Some(b)) = (out.get(n), out.get(m)) else {
+                continue;
+            };
+            let alike = a.whole() == b.whole()
+                && !a.whole()
+                && (a.angle - b.angle).abs() <= tolerance.angular
+                && (a.radius - b.radius).abs() <= tol
+                && (a.k - b.k).abs() * a.thickness <= tol
+                && (a.flat_length - b.flat_length).abs() <= tol;
+            if !alike {
+                continue;
+            }
+            for j in 0..2 {
+                for jm in 0..2 {
+                    let (Some(&(p, u)), Some(&(q, w))) = (
+                        ends.get(n).and_then(|e| e.get(j)),
+                        ends.get(m).and_then(|e| e.get(jm)),
+                    ) else {
+                        continue;
+                    };
+                    let meet = (p[0] - q[0]).phypot(p[1] - q[1]) <= tol
+                        && (u[0] * w[1] - u[1] * w[0]).abs() <= tolerance.angular
+                        && u[0] * w[0] + u[1] * w[1] > 0.0;
+                    let free = out
+                        .get(n)
+                        .and_then(|c| c.joined.get(j))
+                        .is_some_and(Option::is_none)
+                        && out
+                            .get(m)
+                            .and_then(|c| c.joined.get(jm))
+                            .is_some_and(Option::is_none);
+                    if meet && free {
+                        if let Some(x) = out.get_mut(n).and_then(|c| c.joined.get_mut(j)) {
+                            *x = Some(Join::Curved(m));
+                        }
+                        if let Some(x) = out.get_mut(m).and_then(|c| c.joined.get_mut(jm)) {
+                            *x = Some(Join::Curved(n));
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The straight flange whose bend ends at `p` (an end of a curved
@@ -866,7 +987,46 @@ pub(super) fn add_to_sheet(
         let mut ends: Vec<End> = Vec::new();
         for (j, (e, vb)) in [(e0, edge.start), (e1, edge.end)].into_iter().enumerate() {
             let (p1, p2) = (world(at(c, e, xe, ze)), world(at(c, e, xt, zt)));
-            let Some(bend) = c.joined.get(j).copied().flatten() else {
+            let partner = c.joined.get(j).copied().flatten();
+            if let Some(Join::Curved(m)) = partner
+                && m < n
+            {
+                // The earlier curved flange made the common meridian and
+                // side: from the base's vertex out, then to the tip.
+                let from = |edges: [usize; 2], start: VertexId| {
+                    (0..keys.len()).find(|&x| {
+                        matches!(keys.get(x), Some(EdgeKey::Curved { flange, edge }) if *flange == m && edges.contains(edge))
+                            && sheet.edges.get(x).is_some_and(|ed| ed.start == start)
+                    })
+                };
+                let x = from([2, 3], vb)
+                    .ok_or_else(|| no("the curved flange it continues has no bend's end there"))?;
+                let v1 = sheet
+                    .edges
+                    .get(x)
+                    .map(|ed| ed.end)
+                    .ok_or_else(|| no("an edge is missing"))?;
+                let y = from([4, 5], v1)
+                    .ok_or_else(|| no("the curved flange it continues has no side there"))?;
+                let v2 = sheet
+                    .edges
+                    .get(y)
+                    .map(|ed| ed.end)
+                    .ok_or_else(|| no("an edge is missing"))?;
+                let near =
+                    |v: VertexId, q: Vec3| point_of(sheet, v).is_some_and(|z| z.distance(q) <= tol);
+                if !(near(v1, p1) && near(v2, p2)) {
+                    return Err(no("the curved flange it continues does not meet it"));
+                }
+                let id = |x: usize| {
+                    u32::try_from(x)
+                        .map(EdgeId)
+                        .map_err(|_| no("too many edges"))
+                };
+                ends.push((vb, v1, v2, Some((id(x)?, id(y)?))));
+                continue;
+            }
+            let Some(Join::Straight(bend)) = partner else {
                 if whole && j == 1 {
                     let first = ends
                         .first()

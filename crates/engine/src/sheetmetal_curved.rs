@@ -282,19 +282,61 @@ pub(crate) fn bends_json(part: &Part, made: &SheetMetal) -> Vec<Value> {
         .collect()
 }
 
-/// The export's statement of the approximation: per curved flange its id
-/// and the proven strain along its edge the pattern implies.
-pub(crate) fn export_json(part: &Part) -> Value {
+/// The export's statement of the approximation: whether the pattern is
+/// exact, per curved flange its id and the proven strain along its edge
+/// the pattern implies, and the note written into the file.
+pub(crate) fn export_fields(part: &Part) -> Vec<(&'static str, Value)> {
     let list: Vec<Value> = part
         .curved
         .iter()
         .map(|c| json!({"id": c.id, "strain": strain_json(c)}))
         .collect();
-    json!({
-        "approximated": !list.is_empty(),
-        "method": "radial development: the section's lengths kept along every radial line (bend allowance angle * (radius + kFactor * thickness)), the material stretched or compressed along the edge by the strain given",
-        "curvedFlanges": list,
-    })
+    let note = (!part.curved.is_empty()).then(|| {
+        let largest = part
+            .curved
+            .iter()
+            .map(|c| c.strain.largest())
+            .fold(0.0, f64::max);
+        format!(
+            "3DCraft: this flat pattern is APPROXIMATED. Its {} curved flange(s) are not developable; they are laid out by the radial development (along every radial line as a straight bend: bend allowance angle * (radius + kFactor * thickness)), which stretches or compresses the sheet along the curved edge by up to {:.4} (a proven bound; {:.2} per cent).",
+            part.curved.len(),
+            largest,
+            100.0 * largest
+        )
+    });
+    vec![
+        ("patternExact", json!(part.curved.is_empty())),
+        ("curvedFlanges", json!(list)),
+        ("approximationNote", json!(note)),
+    ]
+}
+
+/// The note put into the file's text: an SVG comment after its XML
+/// declaration, a DXF comment (group 999) at its start.
+pub(crate) fn with_note(bytes: Vec<u8>, format: craft3d_io::DrawingFormat, note: &str) -> Vec<u8> {
+    let clean: String = note
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .replace("--", "-");
+    match format {
+        craft3d_io::DrawingFormat::Dxf => {
+            let mut out = format!("999\n{clean}\n").into_bytes();
+            out.extend(bytes);
+            out
+        }
+        craft3d_io::DrawingFormat::Svg => {
+            let text = String::from_utf8_lossy(&bytes).to_string();
+            let comment = format!("<!-- {clean} -->\n");
+            match text.find("?>\n") {
+                Some(at) => {
+                    let (head, tail) = text.split_at(at + 3);
+                    format!("{head}{comment}{tail}").into_bytes()
+                }
+                None => format!("{comment}{text}").into_bytes(),
+            }
+        }
+    }
 }
 
 /// The bend lines of the curved flanges (the arc across the middle of

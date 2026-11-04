@@ -574,33 +574,36 @@ pattern is one outline.
 ```json
 [
  ["sketch.create", {"plane": "xy", "name": "PanBase"}],
- ["sketch.line", {"sketch": "PanBase", "from": [15, 0], "to": [85, 0]}],
- ["sketch.line", {"sketch": "PanBase", "from": [100, 15], "to": [100, 45]}],
- ["sketch.line", {"sketch": "PanBase", "from": [85, 60], "to": [15, 60]}],
- ["sketch.line", {"sketch": "PanBase", "from": [0, 45], "to": [0, 15]}],
- ["sketch.arc", {"sketch": "PanBase", "center": [85, 15], "start": [85, 0], "end": [100, 15]}],
- ["sketch.arc", {"sketch": "PanBase", "center": [85, 45], "start": [100, 45], "end": [85, 60]}],
- ["sketch.arc", {"sketch": "PanBase", "center": [15, 45], "start": [15, 60], "end": [0, 45]}],
- ["sketch.arc", {"sketch": "PanBase", "center": [15, 15], "start": [0, 15], "end": [15, 0]}],
+ ["sketch.line", {"sketch": "PanBase", "from": [25, 0], "to": [75, 0]}],
+ ["sketch.line", {"sketch": "PanBase", "from": [100, 25], "to": [100, 35]}],
+ ["sketch.line", {"sketch": "PanBase", "from": [75, 60], "to": [25, 60]}],
+ ["sketch.line", {"sketch": "PanBase", "from": [0, 35], "to": [0, 25]}],
+ ["sketch.arc", {"sketch": "PanBase", "center": [75, 25], "start": [75, 0], "end": [100, 25]}],
+ ["sketch.arc", {"sketch": "PanBase", "center": [75, 35], "start": [100, 35], "end": [75, 60]}],
+ ["sketch.arc", {"sketch": "PanBase", "center": [25, 35], "start": [25, 60], "end": [0, 35]}],
+ ["sketch.arc", {"sketch": "PanBase", "center": [25, 25], "start": [0, 25], "end": [25, 0]}],
  ["feature.sheetMetal", {"sketch": "PanBase", "name": "Pan", "thickness": "1 mm", "radius": "2 mm",
-   "kFactor": 0.4, "maxStrain": 0.6,
-   "flanges": [{"edge": "e3", "length": "20 mm", "angle": "90 deg"},
-               {"edge": "e6", "length": "20 mm", "angle": "90 deg"},
-               {"edge": "e9", "length": "20 mm", "angle": "90 deg"},
-               {"edge": "e12", "length": "20 mm", "angle": "90 deg"}],
-   "curvedFlanges": [{"edge": "e16", "length": "20 mm", "angle": "90 deg"},
-                     {"edge": "e20", "length": "20 mm", "angle": "90 deg"},
-                     {"edge": "e24", "length": "20 mm", "angle": "90 deg"},
-                     {"edge": "e28", "length": "20 mm", "angle": "90 deg"}]}],
+   "kFactor": 0.4, "maxStrain": 0.3,
+   "flanges": [{"edge": "e3", "length": "8 mm", "angle": "90 deg"},
+               {"edge": "e6", "length": "8 mm", "angle": "90 deg"},
+               {"edge": "e9", "length": "8 mm", "angle": "90 deg"},
+               {"edge": "e12", "length": "8 mm", "angle": "90 deg"}],
+   "curvedFlanges": [{"edge": "e16", "length": "8 mm", "angle": "90 deg"},
+                     {"edge": "e20", "length": "8 mm", "angle": "90 deg"},
+                     {"edge": "e24", "length": "8 mm", "angle": "90 deg"},
+                     {"edge": "e28", "length": "8 mm", "angle": "90 deg"}]}],
  ["sheetMetal.bends", {"feature": "Pan"}],
- ["assert.add", {"name": "Corner strain", "measure": "bendStrain", "of": "Pan", "max": "0.6"}]
+ ["assert.add", {"name": "Corner strain", "measure": "bendStrain", "of": "Pan", "max": "0.3"}]
 ]
 ```
 
-![A tray with rounded corners: four walls and four curved corners, one wall all round](images/curved-tray.png)
+![A tray with corners rounded to 25 mm: four walls and four curved corners, one wall all round](images/curved-tray.png)
 
-Its corners, 20 mm high on a radius of 15 mm, compress the sheet's top edge by up to 56 per cent along
-the corner: a drawn tray, not one a press brake can fold. A larger corner radius or a lower wall lowers it.
+Its corners, a wall 8 mm high (10 mm to the rim) on a radius of 25 mm, compress the top of the wall by up
+to 27 per cent along the corner (the bend table's `strain`): a drawn corner, not one a press brake can
+fold. A larger corner radius or a lower wall lowers it. A drawn part's blank is in practice sized by equal
+area and corrected by trial; the flat pattern here keeps the lengths across the bend and states the strain
+along it.
 
 The bends are folded by the same mechanism as `feature.fold` (a joint with a radius), and the folded sheet
 is given its thickness as `feature.plate` does, so a bend's skins are the cylinders of the inner radius and
