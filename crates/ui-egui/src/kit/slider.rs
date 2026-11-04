@@ -320,6 +320,9 @@ pub struct Slider<'a> {
     /// The field ringed in the failure's colour without a line under it
     /// (the caller says why elsewhere).
     pub alarm: bool,
+    /// A typed value is taken as it is, outside the rail's range too (the
+    /// knob then stays at the end): a joint's.
+    pub typed_free: bool,
 }
 
 impl<'a> Slider<'a> {
@@ -344,6 +347,7 @@ impl<'a> Slider<'a> {
             note: None,
             error: None,
             alarm: false,
+            typed_free: false,
         }
     }
     #[must_use]
@@ -412,6 +416,11 @@ impl<'a> Slider<'a> {
     #[must_use]
     pub fn note(mut self, note: Option<&'a str>) -> Self {
         self.note = note;
+        self
+    }
+    #[must_use]
+    pub fn typed_free(mut self, free: bool) -> Self {
+        self.typed_free = free;
         self
     }
     #[must_use]
@@ -577,9 +586,15 @@ impl Kit {
         mut slider: Slider<'_>,
         state: Option<SliderState<'_>>,
     ) -> SliderShown {
-        let id = ui
-            .make_persistent_id(("kit-slider", slider.label))
-            .with(ui.next_auto_id());
+        // A slider the caller keeps the memory of is known by its name
+        // there (two sliders without labels in one bar never share an id);
+        // the others by their label and their place in the layout.
+        let id = match &state {
+            Some(state) => ui.make_persistent_id(("kit-slider", state.field)),
+            None => ui
+                .make_persistent_id(("kit-slider", slider.label))
+                .with(ui.next_auto_id()),
+        };
         let shown = match state {
             Some(state) => self.slider_parts(
                 ui,
@@ -607,8 +622,8 @@ impl Kit {
                     match typed_plain(&typed.text, slider.unit, slider.scale) {
                         Some(v) => {
                             let v = match slider.range2() {
-                                Some([lo, hi]) => v.clamp(lo, hi),
-                                None => v,
+                                Some([lo, hi]) if !slider.typed_free => v.clamp(lo, hi),
+                                _ => v,
                             };
                             *slider.value = v;
                             own.typing = None;
@@ -821,11 +836,6 @@ impl Kit {
                             memory.drag = None;
                         }
                     }
-                    // A click reports the value it set, changed or not: a
-                    // click is an answer.
-                    if response.clicked() {
-                        changed = true;
-                    }
                     if response.double_clicked()
                         && let Some(at) = pointer
                         && (at.x - knob_at(value_now, rail)).abs() <= knob * 0.5 + 4.0
@@ -893,7 +903,13 @@ impl Kit {
             {
                 let times = if fine { 10 } else { 1 };
                 let mut steps = 0;
+                // The arrows are the slider's only with the pointer over
+                // it: elsewhere they step the history player as always.
+                let over = hover.is_some_and(|p| outer.contains(p));
                 ui.input_mut(|i| {
+                    if !over {
+                        return;
+                    }
                     for key in [egui::Key::ArrowRight, egui::Key::ArrowUp] {
                         if i.consume_key(egui::Modifiers::SHIFT, key)
                             || i.consume_key(egui::Modifiers::NONE, key)
@@ -909,7 +925,6 @@ impl Kit {
                         }
                     }
                 });
-                let over = hover.is_some_and(|p| outer.contains(p));
                 if over {
                     let scroll: f32 = ui.input(|i| {
                         i.raw
@@ -1286,6 +1301,9 @@ impl Kit {
         let s = &self.skin;
         let side = self.hit(t.control_height);
         let middle = (t.control_height * 1.6).max(28.0);
+        // Known by its place in the layout, not on the screen: a scroll
+        // keeps its id.
+        let place_id = ui.next_auto_id();
         let (outer, _) =
             ui.allocate_exact_size(sane(vec2(2.0 * side + middle, side)), Sense::hover());
         let box_rect = Rect::from_center_size(
@@ -1294,7 +1312,7 @@ impl Kit {
         );
         let minus = Rect::from_min_size(outer.min, vec2(side, side));
         let plus = Rect::from_min_size(pos2(outer.right() - side, outer.top()), vec2(side, side));
-        let id = ui.make_persistent_id(("kit-stepper", outer.min.x as i32, outer.min.y as i32));
+        let id = ui.make_persistent_id(("kit-stepper", place_id));
         let lo_r = ui.interact(minus, id.with("-"), Sense::click());
         let hi_r = ui.interact(plus, id.with("+"), Sense::click());
         let mut response = ui.interact(outer, id, Sense::hover());

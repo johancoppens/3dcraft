@@ -112,8 +112,8 @@ fn the_pill_opens_the_popover_with_the_start_screens_controls() {
                 "copy-config",
                 "other-clients",
                 "disconnect-all",
-                // The connected agent's own ✕ (2026-11-04).
-                "disconnect:Claude Code",
+                // The connected agent's own ✕ (2026-11-04), by its key.
+                "disconnect:MCP bridge (process 1)",
             ]
             .contains(&name.as_str())
         })
@@ -445,7 +445,7 @@ fn the_cross_of_an_agent_disconnects_that_one() {
         .cloned()
         .collect();
     assert_eq!(crosses.len(), 1, "{crosses:?}");
-    assert_eq!(crosses[0].0, "disconnect:Claude Code");
+    assert_eq!(crosses[0].0, "disconnect:MCP bridge (process 7)");
     window.click(&mut shell, &mut session, crosses[0].1.center());
     assert_eq!(
         shell.take_agent_disconnect().as_deref(),

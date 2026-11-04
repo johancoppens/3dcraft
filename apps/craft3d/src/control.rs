@@ -601,6 +601,15 @@ fn serve(stream: TcpStream, shared: &Shared) {
                     (shared.wake)();
                     Some(rpc::ok_reply(&request_id(line), &json!({ "bye": true })))
                 }
+                // Sent away by the person while this line was on its way:
+                // not dispatched, the connection ends.
+                Ok(_)
+                    if client
+                        .as_ref()
+                        .is_some_and(|name| shared.clients().dismissed.contains(name)) =>
+                {
+                    break;
+                }
                 Ok(line) => {
                     note_request(shared, id, client.as_ref(), line);
                     let origin = origin_of(shared, client.as_ref());

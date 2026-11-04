@@ -42,8 +42,8 @@ const MAX_DECIMALS: usize = 6;
 /// under an egui id of its own (`push_id`), and the form remembers which
 /// one the drag or the typing belongs to ([`ParamForm::active`]).
 const FIELD: &str = "param";
-/// The most values (from the lowest to the highest less one) a whole
-/// number has to get a stepper `− 3 +` instead of a slider.
+/// The most values a whole number has to get a stepper `− 3 +` instead of
+/// a slider (`hi - lo < 12`: at most twelve values).
 const STEPPER_MOST: f64 = 12.0;
 /// What a document without public parameters says about the tab.
 const NO_PARAMETERS: &str =
@@ -1966,7 +1966,7 @@ impl Shell {
         if p.kind == ParamKind::Integer
             && let Some([lo, hi]) = p.range()
             && step == 1.0
-            && hi - lo <= STEPPER_MOST
+            && hi - lo < STEPPER_MOST
         {
             let mut v = value;
             let (label, response) = labelled(ui, &kit, &p.label, |ui| {

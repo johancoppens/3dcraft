@@ -295,7 +295,8 @@ fn ctrl_z_while_typing_into_a_field_is_the_fields_own() {
     let mut session = plate();
     let (mut shell, mut window) = started(&mut session);
     // Typing begins with a click on the slider's value (2026-11-04: the
-    // one slider; the number field took a double click).
+    // one slider); the second click of this double click lands in the
+    // text box and keeps typing.
     let field = shell
         .slider_hits()
         .into_iter()

@@ -53,6 +53,7 @@ struct Window {
     ctx: egui::Context,
     time: f64,
     modifiers: Modifiers,
+    size: egui::Vec2,
 }
 
 impl Window {
@@ -60,7 +61,7 @@ impl Window {
         self.time += 1.0 / 60.0;
         events.insert(0, Event::ModifiersChanged(self.modifiers));
         let input = egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 760.0))),
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
             time: Some(self.time),
             events,
             ..Default::default()
@@ -146,6 +147,7 @@ fn started() -> (Session, Shell, Window) {
         ctx: egui::Context::default(),
         time: 0.0,
         modifiers: Modifiers::NONE,
+        size: vec2(1280.0, 760.0),
     };
     for _ in 0..4 {
         window.frame(&mut shell, &mut session, Vec::new());
@@ -195,11 +197,13 @@ fn a_drag_shift_finer_ctrl_in_steps_and_the_keys() {
     window.drag(&mut shell, &mut session, at, rail.width() * 0.25);
     let finer = shell.state.transparency - t;
     assert!((finer - 0.0225).abs() <= 0.0005 + 1e-9, "{finer}");
-    // With Ctrl on the steps of 5 %.
+    // With Ctrl on the steps of 5 %, and moved.
     window.modifiers = Modifiers::CTRL;
     let at = knob(&shell);
+    let before_ctrl = shell.state.transparency;
     window.drag(&mut shell, &mut session, at, rail.width() * 0.1);
     let stepped = shell.state.transparency;
+    assert!(stepped > before_ctrl + 0.04, "{before_ctrl} -> {stepped}");
     assert!(
         ((stepped / 0.05).round() * 0.05 - stepped).abs() < 1e-9,
         "{stepped}"
@@ -211,10 +215,21 @@ fn a_drag_shift_finer_ctrl_in_steps_and_the_keys() {
     assert!((shell.state.transparency - (before - 0.05)).abs() < 1e-9);
     window.key(&mut shell, &mut session, Key::ArrowRight);
     assert!((shell.state.transparency - before).abs() < 1e-9);
+    // From 0.8 (set as an agent sets it; the pointer stays over the
+    // slider), Shift+← is exactly ten steps of 5 %.
+    shell
+        .handle_method(&mut session, "ui.set", Some(&json!({"transparency": 0.8})))
+        .unwrap()
+        .unwrap();
+    window.frame(&mut shell, &mut session, Vec::new());
     window.modifiers = Modifiers::SHIFT;
     window.key(&mut shell, &mut session, Key::ArrowLeft);
     window.modifiers = Modifiers::NONE;
-    assert!((shell.state.transparency - (before - 0.5).max(0.0)).abs() < 1e-9);
+    assert!(
+        (shell.state.transparency - 0.3).abs() < 1e-9,
+        "{}",
+        shell.state.transparency
+    );
     // A press on the rail away from the knob puts it there.
     window.click(
         &mut shell,
@@ -456,4 +471,54 @@ fn switching_the_section_off_ends_typing_into_offset() {
     assert!(shell.typing().is_none(), "{:?}", shell.typing());
     // The wheel over where the field was does not step anything.
     assert!(!shell.state.section.on);
+}
+
+/// The arrow keys are a focused slider's only while the pointer is over
+/// it: over the viewport they are the history player's, and leave the
+/// slider (control-protocol.md: arrows over the viewport or the list).
+#[test]
+fn the_arrows_step_a_focused_slider_only_under_the_pointer() {
+    let (mut session, mut shell, mut window) = started();
+    shell
+        .handle_method(&mut session, "ui.set", Some(&json!({"transparency": 0.5})))
+        .unwrap()
+        .unwrap();
+    window.frame(&mut shell, &mut session, Vec::new());
+    let at = knob(&shell);
+    window.click(&mut shell, &mut session, at);
+    window.key(&mut shell, &mut session, Key::ArrowLeft);
+    assert!(
+        (shell.state.transparency - 0.45).abs() < 1e-9,
+        "over it: a step"
+    );
+    let middle = shell.viewport_rect().unwrap().center();
+    window.frame(&mut shell, &mut session, vec![Event::PointerMoved(middle)]);
+    window.key(&mut shell, &mut session, Key::ArrowLeft);
+    assert!(
+        (shell.state.transparency - 0.45).abs() < 1e-9,
+        "elsewhere: not the slider's"
+    );
+}
+
+/// In the compact display bar (a narrower window, the section on) the two
+/// sliders have no labels; each is still its own: a click on a value types
+/// into that slider.
+#[test]
+fn the_compact_bars_sliders_are_each_their_own() {
+    let (mut session, mut shell, mut window) = started();
+    window.size = vec2(900.0, 700.0);
+    for _ in 0..3 {
+        window.frame(&mut shell, &mut session, Vec::new());
+    }
+    let toggle = shell.controls_layout().unwrap().section_toggle.unwrap();
+    window.click(&mut shell, &mut session, toggle.center());
+    window.frame(&mut shell, &mut session, Vec::new());
+    assert!(shell.controls_layout().unwrap().compact, "the compact bar");
+    let (_, see) = parts(&shell, "see-through");
+    window.click(&mut shell, &mut session, see.center());
+    assert_eq!(shell.typing().map(|t| t.field), Some("see-through"));
+    window.key(&mut shell, &mut session, Key::Escape);
+    let (_, offset) = parts(&shell, "offset");
+    window.click(&mut shell, &mut session, offset.center());
+    assert_eq!(shell.typing().map(|t| t.field), Some("offset"));
 }

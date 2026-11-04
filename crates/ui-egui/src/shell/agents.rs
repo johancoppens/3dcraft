@@ -805,7 +805,7 @@ impl Shell {
                     })
                     .inner;
                 if let (Some(close), Some(key)) = (close, client.key.as_deref()) {
-                    hits.push((format!("disconnect:{}", client.name), close.rect));
+                    hits.push((format!("disconnect:{key}"), close.rect));
                     if close.clicked() {
                         self.request_agent_disconnect(key);
                     }

@@ -348,7 +348,10 @@ impl Shell {
                         crate::kit::Slider::new(&mate.name, &mut on_slider, range[0]..=range[1])
                             .widths(label_width, value_width)
                             .shown_as(1.0, decimals, unit)
-                            .default_value(if angle { value.to_degrees() } else { value }),
+                            // Typed values as they are (a joint's slider
+                            // never clamped them); no default to go back
+                            // to: a joint has no rest value of its own.
+                            .typed_free(true),
                         None,
                     )
                 })

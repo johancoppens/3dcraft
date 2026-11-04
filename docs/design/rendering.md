@@ -1330,7 +1330,7 @@ set, the appearance switch and a component kit, without converting a screen yet.
   (WCAG 2, worked out by hand): `text` on the panel 15.19, `text_dim` 6.85, `text_dim` on `row_hover_fill` 6.04,
   `info_ink` 8.99, `failed` 5.90, `ok` 8.29, `accent` 8.61, `info_accent` 5.60 (graphics), `inactive` 3.99
   (graphics); on a popover or dialog (#201F1D) `plate_text` 14.74, `plate_text_dim` 6.57, `info_code` 8.11,
-  `chrome_failed` 5.33, `plate_ok` 7.48; on a popover's field (#2A2927) `plate_text_dim` 5.73. `Tokens::dark()` is Mission with the dark palette; `with_palette` swaps the colours and keeps every
+  `chrome_failed` 5.33, `plate_ok` 7.48; on a popover's field (#2A2927) `plate_text_dim` 5.80. `panel_visuals` restyles the remaining egui widgets in the light set too (fields, hover and chips from the light tokens). `Tokens::dark()` is Mission with the dark palette; `with_palette` swaps the colours and keeps every
   size, so touch sizes survive a switch. The chrome, the plates over the viewport and **the viewport are not themed**
   (the developer's decision): its background, bodies, sketches, datums and the selection's copper on it are the same
   in both, so `view.render`, `ui.screenshot`, the guide's and the tests' pictures stay as they were

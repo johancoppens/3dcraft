@@ -141,60 +141,60 @@ impl Shell {
                         bottom: 0,
                     })
                     .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = tokens.nav_spacing;
-                // Who is connected, on the info card.
-                let (title, detail) = match status.clients.as_slice() {
-                    [] if status.allowed => (
-                        "Waiting for an agent".to_string(),
-                        "Agents may connect to this window".to_string(),
-                    ),
-                    [] => (
-                        "Agents off".to_string(),
-                        "The pill in the status bar turns them on".to_string(),
-                    ),
-                    [one] => (
-                        format!("{} connected", one.name),
-                        format!("{} · {total} commands", ago(one.since_ms, now)),
-                    ),
-                    many => (
-                        format!("{} agents connected", many.len()),
-                        format!("{total} commands"),
-                    ),
-                };
-                kit.banner(
-                    ui,
-                    crate::kit::BannerKind::Info,
-                    Some(&title),
-                    &detail,
-                    |_, _| {},
-                );
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Latest")
-                            .font(kit.medium_font(ui))
-                            .color(color(s.text)),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            egui::RichText::new("newest first")
-                                .font(kit.small_font())
-                                .color(color(s.text_dim)),
+                        ui.spacing_mut().item_spacing.y = tokens.nav_spacing;
+                        // Who is connected, on the info card.
+                        let (title, detail) = match status.clients.as_slice() {
+                            [] if status.allowed => (
+                                "Waiting for an agent".to_string(),
+                                "Agents may connect to this window".to_string(),
+                            ),
+                            [] => (
+                                "Agents off".to_string(),
+                                "The pill in the status bar turns them on".to_string(),
+                            ),
+                            [one] => (
+                                format!("{} connected", one.name),
+                                format!("{} · {total} commands", ago(one.since_ms, now)),
+                            ),
+                            many => (
+                                format!("{} agents connected", many.len()),
+                                format!("{total} commands"),
+                            ),
+                        };
+                        kit.banner(
+                            ui,
+                            crate::kit::BannerKind::Info,
+                            Some(&title),
+                            &detail,
+                            |_, _| {},
                         );
-                    });
-                });
-                if rows.is_empty() {
-                    kit.paragraph(
-                        ui,
-                        "Nothing yet. What an agent does to this document shows here, with what it meant by it.",
-                        true,
-                    );
-                }
-                let mut hits = Vec::new();
-                for row in &rows {
-                    let response = log_row(ui, &kit, row, now, &names);
-                    hits.push(response.rect);
-                }
-                self.side.hits.agent_rows = hits;
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("Latest")
+                                    .font(kit.medium_font(ui))
+                                    .color(color(s.text)),
+                            );
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(
+                                    egui::RichText::new("newest first")
+                                        .font(kit.small_font())
+                                        .color(color(s.text_dim)),
+                                );
+                            });
+                        });
+                        if rows.is_empty() {
+                            kit.paragraph(
+                                ui,
+                                "Nothing yet. What an agent does to this document shows here, with what it meant by it.",
+                                true,
+                            );
+                        }
+                        let mut hits = Vec::new();
+                        for row in &rows {
+                            let response = log_row(ui, &kit, row, now, &names);
+                            hits.push(response.rect);
+                        }
+                        self.side.hits.agent_rows = hits;
                     });
             });
     }

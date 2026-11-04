@@ -155,6 +155,9 @@ pub struct Agents {
     asked: BTreeSet<String>,
     /// What is never offered.
     protected: Protected,
+    /// Questions taken away with their agent (disconnected), whose
+    /// requests the desk refuses at its next turn.
+    dropped: Vec<(u64, String)>,
 }
 
 /// Most questions waiting for the person at once, and per client.
@@ -224,6 +227,7 @@ impl Agents {
             next_prompt: 1,
             asked: BTreeSet::new(),
             protected,
+            dropped: Vec::new(),
         }
     }
 
@@ -310,10 +314,6 @@ impl Agents {
         }
     }
 
-    fn push_prompt(&mut self, prompt: AgentPrompt) -> u64 {
-        self.push_prompt_from(None, prompt)
-    }
-
     /// A question asked of the person, from the client that authenticated
     /// as `key` (when known).
     fn push_prompt_from(&mut self, key: Option<String>, mut prompt: AgentPrompt) -> u64 {
@@ -379,15 +379,21 @@ impl Agents {
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let id = self.push_prompt(AgentPrompt {
-                id: 0,
-                kind: if want.write { "write" } else { "read" }.to_string(),
-                client: origin.name.clone(),
-                path: want.path.clone(),
-                folder: folder.to_string_lossy().into_owned(),
-                file_name,
-                command: Some(want.command.clone()),
-            });
+            // Known by the client's name, so refusing or disconnecting
+            // that client takes its questions away with it.
+            let key = (!origin.key.is_empty()).then(|| origin.key.clone());
+            let id = self.push_prompt_from(
+                key,
+                AgentPrompt {
+                    id: 0,
+                    kind: if want.write { "write" } else { "read" }.to_string(),
+                    client: origin.name.clone(),
+                    path: want.path.clone(),
+                    folder: folder.to_string_lossy().into_owned(),
+                    file_name,
+                    command: Some(want.command.clone()),
+                },
+            );
             return Ok(Some(id));
         }
         Ok(None)
@@ -443,7 +449,7 @@ impl Agents {
     /// The prompts asked before `now - wait`: taken off, with the reason
     /// for their requests. A connect question simply goes.
     pub fn expire(&mut self, now: Instant) -> Vec<(u64, String)> {
-        let mut gone = Vec::new();
+        let mut gone = std::mem::take(&mut self.dropped);
         self.prompts.retain(|pending| {
             let waited = now.saturating_duration_since(pending.asked);
             if pending.prompt.kind == "connect" {
@@ -789,7 +795,17 @@ impl Agents {
     /// Refuse when it connects); the questions it still had wait no
     /// longer. Whether it was known.
     pub fn disconnect(&mut self, key: &str) -> bool {
-        self.prompts.retain(|p| p.key.as_deref() != Some(key));
+        // Its questions go: a request that waited on one is refused at
+        // the next turn ([`Self::expire`]).
+        let mut dropped = Vec::new();
+        self.prompts.retain(|p| {
+            let theirs = p.key.as_deref() == Some(key);
+            if theirs && p.prompt.kind != "connect" {
+                dropped.push((p.prompt.id, denied(&p.prompt)));
+            }
+            !theirs
+        });
+        self.dropped.extend(dropped);
         self.server
             .as_ref()
             .is_some_and(|server| server.disconnect(key))
@@ -1916,6 +1932,58 @@ mod tests {
         );
         assert_eq!(reply["result"]["isError"], false, "{reply}");
         let _ = std::fs::remove_dir_all(&state);
+    }
+
+    /// Refusing an agent at connect, or its ✕, takes its file questions
+    /// with it: none is left for "Allow this folder" to grant to the other
+    /// agents, and the request that waited on one is refused.
+    #[test]
+    fn refusing_an_agent_takes_its_file_questions_with_it() {
+        for by_cross in [false, true] {
+            let state = workdir(if by_cross {
+                "consent-paths-cross"
+            } else {
+                "consent-paths-refuse"
+            });
+            let a = state.join("work").join("a");
+            let outside = state.join("elsewhere");
+            std::fs::create_dir_all(&a).unwrap();
+            std::fs::create_dir_all(&outside).unwrap();
+            let mut desk = consent_desk(&state);
+            let (bridge, _) =
+                relay_turning(&mut desk, bridge_in(&state, &a), initialize(), |_| true);
+            desk.turn();
+            assert!(prompts(&desk).iter().any(|p| p.kind == "connect"));
+            let (bridge, _) =
+                relay_turning(&mut desk, bridge, run(2, "file.new", json!({})), |_| true);
+            let target = outside.join("kept.3dcraft");
+            let (_, reply) = relay_turning(
+                &mut desk,
+                bridge,
+                run(3, "file.save", json!({"path": target.to_str().unwrap()})),
+                |desk| {
+                    if !prompts(desk).iter().any(|p| p.kind == "write") {
+                        return false;
+                    }
+                    if by_cross {
+                        let key = desk.host.shell.agents_status().clients[0]
+                            .key
+                            .clone()
+                            .unwrap();
+                        desk.host.shell.request_agent_disconnect(&key);
+                        true
+                    } else {
+                        click(desk, "connect", PromptAnswer::Refuse)
+                    }
+                },
+            );
+            desk.turn();
+            assert!(prompts(&desk).is_empty(), "{:?}", prompts(&desk));
+            let refused = reply.get("error").is_some() || reply["result"]["isError"] == true;
+            assert!(refused, "{reply}");
+            assert!(!target.exists());
+            let _ = std::fs::remove_dir_all(&state);
+        }
     }
 
     /// The ✕ of one agent in the agent panel disconnects that one and
