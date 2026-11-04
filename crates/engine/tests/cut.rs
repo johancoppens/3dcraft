@@ -818,7 +818,7 @@ fn bad_parameters_and_impossible_kerfs_are_refused() {
         (
             "cut.export",
             json!({"path": "x.dxf", "kerf": "-1 mm"}),
-            "kerf",
+            "`kerf` must be a length of 0 or more, not -1 mm",
         ),
         (
             "cut.export",
@@ -838,7 +838,7 @@ fn bad_parameters_and_impossible_kerfs_are_refused() {
         (
             "cut.export",
             json!({"path": "x.svg", "stroke": -1}),
-            "stroke",
+            "`stroke` must be a line width in millimetres above 0 and at most 100, not -1",
         ),
         (
             "cut.export",
@@ -848,13 +848,17 @@ fn bad_parameters_and_impossible_kerfs_are_refused() {
         (
             "cut.export",
             json!({"path": "x.dxf", "width": "50 mm"}),
-            "width",
+            "mm long, more than the sheet's width 50 mm; give a larger `width`",
         ),
-        ("cut.export", json!({"path": "x.dxf", "width": 0}), "width"),
+        (
+            "cut.export",
+            json!({"path": "x.dxf", "width": 0}),
+            "`width` must be a length above 0, not 0 mm",
+        ),
         (
             "cut.export",
             json!({"path": "x.dxf", "gap": "-1 mm"}),
-            "gap",
+            "`gap` must be a length of 0 or more, not -1 mm",
         ),
         (
             "cut.export",

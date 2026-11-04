@@ -1723,26 +1723,7 @@ fn pattern_sheet(
             "{command}: a sheet holds at most {MAX_SHEET_PARTS} flat patterns"
         ));
     }
-    let length = |session: &Session, key: &str| -> Result<Option<f64>, CommandError> {
-        match p.expr(key)? {
-            None => Ok(None),
-            Some(source) => session
-                .evaluate_typed(&source, crate::typed::TypedKind::Length)
-                .map(Some)
-                .map_err(|e| CommandError::new(format!("{command}: `{key}`: {e}"))),
-        }
-    };
-    let unit = session.document()?.history.current().units.length;
-    let gap = match length(session, "gap")? {
-        Some(gap) if gap >= 0.0 => gap,
-        Some(_) => return fail(format!("{command}: `gap` must not be negative")),
-        None => 5.0 / crate::drawing_cmds::drawing_unit(unit).millimetres(),
-    };
-    let width = match length(session, "width")? {
-        Some(width) if width > 0.0 => Some(width),
-        Some(_) => return fail(format!("{command}: `width` must be positive")),
-        None => None,
-    };
+    let (gap, width) = crate::drawing_cmds::sheet_gap_width(session, p, command)?;
     let slack = session.document()?.history.current().tolerance.linear;
     let mut ids = Vec::with_capacity(items.len());
     for (i, item) in items.iter().enumerate() {

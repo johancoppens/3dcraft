@@ -962,29 +962,7 @@ fn sheet(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
             entries.len()
         ));
     }
-    let unit = session.document()?.history.current().units.length;
-    // Lengths as every other: an expression ("3 mm", "wall * 2") or a
-    // number in the document's unit.
-    let length = |key: &str| -> Result<Option<f64>, CommandError> {
-        match p.expr(key)? {
-            None => Ok(None),
-            Some(source) => session
-                .evaluate_typed(&source, crate::typed::TypedKind::Length)
-                .map(Some)
-                .map_err(|e| CommandError::new(format!("{ID}: `{key}`: {e}"))),
-        }
-    };
-    let gap = match length("gap")? {
-        Some(gap) if gap >= 0.0 => gap,
-        Some(_) => return fail(format!("{ID}: `gap` must not be negative")),
-        // 5 mm in the document's unit.
-        None => 5.0 / drawing_unit(unit).millimetres(),
-    };
-    let width = match length("width")? {
-        Some(width) if width > 0.0 => Some(width),
-        Some(_) => return fail(format!("{ID}: `width` must be positive")),
-        None => None,
-    };
+    let (gap, width) = sheet_gap_width(session, p, ID)?;
     let x_axis = vector(p.get("xAxis"), "xAxis")?;
     // Each entry: the face, whose body, its axes, its layer, and what a
     // layer is named after when it is not given.
@@ -1164,4 +1142,47 @@ pub(crate) fn stroke(p: &Params, format: DrawingFormat) -> Result<Option<f64>, C
         ));
     }
     Ok(Some(width))
+}
+
+/// The `gap` between parts laid out on one sheet and the sheet's `width`
+/// (rows of at most it), each a length as every other (an expression,
+/// "3 mm", or a number in the document's unit): the gap 5 mm unless
+/// given, 0 or more; the width no limit unless given, above 0; both
+/// finite. One reading for every command that lays parts out in rows.
+pub(crate) fn sheet_gap_width(
+    session: &Session,
+    p: &Params,
+    id: &str,
+) -> Result<(f64, Option<f64>), CommandError> {
+    let unit = session.document()?.history.current().units.length;
+    let u = unit.symbol();
+    let length = |key: &str| -> Result<Option<f64>, CommandError> {
+        match p.expr(key)? {
+            None => Ok(None),
+            Some(source) => session
+                .evaluate_typed(&source, crate::typed::TypedKind::Length)
+                .map(Some)
+                .map_err(|e| CommandError::new(format!("{id}: `{key}`: {e}"))),
+        }
+    };
+    let gap = match length("gap")? {
+        Some(g) if g.is_finite() && g >= 0.0 => g,
+        Some(g) => {
+            return fail(format!(
+                "{id}: `gap` must be a length of 0 or more, not {g} {u}"
+            ));
+        }
+        // 5 mm in the document's unit.
+        None => 5.0 / drawing_unit(unit).millimetres(),
+    };
+    let width = match length("width")? {
+        Some(w) if w.is_finite() && w > 0.0 => Some(w),
+        Some(w) => {
+            return fail(format!(
+                "{id}: `width` must be a length above 0, not {w} {u}"
+            ));
+        }
+        None => None,
+    };
+    Ok((gap, width))
 }
