@@ -355,7 +355,7 @@ fn too_many(at: SocketAddr, reason: &str) -> Option<Failure> {
 /// A duration in words, for messages.
 fn seconds(d: Duration) -> String {
     let ms = d.as_millis();
-    if ms % 1000 == 0 {
+    if ms.is_multiple_of(1000) {
         format!("{} s", ms / 1000)
     } else {
         format!("{ms} ms")

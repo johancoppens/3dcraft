@@ -435,7 +435,7 @@ fn a_tangent_at_the_seam_of_a_closed_curve() {
         let line = run(
             &mut s,
             "sketch.line",
-            json!({"sketch": "S", "from": live["start"], "to": [-1.0 * k, 4.0 * k]}),
+            json!({"sketch": "S", "from": live["start"], "to": [-k, 4.0 * k]}),
         );
         constrain(
             &mut s,
