@@ -6,6 +6,10 @@ use super::{Choice, Kit, centred_left, sane};
 use crate::theme::{Rgb, color};
 use egui::{CornerRadius, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
 
+/// The least share of a list row a plain value keeps when a long name
+/// pushes it (the name wins up to there).
+const VALUE_LEAST_SHARE: f32 = 0.3;
+
 /// How a row's value is shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ValueStyle {
@@ -516,12 +520,29 @@ impl Kit {
         } else {
             value_ink
         };
-        let value = self.galley(
-            ui,
-            row.value,
-            self.font(),
-            if row.value_field { s.text } else { value_ink },
-        );
+        let mark_room = if row.mark.is_some() { side } else { 0.0 };
+        // The name wins: a plain value that leaves the name too little
+        // room is cut first (`revolute · 0.0° · dri…`), down to a share
+        // of the row; a field's value keeps its width (it is typed into).
+        let value_room = if row.value_field || row.value_hidden {
+            f32::INFINITY
+        } else {
+            let total = (right - x - mark_room - t.nav_icon_gap).max(0.0);
+            let name_width = self.galley(ui, row.name, self.font(), name_ink).size().x;
+            (total - name_width).max(total * VALUE_LEAST_SHARE)
+        };
+        let value = {
+            let ink = if row.value_field { s.text } else { value_ink };
+            let mut job = egui::text::LayoutJob::simple_singleline(
+                row.value.to_string(),
+                self.font(),
+                color(ink),
+            );
+            if value_room.is_finite() {
+                job.wrap = egui::text::TextWrapping::truncate_at_width(value_room.max(1.0));
+            }
+            painter.layout_job(job)
+        };
         let value_width = value.size().x;
         let field_pad = t.field_text_pad * 0.6;
         let value_rect = Rect::from_min_max(
@@ -556,7 +577,6 @@ impl Kit {
         } else {
             right - value_width
         };
-        let mark_room = if row.mark.is_some() { side } else { 0.0 };
         let room = (left_of_value - t.nav_icon_gap - x - mark_room).max(0.0);
         let mut job = egui::text::LayoutJob::simple_singleline(
             row.name.to_string(),
