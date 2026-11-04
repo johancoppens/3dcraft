@@ -139,6 +139,10 @@ struct Page {
     clock: Instant,
     /// The page thread's frames since the last [`Page::take_frames`], ms.
     frames: Vec<f64>,
+    /// The bytes of the scenes' parts the page read, and the time it took
+    /// in the frames that read any (ms).
+    part_bytes: usize,
+    part_frames: Vec<f64>,
 }
 
 impl Page {
@@ -163,6 +167,8 @@ impl Page {
             checker,
             clock: Instant::now(),
             frames: Vec::new(),
+            part_bytes: 0,
+            part_frames: Vec::new(),
         }
     }
 
@@ -171,11 +177,24 @@ impl Page {
         let started = Instant::now();
         let mut outcome = self.host.pump();
         let taken = std::mem::take(&mut *self.replies.lock().unwrap());
+        let parts: usize = taken
+            .iter()
+            .map(|reply| match reply {
+                Reply::Part { bytes, .. } => bytes.len(),
+                _ => 0,
+            })
+            .sum();
+        self.part_bytes += parts;
         let quality = self.host.shell.scene_quality();
         let now = self.clock.elapsed().as_secs_f64() * 1000.0;
+        let reading = Instant::now();
         let done = self
             .scenes
             .frame_at(&mut self.host.session, quality, taken, now);
+        if parts > 0 {
+            self.part_frames
+                .push(reading.elapsed().as_secs_f64() * 1000.0);
+        }
         let answered = self.host.answered(done.commands);
         outcome.downloads.extend(answered.downloads);
         outcome.pick = outcome.pick.or(answered.pick);
@@ -450,6 +469,33 @@ fn the_page_stalls_on_the_planetary_gearbox() {
             mine.push(now);
         }
         answers.push(mine);
+        if !worker {
+            continue;
+        }
+        // The moments of the motion, as the player asks for them: how much
+        // of the page's frame is reading the scene each moment sends
+        // whole (the owed method sends only the parts' poses).
+        page.run("variable.delete", &json!({"name": "pageStall"}));
+        page.take_frames();
+        page.part_bytes = 0;
+        page.part_frames.clear();
+        let started = Instant::now();
+        let moments = 16;
+        for k in 1..=moments {
+            let t = f64::from(k) / f64::from(moments) * 0.25;
+            page.run("view.motion", &json!({"t": t}));
+        }
+        let wall = started.elapsed();
+        let (longest, total, frames) = page.take_frames();
+        let reading = std::mem::take(&mut page.part_frames);
+        let read_longest = reading.iter().copied().fold(0.0, f64::max);
+        let read_total: f64 = reading.iter().sum();
+        println!(
+            "{moments} moments (worker): longest page frame {longest:.1} ms, page thread {total:.1} ms over {frames} frames in {:.0} ms; scenes read: {} bytes, {read_total:.1} ms in {} frames, the longest {read_longest:.1} ms",
+            wall.as_secs_f64() * 1000.0,
+            page.part_bytes,
+            reading.len(),
+        );
     }
     let _ = answers;
 }
