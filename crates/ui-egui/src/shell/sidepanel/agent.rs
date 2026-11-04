@@ -126,64 +126,76 @@ impl Shell {
             .and_then(|log| log.get("total"))
             .and_then(Value::as_u64)
             .unwrap_or(0);
+        let inset = crate::shell::side_inset(&tokens);
         egui::ScrollArea::vertical()
             .id_salt("craft3d-agent-tab")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = tokens.nav_spacing;
-                // Who is connected, on the info card.
-                let (title, detail) = match status.clients.as_slice() {
-                    [] if status.allowed => (
-                        "Waiting for an agent".to_string(),
-                        "Agents may connect to this window".to_string(),
-                    ),
-                    [] => (
-                        "Agents off".to_string(),
-                        "The pill in the status bar turns them on".to_string(),
-                    ),
-                    [one] => (
-                        format!("{} connected", one.name),
-                        format!("{} · {total} commands", ago(one.since_ms, now)),
-                    ),
-                    many => (
-                        format!("{} agents connected", many.len()),
-                        format!("{total} commands"),
-                    ),
-                };
-                kit.banner(
-                    ui,
-                    crate::kit::BannerKind::Info,
-                    Some(&title),
-                    &detail,
-                    |_, _| {},
-                );
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Latest")
-                            .font(kit.medium_font(ui))
-                            .color(color(s.text)),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            egui::RichText::new("newest first")
-                                .font(kit.small_font())
-                                .color(color(s.text_dim)),
+                // Clear of the split on the right as of the panel's edge
+                // on the left, as the other tabs.
+                egui::Frame::new()
+                    .inner_margin(egui::Margin {
+                        left: 0,
+                        right: inset,
+                        top: 0,
+                        bottom: 0,
+                    })
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = tokens.nav_spacing;
+                        // Who is connected, on the info card.
+                        let (title, detail) = match status.clients.as_slice() {
+                            [] if status.allowed => (
+                                "Waiting for an agent".to_string(),
+                                "Agents may connect to this window".to_string(),
+                            ),
+                            [] => (
+                                "Agents off".to_string(),
+                                "The pill in the status bar turns them on".to_string(),
+                            ),
+                            [one] => (
+                                format!("{} connected", one.name),
+                                format!("{} · {total} commands", ago(one.since_ms, now)),
+                            ),
+                            many => (
+                                format!("{} agents connected", many.len()),
+                                format!("{total} commands"),
+                            ),
+                        };
+                        kit.banner(
+                            ui,
+                            crate::kit::BannerKind::Info,
+                            Some(&title),
+                            &detail,
+                            |_, _| {},
                         );
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("Latest")
+                                    .font(kit.medium_font(ui))
+                                    .color(color(s.text)),
+                            );
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(
+                                    egui::RichText::new("newest first")
+                                        .font(kit.small_font())
+                                        .color(color(s.text_dim)),
+                                );
+                            });
+                        });
+                        if rows.is_empty() {
+                            kit.paragraph(
+                                ui,
+                                "Nothing yet. What an agent does to this document shows here, with what it meant by it.",
+                                true,
+                            );
+                        }
+                        let mut hits = Vec::new();
+                        for row in &rows {
+                            let response = log_row(ui, &kit, row, now, &names);
+                            hits.push(response.rect);
+                        }
+                        self.side.hits.agent_rows = hits;
                     });
-                });
-                if rows.is_empty() {
-                    kit.paragraph(
-                        ui,
-                        "Nothing yet. What an agent does to this document shows here, with what it meant by it.",
-                        true,
-                    );
-                }
-                let mut hits = Vec::new();
-                for row in &rows {
-                    let response = log_row(ui, &kit, row, now, &names);
-                    hits.push(response.rect);
-                }
-                self.side.hits.agent_rows = hits;
             });
     }
 }

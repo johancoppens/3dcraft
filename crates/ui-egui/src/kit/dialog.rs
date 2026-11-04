@@ -128,8 +128,15 @@ impl Kit {
         } else {
             CornerRadius::same(t.dialog_radius)
         };
+        // A dialog is a layer above the panels: in the dark set one step
+        // lighter than them, as the popovers are.
+        let fill = if crate::theme::is_light(t.panel_fill) {
+            s.fill
+        } else {
+            t.popover_fill
+        };
         let frame = Frame::new()
-            .fill(color(s.fill))
+            .fill(color(fill))
             .stroke(egui::Stroke::new(1.0, color(s.field_stroke)))
             .corner_radius(round)
             .inner_margin(Margin::same(pad.clamp(0.0, 64.0) as i8))
@@ -148,8 +155,8 @@ impl Kit {
             }
             ui.spacing_mut().item_spacing.y = t.nav_spacing * 2.0;
             // The title row: icon, title, ×.
-            let title_font = egui::FontId::new(t.dialog_title_font, heading_family(ui));
-            let galley = kit.galley(ui, dialog.title, title_font, s.text);
+            let title_font = kit.title_font(ui);
+            let galley = kit.galley(ui, dialog.title, title_font.clone(), s.text);
             let height = galley.size().y.max(t.control_height);
             let (row, _) =
                 ui.allocate_exact_size(sane(vec2(ui.available_width(), height)), Sense::hover());
@@ -172,7 +179,7 @@ impl Kit {
             let shown = if galley.size().x > room {
                 let mut job = egui::text::LayoutJob::simple_singleline(
                     dialog.title.to_string(),
-                    egui::FontId::new(t.dialog_title_font, heading_family(ui)),
+                    title_font.clone(),
                     color(s.text),
                 );
                 job.wrap = egui::text::TextWrapping::truncate_at_width(room.max(1.0));
@@ -279,7 +286,11 @@ impl Kit {
             let (rect, _) = ui.allocate_exact_size(
                 sane(vec2(
                     label_width,
-                    galley.size().y.max(self.t.label_row_height),
+                    galley
+                        .size()
+                        .y
+                        .max(self.t.label_row_height)
+                        .max(self.t.control_height),
                 )),
                 Sense::hover(),
             );
@@ -353,12 +364,4 @@ impl Kit {
             .inner
             .on_hover_text(text)
     }
-}
-
-/// The headings' family where the fonts in force have one (Semi Bold).
-fn heading_family(ui: &Ui) -> egui::FontFamily {
-    ui.style()
-        .text_styles
-        .get(&egui::TextStyle::Heading)
-        .map_or(egui::FontFamily::Proportional, |font| font.family.clone())
 }

@@ -869,9 +869,15 @@ impl Host {
             }
             // Only the agents' own picker asks for a folder.
             Ok(Choice::Folder(_)) => {}
+            // Cancelled is the person's choice, not a failure: said quietly
+            // (the developer's decision of 2026-11-04).
             Ok(Choice::Cancelled(label)) => {
                 self.close_after_save = false;
-                self.report(label, &Err("cancelled".to_string()));
+                self.shell.last_command = Some(CommandReport {
+                    label: label.to_string(),
+                    ok: true,
+                    text: "cancelled".to_string(),
+                });
             }
             Err(error) => {
                 self.close_after_save = false;
@@ -1458,7 +1464,8 @@ mod tests {
         let (label, ok, text) = last(&host);
         assert_eq!(
             (label.as_str(), ok, text.as_str()),
-            ("file.save", false, "cancelled")
+            // A cancelled picker is no failure (2026-11-04).
+            ("file.save", true, "cancelled")
         );
         assert_eq!(volume_on_disk(&gear), 600.0);
         assert_eq!(listing(&mine), ["gear.3dcraft"]);
@@ -1560,7 +1567,8 @@ mod tests {
         act(&mut host, &mut dialogs, FileAction::Open);
         assert_eq!(
             last(&host),
-            ("file.open".to_string(), false, "cancelled".to_string())
+            // A cancelled picker is no failure (2026-11-04).
+            ("file.open".to_string(), true, "cancelled".to_string())
         );
         assert!(host.session.document_status().is_none());
         // Chosen: opened, through the shell's own request as the menu
@@ -1828,7 +1836,8 @@ mod tests {
         act(&mut host, &mut dialogs, FileAction::Import);
         assert_eq!(
             last(&host),
-            ("file.import".to_string(), false, "cancelled".to_string())
+            // A cancelled picker is no failure (2026-11-04).
+            ("file.import".to_string(), true, "cancelled".to_string())
         );
         assert!(host.session.document_status().is_none());
 
@@ -2179,9 +2188,11 @@ mod tests {
         assert_eq!(host.shell.state.export.name, "untitled.step");
         host.shell.answer_export(false);
         assert!(!host.shell.state.export.open);
+        // Cancelled is said, not a failure (the developer's decision of
+        // 2026-11-04: no red, no Copy details).
         assert_eq!(
             last(&host),
-            ("file.export".to_string(), false, "cancelled".to_string())
+            ("file.export".to_string(), true, "cancelled".to_string())
         );
         assert!(!host.pump_files(&mut dialogs));
         assert!(person.asked().is_empty());

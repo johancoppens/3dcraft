@@ -27,6 +27,8 @@ pub(crate) struct AgentsMemory {
     switch: Option<bool>,
     /// "Disconnect all" was clicked, until the host takes it.
     disconnect: bool,
+    /// The ✕ of one agent was clicked (its key), until the host takes it.
+    disconnect_one: Option<String>,
     /// "Change…" was clicked: the host shows a folder picker.
     change_folder: bool,
     /// "Also the open document's folder" was turned.
@@ -237,6 +239,16 @@ impl Shell {
         std::mem::take(&mut self.agents.disconnect)
     }
 
+    /// Asks the host to disconnect the agent that authenticated as `key`,
+    /// as its ✕ in the agent panel does: refused for the rest of the run.
+    pub fn request_agent_disconnect(&mut self, key: &str) {
+        self.agents.disconnect_one = Some(key.to_string());
+    }
+
+    pub fn take_agent_disconnect(&mut self) -> Option<String> {
+        self.agents.disconnect_one.take()
+    }
+
     /// Asks the host for a folder picker for the agents' folder, as
     /// Change… does.
     pub fn request_agents_folder(&mut self) {
@@ -260,6 +272,7 @@ impl Shell {
     pub(super) fn agents_pending(&self) -> bool {
         self.agents.switch.is_some()
             || self.agents.disconnect
+            || self.agents.disconnect_one.is_some()
             || self.agents.change_folder
             || self.agents.document_folder.is_some()
             || self.agents.answer.is_some()
@@ -299,10 +312,11 @@ impl Shell {
     /// appears or changes, so a click meant for something else (or a
     /// double click) never answers it.
     ///
-    /// At connect (decision of 2026-11-02): Refuse and Only the work
-    /// folder refuse the folder only (the connection stays); Allow this
-    /// folder allows it for this run, or for good with "Remember for this
-    /// folder".
+    /// At connect (decisions of 2026-11-02 and 2026-11-04): Refuse
+    /// disconnects that agent and refuses it for the rest of the run;
+    /// Only the work folder refuses the folder only (the connection
+    /// stays, with the work folder); Allow this folder allows it for this
+    /// run, or for good with "Remember for this folder".
     pub(super) fn agent_prompt(&mut self, ctx: &egui::Context) {
         use crate::state::PromptAnswer;
         self.agents.prompt_hits.clear();
@@ -395,7 +409,7 @@ impl Shell {
                     vec![
                         ("Allow this folder", Button::primary("Allow this folder"), folder),
                         ("Only the work folder", Button::secondary("Only the work folder"), PromptAnswer::Deny),
-                        ("Refuse", Button::quiet("Refuse"), PromptAnswer::Deny),
+                        ("Refuse", Button::danger("Refuse"), PromptAnswer::Refuse),
                     ]
                 } else {
                     vec![
@@ -411,7 +425,8 @@ impl Shell {
             }
             kit.dialog_footer(ui, |ui| {
                 if connect {
-                    answer(ui, "Refuse", Button::quiet("Refuse"), PromptAnswer::Deny);
+                    answer(ui, "Refuse", Button::danger("Refuse"), PromptAnswer::Refuse)
+                        .on_hover_text("Disconnect this agent; it is refused until 3DCraft restarts");
                 } else {
                     answer(ui, "Deny", Button::danger("Deny"), PromptAnswer::Deny);
                 }
@@ -773,17 +788,28 @@ impl Shell {
             });
         } else {
             label(ui, kit, &format!("Connected  {}", status.clients.len()));
-            for client in &status.clients {
+            for (i, client) in status.clients.iter().enumerate() {
                 let last = match &client.last_command {
                     Some(command) => format!(" · last: {command}"),
                     None => " · idle".to_string(),
                 };
-                client_card(
-                    ui,
-                    kit,
-                    &client.name,
-                    &format!("{}{last}", for_how_long(client.since_ms, now)),
-                );
+                let close = ui
+                    .push_id(("craft3d-agent-client", i), |ui| {
+                        client_card(
+                            ui,
+                            kit,
+                            &client.name,
+                            &format!("{}{last}", for_how_long(client.since_ms, now)),
+                            client.key.is_some(),
+                        )
+                    })
+                    .inner;
+                if let (Some(close), Some(key)) = (close, client.key.as_deref()) {
+                    hits.push((format!("disconnect:{key}"), close.rect));
+                    if close.clicked() {
+                        self.request_agent_disconnect(key);
+                    }
+                }
             }
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -967,8 +993,15 @@ fn folder_field(ui: &mut egui::Ui, kit: &Kit, path: &str) {
 }
 
 /// A connected agent: a dot, its name, and since when and what it did
-/// last, on a card of the field's colour.
-fn client_card(ui: &mut egui::Ui, kit: &Kit, name: &str, detail: &str) {
+/// last, on a card of the field's colour, with a ✕ at its right that
+/// disconnects it (board s3) when `closable`: the ✕'s response.
+fn client_card(
+    ui: &mut egui::Ui,
+    kit: &Kit,
+    name: &str,
+    detail: &str,
+    closable: bool,
+) -> Option<egui::Response> {
     let t = kit.t;
     let s = kit.skin;
     egui::Frame::new()
@@ -986,27 +1019,45 @@ fn client_card(ui: &mut egui::Ui, kit: &Kit, name: &str, detail: &str) {
                     ui.allocate_exact_size(egui::vec2(side * 0.8, side), egui::Sense::hover());
                 ui.painter()
                     .circle_filled(dot.center(), side * 0.22, color(s.info_bar));
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(name)
-                                .font(kit.font())
-                                .color(color(s.text)),
-                        )
-                        .truncate(),
-                    );
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(detail)
-                                .font(kit.small_font())
-                                .color(color(s.text_dim)),
-                        )
-                        .truncate(),
-                    );
-                });
-            });
-        });
+                let labels = |ui: &mut egui::Ui| {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(name)
+                                    .font(kit.font())
+                                    .color(color(s.text)),
+                            )
+                            .truncate(),
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(detail)
+                                    .font(kit.small_font())
+                                    .color(color(s.text_dim)),
+                            )
+                            .truncate(),
+                        );
+                    });
+                };
+                if !closable {
+                    labels(ui);
+                    return None;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let close = kit
+                        .icon_button(ui, Glyph::Close, false, "Disconnect")
+                        .on_hover_text(format!(
+                            "Disconnect {name}; it is refused until 3DCraft restarts"
+                        ));
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), labels);
+                    Some(close)
+                })
+                .inner
+            })
+            .inner
+        })
+        .inner
 }
 
 #[cfg(test)]
@@ -1021,6 +1072,7 @@ mod tests {
             last_command: command.map(str::to_string),
             last_ms: at,
             cwd: None,
+            key: None,
         }
     }
 

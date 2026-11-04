@@ -626,10 +626,14 @@ fn the_controls_beside_the_view_cube_set_the_section_and_are_not_the_viewport() 
     assert_eq!(got["section"]["normal"], json!([1.0, 0.0, 0.0]));
     assert_eq!(got["section"]["range"], json!([0.0, 60.0]));
 
-    // The slider moves the plane across the model's extent.
+    // The slider moves the plane across the model's extent: its knob
+    // (at 30, the middle of 0 to 60) dragged to the right. Since
+    // 2026-11-04 (the developer's one slider) a press on the rail away
+    // from the knob puts the knob there, so the drag starts on the knob
+    // instead of the field's left end.
     let slider = hit(&shell, "offset");
     let y = slider.center().y;
-    let from = pos2(slider.left() + 2.0, y);
+    let from = slider.center();
     window.frame(&mut shell, &mut session, vec![Event::PointerMoved(from)]);
     window.button(&mut shell, &mut session, from, true);
     let mut seen = vec![shell.state.section.offset];

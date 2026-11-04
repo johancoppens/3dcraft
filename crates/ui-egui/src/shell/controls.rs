@@ -6,8 +6,9 @@
 //! (`camera`, `view`, `show`, `transparency`, `section`); the widgets only
 //! read and write [`crate::state::UiState`].
 
-use super::number_field::{self, FieldOutcome, NumberField, Typing};
+use super::number_field::{self, Typing};
 use super::{Shell, TURN_SECONDS, Turn};
+use crate::kit::{Kit, Slider, SliderState};
 use crate::state::ProjectionKind;
 use crate::theme::{Tokens, color, color_alpha};
 use crate::view_cube;
@@ -450,64 +451,101 @@ impl Shell {
         }
     }
 
-    /// The See-through field in `field`: how see-through the bodies are.
+    /// The See-through slider in `field` (one row: label, rail, value):
+    /// how see-through the bodies are.
     pub(super) fn see_through_field(&mut self, ui: &mut egui::Ui, field: Rect) {
-        let tokens = self.tokens;
-        self.transparency_rect = Some(field);
-        let range = [0.0, crate::state::MAX_TRANSPARENCY];
-        let outcome = NumberField {
-            id: "see-through",
-            label: "See-through",
-            value: self.state.transparency,
-            range,
-            step: 0.05,
-            scale: 100.0,
-            decimals: 0,
-            unit: "%",
-            enabled: true,
-            range_known: true,
+        let kit = Kit::plate(&self.tokens);
+        self.slider_rails.retain(|(n, _, _)| *n != "see-through");
+        let max = crate::state::MAX_TRANSPARENCY;
+        let mut value = self.state.transparency;
+        let (label_w, value_w) = bar_slider_widths(ui, &kit, "See-through", "90 %");
+        // Clear of the chip before it, as the chips are of each other.
+        let field = field.with_min_x((field.left() + 6.0).min(field.right()));
+        // The compact bar has no room for the label: the tooltip says it.
+        let label = if field.width() >= label_w + value_w + 40.0 {
+            "See-through"
+        } else {
+            ""
+        };
+        let shown = kit.slider_in(
+            ui,
+            field,
+            Slider::new(label, &mut value, 0.0..=max)
+                .widths(label_w, value_w)
+                .step(0.05)
+                .shown_as(100.0, 0, "%")
+                .default_value(0.0),
+            Some(SliderState {
+                field: "see-through",
+                memory: &mut self.fields,
+                typing: &mut self.typing,
+            }),
+        );
+        // Where it takes the mouse: the rail and the knob's reach.
+        self.transparency_rect = Some(shown.response.rect);
+        if label.is_empty() {
+            shown.response.clone().on_hover_text("See-through");
         }
-        .show(ui, field, &tokens, &mut self.fields, &mut self.typing);
-        if let Some(value) = outcome.value.filter(|v| v.is_finite()) {
-            self.state.transparency = value.clamp(range[0], range[1]);
+        if let Some(rail) = shown.rail {
+            self.slider_rails.push(("see-through", rail, shown.field));
+        }
+        if shown.changed && value.is_finite() {
+            self.state.transparency = value.clamp(0.0, max);
             ui.ctx().request_repaint();
         }
     }
 
-    /// The Offset field in `rect`: where the section's plane is along its
-    /// normal, across the model's extent; inert while the section is off.
+    /// The Offset slider in `rect`: where the section's plane is along
+    /// its normal, across the model's extent; inert while the section is
+    /// off.
     pub(super) fn offset_field(
         &mut self,
         ui: &mut egui::Ui,
         rect: Rect,
         section: &mut crate::state::SectionState,
         on: bool,
-    ) {
-        let tokens = self.tokens;
+    ) -> Rect {
+        let kit = Kit::plate(&self.tokens);
+        self.slider_rails.retain(|(n, _, _)| *n != "offset");
         let range = self.section_cache.as_ref().and_then(|cache| cache.range);
         let field_range = range.filter(|[lo, hi]| lo < hi);
         let unit = self.length_unit;
-        let outcome: FieldOutcome = NumberField {
-            id: "offset",
-            label: "Offset",
-            value: section.offset,
-            range: field_range.unwrap_or([section.offset - 1.0, section.offset + 1.0]),
-            step: field_range.map_or(1.0, number_field::nice_step),
-            scale: 1.0,
-            decimals: 2,
-            unit,
-            enabled: on && field_range.is_some(),
-            range_known: field_range.is_some(),
+        let [lo, hi] = field_range.unwrap_or([section.offset - 1.0, section.offset + 1.0]);
+        let mut value = section.offset;
+        let (label_w, value_w) = bar_slider_widths(ui, &kit, "Offset", "-000.00 mm");
+        let rect = rect.with_min_x((rect.left() + 6.0).min(rect.right()));
+        let label = if rect.width() >= label_w + value_w + 40.0 {
+            "Offset"
+        } else {
+            ""
+        };
+        let shown = kit.slider_in(
+            ui,
+            rect,
+            Slider::new(label, &mut value, lo..=hi)
+                .widths(label_w, value_w)
+                .step(field_range.map_or(1.0, number_field::nice_step))
+                .shown_as(1.0, 2, unit)
+                .enabled(on && field_range.is_some()),
+            Some(SliderState {
+                field: "offset",
+                memory: &mut self.fields,
+                typing: &mut self.typing,
+            }),
+        );
+        if let Some(rail) = shown.rail {
+            self.slider_rails.push(("offset", rail, shown.field));
         }
-        .show(ui, rect, &tokens, &mut self.fields, &mut self.typing);
-        if let Some(value) = outcome.value.filter(|v| v.is_finite()) {
+        if shown.changed && value.is_finite() {
             section.offset = value;
         }
+        shown.response.rect
     }
 
     /// Forgets the number field `id`: what was typed into it, a drag on
     /// it and the focus, for a field that is no longer shown.
     pub(super) fn forget_field(&mut self, id: &str) {
+        self.slider_rails.retain(|(n, _, _)| *n != id);
         if self.typing.as_ref().is_some_and(|t| t.field == id) {
             self.typing = None;
         }
@@ -776,6 +814,17 @@ impl Shell {
     pub fn camera_hits(&self) -> &[(&'static str, Rect)] {
         &self.camera_hits
     }
+}
+
+/// The widths of a display-bar slider's label and value: as wide as
+/// `label` and the widest `value` are in the kit's font.
+pub(super) fn bar_slider_widths(ui: &egui::Ui, kit: &Kit, label: &str, value: &str) -> (f32, f32) {
+    let w = |s: &str| kit.galley(ui, s, kit.font(), kit.skin.text).size().x;
+    let (l, v) = (w(label) + 8.0, w(value) + 4.0);
+    (
+        if l.is_finite() { l } else { 80.0 },
+        if v.is_finite() { v } else { 48.0 },
+    )
 }
 
 #[cfg(test)]

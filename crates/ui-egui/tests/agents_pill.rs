@@ -93,6 +93,7 @@ fn the_pill_opens_the_popover_with_the_start_screens_controls() {
         last_command: Some("feature.edit".to_string()),
         last_ms: 2,
         cwd: None,
+        key: Some("MCP bridge (process 1)".to_string()),
     }]));
     let mut window = Window::sized(1400.0, 900.0);
     for _ in 0..3 {
@@ -111,11 +112,13 @@ fn the_pill_opens_the_popover_with_the_start_screens_controls() {
                 "copy-config",
                 "other-clients",
                 "disconnect-all",
+                // The connected agent's own ✕ (2026-11-04), by its key.
+                "disconnect:MCP bridge (process 1)",
             ]
             .contains(&name.as_str())
         })
         .collect();
-    assert_eq!(block.len(), 8, "{block:?}");
+    assert_eq!(block.len(), 9, "{block:?}");
     // The pill is at the status bar's right end.
     let pill = shell.agents_pill_rect().unwrap();
     assert!(
@@ -218,6 +221,7 @@ fn the_pill_and_the_popover_fit_small_windows() {
             last_command: Some("feature.edit".to_string()),
             last_ms: 1_000,
             cwd: None,
+            key: None,
         }]));
         // Doing something now: the longest label.
         shell.set_agents_clock(Some(1_200));
@@ -363,7 +367,9 @@ fn the_question_at_connect_allows_for_the_run_or_remembers() {
         window.click(&mut shell, &mut session, allow);
         assert_eq!(shell.take_agent_prompt_answer(), Some((9, expected)));
     }
-    // Refuse and Only the work folder both refuse the folder only.
+    // Only the work folder refuses the folder only; Refuse disconnects
+    // the agent too (the developer's decision of 2026-11-04: until then
+    // both answered `deny`).
     let mut session = Session::new(Workspace::none());
     let mut shell = Shell::new();
     let mut status = on(Vec::new());
@@ -379,12 +385,73 @@ fn the_question_at_connect_allows_for_the_run_or_remembers() {
     for _ in 0..60 {
         window.frame(&mut shell, &mut session, Vec::new());
     }
-    let refuse = shell.agent_prompt_hits()[0].1.center();
+    let at = |shell: &Shell, name: &str| {
+        shell
+            .agent_prompt_hits()
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, r)| r.center())
+            .unwrap()
+    };
+    let refuse = at(&shell, "Refuse");
     window.click(&mut shell, &mut session, refuse);
+    assert_eq!(
+        shell.take_agent_prompt_answer(),
+        Some((10, PromptAnswer::Refuse))
+    );
+    let only = at(&shell, "Only the work folder");
+    window.click(&mut shell, &mut session, only);
     assert_eq!(
         shell.take_agent_prompt_answer(),
         Some((10, PromptAnswer::Deny))
     );
+}
+
+/// Each connected agent in the agent panel has a ✕ that asks the host to
+/// disconnect that one (by the name it authenticated with); one without
+/// such a name has none.
+#[test]
+fn the_cross_of_an_agent_disconnects_that_one() {
+    let mut session = Session::new(Workspace::none());
+    let mut shell = Shell::new();
+    let client = |name: &str, key: Option<&str>| AgentClient {
+        name: name.to_string(),
+        since_ms: 1,
+        last_command: None,
+        last_ms: 0,
+        cwd: None,
+        key: key.map(str::to_string),
+    };
+    shell.set_agents_status(on(vec![
+        client("Claude Code", Some("MCP bridge (process 7)")),
+        client("control connection", None),
+    ]));
+    let mut window = Window::sized(1400.0, 900.0);
+    shell
+        .handle_method(
+            &mut session,
+            "ui.set",
+            Some(&json!({"dialogs": {"agents": true}})),
+        )
+        .unwrap()
+        .unwrap();
+    for _ in 0..3 {
+        window.frame(&mut shell, &mut session, Vec::new());
+    }
+    let crosses: Vec<(String, egui::Rect)> = shell
+        .agents_popover_hits()
+        .iter()
+        .filter(|(n, _)| n.starts_with("disconnect:"))
+        .cloned()
+        .collect();
+    assert_eq!(crosses.len(), 1, "{crosses:?}");
+    assert_eq!(crosses[0].0, "disconnect:MCP bridge (process 7)");
+    window.click(&mut shell, &mut session, crosses[0].1.center());
+    assert_eq!(
+        shell.take_agent_disconnect().as_deref(),
+        Some("MCP bridge (process 7)")
+    );
+    assert!(!shell.take_agents_disconnect(), "not all of them");
 }
 
 /// `ui.get` over the control channel shows an agent its own entry: not
@@ -400,6 +467,7 @@ fn an_agent_sees_its_own_entry_only() {
         last_command: None,
         last_ms: 0,
         cwd: Some(format!("/home/{name}")),
+        key: Some(name.to_string()),
     };
     let mut status = on(vec![client("Claude Code"), client("Other")]);
     status.prompts = vec![AgentPrompt {

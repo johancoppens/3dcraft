@@ -689,24 +689,32 @@ impl Shell {
             .order(egui::Order::Foreground)
             .fixed_pos(menu.at)
             .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                // The kit's context menu (board c2): a dark plate with a
+                // caption over each group.
+                let plate = crate::kit::Kit::plate(&self.tokens);
+                plate.menu_frame(ui, plate.t.menu_width, |ui| {
                     if let Some((a, b)) = &pair {
-                        ui.label(egui::RichText::new("Mate the selected faces").strong())
-                            .on_hover_text(format!("{a} and {b}"));
+                        plate.menu_caption(ui, "Mate the selected faces");
+                        ui.interact(
+                            ui.min_rect(),
+                            ui.id().with("mate-caption"),
+                            egui::Sense::hover(),
+                        )
+                        .on_hover_text(format!("{a} and {b}"));
                         for (kind, words) in super::joints::MATE_ENTRIES {
-                            let entry = ui.selectable_label(false, words);
+                            let entry = plate.menu_item(ui, crate::kit::MenuItem::new(words));
                             mate_hits.push((kind, entry.rect));
                             if entry.clicked() {
                                 mate = Some(kind);
                             }
                         }
-                        ui.separator();
+                        plate.menu_separator(ui);
                     }
-                    ui.label(egui::RichText::new("Select other").strong());
+                    plate.menu_caption(ui, "Select other");
                     for (k, hit) in menu.hits.iter().enumerate() {
                         let face = hit.face.as_deref().unwrap_or("face");
                         let text = format!("{}. {face} · {}", k + 1, hit.body);
-                        let entry = ui.selectable_label(false, text);
+                        let entry = plate.menu_item(ui, crate::kit::MenuItem::new(&text));
                         if entry.hovered() {
                             hovered = Some(hit.face_id);
                         }
