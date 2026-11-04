@@ -93,7 +93,7 @@ fn filleted(s: &mut Session, source: &str, prefix: &str, r: f64, sign: f64, rim:
         s,
         "feature.fillet",
         json!({
-            "edges": [[format!("{prefix}F3:startCap(e9)"), format!("{prefix}F3:side(e9,e9)")]],
+            "edges": [[format!("{prefix}F3:startCap(e11)"), format!("{prefix}F3:side(e11,e11)")]],
             "radius": format!("{r} mm"),
             "chain": true,
             "name": "Rounded",
@@ -152,7 +152,7 @@ fn moved_then_filleted(d: f64) {
     built(
         &mut s,
         "feature.offsetFace",
-        json!({"faces": ["F3:side(e9,e9)"], "distance": format!("{d} mm"), "name": "Off"}),
+        json!({"faces": ["F3:side(e11,e11)"], "distance": format!("{d} mm"), "name": "Off"}),
     );
     // The outline moved by d (the side leans little): its length by
     // 2π d.
@@ -255,7 +255,7 @@ fn the_bike_saddle_shelled_first_takes_its_four_rim_fillets() {
         "feature.shell",
         json!({"source": "SaddleRaw", "thickness": "2 mm", "name": "Shell"}),
     );
-    let side = "F7:side(e9,e9,e9,e9,e9,e9)";
+    let side = "F7:side(e11,e11,e11,e11,e11,e11)";
     let mut volume = body(&mut s, "Shell")["volume"].as_f64().unwrap();
     for (name, skin, cap, r, estimate) in [
         ("OuterRear", 0, "startCap", 4.0, -680.5),
@@ -267,7 +267,7 @@ fn the_bike_saddle_shelled_first_takes_its_four_rim_fillets() {
             &mut s,
             "feature.fillet",
             json!({
-                "edges": [[format!("F8:copy({skin})/F7:{cap}(e9)"), format!("F8:copy({skin})/{side}")]],
+                "edges": [[format!("F8:copy({skin})/F7:{cap}(e11)"), format!("F8:copy({skin})/{side}")]],
                 "radius": format!("{r} mm"),
                 "chain": true,
                 "name": name,

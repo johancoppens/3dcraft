@@ -417,13 +417,15 @@ fn a_control_point_moved_by_a_variable_reshapes_the_vase() {
 
 /// A closed spline on the egg's points in sketch `Profile`: the spline e7
 /// on e1..e6 and back on e1. Returns its control points, the first again
-/// at the end.
+/// at the end. Clamped at e1 (`periodic: false`), so these tests keep
+/// their oracle on the given polygon (since 2026-11-04 a closed spline is
+/// periodic by default; `sketch_spline.rs` holds the periodic one).
 fn draw_egg(session: &mut Session, k: f64, degree: usize) -> Vec<P> {
     let ring = scaled(&EGG, k);
     let made = run(
         session,
         "sketch.spline",
-        json!({"sketch": "Profile", "control": ring, "degree": degree, "closed": true}),
+        json!({"sketch": "Profile", "control": ring, "degree": degree, "closed": true, "periodic": false}),
     );
     assert_eq!(made["entity"], "e7", "{made}");
     assert_eq!((&made["start"], &made["end"]), (&json!("e1"), &json!("e1")));
@@ -1077,7 +1079,8 @@ fn what_cannot_be_swept_fails_with_the_reason() {
     );
     assert_eq!(made["status"], "failed", "{made}");
     let reason = made["error"].as_str().unwrap();
-    assert!(reason.contains("e7 crosses or touches itself"), "{reason}");
+    // Periodic, eight points (the seam and one more made): the spline is e9.
+    assert!(reason.contains("e9 crosses or touches itself"), "{reason}");
     let mut s = session();
     new_document(&mut s, 1.0);
     draw_egg(&mut s, 1.0, 3);

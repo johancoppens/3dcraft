@@ -1764,3 +1764,79 @@ fn what_a_closed_spline_cannot_be_is_refused() {
     let (angle, _) = seam(2, &control);
     assert!(angle <= 1e-9, "{angle:e}");
 }
+
+/// `π ∮ x² dy` along a closed spline: the volume it sweeps turned a full
+/// turn about the y axis (Pappus, by Green's theorem), by Simpson's rule
+/// on 2000 steps per knot span of de Boor's points and the derivative's.
+fn turned(degree: usize, control: &[P]) -> f64 {
+    let knots = knots(degree, control.len());
+    let derivative: Vec<P> = (0..control.len() - 1)
+        .map(|i| {
+            let scale = degree as f64 / (knots[i + degree + 1] - knots[i + 1]);
+            [
+                (control[i + 1][0] - control[i][0]) * scale,
+                (control[i + 1][1] - control[i][1]) * scale,
+            ]
+        })
+        .collect();
+    let inner = &knots[1..knots.len() - 1];
+    let mut sum = 0.0;
+    let steps = 2000;
+    for span in 0..control.len() - degree {
+        let (a, b) = (knots[degree + span], knots[degree + span + 1]);
+        let h = (b - a) / steps as f64;
+        for i in 0..=steps {
+            let u = (a + h * i as f64).clamp(a + (b - a) * 1e-14, b - (b - a) * 1e-14);
+            let p = de_boor(degree, &knots, control, u);
+            let d = de_boor(degree - 1, inner, &derivative, u);
+            let weight = if i == 0 || i == steps {
+                1.0
+            } else if i % 2 == 1 {
+                4.0
+            } else {
+                2.0
+            };
+            sum += p[0] * p[0] * d[1] * weight * h / 3.0;
+        }
+    }
+    (PI * sum).abs()
+}
+
+/// A periodic closed spline turned about an axis it stays clear of: a
+/// ring whose volume is Pappus's (`π ∮ x² dy` along its control points,
+/// independent of the kernel), at three scales, checked deep.
+#[test]
+fn a_closed_spline_turned_about_an_axis_is_a_ring_of_the_predicted_volume() {
+    for k in [1e-3, 1.0, 1e6] {
+        let through: Vec<P> = ring(7, 4.0 * k)
+            .into_iter()
+            .map(|[x, y]| [x * 0.8 + 12.0 * k, y])
+            .collect();
+        let mut s = session();
+        run(&mut s, "file.new", json!({"tolerance": 1e-6 * k}));
+        run(&mut s, "sketch.create", json!({"name": "Profile"}));
+        let made = run(
+            &mut s,
+            "sketch.spline",
+            json!({"sketch": "Profile", "through": through, "closed": true}),
+        );
+        let control = control_of(&mut s, &made);
+        let (angle, jump) = seam(3, &control);
+        assert!(angle <= 1e-9 && jump <= 1e-9, "x{k}: {angle:e}, {jump:e}");
+        let turned_made = run(
+            &mut s,
+            "feature.revolve",
+            json!({"sketch": "Profile", "axis": "y", "name": "Ring"}),
+        );
+        assert_eq!(turned_made["status"], "ok", "{turned_made}");
+        let solid = body(&mut s, "Ring");
+        close(
+            solid["volume"].as_f64().unwrap(),
+            turned(3, &control),
+            1e-9,
+            &format!("ring x{k}"),
+        );
+        let check = run(&mut s, "document.check", json!({"deep": true}));
+        assert_eq!(check["ok"], true, "x{k}: {check}");
+    }
+}
