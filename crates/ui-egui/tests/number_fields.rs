@@ -1,9 +1,19 @@
-//! The number fields over the viewport (See-through, the section's
-//! Offset), driven by synthetic input as a person drives them: a drag
-//! (plain, with Shift finer, with Ctrl in steps), the arrows at the ends,
-//! and typing an expression with units, evaluated with the document's
-//! variables; text that is not a number shows why and changes nothing,
-//! Escape gives up.
+//! The sliders over the viewport (See-through, the section's Offset): the
+//! kit's one slider in a row (label, rail, value), driven by synthetic
+//! input as a person drives it: a drag of the knob (plain on a fine grid,
+//! with Shift ten times finer, with Ctrl in steps), a press on the rail,
+//! the arrow keys and the wheel once it has the focus, a double click on
+//! the knob for the default, and typing an expression with units into its
+//! value, evaluated with the document's variables; text that is not a
+//! number shows why and changes nothing, Escape gives up.
+//!
+//! Expectations changed on 2026-11-04 (the developer's decision of that
+//! day: one slider for the whole app, the design's slider with the old
+//! number field's precision): a drag starts on the knob (a press on the
+//! rail away from it puts the knob there), a plain drag lands on the fine
+//! grid of a hundredth of the range (1 % here), the ‹ › at the ends are
+//! gone (the arrow keys step instead), and typing begins with a click on
+//! the value instead of a double click.
 
 #![allow(
     clippy::unwrap_used,
@@ -143,44 +153,79 @@ fn started() -> (Session, Shell, Window) {
     (session, shell, window)
 }
 
-fn field(shell: &Shell, name: &str) -> Rect {
-    let layout = shell.controls_layout().unwrap();
-    match name {
-        "see-through" => layout.see_through.unwrap(),
-        _ => layout.offset.unwrap(),
-    }
+/// The rail of slider `name` (between the knob's centre at either end)
+/// and its value, which a click types into.
+fn parts(shell: &Shell, name: &str) -> (Rect, Rect) {
+    let (_, rail, value) = shell
+        .slider_hits()
+        .into_iter()
+        .find(|(n, _, _)| *n == name)
+        .unwrap_or_else(|| panic!("no slider `{name}` in {:?}", shell.slider_hits()));
+    (rail, value.unwrap())
 }
 
+/// Where the see-through slider's knob is now.
+fn knob(shell: &Shell) -> Pos2 {
+    let (rail, _) = parts(shell, "see-through");
+    let f = (shell.state.transparency / MAX) as f32;
+    pos2(rail.left() + rail.width() * f, rail.center().y)
+}
+
+const MAX: f64 = craft3d_ui_egui::state::MAX_TRANSPARENCY;
+
 #[test]
-fn a_drag_shift_finer_ctrl_in_steps_and_the_arrows() {
+fn a_drag_shift_finer_ctrl_in_steps_and_the_keys() {
     let (mut session, mut shell, mut window) = started();
-    let rect = field(&shell, "see-through");
-    let middle = rect.center();
+    let (rail, _) = parts(&shell, "see-through");
     let camera = shell.state.camera;
-    // A drag of a quarter of the width: a quarter of 0 to 0.9.
-    window.drag(&mut shell, &mut session, middle, rect.width() * 0.25);
+    // A drag of the knob over a quarter of the rail: a quarter of 0 to
+    // 0.9, on the fine grid of 1 % (a hundredth of the range, rounded).
+    let at = knob(&shell);
+    window.drag(&mut shell, &mut session, at, rail.width() * 0.25);
     let t = shell.state.transparency;
-    assert!((t - 0.225).abs() < 1e-3, "{t}");
-    // With Shift ten times finer: a quarter of the width more is 0.0225.
+    assert!((t - 0.225).abs() <= 0.005 + 1e-9, "{t}");
+    assert!(
+        ((t / 0.01).round() * 0.01 - t).abs() < 1e-9,
+        "on the grid: {t}"
+    );
+    // With Shift ten times finer: a quarter of the rail more is 0.0225,
+    // on a grid ten times finer.
     window.modifiers = Modifiers::SHIFT;
-    window.drag(&mut shell, &mut session, middle, rect.width() * 0.25);
+    let at = knob(&shell);
+    window.drag(&mut shell, &mut session, at, rail.width() * 0.25);
     let finer = shell.state.transparency - t;
-    assert!((finer - 0.0225).abs() < 1e-3, "{finer}");
+    assert!((finer - 0.0225).abs() <= 0.0005 + 1e-9, "{finer}");
     // With Ctrl on the steps of 5 %.
     window.modifiers = Modifiers::CTRL;
-    window.drag(&mut shell, &mut session, middle, rect.width() * 0.1);
+    let at = knob(&shell);
+    window.drag(&mut shell, &mut session, at, rail.width() * 0.1);
     let stepped = shell.state.transparency;
     assert!(
         ((stepped / 0.05).round() * 0.05 - stepped).abs() < 1e-9,
         "{stepped}"
     );
     window.modifiers = Modifiers::NONE;
-    // The arrows at the ends: a step down, a step up.
+    // Focused by the drag: the arrow keys step it, ten steps with Shift.
     let before = shell.state.transparency;
-    window.click(&mut shell, &mut session, pos2(rect.left() + 6.0, middle.y));
+    window.key(&mut shell, &mut session, Key::ArrowLeft);
     assert!((shell.state.transparency - (before - 0.05)).abs() < 1e-9);
-    window.click(&mut shell, &mut session, pos2(rect.right() - 6.0, middle.y));
+    window.key(&mut shell, &mut session, Key::ArrowRight);
     assert!((shell.state.transparency - before).abs() < 1e-9);
+    window.modifiers = Modifiers::SHIFT;
+    window.key(&mut shell, &mut session, Key::ArrowLeft);
+    window.modifiers = Modifiers::NONE;
+    assert!((shell.state.transparency - (before - 0.5).max(0.0)).abs() < 1e-9);
+    // A press on the rail away from the knob puts it there.
+    window.click(
+        &mut shell,
+        &mut session,
+        pos2(rail.right() + 2.0, rail.center().y),
+    );
+    assert!((shell.state.transparency - MAX).abs() < 1e-9);
+    // A double click on the knob: the default, opaque.
+    let at = knob(&shell);
+    window.double_click(&mut shell, &mut session, at);
+    assert_eq!(shell.state.transparency, 0.0);
     // None of it moved the camera or picked.
     assert_eq!(shell.state.camera, camera);
     assert_eq!(shell.state.picked, None);
@@ -189,9 +234,9 @@ fn a_drag_shift_finer_ctrl_in_steps_and_the_arrows() {
 #[test]
 fn typed_expressions_with_units_set_the_value_and_bad_text_says_why() {
     let (mut session, mut shell, mut window) = started();
-    // The see-through field: a percentage, an expression.
-    let rect = field(&shell, "see-through");
-    window.double_click(&mut shell, &mut session, rect.center());
+    // The see-through slider: a percentage, an expression.
+    let (_, value) = parts(&shell, "see-through");
+    window.click(&mut shell, &mut session, value.center());
     let typing = shell.typing().expect("typing began");
     assert_eq!(typing.field, "see-through");
     assert_eq!(typing.text, "0");
@@ -212,8 +257,14 @@ fn typed_expressions_with_units_set_the_value_and_bad_text_says_why() {
         .1;
     window.click(&mut shell, &mut session, toggle.center());
     assert!(shell.state.section.on);
-    let rect = field(&shell, "offset");
-    window.double_click(&mut shell, &mut session, rect.center());
+    let (rail, value) = parts(&shell, "offset");
+    // Enter with the pointer over the slider types too.
+    window.frame(
+        &mut shell,
+        &mut session,
+        vec![Event::PointerMoved(rail.center())],
+    );
+    window.key(&mut shell, &mut session, Key::Enter);
     assert_eq!(shell.typing().unwrap().field, "offset");
     window.type_text(&mut shell, &mut session, "width / 2 - 3 mm");
     window.key(&mut shell, &mut session, Key::Enter);
@@ -222,7 +273,7 @@ fn typed_expressions_with_units_set_the_value_and_bad_text_says_why() {
 
     // Text that is no number: the field says why and nothing changes.
     let before = shell.state.section.clone();
-    window.double_click(&mut shell, &mut session, rect.center());
+    window.click(&mut shell, &mut session, value.center());
     window.type_text(&mut shell, &mut session, "width +");
     window.key(&mut shell, &mut session, Key::Enter);
     let typing = shell.typing().expect("still typing");
@@ -247,7 +298,7 @@ fn typed_expressions_with_units_set_the_value_and_bad_text_says_why() {
     assert_eq!(shell.state.section, before);
     // While typing, F is a letter and not Fit: the camera stays.
     let camera = shell.state.camera;
-    window.double_click(&mut shell, &mut session, rect.center());
+    window.click(&mut shell, &mut session, value.center());
     window.type_text(&mut shell, &mut session, "F");
     window.key(&mut shell, &mut session, Key::F);
     assert_eq!(shell.state.camera, camera);
@@ -285,9 +336,10 @@ fn the_section_options_are_not_there_while_it_is_off() {
 #[test]
 fn shift_during_a_drag_does_not_make_the_value_jump() {
     let (mut session, mut shell, mut window) = started();
-    let rect = field(&shell, "see-through");
-    let from = rect.center();
-    let w = rect.width();
+    let (rail, _) = parts(&shell, "see-through");
+    // From the knob (at 0, the rail's left end).
+    let from = knob(&shell);
+    let w = rail.width();
     window.frame(&mut shell, &mut session, vec![Event::PointerMoved(from)]);
     window.button(&mut shell, &mut session, from, true);
     for step in 1..=4 {
@@ -295,7 +347,7 @@ fn shift_during_a_drag_does_not_make_the_value_jump() {
         window.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
     }
     let reached = shell.state.transparency;
-    assert!((reached - 0.18).abs() < 1e-2, "{reached}");
+    assert!((reached - 0.18).abs() <= 0.005 + 1e-9, "{reached}");
     // Shift down, the pointer not moved: the value stays.
     window.modifiers = Modifiers::SHIFT;
     window.frame(&mut shell, &mut session, Vec::new());
@@ -304,7 +356,7 @@ fn shift_during_a_drag_does_not_make_the_value_jump() {
     let at = from + vec2(w * 0.4, 0.0);
     window.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
     let finer = shell.state.transparency - reached;
-    assert!((finer - 0.018).abs() < 1e-3, "{finer}");
+    assert!((finer - 0.018).abs() <= 0.0005 + 1e-9, "{finer}");
     // Shift up again: still no jump.
     let held = shell.state.transparency;
     window.modifiers = Modifiers::NONE;
@@ -313,14 +365,13 @@ fn shift_during_a_drag_does_not_make_the_value_jump() {
     window.button(&mut shell, &mut session, at, false);
 }
 
-/// The wheel over a field that does not have the focus zooms as anywhere
-/// in the viewport and leaves the field; once the field was clicked it
-/// steps it instead, until a press elsewhere.
+/// The wheel over a slider that does not have the focus zooms as
+/// anywhere in the viewport and leaves the slider; once the slider was
+/// clicked it steps it instead, until a press elsewhere.
 #[test]
 fn the_wheel_steps_only_the_focused_field() {
     let (mut session, mut shell, mut window) = started();
-    let rect = field(&shell, "see-through");
-    let at = rect.center();
+    let at = knob(&shell);
     let wheel = |window: &mut Window, shell: &mut Shell, session: &mut Session| {
         window.frame(shell, session, vec![Event::PointerMoved(at)]);
         window.frame(
@@ -341,8 +392,9 @@ fn the_wheel_steps_only_the_focused_field() {
     wheel(&mut window, &mut shell, &mut session);
     assert_eq!(shell.state.transparency, 0.0, "not focused: no step");
     assert!(shell.state.camera.distance < distance, "the wheel zoomed");
-    // Clicked (in the middle: no arrow), then the wheel steps it.
+    // Its knob clicked (which leaves the value), then the wheel steps it.
     window.click(&mut shell, &mut session, at);
+    assert_eq!(shell.state.transparency, 0.0);
     let distance = shell.state.camera.distance;
     wheel(&mut window, &mut shell, &mut session);
     assert!((shell.state.transparency - 0.05).abs() < 1e-9);
@@ -364,8 +416,8 @@ fn the_wheel_steps_only_the_focused_field() {
 #[test]
 fn a_pasted_page_is_cut_and_its_error_is_short() {
     let (mut session, mut shell, mut window) = started();
-    let rect = field(&shell, "see-through");
-    window.double_click(&mut shell, &mut session, rect.center());
+    let (_, value) = parts(&shell, "see-through");
+    window.click(&mut shell, &mut session, value.center());
     let page = "x".repeat(100_000);
     window.type_text(&mut shell, &mut session, &page);
     let typed = shell.typing().unwrap().text.chars().count();
@@ -388,8 +440,8 @@ fn switching_the_section_off_ends_typing_into_offset() {
     let toggle = shell.controls_layout().unwrap().section_toggle.unwrap();
     window.click(&mut shell, &mut session, toggle.center());
     window.frame(&mut shell, &mut session, Vec::new());
-    let offset = field(&shell, "offset");
-    window.double_click(&mut shell, &mut session, offset.center());
+    let (_, offset) = parts(&shell, "offset");
+    window.click(&mut shell, &mut session, offset.center());
     assert_eq!(shell.typing().map(|t| t.field), Some("offset"));
     shell
         .handle_method(

@@ -531,19 +531,26 @@ impl Shell {
             self.motion_extras(ui);
             return;
         }
-        let _ = tokens;
         let shown = self.timeline.shown_step().clamp(1, steps);
-        let mut step = shown;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().slider_width = (ui.available_width() - 8.0).max(40.0);
-            let slider = egui::Slider::new(&mut step, 1..=steps)
-                .show_value(false)
-                .trailing_fill(true);
-            ui.add(slider).on_hover_text(
-                "Drag through the history to see the model after each step. \
-                 The document does not change.",
-            );
-        });
+        // The kit's slider, the rail alone (board s8): whole steps.
+        let kit = crate::kit::Kit::panel(&tokens);
+        let mut at = shown as f64;
+        kit.slider(
+            ui,
+            crate::kit::Slider::new("History", &mut at, 1.0..=steps as f64)
+                .form(crate::kit::SliderForm::Rail)
+                .step(1.0)
+                .typable(false),
+        )
+        .on_hover_text(
+            "Drag through the history to see the model after each step. \
+             The document does not change.",
+        );
+        let step = if at.is_finite() {
+            (at.round().max(1.0) as usize).min(steps)
+        } else {
+            shown
+        };
         if step != shown {
             self.go_to_step(step);
             ui.ctx().request_repaint();

@@ -20,8 +20,8 @@
 //! [`Pacer`], [`verdict`], [`ParamList::parse`]), so tests can ask for it.
 
 use super::Shell;
-use super::number_field::{self, FieldMemory, NumberField, Typing};
-use crate::theme::{color, color_alpha};
+use super::number_field::{self, FieldMemory, Typing};
+use crate::theme::color;
 use craft3d_engine::{FeatureState, Scene, Session};
 use craft3d_math::Portable;
 use serde_json::{Map, Value, json};
@@ -42,6 +42,9 @@ const MAX_DECIMALS: usize = 6;
 /// under an egui id of its own (`push_id`), and the form remembers which
 /// one the drag or the typing belongs to ([`ParamForm::active`]).
 const FIELD: &str = "param";
+/// The most values (from the lowest to the highest less one) a whole
+/// number has to get a stepper `− 3 +` instead of a slider.
+const STEPPER_MOST: f64 = 12.0;
 /// What a document without public parameters says about the tab.
 const NO_PARAMETERS: &str =
     "No parameters. Publish a variable (variable.publish) to make this document a Jig.";
@@ -1436,43 +1439,43 @@ impl Shell {
         self.params_sheet_rect
     }
 
-    /// The compact form's header: "Parameters", whether the model built
-    /// with them (Valid) or not, the Jig's title and description behind
-    /// an (i), Reset all, and the spinner while a value is applied.
-    fn compact_parameters_header(&mut self, ui: &mut egui::Ui, list: &ParamList) {
+    /// The form's header (boards s7, m8): "Parameters" on a phone's
+    /// sheet (it has no tab row), whether the model built with these
+    /// values (Valid) or not, the spinner while a value is applied, and
+    /// the Jig's title and description behind an (i).
+    fn parameters_header(&mut self, ui: &mut egui::Ui, list: &ParamList, compact: bool) {
         let kit = crate::kit::Kit::panel(&self.tokens);
         let s = kit.skin;
         let broke = self.params.trouble.as_ref().is_some_and(|t| t.broke);
         let busy = self.params.busy();
         ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("Parameters")
-                    .font(kit.medium_font(ui))
-                    .color(color(s.text)),
-            );
-            let (state, ink) = if busy {
-                ("· applying…", s.text_dim)
-            } else if broke {
-                ("· breaks the model", s.failed)
+            ui.set_min_height(kit.hit(self.tokens.control_height));
+            if compact {
+                ui.label(
+                    egui::RichText::new("Parameters")
+                        .font(egui::FontId::new(
+                            self.tokens.dialog_title_font,
+                            kit.medium_font(ui).family,
+                        ))
+                        .color(color(s.text)),
+                );
+                ui.add_space(self.tokens.inset);
+            }
+            if busy {
+                kit.spinner(ui, "Regenerating…");
             } else {
-                ("· Valid", s.ok)
-            };
-            ui.label(
-                egui::RichText::new(state)
-                    .font(kit.font())
-                    .color(color(ink)),
-            );
+                let (glyph, text, ink) = if broke {
+                    (crate::kit::Glyph::Warning, "Breaks the model", s.failed)
+                } else {
+                    (crate::kit::Glyph::Check, "Valid", s.ok)
+                };
+                let side = self.tokens.nav_icon_size * 0.875;
+                let (place, _) =
+                    ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+                crate::kit::glyphs::paint(ui.painter(), glyph, place, color(ink), &self.tokens);
+                ui.label(egui::RichText::new(text).font(kit.font()).color(color(ink)));
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let any_off = list.params.iter().any(|p| !p.at_default);
-                let reset = kit
-                    .icon_button_enabled(ui, crate::kit::Glyph::Undo, false, "Reset all", any_off)
-                    .on_hover_text(
-                        "Reset all: every parameter back to its default (param.set reset)",
-                    );
-                self.params.hits.push(("Reset all".to_string(), reset.rect));
-                if reset.clicked() {
-                    self.params.ask(json!({ "reset": true }), None);
-                }
                 let about = [list.info.title.as_str(), list.info.description.as_str()]
                     .into_iter()
                     .filter(|t| !t.is_empty())
@@ -1483,6 +1486,16 @@ impl Shell {
                         .icon_button(ui, crate::kit::Glyph::Info, false, "About this Jig")
                         .on_hover_text(about);
                     self.params.hits.push(("about".to_string(), info.rect));
+                }
+                if !compact && !list.info.title.is_empty() {
+                    let room = ui.available_width().max(0.0);
+                    let mut job = egui::text::LayoutJob::simple_singleline(
+                        list.info.title.clone(),
+                        kit.font(),
+                        color(s.text_dim),
+                    );
+                    job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+                    ui.label(job);
                 }
             });
         });
@@ -1500,7 +1513,7 @@ impl Shell {
         let edit = kit
             .button(
                 ui,
-                crate::kit::Button::quiet(label).icon(crate::kit::Glyph::External),
+                crate::kit::Button::secondary(label).icon(crate::kit::Glyph::External),
             )
             .on_hover_text("A new untitled model of it, as it is set, to edit (jig.edit)");
         self.params.hits.push((label.to_string(), edit.rect));
@@ -1511,6 +1524,7 @@ impl Shell {
 
     pub(super) fn parameters_tab(&mut self, ui: &mut egui::Ui) {
         let tokens = self.tokens;
+        let kit = crate::kit::Kit::panel(&tokens);
         let dim = color(tokens.text_dim);
         let now = ui.input(|i| i.time);
         self.params.hits.clear();
@@ -1525,76 +1539,23 @@ impl Shell {
         // The form keeps clear of the split on its right as it does of
         // the panel's edge on its left.
         let room = crate::shell::side_inset(&tokens);
-        // On a phone's half sheet and a tablet's docked panel (boards m8,
-        // t2) the fields come first: one header line with the state, the
-        // description behind (i) and Reset all, Open for editing after
-        // the fields.
+        // On a phone's half sheet (board m8) the header names the form:
+        // the sheet has no tab row.
         let compact = self.narrow();
-        if compact {
-            self.compact_parameters_header(ui, &list);
-        }
         ui.scope(|ui| {
-            if compact {
-                return;
-            }
             ui.set_max_width((ui.available_width() - f32::from(room)).max(40.0));
-            if !list.info.title.is_empty() {
-                ui.label(egui::RichText::new(&list.info.title).heading());
-            }
-            if !list.info.description.is_empty() {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(&list.info.description).color(dim)).wrap(),
-                );
-            }
-            // A Jig in use changes only through its parameters; editing it
-            // takes a model of its own.
-            if self.jig_in_use() {
-                ui.horizontal_wrapped(|ui| {
-                    ui.colored_label(dim, "A Jig: set its parameters.");
-                    // The File menu's item, by the same words.
-                    let label = crate::shell::FileAction::OpenForEditing.label();
-                    let edit = ui.small_button(label).on_hover_text(
-                        "A new untitled model of it, as it is set, to edit (jig.edit)",
-                    );
-                    self.params.hits.push((label.to_string(), edit.rect));
-                    if edit.clicked() {
-                        self.request_file_action(crate::shell::FileAction::OpenForEditing);
-                    }
-                });
-            }
-            let busy = self.params.busy();
-            ui.horizontal(|ui| {
-                let any_off = list.params.iter().any(|p| !p.at_default);
-                let kit = crate::kit::Kit::panel(&self.tokens);
-                let reset = kit
-                    .button(
-                        ui,
-                        crate::kit::Button::secondary("Reset all")
-                            .icon(crate::kit::Glyph::Undo)
-                            .enabled(any_off),
-                    )
-                    .on_hover_text("Every parameter back to its default (param.set reset)");
-                self.params.hits.push(("Reset all".to_string(), reset.rect));
-                if reset.clicked() {
-                    self.params.ask(json!({ "reset": true }), None);
-                }
-                if busy {
-                    kit.spinner(ui, "Regenerating…");
-                }
-            });
-            // What went wrong with a commit that came from no field.
-            if let Some(trouble) = self.params.trouble.clone()
-                && trouble.name.is_none()
-            {
-                self.trouble_line(ui, &trouble);
-            }
-            ui.separator();
+            self.parameters_header(ui, &list, compact);
         });
+        // The footer (board s7): Reset all, and Open for editing for a Jig
+        // in use, under the fields whatever their length.
+        let footer = kit.hit(tokens.control_height) + tokens.inset;
+        let fields_height = (ui.available_height() - footer).max(kit.hit(tokens.row_height) * 2.0);
         egui::ScrollArea::vertical()
             .id_salt(("craft3d-params", self.viewing))
             .auto_shrink([false, false])
+            .max_height(fields_height)
             .show(ui, |ui| {
-                // The plates stop clear of the split, and of the scroll
+                // The fields stop clear of the split, and of the scroll
                 // bar that lies against it.
                 egui::Frame::new()
                     .inner_margin(egui::Margin {
@@ -1604,6 +1565,7 @@ impl Shell {
                         bottom: 0,
                     })
                     .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
                         for group in &list.groups {
                             let members: Vec<&Param> =
                                 list.params.iter().filter(|p| &p.group == group).collect();
@@ -1613,17 +1575,16 @@ impl Shell {
                                 }
                                 continue;
                             }
+                            // A section that folds, with its count (as
+                            // Checks on the Features tab).
                             let collapsed = self.state.parameters.collapsed.contains(group);
-                            let header =
-                                egui::CollapsingHeader::new(egui::RichText::new(group).strong())
-                                    .id_salt(("craft3d-param-group", group))
-                                    .open(Some(!collapsed))
-                                    .show(ui, |ui| {
-                                        for p in &members {
-                                            self.param_row(ui, p, now);
-                                        }
-                                    });
-                            if header.header_response.clicked() {
+                            let mut open = !collapsed;
+                            let header = ui
+                                .push_id(("craft3d-param-group", group), |ui| {
+                                    kit.fold_header(ui, &mut open, group, Some(members.len()), None)
+                                })
+                                .inner;
+                            if header.clicked() {
                                 let collapsed = &mut self.state.parameters.collapsed;
                                 if let Some(at) = collapsed.iter().position(|g| g == group) {
                                     collapsed.remove(at);
@@ -1631,39 +1592,38 @@ impl Shell {
                                     collapsed.push(group.clone());
                                 }
                             }
+                            if open {
+                                for p in &members {
+                                    self.param_row(ui, p, now);
+                                }
+                            }
                         }
                         // The outputs, read-only: computed after
                         // regeneration from the model.
                         if !list.outputs.is_empty() {
                             ui.add_space(tokens.inset * 0.5);
-                            ui.label(egui::RichText::new("Outputs").strong()).on_hover_text(
+                            kit.section_header(ui, "Outputs").on_hover_text(
                                 "Computed from the model after it is built; read-only (output.list)",
                             );
                             for o in &list.outputs {
-                                let tint = match o.status.as_str() {
-                                    "known" => color(tokens.text),
-                                    "unknown" => color(tokens.failed),
-                                    _ => dim,
+                                let ink = match o.status.as_str() {
+                                    "known" => kit.skin.info_ink,
+                                    "unknown" => kit.skin.failed,
+                                    _ => kit.skin.text_dim,
                                 };
                                 let shown = if o.status == "known" {
                                     o.message.clone()
                                 } else {
                                     o.status.clone()
                                 };
-                                ui.horizontal(|ui| {
-                                    // Its label, with its name on hover.
-                                    if o.label.is_empty() {
-                                        ui.label(&o.name);
-                                    } else {
-                                        ui.label(&o.label).on_hover_text(&o.name);
-                                    }
-                                    ui.colored_label(tint, shown).on_hover_text(&o.message);
-                                });
+                                let label = if o.label.is_empty() { &o.name } else { &o.label };
+                                let row = output_row(ui, &kit, label, &shown, ink);
+                                if o.label.is_empty() {
+                                    row.on_hover_text(&o.message);
+                                } else {
+                                    row.on_hover_text(format!("{}: {}", o.name, o.message));
+                                }
                             }
-                        }
-                        if compact && self.jig_in_use() {
-                            ui.add_space(tokens.inset * 0.5);
-                            self.open_for_editing_button(ui);
                         }
                         let footer: Vec<&str> =
                             [list.info.author.as_str(), list.info.licence.as_str()]
@@ -1678,12 +1638,43 @@ impl Shell {
                                 format!("by {}", footer.join(" · "))
                             };
                             ui.add(
-                                egui::Label::new(egui::RichText::new(text).size(tokens.secondary_font).color(dim))
-                                    .wrap(),
+                                egui::Label::new(
+                                    egui::RichText::new(text)
+                                        .font(kit.small_font())
+                                        .color(dim),
+                                )
+                                .wrap(),
                             );
                         }
                     });
             });
+        // The footer: Reset all at the left, Open for editing at the right.
+        ui.scope(|ui| {
+            ui.set_max_width((ui.available_width() - f32::from(room)).max(40.0));
+            kit.divider(ui);
+            ui.horizontal(|ui| {
+                let any_off = list.params.iter().any(|p| !p.at_default);
+                let reset = kit
+                    .button(
+                        ui,
+                        crate::kit::Button::quiet("Reset all")
+                            .icon(crate::kit::Glyph::Undo)
+                            .enabled(any_off),
+                    )
+                    .on_hover_text("Every parameter back to its default (param.set reset)");
+                self.params.hits.push(("Reset all".to_string(), reset.rect));
+                if reset.clicked() {
+                    self.params.ask(json!({ "reset": true }), None);
+                }
+                // A Jig in use changes only through its parameters;
+                // editing it takes a model of its own.
+                if self.jig_in_use() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        self.open_for_editing_button(ui);
+                    });
+                }
+            });
+        });
         // A drag that ended: its last value goes now.
         if self.params.memory.drag.is_none()
             && let Some(live) = self.params.live.as_mut()
@@ -1836,71 +1827,60 @@ impl Shell {
         }
     }
 
-    /// One parameter: its widget, its reset arrow, and what is said under
-    /// it.
+    /// One parameter (board s7): its control, a quiet reset arrow beside
+    /// its field while it is off its default, and what is said under it.
     fn param_row(&mut self, ui: &mut egui::Ui, p: &Param, now: f64) {
         let tokens = self.tokens;
+        let kit = crate::kit::Kit::panel(&tokens);
         ui.push_id(("craft3d-param", &p.name), |ui| {
-            ui.horizontal(|ui| {
-                let reset_room = if p.at_default { 0.0 } else { 34.0 };
-                let width = (ui.available_width() - reset_room).max(40.0);
-                match p.kind {
-                    ParamKind::Number | ParamKind::Integer => {
-                        self.number_param(ui, p, width, now);
-                    }
-                    ParamKind::Boolean => {
-                        let mut on = p.value.is_some_and(|v| v >= 0.5);
-                        let response = ui.checkbox(&mut on, &p.label);
-                        self.params.hits.push((p.name.clone(), response.rect));
-                        let response = if p.description.is_empty() {
-                            response
-                        } else {
-                            response.on_hover_text(&p.description)
-                        };
-                        if response.changed() {
-                            self.params.commit(p, if on { 1.0 } else { 0.0 }, false);
-                        }
-                    }
-                    ParamKind::Choice => {
-                        let label = ui.label(&p.label);
-                        if !p.description.is_empty() {
-                            label.on_hover_text(&p.description);
-                        }
-                        let current = p.value.and_then(|v| p.choice_label(v)).unwrap_or("—");
-                        let mut chosen = None;
-                        let combo = egui::ComboBox::from_id_salt("choice")
-                            .selected_text(current)
-                            .show_ui(ui, |ui| {
-                                for (i, choice) in p.choices.iter().enumerate() {
-                                    if ui.selectable_label(choice == current, choice).clicked() {
-                                        chosen = Some((i + 1) as f64);
-                                    }
-                                }
-                            });
-                        self.params.hits.push((p.name.clone(), combo.response.rect));
-                        if let Some(value) = chosen
-                            && Some(value) != p.value
-                        {
-                            self.params.commit(p, value, false);
-                        }
+            match p.kind {
+                ParamKind::Number | ParamKind::Integer => {
+                    self.number_param(ui, p, now);
+                }
+                ParamKind::Boolean => {
+                    let mut on = p.value.is_some_and(|v| v >= 0.5);
+                    let (label, response) = labelled(ui, &kit, &p.label, |ui| {
+                        self.reset_arrow(ui, &kit, p);
+                        kit.toggle(ui, &mut on, "")
+                    });
+                    self.params.hits.push((p.name.clone(), response.rect));
+                    let response = if p.description.is_empty() {
+                        response
+                    } else {
+                        label.on_hover_text(&p.description);
+                        response.on_hover_text(&p.description)
+                    };
+                    if response.changed() {
+                        self.params.commit(p, if on { 1.0 } else { 0.0 }, false);
                     }
                 }
-                if !p.at_default
-                    && ui
-                        .small_button("↺")
-                        .on_hover_text(format!("Back to its default, {}", p.default_expr))
-                        .clicked()
-                {
-                    let mut values = Map::new();
-                    values.insert(p.name.clone(), Value::String(p.default_expr.clone()));
-                    self.params
-                        .ask(json!({ "values": values }), Some(p.name.clone()));
+                ParamKind::Choice => {
+                    let current = p
+                        .value
+                        .and_then(whole_index)
+                        .and_then(|i| i.checked_sub(1))
+                        .unwrap_or(usize::MAX);
+                    let mut chosen = current;
+                    let options: Vec<&str> = p.choices.iter().map(String::as_str).collect();
+                    let width = (ui.available_width() * 0.55).max(tokens.control_height * 3.0);
+                    let (label, response) = labelled(ui, &kit, &p.label, |ui| {
+                        let response = kit.dropdown(ui, "choice", &mut chosen, &options, width);
+                        self.reset_arrow(ui, &kit, p);
+                        response
+                    });
+                    if !p.description.is_empty() {
+                        label.on_hover_text(&p.description);
+                    }
+                    self.params.hits.push((p.name.clone(), response.rect));
+                    if chosen != current && chosen < options.len() {
+                        self.params.commit(p, (chosen + 1) as f64, false);
+                    }
                 }
-            });
+            }
             let small = |text: &str, tint| {
                 egui::Label::new(
                     egui::RichText::new(text)
-                        .size(tokens.secondary_font)
+                        .font(kit.small_font())
                         .color(color(tint)),
                 )
                 .wrap()
@@ -1928,17 +1908,38 @@ impl Shell {
             {
                 self.trouble_line(ui, &trouble);
             }
-            ui.add_space(2.0);
+            ui.add_space(tokens.nav_spacing.max(4.0));
         });
     }
 
-    /// A number or integer parameter: the number field of the viewport's
-    /// controls, its bar the slider over the range.
-    fn number_param(&mut self, ui: &mut egui::Ui, p: &Param, width: f32, now: f64) {
+    /// The quiet ↺ of a parameter off its default: back to it.
+    fn reset_arrow(&mut self, ui: &mut egui::Ui, kit: &crate::kit::Kit, p: &Param) {
+        if p.at_default {
+            return;
+        }
+        let back = kit
+            .icon_button(ui, crate::kit::Glyph::Undo, false, "Back to its default")
+            .on_hover_text(format!("Back to its default, {}", p.default_expr));
+        if back.clicked() {
+            self.reset_param(p);
+        }
+    }
+
+    /// `p` back to its default expression.
+    fn reset_param(&mut self, p: &Param) {
+        let mut values = Map::new();
+        values.insert(p.name.clone(), Value::String(p.default_expr.clone()));
+        self.params
+            .ask(json!({ "values": values }), Some(p.name.clone()));
+    }
+
+    /// A number or integer parameter: the kit's slider in its form (label
+    /// and number field with the unit, the rail under them, the range
+    /// under that); a stepper for a whole number with a few values; a
+    /// drag field for one without a range.
+    fn number_param(&mut self, ui: &mut egui::Ui, p: &Param, now: f64) {
         let tokens = self.tokens;
-        let height = tokens.nav_height.max(20.0);
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-        self.params.hits.push((p.name.clone(), rect));
+        let kit = crate::kit::Kit::panel(&tokens);
         let value = self.params.shown_value(p).unwrap_or(0.0);
         let range = match (&self.params.live, p.range()) {
             (_, Some(range)) => range,
@@ -1951,6 +1952,42 @@ impl Shell {
             .trouble
             .as_ref()
             .is_some_and(|t| t.name.as_deref() == Some(p.name.as_str()));
+        let enabled = p.takes_numbers() && p.value.is_some();
+        let unit = p.unit_shown().to_string();
+        // A whole number with a few values: a stepper `− 3 +`.
+        if p.kind == ParamKind::Integer
+            && let Some([lo, hi]) = p.range()
+            && step == 1.0
+            && hi - lo <= STEPPER_MOST
+        {
+            let mut v = value;
+            let (label, response) = labelled(ui, &kit, &p.label, |ui| {
+                let response = kit.stepper(ui, &mut v, [lo, hi], enabled);
+                self.reset_arrow(ui, &kit, p);
+                response
+            });
+            if !p.description.is_empty() {
+                label.on_hover_text(&p.description);
+            }
+            self.params.hits.push((p.name.clone(), response.rect));
+            hint_line(ui, &kit, &number_field::range_hint(lo, hi, &unit));
+            if response.changed()
+                && let Some(settled) = settle(p, v)
+            {
+                self.params.flush_other(&p.name);
+                self.params.say(&p.name, settled.note);
+                self.params.live = Some(Live {
+                    name: p.name.clone(),
+                    value: settled.value,
+                    range,
+                    dragging: false,
+                    dirty: true,
+                    committed: false,
+                    last_sent: now,
+                });
+            }
+            return;
+        }
         let mine = self.params.active.as_deref().is_none_or(|a| a == p.name);
         let mut spare_memory = FieldMemory::default();
         let mut spare_typing = None;
@@ -1966,26 +2003,33 @@ impl Shell {
                 .max(p.step.map_or(0, decimals_of))
                 .min(MAX_DECIMALS)
         };
-        // The field is made for the dark plates over the viewport: it
-        // gets one of its own on the light panel.
-        ui.painter().rect_filled(
-            rect,
-            egui::CornerRadius::same(tokens.field_radius),
-            color_alpha(tokens.plate_fill, tokens.plate_opacity),
+        let form = if p.range().is_some() {
+            crate::kit::SliderForm::Form
+        } else {
+            crate::kit::SliderForm::Drag
+        };
+        let hint = p
+            .range()
+            .map(|[lo, hi]| number_field::range_hint(lo, hi, &unit));
+        let field_width = (ui.available_width() * 0.45).clamp(64.0, 120.0);
+        let mut v = value;
+        let shown = kit.slider_with(
+            ui,
+            crate::kit::Slider::new(&p.label, &mut v, range[0]..=range[1])
+                .form(form)
+                .widths(0.0, field_width)
+                .step(step)
+                .shown_as(1.0, decimals, &unit)
+                .enabled(enabled)
+                .reset_asked(!p.at_default)
+                .alarm(trouble)
+                .hint_opt(hint.as_deref()),
+            Some(crate::kit::SliderState {
+                field: FIELD,
+                memory,
+                typing,
+            }),
         );
-        let outcome = NumberField {
-            id: FIELD,
-            label: &p.label,
-            value,
-            range,
-            step,
-            scale: 1.0,
-            decimals,
-            unit: p.unit_shown(),
-            enabled: p.takes_numbers() && p.value.is_some(),
-            range_known: p.range().is_some(),
-        }
-        .show(ui, rect, &tokens, memory, typing);
         let dragging = memory.drag.is_some();
         let engaged = dragging || memory.focus.is_some() || typing.is_some();
         if !mine && engaged {
@@ -1998,19 +2042,30 @@ impl Shell {
         } else if self.params.active.as_deref() == Some(p.name.as_str()) {
             self.params.active = None;
         }
-        if trouble {
-            ui.painter().rect_stroke(
-                rect,
-                egui::CornerRadius::same(tokens.field_radius),
-                egui::Stroke::new(1.5, color(tokens.failed)),
-                egui::StrokeKind::Inside,
-            );
+        self.params.hits.push((p.name.clone(), shown.response.rect));
+        if let Some(field) = shown.field {
+            self.params.hits.push((format!("{}.field", p.name), field));
+            // The quiet ↺ beside the field while the value is off its
+            // default.
+            if !p.at_default {
+                let side = kit.hit(tokens.control_height);
+                let place = egui::Rect::from_min_size(
+                    egui::pos2(field.left() - side - 2.0, field.center().y - side * 0.5),
+                    egui::vec2(side, side),
+                );
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(place));
+                self.reset_arrow(&mut child, &kit, p);
+            }
         }
         if !p.description.is_empty() {
-            ui.interact(rect, ui.id().with("tip"), egui::Sense::hover())
-                .on_hover_text(&p.description);
+            shown.response.clone().on_hover_text(&p.description);
         }
-        if let Some(wanted) = outcome.value {
+        if shown.reset {
+            self.reset_param(p);
+            return;
+        }
+        if shown.changed {
+            let wanted = v;
             let Some(settled) = settle(p, wanted) else {
                 return;
             };
@@ -2035,7 +2090,7 @@ impl Shell {
                     ..live
                 });
             } else {
-                // An arrow or the wheel: a step of its own.
+                // A click, an arrow or the wheel: a step of its own.
                 self.params.say(&p.name, settled.note);
                 self.params.live = Some(Live {
                     name: p.name.clone(),
@@ -2112,6 +2167,79 @@ impl Shell {
         self.params.memory.focus = None;
         self.params.active = None;
     }
+}
+
+/// A row of the form: `label` at the left in the text's ink, what `add`
+/// lays out at the right (right to left: the first thing `add` adds is
+/// rightmost). The label's response and `add`'s.
+fn labelled<R>(
+    ui: &mut egui::Ui,
+    kit: &crate::kit::Kit,
+    label: &str,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> (egui::Response, R) {
+    ui.horizontal(|ui| {
+        ui.set_min_height(kit.hit(kit.t.control_height));
+        let label = ui.label(
+            egui::RichText::new(label)
+                .font(kit.font())
+                .color(color(kit.skin.text)),
+        );
+        let inner = ui
+            .with_layout(egui::Layout::right_to_left(egui::Align::Center), add)
+            .inner;
+        (label, inner)
+    })
+    .inner
+}
+
+/// A hint under a control: small, dim.
+fn hint_line(ui: &mut egui::Ui, kit: &crate::kit::Kit, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .font(kit.small_font())
+            .color(color(kit.skin.text_dim)),
+    );
+}
+
+/// An output: its label dim at the left, its value at the right in
+/// `ink` (the info ink when it is known).
+fn output_row(
+    ui: &mut egui::Ui,
+    kit: &crate::kit::Kit,
+    label: &str,
+    value: &str,
+    ink: crate::theme::Rgb,
+) -> egui::Response {
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(width.max(0.0), kit.t.label_row_height),
+        egui::Sense::hover(),
+    );
+    let painter = ui.painter();
+    let value = kit.galley(ui, value, kit.font(), ink);
+    let value_w = value.size().x.min(rect.width() * 0.6);
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        label.to_string(),
+        kit.font(),
+        color(kit.skin.text_dim),
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - value_w - 8.0).max(0.0));
+    let label = painter.layout_job(job);
+    painter.galley(
+        egui::pos2(rect.left(), rect.center().y - label.size().y * 0.5),
+        label,
+        color(kit.skin.text_dim),
+    );
+    painter.galley(
+        egui::pos2(
+            rect.right() - value.size().x,
+            rect.center().y - value.size().y * 0.5,
+        ),
+        value,
+        color(ink),
+    );
+    response
 }
 
 /// The range a drag spans for a parameter without both ends: from its

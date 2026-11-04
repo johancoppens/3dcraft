@@ -30,7 +30,7 @@
 
 use super::Shell;
 use super::icons::{self, Icon};
-use crate::kit::{ChipKind, Glyph, Kit, Segment};
+use crate::kit::{ChipKind, Glyph, Kit, Segment, Slider, SliderForm};
 use crate::state::{MOTION_SECONDS, Playback};
 use crate::theme::{Tokens, color};
 use craft3d_engine::Session;
@@ -520,15 +520,16 @@ impl Shell {
     pub(crate) fn motion_slider(&mut self, ui: &mut egui::Ui) {
         let shown = self.timeline.motion_t().unwrap_or(0.0);
         let mut t = shown;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().slider_width = (ui.available_width() - 8.0).max(40.0);
-            ui.add(
-                egui::Slider::new(&mut t, 0.0..=1.0)
-                    .show_value(false)
-                    .trailing_fill(true),
+        // The kit's slider, the rail alone (board s8).
+        crate::kit::Kit::panel(&self.tokens)
+            .slider(
+                ui,
+                crate::kit::Slider::new("Motion", &mut t, 0.0..=1.0)
+                    .form(crate::kit::SliderForm::Rail)
+                    .step(MOTION_STEP)
+                    .typable(false),
             )
             .on_hover_text("Drag through the motion. The document does not change.");
-        });
         if t != shown {
             self.go_to_t(t);
             ui.ctx().request_repaint();
@@ -910,13 +911,21 @@ impl Shell {
                     let room =
                         (ui.available_width() - tokens.compact_player_label - PLAYER_GROUP_GAP)
                             .max(40.0);
-                    ui.spacing_mut().slider_width = room;
                     let mut t = shown;
-                    let slider = ui.add(
-                        egui::Slider::new(&mut t, 0.0..=1.0)
-                            .show_value(false)
-                            .trailing_fill(true),
-                    );
+                    let slider = ui
+                        .allocate_ui(
+                            egui::vec2(room, kit.slider_height(SliderForm::Rail)),
+                            |ui| {
+                                kit.slider(
+                                    ui,
+                                    Slider::new("Motion", &mut t, 0.0..=1.0)
+                                        .form(SliderForm::Rail)
+                                        .step(MOTION_STEP)
+                                        .typable(false),
+                                )
+                            },
+                        )
+                        .inner;
                     if t != shown {
                         self.go_to_t(t);
                         ui.ctx().request_repaint();

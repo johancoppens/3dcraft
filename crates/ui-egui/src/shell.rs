@@ -776,6 +776,9 @@ pub struct Shell {
     turn: Option<Turn>,
     /// Where the see-through field was drawn.
     transparency_rect: Option<egui::Rect>,
+    /// The rails and the value fields of the display bar's sliders, by
+    /// name (`see-through`, `offset`), as last drawn.
+    slider_rails: Vec<(&'static str, egui::Rect, Option<egui::Rect>)>,
     /// A drag on a number field under way, and the field being typed
     /// into.
     fields: number_field::FieldMemory,
@@ -1343,6 +1346,7 @@ impl Shell {
             view_cube_rect: None,
             turn: None,
             transparency_rect: None,
+            slider_rails: Vec::new(),
             fields: number_field::FieldMemory::default(),
             typing: None,
             length_unit: "",
@@ -2169,6 +2173,13 @@ impl Shell {
     /// viewport was drawn.
     pub fn transparency_rect(&self) -> Option<egui::Rect> {
         self.transparency_rect
+    }
+
+    /// The display bar's sliders as last drawn: each one's name
+    /// (`see-through`, `offset`), its rail (between the knob's centre at
+    /// either end) and its value, which a click types into.
+    pub fn slider_hits(&self) -> Vec<(&'static str, egui::Rect, Option<egui::Rect>)> {
+        self.slider_rails.clone()
     }
 
     /// How near to an edge a click counts as a click on it, in pixels of

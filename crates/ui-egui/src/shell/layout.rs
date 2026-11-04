@@ -58,7 +58,7 @@ pub struct ControlWidths {
     pub projection: f32,
     /// One segment of X | Y | Z.
     pub axis: f32,
-    /// The number fields.
+    /// The sliders (label, rail, value in one row).
     pub see_through: f32,
     pub offset: f32,
 }
@@ -82,8 +82,10 @@ impl ControlWidths {
         let with_icon =
             |s: &str| inset + tokens.nav_icon_size + tokens.nav_icon_gap + text(s) + inset + 2.0;
         let plain = |s: &str| (2.0 * inset + text(s) + 4.0).max(tokens.nav_height);
+        // A slider in one row (the kit's): its label, a rail of half a
+        // field's width, its value.
         let field = |label: &str, value: &str| {
-            (text(label) + text(value) + 2.0 * tokens.field_inset + tokens.field_arrow_inset)
+            (text(label) + 8.0 + tokens.field_width * 0.6 + 6.0 + text(value) + 4.0)
                 .max(tokens.nav_height)
         };
         let widest = |items: &[&str], f: &dyn Fn(&str) -> f32| {
@@ -148,8 +150,8 @@ impl ControlWidths {
             flip: icon + chars(9.0),
             projection: 2.0 * tokens.nav_inset + chars(5.0) + 4.0,
             axis: tokens.nav_height,
-            see_through: tokens.field_width,
-            offset: tokens.field_width,
+            see_through: tokens.field_width * 1.6,
+            offset: tokens.field_width * 1.6,
         }
     }
 }

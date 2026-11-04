@@ -15,7 +15,9 @@
 //! screen is converted by swapping egui's widget for the kit's.
 //!
 //! - [`controls`]: buttons, icon buttons, chips, segmented controls, check
-//!   boxes, switches, sliders, number and text fields, dropdowns;
+//!   boxes, switches, number and text fields, dropdowns;
+//! - [`slider`]: the one slider of the app, in its four forms, and the
+//!   stepper for small whole numbers;
 //! - [`rows`]: section and fold headers, label/value rows, list rows, the
 //!   tab bar, captions;
 //! - [`dialog`]: the one layout of every dialog (title, body, footer);
@@ -37,14 +39,16 @@ pub mod gallery;
 pub mod glyphs;
 pub mod overlays;
 pub mod rows;
+pub mod slider;
 pub mod status;
 
 pub use brand::AppIcon;
-pub use controls::{Button, ButtonKind, ChipKind, Segment, Slider};
+pub use controls::{Button, ButtonKind, ChipKind, Segment};
 pub use dialog::{Dialog, DialogShown};
 pub use glyphs::Glyph;
 pub use overlays::MenuItem;
 pub use rows::{Depends, ListRow, RowHits, RowMark, Tab, ValueStyle};
+pub use slider::{Slider, SliderForm, SliderShown, SliderState};
 pub use status::{BannerKind, PillState};
 
 use crate::theme::{Rgb, Tokens, blend, color};

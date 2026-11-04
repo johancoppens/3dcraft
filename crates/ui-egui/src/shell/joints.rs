@@ -311,7 +311,8 @@ impl Shell {
         let Some(outline) = self.outline.clone() else {
             return;
         };
-        ui.label(egui::RichText::new("Joints").strong());
+        let kit = crate::kit::Kit::panel(&tokens);
+        kit.section_header(ui, "Joints");
         let size = self
             .shown_scene
             .as_ref()
@@ -330,29 +331,34 @@ impl Shell {
                 _ => value,
             };
             // A slider of degrees for an angle, of the document's unit
-            // otherwise.
-            let (mut on_slider, range, suffix) = if angle {
-                (
-                    shown.to_degrees(),
-                    lo.to_degrees()..=hi.to_degrees(),
-                    "°".to_string(),
-                )
+            // otherwise: the kit's one slider in a row (label, rail,
+            // value).
+            let (mut on_slider, range, unit) = if angle {
+                (shown.to_degrees(), [lo.to_degrees(), hi.to_degrees()], "°")
             } else {
-                (shown, lo..=hi, format!(" {}", outline.unit))
+                (shown, [lo, hi], outline.unit.as_str())
             };
-            let response = ui
-                .horizontal(|ui| {
-                    ui.label(&mate.name);
-                    ui.add(
-                        egui::Slider::new(&mut on_slider, range)
-                            .suffix(suffix)
-                            .clamping(egui::SliderClamping::Never),
+            let label_width = (ui.available_width() * 0.3).clamp(48.0, 120.0);
+            let value_width = 72.0;
+            let decimals = if angle { 1 } else { 2 };
+            let slider = ui
+                .push_id(("craft3d-joint", &mate.name), |ui| {
+                    kit.slider_with(
+                        ui,
+                        crate::kit::Slider::new(&mate.name, &mut on_slider, range[0]..=range[1])
+                            .widths(label_width, value_width)
+                            .shown_as(1.0, decimals, unit)
+                            .default_value(if angle { value.to_degrees() } else { value }),
+                        None,
                     )
                 })
-                .inner
+                .inner;
+            let response = slider
+                .response
+                .clone()
                 .on_hover_text(format!("{} · joint.set {}", mate.kind, mate.name));
             self.joints.hits.push((mate.name.clone(), response.rect));
-            if response.changed() && on_slider.is_finite() {
+            if slider.changed && on_slider.is_finite() {
                 shown = if angle {
                     on_slider.to_radians()
                 } else {
@@ -368,7 +374,8 @@ impl Shell {
                 );
                 ui.ctx().request_repaint();
             }
-            if response.drag_stopped() || (response.changed() && !response.dragged()) {
+            let mine = matches!(&self.joints.dragging, Some((name, _)) if *name == mate.name);
+            if mine && !slider.dragging {
                 released = true;
             }
         }
@@ -387,7 +394,7 @@ impl Shell {
                 .wrap(),
             );
         }
-        ui.separator();
+        kit.divider(ui);
     }
 }
 

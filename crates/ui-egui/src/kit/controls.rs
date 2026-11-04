@@ -10,7 +10,6 @@ use egui::{
     Align, CornerRadius, Frame, Id, Margin, Rect, Response, Sense, Shape, Stroke, StrokeKind, Ui,
     pos2, vec2,
 };
-use std::ops::RangeInclusive;
 
 /// What a button does, which its look says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,66 +106,6 @@ pub enum Segment<'a> {
     Icon(Glyph),
     /// A line icon before the words (the start screen's sections).
     IconText(Glyph, &'a str),
-}
-
-/// A slider with its label and value: `text` is the value as shown
-/// (`0.00 EV`, `f/2.8`), `hint` a line under the rail.
-pub struct Slider<'a> {
-    pub label: &'a str,
-    pub value: &'a mut f64,
-    pub range: RangeInclusive<f64>,
-    pub text: String,
-    pub enabled: bool,
-    pub hint: Option<&'a str>,
-    /// The widths kept for the label and the value, in points.
-    pub label_width: f32,
-    pub value_width: f32,
-}
-
-impl<'a> Slider<'a> {
-    pub fn new(label: &'a str, value: &'a mut f64, range: RangeInclusive<f64>) -> Self {
-        let text = format!("{:.2}", *value);
-        Self {
-            label,
-            value,
-            range,
-            text,
-            enabled: true,
-            hint: None,
-            label_width: 96.0,
-            value_width: 64.0,
-        }
-    }
-    #[must_use]
-    pub fn text(mut self, text: impl Into<String>) -> Self {
-        self.text = text.into();
-        self
-    }
-    #[must_use]
-    pub fn hint(mut self, hint: &'a str) -> Self {
-        self.hint = Some(hint);
-        self
-    }
-    #[must_use]
-    pub fn enabled(mut self, enabled: bool) -> Self {
-        self.enabled = enabled;
-        self
-    }
-    #[must_use]
-    pub fn widths(mut self, label: f32, value: f32) -> Self {
-        self.label_width = label;
-        self.value_width = value;
-        self
-    }
-}
-
-/// Where `value` lies in `range`, 0 to 1 (0 for what means nothing).
-pub fn fraction(value: f64, range: &RangeInclusive<f64>) -> f32 {
-    let (lo, hi) = (*range.start(), *range.end());
-    if !(value.is_finite() && lo.is_finite() && hi.is_finite()) || hi <= lo {
-        return 0.0;
-    }
-    ((value - lo) / (hi - lo)).clamp(0.0, 1.0) as f32
 }
 
 impl Kit {
@@ -634,106 +573,6 @@ impl Kit {
         response.widget_info(|| {
             egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, state, text)
         });
-        response
-    }
-
-    /// A slider across the width there is: label, rail, value; a hint
-    /// under the rail. Dragging or clicking the rail sets the value.
-    pub fn slider(&self, ui: &mut Ui, slider: Slider<'_>) -> Response {
-        let t = &self.t;
-        let s = &self.skin;
-        let ink = if slider.enabled { s.text } else { s.faint };
-        let width = ui
-            .available_width()
-            .max(slider.label_width + slider.value_width + 40.0);
-        let row = self.hit(t.control_height);
-        let (outer, place) = ui.allocate_exact_size(sane(vec2(width, row)), Sense::hover());
-        let knob = t.knob_size;
-        let rail = Rect::from_min_max(
-            pos2(outer.left() + slider.label_width + knob * 0.5, outer.top()),
-            pos2(
-                outer.right() - slider.value_width - knob * 0.5,
-                outer.bottom(),
-            ),
-        );
-        let sense = if slider.enabled {
-            Sense::click_and_drag()
-        } else {
-            Sense::hover()
-        };
-        let id = place.id.with("rail");
-        let mut response = ui.interact(rail.expand2(vec2(knob * 0.5, 0.0)), id, sense);
-        if (response.dragged() || response.clicked())
-            && let Some(at) = response.interact_pointer_pos()
-            && rail.width() > 0.0
-        {
-            let share = f64::from(((at.x - rail.left()) / rail.width()).clamp(0.0, 1.0));
-            let (lo, hi) = (*slider.range.start(), *slider.range.end());
-            if lo.is_finite() && hi.is_finite() && hi > lo {
-                let value = lo + share * (hi - lo);
-                if value != *slider.value {
-                    *slider.value = value;
-                    response.mark_changed();
-                }
-            }
-        }
-        if ui.is_rect_visible(outer) {
-            let painter = ui.painter();
-            let label = self.galley(ui, slider.label, self.font(), ink);
-            painter.galley(
-                pos2(outer.left(), outer.center().y - label.size().y * 0.5),
-                label,
-                color(ink),
-            );
-            let value = self.galley(ui, slider.text.as_str(), self.font(), ink);
-            painter.galley(
-                pos2(
-                    outer.right() - value.size().x,
-                    outer.center().y - value.size().y * 0.5,
-                ),
-                value,
-                color(ink),
-            );
-            let thick = (t.progress_height * 0.75).max(1.0);
-            let y = outer.center().y;
-            let f = fraction(*slider.value, &slider.range);
-            let x = rail.left() + rail.width().max(0.0) * f;
-            let full = Rect::from_min_max(
-                pos2(rail.left(), y - thick * 0.5),
-                pos2(rail.right(), y + thick * 0.5),
-            );
-            let r = CornerRadius::same(radius_of(thick));
-            painter.rect_filled(full, r, color(s.track));
-            let done = if slider.enabled { t.accent } else { s.faint };
-            painter.rect_filled(
-                Rect::from_min_max(full.min, pos2(x, full.bottom())),
-                r,
-                color(done),
-            );
-            let (fill, rim) = if slider.enabled {
-                (s.knob, s.knob_rim)
-            } else {
-                (blend(s.faint, 140, s.fill), s.faint)
-            };
-            painter.circle(
-                pos2(x, y),
-                knob * 0.5,
-                color(fill),
-                Stroke::new(1.0, color(rim)),
-            );
-        }
-        if let Some(hint) = slider.hint {
-            let galley = self.galley(ui, hint, self.small_font(), s.text_dim);
-            let (place, _) =
-                ui.allocate_exact_size(sane(vec2(width, galley.size().y)), Sense::hover());
-            ui.painter().galley(
-                pos2(rail.left() - knob * 0.5, place.top()),
-                galley,
-                color(s.text_dim),
-            );
-        }
-        let value = *slider.value;
-        response.widget_info(|| egui::WidgetInfo::slider(slider.enabled, value, slider.label));
         response
     }
 
