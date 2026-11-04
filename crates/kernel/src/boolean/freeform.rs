@@ -1898,6 +1898,13 @@ impl std::fmt::Write for KeyHasher {
     }
 }
 
+/// The [`key_hash`]es of the surfaces whose trees the shelf holds: for
+/// tests that hold [`release_unheld`] to keep only what is held.
+pub fn shelf_keys() -> std::collections::BTreeSet<u64> {
+    let shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
+    shelf.iter().map(|(_, hash, _)| *hash).collect()
+}
+
 /// How many trees the shelf holds, and about how many bytes they take.
 pub fn shelf_size() -> (usize, usize) {
     let shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);

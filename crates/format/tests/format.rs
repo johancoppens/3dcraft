@@ -818,6 +818,32 @@ fn meshes_drawings_and_pictures_opened_as_a_document_say_what_they_are() {
     assert!(matches!(error, FormatError::Zip(_)), "{error}");
 }
 
+/// A ZIP archive is told by its signature before a binary STL is told by
+/// its size: an archive whose length happens to be 84 bytes plus 50 per
+/// the number at bytes 80 to 84 is still the archive it is.
+#[test]
+fn an_archive_the_size_of_a_binary_stl_is_the_archive() {
+    let stl_sized = |entry: &[u8]| {
+        let mut bytes = b"PK\x03\x04\x14\0\0\0\0\0".to_vec();
+        bytes.extend_from_slice(entry);
+        bytes.resize(80, b' ');
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.resize(84 + 50, 0);
+        bytes
+    };
+    let fcstd = stl_sized(b"Document.xml");
+    let error = from_bytes(&fcstd).unwrap_err();
+    assert!(error.to_string().contains("FreeCAD"), "{error}");
+    let three_mf = stl_sized(b"3D/3dmodel.model");
+    let error = from_bytes(&three_mf).unwrap_err();
+    assert!(error.to_string().contains("3MF"), "{error}");
+    // An archive of something else is a broken or foreign archive, not a
+    // mesh.
+    let other = stl_sized(b"readme.txt");
+    let error = from_bytes(&other).unwrap_err();
+    assert!(matches!(error, FormatError::Zip(_)), "{error}");
+}
+
 #[test]
 fn a_command_script_opened_as_a_document_says_how_to_run_it() {
     for script in [
