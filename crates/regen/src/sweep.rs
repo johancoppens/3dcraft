@@ -67,22 +67,11 @@ pub(crate) fn build(
             .feature(feature.path)
             .map_or_else(|| feature.path.to_string(), |f| f.name.clone());
         sweep_helix(profile, &made.plane, &helix, None, &made.tolerance).map_err(|error| {
-            match &error {
-                KernelError::Sweep { reason, .. } => format!(
-                    "path: helix `{along}`: {}",
-                    made.solved.curve_ids.rename_in(reason)
-                ),
-                KernelError::DegenerateCurve { .. }
-                | KernelError::ShortSplinePiece { .. }
-                | KernelError::DuplicateCurveId { .. }
-                | KernelError::TooManyCurves { .. } => {
-                    format!(
-                        "path: helix `{along}`: {}",
-                        profile_error(&error, &made.solved.curve_ids)
-                    )
-                }
-                other => format!("path: helix `{along}`: {other}"),
-            }
+            reason_of(
+                &error,
+                &format!("path: helix `{along}`: "),
+                &made.solved.curve_ids,
+            )
         })?
     } else {
         // What `drawn` says of a sketch, as what it says of the path.
@@ -102,86 +91,23 @@ pub(crate) fn build(
         }
         ids = Some(joint);
         let joint = ids.as_ref().unwrap_or(&made.solved.curve_ids);
-        sweep(profile, &made.plane, &curves, &path.plane, &made.tolerance).map_err(|error| {
-            match &error {
-                // The kernel names the curves of the path as the sketch does.
-                KernelError::Sweep { reason, .. } => {
-                    format!("path: sketch `{along}`: {}", joint.rename_in(reason))
-                }
-                KernelError::DegenerateCurve { .. }
-                | KernelError::ShortSplinePiece { .. }
-                | KernelError::DuplicateCurveId { .. }
-                | KernelError::TooManyCurves { .. } => {
-                    format!("path: sketch `{along}`: {}", profile_error(&error, joint))
-                }
-                other => format!("path: {other}"),
-            }
-        })?
+        sweep(profile, &made.plane, &curves, &path.plane, &made.tolerance)
+            .map_err(|error| reason_of(&error, &format!("path: sketch `{along}`: "), joint))?
     };
-    let mut faces: Vec<PersistentName> = swept.faces.iter().map(|o| name_of(id, o)).collect();
-    // A side is named after a curve of the profile and one of the path:
-    // both into their names' words, from the table of the two.
-    if let Some(joint) = ids.as_ref().filter(|j| !j.is_empty()) {
-        for face in &mut faces {
-            let mut link = face;
-            while link.role == NameRole::Piece {
-                let Some(next) = link.of.as_mut().map(Arc::make_mut) else {
-                    break;
-                };
-                link = next;
-            }
-            link.sources = joint.expand(&link.sources);
-        }
-    }
-    crate::collapse_runs(
-        doc,
-        earlier,
-        feature.sketch,
-        &mut faces,
-        &[NameRole::StartCap, NameRole::EndCap],
-    );
-    crate::offset_profile::rename(
-        doc,
-        earlier,
-        feature.sketch,
-        &mut faces,
-        &[NameRole::StartCap, NameRole::EndCap],
-    )?;
-
     // A path that comes back near itself carries the profile through
     // what it swept before: a body that is valid in how it hangs together
     // and passes through itself. It is never handed on.
-    let advice =
-        "keep the path further from itself than the profile is wide, or make the profile narrower";
-    match crossing(&swept.body, &faces, made.tolerance.linear) {
-        Crossing::None => {}
-        Crossing::Spent => return Err(Crossing::spent("path", "sweep")),
-        Crossing::Unknown(error) => {
-            return Err(format!(
-                "path: the sweep cannot be meshed to see whether it passes through itself ({error}); {advice}"
-            ));
-        }
-        touching @ Crossing::Touching(..) => {
-            touching.refused("path", "sweep", advice)?;
-        }
-        Crossing::Found(pair) => {
-            let between = pair
-                .map(|[a, b]| format!(": {a} and {b} cross"))
-                .unwrap_or_default();
-            return Err(format!(
-                "path: the sweep passes through itself{between}; {advice}"
-            ));
-        }
-    }
-
-    let names = Names::by_faces(id, &swept.body, faces, made.tolerance.linear)?;
-    let report = SweepReport {
-        closed: swept.closed,
-        length: swept.length,
-        deviation: swept.deviation,
-        stations: swept.stations,
-    };
-    Ok((swept.body, names, report))
+    finished(
+        doc,
+        id,
+        earlier,
+        feature.sketch,
+        swept,
+        ids.as_ref(),
+        "path",
+        "keep the path further from itself than the profile is wide, or make the profile narrower",
+        made.tolerance.linear,
+    )
 }
 
 /// A sweep along two rails: the profile of `feature.sketch` carried so
@@ -277,16 +203,53 @@ fn two_rails(
         up,
         &made.tolerance,
     )
-    .map_err(|error| match &error {
-        KernelError::Sweep { reason, .. } => format!("rail: {}", joint.rename_in(reason)),
+    .map_err(|error| reason_of(&error, "rail: ", &joint))?;
+    finished(
+        doc,
+        id,
+        earlier,
+        feature.sketch,
+        swept,
+        Some(&joint),
+        "rail",
+        "keep the rails further from themselves and each other than the section is wide, or make the section smaller",
+        made.tolerance.linear,
+    )
+}
+
+/// A kernel error of a sweep as the reason the feature gives, after
+/// `prefix` (the parameter and what it names), the curves named as their
+/// sketches do (`ids`).
+fn reason_of(error: &KernelError, prefix: &str, ids: &CurveIds) -> String {
+    match error {
+        KernelError::Sweep { reason, .. } => format!("{prefix}{}", ids.rename_in(reason)),
         KernelError::DegenerateCurve { .. }
         | KernelError::ShortSplinePiece { .. }
         | KernelError::DuplicateCurveId { .. }
-        | KernelError::TooManyCurves { .. } => format!("rail: {}", profile_error(&error, &joint)),
-        other => format!("rail: {other}"),
-    })?;
+        | KernelError::TooManyCurves { .. } => format!("{prefix}{}", profile_error(error, ids)),
+        other => format!("{prefix}{other}"),
+    }
+}
+
+/// What every sweep does with the body the kernel made: its faces named
+/// (a side after a curve of the profile and one of each path, both from
+/// the table `joint`; the caps as the profile's region), the body
+/// searched for places where it passes through itself (refused under
+/// `key`, with `advice`), and the report.
+#[allow(clippy::too_many_arguments)]
+fn finished(
+    doc: &Document,
+    id: FeatureId,
+    earlier: &[FeatureResult],
+    sketch: FeatureId,
+    swept: craft3d_kernel::sweep::Swept,
+    joint: Option<&CurveIds>,
+    key: &str,
+    advice: &str,
+    linear: f64,
+) -> Result<(Body, Names, SweepReport), String> {
     let mut faces: Vec<PersistentName> = swept.faces.iter().map(|o| name_of(id, o)).collect();
-    if !joint.is_empty() {
+    if let Some(joint) = joint.filter(|j| !j.is_empty()) {
         for face in &mut faces {
             let mut link = face;
             while link.role == NameRole::Piece {
@@ -298,42 +261,30 @@ fn two_rails(
             link.sources = joint.expand(&link.sources);
         }
     }
-    crate::collapse_runs(
-        doc,
-        earlier,
-        feature.sketch,
-        &mut faces,
-        &[NameRole::StartCap, NameRole::EndCap],
-    );
-    crate::offset_profile::rename(
-        doc,
-        earlier,
-        feature.sketch,
-        &mut faces,
-        &[NameRole::StartCap, NameRole::EndCap],
-    )?;
-    let advice = "keep the rails further from themselves and each other than the section is wide, or make the section smaller";
-    match crossing(&swept.body, &faces, made.tolerance.linear) {
+    let caps = [NameRole::StartCap, NameRole::EndCap];
+    crate::collapse_runs(doc, earlier, sketch, &mut faces, &caps);
+    crate::offset_profile::rename(doc, earlier, sketch, &mut faces, &caps)?;
+    match crossing(&swept.body, &faces, linear) {
         Crossing::None => {}
-        Crossing::Spent => return Err(Crossing::spent("rail", "sweep")),
+        Crossing::Spent => return Err(Crossing::spent(key, "sweep")),
         Crossing::Unknown(error) => {
             return Err(format!(
-                "rail: the sweep cannot be meshed to see whether it passes through itself ({error}); {advice}"
+                "{key}: the sweep cannot be meshed to see whether it passes through itself ({error}); {advice}"
             ));
         }
         touching @ Crossing::Touching(..) => {
-            touching.refused("rail", "sweep", advice)?;
+            touching.refused(key, "sweep", advice)?;
         }
         Crossing::Found(pair) => {
             let between = pair
                 .map(|[a, b]| format!(": {a} and {b} cross"))
                 .unwrap_or_default();
             return Err(format!(
-                "rail: the sweep passes through itself{between}; {advice}"
+                "{key}: the sweep passes through itself{between}; {advice}"
             ));
         }
     }
-    let names = Names::by_faces(id, &swept.body, faces, made.tolerance.linear)?;
+    let names = Names::by_faces(id, &swept.body, faces, linear)?;
     let report = SweepReport {
         closed: swept.closed,
         length: swept.length,
