@@ -15,7 +15,7 @@ pub const BUG: &str = crate::bug_text!();
 #[macro_export]
 macro_rules! bug_text {
     () => {
-        "internal error (a bug in 3DCraft, please report it: Copy details in the window, session.report for an agent)"
+        "internal error (a bug in 3DCraft, please report it, with session.report or Copy details)"
     };
     ($context:literal) => {
         concat!($crate::bug_text!(), ": ", $context)
