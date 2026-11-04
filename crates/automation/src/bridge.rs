@@ -51,6 +51,12 @@ pub struct BridgeConfig {
     /// been quiet for a while.
     pub client: Option<String>,
     pub connect_timeout: Duration,
+    /// How long the window may take to answer the challenge, the first
+    /// line of every connection. A window answers it at once on the
+    /// connection's own thread, whatever its engine is doing; a program
+    /// that accepts and never answers would otherwise hold the bridge for
+    /// the whole reply timeout.
+    pub challenge_timeout: Duration,
     /// How long one message may take in the app (a large regeneration,
     /// or the person's answer to a prompt: the window waits two minutes
     /// for that, so this is longer).
@@ -77,6 +83,7 @@ impl BridgeConfig {
             window,
             client: Some(format!("MCP bridge (process {})", std::process::id())),
             connect_timeout: Duration::from_secs(3),
+            challenge_timeout: Duration::from_secs(5),
             reply_timeout: Duration::from_secs(330),
             cwd: std::env::current_dir()
                 .ok()
@@ -185,7 +192,9 @@ impl Bridge {
 
 /// Why a message did not get through.
 enum Failure {
-    /// Nothing listens at the address.
+    /// No window answered at the address: nothing listens there, or the
+    /// program there dropped the connection or stayed silent before it
+    /// proved it is the window (`before_proof`).
     Unreachable(String),
     Other(String),
 }
@@ -331,6 +340,28 @@ fn before_proof(
     }
 }
 
+/// The window's refusal of a connection over its limit
+/// (`apps/craft3d/src/control.rs`, `accept`), sent instead of the
+/// challenge's answer: told as such, not as a program that is not the
+/// window. Not proven to come from the window, so nothing is sent after it.
+fn too_many(at: SocketAddr, reason: &str) -> Option<Failure> {
+    reason.starts_with("too many connections").then(|| {
+        Failure::Other(format!(
+            "the 3DCraft window at {at} refused the connection: {reason} (other agents or scripts hold them; a silent one is closed after 30 s)"
+        ))
+    })
+}
+
+/// A duration in words, for messages.
+fn seconds(d: Duration) -> String {
+    let ms = d.as_millis();
+    if ms % 1000 == 0 {
+        format!("{} s", ms / 1000)
+    } else {
+        format!("{ms} ms")
+    }
+}
+
 /// Connects to the window, authenticates, sends `request` and returns
 /// the window's answer to it.
 fn call(
@@ -348,7 +379,12 @@ fn call(
             "could not set up the connection to the 3DCraft window: {e}"
         ))
     };
-    stream.set_read_timeout(Some(timeout)).map_err(timed)?;
+    // The challenge's answer under its own short timeout, the rest under
+    // the caller's.
+    let challenge_timeout = config.challenge_timeout.min(timeout);
+    stream
+        .set_read_timeout(Some(challenge_timeout))
+        .map_err(timed)?;
     stream.set_write_timeout(Some(timeout)).map_err(timed)?;
     let _ = stream.set_nodelay(true);
     let mut reader = BufReader::new(stream.try_clone().map_err(timed)?);
@@ -367,10 +403,30 @@ fn call(
     };
     let answer = receive(&mut reader)
         .map_err(|why| match why {
-            Received::Lost(e) => before_proof(at, fixed, e, |e| Received::Lost(e).text()),
+            Received::Lost(e) => {
+                let e = if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) {
+                    io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "no answer to the challenge within {}",
+                            seconds(challenge_timeout)
+                        ),
+                    )
+                } else {
+                    e
+                };
+                before_proof(at, fixed, e, |e| Received::Lost(e).text())
+            }
             bad => Failure::Other(bad.text()),
         })?
-        .map_err(|reason| not_the_window(&reason))?;
+        .map_err(|reason| match too_many(at, &reason) {
+            Some(failure) => failure,
+            None => not_the_window(&reason),
+        })?;
+    stream.set_read_timeout(Some(timeout)).map_err(timed)?;
     let theirs = answer
         .get("nonce")
         .and_then(Value::as_str)
@@ -572,6 +628,69 @@ mod tests {
                 "{kind:?}"
             );
         }
+    }
+
+    /// A program that accepts the connection and never answers the
+    /// challenge holds the bridge for the challenge's timeout, not for the
+    /// reply timeout of a whole message, and reads as no window there
+    /// (2026-11-04: before, 330 s, twice when discovering).
+    #[test]
+    fn a_silent_program_is_given_up_on_after_the_challenge_timeout() {
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let (done, wait) = std::sync::mpsc::channel::<()>();
+        // Accepts, reads nothing, says nothing, until the test is over.
+        let holder = std::thread::spawn(move || {
+            let held = listener.accept();
+            let _ = wait.recv();
+            drop(held);
+        });
+        let mut config = BridgeConfig::new(address, "token".into());
+        config.challenge_timeout = Duration::from_millis(200);
+        config.reply_timeout = Duration::from_secs(600);
+        let target = Target {
+            address,
+            token: "token".into(),
+            pid: None,
+        };
+        let started = std::time::Instant::now();
+        let outcome = call(
+            &config,
+            &target,
+            &json!({"id": 1, "method": "x"}),
+            config.reply_timeout,
+        );
+        let took = started.elapsed();
+        let _ = done.send(());
+        let _ = holder.join();
+        let Err(Failure::Unreachable(text)) = outcome else {
+            panic!("a silent program is not a window not reachable");
+        };
+        assert!(
+            text.contains("(no answer to the challenge within 200 ms)"),
+            "{text}"
+        );
+        assert!(text.contains("start it with `craft3d --control"), "{text}");
+        // Far below the reply timeout; generous against a loaded machine.
+        assert!(took < Duration::from_secs(120), "{took:?}");
+    }
+
+    /// The window's refusal of a connection over its limit is told as such.
+    #[test]
+    fn too_many_connections_is_told_as_such() {
+        let reason = "too many connections (16 at most); close one and try again";
+        let Some(Failure::Other(text)) = too_many(at(), reason) else {
+            panic!("the refusal is not recognised");
+        };
+        assert_eq!(
+            text,
+            format!(
+                "the 3DCraft window at 127.0.0.1:47611 refused the connection: {reason} (other agents or scripts hold them; a silent one is closed after 30 s)"
+            )
+        );
+        assert!(too_many(at(), "auth: a proof needs a challenge first").is_none());
+        assert_eq!(seconds(Duration::from_secs(5)), "5 s");
+        assert_eq!(seconds(Duration::from_millis(250)), "250 ms");
     }
 
     /// Once the window has answered, a dropped connection is told as such:

@@ -907,6 +907,59 @@ fn one_connection_over_the_limit_is_told_and_closed() {
     assert_eq!(ControlConfig::new(1, String::new()).max_connections, 16);
 }
 
+/// A client that speaks first, as the bridge does with its challenge, still
+/// reads the refusal of a connection over the limit, and then the end of
+/// the connection: the window reads what it sent before closing, so the
+/// close is not a reset that could lose the line (2026-11-04).
+#[test]
+fn a_refused_connection_that_spoke_first_still_reads_why() {
+    let rig = Rig::with(Workspace::none(), |config| config.max_connections = 0);
+    let mut extra = rig.connect();
+    let challenge = json!({"id": 0, "method": "challenge", "params": {"nonce": "0".repeat(32)}});
+    // More than one segment's worth, all unread by the window.
+    extra.send(format!("{challenge}\n{}\n", " ".repeat(8000)).as_bytes());
+    let reply = extra.read().expect("the refusal is read");
+    let error = reply["error"].as_str().unwrap();
+    assert!(
+        error.contains("too many connections (0 at most)"),
+        "{error}"
+    );
+    let mut line = String::new();
+    assert_eq!(
+        extra.reader.read_line(&mut line).map_err(|e| e.kind()),
+        Ok(0),
+        "the connection ends cleanly, not with a reset"
+    );
+}
+
+/// The bridge tells the window's refusal of a connection over its limit as
+/// such, not as a window that is not reachable or not the window
+/// (2026-11-04).
+#[test]
+fn the_bridge_tells_a_window_with_too_many_connections() {
+    use craft3d_automation::bridge::{self, BridgeConfig};
+    let rig = Rig::with(Workspace::none(), |config| config.max_connections = 0);
+    let message = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+    let mut output = Vec::new();
+    bridge::serve(
+        &BridgeConfig::new(rig.address, TOKEN.to_string()),
+        format!("{message}\n").as_bytes(),
+        &mut output,
+    )
+    .unwrap();
+    let reply: Value = serde_json::from_slice(&output).unwrap();
+    let error = reply["error"]["message"].as_str().unwrap();
+    assert!(
+        error.contains(&format!(
+            "the 3DCraft window at {} refused the connection: too many connections (0 at most)",
+            rig.address
+        )),
+        "{error}"
+    );
+    assert!(!error.contains("not reachable"), "{error}");
+    assert!(!error.contains("is not the 3DCraft window"), "{error}");
+}
+
 #[test]
 fn an_idle_connection_is_closed_and_a_busy_one_is_not() {
     let rig = Rig::with(Workspace::none(), |config| {

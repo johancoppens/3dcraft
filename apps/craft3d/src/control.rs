@@ -665,6 +665,35 @@ fn request_id(line: &str) -> Value {
         .unwrap_or(Value::Null)
 }
 
+/// Closes a connection that was refused with a line, so the line is read:
+/// closing a socket with unread input (the client's first request) resets
+/// the connection, and a reset can make the client lose the line before it
+/// reads it. The end of output is signalled, and what the client already
+/// sent is read and dropped until it closes too, for at most a quarter of
+/// a second and 64 KiB, so a client that keeps sending cannot hold the
+/// listener.
+fn close_after_refusal(mut stream: TcpStream) {
+    use std::io::Read;
+    let _ = stream.shutdown(Shutdown::Write);
+    let until = Instant::now() + Duration::from_millis(250);
+    let mut left: usize = 64 * 1024;
+    let mut buffer = [0u8; 4096];
+    while left > 0 {
+        let now = Instant::now();
+        if now >= until
+            || stream
+                .set_read_timeout(Some(until.saturating_duration_since(now)))
+                .is_err()
+        {
+            return;
+        }
+        match stream.read(&mut buffer) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => left = left.saturating_sub(n),
+        }
+    }
+}
+
 fn accept(listener: &TcpListener, shared: &Arc<Shared>) {
     for stream in listener.incoming() {
         if shared.stopping.load(Ordering::SeqCst) {
@@ -687,6 +716,7 @@ fn accept(listener: &TcpListener, shared: &Arc<Shared>) {
                     &format!("too many connections ({limit} at most); close one and try again"),
                 ),
             );
+            close_after_refusal(stream);
             continue;
         }
         let for_thread = Arc::clone(shared);
