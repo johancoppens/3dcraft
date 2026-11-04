@@ -1466,3 +1466,301 @@ fn a_point_on_a_spline_takes_bad_parameters_as_errors() {
     let control = places(&mut s, &[1, 2, 3, 4, 5]);
     assert!(off_spline(3, &control, control[2]) <= 1e-6, "{control:?}");
 }
+
+// ------------------------------------------------- closed splines (periodic)
+
+/// The control points of the spline `made` of sketch `Profile`.
+fn control_of(session: &mut Session, made: &Value) -> Vec<P> {
+    control_in(session, "Profile", made)
+}
+
+/// The control points of the spline `made` of sketch `sketch`.
+fn control_in(session: &mut Session, sketch: &str, made: &Value) -> Vec<P> {
+    let inspected = run(session, "sketch.inspect", json!({"sketch": sketch}));
+    made["control"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| {
+            let entity = inspected["entities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["id"] == *id)
+                .unwrap();
+            [entity["x"].as_f64().unwrap(), entity["y"].as_f64().unwrap()]
+        })
+        .collect()
+}
+
+/// The derivatives of orders 1 and 2 of a clamped spline on uniform knots
+/// at its start and at its end, from the control points of its derivative
+/// curves (*The NURBS Book*, eq. 3.8): `[[d1, d2] at the start, [d1, d2]
+/// at the end]`.
+fn end_derivatives(degree: usize, control: &[P]) -> [[P; 2]; 2] {
+    let knots = knots(degree, control.len());
+    let mut levels = vec![control.to_vec()];
+    for k in 1..=2 {
+        let before = levels.last().unwrap();
+        let next: Vec<P> = (0..before.len() - 1)
+            .map(|i| {
+                let f = (degree + 1 - k) as f64 / (knots[i + degree + 1] - knots[i + k]);
+                [
+                    f * (before[i + 1][0] - before[i][0]),
+                    f * (before[i + 1][1] - before[i][1]),
+                ]
+            })
+            .collect();
+        levels.push(next);
+    }
+    [
+        [levels[1][0], levels[2][0]],
+        [*levels[1].last().unwrap(), *levels[2].last().unwrap()],
+    ]
+}
+
+fn length(v: P) -> f64 {
+    v[0].phypot(v[1])
+}
+
+/// The angle between the directions in which a closed spline leaves its
+/// seam and arrives at it, and how far its second derivatives there are
+/// apart, as a share of their size.
+fn seam(degree: usize, control: &[P]) -> (f64, f64) {
+    let [[d1s, d2s], [d1e, d2e]] = end_derivatives(degree, control);
+    let cross = d1s[0] * d1e[1] - d1s[1] * d1e[0];
+    let dot = d1s[0] * d1e[0] + d1s[1] * d1e[1];
+    let angle = cross.abs().patan2(dot);
+    let jump = length([d2s[0] - d2e[0], d2s[1] - d2e[1]]) / length(d2s).max(length(d2e));
+    (angle, jump)
+}
+
+/// `count` points on a circle of radius `r` about the origin, the first
+/// on the x axis.
+fn ring(count: usize, r: f64) -> Vec<P> {
+    (0..count)
+        .map(|i| {
+            let a = 2.0 * PI * i as f64 / count as f64;
+            [r * a.pcos(), r * a.psin()]
+        })
+        .collect()
+}
+
+/// The developer's finding (2026-11-04): a fan blade lofted from closed
+/// splines through points had a real kink at their first point, 57 to 100
+/// degrees: a closed spline was clamped there. Now it is periodic: it
+/// leaves its seam in the direction it arrives (the angle was far above
+/// 1e-9 before), with the same second derivative, passes through every
+/// point, the seam on the first, and through eight points on a circle
+/// stays within the error bound of periodic cubic interpolation, `5/384
+/// h^4 |f''''|` per coordinate (Hall and Meyer 1976; h = 2π/8 of the
+/// angle, |f''''| = r). Extruded, its volume is its area (Green's theorem
+/// along its control points, independent of the kernel) times the depth,
+/// at three scales; live, the spline is the same.
+#[test]
+fn a_closed_spline_through_points_is_smooth_where_it_closes() {
+    for k in [1e-3, 1.0, 1e6] {
+        let r = 10.0 * k;
+        let through = ring(8, r);
+        let mut s = session();
+        run(&mut s, "file.new", json!({"tolerance": 1e-6 * k}));
+        run(&mut s, "sketch.create", json!({"name": "Profile"}));
+        let made = run(
+            &mut s,
+            "sketch.spline",
+            json!({"sketch": "Profile", "through": through, "closed": true}),
+        );
+        assert_eq!(made["status"], "ok", "{made}");
+        let control = control_of(&mut s, &made);
+        // Eight places, a cubic: eleven control points, the first the last.
+        assert_eq!(control.len(), 11, "x{k}");
+        assert_eq!(made["control"][0], made["control"][10]);
+        assert_eq!(made["start"], made["control"][0]);
+        assert_eq!(control[0], through[0], "the seam is the first point");
+        let (angle, jump) = seam(3, &control);
+        assert!(angle <= 1e-9, "x{k}: a kink of {angle:e} rad at the seam");
+        assert!(
+            jump <= 1e-9,
+            "x{k}: the curvature jumps by {jump:e} at the seam"
+        );
+        // Through every point, point i at i / 8.
+        for (i, wanted) in through.iter().enumerate() {
+            let got = spline_point(3, &control, i as f64 / 8.0);
+            let off = length([got[0] - wanted[0], got[1] - wanted[1]]);
+            assert!(off <= 1e-12 * r, "x{k}: point {i} off by {off:e}");
+        }
+        let bound = 5.0 / 384.0 * (PI / 4.0).ppowi(4) * r;
+        let mut worst: f64 = 0.0;
+        for step in 0..=800 {
+            let u = f64::from(step) / 800.0;
+            let got = spline_point(3, &control, u);
+            let a = 2.0 * PI * u;
+            for (g, w) in got.iter().zip([r * a.pcos(), r * a.psin()]) {
+                worst = worst.max((g - w).abs());
+            }
+        }
+        assert!(worst <= bound, "x{k}: {worst:e} beyond the bound {bound:e}");
+        // Extruded: the area by Green's theorem times the depth.
+        let area = swept(3, &control).abs();
+        let depth = 3.0 * k;
+        let extruded = run(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": "Profile", "distance": depth, "name": "Disc"}),
+        );
+        assert_eq!(extruded["status"], "ok", "{extruded}");
+        let solid = body(&mut s, "Disc");
+        close(
+            solid["volume"].as_f64().unwrap(),
+            area * depth,
+            1e-9,
+            "disc",
+        );
+        let check = run(&mut s, "document.check", json!({"deep": true}));
+        assert_eq!(check["ok"], true, "x{k}: {check}");
+
+        // Live: fitted at every regeneration, the same spline.
+        let mut live = session();
+        run(&mut live, "file.new", json!({"tolerance": 1e-6 * k}));
+        run(&mut live, "sketch.create", json!({"name": "Profile"}));
+        let made = run(
+            &mut live,
+            "sketch.spline",
+            json!({"sketch": "Profile", "through": through, "closed": true, "live": true}),
+        );
+        assert_eq!(made["status"], "ok", "{made}");
+        run(
+            &mut live,
+            "feature.extrude",
+            json!({"sketch": "Profile", "distance": depth, "name": "Disc"}),
+        );
+        let lived = body(&mut live, "Disc");
+        close(
+            lived["volume"].as_f64().unwrap(),
+            area * depth,
+            1e-9,
+            "live disc",
+        );
+    }
+}
+
+/// A closed spline on control points is periodic too: smooth where it
+/// closes, its seam across the first point at `(P[k−1] + 4 P[0] + P[1]) / 6`
+/// for a cubic (the uniform B-spline's point at a knot), the control
+/// points away from the seam those given. With `periodic: false` it is
+/// the clamped spline from the first point back to it, as before, with a
+/// corner there.
+#[test]
+fn a_closed_spline_on_control_points_is_periodic_unless_asked_not_to_be() {
+    for k in [1e-3, 1.0, 1e6] {
+        let a = 5.0 * k;
+        let square = vec![[a, -a], [a, a], [-a, a], [-a, -a], [0.5 * a, -1.5 * a]];
+        let mut s = session();
+        run(&mut s, "file.new", json!({"tolerance": 1e-6 * k}));
+        run(&mut s, "sketch.create", json!({"name": "Profile"}));
+        let made = run(
+            &mut s,
+            "sketch.spline",
+            json!({"sketch": "Profile", "control": square, "closed": true}),
+        );
+        assert_eq!(made["status"], "ok", "{made}");
+        let control = control_of(&mut s, &made);
+        assert_eq!(control.len(), square.len() + 3);
+        let (angle, jump) = seam(3, &control);
+        assert!(angle <= 1e-9 && jump <= 1e-9, "x{k}: {angle:e}, {jump:e}");
+        let n = square.len();
+        let expected = [
+            (square[n - 1][0] + 4.0 * square[0][0] + square[1][0]) / 6.0,
+            (square[n - 1][1] + 4.0 * square[0][1] + square[1][1]) / 6.0,
+        ];
+        let start = control[0];
+        assert!(
+            length([start[0] - expected[0], start[1] - expected[1]]) <= 1e-12 * a,
+            "x{k}: the seam at {start:?}, not {expected:?}"
+        );
+        // The given points away from the seam are the spline's own.
+        for given in &square[2..n - 1] {
+            assert!(control.contains(given), "x{k}: {given:?} is not kept");
+        }
+        let depth = 2.0 * k;
+        run(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": "Profile", "distance": depth, "name": "Pad"}),
+        );
+        let solid = body(&mut s, "Pad");
+        close(
+            solid["volume"].as_f64().unwrap(),
+            swept(3, &control).abs() * depth,
+            1e-9,
+            "pad",
+        );
+
+        // Not periodic: the points as given, a corner at the first.
+        run(&mut s, "sketch.create", json!({"name": "Old"}));
+        let made = run(
+            &mut s,
+            "sketch.spline",
+            json!({"sketch": "Old", "control": square, "closed": true, "periodic": false}),
+        );
+        assert_eq!(made["status"], "ok", "{made}");
+        let ids = made["control"].as_array().unwrap();
+        assert_eq!(ids.len(), n + 1);
+        assert_eq!(ids[0], ids[n]);
+        let old = control_in(&mut s, "Old", &made);
+        assert_eq!(&old[..n], &square[..]);
+        let (angle, _) = seam(3, &old);
+        assert!(
+            angle > 0.5,
+            "x{k}: the corner of the clamped spline, {angle}"
+        );
+    }
+}
+
+/// What a closed spline cannot be is refused with the reason, and changes
+/// nothing.
+#[test]
+fn what_a_closed_spline_cannot_be_is_refused() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    let four = ring(4, 10.0);
+    for (params, words) in [
+        (
+            json!({"control": four, "periodic": true}),
+            "`periodic` is for a closed spline",
+        ),
+        (
+            json!({"through": four, "closed": true, "live": true, "periodic": false}),
+            "a closed live spline is periodic",
+        ),
+        (
+            json!({"through": four, "closed": true, "degree": 2}),
+            "even degree 2 through an even number",
+        ),
+        (
+            json!({"through": four, "closed": true, "periodic": "yes"}),
+            "periodic",
+        ),
+    ] {
+        let mut params = params;
+        params["sketch"] = json!("Profile");
+        let before = run(&mut s, "sketch.inspect", json!({"sketch": "Profile"}));
+        let why = error(&mut s, "sketch.spline", params.clone());
+        assert!(why.contains(words), "{params}: {why}");
+        assert_eq!(
+            run(&mut s, "sketch.inspect", json!({"sketch": "Profile"})),
+            before
+        );
+    }
+    // An even degree through an odd number of places is determined.
+    let five = ring(5, 10.0);
+    let made = run(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "Profile", "through": five, "closed": true, "degree": 2}),
+    );
+    let control = control_of(&mut s, &made);
+    assert_eq!(control.len(), 7);
+    let (angle, _) = seam(2, &control);
+    assert!(angle <= 1e-9, "{angle:e}");
+}

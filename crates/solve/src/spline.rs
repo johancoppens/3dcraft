@@ -73,6 +73,52 @@ pub(crate) fn fault(degree: usize, knots: &[f64], count: usize) -> Option<&'stat
     }
 }
 
+/// The weights of the `order`th derivative of a clamped spline of
+/// `degree` on `knots` and `count` control points at its start (on its
+/// first `order + 1` control points) and at its end (on its last
+/// `order + 1`), from the control points of its derivatives (*The NURBS
+/// Book*, eq. 3.8). `None` for an order of 0 or of at least `count`, or
+/// knots that do not fit.
+pub(crate) fn seam_weights(
+    knots: &[f64],
+    degree: usize,
+    count: usize,
+    order: usize,
+) -> Option<(Vec<f64>, Vec<f64>)> {
+    if order == 0 || order >= count || order > degree {
+        return None;
+    }
+    let weights = |from: usize| -> Option<Vec<f64>> {
+        // Row j: the weights of derivative control point `from + j` of the
+        // current order, on control points `from ..= from + order`.
+        let mut rows: Vec<Vec<f64>> = (0..=order)
+            .map(|j| {
+                let mut row = vec![0.0; order + 1];
+                if let Some(slot) = row.get_mut(j) {
+                    *slot = 1.0;
+                }
+                row
+            })
+            .collect();
+        for k in 1..=order {
+            let mut next = Vec::with_capacity(rows.len().saturating_sub(1));
+            for j in 0..=order - k {
+                let i = from + j;
+                let width = knots.get(i + degree + 1)? - knots.get(i + k)?;
+                if !(width.is_finite() && width > 0.0) {
+                    return None;
+                }
+                let factor = (degree + 1 - k) as f64 / width;
+                let (a, b) = (rows.get(j + 1)?, rows.get(j)?);
+                next.push(a.iter().zip(b).map(|(a, b)| factor * (a - b)).collect());
+            }
+            rows = next;
+        }
+        rows.into_iter().next()
+    };
+    Some((weights(0)?, weights(count.checked_sub(order + 1)?)?))
+}
+
 /// Where the curve is at one parameter.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct At {

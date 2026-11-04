@@ -327,6 +327,11 @@ pub struct Spline {
     /// Points the spline passes through, each at its parameter (within
     /// the knots' domain).
     pub through: Vec<(EntityId, f64)>,
+    /// A closed spline that is smooth where it closes: its derivatives up
+    /// to the degree less one the same at its start as at its end (its
+    /// first control point is its last). A periodic spline written as a
+    /// clamped one (a closed live spline of the sketch).
+    pub periodic: bool,
 }
 
 /// An end of a spline.
@@ -444,8 +449,26 @@ impl Sketch {
             control,
             fixed: Vec::new(),
             through,
+            periodic: false,
         });
         self.splines.len() - 1
+    }
+
+    /// [`Self::add_spline_through`] for a closed spline that is smooth
+    /// where it closes ([`Spline::periodic`]): `control` starts and ends
+    /// on the same point.
+    pub fn add_closed_spline_through(
+        &mut self,
+        degree: usize,
+        knots: Vec<f64>,
+        control: Vec<EntityId>,
+        through: Vec<(EntityId, f64)>,
+    ) -> usize {
+        let number = self.add_spline_through(degree, knots, control, through);
+        if let Some(spline) = self.splines.get_mut(number) {
+            spline.periodic = true;
+        }
+        number
     }
 
     /// Adds a spline whose control points are the fixed coordinates
@@ -462,6 +485,7 @@ impl Sketch {
             control: Vec::new(),
             fixed,
             through: Vec::new(),
+            periodic: false,
         });
         self.splines.len() - 1
     }

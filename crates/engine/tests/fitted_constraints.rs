@@ -360,9 +360,10 @@ fn what_fitted_curves_do_not_take_is_refused_with_the_reason() {
 }
 
 /// At the seam of a closed curve: a formula that closes smoothly (a
-/// circle) takes a tangent there, along its one direction; one that
-/// closes with a corner, and a closed live spline (clamped, its directions
-/// at the seam its points'), fail the sketch with the reason.
+/// circle) takes a tangent there, along its one direction, and so does a
+/// closed live spline, which is periodic (since 2026-11-04; before, it was
+/// clamped, its directions at the seam its points', and refused); one
+/// that closes with a corner fails the sketch with the reason.
 #[test]
 fn a_tangent_at_the_seam_of_a_closed_curve() {
     for k in SCALES {
@@ -417,23 +418,43 @@ fn a_tangent_at_the_seam_of_a_closed_curve() {
     );
     assert_ne!(made["status"], "ok", "{made}");
     assert!(made.to_string().contains("ambiguous"), "{made}");
-    let mut s = document(1.0);
-    let live = run(
-        &mut s,
-        "sketch.spline",
-        json!({"sketch": "S", "through": [[0, 0], [5, 5], [10, 0]], "closed": true, "live": true}),
-    );
-    let line = run(
-        &mut s,
-        "sketch.line",
-        json!({"sketch": "S", "from": live["start"], "to": [-3, 1]}),
-    );
-    let made = constrain(
-        &mut s,
-        "tangent",
-        json!([live["entity"], line["entity"]]),
-        None,
-    );
-    assert_ne!(made["status"], "ok", "{made}");
-    assert!(made.to_string().contains("ambiguous"), "{made}");
+    // Points that the x axis mirrors onto themselves, the seam on it: the
+    // one periodic spline through them is mirrored too, so it crosses the
+    // axis square at the seam, and the line made tangent there stands
+    // straight up.
+    for k in SCALES {
+        let mut s = document(k);
+        let live = run(
+            &mut s,
+            "sketch.spline",
+            json!({"sketch": "S", "through": [[0, 0], [5.0 * k, 5.0 * k], [10.0 * k, 0], [5.0 * k, -5.0 * k]], "closed": true, "live": true}),
+        );
+        for point in live["through"].as_array().unwrap().iter().take(4) {
+            constrain(&mut s, "fixed", json!([point]), None);
+        }
+        let line = run(
+            &mut s,
+            "sketch.line",
+            json!({"sketch": "S", "from": live["start"], "to": [-1.0 * k, 4.0 * k]}),
+        );
+        constrain(
+            &mut s,
+            "distance",
+            json!([line["entity"]]),
+            Some(format!("{} mm", 5.0 * k)),
+        );
+        let made = constrain(
+            &mut s,
+            "tangent",
+            json!([live["entity"], line["entity"]]),
+            None,
+        );
+        assert_eq!(made["status"], "ok", "{made}");
+        near(
+            at(&mut s, &line["end"]),
+            [0.0, 5.0 * k],
+            k,
+            &format!("x{k}: square to the axis at the seam"),
+        );
+    }
 }

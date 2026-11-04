@@ -565,6 +565,55 @@ fn problem(
                 );
                 (number, Vec::new())
             }
+            Geometry::Interpolated { degree, through }
+                if through.len() > 2 && through.first() == through.last() =>
+            {
+                // Closed: periodic, smooth where it closes. The solver has
+                // it as the clamped spline it is, on `k + p` control points
+                // (the first and last the first point), through point `i`
+                // at `i / k`, and the seam's equations.
+                let p = usize::try_from(*degree)
+                    .map_err(|_| format!("{curve}: the degree is too high"))?;
+                let k = through.len() - 1;
+                let count = k + p;
+                let knots = craft3d_doc::clamped_uniform_knots(*degree, count);
+                let Some(first) = through.first().filter(|_| !knots.is_empty()) else {
+                    return Err(format!(
+                        "{curve}: no closed spline of degree {degree} passes through {} points",
+                        through.len()
+                    ));
+                };
+                let at: Option<Vec<[f64; 2]>> = through.iter().map(|id| stored_at(*id)).collect();
+                let guess = at
+                    .as_ref()
+                    .and_then(|at| curve_fit::interpolated(*degree, at).ok())
+                    .map(|fit| fit.control)
+                    .filter(|control| control.len() == count);
+                let seam = find(*first)?;
+                let mut control = vec![seam];
+                for i in 1..count - 1 {
+                    let [x, y] = guess
+                        .as_ref()
+                        .and_then(|g| g.get(i))
+                        .or_else(|| at.as_ref().and_then(|a| a.get(i % k)))
+                        .copied()
+                        .unwrap_or([0.0, 0.0]);
+                    let id = position(input.entities.len())?;
+                    input.entities.push(solve::Entity::Point { x, y });
+                    entities.push(curve);
+                    control.push(id);
+                }
+                control.push(seam);
+                let mut passes = Vec::new();
+                for i in 1..k {
+                    let point = through
+                        .get(i)
+                        .ok_or_else(|| format!("{curve}: a point is missing"))?;
+                    passes.push((find(*point)?, i as f64 / k as f64));
+                }
+                let number = input.add_closed_spline_through(p, knots, control.clone(), passes);
+                (number, control)
+            }
             Geometry::Interpolated { degree, through } => {
                 let p = usize::try_from(*degree)
                     .map_err(|_| format!("{curve}: the degree is too high"))?;
@@ -726,9 +775,11 @@ fn problem(
                         let start = ends_of(f).map(|(start, _)| start);
                         // At the seam of a closed curve the tangency is
                         // the curve's only where it leaves and arrives in
-                        // one direction: a formula that closes smoothly.
-                        // A live spline is clamped, its directions at the
-                        // seam its points' (refused); so is a corner.
+                        // one direction: a formula that closes smoothly,
+                        // or a closed live spline, which is periodic
+                        // (2026-11-04; before, it was clamped, its
+                        // directions at the seam its points', and refused).
+                        // A corner is refused.
                         let seam = |id: EntityId| ends_of(id).is_some_and(|(a, b)| a == b);
                         let ambiguous = |curve: EntityId| {
                             format!(
@@ -743,14 +794,12 @@ fn problem(
                                         .find(|(c, _)| *c == f)
                                         .and_then(|(_, fit)| fit.as_ref().ok())
                                         .is_some_and(|fit| closes_smoothly(&fit.spline.control)),
+                                    Geometry::Interpolated { .. } => true,
                                     _ => false,
                                 };
                             if !smooth {
                                 return Err(ambiguous(f));
                             }
-                        }
-                        if seam(o) && matches!(other, Geometry::Interpolated { .. }) {
-                            return Err(ambiguous(o));
                         }
                         let end = if start == Some(at_f) {
                             solve::SplineEnd::Start

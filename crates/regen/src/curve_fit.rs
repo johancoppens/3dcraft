@@ -251,6 +251,12 @@ pub fn polyline(spline: &Spline2, tolerance: f64) -> Vec<P2> {
 /// and last control points are the first and last points themselves.
 /// `sketch.spline {through}` fits a spline so once; a live spline
 /// (`craft3d_doc::Geometry::Interpolated`) at every regeneration.
+///
+/// Points whose last is their first, exactly, close the spline, and a
+/// closed spline is periodic ([`interpolate_closed`]): smooth all round,
+/// also where it closes, with `degree + 1` more control points than it
+/// has distinct points (2026-11-04: before, a closed spline was this open
+/// fit from the first point back to itself, which met itself at an angle).
 pub fn interpolate(degree: u32, through: &[(f64, f64)]) -> Result<Vec<(f64, f64)>, String> {
     let count = through.len();
     let knots = craft3d_doc::clamped_uniform_knots(degree, count);
@@ -265,6 +271,26 @@ pub fn interpolate(degree: u32, through: &[(f64, f64)]) -> Result<Vec<(f64, f64)
     if count > MAX_THROUGH_POINTS {
         return Err(format!(
             "a spline is fitted through at most {MAX_THROUGH_POINTS} points, got {count}; give control points instead"
+        ));
+    }
+    if closes(through) {
+        return interpolate_closed(p, through);
+    }
+    interpolate_open(degree, through)
+}
+
+/// [`interpolate`] without closing: points whose last is their first make
+/// a spline from the first point back to it, which leaves and reaches it
+/// in directions of their own (a closed spline before 2026-11-04, and
+/// `sketch.spline {closed, periodic: false}`).
+pub fn interpolate_open(degree: u32, through: &[(f64, f64)]) -> Result<Vec<(f64, f64)>, String> {
+    let count = through.len();
+    let knots = craft3d_doc::clamped_uniform_knots(degree, count);
+    let p = usize::try_from(degree).unwrap_or(usize::MAX);
+    if knots.is_empty() || count > MAX_THROUGH_POINTS {
+        return Err(format!(
+            "a spline of degree {degree} is fitted through from {} to {MAX_THROUGH_POINTS} points, got {count}",
+            p.saturating_add(1)
         ));
     }
     // One row per point: the basis functions at its parameter, and the
@@ -287,7 +313,27 @@ pub fn interpolate(degree: u32, through: &[(f64, f64)]) -> Result<Vec<(f64, f64)
         }
         rows.push((row, point.0, point.1));
     }
-    // Gaussian elimination with partial pivoting.
+    let mut control = solve_dense(rows)?;
+    // The ends are the end points exactly, not within rounding.
+    if let (Some(first), Some(point)) = (control.first_mut(), through.first()) {
+        *first = *point;
+    }
+    if let (Some(last), Some(point)) = (control.last_mut(), through.last()) {
+        *last = *point;
+    }
+    Ok(control)
+}
+
+/// Whether points close a spline: more than two, the last exactly the
+/// first.
+pub fn closes(points: &[(f64, f64)]) -> bool {
+    points.len() > 2 && points.first() == points.last()
+}
+
+/// The square system of `rows` (each the coefficients and the right-hand
+/// sides x and y) solved by Gaussian elimination with partial pivoting.
+fn solve_dense(mut rows: Vec<(Vec<f64>, f64, f64)>) -> Result<Vec<(f64, f64)>, String> {
+    let count = rows.len();
     for column in 0..count {
         let pivot = (column..count)
             .max_by(|&a, &b| {
@@ -318,11 +364,11 @@ pub fn interpolate(degree: u32, through: &[(f64, f64)]) -> Result<Vec<(f64, f64)
             row.2 -= factor * lead.2;
         }
     }
-    let mut control = vec![(0.0, 0.0); count];
+    let mut solved_all = vec![(0.0, 0.0); count];
     for i in (0..count).rev() {
         let (row, x, y) = rows.get(i).ok_or("a row is missing")?;
         let (mut x, mut y) = (*x, *y);
-        for (value, solved) in row.iter().zip(&control).skip(i + 1) {
+        for (value, solved) in row.iter().zip(&solved_all).skip(i + 1) {
             x -= value * solved.0;
             y -= value * solved.1;
         }
@@ -331,16 +377,205 @@ pub fn interpolate(degree: u32, through: &[(f64, f64)]) -> Result<Vec<(f64, f64)
         if !(solved.0.is_finite() && solved.1.is_finite()) {
             return Err("the points do not determine a spline of this degree".into());
         }
-        *control.get_mut(i).ok_or("a point is missing")? = solved;
+        *solved_all.get_mut(i).ok_or("a point is missing")? = solved;
     }
-    // The ends are the end points exactly, not within rounding.
+    Ok(solved_all)
+}
+
+/// A control point, with the index of the given point it is when it is
+/// one of them.
+pub type Labelled = ((f64, f64), Option<usize>);
+
+/// The knots of a periodic uniform spline of degree `p` with `k` control
+/// points, unclamped: `(j − p) / k` for `j` in `0 ..= k + 2p`, so that the
+/// curve's one turn is the parameters 0 to 1 (knots `p` to `k + p`), on
+/// `k + p` control points, the first `p` of them again at the end.
+fn periodic_knots(p: usize, k: usize) -> Vec<f64> {
+    let spans = k as f64;
+    (0..=k + 2 * p)
+        .map(|j| (j as f64 - p as f64) / spans)
+        .collect()
+}
+
+/// The control points of the periodic spline of degree `p` on uniform
+/// knots that passes through the `k` distinct points of `through` (whose
+/// last is its first), point `i` at the parameter `i / k`, written as the
+/// clamped spline it is (`craft3d_doc::clamped_uniform_knots`, `k + p`
+/// control points, the first and last the first point exactly): the
+/// curve is the same, `p − 1` times continuously differentiable also
+/// where it closes, as at every other knot.
+///
+/// The system is circulant. For an odd degree it is never singular (the
+/// Euler–Frobenius polynomial of an even order has no root on the unit
+/// circle); for an even degree it is singular when `k` is even, and
+/// refused so.
+pub fn interpolate_closed(p: usize, through: &[(f64, f64)]) -> Result<Vec<(f64, f64)>, String> {
+    let distinct = through
+        .get(..through.len().saturating_sub(1))
+        .ok_or("a closed spline needs points")?;
+    let k = distinct.len();
+    if p == 0 || p > craft3d_doc::MAX_SPLINE_DEGREE as usize || k < 2 {
+        return Err("a closed spline needs at least two places and a degree from 1 to 7".into());
+    }
+    if p.is_multiple_of(2) && k.is_multiple_of(2) {
+        return Err(format!(
+            "a closed spline of even degree {p} through an even number of places ({k}) is not determined by them; use an odd degree (3 is the usual), or an odd number of places"
+        ));
+    }
+    let knots = periodic_knots(p, k);
+    let wrapped = k + p;
+    let mut rows: Vec<(Vec<f64>, f64, f64)> = Vec::with_capacity(k);
+    for (i, point) in distinct.iter().enumerate() {
+        let u = i as f64 / k as f64;
+        let (span, values) = basis(p, &knots, wrapped, u).ok_or("the knots do not fit")?;
+        let first = span.checked_sub(p).ok_or("the knots do not fit")?;
+        let mut row = vec![0.0; k];
+        for (r, value) in values.iter().enumerate() {
+            let column = (first + r) % k;
+            *row.get_mut(column).ok_or("a column is missing")? += *value;
+        }
+        rows.push((row, point.0, point.1));
+    }
+    let periodic = solve_dense(rows)?;
+    let labelled: Vec<Labelled> = periodic.into_iter().map(|at| (at, None)).collect();
+    let mut control: Vec<(f64, f64)> = periodic_to_clamped(p, &labelled)?
+        .into_iter()
+        .map(|(at, _)| at)
+        .collect();
+    // The seam is the first point exactly, not within rounding.
     if let (Some(first), Some(point)) = (control.first_mut(), through.first()) {
         *first = *point;
     }
-    if let (Some(last), Some(point)) = (control.last_mut(), through.last()) {
+    if let (Some(last), Some(point)) = (control.last_mut(), through.first()) {
         *last = *point;
     }
     Ok(control)
+}
+
+/// The closed spline of degree `p` whose control polygon is `polygon`,
+/// closed (its last point back to its first is a leg too): the periodic
+/// uniform spline, written as the clamped spline it is, `k + p` control
+/// points of which the first and last are the point where it closes.
+/// Each control point that is one of the polygon's own carries its index
+/// (only near the seam are they new); the seam lies across the first
+/// point, between its neighbours.
+pub fn periodic_control(p: usize, polygon: &[(f64, f64)]) -> Result<Vec<Labelled>, String> {
+    let k = polygon.len();
+    if p == 0 || p > craft3d_doc::MAX_SPLINE_DEGREE as usize || k < 2 {
+        return Err(
+            "a closed spline needs at least two control points and a degree from 1 to 7".into(),
+        );
+    }
+    // Turned so the curve's start, which control points shift ..= shift + p
+    // hold, has the first point in their middle.
+    let shift = p / 2;
+    let labelled: Vec<Labelled> = (0..k)
+        .map(|j| {
+            let index = (j + k - shift % k) % k;
+            polygon
+                .get(index)
+                .map(|at| (*at, Some(index)))
+                .ok_or_else(|| "a control point is missing".to_string())
+        })
+        .collect::<Result<_, _>>()?;
+    let mut control = periodic_to_clamped(p, &labelled)?;
+    // The seam's one point, exactly the same at both ends.
+    if let (Some(first), Some(last)) = (control.first().copied(), control.last_mut()) {
+        *last = first;
+    }
+    Ok(control)
+}
+
+/// The periodic uniform spline of degree `p` on the `k` control points
+/// `periodic` (cyclic), as a clamped spline on uniform knots: its knots
+/// at 0 and 1 inserted until each is there `p` times (*The NURBS Book*,
+/// algorithm A5.1), which leaves the curve as it is and makes it pass
+/// through a control point there. `k + p` control points; a point kept
+/// as it was keeps its label, a new one has none.
+fn periodic_to_clamped(p: usize, periodic: &[Labelled]) -> Result<Vec<Labelled>, String> {
+    let k = periodic.len();
+    let mut knots = periodic_knots(p, k);
+    let mut control: Vec<Labelled> = (0..k + p)
+        .map(|j| {
+            periodic
+                .get(j % k)
+                .copied()
+                .ok_or("a control point is missing")
+        })
+        .collect::<Result<_, _>>()?;
+    for u in [0.0, 1.0] {
+        for _ in 1..p {
+            insert_knot(p, &mut knots, &mut control, u)?;
+        }
+    }
+    let first_zero = knots
+        .iter()
+        .position(|t| *t == 0.0)
+        .ok_or("the periodic knots have no 0")?;
+    let from = first_zero
+        .checked_sub(1)
+        .ok_or("the periodic knots start at 0")?;
+    control
+        .get(from..from + k + p)
+        .map(<[_]>::to_vec)
+        .ok_or_else(|| "the periodic spline has too few control points".to_string())
+}
+
+/// The control point before the `i`th.
+fn previous(control: &[Labelled], i: usize) -> Result<Labelled, String> {
+    i.checked_sub(1)
+        .and_then(|j| control.get(j))
+        .copied()
+        .ok_or_else(|| "a control point is missing".to_string())
+}
+
+/// Inserts the knot `u` once into the spline of degree `p` on `knots`
+/// and `control` (*The NURBS Book*, algorithm A5.1). `u` must lie inside
+/// the knots, strictly beyond the first `p` and before the last `p`.
+fn insert_knot(
+    p: usize,
+    knots: &mut Vec<f64>,
+    control: &mut Vec<Labelled>,
+    u: f64,
+) -> Result<(), String> {
+    // The span: the last knot not above u.
+    let span = knots
+        .iter()
+        .rposition(|t| *t <= u)
+        .ok_or("the knot to insert is before the knots")?;
+    let multiplicity = knots.iter().filter(|t| **t == u).count();
+    if span < p || span + 1 >= knots.len() || multiplicity >= p {
+        return Err("the knot cannot be inserted there".into());
+    }
+    let mut next = Vec::with_capacity(control.len() + 1);
+    for i in 0..=control.len() {
+        let at = if i + p <= span {
+            *control.get(i).ok_or("a control point is missing")?
+        } else if i + multiplicity <= span {
+            let (lo, hi) = (
+                *knots.get(i).ok_or("a knot is missing")?,
+                *knots.get(i + p).ok_or("a knot is missing")?,
+            );
+            let alpha = (u - lo) / (hi - lo);
+            let (a, b) = (
+                control.get(i).ok_or("a control point is missing")?.0,
+                previous(control, i)?.0,
+            );
+            (
+                (
+                    alpha * a.0 + (1.0 - alpha) * b.0,
+                    alpha * a.1 + (1.0 - alpha) * b.1,
+                ),
+                None,
+            )
+        } else {
+            previous(control, i)?
+        };
+        next.push(at);
+    }
+    knots.insert(span + 1, u);
+    *control = next;
+    Ok(())
 }
 
 /// The live spline of `degree` through `through` as the kernel takes it:
@@ -1226,5 +1461,139 @@ mod tests {
         // A power below one near zero changes faster than the step: free.
         let mut steep = |u: f64| Ok([u, (u + 1e-3).ppowf(0.5)]);
         assert_eq!(end_direction(&mut steep, 0.0, 1.0).unwrap(), None);
+    }
+
+    /// The derivatives of orders 1 to `degree − 1` of a clamped spline at
+    /// its start and at its end.
+    fn ends(spline: &Spline2) -> Vec<(P2, P2)> {
+        let mut out = Vec::new();
+        let mut d = spline.clone();
+        while let Some(next) = derivative(&d) {
+            let (lo, hi) = (next.knots[next.degree], next.knots[next.control.len()]);
+            out.push((point(&next, lo).unwrap(), point(&next, hi).unwrap()));
+            d = next;
+        }
+        out
+    }
+
+    /// A closed spline through points is periodic: for degrees 1 to 7
+    /// every derivative below the degree is the same where it starts and
+    /// where it ends (relative to its size, at three scales), it passes
+    /// through every point, its seam on the first, exactly.
+    #[test]
+    fn a_closed_spline_is_smooth_where_it_closes_at_every_odd_degree() {
+        for scale in [1e-3, 1.0, 1e6] {
+            for degree in [1_u32, 3, 5, 7] {
+                // An egg of nine places, not a circle.
+                let mut through: Vec<(f64, f64)> = (0..9)
+                    .map(|i| {
+                        let a = std::f64::consts::TAU * f64::from(i) / 9.0;
+                        (
+                            scale * (3.0 + 0.6 * a.pcos()) * a.pcos(),
+                            scale * 2.0 * a.psin(),
+                        )
+                    })
+                    .collect();
+                through.push(through[0]);
+                let spline = interpolated(
+                    degree,
+                    &through.iter().map(|p| [p.0, p.1]).collect::<Vec<_>>(),
+                )
+                .unwrap();
+                let p = degree as usize;
+                assert_eq!(spline.control.len(), 9 + p);
+                assert_eq!(spline.control[0], [through[0].0, through[0].1]);
+                assert_eq!(spline.control.last(), spline.control.first());
+                for (order, (start, end)) in ends(&spline).iter().enumerate() {
+                    if order + 1 >= p {
+                        break;
+                    }
+                    let size = start[0].phypot(start[1]).max(end[0].phypot(end[1]));
+                    let gap = (start[0] - end[0]).phypot(start[1] - end[1]);
+                    assert!(
+                        gap <= 1e-9 * size,
+                        "degree {degree}, order {}: {gap:e} of {size:e}",
+                        order + 1
+                    );
+                }
+                for (i, at) in through.iter().take(9).enumerate() {
+                    let got = point(&spline, i as f64 / 9.0).unwrap();
+                    let off = (got[0] - at.0).phypot(got[1] - at.1);
+                    assert!(
+                        off <= 1e-12 * scale * 4.0,
+                        "degree {degree}: point {i} off by {off:e}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// An even degree through an odd number of places is determined and
+    /// periodic; through an even number it is refused, never a guess.
+    #[test]
+    fn an_even_degree_closes_through_an_odd_number_of_places() {
+        let ring = |n: usize| -> Vec<(f64, f64)> {
+            let mut points: Vec<(f64, f64)> = (0..n)
+                .map(|i| {
+                    let a = std::f64::consts::TAU * i as f64 / n as f64;
+                    (a.pcos(), a.psin())
+                })
+                .collect();
+            points.push(points[0]);
+            points
+        };
+        for degree in [2_u32, 4, 6] {
+            let control = interpolate(degree, &ring(9)).unwrap();
+            assert_eq!(control.len(), 9 + degree as usize);
+            let why = interpolate(degree, &ring(8)).unwrap_err();
+            assert!(why.contains("even number"), "{why}");
+        }
+    }
+
+    /// The control polygon of a closed spline on control points: the
+    /// periodic spline written as a clamped one, the polygon's own points
+    /// away from the seam kept and labelled, and the curve the uniform
+    /// B-spline's (at a knot, (P[i−1] + 4 P[i] + P[i+1]) / 6 for a cubic).
+    #[test]
+    fn a_closed_control_polygon_makes_the_periodic_spline() {
+        let polygon = [
+            (4.0, -4.0),
+            (4.0, 4.0),
+            (-4.0, 4.0),
+            (-4.0, -4.0),
+            (2.0, -6.0),
+            (0.0, -7.0),
+        ];
+        let made = periodic_control(3, &polygon).unwrap();
+        assert_eq!(made.len(), polygon.len() + 3);
+        let spline = Spline2 {
+            degree: 3,
+            knots: craft3d_doc::clamped_uniform_knots(3, made.len()),
+            control: made.iter().map(|(at, _)| [at.0, at.1]).collect(),
+        };
+        let k = polygon.len();
+        for i in 0..k {
+            let (a, b, c) = (polygon[(i + k - 1) % k], polygon[i], polygon[(i + 1) % k]);
+            let want = [(a.0 + 4.0 * b.0 + c.0) / 6.0, (a.1 + 4.0 * b.1 + c.1) / 6.0];
+            let got = point(&spline, i as f64 / k as f64).unwrap();
+            assert!(
+                (got[0] - want[0]).phypot(got[1] - want[1]) <= 1e-12,
+                "{i}: {got:?} {want:?}"
+            );
+        }
+        let kept: Vec<usize> = made.iter().filter_map(|(_, label)| *label).collect();
+        assert!(kept.len() >= k - 2, "{kept:?}");
+        for (at, label) in &made {
+            if let Some(i) = label {
+                assert_eq!(*at, polygon[*i]);
+            }
+        }
+        for (start, end) in ends(&spline).iter().take(2) {
+            assert!(
+                (start[0] - end[0]).phypot(start[1] - end[1]) <= 1e-9 * start[0].phypot(start[1])
+            );
+        }
+        assert!(periodic_control(3, &polygon[..1]).is_err());
+        assert!(periodic_control(0, &polygon).is_err());
     }
 }

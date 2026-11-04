@@ -535,7 +535,12 @@ pub enum Geometry {
     /// (on clamped uniform knots, each point at the Greville abscissa of
     /// its control point, as `sketch.spline {through}` fits once). It has
     /// no unknowns of its own: the points shape it, also points held by
-    /// formulas. With the first point also as the last it closes.
+    /// formulas. With the first point also as the last it closes, and is
+    /// periodic: smooth where it closes as everywhere else, point `i` of
+    /// the `k` distinct ones at `i / k` on uniform knots, written as a
+    /// clamped spline of `k + degree` control points (since 2026-11-04;
+    /// before, a closed one was the open fit back to its first point, with
+    /// a corner there, and a saved one now rebuilds smooth).
     Interpolated {
         degree: u32,
         through: Vec<EntityId>,

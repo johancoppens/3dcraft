@@ -21,6 +21,7 @@ const SMALL_ARC: &str = "an arc smaller than the linear tolerance has no tangent
 const STALLED_SPLINE: &str =
     "a spline that stands still where the point is nearest to it has no direction there";
 const STALLED_END: &str = "a spline that stands still at its end has no direction there";
+const SEAM: &str = "the knots of a closed spline do not give it a derivative where it closes";
 /// A line, circle or arc touching a spline anywhere is one equation in
 /// the curve's unknowns and those of the `degree + 1` control points that
 /// count where they touch: more than [`SLOTS`] from degree 7 on when the
@@ -397,6 +398,15 @@ pub(crate) enum Equation {
     /// A built-in equation of a spline through a point: two rows,
     /// `C(u) - p`.
     SplineThrough { p: Pt, spline: usize, u: f64 },
+    /// A built-in equation of a periodic spline ([`crate::model::Spline::periodic`]):
+    /// one row, the `order`th derivative at its start less that at its
+    /// end, along `axis`, scaled to a length (divided by its largest
+    /// weight).
+    SplineSeam {
+        spline: usize,
+        order: usize,
+        axis: Axis,
+    },
     /// A line tangent to a spline: at an end (`Some(u)`, that end's
     /// parameter), the sine of the angle between the line and the
     /// spline's direction there; else the signed distance from the line
@@ -691,6 +701,55 @@ impl<'a> Ctx<'a> {
         Ok([cx - px, cy - py])
     }
 
+    /// The row of [`Equation::SplineSeam`]: one coordinate of the
+    /// `order`th derivative at the start less that at the end. Only that
+    /// coordinate of each control point takes a slot.
+    fn spline_seam(&mut self, spline: usize, order: usize, axis: Axis) -> Result<Dual, Fail> {
+        let splines = self.splines;
+        let s = splines.get(spline).ok_or(Fail::NonFinite)?;
+        let n = s.control.len();
+        let (start, end) = crate::spline::seam_weights(&s.knots, s.degree, n, order)
+            .ok_or(Fail::Degenerate(SEAM))?;
+        let scale = start
+            .iter()
+            .chain(&end)
+            .fold(0.0_f64, |m, w| m.max(w.abs()));
+        if !(scale.is_finite() && scale > 0.0) {
+            return Err(Fail::Degenerate(SEAM));
+        }
+        let from_end = n.checked_sub(order + 1).ok_or(Fail::Degenerate(SEAM))?;
+        let terms = start
+            .iter()
+            .enumerate()
+            .map(|(j, w)| (j, *w))
+            .chain(end.iter().enumerate().map(|(j, w)| (from_end + j, -*w)));
+        let mut row = Dual::constant(0.0);
+        for (index, weight) in terms {
+            if weight == 0.0 {
+                continue;
+            }
+            let control = *s.control.get(index).ok_or(Fail::NonFinite)?;
+            let value = match control {
+                Pt::Own(i) => {
+                    let offset = match axis {
+                        Axis::X => 0,
+                        Axis::Y => 1,
+                    };
+                    self.var(i.checked_add(offset).ok_or(Fail::NonFinite)?)?
+                }
+                other => {
+                    let [x, y] = self.pt(other)?;
+                    match axis {
+                        Axis::X => x,
+                        Axis::Y => y,
+                    }
+                }
+            };
+            row = row + value * Dual::constant(weight / scale);
+        }
+        Ok(row)
+    }
+
     /// [`TOUCH_TOO_HIGH`] when a curve with `own` unknowns touching
     /// spline `s` anywhere would need more slots than one equation has.
     fn touch_fits(s: &SplineVars, own: usize) -> Result<(), Fail> {
@@ -922,6 +981,11 @@ impl<'a> Ctx<'a> {
             } => one(self.radius(round)? * factor - value),
             Equation::ArcClosure { c, s, e } => one(self.distance(c, s)? - self.distance(c, e)?),
             Equation::SplineThrough { p, spline, u } => (2, self.spline_through(p, spline, u)?),
+            Equation::SplineSeam {
+                spline,
+                order,
+                axis,
+            } => one(self.spline_seam(spline, order, axis)?),
             Equation::TangentSplineLine { line, spline, end } => {
                 one(self.tangent_spline_line(line, spline, end)?)
             }
@@ -1706,6 +1770,27 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
                 at,
             ));
         }
+        if spline.periodic {
+            // Smooth where it closes: each derivative below the degree
+            // the same at both ends, one row per coordinate.
+            if spline.control.first() != spline.control.last() {
+                return Err(invalid(
+                    "a periodic spline starts and ends on the same control point",
+                ));
+            }
+            for order in 1..spline.degree {
+                for axis in [Axis::X, Axis::Y] {
+                    throughs.push((
+                        Equation::SplineSeam {
+                            spline: number,
+                            order,
+                            axis,
+                        },
+                        Site::Entity(first),
+                    ));
+                }
+            }
+        }
         splines.push(vars);
     }
     builder.splines = splines;
@@ -2384,6 +2469,87 @@ mod tests {
                         "degree {degree} {target:?} unknown {i}: {} against {want}",
                         gradient[i]
                     );
+                }
+            }
+        }
+    }
+
+    /// The seam of a periodic spline: the weights of its derivatives at
+    /// the ends in closed form (a cubic on uniform clamped knots of `s`
+    /// spans leaves its start at `3 s (Q1 − Q0)`), and the rows of
+    /// [`Equation::SplineSeam`], one coordinate each, with the gradients
+    /// of their central differences and only that coordinate's slots.
+    #[test]
+    fn the_seam_of_a_periodic_spline_has_exact_rows() {
+        let control = [
+            [0.0, 0.0],
+            [1.0, 2.0],
+            [2.5, -1.0],
+            [4.0, 3.0],
+            [5.0, 0.5],
+            [6.5, 1.0],
+            [8.0, 0.0],
+            [9.0, 2.0],
+            [11.0, 1.0],
+        ];
+        let count = control.len();
+        let knots_of = |degree: usize| {
+            let spans = count - degree;
+            let mut knots = vec![0.0; degree + 1];
+            knots.extend((1..spans).map(|i| i as f64 / spans as f64));
+            knots.extend(vec![1.0; degree + 1]);
+            knots
+        };
+        let (start, end) = crate::spline::seam_weights(&knots_of(3), 3, count, 1).unwrap();
+        let s = (count - 3) as f64;
+        for (got, want) in start
+            .iter()
+            .chain(&end)
+            .zip([-3.0 * s, 3.0 * s, -3.0 * s, 3.0 * s])
+        {
+            assert!((got - want).abs() <= 1e-12 * s, "{start:?} {end:?}");
+        }
+        assert!(crate::spline::seam_weights(&knots_of(3), 3, count, 0).is_none());
+        assert!(crate::spline::seam_weights(&knots_of(3), 3, count, 4).is_none());
+        for degree in 2..=crate::spline::MAX_SPLINE_DEGREE {
+            let splines = [SplineVars {
+                degree,
+                knots: knots_of(degree),
+                control: (0..count).map(|i| Pt::Own(2 * i)).collect(),
+            }];
+            let x: Vec<f64> = control.iter().flatten().copied().collect();
+            for order in 1..degree {
+                for axis in [Axis::X, Axis::Y] {
+                    let eq = Equation::SplineSeam {
+                        spline: 0,
+                        order,
+                        axis,
+                    };
+                    let e = eq.eval_with(&x, 1e-9, &splines, &[]).unwrap();
+                    assert_eq!(e.count, 1);
+                    assert!(
+                        e.used <= 2 * (order + 1),
+                        "degree {degree} order {order}: {}",
+                        e.used
+                    );
+                    let mut gradient = vec![0.0; x.len()];
+                    for slot in 0..e.used {
+                        gradient[e.slots[slot]] += e.rows[0].d[slot];
+                    }
+                    let h = 1e-6;
+                    for i in 0..x.len() {
+                        let (mut lo, mut hi) = (x.clone(), x.clone());
+                        lo[i] -= h;
+                        hi[i] += h;
+                        let want = (eq.eval_with(&hi, 1e-9, &splines, &[]).unwrap().rows[0].v
+                            - eq.eval_with(&lo, 1e-9, &splines, &[]).unwrap().rows[0].v)
+                            / (2.0 * h);
+                        assert!(
+                            (gradient[i] - want).abs() < 1e-6,
+                            "degree {degree} order {order} unknown {i}: {} against {want}",
+                            gradient[i]
+                        );
+                    }
                 }
             }
         }
