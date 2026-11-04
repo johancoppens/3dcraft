@@ -116,6 +116,17 @@ pub const GPU_MOVING_PIXELS: u64 = 400_000;
 /// The product's name, as the window's title ends with it.
 pub const PRODUCT: &str = "3DCraft";
 
+/// `name` cut to `most` characters, with an ellipsis when it was longer.
+fn short_name(name: &str, most: usize) -> String {
+    if name.chars().count() <= most {
+        name.to_string()
+    } else {
+        let mut out: String = name.chars().take(most.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
+
 /// What the File menu and its shortcuts ask for. The shell only asks: the
 /// host runs the command, after showing its file dialog where one is
 /// needed (`file.new`, `file.open`, `file.save`, `file.import`,
@@ -829,6 +840,8 @@ pub struct Shell {
     last_tap: Option<(f64, egui::Pos2)>,
     /// Where the drawer's button was drawn, in the narrow layout.
     drawer_button: Option<egui::Rect>,
+    /// The narrow layout's ⋯ (File, Edit, View, Help), as last drawn.
+    more_menu: Option<egui::Rect>,
     /// Two fingers were on the viewport: the finger left on it does not
     /// turn the camera until it is lifted.
     touch_gesture: bool,
@@ -1372,6 +1385,7 @@ impl Shell {
             last_touch: f64::NEG_INFINITY,
             last_tap: None,
             drawer_button: None,
+            more_menu: None,
             touch_gesture: false,
             player_shown: false,
             player_hits: Vec::new(),
@@ -2737,7 +2751,10 @@ impl Shell {
             self.recovery_hits.clear();
             self.discard_armed = None;
         }
-        if self.tabs.is_empty() {
+        if self.narrow && !self.tabs.is_empty() {
+            // The top bar names the document and lists the others (its
+            // ▾): no tab row on a phone or a tablet (boards m2, t1).
+        } else if self.tabs.is_empty() {
             self.tab_hits.clear();
         } else {
             egui::Panel::top("craft3d-tabs")
@@ -2948,15 +2965,30 @@ impl Shell {
                     side * self.tokens.drawer_icon_width,
                     side * self.tokens.drawer_icon_gap,
                 );
-                for k in [-1.0, 0.0, 1.0] {
-                    let y = rect.center().y + k * gap;
-                    ui.painter().line_segment(
-                        [
-                            egui::pos2(rect.center().x - w * 0.5, y),
-                            egui::pos2(rect.center().x + w * 0.5, y),
-                        ],
-                        egui::Stroke::new(self.tokens.nav_icon_width, ink),
-                    );
+                if open {
+                    // Open: a ✕ that closes it (board t1).
+                    let r = w * 0.4;
+                    let c = rect.center();
+                    for (a, b) in [
+                        (egui::vec2(-r, -r), egui::vec2(r, r)),
+                        (egui::vec2(-r, r), egui::vec2(r, -r)),
+                    ] {
+                        ui.painter().line_segment(
+                            [c + a, c + b],
+                            egui::Stroke::new(self.tokens.nav_icon_width, ink),
+                        );
+                    }
+                } else {
+                    for k in [-1.0, 0.0, 1.0] {
+                        let y = rect.center().y + k * gap;
+                        ui.painter().line_segment(
+                            [
+                                egui::pos2(rect.center().x - w * 0.5, y),
+                                egui::pos2(rect.center().x + w * 0.5, y),
+                            ],
+                            egui::Stroke::new(self.tokens.nav_icon_width, ink),
+                        );
+                    }
                 }
                 let response = response.on_hover_text(if open {
                     "Close the features panel"
@@ -2969,7 +3001,64 @@ impl Shell {
                 }
                 self.drawer_button = Some(rect);
             }
-            self.menus(ui, status);
+            if self.narrow && !self.tabs.is_empty() {
+                // The phone's and the tablet's top bar (boards m2, t1): the
+                // document's name with its menu of the open documents
+                // (the tab row's All), and ⋯ with File, Edit, View, Help.
+                let tokens = self.tokens;
+                let name = self
+                    .active_tab()
+                    .and_then(|at| self.tabs.get(at))
+                    .map_or_else(|| PRODUCT.to_string(), |tab| tab.name.clone());
+                // The chevron and the ⋯ are the kit's line icons, painted
+                // over room kept for them in the titles (the text font
+                // has neither).
+                let ink = color(tokens.chrome_text);
+                let side = tokens.nav_icon_size * 0.75;
+                let (documents, _) = menus::kit_menu(
+                    ui,
+                    &tokens,
+                    &format!("{}      ", short_name(&name, 28)),
+                    tokens.menu_width,
+                    |kit, ui| self.menu_documents(ui, kit),
+                );
+                crate::kit::glyphs::paint(
+                    ui.painter(),
+                    crate::kit::Glyph::ChevronDown,
+                    egui::Rect::from_center_size(
+                        egui::pos2(documents.right() - side, documents.center().y),
+                        egui::vec2(side, side),
+                    ),
+                    ink,
+                    &tokens,
+                );
+                self.tab_hits = vec![(tabs::TabPart::All, documents)];
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let (more, _) = menus::kit_menu(
+                        ui,
+                        &tokens,
+                        "      ",
+                        tokens.menu_widths[0] * 0.6,
+                        |_, ui| {
+                            self.menus(ui, status);
+                        },
+                    );
+                    crate::kit::glyphs::paint(
+                        ui.painter(),
+                        crate::kit::Glyph::More,
+                        egui::Rect::from_center_size(
+                            more.center(),
+                            egui::vec2(tokens.nav_icon_size, tokens.nav_icon_size),
+                        ),
+                        ink,
+                        &tokens,
+                    );
+                    self.more_menu = Some(more);
+                });
+            } else {
+                self.more_menu = None;
+                self.menus(ui, status);
+            }
         });
     }
 
@@ -3557,6 +3646,11 @@ impl Shell {
     /// Where the drawer's button is in the menu bar, in the narrow layout.
     pub fn drawer_button_rect(&self) -> Option<egui::Rect> {
         self.drawer_button
+    }
+
+    /// Where the narrow layout's ⋯ (the menus) is in the top bar.
+    pub fn more_menu_rect(&self) -> Option<egui::Rect> {
+        self.more_menu
     }
 
     /// The side panel as a drawer over the viewport, from its left edge,

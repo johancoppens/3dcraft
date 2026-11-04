@@ -91,6 +91,7 @@ fn connected() -> AgentsStatus {
             last_command: Some("feature.fillet".to_string()),
             last_ms: 1_000,
             cwd: None,
+            key: None,
         }],
         work_folder: Some("/home/me/Documents/3DCraft".to_string()),
         document_folder: true,

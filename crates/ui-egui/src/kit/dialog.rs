@@ -279,7 +279,11 @@ impl Kit {
             let (rect, _) = ui.allocate_exact_size(
                 sane(vec2(
                     label_width,
-                    galley.size().y.max(self.t.label_row_height),
+                    galley
+                        .size()
+                        .y
+                        .max(self.t.label_row_height)
+                        .max(self.t.control_height),
                 )),
                 Sense::hover(),
             );

@@ -1238,10 +1238,14 @@ impl Shell {
         let mut hits = Vec::new();
         let sheet = self.narrow();
         let panel = self.popover(ui, "analysis-options", popover, place, |shell, ui| {
-            analysis_options(ui, &tokens, &mut shell.state.analysis, &mut hits, sheet);
-            if let Some(view) = legend.as_deref() {
-                analysis_legend(ui, view, &tokens);
-            }
+            analysis_options(
+                ui,
+                &tokens,
+                &mut shell.state.analysis,
+                &mut hits,
+                sheet,
+                legend.as_deref(),
+            );
             if let Some(problem) = &problem {
                 ui.add(
                     egui::Label::new(
@@ -1536,6 +1540,7 @@ fn analysis_options(
     a: &mut crate::state::AnalysisState,
     hits: &mut Vec<(String, Rect)>,
     sheet: bool,
+    legend: Option<&crate::viewport::ViewAnalysis>,
 ) {
     let kit = crate::kit::Kit::plate(tokens);
     let t = kit.t;
@@ -1710,6 +1715,10 @@ fn analysis_options(
             );
         }
         _ => {}
+    }
+    // The map's key under its options (board s1).
+    if let Some(view) = legend {
+        analysis_legend(ui, view, tokens);
     }
     ui.add_space(t.nav_spacing);
     kit.section_header(ui, "Combs");

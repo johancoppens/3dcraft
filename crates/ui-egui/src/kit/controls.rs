@@ -123,7 +123,12 @@ impl Kit {
             ButtonKind::Primary => self.medium_font(ui),
             _ => self.font(),
         };
-        let pad = t.field_inset;
+        // A link is text: it starts where the text beside it starts.
+        let pad = if button.kind == ButtonKind::Link {
+            0.0
+        } else {
+            t.field_inset
+        };
         let icon = button.icon.map(|_| t.nav_icon_size + t.nav_icon_gap);
         let (ink, fill, stroke) = if !button.enabled {
             (s.faint, None, Some(s.field_stroke))

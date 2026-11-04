@@ -42,14 +42,22 @@ pub(super) fn kit_menu<R>(
             egui::containers::menu::menu_style(style);
             style.visuals = tokens.menu_visuals();
         });
-    let (response, inner) = egui::containers::menu::MenuButton::new(title)
-        .config(config)
-        .ui(ui, |ui| {
-            let kit = Kit::plate(&tokens);
-            ui.spacing_mut().item_spacing.y = 0.0;
-            ui.set_width(width);
-            add(&kit, ui)
-        });
+    let content = |ui: &mut egui::Ui| {
+        let kit = Kit::plate(&tokens);
+        ui.spacing_mut().item_spacing.y = 0.0;
+        ui.set_width(width);
+        add(&kit, ui)
+    };
+    // Inside another menu (the phone's ⋯) a submenu that opens beside it.
+    let (response, inner) = if egui::containers::menu::is_in_menu(ui) {
+        egui::containers::menu::SubMenuButton::from_button(egui::Button::new(title).right_text("›"))
+            .config(config)
+            .ui(ui, content)
+    } else {
+        egui::containers::menu::MenuButton::new(title)
+            .config(config)
+            .ui(ui, content)
+    };
     (response.rect, inner.map(|i| i.inner))
 }
 

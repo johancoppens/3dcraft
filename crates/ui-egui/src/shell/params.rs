@@ -677,6 +677,8 @@ pub struct ParamForm {
     hits: Vec<(String, egui::Rect)>,
     /// Where the last frame drew Back to last good over the viewport.
     banner_hit: Option<egui::Rect>,
+    /// The form is drawn in the phone's half sheet (it has no tab row).
+    in_sheet: bool,
 }
 
 impl ParamForm {
@@ -1425,9 +1427,11 @@ impl Shell {
                         ui.set_width((place.width() - 2.0 * pad).max(0.0));
                         ui.set_height((place.height() - 2.0 * pad).max(0.0));
                         crate::kit::Kit::panel(&tokens).grabber(ui);
-                        // The tab's own header says Parameters; its
-                        // fields scroll under it.
+                        // The sheet has no tab row: the form's header
+                        // says Parameters; its fields scroll under it.
+                        self.params.in_sheet = true;
                         self.parameters_tab(ui);
+                        self.params.in_sheet = false;
                     });
             });
         self.params_sheet_rect = Some(shown.response.rect.intersect(place));
@@ -1541,7 +1545,7 @@ impl Shell {
         let room = crate::shell::side_inset(&tokens);
         // On a phone's half sheet (board m8) the header names the form:
         // the sheet has no tab row.
-        let compact = self.narrow();
+        let compact = self.params.in_sheet;
         ui.scope(|ui| {
             ui.set_max_width((ui.available_width() - f32::from(room)).max(40.0));
             self.parameters_header(ui, &list, compact);

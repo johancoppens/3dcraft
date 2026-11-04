@@ -370,7 +370,7 @@ impl Shell {
     }
 
     /// The active tab, by its place in the row.
-    fn active_tab(&self) -> Option<usize> {
+    pub(super) fn active_tab(&self) -> Option<usize> {
         self.tabs.iter().position(|tab| tab.active)
     }
 
