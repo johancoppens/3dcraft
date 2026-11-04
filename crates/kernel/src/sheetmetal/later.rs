@@ -66,6 +66,9 @@ fn flat_point(part: &Part, role: SheetFace, level: usize, p: Vec3) -> Option<(P2
             let at = if level == 0 { 0.0 } else { t };
             Some(([q.x, q.y], (q.z - at).abs()))
         }
+        // A curved flange's pattern is approximated: a later cut through
+        // it has no one place in the flat (not carried back).
+        SheetFace::CurvedBend(_) | SheetFace::CurvedFlat(_) => None,
         SheetFace::Bend(n) | SheetFace::BendPiece(n, _) => {
             let b = part.bends.get(n)?;
             let q = part.flats.get(b.parent)?.transform.inverse()?.point(local);
@@ -229,6 +232,11 @@ fn new_edges(
         own.push(line(b.start, b.end));
         own.push(line(a0, a1));
     }
+    // A curved flange's tangent lines: the base's arc and the strip's far
+    // arc (or circles).
+    for c in &part.curved {
+        own.extend(c.tangent_lines());
+    }
     let on_own = |p: P2| own.iter().any(|s| s.distance_to(p, tol) <= 2.0 * tol);
     let mut out: [Vec<Segment>; 2] = [Vec::new(), Vec::new()];
     for face in &body.faces {
@@ -260,6 +268,8 @@ fn new_edges(
         let cell = |r: SheetFace| match r {
             SheetFace::Flat(i) | SheetFace::FlatPiece(i, _) => (0, i),
             SheetFace::Bend(i) | SheetFace::BendPiece(i, _) => (1, i),
+            SheetFace::CurvedBend(i) => (2, i),
+            SheetFace::CurvedFlat(i) => (3, i),
         };
         let Some(&(level, first)) = skins.first() else {
             continue;
@@ -278,6 +288,13 @@ fn new_edges(
             return Err(refuse(
                 "a face of the part's skin lies on the surface of skins of different flats, bends or sides, so the later cuts through it cannot be laid flat one way".to_string(),
             ));
+        }
+        // A curved flange's skins have no one place in the flat (its
+        // pattern is approximated): their own edges are passed over, and
+        // an edge of a later feature on one is refused, naming the flange.
+        if let SheetFace::CurvedBend(c) | SheetFace::CurvedFlat(c) = role {
+            curved_skin_untouched(part, body, face, c, tol)?;
+            continue;
         }
         for l in &face.loops {
             let Some(lp) = body.loop_(*l) else { continue };
@@ -546,4 +563,53 @@ pub fn later_cuts(
         }
     }
     Ok(found)
+}
+
+/// Every edge of `face` (a later body's face on a skin of curved flange
+/// `c`) is one of the part's own: three points of it (a quarter, half and
+/// three quarters along) lie within twice the tolerance of an edge of the
+/// part's solid, inside that edge's box. Otherwise a later feature cut
+/// the curved flange, whose pattern is approximated, so the cut has no one
+/// place in the flat: refused, naming the flange.
+fn curved_skin_untouched(
+    part: &Part,
+    body: &craft3d_topo::Body,
+    face: &craft3d_topo::Face,
+    c: usize,
+    tol: f64,
+) -> Result<(), KernelError> {
+    let own = &part.solid.body;
+    let on_own = |p: Vec3| {
+        own.edges.iter().any(|e| {
+            let Ok(t) = e.curve.project(p) else {
+                return false;
+            };
+            let q = e.curve.eval(t);
+            let (a, b) = (e.curve.eval(e.range.0), e.curve.eval(e.range.1));
+            (q.distance(p) <= 2.0 * tol
+                && [t, t + std::f64::consts::TAU, t - std::f64::consts::TAU]
+                    .iter()
+                    .any(|t| (e.range.0 - 1e-12..=e.range.1 + 1e-12).contains(t)))
+                || [a, b].iter().any(|x| x.distance(p) <= 2.0 * tol)
+        })
+    };
+    for l in &face.loops {
+        let Some(lp) = body.loop_(*l) else { continue };
+        for co in &lp.coedges {
+            let Some(edge) = body.edge(co.edge) else {
+                continue;
+            };
+            let (t0, t1) = edge.range;
+            let own_edge = [0.25, 0.5, 0.75]
+                .iter()
+                .all(|f| on_own(edge.curve.eval(t0 + (t1 - t0) * f)));
+            if !own_edge {
+                let id = part.curved.get(c).map_or(0, |x| x.id);
+                return Err(refuse(format!(
+                    "a later feature cuts curved flange {id} (curvedFlanges.{c}), whose flat pattern is approximated (a curved bend is not developable): the cut has no one place in the flat, so it cannot be carried back; cut it in the part's own sketch, or keep later cuts off the curved flange"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
