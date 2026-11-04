@@ -394,6 +394,10 @@ pub struct AgentSetup {
     pub cli_prefix: Vec<String>,
     /// Quote command lines for Windows (`"…"`) rather than a POSIX shell.
     pub windows: bool,
+    /// The window's own port and token file, when it was started with
+    /// `--control PORT` (`--control-token-file FILE`): such a window is not
+    /// announced for discovery, so the bridge is told where it is.
+    pub window: Option<(u16, String)>,
 }
 
 impl Default for AgentSetup {
@@ -402,6 +406,7 @@ impl Default for AgentSetup {
             cli: "craft3d-cli".to_string(),
             cli_prefix: Vec::new(),
             windows: cfg!(windows),
+            window: None,
         }
     }
 }
@@ -493,6 +498,13 @@ impl AgentSetup {
     fn args(&self) -> Vec<String> {
         let mut args = self.cli_prefix.clone();
         args.extend(["mcp".to_string(), "--bridge".to_string()]);
+        if let Some((port, token_file)) = &self.window {
+            args.extend([
+                port.to_string(),
+                "--control-token-file".to_string(),
+                token_file.clone(),
+            ]);
+        }
         args
     }
 
@@ -1193,6 +1205,36 @@ mod tests {
         assert_eq!(super::example("nope"), None);
     }
 
+    /// A window started with `--control PORT --control-token-file FILE`
+    /// is not announced for discovery: what is copied names its port and
+    /// the token file (the path, never the token), so the bridge reaches
+    /// that window instead of saying "switch on Allow AI agents"
+    /// (2026-11-04, the end-to-end user test).
+    #[test]
+    fn the_copied_command_names_a_window_started_on_its_own_port() {
+        let setup = AgentSetup {
+            cli: "/opt/3dcraft/craft3d-cli".to_string(),
+            cli_prefix: Vec::new(),
+            windows: false,
+            window: Some((7911, "/home/me/my token".to_string())),
+        };
+        let config: Value = serde_json::from_str(&setup.mcp_config()).unwrap();
+        assert_eq!(
+            config["mcpServers"]["3dcraft"]["args"],
+            json!([
+                "mcp",
+                "--bridge",
+                "7911",
+                "--control-token-file",
+                "/home/me/my token"
+            ])
+        );
+        assert_eq!(
+            setup.claude_command(),
+            "claude mcp add 3dcraft -- /opt/3dcraft/craft3d-cli mcp --bridge 7911 --control-token-file '/home/me/my token'"
+        );
+    }
+
     /// What is copied names the bridge only: no port and no token
     /// (2026-11-02: the bridge finds the window and its token itself).
     #[test]
@@ -1201,6 +1243,7 @@ mod tests {
             cli: "/opt/3dcraft/craft3d-cli".to_string(),
             cli_prefix: Vec::new(),
             windows: false,
+            window: None,
         };
         let config: Value = serde_json::from_str(&setup.mcp_config()).unwrap();
         assert_eq!(
@@ -1223,6 +1266,7 @@ mod tests {
             cli: r#"C:\3D "Craft"\craft3d-cli.exe"#.to_string(),
             cli_prefix: Vec::new(),
             windows: true,
+            window: None,
         };
         let config: Value = serde_json::from_str(&odd.mcp_config()).unwrap();
         assert_eq!(
@@ -1234,6 +1278,7 @@ mod tests {
             cli: "/home/me/Apps/3DCraft-0.1.0-x86_64.AppImage".to_string(),
             cli_prefix: vec!["cli".to_string()],
             windows: false,
+            window: None,
         };
         let config: Value = serde_json::from_str(&appimage.mcp_config()).unwrap();
         assert_eq!(
@@ -1265,6 +1310,7 @@ mod tests {
             cli: r"C:\Program Files\3DCraft\craft3d-cli.exe".to_string(),
             cli_prefix: Vec::new(),
             windows: true,
+            window: None,
         };
         assert_eq!(
             windows.claude_command(),
@@ -1274,6 +1320,7 @@ mod tests {
             cli: "/opt/3D Craft/craft3d-cli".to_string(),
             cli_prefix: Vec::new(),
             windows: false,
+            window: None,
         };
         assert_eq!(
             posix.claude_command(),

@@ -551,6 +551,11 @@ fn control_call_tool(extension: &Extension<'_>) -> Value {
             method.name, method.params, method.summary
         ));
     }
+    if extension.methods.is_empty() {
+        description.push_str(
+            "\n(listed here when the window runs; it was not running when this list was made: ui.get, ui.pick, ui.highlight, ui.select and ui.screenshot are the usual ones, docs/control-protocol.md has them all)",
+        );
+    }
     json!({
         "name": WINDOW_TOOL,
         "description": description,

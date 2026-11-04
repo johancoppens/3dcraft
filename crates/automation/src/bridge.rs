@@ -150,18 +150,19 @@ impl Bridge {
 
     /// Passes one MCP message on; a window that went away is forgotten
     /// and, when discovered, looked for again once.
-    fn exchange(&mut self, line: &str) -> Result<Option<String>, String> {
-        let target = self.target()?;
+    fn exchange(&mut self, line: &str) -> Result<Option<String>, Failure> {
+        // No window found to talk to is a window not reachable too.
+        let target = self.target().map_err(Failure::Unreachable)?;
         let result = match exchange(&self.config, &target, line) {
             Err(Failure::Unreachable(why)) => {
                 let discovering = matches!(self.config.window, Window::Discover { .. });
                 if !discovering || self.chosen.take().is_none() {
-                    return Err(why);
+                    return Err(Failure::Unreachable(why));
                 }
-                let again = self.target()?;
-                exchange(&self.config, &again, line).map_err(Failure::text)
+                let again = self.target().map_err(Failure::Unreachable)?;
+                exchange(&self.config, &again, line)
             }
-            other => other.map_err(Failure::text),
+            other => other,
         };
         if result.is_ok() {
             self.reached = true;
@@ -524,21 +525,55 @@ pub fn relay(bridge: &mut Bridge, line: &str) -> Option<String> {
     }
     match bridge.exchange(line) {
         Ok(reply) => reply,
-        Err(reason) => {
-            // Only a request (it has an id) is owed an answer; the app
-            // would have said the same about anything else.
-            match serde_json::from_str::<Value>(line) {
-                Ok(Value::Object(message)) => match message.get("id") {
-                    Some(id) if !id.is_null() && message.contains_key("method") => {
-                        Some(rpc_error(id, BRIDGE_ERROR, &reason))
-                    }
-                    _ => None,
-                },
-                Ok(_) => Some(rpc_error(&Value::Null, INVALID_REQUEST, &reason)),
-                Err(_) => Some(rpc_error(&Value::Null, PARSE_ERROR, &reason)),
-            }
+        // What does not need the window is answered here when it is not
+        // there: `initialize`, `ping` and `tools/list` (the tools are the
+        // same whatever the window holds). A client that starts the
+        // bridge before the window then keeps the server instead of
+        // marking it failed; its tool calls say how to start the window.
+        Err(Failure::Unreachable(reason)) => {
+            offline(line).or_else(|| answer_failure(line, &reason))
         }
+        Err(other) => answer_failure(line, &other.text()),
     }
+}
+
+/// The reply to `line` when it could not be passed on, for `reason`.
+fn answer_failure(line: &str, reason: &str) -> Option<String> {
+    // Only a request (it has an id) is owed an answer; the app would have
+    // said the same about anything else.
+    match serde_json::from_str::<Value>(line) {
+        Ok(Value::Object(message)) => match message.get("id") {
+            Some(id) if !id.is_null() && message.contains_key("method") => {
+                Some(rpc_error(id, BRIDGE_ERROR, reason))
+            }
+            _ => None,
+        },
+        Ok(_) => Some(rpc_error(&Value::Null, INVALID_REQUEST, reason)),
+        Err(_) => Some(rpc_error(&Value::Null, PARSE_ERROR, reason)),
+    }
+}
+
+/// The methods answered without the window ([`offline`]).
+const OFFLINE: [&str; 3] = ["initialize", "ping", "tools/list"];
+
+/// The answer to `line` without a window, when it is one of [`OFFLINE`]:
+/// the same MCP code the window runs, on an empty session, with no
+/// window methods to list for `control_call`. `None` for anything else.
+fn offline(line: &str) -> Option<String> {
+    let message: Value = serde_json::from_str(line).ok()?;
+    let method = message.get("method")?.as_str()?;
+    if !OFFLINE.contains(&method) {
+        return None;
+    }
+    let mut session = craft3d_engine::Session::new(craft3d_engine::Workspace::none());
+    let mut handle = |_: &mut craft3d_engine::Session, method: &str, _: Option<&Value>| {
+        Some(Err(format!("{method}: the 3DCraft window is not running")))
+    };
+    let mut extension = crate::rpc::Extension {
+        methods: &[],
+        handle: &mut handle,
+    };
+    crate::mcp::handle_line_with(&mut session, line, &mut extension)
 }
 
 /// Serves MCP messages from `input` until it ends, writing each reply to
@@ -673,6 +708,71 @@ mod tests {
         assert!(text.contains("start it with `craft3d --control"), "{text}");
         // Far below the reply timeout; generous against a loaded machine.
         assert!(took < Duration::from_secs(120), "{took:?}");
+    }
+
+    /// Without a window, `initialize`, `ping` and `tools/list` are answered
+    /// by the bridge (an MCP client that starts it before the window keeps
+    /// the server instead of marking it failed, the end-to-end user test of
+    /// 2026-11-04), and a tool call gets the error that says how to start
+    /// the window. A notification gets nothing.
+    #[test]
+    fn without_a_window_the_bridge_still_introduces_itself() {
+        // A port nothing listens on: bound, then let go.
+        let address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let mut bridge = Bridge::new(BridgeConfig::new(address, "token".into()));
+        let ask = |bridge: &mut Bridge, line: Value| -> Value {
+            serde_json::from_str(&relay(bridge, &line.to_string()).unwrap()).unwrap()
+        };
+        let init = ask(
+            &mut bridge,
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                   "params": {"protocolVersion": "2025-06-18"}}),
+        );
+        assert_eq!(init["result"]["protocolVersion"], "2025-06-18", "{init}");
+        assert_eq!(
+            init["result"]["serverInfo"]["name"],
+            crate::mcp::SERVER_NAME
+        );
+        assert!(
+            relay(
+                &mut bridge,
+                r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#
+            )
+            .is_none()
+        );
+        let pong = ask(
+            &mut bridge,
+            json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}),
+        );
+        assert_eq!(pong["result"], json!({}), "{pong}");
+        let list = ask(
+            &mut bridge,
+            json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"}),
+        );
+        let names: Vec<&str> = list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        for name in crate::mcp::tool_names() {
+            assert!(names.contains(&name.as_str()), "{name} missing: {names:?}");
+        }
+        assert!(names.contains(&"control_call"), "{names:?}");
+        let call = ask(
+            &mut bridge,
+            json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                   "params": {"name": "doc_inspect", "arguments": {}}}),
+        );
+        assert_eq!(call["error"]["code"], BRIDGE_ERROR, "{call}");
+        let message = call["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("not reachable") && message.contains("start it with"),
+            "{message}"
+        );
     }
 
     /// The window's refusal of a connection over its limit is told as such.

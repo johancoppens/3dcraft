@@ -155,6 +155,31 @@ fn setup_for(env: &dyn Fn(&str) -> Option<String>, exe: Option<&Path>) -> AgentS
         cli,
         cli_prefix,
         windows: cfg!(windows),
+        window: None,
+    }
+}
+
+/// A window given a token file of its own (`--control PORT
+/// --control-token-file FILE`) is not announced for discovery: the
+/// command the start screen and the agents panel copy names its port and
+/// the token file's absolute path (never the token), so the bridge
+/// reaches this window. Before (the end-to-end user test, 2026-11-04) it
+/// named neither, and the bridge said to switch on Allow AI agents
+/// although they were on. A window on the default token file is found by
+/// discovery and keeps the plain command.
+pub fn name_the_window(
+    setup: &mut AgentSetup,
+    options: &crate::args::Options,
+    address: Option<std::net::SocketAddr>,
+    token_file: Option<&Path>,
+) {
+    if options.control.is_none() || options.token_file.is_none() {
+        return;
+    }
+    if let (Some(address), Some(token_file)) = (address, token_file) {
+        let token_file =
+            std::path::absolute(token_file).unwrap_or_else(|_| token_file.to_path_buf());
+        setup.window = Some((address.port(), token_file.to_string_lossy().into_owned()));
     }
 }
 
@@ -423,6 +448,44 @@ mod tests {
         // Only web addresses are handed to the opener as links.
         assert!(open_external(&External::Url("file:///etc/passwd".to_string())).is_err());
         assert!(open_external(&External::Url("--help".to_string())).is_err());
+    }
+
+    /// The copied command reaches a window started with its own token
+    /// file and port; a window on the default token file keeps the plain
+    /// command (it is found by discovery).
+    #[test]
+    fn a_window_with_its_own_token_file_is_named_in_the_copied_command() {
+        let address: std::net::SocketAddr = "127.0.0.1:7911".parse().unwrap();
+        let token = Path::new("/home/me/scripts/demo.token");
+        let mut options = crate::args::Options {
+            control: Some(7911),
+            token_file: Some(token.to_path_buf()),
+            ..Default::default()
+        };
+        let mut setup = AgentSetup::default();
+        name_the_window(&mut setup, &options, Some(address), Some(token));
+        assert_eq!(
+            setup.window,
+            Some((
+                7911,
+                std::path::absolute(token)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            ))
+        );
+        assert!(
+            setup
+                .server_command()
+                .contains("--bridge 7911 --control-token-file"),
+            "{}",
+            setup.server_command()
+        );
+        options.token_file = None;
+        let mut plain = AgentSetup::default();
+        name_the_window(&mut plain, &options, Some(address), Some(token));
+        assert_eq!(plain.window, None);
+        assert!(plain.server_command().ends_with("mcp --bridge"));
     }
 
     #[test]

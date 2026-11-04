@@ -2409,7 +2409,8 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
         .unwrap_or_default();
     host.recent_baseline = recent.clone();
     let data_folder = crate::places::data_folder(options, &env);
-    let agent = crate::places::agent_setup(&env);
+    let mut agent = crate::places::agent_setup(&env);
+    crate::places::name_the_window(&mut agent, options, agents.address(), agents.token_file());
     let title = window_title(host.session.document_status().as_ref());
     let picker = Picker::new(Arc::new(SystemDialogs), Arc::clone(&wake));
     let agents_picker = Picker::new(Arc::new(SystemDialogs), Arc::clone(&wake));

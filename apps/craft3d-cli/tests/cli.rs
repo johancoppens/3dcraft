@@ -1356,7 +1356,9 @@ fn mcp_bridge_checks_its_flags_and_reports_a_window_that_is_not_there() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-    let request = r#"{"jsonrpc":"2.0","id":4,"method":"tools/list"}"#;
+    // A tool call: `initialize`, `ping` and `tools/list` are answered by
+    // the bridge itself when no window is there (2026-11-04).
+    let request = r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"doc_inspect","arguments":{}}}"#;
     let notification = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
     let input = format!("{request}\n{notification}\n{request}\n");
     let run_on = |port: &str| {
