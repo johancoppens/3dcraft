@@ -730,6 +730,33 @@ fn the_form_steps_drags_resets_and_types_with_the_one_slider() {
     let sent = window.ran.len();
     window.click(&mut shell, &mut session, minus);
     assert_eq!(window.ran.len(), sent);
+    // A click on its number types into it (as on a slider's value): a
+    // whole number held to the range, what is not a number refused,
+    // Escape gives up.
+    window.click(&mut shell, &mut session, count.center());
+    window.frame(&mut shell, &mut session, vec![Event::Text("5".to_string())]);
+    window.key(&mut shell, &mut session, Key::Enter);
+    assert_eq!(value(&mut session, "n"), 5.0);
+    window.click(&mut shell, &mut session, count.center());
+    window.frame(
+        &mut shell,
+        &mut session,
+        vec![Event::Text("99".to_string())],
+    );
+    window.key(&mut shell, &mut session, Key::Enter);
+    assert_eq!(value(&mut session, "n"), 6.0, "held to 2..6");
+    let sent = window.ran.len();
+    window.click(&mut shell, &mut session, count.center());
+    window.frame(&mut shell, &mut session, vec![Event::Text("x".to_string())]);
+    window.key(&mut shell, &mut session, Key::Enter);
+    window.key(&mut shell, &mut session, Key::Escape);
+    assert_eq!(value(&mut session, "n"), 6.0);
+    assert_eq!(window.ran.len(), sent, "nothing sent for a wrong number");
+    window.click(&mut shell, &mut session, minus);
+    window.click(&mut shell, &mut session, minus);
+    window.click(&mut shell, &mut session, minus);
+    window.click(&mut shell, &mut session, minus);
+    assert_eq!(value(&mut session, "n"), 2.0);
     // The drag field: a drag to the right makes it thicker.
     let field = hit(&shell, "t");
     let before = value(&mut session, "t");
