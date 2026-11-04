@@ -515,7 +515,8 @@ mod tests {
         }
         let (_, ok, text) = last(&desk);
         settle(&mut desk);
-        assert!(!ok && text.contains("cancelled"), "{text}");
+        // A cancelled picker is said, not a failure (2026-11-04).
+        assert!(ok && text.contains("cancelled"), "{text}");
         assert_eq!(desk.host.session.document_statuses().len(), 2);
         assert_eq!(active(&desk), Some(0));
         assert!(!desk.host.close_after_save);
