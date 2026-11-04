@@ -2135,6 +2135,39 @@ mod engine_thread {
         }
     }
 
+    /// The coordinator's demo (2026-11-04): a script that made a new
+    /// document with `file.new` over one connection and built in it over
+    /// the next had its commands land in another document ("no feature
+    /// named B0"). The document `file.new` and `file.open` make is the one
+    /// the next request works on, whichever connection sends it.
+    #[test]
+    fn a_new_document_is_the_one_the_next_request_works_on() {
+        let window = Window::open();
+        let named = |client: &str| {
+            let mut c = Client::connect(window.address);
+            let reply = c.call("auth", json!({"token": TOKEN, "client": client}));
+            assert_eq!(reply["ok"], true, "{reply}");
+            c
+        };
+        for round in 0..4_u64 {
+            let made = {
+                let mut agent = named("demo");
+                agent.execute("file.new", json!({"units": "mm"}))
+            };
+            assert_eq!(made["document"], round, "{made}");
+            let mut agent = named("demo");
+            agent.execute(
+                "feature.block",
+                json!({"name": "B0", "size": ["10 mm", "10 mm", "10 mm"]}),
+            );
+            let list = agent.execute("file.list", json!({}));
+            assert_eq!(list["active"], round, "{list}");
+            for (index, row) in list["documents"].as_array().unwrap().iter().enumerate() {
+                assert_eq!(row["features"], 1, "document {index}: {list}");
+            }
+        }
+    }
+
     #[test]
     fn mcp_tool_calls_go_to_the_engine_thread_and_the_rest_stays() {
         use crate::host::{Route, route};
