@@ -48,6 +48,30 @@ fn file_import(session: &mut Session, params: &Value) -> Run {
     import_bytes(session, ID, bytes, &file_name, given)
 }
 
+/// What a file that failed to read as STEP is instead, when it is not a
+/// STEP file at all (a STEP file starts with `ISO-10303-21`): `None` for
+/// one that is, whose own error then says where it is broken.
+fn not_step(bytes: &[u8], file_name: &str) -> Option<&'static str> {
+    let start = bytes.get(..bytes.len().min(512)).unwrap_or_default();
+    let text = String::from_utf8_lossy(start);
+    let text = text.trim_start_matches('\u{feff}').trim_start();
+    if text.starts_with("ISO-10303-21") {
+        return None;
+    }
+    let lower = file_name.to_ascii_lowercase();
+    let mesh = [".stl", ".obj", ".3mf", ".ply", ".off"]
+        .iter()
+        .any(|ending| lower.ends_with(ending))
+        || (text.starts_with("solid") && text.contains("facet"));
+    Some(if mesh {
+        "it is a mesh, or is named as one"
+    } else if text.is_empty() {
+        "it is empty"
+    } else {
+        "it does not start with ISO-10303-21"
+    })
+}
+
 /// Adds the import features of a file's bytes, after reading every solid
 /// of it with the document's units and tolerance.
 pub(crate) fn import_bytes(
@@ -61,8 +85,14 @@ pub(crate) fn import_bytes(
     if craft3d_fcstdread::reads(blob.bytes()) {
         return import_document(session, id, blob, file_name, given);
     }
-    let parsed = craft3d_stepread::parse_shared(blob.bytes(), &blob.sha256())
-        .map_err(|e| CommandError::new(format!("{id}: `{file_name}`: {e}")))?;
+    let parsed = craft3d_stepread::parse_shared(blob.bytes(), &blob.sha256()).map_err(|e| {
+        match not_step(blob.bytes(), file_name) {
+            Some(what) => CommandError::new(format!(
+                "{id}: `{file_name}` is not a readable STEP file: {what}; file.import reads STEP (.step, .stp), FreeCAD documents (.FCStd) and BRep files (.brep, .brp); meshes (STL, OBJ, 3MF) cannot be imported yet"
+            )),
+            None => CommandError::new(format!("{id}: `{file_name}`: {e}")),
+        }
+    })?;
     let items = parsed.items();
     let placed = parsed.placed();
     if items.is_empty() || placed.is_empty() {

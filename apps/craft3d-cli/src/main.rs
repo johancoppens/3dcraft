@@ -71,7 +71,7 @@ Subcommands:
   commands   List the command registry: id, params, summary
   run        Open or create a document, run commands, optionally save it
   info       Print a document's state as JSON
-  render     Render a document to a PNG with the CPU renderer
+  render     Render a document to a PNG (on the GPU when there is one)
   convert    Convert a .3dcraft file to STEP, STL, 3MF, OBJ, DXF, SVG or .3dcraft
   replay     Make a video (MP4, GIF) or frames of how a document is built
   score      Run a script for a task of the task set and print its scorecard
@@ -144,8 +144,7 @@ Usage: craft3d-cli render FILE --out PNG [--size WxH] [--view V] [--mode M]
 
 Renders the bodies of a .3dcraft file to a PNG without a window and prints
 what it drew as one line of JSON (its renderer says which drew it). The
-bodies are
-meshed for the picture (the command view.render without a tolerance):
+bodies are meshed for the picture (view.render without a tolerance):
 between a quarter and half a pixel where it shows the model, never finer
 than the floor of 2e-4 of the diagonal of the bodies' box, within a total
 budget of a million triangles; the JSON says the tolerance used and

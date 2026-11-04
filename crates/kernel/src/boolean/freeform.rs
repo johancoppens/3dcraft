@@ -1805,8 +1805,9 @@ impl Ord for Pending {
 /// Trees built lately, by the surface they index (written out in full, so
 /// that two surfaces are the same key only when every number of them is
 /// the same, bit for bit), with what each takes ([`PatchTree::bytes`]),
-/// the most recently used last.
-type Shelf = Vec<(String, Arc<PatchTree>)>;
+/// the most recently used last; beside each key its [`key_hash`], so that
+/// [`release_unheld`] need not read the keys.
+type Shelf = Vec<(String, u64, Arc<PatchTree>)>;
 static SHELF: Mutex<Shelf> = Mutex::new(Vec::new());
 /// How many trees are kept, and how much memory all of them take at most
 /// ([`PatchTree::bytes`]). A boolean holds the trees of every freeform
@@ -1837,18 +1838,64 @@ const SHELF_BYTES: usize = 128 << 20;
 /// tree is a function of its surface alone, so this changes no result:
 /// a tree let go is built again, the same, when it is asked for.
 pub fn release_unused(bodies: &[&craft3d_topo::Body]) -> usize {
+    release_unheld(&held_keys(bodies))
+}
+
+/// The [`key_hash`]es of the surfaces of the freeform faces of `bodies`:
+/// what [`release_unheld`] keeps. A caller that holds bodies which do not
+/// change (the documents not being edited) works them out once and keeps
+/// them: writing out every freeform surface of a big model took some 40 ms
+/// per edit of any open document while the fuel tank was open
+/// (2026-11-04).
+pub fn held_keys(bodies: &[&craft3d_topo::Body]) -> std::collections::BTreeSet<u64> {
     let mut held = std::collections::BTreeSet::new();
     for body in bodies {
         for face in &body.faces {
             if is_freeform(&face.surface) {
-                held.insert(format!("{:?}", face.surface));
+                held.insert(key_hash(&face.surface));
             }
         }
     }
+    held
+}
+
+/// Lets go of the trees on the shelf whose surface's [`key_hash`] is not
+/// in `held` ([`held_keys`] of the bodies something still holds). Two
+/// surfaces of one hash only keep a tree longer. Returns how many trees
+/// were let go.
+pub fn release_unheld(held: &std::collections::BTreeSet<u64>) -> usize {
     let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
     let before = shelf.len();
-    shelf.retain(|(key, _)| held.contains(key));
+    shelf.retain(|(_, hash, _)| held.contains(hash));
     before.saturating_sub(shelf.len())
+}
+
+/// The FNV-1a hash of a surface's key (`format!("{surface:?}")`), worked
+/// out as it is written, without the text: the same for the same key on
+/// every platform.
+fn key_hash(surface: &Surface) -> u64 {
+    let mut hasher = KeyHasher(0xcbf2_9ce4_8422_2325);
+    let _ = std::fmt::Write::write_fmt(&mut hasher, format_args!("{surface:?}"));
+    hasher.0
+}
+
+/// [`key_hash`] of a key already written.
+fn text_hash(text: &str) -> u64 {
+    let mut hasher = KeyHasher(0xcbf2_9ce4_8422_2325);
+    let _ = std::fmt::Write::write_str(&mut hasher, text);
+    hasher.0
+}
+
+/// FNV-1a over the bytes written to it.
+struct KeyHasher(u64);
+
+impl std::fmt::Write for KeyHasher {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        for byte in s.bytes() {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+        Ok(())
+    }
 }
 
 /// How many trees the shelf holds, and about how many bytes they take.
@@ -1861,7 +1908,7 @@ pub fn shelf_size() -> (usize, usize) {
 fn shelf_bytes(shelf: &Shelf) -> usize {
     shelf
         .iter()
-        .map(|(_, tree)| tree.bytes())
+        .map(|(_, _, tree)| tree.bytes())
         .fold(0_usize, usize::saturating_add)
 }
 
@@ -1873,7 +1920,7 @@ fn keep_within_budget(shelf: &mut Shelf) {
         if shelf.is_empty() {
             break;
         }
-        let (_, forgotten) = shelf.remove(0);
+        let (_, _, forgotten) = shelf.remove(0);
         total = total.saturating_sub(forgotten.bytes());
     }
 }
@@ -2231,9 +2278,9 @@ impl PatchTree {
         let key = format!("{surface:?}");
         {
             let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(at) = shelf.iter().position(|(k, _)| *k == key) {
+            if let Some(at) = shelf.iter().position(|(k, _, _)| *k == key) {
                 let entry = shelf.remove(at);
-                let tree = Arc::clone(&entry.1);
+                let tree = Arc::clone(&entry.2);
                 shelf.push(entry);
                 // What the trees remember grew since they were put on the
                 // shelf: counted again each time a tree is asked for.
@@ -2248,8 +2295,9 @@ impl PatchTree {
         crate::work::patch_tree();
         if tree.bytes() <= SHELF_BYTES {
             let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
-            if !shelf.iter().any(|(k, _)| *k == key) {
-                shelf.push((key, Arc::clone(&tree)));
+            if !shelf.iter().any(|(k, _, _)| *k == key) {
+                let hash = text_hash(&key);
+                shelf.push((key, hash, Arc::clone(&tree)));
             }
             keep_within_budget(&mut shelf);
         }
@@ -5210,6 +5258,21 @@ mod tests {
             format!("{:?}", tree.nearest(Vec3::new(0.0, 0.0, 2.0))),
             format!("{:?}", tree.search(Vec3::new(0.0, -0.0, 2.0)))
         );
+    }
+
+    /// A surface's key hash, worked out as it is written, is the hash of
+    /// its key, and two surfaces that differ in one bit hash apart here.
+    #[test]
+    fn the_key_hash_is_the_hash_of_the_key() {
+        for surface in [dome(), strip(30, 10.0, 10.0, 0.5)] {
+            assert_eq!(key_hash(&surface), text_hash(&format!("{surface:?}")));
+        }
+        assert_ne!(
+            key_hash(&strip(30, 10.0, 10.0, 0.5)),
+            key_hash(&strip(30, 10.0, 10.0, 0.5 + 1e-12))
+        );
+        // FNV-1a's own check value.
+        assert_eq!(text_hash("a"), 0xaf63_dc4c_8601_ec8c);
     }
 
     #[test]

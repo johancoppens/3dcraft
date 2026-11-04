@@ -422,6 +422,30 @@ fn a_chain_of_lines_and_arcs_is_picked_by_one_of_its_edges() {
 
 // ----------------------------------------------------------- what is refused
 
+/// What fits is said as a person reads it: worked out across a rounded
+/// corner it came out as 0.7999999999999987 mm (seen 2026-11-04 on a
+/// plate made thinner than its chamfer), now 0.8 mm.
+#[test]
+fn what_fits_is_said_without_rounding_noise() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "feature.block", json!({"size": [140, 60, 0.8]}));
+    run(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [["F1:face(2)", "F1:face(4)"]], "radius": 5}),
+    );
+    let reason = failed(
+        &mut s,
+        "feature.chamfer",
+        json!({"edges": [["F1:face(1)", "F1:face(2)"]], "distance": 1, "chain": true}),
+    );
+    assert!(
+        reason.ends_with("the largest distance that fits there is below 0.8 mm"),
+        "{reason}"
+    );
+}
+
 #[test]
 fn a_distance_too_large_names_the_edge_the_face_and_what_fits() {
     for k in SCALES {

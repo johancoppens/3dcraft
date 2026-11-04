@@ -50,9 +50,11 @@ fn explain(
             radius,
             largest,
         } => format!(
-            "radius: too large for {}: with a radius of {radius} {unit} the line along which the fillet touches the face {} leaves that face; the largest radius that fits there is below {largest} {unit}",
+            "radius: too large for {}: with a radius of {} {unit} the line along which the fillet touches the face {} leaves that face; the largest radius that fits there is below {} {unit}",
             role(edge),
-            face_name(face)
+            craft3d_kernel::short_number(radius),
+            face_name(face),
+            craft3d_kernel::short_number(largest)
         ),
         KernelError::FilletSpindle {
             edge,

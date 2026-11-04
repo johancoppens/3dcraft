@@ -206,6 +206,29 @@ pub(crate) fn about(
     })
 }
 
+/// The largest value that fits, for reading: six significant digits,
+/// cut towards zero so what is shown still fits (4.99999 rather than
+/// 4.999996662139893).
+pub(crate) fn fits_shown(largest: f64) -> f64 {
+    if !largest.is_finite() || largest == 0.0 {
+        return largest;
+    }
+    let size = largest.abs();
+    let mut scale = 1.0_f64;
+    // Bounded: a finite f64 is within 10^±308.
+    for _ in 0..700 {
+        if size * scale < 1e5 {
+            scale *= 10.0;
+        } else if size * scale >= 1e6 {
+            scale /= 10.0;
+        } else {
+            break;
+        }
+    }
+    let shown = (largest * scale).trunc() / scale;
+    if shown.is_finite() { shown } else { largest }
+}
+
 /// A kernel error of a face operation in the words of the document:
 /// `param` is the parameter that says how far, `unit` its unit, and
 /// `sign` whether it was given negative (-1) or positive (1).
@@ -228,7 +251,7 @@ pub(crate) fn explain(
             let at = about(source.body, source.names, &faces, edge)
                 .map(|at| format!(" ({at})"))
                 .unwrap_or_default();
-            let (value, largest) = (value * sign, largest * sign);
+            let (value, largest) = (value * sign, fits_shown(largest) * sign);
             let bound = if sign < 0.0 { "above" } else { "below" };
             format!(
                 "{param}: {value} {unit} is too far: {reason}{at}; what fits is {bound} {largest} {unit}"
@@ -353,6 +376,26 @@ fn said(
             Err(format!(
                 "{param}: {why}the {noun} passes through itself{between}"
             ))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fits_shown;
+
+    #[test]
+    fn what_fits_is_shown_in_six_digits_and_still_fits() {
+        assert_eq!(fits_shown(4.999_996_662_139_893).to_string(), "4.99999");
+        assert_eq!(fits_shown(10.0).to_string(), "10");
+        assert_eq!(fits_shown(0.833_333_333_3).to_string(), "0.833333");
+        assert_eq!(fits_shown(44.999_999_87).to_string(), "44.9999");
+        assert!(fits_shown(123_456_789.9) <= 123_456_789.9);
+        assert!(fits_shown(1.234_567_89e-7) <= 1.234_567_89e-7);
+        for odd in [0.0, f64::NAN, f64::INFINITY, 5e-324, f64::MAX] {
+            let shown = fits_shown(odd);
+            assert!(shown.is_nan() == odd.is_nan());
+            assert!(shown.is_nan() || shown.abs() <= odd.abs());
         }
     }
 }

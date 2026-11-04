@@ -562,6 +562,12 @@ pub struct Session {
     /// the kernel last let go of the trees of surfaces no body holds
     /// ([`Session::release_unused_trees`]).
     trees_held_for: Vec<(u64, Option<u64>)>,
+    /// Per open document and regeneration revision, the keys of the trees
+    /// its bodies hold (`craft3d_regen::held_tree_keys`), worked out once
+    /// per revision: an edit of one document does not write out the
+    /// surfaces of the others again (40 ms an edit with the fuel tank open,
+    /// 2026-11-04).
+    tree_keys: Vec<(u64, Option<u64>, std::collections::BTreeSet<u64>)>,
     /// [`Session::set_body_budget`], for documents opened later.
     body_budget: Option<usize>,
     /// [`Session::set_lean_sampling`].
@@ -645,6 +651,7 @@ impl Session {
             scene: scene::SceneCache::default(),
             recovery: recovery::RecoveryHandle::default(),
             trees_held_for: Vec::new(),
+            tree_keys: Vec::new(),
             body_budget: None,
             lean_sampling: false,
             bake_in_background: false,
@@ -730,14 +737,33 @@ impl Session {
         {
             crate::verify::forget_kept_lines();
         }
-        let bodies: Vec<&craft3d_topo::Body> = self
-            .documents
+        let mut keys = Vec::with_capacity(self.documents.len());
+        for document in &self.documents {
+            let revision = document.regen.as_ref().map(|(revision, _)| *revision);
+            let known = self
+                .tree_keys
+                .iter()
+                .position(|(id, at, _)| *id == document.id && *at == revision);
+            let held = match known {
+                Some(at) => self.tree_keys.swap_remove(at).2,
+                None => {
+                    let bodies: Vec<&craft3d_topo::Body> = document
+                        .regen
+                        .iter()
+                        .flat_map(|(_, regen)| regen.features.iter())
+                        .filter_map(|f| f.body.as_deref())
+                        .collect();
+                    craft3d_regen::held_tree_keys(&bodies)
+                }
+            };
+            keys.push((document.id, revision, held));
+        }
+        let held: std::collections::BTreeSet<u64> = keys
             .iter()
-            .filter_map(|d| d.regen.as_ref())
-            .flat_map(|(_, regen)| regen.features.iter())
-            .filter_map(|f| f.body.as_deref())
+            .flat_map(|(_, _, held)| held.iter().copied())
             .collect();
-        craft3d_regen::release_unused_trees(&bodies);
+        craft3d_regen::release_unheld_trees(&held);
+        self.tree_keys = keys;
         self.trees_held_for = now;
     }
 
