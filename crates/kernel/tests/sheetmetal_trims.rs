@@ -663,15 +663,17 @@ fn a_mitre_of_unlike_walls_is_kept_only_where_the_other_wall_is_clear() {
         // `R + T` inside the wall's bottom skin, radii 1 and 2) runs into
         // the other wall's extension (between `x = W + R_B` and `W + R_B +
         // T`, on the far side of the mitre plane `x + y = W + R_B − R_A +
-        // g/√2`): refused, as before (the proof looks at the bend only, so
-        // a subtree moved to the corner's end is not taken as proven).
+        // g/√2`): refused, naming the tab's wall (flange 0): what a wall
+        // carries is proven clear of the other wall at every corner
+        // (`sheetmetal_corner_carried.rs`).
         let mut near_tab = square.clone();
         near_tab.flanges.push(FlangeSpec {
             on: On::Side(0, 1),
             ..flange(1, 5.0 * k, FRAC_PI_2, 1.0 * k, 0.4)
         });
         let (f, why) = refused(&near_tab, &tol);
-        assert_eq!(f, Some(1), "scale {k}: {why}");
+        assert_eq!(f, Some(0), "scale {k}: {why}");
+        assert!(why.contains("not proven clear"), "scale {k}: {why}");
         // The contact is real: a point inside both (in plan; at any height
         // between `R_B + T`, where the other wall starts, and the tab's top).
         let side_x = 60.0 * k + rb + t - g / 2f64.sqrt();

@@ -1465,8 +1465,6 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
     // trimmed, proven clear of the other flange as folded (after the
     // refold, so a subtree moved to a corner's end is where it will be).
     uncut_clear(&flats, &bends, &uncut, t, tolerance)?;
-    // What a flange carries kept clear of the other wall at each corner.
-    corners_clear(&flats, &bends, &corners, nf, t, tolerance)?;
     bend_reliefs_fit(&flats, &bends, &bend_ends, tolerance)?;
     let done: Vec<bool> = placed.iter().map(Option::is_some).collect();
     let mut across = place_cutouts(&mut flats, &spec.cutouts, &done, tolerance)?;
@@ -1485,9 +1483,14 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         .iter()
         .map(|(edge, surface)| (*edge, crate::plate::Joint::Onto(surface)))
         .collect();
-    let (solid, joined) = if bends.iter().any(Bend::sharp) {
+    if bends.iter().any(Bend::sharp) {
         sharp::refused(&bends, &corners, tol)?;
         sharp::clear(&flats, &bends, nf, &[], t, tol)?;
+    }
+    // What a flange carries kept clear of the other wall at each corner
+    // (after the sharp bends' own proofs, which name their skins).
+    corners_clear(&flats, &bends, &corners, nf, t, tolerance)?;
+    let (solid, joined) = if bends.iter().any(Bend::sharp) {
         sharp::plate(
             &sheet,
             &sides,
