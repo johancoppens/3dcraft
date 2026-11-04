@@ -559,6 +559,49 @@ stretches the sheet (the hood's length across over its width, less 1), for your 
 ]
 ```
 
+A **curved flange** (`curvedFlanges`) is bent along an arc or a circle of the base (its `edge`): the rim
+of a round pan, a collar round a round hole, the rounded corners of a tray. In the part it is exact (every
+section across the edge is a straight bend's, so the bend is a piece of a torus and the flat a piece of a
+cone). A torus cannot be laid flat without stretching, so the flat pattern is **approximated**: along every
+line across the edge it is laid out as a straight bend is, and the sheet is compressed along the edge (a
+flange growing away from the arc's centre) or stretched (towards it). How much is proven, not estimated:
+the bend table gives each curved flange's `strain`, the export says the pattern is approximated and by how
+much, `bendStrain` measures it for your material's limit, and `maxStrain` on the part refuses a flange that
+would need more. Where a curved flange meets a straight one tangent to it with the same angle, radius,
+K-factor and length, they are one wall: a tray with rounded corners has no seam at its corners and its flat
+pattern is one outline.
+
+```json
+[
+ ["sketch.create", {"plane": "xy", "name": "PanBase"}],
+ ["sketch.line", {"sketch": "PanBase", "from": [15, 0], "to": [85, 0]}],
+ ["sketch.line", {"sketch": "PanBase", "from": [100, 15], "to": [100, 45]}],
+ ["sketch.line", {"sketch": "PanBase", "from": [85, 60], "to": [15, 60]}],
+ ["sketch.line", {"sketch": "PanBase", "from": [0, 45], "to": [0, 15]}],
+ ["sketch.arc", {"sketch": "PanBase", "center": [85, 15], "start": [85, 0], "end": [100, 15]}],
+ ["sketch.arc", {"sketch": "PanBase", "center": [85, 45], "start": [100, 45], "end": [85, 60]}],
+ ["sketch.arc", {"sketch": "PanBase", "center": [15, 45], "start": [15, 60], "end": [0, 45]}],
+ ["sketch.arc", {"sketch": "PanBase", "center": [15, 15], "start": [0, 15], "end": [15, 0]}],
+ ["feature.sheetMetal", {"sketch": "PanBase", "name": "Pan", "thickness": "1 mm", "radius": "2 mm",
+   "kFactor": 0.4, "maxStrain": 0.6,
+   "flanges": [{"edge": "e3", "length": "20 mm", "angle": "90 deg"},
+               {"edge": "e6", "length": "20 mm", "angle": "90 deg"},
+               {"edge": "e9", "length": "20 mm", "angle": "90 deg"},
+               {"edge": "e12", "length": "20 mm", "angle": "90 deg"}],
+   "curvedFlanges": [{"edge": "e16", "length": "20 mm", "angle": "90 deg"},
+                     {"edge": "e20", "length": "20 mm", "angle": "90 deg"},
+                     {"edge": "e24", "length": "20 mm", "angle": "90 deg"},
+                     {"edge": "e28", "length": "20 mm", "angle": "90 deg"}]}],
+ ["sheetMetal.bends", {"feature": "Pan"}],
+ ["assert.add", {"name": "Corner strain", "measure": "bendStrain", "of": "Pan", "max": "0.6"}]
+]
+```
+
+![A tray with rounded corners: four walls and four curved corners, one wall all round](images/curved-tray.png)
+
+Its corners, 20 mm high on a radius of 15 mm, compress the sheet's top edge by up to 56 per cent along
+the corner: a drawn tray, not one a press brake can fold. A larger corner radius or a lower wall lowers it.
+
 The bends are folded by the same mechanism as `feature.fold` (a joint with a radius), and the folded sheet
 is given its thickness as `feature.plate` does, so a bend's skins are the cylinders of the inner radius and
 of the inner radius plus the thickness. `sheetMetal.bends` is the **bend table**: per bend its angle and
@@ -567,7 +610,7 @@ the bend's neutral band laid flat by the unfold), the outside setback and the be
 flange's length; and the flat pattern's area and size. The **manufacturability** measures for assertions
 are `bendRadius` (the smallest inner radius), `flangeLength` (the shortest flange; `"measured": "mould"`
 from the virtual sharp), `holeToBend` (the least distance from a hole to a bend's tangent line) and
-`relief` (every corner where two bends meet, and every end of a bend inside its edge, is relieved) `cornerGap` (the least gap at the closed corners), and `flatExtent` (`axis` x or y: the width or height of the flat pattern, the blank it needs) and `flatArea`. 3DCraft has no material catalogue: the limits
+`relief` (every corner where two bends meet, and every end of a bend inside its edge, is relieved) `cornerGap` (the least gap at the closed corners), and `flatExtent` (`axis` x or y: the width or height of the flat pattern, the blank it needs), `flatArea` and `bendStrain`. 3DCraft has no material catalogue: the limits
 for a material and a thickness are yours, as expressions or a table, as above. `file.export` with
 `sheetMetal` writes the flat pattern (.dxf or .svg): the outline on the layer `outline`, the bend lines
 on `bendUp` (dashed) and `bendDown` (dash-dot). `sheetMetal.bendSequence` checks whether the part can be

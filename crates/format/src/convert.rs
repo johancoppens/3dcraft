@@ -1248,7 +1248,40 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 bend_relief,
                 jogs,
                 formed_louvres,
+                curved_flanges,
+                max_strain,
             }) => manifest::FeatureKind::SheetMetal {
+                curved_flanges: curved_flanges
+                    .iter()
+                    .map(
+                        |doc::CurvedFlange {
+                             edge,
+                             length,
+                             angle,
+                             direction,
+                             radius,
+                             k_factor,
+                             from,
+                             id,
+                         }| manifest::SheetCurvedFlange {
+                            edge: edge.0,
+                            length: expr_to_manifest(length),
+                            angle: expr_to_manifest(angle),
+                            direction: match direction {
+                                doc::BendDirection::Up => manifest::BendDirection::Up,
+                                doc::BendDirection::Down => manifest::BendDirection::Down,
+                            },
+                            radius: radius.as_ref().map(expr_to_manifest),
+                            k_factor: k_factor.as_ref().map(expr_to_manifest),
+                            from: match from {
+                                doc::FlangeFrom::Tangent => manifest::FlangeFrom::Tangent,
+                                doc::FlangeFrom::Mould => manifest::FlangeFrom::Mould,
+                            },
+                            id: *id,
+                        },
+                    )
+                    .collect(),
+                max_strain: max_strain.as_ref().map(expr_to_manifest),
                 formed_louvres: formed_louvres
                     .iter()
                     .map(
@@ -3274,9 +3307,42 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 bend_relief,
                 jogs,
                 formed_louvres,
+                curved_flanges,
+                max_strain,
             } => doc::FeatureKind::SheetMetal({
                 let mut part = doc::SheetMetal {
                     next_flange_id: 0,
+                    curved_flanges: curved_flanges
+                        .into_iter()
+                        .map(
+                            |manifest::SheetCurvedFlange {
+                                 edge,
+                                 length,
+                                 angle,
+                                 direction,
+                                 radius,
+                                 k_factor,
+                                 from,
+                                 id,
+                             }| doc::CurvedFlange {
+                                edge: doc::EntityId(edge),
+                                length: doc::Expr(length),
+                                angle: doc::Expr(angle),
+                                direction: match direction {
+                                    manifest::BendDirection::Up => doc::BendDirection::Up,
+                                    manifest::BendDirection::Down => doc::BendDirection::Down,
+                                },
+                                radius: radius.map(doc::Expr),
+                                k_factor: k_factor.map(doc::Expr),
+                                from: match from {
+                                    manifest::FlangeFrom::Tangent => doc::FlangeFrom::Tangent,
+                                    manifest::FlangeFrom::Mould => doc::FlangeFrom::Mould,
+                                },
+                                id,
+                            },
+                        )
+                        .collect(),
+                    max_strain: max_strain.map(doc::Expr),
                     formed_louvres: formed_louvres
                         .into_iter()
                         .map(

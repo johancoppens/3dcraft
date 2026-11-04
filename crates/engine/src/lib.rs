@@ -89,6 +89,7 @@ mod selection;
 mod set_cmds;
 mod sheet_cmds;
 mod sheetmetal_cmds;
+mod sheetmetal_curved;
 mod sketch_cmds;
 mod sketch_conflicts;
 mod sketch_curve_cmds;

@@ -66,6 +66,9 @@ fn flat_point(part: &Part, role: SheetFace, level: usize, p: Vec3) -> Option<(P2
             let at = if level == 0 { 0.0 } else { t };
             Some(([q.x, q.y], (q.z - at).abs()))
         }
+        // A curved flange's pattern is approximated: a later cut through
+        // it has no one place in the flat (not carried back).
+        SheetFace::CurvedBend(_) | SheetFace::CurvedFlat(_) => None,
         SheetFace::Bend(n) | SheetFace::BendPiece(n, _) => {
             let b = part.bends.get(n)?;
             let q = part.flats.get(b.parent)?.transform.inverse()?.point(local);
@@ -260,6 +263,8 @@ fn new_edges(
         let cell = |r: SheetFace| match r {
             SheetFace::Flat(i) | SheetFace::FlatPiece(i, _) => (0, i),
             SheetFace::Bend(i) | SheetFace::BendPiece(i, _) => (1, i),
+            SheetFace::CurvedBend(i) => (2, i),
+            SheetFace::CurvedFlat(i) => (3, i),
         };
         let Some(&(level, first)) = skins.first() else {
             continue;

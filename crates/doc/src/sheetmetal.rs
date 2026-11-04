@@ -345,6 +345,30 @@ pub struct FormedLouvre {
     pub id: u32,
 }
 
+/// A curved flange (format version 67): bent along an arc or a circle of
+/// the base's outline or of a hole of it. Its bend is a piece of a torus,
+/// which is not developable, so its flat pattern is approximated (the
+/// radial development) and the strain along the edge that implies is
+/// bounded (docs/design/sheetmetal.md › *Curved bends*).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurvedFlange {
+    /// The arc or circle of the part's sketch (the base's outline or a
+    /// hole of it) it is bent from.
+    pub edge: EntityId,
+    pub length: Expr,
+    /// The bend angle, more than 0 and at most 180 degrees.
+    pub angle: Expr,
+    pub direction: BendDirection,
+    /// The bend's inner radius; `None`: the part's.
+    pub radius: Option<Expr>,
+    /// The bend's K-factor; `None`: the part's.
+    pub k_factor: Option<Expr>,
+    pub from: FlangeFrom,
+    /// What its names are numbered by, from the flanges' ids
+    /// ([`SheetMetal::next_flange_id`] is past it).
+    pub id: u32,
+}
+
 /// A sheet-metal part.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SheetMetal {
@@ -389,6 +413,14 @@ pub struct SheetMetal {
     /// Formed louvres in its flats (format version 65).
     #[serde(default)]
     pub formed_louvres: Vec<FormedLouvre>,
+    /// Curved flanges on arcs and circles of the base (format version 67).
+    #[serde(default)]
+    pub curved_flanges: Vec<CurvedFlange>,
+    /// The most a curved flange's approximated flat pattern may stretch or
+    /// compress the material along its edge (a strain: 0.05 is 5 per cent;
+    /// `None`: no limit but the geometry's), format version 67.
+    #[serde(default)]
+    pub max_strain: Option<Expr>,
 }
 
 /// The highest id a flange may have: its faces are named `face(2 · id −
@@ -440,6 +472,26 @@ impl SheetMetal {
                 return Some(format!(
                     "jog {g} takes the ids {} and {second}, which are not below the next id {}",
                     j.id, self.next_flange_id
+                ));
+            }
+        }
+        for (g, f) in self.curved_flanges.iter().enumerate() {
+            if f.id == 0 || f.id > MAX_FLANGE_ID {
+                return Some(format!(
+                    "curved flange {g}'s id {} is 0 or past the highest",
+                    f.id
+                ));
+            }
+            if !seen.insert(f.id) {
+                return Some(format!(
+                    "curved flange {g}'s id {} is a flange's, a jog's or a louvre's",
+                    f.id
+                ));
+            }
+            if f.id >= self.next_flange_id {
+                return Some(format!(
+                    "curved flange {g}'s id {} is not below the next id {}",
+                    f.id, self.next_flange_id
                 ));
             }
         }
@@ -532,6 +584,19 @@ impl SheetMetal {
             out.push((format!("formedLouvres.{g}.width"), &f.width));
             out.push((format!("formedLouvres.{g}.height"), &f.height));
         }
+        for (g, f) in self.curved_flanges.iter().enumerate() {
+            out.push((format!("curvedFlanges.{g}.length"), &f.length));
+            out.push((format!("curvedFlanges.{g}.angle"), &f.angle));
+            if let Some(r) = &f.radius {
+                out.push((format!("curvedFlanges.{g}.radius"), r));
+            }
+            if let Some(k) = &f.k_factor {
+                out.push((format!("curvedFlanges.{g}.kFactor"), k));
+            }
+        }
+        if let Some(e) = &self.max_strain {
+            out.push(("maxStrain".to_string(), e));
+        }
         out
     }
 
@@ -595,6 +660,19 @@ impl SheetMetal {
         for f in &mut self.formed_louvres {
             out.push(&mut f.width);
             out.push(&mut f.height);
+        }
+        for f in &mut self.curved_flanges {
+            out.push(&mut f.length);
+            out.push(&mut f.angle);
+            if let Some(r) = &mut f.radius {
+                out.push(r);
+            }
+            if let Some(k) = &mut f.k_factor {
+                out.push(k);
+            }
+        }
+        if let Some(e) = &mut self.max_strain {
+            out.push(e);
         }
         out
     }

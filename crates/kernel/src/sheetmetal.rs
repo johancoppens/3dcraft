@@ -62,6 +62,7 @@ use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId};
 use std::collections::BTreeMap;
 use std::f64::consts::{PI, TAU};
 
+pub mod curved;
 mod cuts;
 pub mod formed;
 mod jog;
@@ -505,6 +506,10 @@ pub enum EdgeKey {
         seg: usize,
         piece: usize,
     },
+    /// An edge of curved flange `flange` ([`Part::curved`]): 0 its bend's
+    /// far tangent line, 1 its tip, 2 and 3 its bend's ends at the arc's
+    /// own start and end, 4 and 5 its flat's sides there.
+    Curved { flange: usize, edge: usize },
 }
 
 /// The end of a flange's extension at a closed corner.
@@ -554,6 +559,9 @@ pub enum SheetFace {
     /// across a bend (a slot across a whole strip leaves the bend in two).
     FlatPiece(usize, usize),
     BendPiece(usize, usize),
+    /// The bend and the flat of curved flange `c` ([`Part::curved`]).
+    CurvedBend(usize),
+    CurvedFlat(usize),
 }
 
 /// A sheet-metal part: its pattern, its folded bottom skin and the solid.
@@ -585,6 +593,9 @@ pub struct Part {
     /// How many of the bends are flanges' (the spec's flanges, in their
     /// order); the rest are jogs', two per jog ([`Spec::jogs`]).
     pub flanges: usize,
+    /// The curved flanges, bent from arcs and circles of the base
+    /// (docs/design/sheetmetal.md › *Curved bends*); not among `bends`.
+    pub curved: Vec<curved::Curved>,
 }
 
 /// The highest flange id: a flange's faces are numbered `2 · id − 1` and
@@ -666,6 +677,18 @@ fn line(start: P2, end: P2) -> Segment {
 /// at a reflex corner or in line, a relief that does not fit its edges;
 /// and whatever the fold or the plate refuses.
 pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
+    build_with(spec, &[], None, tolerance)
+}
+
+/// [`build`] with curved flanges on arcs and circles of the base
+/// (docs/design/sheetmetal.md › *Curved bends*), each refused where the
+/// strain its approximated flat pattern implies is above `max_strain`.
+pub fn build_with(
+    spec: &Spec,
+    curved_specs: &[curved::CurvedSpec],
+    max_strain: Option<f64>,
+    tolerance: &Tolerance,
+) -> Result<Part, KernelError> {
     let tol = tolerance.linear;
     if !(tol.is_finite() && tol > 0.0) {
         return Err(KernelError::InvalidSize {
@@ -768,11 +791,11 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                         Some(i),
                         if h.is_some() {
                             format!(
-                                "the curve {id} bounds a hole of the base and is not straight; a flange sits on a straight edge (on a curved edge it would be a stretched or shrunk flange, not a bend: not supported)"
+                                "the curve {id} bounds a hole of the base and is not straight; a flange sits on a straight edge (a flange on an arc or a circle of the base is one of `curvedFlanges`)"
                             )
                         } else {
                             format!(
-                                "the curve {id} is not straight; a flange sits on a straight edge (a flange on a curved edge is not a bend but a stretched or shrunk flange: its bend region is a piece of a torus, which is not developable, so it has no flat pattern that keeps lengths; not supported)"
+                                "the curve {id} is not straight; a flange sits on a straight edge (a flange on an arc or a circle of the base is one of `curvedFlanges`: its bend is a piece of a torus, not developable, so its flat pattern is approximated and the strain that implies is bounded)"
                             )
                         },
                     ));
@@ -1451,8 +1474,30 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
     let across = place_cutouts(&mut flats, &spec.cutouts, &done, tolerance)?;
     pattern_clear(&flats, &bends, &[], &corners, tolerance)?;
     let cuts = place_cuts(&flats, &bends, &across, tolerance)?;
-    let (sheet, sheet_faces, ends, edge_keys) =
+    let (mut sheet, mut sheet_faces, ends, mut edge_keys) =
         folded_sheet(spec, &flats, &bends, &cuts, tolerance, true)?;
+    let curved = if curved_specs.is_empty() {
+        Vec::new()
+    } else {
+        if bends.iter().any(Bend::sharp) {
+            return Err(refuse(
+                None,
+                "curvedFlanges: a part with a sharp bend takes no curved flange (not built)",
+            ));
+        }
+        let curved = curved::lay_out(&flats, &bends, curved_specs, max_strain, t, tolerance)?;
+        curved::pattern_clear(&flats, &bends, &cuts, &curved, tolerance)?;
+        curved::add_to_sheet(
+            &spec.plane,
+            &curved,
+            &flats,
+            &mut sheet,
+            &mut sheet_faces,
+            &mut edge_keys,
+            tolerance,
+        )?;
+        curved
+    };
     let faces: Vec<FaceId> = (0..sheet.faces.len())
         .filter_map(|f| u32::try_from(f).ok().map(FaceId))
         .collect();
@@ -1492,6 +1537,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         solid,
         marks,
         flanges: spec.flanges.len(),
+        curved,
     })
 }
 
@@ -1956,7 +2002,7 @@ fn cutout_edge(spec: &Spec, i: usize, c: usize, curve: u64) -> Result<usize, Ker
         return Err(refuse(
             Some(i),
             format!(
-                "the curve {curve} of the cut-out of {} is not straight; a flange sits on a straight edge (on a curved edge it would be a stretched or shrunk flange, not a bend: not supported)",
+                "the curve {curve} of the cut-out of {} is not straight; a flange sits on a straight edge (a flange on an arc or a circle of the base is one of `curvedFlanges`)",
                 cut.from
             ),
         ));
@@ -4092,6 +4138,10 @@ pub fn edge_numbers(part: &Part, key: EdgeKey) -> Option<Vec<u64>> {
             Some(out)
         }
         EdgeKey::Cut { cut, seg, piece } => Some(vec![10, cut as u64, seg as u64, piece as u64]),
+        EdgeKey::Curved { flange, edge } => {
+            let id = part.curved.get(flange)?.id;
+            Some(vec![17, id.checked_sub(1)?, edge as u64])
+        }
     }
 }
 
@@ -5007,6 +5057,7 @@ pub fn flange_length(part: &Part, bend: usize) -> Option<f64> {
 /// bends' strips.
 pub fn flat_area(part: &Part) -> f64 {
     pattern_area(&part.flats, &part.bends, &part.cuts)
+        + part.curved.iter().map(curved::Curved::area).sum::<f64>()
 }
 
 fn pattern_area(flats: &[Flat], bends: &[Bend], cuts: &[Cut]) -> f64 {
@@ -5037,10 +5088,11 @@ fn pattern_area(flats: &[Flat], bends: &[Bend], cuts: &[Cut]) -> f64 {
 /// edges that a bend's strip continues are left out; the strips' ends
 /// are lines across them.
 pub fn outline(part: &Part, tolerance: &Tolerance) -> Vec<Vec<Segment>> {
-    tagged_outline(&part.flats, &part.bends, &part.cuts, tolerance.linear)
+    let chains = tagged_outline(&part.flats, &part.bends, &part.cuts, tolerance.linear)
         .into_iter()
         .map(|chain| chain.into_iter().map(|(s, _)| s).collect())
-        .collect()
+        .collect();
+    curved::with_curved(chains, &part.curved, tolerance.linear)
 }
 
 /// The box of the flat pattern in the pattern's axes, `[min x, min y, max
