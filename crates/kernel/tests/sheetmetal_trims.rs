@@ -524,12 +524,16 @@ fn trims_refused_by_reason() {
 /// through the corner's point, so one bend's root reaches past its end
 /// plane by more than half the gap (review of cc7b9228: let through as the
 /// corner's own cut, with nothing proving the other wall leaves room). It
-/// is kept only when the other flange's flat lies wholly past the bend's
-/// square end: square walls (the wall `R + T` out from its edge, every
-/// point of it past the bend's end) build, a valid solid, both bends left
-/// square; a wall leaning in at 120 degrees beside a square one of
-/// another radius, whose flat comes back over the square one's bend end,
-/// is refused by reason, never left square.
+/// is kept only when the other flange's flat and what it carries are
+/// proven apart from the bend: square walls (the wall `R + T` out from its
+/// edge, every point of it past the bend's end) build, a valid solid, both
+/// bends left square; a return on the other wall's tip turned in over the
+/// base, high above the bend, is proven apart by the bend's cross-section
+/// (a separating axis square to its axis) and builds, its volume the
+/// return's closed form (until 2026-11-04 it was refused: the proof was one
+/// half-space along the tangent line); a wall leaning in at 120 degrees
+/// beside a square one of another radius, whose flat comes back over the
+/// square one's bend end, is refused by reason, never left square.
 #[test]
 fn a_mitre_of_unlike_walls_is_kept_only_where_the_other_wall_is_clear() {
     for k in SCALES {
@@ -569,19 +573,124 @@ fn a_mitre_of_unlike_walls_is_kept_only_where_the_other_wall_is_clear() {
         assert!(root > 1e3 * tol.linear, "scale {k}");
         let clear = clearance_past_end(&part, 1, 0, 0).unwrap();
         near(clear, ra, 1e-9 * k, &format!("scale {k}: the clearance"));
-        // A return on that other wall's tip, turned in over the base, comes
-        // back past the bend's end: nothing proves it clear, refused (the
-        // clearance counts what the other flange carries).
+        // A return on that other wall's tip, turned in over the base: it
+        // comes back past the bend's end along its tangent line (the
+        // measure is negative), but lies wholly above the bend, which
+        // reaches `R_B + T` above the base's bottom skin; the return starts
+        // at the wall's tip, `R_A + T + L` up (and its flat `R` higher
+        // still). Proven apart, built: the volume is the square part's
+        // and the return's, its bend `θ W T (R + T/2)` and its flat
+        // `W L_r T` along the tip `W` (the tip ends at the corner: the
+        // closed corner runs the flat on along its tangent line, not its
+        // tip). Before 2026-11-04 refused (one half-space).
         let mut returned = square.clone();
         returned.flanges.push(FlangeSpec {
             on: On::Tip(0),
             ..flange(1, 15.0 * k, FRAC_PI_2, 1.0 * k, 0.4)
         });
-        let (f, why) = refused(&returned, &tol);
-        assert_eq!(f, Some(1), "scale {k}: {why}");
         assert!(
-            why.contains("comes back over the bend's end"),
-            "scale {k}: {why}"
+            clearance_past_end(&build(&square, &tol).unwrap(), 1, 0, 0).unwrap() > 0.0,
+            "scale {k}"
+        );
+        let with = build(&returned, &tol).unwrap_or_else(|e| panic!("scale {k}: {e}"));
+        assert!(check(&with.solid.body, &tol).is_empty(), "scale {k}");
+        assert!(
+            clearance_past_end(&with, 1, 0, 0).unwrap() < 0.0,
+            "scale {k}: the return comes back past the bend's end"
+        );
+        let (w, lr, rr) = (60.0 * k, 15.0 * k, 1.0 * k);
+        let ret = FRAC_PI_2 * w * t * (rr + 0.5 * t) + w * lr * t;
+        let v = volume(&part) + ret;
+        near(
+            volume(&with),
+            v,
+            1e-8 * v,
+            &format!("scale {k}: the return"),
+        );
+        // Apart for real: the return's lowest point is the wall's tip,
+        // above the bend's highest.
+        let body = &with.solid.body;
+        let mut low = f64::INFINITY;
+        for flat in [3usize] {
+            for f in craft3d_kernel::sheetmetal::flat_faces(&with, flat) {
+                for lp in &body.faces[f].loops {
+                    for co in &body.loop_(*lp).unwrap().coedges {
+                        let p = body.vertex(body.coedge_ends(*co).unwrap().0).unwrap().point;
+                        low = low.min(p.z);
+                    }
+                }
+            }
+        }
+        near(
+            low,
+            ra + t + l + rr,
+            10.0 * tol.linear,
+            &format!("scale {k}: the return's flat"),
+        );
+        assert!(low > rb + t, "scale {k}");
+        // The return as low as the wall allows (the wall 1 long): still
+        // apart, since the return lies on the base's side of the bend's
+        // end plane `x = W` (the tip ends at the corner) and the bend
+        // meets that plane only between the base's skins, `z` in [0, T],
+        // while the return starts at the tip, `R_A + T + 1` up. Built, the
+        // same closed form.
+        let mut low_return = returned.clone();
+        low_return.flanges[0].length = 1.0 * k;
+        let mut low_square = square.clone();
+        low_square.flanges[0].length = 1.0 * k;
+        let with = build(&low_return, &tol).unwrap_or_else(|e| panic!("scale {k}: {e}"));
+        assert!(check(&with.solid.body, &tol).is_empty(), "scale {k}");
+        let v = volume(&build(&low_square, &tol).unwrap()) + ret;
+        near(
+            volume(&with),
+            v,
+            1e-8 * v,
+            &format!("scale {k}: the low return"),
+        );
+        // A tab on the wall's side at its open end, turned in: it comes
+        // back past the bend's end along the tangent line too, but lies
+        // `W` from the bend across it. Built (refused before 2026-11-04).
+        let mut far_tab = square.clone();
+        far_tab.flanges.push(FlangeSpec {
+            on: On::Side(0, 0),
+            ..flange(1, 5.0 * k, FRAC_PI_2, 1.0 * k, 0.4)
+        });
+        let with = build(&far_tab, &tol).unwrap_or_else(|e| panic!("scale {k}: {e}"));
+        assert!(check(&with.solid.body, &tol).is_empty(), "scale {k}");
+        // A tab on the side at the corner moves with it to the corner's
+        // end (`x = W + R_B + T − g/√2` on the wall's bottom skin) and,
+        // turned in, its bend (about the vertical axis through that side
+        // `R + T` inside the wall's bottom skin, radii 1 and 2) runs into
+        // the other wall's extension (between `x = W + R_B` and `W + R_B +
+        // T`, on the far side of the mitre plane `x + y = W + R_B − R_A +
+        // g/√2`): refused, naming the tab's wall (flange 0): what a wall
+        // carries is proven clear of the other wall at every corner
+        // (`sheetmetal_corner_carried.rs`).
+        let mut near_tab = square.clone();
+        near_tab.flanges.push(FlangeSpec {
+            on: On::Side(0, 1),
+            ..flange(1, 5.0 * k, FRAC_PI_2, 1.0 * k, 0.4)
+        });
+        let (f, why) = refused(&near_tab, &tol);
+        assert_eq!(f, Some(0), "scale {k}: {why}");
+        assert!(why.contains("not proven clear"), "scale {k}: {why}");
+        // The contact is real: a point inside both (in plan; at any height
+        // between `R_B + T`, where the other wall starts, and the tab's top).
+        let side_x = 60.0 * k + rb + t - g / 2f64.sqrt();
+        let axis = [side_x, -(ra + t) + 1.0 * k + t];
+        let q = [side_x + 0.1 * k, -1.5 * k];
+        let r = (q[0] - axis[0]).phypot(q[1] - axis[1]);
+        assert!(r > 1.0 * k && r < 2.0 * k && q[0] > axis[0] && q[1] < axis[1]);
+        assert!(q[0] > 60.0 * k + rb && q[0] < 60.0 * k + rb + t);
+        assert!(q[0] + q[1] > 60.0 * k + rb - ra + g / 2f64.sqrt());
+        // And by the kernel's point classification: the point, at a height
+        // both reach, lies in the part without the tab (in the other
+        // wall's extension).
+        let w = Vec3::new(q[0], q[1], 8.0 * k);
+        assert_eq!(
+            craft3d_kernel::boolean::contains_points(&part.solid.body, &[w], &tol).unwrap(),
+            vec![Some(true)],
+            "scale {k}: the point is in the other wall"
         );
         // The wall of radius 1 leaning in at 120 degrees, the other square
         // with radius 3: the plane cuts the square wall's bend at its root
