@@ -171,6 +171,9 @@ pub struct Pending {
     pub prompt: AgentPrompt,
     /// When it was asked: a command waits [`crate::consent::PROMPT_WAIT`].
     pub asked: Instant,
+    /// The name the asking client authenticated with (a connect
+    /// question's): Refuse disconnects it by that name.
+    pub key: Option<String>,
 }
 
 /// What the person's answer means for the request that waited.
@@ -278,7 +281,7 @@ impl Agents {
             if self.asked.len() >= MAX_ASKED {
                 self.asked.clear();
             }
-            self.asked.insert(key);
+            self.asked.insert(key.clone());
             if cwd.to_string_lossy().chars().any(crate::consent::deceptive) {
                 continue;
             }
@@ -292,25 +295,35 @@ impl Agents {
                 continue;
             }
             let text = folder.to_string_lossy().into_owned();
-            self.push_prompt(AgentPrompt {
-                id: 0,
-                kind: "connect".to_string(),
-                client: client.name,
-                path: text.clone(),
-                folder: text,
-                file_name: String::new(),
-                command: None,
-            });
+            self.push_prompt_from(
+                Some(key.clone()),
+                AgentPrompt {
+                    id: 0,
+                    kind: "connect".to_string(),
+                    client: client.name,
+                    path: text.clone(),
+                    folder: text,
+                    file_name: String::new(),
+                    command: None,
+                },
+            );
         }
     }
 
-    fn push_prompt(&mut self, mut prompt: AgentPrompt) -> u64 {
+    fn push_prompt(&mut self, prompt: AgentPrompt) -> u64 {
+        self.push_prompt_from(None, prompt)
+    }
+
+    /// A question asked of the person, from the client that authenticated
+    /// as `key` (when known).
+    fn push_prompt_from(&mut self, key: Option<String>, mut prompt: AgentPrompt) -> u64 {
         let id = self.next_prompt;
         self.next_prompt = self.next_prompt.saturating_add(1);
         prompt.id = id;
         self.prompts.push(Pending {
             prompt,
             asked: Instant::now(),
+            key,
         });
         id
     }
@@ -385,6 +398,7 @@ impl Agents {
     pub fn answer(&mut self, id: u64, answer: PromptAnswer) -> Option<Verdict> {
         let index = self.prompts.iter().position(|p| p.prompt.id == id)?;
         let pending = self.prompts.remove(index);
+        let key = pending.key;
         let prompt = pending.prompt;
         let folder = PathBuf::from(&prompt.folder);
         let connect = prompt.kind == "connect";
@@ -403,13 +417,21 @@ impl Agents {
             // Once: the file for that request only, given to it alone by
             // the desk (`Verdict::Once`); nothing here changes.
             PromptAnswer::Once | PromptAnswer::Deny => {}
+            // Refuse at connect: that agent is disconnected and refused
+            // for the rest of the run (decision of 2026-11-04); its
+            // other questions go with it.
+            PromptAnswer::Refuse => {
+                if connect && let Some(key) = &key {
+                    self.disconnect(key);
+                }
+            }
         }
         self.recompute();
         if connect {
             return None;
         }
         Some(match answer {
-            PromptAnswer::Deny => Verdict::Refuse(denied(&prompt)),
+            PromptAnswer::Deny | PromptAnswer::Refuse => Verdict::Refuse(denied(&prompt)),
             PromptAnswer::Once => Verdict::Once {
                 file: PathBuf::from(&prompt.path),
                 write: prompt.kind == "write",
@@ -762,6 +784,17 @@ impl Agents {
         self.recompute();
     }
 
+    /// Closes the connection of the agent that authenticated as `key` and
+    /// refuses it for the rest of the run (its ✕ in the agent panel, or
+    /// Refuse when it connects); the questions it still had wait no
+    /// longer. Whether it was known.
+    pub fn disconnect(&mut self, key: &str) -> bool {
+        self.prompts.retain(|p| p.key.as_deref() != Some(key));
+        self.server
+            .as_ref()
+            .is_some_and(|server| server.disconnect(key))
+    }
+
     /// Closes every agent's connection and refuses those agents for the
     /// rest of the run; how many were connected.
     pub fn disconnect_all(&mut self) -> usize {
@@ -829,6 +862,7 @@ impl Agents {
                     last_command: client.command,
                     last_ms: client.command_ms,
                     cwd: client.cwd.map(|cwd| cwd.to_string_lossy().into_owned()),
+                    key: client.key,
                 })
                 .collect(),
             work_folder: self
@@ -1813,6 +1847,126 @@ mod tests {
                 .iter()
                 .any(|r| Path::new(&r.path) == a)
         );
+        let _ = std::fs::remove_dir_all(&state);
+    }
+
+    /// The connect question's two refusals (decision of 2026-11-04):
+    /// "Only the work folder" keeps the agent connected with the work
+    /// folder alone; "Refuse" disconnects that agent and refuses it for
+    /// the rest of the run, while another agent keeps working.
+    #[test]
+    fn refuse_at_connect_disconnects_that_agent_only_the_work_folder_keeps_it() {
+        let state = workdir("consent-refuse");
+        let (a, b) = (state.join("work").join("a"), state.join("work").join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let mut desk = consent_desk(&state);
+        // A: only the work folder. It stays connected and works.
+        let (mut first, _) =
+            relay_turning(&mut desk, bridge_in(&state, &a), initialize(), |_| true);
+        desk.turn();
+        assert!(click(&mut desk, "connect", PromptAnswer::Deny));
+        desk.turn();
+        let a_canon = craft3d_engine::canonical(&a).unwrap();
+        let status = desk.host.shell.agents_status().clone();
+        assert!(
+            !status.roots.iter().any(|r| Path::new(&r.path) == a_canon),
+            "its folder is not given: {status:?}"
+        );
+        assert!(
+            status.roots.iter().any(|r| r.from == "chosen"),
+            "the work folder is: {status:?}"
+        );
+        let (back, reply) = relay_turning(
+            &mut desk,
+            first,
+            run(2, "file.new", json!({"units": "mm"})),
+            |_| true,
+        );
+        first = back;
+        assert_eq!(
+            reply["result"]["isError"], false,
+            "still connected: {reply}"
+        );
+        // B: Refuse. Its connection is closed and it is refused from then
+        // on, by its name.
+        let (second, _) = relay_turning(&mut desk, bridge_in(&state, &b), initialize(), |_| true);
+        desk.turn();
+        assert!(click(&mut desk, "connect", PromptAnswer::Refuse));
+        desk.turn();
+        let (_, refused) = relay_turning(&mut desk, second, initialize(), |_| true);
+        let message = refused["error"]["message"].as_str().unwrap_or_default();
+        assert!(message.contains("disconnected"), "{refused}");
+        let b_canon = craft3d_engine::canonical(&b).unwrap();
+        assert!(
+            !desk
+                .host
+                .shell
+                .agents_status()
+                .roots
+                .iter()
+                .any(|r| Path::new(&r.path) == b_canon)
+        );
+        // A goes on working.
+        let (_, reply) = relay_turning(
+            &mut desk,
+            first,
+            run(3, "feature.block", json!({"size": [5, 5, 5]})),
+            |_| true,
+        );
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        let _ = std::fs::remove_dir_all(&state);
+    }
+
+    /// The ✕ of one agent in the agent panel disconnects that one and
+    /// refuses it for the rest of the run; the other stays.
+    #[test]
+    fn one_agent_is_disconnected_by_its_cross_and_the_other_stays() {
+        let state = workdir("consent-cross");
+        let work = state.join("Documents").join("3DCraft");
+        std::fs::create_dir_all(&work).unwrap();
+        let mut desk = consent_desk(&state);
+        let named = |name: &str| {
+            let mut config = BridgeConfig::discover(state.join("craft"), None);
+            config.cwd = Some(craft3d_engine::canonical(&work).unwrap());
+            config.client = Some(name.to_string());
+            Bridge::new(config)
+        };
+        // Both work in the work folder: nothing is asked.
+        let (gone, _) = relay_turning(
+            &mut desk,
+            named("MCP bridge (cross a)"),
+            initialize(),
+            |_| true,
+        );
+        let (stays, _) = relay_turning(
+            &mut desk,
+            named("MCP bridge (cross b)"),
+            initialize(),
+            |_| true,
+        );
+        desk.turn();
+        let clients = desk.host.shell.agents_status().clients.clone();
+        assert_eq!(clients.len(), 2, "{clients:?}");
+        assert!(
+            clients
+                .iter()
+                .any(|c| c.key.as_deref() == Some("MCP bridge (cross a)")),
+            "{clients:?}"
+        );
+        desk.host
+            .shell
+            .request_agent_disconnect("MCP bridge (cross a)");
+        desk.turn();
+        let left = desk.host.shell.agents_status().clients.clone();
+        assert_eq!(left.len(), 1, "{left:?}");
+        assert_eq!(left[0].key.as_deref(), Some("MCP bridge (cross b)"));
+        // The one sent away is refused; the other works.
+        let (_, refused) = relay_turning(&mut desk, gone, initialize(), |_| true);
+        let message = refused["error"]["message"].as_str().unwrap_or_default();
+        assert!(message.contains("disconnected"), "{refused}");
+        let (_, reply) = relay_turning(&mut desk, stays, run(2, "file.new", json!({})), |_| true);
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
         let _ = std::fs::remove_dir_all(&state);
     }
 

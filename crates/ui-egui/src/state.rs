@@ -511,6 +511,11 @@ pub struct AgentClient {
     /// The folder it works in (its MCP client's working folder, which the
     /// bridge sends), absolute.
     pub cwd: Option<String>,
+    /// The name it authenticated with, which the window disconnects it
+    /// by (its ✕ in the agent panel); none for a connection without one.
+    /// Not reported.
+    #[serde(skip)]
+    pub key: Option<String>,
 }
 
 /// A question about an agent's access, waiting for the person.
@@ -545,8 +550,12 @@ pub enum PromptAnswer {
     Session,
     /// This one command only (a path).
     Once,
-    /// No.
+    /// No: the folder or the file is not given (at connect: the agent
+    /// keeps the work folder only).
     Deny,
+    /// At connect: no, and the agent is disconnected and refused for the
+    /// rest of the run, as Disconnect all does for every agent.
+    Refuse,
 }
 
 /// One folder agents may read or write files in.
