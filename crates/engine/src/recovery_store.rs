@@ -519,8 +519,7 @@ impl Shared {
                     entry.noted = None;
                     entry.since = now;
                 }
-                state.problem =
-                    Some("autosave failed: internal error (a bug in 3DCraft)".to_string());
+                state.problem = Some(craft3d_math::bug_text!("autosave failed").to_string());
                 drop(state);
                 self.changed();
             }

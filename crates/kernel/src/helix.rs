@@ -463,7 +463,7 @@ fn follow(
 fn internal() -> KernelError {
     refuse(
         &[],
-        "the sweep along a helix lost track of a curve; this is a bug",
+        craft3d_math::bug_text!("the sweep along a helix lost track of a curve"),
     )
 }
 

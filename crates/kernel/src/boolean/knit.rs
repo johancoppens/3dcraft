@@ -169,7 +169,9 @@ pub fn sew_sheets(a: &Body, b: &Body, tolerance: &Tolerance) -> Result<BooleanRe
     for (index, into) in uses {
         let source = source_of(index);
         let Some(slot) = owner.get_mut(into.0 as usize) else {
-            return Err(refused("sewing lost track of an edge; this is a bug"));
+            return Err(refused(craft3d_math::bug_text!(
+                "sewing lost track of an edge"
+            )));
         };
         match slot {
             None => *slot = Some(source),
@@ -188,9 +190,9 @@ pub fn sew_sheets(a: &Body, b: &Body, tolerance: &Tolerance) -> Result<BooleanRe
     let edges = owner
         .into_iter()
         .map(|s| {
-            s.ok_or(refused(
-                "sewing left an edge without a source; this is a bug",
-            ))
+            s.ok_or(refused(craft3d_math::bug_text!(
+                "sewing left an edge without a source"
+            )))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut vertex_owner: Vec<Option<VertexSource>> = vec![None; sewn.body.vertices.len()];
@@ -207,7 +209,9 @@ pub fn sew_sheets(a: &Body, b: &Body, tolerance: &Tolerance) -> Result<BooleanRe
             }
         };
         let Some(slot) = vertex_owner.get_mut(into.0 as usize) else {
-            return Err(refused("sewing lost track of a vertex; this is a bug"));
+            return Err(refused(craft3d_math::bug_text!(
+                "sewing lost track of a vertex"
+            )));
         };
         if slot.is_none() {
             *slot = Some(source);
@@ -216,9 +220,9 @@ pub fn sew_sheets(a: &Body, b: &Body, tolerance: &Tolerance) -> Result<BooleanRe
     let vertices = vertex_owner
         .into_iter()
         .map(|s| {
-            s.ok_or(refused(
-                "sewing left a vertex without a source; this is a bug",
-            ))
+            s.ok_or(refused(craft3d_math::bug_text!(
+                "sewing left a vertex without a source"
+            )))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let faces: Vec<FaceSource> = (0..sewn.body.faces.len())

@@ -304,7 +304,7 @@ impl Reason {
             Reason::FreeRunsOver => {
                 "the chamfer's border runs off a face beside the edge across one of its other edges along the way: the distance is too large for that face, or the chamfer would have to carry on onto the next face, which is not built yet"
             }
-            Reason::Lost => "the chamfer lost track of an entity; this is a bug",
+            Reason::Lost => craft3d_math::bug_text!("the chamfer lost track of an entity"),
         }
     }
 
@@ -361,7 +361,9 @@ impl Reason {
                 "three or more fillets meet at the end of this edge in a corner that is not built yet: a corner is made where exactly three straight edges meet, all convex or all concave, all filleted with one radius; leave one of the edges sharp (two fillets run out into each other)"
             }
             Reason::NotTangent => {
-                "the fillet face came out not tangent to a face it should run into smoothly; this is a bug"
+                craft3d_math::bug_text!(
+                    "the fillet face came out not tangent to a face it should run into smoothly"
+                )
             }
             Reason::FreeEnd => {
                 "the fillet of a freeform edge does not end cleanly: each end of the edge has to be a corner of exactly three faces whose third face the fillet runs into across the edge"
@@ -406,7 +408,7 @@ impl Reason {
             Reason::FreeRunsOver => {
                 "the fillet's border runs off a face beside the edge across one of its other edges along the way (where the ball would roll on over a smooth edge onto the next face, or the face is too narrow for the radius); a fillet that carries on onto the next face in the middle of an edge is not built yet: give a smaller radius"
             }
-            Reason::Lost => "the fillet lost track of an entity; this is a bug",
+            Reason::Lost => craft3d_math::bug_text!("the fillet lost track of an entity"),
         }
     }
 }

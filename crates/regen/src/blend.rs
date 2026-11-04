@@ -27,6 +27,7 @@ use crate::selfcheck;
 use crate::{Contributors, Kept, Names, entity};
 use craft3d_doc::{FeatureId, NameRole, PersistentName};
 use craft3d_kernel::chamfer::tangent_chain;
+use craft3d_math::BUG;
 use craft3d_math::Vec3;
 use craft3d_tess::FaceRole;
 use craft3d_topo::{Body, EdgeId, FaceId, VertexId};
@@ -235,10 +236,7 @@ pub(crate) fn name(
         match face {
             Made::Kept(_) => {
                 let Some(name) = copies.faces.get(next_copy) else {
-                    return Err(format!(
-                        "the {} lost the name of a face; this is a bug",
-                        roles.noun
-                    ));
+                    return Err(format!("{BUG}: the {} lost the name of a face", roles.noun));
                 };
                 named.faces.push(name.clone());
                 let aliases = copies.aliases_of(next_copy);
@@ -250,10 +248,7 @@ pub(crate) fn name(
             Made::Blend(edges) => {
                 let mut all = edges.iter().filter_map(|i| blend_name(*i));
                 let Some(own) = all.next() else {
-                    return Err(format!(
-                        "the {} lost the edge of a face; this is a bug",
-                        roles.noun
-                    ));
+                    return Err(format!("{BUG}: the {} lost the edge of a face", roles.noun));
                 };
                 named.faces.push(own);
                 let aliases: Vec<PersistentName> = all.collect();

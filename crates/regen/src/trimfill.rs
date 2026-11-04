@@ -17,6 +17,7 @@ use craft3d_expr::Evaluation;
 use craft3d_geom::refine::reversed;
 use craft3d_geom::trim::{self, Projection};
 use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
+use craft3d_math::BUG;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, VertexId};
 
@@ -138,7 +139,7 @@ fn chained(
             continue;
         };
         let Some((pa, pb)) = first_last(previous) else {
-            return Err(format!("{role}: a curve lost its pieces; this is a bug"));
+            return Err(format!("{BUG}: {role}: a curve lost its pieces"));
         };
         if pb.distance(a) <= tol {
             out.push(rail);
@@ -469,7 +470,7 @@ pub(crate) fn build_trim(
                     (None, Surface::Plane(plane)) => {
                         (onto_plane(curve, plane.frame(), along, &what)?, None)
                     }
-                    _ => return Err(format!("{what}: no surface to put it on; this is a bug")),
+                    _ => return Err(format!("{BUG}: {what}: no surface to put it on")),
                 };
                 degree = degree.max(space.degree());
                 // Points for the turning: 16 per piece.
@@ -539,7 +540,7 @@ pub(crate) fn build_trim(
             // The vertex between the piece before and this one.
             let before = pieces
                 .get((i + count - 1) % count)
-                .ok_or("a loop lost its pieces; this is a bug")?;
+                .ok_or(craft3d_math::bug_text!("a loop lost its pieces"))?;
             let (_, previous_end) = ends(&before.curve);
             let at = start.lerp(previous_end, 0.5);
             vertices.push(body.add_vertex(at));
@@ -559,7 +560,7 @@ pub(crate) fn build_trim(
         for (i, p) in pieces.iter().enumerate() {
             let (Some(&start), Some(&end)) = (vertices.get(i), vertices.get((i + 1) % count))
             else {
-                return Err("a loop lost its vertices; this is a bug".into());
+                return Err(craft3d_math::bug_text!("a loop lost its vertices").into());
             };
             let edge = body.add_edge(Curve3::Nurbs(p.curve.clone()), p.curve.domain(), start, end);
             coedges.push(Coedge {
@@ -782,7 +783,7 @@ pub(crate) fn build_nsided(
         let (first, _) = made
             .halves
             .get(k)
-            .ok_or("a fill lost its curves; this is a bug")?;
+            .ok_or(craft3d_math::bug_text!("a fill lost its curves"))?;
         let (a, b) = first.domain();
         let kk = keys.get(k).copied().unwrap_or(0);
         let before = keys.get((k + n - 1) % n).copied().unwrap_or(0);
@@ -803,18 +804,18 @@ pub(crate) fn build_nsided(
         let spoke = made
             .spokes
             .get(k)
-            .ok_or("a fill lost its spokes; this is a bug")?;
+            .ok_or(craft3d_math::bug_text!("a fill lost its spokes"))?;
         let (Some(&m), Some(&v), Some(&v_next)) =
             (mids.get(k), corners.get(k), corners.get((k + 1) % n))
         else {
-            return Err("a fill lost its vertices; this is a bug".into());
+            return Err(craft3d_math::bug_text!("a fill lost its vertices").into());
         };
         spoke_edges.push(body.add_edge(Curve3::Nurbs(spoke.clone()), spoke.domain(), centre, m));
         edge_names.push(PersistentName::new(id, NameRole::LateralEdge, vec![kk]));
         let (first, second) = made
             .halves
             .get(k)
-            .ok_or("a fill lost its curves; this is a bug")?;
+            .ok_or(craft3d_math::bug_text!("a fill lost its curves"))?;
         let e1 = body.add_edge(Curve3::Nurbs(first.clone()), first.domain(), v, m);
         edge_names.push(PersistentName::new(id, NameRole::StartEdge, vec![kk]));
         let e2 = body.add_edge(Curve3::Nurbs(second.clone()), second.domain(), m, v_next);
@@ -831,7 +832,7 @@ pub(crate) fn build_nsided(
             half_edges.get(k),
             half_edges.get(next),
         ) else {
-            return Err("a fill lost its edges; this is a bug".into());
+            return Err(craft3d_math::bug_text!("a fill lost its edges").into());
         };
         let lp = body.add_loop(vec![
             Coedge {
@@ -854,7 +855,7 @@ pub(crate) fn build_nsided(
         let surface = made
             .patches
             .get(k)
-            .ok_or("a fill lost its patches; this is a bug")?;
+            .ok_or(craft3d_math::bug_text!("a fill lost its patches"))?;
         face_ids.push(body.add_face(Surface::Nurbs(surface.clone()), false, vec![lp]));
         face_names.push(PersistentName::new(
             id,

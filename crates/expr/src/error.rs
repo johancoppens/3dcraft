@@ -393,10 +393,9 @@ impl fmt::Display for ErrorKind {
             ErrorKind::DependencyFailed { name } => {
                 write!(f, "depends on `{name}`, which has an error")
             }
-            ErrorKind::Internal => write!(
-                f,
-                "internal error: malformed expression tree (please report this)"
-            ),
+            ErrorKind::Internal => {
+                f.write_str(craft3d_math::bug_text!("an expression's tree is malformed"))
+            }
         }
     }
 }

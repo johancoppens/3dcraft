@@ -166,7 +166,9 @@ fn carry(
 ) -> Result<(), KernelError> {
     let lost = || KernelError::Unsupported {
         operation,
-        reason: "the operation's map of where its entities came from does not fit its body; this is a bug",
+        reason: craft3d_math::bug_text!(
+            "the operation's map of where its entities came from does not fit its body"
+        ),
         faces: Vec::new(),
     };
     // Start from nothing: what the operation's own steps recorded was

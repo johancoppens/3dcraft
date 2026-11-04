@@ -27,6 +27,7 @@ use crate::{CommandError, CommandSpec, OpenDocument, Session};
 use craft3d_doc::sketch::{ConstraintKind, Geometry, PlaceMap};
 use craft3d_doc::{Document, Expect, Expr, FeatureKind, LengthUnit, OutputDef, PatternLayout};
 use craft3d_expr::{Dimension, Evaluation, Quantity};
+use craft3d_math::BUG;
 use craft3d_math::Portable;
 use craft3d_math::Vec3;
 use serde_json::{Map, Value, json};
@@ -638,7 +639,7 @@ fn keep_the_sizes(
                 .any(|(e, (_, s, _))| e.source() != s)
         {
             return Err(format!(
-                "the expressions of `{feature_name}` could not be told apart (a bug in 3DCraft, please report it)"
+                "{BUG}: the expressions of `{feature_name}` could not be told apart"
             ));
         }
         for (expr, (name, source, role)) in exprs.into_iter().zip(named) {

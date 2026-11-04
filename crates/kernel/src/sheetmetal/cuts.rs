@@ -35,6 +35,7 @@ use super::{
 use crate::KernelError;
 use crate::profile::{Loop2, distance};
 use craft3d_geom::{Circle, Curve3, Cylinder, Plane, Surface};
+use craft3d_math::BUG;
 use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId};
@@ -536,7 +537,7 @@ fn analyse(
                 refuse(
                     None,
                     format!(
-                        "{named}: a piece of it near ({}, {}) lies in no one flat or bend of the flat pattern; this is a bug",
+                        "{BUG}: {named}: a piece of it near ({}, {}) lies in no one flat or bend of the flat pattern",
                         mid[0], mid[1]
                     ),
                 )
@@ -1127,7 +1128,9 @@ pub(super) fn folded_sheet(
             if starts.insert(p.from, i).is_some() {
                 return Err(refuse(
                     None,
-                    "the faces of a flat pattern with a hole across a bend could not be traced: two pieces start at one point; this is a bug",
+                    craft3d_math::bug_text!(
+                        "the faces of a flat pattern with a hole across a bend could not be traced: two pieces start at one point"
+                    ),
                 ));
             }
         }
@@ -1143,7 +1146,9 @@ pub(super) fn folded_sheet(
                 if used.get(at).copied().unwrap_or(true) {
                     return Err(refuse(
                         None,
-                        "the faces of a flat pattern with a hole across a bend could not be traced: a boundary does not close; this is a bug",
+                        craft3d_math::bug_text!(
+                            "the faces of a flat pattern with a hole across a bend could not be traced: a boundary does not close"
+                        ),
                     ));
                 }
                 if let Some(u) = used.get_mut(at) {
@@ -1154,7 +1159,9 @@ pub(super) fn folded_sheet(
                 let Some(&next) = starts.get(&p.to) else {
                     return Err(refuse(
                         None,
-                        "the faces of a flat pattern with a hole across a bend could not be traced: a boundary stops; this is a bug",
+                        craft3d_math::bug_text!(
+                            "the faces of a flat pattern with a hole across a bend could not be traced: a boundary stops"
+                        ),
                     ));
                 };
                 if next == first {
@@ -1207,7 +1214,9 @@ pub(super) fn folded_sheet(
                 None => {
                     return Err(refuse(
                         None,
-                        "a hole of a flat pattern with a hole across a bend lies in none of its faces; this is a bug",
+                        craft3d_math::bug_text!(
+                            "a hole of a flat pattern with a hole across a bend lies in none of its faces"
+                        ),
                     ));
                 }
             }

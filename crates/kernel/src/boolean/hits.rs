@@ -22,7 +22,9 @@ use craft3d_geom::{Curve3, GeomError, Surface};
 use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Tolerance, Vec3};
 
-const FREEFORM: &str = "a freeform (Bézier or NURBS) surface that was not indexed for booleans (a bug in 3DCraft, please report it)";
+const FREEFORM: &str = craft3d_math::bug_text!(
+    "a freeform (Bézier or NURBS) surface that was not indexed for booleans"
+);
 const ALONG: &str = "a curve that runs along a surface within the tolerance without lying on it (at the edge of tolerance)";
 
 /// The most evaluations one curve and surface may cost.

@@ -16,6 +16,7 @@ use crate::sketch::{FormulaFits, Placement, SketchResult, formula_fits, solve_sk
 use crate::{FeatureResult, Status};
 use craft3d_doc::{Document, Feature, FeatureId, FeatureKind, Sketch, Tolerance, Units};
 use craft3d_expr::{Dimension, Evaluation};
+use craft3d_math::BUG;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -1167,7 +1168,7 @@ fn rederive_all(
                 other => format!("{other:?} and no body"),
             };
             result.status = Status::Failed(format!(
-                "the body of `{}` could not be derived again from what it is made from ({why}); this is a bug of the regeneration cache",
+                "{BUG}: the regeneration cache could not derive the body of `{}` again from what it is made from ({why})",
                 feature.name
             ));
             continue;

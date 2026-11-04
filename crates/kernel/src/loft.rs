@@ -124,7 +124,10 @@ fn refuse(sections: &[usize], reason: impl Into<String>) -> KernelError {
 }
 
 fn internal() -> KernelError {
-    refuse(&[], "the loft lost track of a section; this is a bug")
+    refuse(
+        &[],
+        craft3d_math::bug_text!("the loft lost track of a section"),
+    )
 }
 
 /// An arc as a piece of a circle: the points `center + radius (cos a · x +

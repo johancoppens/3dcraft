@@ -115,6 +115,7 @@ use crate::sweep::{
 };
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::NurbsCurve;
+use craft3d_math::BUG;
 use craft3d_math::quadrature::Rule;
 use craft3d_math::{Frame, Portable, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, EdgeId, FaceId};
@@ -174,7 +175,7 @@ const SAME_JOINT: f64 = 1e-12;
 fn internal() -> KernelError {
     refuse(
         &[],
-        "the sweep along two rails lost track of a curve; this is a bug",
+        craft3d_math::bug_text!("the sweep along two rails lost track of a curve"),
     )
 }
 
@@ -1946,7 +1947,7 @@ pub fn sweep_two_rails_up(
                 return Err(refuse(
                     &[leg.a.source, leg.b.source],
                     format!(
-                        "followed round the closed rails the section comes back {gap} from where it started; this is a bug"
+                        "{BUG}: followed round the closed rails the section comes back {gap} from where it started"
                     ),
                 ));
             }

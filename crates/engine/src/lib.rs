@@ -172,6 +172,7 @@ pub use workspace::{Access, Workspace};
 pub use workspace::{canonical, plain};
 
 use craft3d_doc::Document;
+use craft3d_math::BUG;
 use craft3d_ops::History;
 use craft3d_regen::{Need, Regen};
 use serde_json::Value;
@@ -1043,9 +1044,7 @@ impl Session {
                     .map(|s| (*s).to_string())
                     .or_else(|| payload.downcast_ref::<String>().cloned())
                     .unwrap_or_else(|| "no details".to_string());
-                Err(CommandError::new(format!(
-                    "{id}: internal error (a bug in 3DCraft, please report it): {detail}"
-                )))
+                Err(CommandError::new(format!("{id}: {BUG}: {detail}")))
             }
         }
     }

@@ -48,7 +48,9 @@ pub(super) const TOO_CLOSE: Reason =
 const NO_POLE: Reason =
     "a face on a sphere whose boundary comes close to every point tried as a centre of projection";
 const NO_CUT: Reason = "a face on a torus whose boundary crosses every circle around its axis and every circle around its tube";
-const CUT_CROSSED: Reason = "a face on a torus whose boundary runs through the cut its chart was opened along; this is a bug";
+const CUT_CROSSED: Reason = craft3d_math::bug_text!(
+    "a face on a torus whose boundary runs through the cut its chart was opened along"
+);
 /// How much further than the chart's own bound a stretch's image may move
 /// before it is read as a jump across the cut: the bound is exact on the
 /// torus, and a boundary curve fitted within the tolerance of it moves

@@ -301,7 +301,7 @@ pub(crate) const SHEET_UNION: Reason = "the union of a sheet with a body: a shee
 pub(crate) const NOT_SOLID: Reason =
     "a body that is a sheet, which has no inside: points and interference are told against solids";
 const NO_RAY: Reason = "could not tell inside from outside: every ray tried grazes the other body";
-pub(crate) const LOST: Reason = "the boolean lost track of an entity; this is a bug";
+pub(crate) const LOST: Reason = craft3d_math::bug_text!("the boolean lost track of an entity");
 /// Two faces pass through each other along a curve, and the curve does not
 /// divide one of them: a piece of it is missing (a place where an edge
 /// meets a surface was not found, or a curve was cut short).

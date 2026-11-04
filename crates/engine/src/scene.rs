@@ -13,6 +13,7 @@ use crate::meshes::{
 };
 use crate::{CommandError, Session, Workspace};
 use craft3d_doc::{AngleUnit, Document, Entity, FeatureKind, Geometry, Sketch};
+use craft3d_math::BUG;
 use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_regen::{Regen, SketchResult, Status};
@@ -2090,9 +2091,7 @@ fn internal_error(payload: &(dyn std::any::Any + Send)) -> CommandError {
         .map(|s| (*s).to_string())
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "no details".to_string());
-    CommandError::new(format!(
-        "the scene could not be built: internal error (a bug in 3DCraft, please report it): {detail}"
-    ))
+    CommandError::new(format!("the scene could not be built: {BUG}: {detail}"))
 }
 
 /// The display scene of one state of a document, to be built away from

@@ -54,7 +54,7 @@ const TIE: f64 = 1e-3;
 const APART: f64 = 4.0;
 
 const TANGENT: Reason = "two curves leave a point in the same direction and stay together (tangent contact of higher order)";
-const LOST: Reason = "an imprinted face could not be divided into regions; this is a bug";
+const LOST: Reason = craft3d_math::bug_text!("an imprinted face could not be divided into regions");
 const UNBOUNDED: Reason = "a piece of a face is not closed off by its boundary";
 
 fn wrap(a: f64) -> f64 {
