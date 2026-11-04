@@ -433,7 +433,6 @@ pub(crate) fn io_reason(error: &std::io::Error, access: IoAccess) -> String {
         (ErrorKind::ReadOnlyFilesystem, _) => {
             "the disk is read-only; choose a folder on another disk".to_string()
         }
-        (ErrorKind::IsADirectory, _) => "that is a folder, not a file; give a file name".to_string(),
         (ErrorKind::FileTooLarge, _) => "the file is larger than the disk allows".to_string(),
         _ => error.to_string(),
     }
@@ -445,9 +444,9 @@ pub(crate) fn io_reason(error: &std::io::Error, access: IoAccess) -> String {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CommandError> {
     use std::io::Write;
-    let fail = |e: std::io::Error| {
+    let fail = |what: &str, e: std::io::Error| {
         CommandError::new(format!(
-            "cannot write `{}`: {}",
+            "cannot {what} `{}`: {}",
             path.display(),
             io_reason(&e, IoAccess::Write)
         ))
@@ -471,15 +470,15 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CommandError
         };
         let mut file = match open() {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                std::fs::remove_file(&temp).map_err(fail)?;
+                std::fs::remove_file(&temp).map_err(|e| fail("create a temporary file for", e))?;
                 open()
             }
             other => other,
         }
-        .map_err(fail)?;
-        file.write_all(bytes).map_err(fail)?;
-        file.sync_all().map_err(fail)?;
-        std::fs::rename(&temp, path).map_err(fail)
+        .map_err(|e| fail("create a temporary file for", e))?;
+        file.write_all(bytes).map_err(|e| fail("write", e))?;
+        file.sync_all().map_err(|e| fail("write", e))?;
+        std::fs::rename(&temp, path).map_err(|e| fail("replace", e))
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&temp);
