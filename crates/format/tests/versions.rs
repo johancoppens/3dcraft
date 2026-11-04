@@ -114,6 +114,9 @@ const FROZEN: &[(u32, usize, u64)] = &[
     // A sheet-metal plate with a curved flange on its half-round top and a
     // collar round a hole (curved_flanges), under max_strain.
     (68, 5102, 0xb68e_f3bd_a11f_0fb4),
+    // A periodic closed spline through points and one on control points,
+    // and a closed one with periodic: false, each extruded (periodic).
+    (69, 8469, 0x0bdd_b6c7_e128_6e6d),
 ];
 
 fn dir() -> PathBuf {

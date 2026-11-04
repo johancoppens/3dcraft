@@ -1,0 +1,471 @@
+{
+  "format_version": 69,
+  "written_by": "7383535e31a3ab0510f6e2b2c09e9d6a84f33308",
+  "how": "the engine of that commit (on the developer's laptop, by a temporary test, crates/engine/tests/zz_write_fixture_v69.rs, that ran v69.steps.json in a session as craft3d-cli run --new '{\"units\": \"mm\"}' --script v69.steps.json --out v69.3dcraft does, printed the file and what document.inspect said of it opened again); a periodic closed spline through eight points extruded, a periodic closed spline on five control points extruded, and a closed spline with periodic: false (a corner at its first point) extruded: the periodic field of a sketch spline, format 69",
+  "rollback": null,
+  "features": [
+    {
+      "dof": 16,
+      "id": "F1",
+      "name": "Ring",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 12.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 12.000000000000002,
+              "y": 1.8571428571428572
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 8.714285714285715,
+              "y": 5.571428571428572
+            },
+            "id": 3
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": -0.5,
+              "y": 7.7142857142857135
+            },
+            "id": 4
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": -6.714285714285714,
+              "y": 5.571428571428572
+            },
+            "id": 5
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": -8.642857142857144,
+              "y": -3.653467085715771e-16
+            },
+            "id": 6
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": -6.714285714285714,
+              "y": -5.571428571428572
+            },
+            "id": 7
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": -0.5000000000000004,
+              "y": -7.7142857142857135
+            },
+            "id": 8
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 8.714285714285715,
+              "y": -5.571428571428572
+            },
+            "id": 9
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 12.0,
+              "y": -1.8571428571428577
+            },
+            "id": 10
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "control": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                1
+              ],
+              "degree": 3,
+              "periodic": true,
+              "type": "spline"
+            },
+            "id": 11
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 12,
+        "plane": {
+          "offset": "0",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F2",
+      "name": "Disc",
+      "params": {
+        "distance": "5 mm",
+        "end": {
+          "type": "distance"
+        },
+        "reversed": false,
+        "sketch": 1,
+        "symmetric": false,
+        "type": "extrude"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 10,
+      "id": "F3",
+      "name": "Cage",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 9.166666666666666,
+              "y": -7.500000000000002
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 10.0,
+              "y": -3.333333333333335
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 10.0,
+              "y": 10.0
+            },
+            "id": 3
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": -10.0,
+              "y": 10.0
+            },
+            "id": 4
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": -10.0,
+              "y": -10.0
+            },
+            "id": 5
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 5.0,
+              "y": -15.0
+            },
+            "id": 6
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 8.333333333333334,
+              "y": -11.666666666666668
+            },
+            "id": 7
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "control": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                1
+              ],
+              "degree": 3,
+              "periodic": true,
+              "type": "spline"
+            },
+            "id": 8
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 9,
+        "plane": {
+          "offset": "20 mm",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F4",
+      "name": "Pad",
+      "params": {
+        "distance": "4 mm",
+        "end": {
+          "type": "distance"
+        },
+        "reversed": false,
+        "sketch": 3,
+        "symmetric": false,
+        "type": "extrude"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 8,
+      "id": "F5",
+      "name": "Drop",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 10.0,
+              "y": 6.0
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 14.0,
+              "y": 14.0
+            },
+            "id": 3
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 6.0,
+              "y": 12.0
+            },
+            "id": 4
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "control": [
+                1,
+                2,
+                3,
+                4,
+                1
+              ],
+              "degree": 3,
+              "type": "spline"
+            },
+            "id": 5
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 6,
+        "plane": {
+          "offset": "40 mm",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F6",
+      "name": "Tear",
+      "params": {
+        "distance": "3 mm",
+        "end": {
+          "type": "distance"
+        },
+        "reversed": false,
+        "sketch": 5,
+        "symmetric": false,
+        "type": "extrude"
+      },
+      "status": "ok",
+      "suppressed": false
+    }
+  ],
+  "bodies": [
+    {
+      "area": 709.6538919021218,
+      "bbox": [
+        [
+          -8.0,
+          -7.0,
+          0.0
+        ],
+        [
+          12.0,
+          7.0,
+          5.0
+        ]
+      ],
+      "bboxTolerance": 0.043074397138888415,
+      "centroid": [
+        1.501449577359606,
+        4.1404426470142767e-16,
+        2.5
+      ],
+      "edges": 6,
+      "faceNames": [
+        "F2:side(e11)",
+        "F2:piece(1)/F2:side(e11)",
+        "F2:startCap(e11)",
+        "F2:endCap(e11)"
+      ],
+      "faces": 4,
+      "feature": "F2",
+      "kind": "solid",
+      "name": "Disc",
+      "shells": 1,
+      "valid": true,
+      "vertices": 4,
+      "volume": 1098.30612244898
+    },
+    {
+      "area": 955.3648480212573,
+      "bbox": [
+        [
+          -9.270833333333334,
+          -13.333333333333332,
+          19.999999999999993
+        ],
+        [
+          9.620768229166666,
+          9.166666666666668,
+          24.0
+        ]
+      ],
+      "bboxTolerance": 0.043074397138888415,
+      "centroid": [
+        0.4832629288274446,
+        -1.9559011776753712,
+        22.0
+      ],
+      "edges": 6,
+      "faceNames": [
+        "F4:side(e8)",
+        "F4:piece(1)/F4:side(e8)",
+        "F4:startCap(e8)",
+        "F4:endCap(e8)"
+      ],
+      "faces": 4,
+      "feature": "F4",
+      "kind": "solid",
+      "name": "Pad",
+      "shells": 1,
+      "valid": true,
+      "vertices": 4,
+      "volume": 1377.777777777778
+    },
+    {
+      "area": 190.38494895529917,
+      "bbox": [
+        [
+          0.0,
+          0.0,
+          40.0
+        ],
+        [
+          11.224609375,
+          12.0240478515625,
+          43.0
+        ]
+      ],
+      "bboxTolerance": 0.043074397138888415,
+      "centroid": [
+        6.332199546485256,
+        6.842970521541954,
+        41.5
+      ],
+      "edges": 6,
+      "faceNames": [
+        "F6:side(e5)",
+        "F6:piece(1)/F6:side(e5)",
+        "F6:startCap(e5)",
+        "F6:endCap(e5)"
+      ],
+      "faces": 4,
+      "feature": "F6",
+      "kind": "solid",
+      "name": "Tear",
+      "shells": 1,
+      "valid": true,
+      "vertices": 4,
+      "volume": 132.29999999999995
+    }
+  ]
+}
