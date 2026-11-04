@@ -858,7 +858,7 @@ impl Shell {
     fn player_position(&self) -> String {
         if self.playing_motion_mode() {
             let shown = self.timeline.motion_t().unwrap_or(0.0);
-            t_text(self.shown_t().unwrap_or(shown))
+            t_readout(self.shown_t().unwrap_or(shown))
         } else {
             let steps = self.timeline.steps;
             let shown = self.timeline.shown_step().clamp(1, steps.max(1));
@@ -907,7 +907,7 @@ impl Shell {
                 if self.playing_motion_mode() {
                     let play = self.play_button(ui, &kit);
                     let shown = self.timeline.motion_t().unwrap_or(0.0);
-                    let label = t_text(self.shown_t().unwrap_or(shown));
+                    let label = t_readout(self.shown_t().unwrap_or(shown));
                     let room =
                         (ui.available_width() - tokens.compact_player_label - PLAYER_GROUP_GAP)
                             .max(40.0);
@@ -1005,6 +1005,13 @@ pub(crate) fn button_side_for(row: f32, tokens: &Tokens) -> f32 {
 /// `Shell::shown_t`, rounded the same way.
 pub(crate) fn t_text(t: f64) -> String {
     format!("t = {t:.3}")
+}
+
+/// The player row's position readout of a motion (board s8): `t 0.350`,
+/// the same rounding as [`t_text`], without the `=` the sentences of the
+/// caption and the status bar keep.
+pub(crate) fn t_readout(t: f64) -> String {
+    format!("t {t:.3}")
 }
 
 #[cfg(test)]
