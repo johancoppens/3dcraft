@@ -121,6 +121,14 @@ mod visibility_cmds;
 mod when_cmds;
 mod workspace;
 
+/// What the error of a command that panicked says after [`craft3d_math::BUG`]:
+/// a panic caught (a crash), told apart from a bug the code caught itself
+/// and refused with (the fuzz runner's `crash` and `bug`).
+pub const PANICKED: &str = "it panicked";
+
+/// The words of every bug (`craft3d_math::BUG`), for the engine's users.
+pub use craft3d_math::BUG;
+
 pub use asm_outline::{AssemblyOutline, JointHandle, OutlineInstance, OutlineMate};
 pub use assert_cmds::{AssertionState, AssertionStatus};
 pub use checks_elsewhere::{CheckRequest, measure_checks};
@@ -172,7 +180,6 @@ pub use workspace::{Access, Workspace};
 pub use workspace::{canonical, plain};
 
 use craft3d_doc::Document;
-use craft3d_math::BUG;
 use craft3d_ops::History;
 use craft3d_regen::{Need, Regen};
 use serde_json::Value;
@@ -1098,7 +1105,9 @@ impl Session {
                     .map(|s| (*s).to_string())
                     .or_else(|| payload.downcast_ref::<String>().cloned())
                     .unwrap_or_else(|| "no details".to_string());
-                Err(CommandError::new(format!("{id}: {BUG}: {detail}")))
+                Err(CommandError::new(format!(
+                    "{id}: {BUG}: {PANICKED}: {detail}"
+                )))
             }
         }
     }
