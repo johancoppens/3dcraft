@@ -38,7 +38,8 @@ numbers other than 0 (`[1, "25 mm", 0]`: give all as lengths or all as numbers).
 
 `feature.sweep` with `rail` carries the profile along two curves at once: two of its points follow the
 two rails, so it grows and shrinks as they part and close in. `path` and `rail` are each a sketch of one
-open chain (lines, arcs and splines end to end), and each starts on the outline of the profile. The two
+open chain (lines, arcs and splines end to end), and each starts on the outline of the profile (or both
+close into rings, below). The two
 are walked together by the fraction of each one's length, the profile's x axis along the line between
 them and its y axis as near to the normal of the `path`'s sketch as that allows: for rails drawn in one
 plane, the sections stand square to it, so draw the profile on the plane through both rails' starts
@@ -76,6 +77,49 @@ face is named after the curve of the profile and the curves of the two rails it 
 (`F4:side(e2,e3,e3)`), so a rail can be redrawn without losing what is built on the faces. Refused, with
 the place: a rail that does not start on the profile, rails that meet or cross, rails that start at one
 point, and a sweep that would fold or pass through itself.
+
+**Rings.** Both rails may close: a sketch of lines, arcs and splines that close into one loop, or one
+circle. Each ring has to pass through the outline of the profile, and the body is a closed ring
+without ends (`closed` in the result). A circle carried round two concentric circles is a torus:
+
+```json
+[
+ ["variable.set", {"name": "major", "expr": "40 mm"}],
+ ["variable.set", {"name": "minor", "expr": "6 mm"}],
+ ["sketch.create", {"name": "Section", "plane": "zx"}],
+ ["sketch.circle", {"sketch": "Section", "center": [0, "major"], "radius": "minor"}],
+ ["sketch.create", {"name": "Inner", "plane": "xy"}],
+ ["sketch.circle", {"sketch": "Inner", "center": [0, 0], "radius": "major - minor"}],
+ ["sketch.create", {"name": "Outer", "plane": "xy"}],
+ ["sketch.circle", {"sketch": "Outer", "center": [0, 0], "radius": "major + minor"}],
+ ["feature.sweep", {"sketch": "Section", "path": "Inner", "rail": "Outer", "name": "Ring"}],
+ ["assert.add", {"name": "torus", "measure": "volume", "of": "Ring", "eq": "2 * pi * major * pi * minor^2"}]
+]
+```
+
+**The up direction.** `up` sets the direction the profile stands in with the line between the rails,
+instead of the normal of the `path`'s sketch: `"x"`, `"y"`, `"z"`, two face names for the straight edge
+between them, or a datum axis (which way it points does not matter; `null` in `feature.edit` goes back
+to the default). Draw the profile on the plane through both rails' starts that holds it. A flat band
+round two rings, standing along an axis that leans 27° from z, leans forwards and back as it goes round:
+
+```json
+[
+ ["sketch.create", {"name": "Blade", "plane": "zx"}],
+ ["sketch.rect", {"sketch": "Blade", "from": [0, 38], "to": [12, 42]}],
+ ["sketch.create", {"name": "Inside", "plane": "xy"}],
+ ["sketch.circle", {"sketch": "Inside", "center": [0, 0], "radius": 38}],
+ ["sketch.create", {"name": "Outside", "plane": "xy"}],
+ ["sketch.circle", {"sketch": "Outside", "center": [0, 0], "radius": 42}],
+ ["datum.axis", {"through": [[0, 0, 0], [0.5, 0, 1]], "name": "Lean"}],
+ ["feature.sweep", {"sketch": "Blade", "path": "Inside", "rail": "Outside", "up": "Lean", "name": "Band"}]
+]
+```
+
+![A band round two rings, leaning with the up direction](images/two-rail-lean.png)
+
+An up direction along the rails would lay the profile into their course; that is refused as the fold
+it makes.
 
 ## Text
 

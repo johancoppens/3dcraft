@@ -497,22 +497,30 @@ pub struct OffsetProfile {
 /// The solid one closed profile sweeps out as it is carried along a path
 /// in a plane, staying square to it; or, with a second rail, carried so
 /// that two of its points follow `path` and `rail`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sweep {
     /// The sketch feature whose one closed profile is carried.
     pub sketch: FeatureId,
     /// The sketch feature whose curves are the path: one chain of lines,
     /// arcs and splines, open or closed, or a circle. With `rail`, the
-    /// first rail: one open chain.
+    /// first rail: one chain, open or closed, or a circle.
     pub path: FeatureId,
-    /// The second rail, a sketch of one open chain: the profile is then
-    /// placed at each station so that the points where the rails start
-    /// on it follow `path` and `rail` (format version 66).
+    /// The second rail, a sketch of one chain (open, or closed when the
+    /// path is, or a circle): the profile is then placed at each station
+    /// so that the points where the rails start on it, or pass through
+    /// it, follow `path` and `rail` (format version 66; closed rails 67).
     #[serde(default)]
     pub rail: Option<FeatureId>,
     /// How a sweep along two rails scales the profile between them.
     #[serde(default)]
     pub scale: SweepScale,
+    /// The up direction of a sweep along two rails: the section stands in
+    /// the plane of the chord between the rails and this direction (an
+    /// axis of the world, the straight edge between two faces, or a datum
+    /// axis; its sense does not matter). `None`: the normal of the path's
+    /// sketch (format version 67).
+    #[serde(default)]
+    pub up: Option<AxisRef>,
 }
 
 /// How a sweep along two rails scales the profile as the rails part or
@@ -1671,6 +1679,11 @@ impl FeatureKind {
             FeatureKind::Sweep(s) => {
                 let mut out = vec![s.sketch, s.path];
                 out.extend(s.rail);
+                for id in s.up.iter().flat_map(AxisRef::inputs) {
+                    if !out.contains(&id) {
+                        out.push(id);
+                    }
+                }
                 out
             }
             FeatureKind::OffsetProfile(o) => vec![o.sketch],
@@ -2551,6 +2564,7 @@ impl Document {
                     faces.iter().collect()
                 }
                 FeatureKind::Thread(thread) => vec![&thread.face, &thread.start],
+                FeatureKind::Sweep(sweep) => sweep.up.iter().flat_map(AxisRef::names).collect(),
                 FeatureKind::Split(split) => vec![&split.face],
                 FeatureKind::SurfaceNetwork(n) => {
                     let mut names = Vec::new();

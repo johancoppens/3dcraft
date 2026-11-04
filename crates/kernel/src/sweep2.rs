@@ -1,12 +1,28 @@
 //! Sweep along two rails: the solid a closed profile sweeps out as it is
 //! carried so that two of its points follow two curves in space.
 //!
-//! **The rails** are two open chains of lines, arcs and splines, each
-//! drawn in a sketch of its own (so the two may lie in different planes).
-//! Each starts on the profile: the end of a chain that touches the
-//! profile's outline (within the tolerance) is where it starts. Those two
-//! points of the outline, `a` and `b`, are the points that follow the
-//! rails.
+//! **The rails** are two chains of lines, arcs and splines, each drawn
+//! in a sketch of its own (so the two may lie in different planes), both
+//! open or both closed (one circle is a closed rail: two half turns).
+//! An open rail starts on the profile: the end of a chain that touches
+//! the profile's outline (within the tolerance) is where it starts. A
+//! closed rail passes through the profile's plane on its outline (where
+//! it does so nearest the outline: along a line and an arc in closed
+//! form, along a spline by sign changes and bisection) and is travelled
+//! the way the profile's normal points. Those two points of the outline,
+//! `a` and `b`, are the points that follow the rails.
+//!
+//! **Rings.** Round two closed rails the stations are fractions of each
+//! ring's length counted from `a` and `b`, as for open rails, and the
+//! placement at `σ = 1` is the one at `σ = 0`. The body starts at the
+//! first joint of either ring after the profile (so the curve the profile
+//! is on is not cut there); the other ring's curve there is cut in two,
+//! each part keeping the curve's parameter and its share of `σ`, and runs
+//! first and last, beside different curves of the first ring, so no two
+//! faces have one name. The last leg ends on the first leg's ring of
+//! edges (its last station is the start's, whose gap from the exact one
+//! is in the proof like any other); a shell per loop of the profile, no
+//! caps.
 //!
 //! **Stations.** A station is a value `σ` from 0 to 1 and a point on each
 //! rail: `A(σ)` at the fraction `σ` of rail A's length, `B(σ)` at the same
@@ -20,9 +36,12 @@
 //! by a similarity that takes `a` to `A(σ)` and `b` to `B(σ)`. Its x axis
 //! (from `a` to `b`) is the chord; its y axis is the *up* direction made
 //! square to the chord: `w = (up − (up·e) e) / |…|`, `e = c / |c|`. The up
-//! direction is the normal of rail A's sketch plane, turned round when the
-//! rails leave the profile against it: for rails drawn in one plane the
-//! sections stand square to that plane. A profile is drawn in the plane of
+//! direction is the one given ([`sweep_two_rails_up`]) or the normal of
+//! rail A's sketch plane, turned round when the rails leave the profile
+//! against it: for rails drawn in one plane the sections stand square to
+//! that plane by default. A constant `up` keeps every bound below as it
+//! is; an up direction along the rails lays the section into their course
+//! and is refused as the fold it makes. A profile is drawn in the plane of
 //! the chord and the up direction at the start (a profile that leans off
 //! it by less than the linear tolerance moves is laid into it). The
 //! profile is scaled by `s = |c(σ)| / |b − a|`: **uniformly** by default,
@@ -39,9 +58,10 @@
 //! **The surface.** Each curve of the profile sweeps one face per *leg*:
 //! a stretch of `σ` over which each rail runs along one piece. Where the
 //! legs meet every face shares the profile's edges at an exact station.
-//! A leg along which both rails are parallel lines of equal length and the
-//! profile keeps its size is a translation, and is swept exactly (planes
-//! and cylinders, as an extrusion). Every other leg is a B-spline surface
+//! A leg along which both rails are parallel lines of equal length, the
+//! profile keeps its size and moves square to its plane is a translation,
+//! and is swept exactly (planes and cylinders, as an extrusion; at a slant
+//! a circle would sweep an elliptic cylinder, so that leg is followed). Every other leg is a B-spline surface
 //! through the profile placed at stations along it, in parts of degree 5,
 //! 7 or 9 through the Chebyshev points ([`crate::sweep::part_band`]), as
 //! along a spline path. **The bound is proven, not sampled:** the surface
@@ -65,7 +85,9 @@
 //! what was reached is [`Swept::deviation`].
 //!
 //! **What is refused, before anything is built:** a rail that is not one
-//! open chain, a rail that does not start on the profile's outline, rails
+//! chain, an open rail with a closed one, a rail that does not start on
+//! (or a ring that does not pass through) the profile's outline, an up
+//! direction of no length, rails
 //! that meet or cross (a branch and bound over pairs of places, each pair
 //! of boxes judged by the distance at its centre less what the rails can
 //! move within it: proven apart, or refused with the place), rails that
@@ -85,7 +107,7 @@
 
 use crate::extrude::{Origin, Role, cap_sources, each_curve_once};
 use crate::loft::Band;
-use crate::profile::{Profile, Segment, Shape, SketchCurve, open_chain};
+use crate::profile::{Curve2, Profile, Segment, Shape, SketchCurve, chain};
 use crate::spline2::{Spline2, distance_to};
 use crate::sweep::{
     Builder, Form, Map2, Motion, P2, Station, Swept, coedge, part_band, profile_loops, quarters,
@@ -185,6 +207,177 @@ enum Course {
         speed: f64,
         bend: f64,
     },
+}
+
+impl Course {
+    /// The point at the share `q` of the course (its own parameter).
+    fn at(&self, q: f64) -> Vec3 {
+        match self {
+            Course::Line { from, to } => *from + (*to - *from) * q,
+            Course::Arc {
+                center,
+                x,
+                y,
+                radius,
+                sweep,
+            } => {
+                let (s, c) = (sweep * q).psin_cos();
+                *center + (*x * c + *y * s) * *radius
+            }
+            Course::Spline { curve, t0, t1, .. } => curve.eval(t0 + (t1 - t0) * q),
+        }
+    }
+
+    /// The derivative by the share at `q`.
+    fn tangent(&self, q: f64) -> Vec3 {
+        match self {
+            Course::Line { from, to } => *to - *from,
+            Course::Arc {
+                x,
+                y,
+                radius,
+                sweep,
+                ..
+            } => {
+                let (s, c) = (sweep * q).psin_cos();
+                (*y * c - *x * s) * (radius * sweep)
+            }
+            Course::Spline {
+                derivative, t0, t1, ..
+            } => derivative.eval(t0 + (t1 - t0) * q) * (t1 - t0),
+        }
+    }
+
+    /// The stretch of the course from the share `q0` to `q1`, run by the
+    /// same parameter (a spline's bounds on its derivatives hold for any
+    /// stretch of it).
+    fn between(&self, q0: f64, q1: f64) -> Course {
+        match self {
+            Course::Line { .. } => Course::Line {
+                from: self.at(q0),
+                to: self.at(q1),
+            },
+            Course::Arc {
+                center,
+                x,
+                y,
+                radius,
+                sweep,
+            } => {
+                let (s, c) = (sweep * q0).psin_cos();
+                Course::Arc {
+                    center: *center,
+                    x: *x * c + *y * s,
+                    y: *y * c - *x * s,
+                    radius: *radius,
+                    sweep: sweep * (q1 - q0),
+                }
+            }
+            Course::Spline {
+                curve,
+                derivative,
+                t0,
+                t1,
+                speed,
+                bend,
+            } => Course::Spline {
+                curve: curve.clone(),
+                derivative: derivative.clone(),
+                t0: t0 + (t1 - t0) * q0,
+                t1: t0 + (t1 - t0) * q1,
+                speed: *speed,
+                bend: *bend,
+            },
+        }
+    }
+
+    /// The shares at which the course passes through the level set
+    /// `height = 0` of an affine function: in closed form along a line
+    /// and an arc, by sign changes at 32 places per span of a spline and
+    /// bisection.
+    fn crossings(&self, height: &dyn Fn(Vec3) -> f64, tol: f64) -> Vec<f64> {
+        let mut out = Vec::new();
+        match self {
+            Course::Line { from, to } => {
+                let (a, b) = (height(*from), height(*to));
+                let f = a / (a - b);
+                let slack = tol / from.distance(*to);
+                if f.is_finite() && f >= -slack && f <= 1.0 + slack {
+                    out.push(f.clamp(0.0, 1.0));
+                } else if a.abs() <= tol {
+                    out.push(0.0);
+                }
+            }
+            Course::Arc {
+                center,
+                x,
+                y,
+                radius,
+                sweep,
+            } => {
+                // h(φ) = h(c) + r (h_x cos φ + h_y sin φ), h affine.
+                let base = height(*center);
+                let hx = height(*center + *x) - base;
+                let hy = height(*center + *y) - base;
+                let reach = hx.phypot(hy) * radius;
+                let level = -base / reach;
+                if level.is_finite() && level.abs() <= 1.0 {
+                    let middle = hy.patan2(hx);
+                    let half = level.pacos();
+                    let slack = tol / radius;
+                    for angle in [middle - half, middle + half] {
+                        let turned = angle.rem_euclid(std::f64::consts::TAU);
+                        let turned = if turned >= std::f64::consts::TAU - slack {
+                            0.0
+                        } else {
+                            turned
+                        };
+                        if turned <= sweep + slack {
+                            out.push((turned / sweep).clamp(0.0, 1.0));
+                        }
+                    }
+                }
+            }
+            Course::Spline { curve, t0, t1, .. } => {
+                let mut spans: Vec<f64> = vec![*t0];
+                spans.extend(
+                    curve
+                        .knots()
+                        .iter()
+                        .copied()
+                        .filter(|k| *k > *t0 && *k < *t1),
+                );
+                spans.push(*t1);
+                spans.dedup();
+                let share = |t: f64| (t - t0) / (t1 - t0);
+                let at = |t: f64| height(curve.eval(t));
+                if at(*t0).abs() <= tol {
+                    out.push(0.0);
+                }
+                for (&low, &high) in spans.iter().zip(spans.iter().skip(1)) {
+                    const STEPS: u32 = 32;
+                    for step in 0..STEPS {
+                        let mut a = low + (high - low) * f64::from(step) / f64::from(STEPS);
+                        let mut b = low + (high - low) * f64::from(step + 1) / f64::from(STEPS);
+                        let (ha, hb) = (at(a), at(b));
+                        if !(ha.is_finite() && hb.is_finite()) || (ha > 0.0) == (hb > 0.0) {
+                            continue;
+                        }
+                        for _ in 0..60 {
+                            let middle = 0.5 * (a + b);
+                            if (at(middle) > 0.0) == (ha > 0.0) {
+                                a = middle;
+                            } else {
+                                b = middle;
+                            }
+                        }
+                        out.push(share(0.5 * (a + b)).clamp(0.0, 1.0));
+                    }
+                }
+            }
+        }
+        out
+    }
 }
 
 /// One piece of a rail, over `[from, to]` of `σ`.
@@ -442,28 +635,166 @@ fn course_length(course: &Course) -> f64 {
     }
 }
 
-/// The rail through `curves` in `plane`, starting at the end of the chain
-/// nearer to the point `near` (the profile).
+/// The segments of a rail's sketch in the order they are joined, and
+/// whether they close: one chain, or one circle as two half turns
+/// (pieces 0 and 1, from its point at angle 0 of the sketch).
+fn segments_of(
+    curves: &[SketchCurve],
+    tolerance: &Tolerance,
+) -> Result<(Vec<Segment>, bool), KernelError> {
+    if let [only] = curves
+        && let Curve2::Circle { center, radius } = only.curve
+    {
+        if !(radius.is_finite() && radius > tolerance.linear) {
+            return Err(KernelError::DegenerateCurve {
+                id: only.id,
+                reason: "the circle has no radius",
+            });
+        }
+        let east = [center[0] + radius, center[1]];
+        let west = [center[0] - radius, center[1]];
+        let half = |piece: u32, start: [f64; 2], end: [f64; 2]| Segment {
+            source: only.id,
+            piece,
+            reversed: false,
+            start,
+            end,
+            shape: Shape::Arc { center, radius },
+        };
+        return Ok((vec![half(0, east, west), half(1, west, east)], true));
+    }
+    let (chain, closed) = chain(curves, tolerance)?;
+    Ok((chain.segments, closed))
+}
+
+/// Pieces of one length each laid end to end over `σ` from 0 to 1, and
+/// the rail they make.
+fn laid(pieces: Vec<(u64, u32, Course, f64)>) -> Result<Rail, KernelError> {
+    let total: f64 = pieces.iter().map(|p| p.3).sum();
+    let count = pieces.len();
+    let mut run = 0.0;
+    let mut out: Vec<Piece> = Vec::with_capacity(count);
+    for (k, (source, part, course, length)) in pieces.into_iter().enumerate() {
+        let from = run / total;
+        run += length;
+        let to = if k + 1 == count { 1.0 } else { run / total };
+        if to <= from {
+            return Err(internal());
+        }
+        out.push(Piece {
+            source,
+            part,
+            course,
+            length,
+            from,
+            to,
+        });
+    }
+    let rate = out.iter().map(Piece::speed).fold(0.0, f64::max);
+    if !(total.is_finite() && rate.is_finite()) {
+        return Err(internal());
+    }
+    Ok(Rail {
+        pieces: out,
+        length: total,
+        rate,
+    })
+}
+
+/// A rail as drawn: an open one laid on `σ` from where it starts on the
+/// profile, or a closed one, laid on `σ` once it is known where the body
+/// starts round it.
+enum Drawn {
+    Open(Rail),
+    Closed(Round),
+}
+
+/// A closed rail: its pieces in the direction it is travelled, as
+/// fractions of its length from the start of its first piece, and where
+/// it passes through the profile's outline.
+struct Round {
+    rail: Rail,
+    /// The fraction at which it passes through the outline.
+    at: f64,
+}
+
+impl Round {
+    /// The fractions of its joints, counted from where it passes through
+    /// the outline, in `[0, 1)`.
+    fn joints_after(&self) -> impl Iterator<Item = f64> + '_ {
+        self.rail
+            .pieces
+            .iter()
+            .map(|p| (p.from - self.at).rem_euclid(1.0))
+            .map(|f| if f >= 1.0 - SAME_JOINT { 0.0 } else { f })
+    }
+
+    /// The rail laid on `σ` from the fraction `g` of the ring: the piece
+    /// `g` falls in is cut in two there (each part keeping the piece's
+    /// parameter, and the share of `σ` it had), unless `g` is at one of
+    /// its ends within [`SAME_JOINT`].
+    fn opened_at(&self, g: f64) -> Result<Rail, KernelError> {
+        let pieces = &self.rail.pieces;
+        let count = pieces.len();
+        let k = pieces
+            .iter()
+            .position(|p| g <= p.to)
+            .unwrap_or(count.saturating_sub(1));
+        let here = pieces.get(k).ok_or_else(internal)?;
+        let whole = |p: &Piece| (p.source, p.part, p.course.clone(), p.length);
+        let mut out = Vec::with_capacity(count + 1);
+        let (first, split) = if g - here.from <= SAME_JOINT {
+            (k, None)
+        } else if here.to - g <= SAME_JOINT {
+            ((k + 1) % count, None)
+        } else {
+            (k + 1, Some(here.share(g)))
+        };
+        if let Some(q) = split {
+            out.push((
+                here.source,
+                here.part,
+                here.course.between(q, 1.0),
+                here.length * (1.0 - q),
+            ));
+        }
+        for i in 0..count {
+            let index = (first + i) % count;
+            if split.is_some() && index == k {
+                break;
+            }
+            out.push(whole(pieces.get(index).ok_or_else(internal)?));
+        }
+        if let Some(q) = split {
+            out.push((
+                here.source,
+                here.part,
+                here.course.between(0.0, q),
+                here.length * q,
+            ));
+        }
+        laid(out)
+    }
+}
+
+/// The rail through `curves` in `plane`. An open chain starts at the end
+/// nearer to the profile (`near`: how far a point is off its outline). A
+/// closed one (a ring, or one circle) is found where it passes through
+/// the profile's plane (`height`, signed) on its outline, and travelled
+/// the way the profile's normal `normal` points.
 fn rail_of(
     curves: &[SketchCurve],
     plane: &Frame,
     tolerance: &Tolerance,
     near: &dyn Fn(Vec3) -> f64,
-) -> Result<Rail, KernelError> {
-    let chain = open_chain(curves, tolerance)?;
-    let first = chain.segments.first().ok_or(KernelError::NoProfile)?;
-    let last = chain.segments.last().ok_or(KernelError::NoProfile)?;
+    height: &dyn Fn(Vec3) -> f64,
+    normal: Vec3,
+) -> Result<Drawn, KernelError> {
+    let (segments, closed) = segments_of(curves, tolerance)?;
+    let first = segments.first().ok_or(KernelError::NoProfile)?;
+    let last = segments.last().ok_or(KernelError::NoProfile)?;
     let point = |p: P2| plane.point(p[0], p[1], 0.0);
-    let backwards = near(point(last.end)) < near(point(first.start));
-    let mut pieces: Vec<Piece> = Vec::with_capacity(chain.segments.len());
-    let ordered: Vec<&Segment> = if backwards {
-        chain.segments.iter().rev().collect()
-    } else {
-        chain.segments.iter().collect()
-    };
-    let mut total = 0.0;
-    let mut lengths = Vec::with_capacity(ordered.len());
-    for segment in ordered {
+    let lifted = |segment: &Segment, backwards: bool| -> Result<_, KernelError> {
         let course = lift(segment, plane, backwards)?;
         let length = course_length(&course);
         if !(length.is_finite() && length > tolerance.linear) {
@@ -472,36 +803,92 @@ fn rail_of(
                 reason: "the curve of a rail is shorter than the tolerance",
             });
         }
-        total += length;
-        lengths.push(length);
-        pieces.push(Piece {
-            source: segment.source,
-            part: segment.piece,
-            course,
-            length,
-            from: 0.0,
-            to: 0.0,
-        });
+        Ok((segment.source, segment.piece, course, length))
+    };
+    if !closed {
+        let backwards = near(point(last.end)) < near(point(first.start));
+        let ordered: Vec<&Segment> = if backwards {
+            segments.iter().rev().collect()
+        } else {
+            segments.iter().collect()
+        };
+        let pieces = ordered
+            .into_iter()
+            .map(|segment| lifted(segment, backwards))
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(Drawn::Open(laid(pieces)?));
     }
-    let mut run = 0.0;
-    let count = pieces.len();
-    for (k, piece) in pieces.iter_mut().enumerate() {
-        piece.from = run / total;
-        run += piece.length;
-        piece.to = if k + 1 == count { 1.0 } else { run / total };
-        if piece.to <= piece.from {
-            return Err(internal());
+
+    // A ring: where it passes through the outline, nearest to it.
+    let tol = tolerance.linear;
+    let forwards = segments
+        .iter()
+        .map(|segment| lifted(segment, false))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut best: Option<(usize, f64, Vec3, f64)> = None;
+    for (index, (_, _, course, _)) in forwards.iter().enumerate() {
+        for q in course.crossings(height, tol) {
+            let at = course.at(q);
+            let off = near(at);
+            if off.is_finite() && best.is_none_or(|(_, _, _, least)| off < least) {
+                best = Some((index, q, at, off));
+            }
         }
     }
-    let rate = pieces.iter().map(Piece::speed).fold(0.0, f64::max);
-    if !(total.is_finite() && rate.is_finite()) {
-        return Err(internal());
+    let sources: Vec<u64> = segments
+        .iter()
+        .map(|s| s.source)
+        .take(MAX_REPORTED)
+        .collect();
+    let Some((index, q, at, off)) = best else {
+        return Err(refuse(
+            &sources,
+            format!(
+                "the closed rail through e{} does not pass through the section's plane; a closed rail has to pass through the outline of the section",
+                first.source
+            ),
+        ));
+    };
+    if off > tol * 7.0 / 8.0 {
+        return Err(refuse(
+            &sources,
+            format!(
+                "the closed rail through e{} passes through the section's plane at {}, which is {off} from the section's outline; a closed rail has to pass through the outline of the section",
+                first.source,
+                point_text(at)
+            ),
+        ));
     }
-    Ok(Rail {
-        pieces,
-        length: total,
-        rate,
-    })
+    let (_, _, course, _) = forwards.get(index).ok_or_else(internal)?;
+    let tangent = course.tangent(q);
+    let rise = tangent.dot(normal);
+    let along = tangent.length();
+    if !(rise.is_finite() && along.is_finite() && rise.abs() > 1e-9 * along) {
+        return Err(refuse(
+            &sources,
+            format!(
+                "the closed rail through e{} runs along the section's plane where it passes through it at {}; a rail has to cross the section's plane",
+                first.source,
+                point_text(at)
+            ),
+        ));
+    }
+    // Travelled the way the profile's normal points.
+    let backwards = rise < 0.0;
+    let (pieces, index, q) = if backwards {
+        let pieces = segments
+            .iter()
+            .rev()
+            .map(|segment| lifted(segment, true))
+            .collect::<Result<Vec<_>, _>>()?;
+        (pieces, segments.len() - 1 - index, 1.0 - q)
+    } else {
+        (forwards, index, q)
+    };
+    let rail = laid(pieces)?;
+    let piece = rail.pieces.get(index).ok_or_else(internal)?;
+    let fraction = piece.from + (piece.to - piece.from) * q;
+    Ok(Drawn::Closed(Round { at: fraction, rail }))
 }
 
 /// Where the profile is at a station: the chord's length, its direction
@@ -537,6 +924,8 @@ fn placed(a: Vec3, b: Vec3, up: Vec3) -> Option<Placed> {
 /// What every station needs to know.
 struct Setting {
     up: Vec3,
+    /// What the up direction is, for messages.
+    up_text: String,
     /// The distance from `a` to `b` in the profile, which the chord's
     /// length is measured against.
     d_ref: f64,
@@ -544,6 +933,11 @@ struct Setting {
     /// The largest `|x|` and `|y|` of the profile's control points.
     x: f64,
     y: f64,
+    /// The profile's box: the least and largest `x` and `y` of its
+    /// control points (the crossing speed, affine in the point, is least
+    /// at a corner of it).
+    xs: (f64, f64),
+    ys: (f64, f64),
     tol: f64,
     /// The rails are at least this far apart anywhere.
     apart: f64,
@@ -618,10 +1012,10 @@ fn crossing_speed(leg: &Leg, sigma: f64, p: &Placed, set: &Setting) -> f64 {
     let forward = p.e.cross(p.w);
     let mut least = f64::INFINITY;
     for (x, y) in [
-        (set.x, set.y),
-        (set.x, -set.y),
-        (-set.x, set.y),
-        (-set.x, -set.y),
+        (set.xs.0, set.ys.0),
+        (set.xs.0, set.ys.1),
+        (set.xs.1, set.ys.0),
+        (set.xs.1, set.ys.1),
     ] {
         least = least.min((vo + vu * x + vb * y).dot(forward));
     }
@@ -658,9 +1052,10 @@ fn leg_bounds(leg: &Leg, set: &Setting, spent: &mut usize) -> Result<Bounds, Ker
                 return Err(refuse(
                     &sources,
                     format!(
-                        "the chord between the rails at {} and {} runs along the up direction (the normal of the first rail's sketch); the section cannot be stood up there",
+                        "the chord between the rails at {} and {} runs along {}; the section cannot be stood up there",
                         point_text(a),
-                        point_text(b)
+                        point_text(b),
+                        set.up_text
                     ),
                 ));
             };
@@ -675,10 +1070,11 @@ fn leg_bounds(leg: &Leg, set: &Setting, spent: &mut usize) -> Result<Bounds, Ker
                 return Err(refuse(
                     &sources,
                     format!(
-                        "the rails carry the section along its own plane near {} (on e{} and e{}): the sweep would fold over itself",
+                        "the rails carry the section along its own plane near {} (on e{} and e{}): the sweep would fold over itself (the section stands in the plane of the chord and {}, so an up direction along the rails lays it into their course)",
                         point_text(p.a),
                         leg.a.source,
-                        leg.b.source
+                        leg.b.source,
+                        set.up_text
                     ),
                 ));
             }
@@ -807,9 +1203,15 @@ fn spend(spent: &mut usize, count: usize, leg: &Leg) -> Result<(), KernelError> 
     Ok(())
 }
 
+/// `first` is the station the leg starts from (the one the leg before
+/// ended with, to the bit); `last`, when given, the one it has to end
+/// with (round closed rails, the start's), whose gap from the exact one
+/// is in the samples like any other.
+#[allow(clippy::too_many_arguments)]
 fn follow(
     leg: &Leg,
     first: &Station,
+    last: Option<&Station>,
     set: &Setting,
     bounds: &Bounds,
     (parts, degree): (usize, usize),
@@ -832,7 +1234,10 @@ fn follow(
             stations.push(if part == 0 && step == 0 {
                 *first
             } else if part + 1 == parts && step == degree {
-                exact(leg.to)?
+                match last {
+                    Some(last) => *last,
+                    None => exact(leg.to)?,
+                }
             } else {
                 exact(sigma_at(part as f64 + share))?
             });
@@ -955,6 +1360,13 @@ fn translation(leg: &Leg, start: &Station, set: &Setting, bounds: &Bounds) -> Op
     }
     let da = leg.a.at(leg.to) - leg.a.at(leg.from);
     let db = leg.b.at(leg.to) - leg.b.at(leg.from);
+    // Square to the section only: a slide at a slant carries a circle
+    // into an elliptic cylinder, which is followed instead (the up
+    // direction or a chord at a slant to the rails).
+    let square_on = da.normalized()?.dot(start.forward().ok()?).abs();
+    if !(square_on.is_finite() && 1.0 - square_on <= 1e-12) {
+        return None;
+    }
     let off = (db - da).length();
     // The chord moves by at most `off`; the placement follows it.
     let shift = off / set.d_ref;
@@ -987,6 +1399,35 @@ pub fn sweep_two_rails(
     scaling: Scaling,
     tolerance: &Tolerance,
 ) -> Result<Swept, KernelError> {
+    sweep_two_rails_up(
+        profile,
+        profile_plane,
+        rail_a,
+        plane_a,
+        rail_b,
+        plane_b,
+        scaling,
+        None,
+        tolerance,
+    )
+}
+
+/// [`sweep_two_rails`] with the up direction given: the section stands in
+/// the plane of the chord and `up` at every station (any length, either
+/// way: it is turned round when the rails leave the profile against it).
+/// `None` is the normal of rail A's sketch.
+#[allow(clippy::too_many_arguments)]
+pub fn sweep_two_rails_up(
+    profile: &Profile,
+    profile_plane: &Frame,
+    rail_a: &[SketchCurve],
+    plane_a: &Frame,
+    rail_b: &[SketchCurve],
+    plane_b: &Frame,
+    scaling: Scaling,
+    up: Option<Vec3>,
+    tolerance: &Tolerance,
+) -> Result<Swept, KernelError> {
     let tol = tolerance.linear;
     if !(tol.is_finite() && tol > 0.0) {
         return Err(KernelError::InvalidSize {
@@ -1010,9 +1451,37 @@ pub fn sweep_two_rails(
         let (x, y, z) = profile_plane.local(p);
         z.abs().max(distance_to(&outline, [x, y], tol))
     };
-    let rail_a = rail_of(rail_a, plane_a, tolerance, &off_outline)?;
-    let rail_b = rail_of(rail_b, plane_b, tolerance, &off_outline)?;
-    let (Some(a0), Some(b0)) = (rail_a.at(0.0), rail_b.at(0.0)) else {
+    let height = |p: Vec3| profile_plane.local(p).2;
+    let normal = profile_plane.z();
+    let drawn_a = rail_of(rail_a, plane_a, tolerance, &off_outline, &height, normal)?;
+    let drawn_b = rail_of(rail_b, plane_b, tolerance, &off_outline, &height, normal)?;
+    // An open rail starts on the profile; round two closed ones the body
+    // starts at the first joint of either after the profile (so that the
+    // piece the profile is on is not cut there), and the profile is at
+    // `σ_p`.
+    let (rail_a, rail_b, closed, sigma_p) = match (drawn_a, drawn_b) {
+        (Drawn::Open(a), Drawn::Open(b)) => (a, b, false, 0.0),
+        (Drawn::Closed(a), Drawn::Closed(b)) => {
+            let c = a
+                .joints_after()
+                .chain(b.joints_after())
+                .fold(1.0_f64, f64::min);
+            if !(c.is_finite() && (0.0..1.0).contains(&c)) {
+                return Err(internal());
+            }
+            let open = |round: &Round| round.opened_at((round.at + c).rem_euclid(1.0));
+            let sigma_p = if c > 0.0 { 1.0 - c } else { 0.0 };
+            (open(&a)?, open(&b)?, true, sigma_p)
+        }
+        (Drawn::Open(open), Drawn::Closed(_)) | (Drawn::Closed(_), Drawn::Open(open)) => {
+            let ids: Vec<u64> = open.pieces.iter().map(|p| p.source).take(2).collect();
+            return Err(refuse(
+                &ids,
+                "one rail closes into a ring and the other does not; both rails are open chains, or both close",
+            ));
+        }
+    };
+    let (Some(a0), Some(b0)) = (rail_a.at(sigma_p), rail_b.at(sigma_p)) else {
         return Err(internal());
     };
     let (Some(first_a), Some(first_b)) = (rail_a.first(), rail_b.first()) else {
@@ -1051,19 +1520,42 @@ pub fn sweep_two_rails(
     // is bounded from below by a branch and bound.
     let apart = rails_apart(&rail_a, &rail_b, tol)?;
 
-    // The up direction: the normal of rail A's sketch, turned round when
-    // the rails leave the profile against it.
-    let mut up = plane_a.z();
+    // The up direction: the one given, or the normal of rail A's sketch;
+    // turned round when the rails leave the profile against it.
+    let (mut up, up_text) = match up {
+        None => (
+            plane_a.z(),
+            "the normal of the first rail's sketch".to_string(),
+        ),
+        Some(given) => {
+            let unit = given
+                .normalized()
+                .filter(|_| given.x.is_finite() && given.y.is_finite() && given.z.is_finite());
+            let Some(unit) = unit else {
+                return Err(refuse(
+                    &[first_a, first_b],
+                    format!(
+                        "the up direction {} has no direction; give a direction that is not zero",
+                        point_text(given)
+                    ),
+                ));
+            };
+            (unit, format!("the up direction {}", point_text(unit)))
+        }
+    };
     let e0 = (b0 - a0).normalized().ok_or_else(internal)?;
-    let start_a = rail_a.pieces.first().ok_or_else(internal)?;
-    let start_b = rail_b.pieces.first().ok_or_else(internal)?;
-    let heading = start_a.velocity(0.0).normalized().unwrap_or(Vec3::ZERO)
-        + start_b.velocity(0.0).normalized().unwrap_or(Vec3::ZERO);
+    let leaving = |rail: &Rail| {
+        rail.piece_at(sigma_p)
+            .map(|p| p.velocity(sigma_p))
+            .and_then(Vec3::normalized)
+            .unwrap_or(Vec3::ZERO)
+    };
+    let heading = leaving(&rail_a) + leaving(&rail_b);
     let first = placed(a0, b0, up).ok_or_else(|| {
         refuse(
             &[first_a, first_b],
             format!(
-                "the rails start at {} and {}, along the up direction (the normal of the first rail's sketch); the section cannot be stood up between them",
+                "the rails start at {} and {}, along {up_text}; the section cannot be stood up between them",
                 point_text(a0),
                 point_text(b0)
             ),
@@ -1083,7 +1575,9 @@ pub fn sweep_two_rails(
     if facing.is_nan() || facing.abs() < 0.5 {
         return Err(refuse(
             &[first_a, first_b],
-            "the section's plane does not hold the up direction (the normal of the first rail's sketch) at the start of the rails; draw the section on a plane through both rails' starts that holds that direction",
+            format!(
+                "the section's plane does not hold {up_text} where the rails start on it; draw the section on a plane through both rails' starts that holds that direction"
+            ),
         ));
     }
     let mirrored = facing < 0.0;
@@ -1132,10 +1626,13 @@ pub fn sweep_two_rails(
     }
     let set = Setting {
         up,
+        up_text: up_text.clone(),
         d_ref,
         scaling,
         x: x_reach,
         y: y_reach,
+        xs,
+        ys,
         tol,
         apart,
     };
@@ -1184,7 +1681,7 @@ pub fn sweep_two_rails(
         return Err(refuse(
             &[first_a, first_b],
             format!(
-                "the section is not in the plane through both rails' starts that holds the up direction (the normal of the first rail's sketch): laying it there would move it by {moved}; draw it on that plane"
+                "the section is not in the plane through both rails' starts that holds {up_text}: laying it there would move it by {moved}; draw it on that plane"
             ),
         ));
     }
@@ -1263,16 +1760,35 @@ pub fn sweep_two_rails(
         Scaling::Uniform => Some(scale),
         Scaling::Width => None,
     };
-    let mut scale = first.r / d_ref;
-    let first_ring = b.ring_scaled(&loops, &home, true, across(scale))?;
+    // Where the body starts: on the profile for open rails; round closed
+    // ones at `σ = 0`, a joint of one of them, where the profile is
+    // placed as at every station.
+    let (start, start_scale) = if closed {
+        let (Some(a), Some(b)) = (rail_a.at(0.0), rail_b.at(0.0)) else {
+            return Err(internal());
+        };
+        let there = placed(a, b, set.up).ok_or_else(internal)?;
+        (set.station(&there), there.r / d_ref)
+    } else {
+        (home, first.r / d_ref)
+    };
+    let mut scale = start_scale;
+    let first_ring = b.ring_scaled(&loops, &start, true, across(scale))?;
     let mut ring = first_ring.clone();
-    let mut station = home;
+    let mut station = start;
     let mut shell: Vec<FaceId> = Vec::new();
+    // Round closed rails, a shell per loop of the profile (a hole sweeps
+    // a ring of its own).
+    let mut groups: Vec<Vec<FaceId>> = vec![Vec::new(); loops.len()];
+    let leg_count = legs.len();
     // Per side, the pieces of the rails' curves it runs between.
     let mut parts: Vec<(u32, u32)> = Vec::new();
     let (mut deviation, mut stations) = (0.0_f64, 1_usize);
     let mut spent = 0_usize;
-    for leg in &legs {
+    for (index, leg) in legs.iter().enumerate() {
+        // Round closed rails the last leg ends where the first began.
+        let closing = closed && index + 1 == leg_count;
+        let end = closing.then_some(&start);
         let bounds = leg_bounds(leg, &set, &mut spent)?;
         let (motion, next, reached) = match translation(leg, &station, &set, &bounds) {
             Some((shift, bound)) => {
@@ -1287,7 +1803,7 @@ pub fn sweep_two_rails(
                 let mut followed = None;
                 let mut costly = false;
                 for plan in PLANS {
-                    match follow(leg, &station, &set, &bounds, plan, &mut spent)? {
+                    match follow(leg, &station, end, &set, &bounds, plan, &mut spent)? {
                         Outcome::Made(made) if made.deviation <= tol / 2.0 => {
                             followed = Some(made);
                             break;
@@ -1331,8 +1847,29 @@ pub fn sweep_two_rails(
                 )
             }
         };
-        deviation = deviation.max(reached);
-        let next_ring = b.ring_scaled(&loops, &next, true, across(scale))?;
+        let (next, next_ring) = if closing {
+            // Round the rails the profile is back where it started, to
+            // the bit when the last leg was followed (its last station
+            // is the start's), within rounding when it slid.
+            let gap = loops
+                .iter()
+                .flatten()
+                .map(|e| next.at(e.start).distance(start.at(e.start)))
+                .fold(0.0, f64::max);
+            if gap.is_nan() || gap > tol / 4.0 {
+                return Err(refuse(
+                    &[leg.a.source, leg.b.source],
+                    format!(
+                        "followed round the closed rails the section comes back {gap} from where it started; this is a bug"
+                    ),
+                ));
+            }
+            deviation = deviation.max(reached + gap);
+            (start, first_ring.clone())
+        } else {
+            deviation = deviation.max(reached);
+            (next, b.ring_scaled(&loops, &next, true, across(scale))?)
+        };
         for (l, elements) in loops.iter().enumerate() {
             let (Some(from), Some(to), Some(low_edges), Some(high_edges)) = (
                 ring.vertices.get(l),
@@ -1369,13 +1906,15 @@ pub fn sweep_two_rails(
                 ]];
                 let (surface, reversed) =
                     b.surface(&motion, element, &station, &next, leg.a.source)?;
-                shell.push(b.face(
+                let face = b.face(
                     surface,
                     reversed,
                     around,
                     Role::Side,
                     vec![element.source, leg.a.source, leg.b.source],
-                ));
+                );
+                shell.push(face);
+                groups.get_mut(l).ok_or_else(internal)?.push(face);
                 parts.push((leg.a.part, leg.b.part));
             }
         }
@@ -1383,43 +1922,49 @@ pub fn sweep_two_rails(
         ring = next_ring;
     }
 
-    let sources = cap_sources(&profile.outer);
-    for (role, at, ring) in [
-        (Role::StartCap, &home, &first_ring),
-        (Role::EndCap, &station, &ring),
-    ] {
-        let forward = at.forward()?;
-        let start = role == Role::StartCap;
-        let normal = if start { -forward } else { forward };
-        let frame = Frame::new(at.origin, normal, at.u).ok_or_else(internal)?;
-        let mut around = Vec::with_capacity(ring.edges.len());
-        for edges in &ring.edges {
-            let edges = edges
-                .iter()
-                .map(|e| e.ok_or_else(internal))
-                .collect::<Result<Vec<_>, _>>()?;
-            around.push(if start {
-                edges
-                    .iter()
-                    .rev()
-                    .map(|&(edge, against)| coedge(edge, !against))
-                    .collect()
-            } else {
-                edges
-                    .iter()
-                    .map(|&(edge, against)| coedge(edge, against))
-                    .collect()
-            });
+    if closed {
+        for group in groups {
+            b.body.add_shell(group);
         }
-        shell.push(b.face(
-            craft3d_geom::Surface::Plane(craft3d_geom::Plane::new(frame)),
-            false,
-            around,
-            role,
-            sources.clone(),
-        ));
+    } else {
+        let sources = cap_sources(&profile.outer);
+        for (role, at, ring) in [
+            (Role::StartCap, &home, &first_ring),
+            (Role::EndCap, &station, &ring),
+        ] {
+            let forward = at.forward()?;
+            let start = role == Role::StartCap;
+            let normal = if start { -forward } else { forward };
+            let frame = Frame::new(at.origin, normal, at.u).ok_or_else(internal)?;
+            let mut around = Vec::with_capacity(ring.edges.len());
+            for edges in &ring.edges {
+                let edges = edges
+                    .iter()
+                    .map(|e| e.ok_or_else(internal))
+                    .collect::<Result<Vec<_>, _>>()?;
+                around.push(if start {
+                    edges
+                        .iter()
+                        .rev()
+                        .map(|&(edge, against)| coedge(edge, !against))
+                        .collect()
+                } else {
+                    edges
+                        .iter()
+                        .map(|&(edge, against)| coedge(edge, against))
+                        .collect()
+                });
+            }
+            shell.push(b.face(
+                craft3d_geom::Surface::Plane(craft3d_geom::Plane::new(frame)),
+                false,
+                around,
+                role,
+                sources.clone(),
+            ));
+        }
+        b.body.add_shell(shell);
     }
-    b.body.add_shell(shell);
 
     // A side's number says which pieces of the rails' curves it runs
     // between (a spline with corners is several), and then counts the
@@ -1457,7 +2002,7 @@ pub fn sweep_two_rails(
     Ok(Swept {
         body: b.body,
         faces,
-        closed: false,
+        closed,
         length: rail_a.length,
         deviation,
         stations,

@@ -1,0 +1,11 @@
+[
+ ["sketch.create", {"plane": "zx", "name": "Section"}],
+ ["sketch.circle", {"sketch": "Section", "center": [0, 10], "radius": 2}],
+ ["sketch.create", {"plane": "xy", "name": "Inner"}],
+ ["sketch.circle", {"sketch": "Inner", "center": [0, 0], "radius": 8}],
+ ["sketch.create", {"plane": "xy", "name": "Outer"}],
+ ["sketch.circle", {"sketch": "Outer", "center": [0, 0], "radius": 12}],
+ ["datum.axis", {"through": [[0, 0, 0], [0.5, 0, 1]], "name": "Lean"}],
+ ["feature.sweep", {"sketch": "Section", "path": "Inner", "rail": "Outer", "name": "Ring"}],
+ ["feature.sweep", {"sketch": "Section", "path": "Inner", "rail": "Outer", "up": "Lean", "name": "Leaning"}]
+]

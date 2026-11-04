@@ -12,7 +12,7 @@ use craft3d_doc::{Document, FeatureId, FeatureKind, NameRole, PersistentName, Sw
 use craft3d_kernel::KernelError;
 use craft3d_kernel::helix::sweep_helix;
 use craft3d_kernel::sweep::sweep;
-use craft3d_kernel::sweep2::{Scaling, sweep_two_rails};
+use craft3d_kernel::sweep2::{Scaling, sweep_two_rails_up};
 use craft3d_topo::Body;
 use std::sync::Arc;
 
@@ -32,6 +32,11 @@ pub(crate) fn build(
     }
     if let Some(rail) = feature.rail {
         return two_rails(doc, id, feature, rail, earlier);
+    }
+    if feature.up.is_some() {
+        return Err(
+            "up: an up direction is for a sweep along two rails; give rail too".to_string(),
+        );
     }
     let made = swept(doc, earlier, feature.sketch, "sweep")?;
     let name = made.name;
@@ -254,7 +259,14 @@ fn two_rails(
         SweepScale::Uniform => Scaling::Uniform,
         SweepScale::Width => Scaling::Width,
     };
-    let swept = sweep_two_rails(
+    // The up direction: an axis's direction (its sense does not matter).
+    let up = match &feature.up {
+        Some(axis) => {
+            Some(crate::datum::axis_ref(doc, earlier, axis, &made.tolerance, "up")?.direction)
+        }
+        None => None,
+    };
+    let swept = sweep_two_rails_up(
         profile,
         &made.plane,
         &curves_first,
@@ -262,6 +274,7 @@ fn two_rails(
         &curves_second,
         &second.plane,
         scaling,
+        up,
         &made.tolerance,
     )
     .map_err(|error| match &error {
@@ -322,7 +335,7 @@ fn two_rails(
     }
     let names = Names::by_faces(id, &swept.body, faces, made.tolerance.linear)?;
     let report = SweepReport {
-        closed: false,
+        closed: swept.closed,
         length: swept.length,
         deviation: swept.deviation,
         stations: swept.stations,

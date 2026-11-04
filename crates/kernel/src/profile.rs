@@ -1678,6 +1678,25 @@ const MORE_THAN_ONE_CHAIN: &str = "the curves make more than one chain: an open 
 /// curve. A circle, a spline that closes on itself, curves that close into
 /// a loop, a branch and curves that make more than one chain are refused.
 pub fn open_chain(curves: &[SketchCurve], tolerance: &Tolerance) -> Result<Loop2, KernelError> {
+    chain_of(curves, tolerance, false).map(|(chain, _)| chain)
+}
+
+/// The one chain the curves of a sketch join into, open or closed: as
+/// [`open_chain`] for an open one; curves that close into one loop (a
+/// spline that closes on itself is cut in two, as a profile's is) are
+/// walked from the start of the curve with the smallest id, in its own
+/// direction, round to it. The flag says whether the chain is closed. A
+/// circle, a branch and curves that make more than one chain are refused.
+/// (A rail of a sweep along two rails, which may close into a ring.)
+pub fn chain(curves: &[SketchCurve], tolerance: &Tolerance) -> Result<(Loop2, bool), KernelError> {
+    chain_of(curves, tolerance, true)
+}
+
+fn chain_of(
+    curves: &[SketchCurve],
+    tolerance: &Tolerance,
+    may_close: bool,
+) -> Result<(Loop2, bool), KernelError> {
     let tol = tolerance.linear;
     if !(tol.is_finite() && tol > 0.0) {
         return Err(KernelError::InvalidSize {
@@ -1721,15 +1740,17 @@ pub fn open_chain(curves: &[SketchCurve], tolerance: &Tolerance) -> Result<Loop2
                 });
             }
             Curve2::Spline(spline) => {
-                if let (Some(first), Some(last)) = (spline.control.first(), spline.control.last())
-                    && distance(*first, *last) <= tol
-                {
+                let closes = matches!(
+                    (spline.control.first(), spline.control.last()),
+                    (Some(first), Some(last)) if distance(*first, *last) <= tol
+                );
+                if closes && !may_close {
                     return Err(KernelError::InvalidProfile {
                         reason: "a spline that closes on itself: an open chain has two free ends",
                     });
                 }
                 let parts = spline
-                    .profile_pieces_within(false, tolerance)
+                    .profile_pieces_within(closes, tolerance)
                     .map_err(|knot| KernelError::ShortSplinePiece { id: curve.id, knot })?;
                 for (piece, part) in parts.into_iter().enumerate() {
                     if cut.len() >= MAX_CHAIN_CURVES {
@@ -1824,6 +1845,8 @@ pub fn open_chain(curves: &[SketchCurve], tolerance: &Tolerance) -> Result<Loop2
         .filter(|&i| mates.get(i).is_some_and(Option::is_none))
         .collect();
     let first_free = match free.as_slice() {
+        // Closed: from the start of the first curve (the smallest id).
+        [] if may_close => 0,
         [] => {
             return Err(KernelError::InvalidProfile {
                 reason: "the curves close into a loop: an open chain has two free ends (a closed loop is a profile)",
@@ -1906,8 +1929,14 @@ pub fn open_chain(curves: &[SketchCurve], tolerance: &Tolerance) -> Result<Loop2
     // From the first free end to the other.
     let mut segments = Vec::with_capacity(own.len());
     let mut entry = first_free;
+    let mut walked = vec![false; own.len()];
     for _ in 0..own.len() {
         let end = ends.get(entry).ok_or_else(internal)?;
+        // Round a closed chain, or into another loop: no curve twice.
+        match walked.get_mut(end.curve) {
+            Some(seen) if !*seen => *seen = true,
+            _ => break,
+        }
         let segment = own.get(end.curve).ok_or_else(internal)?;
         let reversed = end.which == 1;
         segments.push(if reversed {
@@ -1926,5 +1955,5 @@ pub fn open_chain(curves: &[SketchCurve], tolerance: &Tolerance) -> Result<Loop2
             reason: MORE_THAN_ONE_CHAIN,
         });
     }
-    Ok(Loop2 { segments })
+    Ok((Loop2 { segments }, free.is_empty()))
 }

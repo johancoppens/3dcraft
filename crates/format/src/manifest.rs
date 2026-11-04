@@ -889,6 +889,10 @@ pub enum FeatureKind {
         /// 66). Written only when it is not uniform.
         #[serde(default, skip_serializing_if = "SweepScale::is_uniform")]
         scale: SweepScale,
+        /// The up direction of a sweep along two rails (format version
+        /// 67). Written only when one is given.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        up: Option<AxisRef>,
     },
     /// The body of feature `source`, turned by `angle` about the line
     /// through `pivot` along `axis` (three plain numbers), then shifted by

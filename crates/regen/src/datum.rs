@@ -347,7 +347,7 @@ fn edge_line(
     Ok(line)
 }
 
-fn axis_ref(
+pub(crate) fn axis_ref(
     doc: &Document,
     earlier: &[FeatureResult],
     axis: &AxisRef,

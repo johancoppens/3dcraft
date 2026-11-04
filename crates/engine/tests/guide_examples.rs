@@ -629,3 +629,37 @@ fn the_spout_of_the_features_chapter_meets_its_volume() {
     let check = run(&mut s, "document.check", json!({"deep": true}));
     assert_eq!(check["ok"], true, "{check}");
 }
+
+/// The rings and the up direction of the features chapter (`09-features.md`
+/// › *Sweep along two rails*) run as written: the torus round two rings
+/// meets its volume (Pappus), the band with a leaning up direction is
+/// built, and both pass the deep check.
+#[test]
+fn the_rings_of_the_features_chapter_are_built() {
+    let text = read_text(&docs().join("guide/09-features.md"));
+    for (marker, asserted) in [("\"rail\": \"Outer\"", 1), ("\"up\": \"Lean\"", 0)] {
+        let block = json_blocks(&text)
+            .into_iter()
+            .find(|b| b.contains(marker))
+            .expect("the chapter has the example");
+        let steps = steps(&serde_json::from_str(&block).unwrap()).unwrap();
+        let mut s = common::session();
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        for (id, params) in steps {
+            let out = run(&mut s, &id, params);
+            assert_ne!(out["status"], "failed", "{id}: {out}");
+        }
+        let assertions = run(&mut s, "assert.list", json!({}));
+        assert_eq!(assertions["ok"], true, "{assertions}");
+        assert_eq!(assertions["passed"], asserted, "{assertions}");
+        let inspect = run(&mut s, "document.inspect", json!({}));
+        let closed = inspect["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|b| b["valid"] == true);
+        assert!(closed, "{inspect}");
+        let check = run(&mut s, "document.check", json!({"deep": true}));
+        assert_eq!(check["ok"], true, "{check}");
+    }
+}

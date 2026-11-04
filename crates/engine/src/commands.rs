@@ -2450,7 +2450,7 @@ fn symmetric_fits(end: &ExtrudeEnd, symmetric: bool, command: &str) -> Result<()
 /// The parameters of a thread that `feature.edit` takes as null.
 const THREAD_NULLS: [&str; 2] = ["size", "pitch"];
 
-const EDITABLE: [&str; 64] = [
+const EDITABLE: [&str; 65] = [
     "sketch",
     "sections",
     "ruled",
@@ -2515,6 +2515,7 @@ const EDITABLE: [&str; 64] = [
     "rise",
     "rail",
     "scale",
+    "up",
 ];
 
 fn feature_edit(session: &mut Session, params: &Value) -> Run {
@@ -2738,8 +2739,9 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                 || (circular && *key == "step" && p.has(key))
                 // A network's acrossDegree as null: the default again.
                 || (is_network && *key == "acrossDegree" && p.has(key))
-                // A sweep's second rail as null: along one path again.
-                || (*key == "rail" && p.has(key))
+                // A sweep's second rail as null: along one path again;
+                // its up direction as null: the path's sketch normal.
+                || ((*key == "rail" || *key == "up") && p.has(key))
         })
         .collect();
     if given.is_empty() {
@@ -2846,6 +2848,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                 ("path", Slot::Elsewhere),
                 ("rail", Slot::Elsewhere),
                 ("scale", Slot::Elsewhere),
+                ("up", Slot::Elsewhere),
             ],
         ),
         FeatureKind::Fill(_) => ("fill", vec![("sketch", Slot::Elsewhere)]),

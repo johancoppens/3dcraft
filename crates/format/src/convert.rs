@@ -1495,6 +1495,7 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 path: doc::FeatureId(path),
                 rail,
                 scale,
+                up,
             }) => manifest::FeatureKind::Sweep {
                 sketch: *sketch,
                 path: *path,
@@ -1503,6 +1504,7 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                     doc::SweepScale::Uniform => manifest::SweepScale::Uniform,
                     doc::SweepScale::Width => manifest::SweepScale::Width,
                 },
+                up: up.as_ref().map(axis_ref_to_manifest),
             },
             doc::FeatureKind::OffsetProfile(doc::OffsetProfile {
                 sketch: doc::FeatureId(sketch),
@@ -3525,6 +3527,7 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 path,
                 rail,
                 scale,
+                up,
             } => doc::FeatureKind::Sweep(doc::Sweep {
                 sketch: doc::FeatureId(sketch),
                 path: doc::FeatureId(path),
@@ -3533,6 +3536,7 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                     manifest::SweepScale::Uniform => doc::SweepScale::Uniform,
                     manifest::SweepScale::Width => doc::SweepScale::Width,
                 },
+                up: up.map(axis_ref_to_doc),
             }),
             manifest::FeatureKind::OffsetProfile {
                 sketch,

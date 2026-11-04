@@ -59,7 +59,7 @@ Three steps, as for G1:
 
 ## Limits
 
-- No sweep along two rails yet. The method owed: copies of the profile placed by the similarity that takes its ends to the rails' points at stations along them, and the Gordon surface through the copies and the rails.
+- The sweep along two rails (open or closed into rings, with an up direction of the user's choice) is in [`sweeps.md`](sweeps.md) › *Sweep along two rails*; owed there: a normal rule that turns with the rails, twist and guide curves beyond two rails.
 - A loft with guides takes open sections only (owed: a periodic Gordon surface for closed sections) and is not ruled or closed; `feature.edit` changes its sections, not its guides.
 - Two held edges at one corner pass only where their faces ask the same twist there (their second fundamental forms agree along the corner's directions, as on one smooth face); otherwise the measured tangency refuses the feature. Owed: a corner blend (stage 4, Gregory or subdivided patches).
 - Tangency to a torus is refused (owed: its rational form, as the trimmed faces write it). A spline face is held along any curve on it (*Holds and the measure along any curve on a spline face*). The parameter line is found from the edge projected at 4 places per knot span (33 to 1025); on a face closed in a direction the coordinates are read across its seam (the fixed one nearest the first place's, the running one followed from place to place by whole turns, `round((x − last) / period)`), and an edge along a line that crosses the seam is refused (owed: the iso-curve joined across the seam).
