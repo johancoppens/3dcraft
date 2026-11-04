@@ -459,6 +459,8 @@ impl Shell {
         let max = crate::state::MAX_TRANSPARENCY;
         let mut value = self.state.transparency;
         let (label_w, value_w) = bar_slider_widths(ui, &kit, "See-through", "90 %");
+        // Clear of the chip before it, as the chips are of each other.
+        let field = field.with_min_x((field.left() + 6.0).min(field.right()));
         let shown = kit.slider_in(
             ui,
             field,
@@ -502,6 +504,7 @@ impl Shell {
         let [lo, hi] = field_range.unwrap_or([section.offset - 1.0, section.offset + 1.0]);
         let mut value = section.offset;
         let (label_w, value_w) = bar_slider_widths(ui, &kit, "Offset", "-000.00 mm");
+        let rect = rect.with_min_x((rect.left() + 6.0).min(rect.right()));
         let shown = kit.slider_in(
             ui,
             rect,
