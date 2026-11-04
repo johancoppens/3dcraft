@@ -658,6 +658,12 @@ fn a_jig_in_use_offers_open_for_editing_and_only_its_parameters_change() {
         .unwrap()
         .unwrap();
     assert_eq!(answer["result"]["changed"], true, "{answer}");
+    // Changed, its tab carries the unsaved mark: closing it asks, though
+    // a Jig in use is never saved over (not `dirty`).
+    window.idle(&mut shell, &mut session, 2);
+    let tab = shell.tabs().iter().find(|t| t.active).unwrap();
+    assert!(tab.asks_to_close && !tab.dirty, "{tab:?}");
+    assert!(tab.marked());
     // Open for editing asks the host for a model of it. The button says
     // what the File menu's item says (sentence case, as the window's
     // other menu items and buttons; 2026-10-23).
@@ -829,4 +835,72 @@ fn the_form_steps_drags_resets_and_types_with_the_one_slider() {
     );
     window.key(&mut shell, &mut session, Key::Enter);
     assert_eq!(at(&mut session), 60.0);
+}
+
+/// An undo (or a redo, or an agent's edit) that brings back a value that
+/// breaks the model is said as a commit that broke it would be: the head
+/// does not say Valid, the banner is up, the moved field is marked; a
+/// redo that mends it takes it all away (the end-to-end test of
+/// 2026-11-04: case.3dcraftjig said ✓ Valid at wall 1 mm after an undo).
+#[test]
+fn an_undo_that_breaks_the_model_is_said_as_a_commit_would_be() {
+    let (mut session, mut shell, mut window) = started(jig());
+    let answer = shell
+        .handle_method(
+            &mut session,
+            "ui.param",
+            Some(&json!({"name": "r", "value": 15})),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(answer["result"]["failed"].is_array(), "{answer}");
+    window.idle(&mut shell, &mut session, 3);
+    assert_eq!(form(&mut shell, &mut session)["trouble"]["broke"], true);
+    shell
+        .handle_method(
+            &mut session,
+            "ui.param",
+            Some(&json!({"name": "r", "value": 2})),
+        )
+        .unwrap()
+        .unwrap();
+    window.idle(&mut shell, &mut session, 3);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
+    // Undone: back at 15 mm, broken, without a commit of the form's.
+    run(&mut session, "edit.undo", json!({}));
+    window.idle(&mut shell, &mut session, 4);
+    assert_eq!(value(&mut session, "r"), 15.0);
+    let shown = form(&mut shell, &mut session);
+    assert_eq!(shown["trouble"]["broke"], true, "{shown}");
+    assert_eq!(shown["trouble"]["name"], "r", "{shown}");
+    let banner = hit(&shell, "Back to last good");
+    // Below the view bar, not over it.
+    let bar = shell.controls_layout().unwrap().camera_plate.unwrap();
+    assert!(banner.top() >= bar.bottom(), "{banner:?} under {bar:?}");
+    // Redone: mended, all of it gone.
+    run(&mut session, "edit.redo", json!({}));
+    window.idle(&mut shell, &mut session, 4);
+    assert_eq!(value(&mut session, "r"), 2.0);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
+}
+
+/// A long Jig title never runs over the status at the form's head (the
+/// Gear reducer's "Two-stage spur gear reducer" over "Valid",
+/// 2026-11-04): it is cut to the room beside it.
+#[test]
+fn a_long_title_never_covers_the_status() {
+    let mut s = jig();
+    run(
+        &mut s,
+        "document.info",
+        json!({"title": "A two-stage spur gear reducer with a very long title indeed"}),
+    );
+    let (mut session, mut shell, mut window) = started(s);
+    window.idle(&mut shell, &mut session, 2);
+    let status = hit(&shell, "status");
+    let title = hit(&shell, "title");
+    assert!(
+        title.left() >= status.right(),
+        "title {title:?} over status {status:?}"
+    );
 }

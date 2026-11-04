@@ -1166,11 +1166,40 @@ impl Shell {
                     broke: true,
                 });
             }
-        } else if changed && !form.busy() {
+        } else if !form.busy() && form.judging.is_none() && !measuring {
             match &form.trouble {
                 // Mended elsewhere (an undo, an agent): good again.
-                Some(t) if t.broke && faults.new_since(&baseline).is_none() => form.trouble = None,
-                Some(t) if !t.broke => form.trouble = None,
+                Some(t) if changed && t.broke && faults.new_since(&baseline).is_none() => {
+                    form.trouble = None;
+                }
+                Some(t) if changed && !t.broke => form.trouble = None,
+                // Broken elsewhere (an undo or a redo, an agent's edit) in
+                // a Jig: said as a commit that broke it would be, at the
+                // parameter that moved off the last good values (none: at
+                // the form's head). Measured first: a fault is judged only
+                // once the assertions are.
+                None if form.list.as_ref().is_some_and(|l| l.jig) => {
+                    if let Some(message) = faults.new_since(&baseline) {
+                        let moved = form.list.as_ref().and_then(|list| {
+                            let good = &form.last_good.as_ref()?.values;
+                            list.params
+                                .iter()
+                                .find(|p| {
+                                    let now = match p.value {
+                                        Some(value) if p.takes_numbers() => sent_value(p, value),
+                                        _ => Value::String(p.expr.clone()),
+                                    };
+                                    good.get(&p.name).is_some_and(|g| *g != now)
+                                })
+                                .map(|p| p.name.clone())
+                        });
+                        form.trouble = Some(Trouble {
+                            name: moved,
+                            message,
+                            broke: true,
+                        });
+                    }
+                }
                 _ => {}
             }
         }
@@ -1477,7 +1506,10 @@ impl Shell {
                 let (place, _) =
                     ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
                 crate::kit::glyphs::paint(ui.painter(), glyph, place, color(ink), &self.tokens);
-                ui.label(egui::RichText::new(text).font(kit.font()).color(color(ink)));
+                let said = ui.label(egui::RichText::new(text).font(kit.font()).color(color(ink)));
+                self.params
+                    .hits
+                    .push(("status".to_string(), place.union(said.rect)));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let about = [list.info.title.as_str(), list.info.description.as_str()]
@@ -1492,14 +1524,24 @@ impl Shell {
                     self.params.hits.push(("about".to_string(), info.rect));
                 }
                 if !compact && !list.info.title.is_empty() {
-                    let room = ui.available_width().max(0.0);
+                    // Cut to the room left of the status (a label would
+                    // lay a long title out whole, over "Valid"), the whole
+                    // title on hover.
+                    let room = (ui.available_width() - self.tokens.nav_icon_gap).max(0.0);
                     let mut job = egui::text::LayoutJob::simple_singleline(
                         list.info.title.clone(),
                         kit.font(),
                         color(s.text_dim),
                     );
-                    job.wrap = egui::text::TextWrapping::truncate_at_width(room);
-                    ui.label(job);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width(room.max(1.0));
+                    let galley = ui.painter().layout_job(job);
+                    let (rect, response) = ui.allocate_exact_size(
+                        egui::vec2(galley.size().x.min(room), galley.size().y),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter().galley(rect.min, galley, color(s.text_dim));
+                    response.on_hover_text(&list.info.title);
+                    self.params.hits.push(("title".to_string(), rect));
                 }
             });
         });
@@ -1732,7 +1774,18 @@ impl Shell {
             .map(|g| g.values.clone())
             .filter(|v| !v.is_empty());
         let width = (view.width() - 2.0 * tokens.inset).clamp(120.0, 560.0);
-        let at = egui::pos2(view.center().x - width * 0.5, view.top() + tokens.inset);
+        // Under the view bar (Fit, Iso, Persp…) where it would cover it.
+        let left = view.center().x - width * 0.5;
+        let top = view.top() + tokens.inset;
+        let top = match self.controls_layout.and_then(|l| l.camera_plate) {
+            Some(bar)
+                if bar.left() < left + width && bar.right() > left && bar.top() < top + 60.0 =>
+            {
+                top.max(bar.bottom() + tokens.nav_gap)
+            }
+            _ => top,
+        };
+        let at = egui::pos2(left, top);
         let mut back = None;
         let kit = crate::kit::Kit::plate(&tokens);
         let shown = egui::Area::new(egui::Id::new("craft3d-param-trouble"))
