@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 66,
+  "format_version": 67,
   "document": {
     "units": {
       "length": "mm",
@@ -2949,7 +2949,10 @@ fn a_sweep_with_an_up_direction_is_written_like_this_and_round_trips() {
             AxisRef::Edge {
                 between: edge.clone(),
             },
-            serde_json::json!({"type": "edge", "between": ["F2:side(e1)", "F2:startCap"]}),
+            serde_json::json!({"type": "edge", "between": [
+                {"feature": 2, "role": "side", "sources": [1]},
+                {"feature": 2, "role": "startCap", "sources": []}
+            ]}),
         ),
     ] {
         let mut doc = small();
