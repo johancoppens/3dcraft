@@ -112,8 +112,22 @@ pub fn split_chip(rect: Rect, tokens: &Tokens) -> (Rect, Rect) {
 }
 
 /// The ids of the areas egui fades in as they appear: the popovers'
-/// (`Shell::popover`) and the narrow layout's drawer.
-pub const FADING_AREAS: [&str; 3] = ["studio-options", "analysis-options", "craft3d-drawer"];
+/// (`Shell::popover`, the agents popover over the pill, the phone's
+/// parameters sheet), the narrow layout's drawer and the kit's dialogs.
+pub const FADING_AREAS: [&str; 12] = [
+    "studio-options",
+    "analysis-options",
+    "craft3d-drawer",
+    "craft3d-agents-popover",
+    "craft3d-params-sheet",
+    "craft3d-about",
+    "craft3d-shortcuts",
+    "craft3d-export-dialog",
+    "craft3d-error-dialog",
+    "craft3d-error-details",
+    "craft3d-closing",
+    "craft3d-agent-prompt",
+];
 
 impl Shell {
     /// Whether a popover or the drawer is still fading in at egui's time
