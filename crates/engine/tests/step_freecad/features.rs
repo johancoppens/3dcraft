@@ -1685,6 +1685,161 @@ const METRES: &[&str] = &[
     "far-small-cylinder",
 ];
 
+/// `∫ ρ dA` of a curved flange's section about its arc's axis (Pappus,
+/// docs/design/sheetmetal.md › *Curved bends*), written out here: the
+/// bend's ring sector between `r` and `r + t` over `theta` at `x = ρ sin φ`,
+/// and the flat `l × t` at `x = ρ sin θ + d cos θ`; `eps` +1 when the
+/// flange grows away from the arc's centre.
+fn pappus(a: f64, eps: f64, theta: f64, r: f64, t: f64, l: f64) -> f64 {
+    let ro = r + t;
+    let area = theta * (ro * ro - r * r) / 2.0 + l * t;
+    let mx = (1.0 - theta.pcos()) * (ro.ppowi(3) - r.ppowi(3)) / 3.0
+        + theta.psin() * l * (ro * ro - r * r) / 2.0
+        + theta.pcos() * t * l * l / 2.0;
+    a * area + eps * mx
+}
+
+/// The entity a sketch command made.
+fn made(s: &mut Session, id: &str, params: Value) -> Result<String, String> {
+    let out = step(s, id, params)?;
+    out["entity"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| format!("{id} made no entity"))
+}
+
+/// A sheet-metal part of thickness 1, radius 2 and K-factor 0.4 (scaled).
+fn sheet_part(s: &mut Session, k: f64, name: &str, rest: Value) -> Built {
+    let mut params = json!({"sketch": "Base", "name": name, "thickness": k,
+                            "radius": 2.0 * k, "kFactor": 0.4});
+    if let (Some(map), Value::Object(more)) = (params.as_object_mut(), rest) {
+        map.extend(more);
+    }
+    step(s, "feature.sheetMetal", params).map(drop)
+}
+
+/// A round pan: a disc of radius 40 with its rim bent up 90 degrees, 10
+/// long (a whole circle: a torus and a cylinder about the disc's axis).
+fn curved_pan(s: &mut Session, k: f64) -> Forms {
+    sketch(s, "Base", json!("xy"), 0.0)?;
+    let rim = made(
+        s,
+        "sketch.circle",
+        json!({"sketch": "Base", "center": [0, 0], "radius": 40.0 * k}),
+    )?;
+    sheet_part(
+        s,
+        k,
+        "Pan",
+        json!({"curvedFlanges": [{"edge": rim, "length": 10.0 * k, "angle": "90 deg"}]}),
+    )?;
+    let v = PI * 1600.0 + 2.0 * PI * pappus(40.0, 1.0, PI / 2.0, 2.0, 1.0, 10.0);
+    Ok(vec![closed("Pan", v, 0.0).volume_only().within(1e-7)])
+}
+
+/// A collar bent down 90 degrees round a hole of radius 15 in a plate 100
+/// × 60, 4 long, its own radius 1.5 and K-factor ½ (a stretch flange).
+fn curved_collar(s: &mut Session, k: f64) -> Forms {
+    sketch(s, "Base", json!("xy"), 0.0)?;
+    rectangle(s, "Base", k, (0.0, 100.0), (0.0, 60.0))?;
+    let hole = made(
+        s,
+        "sketch.circle",
+        json!({"sketch": "Base", "center": [50.0 * k, 30.0 * k], "radius": 15.0 * k}),
+    )?;
+    sheet_part(
+        s,
+        k,
+        "Collar",
+        json!({"curvedFlanges": [{"edge": hole, "length": 4.0 * k, "angle": "90 deg",
+                                  "direction": "down", "radius": 1.5 * k, "kFactor": 0.5}]}),
+    )?;
+    let v = 6000.0 - PI * 225.0 + 2.0 * PI * pappus(15.0, -1.0, PI / 2.0, 1.5, 1.0, 4.0);
+    Ok(vec![closed("Collar", v, 0.0).volume_only().within(1e-7)])
+}
+
+/// A plate 100 wide whose top is a half circle of radius 50, its arc bent
+/// up by `degrees`, 10 long: the flat a cone (60: widening, 120: closing).
+fn curved_cone(degrees: f64) -> impl Fn(&mut Session, f64) -> Forms {
+    move |s: &mut Session, k: f64| {
+        sketch(s, "Base", json!("xy"), 0.0)?;
+        for (a, b) in [
+            ([0.0, 0.0], [100.0, 0.0]),
+            ([100.0, 0.0], [100.0, 60.0]),
+            ([0.0, 60.0], [0.0, 0.0]),
+        ] {
+            made(
+                s,
+                "sketch.line",
+                json!({"sketch": "Base", "from": [a[0] * k, a[1] * k], "to": [b[0] * k, b[1] * k]}),
+            )?;
+        }
+        let arc = made(
+            s,
+            "sketch.arc",
+            json!({"sketch": "Base", "center": [50.0 * k, 60.0 * k],
+                   "start": [100.0 * k, 60.0 * k], "end": [0.0, 60.0 * k]}),
+        )?;
+        sheet_part(
+            s,
+            k,
+            "Dome",
+            json!({"curvedFlanges": [{"edge": arc, "length": 10.0 * k,
+                                      "angle": format!("{degrees} deg")}]}),
+        )?;
+        let v = 6000.0 + PI * 1250.0 + PI * pappus(50.0, 1.0, degrees.to_radians(), 2.0, 1.0, 10.0);
+        Ok(vec![closed("Dome", v, 0.0).volume_only().within(1e-7)])
+    }
+}
+
+/// A tray 100 × 60 with its corners rounded to 25: four walls 8 long on the
+/// lines and four curved corners, one wall all round.
+fn curved_tray(s: &mut Session, k: f64) -> Forms {
+    sketch(s, "Base", json!("xy"), 0.0)?;
+    let (rc, w, h) = (25.0, 100.0, 60.0);
+    let sc = |p: [f64; 2]| [p[0] * k, p[1] * k];
+    let mut lines = Vec::new();
+    for (a, b) in [
+        ([rc, 0.0], [w - rc, 0.0]),
+        ([w, rc], [w, h - rc]),
+        ([w - rc, h], [rc, h]),
+        ([0.0, h - rc], [0.0, rc]),
+    ] {
+        lines.push(made(
+            s,
+            "sketch.line",
+            json!({"sketch": "Base", "from": sc(a), "to": sc(b)}),
+        )?);
+    }
+    let mut arcs = Vec::new();
+    for (c, a, b) in [
+        ([w - rc, rc], [w - rc, 0.0], [w, rc]),
+        ([w - rc, h - rc], [w, h - rc], [w - rc, h]),
+        ([rc, h - rc], [rc, h], [0.0, h - rc]),
+        ([rc, rc], [0.0, rc], [rc, 0.0]),
+    ] {
+        arcs.push(made(
+            s,
+            "sketch.arc",
+            json!({"sketch": "Base", "center": sc(c), "start": sc(a), "end": sc(b)}),
+        )?);
+    }
+    let wall = |e: &String| json!({"edge": e, "length": 8.0 * k, "angle": "90 deg"});
+    sheet_part(
+        s,
+        k,
+        "Tray",
+        json!({"flanges": lines.iter().map(wall).collect::<Vec<_>>(),
+               "curvedFlanges": arcs.iter().map(wall).collect::<Vec<_>>()}),
+    )?;
+    let theta = PI / 2.0;
+    let walls = 2.0 * (50.0 + 10.0);
+    let v = (6000.0 - (4.0 - PI) * rc * rc)
+        + walls * (theta * (2.0 + 0.5) + 8.0)
+        + 4.0 * theta * pappus(rc, 1.0, theta, 2.0, 1.0, 8.0);
+    Ok(vec![closed("Tray", v, 0.0).volume_only().within(1e-7)])
+}
+
 /// How the meshes of the documents are held to the exact bodies.
 ///
 /// FreeCAD's mesh kernel stores 32-bit floats, so a coordinate is rounded
@@ -1944,6 +2099,12 @@ fn freecad_reads_extrusion_ends_datums_splines_and_slivers() {
             EXACT,
             Box::new(small_cylinder_far_away),
         ),
+        // Curved bends (sheet metal): tori and cones about an arc's axis.
+        ("curved-pan", RING, Box::new(curved_pan)),
+        ("curved-collar", RING, Box::new(curved_collar)),
+        ("curved-cone-60", RING, Box::new(curved_cone(60.0))),
+        ("curved-cone-120", RING, Box::new(curved_cone(120.0))),
+        ("curved-tray", RING, Box::new(curved_tray)),
     ];
 
     let mut meshes = None;

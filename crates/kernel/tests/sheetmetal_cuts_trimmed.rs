@@ -240,6 +240,9 @@ fn round_trip(part: &Part, tol: &Tolerance) {
                                 "a bend's edge lands {dd:e} off the pattern"
                             );
                         }
+                        SheetFace::CurvedBend(_) | SheetFace::CurvedFlat(_) => {
+                            panic!("no curved flange in these parts")
+                        }
                     }
                 }
             }
