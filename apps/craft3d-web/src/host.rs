@@ -372,6 +372,9 @@ pub struct WebHost {
     /// What the work in progress is about, for the status bar: the command
     /// or `file.open`, and the file's name.
     about: Option<(String, Option<String>)>,
+    /// What an open done a piece per frame answered, said once its scene
+    /// is there ([`WebHost::release_report`]).
+    held_report: Option<(String, Result<Value, String>)>,
     /// A file named in the page's address is being fetched.
     fetching: Option<String>,
     /// The address of a published example to fetch, for the page.
@@ -441,6 +444,7 @@ impl WebHost {
             fonts_failed: BTreeSet::new(),
             away: false,
             last_answer: None,
+            held_report: None,
         }
     }
 
@@ -578,6 +582,7 @@ impl WebHost {
         // the deadline now and then (`page.rs`).
         if self.session.regen_elsewhere() {
             self.away = !self.session.scene_ready(quality);
+            self.release_report();
             // A moment of the motion on its way: the player says it plays
             // (`Playing`), and the next one is asked for as soon as it
             // came, so the work never ends while it plays; not said as
@@ -604,6 +609,7 @@ impl WebHost {
         }
         let step = self.session.prepare_some(quality, stop);
         self.away = !self.session.scene_ready(quality);
+        self.release_report();
         match step {
             None => {
                 self.about = None;
@@ -814,14 +820,32 @@ impl WebHost {
     /// Reports `outcome` under `label`, empties the memory and shows what
     /// the session holds now.
     fn finish(&mut self, label: &str, outcome: &Result<Value, String>) {
-        self.report(label, outcome);
         self.forget_files();
-        // Done a piece per frame: shown once the scene is there.
+        // Done a piece per frame: shown once the scene is there, and only
+        // then said done (the status bar said "Opened" while the page
+        // still showed "Opening…", 2026-11-04). A failure is said at once.
         if self.stepwise && !self.session.scene_ready(self.shell.scene_quality()) {
+            if outcome.is_ok() {
+                self.last_answer = outcome.as_ref().ok().cloned();
+                self.held_report = Some((label.to_string(), outcome.clone()));
+            } else {
+                self.report(label, outcome);
+            }
             self.away = true;
             return;
         }
+        self.report(label, outcome);
         self.shell.sync(&mut self.session);
+    }
+
+    /// The report of a file opened a piece per frame, once its scene is
+    /// there ([`Self::finish`]).
+    fn release_report(&mut self) {
+        if !self.away
+            && let Some((label, outcome)) = self.held_report.take()
+        {
+            self.report(&label, &outcome);
+        }
     }
 
     /// Takes every file out of the session's memory: nothing stays there
@@ -2122,6 +2146,14 @@ mod tests {
         // Still fetching: nothing to do but say so.
         assert!(host.prepare(|| true));
         host.receive("table.3dcraft", bytes, None).unwrap();
+        // Not said opened while it still opens.
+        let opened = |host: &WebHost| {
+            host.shell
+                .last_command
+                .as_ref()
+                .is_some_and(|c| c.label == "file.open" && c.ok)
+        };
+        assert!(!opened(&host), "{:?}", host.shell.last_command);
         // A frame as the page draws it (`page.rs`): as it was while the
         // scene is not there, from the session once it is.
         let ctx = egui::Context::default();
@@ -2152,12 +2184,18 @@ mod tests {
         while host.prepare(|| true) {
             frames += 1;
             assert!(frames < 50, "{said:?}");
+            assert_eq!(
+                opened(&host),
+                !host.away(),
+                "said opened only once it is shown"
+            );
             draw(&mut host);
             said.push(host.shell.busy().map(|(text, _)| text).unwrap_or_default());
         }
         draw(&mut host);
         assert_eq!(host.shell.busy(), None, "{said:?}");
         assert!(!host.away());
+        assert!(opened(&host), "{:?}", host.shell.last_command);
         // The features one by one, then the picture's meshes, then the
         // assertions.
         assert_eq!(
