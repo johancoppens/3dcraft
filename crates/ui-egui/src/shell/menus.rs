@@ -35,14 +35,22 @@ pub(super) fn kit_menu<R>(
     add: impl FnOnce(&Kit, &mut egui::Ui) -> R,
 ) -> (egui::Rect, Option<R>) {
     let tokens = *shell_tokens;
-    let shown = ui.menu_button(title, |ui| {
-        let kit = Kit::plate(&tokens);
-        ui.style_mut().visuals = tokens.plate_visuals();
-        ui.spacing_mut().item_spacing.y = 0.0;
-        ui.set_width(width);
-        add(&kit, ui)
-    });
-    (shown.response.rect, shown.inner)
+    // The menu's plate is the context menu's (`Tokens::menu_visuals`):
+    // one menu colour in both appearances, a step above the dark panel.
+    let config =
+        egui::containers::menu::MenuConfig::find(ui).style(move |style: &mut egui::Style| {
+            egui::containers::menu::menu_style(style);
+            style.visuals = tokens.menu_visuals();
+        });
+    let (response, inner) = egui::containers::menu::MenuButton::new(title)
+        .config(config)
+        .ui(ui, |ui| {
+            let kit = Kit::plate(&tokens);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.set_width(width);
+            add(&kit, ui)
+        });
+    (response.rect, inner.map(|i| i.inner))
 }
 
 /// An item's keys as the platform writes them.

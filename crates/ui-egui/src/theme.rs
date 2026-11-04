@@ -722,13 +722,15 @@ impl Palette {
         Tokens::mission().palette()
     }
 
-    /// The dark appearance (plan of the UI overhaul, 2026-11-02): warm
-    /// near-black panels, light warm text, the selection's copper darkened,
-    /// the info accent and its ink lightened so they read on the dark
-    /// panel; popovers one step lighter than the panel.
+    /// The dark appearance (plan of the UI overhaul, 2026-11-02, made the
+    /// darkest variant by the developer on 2026-11-04): the panels are the
+    /// plates' near-black #161514, every layer above them one step
+    /// lighter (fields, hover and chips; popovers and menus one step
+    /// #201F1D), light warm text, the selection's copper darkened, the
+    /// info accent and its ink lightened so they read on the dark panel.
     pub fn dark() -> Self {
         Self {
-            panel_fill: [0x1C, 0x1B, 0x19],
+            panel_fill: [0x16, 0x15, 0x14],
             text: [0xED, 0xEA, 0xE4],
             text_dim: [0xA3, 0x9E, 0x95],
             inactive: [0x7A, 0x75, 0x6E],
@@ -738,22 +740,22 @@ impl Palette {
             selection_fill: [0x5C, 0x42, 0x20],
             info_accent: [0x7F, 0x8A, 0xD0],
             info_ink: [0xA9, 0xB3, 0xEC],
-            row_hover_fill: [0x28, 0x27, 0x25],
-            divider: [0x30, 0x2E, 0x2B],
-            field_fill: [0x26, 0x25, 0x23],
+            row_hover_fill: [0x22, 0x21, 0x1F],
+            divider: [0x2A, 0x28, 0x26],
+            field_fill: [0x1F, 0x1E, 0x1C],
             field_stroke: [0x3A, 0x38, 0x36],
             info_fill: [0x26, 0x2A, 0x44],
             failed_fill: [0x3B, 0x20, 0x1D],
-            chip_fill: [0x2C, 0x2B, 0x29],
+            chip_fill: [0x2A, 0x29, 0x27],
             attention_fill: [0x3A, 0x2E, 0x19],
             track: [0x3A, 0x38, 0x36],
             knob_fill: [0xF5, 0xF2, 0xEC],
             knob_rim: [0x7A, 0x75, 0x6E],
             icon_sketch: [0x86, 0x92, 0xD6],
             icon_datum: [0x4F, 0xB3, 0xAE],
-            popover_fill: [0x26, 0x25, 0x23],
-            popover_field: [0x30, 0x2E, 0x2B],
-            popover_hover: [0x33, 0x31, 0x2E],
+            popover_fill: [0x20, 0x1F, 0x1D],
+            popover_field: [0x2A, 0x29, 0x27],
+            popover_hover: [0x2E, 0x2D, 0x2A],
             popover_rim_opacity: 31,
         }
     }
@@ -1188,6 +1190,48 @@ impl Tokens {
         // text field's focus ring take the info ink.
         visuals.hyperlink_color = color(self.info_ink);
         visuals.selection.stroke = egui::Stroke::new(1.0, color(self.info_ink));
+        // Every egui widget still drawn on a panel (a scroll bar, a
+        // separator, a text edit) in the kit's fills, never egui's greys.
+        visuals.extreme_bg_color = color(self.field_fill);
+        visuals.text_edit_bg_color = Some(color(self.field_fill));
+        visuals.faint_bg_color = color(self.row_hover_fill);
+        visuals.code_bg_color = color(self.field_fill);
+        visuals.window_stroke = egui::Stroke::new(1.0, color(self.divider));
+        visuals.widgets.noninteractive.bg_fill = color(self.panel_fill);
+        visuals.widgets.noninteractive.weak_bg_fill = color(self.panel_fill);
+        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, color(self.divider));
+        visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, color(self.text));
+        for (widget, fill, stroke, ink) in [
+            (
+                &mut visuals.widgets.inactive,
+                self.field_fill,
+                self.field_stroke,
+                self.text,
+            ),
+            (
+                &mut visuals.widgets.hovered,
+                self.row_hover_fill,
+                self.field_stroke,
+                self.text,
+            ),
+            (
+                &mut visuals.widgets.active,
+                self.chip_fill,
+                self.field_stroke,
+                self.text,
+            ),
+            (
+                &mut visuals.widgets.open,
+                self.chip_fill,
+                self.field_stroke,
+                self.text,
+            ),
+        ] {
+            widget.bg_fill = color(fill);
+            widget.weak_bg_fill = color(fill);
+            widget.bg_stroke = egui::Stroke::new(1.0, color(stroke));
+            widget.fg_stroke = egui::Stroke::new(1.0, color(ink));
+        }
         self.round(&mut visuals);
         visuals
     }
@@ -1814,19 +1858,24 @@ mod tests {
     }
 
     /// The figures of the overhaul's plan (plan/mockups/ui-overhaul,
-    /// *Contrast*), the design's own check of the dark set.
+    /// *Contrast*), the design's own check of the dark set. Changed on
+    /// 2026-11-04 with the developer's decision that dark is the darkest
+    /// variant (panels #161514, popovers #201F1D): the ratios of the
+    /// panel, its hover and the popover were worked out again by hand
+    /// (WCAG 2 relative luminance, a script outside this code) and stand
+    /// in the design notes' table (docs/design/rendering.md).
     #[test]
     fn the_dark_set_has_the_planned_figures() {
         let d = Tokens::dark();
         for (ink, fill, ratio) in [
-            (d.text, d.panel_fill, 14.33),
-            (d.text_dim, d.panel_fill, 6.46),
-            (d.text_dim, d.row_hover_fill, 5.60),
+            (d.text, d.panel_fill, 15.19),
+            (d.text_dim, d.panel_fill, 6.85),
+            (d.text_dim, d.row_hover_fill, 6.04),
             (d.text, d.selection_fill, 7.76),
             (d.info_ink, d.info_fill, 6.91),
             (d.failed, d.failed_fill, 4.82),
             (d.attention, d.attention_fill, 7.11),
-            (d.plate_text_dim, d.popover_fill, 6.11),
+            (d.plate_text_dim, d.popover_fill, 6.57),
         ] {
             let got = contrast(ink, fill);
             assert!((got - ratio).abs() < 0.01, "{ink:?} on {fill:?}: {got:.2}");

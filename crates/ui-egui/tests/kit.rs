@@ -179,7 +179,9 @@ fn the_kit_follows_the_appearance() {
     assert_eq!(Kit::panel(&dark).skin.fill, Palette::dark().panel_fill);
     assert_eq!(Kit::panel(&dark).skin.text, Palette::dark().text);
     assert_eq!(Kit::plate(&light).skin.fill, light.plate_fill);
-    assert_eq!(Kit::plate(&dark).skin.fill, [0x26, 0x25, 0x23]);
+    // One step above the dark panel (#161514): the developer's darkest
+    // dark set of 2026-11-04.
+    assert_eq!(Kit::plate(&dark).skin.fill, [0x20, 0x1F, 0x1D]);
     assert_eq!(Kit::plate(&dark).skin.text, Kit::plate(&light).skin.text);
     assert!(!Kit::plate(&light).touch() && Kit::plate(&light.touch()).touch());
 }
