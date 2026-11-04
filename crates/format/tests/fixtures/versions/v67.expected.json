@@ -1,0 +1,290 @@
+{
+  "format_version": 67,
+  "written_by": "c326b6adf9c746328ae7e31d38d072b4d4b3df01",
+  "how": "the engine of that commit (on the Strix, Check run 41824321895, by a temporary test, crates/engine/tests/zz_write_fixture_v67.rs, that ran v67.steps.json in a session as craft3d-cli run --new '{\"units\": \"mm\"}' --script v67.steps.json --out v67.3dcraft does, printed the file and what document.inspect said of it opened again); a circle of radius 2 on the zx plane carried round two circles of radii 8 and 12 on the xy plane: once with the up direction of the rails' sketch (Ring, a torus) and once with the up direction a datum axis leaning from z (Leaning): the up field of a sweep and closed rails, format 67",
+  "rollback": null,
+  "features": [
+    {
+      "dof": 3,
+      "id": "F1",
+      "name": "Section",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 10.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "center": 1,
+              "radius": 2.0,
+              "type": "circle"
+            },
+            "id": 2
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 3,
+        "plane": {
+          "offset": "0",
+          "plane": "zx",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 3,
+      "id": "F2",
+      "name": "Inner",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "center": 1,
+              "radius": 8.0,
+              "type": "circle"
+            },
+            "id": 2
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 3,
+        "plane": {
+          "offset": "0",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 3,
+      "id": "F3",
+      "name": "Outer",
+      "params": {
+        "constraints": [],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "center": 1,
+              "radius": 12.0,
+              "type": "circle"
+            },
+            "id": 2
+          }
+        ],
+        "next_constraint_id": 1,
+        "next_entity_id": 3,
+        "plane": {
+          "offset": "0",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "datum": {
+        "direction": [
+          0.4472135954999579,
+          0.0,
+          0.8944271909999159
+        ],
+        "kind": "axis",
+        "origin": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "id": "F4",
+      "name": "Lean",
+      "params": {
+        "by": {
+          "points": [
+            {
+              "position": [
+                "0",
+                "0",
+                "0"
+              ],
+              "type": "at"
+            },
+            {
+              "position": [
+                "0.5",
+                "0",
+                "1"
+              ],
+              "type": "at"
+            }
+          ],
+          "type": "twoPoints"
+        },
+        "type": "datumAxis"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F5",
+      "name": "Ring",
+      "params": {
+        "path": 2,
+        "rail": 3,
+        "scale": "uniform",
+        "sketch": 1,
+        "type": "sweep",
+        "up": null
+      },
+      "path": {
+        "closed": true,
+        "deviation": 1.2613832015752535e-07,
+        "length": 50.26548245743669,
+        "stations": 37
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F6",
+      "name": "Leaning",
+      "params": {
+        "path": 2,
+        "rail": 3,
+        "scale": "uniform",
+        "sketch": 1,
+        "type": "sweep",
+        "up": {
+          "feature": 4,
+          "type": "datum"
+        }
+      },
+      "path": {
+        "closed": true,
+        "deviation": 4.855308212579423e-07,
+        "length": 50.26548245743669,
+        "stations": 57
+      },
+      "status": "ok",
+      "suppressed": false
+    }
+  ],
+  "bodies": [
+    {
+      "area": 789.5683520873828,
+      "bbox": [
+        [
+          -12.0,
+          -12.0,
+          -2.000000000000002
+        ],
+        [
+          12.0,
+          12.0,
+          2.000000000000002
+        ]
+      ],
+      "bboxTolerance": 0.039470147437348405,
+      "centroid": [
+        6.798989834637259e-15,
+        7.487275225627571e-15,
+        -3.599651550782486e-17
+      ],
+      "edges": 16,
+      "faceNames": [
+        "F5:side(e2,e2,e2)",
+        "F5:piece(1)/F5:side(e2,e2,e2)",
+        "F5:piece(2)/F5:side(e2,e2,e2)",
+        "F5:piece(3)/F5:side(e2,e2,e2)",
+        "F5:piece(4100)/F5:side(e2,e2,e2)",
+        "F5:piece(4101)/F5:side(e2,e2,e2)",
+        "F5:piece(4102)/F5:side(e2,e2,e2)",
+        "F5:piece(4103)/F5:side(e2,e2,e2)"
+      ],
+      "faces": 8,
+      "feature": "F5",
+      "kind": "solid",
+      "name": "Ring",
+      "shells": 1,
+      "valid": true,
+      "vertices": 8,
+      "volume": 789.568352087461
+    },
+    {
+      "area": 768.3241866386379,
+      "bbox": [
+        [
+          -12.0,
+          -12.0,
+          -2.0
+        ],
+        [
+          12.0,
+          12.0,
+          2.0
+        ]
+      ],
+      "bboxTolerance": 0.039470147437348405,
+      "centroid": [
+        -5.660128457078064e-16,
+        -4.570955473223926e-16,
+        -1.1427388683059815e-16
+      ],
+      "edges": 16,
+      "faceNames": [
+        "F6:side(e2,e2,e2)",
+        "F6:piece(1)/F6:side(e2,e2,e2)",
+        "F6:piece(2)/F6:side(e2,e2,e2)",
+        "F6:piece(3)/F6:side(e2,e2,e2)",
+        "F6:piece(4100)/F6:side(e2,e2,e2)",
+        "F6:piece(4101)/F6:side(e2,e2,e2)",
+        "F6:piece(4102)/F6:side(e2,e2,e2)",
+        "F6:piece(4103)/F6:side(e2,e2,e2)"
+      ],
+      "faces": 8,
+      "feature": "F6",
+      "kind": "solid",
+      "name": "Leaning",
+      "shells": 1,
+      "valid": true,
+      "vertices": 8,
+      "volume": 746.1470914839076
+    }
+  ]
+}
