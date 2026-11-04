@@ -60,7 +60,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "view.trace",
         "Trace Point",
         r#"{"point": vertex name or {sketch, entity}, "feature": id or name = the body that has the vertex, "t": [number, number] = [0, 1], "samples": integer = 65, "name": string = "Trace <n>", "grow": boolean = false, "clear": boolean or trace name, "background": boolean = true in a window, else false, "wait": boolean = false} or {"name": string, "wait": boolean = false}"#,
-        "Traces the path of a point over the motion: the point is a vertex by its persistent name (document.edges lists them; feature says which body when several have it) or a point of a sketch ({sketch, entity}); its place is taken at samples values of t evenly from t[0] to t[1] (both included), each state made as view.motion makes it. The trace is view state of the document (not saved, not undone, let go of at the next edit): the viewport draws it as a line, and file.export {path: *.svg or *.dxf, trace: name} writes it in its plane. With grow: true the viewport draws the trace only up to the t it shows while it shows a moment of the motion (the player draws it as it goes), whole otherwise. A trace with the name of one kept replaces it; at most 32 are kept. clear: true removes every trace, clear: name one of them (nothing is traced then). The document needs a timeline (view.motion). A point that is gone at some t fails the trace, naming that t. Returns name, point, t, samples, grow, points ([x, y, z] in the document's unit), length (along the polyline), closed (more than 2 points and it ends where it began, within the tolerance), box and plane ({point, normal} when the path lies in one plane within the tolerance and within a millionth of its size, else null). In an assembly the point is named through an instance as a mate names it (Coupler/End2, Foot/F1:vertex(2)), without feature. With background: true (a window's default) the points are worked out by the motion's background builder, so a window goes on playing meanwhile: the result says pending: true and leaves out the points and what is measured of them, and the trace is drawn once it is done (view.trace with background: false works it out in the command and returns them). view.trace {name} without point reads a trace asked for before: its full answer once it is there, the error that stopped it (a wrong point is an error at once; work let go of, by motion.bake {cancel: true}, view.motion {t: null} or an edit, says let go of), or pending: true; wait: true waits for it, in a window at most 2 s (it holds the window's engine thread: an agent asks again, or follows ui.get traces), elsewhere at most 600 s.",
+        "Traces the path of a point over the motion: the point is a vertex by its persistent name (document.edges lists them; feature says which body when several have it) or a point of a sketch ({sketch, entity}); its place is taken at samples values of t evenly from t[0] to t[1] (both included), each state made as view.motion makes it. The trace is view state of the document (not saved, not undone, let go of at the next edit): the viewport draws it as a line, and file.export {path: *.svg or *.dxf, trace: name} writes it in its plane. With grow: true the viewport draws the trace only up to the t it shows while it shows a moment of the motion (the player draws it as it goes), whole otherwise. A trace with the name of one kept replaces it; at most 32 are kept. clear: true removes every trace, clear: name one of them (nothing is traced then). The document needs a timeline (view.motion). A point that is gone at some t fails the trace, naming that t. Returns name, point, t, samples, grow, points ([x, y, z] in the document's unit), length (along the polyline), closed (more than 2 points and it ends where it began, within the tolerance), box and plane ({point, normal} when the path lies in one plane within the tolerance and within a millionth of its size, else null). In an assembly the point is named through an instance as a mate names it (Coupler/End2, Foot/F1:vertex(2)), without feature. With background: true (a window's default) the points are worked out by the motion's background builder, so a window goes on playing meanwhile: the result says pending: true and leaves out the points and what is measured of them, and the trace is drawn once it is done (view.trace with background: false works it out in the command and returns them). view.trace {name} without point reads a trace asked for before: its full answer once it is there, the error that stopped it (a wrong point is an error at once; work let go of, by motion.bake {cancel: true}, view.motion {t: null} or an edit, says let go of), or pending: true; wait: true waits for it, in a window at most 2 s (it holds the window's engine thread: an agent asks again, or follows ui.get traces), elsewhere at most 600 s. Where the bodies are beside the host (the browser's worker), the trace is worked out there: the result says deferred: true and pending: true with its name, the trace is pending until its answer came (then drawn, or its error said), and the answer is what view.trace with background: false answers.",
         doc: true,
         names: ["point"],
         view_trace
@@ -69,7 +69,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "motion.check",
         "Check Over Motion",
         r#"{"assertions": [name, ...] = every assertion (or only measure's), "measure": {the parameters of assert.add without name}, "t": [number, number] = [0, 1], "samples": integer = 33, "details": boolean = false}"#,
-        "Checks assertions at samples of the motion: at samples values of t evenly from t[0] to t[1] (both included) the document is set to that t (as view.motion makes it) and the assertions are measured as document.check measures them, on a copy: the document does not change. What it proves is what held at the samples: a failure between two samples (a collision shorter than their spacing) can be missed, so the result says sampled: true. measure is an assertion written as for assert.add (without its name) and checked only here; assertions names the document's own (default: all of them, or none when measure is given). Any measure works: overlap with is false gives the first sample that collides, clearance with a min the least clearance at the samples and its t. Per assertion: status (failed when any sample fails; else error, notProven, passed, or inactive when it is never on), failed (how many samples), firstFailure ({t, after, measured, message}: the first sample that fails, and after the last sample before it that passed, null when none did, so the failure begins in (after, t]; null when no sample fails), firstError and firstNotProven the same for samples that could not be measured or not proven, min and max ({t, value} of a numeric measure at the samples), unit and expected; with details every sample ({t, status, measured}). ok is true when every assertion passed at every sample. The document needs a timeline (view.motion). At most 1000 samples. For an assembly each sample is measured at the moment as view.motion solves it, and deadPoints lists every dead point met ({t, why}).",
+        "Checks assertions at samples of the motion: at samples values of t evenly from t[0] to t[1] (both included) the document is set to that t (as view.motion makes it) and the assertions are measured as document.check measures them, on a copy: the document does not change. What it proves is what held at the samples: a failure between two samples (a collision shorter than their spacing) can be missed, so the result says sampled: true. measure is an assertion written as for assert.add (without its name) and checked only here; assertions names the document's own (default: all of them, or none when measure is given). Any measure works: overlap with is false gives the first sample that collides, clearance with a min the least clearance at the samples and its t. Per assertion: status (failed when any sample fails; else error, notProven, passed, or inactive when it is never on), failed (how many samples), firstFailure ({t, after, measured, message}: the first sample that fails, and after the last sample before it that passed, null when none did, so the failure begins in (after, t]; null when no sample fails), firstError and firstNotProven the same for samples that could not be measured or not proven, min and max ({t, value} of a numeric measure at the samples), unit and expected; with details every sample ({t, status, measured}). ok is true when every assertion passed at every sample. The document needs a timeline (view.motion). At most 1000 samples. For an assembly each sample is measured at the moment as view.motion solves it, and deadPoints lists every dead point met ({t, why}). Where the bodies are beside the host (the browser's worker), the samples are made there: the result says deferred: true, and the answer follows.",
         doc: true,
         motion_check
     ),
@@ -1718,11 +1718,84 @@ pub(crate) struct TraceJob {
     generation: u64,
     /// Why it could not be made; `None` while pending.
     error: Option<String>,
+    /// Made where the bodies are (`commands_elsewhere.rs`, the page's
+    /// worker), not by this session's builder: its answer brings it.
+    elsewhere: bool,
 }
 
 impl TraceJob {
     fn pending(&self) -> bool {
         self.error.is_none()
+    }
+}
+
+/// A trace as it crosses from where it was made (`commands_elsewhere.rs`):
+/// its numbers as their bits.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TraceWire {
+    pub point: String,
+    pub points: Vec<Vec3>,
+    pub t: (f64, f64),
+    pub grow: bool,
+}
+
+/// Most points a trace that crosses may have (as many as it may sample).
+const MAX_WIRE_POINTS: usize = MAX_SAMPLES as usize;
+
+impl TraceWire {
+    fn of(trace: &Trace) -> Self {
+        Self {
+            point: trace.point.clone(),
+            points: trace.points.clone(),
+            t: trace.t,
+            grow: trace.grow,
+        }
+    }
+
+    pub(crate) fn json(&self) -> Value {
+        let bits = |v: f64| format!("{:016x}", v.to_bits());
+        json!({
+            "point": self.point,
+            "points": self.points.iter().map(|p| [bits(p.x), bits(p.y), bits(p.z)]).collect::<Vec<_>>(),
+            "t": [bits(self.t.0), bits(self.t.1)],
+            "grow": self.grow,
+        })
+    }
+
+    /// Read back from [`Self::json`]; `None` for anything else (hostile:
+    /// it comes from another instance).
+    pub(crate) fn from_json(value: &Value) -> Option<Self> {
+        let bits = |v: &Value| {
+            let text = v.as_str()?;
+            (text.len() == 16)
+                .then(|| u64::from_str_radix(text, 16).ok())
+                .flatten()
+                .map(f64::from_bits)
+        };
+        let point = value.get("point")?.as_str()?;
+        if point.len() > 4096 {
+            return None;
+        }
+        let items = value.get("points")?.as_array()?;
+        if items.len() > MAX_WIRE_POINTS {
+            return None;
+        }
+        let mut points = Vec::with_capacity(items.len());
+        for item in items {
+            let [x, y, z] = item.as_array()?.as_slice() else {
+                return None;
+            };
+            points.push(Vec3::new(bits(x)?, bits(y)?, bits(z)?));
+        }
+        let [a, b] = value.get("t")?.as_array()?.as_slice() else {
+            return None;
+        };
+        Some(Self {
+            point: point.to_string(),
+            points,
+            t: (bits(a)?, bits(b)?),
+            grow: value.get("grow")?.as_bool()?,
+        })
     }
 }
 
@@ -1834,7 +1907,7 @@ impl OpenDocument {
     pub(crate) fn reset_builder(&mut self, why: &str) {
         self.motion.builder.reset();
         for job in self.motion.trace_jobs.values_mut() {
-            if job.pending() {
+            if job.pending() && !job.elsewhere {
                 job.error = Some(format!("let go of: {why}"));
             }
         }
@@ -1851,6 +1924,16 @@ impl OpenDocument {
         });
         if stale {
             self.reset_builder("the document changed before it was done");
+            // Those made elsewhere too: their answer is for a state the
+            // document left.
+            for job in self.motion.trace_jobs.values_mut() {
+                if job.pending()
+                    && (!Arc::ptr_eq(&job.base, &current) || job.generation != generation)
+                {
+                    job.error =
+                        Some("let go of: the document changed before it was done".to_string());
+                }
+            }
         }
         self.motion.trace_jobs.retain(|_, job| {
             job.pending() || (Arc::ptr_eq(&job.base, &current) && job.generation == generation)
@@ -2101,6 +2184,106 @@ impl OpenDocument {
             return true;
         }
         false
+    }
+
+    /// A command tried without the bodies (`commands_elsewhere.rs`) that
+    /// samples the motion (`view.trace`, `motion.check`) is run where
+    /// the bodies are, whatever is regenerated here: true then (noted),
+    /// and the command stops before it samples anything.
+    pub(crate) fn sweep_elsewhere(&mut self) -> bool {
+        if self.forbid_regen.is_some() {
+            self.forbid_regen = Some(true);
+            return true;
+        }
+        false
+    }
+
+    /// A trace handed over to be made where the bodies are: pending under
+    /// `name` until [`Self::trace_came`]. Returns its serial.
+    pub(crate) fn trace_handed_over(&mut self, name: &str) -> u64 {
+        self.check_trace_base();
+        self.motion.trace_serial = self.motion.trace_serial.wrapping_add(1);
+        let serial = self.motion.trace_serial;
+        self.motion.trace_jobs.insert(
+            name.to_string(),
+            TraceJob {
+                serial,
+                base: Arc::clone(self.history.current()),
+                generation: self.asm.generation,
+                error: None,
+                elsewhere: true,
+            },
+        );
+        serial
+    }
+
+    /// The answer to a trace handed over ([`Self::trace_handed_over`]):
+    /// its points, kept as a trace made here is, or why it could not be
+    /// made. Only the one last asked for its name is taken, and only for
+    /// the document as it is.
+    /// `refused`: the command itself failed there (as where it runs here,
+    /// nothing is kept: no trace, none pending).
+    pub(crate) fn trace_came(
+        &mut self,
+        name: &str,
+        serial: u64,
+        made: Result<TraceWire, String>,
+        refused: bool,
+    ) {
+        self.check_trace_base();
+        let Some(job) = self.motion.trace_jobs.get(name) else {
+            return;
+        };
+        if job.serial != serial || !job.pending() {
+            return;
+        }
+        let (base, generation) = (Arc::clone(&job.base), job.generation);
+        let wire = match made {
+            Ok(wire) => wire,
+            Err(_) if refused => {
+                self.motion.trace_jobs.remove(name);
+                return;
+            }
+            Err(why) => {
+                if let Some(job) = self.motion.trace_jobs.get_mut(name) {
+                    job.error = Some(why);
+                }
+                return;
+            }
+        };
+        let pending = self
+            .motion
+            .trace_jobs
+            .values()
+            .filter(|j| j.pending())
+            .count()
+            .saturating_sub(1);
+        let traces = self.traces();
+        traces.retain(|t| t.name != name);
+        if traces.len().saturating_add(pending) < MAX_TRACES {
+            traces.push(Trace {
+                base,
+                generation,
+                name: name.to_string(),
+                point: wire.point,
+                points: wire.points,
+                t: wire.t,
+                grow: wire.grow,
+            });
+            self.motion.trace_jobs.remove(name);
+        } else if let Some(job) = self.motion.trace_jobs.get_mut(name) {
+            job.error = Some(format!("{MAX_TRACES} traces are kept already"));
+        }
+    }
+
+    /// Takes the trace `name` out of this document (the other side of
+    /// [`Self::trace_came`]: a trace made here for another session, which
+    /// is not kept here), written out bit for bit.
+    pub(crate) fn take_trace_wire(&mut self, name: &str) -> Option<Value> {
+        let traces = self.traces();
+        let at = traces.iter().position(|t| t.name == name)?;
+        let trace = traces.remove(at);
+        Some(TraceWire::of(&trace).json())
     }
 
     /// Takes in the traces worked out in the background; true when one
@@ -2928,6 +3111,41 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
     let shown = open.scrubbed();
     timeline(&shown).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
     let point = PointRef::parse(ID, &base, &p)?;
+    // Tried without the bodies (the page): sampled where they are, on
+    // the document as it is (not while the view is scrubbed, whose state
+    // the other side does not have), under the name given here.
+    // What is wrong with the request itself is said here, as where it
+    // runs here (the point itself is found there, at the first `t`).
+    if open.forbid_regen.is_some()
+        && base.is_assembly()
+        && !matches!(point, PointRef::Vertex { feature: None, .. })
+    {
+        return fail(format!(
+            "{ID}: in an assembly the point is named through its instance, as a mate names it (`Coupler/End2`, `Foot/F1:vertex(2)`), without `feature`"
+        ));
+    }
+    if open.scrubbed_to().is_none() && open.sweep_elsewhere() {
+        let name = trace_name(open, given_name);
+        let others = open
+            .traces()
+            .iter()
+            .filter(|t| t.name != name)
+            .count()
+            .saturating_add(
+                open.motion
+                    .trace_jobs
+                    .iter()
+                    .filter(|(n, job)| **n != name && job.pending())
+                    .count(),
+            );
+        if others >= MAX_TRACES {
+            return fail(format!(
+                "{ID}: {MAX_TRACES} traces are kept or being worked out already; remove some with clear"
+            ));
+        }
+        session.commands.note_trace(name);
+        return fail(format!("{ID}: sampled where the bodies are"));
+    }
     let generation = open.asm.generation;
     // The motion's own sweep over that state: what a bake built is used,
     // and it is the sweep the player goes on with (it shows the same
@@ -3030,6 +3248,7 @@ fn view_trace(session: &mut Session, params: &Value) -> Run {
             base: Arc::clone(&base),
             generation,
             error: None,
+            elsewhere: false,
         },
     );
     if wait {
@@ -3393,6 +3612,59 @@ struct Over {
     samples: Vec<(f64, crate::assert_cmds::AssertionStatus, Value, String)>,
 }
 
+/// What `motion.check` refuses in its request before it measures (the
+/// shape of `measure`, the names in `assertions`), with the errors it
+/// gives where it measures: said by a host that has the check made
+/// elsewhere before it hands it over. The measure itself is read there.
+fn check_request(id: &str, doc: &Document, p: &Params) -> Result<(), CommandError> {
+    let measured = match p.get("measure") {
+        None => false,
+        Some(Value::Object(map)) if map.contains_key("name") => {
+            return fail(format!(
+                "{id}: `measure` has no name; it is checked here only"
+            ));
+        }
+        Some(Value::Object(_)) => true,
+        Some(other) => {
+            return fail(format!(
+                "{id}: `measure` is an assertion as assert.add takes it, without its name, got {}",
+                short(other)
+            ));
+        }
+    };
+    match p.get("assertions") {
+        None | Some(Value::Null) if !measured && doc.assertions.is_empty() => fail(format!(
+            "{id}: the document has no assertions; give `measure` (an assertion as assert.add takes it) or add some with assert.add"
+        )),
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::Array(items)) => {
+            for item in items {
+                let Some(name) = item.as_str() else {
+                    return fail(format!(
+                        "{id}: `assertions` is a list of assertion names, got {}",
+                        short(item)
+                    ));
+                };
+                // The measure's own name is given there.
+                if doc.assertion(name).is_none() && !(measured && name.starts_with("overMotion")) {
+                    return fail(format!(
+                        "{id}: there is no assertion `{}`",
+                        name.chars().take(80).collect::<String>()
+                    ));
+                }
+            }
+            if items.is_empty() && !measured {
+                return fail(format!("{id}: `assertions` names none"));
+            }
+            Ok(())
+        }
+        Some(other) => fail(format!(
+            "{id}: `assertions` is a list of assertion names, got {}",
+            short(other)
+        )),
+    }
+}
+
 fn motion_check(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "motion.check";
     use crate::assert_cmds::AssertionStatus as S;
@@ -3407,6 +3679,14 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
     let open = session.document_mut()?;
     let base = Document::clone(open.history.current());
     timeline(&base).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
+    // Tried without the bodies (the page): sampled where they are, once
+    // what is wrong with the request itself is said here.
+    if open.forbid_regen.is_some() {
+        check_request(ID, &base, &p)?;
+    }
+    if open.sweep_elsewhere() {
+        return fail(format!("{ID}: sampled where the bodies are"));
+    }
     open.regen();
     let cache = open.cache.clone();
 
