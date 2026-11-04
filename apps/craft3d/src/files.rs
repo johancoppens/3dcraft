@@ -2179,9 +2179,11 @@ mod tests {
         assert_eq!(host.shell.state.export.name, "untitled.step");
         host.shell.answer_export(false);
         assert!(!host.shell.state.export.open);
+        // Cancelled is said, not a failure (the developer's decision of
+        // 2026-11-04: no red, no Copy details).
         assert_eq!(
             last(&host),
-            ("file.export".to_string(), false, "cancelled".to_string())
+            ("file.export".to_string(), true, "cancelled".to_string())
         );
         assert!(!host.pump_files(&mut dialogs));
         assert!(person.asked().is_empty());
