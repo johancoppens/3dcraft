@@ -423,3 +423,43 @@ fn a_ring_is_the_same_body_to_the_bit_every_time() {
     assert_eq!(format!("{:?}", one.body), format!("{:?}", two.body));
     assert_eq!(one.deviation.to_bits(), two.deviation.to_bits());
 }
+
+#[test]
+fn a_rectangle_carried_at_a_slant_between_parallel_lines_still_slides_exactly() {
+    // Rails (0, 0)–(0, 30) and (10, 4)–(10, 34): the chord (10, 4) is
+    // not square to the run, so the section moves at a slant to its own
+    // plane. Its lines sweep planes exactly at any slant: a slide (its
+    // deviation rounding only),
+    // every face a plane, and the volume the section's shadow across the
+    // run times the run, `10 h · 30`.
+    for k in SCALES {
+        let (l, h) = (30.0 * k, 5.0 * k);
+        let e = Vec3::new(10.0, 4.0, 0.0).normalized().unwrap();
+        let d = 116.0_f64.sqrt() * k;
+        let plane = Frame::new(Vec3::ZERO, e.cross(Vec3::Z), e).unwrap();
+        let wall = sweep_two_rails(
+            &profile(&rectangle(1, 1, (0.0, d), (0.0, h)), k),
+            &plane,
+            &[line(10, [0.0, 0.0], [0.0, l])],
+            &Frame::WORLD,
+            &[line(20, [10.0 * k, 4.0 * k], [10.0 * k, 4.0 * k + l])],
+            &Frame::WORLD,
+            Scaling::Uniform,
+            &tol(k),
+        )
+        .unwrap();
+        // A slide's bound is rounding only; a followed leg's carries at
+        // least `256 ε` times the size.
+        assert!(
+            wall.deviation <= 64.0 * f64::EPSILON * l,
+            "followed, not slid: {}",
+            wall.deviation
+        );
+        assert!(
+            wall.body.faces.iter().all(|f| f.surface.kind() == "plane"),
+            "not all planes"
+        );
+        let (volume, area, _) = sound(&wall, k);
+        within(volume, 10.0 * k * h * l, area * tol(k).linear);
+    }
+}
