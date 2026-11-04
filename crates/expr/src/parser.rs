@@ -456,9 +456,34 @@ fn spelled_unit(word: &str) -> Option<Unit> {
         "joule" => Unit::Joule,
         "litre" | "liter" | "l" => Unit::Litre,
         "millilitre" | "milliliter" | "ml" => Unit::Millilitre,
-        _ => return None,
+        _ => return one_letter_too_many(&lower),
     };
     Some(unit)
+}
+
+/// `10 mmm`, `90 degg`: a unit of two letters or more typed with one
+/// letter too many, when only one unit is left by taking a letter out.
+fn one_letter_too_many(word: &str) -> Option<Unit> {
+    if word.len() < 3 || word.len() > 8 || !word.is_ascii() {
+        return None;
+    }
+    let mut found: Option<Unit> = None;
+    for at in 0..word.len() {
+        let (Some(head), Some(tail)) = (word.get(..at), word.get(at.saturating_add(1)..)) else {
+            continue;
+        };
+        let shorter = format!("{head}{tail}");
+        if shorter.len() < 2 {
+            continue;
+        }
+        if let Some(unit) = Unit::from_symbol(&shorter) {
+            match found {
+                Some(other) if other != unit => return None,
+                _ => found = Some(unit),
+            }
+        }
+    }
+    found
 }
 
 struct Parser<'a> {
@@ -1426,6 +1451,8 @@ mod tests {
             ("3 MM", "MM", Unit::Millimetre),
             ("5 degrees", "degrees", Unit::Degree),
             ("1 feet", "feet", Unit::Foot),
+            ("10 mmm", "mmm", Unit::Millimetre),
+            ("90 degg", "degg", Unit::Degree),
         ] {
             let e = err(source);
             assert_eq!(

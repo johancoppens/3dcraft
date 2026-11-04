@@ -985,7 +985,13 @@ fn load_from_disk(
 ) -> Result<(craft3d_doc::Document, Vec<String>), String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        craft3d_format::load_noted(resolved).map_err(|e| e.to_string())
+        craft3d_format::load_noted(resolved).map_err(|e| match e {
+            // The path is in the message that wraps this already.
+            craft3d_format::FormatError::Io { error, .. } => {
+                crate::workspace::io_reason(&error, crate::workspace::IoAccess::Read)
+            }
+            other => other.to_string(),
+        })
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -1003,8 +1009,12 @@ pub(crate) fn save_to_disk(
 ) -> Result<(), String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        craft3d_format::save_with_thumbnail(resolved, document, thumbnail)
-            .map_err(|e| e.to_string())
+        craft3d_format::save_with_thumbnail(resolved, document, thumbnail).map_err(|e| match e {
+            craft3d_format::FormatError::Io { error, .. } => {
+                crate::workspace::io_reason(&error, crate::workspace::IoAccess::Write)
+            }
+            other => other.to_string(),
+        })
     }
     #[cfg(target_arch = "wasm32")]
     {
