@@ -27,8 +27,8 @@ use serde_json::{Value, json};
 const MAX_DRAWN_POINTS: usize = 4096;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("sketch.spline", "Sketch Spline", r#"{"sketch": id or name, "control": [point id or [x, y], ...], "through": [point id or [x, y], ...], "degree": integer = 3, "closed": boolean = false, "periodic": boolean = true, "live": boolean = false, "construction": boolean = false}"#,
-        "Adds a B-spline. Give either control: its control points in order (it starts at the first, ends at the last and leaves each along the leg to the next; the points in between pull it without lying on it), or through: points it passes through, from which the control points are worked out once (the first and last are shared as given, the ones in between become new control points). An existing point (\"e1\") shares an end with a line, an arc or another spline, which is how a spline closes a profile; a tangent constraint between the two then makes the corner smooth. degree is from 1 to 7 and needs degree + 1 points; closed brings the spline back to its first point, smooth all round: a periodic spline, also where it closes (written as a clamped spline of degree more control points than the points given, the first and last its seam). Closed with through, it passes through every point given and its seam is the first one; an even degree needs an odd number of points. Closed with control, the points given are a closed control polygon it passes through none of; its seam lies across the first point, and the control points near it are new points (the result lists them all). periodic: false (only with closed, not live) makes the closed spline as before 2026-11-04 instead: clamped, from its first point back to it, which it leaves and reaches in directions of their own (a corner there, as a teardrop's tip), its points as given. A profile takes splines that do not cross or touch themselves or other curves, extruded or revolved: a closed spline is a profile on its own (its wall is made in two faces, the second called F2:piece(1)/F2:side(e7)), and a spline of degree 1 is a polyline whose every leg sweeps a flat face (numbered the same way). Revolved, a spline has to stay clear of the axis (a line may lie on it). Returns the spline and its control points; move one with sketch.edit (entity and at). With live (only with through) the points given are the spline's own points, kept as they are, and the spline is fitted through them again at every regeneration: points held by formulas ([\"r * cos(30 deg)\", \"r * sin(30 deg)\"]) or by constraints move it, and the fit is the same as through gives once. A live spline takes pointOn and tangent as a formula curve does (see sketch.constrain); returns the spline and its through points.", doc: true, sketch_spline),
+    spec!("sketch.spline", "Sketch Spline", r#"{"sketch": id or name, "control": [point id or [x, y], ...], "through": [point id or [x, y], ...], "degree": integer = 3, "closed": boolean = false, "periodic": boolean = closed, "live": boolean = false, "construction": boolean = false}"#,
+        "Adds a B-spline. Give either control: its control points in order (it starts at the first, ends at the last and leaves each along the leg to the next; the points in between pull it without lying on it), or through: points it passes through, from which the control points are worked out once (the first and last are shared as given, the ones in between become new control points). An existing point (\"e1\") shares an end with a line, an arc or another spline, which is how a spline closes a profile; a tangent constraint between the two then makes the corner smooth. degree is from 1 to 7 and needs degree + 1 points; closed brings the spline back to its first point, smooth all round: a periodic spline, also where it closes and when its points are moved later (written as a clamped spline of degree more control points than the points given, the first and last its seam). Closed with through, it passes through every point given and its seam is the first one; an even degree needs an odd number of points. Closed with control, the points given are a closed control polygon it passes through none of; its seam lies across the first point, and the control points near it are new points (the result lists them all). periodic: false (only with closed, not live) makes the closed spline as before 2026-11-04 instead: clamped, from its first point back to it, which it leaves and reaches in directions of their own (a corner there, as a teardrop's tip), its points as given. A profile takes splines that do not cross or touch themselves or other curves, extruded or revolved: a closed spline is a profile on its own (its wall is made in two faces, the second called F2:piece(1)/F2:side(eN), eN the spline), and a spline of degree 1 is a polyline whose every leg sweeps a flat face (numbered the same way). Revolved, a spline has to stay clear of the axis (a line may lie on it). Returns the spline and its control points; move one with sketch.edit (entity and at). With live (only with through) the points given are the spline's own points, kept as they are, and the spline is fitted through them again at every regeneration: points held by formulas ([\"r * cos(30 deg)\", \"r * sin(30 deg)\"]) or by constraints move it, and the fit is the same as through gives once. A live spline takes pointOn and tangent as a formula curve does (see sketch.constrain); returns the spline and its through points.", doc: true, sketch_spline),
 ];
 
 /// A sketch spline of `degree` on these control points, for evaluating.
@@ -226,6 +226,15 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
         };
         given.push(first);
     }
+    // An even degree through an even number of places, closed, is not
+    // determined by them (the periodic fit's system is singular): refused
+    // here, live too, before the sketch takes a spline it cannot build.
+    let places_given = given.len().saturating_sub(usize::from(closed));
+    if closed && periodic && fitted && degree.is_multiple_of(2) && places_given.is_multiple_of(2) {
+        return fail(format!(
+            "{COMMAND}: a closed spline of even degree {degree} through an even number of places ({places_given}) is not determined by them; use an odd degree (3 is the usual), or an odd number of places"
+        ));
+    }
     let needed = usize::try_from(degree).map_or(usize::MAX, |d| d.saturating_add(1));
     if given.len() < needed {
         return fail(format!(
@@ -317,7 +326,8 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
                 .map_err(|_| SketchError::Invalid("the degree is too high".into()))?;
             let distinct = given.get(..last).unwrap_or(&[]);
             let control: Vec<craft3d_regen::curve_fit::Labelled> = if fitted {
-                let solved = interpolate(degree, &places).map_err(SketchError::Invalid)?;
+                let solved = craft3d_regen::curve_fit::interpolate_closed(p, &places)
+                    .map_err(SketchError::Invalid)?;
                 let end = solved.len().saturating_sub(1);
                 // The seam is the first point given; the rest are made.
                 solved
@@ -351,12 +361,26 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
                     None => s.add_point(at.0, at.1)?,
                 });
             }
-            // A point given with a coordinate held by an expression that
-            // is not one of the spline's own points would lose its hold.
+            // A point of the sketch given that is not one of the spline's
+            // own would drop out of it silently (a line ending on it would
+            // hang loose), and a coordinate held by an expression would
+            // lose its hold.
             for (i, point) in distinct.iter().enumerate() {
-                if !used.contains_key(&i)
-                    && matches!(point, PointArg::New(_, _, held) if *held != Default::default())
-                {
+                if used.contains_key(&i) {
+                    continue;
+                }
+                if let PointArg::Existing(existing) = point {
+                    return invalid(format!(
+                        "{existing} is point {} of the closed spline, but a periodic spline does not pass through it ({}); give it as coordinates, or give periodic: false to close the spline on it with a corner there",
+                        i + 1,
+                        if fitted {
+                            "only the first point, its seam, is kept"
+                        } else {
+                            "its seam lies across the first control point, and only control points away from it are kept"
+                        }
+                    ));
+                }
+                if matches!(point, PointArg::New(_, _, held) if *held != Default::default()) {
                     return invalid(format!(
                         "point {} has a coordinate written as an expression, but a closed spline does not keep it as one of its points (it is periodic: {}); give it as numbers",
                         i + 1,
@@ -370,14 +394,8 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
             }
         } else if fitted {
             // Not periodic: a closed one is the open fit from the first
-            // point back to it (its places differ in the last only by
-            // being a copy, which `interpolate` would take as closing).
-            let solved = if closed {
-                craft3d_regen::curve_fit::interpolate_open(degree, &places)
-            } else {
-                interpolate(degree, &places)
-            }
-            .map_err(SketchError::Invalid)?;
+            // point back to it.
+            let solved = interpolate(degree, &places).map_err(SketchError::Invalid)?;
             for (i, (point, at)) in given.iter().zip(&solved).enumerate() {
                 points.push(if closed && i == last {
                     *points
@@ -408,7 +426,11 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
                 });
             }
         }
-        let spline = s.add_spline(degree, points.clone(), construction)?;
+        let spline = if periodic {
+            s.add_periodic_spline(degree, points.clone(), construction)?
+        } else {
+            s.add_spline(degree, points.clone(), construction)?
+        };
         Ok((spline, points))
     })?;
     let (start, end) = (points.first().copied(), points.last().copied());

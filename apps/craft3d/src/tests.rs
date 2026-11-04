@@ -932,6 +932,29 @@ fn a_refused_connection_that_spoke_first_still_reads_why() {
     );
 }
 
+/// Refused connections are closed beside the listener (review of
+/// 2026-11-04): sixteen that never close, each read for up to a quarter of
+/// a second, do not hold up a client that comes once a slot is free (in
+/// the accept loop they took four seconds before it was taken).
+#[test]
+fn refusals_do_not_hold_up_the_next_connection() {
+    let rig = Rig::with(Workspace::none(), |config| config.max_connections = 1);
+    let held = rig.client();
+    eventually("one connection is counted", || rig.connections() == 1);
+    let mut refused: Vec<Client> = (0..16).map(|_| rig.connect()).collect();
+    for client in &mut refused {
+        client.send(b"{\"id\":0,\"method\":\"ping\"}\n");
+    }
+    drop(held);
+    eventually("the slot is free", || rig.connections() == 0);
+    let started = Instant::now();
+    let mut next = rig.client();
+    next.ok("ui.get", json!({}));
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(2), "{took:?}");
+    drop(refused);
+}
+
 /// The bridge tells the window's refusal of a connection over its limit as
 /// such, not as a window that is not reachable or not the window
 /// (2026-11-04).

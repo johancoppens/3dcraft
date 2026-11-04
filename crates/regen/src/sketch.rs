@@ -586,7 +586,7 @@ fn problem(
                 let at: Option<Vec<[f64; 2]>> = through.iter().map(|id| stored_at(*id)).collect();
                 let guess = at
                     .as_ref()
-                    .and_then(|at| curve_fit::interpolated(*degree, at).ok())
+                    .and_then(|at| curve_fit::interpolated(*degree, at, true).ok())
                     .map(|fit| fit.control)
                     .filter(|control| control.len() == count);
                 let seam = find(*first)?;
@@ -629,7 +629,7 @@ fn problem(
                 let at: Option<Vec<[f64; 2]>> = through.iter().map(|id| stored_at(*id)).collect();
                 let guess = at
                     .as_ref()
-                    .and_then(|at| curve_fit::interpolated(*degree, at).ok())
+                    .and_then(|at| curve_fit::interpolated(*degree, at, false).ok())
                     .map(|fit| fit.control);
                 let mut control = vec![find(*first)?];
                 let mut passes = Vec::new();
@@ -666,6 +666,28 @@ fn problem(
     };
     let mut made: BTreeMap<EntityId, Made> = BTreeMap::new();
     let mut splines: BTreeMap<EntityId, usize> = BTreeMap::new();
+    // A periodic spline is held smooth where it closes by the solve
+    // itself, constrained or not: its control points move together.
+    for entity in &sketch.entities {
+        if let Geometry::Spline {
+            degree,
+            control,
+            periodic: true,
+        } = &entity.geometry
+        {
+            let points = control
+                .iter()
+                .map(|id| find(*id))
+                .collect::<Result<Vec<_>, _>>()?;
+            let number = input.add_closed_spline_through(
+                usize::try_from(*degree).unwrap_or(usize::MAX),
+                craft3d_doc::clamped_uniform_knots(*degree, control.len()),
+                points,
+                Vec::new(),
+            );
+            splines.insert(entity.id, number);
+        }
+    }
     let mut handed = Vec::with_capacity(sketch.constraints.len());
     let mut left_out = Vec::new();
     for constraint in &sketch.constraints {
@@ -698,8 +720,9 @@ fn problem(
                 }
             }
             ConstraintKind::PointOn { point, curve } => {
-                if let Ok(Geometry::Spline { degree, control }) =
-                    sketch.entity(*curve).map(|e| &e.geometry)
+                if let Ok(Geometry::Spline {
+                    degree, control, ..
+                }) = sketch.entity(*curve).map(|e| &e.geometry)
                 {
                     // The solver has the spline as its control points, in
                     // a list of its own; each spline is given once.
@@ -794,7 +817,7 @@ fn problem(
                                         .find(|(c, _)| *c == f)
                                         .and_then(|(_, fit)| fit.as_ref().ok())
                                         .is_some_and(|fit| closes_smoothly(&fit.spline.control)),
-                                    Geometry::Interpolated { .. } => true,
+                                    Geometry::Interpolated { degree, .. } => *degree >= 2,
                                     _ => false,
                                 };
                             if !smooth {
@@ -2076,10 +2099,12 @@ fn fitted_curves(
                 curves.push(curve);
             }
             Geometry::Interpolated { degree, through } => {
+                // Closed by its points: the same point first and last.
+                let closed = through.len() > 2 && through.first() == through.last();
                 let at: Option<Vec<[f64; 2]>> = through.iter().map(|id| solved_at(*id)).collect();
                 let spline = at
                     .ok_or_else(|| "a point it passes through has no solved position".to_string())
-                    .and_then(|at| curve_fit::interpolated(*degree, &at));
+                    .and_then(|at| curve_fit::interpolated(*degree, &at, closed));
                 match spline {
                     Ok(spline) => curves.push(FittedCurve {
                         id: entity.id,

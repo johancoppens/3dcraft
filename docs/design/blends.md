@@ -50,6 +50,11 @@ Conditions that exist for one configuration and are not (yet) a general method. 
 | The tool-path requests planned on the body the in-place blends left by their original edge and face ids (`construct`, `mixed`), which `compact` and `compact_faces` renumber after a whole edge or face is taken | the requests left for the tools | remap through the sources before planning (a latent bug, *Consolidation*) |
 | An arc of half a turn or more refused (`Section::net`) | a ball whose arc is not one rational quadratic | a section in two pieces |
 
+## Owed, found by the coordinator's demo (2026-11-04)
+
+- *The vertex patch where a concave fillet meets convex ones*: a blade root rounded onto a hub (concave) whose leading and trailing edges are rounded too (convex) meet at a vertex no corner patch here closes; a vertex blend of mixed sides (a setback patch, or a Gregory or subdivided N-sided patch as the fills build, [`surfacing.md`](surfacing.md)) is the method owed.
+- *Chamfers of freeform edges round a closed loop and along a smooth chain*: refused as "chamfers of freeform edges that meet in a vertex are not built yet" and "the chamfer cannot be carried on where this edge goes on smoothly into the next" (a blade tip's outline of lines and arcs lofted); the chamfer's border carried across a smooth joint, as the fillets' chains are, is owed.
+
 ## Findings
 
 > The findings were moved from `docs/architecture.md` on 2026-10-15 (§ numbers in older text are that file's before the split; [README.md](README.md) says where each is now) and shortened to what still describes live code on 2026-10-17.

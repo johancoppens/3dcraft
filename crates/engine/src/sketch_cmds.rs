@@ -1290,6 +1290,7 @@ fn sketch_inspect(session: &mut Session, params: &Value) -> Run {
                     Geometry::Spline {
                         degree,
                         ref control,
+                        periodic,
                     } => {
                         map.insert("degree".into(), degree.into());
                         map.insert("control".into(), ids(control).into());
@@ -1297,6 +1298,9 @@ fn sketch_inspect(session: &mut Session, params: &Value) -> Run {
                             "closed".into(),
                             (control.len() > 1 && control.first() == control.last()).into(),
                         );
+                        if periodic {
+                            map.insert("periodic".into(), true.into());
+                        }
                     }
                     Geometry::Formula {
                         ref x,

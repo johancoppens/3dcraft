@@ -17,6 +17,10 @@ Offset face, shell, move face, draft, thicken and delete face (`kernel::tweak` a
 
 **Names**: every entity of an offset, move or draft is the copy of what it was; a shell or thicken names its skin and the faces of the hollow or layer as copies in instance 0 and 1; a deletion names edges and vertices by their faces. A sketch on a moved face moves and turns with it. What local checks cannot see, two faces far apart that ran into each other, regeneration finds on a mesh: near the change for move face and draft, over the whole body for offset face, shell and thicken (structural debt, the map's §9).
 
+## Owed, found by the coordinator's demo (2026-11-04)
+
+- *A shell of a twisted loft* (four rounded squares turned 0, 30, 60 and 90 degrees over 120 mm) is refused even at 0.5 mm: "the offset of the freeform face would fold over … (or comes so near one that it cannot be shown not to)" on a corner-arc column of the loft's side. The face's least radius of curvature was not measured; the fold bound is probably conservative there. Owed: the least radius measured on that face against the bound's, and a tighter bound where they differ.
+
 ## Findings and history
 
 > Moved verbatim from `docs/architecture.md` on 2026-10-15. Section numbers (§4.1, §5.3, …) in the text are those of that file before the split; [README.md](README.md) says where each one is now.

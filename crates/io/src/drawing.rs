@@ -230,7 +230,9 @@ pub fn sketch_outline(
                         },
                     ));
                 }
-                Geometry::Spline { degree, control } => {
+                Geometry::Spline {
+                    degree, control, ..
+                } => {
                     let not_a_curve =
                         || unsupported(format!("the spline {} is not a curve", entity.id));
                     let (Some(&first), Some(&last)) = (control.first(), control.last()) else {

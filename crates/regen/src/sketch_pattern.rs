@@ -1071,7 +1071,9 @@ pub(crate) fn instance_curves(
                     .radius(entity.id)
                     .ok_or_else(|| format!("{} has no solved radius", entity.id))?,
             },
-            Geometry::Spline { degree, control } => {
+            Geometry::Spline {
+                degree, control, ..
+            } => {
                 let knots = craft3d_doc::clamped_uniform_knots(*degree, control.len());
                 let degree = usize::try_from(*degree).unwrap_or(usize::MAX);
                 let control = control

@@ -315,7 +315,9 @@ fn track(sketch: &Sketch, id: EntityId, solved: &Solved<'_>, tol: f64) -> Result
             }
             Ok(Track::Arc { c, r, a0, sweep })
         }
-        Geometry::Spline { degree, control } => {
+        Geometry::Spline {
+            degree, control, ..
+        } => {
             let control = control
                 .iter()
                 .map(|e| p(*e))

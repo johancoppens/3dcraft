@@ -1840,3 +1840,205 @@ fn a_closed_spline_turned_about_an_axis_is_a_ring_of_the_predicted_volume() {
         assert_eq!(check["ok"], true, "x{k}: {check}");
     }
 }
+
+/// Review of 2026-11-04 (B1): an OPEN spline through points whose last is
+/// at the first's place is the open fit, never taken for a closed one by
+/// its coordinates: as many control points as points, through each at
+/// its Greville abscissa, through (5, −5) too; live, the curve the solver
+/// shapes is the one built.
+#[test]
+fn an_open_spline_that_ends_where_it_starts_stays_open() {
+    let through = [[0.0, 0.0], [5.0, 5.0], [10.0, 0.0], [5.0, -5.0], [0.0, 0.0]];
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    let made = run(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "Profile", "through": through}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+    let control = control_of(&mut s, &made);
+    assert_eq!(control.len(), 5);
+    assert_ne!(made["control"][0], made["control"][4], "two points, open");
+    let k = knots(3, 5);
+    for (i, wanted) in through.iter().enumerate() {
+        let u = k[i + 1..=i + 3].iter().sum::<f64>() / 3.0;
+        let got = spline_point(3, &control, u);
+        assert!(
+            (got[0] - wanted[0]).phypot(got[1] - wanted[1]) <= 1e-12 * 10.0,
+            "point {i}: {got:?}"
+        );
+    }
+    // Live: fitted at every regeneration, still open; a point held on it
+    // lies on the curve built.
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    let made = run(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "Profile", "through": through, "live": true}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+    let inspected = run(&mut s, "sketch.inspect", json!({"sketch": "Profile"}));
+    let spline = inspected["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == made["entity"])
+        .unwrap()
+        .clone();
+    assert_eq!(spline["fit"]["controlPoints"], 5, "{spline}");
+}
+
+/// Review (S4): a closed spline stays periodic when one of its points is
+/// moved: the solve keeps it smooth where it closes (before, a stored
+/// clamped spline took the move and made a corner of 7°).
+#[test]
+fn a_periodic_spline_stays_smooth_when_a_point_is_moved() {
+    for (key, points) in [
+        ("through", ring(8, 10.0)),
+        (
+            "control",
+            vec![
+                [10.0, -10.0],
+                [10.0, 10.0],
+                [-10.0, 10.0],
+                [-10.0, -10.0],
+                [5.0, -15.0],
+            ],
+        ),
+    ] {
+        let mut s = session();
+        new_document(&mut s, 1.0);
+        let made = run(
+            &mut s,
+            "sketch.spline",
+            json!({"sketch": "Profile", key: points, "closed": true}),
+        );
+        assert_eq!(made["status"], "ok", "{made}");
+        let inspected = run(&mut s, "sketch.inspect", json!({"sketch": "Profile"}));
+        let spline = inspected["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == made["entity"])
+            .unwrap()
+            .clone();
+        assert_eq!(spline["periodic"], true, "{spline}");
+        let moved = run(
+            &mut s,
+            "sketch.edit",
+            json!({"sketch": "Profile", "entity": made["control"][1], "at": [9.5, 4.0]}),
+        );
+        assert_eq!(moved["status"], "ok", "{key}: {moved}");
+        let control = control_of(&mut s, &made);
+        let (angle, jump) = seam(3, &control);
+        assert!(
+            angle <= 1e-9,
+            "{key}: a kink of {angle:e} rad after the move"
+        );
+        assert!(
+            jump <= 1e-9,
+            "{key}: a curvature jump of {jump:e} after the move"
+        );
+        // Saved and opened, it is still periodic.
+        let dir = workdir(&format!("periodic-{key}"));
+        let mut saved = session_in(&dir);
+        new_document(&mut saved, 1.0);
+        run(
+            &mut saved,
+            "sketch.spline",
+            json!({"sketch": "Profile", key: points, "closed": true}),
+        );
+        run(&mut saved, "file.save", json!({"path": "p.3dcraft"}));
+        run(&mut saved, "file.close", json!({}));
+        run(&mut saved, "file.open", json!({"path": "p.3dcraft"}));
+        let inspected = run(&mut saved, "sketch.inspect", json!({"sketch": "Profile"}));
+        assert!(
+            inspected["entities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["periodic"] == true),
+            "{inspected}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Review (S2, S3, S5): a tangent at the seam of a closed live spline of
+/// degree 1 (a corner there) is refused as ambiguous; an even degree
+/// through an even number of places is refused up front, live too; a
+/// point of the sketch given to a periodic closed spline on control
+/// points, which would drop out of it, is refused with the reason.
+#[test]
+fn what_a_periodic_spline_cannot_take_is_refused_up_front() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    let live = run(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "Profile", "through": [[0, 0], [5, 5], [10, 0], [5, -5]],
+               "closed": true, "live": true, "degree": 1}),
+    );
+    let line = run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "Profile", "from": live["start"], "to": [-1, 4]}),
+    );
+    let made = run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Profile", "type": "tangent", "entities": [live["entity"], line["entity"]]}),
+    );
+    assert_ne!(made["status"], "ok", "{made}");
+    assert!(made.to_string().contains("ambiguous"), "{made}");
+
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    let before = run(&mut s, "sketch.inspect", json!({"sketch": "Profile"}));
+    let why = error(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "Profile", "through": ring(4, 10.0), "closed": true,
+               "live": true, "degree": 2}),
+    );
+    assert!(
+        why.contains("even degree 2 through an even number"),
+        "{why}"
+    );
+    assert_eq!(
+        run(&mut s, "sketch.inspect", json!({"sketch": "Profile"})),
+        before
+    );
+
+    // e1 ends a line and is given as the first control point.
+    run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "Profile", "from": [20, 0], "to": [30, 0]}),
+    );
+    let before = run(&mut s, "sketch.inspect", json!({"sketch": "Profile"}));
+    let why = error(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "Profile", "control": ["e1", [10, 10], [0, 10], [0, 0]], "closed": true}),
+    );
+    assert!(
+        why.contains("e1")
+            && why.contains("does not pass through it")
+            && why.contains("periodic: false"),
+        "{why}"
+    );
+    assert_eq!(
+        run(&mut s, "sketch.inspect", json!({"sketch": "Profile"})),
+        before
+    );
+    // With periodic: false it closes on e1, as before.
+    let made = run(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "Profile", "control": ["e1", [10, 10], [0, 10], [0, 0]], "closed": true, "periodic": false}),
+    );
+    assert_eq!(made["start"], "e1", "{made}");
+}

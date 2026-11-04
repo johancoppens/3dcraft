@@ -4,6 +4,10 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Changed
+
+- **Closed splines are smooth where they close** (2026-11-04). `sketch.spline` with `closed: true` makes a periodic spline (through points, live, or on control points), kept smooth when its points are moved; `"periodic": false` gives the old spline with a corner at its first point. A periodic spline has more control points than points given, so the entity numbers after it shift (a cubic through eight points is `e11`, not `e9`): scripts that name later entities or faces by number may need their numbers changed. A saved closed live spline now rebuilds smooth; other saved splines rebuild as saved (format 69).
+
 ## [0.1.0] - unreleased
 
 The first release for people outside the project. 3DCraft is a parametric 3D CAD modeller built for AI: you describe a part, an AI agent builds it through 3DCraft's commands, and you watch it appear in the window, point at faces and check the result. Ready-made designs called Jigs need no AI at all: set their sizes in a form and export. Everything can also be done from the command line or a script, and 3DCraft runs in the browser too.

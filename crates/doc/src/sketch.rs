@@ -496,9 +496,18 @@ pub enum Geometry {
     ///
     /// Knots and weights are not stored: a later rational or non-uniform
     /// spline adds them as fields that default to what this one means.
+    ///
+    /// `periodic` (since format 69): a closed spline (its first point is
+    /// its last) that stays smooth where it closes, a periodic spline
+    /// written as this clamped one: the solve holds each derivative below
+    /// the degree the same at its start as at its end, so moving one of
+    /// its points keeps it smooth there. Without it a closed spline is as
+    /// its points make it, a corner where it closes when they do.
     Spline {
         degree: u32,
         control: Vec<EntityId>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        periodic: bool,
     },
     /// The image of the seed point `of` in instance `index` of the sketch
     /// pattern `pattern`: a point with no coordinates of its own, which
@@ -1408,7 +1417,39 @@ impl Sketch {
         if let Some(fault) = Geometry::spline_fault(degree, &control) {
             return invalid(fault);
         }
-        self.push(Geometry::Spline { degree, control }, construction)
+        self.push(
+            Geometry::Spline {
+                degree,
+                control,
+                periodic: false,
+            },
+            construction,
+        )
+    }
+
+    /// A closed spline of `degree` on the existing points `control`, its
+    /// first point also its last, kept smooth where it closes
+    /// ([`Geometry::Spline`] `periodic`).
+    pub fn add_periodic_spline(
+        &mut self,
+        degree: u32,
+        control: Vec<EntityId>,
+        construction: bool,
+    ) -> Result<EntityId, SketchError> {
+        if let Some(fault) = Geometry::spline_fault(degree, &control) {
+            return invalid(fault);
+        }
+        if control.len() < 3 || control.first() != control.last() {
+            return invalid("a periodic spline closes: its first control point is also its last");
+        }
+        self.push(
+            Geometry::Spline {
+                degree,
+                control,
+                periodic: true,
+            },
+            construction,
+        )
     }
 
     /// A curve given by formulas ([`Geometry::Formula`]) from the existing
@@ -2622,7 +2663,9 @@ impl Sketch {
                     }
                 }
                 Geometry::Line { .. } | Geometry::Arc { .. } => {}
-                Geometry::Spline { degree, control }
+                Geometry::Spline {
+                    degree, control, ..
+                }
                 | Geometry::Interpolated {
                     degree,
                     through: control,
@@ -2984,24 +3027,28 @@ mod tests {
                 *g = Geometry::Spline {
                     degree: 0,
                     control: vec![EntityId(1), EntityId(2)],
+                    periodic: false,
                 }
             },
             |g| {
                 *g = Geometry::Spline {
                     degree: 3,
                     control: vec![EntityId(1), EntityId(2)],
+                    periodic: false,
                 }
             },
             |g| {
                 *g = Geometry::Spline {
                     degree: 1,
                     control: vec![EntityId(1), EntityId(40)],
+                    periodic: false,
                 }
             },
             |g| {
                 *g = Geometry::Spline {
                     degree: 1,
                     control: vec![EntityId(1), EntityId(2), EntityId(2)],
+                    periodic: false,
                 }
             },
         ];
@@ -3874,4 +3921,8 @@ mod tests {
         }
         assert!(damaged.validate().is_err());
     }
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }

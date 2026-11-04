@@ -82,9 +82,15 @@ struct Shared {
     requests: Mutex<Sender<Request>>,
     wake: Wake,
     connections: AtomicUsize,
+    /// Refused connections being closed on threads of their own.
+    refusing: AtomicUsize,
     stopping: AtomicBool,
     clients: Mutex<Clients>,
 }
+
+/// Most refused connections closed at once on threads of their own
+/// ([`close_after_refusal`]); beyond, one is closed at once, unread.
+const MAX_REFUSING: usize = 4;
 
 /// Most clients that named themselves kept at once, and most names sent
 /// away.
@@ -725,7 +731,24 @@ fn accept(listener: &TcpListener, shared: &Arc<Shared>) {
                     &format!("too many connections ({limit} at most); close one and try again"),
                 ),
             );
-            close_after_refusal(stream);
+            // Closed on a thread of its own, so the listener takes the
+            // next connection at once (a slot that frees is not held up
+            // behind refusals); a few at a time, the rest closed unread.
+            if shared.refusing.fetch_add(1, Ordering::SeqCst) < MAX_REFUSING {
+                let for_thread = Arc::clone(shared);
+                let closing = std::thread::Builder::new()
+                    .name("craft3d-control-refused".to_string())
+                    .spawn(move || {
+                        close_after_refusal(stream);
+                        for_thread.refusing.fetch_sub(1, Ordering::SeqCst);
+                    });
+                if closing.is_err() {
+                    shared.refusing.fetch_sub(1, Ordering::SeqCst);
+                }
+            } else {
+                shared.refusing.fetch_sub(1, Ordering::SeqCst);
+                drop(stream);
+            }
             continue;
         }
         let for_thread = Arc::clone(shared);
@@ -764,6 +787,7 @@ impl ControlServer {
             requests: Mutex::new(requests),
             wake,
             connections: AtomicUsize::new(0),
+            refusing: AtomicUsize::new(0),
             stopping: AtomicBool::new(false),
             clients: Mutex::new(Clients::default()),
         });

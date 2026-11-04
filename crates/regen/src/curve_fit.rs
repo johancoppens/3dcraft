@@ -252,11 +252,10 @@ pub fn polyline(spline: &Spline2, tolerance: f64) -> Vec<P2> {
 /// `sketch.spline {through}` fits a spline so once; a live spline
 /// (`craft3d_doc::Geometry::Interpolated`) at every regeneration.
 ///
-/// Points whose last is their first, exactly, close the spline, and a
-/// closed spline is periodic ([`interpolate_closed`]): smooth all round,
-/// also where it closes, with `degree + 1` more control points than it
-/// has distinct points (2026-11-04: before, a closed spline was this open
-/// fit from the first point back to itself, which met itself at an angle).
+/// It is always open: points whose last is their first make a spline
+/// from the first point back to it, which leaves and reaches it in
+/// directions of their own. A closed spline is [`interpolate_closed`],
+/// which the caller asks for: closedness is never read off the points.
 pub fn interpolate(degree: u32, through: &[(f64, f64)]) -> Result<Vec<(f64, f64)>, String> {
     let count = through.len();
     let knots = craft3d_doc::clamped_uniform_knots(degree, count);
@@ -271,26 +270,6 @@ pub fn interpolate(degree: u32, through: &[(f64, f64)]) -> Result<Vec<(f64, f64)
     if count > MAX_THROUGH_POINTS {
         return Err(format!(
             "a spline is fitted through at most {MAX_THROUGH_POINTS} points, got {count}; give control points instead"
-        ));
-    }
-    if closes(through) {
-        return interpolate_closed(p, through);
-    }
-    interpolate_open(degree, through)
-}
-
-/// [`interpolate`] without closing: points whose last is their first make
-/// a spline from the first point back to it, which leaves and reaches it
-/// in directions of their own (a closed spline before 2026-11-04, and
-/// `sketch.spline {closed, periodic: false}`).
-pub fn interpolate_open(degree: u32, through: &[(f64, f64)]) -> Result<Vec<(f64, f64)>, String> {
-    let count = through.len();
-    let knots = craft3d_doc::clamped_uniform_knots(degree, count);
-    let p = usize::try_from(degree).unwrap_or(usize::MAX);
-    if knots.is_empty() || count > MAX_THROUGH_POINTS {
-        return Err(format!(
-            "a spline of degree {degree} is fitted through from {} to {MAX_THROUGH_POINTS} points, got {count}",
-            p.saturating_add(1)
         ));
     }
     // One row per point: the basis functions at its parameter, and the
@@ -322,12 +301,6 @@ pub fn interpolate_open(degree: u32, through: &[(f64, f64)]) -> Result<Vec<(f64,
         *last = *point;
     }
     Ok(control)
-}
-
-/// Whether points close a spline: more than two, the last exactly the
-/// first.
-pub fn closes(points: &[(f64, f64)]) -> bool {
-    points.len() > 2 && points.first() == points.last()
 }
 
 /// The square system of `rows` (each the coefficients and the right-hand
@@ -414,6 +387,9 @@ pub fn interpolate_closed(p: usize, through: &[(f64, f64)]) -> Result<Vec<(f64, 
         .get(..through.len().saturating_sub(1))
         .ok_or("a closed spline needs points")?;
     let k = distinct.len();
+    if !through.iter().all(|(x, y)| x.is_finite() && y.is_finite()) {
+        return Err("a point of the spline is not a finite number".into());
+    }
     if p == 0 || p > craft3d_doc::MAX_SPLINE_DEGREE as usize || k < 2 {
         return Err("a closed spline needs at least two places and a degree from 1 to 7".into());
     }
@@ -461,6 +437,9 @@ pub fn interpolate_closed(p: usize, through: &[(f64, f64)]) -> Result<Vec<(f64, 
 /// point, between its neighbours.
 pub fn periodic_control(p: usize, polygon: &[(f64, f64)]) -> Result<Vec<Labelled>, String> {
     let k = polygon.len();
+    if !polygon.iter().all(|(x, y)| x.is_finite() && y.is_finite()) {
+        return Err("a control point of the spline is not a finite number".into());
+    }
     if p == 0 || p > craft3d_doc::MAX_SPLINE_DEGREE as usize || k < 2 {
         return Err(
             "a closed spline needs at least two control points and a degree from 1 to 7".into(),
@@ -580,9 +559,24 @@ fn insert_knot(
 
 /// The live spline of `degree` through `through` as the kernel takes it:
 /// [`interpolate`] on clamped uniform knots.
-pub fn interpolated(degree: u32, through: &[P2]) -> Result<Spline2, String> {
+/// `closed` (its first point is its last, as the same point): the
+/// periodic spline of [`interpolate_closed`].
+pub fn interpolated(degree: u32, through: &[P2], closed: bool) -> Result<Spline2, String> {
     let points: Vec<(f64, f64)> = through.iter().map(|p| (p[0], p[1])).collect();
-    let control = interpolate(degree, &points)?;
+    let control = if closed {
+        if points.len() > MAX_THROUGH_POINTS {
+            return Err(format!(
+                "a spline is fitted through at most {MAX_THROUGH_POINTS} points, got {}",
+                points.len()
+            ));
+        }
+        interpolate_closed(
+            usize::try_from(degree).map_err(|_| "the degree is too high".to_string())?,
+            &points,
+        )?
+    } else {
+        interpolate(degree, &points)?
+    };
     Ok(Spline2 {
         degree: usize::try_from(degree).map_err(|_| "the degree is too high".to_string())?,
         knots: craft3d_doc::clamped_uniform_knots(degree, control.len()),
@@ -1498,6 +1492,7 @@ mod tests {
                 let spline = interpolated(
                     degree,
                     &through.iter().map(|p| [p.0, p.1]).collect::<Vec<_>>(),
+                    true,
                 )
                 .unwrap();
                 let p = degree as usize;
@@ -1543,9 +1538,9 @@ mod tests {
             points
         };
         for degree in [2_u32, 4, 6] {
-            let control = interpolate(degree, &ring(9)).unwrap();
+            let control = interpolate_closed(degree as usize, &ring(9)).unwrap();
             assert_eq!(control.len(), 9 + degree as usize);
-            let why = interpolate(degree, &ring(8)).unwrap_err();
+            let why = interpolate_closed(degree as usize, &ring(8)).unwrap_err();
             assert!(why.contains("even number"), "{why}");
         }
     }

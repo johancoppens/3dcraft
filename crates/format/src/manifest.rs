@@ -2091,10 +2091,13 @@ pub enum SketchGeometry {
         end: u64,
     },
     /// A polynomial B-spline on clamped uniform knots: its control points
-    /// in order (format version 6).
+    /// in order (format version 6). `periodic` (format 69): closed and kept
+    /// smooth where it closes; written only when true.
     Spline {
         degree: u32,
         control: Vec<u64>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        periodic: bool,
     },
     /// The image of seed point `of` in instance `index` of pattern
     /// `pattern` (format version 18): no coordinates of its own. From

@@ -1238,6 +1238,7 @@ fn polyline(solved: &SketchResult, entity: &Entity, tolerance: f64) -> Option<Sc
         Geometry::Spline {
             degree,
             ref control,
+            ..
         } => {
             let control: Vec<(f64, f64)> = control
                 .iter()
