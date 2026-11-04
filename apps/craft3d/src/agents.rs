@@ -1298,11 +1298,18 @@ mod tests {
             serde_json::from_str(&bridge::relay(&mut other, &initialize).unwrap()).unwrap();
         assert!(reply.get("result").is_some(), "{reply}");
 
-        // Switched off: the bridge says how to turn it on.
+        // Switched off: the bridge still introduces itself (since
+        // 2026-11-04, so the MCP client keeps the server), and a tool call
+        // says how to turn the switch on.
         agents.allow(false);
         let mut late = Bridge::new(BridgeConfig::discover(state.clone(), None));
         let reply: Value =
             serde_json::from_str(&bridge::relay(&mut late, &initialize).unwrap()).unwrap();
+        assert!(reply.get("result").is_some(), "{reply}");
+        let call = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "doc_inspect", "arguments": {}}})
+        .to_string();
+        let reply: Value = serde_json::from_str(&bridge::relay(&mut late, &call).unwrap()).unwrap();
         let message = reply["error"]["message"].as_str().unwrap();
         assert!(message.contains("Allow AI agents"), "{message}");
         let _ = std::fs::remove_dir_all(&state);

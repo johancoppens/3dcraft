@@ -1746,8 +1746,10 @@ fn the_bridge_tells_the_agent_when_the_window_cannot_be_used() {
     // Nothing reached the session's thread.
     assert_eq!(rig.dispatched.load(Ordering::SeqCst), 0);
 
-    // The window is gone: an error that says how to start it, for every
-    // request, while notifications stay unanswered.
+    // The window is gone: `tools/list` is answered by the bridge itself
+    // (since 2026-11-04, so an MCP client keeps the server), a tool call
+    // gets an error that says how to start the window, and notifications
+    // stay unanswered.
     let address = rig.address;
     drop(rig.finish());
     let replies = bridged(
@@ -1760,7 +1762,15 @@ fn the_bridge_tells_the_agent_when_the_window_cannot_be_used() {
         ],
     );
     assert_eq!(replies.len(), 2, "{replies:?}");
-    for (reply, id) in replies.iter().zip([json!("a"), json!(9)]) {
+    assert_eq!(replies[0]["id"], "a");
+    assert!(
+        replies[0]["result"]["tools"]
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty()),
+        "{}",
+        replies[0]
+    );
+    for (reply, id) in replies.iter().skip(1).zip([json!(9)]) {
         assert_eq!(reply["id"], id);
         assert_eq!(reply["error"]["code"], -32000);
         let message = reply["error"]["message"].as_str().unwrap();
