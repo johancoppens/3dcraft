@@ -179,7 +179,9 @@ fn the_kit_follows_the_appearance() {
     assert_eq!(Kit::panel(&dark).skin.fill, Palette::dark().panel_fill);
     assert_eq!(Kit::panel(&dark).skin.text, Palette::dark().text);
     assert_eq!(Kit::plate(&light).skin.fill, light.plate_fill);
-    assert_eq!(Kit::plate(&dark).skin.fill, [0x26, 0x25, 0x23]);
+    // One step above the dark panel (#161514): the developer's darkest
+    // dark set of 2026-11-04.
+    assert_eq!(Kit::plate(&dark).skin.fill, [0x20, 0x1F, 0x1D]);
     assert_eq!(Kit::plate(&dark).skin.text, Kit::plate(&light).skin.text);
     assert!(!Kit::plate(&light).touch() && Kit::plate(&light.touch()).touch());
 }
@@ -616,4 +618,58 @@ fn the_viewport_is_painted_the_same_in_both_appearances() {
         differ.is_empty() && light.len() == dark.len(),
         "{differ:#?}"
     );
+}
+
+/// A value typed into a slider's own field: clamped to the rail's range,
+/// unless the slider takes typed values as they are (a joint's: its old
+/// slider never clamped them).
+#[test]
+fn a_typed_value_is_clamped_unless_the_slider_takes_it_free() {
+    for (free, want) in [(false, 360.0), (true, 400.0)] {
+        let tokens = Tokens::light();
+        let kit = Kit::panel(&tokens);
+        let ctx = egui::Context::default();
+        let mut value = 10.0;
+        let field = std::cell::Cell::new(Rect::NOTHING);
+        let frame = |ctx: &egui::Context, events: Vec<Event>, value: &mut f64| {
+            let _ = run(ctx, input([600.0, 200.0], events), |ui| {
+                let shown = kit.slider_with(
+                    ui,
+                    Slider::new("Drive", value, -360.0..=360.0)
+                        .shown_as(1.0, 1, "°")
+                        .typed_free(free),
+                    None,
+                );
+                field.set(shown.field.unwrap_or(Rect::NOTHING));
+            });
+        };
+        frame(&ctx, Vec::new(), &mut value);
+        let at = field.get().center();
+        let press = |pressed| Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&ctx, vec![Event::PointerMoved(at)], &mut value);
+        frame(&ctx, vec![press(true)], &mut value);
+        frame(&ctx, vec![press(false)], &mut value);
+        frame(&ctx, Vec::new(), &mut value);
+        frame(&ctx, vec![Event::Text("400".to_string())], &mut value);
+        for pressed in [true, false] {
+            frame(
+                &ctx,
+                vec![Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                &mut value,
+            );
+        }
+        frame(&ctx, Vec::new(), &mut value);
+        assert_eq!(value, want, "free: {free}");
+    }
 }

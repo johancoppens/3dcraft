@@ -157,10 +157,13 @@ fn the_export_dialog_remembers_the_format_and_quality_and_escape_cancels() {
     frame(&ctx, &mut shell, &mut session, key(egui::Key::Escape));
     assert!(shell.export_dialog().is_none() && !shell.state.export.open);
     assert_eq!(shell.take_export_answer(), None);
+    // Cancelled is no failure (the developer's decision of 2026-11-04,
+    // from the UI audit: a cancelled export dialog was shown in red with
+    // Copy details): said in the status bar, ok.
     let report = shell.last_command.clone().unwrap();
     assert_eq!(
         (report.label.as_str(), report.ok, report.text.as_str()),
-        ("file.export", false, "cancelled")
+        ("file.export", true, "cancelled")
     );
 }
 

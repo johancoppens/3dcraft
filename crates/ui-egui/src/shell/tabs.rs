@@ -370,7 +370,7 @@ impl Shell {
     }
 
     /// The active tab, by its place in the row.
-    fn active_tab(&self) -> Option<usize> {
+    pub(super) fn active_tab(&self) -> Option<usize> {
         self.tabs.iter().position(|tab| tab.active)
     }
 
@@ -663,18 +663,28 @@ impl Shell {
                     egui::vec2((row - menu_width).max(0.0), tokens.tab_height),
                     |ui| tab_strip(ui),
                 );
-                let all = ui
-                    .menu_button(format!("All {count}"), |ui| {
-                        for tab in &self.tabs {
+                // The documents menu of board s4: the kit's plate, a check
+                // at the one shown.
+                let width = tokens.menu_width;
+                let tabs = &self.tabs;
+                let (all, _) = super::menus::kit_menu(
+                    ui,
+                    &tokens,
+                    &format!("All {count}"),
+                    width,
+                    |kit, ui| {
+                        kit.menu_caption(ui, "Documents");
+                        for tab in tabs {
                             let mark = if tab.dirty {
                                 format!(" {UNSAVED_MARK}")
                             } else {
                                 String::new()
                             };
-                            if ui
-                                .add(
-                                    egui::Button::new(format!("{}{mark}", tab.name))
-                                        .selected(tab.active),
+                            let label = format!("{}{mark}", tab.name);
+                            if kit
+                                .menu_item(
+                                    ui,
+                                    crate::kit::MenuItem::new(&label).checked(tab.active),
                                 )
                                 .clicked()
                             {
@@ -682,8 +692,10 @@ impl Shell {
                                 ui.close();
                             }
                         }
-                    })
-                    .response
+                    },
+                );
+                let all = ui
+                    .interact(all, ui.id().with("all-tip"), egui::Sense::hover())
                     .on_hover_text("Every open document");
                 all_rect = Some(all.rect);
             });

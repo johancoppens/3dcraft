@@ -58,9 +58,13 @@ pub struct ControlWidths {
     pub projection: f32,
     /// One segment of X | Y | Z.
     pub axis: f32,
-    /// The number fields.
+    /// The sliders (label, rail, value in one row).
     pub see_through: f32,
     pub offset: f32,
+    /// The same without their labels (the compact bar: the tooltip says
+    /// which is which).
+    pub see_through_compact: f32,
+    pub offset_compact: f32,
 }
 
 impl ControlWidths {
@@ -82,9 +86,14 @@ impl ControlWidths {
         let with_icon =
             |s: &str| inset + tokens.nav_icon_size + tokens.nav_icon_gap + text(s) + inset + 2.0;
         let plain = |s: &str| (2.0 * inset + text(s) + 4.0).max(tokens.nav_height);
+        // A slider in one row (the kit's): its label, a rail of half a
+        // field's width, its value.
         let field = |label: &str, value: &str| {
-            (text(label) + text(value) + 2.0 * tokens.field_inset + tokens.field_arrow_inset)
+            (6.0 + text(label) + 8.0 + tokens.field_width * 0.35 + 6.0 + text(value) + 4.0)
                 .max(tokens.nav_height)
+        };
+        let bare = |value: &str| {
+            (6.0 + tokens.field_width * 0.35 + 6.0 + text(value) + 4.0).max(tokens.nav_height)
         };
         let widest = |items: &[&str], f: &dyn Fn(&str) -> f32| {
             items.iter().map(|s| f(s)).fold(0.0, f32::max)
@@ -103,6 +112,8 @@ impl ControlWidths {
             axis: widest(&["X", "Y", "Z"], &plain),
             see_through: field("See-through", "90 %"),
             offset: field("Offset", "-000.00 mm"),
+            see_through_compact: bare("90 %"),
+            offset_compact: bare("-000.00 mm"),
         };
         if out.all_finite() {
             out
@@ -126,6 +137,8 @@ impl ControlWidths {
             self.axis,
             self.see_through,
             self.offset,
+            self.see_through_compact,
+            self.offset_compact,
         ]
         .iter()
         .all(|w| w.is_finite() && *w >= 0.0)
@@ -148,8 +161,10 @@ impl ControlWidths {
             flip: icon + chars(9.0),
             projection: 2.0 * tokens.nav_inset + chars(5.0) + 4.0,
             axis: tokens.nav_height,
-            see_through: tokens.field_width,
-            offset: tokens.field_width,
+            see_through: tokens.field_width * 1.4,
+            offset: tokens.field_width * 1.4,
+            see_through_compact: tokens.field_width * 0.9,
+            offset_compact: tokens.field_width * 0.9,
         }
     }
 }
@@ -278,6 +293,24 @@ impl Nav<'_> {
         self.h() + 2.0 * self.pad()
     }
 
+    /// The See-through slider's width: without its label when compact.
+    fn see_w(&self) -> f32 {
+        if self.compact {
+            self.w.see_through_compact
+        } else {
+            self.w.see_through
+        }
+    }
+
+    /// The Offset slider's width: without its label when compact.
+    fn offset_w(&self) -> f32 {
+        if self.compact {
+            self.w.offset_compact
+        } else {
+            self.w.offset
+        }
+    }
+
     /// A chip that is `natural` wide with its name, square without.
     fn chip(&self, natural: f32) -> f32 {
         if self.compact { self.h() } else { natural }
@@ -393,14 +426,14 @@ impl Nav<'_> {
             self.show_chip(self.w.edges),
         );
         let section = self.chip(self.w.section);
-        let see = self.w.see_through;
+        let see = self.see_w();
         let off_w = pad + sketches + sp + datums + sp + edges + sp + see + gap + section + pad;
         let flip = self.chip(self.w.flip);
         let axes = 3.0 * self.w.axis;
         let extra = if self.wrap {
             0.0
         } else {
-            gap + axes + sp + self.w.offset + sp + flip
+            gap + axes + sp + self.offset_w() + sp + flip
         };
         let bar_w = if self.on { off_w + extra } else { off_w };
         // Placed for the bar with the options open, so that the Section
@@ -429,7 +462,7 @@ impl Nav<'_> {
         x += section;
         if self.on && self.wrap {
             // Above the bar, right-aligned with it.
-            let w = pad + axes + sp + self.w.offset + sp + flip + pad;
+            let w = pad + axes + sp + self.offset_w() + sp + flip + pad;
             let right = bar.right().max(area.left() + w).min(area.right());
             let plate = Rect::from_min_size(
                 pos2(right - w, bar.top() - gap - self.plate_h()),
@@ -440,16 +473,16 @@ impl Nav<'_> {
             let mut x = plate.left() + pad;
             out.axes = Some(self.at(x, y, axes));
             x += axes + sp;
-            out.offset = Some(self.at(x, y, self.w.offset));
-            x += self.w.offset + sp;
+            out.offset = Some(self.at(x, y, self.offset_w()));
+            x += self.offset_w() + sp;
             out.side = Some(self.at(x, y, flip));
         } else if self.on {
             out.dividers[2] = Some(self.vertical(x, y));
             x += gap;
             out.axes = Some(self.at(x, y, axes));
             x += axes + sp;
-            out.offset = Some(self.at(x, y, self.w.offset));
-            x += self.w.offset + sp;
+            out.offset = Some(self.at(x, y, self.offset_w()));
+            x += self.offset_w() + sp;
             out.side = Some(self.at(x, y, flip));
         }
         out
@@ -1236,10 +1269,14 @@ impl Shell {
         let mut hits = Vec::new();
         let sheet = self.narrow();
         let panel = self.popover(ui, "analysis-options", popover, place, |shell, ui| {
-            analysis_options(ui, &tokens, &mut shell.state.analysis, &mut hits, sheet);
-            if let Some(view) = legend.as_deref() {
-                analysis_legend(ui, view, &tokens);
-            }
+            analysis_options(
+                ui,
+                &tokens,
+                &mut shell.state.analysis,
+                &mut hits,
+                sheet,
+                legend.as_deref(),
+            );
             if let Some(problem) = &problem {
                 ui.add(
                     egui::Label::new(
@@ -1396,8 +1433,8 @@ impl Shell {
             if let Some(axis) = clicked {
                 choose_axis(&mut section, axis, scene);
             }
-            self.offset_field(ui, offset, &mut section, on);
-            hits.push(("offset", offset));
+            let rail = self.offset_field(ui, offset, &mut section, on);
+            hits.push(("offset", rail));
             let flip_named = named || side.width() > tokens.nav_height + 0.5;
             if toggle(
                 ui,
@@ -1442,46 +1479,99 @@ fn number(
     ui: &mut egui::Ui,
     kit: &crate::kit::Kit,
     sheet: bool,
+    label: &str,
     value: &mut f64,
     step: f64,
     range: std::ops::RangeInclusive<f64>,
-    suffix: &str,
+    unit: &str,
+    digits: usize,
+) -> Rect {
+    let t = kit.t;
+    if !sheet {
+        // The kit's one slider in a row (the developer's decision of
+        // 2026-11-04): label, rail, value; typed values and the keys.
+        return kit
+            .slider_with(
+                ui,
+                crate::kit::Slider::new(label, value, range)
+                    .widths(t.popover_label_width, t.popover_value_width + 16.0)
+                    .step(step)
+                    .shown_as(1.0, digits, unit),
+                None,
+            )
+            .response
+            .rect;
+    }
+    ui.horizontal(|ui| {
+        let galley = kit.galley(ui, label, kit.font(), kit.skin.text);
+        let (place, _) = ui.allocate_exact_size(
+            egui::vec2(t.popover_label_width, kit.hit(t.control_height)),
+            egui::Sense::hover(),
+        );
+        ui.painter().galley(
+            egui::pos2(place.left(), place.center().y - galley.size().y * 0.5),
+            galley,
+            color(kit.skin.text),
+        );
+        let (lo, hi) = (*range.start(), *range.end());
+        let minus = kit.button(ui, crate::kit::Button::secondary("−").enabled(*value > lo));
+        let text = crate::kit::slider::shown(*value, 1.0, digits, unit);
+        let galley = kit.galley(ui, text, kit.font(), kit.skin.text);
+        let (place, _) = ui.allocate_exact_size(
+            egui::vec2(
+                galley.size().x.max(kit.t.popover_value_width),
+                kit.hit(kit.t.control_height),
+            ),
+            egui::Sense::hover(),
+        );
+        ui.painter().galley(
+            place.center() - galley.size() * 0.5,
+            galley,
+            color(kit.skin.text),
+        );
+        let plus = kit.button(ui, crate::kit::Button::secondary("+").enabled(*value < hi));
+        if minus.clicked() {
+            *value = (*value - step).max(lo);
+        }
+        if plus.clicked() {
+            *value = (*value + step).min(hi);
+        }
+    })
+    .response
+    .rect
+}
+
+/// A number without a range of its own (the curvature's fixed ends, the
+/// pull's components, the combs' scale): the kit's drag field, `width`
+/// wide, dragged across `span` and typed into.
+fn drag_field(
+    ui: &mut egui::Ui,
+    kit: &crate::kit::Kit,
+    value: &mut f64,
+    span: [f64; 2],
+    width: f32,
     digits: usize,
 ) {
-    if !sheet {
-        let speed = if digits == 0 { 0.5 } else { step * 0.2 };
-        ui.add(
-            egui::DragValue::new(value)
-                .range(range)
-                .speed(speed)
-                .suffix(suffix),
+    let height = kit.slider_height(crate::kit::SliderForm::Drag);
+    ui.allocate_ui(egui::vec2(width, height), |ui| {
+        kit.slider_with(
+            ui,
+            crate::kit::Slider::new("", value, span[0]..=span[1])
+                .form(crate::kit::SliderForm::Drag)
+                .widths(0.0, width)
+                .shown_as(1.0, digits, ""),
+            None,
         );
-        return;
-    }
-    let (lo, hi) = (*range.start(), *range.end());
-    let minus = kit.button(ui, crate::kit::Button::secondary("−").enabled(*value > lo));
-    let text = format!("{:.*}{suffix}", digits, *value);
-    let galley = kit.galley(ui, text, kit.font(), kit.skin.text);
-    let (place, _) = ui.allocate_exact_size(
-        egui::vec2(
-            galley.size().x.max(kit.t.popover_value_width),
-            kit.hit(kit.t.control_height),
-        ),
-        egui::Sense::hover(),
-    );
-    ui.painter().galley(
-        place.center() - galley.size() * 0.5,
-        galley,
-        color(kit.skin.text),
-    );
-    let plus = kit.button(ui, crate::kit::Button::secondary("+").enabled(*value < hi));
-    if minus.clicked() {
-        *value = (*value - step).max(lo);
-    }
-    if plus.clicked() {
-        *value = (*value + step).min(hi);
-    }
+    });
 }
+
+/// The stripes' and the combs' density's slider ends: the useful span, so
+/// the knob of the default (16 stripes, 40 teeth) sits well inside the
+/// rail instead of at its left end (on a rail of 1 to 512, 16 is 3 % of
+/// the way); `ui.set` and the phone's steppers still reach 512 and 400
+/// (the knob then stays at the right end).
+const STRIPES_MOST: f64 = 64.0;
+const DENSITY_MOST: f64 = 120.0;
 
 fn analysis_options(
     ui: &mut egui::Ui,
@@ -1489,6 +1579,7 @@ fn analysis_options(
     a: &mut crate::state::AnalysisState,
     hits: &mut Vec<(String, Rect)>,
     sheet: bool,
+    legend: Option<&crate::viewport::ViewAnalysis>,
 ) {
     let kit = crate::kit::Kit::plate(tokens);
     let t = kit.t;
@@ -1538,27 +1629,53 @@ fn analysis_options(
     }
     match a.mode.as_str() {
         "zebra" | "highlight" => {
-            row(ui, "Stripes", &mut |ui| {
+            hits.push((
+                "stripes".to_string(),
                 number(
                     ui,
                     &kit,
                     sheet,
+                    "Stripes",
                     &mut a.stripes,
                     1.0,
-                    1.0..=512.0,
-                    " / turn",
+                    1.0..=if sheet { 512.0 } else { STRIPES_MOST },
+                    "/ turn",
                     0,
-                );
-            });
-            row(ui, "Direction", &mut |ui| {
-                number(ui, &kit, sheet, &mut a.direction, 5.0, 0.0..=360.0, "°", 0);
-            });
-            row(ui, "Width", &mut |ui| {
-                number(ui, &kit, sheet, &mut a.width, 0.05, 0.0..=1.0, "", 2);
-            });
-            row(ui, "Offset", &mut |ui| {
-                number(ui, &kit, sheet, &mut a.offset, 0.05, 0.0..=1.0, "", 2);
-            });
+                ),
+            ));
+            number(
+                ui,
+                &kit,
+                sheet,
+                "Direction",
+                &mut a.direction,
+                5.0,
+                0.0..=360.0,
+                "°",
+                0,
+            );
+            number(
+                ui,
+                &kit,
+                sheet,
+                "Width",
+                &mut a.width,
+                0.05,
+                0.0..=1.0,
+                "",
+                2,
+            );
+            number(
+                ui,
+                &kit,
+                sheet,
+                "Offset",
+                &mut a.offset,
+                0.05,
+                0.0..=1.0,
+                "",
+                2,
+            );
             ui.label(
                 egui::RichText::new("Stripes kink at a G1 seam, run on at G2")
                     .font(kit.small_font())
@@ -1586,17 +1703,29 @@ fn analysis_options(
                 }
             });
             let mut fixed = a.range.is_some();
+            let [mut lo, mut hi] = a.range.unwrap_or([-1.0, 1.0]);
             row(ui, "Range", &mut |ui| {
                 kit.checkbox(ui, &mut fixed, "Fixed");
+                if fixed {
+                    // The ends, each a drag field across ten times its
+                    // size, typed into for an exact one.
+                    let w = t.popover_value_width + 8.0;
+                    let span = |v: f64| {
+                        let r = (v.abs() * 10.0).max(1e-6);
+                        [v - r, v + r]
+                    };
+                    let (lo_span, hi_span) = (span(lo), span(hi));
+                    drag_field(ui, &kit, &mut lo, lo_span, w, 4);
+                    drag_field(ui, &kit, &mut hi, hi_span, w, 4);
+                } else {
+                    ui.label(
+                        egui::RichText::new("auto")
+                            .font(kit.font())
+                            .color(color(kit.skin.text_dim)),
+                    );
+                }
             });
             if fixed {
-                let [mut lo, mut hi] = a.range.unwrap_or([-1.0, 1.0]);
-                row(ui, "Low", &mut |ui| {
-                    ui.add(egui::DragValue::new(&mut lo).speed(0.001));
-                });
-                row(ui, "High", &mut |ui| {
-                    ui.add(egui::DragValue::new(&mut hi).speed(0.001));
-                });
                 a.range = (lo < hi).then_some([lo, hi]).or(a.range);
                 if a.range.is_none() {
                     a.range = Some([-1.0, 1.0]);
@@ -1607,15 +1736,28 @@ fn analysis_options(
         }
         "draft" => {
             row(ui, "Pull", &mut |ui| {
+                let w = ((ui.available_width() - 2.0 * t.nav_spacing) / 3.0).clamp(36.0, 72.0);
                 for c in &mut a.pull {
-                    ui.add(egui::DragValue::new(c).speed(0.01));
+                    drag_field(ui, &kit, c, [-1.0, 1.0], w, 2);
                 }
             });
-            row(ui, "Least draft", &mut |ui| {
-                number(ui, &kit, sheet, &mut a.min_draft, 0.5, 0.0..=90.0, "°", 1);
-            });
+            number(
+                ui,
+                &kit,
+                sheet,
+                "Least draft",
+                &mut a.min_draft,
+                0.5,
+                0.0..=90.0,
+                "°",
+                1,
+            );
         }
         _ => {}
+    }
+    // The map's key under its options (board s1).
+    if let Some(view) = legend {
+        analysis_legend(ui, view, tokens);
     }
     ui.add_space(t.nav_spacing);
     kit.section_header(ui, "Combs");
@@ -1634,23 +1776,30 @@ fn analysis_options(
             .get("density")
             .and_then(serde_json::Value::as_f64)
             .unwrap_or(40.0);
-        let mut changed = false;
-        row(ui, "Density", &mut |ui| {
-            changed = ui
-                .add(egui::DragValue::new(&mut density).range(2.0..=400.0))
-                .changed();
-        });
-        if changed {
+        let before = density;
+        number(
+            ui,
+            &kit,
+            sheet,
+            "Density",
+            &mut density,
+            1.0,
+            2.0..=if sheet { 400.0 } else { DENSITY_MOST },
+            "",
+            0,
+        );
+        if density != before {
             c.insert("density".into(), serde_json::json!(density.round()));
         }
         let mut scale = c.get("scale").and_then(serde_json::Value::as_f64);
         let mut fixed = scale.is_some();
         row(ui, "Scale", &mut |ui| {
-            kit.checkbox(ui, &mut fixed, "");
+            kit.checkbox(ui, &mut fixed, "Fixed");
             if fixed {
                 let mut v = scale.unwrap_or(1.0);
-                ui.add(egui::DragValue::new(&mut v).range(1e-9..=1e9).speed(0.01));
-                scale = Some(v);
+                let span = [0.0, v + (v.abs() * 10.0).max(1e-6)];
+                drag_field(ui, &kit, &mut v, span, t.popover_value_width + 8.0, 3);
+                scale = Some(v.clamp(1e-9, 1e9));
             } else {
                 scale = None;
             }
@@ -1659,28 +1808,89 @@ fn analysis_options(
     }
 }
 
-/// The legend of the analysis shown: its title, and the ramp or the
-/// classes with their colours.
+/// The legend of the analysis shown (board s1): for a curvature map its
+/// colour ramp with the low, middle and high ends under it (the unit at
+/// the high end); for draft a one-line key of the three classes. Zebra
+/// and highlight lines need none (the hint above says how to read them).
 fn analysis_legend(ui: &mut egui::Ui, view: &crate::viewport::ViewAnalysis, tokens: &Tokens) {
-    let Some((title, rows)) = crate::viewport::legend_rows(view) else {
+    use craft3d_render::analysis::AnalysisMode;
+    let Some(a) = view.analysis.as_ref().filter(|_| view.legend) else {
         return;
     };
-    ui.separator();
-    ui.label(egui::RichText::new(title).color(color(tokens.plate_text)));
-    for (swatches, words) in rows {
-        ui.horizontal(|ui| {
-            let (rect, _) = ui.allocate_exact_size(vec2(28.0, 12.0), egui::Sense::hover());
-            let n = swatches.len().max(1) as f32;
-            for (k, rgb) in swatches.iter().enumerate() {
-                let w = rect.width() / n;
-                let part = Rect::from_min_size(
-                    pos2(rect.left() + w * k as f32, rect.top()),
-                    vec2(w, rect.height()),
-                );
-                ui.painter().rect_filled(part, 0.0, color(*rgb));
+    let kit = crate::kit::Kit::plate(tokens);
+    let dim = kit.skin.text_dim;
+    let c = &a.colors;
+    match a.mode {
+        AnalysisMode::Curvature => {
+            let width = ui.available_width().max(40.0);
+            let (rect, _) = ui.allocate_exact_size(vec2(width, 8.0), egui::Sense::hover());
+            let bar = Rect::from_center_size(rect.center(), vec2(rect.width(), 6.0));
+            let mut mesh = egui::Mesh::default();
+            let n = c.ramp.len().saturating_sub(1).max(1);
+            for (k, pair) in c.ramp.windows(2).enumerate() {
+                let (Some(from), Some(to)) = (pair.first(), pair.get(1)) else {
+                    continue;
+                };
+                let x0 = bar.left() + bar.width() * k as f32 / n as f32;
+                let x1 = bar.left() + bar.width() * (k + 1) as f32 / n as f32;
+                let at = mesh.vertices.len() as u32;
+                for (x, y, rgb) in [
+                    (x0, bar.top(), from),
+                    (x1, bar.top(), to),
+                    (x1, bar.bottom(), to),
+                    (x0, bar.bottom(), from),
+                ] {
+                    mesh.colored_vertex(pos2(x, y), color(*rgb));
+                }
+                mesh.add_triangle(at, at + 1, at + 2);
+                mesh.add_triangle(at, at + 2, at + 3);
             }
-            ui.label(words);
-        });
+            ui.painter().add(egui::Shape::mesh(mesh));
+            let unit = if view.curvature == "gaussian" || view.curvature.is_empty() {
+                format!("/{}²", view.unit)
+            } else {
+                format!("/{}", view.unit)
+            };
+            let [lo, hi] = a.range;
+            let write = |v: f64| crate::shell::sidepanel::checks::compact(&format!("{v}"));
+            let mid = 0.5 * (lo + hi);
+            let (row, _) = ui.allocate_exact_size(
+                vec2(width, kit.t.label_row_height * 0.8),
+                egui::Sense::hover(),
+            );
+            let painter = ui.painter();
+            let ticks = [
+                (write(lo), egui::Align2::LEFT_CENTER, row.left_center()),
+                (write(mid), egui::Align2::CENTER_CENTER, row.center()),
+                (
+                    format!("{} {unit}", write(hi)),
+                    egui::Align2::RIGHT_CENTER,
+                    row.right_center(),
+                ),
+            ];
+            for (text, align, at) in ticks {
+                painter.text(at, align, text, kit.small_font(), color(dim));
+            }
+        }
+        AnalysisMode::Draft => {
+            ui.horizontal(|ui| {
+                for (rgb, words) in [
+                    (c.draft_in, "with the pull"),
+                    (c.draft_out, "against"),
+                    (c.draft_shallow, "too steep"),
+                ] {
+                    let (swatch, _) = ui.allocate_exact_size(vec2(9.0, 9.0), egui::Sense::hover());
+                    ui.painter()
+                        .rect_filled(swatch, egui::CornerRadius::same(2), color(rgb));
+                    ui.label(
+                        egui::RichText::new(words)
+                            .font(kit.small_font())
+                            .color(color(dim)),
+                    );
+                }
+            });
+        }
+        AnalysisMode::Zebra | AnalysisMode::Highlight => {}
     }
 }
 

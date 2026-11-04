@@ -400,37 +400,6 @@ pub fn zoomable(row: &super::TreeRow, shown: &BTreeSet<String>) -> bool {
     }
 }
 
-/// The zoom icon of a row: a target (⌖) where it can be flown to and the
-/// row is under the pointer, else room kept empty so the eyes line up.
-/// The response when it is drawn.
-pub(crate) fn zoom_icon(
-    ui: &mut egui::Ui,
-    zoomable: bool,
-    row_hovered: bool,
-    tokens: &crate::theme::Tokens,
-) -> Option<egui::Response> {
-    let side = ui.spacing().interact_size.y.max(12.0);
-    let size = egui::vec2(side, side);
-    if !(zoomable && row_hovered) {
-        ui.allocate_exact_size(size, egui::Sense::hover());
-        return None;
-    }
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    let ink = if response.hovered() {
-        crate::theme::color(tokens.text)
-    } else {
-        crate::theme::color(tokens.text_dim)
-    };
-    super::icons::paint(
-        ui.painter(),
-        super::icons::Icon::ZoomTo,
-        rect.shrink(rect.width() * 0.08),
-        ink,
-        tokens,
-    );
-    Some(response.on_hover_text(ZOOM_TOOLTIP))
-}
-
 /// What a flight frames.
 struct Target {
     bbox: Bbox3,

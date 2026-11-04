@@ -155,8 +155,10 @@ The history keys work while the pointer is over the view or the feature list.
 | Double-click a feature, or its ⌖ | Select the feature and fly to what it made |
 | Click the view cube | Turn to that view |
 
-In a Jig's number field: drag across it (Shift finer, Ctrl in steps), the wheel or the ‹ › to step it,
-double-click or Enter to type a value, Escape to give up.
+On a slider (a Jig's parameters, See-through, the section's Offset, the Studio and Analysis options): press
+the rail to put the knob there and drag it (Shift finer, Ctrl in whole steps); once clicked, the arrow keys or
+the wheel step it (Shift: ten steps); click its value (or press Enter over it) to type a value or an expression
+with units, Escape to give up; double-click the knob for its default.
 
 ## Units, functions and names
 

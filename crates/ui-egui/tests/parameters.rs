@@ -141,6 +141,17 @@ impl Window {
     }
 
     fn key(&mut self, shell: &mut Shell, session: &mut Session, key: Key) {
+        self.key_with(shell, session, key, Modifiers::NONE);
+    }
+
+    fn key_with(
+        &mut self,
+        shell: &mut Shell,
+        session: &mut Session,
+        key: Key,
+        modifiers: Modifiers,
+    ) {
+        self.frame(shell, session, vec![Event::ModifiersChanged(modifiers)]);
         for pressed in [true, false] {
             self.frame(
                 shell,
@@ -150,7 +161,7 @@ impl Window {
                     physical_key: None,
                     pressed,
                     repeat: false,
-                    modifiers: Modifiers::NONE,
+                    modifiers,
                 }],
             );
         }
@@ -178,6 +189,16 @@ fn hit(shell: &Shell, name: &str) -> Rect {
         .find(|(n, _)| n == name)
         .map(|(_, r)| *r)
         .unwrap_or_else(|| panic!("no `{name}` in {:?}", shell.parameter_hits()))
+}
+
+/// The knob's centre on a slider whose rail (with the knob's reach) is
+/// `rail`, at `fraction` of its range.
+fn knob(shell: &Shell, rail: Rect, fraction: f32) -> Pos2 {
+    let k = shell.tokens.knob_size;
+    pos2(
+        rail.left() + k * 0.5 + (rail.width() - k) * fraction,
+        rail.center().y,
+    )
 }
 
 fn form(shell: &mut Shell, session: &mut Session) -> Value {
@@ -548,11 +569,16 @@ fn a_step_that_changes_nothing_shows_the_documents_value_again() {
         json!({"values": {"w": "100 mm"}}),
     );
     window.idle(&mut shell, &mut session, 3);
-    // The › at the right end of a field at its maximum: a commit that
-    // changes nothing.
+    // A click on the knob (at the right end, the maximum) only takes the
+    // focus: nothing is sent. Then → over it, a step past the maximum: a
+    // commit that changes nothing. (Until 2026-11-04 the › at the field's
+    // end was the step; the one slider steps with the arrow keys.)
     let field = hit(&shell, "w");
-    let arrow = pos2(field.right() - 4.0, field.center().y);
-    window.click(&mut shell, &mut session, arrow);
+    let sent = window.ran.len();
+    let at_max = knob(&shell, field, 1.0);
+    window.click(&mut shell, &mut session, at_max);
+    assert_eq!(window.ran.len(), sent, "a click on the knob sends nothing");
+    window.key(&mut shell, &mut session, Key::ArrowRight);
     assert_eq!(window.ran.last().unwrap()["values"]["w"], 100.0);
     let shown = form(&mut shell, &mut session);
     assert_eq!(shown["live"], Value::Null, "{shown}");
@@ -650,4 +676,130 @@ fn a_jig_in_use_offers_open_for_editing_and_only_its_parameters_change() {
         .execute("variable.set", &json!({"name": "w", "expr": "50 mm"}))
         .unwrap_err();
     assert!(refused.message().contains("this is a Jig"), "{refused}");
+}
+
+/// A Jig with a whole number of few values (a stepper), a length without
+/// a range (a drag field) and a length with one, which a variable of the
+/// document drives.
+fn small_jig() -> Session {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    for (name, expr) in [("n", "3"), ("t", "4 mm"), ("w", "40 mm"), ("base", "30 mm")] {
+        run(&mut s, "variable.set", json!({"name": name, "expr": expr}));
+    }
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Plate", "size": ["w", "t * n", "5 mm"]}),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "n", "label": "Count", "kind": "integer", "min": "2", "max": "6", "order": 1}),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "t", "label": "Thickness", "order": 2}),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "w", "label": "Width", "min": "20 mm", "max": "100 mm", "step": "1 mm", "order": 3}),
+    );
+    s
+}
+
+/// The one slider in the Jig form (2026-11-04): a whole number with few
+/// values is a stepper; a length without a range a drag field; Shift and
+/// Ctrl on the rail; a double click on the knob sets the default; an
+/// expression with a variable typed into the field.
+#[test]
+fn the_form_steps_drags_resets_and_types_with_the_one_slider() {
+    let (mut session, mut shell, mut window) = started(small_jig());
+    // The stepper: + then −, a commit each.
+    let count = hit(&shell, "n");
+    let plus = pos2(count.right() - 6.0, count.center().y);
+    window.click(&mut shell, &mut session, plus);
+    assert_eq!(value(&mut session, "n"), 4.0);
+    let minus = pos2(count.left() + 6.0, count.center().y);
+    window.click(&mut shell, &mut session, minus);
+    window.click(&mut shell, &mut session, minus);
+    assert_eq!(value(&mut session, "n"), 2.0);
+    // At its least − does nothing more.
+    let sent = window.ran.len();
+    window.click(&mut shell, &mut session, minus);
+    assert_eq!(window.ran.len(), sent);
+    // The drag field: a drag to the right makes it thicker.
+    let field = hit(&shell, "t");
+    let before = value(&mut session, "t");
+    window.drag(
+        &mut shell,
+        &mut session,
+        field.center(),
+        field.width() * 0.3,
+        10,
+    );
+    assert!(value(&mut session, "t") > before, "{before}");
+    // Shift: ten times finer than a plain drag of the same length.
+    let rail = hit(&shell, "w");
+    let at = |s: &mut Session| value(s, "w");
+    let start = at(&mut session);
+    let from = knob(&shell, rail, ((start - 20.0) / 80.0) as f32);
+    window.drag(&mut shell, &mut session, from, rail.width() * 0.25, 10);
+    let plain = at(&mut session) - start;
+    assert!((plain - 20.0).abs() <= 1.0, "a quarter of 80 mm: {plain}");
+    let start = at(&mut session);
+    let from = knob(&shell, rail, ((start - 20.0) / 80.0) as f32);
+    window.frame(
+        &mut shell,
+        &mut session,
+        vec![Event::ModifiersChanged(Modifiers::SHIFT)],
+    );
+    window.drag(&mut shell, &mut session, from, rail.width() * 0.25, 10);
+    window.frame(
+        &mut shell,
+        &mut session,
+        vec![Event::ModifiersChanged(Modifiers::NONE)],
+    );
+    let fine = at(&mut session) - start;
+    assert!((fine - 2.0).abs() <= 1.0, "a tenth of that: {fine}");
+    // Ctrl: on whole steps; the value moves.
+    let start = at(&mut session);
+    let from = knob(&shell, rail, ((start - 20.0) / 80.0) as f32);
+    window.frame(
+        &mut shell,
+        &mut session,
+        vec![Event::ModifiersChanged(Modifiers::CTRL)],
+    );
+    window.drag(&mut shell, &mut session, from, -rail.width() * 0.2, 10);
+    window.frame(
+        &mut shell,
+        &mut session,
+        vec![Event::ModifiersChanged(Modifiers::NONE)],
+    );
+    let stepped = at(&mut session);
+    assert!(stepped < start, "{start} -> {stepped}");
+    assert_eq!(stepped, stepped.round());
+    // A double click on the knob: the default, 40 mm.
+    let v = at(&mut session);
+    let on = knob(&shell, rail, ((v - 20.0) / 80.0) as f32);
+    window.frame(&mut shell, &mut session, vec![Event::PointerMoved(on)]);
+    window.time += 1.0;
+    for _ in 0..2 {
+        window.button(&mut shell, &mut session, on, true);
+        window.button(&mut shell, &mut session, on, false);
+    }
+    window.idle(&mut shell, &mut session, 4);
+    assert_eq!(at(&mut session), 40.0);
+    // Typed into its field: an expression with the document's variable.
+    let typed = hit(&shell, "w.field");
+    window.click(&mut shell, &mut session, typed.center());
+    window.frame(
+        &mut shell,
+        &mut session,
+        vec![Event::Text("base * 2".to_string())],
+    );
+    window.key(&mut shell, &mut session, Key::Enter);
+    assert_eq!(at(&mut session), 60.0);
 }

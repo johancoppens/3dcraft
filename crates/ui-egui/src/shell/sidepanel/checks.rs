@@ -245,17 +245,28 @@ impl Shell {
                     let x0 = rect.left() + t.nav_spacing * 2.0 + if failing { 4.0 } else { 0.0 };
                     status_dot(painter, &kit, pos2(x0 + r, y), r, dot);
                     let text_x = x0 + 2.0 * r + t.nav_icon_gap + 2.0;
-                    // At the right: the limit, and the measure before it.
-                    let limit = kit.galley(ui, line.limit.clone(), kit.font(), sk.text_dim);
-                    let limit_w = limit.size().x;
+                    // At the right: the limit, and the measure before it,
+                    // each cut to its share of the row so the name keeps
+                    // room of its own (a long expected value never runs
+                    // over the name and the icon).
                     let right = rect.right() - 2.0;
+                    let room = (right - text_x).max(0.0);
+                    let cut = |text: String, ink, share: f32| {
+                        let mut job =
+                            egui::text::LayoutJob::simple_singleline(text, kit.font(), kit.c(ink));
+                        job.wrap =
+                            egui::text::TextWrapping::truncate_at_width((room * share).max(1.0));
+                        painter.layout_job(job)
+                    };
+                    let limit = cut(compact_all(&line.limit), sk.text_dim, 0.32);
+                    let limit_w = limit.size().x;
                     painter.galley(
                         pos2(right - limit_w, y - limit.size().y * 0.5),
                         limit,
                         kit.c(sk.text_dim),
                     );
                     let measured_ink = if failing { sk.failed } else { sk.text };
-                    let measured = kit.galley(ui, line.measured.clone(), kit.font(), measured_ink);
+                    let measured = cut(line.measured.clone(), measured_ink, 0.26);
                     let measured_x = right - limit_w - t.nav_icon_gap * 1.5 - measured.size().x;
                     painter.galley(
                         pos2(measured_x, y - measured.size().y * 0.5),
@@ -357,6 +368,21 @@ pub fn compact(text: &str) -> String {
     }
 }
 
+/// Every number of `text` written short as [`compact`] writes a measure
+/// (`491.20578 mm^3 ± 0.00649120578` is `491.2 mm^3 ± 0.006491`).
+pub fn compact_all(text: &str) -> String {
+    text.split(' ')
+        .map(|word| {
+            if word.parse::<f64>().is_ok_and(f64::is_finite) {
+                compact(word)
+            } else {
+                word.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The power of ten of `v`'s first digit, without a float logarithm
 /// (`craft3d_math::Portable` keeps those for geometry): by counting.
 trait Log10Floor {
@@ -417,6 +443,17 @@ mod tests {
         assert_eq!(compact("22.0001 mm"), "22 mm");
         assert_eq!(compact("true"), "true");
         assert_eq!(compact("12345.6 mm"), "12346 mm");
+    }
+
+    #[test]
+    fn long_expected_values_are_written_short() {
+        assert_eq!(
+            compact_all("491.20578 mm^3 ± 0.00649120578"),
+            "491.2 mm^3 ± 0.006491"
+        );
+        assert_eq!(compact_all("≥ 2"), "≥ 2");
+        assert_eq!(compact_all("true"), "true");
+        assert_eq!(compact_all(""), "");
     }
 
     #[test]

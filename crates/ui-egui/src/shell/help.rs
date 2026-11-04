@@ -470,11 +470,17 @@ impl Shell {
             ui.add_space(tokens.nav_spacing * 2.0);
         };
         let shown = kit.dialog(ctx, dialog, |_, ui| {
+            // As tall as its rows, up to the window's room: only then
+            // does it scroll (with its bar shown).
             egui::ScrollArea::vertical()
                 .max_height(height)
+                .min_scrolled_height(height)
                 .auto_shrink([false, true])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
+                    // A gutter between the two columns (board s4).
+                    ui.spacing_mut().item_spacing.x = tokens.dialog_padding * 1.5;
                     let (left, right): (Vec<ShortcutGroup>, Vec<ShortcutGroup>) =
                         ShortcutGroup::ALL.into_iter().partition(|g| {
                             matches!(
@@ -485,8 +491,9 @@ impl Shell {
                     if two {
                         ui.columns(2, |columns| {
                             if let [a, b] = columns {
-                                a.spacing_mut().item_spacing.y = 2.0;
-                                b.spacing_mut().item_spacing.y = 2.0;
+                                for column in [&mut *a, &mut *b] {
+                                    column.spacing_mut().item_spacing = egui::vec2(8.0, 2.0);
+                                }
                                 for group in &left {
                                     group_ui(a, *group);
                                 }
@@ -496,6 +503,7 @@ impl Shell {
                             }
                         });
                     } else {
+                        ui.spacing_mut().item_spacing.x = 8.0;
                         for group in ShortcutGroup::ALL {
                             group_ui(ui, group);
                         }

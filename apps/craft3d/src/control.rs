@@ -601,6 +601,15 @@ fn serve(stream: TcpStream, shared: &Shared) {
                     (shared.wake)();
                     Some(rpc::ok_reply(&request_id(line), &json!({ "bye": true })))
                 }
+                // Sent away by the person while this line was on its way:
+                // not dispatched, the connection ends.
+                Ok(_)
+                    if client
+                        .as_ref()
+                        .is_some_and(|name| shared.clients().dismissed.contains(name)) =>
+                {
+                    break;
+                }
                 Ok(line) => {
                     note_request(shared, id, client.as_ref(), line);
                     let origin = origin_of(shared, client.as_ref());
@@ -825,6 +834,35 @@ impl ControlServer {
             });
         }
         list
+    }
+
+    /// Closes the connections of the client that authenticated as `key`
+    /// and refuses it for the rest of the run, as [`Self::disconnect_all`]
+    /// does for all; returns whether it was known.
+    pub fn disconnect(&self, key: &str) -> bool {
+        let mut clients = self.shared.clients();
+        let known = clients.seen.remove(key).is_some()
+            || clients
+                .open
+                .values()
+                .any(|open| open.client.as_deref() == Some(key));
+        clients.dismissed.insert(key.to_string());
+        while clients.dismissed.len() > MAX_CLIENTS {
+            let Some(first) = clients.dismissed.iter().find(|k| *k != key).cloned() else {
+                break;
+            };
+            clients.dismissed.remove(&first);
+        }
+        for open in clients
+            .open
+            .values()
+            .filter(|open| open.client.as_deref() == Some(key))
+        {
+            let _ = open.stream.shutdown(Shutdown::Both);
+        }
+        drop(clients);
+        (self.shared.wake)();
+        known
     }
 
     /// Closes every connection and refuses the clients that named

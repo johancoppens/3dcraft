@@ -19,9 +19,13 @@ pub const TEXT: &str = "inter";
 pub const MONO: &str = "mono";
 /// The family of the medium weight, which headings use.
 pub const MEDIUM: &str = "medium";
+/// The semi-bold weight of the text font: dialog and sheet titles (17
+/// Semi Bold, board s4).
+pub const SEMIBOLD: &str = "semibold";
 /// Inter's weight for running text and for the medium family.
 const WEIGHT_REGULAR: f32 = 400.0;
 const WEIGHT_MEDIUM: f32 = 500.0;
+const WEIGHT_SEMIBOLD: f32 = 600.0;
 
 /// Which of the interface's fonts are in the context's definitions.
 #[derive(Debug, Default)]
@@ -116,7 +120,9 @@ pub fn definitions(text: Option<&[u8]>, mono: Option<&[u8]>) -> FontDefinitions 
         .cloned()
         .unwrap_or_default();
     defs.families
-        .insert(FontFamily::Name(Arc::from(MEDIUM)), fallback);
+        .insert(FontFamily::Name(Arc::from(MEDIUM)), fallback.clone());
+    defs.families
+        .insert(FontFamily::Name(Arc::from(SEMIBOLD)), fallback);
     if let Some(bytes) = text {
         put(
             &mut defs,
@@ -133,6 +139,12 @@ pub fn definitions(text: Option<&[u8]>, mono: Option<&[u8]>) -> FontDefinitions 
             "Inter Medium",
             weighted(bytes, WEIGHT_MEDIUM),
             &[(FontFamily::Name(Arc::from(MEDIUM)), true)],
+        );
+        put(
+            &mut defs,
+            "Inter SemiBold",
+            weighted(bytes, WEIGHT_SEMIBOLD),
+            &[(FontFamily::Name(Arc::from(SEMIBOLD)), true)],
         );
     }
     if let Some(bytes) = mono {

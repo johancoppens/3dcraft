@@ -379,6 +379,10 @@ impl Desk {
             agents.disconnect_all();
             changed = true;
         }
+        if let Some(key) = self.host.shell.take_agent_disconnect() {
+            agents.disconnect(&key);
+            changed = true;
+        }
         if let Some(on) = self.host.shell.take_agents_document_folder() {
             agents.set_document_folder(on);
             changed = true;
