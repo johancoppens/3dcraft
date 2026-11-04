@@ -18,8 +18,8 @@ use craft3d_doc::{
 };
 use craft3d_kernel::profile::{Segment, Shape};
 use craft3d_kernel::sheetmetal::{
-    self, developed_allowance, flange_length, flat_area, flat_faces, holes_to_bends,
-    measured_angle, measured_radius,
+    self, developed_allowance, flange_length, flat_area, flat_faces, holes_across_bends,
+    holes_to_bends, measured_angle, measured_radius,
 };
 use craft3d_math::Portable;
 use serde_json::{Map, Value, json};
@@ -48,7 +48,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("sheetMetal.edit", "Edit Sheet Metal", r#"{"feature": id or name, "sketch": id or name, "thickness": expr, "radius": expr, "kFactor": expr, "flanges": [flange, ...] as feature.sheetMetal (the whole list; a flange's id keeps it the part's flange of that id), "relief": {shape, size} or null, "bendRelief": {shape, size} or null, "corner": {kind, gap} or null, "corners": [corner, ...] (the whole list), "cutouts": [sketch, ...] (the whole list), "jogs": [jog, ...] as feature.sheetMetal (the whole list; a jog's id keeps it the part's jog of that id), "formedLouvres": [louvre, ...] as feature.sheetMetal (the whole list; a louvre's id keeps it the part's louvre of that id), "curvedFlanges": [curved flange, ...] as feature.sheetMetal (the whole list; an id keeps it the part's curved flange of that id), "maxStrain": expr or null}"#,
         "Changes a sheet-metal part: what is given replaces what it had (flanges as a whole list; relief or bendRelief null removes it). One undo step. Each flange has an id (sheetMetal.bends lists them), which names its faces, edges and rims, so those names stay with the flange when others are added, deleted or moved in the list: a flange given with its id is the part's flange of that id (an id the part has no flange of, or one given twice, is refused); one given without is the part's flange it equals in every field (what it sits on read through the flanges' ids), and else a new flange with a new id, never one a deleted flange had, so a flange changed without its id loses the names of its split edges (an error where they are used) and none moves to another flange. Every face, edge and rim name of a flange follows its id. corners not given are kept and follow their flanges by id to their new places; one whose flange is gone is refused, naming it.", doc: true, sheet_metal_edit),
     spec!("sheetMetal.bends", "Bend Table", r#"{"feature": id or name}"#,
-        "The bend table of a sheet-metal part, measured on the part as built: per bend (one per flange, in order, then two per jog: flange null and jog its place) its flange's id (sheetMetal.edit; a jog's second bend id + 1), what it is on, direction, angle (degrees, between the planes of its two flats as folded), radius (the inner skin's), kFactor, thickness, allowance (the bend allowance angle * (radius + kFactor * thickness)), developed (the width of the bend's neutral band laid flat by the unfold, which must agree with allowance), setback ((radius + thickness) tan(angle/2), the outside setback; null at 180 degrees), deduction (2 setback - allowance, the bend deduction; null at 180 degrees), flangeLength (the flange's flat beyond the bend), toMould (flangeLength + setback), length (the bend's length along its tangent line) and ends (each end of the bend that lies inside its edge, an inset flange's or a tab's: end start|end, point, and the bend relief there, relief and size, null without one). For the part: flatArea, flatSize (the flat pattern's width and height in the sketch's axes), corners (where two flanged edges meet: point, bends, relief, size, kind (open, butt, overlap, miter), gap (null when open), over (the covering flange of a butt or overlap)), holes (per hole of the base and of each flange's flat, its curves, flange (null for the base), the nearest bend beside that flat and the distance from the hole to that bend's tangent line on the flat's side), formedLouvres (per formed louvre: id, flat (0 the base), lance, width, height, ends, direction, radius (its section's arcs'), stretch, footprintArea, hoodVolume). Read-only.", doc: true, sheet_metal_bends),
+        "The bend table of a sheet-metal part, measured on the part as built: per bend (one per flange, in order, then two per jog: flange null and jog its place) its flange's id (sheetMetal.edit; a jog's second bend id + 1), what it is on, direction, angle (degrees, between the planes of its two flats as folded), radius (the inner skin's), kFactor, thickness, allowance (the bend allowance angle * (radius + kFactor * thickness)), developed (the width of the bend's neutral band laid flat by the unfold, which must agree with allowance), setback ((radius + thickness) tan(angle/2), the outside setback; null at 180 degrees), deduction (2 setback - allowance, the bend deduction; null at 180 degrees), flangeLength (the flange's flat beyond the bend), toMould (flangeLength + setback), length (the bend's length along its tangent line) and ends (each end of the bend that lies inside its edge, an inset flange's or a tab's: end start|end, point, and the bend relief there, relief and size, null without one). For the part: flatArea, flatSize (the flat pattern's width and height in the sketch's axes), corners (where two flanged edges meet: point, bends, relief, size, kind (open, butt, overlap, miter), gap (null when open), over (the covering flange of a butt or overlap)), holes (per hole of the base and of each flange's flat, its curves, flange (null for the base), the nearest bend beside that flat and the distance from the hole to that bend's tangent line on the flat's side), holesAcross (per hole across bends, which lies on no one flat and so is not in holes: hole, how it is named, and bends, the bends whose tangent lines it crosses), formedLouvres (per formed louvre: id, flat (0 the base), lance, width, height, ends, direction, radius (its section's arcs'), stretch, footprintArea, hoodVolume). Read-only.", doc: true, sheet_metal_bends),
 ];
 
 fn flange_value(
@@ -1582,6 +1582,11 @@ fn sheet_metal_bends(session: &mut Session, params: &Value) -> Run {
             json!({"curves": curves, "flange": h.flat.checked_sub(1), "bend": h.bend, "distance": h.distance, "lower": h.lower, "upper": h.upper, "exact": h.exact})
         })
         .collect();
+    let across: Vec<Value> = holes_across_bends(part, &tol)
+        .map_err(|e| CommandError::new(format!("{ID}: {e}")))?
+        .into_iter()
+        .map(|h| json!({"hole": h.named, "bends": h.bends}))
+        .collect();
     // A later feature that took the part's body (a boolean that drilled
     // it) is not in the flat pattern: what it cut is not cut flat.
     let changed_by = regen
@@ -1597,6 +1602,7 @@ fn sheet_metal_bends(session: &mut Session, params: &Value) -> Run {
         "flatSize": [hi[0] - lo[0], hi[1] - lo[1]],
         "corners": corners,
         "holes": holes,
+        "holesAcross": across,
         "formedLouvres": built
             .formed
             .iter()
@@ -2251,6 +2257,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
     // holes they have, and the features their bodies went on into.
     let mut parts = Vec::new();
     let mut holes = 0_usize;
+    let mut across = 0_usize;
     let mut taken = Vec::new();
     for id in parts_of(ctx, p)? {
         let fname = ctx.feature_name(id);
@@ -2262,6 +2269,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
                 .flats
                 .iter()
                 .fold(holes, |n, f| n.saturating_add(f.holes.len()));
+            across = across.saturating_add(part.cuts.len());
             if let Some(taker) = ctx.regen.feature(id).and_then(|o| o.consumed_by) {
                 taken.push(format!(
                     "`{fname}` went on into `{}`",
@@ -2368,7 +2376,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
     } else {
         if !least.is_finite() {
             return Err(match name {
-                "holeToBend" => no_hole_beside_a_bend(&parts, holes, &taken),
+                "holeToBend" => no_hole_beside_a_bend(&parts, holes, across, &taken),
                 _ => "the part has no bends".to_string(),
             });
         }
@@ -2496,18 +2504,34 @@ fn louvre_stretch(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, Stri
 /// number (not a pass), so it is an error that says what the part has and
 /// how an assertion written for a design without such a hole is switched
 /// off (docs/design/sheetmetal.md › *Measures over nothing*).
-fn no_hole_beside_a_bend(parts: &[String], holes: usize, taken: &[String]) -> String {
+fn no_hole_beside_a_bend(
+    parts: &[String],
+    holes: usize,
+    across: usize,
+    taken: &[String],
+) -> String {
     let has = if parts.len() > 1 { "have" } else { "has" };
     let parts = if parts.is_empty() {
         "the parts".to_string()
     } else {
         parts.join(", ")
     };
-    let what = if holes == 0 {
-        format!("{parts} {has} no holes")
-    } else {
-        format!("none of the {holes} holes of {parts} lies on a flat beside a bend")
+    let mut what = match (holes, across) {
+        (0, 0) => format!("{parts} {has} no holes"),
+        (0, _) => format!("{parts} {has} no hole on a flat"),
+        _ => format!("none of the {holes} holes of {parts} lies on a flat beside a bend"),
     };
+    // A hole across a bend runs through it: it has no distance to the
+    // bend, and holeToBend measures holes beside one.
+    match across {
+        0 => {}
+        1 => what.push_str(
+            " (its hole across a bend runs through the bend, so it has no distance to it: sheetMetal.bends lists it under holesAcross)",
+        ),
+        n => what.push_str(&format!(
+            " (its {n} holes across bends run through them, so they have no distance to them: sheetMetal.bends lists them under holesAcross)"
+        )),
+    }
     let later = if taken.is_empty() {
         String::new()
     } else {
