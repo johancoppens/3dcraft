@@ -25,7 +25,7 @@ use craft3d_geom::Surface;
 use craft3d_kernel::KernelError;
 use craft3d_kernel::plate::Made;
 use craft3d_kernel::profile::{Curve2, Profile, SketchCurve, detect_profiles};
-use craft3d_kernel::sheetmetal::sharp::{SharpFace, joined};
+use craft3d_kernel::sheetmetal::sharp::SharpFace;
 use craft3d_kernel::sheetmetal::{
     Closing, CornerKind, Cutout, Direction, FlangeSpec, LengthFrom, On, Part, Relief, ReliefKind,
     Spec, build, developed_allowance, flat_area, measured_angle, measured_radius,
@@ -149,7 +149,9 @@ fn sharp_faces(part: &Part, t: f64, tol: f64) {
             .iter()
             .enumerate()
             .filter_map(|(f, m)| match m {
-                Made::Joined(c) if joined(*c).0 == i => Some((f, joined(*c).1)),
+                Made::Joined(c) if part.joined_face(*c).unwrap().0 == i => {
+                    Some((f, part.joined_face(*c).unwrap().1))
+                }
                 _ => None,
             })
             .collect();
@@ -157,13 +159,15 @@ fn sharp_faces(part: &Part, t: f64, tol: f64) {
         for (f, what) in faces {
             let surface = &part.solid.body.faces[f].surface;
             match what {
-                SharpFace::Skin => {
+                SharpFace::Skin | SharpFace::SkinPiece(_) => {
                     let Surface::Cylinder(c) = surface else {
                         panic!("a sharp bend's skin is a cylinder")
                     };
                     near(c.radius(), t, tol, "the outer skin's radius");
                 }
-                SharpFace::End(_) => assert!(matches!(surface, Surface::Plane(_))),
+                SharpFace::End(_) | SharpFace::Side(..) => {
+                    assert!(matches!(surface, Surface::Plane(_)))
+                }
             }
         }
         assert_eq!(measured_radius(part, i), Some(0.0));

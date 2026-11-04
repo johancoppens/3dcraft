@@ -213,29 +213,61 @@ fn rpc_error(id: &Value, code: i64, message: &str) -> String {
     }))
 }
 
-fn send(stream: &mut TcpStream, request: &Value) -> Result<(), String> {
+fn send(stream: &mut TcpStream, request: &Value) -> io::Result<()> {
     let mut line = serialize(request);
     line.push('\n');
-    stream
-        .write_all(line.as_bytes())
-        .and_then(|()| stream.flush())
-        .map_err(|e| format!("could not send to the 3DCraft window: {e}"))
+    stream.write_all(line.as_bytes())?;
+    stream.flush()
+}
+
+/// What a send's failure reads as once the window has answered.
+fn send_text(e: &io::Error) -> String {
+    format!("could not send to the 3DCraft window: {e}")
+}
+
+/// Why no reply was read.
+#[derive(Debug)]
+enum Received {
+    /// The connection failed or was closed before a whole reply came.
+    Lost(io::Error),
+    /// A reply came that is not one of the control channel's.
+    Bad(String),
+}
+
+impl Received {
+    /// What it reads as once the window has answered before.
+    fn text(self) -> String {
+        match self {
+            Self::Lost(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                "the 3DCraft window closed the connection without answering".into()
+            }
+            Self::Lost(e) => format!("no answer from the 3DCraft window: {e}"),
+            Self::Bad(text) => text,
+        }
+    }
 }
 
 /// One reply of the control channel, as `Ok(result)` or `Err(error text)`.
-fn receive(reader: &mut BufReader<TcpStream>) -> Result<Result<Value, String>, String> {
+fn receive(reader: &mut BufReader<TcpStream>) -> Result<Result<Value, String>, Received> {
     // The app caps its replies; a little room for the envelope around one.
     let cap = MAX_REPLY_BYTES.saturating_add(4096);
     let bytes = match read_line(reader, cap) {
         Ok(Line::Bytes(bytes)) => bytes,
         Ok(Line::End) => {
-            return Err("the 3DCraft window closed the connection without answering".into());
+            return Err(Received::Lost(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "the connection was closed without an answer",
+            )));
         }
-        Ok(Line::TooLong) => return Err("the 3DCraft window's answer is too large".into()),
-        Err(e) => return Err(format!("no answer from the 3DCraft window: {e}")),
+        Ok(Line::TooLong) => {
+            return Err(Received::Bad(
+                "the 3DCraft window's answer is too large".into(),
+            ));
+        }
+        Err(e) => return Err(Received::Lost(e)),
     };
     let reply: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| "the 3DCraft window's answer is not JSON".to_string())?;
+        .map_err(|_| Received::Bad("the 3DCraft window's answer is not JSON".to_string()))?;
     match reply.get("ok").and_then(Value::as_bool) {
         Some(true) => Ok(Ok(reply.get("result").cloned().unwrap_or(Value::Null))),
         Some(false) => Ok(Err(reply
@@ -243,7 +275,59 @@ fn receive(reader: &mut BufReader<TcpStream>) -> Result<Result<Value, String>, S
             .and_then(Value::as_str)
             .unwrap_or("it gave no reason")
             .to_string())),
-        None => Err("the 3DCraft window's answer has no `ok` field".into()),
+        None => Err(Received::Bad(
+            "the 3DCraft window's answer has no `ok` field".into(),
+        )),
+    }
+}
+
+/// The message for a window that cannot be reached at `at`, with the
+/// operating system's reason and what to do about it.
+fn not_reachable(at: SocketAddr, fixed: bool, why: &io::Error) -> String {
+    if fixed {
+        format!(
+            "the 3DCraft window is not reachable at {at} ({why}); start it with `craft3d --control {} --control-token-file <the same token file>` and try again",
+            at.port()
+        )
+    } else {
+        format!(
+            "the 3DCraft window is not reachable at {at} ({why}); open 3DCraft and switch on Allow AI agents (on the start screen or in the Help menu), then try again"
+        )
+    }
+}
+
+/// Whether a failure of this kind means the connection went away: the
+/// peer refused it, reset or dropped it, or never answered.
+fn lost(kind: io::ErrorKind) -> bool {
+    use io::ErrorKind::*;
+    matches!(
+        kind,
+        ConnectionRefused
+            | ConnectionReset
+            | ConnectionAborted
+            | NotConnected
+            | BrokenPipe
+            | UnexpectedEof
+            | TimedOut
+            | WouldBlock
+    )
+}
+
+/// A failure before the program at `at` proved it is the window: when the
+/// connection went away, no window answered there, which to the agent is
+/// the same as nothing listening (2026-11-04: a port taken and let go by
+/// another process reset the connection, and the agent was told only
+/// "connection reset").
+fn before_proof(
+    at: SocketAddr,
+    fixed: bool,
+    e: io::Error,
+    text: impl FnOnce(io::Error) -> String,
+) -> Failure {
+    if lost(e.kind()) {
+        Failure::Unreachable(not_reachable(at, fixed, &e))
+    } else {
+        Failure::Other(text(e))
     }
 }
 
@@ -257,18 +341,8 @@ fn call(
 ) -> Result<Result<Value, String>, Failure> {
     let at = target.address;
     let fixed = matches!(config.window, Window::Fixed { .. });
-    let mut stream = TcpStream::connect_timeout(&at, config.connect_timeout).map_err(|e| {
-        Failure::Unreachable(if fixed {
-            format!(
-                "the 3DCraft window is not reachable at {at} ({e}); start it with `craft3d --control {} --control-token-file <the same token file>` and try again",
-                at.port()
-            )
-        } else {
-            format!(
-                "the 3DCraft window is not reachable at {at} ({e}); open 3DCraft and switch on Allow AI agents (on the start screen or in the Help menu), then try again"
-            )
-        })
-    })?;
+    let mut stream = TcpStream::connect_timeout(&at, config.connect_timeout)
+        .map_err(|e| Failure::Unreachable(not_reachable(at, fixed, &e)))?;
     let timed = |e: io::Error| {
         Failure::Other(format!(
             "could not set up the connection to the 3DCraft window: {e}"
@@ -285,14 +359,17 @@ fn call(
         &mut stream,
         &json!({ "id": 0, "method": "challenge", "params": { "nonce": ours } }),
     )
-    .map_err(Failure::Other)?;
+    .map_err(|e| before_proof(at, fixed, e, |e| send_text(&e)))?;
     let not_the_window = |why: &str| {
         Failure::Other(format!(
             "the program at {at} is not the 3DCraft window that holds this token ({why}); nothing was sent to it"
         ))
     };
     let answer = receive(&mut reader)
-        .map_err(Failure::Other)?
+        .map_err(|why| match why {
+            Received::Lost(e) => before_proof(at, fixed, e, |e| Received::Lost(e).text()),
+            bad => Failure::Other(bad.text()),
+        })?
         .map_err(|reason| not_the_window(&reason))?;
     let theirs = answer
         .get("nonce")
@@ -347,14 +424,14 @@ fn call(
         &mut stream,
         &json!({ "id": 1, "method": "auth", "params": auth }),
     )
-    .map_err(Failure::Other)?;
-    if let Err(reason) = receive(&mut reader).map_err(Failure::Other)? {
+    .map_err(|e| Failure::Other(send_text(&e)))?;
+    if let Err(reason) = receive(&mut reader).map_err(|why| Failure::Other(why.text()))? {
         return Err(Failure::Other(format!(
             "the 3DCraft window at {at} refused this agent ({reason})"
         )));
     }
-    send(&mut stream, request).map_err(Failure::Other)?;
-    receive(&mut reader).map_err(Failure::Other)
+    send(&mut stream, request).map_err(|e| Failure::Other(send_text(&e)))?;
+    receive(&mut reader).map_err(|why| Failure::Other(why.text()))
 }
 
 /// Passes one MCP message to the app and returns the app's answer to it
@@ -443,5 +520,70 @@ pub fn serve(
             output.write_all(b"\n")?;
             output.flush()?;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at() -> SocketAddr {
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 47_611))
+    }
+
+    /// Every way a connection goes away before the window has answered
+    /// tells the agent the window is not reachable and how to start it,
+    /// with the operating system's reason kept (2026-11-04).
+    #[test]
+    fn a_connection_that_goes_away_before_the_proof_is_a_window_not_reachable() {
+        use io::ErrorKind::*;
+        for kind in [
+            ConnectionRefused,
+            ConnectionReset,
+            ConnectionAborted,
+            NotConnected,
+            BrokenPipe,
+            UnexpectedEof,
+            TimedOut,
+            WouldBlock,
+        ] {
+            for fixed in [true, false] {
+                let e = io::Error::new(kind, format!("reason {kind:?}"));
+                let Failure::Unreachable(text) = before_proof(at(), fixed, e, |_| String::new())
+                else {
+                    panic!("{kind:?} is not read as a window not reachable");
+                };
+                assert!(text.contains("not reachable at 127.0.0.1:47611"), "{text}");
+                assert!(text.contains(&format!("(reason {kind:?})")), "{text}");
+                let how = if fixed {
+                    "start it with `craft3d --control 47611 "
+                } else {
+                    "switch on Allow AI agents"
+                };
+                assert!(text.contains(how), "{text}");
+            }
+        }
+        // The other kinds are not about the connection: told as they are.
+        for kind in [PermissionDenied, InvalidData, OutOfMemory, Other] {
+            let e = io::Error::new(kind, "why");
+            let failure = before_proof(at(), true, e, |e| format!("as is: {e}"));
+            assert!(
+                matches!(&failure, Failure::Other(text) if text == "as is: why"),
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// Once the window has answered, a dropped connection is told as such:
+    /// the message may have reached it, so it is not "start the window".
+    #[test]
+    fn a_connection_lost_after_the_proof_keeps_its_own_words() {
+        let closed = Received::Lost(io::Error::new(io::ErrorKind::UnexpectedEof, "eof")).text();
+        assert_eq!(
+            closed,
+            "the 3DCraft window closed the connection without answering"
+        );
+        let reset = Received::Lost(io::Error::new(io::ErrorKind::ConnectionReset, "reset")).text();
+        assert_eq!(reset, "no answer from the 3DCraft window: reset");
     }
 }

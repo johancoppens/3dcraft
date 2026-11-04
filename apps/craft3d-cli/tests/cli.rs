@@ -1359,12 +1359,49 @@ fn mcp_bridge_checks_its_flags_and_reports_a_window_that_is_not_there() {
     let request = r#"{"jsonrpc":"2.0","id":4,"method":"tools/list"}"#;
     let notification = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
     let input = format!("{request}\n{notification}\n{request}\n");
+    let run_on = |port: &str| {
+        cli_in(
+            &dir,
+            &["mcp", "--bridge", port, "--control-token-file", &token],
+            Some(&input),
+        )
+        .ok()
+    };
+    let messages = |ran: &Ran| -> Vec<String> {
+        let replies = ran.json_lines();
+        assert_eq!(replies.len(), 2, "{}", ran.stdout);
+        replies
+            .iter()
+            .map(|reply| {
+                assert_eq!(reply["id"], 4);
+                reply["error"]["message"].as_str().unwrap().to_string()
+            })
+            .collect()
+    };
+    let not_reachable = |message: &str, port: &str| {
+        message.contains("not reachable") && message.contains(&format!("--control {port}"))
+    };
+    // A program that takes the connection and drops it before answering
+    // (here one the test owns, so nothing else can be on its port) is no
+    // window either: the agent is told the same (2026-11-04, the gate
+    // failed on a "connection reset" from a port another process took).
+    let dropper = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = dropper.local_addr().unwrap().port().to_string();
+    std::thread::spawn(move || {
+        for stream in dropper.incoming() {
+            drop(stream);
+        }
+    });
+    for message in messages(&run_on(&port)) {
+        assert!(not_reachable(&message, &port), "{message}");
+    }
     // A port nothing listens on: bound once to find a free one, then
     // closed again. Another process (a parallel test) may take it in
-    // between; then the bridge rightly reports a peer that is not the
-    // window, so the run is made again on a new port, a few times at most.
+    // between: one that drops the connection is read as above, and only a
+    // peer that answers shows in the reply as not being the window; then
+    // the run is made again on a new port, a few times at most.
     let mut attempt = 0;
-    let (port, ran) = loop {
+    loop {
         attempt += 1;
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
@@ -1372,26 +1409,17 @@ fn mcp_bridge_checks_its_flags_and_reports_a_window_that_is_not_there() {
             .unwrap()
             .port()
             .to_string();
-        let ran = cli_in(
-            &dir,
-            &["mcp", "--bridge", &port, "--control-token-file", &token],
-            Some(&input),
-        )
-        .ok();
-        let taken = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok();
-        if !taken || attempt == 5 {
-            break (port, ran);
+        let messages = messages(&run_on(&port));
+        let foreign = messages
+            .iter()
+            .any(|message| message.contains("is not the 3DCraft window"));
+        if foreign && attempt < 5 {
+            continue;
         }
-    };
-    let replies = ran.json_lines();
-    assert_eq!(replies.len(), 2, "{}", ran.stdout);
-    for reply in &replies {
-        assert_eq!(reply["id"], 4);
-        let message = reply["error"]["message"].as_str().unwrap();
-        assert!(
-            message.contains("not reachable") && message.contains(&format!("--control {port}")),
-            "{message}"
-        );
+        for message in &messages {
+            assert!(not_reachable(message, &port), "{message}");
+        }
+        break;
     }
 
     let wrong = path(&dir, "wrong.token");

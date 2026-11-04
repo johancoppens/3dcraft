@@ -722,20 +722,40 @@ pub(crate) fn build(
     // (its inner skin, a line, has no face; docs/design/sheetmetal.md ›
     // *Sharp bends*).
     let joined_name = |code: u32| -> Option<PersistentName> {
-        let (bend, what) = sheetmetal::sharp::joined(code);
+        let (bend, what) = part.joined_face(code)?;
         let face = sheet_face_name(id, part, SheetFace::Bend(bend))?;
+        let up = part.bends.get(bend)?.angle > 0.0;
+        let edge = |key: sheetmetal::EdgeKey| -> Option<PersistentName> {
+            Some(PersistentName::new(
+                id,
+                NameRole::Edge,
+                sheetmetal::edge_numbers(part, key)?,
+            ))
+        };
         match what {
             sheetmetal::sharp::SharpFace::Skin => {
-                let up = part.bends.get(bend)?.angle > 0.0;
                 Some(PersistentName::copy(id, u64::from(up), face))
             }
-            sheetmetal::sharp::SharpFace::End(end) => {
-                let edge = PersistentName::new(
-                    id,
-                    NameRole::Edge,
-                    sheetmetal::edge_numbers(part, sheetmetal::EdgeKey::Arc { bend, end })?,
-                );
-                Some(PersistentName::rim(id, &edge, face))
+            sheetmetal::sharp::SharpFace::End(end) => Some(PersistentName::rim(
+                id,
+                &edge(sheetmetal::EdgeKey::Arc { bend, end })?,
+                face,
+            )),
+            // The further stretches holes across the bend leave, as a
+            // rounded bend's further pieces; the hole's sides there as
+            // the rims along its pieces across the strip.
+            sheetmetal::sharp::SharpFace::SkinPiece(j) => Some(PersistentName::copy(
+                id,
+                u64::from(up),
+                sheet_face_name(id, part, SheetFace::BendPiece(bend, j))?,
+            )),
+            sheetmetal::sharp::SharpFace::Side(j, key) => {
+                let piece = if j == 0 {
+                    face
+                } else {
+                    sheet_face_name(id, part, SheetFace::BendPiece(bend, j))?
+                };
+                Some(PersistentName::rim(id, &edge(key)?, piece))
             }
         }
     };
