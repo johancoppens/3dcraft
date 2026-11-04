@@ -549,6 +549,10 @@ impl OpenDocument {
     }
 }
 
+/// Per open document (its id) and regeneration ([`OpenDocument::regen_key`]),
+/// the hashed keys of the trees its bodies hold.
+type HeldTrees = (u64, Option<(u64, u64)>, std::collections::BTreeSet<u64>);
+
 /// Open documents plus the rules for touching files. A clone is an
 /// independent session with the same documents (bodies and meshes are
 /// shared until one of them changes).
@@ -572,7 +576,7 @@ pub struct Session {
     /// regeneration: an edit of one document does not write out the
     /// surfaces of the others again (40 ms an edit with the fuel tank open,
     /// 2026-11-04).
-    tree_keys: Vec<(u64, Option<(u64, u64)>, std::collections::BTreeSet<u64>)>,
+    tree_keys: Vec<HeldTrees>,
     /// [`Session::set_body_budget`], for documents opened later.
     body_budget: Option<usize>,
     /// [`Session::set_lean_sampling`].
