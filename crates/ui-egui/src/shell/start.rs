@@ -822,10 +822,18 @@ impl Shell {
             egui::Layout::left_to_right(egui::Align::Min)
         };
         ui.with_layout(row, |ui| {
+            // The gap is all there is between the columns: the item
+            // spacing beside it would push the right column past the
+            // examples' right edge.
+            let spacing = ui.spacing().item_spacing.x;
+            if !stacked {
+                ui.spacing_mut().item_spacing.x = 0.0;
+            }
             ui.allocate_ui_with_layout(
                 egui::vec2(left, 0.0),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
+                    ui.spacing_mut().item_spacing.x = spacing;
                     ui.set_width(left);
                     kit.section_header(ui, "Recent");
                     ui.add_space(tokens.nav_spacing);
@@ -841,6 +849,7 @@ impl Shell {
                 egui::vec2(right, 0.0),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
+                    ui.spacing_mut().item_spacing.x = spacing;
                     ui.set_width(right);
                     self.agent_block(ui, &kit);
                 },

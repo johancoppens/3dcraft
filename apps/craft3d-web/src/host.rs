@@ -28,6 +28,7 @@ use craft3d_ui_egui::files::{
     ASSEMBLY_EXTENSION, EXPORT_FORMATS, EXTENSION, ExportPlan, JIG_EXTENSION, export_params,
     extension_of, file_stem, suggested_jig_name, suggested_name,
 };
+use craft3d_ui_egui::kit::{Button, Dialog, Kit};
 use craft3d_ui_egui::shell::ExportRequest;
 use craft3d_ui_egui::{CommandReport, DocAction, FileAction, Shell, Work};
 use serde_json::{Value, json};
@@ -1034,19 +1035,42 @@ impl WebHost {
         }
         let label = Session::command(&command).map_or(command.as_str(), |spec| spec.label);
         let mut cancel = false;
-        egui::Window::new("Working")
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
+        // A small plate of the kit's (on the panel's ground) at the bottom
+        // of the page: the spinner, what it does, Cancel.
+        let tokens = self.shell.tokens;
+        let kit = Kit::panel(&tokens);
+        let fill = if craft3d_ui_egui::theme::is_light(tokens.panel_fill) {
+            tokens.panel_fill
+        } else {
+            tokens.popover_fill
+        };
+        egui::Area::new(egui::Id::new("craft3d-web-working"))
+            .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -48.0))
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(format!("Working on {label}…"));
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
-                    }
-                });
+                egui::Frame::new()
+                    .fill(craft3d_ui_egui::theme::color(fill))
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        craft3d_ui_egui::theme::color(tokens.field_stroke),
+                    ))
+                    .corner_radius(egui::CornerRadius::same(tokens.dialog_radius))
+                    .inner_margin(egui::Margin::same(
+                        (tokens.dialog_padding * 0.5).clamp(0.0, 32.0) as i8,
+                    ))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = tokens.nav_gap;
+                            ui.add(
+                                egui::Spinner::new()
+                                    .color(craft3d_ui_egui::theme::color(tokens.text_dim)),
+                            );
+                            kit.paragraph(ui, &format!("Working on {label}…"), false);
+                            if kit.button(ui, Button::secondary("Cancel")).clicked() {
+                                cancel = true;
+                            }
+                        });
+                    });
             });
         if cancel {
             return self.cancel_edits();
@@ -1414,24 +1438,33 @@ impl WebHost {
     pub fn companion_ui(&mut self, ctx: &egui::Context) -> Option<Download> {
         let file = self.companion.take()?;
         let mut answer = None;
-        egui::Window::new("Material library")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.label(format!(
+        let tokens = self.shell.tokens;
+        let kit = Kit::panel(&tokens);
+        let dialog =
+            Dialog::new(egui::Id::new("craft3d-web-companion"), "Material library").closable(false);
+        let shown = kit.dialog(ctx, dialog, |kit, ui| {
+            kit.paragraph(
+                ui,
+                &format!(
                     "The OBJ's colours are in `{}`. Save it next to the OBJ.",
                     file.name
-                ));
-                ui.horizontal(|ui| {
-                    if ui.button("Save…").clicked() {
+                ),
+                false,
+            );
+            kit.dialog_footer(ui, |ui| {
+                kit.footer_right(ui, |ui| {
+                    if kit.button(ui, Button::primary("Save…")).clicked() {
                         answer = Some(true);
                     }
-                    if ui.button("Skip").clicked() {
+                    if kit.button(ui, Button::secondary("Skip")).clicked() {
                         answer = Some(false);
                     }
                 });
             });
+        });
+        if shown.close && answer.is_none() {
+            answer = Some(false);
+        }
         match answer {
             Some(true) => Some(file),
             Some(false) => {
@@ -1652,35 +1685,48 @@ impl WebHost {
             Purpose::Save { .. } => "Save As",
             Purpose::ExportJig => "Export as Jig",
         };
-        egui::Window::new(title)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.label("File name:");
-                let field = ui.text_edit_singleline(&mut dialog.name);
-                if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    answer = Some(true);
-                }
-                ui.horizontal(|ui| {
-                    // With the file dialogs, Export goes on to the
-                    // system's save dialog.
-                    let verb = match dialog.purpose {
-                        Purpose::Save { .. } => "Save",
-                        Purpose::ExportJig if self.pickers => "Export…",
-                        Purpose::ExportJig => "Export",
-                    };
-                    if ui.button(verb).clicked() {
+        // With the file dialogs, Export goes on to the system's save
+        // dialog.
+        let verb = match dialog.purpose {
+            Purpose::Save { .. } => "Save",
+            Purpose::ExportJig if self.pickers => "Export…",
+            Purpose::ExportJig => "Export",
+        };
+        let tokens = self.shell.tokens;
+        let kit = Kit::panel(&tokens);
+        let shown = kit.dialog(
+            ctx,
+            Dialog::new(egui::Id::new("craft3d-web-name"), title),
+            |kit, ui| {
+                // The label column of the About dialog's rows.
+                kit.dialog_row(ui, "File name", 96.0, |ui| {
+                    let field = kit.text_field(
+                        ui,
+                        "craft3d-web-name-field",
+                        &mut dialog.name,
+                        "",
+                        None,
+                        ui.available_width(),
+                    );
+                    if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         answer = Some(true);
                     }
-                    if ui.button("Cancel").clicked() {
-                        answer = Some(false);
-                    }
                 });
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    answer = Some(false);
-                }
-            });
+                kit.dialog_footer(ui, |ui| {
+                    kit.footer_right(ui, |ui| {
+                        if kit.button(ui, Button::primary(verb)).clicked() {
+                            answer = Some(true);
+                        }
+                        if kit.button(ui, Button::secondary("Cancel")).clicked() {
+                            answer = Some(false);
+                        }
+                    });
+                });
+            },
+        );
+        if answer.is_none() && shown.close {
+            answer = Some(false);
+        }
         match answer {
             Some(true) if self.session.edits_waiting() => {
                 self.hold(HeldAnswer::Name(dialog));

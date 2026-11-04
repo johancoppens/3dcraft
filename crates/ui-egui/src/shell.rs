@@ -5331,8 +5331,7 @@ fn mates_ui(
 /// hint while there are none.
 fn assertions_heading(ui: &mut egui::Ui, tokens: &Tokens, empty: bool) {
     ui.add_space(tokens.inset * 0.5);
-    ui.label(egui::RichText::new("Assertions").strong());
-    ui.separator();
+    crate::kit::Kit::panel(tokens).section_header(ui, "Assertions");
     if empty {
         ui.add(
             egui::Label::new(

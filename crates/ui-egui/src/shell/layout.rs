@@ -1736,7 +1736,10 @@ fn analysis_options(
         }
         "draft" => {
             row(ui, "Pull", &mut |ui| {
-                let w = ((ui.available_width() - 2.0 * t.nav_spacing) / 3.0).clamp(36.0, 72.0);
+                // Three fields and the two gaps the row puts between
+                // them, inside the popover's width.
+                let gap = ui.spacing().item_spacing.x;
+                let w = ((ui.available_width() - 2.0 * gap) / 3.0 - 0.5).clamp(28.0, 72.0);
                 for c in &mut a.pull {
                     drag_field(ui, &kit, c, [-1.0, 1.0], w, 2);
                 }
