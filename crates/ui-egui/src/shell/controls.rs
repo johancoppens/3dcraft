@@ -816,6 +816,17 @@ impl Shell {
     }
 }
 
+/// The widths of a display-bar slider's label and value: as wide as
+/// `label` and the widest `value` are in the kit's font.
+pub(super) fn bar_slider_widths(ui: &egui::Ui, kit: &Kit, label: &str, value: &str) -> (f32, f32) {
+    let w = |s: &str| kit.galley(ui, s, kit.font(), kit.skin.text).size().x;
+    let (l, v) = (w(label) + 8.0, w(value) + 4.0);
+    (
+        if l.is_finite() { l } else { 80.0 },
+        if v.is_finite() { v } else { 48.0 },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -954,15 +965,4 @@ mod tests {
         }
         assert!(drawn > 200);
     }
-}
-
-/// The widths of a display-bar slider's label and value: as wide as
-/// `label` and the widest `value` are in the kit's font.
-pub(super) fn bar_slider_widths(ui: &egui::Ui, kit: &Kit, label: &str, value: &str) -> (f32, f32) {
-    let w = |s: &str| kit.galley(ui, s, kit.font(), kit.skin.text).size().x;
-    let (l, v) = (w(label) + 8.0, w(value) + 4.0);
-    (
-        if l.is_finite() { l } else { 80.0 },
-        if v.is_finite() { v } else { 48.0 },
-    )
 }

@@ -1059,11 +1059,8 @@ impl Kit {
             }
         }
         if editing && let Some(place) = field_place {
-            let place = if slider.form == SliderForm::Row {
-                Rect::from_center_size(place.center(), vec2(place.width(), t.control_height))
-            } else {
-                Rect::from_center_size(place.center(), vec2(place.width(), t.control_height))
-            };
+            let place =
+                Rect::from_center_size(place.center(), vec2(place.width(), t.control_height));
             self.typing_box(ui, id, place, slider, typing, began);
         }
         SliderShown {
