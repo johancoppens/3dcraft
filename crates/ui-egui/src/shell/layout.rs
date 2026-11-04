@@ -61,6 +61,10 @@ pub struct ControlWidths {
     /// The sliders (label, rail, value in one row).
     pub see_through: f32,
     pub offset: f32,
+    /// The same without their labels (the compact bar: the tooltip says
+    /// which is which).
+    pub see_through_compact: f32,
+    pub offset_compact: f32,
 }
 
 impl ControlWidths {
@@ -88,6 +92,9 @@ impl ControlWidths {
             (6.0 + text(label) + 8.0 + tokens.field_width * 0.35 + 6.0 + text(value) + 4.0)
                 .max(tokens.nav_height)
         };
+        let bare = |value: &str| {
+            (6.0 + tokens.field_width * 0.35 + 6.0 + text(value) + 4.0).max(tokens.nav_height)
+        };
         let widest = |items: &[&str], f: &dyn Fn(&str) -> f32| {
             items.iter().map(|s| f(s)).fold(0.0, f32::max)
         };
@@ -105,6 +112,8 @@ impl ControlWidths {
             axis: widest(&["X", "Y", "Z"], &plain),
             see_through: field("See-through", "90 %"),
             offset: field("Offset", "-000.00 mm"),
+            see_through_compact: bare("90 %"),
+            offset_compact: bare("-000.00 mm"),
         };
         if out.all_finite() {
             out
@@ -128,6 +137,8 @@ impl ControlWidths {
             self.axis,
             self.see_through,
             self.offset,
+            self.see_through_compact,
+            self.offset_compact,
         ]
         .iter()
         .all(|w| w.is_finite() && *w >= 0.0)
@@ -152,6 +163,8 @@ impl ControlWidths {
             axis: tokens.nav_height,
             see_through: tokens.field_width * 1.4,
             offset: tokens.field_width * 1.4,
+            see_through_compact: tokens.field_width * 0.9,
+            offset_compact: tokens.field_width * 0.9,
         }
     }
 }
@@ -280,6 +293,24 @@ impl Nav<'_> {
         self.h() + 2.0 * self.pad()
     }
 
+    /// The See-through slider's width: without its label when compact.
+    fn see_w(&self) -> f32 {
+        if self.compact {
+            self.w.see_through_compact
+        } else {
+            self.w.see_through
+        }
+    }
+
+    /// The Offset slider's width: without its label when compact.
+    fn offset_w(&self) -> f32 {
+        if self.compact {
+            self.w.offset_compact
+        } else {
+            self.w.offset
+        }
+    }
+
     /// A chip that is `natural` wide with its name, square without.
     fn chip(&self, natural: f32) -> f32 {
         if self.compact { self.h() } else { natural }
@@ -395,14 +426,14 @@ impl Nav<'_> {
             self.show_chip(self.w.edges),
         );
         let section = self.chip(self.w.section);
-        let see = self.w.see_through;
+        let see = self.see_w();
         let off_w = pad + sketches + sp + datums + sp + edges + sp + see + gap + section + pad;
         let flip = self.chip(self.w.flip);
         let axes = 3.0 * self.w.axis;
         let extra = if self.wrap {
             0.0
         } else {
-            gap + axes + sp + self.w.offset + sp + flip
+            gap + axes + sp + self.offset_w() + sp + flip
         };
         let bar_w = if self.on { off_w + extra } else { off_w };
         // Placed for the bar with the options open, so that the Section
@@ -431,7 +462,7 @@ impl Nav<'_> {
         x += section;
         if self.on && self.wrap {
             // Above the bar, right-aligned with it.
-            let w = pad + axes + sp + self.w.offset + sp + flip + pad;
+            let w = pad + axes + sp + self.offset_w() + sp + flip + pad;
             let right = bar.right().max(area.left() + w).min(area.right());
             let plate = Rect::from_min_size(
                 pos2(right - w, bar.top() - gap - self.plate_h()),
@@ -442,16 +473,16 @@ impl Nav<'_> {
             let mut x = plate.left() + pad;
             out.axes = Some(self.at(x, y, axes));
             x += axes + sp;
-            out.offset = Some(self.at(x, y, self.w.offset));
-            x += self.w.offset + sp;
+            out.offset = Some(self.at(x, y, self.offset_w()));
+            x += self.offset_w() + sp;
             out.side = Some(self.at(x, y, flip));
         } else if self.on {
             out.dividers[2] = Some(self.vertical(x, y));
             x += gap;
             out.axes = Some(self.at(x, y, axes));
             x += axes + sp;
-            out.offset = Some(self.at(x, y, self.w.offset));
-            x += self.w.offset + sp;
+            out.offset = Some(self.at(x, y, self.offset_w()));
+            x += self.offset_w() + sp;
             out.side = Some(self.at(x, y, flip));
         }
         out
@@ -1402,8 +1433,8 @@ impl Shell {
             if let Some(axis) = clicked {
                 choose_axis(&mut section, axis, scene);
             }
-            self.offset_field(ui, offset, &mut section, on);
-            hits.push(("offset", offset));
+            let rail = self.offset_field(ui, offset, &mut section, on);
+            hits.push(("offset", rail));
             let flip_named = named || side.width() > tokens.nav_height + 0.5;
             if toggle(
                 ui,

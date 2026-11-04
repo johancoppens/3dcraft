@@ -461,10 +461,16 @@ impl Shell {
         let (label_w, value_w) = bar_slider_widths(ui, &kit, "See-through", "90 %");
         // Clear of the chip before it, as the chips are of each other.
         let field = field.with_min_x((field.left() + 6.0).min(field.right()));
+        // The compact bar has no room for the label: the tooltip says it.
+        let label = if field.width() >= label_w + value_w + 40.0 {
+            "See-through"
+        } else {
+            ""
+        };
         let shown = kit.slider_in(
             ui,
             field,
-            Slider::new("See-through", &mut value, 0.0..=max)
+            Slider::new(label, &mut value, 0.0..=max)
                 .widths(label_w, value_w)
                 .step(0.05)
                 .shown_as(100.0, 0, "%")
@@ -477,6 +483,9 @@ impl Shell {
         );
         // Where it takes the mouse: the rail and the knob's reach.
         self.transparency_rect = Some(shown.response.rect);
+        if label.is_empty() {
+            shown.response.clone().on_hover_text("See-through");
+        }
         if let Some(rail) = shown.rail {
             self.slider_rails.push(("see-through", rail, shown.field));
         }
@@ -495,7 +504,7 @@ impl Shell {
         rect: Rect,
         section: &mut crate::state::SectionState,
         on: bool,
-    ) {
+    ) -> Rect {
         let kit = Kit::plate(&self.tokens);
         self.slider_rails.retain(|(n, _, _)| *n != "offset");
         let range = self.section_cache.as_ref().and_then(|cache| cache.range);
@@ -505,10 +514,15 @@ impl Shell {
         let mut value = section.offset;
         let (label_w, value_w) = bar_slider_widths(ui, &kit, "Offset", "-000.00 mm");
         let rect = rect.with_min_x((rect.left() + 6.0).min(rect.right()));
+        let label = if rect.width() >= label_w + value_w + 40.0 {
+            "Offset"
+        } else {
+            ""
+        };
         let shown = kit.slider_in(
             ui,
             rect,
-            Slider::new("Offset", &mut value, lo..=hi)
+            Slider::new(label, &mut value, lo..=hi)
                 .widths(label_w, value_w)
                 .step(field_range.map_or(1.0, number_field::nice_step))
                 .shown_as(1.0, 2, unit)
@@ -525,6 +539,7 @@ impl Shell {
         if shown.changed && value.is_finite() {
             section.offset = value;
         }
+        shown.response.rect
     }
 
     /// Forgets the number field `id`: what was typed into it, a drag on

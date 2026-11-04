@@ -294,7 +294,14 @@ fn without_a_document_the_keys_ask_for_nothing() {
 fn ctrl_z_while_typing_into_a_field_is_the_fields_own() {
     let mut session = plate();
     let (mut shell, mut window) = started(&mut session);
-    let field = shell.controls_layout().unwrap().see_through.unwrap();
+    // Typing begins with a click on the slider's value (2026-11-04: the
+    // one slider; the number field took a double click).
+    let field = shell
+        .slider_hits()
+        .into_iter()
+        .find(|(n, _, _)| *n == "see-through")
+        .and_then(|(_, _, value)| value)
+        .unwrap();
     window.double_click(&mut shell, &mut session, field.center());
     assert!(shell.typing().is_some(), "typing into See-through");
     assert_eq!(window.press(&mut shell, &mut session, Key::Z, CTRL), None);
