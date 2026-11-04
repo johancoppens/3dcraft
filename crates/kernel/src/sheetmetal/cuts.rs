@@ -334,6 +334,8 @@ struct Analysis {
     /// (a vertex on a tangent line: that line's flat).
     homes: BTreeMap<(usize, usize), Cell>,
     cells: BTreeMap<Cell, Vec<Piece>>,
+    /// The cuts' pieces straight across sharp bends' strips.
+    sides: Vec<super::sharp::SharpSide>,
 }
 
 /// The tangent lines of the pattern: per bend its parent's edge and the
@@ -396,6 +398,7 @@ fn analyse(
     let mut on_line: Vec<Vec<(f64, P2, VRef)>> = vec![Vec::new(); tangents.len()];
     let mut homes: BTreeMap<(usize, usize), Cell> = BTreeMap::new();
     let mut cells: BTreeMap<Cell, Vec<Piece>> = BTreeMap::new();
+    let mut sides: Vec<super::sharp::SharpSide> = Vec::new();
     // Which cuts cross each tangent line.
     let mut crossed_by: Vec<Vec<usize>> = vec![Vec::new(); tangents.len()];
     for (c, cut) in cuts.iter().enumerate() {
@@ -538,6 +541,12 @@ fn analyse(
                     ),
                 )
             })?;
+            if let Cell::Strip(b) = cell
+                && let Some(bend) = bends.get(b).filter(|x| x.sharp())
+            {
+                sides.push(sharp_side(named, bend, b, &seg, (c, j, i), tol)?);
+                continue;
+            }
             if let VRef::Cut(cc, jj) = from {
                 homes.entry((cc, jj)).or_insert(cell);
             }
@@ -656,6 +665,10 @@ fn analyse(
         *cell = own;
     }
     for (b, bend) in bends.iter().enumerate() {
+        if bend.sharp() {
+            // No face of the folded sheet (`sharp.rs`).
+            continue;
+        }
         let (Some(lp), Some(lf)) = (
             tangents
                 .iter()
@@ -749,6 +762,56 @@ fn analyse(
         crossings,
         homes,
         cells,
+        sides,
+    })
+}
+
+/// A cut's piece `(cut, segment, piece)` in sharp bend `b`'s strip: built
+/// when it runs straight across the strip, from one tangent line to the
+/// other (its `u` along the bend the same at both ends within a thousandth
+/// of the tolerance): the hole then takes the whole bend away over a
+/// stretch, and the stretches left are joined in as sharp bends of their
+/// own (`sharp.rs`), the hole's side there the sector between the axis
+/// and the outer skin. Refused otherwise, with the reason.
+fn sharp_side(
+    named: &str,
+    bend: &Bend,
+    b: usize,
+    seg: &Segment,
+    (c, j, i): (usize, usize, usize),
+    tol: f64,
+) -> Result<super::sharp::SharpSide, KernelError> {
+    let d = unit(sub(bend.end, bend.start)).ok_or_else(|| refuse(Some(b), "no length"))?;
+    let local = |p: P2| {
+        let r = sub(p, bend.start);
+        (dot(r, d), dot(r, bend.across))
+    };
+    let (u0, s0) = local(seg.start);
+    let (u1, s1) = local(seg.end);
+    let small = 1e-3 * tol;
+    let on = |s: f64| s.abs() <= tol || (s - bend.allowance).abs() <= tol;
+    let across = matches!(seg.shape, Shape::Line)
+        && (u1 - u0).abs() <= small
+        && on(s0)
+        && on(s1)
+        && (s1 - s0).abs() > tol;
+    if !across {
+        return Err(refuse(
+            None,
+            format!(
+                "{named} is a hole across a bend that crosses the bend of {}, which is sharp (inner radius 0), other than straight across it: on a sharp bend the inner skin is a line (the axis), so the hole's edge there would meet it along a stretch of that line (not built, owed), and where the hole leaves material on both sides of it across the bend, the two pieces would touch only along the axis, which one solid cannot hold; let the hole's edges run square across the sharp bend, from one tangent line to the other, or give the bend a radius",
+                flange_name(b)
+            ),
+        ));
+    }
+    Ok(super::sharp::SharpSide {
+        bend: b,
+        u: 0.5 * (u0 + u1),
+        key: EdgeKey::Cut {
+            cut: c,
+            seg: j,
+            piece: i,
+        },
     })
 }
 
@@ -1030,9 +1093,19 @@ pub(super) fn folded_sheet(
     cuts: &[Cut],
     tolerance: &Tolerance,
     checked: bool,
-) -> Result<(Body, Vec<SheetFace>, Ends, Vec<EdgeKey>), KernelError> {
+) -> Result<
+    (
+        Body,
+        Vec<SheetFace>,
+        Ends,
+        Vec<EdgeKey>,
+        Vec<super::sharp::SharpSide>,
+    ),
+    KernelError,
+> {
     let tol = tolerance.linear;
-    let found = analyse(flats, bends, cuts, tolerance)?;
+    let mut found = analyse(flats, bends, cuts, tolerance)?;
+    let sides = std::mem::take(&mut found.sides);
     let worlds: Vec<Transform> = flats.iter().map(|f| world(plane, f)).collect();
     let w_of = |i: usize| -> Result<Transform, KernelError> {
         worlds
@@ -1040,10 +1113,17 @@ pub(super) fn folded_sheet(
             .copied()
             .ok_or_else(|| refuse(None, "a flat is missing"))
     };
-    let skins: Vec<Skin> = bends
+    // A sharp bend has no face of the folded sheet (`sharp.rs`): no skin.
+    let skins: Vec<Option<Skin>> = bends
         .iter()
-        .map(|b| Skin::of(b, &w_of(b.parent)?))
-        .collect::<Result<_, _>>()?;
+        .map(|b| {
+            if b.sharp() {
+                Ok(None)
+            } else {
+                Skin::of(b, &w_of(b.parent)?).map(Some)
+            }
+        })
+        .collect::<Result<_, KernelError>>()?;
 
     // Each cell's boundary traced into loops, and the loops into faces.
     let mut regions: Vec<(Cell, Vec<Vec<usize>>)> = Vec::new();
@@ -1193,6 +1273,7 @@ pub(super) fn folded_sheet(
             .ok_or_else(|| refuse(Some(bend), "a trimmed end has no trim"))?;
         let skin = skins
             .get(bend)
+            .and_then(Option::as_ref)
             .ok_or_else(|| refuse(Some(bend), "a bend is missing"))?;
         Ok((x, t, skin, w_of(x.parent)?))
     };
@@ -1229,7 +1310,11 @@ pub(super) fn folded_sheet(
                     .start;
                 match found.homes.get(&(c, j)).copied().ok_or_else(lost)? {
                     Cell::Flat(f) => Ok(w_of(f)?.point(lift(p))),
-                    Cell::Strip(s) => Ok(skins.get(s).ok_or_else(lost)?.point(p)),
+                    Cell::Strip(s) => Ok(skins
+                        .get(s)
+                        .and_then(Option::as_ref)
+                        .ok_or_else(lost)?
+                        .point(p)),
                 }
             }
             VRef::Knee(bend, end) => {
@@ -1278,6 +1363,7 @@ pub(super) fn folded_sheet(
                             (ERef::Arc(bend, end), _) => {
                                 let skin = skins
                                     .get(bend)
+                                    .and_then(Option::as_ref)
                                     .ok_or_else(|| refuse(Some(bend), "a bend is missing"))?;
                                 let circle = Curve3::Circle(skin.circle(shift_of(bend, end))?);
                                 // A trimmed end's arc runs to its knee.
@@ -1299,6 +1385,7 @@ pub(super) fn folded_sheet(
                             (ERef::Cut(..), Cell::Strip(bend)) => {
                                 let skin = skins
                                     .get(bend)
+                                    .and_then(Option::as_ref)
                                     .ok_or_else(|| refuse(Some(bend), "a bend is missing"))?;
                                 wrapped_edge(&mut b, skin, &seg, from, to, tol)?
                             }
@@ -1337,6 +1424,7 @@ pub(super) fn folded_sheet(
             Cell::Strip(bend) => {
                 let skin = skins
                     .get(*bend)
+                    .and_then(Option::as_ref)
                     .ok_or_else(|| refuse(Some(*bend), "a bend is missing"))?;
                 let up = bends.get(*bend).is_some_and(|x| x.angle > 0.0);
                 (
@@ -1348,7 +1436,15 @@ pub(super) fn folded_sheet(
         faces.push(b.body.add_face(surface.0, surface.1, loops));
         roles.push(*role);
     }
-    b.body.add_shell(faces);
+    if bends.iter().any(Bend::sharp) {
+        // Sharp bends have no face here: the sheet falls into pieces, each
+        // a shell of its own.
+        for piece in super::sharp::pieces(&b.body) {
+            b.body.add_shell(piece);
+        }
+    } else {
+        b.body.add_shell(faces);
+    }
 
     // The extensions' ends, with their planes in the world.
     let to_world = Transform::from_frame(plane);
@@ -1395,7 +1491,7 @@ pub(super) fn folded_sheet(
         .collect::<Option<_>>()
         .ok_or_else(|| refuse(None, "an edge of the folded sheet is not accounted for"))?;
     if !checked {
-        return Ok((b.body, roles, ends, keys));
+        return Ok((b.body, roles, ends, keys, sides));
     }
     let mut defects = craft3d_topo::check_remembered(&b.body, tolerance);
     if !defects.is_empty() {
@@ -1405,5 +1501,5 @@ pub(super) fn folded_sheet(
             defects,
         });
     }
-    Ok((b.body, roles, ends, keys))
+    Ok((b.body, roles, ends, keys, sides))
 }

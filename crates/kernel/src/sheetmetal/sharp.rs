@@ -25,8 +25,8 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use super::{
-    Bend, Corner, CornerKind, Cut, EdgeKey, Flat, P2, SLIVER_TOLERANCES, SheetFace, lift,
-    outline_key, refuse, seat_of, unit, world,
+    Bend, Corner, CornerKind, EdgeKey, Flat, P2, SLIVER_TOLERANCES, lift, outline_key, refuse,
+    seat_of, unit, world,
 };
 use crate::KernelError;
 use crate::plate::{Joint, Made, Plate, Side};
@@ -101,23 +101,9 @@ pub(super) fn check(
 /// - **Folded flat**: the far end of a sharp bend's flat no more than
 ///   [`SLIVER_TOLERANCES`] tolerances from the parent's inner skin
 ///   (`L sin θ`), touching it or a sliver from it.
-/// - A hole across a bend in the part, and a trimmed sharp bend (owed).
-pub(super) fn refused(
-    bends: &[Bend],
-    corners: &[Corner],
-    cuts: &[Cut],
-    tol: f64,
-) -> Result<(), KernelError> {
-    if let Some(i) = bends.iter().position(Bend::sharp)
-        && !cuts.is_empty()
-    {
-        return Err(refuse(
-            None,
-            format!(
-                "the part has a hole across a bend and flange {i}'s bend is sharp (inner radius 0): a hole across a bend in a part with a sharp bend is not built (owed); give the sharp bends a radius, or keep the holes inside the flats"
-            ),
-        ));
-    }
+/// - A trimmed sharp bend (owed). A hole across a sharp bend is decided
+///   where the holes are cut into the pattern (`cuts.rs`).
+pub(super) fn refused(bends: &[Bend], corners: &[Corner], tol: f64) -> Result<(), KernelError> {
     for (i, b) in bends.iter().enumerate() {
         if !b.sharp() {
             continue;
@@ -584,35 +570,27 @@ pub(super) fn clear_hoods(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SharpFace {
     /// The outer skin: the cylinder of radius `T` about the bend's axis
-    /// (the bottom skin for a bend up, the top for a bend down).
+    /// (the bottom skin for a bend up, the top for a bend down); with
+    /// holes across the bend, its first stretch along the axis.
     Skin,
     /// The sector at the bend's start (0) or end (1).
     End(usize),
+    /// The outer skin's further stretch `j` (1, 2, ...) along the axis
+    /// that holes across the bend leave it in.
+    SkinPiece(usize),
+    /// The sector at the side of a hole across the bend that ends
+    /// stretch `j`: the rim along that hole's piece across the strip
+    /// (`EdgeKey::Cut`).
+    Side(usize, EdgeKey),
 }
 
-/// The number [`Made::Joined`] carries for face `face` of sharp bend
-/// `bend`.
-fn code(bend: usize, face: SharpFace) -> Result<u32, KernelError> {
-    let role = match face {
-        SharpFace::Skin => 0,
-        SharpFace::End(0) => 1,
-        SharpFace::End(_) => 2,
-    };
-    bend.checked_mul(3)
-        .and_then(|b| b.checked_add(role))
-        .and_then(|c| u32::try_from(c).ok())
-        .ok_or_else(|| refuse(Some(bend), "too many bends to number"))
-}
-
-/// The bend and the face a [`Made::Joined`] number stands for.
-pub fn joined(code: u32) -> (usize, SharpFace) {
-    let c = code as usize;
-    let face = match c % 3 {
-        0 => SharpFace::Skin,
-        1 => SharpFace::End(0),
-        _ => SharpFace::End(1),
-    };
-    (c / 3, face)
+/// A hole's piece straight across a sharp bend's strip: the bend, where
+/// along its tangent line it lies, and what the piece is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SharpSide {
+    pub bend: usize,
+    pub u: f64,
+    pub key: EdgeKey,
 }
 
 /// The most steps an alias is followed (each joins one edge or vertex
@@ -625,7 +603,7 @@ const MAX_ALIAS: usize = 1 << 16;
 #[allow(clippy::too_many_arguments)]
 pub(super) fn plate(
     sheet: &Body,
-    sheet_faces: &[SheetFace],
+    sides: &[SharpSide],
     edge_keys: &[EdgeKey],
     flats: &[Flat],
     bends: &[Bend],
@@ -633,7 +611,7 @@ pub(super) fn plate(
     t: f64,
     joints: &BTreeMap<EdgeId, Joint<'_>>,
     tolerance: &Tolerance,
-) -> Result<Plate, KernelError> {
+) -> Result<(Plate, Vec<(usize, SharpFace)>), KernelError> {
     let tol = tolerance.linear;
     // Each piece plated apart, its joints those on its own edges.
     let mut body = Body::new(BodyKind::Solid);
@@ -657,15 +635,17 @@ pub(super) fn plate(
     let mut join = Join {
         body,
         made,
+        joined: Vec::new(),
         dropped: BTreeSet::new(),
         vertex_alias: BTreeMap::new(),
         edge_alias: BTreeMap::new(),
     };
     for (i, bend) in bends.iter().enumerate() {
         if bend.sharp() {
-            join.bend(i, bend, sheet_faces, edge_keys, flats, plane, t, tol)?;
+            join.bend(i, bend, sheet, edge_keys, sides, flats, plane, t, tol)?;
         }
     }
+    let joined = std::mem::take(&mut join.joined);
     let solid = join.finish()?;
     let mut defects = craft3d_topo::check_remembered(&solid.body, tolerance);
     if !defects.is_empty() {
@@ -675,7 +655,7 @@ pub(super) fn plate(
             defects,
         });
     }
-    Ok(solid)
+    Ok((solid, joined))
 }
 
 /// The pieces of a sheet: its faces that hang together across shared
@@ -770,6 +750,9 @@ fn append(body: &mut Body, made: &mut Vec<Made>, p: &Plate) -> Result<(), Kernel
 struct Join {
     body: Body,
     made: Vec<Made>,
+    /// What each [`Made::Joined`] number stands for: the bend and the
+    /// face (the number is the place in this list).
+    joined: Vec<(usize, SharpFace)>,
     /// The rims taken out.
     dropped: BTreeSet<usize>,
     /// A vertex that went into another.
@@ -786,6 +769,15 @@ struct Quad {
 }
 
 impl Join {
+    /// Records the face just added as `face` of sharp bend `bend`.
+    fn joined_face(&mut self, bend: usize, face: SharpFace) -> Result<(), KernelError> {
+        let code = u32::try_from(self.joined.len())
+            .map_err(|_| refuse(Some(bend), "too many faces to number"))?;
+        self.joined.push((bend, face));
+        self.made.push(Made::Joined(code));
+        Ok(())
+    }
+
     fn vertex(&self, v: VertexId) -> VertexId {
         let mut v = v.0;
         for _ in 0..MAX_ALIAS {
@@ -927,19 +919,23 @@ impl Join {
         (d <= tol).then_some(v)
     }
 
+    /// Joins sharp bend `i` in: per stretch of it that no hole across it
+    /// takes away (the whole bend without one), the outer skin and the two
+    /// end sectors between the rims along its two tangent lines' pieces
+    /// over that stretch ([`Join::stretch`]).
     #[allow(clippy::too_many_arguments)]
     fn bend(
         &mut self,
         i: usize,
         bend: &Bend,
-        sheet_faces: &[SheetFace],
+        sheet: &Body,
         edge_keys: &[EdgeKey],
+        sides: &[SharpSide],
         flats: &[Flat],
         plane: &Frame,
         t: f64,
         tol: f64,
     ) -> Result<(), KernelError> {
-        let up = bend.angle > 0.0;
         let seat = seat_of(flats, i, bend)?;
         let parent_key = match seat.hole {
             None => outline_key(flats, bend.parent, seat.seg),
@@ -950,22 +946,154 @@ impl Join {
             },
         };
         let child_key = outline_key(flats, bend.child, 0);
-        let edge_of = |key: EdgeKey| {
-            edge_keys
-                .iter()
-                .position(|k| *k == key)
-                .ok_or_else(|| refuse(Some(i), "a sharp bend's tangent line has no edge"))
+        // The tangent lines' edges: whole, or the pieces a hole across the
+        // bend leaves of them.
+        let on_parent = |k: &EdgeKey| match (*k, seat.hole) {
+            (EdgeKey::Split { flat, seg, .. }, None) => flat == bend.parent && seg == seat.seg,
+            (
+                EdgeKey::SplitHole {
+                    flat, hole, seg, ..
+                },
+                Some(h),
+            ) => flat == bend.parent && hole == h && seg == seat.seg,
+            _ => *k == parent_key,
         };
-        let face_of = |flat: usize| {
-            sheet_faces
+        let on_child = |k: &EdgeKey| match *k {
+            EdgeKey::Split { flat, seg: 0, .. } => flat == bend.child,
+            _ => *k == child_key,
+        };
+        let d = unit(sub(bend.end, bend.start)).ok_or_else(|| refuse(Some(i), "no length"))?;
+        let wp = world(
+            plane,
+            flats
+                .get(bend.parent)
+                .ok_or_else(|| refuse(Some(i), "a bend's parent is missing"))?,
+        );
+        let axis = wp
+            .vector(lift(d))
+            .normalized()
+            .ok_or_else(|| refuse(Some(i), "a bend's axis is not finite"))?;
+        let origin = wp.point(lift(bend.start));
+        // Per edge, its stretch along the axis.
+        let stretch = |e: usize| -> Option<(f64, f64, usize)> {
+            let edge = sheet.edge(EdgeId(u32::try_from(e).ok()?))?;
+            let a = (sheet.vertex(edge.start)?.point - origin).dot(axis);
+            let b = (sheet.vertex(edge.end)?.point - origin).dot(axis);
+            Some((a.min(b), a.max(b), e))
+        };
+        let lost = || refuse(Some(i), "a sharp bend's tangent line has no edge");
+        let mut parents = Vec::new();
+        let mut children = Vec::new();
+        for (e, k) in edge_keys.iter().enumerate() {
+            if on_parent(k) {
+                parents.push(stretch(e).ok_or_else(lost)?);
+            } else if on_child(k) {
+                children.push(stretch(e).ok_or_else(lost)?);
+            }
+        }
+        parents.sort_by(|a, b| a.0.total_cmp(&b.0));
+        children.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let same = parents.len() == children.len()
+            && !parents.is_empty()
+            && parents
                 .iter()
-                .position(|f| *f == SheetFace::Flat(flat))
+                .zip(&children)
+                .all(|(p, c)| (p.0 - c.0).abs() <= tol && (p.1 - c.1).abs() <= tol);
+        if !same {
+            return Err(refuse(
+                Some(i),
+                "its bend is sharp, and the pieces a hole across it leaves of its two tangent lines do not pair up along the bend",
+            ));
+        }
+        let n = parents.len();
+        for (j, (p, c)) in parents.iter().zip(&children).enumerate() {
+            // The sector at each end of the stretch: the bend's own end,
+            // or the side of a hole across it (named after the hole's
+            // piece there).
+            let side = |u: f64| -> Result<SharpFace, KernelError> {
+                sides
+                    .iter()
+                    .find(|s| s.bend == i && (s.u - u).abs() <= tol)
+                    .map(|s| SharpFace::Side(j, s.key))
+                    .ok_or_else(|| {
+                        refuse(
+                            Some(i),
+                            "its bend is sharp, and a stretch of it ends where no hole across it does",
+                        )
+                    })
+            };
+            let ends = [
+                if j == 0 {
+                    SharpFace::End(0)
+                } else {
+                    side(p.0)?
+                },
+                if j + 1 == n {
+                    SharpFace::End(1)
+                } else {
+                    side(p.1)?
+                },
+            ];
+            let skin = if j == 0 {
+                SharpFace::Skin
+            } else {
+                SharpFace::SkinPiece(j)
+            };
+            let span = if n == 1 { None } else { Some((p.0, p.1)) };
+            self.stretch(
+                i,
+                bend,
+                sheet,
+                (p.2, c.2),
+                span,
+                skin,
+                ends,
+                flats,
+                plane,
+                t,
+                tol,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Joins the stretch `span` along the axis (the whole bend: `None`)
+    /// of sharp bend `i` between the rims along the parent's and the
+    /// child's tangent edges `edges`: its outer skin `skin` and its end
+    /// sectors `ends`.
+    #[allow(clippy::too_many_arguments)]
+    fn stretch(
+        &mut self,
+        i: usize,
+        bend: &Bend,
+        sheet: &Body,
+        edges: (usize, usize),
+        span: Option<(f64, f64)>,
+        skin: SharpFace,
+        ends: [SharpFace; 2],
+        flats: &[Flat],
+        plane: &Frame,
+        t: f64,
+        tol: f64,
+    ) -> Result<(), KernelError> {
+        let up = bend.angle > 0.0;
+        let face_of = |e: usize| -> Result<FaceId, KernelError> {
+            let id = EdgeId(u32::try_from(e).map_err(|_| refuse(Some(i), "too many edges"))?);
+            sheet
+                .faces
+                .iter()
+                .position(|f| {
+                    f.loops
+                        .iter()
+                        .filter_map(|l| sheet.loop_(*l))
+                        .any(|l| l.coedges.iter().any(|c| c.edge == id))
+                })
                 .and_then(|f| u32::try_from(f).ok())
                 .map(FaceId)
                 .ok_or_else(|| refuse(Some(i), "a sharp bend's flat has no face"))
         };
-        let (rp, qp) = self.quad(i, edge_of(parent_key)?, face_of(bend.parent)?, up)?;
-        let (rc, qc) = self.quad(i, edge_of(child_key)?, face_of(bend.child)?, up)?;
+        let (rp, qp) = self.quad(i, edges.0, face_of(edges.0)?, up)?;
+        let (rc, qc) = self.quad(i, edges.1, face_of(edges.1)?, up)?;
 
         // The bend's axis and its outer skin, as the folded sheet has a
         // bend's (the axis `T` above the tangent line for a bend up, on it
@@ -987,9 +1115,10 @@ impl Join {
             .ok_or_else(|| refuse(Some(i), "a bend's axis is not finite"))?;
         let theta = bend.theta();
         let (sn, cs) = theta.psin_cos();
+        let (ua, ub) = span.unwrap_or((0.0, len));
         let at = |j: usize| -> Result<Frame, KernelError> {
             frame
-                .at(c0 + axis * (if j == 0 { 0.0 } else { len }))
+                .at(c0 + axis * (if j == 0 { ua } else { ub }))
                 .ok_or_else(|| refuse(Some(i), "a bend's axis is not finite"))
         };
         let far = |f: &Frame| f.origin() + (f.x() * cs + f.y() * sn) * t;
@@ -1082,21 +1211,21 @@ impl Join {
                 reversed,
             })
         };
-        let skin = [qp.outer, arc(a, false)?, qc.outer, arc(b, true)?];
-        self.closes(&skin).ok_or_else(|| {
+        let outer = [qp.outer, arc(a, false)?, qc.outer, arc(b, true)?];
+        self.closes(&outer).ok_or_else(|| {
             refuse(
                 Some(i),
                 "the outer skin of a sharp bend does not close round its plates' edges",
             )
         })?;
         let skin_frame = frame;
-        let loop_ = self.body.add_loop(skin.to_vec());
+        let loop_ = self.body.add_loop(outer.to_vec());
         self.body.add_face(
             Surface::Cylinder(Cylinder::new(skin_frame, t)?),
             false,
             vec![loop_],
         );
-        self.made.push(Made::Joined(code(i, SharpFace::Skin)?));
+        self.joined_face(i, skin)?;
 
         // The two end sectors: the arc the other way, the parent's side and
         // the child's side as their rims ran them.
@@ -1129,7 +1258,7 @@ impl Join {
             let loop_ = self.body.add_loop(order.to_vec());
             self.body
                 .add_face(Surface::Plane(Plane::new(end_frame)), false, vec![loop_]);
-            self.made.push(Made::Joined(code(i, SharpFace::End(j))?));
+            self.joined_face(i, *ends.get(j).ok_or_else(lost)?)?;
         }
         self.dropped.insert(rp);
         self.dropped.insert(rc);

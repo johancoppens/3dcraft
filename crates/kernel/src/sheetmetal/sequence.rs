@@ -91,7 +91,7 @@ pub fn bend_faces(part: &Part, bend: usize) -> Vec<usize> {
         .filter(|(_, made)| match made {
             crate::plate::Made::Front(f) | crate::plate::Made::Back(f) => faces.contains(f),
             crate::plate::Made::Rim(e) => edges.contains(e),
-            crate::plate::Made::Joined(k) => super::sharp::joined(*k).0 == bend,
+            crate::plate::Made::Joined(k) => part.joined_face(*k).is_some_and(|(b, _)| b == bend),
         })
         .map(|(i, _)| i)
         .collect()

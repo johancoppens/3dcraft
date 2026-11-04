@@ -294,3 +294,80 @@ fn a_later_cut_across_a_sharp_bend_is_listed_not_carried() {
         }
     }
 }
+
+/// A slot straight across a sharp bend by command (holes across a sharp
+/// bend, 2026-11-04): the bend in two stretches, the volume `A T` at
+/// K = ½ less nothing else (the slot's area on the strip takes `T/(2K) =
+/// T` per area), every face named once, the names the same after saving
+/// and reopening; a round hole on the tangent line fails the feature with
+/// the reason.
+#[test]
+fn a_slot_straight_across_a_sharp_bend_by_command() {
+    for k in SCALES {
+        let dir = workdir("sheetmetal-sharp", &format!("slot-{k}"));
+        let mut s = session_in(&dir);
+        new_document(&mut s, k);
+        let (w, d, l, t, kf) = (40.0 * k, 30.0 * k, 25.0 * k, 2.0 * k, 0.5);
+        let lines = rect(&mut s, "Base", w, d);
+        let ba = FRAC_PI_2 * kf * t;
+        run(
+            &mut s,
+            "sketch.create",
+            json!({"plane": "xy", "name": "Slot"}),
+        );
+        run(
+            &mut s,
+            "sketch.rect",
+            json!({"sketch": "Slot", "from": [15.0 * k, -ba - 5.0 * k], "to": [21.0 * k, 3.0 * k]}),
+        );
+        built(
+            &mut s,
+            "feature.sheetMetal",
+            json!({"sketch": "Base", "name": "L", "thickness": mm(t), "radius": "0 mm",
+                   "kFactor": kf, "cutouts": ["Slot"],
+                   "flanges": [{"edge": lines[0], "length": mm(l), "angle": "90 deg"}]}),
+        );
+        let found = body(&mut s, "L");
+        assert_eq!(found["valid"], true, "{found}");
+        let area = w * (d + ba + l) - 6.0 * k * (8.0 * k + ba);
+        assert_close(&found["volume"], area * t, "A T");
+        let list = found["faceNames"].as_array().unwrap();
+        let unique: BTreeSet<&str> = list.iter().map(|n| n.as_str().unwrap()).collect();
+        assert_eq!(unique.len(), list.len(), "{list:?}");
+        // The second stretch of the outer skin is named as the bend's
+        // further piece.
+        assert!(
+            unique.iter().any(|n| n.contains("face(4294967297)")),
+            "{unique:?}"
+        );
+        deep(&mut s);
+        run(&mut s, "file.save", json!({"path": "slot.3dcraft"}));
+        let mut u = session_in(&dir);
+        run(&mut u, "file.open", json!({"path": "slot.3dcraft"}));
+        let again = body(&mut u, "L");
+        assert_eq!(found["faceNames"], again["faceNames"]);
+        assert_eq!(found["volume"], again["volume"]);
+    }
+    let dir = workdir("sheetmetal-sharp", "round-on-the-line");
+    let mut s = session_in(&dir);
+    new_document(&mut s, 1.0);
+    let lines = rect(&mut s, "Base", 40.0, 30.0);
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "xy", "name": "Hole"}),
+    );
+    run(
+        &mut s,
+        "sketch.circle",
+        json!({"sketch": "Hole", "center": [20.0, 0.0], "radius": 2.0}),
+    );
+    let reason = failed(
+        &mut s,
+        "feature.sheetMetal",
+        json!({"sketch": "Base", "name": "L", "thickness": "1 mm", "radius": "0 mm",
+               "kFactor": 0.4, "cutouts": ["Hole"],
+               "flanges": [{"edge": lines[0], "length": "10 mm", "angle": "90 deg"}]}),
+    );
+    assert!(reason.contains("straight across"), "{reason}");
+}

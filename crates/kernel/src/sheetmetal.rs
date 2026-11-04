@@ -577,6 +577,10 @@ pub struct Part {
     pub edge_keys: Vec<EdgeKey>,
     pub sheet_faces: Vec<SheetFace>,
     pub solid: Plate,
+    /// What each face the solid has joined in at a sharp bend is
+    /// ([`crate::plate::Made::Joined`]'s number is its place here): the
+    /// bend and the face ([`Part::joined_face`]).
+    pub joined: Vec<(usize, sharp::SharpFace)>,
     /// Per flange, its id ([`Spec::ids`], or its place plus 1 when none
     /// are given): what every name of the part that belongs to a flange is
     /// numbered by ([`Part::flange_number`]), so deleting, inserting or
@@ -593,6 +597,12 @@ pub struct Part {
 pub const MAX_FLANGE_ID: u64 = (1 << 31) - 1;
 
 impl Part {
+    /// The sharp bend and its face a [`crate::plate::Made::Joined`] number
+    /// stands for.
+    pub fn joined_face(&self, code: u32) -> Option<(usize, sharp::SharpFace)> {
+        self.joined.get(usize::try_from(code).ok()?).copied()
+    }
+
     /// The number flange `i`'s names carry: its id less 1, which is its
     /// place in the list for a part whose ids are its places plus 1 (so
     /// such a part is named as before ids were kept).
@@ -1463,7 +1473,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
     across.extend(jog_cuts);
     pattern_clear(&flats, &bends, &[], &corners, tolerance)?;
     let cuts = place_cuts(&flats, &bends, &across, tolerance)?;
-    let (sheet, sheet_faces, ends, edge_keys) =
+    let (sheet, sheet_faces, ends, edge_keys, sides) =
         folded_sheet(spec, &flats, &bends, &cuts, tolerance, true)?;
     let faces: Vec<FaceId> = (0..sheet.faces.len())
         .filter_map(|f| u32::try_from(f).ok().map(FaceId))
@@ -1473,12 +1483,12 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         .iter()
         .map(|(edge, surface)| (*edge, crate::plate::Joint::Onto(surface)))
         .collect();
-    let solid = if bends.iter().any(Bend::sharp) {
-        sharp::refused(&bends, &corners, &cuts, tol)?;
+    let (solid, joined) = if bends.iter().any(Bend::sharp) {
+        sharp::refused(&bends, &corners, tol)?;
         sharp::clear(&flats, &bends, nf, &[], t, tol)?;
         sharp::plate(
             &sheet,
-            &sheet_faces,
+            &sides,
             &edge_keys,
             &flats,
             &bends,
@@ -1488,7 +1498,10 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
             tolerance,
         )?
     } else {
-        plate(&sheet, &faces, t, Side::Out, &joints, tolerance)?
+        (
+            plate(&sheet, &faces, t, Side::Out, &joints, tolerance)?,
+            Vec::new(),
+        )
     };
     Ok(Part {
         plane: spec.plane,
@@ -1502,6 +1515,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         edge_keys,
         sheet_faces,
         solid,
+        joined,
         marks,
         flanges: spec.flanges.len(),
     })
@@ -4452,7 +4466,16 @@ fn folded_sheet(
     cuts: &[Cut],
     tolerance: &Tolerance,
     checked: bool,
-) -> Result<(Body, Vec<SheetFace>, Ends, Vec<EdgeKey>), KernelError> {
+) -> Result<
+    (
+        Body,
+        Vec<SheetFace>,
+        Ends,
+        Vec<EdgeKey>,
+        Vec<sharp::SharpSide>,
+    ),
+    KernelError,
+> {
     if !cuts.is_empty() {
         return cuts::folded_sheet(&spec.plane, flats, bends, cuts, tolerance, checked);
     }
@@ -4759,7 +4782,7 @@ fn folded_sheet(
         .collect::<Option<_>>()
         .ok_or_else(|| refuse(None, "an edge of the folded sheet is not accounted for"))?;
     if !checked {
-        return Ok((b.body, roles, ends, keys));
+        return Ok((b.body, roles, ends, keys, Vec::new()));
     }
     let mut defects = craft3d_topo::check_remembered(&b.body, tolerance);
     if !defects.is_empty() {
@@ -4769,7 +4792,7 @@ fn folded_sheet(
             defects,
         });
     }
-    Ok((b.body, roles, ends, keys))
+    Ok((b.body, roles, ends, keys, Vec::new()))
 }
 
 /// The bend's neutral band, `R + K T` about its axis over its angle and
@@ -4871,7 +4894,7 @@ pub fn measured_radius(part: &Part, bend: usize) -> Option<f64> {
             .solid
             .faces
             .iter()
-            .any(|m| matches!(m, crate::plate::Made::Joined(k) if sharp::joined(*k) == (bend, sharp::SharpFace::Skin)))
+            .any(|m| matches!(m, crate::plate::Made::Joined(k) if part.joined_face(*k) == Some((bend, sharp::SharpFace::Skin))))
             .then_some(0.0);
     }
     let face = part
