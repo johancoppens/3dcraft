@@ -18,7 +18,9 @@
 //! `Documents/3DCraft`, made when missing), or in the roots the command
 //! line gave instead, which win; and, unless the person turned it off, in
 //! the folder of the open document, following the active tab. Off takes
-//! them back. `--control` alone keeps the command line's roots.
+//! them back. A window `--control` opened gets the same roots while the
+//! command line gives none (2026-11-05: Change… in such a window did
+//! nothing); given, the command line's roots alone.
 //!
 //! The token is the guard: without it, any web page in a browser could
 //! post a JSON line to the port. It is never shown or copied; the bridge
@@ -235,6 +237,14 @@ impl Agents {
     /// person asked (a window `--control` opened for a script is not).
     pub fn asks(&self) -> bool {
         self.server.is_some() && self.switched
+    }
+
+    /// Whether agents get the person's roots (the chosen folder, the
+    /// allowed ones, the document's): while the switch lets them in, and
+    /// in a window `--control` opened whose command line gave no roots
+    /// (that window's Change… would otherwise do nothing; 2026-11-05).
+    fn gives_roots(&self) -> bool {
+        self.server.is_some() && (self.switched || self.config.command_line.is_none())
     }
 
     /// The session's roots as they are now.
@@ -612,7 +622,7 @@ impl Agents {
             read,
             write,
         };
-        if self.server.is_some() && self.switched {
+        if self.gives_roots() {
             let mut read: Vec<PathBuf> = Vec::new();
             let mut write: Vec<PathBuf> = Vec::new();
             match &self.config.command_line {
@@ -1542,6 +1552,60 @@ mod tests {
         let error = agents.status().error.unwrap();
         assert!(error.contains("no files"), "{error}");
         assert!(agents.status().roots.is_empty());
+        let _ = std::fs::remove_dir_all(&state);
+    }
+
+    /// A window `--control` opened, with no roots on its command line,
+    /// gets the default folder as the switch gives it, and Change… there
+    /// changes it (the developer, 2026-11-05: the work folder read *No
+    /// folder* and Change… did nothing). With roots on the command line,
+    /// those alone.
+    #[test]
+    fn a_control_window_gets_the_work_folder_and_change_works() {
+        let state = workdir("forced-folder");
+        let work = state.join("Documents").join("3DCraft");
+        let mut forced = config(&state.join("craft"));
+        forced.forced_port = Some(free_port());
+        forced.work_folder = Some(work.clone());
+        let (mut agents, _pump) = agents(forced.clone());
+        agents.start().unwrap();
+        let status = agents.status();
+        assert!(status.forced && status.allowed);
+        assert_eq!(status.work_folder.as_deref(), work.to_str(), "{status:?}");
+        assert!(work.is_dir(), "the folder is made");
+        assert_eq!(status.roots[0].from, "chosen");
+        let real = craft3d_engine::canonical(&work).unwrap();
+        assert_eq!(agents.take_workspace().unwrap().write, Access::Root(real));
+        assert!(!agents.asks(), "a script's window still asks nobody");
+        // Change…: the folder chosen is the one agents get.
+        let mine = state.join("mine");
+        agents.choose_folder(&mine).unwrap();
+        let status = agents.status();
+        assert_eq!(status.work_folder.as_deref(), mine.to_str(), "{status:?}");
+        assert_eq!(status.error, None);
+        let real = craft3d_engine::canonical(&mine).unwrap();
+        assert_eq!(agents.take_workspace().unwrap().write, Access::Root(real));
+        drop(agents);
+        // With roots on the command line: those alone, Change… refused.
+        let given = state.join("given");
+        std::fs::create_dir_all(&given).unwrap();
+        let given = craft3d_engine::canonical(&given).unwrap();
+        forced.forced_port = Some(free_port());
+        forced.command_line = Some((Access::Root(given.clone()), Access::Root(given.clone())));
+        let (mut agents, _pump) = super::tests::agents(forced);
+        agents.start().unwrap();
+        let status = agents.status();
+        assert_eq!(status.work_folder, None);
+        assert_eq!(status.roots.len(), 1);
+        assert_eq!(status.roots[0].from, "command line");
+        assert_eq!(
+            *agents.workspace(),
+            Workspace {
+                read: Access::Root(given.clone()),
+                write: Access::Root(given),
+            }
+        );
+        assert!(agents.choose_folder(&state.join("other")).is_err());
         let _ = std::fs::remove_dir_all(&state);
     }
 
