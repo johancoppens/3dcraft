@@ -378,7 +378,7 @@ fn ui_set_hides_and_shows_the_datums() {
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     assert_eq!(
         got["state"]["show"],
-        json!({"datums": true, "sketches": true, "edges": true})
+        json!({"datums": true, "sketches": true, "edges": true, "mates": true})
     );
     let shot = |shell: &mut Shell, session: &mut Session| {
         call(
@@ -400,7 +400,7 @@ fn ui_set_hides_and_shows_the_datums() {
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     assert_eq!(
         got["state"]["show"],
-        json!({"datums": false, "sketches": true, "edges": true})
+        json!({"datums": false, "sketches": true, "edges": true, "mates": true})
     );
     let hidden = shot(&mut shell, &mut session);
     assert!(shown > hidden, "{shown} against {hidden}");

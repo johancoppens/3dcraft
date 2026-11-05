@@ -84,6 +84,11 @@ pub struct Segment {
     /// Where it is hidden: drawn with the hidden opacity rather than left
     /// out.
     pub dimmed: bool,
+    /// Where it is hidden and dimmed: drawn at this opacity (0 to 255)
+    /// rather than the frame's ([`OverlayParams::hidden_opacity`]); a
+    /// marker meant to read through a body (an assembly's mate) is dimmed
+    /// less than a sketch.
+    pub hidden_opacity: Option<u8>,
     /// A world axis: `from` and `to` are multiplied by the axis length of
     /// the frame ([`OverlayParams::axis_length`]) when it is drawn, so the
     /// axes keep their size on screen without being uploaded again.
@@ -256,6 +261,9 @@ const FLAG_TESTED: u32 = 1;
 const FLAG_DIMMED: u32 = 2;
 const FLAG_EDGE: u32 = 4;
 const FLAG_EXTENT: u32 = 8;
+/// The segment's own hidden opacity is in bits 8 to 15 of its flags
+/// ([`Segment::hidden_opacity`]).
+const FLAG_OWN_HIDDEN: u32 = 16;
 
 /// The ink of the edges, summed per pixel by blending.
 const INK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
@@ -349,7 +357,10 @@ fn pack_segment(segment: &Segment, origin: Vec3, axis_length: f64) -> Option<[u8
     let flags = if segment.tested { FLAG_TESTED } else { 0 }
         | if segment.dimmed { FLAG_DIMMED } else { 0 }
         | if edge.is_some() { FLAG_EDGE } else { 0 }
-        | if extent.is_some() { FLAG_EXTENT } else { 0 };
+        | if extent.is_some() { FLAG_EXTENT } else { 0 }
+        | segment
+            .hidden_opacity
+            .map_or(0, |o| FLAG_OWN_HIDDEN | (u32::from(o) << 8));
     let width = segment.width.max(0.0);
     let outline_width = edge.map_or(width, |edge| {
         if edge.outline_width.is_finite() {
@@ -3224,6 +3235,7 @@ mod tests {
             tested: true,
             dimmed: false,
             axis: false,
+            hidden_opacity: None,
             edge: None,
         }
     }
@@ -3283,6 +3295,7 @@ mod tests {
         // An axis is scaled by the axis length.
         let axis = Segment {
             axis: true,
+            hidden_opacity: None,
             ..segment(Vec3::ZERO, Vec3::X)
         };
         let packed = pack_segment(&axis, Vec3::ZERO, 7.0).unwrap();

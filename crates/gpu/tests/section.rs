@@ -981,6 +981,7 @@ fn the_cap_hides_the_lines_behind_it() {
         tested: true,
         dimmed: false,
         axis: false,
+        hidden_opacity: None,
         edge: None,
     };
     // Inside the body behind the cap, and in the half that is cut away.

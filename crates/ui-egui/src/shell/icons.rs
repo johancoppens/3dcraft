@@ -17,6 +17,9 @@ pub enum Icon {
     Sketches,
     /// Datums: a plane seen at a slant.
     Datums,
+    /// An assembly's mate markers: a joint's axis, an arrow up from its
+    /// origin, and an arc turning about it.
+    Mates,
     /// Edges: a face with its edges inked.
     Edges,
     /// The studio look: a lamp, a disc with rays.
@@ -271,6 +274,25 @@ pub fn paint(painter: &egui::Painter, icon: Icon, place: Rect, ink: Color32, tok
                 head(p(0.75, -0.5), 1.0, 0.0),
                 line(lower),
                 head(p(-0.75, 0.5), -1.0, 0.0),
+            ]
+        }
+        Icon::Mates => {
+            // The axis from a dot at its origin to an arrow's head, and
+            // three quarters of a flat turn about it, with its head.
+            let points: Vec<Pos2> = (0..=18)
+                .map(|k| {
+                    let a = 1.9 + (k as f32) / 18.0 * 4.0;
+                    p(0.7 * a.pcos(), 0.15 + 0.28 * a.psin())
+                })
+                .collect();
+            let end = 5.9_f32;
+            let tip = p(0.7 * end.pcos(), 0.15 + 0.28 * end.psin());
+            vec![
+                line(vec![p(0.0, 0.85), p(0.0, -0.9)]),
+                head(p(0.0, -0.9), 0.0, -1.0),
+                Shape::circle_filled(p(0.0, 0.85), tokens.nav_icon_width * 1.4, ink),
+                line(points),
+                head(tip, -0.7 * end.psin(), 0.28 * end.pcos()),
             ]
         }
         Icon::Orbit => {

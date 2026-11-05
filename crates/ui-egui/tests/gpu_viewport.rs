@@ -959,6 +959,92 @@ fn the_direct_path_draws_datums_and_matches_the_oracle() {
     }
 }
 
+/// A four-bar assembly (a bar part, four instances, a fixed mate and four
+/// revolutes), in a folder of its own. The joints' axes start under the
+/// bars, so that the markers run up through them and are drawn dimmed
+/// there.
+fn four_bar() -> Session {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gpu-viewport-mates");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::new(Workspace {
+        read: craft3d_engine::Access::Root(dir.clone()),
+        write: craft3d_engine::Access::Root(dir),
+    });
+    run(&mut s, "file.new", json!({}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "len", "expr": "24 mm" }),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({ "name": "len", "min": "10 mm", "max": "500 mm" }),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({ "name": "Bar", "size": ["len", 6, 4] }),
+    );
+    run(
+        &mut s,
+        "datum.axis",
+        json!({ "name": "End1", "through": [[3, 3, -3], [3, 3, -2]] }),
+    );
+    run(
+        &mut s,
+        "datum.axis",
+        json!({ "name": "End2", "through": [["len - 3 mm", 3, -3], ["len - 3 mm", 3, -2]] }),
+    );
+    run(&mut s, "file.save", json!({ "path": "bar.3dcraft" }));
+    run(&mut s, "assembly.new", json!({}));
+    for (name, len) in [
+        ("Ground", "64 mm"),
+        ("Crank", "24 mm"),
+        ("Coupler", "64 mm"),
+        ("Rocker", "24 mm"),
+    ] {
+        run(
+            &mut s,
+            "instance.add",
+            json!({ "source": "bar.3dcraft", "name": name, "body": "Bar", "params": { "len": len } }),
+        );
+    }
+    for (name, a, b) in [
+        ("Base", "world/z", "Ground/End1"),
+        ("Drive", "Ground/End1", "Crank/End1"),
+        ("Elbow", "Crank/End2", "Coupler/End1"),
+        ("Knee", "Coupler/End2", "Rocker/End2"),
+        ("Hip", "Ground/End2", "Rocker/End1"),
+    ] {
+        let kind = if name == "Base" { "fixed" } else { "revolute" };
+        run(
+            &mut s,
+            "mate.add",
+            json!({ "kind": kind, "a": a, "b": b, "name": name, "flip": true }),
+        );
+    }
+    run(
+        &mut s,
+        "joint.set",
+        json!({ "mate": "Drive", "value": "60 deg" }),
+    );
+    s
+}
+
+/// An assembly's mate markers drawn by the window's device against the
+/// oracle: the same lines, tested against the bodies alike, dimmed where
+/// they run inside a bar (docs/design/assemblies.md › *Mate markers*).
+/// Opaque only: over this assembly's see-through bars the two pictures
+/// differ at 4 pixels beside the bars' edges with the markers left out
+/// too (2026-11-05, Intel and AMD alike), a difference of the see-through
+/// bodies, not of the lines; it is owed to the see-through oracle.
+#[test]
+fn the_direct_path_draws_mate_markers_and_matches_the_oracle() {
+    direct_path_against_the_oracle_of(four_bar(), "viewport-mates", 0.0);
+}
+
 /// The same with the bodies see-through: the device draws the two layers
 /// and blends them, with the hidden parts of the bodies' edges dimmed,
 /// and the picture is still the oracle's within the tolerance (§7.2,
@@ -1004,6 +1090,8 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
     shell.tokens.construction_width = 3.0;
     shell.tokens.axis_width = 3.0;
     shell.tokens.datum_width = 3.0;
+    shell.tokens.mate_width = 3.0;
+    shell.tokens.mate_hot_width = 3.0;
     let tokens = shell.tokens;
     shell.attach_gpu(&state).unwrap();
     assert!(shell.draws_directly());
@@ -1074,8 +1162,13 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
         vec![cpu_frame.clone()]
     };
     let slack = viewport::depth_slack(Backend::Gpu, Some(&scene), &camera);
-    // The datums, as the shell shows them (none in a part without any).
-    let marks = viewport::datum_marks(Some(&scene), shell.state.show.datums);
+    // The datums, as the shell shows them (none in a part without any),
+    // and an assembly's mate markers (none in a part).
+    let marks =
+        viewport::datum_marks(Some(&scene), shell.state.show.datums).with(shell.mate_marks());
+    if base.starts_with("viewport-mates") {
+        assert!(!marks.mates.is_empty(), "the assembly's markers are drawn");
+    }
     let overlay = viewport::overlay_see_through(
         Some(&scene),
         &camera,
@@ -1284,6 +1377,13 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
         near
     };
     let (mut samples, mut agree, mut inked, mut dimmed, mut bare) = (0, 0, 0, 0, 0);
+    let (mut mate_samples, mut mate_agree) = (0_usize, 0_usize);
+    let is_mate = |kind: viewport::LineKind| {
+        matches!(
+            kind,
+            viewport::LineKind::Mate | viewport::LineKind::MateHot | viewport::LineKind::MateHalo
+        )
+    };
     /// (difference, where, the CPU's pixel, the GPU's).
     type Worst = (f64, [f64; 2], [u8; 3], [u8; 3]);
     let mut worst: Vec<Worst> = Vec::new();
@@ -1302,7 +1402,7 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
                     !near.contains(j)
                         && near.iter().any(|&n| {
                             let m = &everything.lines[n];
-                            m.kind == l.kind
+                            (m.kind == l.kind || (is_mate(m.kind) && is_mate(l.kind)))
                                 && (same(m.to, l.from)
                                     || same(m.from, l.to)
                                     || same(m.from, l.from)
@@ -1324,7 +1424,9 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
         let length = (line.to[0] - line.from[0]).phypot(line.to[1] - line.from[1]);
         // Every 2 pixels, and the middle of a segment shorter than 4.
         let steps = ((length / 2.0).floor() as usize).max(2);
-        let neighbours = if line.kind == viewport::LineKind::Edge {
+        // A mate marker's lines lie on their halo, and its pieces join:
+        // they do not crowd each other either.
+        let neighbours = if line.kind == viewport::LineKind::Edge || is_mate(line.kind) {
             chain(k)
         } else {
             vec![k]
@@ -1450,8 +1552,10 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
                     .unwrap_or(0);
             }
             samples += 1;
+            mate_samples += usize::from(is_mate(line.kind));
             if diff <= 8 {
                 agree += 1;
+                mate_agree += usize::from(is_mate(line.kind));
             } else {
                 worst.push((f64::from(diff), p, c, g));
             }
@@ -1462,6 +1566,20 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
         "lines: {samples} samples ({inked} inked, {dimmed} dimmed, {bare} hidden edges), {agree} agree; worst {:?}",
         &worst[..worst.len().min(5)]
     );
+    println!("mate markers: {mate_samples} samples, {mate_agree} agree");
+    if !marks.mates.is_empty() {
+        assert!(
+            mate_samples > 20,
+            "the markers are hardly sampled: {mate_samples}"
+        );
+        // Their own share, so that a marker one path drops cannot pass under
+        // the share of all the lines.
+        assert!(
+            mate_agree * 100 >= mate_samples * 99,
+            "the GPU's markers differ from the CPU's at {} of {mate_samples} samples",
+            mate_samples - mate_agree
+        );
+    }
     // Every body's edges are sampled, between faces and as outlines: the
     // colour of each, as the CPU drew it, at enough samples.
     println!("edge colours sampled: {colour_samples:?}");

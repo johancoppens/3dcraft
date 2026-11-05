@@ -1324,23 +1324,48 @@ impl Shell {
         let mut show = self.state.show;
         // A tight bar has these three by their icons.
         let named_in = |rect: Rect| named && rect.width() > tokens.nav_height + 0.5;
-        if toggle(
-            ui,
-            sketches,
-            Chip {
-                id: "sketches",
-                icon: Icon::Sketches,
-                label: "Sketches",
-                named: named_in(sketches),
-            },
-            show.sketches,
-            &tokens,
-        )
-        .on_hover_text("Show the sketches")
-        .clicked()
-        {
-            show.sketches = !show.sketches;
-        }
+        // An assembly has no sketches of its own: its first toggle is the
+        // mate markers', in the same place.
+        let assembly = self.is_assembly_shown();
+        let first = if assembly {
+            let clicked = toggle(
+                ui,
+                sketches,
+                Chip {
+                    id: "mates",
+                    icon: Icon::Mates,
+                    label: "Mates",
+                    named: named_in(sketches),
+                },
+                show.mates,
+                &tokens,
+            )
+            .on_hover_text("Show the mates' markers")
+            .clicked();
+            if clicked {
+                show.mates = !show.mates;
+            }
+            "mates"
+        } else {
+            if toggle(
+                ui,
+                sketches,
+                Chip {
+                    id: "sketches",
+                    icon: Icon::Sketches,
+                    label: "Sketches",
+                    named: named_in(sketches),
+                },
+                show.sketches,
+                &tokens,
+            )
+            .on_hover_text("Show the sketches")
+            .clicked()
+            {
+                show.sketches = !show.sketches;
+            }
+            "sketches"
+        };
         if toggle(
             ui,
             datums,
@@ -1375,7 +1400,7 @@ impl Shell {
         {
             show.edges = !show.edges;
         }
-        self.show_hits = vec![("sketches", sketches), ("datums", datums), ("edges", edges)];
+        self.show_hits = vec![(first, sketches), ("datums", datums), ("edges", edges)];
         self.see_through_field(ui, field);
         self.set_show(ui, show);
     }

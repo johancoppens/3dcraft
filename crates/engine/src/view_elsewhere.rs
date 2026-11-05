@@ -22,7 +22,7 @@
 //! anything, and what it draws is what a session that shows the view
 //! itself draws, bit for bit (`crates/engine/tests/view_elsewhere.rs`).
 
-use crate::asm_outline::{AssemblyOutline, JointHandle, OutlineInstance, OutlineMate};
+use crate::asm_outline::{AssemblyOutline, JointHandle, MateFrame, OutlineInstance, OutlineMate};
 use crate::{OpenDocument, Session};
 use craft3d_doc::{Blob, Document};
 use serde_json::{Map, Value, json};
@@ -675,6 +675,12 @@ fn outline_json(o: &AssemblyOutline) -> Value {
             "variables": m.variables,
             "settable": m.settable,
             "limits": m.limits.map(|(a, b)| json!([bits(a), bits(b)])),
+            "parts": m.parts,
+            "frame": m.frame.map(|f| json!({
+                "origin": f.origin.map(bits),
+                "x": f.x.map(bits),
+                "z": f.z.map(bits),
+            })),
         })).collect::<Vec<_>>(),
         "dof": o.dof,
         "free": o.free,
@@ -786,6 +792,18 @@ fn outline_from(value: &Value) -> Option<AssemblyOutline> {
             limits: match m.get("limits")? {
                 Value::Null => None,
                 v => Some(pair(v)?),
+            },
+            parts: match texts(m, "parts")?.as_slice() {
+                [a, b] => [a.clone(), b.clone()],
+                _ => return None,
+            },
+            frame: match m.get("frame")? {
+                Value::Null => None,
+                f => Some(MateFrame {
+                    origin: three(f.get("origin")?)?,
+                    x: three(f.get("x")?)?,
+                    z: three(f.get("z")?)?,
+                }),
             },
         });
     }
@@ -1076,6 +1094,12 @@ mod tests {
                 variables: vec!["Spin_angle".into()],
                 settable: false,
                 limits: Some((-0.0, f64::MAX)),
+                parts: ["world".into(), "Sun".into()],
+                frame: Some(MateFrame {
+                    origin: [1.0 / 3.0, -0.0, 7.0],
+                    x: [1.0, 0.0, 0.0],
+                    z: [0.0, 0.0, 1.0],
+                }),
             }],
             dof: Some(1),
             free: vec!["Spin turns".into()],

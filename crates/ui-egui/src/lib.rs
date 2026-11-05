@@ -48,6 +48,7 @@ pub mod files;
 pub mod fonts;
 pub mod frames;
 pub mod kit;
+pub mod mates;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod record;
 pub mod shell;

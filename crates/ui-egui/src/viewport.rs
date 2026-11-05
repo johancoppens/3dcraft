@@ -48,6 +48,12 @@ pub enum LineKind {
     /// The outline of a datum plane, a datum axis, or (as a dot) a datum
     /// point.
     Datum,
+    /// The light halo under a mate marker's lines.
+    MateHalo,
+    /// An assembly's mate marker ([`Marks::mates`]).
+    Mate,
+    /// A mate marker pointed at or chosen ([`Marks::mates_hot`]).
+    MateHot,
     /// A point's path over the motion (`view.trace`).
     Trace,
     /// A curvature comb's spike or its line through the tips
@@ -351,6 +357,16 @@ pub fn opacity(hidden: bool, tokens: &Tokens) -> u8 {
     if hidden { tokens.hidden_opacity } else { 255 }
 }
 
+/// [`opacity`] of a line of `kind`: a mate marker behind a body is dimmed
+/// less (`tokens.mate_hidden_opacity`), since a mate's origin lies on or
+/// in a body almost always.
+pub fn line_opacity(kind: LineKind, hidden: bool, tokens: &Tokens) -> u8 {
+    match (hidden, kind.hidden_opacity(tokens)) {
+        (true, Some(own)) => own,
+        _ => opacity(hidden, tokens),
+    }
+}
+
 impl LineKind {
     pub fn color(self, tokens: &Tokens) -> Rgb {
         match self {
@@ -365,6 +381,9 @@ impl LineKind {
             LineKind::Edge => tokens.edge,
             LineKind::Highlight => tokens.face_highlight,
             LineKind::Datum => tokens.datum,
+            LineKind::MateHalo => tokens.mate_halo,
+            LineKind::Mate => tokens.mate,
+            LineKind::MateHot => tokens.face_highlight,
             LineKind::Trace => tokens.trace,
             LineKind::Comb => tokens.comb,
         }
@@ -379,8 +398,22 @@ impl LineKind {
             LineKind::Edge => tokens.edge_width,
             LineKind::Highlight => tokens.highlight_width,
             LineKind::Datum => tokens.datum_width,
+            LineKind::MateHalo => tokens.mate_halo_width,
+            LineKind::Mate => tokens.mate_width,
+            LineKind::MateHot => tokens.mate_hot_width,
             LineKind::Trace => tokens.trace_width,
             LineKind::Comb => tokens.comb_width,
+        }
+    }
+
+    /// Its own opacity where it is hidden, when not the theme's
+    /// `hidden_opacity`: the mate markers'.
+    pub fn hidden_opacity(self, tokens: &Tokens) -> Option<u8> {
+        match self {
+            LineKind::MateHalo | LineKind::Mate | LineKind::MateHot => {
+                Some(tokens.mate_hidden_opacity)
+            }
+            _ => None,
         }
     }
 
@@ -460,6 +493,12 @@ pub struct Marks {
     /// Curvature combs (`craft3d_engine::analysis::combs`), as polylines,
     /// tested like a trace.
     pub combs: Vec<Vec<Vec3>>,
+    /// An assembly's mate markers (`crate::mates`), as segments in the
+    /// world sized for the camera they were made for, tested like a datum;
+    /// the section does not cut them. `mates_hot` are those of the marker
+    /// pointed at or chosen, drawn over the others.
+    pub mates: Vec<[Vec3; 2]>,
+    pub mates_hot: Vec<[Vec3; 2]>,
 }
 
 impl Marks {
@@ -508,7 +547,15 @@ impl Marks {
         self.soft_edges |= other.soft_edges;
         self.traces.extend(other.traces);
         self.combs.extend(other.combs);
+        self.mates.extend(other.mates);
+        self.mates_hot.extend(other.mates_hot);
         self
+    }
+
+    /// Every mate marker's lines, the plain ones then the hot ones: what
+    /// the halo is drawn under.
+    pub fn mate_lines(&self) -> impl Iterator<Item = &[Vec3; 2]> {
+        self.mates.iter().chain(&self.mates_hot)
     }
 
     /// The section for the renderers.
@@ -1436,6 +1483,17 @@ fn build_overlay(
     for [a, b] in marks.map(Marks::datum_lines).unwrap_or_default() {
         line_of(a, b, LineKind::Datum, true, true, None);
     }
+    // The mate markers, tested like a datum, over a halo; the one pointed
+    // at over them.
+    for &[a, b] in marks.into_iter().flat_map(Marks::mate_lines) {
+        line_of(a, b, LineKind::MateHalo, true, true, None);
+    }
+    for &[a, b] in marks.into_iter().flat_map(|marks| &marks.mates) {
+        line_of(a, b, LineKind::Mate, true, true, None);
+    }
+    for &[a, b] in marks.into_iter().flat_map(|marks| &marks.mates_hot) {
+        line_of(a, b, LineKind::MateHot, true, true, None);
+    }
     for trace in marks.into_iter().flat_map(|marks| &marks.traces) {
         for pair in trace.windows(2) {
             if let [a, b] = *pair {
@@ -1837,7 +1895,7 @@ pub fn rasterise(composed: Composed, tokens: &Tokens, scale: f64) -> Picture {
                 line.to,
                 f64::from(line.width(tokens)) * scale,
                 line.color(tokens),
-                opacity(line.hidden, tokens),
+                line_opacity(line.kind, line.hidden, tokens),
             );
             k += 1;
             continue;

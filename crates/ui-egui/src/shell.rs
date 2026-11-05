@@ -35,6 +35,7 @@ pub(crate) mod icons;
 mod joints;
 mod layout;
 pub mod look_panel;
+mod mate_view;
 mod menus;
 pub mod number_field;
 mod params;
@@ -523,6 +524,9 @@ struct FrameKey {
     /// What the traces drawn depend on ([`Shell::traces_key`]): a trace
     /// made, cleared or grown is another picture.
     traces: (u64, Option<u64>),
+    /// The mate markers drawn ([`Shell::mate_marks_for`] the key's camera
+    /// and size): sized for the camera, so a zoom redraws them.
+    mates: viewport::Marks,
     /// How the bodies are lit.
     look: crate::state::LookState,
     /// The surface analysis drawn, by when it was made.
@@ -904,6 +908,8 @@ pub struct Shell {
     /// The joints of the Parameters tab: the slider dragged now (its
     /// mate and value), and where each slider was drawn.
     joints: joints::Joints,
+    /// The mates' markers and rows: what the pointer points at.
+    mate_view: mate_view::MateView,
     /// The document's assertions as checked at the last [`Self::sync`],
     /// listed under the features.
     assertion_rows: Vec<craft3d_engine::AssertionState>,
@@ -1415,6 +1421,7 @@ impl Shell {
             outline: None,
             instance_hits: Vec::new(),
             joints: joints::Joints::default(),
+            mate_view: mate_view::MateView::default(),
             assertion_rows: Vec::new(),
             file_action: None,
             problem: None,
@@ -2016,14 +2023,21 @@ impl Shell {
             );
         }
         if ids.is_empty() {
-            return Highlight::NONE;
+            // The parts of the mate pointed at or chosen, tinted, when
+            // nothing else is lit; not under the lens with something
+            // selected, where the selection keeps its own colours.
+            if lens && !self.select.view.items.is_empty() {
+                return Highlight::NONE;
+            }
+            return self.mate_part_highlight(scene).unwrap_or(Highlight::NONE);
         }
         Highlight::new(self.tokens.face_highlight, ids).0
     }
 
     /// What the viewport draws over the picture to point at something
     /// (the highlighted edge and the highlighted vertex), and the section
-    /// the picture is cut open with.
+    /// the picture is cut open with. Without the mate markers, which are
+    /// sized for an image ([`Self::mate_marks`]).
     pub fn marks(&self, scene: Option<&Scene>) -> viewport::Marks {
         marks_of(
             scene,
@@ -2062,6 +2076,7 @@ impl Shell {
             ..viewport::Marks::default()
         })
         .with(self.comb_marks())
+        .with(key.mates.clone())
     }
 
     /// The plane the viewport's picture is cut open with, as the
@@ -2533,6 +2548,8 @@ impl Shell {
         }) {
             self.state.picked = None;
         }
+        // A mate chosen or pointed at is of the document it was chosen in.
+        self.mates_follow_document(session.document_status().map(|s| s.id));
         let selected = self.state.selected_feature.as_deref();
         let name_of = |id: &str| {
             scene
@@ -4016,7 +4033,7 @@ impl Shell {
                         let mut statuses = Vec::new();
                         if let Some(outline) = &outline {
                             let mut open = !self.state.side_panel.is_open("mates-folded");
-                            statuses = mates_ui(ui, &kit, outline, &mut open);
+                            statuses = self.mates_ui(ui, &kit, outline, &mut open);
                             self.state.side_panel.set_open("mates-folded", !open);
                         }
                         let (lines, note) = self.side_checks();
@@ -4343,7 +4360,8 @@ impl Shell {
         // In the narrow layout a tap beside the open drawer closes it and
         // selects nothing.
         // A release that ends a pinch or a two-finger pan is no tap.
-        let tapped = response.clicked() && !self.touch_gesture;
+        let on_marker = self.mate_pointer(ui, &response, rect, scene);
+        let tapped = response.clicked() && !self.touch_gesture && !on_marker;
         let closes_drawer = self.narrow && self.state.panels.drawer && tapped;
         if closes_drawer {
             self.state.panels.drawer = false;
@@ -4418,6 +4436,7 @@ impl Shell {
             sketches: self.state.show.sketches,
             edges: self.edges_drawn(),
             traces: self.traces_key(),
+            mates: self.mate_marks_for(&self.state.camera, size, scale),
             look: self.state.look.clone(),
             analysis: self.analysis_serial,
             look_ready: self.look_ready(),
@@ -5292,74 +5311,6 @@ fn assembly_status(
     }
 }
 
-/// An assembly's mates under its instances, a section that folds with
-/// its count: each a kit row with its state as its icon, its name, and
-/// its kind and value at the right (or why it fails under it).
-fn mates_ui(
-    ui: &mut egui::Ui,
-    kit: &crate::kit::Kit,
-    outline: &craft3d_engine::AssemblyOutline,
-    open: &mut bool,
-) -> Vec<egui::Rect> {
-    let mut statuses = Vec::new();
-    let t = kit.t;
-    let s = kit.skin;
-    kit.fold_header(ui, open, "Mates", Some(outline.mates.len()), None);
-    if !*open {
-        return statuses;
-    }
-    if outline.mates.is_empty() {
-        ui.label(
-            egui::RichText::new("No mates yet.")
-                .font(kit.small_font())
-                .color(color(s.text_dim)),
-        );
-    }
-    for mate in &outline.mates {
-        let (glyph, ink) = match mate.status {
-            "ok" => (crate::kit::Glyph::Check, s.ok),
-            "unsolved" => (crate::kit::Glyph::Warning, s.attention),
-            _ => (crate::kit::Glyph::Warning, s.failed),
-        };
-        let value = match mate.value {
-            Some((v, true)) => format!(" · {}°", crate::kit::slider::fixed(v.to_degrees(), 1)),
-            Some((v, false)) => format!(" · {}", crate::kit::slider::fixed(v, 3)),
-            None => String::new(),
-        };
-        let driven = if mate.driven { " · driven" } else { "" };
-        let status = format!("{}{value}{driven}", mate.kind);
-        let hover = mate
-            .error
-            .clone()
-            .unwrap_or_else(|| format!("{} · {}", mate.kind, mate.status));
-        let shown = kit
-            .list_row_hits(
-                ui,
-                crate::kit::ListRow::new(&mate.name)
-                    .icon(glyph)
-                    .icon_ink(ink)
-                    .value(&status)
-                    .failed(mate.status != "ok" && mate.status != "unsolved"),
-            )
-            .response
-            .on_hover_text(hover);
-        statuses.push(shown.rect);
-        if let Some(error) = &mate.error {
-            ui.indent(("craft3d-mate-error", &mate.name), |ui| {
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(error)
-                            .color(color(ink))
-                            .size(t.secondary_font),
-                    )
-                    .wrap(),
-                );
-            });
-        }
-    }
-    statuses
-}
-
 /// The "Assertions" heading of the feature panel, always there; with the
 /// hint while there are none.
 fn assertions_heading(ui: &mut egui::Ui, tokens: &Tokens, empty: bool) {
@@ -5416,7 +5367,7 @@ fn paint_overlay(
     let piece = f64::from(viewport::tile_pixels(tokens, pixels_per_point)) * 0.5;
     let mut colors = viewport::EdgeColorCache::default();
     for line in &overlay.lines {
-        let alpha = f64::from(viewport::opacity(line.hidden, tokens));
+        let alpha = f64::from(viewport::line_opacity(line.kind, line.hidden, tokens));
         let ink = match line.edge {
             Some(edge) => colors.get(edge.body, tokens).pick(edge.silhouette),
             None => line.color(tokens),

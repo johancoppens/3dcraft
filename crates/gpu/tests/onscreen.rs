@@ -302,6 +302,7 @@ fn lines_are_hidden_behind_a_body_and_dimmed_or_left_out_as_asked() {
         tested,
         dimmed,
         axis: false,
+        hidden_opacity: None,
         edge: None,
     };
     let segments = [
@@ -324,6 +325,7 @@ fn lines_are_hidden_behind_a_body_and_dimmed_or_left_out_as_asked() {
             tested: true,
             dimmed: true,
             axis: false,
+            hidden_opacity: None,
             edge: None,
         },
         Segment {
@@ -334,6 +336,7 @@ fn lines_are_hidden_behind_a_body_and_dimmed_or_left_out_as_asked() {
             tested: true,
             dimmed: true,
             axis: false,
+            hidden_opacity: None,
             edge: None,
         },
     ];
@@ -523,6 +526,7 @@ fn what_the_renderer_refuses_and_what_it_takes_in_its_stride() {
                 tested: true,
                 dimmed: true,
                 axis: false,
+                hidden_opacity: None,
                 edge: None,
             },
             Segment {
@@ -533,6 +537,7 @@ fn what_the_renderer_refuses_and_what_it_takes_in_its_stride() {
                 tested: true,
                 dimmed: false,
                 axis: true,
+                hidden_opacity: None,
                 edge: None,
             },
             Segment {
@@ -543,6 +548,7 @@ fn what_the_renderer_refuses_and_what_it_takes_in_its_stride() {
                 tested: false,
                 dimmed: false,
                 axis: true,
+                hidden_opacity: None,
                 edge: None,
             },
         ];
