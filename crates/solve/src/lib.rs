@@ -130,10 +130,48 @@ pub const MAX_BLAMED: usize = 8;
 /// for it: the extent of its points where they start (fixed and image
 /// points included) and its lengths (distances, offsets, radii), as the
 /// solve measures it. What a solution can be held against: a part of it
-/// spread far beyond this is not what the constraints asked for. 0 for a
-/// sketch that cannot be prepared.
-pub fn asked_size(sketch: &Sketch) -> f64 {
-    equations::prepare(sketch, 0.0).map_or(0.0, |prepared| prepared.size)
+/// spread far beyond this is not what the constraints asked for (a
+/// coordinate constraint is a place on its axis). `None` for a sketch that
+/// cannot be prepared.
+pub fn asked_size(sketch: &Sketch) -> Option<f64> {
+    let prepared = equations::prepare(sketch, 0.0).ok()?;
+    // The solve's own size leaves coordinate values out of its extent (it
+    // is the scale of its nudges, kept as it is); here they are places on
+    // their axes, with the points where they start and the fixed places.
+    let mut lo = [f64::INFINITY; 2];
+    let mut hi = [f64::NEG_INFINITY; 2];
+    let mut at = |k: usize, v: f64| {
+        if let (Some(l), Some(h)) = (lo.get_mut(k), hi.get_mut(k)) {
+            *l = l.min(v);
+            *h = h.max(v);
+        }
+    };
+    for entity in &sketch.entities {
+        if let Entity::Point { x, y } = *entity {
+            at(0, x);
+            at(1, y);
+        }
+    }
+    for equation in &prepared.equations {
+        match *equation {
+            equations::Equation::Fixed(_, [x, y]) => {
+                at(0, x);
+                at(1, y);
+            }
+            equations::Equation::Coordinate(axis, _, value) => match axis {
+                equations::Axis::X => at(0, value),
+                equations::Axis::Y => at(1, value),
+            },
+            _ => {}
+        }
+    }
+    let span = lo
+        .iter()
+        .zip(hi)
+        .filter(|(l, h)| h >= *l)
+        .map(|(l, h)| h - l)
+        .fold(0.0_f64, f64::max);
+    Some(prepared.size.max(span))
 }
 
 /// Solves `sketch` from its current coordinates.

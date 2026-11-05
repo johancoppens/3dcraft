@@ -2090,10 +2090,37 @@ fn a_periodic_spline_is_not_driven_out_of_scale_by_a_seam_tangent() {
     assert_eq!(tangent["status"], "failed", "{tangent}");
     let why = tangent["error"].as_str().unwrap();
     assert!(
-        why.contains("far beyond the sketch's size") && why.contains("periodic: false"),
+        why.contains("tangent at its seam is not taken") && why.contains("periodic: false"),
         "{why}"
     );
     assert!(largest < 100.0, "a point at {largest}");
+    // Live, the same: its through points are solved points too (they ran
+    // off to x = ±3384 before).
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    let made = run(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "Profile", "through": ring(7, 10.0), "closed": true, "live": true}),
+    );
+    let line = run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "Profile", "from": made["start"], "to": [20, 0.5]}),
+    );
+    run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Profile", "type": "horizontal", "entities": [line["entity"]]}),
+    );
+    let tangent = run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Profile", "type": "tangent", "entities": [made["entity"], line["entity"]]}),
+    );
+    assert_eq!(tangent["status"], "failed", "{tangent}");
+    let why = tangent["error"].as_str().unwrap();
+    assert!(why.contains("tangent at its seam is not taken"), "{why}");
     // Clamped, the same tangent is met in scale.
     let mut s = session();
     new_document(&mut s, 1.0);
@@ -2280,6 +2307,47 @@ fn design_changes_of_a_periodic_spline_are_not_taken_for_a_run_off() {
     assert_eq!(moved["status"], "ok", "{moved}");
     let far = ok(&mut s, "moved");
     assert!(spread(&far) > 400.0, "{}", spread(&far));
+
+    // A coordinate constraint far out (x = 500 mm on a control point), one
+    // that follows a variable from 15 to 500 mm, and a spline drawn 0.02
+    // wide put at y = 5 mm: coordinates are places the sketch asks for.
+    for (at, by) in [("500 mm", None), ("X", Some(("15 mm", "500 mm")))] {
+        let mut s = session();
+        new_document(&mut s, 1.0);
+        if let Some((from, _)) = by {
+            run(&mut s, "variable.set", json!({"name": "X", "expr": from}));
+        }
+        let made = run(
+            &mut s,
+            "sketch.spline",
+            json!({"sketch": "Profile", "control": polygon(10.0), "closed": true}),
+        );
+        let made_x = run(
+            &mut s,
+            "sketch.constrain",
+            json!({"sketch": "Profile", "type": "x", "entities": [made["control"][3]], "value": at}),
+        );
+        assert_eq!(made_x["status"], "ok", "{at}: {made_x}");
+        if let Some((_, to)) = by {
+            run(&mut s, "variable.set", json!({"name": "X", "expr": to}));
+        }
+        let far = ok(&mut s, at);
+        assert!(spread(&far) > 400.0, "{at}: {}", spread(&far));
+    }
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    let made = run(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "Profile", "control": polygon(0.01), "closed": true}),
+    );
+    let placed = run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Profile", "type": "y", "entities": [made["control"][3]], "value": "5 mm"}),
+    );
+    assert_eq!(placed["status"], "ok", "{placed}");
+    ok(&mut s, "y = 5 mm");
 
     // A closed live spline on points held by formulas of r: 10 to 200.
     let mut s = session();

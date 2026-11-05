@@ -360,10 +360,12 @@ fn what_fitted_curves_do_not_take_is_refused_with_the_reason() {
 }
 
 /// At the seam of a closed curve: a formula that closes smoothly (a
-/// circle) takes a tangent there, along its one direction, and so does a
-/// closed live spline, which is periodic (since 2026-11-04; before, it was
-/// clamped, its directions at the seam its points', and refused); one
-/// that closes with a corner fails the sketch with the reason.
+/// circle) takes a tangent there, along its one direction; one that
+/// closes with a corner fails the sketch with the reason, and so does a
+/// closed live spline, which is periodic: its direction at the seam is
+/// its own, and a tangent there is refused before the solve (the
+/// coordinator's decision of 2026-11-04, after such tangents pulled
+/// periodic splines thousands of radii out of shape).
 #[test]
 fn a_tangent_at_the_seam_of_a_closed_curve() {
     for k in SCALES {
@@ -418,10 +420,8 @@ fn a_tangent_at_the_seam_of_a_closed_curve() {
     );
     assert_ne!(made["status"], "ok", "{made}");
     assert!(made.to_string().contains("ambiguous"), "{made}");
-    // Points that the x axis mirrors onto themselves, the seam on it: the
-    // one periodic spline through them is mirrored too, so it crosses the
-    // axis square at the seam, and the line made tangent there stands
-    // straight up.
+    // Points that the x axis mirrors onto themselves, the seam on it: even
+    // where a tangent at the seam could be met, it is refused.
     for k in SCALES {
         let mut s = document(k);
         let live = run(
@@ -449,12 +449,11 @@ fn a_tangent_at_the_seam_of_a_closed_curve() {
             json!([live["entity"], line["entity"]]),
             None,
         );
-        assert_eq!(made["status"], "ok", "{made}");
-        near(
-            at(&mut s, &line["end"]),
-            [0.0, 5.0 * k],
-            k,
-            &format!("x{k}: square to the axis at the seam"),
+        assert_ne!(made["status"], "ok", "{made}");
+        assert!(
+            made.to_string()
+                .contains("tangent at its seam is not taken"),
+            "{made}"
         );
     }
 }

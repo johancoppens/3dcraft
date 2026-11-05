@@ -776,6 +776,12 @@ fn problem(
                 a: find(*a)?,
                 b: find(*b)?,
             },
+            ConstraintKind::Tangent { a, b } if seam_tangent(sketch, *a, *b).is_some() => {
+                return Err(format!(
+                    "{id}: {}",
+                    seam_tangent(sketch, *a, *b).unwrap_or_default()
+                ));
+            }
             ConstraintKind::Tangent { a, b } if is_fitted(*a) || is_fitted(*b) => {
                 if is_formula(*a) && is_formula(*b) {
                     return Err(format!(
@@ -1831,7 +1837,7 @@ pub(crate) fn solve_sketch(
     }
     radii.sort_by_key(|(id, _)| *id);
     points.sort_by_key(|(id, ..)| *id);
-    if let Some(reason) = periodic_run_off(sketch, &points, solve::asked_size(&problem.input)) {
+    if let Some(reason) = periodic_run_off(sketch, &points, || solve::asked_size(&problem.input)) {
         return unsolved(reason);
     }
     let state = |report: &solve::ConstraintReport| match report.status {
@@ -2384,48 +2390,142 @@ fn spread(points: impl Iterator<Item = (f64, f64)>) -> f64 {
     }
 }
 
-/// Why the solve is not taken when it spread the control points of a
-/// periodic spline far beyond the size the sketch asks for: held smooth
-/// where it closes, such a spline can meet some constraints at its seam
-/// (a tangent to a line square to it) only by moving its points thousands
-/// of its sizes away, a solution of no use however exactly it holds (the
-/// re-review of 2026-11-04: a ring of radius 10 went to x = ±6940 with
-/// status ok). The size asked for, `asked` ([`solve::asked_size`]), is
-/// that of where the points start and of the lengths the constraints
-/// give, so a design change (a dimension made twenty times larger, a
-/// point moved far, a spline drawn tiny and dimensioned to its size) is
-/// not taken for one: only a spread far beyond everything the sketch
-/// says. `None` when every periodic spline stayed in scale. `points` are
-/// the solved ones, sorted by id.
+/// Why the solve is not taken when it spread the points of a periodic
+/// spline (the control points of one stored so, the through points of a
+/// closed live one) far beyond the size the sketch asks for: a solution
+/// of no use however exactly it holds (the reviews of 2026-11-04: rings
+/// of radius 10 went to x = ±6940 and, live, ±3384 with status ok, both
+/// from a tangent at the seam, which is now refused before the solve,
+/// `seam_tangent`). A net for what else may do it, not a proof: the
+/// size asked for ([`solve::asked_size`]: where the points start, the
+/// lengths and coordinates the constraints give) is the whole sketch's,
+/// so large geometry elsewhere in the sketch hides a spline pulled too
+/// big. `asked` is worked out only when a periodic spline spread
+/// further than its own size before; a sketch it cannot be worked out
+/// for is not judged. `None` when every periodic spline stayed in scale.
+/// `points` are the solved ones, sorted by id.
 fn periodic_run_off(
     sketch: &Sketch,
     points: &[(EntityId, f64, f64)],
-    asked: f64,
+    asked: impl FnOnce() -> Option<f64>,
 ) -> Option<String> {
+    let mut asked = Some(asked);
+    let mut size: Option<Option<f64>> = None;
     for entity in &sketch.entities {
-        let Geometry::Spline {
-            control,
-            periodic: true,
-            ..
-        } = &entity.geometry
-        else {
-            continue;
+        let ids = match &entity.geometry {
+            Geometry::Spline {
+                control,
+                periodic: true,
+                ..
+            } => control,
+            Geometry::Interpolated { through, .. }
+                if through.len() > 2 && through.first() == through.last() =>
+            {
+                through
+            }
+            _ => continue,
         };
-        let before = spread(control.iter().filter_map(|id| sketch.point(*id).ok()));
-        let after = spread(control.iter().filter_map(|id| {
+        let before = spread(ids.iter().filter_map(|id| sketch.point(*id).ok()));
+        let after = spread(ids.iter().filter_map(|id| {
             points
                 .binary_search_by_key(id, |(p, ..)| *p)
                 .ok()
                 .and_then(|i| points.get(i))
                 .map(|(_, x, y)| (*x, *y))
         }));
-        let scale = before.max(asked);
+        if after <= PERIODIC_SPREAD * before {
+            continue;
+        }
+        let asked_size = *size.get_or_insert_with(|| asked.take().and_then(|f| f()));
+        let Some(asked_size) = asked_size else {
+            continue;
+        };
+        let scale = before.max(asked_size);
         if scale > 0.0 && after > PERIODIC_SPREAD * scale {
             return Some(format!(
-                "{}: to meet its constraints its control points would spread {after:.6} across, far beyond the sketch's size of {scale:.6}: a periodic spline stays smooth where it closes, so a constraint at its seam that asks another direction there (a tangent) pulls it apart; constrain it away from its seam, or make it with periodic: false",
+                "{}: the spline's points were solved far beyond the sketch's size (spread {after:.6} against a size of {scale:.6}): a periodic spline, held smooth where it closes, was pulled out of shape by its constraints; take away or change the constraint that pulls it, or make it with periodic: false",
                 entity.id
             ));
         }
     }
     None
+}
+
+/// Why a tangent between `a` and `b` is refused: when it is at the seam of
+/// a periodic spline (closed and smooth where it closes: a closed spline
+/// through points, one on a closed control polygon, a closed live
+/// spline). The spline already has one direction there, held by its
+/// smoothness; a tangent that asks another can be met only by pulling the
+/// spline far out of shape (the reviews of 2026-11-04: a ring of radius 10
+/// went to x = ±6940, live to ±3384). `None` for any other tangent.
+fn seam_tangent(sketch: &Sketch, a: EntityId, b: EntityId) -> Option<String> {
+    let (at_a, at_b) = sketch.tangent_at(a, b)?;
+    for (curve, at) in [(a, at_a), (b, at_b)] {
+        let seam = match &sketch.entity(curve).ok()?.geometry {
+            // Of degree 1 a periodic spline is a polygon, a corner at its
+            // seam: refused as ambiguous where that is judged.
+            Geometry::Spline {
+                control,
+                periodic: true,
+                degree,
+            } if *degree >= 2 => control.first().copied(),
+            Geometry::Interpolated { through, degree }
+                if *degree >= 2 && through.len() > 2 && through.first() == through.last() =>
+            {
+                through.first().copied()
+            }
+            _ => None,
+        };
+        if seam == Some(at) {
+            return Some(format!(
+                "{curve} is a periodic spline, smooth where it closes at {at}, so its direction there is its own: a tangent at its seam is not taken; make the other curve meet it at another point, or make the spline with periodic: false (a corner allowed at its first point)"
+            ));
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod run_off_tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+    use super::*;
+
+    /// The net holds the through points of a closed live spline too (the
+    /// review of 2026-11-05: they ran off to x = ±3384 with status ok):
+    /// spread a hundred times wider than the sketch asks it is refused, in
+    /// scale it is not, and a sketch whose size cannot be worked out is
+    /// not judged.
+    #[test]
+    fn the_net_holds_a_closed_live_spline_and_skips_what_it_cannot_size() {
+        let mut sketch = Sketch::new(SketchPlane::default());
+        let ring: Vec<(f64, f64)> = (0..7)
+            .map(|i| {
+                let a = std::f64::consts::TAU * f64::from(i) / 7.0;
+                (10.0 * a.pcos(), 10.0 * a.psin())
+            })
+            .collect();
+        let mut ids: Vec<EntityId> = ring
+            .iter()
+            .map(|(x, y)| sketch.add_point(*x, *y).unwrap())
+            .collect();
+        ids.push(ids[0]);
+        sketch.add_interpolated(3, ids.clone(), false).unwrap();
+        let solved = |k: f64| -> Vec<(EntityId, f64, f64)> {
+            let mut points: Vec<(EntityId, f64, f64)> = ids
+                .iter()
+                .take(7)
+                .zip(&ring)
+                .map(|(id, (x, y))| (*id, x * k, y * k))
+                .collect();
+            points.sort_by_key(|(id, ..)| *id);
+            points
+        };
+        let why = periodic_run_off(&sketch, &solved(100.0), || Some(20.0)).unwrap();
+        assert!(why.contains("far beyond the sketch's size"), "{why}");
+        assert!(periodic_run_off(&sketch, &solved(1.5), || Some(20.0)).is_none());
+        assert!(periodic_run_off(&sketch, &solved(100.0), || None).is_none());
+        // Asked for 2000 (a dimension that large), a spread of 2000 is in
+        // scale.
+        assert!(periodic_run_off(&sketch, &solved(100.0), || Some(2000.0)).is_none());
+    }
 }
