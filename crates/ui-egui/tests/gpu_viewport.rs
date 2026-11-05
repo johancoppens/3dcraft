@@ -1375,6 +1375,13 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
         near
     };
     let (mut samples, mut agree, mut inked, mut dimmed, mut bare) = (0, 0, 0, 0, 0);
+    let mut mate_samples = 0_usize;
+    let is_mate = |kind: viewport::LineKind| {
+        matches!(
+            kind,
+            viewport::LineKind::Mate | viewport::LineKind::MateHot | viewport::LineKind::MateHalo
+        )
+    };
     /// (difference, where, the CPU's pixel, the GPU's).
     type Worst = (f64, [f64; 2], [u8; 3], [u8; 3]);
     let mut worst: Vec<Worst> = Vec::new();
@@ -1393,7 +1400,7 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
                     !near.contains(j)
                         && near.iter().any(|&n| {
                             let m = &everything.lines[n];
-                            m.kind == l.kind
+                            (m.kind == l.kind || (is_mate(m.kind) && is_mate(l.kind)))
                                 && (same(m.to, l.from)
                                     || same(m.from, l.to)
                                     || same(m.from, l.from)
@@ -1415,7 +1422,9 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
         let length = (line.to[0] - line.from[0]).phypot(line.to[1] - line.from[1]);
         // Every 2 pixels, and the middle of a segment shorter than 4.
         let steps = ((length / 2.0).floor() as usize).max(2);
-        let neighbours = if line.kind == viewport::LineKind::Edge {
+        // A mate marker's lines lie on their halo, and its pieces join:
+        // they do not crowd each other either.
+        let neighbours = if line.kind == viewport::LineKind::Edge || is_mate(line.kind) {
             chain(k)
         } else {
             vec![k]
@@ -1541,6 +1550,7 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
                     .unwrap_or(0);
             }
             samples += 1;
+            mate_samples += usize::from(is_mate(line.kind));
             if diff <= 8 {
                 agree += 1;
             } else {
@@ -1553,6 +1563,13 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
         "lines: {samples} samples ({inked} inked, {dimmed} dimmed, {bare} hidden edges), {agree} agree; worst {:?}",
         &worst[..worst.len().min(5)]
     );
+    println!("mate markers: {mate_samples} samples");
+    if !marks.mates.is_empty() {
+        assert!(
+            mate_samples > 20,
+            "the markers are hardly sampled: {mate_samples}"
+        );
+    }
     // Every body's edges are sampled, between faces and as outlines: the
     // colour of each, as the CPU drew it, at enough samples.
     println!("edge colours sampled: {colour_samples:?}");
