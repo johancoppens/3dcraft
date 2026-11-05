@@ -272,7 +272,9 @@ fn batch_continues_past_errors_when_asked() {
         .collect();
     assert_eq!(oks, [true, false, false, true]);
 
-    let empty = call(&mut s, "batch", json!({"steps": []}));
+    let mut empty = call(&mut s, "batch", json!({"steps": []}));
+    assert!(empty["ms"].as_f64().is_some(), "{empty}");
+    empty.as_object_mut().unwrap().remove("ms");
     assert_eq!(empty, json!({"completed": 0, "failed": 0, "results": []}));
 
     // Terse: the failures with the number of their step, and the result
@@ -300,7 +302,9 @@ fn batch_continues_past_errors_when_asked() {
     assert_eq!(steps, [1, 2]);
     assert_eq!(report["last"]["step"], 3);
     assert_eq!(report["last"]["result"]["status"], "ok");
-    let empty = call(&mut s, "batch", json!({"steps": [], "terse": true}));
+    let mut empty = call(&mut s, "batch", json!({"steps": [], "terse": true}));
+    assert!(empty["ms"].as_f64().is_some(), "{empty}");
+    empty.as_object_mut().unwrap().remove("ms");
     assert_eq!(
         empty,
         json!({"completed": 0, "failed": 0, "errors": [], "last": null})
@@ -746,8 +750,13 @@ fn serve_answers_every_line_and_survives_every_kind_of_bad_line() {
         7,
         "one reply per non-blank line: {replies:#?}"
     );
+    // The time a command took is the one field that differs from run to
+    // run (2026-11-05).
+    assert!(replies[0]["ms"].as_f64().is_some(), "{}", replies[0]);
+    let mut first = replies[0].clone();
+    first.as_object_mut().unwrap().remove("ms");
     assert_eq!(
-        replies[0],
+        first,
         json!({"id": 1, "ok": true, "result": {"document": 0, "units": "mm"}})
     );
     assert_eq!(replies[1]["id"], Value::Null);

@@ -340,6 +340,63 @@ fn tools_list_describes_six_tools_with_closed_schemas() {
     }
 }
 
+/// 2026-11-05: the whole list was 289 KB (the feature commands alone
+/// 90 KB), too much for an agent to start with. brief gives each command
+/// with the first sentence of its summary; id gives one command whole.
+#[test]
+fn a_brief_command_list_is_small_and_one_id_gives_the_whole_entry() {
+    let mut s = session();
+    let size = |s: &mut Session, arguments: Value| -> usize {
+        let result = tool(s, "command_list", arguments);
+        result["content"][0]["text"].as_str().unwrap().len()
+    };
+    let full = size(&mut s, json!({}));
+    let brief = size(&mut s, json!({"brief": true}));
+    assert!(brief * 3 < full, "brief {brief} bytes, full {full} bytes");
+    let listed = tool_json(&mut s, "command_list", json!({"brief": true}));
+    let listed = listed["commands"].as_array().unwrap();
+    assert_eq!(listed.len(), Session::commands().len());
+    for (entry, spec) in listed.iter().zip(Session::commands()) {
+        let keys: Vec<&String> = entry.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["enabled", "id", "params", "summary"], "{entry}");
+        assert_eq!(entry["id"], spec.id);
+        assert_eq!(entry["params"], spec.params);
+        let summary = entry["summary"].as_str().unwrap();
+        assert!(summary.chars().count() <= 201, "{summary}");
+        assert!(!summary.is_empty(), "{}", spec.id);
+        let head = summary.trim_end_matches('…');
+        assert!(spec.summary.starts_with(head), "{summary}");
+    }
+    // A sentence ends at its full stop, not at "e.g." nor inside brackets.
+    let one = |s: &mut Session, id: &str| {
+        tool_json(s, "command_list", json!({"brief": true, "id": id}))["commands"][0]["summary"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let save = one(&mut s, "file.save");
+    assert_eq!(
+        save,
+        "Saves the active document as a .3dcraft file (atomically) under the write root."
+    );
+    // One id, whole.
+    let whole = tool_json(&mut s, "command_list", json!({"id": "feature.block"}));
+    let whole = whole["commands"].as_array().unwrap();
+    assert_eq!(whole.len(), 1);
+    let spec = Session::command("feature.block").unwrap();
+    assert_eq!(whole[0]["summary"], spec.summary);
+    assert_eq!(whole[0]["label"], spec.label);
+    // An exact id: not every id that holds it.
+    let none = tool_json(&mut s, "command_list", json!({"id": "feature.bloc"}));
+    assert_eq!(none["commands"], json!([]));
+    let (_, message) = rpc_error(
+        &mut s,
+        "tools/call",
+        json!({"name": "command_list", "arguments": {"brief": "yes"}}),
+    );
+    assert!(message.contains("brief"), "{message}");
+}
+
 #[test]
 fn command_list_returns_the_registry_and_filters() {
     let mut s = session();
@@ -854,15 +911,20 @@ fn a_terse_batch_lists_the_features_that_were_added_but_failed() {
         {"id": "feature.fillet", "params": {"edges": [["F1:face(2)", "F1:face(4)"]], "radius": 50, "name": "Huge"}},
         {"id": "document.measure"},
     ]);
-    let report = tool_json(
+    // Since 2026-11-05 the step of a feature that could not be built is a
+    // failed step (it was counted as completed, so a batch went on
+    // building on it); here the batch goes on past it.
+    let report = tool_report(
         &mut s,
         "command_batch",
-        json!({"steps": steps, "terse": true}),
+        json!({"steps": steps, "terse": true, "stop_on_error": false}),
     );
     assert_eq!(
         (&report["completed"], &report["failed"]),
-        (&json!(4), &json!(0))
+        (&json!(3), &json!(1))
     );
+    assert_eq!(report["errors"][0]["step"], 2, "{report}");
+    assert_eq!(report["errors"][0]["applied"], true, "{report}");
     let failed = report["featuresFailed"].as_array().unwrap();
     assert_eq!(failed.len(), 1, "{report}");
     assert_eq!(failed[0]["step"], 2);
@@ -894,22 +956,32 @@ fn a_terse_batch_lists_the_features_that_were_added_but_failed() {
         {"id": "feature.transform", "params": {"source": "Round", "translate": [20, 0, 0], "name": "Moved"}},
         {"id": "assert.add", "params": {"name": "wrong", "measure": "volume", "of": "Moved", "eq": 1}},
     ]);
-    let repaired = tool_json(
+    let repaired = tool_report(
         &mut s,
         "command_batch",
-        json!({"steps": steps, "terse": true}),
+        json!({"steps": steps, "terse": true, "stop_on_error": false}),
     );
     assert!(repaired.get("featuresFailed").is_none(), "{repaired}");
+    // The fillet's own step failed; the assertion that fails is no
+    // failed step.
+    assert_eq!(repaired["failed"], 1, "{repaired}");
     assert_eq!(repaired["last"]["result"]["status"], "failed", "{repaired}");
     // A 15 mm round does not fit on a 10 mm block: the variable breaks
     // the round and the transform made from it.
-    let broken = tool_json(
+    let broken = tool_report(
         &mut s,
         "command_batch",
         json!({"terse": true, "steps": [
             {"id": "variable.set", "params": {"name": "h", "expr": "30 mm"}},
             {"id": "document.measure"},
         ]}),
+    );
+    // The edit that broke them is a failed step, and the batch stopped
+    // there.
+    assert_eq!(
+        (&broken["completed"], &broken["failed"]),
+        (&json!(0), &json!(1)),
+        "{broken}"
     );
     let failed = broken["featuresFailed"].as_array().unwrap();
     let listed: Vec<(&str, u64)> = failed
@@ -918,6 +990,79 @@ fn a_terse_batch_lists_the_features_that_were_added_but_failed() {
         .collect();
     assert_eq!(listed, [("Round", 0), ("Moved", 0)], "{broken}");
     assert_eq!(failed[1]["causedBy"], "F2", "{broken}");
+}
+
+/// The report of a tool that returns one text block of JSON, whether it
+/// flags a failure or not.
+fn tool_report(session: &mut Session, name: &str, arguments: Value) -> Value {
+    let result = tool(session, name, arguments);
+    serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+}
+
+/// 2026-11-05: a batch whose fillet was added but could not be built said
+/// "completed 5, failed 0", and stop_on_error did not stop there. The
+/// step is a failed one now, applied all the same: its entry says so and
+/// keeps the result, and the batch stops there unless told not to.
+#[test]
+fn a_feature_that_cannot_be_built_fails_its_step_and_stops_the_batch() {
+    let mut s = session();
+    let steps = json!([
+        {"id": "file.new"},
+        {"id": "feature.block", "params": {"size": [10, 10, 10], "name": "Cube"}},
+        {"id": "feature.fillet", "params": {"edges": [["F1:face(2)", "F1:face(4)"]], "radius": 50, "name": "Huge"}},
+        {"id": "feature.sphere", "params": {"radius": 2, "name": "After"}},
+    ]);
+    let result = tool(&mut s, "command_batch", json!({"steps": steps}));
+    assert_eq!(result["isError"], true, "{result}");
+    let report: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        (&report["completed"], &report["failed"]),
+        (&json!(2), &json!(1)),
+        "{report}"
+    );
+    let results = report["results"].as_array().unwrap();
+    assert_eq!(results.len(), 3, "stopped at the fillet: {report}");
+    let fillet = &results[2];
+    assert_eq!(fillet["ok"], false, "{fillet}");
+    assert_eq!(fillet["applied"], true, "{fillet}");
+    assert_eq!(fillet["result"]["status"], "failed", "{fillet}");
+    let error = fillet["error"].as_str().unwrap();
+    assert!(
+        error.starts_with("feature.fillet: the feature F2 `Huge` could not be built"),
+        "{error}"
+    );
+    assert!(error.contains("stays so"), "{error}");
+    // Applied: the fillet is in the history as it is; the sphere after it
+    // never ran.
+    let doc = tool_json(&mut s, "doc_inspect", json!({}));
+    let names: Vec<&str> = doc["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Cube", "Huge"], "{doc}");
+    // Every step and the whole batch say how long they took.
+    for entry in results {
+        assert!(entry["ms"].as_f64().is_some_and(|ms| ms >= 0.0), "{entry}");
+    }
+    assert!(report["ms"].as_f64().is_some(), "{report}");
+    // Without stop_on_error it goes on; renaming the broken feature is
+    // no failure of the rename.
+    let report = tool_report(
+        &mut s,
+        "command_batch",
+        json!({"stop_on_error": false, "steps": [
+            {"id": "feature.rename", "params": {"feature": "Huge", "name": "Huger"}},
+            {"id": "feature.sphere", "params": {"radius": 2, "name": "After"}},
+        ]}),
+    );
+    assert_eq!(
+        (&report["completed"], &report["failed"]),
+        (&json!(2), &json!(0)),
+        "{report}"
+    );
 }
 
 #[test]

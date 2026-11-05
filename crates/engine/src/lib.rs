@@ -178,7 +178,7 @@ pub use selection::{
     summary as selection_summary,
 };
 pub use typed::TypedKind;
-pub use workspace::{Access, Workspace};
+pub use workspace::{Access, FileHelp, Workspace};
 pub use workspace::{canonical, plain};
 
 use craft3d_doc::Document;
@@ -599,6 +599,9 @@ pub struct Session {
     pub(crate) documents: Vec<OpenDocument>,
     pub(crate) active: usize,
     pub(crate) workspace: Workspace,
+    /// The way out a refusal to touch a file names where the host is not
+    /// the command line ([`FileHelp`]); `None` keeps the command line's.
+    pub(crate) file_help: Option<FileHelp>,
     /// What a viewer draws for the active document (`scene.rs`).
     pub(crate) scene: scene::SceneCache,
     /// Autosave and crash recovery (`recovery.rs`); none in a clone.
@@ -695,6 +698,7 @@ impl Session {
             documents: Vec::new(),
             active: 0,
             workspace,
+            file_help: None,
             scene: scene::SceneCache::default(),
             recovery: recovery::RecoveryHandle::default(),
             trees_held_for: Vec::new(),
@@ -1063,7 +1067,10 @@ impl Session {
                 .collect::<Vec<_>>(),
             self.document().ok().map(|open| open.id),
         );
-        let outcome = self.logged(id, |session| session.execute_unrecorded(id, params));
+        let mut outcome = self.logged(id, |session| session.execute_unrecorded(id, params));
+        if let (Err(error), Some(help)) = (&mut outcome, &self.file_help) {
+            *error = CommandError::new(help.explain(error.message()));
+        }
         self.track_who_opened(id, before);
         // The report itself is not what a report is about.
         if let Err(error) = &outcome

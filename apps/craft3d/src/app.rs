@@ -133,7 +133,42 @@ pub fn session(options: &Options) -> Result<Session, String> {
             .map_err(|e| e.message().to_string())?;
     }
     session.set_workspace(workspace);
+    let command_line = options.read_root.is_some() || options.write_root.is_some();
+    session.set_file_help(Some(file_help(command_line)));
     Ok(session)
+}
+
+/// What a refusal to touch a file tells an agent of this window to do
+/// (2026-11-05: it said "start it with a write root", the command line's
+/// way, which an agent of a running window cannot take). The person
+/// gives agents a folder in the window; where the command line set the
+/// roots (`--automation-read-root`, `--automation-write-root`), the
+/// window's Change… is off and those flags are the way.
+pub fn file_help(command_line: bool) -> craft3d_engine::FileHelp {
+    if command_line {
+        let flag = |direction: &str| format!("--automation-{direction}-root");
+        return craft3d_engine::FileHelp {
+            none: ["read", "write"].map(|d| {
+                format!(
+                    "this 3DCraft window's folders for agents were set by its command line: the person starts it with {} DIR",
+                    flag(d)
+                )
+            }),
+            outside: ["read", "write"].map(|d| {
+                format!(
+                    "this 3DCraft window's folders for agents were set by its command line ({}); use a path beneath them",
+                    flag(d)
+                )
+            }),
+        };
+    }
+    let place = "in the 3DCraft window: Help → Connect an AI agent… → Work folder (Change… picks the folder agents may read and write; Also the open document's folder adds the folder of the document that is open)";
+    craft3d_engine::FileHelp {
+        none: [0, 1].map(|_| format!("the person gives agents a folder {place}")),
+        outside: [0, 1].map(|_| {
+            format!("agents reach only the folders the person gave them; for another, the person adds it {place}")
+        }),
+    }
 }
 
 /// How the window's session autosaves, when the options name a recovery
@@ -816,13 +851,24 @@ impl Desk {
         }
     }
 
-    /// `ui.get` or `ui.quit` while the session is away. Never panics.
+    /// `ui.get` or `ui.quit` while the session is away, also `ui.get`
+    /// through MCP's `control_call`, answered in its envelope. Never
+    /// panics.
     fn answer_away(&mut self, line: &str) -> Option<String> {
-        let shell = &mut self.host.shell;
+        let Host { shell, session, .. } = &mut self.host;
         let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let request: Value = serde_json::from_str(line).unwrap_or(Value::Null);
             let id = request.get("id").cloned().unwrap_or(Value::Null);
             let params = request.get("params");
+            // The session here is the stand-in while the real one is on
+            // the engine thread: the envelope needs nothing of it.
+            if let Some((method, inner, mcp)) = crate::host::control_call_of(&request)
+                && method == "ui.get"
+            {
+                let result = shell.ui_get_away(inner.as_ref());
+                let wrapped = crate::host::control_call_reply(session, &mcp, result);
+                return rpc::ok_reply(&id, &wrapped);
+            }
             let result = match request.get("method").and_then(Value::as_str) {
                 Some("ui.get") => shell.ui_get_away(params),
                 _ => {

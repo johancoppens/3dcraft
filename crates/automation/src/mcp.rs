@@ -45,10 +45,12 @@ const PREVIEW_MIN_SIDE: u64 = 16;
 const PREVIEW_MAX_PNG_BYTES: usize = 5 << 20;
 
 const INSTRUCTIONS: &str = "3DCraft is a parametric CAD modeller. Every action is a command with a stable id and JSON params. \
-Start with the tool command_list to see the commands and their params, then run them with command_run \
-(first file.new or file.open, then variable.set and feature.* to model). \
+Start with the tool command_list with brief: true to see the commands and their params (then with id for the full entry of a command), \
+and run them with command_run or command_batch (first file.new or file.open, then variable.set and feature.* to model). \
 Check your work with doc_inspect (volumes, areas, feature status) and doc_render_preview (a picture). \
-Lengths are expressions such as \"40 mm\" or \"width / 2\". File paths resolve beneath the roots the server was started with.";
+Lengths are expressions such as \"40 mm\" or \"width / 2\". File paths resolve beneath the folders agents may use: \
+the roots craft3d-cli serve or mcp was started with, or, through a 3DCraft window, the work folder the person gave agents there \
+(Help, Connect an AI agent).";
 
 // JSON-RPC 2.0 error codes.
 const PARSE_ERROR: i64 = -32700;
@@ -400,10 +402,18 @@ fn tools() -> Value {
     json!([
         {
             "name": "command_list",
-            "description": "Lists 3DCraft's commands: id, label, params notation, summary, and whether each can run now (enabled, disabledReason). Call this first to learn what command_run accepts.",
+            "description": "Lists 3DCraft's commands: id, label, params notation, summary, and whether each can run now (enabled, disabledReason). Call this first to learn what command_run accepts, with brief: true (each command's id, params and the first sentence of its summary: the whole list in a fraction of the size), then with id for the full entry of a command you use.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "brief": {
+                        "type": "boolean",
+                        "description": "Only id, params, the first sentence of the summary and enabled per command. Default false. Start with this."
+                    },
+                    "id": {
+                        "type": "string",
+                        "description": "One command by its exact id, e.g. \"feature.fillet\": its full entry."
+                    },
                     "filter": {
                         "type": "string",
                         "description": "Case-insensitive substring of a command id or label, e.g. \"feature\"."
@@ -418,7 +428,7 @@ fn tools() -> Value {
         },
         {
             "name": "command_run",
-            "description": "Runs one command by id and returns its JSON result. Start with file.new or file.open. A failed command returns isError with a message that names the command and the parameter.",
+            "description": "Runs one command by id and returns its JSON result (its wall-clock milliseconds in the tool result's _meta.ms; a command_batch step has them in its entry). Start with file.new or file.open. A failed command returns isError with a message that names the command and the parameter.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -442,7 +452,7 @@ fn tools() -> Value {
         },
         {
             "name": "command_batch",
-            "description": "Runs up to 256 commands in order and returns {completed, failed, results: [{ok, result | error}]}. Not atomic: steps that ran stay applied when a later one fails; recover with edit.undo once per applied step. For long batches pass terse: the report is then {completed, failed, errors: [{step, error}], last: {step, result}}, the failures and the result of the last step that succeeded, plus featuresFailed: [{step, feature, id, error, causedBy?}] when there are any: the features that fail at the end of the batch and that a step reported failing (a feature it added or edited that could not be built, or one its edit broke), with the last such step; a failure a later step repaired is not listed, nor a failed assertion. Their commands succeeded, so they are not counted in failed.",
+            "description": "Runs up to 256 commands in order and returns {completed, failed, results: [{ok, result | error, ms}], ms}. A step fails when its command returns an error, and also when its command succeeded but reports a feature that could not be built (the feature it added or edited, or one its edit made fail): that step is applied and stays so, the feature in the history as it is, and its entry has ok: false, an error naming the feature, applied: true and the result; stop_on_error stops there too. Not atomic: steps that ran stay applied when a later one fails; recover with edit.undo once per applied step. For long batches pass terse: the report is then {completed, failed, errors: [{step, error, applied?, ms}], last: {step, result, ms}, ms}, the failures and the result of the last step that succeeded, plus featuresFailed: [{step, feature, id, error, causedBy?}] when there are any: the features that fail at the end of the batch and that a step reported failing, with the last such step; a failure a later step repaired is not listed, nor a failed assertion. ms is the wall-clock milliseconds each step and the whole batch took: the only fields that differ from run to run (null where there is no clock).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -633,6 +643,7 @@ fn call_tool(
     // Other keys of `params` (`_meta` with a progress token, say) are the
     // protocol's, not ours, and are ignored; only `arguments` is checked.
     let arguments = params.and_then(|p| p.get("arguments"));
+    let clock = registry::Stopwatch::start();
     let outcome = match name {
         "command_list" => tool_command_list(session, arguments),
         "command_run" => tool_command_run(session, arguments),
@@ -668,7 +679,14 @@ fn call_tool(
             is_error: true,
         },
     };
-    Ok(json!({ "content": output.content, "isError": output.is_error }))
+    let mut reply = json!({ "content": output.content, "isError": output.is_error });
+    // One command's wall-clock time, beside its result rather than in it
+    // (the result stays what the command returns); a batch has it per
+    // step in its report.
+    if let ("command_run", Some(map)) = (name, reply.as_object_mut()) {
+        map.insert("_meta".into(), json!({ "ms": clock.ms() }));
+    }
+    Ok(reply)
 }
 
 fn tool_command_list(
@@ -679,14 +697,15 @@ fn tool_command_list(
         "command_list",
         "argument",
         arguments,
-        &["filter", "enabled_only"],
+        &["filter", "id", "enabled_only", "brief"],
     )?;
-    let enabled_only = a.bool("enabled_only")?.unwrap_or(false);
-    Ok(ToolOutput::json(&registry::command_list(
-        session,
-        a.str("filter")?,
-        enabled_only,
-    )))
+    let query = registry::ListQuery {
+        filter: a.str("filter")?,
+        id: a.str("id")?,
+        enabled_only: a.bool("enabled_only")?.unwrap_or(false),
+        brief: a.bool("brief")?.unwrap_or(false),
+    };
+    Ok(ToolOutput::json(&registry::command_list(session, &query)))
 }
 
 fn tool_command_run(

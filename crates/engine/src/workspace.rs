@@ -242,7 +242,8 @@ fn resolve(access: &Access, path: &str, direction: &str) -> Result<PathBuf, Comm
     match access {
         Access::Unrestricted => Ok(PathBuf::from(path)),
         Access::None => Err(CommandError::new(format!(
-            "this session has no {direction} access to files; start it with a {direction} root to allow `{path}`"
+            "this session has no {direction} access to files; {} to allow `{path}`",
+            cli_way_out(direction)
         ))),
         Access::Root(root) => beneath(root, path, direction),
         Access::Grant { base, file } => {
@@ -289,6 +290,53 @@ fn resolve(access: &Access, path: &str, direction: &str) -> Result<PathBuf, Comm
             }
             checked_join(&PathBuf::new(), Path::new(path), path, direction)
         }
+    }
+}
+
+/// How a session of the command line (`craft3d-cli serve`, `mcp`, `run`)
+/// gets access in `direction`: the end of its refusal without any, which
+/// [`FileHelp::explain`] replaces where the session runs elsewhere.
+fn cli_way_out(direction: &str) -> String {
+    format!("start it with a {direction} root")
+}
+
+/// What a refusal to touch a file says about the way out, where the
+/// session does not run on the command line (2026-11-05: an agent of the
+/// desktop window was told to start it with a write root, a startup
+/// option it cannot give; there the person gives agents a folder in the
+/// window). Set on the session by its host ([`crate::Session::set_file_help`]);
+/// without one, refusals keep the command line's wording.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileHelp {
+    /// How to get access in a direction with none, followed in the
+    /// message by "to allow `path`": one for reading, one for writing.
+    pub none: [String; 2],
+    /// What to do about a path outside the roots there are, appended to
+    /// that refusal after a semicolon: for reading, for writing.
+    pub outside: [String; 2],
+}
+
+impl FileHelp {
+    /// `message`, a command's error, with the way out this host offers
+    /// when it is a refusal of a path ([`resolve`]); unchanged otherwise.
+    pub fn explain(&self, message: &str) -> String {
+        let mut out = message.to_string();
+        for (index, direction) in ["read", "write"].into_iter().enumerate() {
+            let (Some(none), Some(outside)) = (self.none.get(index), self.outside.get(index))
+            else {
+                continue;
+            };
+            let cli = format!("{} to allow `", cli_way_out(direction));
+            if out.contains(&format!("no {direction} access to files; {cli}")) {
+                out = out.replacen(&cli, &format!("{none} to allow `"), 1);
+            } else if out.contains(&format!("is outside the {direction} root"))
+                || out.contains(&format!("is outside every {direction} root"))
+                || out.contains(&format!("leads outside the {direction} root"))
+            {
+                out = format!("{out}; {outside}");
+            }
+        }
+        out
     }
 }
 
@@ -763,6 +811,58 @@ mod tests {
                 .resolve_read("/any/where")
                 .unwrap(),
             PathBuf::from("/any/where")
+        );
+    }
+
+    /// 2026-11-05: an agent of the desktop window was told to "start it
+    /// with a write root", a startup option of the command line. A host
+    /// with its own way out says that instead; without one the command
+    /// line's wording stays.
+    #[test]
+    fn a_refusal_says_the_way_out_of_the_host_it_runs_in() {
+        let help = FileHelp {
+            none: ["READ-WAY".into(), "WRITE-WAY".into()],
+            outside: ["READ-OUTSIDE".into(), "WRITE-OUTSIDE".into()],
+        };
+        let none = Workspace::none().resolve_write("out.stl").unwrap_err();
+        let said = help.explain(&format!("file.export: {none}"));
+        assert_eq!(
+            said,
+            "file.export: this session has no write access to files; WRITE-WAY to allow `out.stl`"
+        );
+        assert!(!said.contains("start it with"), "{said}");
+        let none = Workspace::none().resolve_read("in.step").unwrap_err();
+        assert!(
+            help.explain(none.message())
+                .ends_with("READ-WAY to allow `in.step`"),
+            "{none}"
+        );
+        let (root, _) = roots();
+        let rooted = Workspace {
+            read: Access::Root(root.clone()),
+            write: Access::Root(root.clone()),
+        };
+        let away = if cfg!(windows) {
+            "C:\\elsewhere\\x.stl"
+        } else {
+            "/elsewhere/x.stl"
+        };
+        let outside = rooted.resolve_write(away).unwrap_err();
+        let said = help.explain(outside.message());
+        assert!(said.ends_with("; WRITE-OUTSIDE"), "{said}");
+        let several = Workspace {
+            read: Access::from_roots(vec![root.clone(), root.join("other")]),
+            write: Access::None,
+        };
+        let outside = several.resolve_read(away).unwrap_err();
+        assert!(
+            help.explain(outside.message()).ends_with("; READ-OUTSIDE"),
+            "{outside}"
+        );
+        // Anything else is left as it is.
+        assert_eq!(
+            help.explain("feature.block: no size"),
+            "feature.block: no size"
         );
     }
 

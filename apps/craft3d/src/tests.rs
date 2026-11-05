@@ -1332,6 +1332,50 @@ fn the_file_argument_is_opened_and_automation_gets_only_its_roots() {
 /// --automation-write-root target/work` saved to
 /// `target/work/target/work/x.3dcraft`, which did not exist), and the
 /// listing (where the tabs take their paths from) shows where it is.
+/// 2026-11-05: an agent of the window was refused a file with "start it
+/// with a write root", a startup option of the command line it cannot
+/// give. In the window the person gives agents a folder (the agents
+/// panel's Work folder); where the command line set the roots, those
+/// flags are the way.
+#[test]
+fn a_refused_file_says_the_windows_way_out_not_the_command_lines() {
+    let mut bare = app::session(&Options::default()).unwrap();
+    bare.execute("file.new", &json!({})).unwrap();
+    for (command, params) in [
+        ("file.save", json!({"path": "a.3dcraft"})),
+        ("file.open", json!({"path": "a.3dcraft"})),
+    ] {
+        let error = bare.execute(command, &params).unwrap_err().to_string();
+        assert!(!error.contains("start it with"), "{error}");
+        assert!(
+            error.contains("Connect an AI agent") && error.contains("Work folder"),
+            "{error}"
+        );
+        assert!(error.contains("to allow `a.3dcraft`"), "{error}");
+    }
+    let dir = workdir("file-help");
+    let rooted = Options {
+        write_root: Some(dir.to_str().unwrap().to_string()),
+        ..Options::default()
+    };
+    let mut session = app::session(&rooted).unwrap();
+    session.execute("file.new", &json!({})).unwrap();
+    let away = std::env::temp_dir().join("elsewhere").join("a.3dcraft");
+    let error = session
+        .execute("file.save", &json!({"path": away.to_str().unwrap()}))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("outside the write root"), "{error}");
+    assert!(error.contains("--automation-write-root"), "{error}");
+    let error = session
+        .execute("file.open", &json!({"path": "a.3dcraft"}))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("--automation-read-root DIR"), "{error}");
+    assert!(!error.contains("start it with a read root"), "{error}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_file_named_by_a_relative_path_is_saved_back_to_itself() {
     let dir = workdir("relative");
@@ -2030,6 +2074,37 @@ mod engine_thread {
         assert_eq!(state["lastCommand"]["label"], "file.new", "{state}");
     }
 
+    /// 2026-11-05: an agent through the MCP bridge asked `ui.get` (by
+    /// `control_call`) while a long command ran, and waited for the
+    /// command: the JSON channel's `ui.get` was answered at once, MCP's
+    /// queued behind the command. Now both are answered meanwhile.
+    #[test]
+    fn ui_get_through_mcp_is_answered_while_a_command_runs() {
+        let window = Window::open();
+        let address = window.address;
+        let slow = std::thread::spawn(move || {
+            let mut client = Client::connect(address);
+            client.call("auth", json!({"token": TOKEN}));
+            client.ok("debug.slow", json!({"ms": 1500, "steps": 5}))
+        });
+        let mut agent = window.client();
+        until(|| agent.ok("ui.get", json!({}))["work"] != Value::Null);
+        let message = tool_call(7, "control_call", json!({"method": "ui.get"}));
+        let asked = Instant::now();
+        let reply = agent.ok("mcp.message", json!({"line": message.to_string()}));
+        let took = asked.elapsed();
+        let inner: Value = serde_json::from_str(reply["reply"].as_str().unwrap()).unwrap();
+        assert_eq!(inner["id"], 7, "{inner}");
+        let state = tool_json(&inner);
+        assert_eq!(state["work"]["label"], "debug.slow", "{state}");
+        assert!(took < Duration::from_millis(700), "waited {took:?}");
+        assert_eq!(slow.join().unwrap()["slept"], 1500);
+        // Once idle, the same call is answered by the window as before.
+        let reply = agent.ok("mcp.message", json!({"line": message.to_string()}));
+        let inner: Value = serde_json::from_str(reply["reply"].as_str().unwrap()).unwrap();
+        assert_eq!(tool_json(&inner)["work"], Value::Null, "{inner}");
+    }
+
     /// Commands stay in the order they were sent, whichever connection
     /// sent them: a second waits for the first. Only `ui.get` (and
     /// `ui.quit`) is answered while work runs.
@@ -2214,6 +2289,12 @@ mod engine_thread {
         };
         assert_eq!(route(&call("command_run")), Route::Engine);
         assert_eq!(route(&call("control_call")), Route::Window);
+        let ui = |method: &str| {
+            mcp(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "control_call", "arguments": {"method": method}}}))
+        };
+        assert_eq!(route(&ui("ui.get")), Route::Anytime);
+        assert_eq!(route(&ui("ui.screenshot")), Route::Window);
         assert_eq!(
             route(&mcp(
                 json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})

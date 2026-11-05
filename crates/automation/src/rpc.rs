@@ -34,17 +34,17 @@ pub const METHODS: &[Method] = &[
     Method {
         name: "engine.execute",
         params: r#"{"command": string, "params": object = {}, "intent": string}"#,
-        summary: "Runs a command by id and returns its result. intent (optional, at most 300 characters, one line): why, in the agent's own words (\"round the base edges for handling\"); the window shows it in its agent log.",
+        summary: "Runs a command by id and returns its result; the reply has ms, the milliseconds it took (wall clock, the one field that differs from run to run). intent (optional, at most 300 characters, one line): why, in the agent's own words (\"round the base edges for handling\"); the window shows it in its agent log.",
     },
     Method {
         name: "engine.commands",
-        params: r#"{"filter": string}"#,
-        summary: "Lists the commands with their params, and whether each can run now. filter is a case-insensitive substring of the id or label.",
+        params: r#"{"filter": string, "id": string, "brief": boolean = false}"#,
+        summary: "Lists the commands with their params, and whether each can run now. filter is a case-insensitive substring of the id or label; id picks one command by its exact id. brief gives each as {id, params, summary, enabled} with only the first sentence of its summary.",
     },
     Method {
         name: "batch",
         params: r#"{"steps": [{"command": string, "params": object = {}}], "stopOnError": boolean = true, "terse": boolean = false}"#,
-        summary: "Runs up to 256 commands in order and returns {completed, failed, results: [{ok, result | error}]}; with terse, {completed, failed, errors: [{step, error}], last: {step, result}}. Not a transaction: earlier steps stay applied.",
+        summary: "Runs up to 256 commands in order and returns {completed, failed, results: [{ok, result | error, ms}], ms}; with terse, {completed, failed, errors: [{step, error, ms}], last: {step, result, ms}, ms}. A step whose command succeeded but reports a feature that could not be built (the one it added or edited, or one its edit made fail) is a failed step too, with applied: true (it stays applied) and, but terse, its result; stopOnError stops there. ms is wall-clock milliseconds, per step and for the batch: the only fields that differ from run to run. Not a transaction: earlier steps stay applied.",
     },
     Method {
         name: "methods",
@@ -185,6 +185,7 @@ fn handle_line_extended(
 
     // Last-resort guard (AGENTS.md, never crash). `Session::execute` already
     // catches a panic inside a command; this one covers this module.
+    let clock = registry::Stopwatch::start();
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         dispatch(session, method, params, extension.as_deref_mut())
     }))
@@ -198,8 +199,19 @@ fn handle_line_extended(
         ))
     });
 
+    // A command's reply says how long it took (wall clock, the one field
+    // that differs from run to run); a batch says it in its result.
+    let timed = method == "engine.execute";
     let reply = match outcome {
+        Ok(result) if timed => {
+            serialize(&json!({ "id": id, "ok": true, "result": result, "ms": clock.ms() }))
+        }
         Ok(result) => serialize(&json!({ "id": id, "ok": true, "result": result })),
+        Err(error) if timed => {
+            return Some(serialize(
+                &json!({ "id": id, "ok": false, "error": error, "ms": clock.ms() }),
+            ));
+        }
         Err(error) => return Some(failure(id, &error)),
     };
     if reply.len() > max_reply {
@@ -239,8 +251,14 @@ fn dispatch(
             })
         }
         "engine.commands" => {
-            let p = Fields::new(method, "parameter", params, &["filter"])?;
-            Ok(registry::command_list(session, p.str("filter")?, false))
+            let p = Fields::new(method, "parameter", params, &["filter", "id", "brief"])?;
+            let query = registry::ListQuery {
+                filter: p.str("filter")?,
+                id: p.str("id")?,
+                enabled_only: false,
+                brief: p.bool("brief")?.unwrap_or(false),
+            };
+            Ok(registry::command_list(session, &query))
         }
         "batch" => {
             let p = Fields::new(
@@ -352,7 +370,10 @@ mod tests {
     #[test]
     fn the_reply_cap_is_exact() {
         let mut session = Session::new(Workspace::none());
-        let request = r#"{"id": 1, "method": "engine.execute", "params": {"command": "file.new"}}"#;
+        // A reply without `ms` (2026-11-05: `engine.execute`'s has the
+        // time it took, which differs from run to run, and with it the
+        // length of the line).
+        let request = r#"{"id": 1, "method": "engine.commands", "params": {"filter": "undo"}}"#;
         let full = handle_line(&mut session, request).unwrap();
         let mut session = Session::new(Workspace::none());
         let at_cap = handle_line_capped(&mut session, request, full.len()).unwrap();
