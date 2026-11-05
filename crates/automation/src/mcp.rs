@@ -452,7 +452,7 @@ fn tools() -> Value {
         },
         {
             "name": "command_batch",
-            "description": "Runs up to 256 commands in order and returns {completed, failed, results: [{ok, result | error, ms}], ms}. A step fails when its command returns an error, and also when its command succeeded but reports a feature that could not be built (the feature it added or edited, or one its edit made fail): that step is applied and stays so, the feature in the history as it is, and its entry has ok: false, an error naming the feature, applied: true and the result; stop_on_error stops there too. Not atomic: steps that ran stay applied when a later one fails; recover with edit.undo once per applied step. For long batches pass terse: the report is then {completed, failed, errors: [{step, error, applied?, ms}], last: {step, result, ms}, ms}, the failures and the result of the last step that succeeded, plus featuresFailed: [{step, feature, id, error, causedBy?}] when there are any: the features that fail at the end of the batch and that a step reported failing, with the last such step; a failure a later step repaired is not listed, nor a failed assertion. ms is the wall-clock milliseconds each step and the whole batch took: the only fields that differ from run to run (null where there is no clock).",
+            "description": "Runs up to 256 commands in order and returns {completed, failed, results: [{ok, result | error, broke?, ms}], featuresFailed?, ms}. failed counts the commands that returned an error; stop_on_error (default true) stops at the first. A command that succeeds but makes a feature fail is no failed step, since a later step may repair it: its entry lists the features under broke ({feature, id, error, causedBy?, repairedBy?: the step after which it no longer failed}); a query, or touching a feature that failed already, breaks nothing. The batch is judged at the end: featuresFailed lists the features that fail in the final state and that a step made fail ({step, feature, id, type, error, causedBy?, fix}), and the batch is an error (isError) when there are any. stop_on_break: true also stops at the first step that makes a feature fail. Not atomic: steps that ran stay applied; edit.undo takes back the last applied step, once per step. terse reports {completed, failed, errors: [{step, error, ms}], last: {step, result, ms}, featuresFailed?, ms}. ms is the wall-clock milliseconds each step and the whole batch took: the only fields that differ from run to run (null where there is no clock).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -472,7 +472,11 @@ fn tools() -> Value {
                     },
                     "stop_on_error": {
                         "type": "boolean",
-                        "description": "Stop at the first failing step. Default true."
+                        "description": "Stop at the first command that returns an error. Default true."
+                    },
+                    "stop_on_break": {
+                        "type": "boolean",
+                        "description": "Also stop at the first step that makes a feature fail. Default false: judged at the end (featuresFailed)."
                     },
                     "terse": {
                         "type": "boolean",
@@ -735,17 +739,20 @@ fn tool_command_batch(
         "command_batch",
         "argument",
         arguments,
-        &["steps", "stop_on_error", "terse", "intent"],
+        &["steps", "stop_on_error", "stop_on_break", "terse", "intent"],
     )?;
-    let stop_on_error = a.bool("stop_on_error")?.unwrap_or(true);
+    let stops = registry::BatchStops {
+        on_error: a.bool("stop_on_error")?.unwrap_or(true),
+        on_break: a.bool("stop_on_break")?.unwrap_or(false),
+    };
     let terse = a.bool("terse")?.unwrap_or(false);
     let intent = a.str("intent")?;
     let steps = registry::parse_steps("command_batch", "argument", &a, "id")?;
-    let outcome = registry::run_batch(session, &steps, stop_on_error, terse, intent);
+    let outcome = registry::run_batch(session, &steps, &stops, terse, intent);
     // The report is the content either way: it says which steps ran. The
     // flag makes sure a model does not read a failed batch as done.
     Ok(ToolOutput {
-        is_error: outcome.failed > 0,
+        is_error: outcome.is_error(),
         ..ToolOutput::json(&outcome.report)
     })
 }

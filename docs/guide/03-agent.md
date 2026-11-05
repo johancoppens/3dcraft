@@ -194,12 +194,9 @@ The parts worth knowing:
   feature could not be built. Its result has `"status": "failed"` and an `error` that names the parameter,
   the entities and often the largest value that would fit ("the largest radius that fits there is below
   26 mm"). Features built from it fail too, each with `causedBy`: the one to fix. See [chapter 6](06-concepts.md#failed-features). A
-  `command_batch` counts the step of such a feature as failed (`ok: false`, `applied: true`: the step
-  stays applied, the feature in the history as it is) and, with `stop_on_error` (the default), stops
-  there, so an agent does not go on building on a broken feature. With `terse` it also lists under
-  `featuresFailed` the features that still fail when the batch ends and that one of its steps added,
-  edited or broke (each with that step and its `causedBy`). A failed assertion is not a failed step:
-  read `assert.list` or `document.check`.
+  `command_batch` judges this at the end: it lists under `featuresFailed` the features that still fail
+  when the batch ends and that one of its steps broke, and is then an error; a break a later step
+  repairs is only noted. A failed assertion is not listed there: read `assert.list` or `document.check`.
 - **`failed`** in the result of `variable.set` and of the edits that can break other features
   (`variable.delete` with `force`, `feature.edit`, `feature.suppress`, `feature.move`, `feature.delete`, `history.rollback`,
   and every `sketch.*` command that changes an existing sketch: a dimension, a constraint, an entity drawn

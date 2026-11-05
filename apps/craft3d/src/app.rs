@@ -871,10 +871,16 @@ impl Desk {
             }
             let result = match request.get("method").and_then(Value::as_str) {
                 Some("ui.get") => shell.ui_get_away(params),
-                _ => {
+                Some("ui.quit") => {
                     shell.request_quit();
                     Ok(json!({ "quitting": true }))
                 }
+                // Only what `route` sends here (`Route::Anytime`); anything
+                // else waits for the session, and never quits by mistake.
+                other => Err(format!(
+                    "{}: not answered while a command runs; send it again when it is done",
+                    other.unwrap_or("the request")
+                )),
             };
             match result {
                 Ok(result) => rpc::ok_reply(&id, &result),
@@ -2652,6 +2658,37 @@ mod tests {
         let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
         let host = Host::new(Session::new(Workspace::none()));
         (Desk::new(host, incoming, picker), requests)
+    }
+
+    /// While a command runs only `ui.get` and `ui.quit` are answered from
+    /// what the window shows; anything else that got there is an error,
+    /// never a quit (review of 2026-11-05: every other method fell into
+    /// the quit branch).
+    #[test]
+    fn answered_away_only_get_and_quit_and_nothing_else_quits() {
+        let (mut desk, _requests) = desk();
+        let reply = desk
+            .answer_away(r#"{"id": 1, "method": "ui.fit", "params": {}}"#)
+            .unwrap();
+        let reply: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert!(!desk.host.shell.quit_requested());
+        let got: Value = serde_json::from_str(
+            &desk
+                .answer_away(r#"{"id": 2, "method": "ui.get"}"#)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(got["ok"], true, "{got}");
+        assert!(!desk.host.shell.quit_requested());
+        let quit: Value = serde_json::from_str(
+            &desk
+                .answer_away(r#"{"id": 3, "method": "ui.quit"}"#)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(quit["result"]["quitting"], true, "{quit}");
+        assert!(desk.host.shell.quit_requested());
     }
 
     /// `ui.record` and `ui.advance` are the desk's: painted offscreen on

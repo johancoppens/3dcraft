@@ -70,8 +70,8 @@ const BRIEF_SUMMARY_CHARS: usize = 200;
 
 /// The first sentence of `summary`: up to the first full stop that ends
 /// a sentence (followed by a space and a capital, or the end; not inside
-/// brackets, not "e.g."), at most [`BRIEF_SUMMARY_CHARS`] characters (cut
-/// at a word, with an ellipsis).
+/// brackets, not "e.g."), at most [`BRIEF_SUMMARY_CHARS`] characters, the ellipsis
+/// included (cut at a word).
 pub(crate) fn first_sentence(summary: &str) -> String {
     let chars: Vec<char> = summary.chars().collect();
     let mut depth = 0_i32;
@@ -104,7 +104,11 @@ pub(crate) fn first_sentence(summary: &str) -> String {
     if sentence.chars().count() <= BRIEF_SUMMARY_CHARS {
         return sentence;
     }
-    let cut: String = sentence.chars().take(BRIEF_SUMMARY_CHARS).collect();
+    // Room for the ellipsis within the limit.
+    let cut: String = sentence
+        .chars()
+        .take(BRIEF_SUMMARY_CHARS.saturating_sub(1))
+        .collect();
     let at_word = cut
         .rfind(' ')
         .map_or(cut.as_str(), |i| cut.get(..i).unwrap_or(&cut));
@@ -160,35 +164,58 @@ pub(crate) fn parse_steps<'a>(
 
 /// The outcome of a batch, in the shape both protocols return.
 pub(crate) struct BatchOutcome {
+    /// Steps whose command returned an error.
     pub failed: usize,
+    /// Features that fail at the end and that a step of the batch made
+    /// fail (`featuresFailed`).
+    pub broken: usize,
     pub report: Value,
 }
 
+impl BatchOutcome {
+    /// Whether the batch did not do what was asked: a command failed, or
+    /// it leaves a feature it broke failing.
+    pub(crate) fn is_error(&self) -> bool {
+        self.failed > 0 || self.broken > 0
+    }
+}
+
+/// How a batch ends ([`run_batch`]).
+pub(crate) struct BatchStops {
+    /// At the first command that returns an error.
+    pub on_error: bool,
+    /// Also at the first step that makes a feature fail.
+    pub on_break: bool,
+}
+
 /// Runs the steps in order. Not a transaction: steps that ran stay applied
-/// when a later one fails. With `stop_on_error` the first failure ends the
-/// batch, and `results` is shorter than `steps`.
+/// when a later one fails. With `stops.on_error` the first command that
+/// returns an error ends the batch, and `results` is shorter than `steps`.
 ///
-/// A step fails when its command returns an error, and also (2026-11-05)
-/// when its command succeeded but reports a feature that could not be
-/// built ([`failing_features`]): the feature it added or edited, or one its
-/// edit made fail. Such a step was applied, and stays so (the feature is
-/// in the history as the command left it): its entry says `applied: true`
-/// and keeps the command's `result`. Before, it counted as completed and a
-/// batch with `stop_on_error` went on building on a broken feature.
+/// Features that fail are judged at the end (2026-11-05): a step that
+/// makes a feature fail is no failed step, since a later step may repair
+/// it (a variable set too far, then the variable it is measured against).
+/// Each step's entry lists under `broke` the features it made fail
+/// (failing after it and not before it, so a query never breaks anything
+/// and touching a feature that failed already is no break), each with
+/// `repairedBy`, the step after which it no longer failed, when one did.
+/// The report's `featuresFailed` lists the features that fail at the end
+/// and that a step made fail, each with the last such step, its kind and
+/// what fixes it; when there are any the batch did not do what was asked
+/// ([`BatchOutcome::is_error`]). With `stops.on_break` the batch also ends
+/// at the first step that makes a feature fail. A step that changes the
+/// active document (`file.new`, `file.open`, `file.activate`,
+/// `file.close`, `recovery.open`) starts the judging again, on that
+/// document.
 ///
-/// `terse` is for long batches, where the results of every step would be
-/// a lot to send and to read: the report then holds the failures only,
-/// each with the number of its step, and the result of the last step that
-/// succeeded. It also holds `featuresFailed`, when there are any: the
-/// features that fail at the end of the batch and that a step of it
-/// reported failing (a feature it added or edited that could not be
-/// built, or one its edit broke, listed under that step's `failed`), each
-/// with the last such step. A failure a later step repaired is not in
-/// it; neither is a feature that failed before the batch and that no step
-/// touched, nor a failed assertion (`assert.list` and `document.check` say
-/// those). A step that changes the active document (`file.new`,
-/// `file.open`, `file.activate`, `file.close`, `recovery.open`) starts the
-/// collection again.
+/// The features that fail are read after each step that changed the
+/// document (`Session::failed_features`, which regenerates what the step
+/// left to regenerate; a step that changed nothing costs nothing), and
+/// once before the first step.
+///
+/// `terse` is for long batches: the report then holds the command errors
+/// only, each with the number of its step, the result of the last step
+/// that succeeded, and `featuresFailed`.
 ///
 /// Every step's entry (in `results`, or in `errors` and `last` when
 /// terse) has `ms`, the wall-clock milliseconds it took, and the report
@@ -197,17 +224,21 @@ pub(crate) struct BatchOutcome {
 pub(crate) fn run_batch(
     session: &mut Session,
     steps: &[Step],
-    stop_on_error: bool,
+    stops: &BatchStops,
     terse: bool,
     intent: Option<&str>,
 ) -> BatchOutcome {
     let whole = Stopwatch::start();
-    let mut results = Vec::with_capacity(if terse { 0 } else { steps.len() });
+    let mut results: Vec<Value> = Vec::with_capacity(if terse { 0 } else { steps.len() });
     let mut errors = Vec::new();
-    // Feature id -> the last step that reported it failing.
-    let mut reported: BTreeMap<String, usize> = BTreeMap::new();
+    // Feature id -> the last step that made it fail.
+    let mut broken_by: BTreeMap<String, usize> = BTreeMap::new();
+    // Each break: (step, feature id, its entry), for `repairedBy`.
+    let mut breaks: Vec<(usize, String, Value)> = Vec::new();
     let mut last = Value::Null;
     let (mut completed, mut failed) = (0_usize, 0_usize);
+    let mut before = failing_now(session);
+    let mut revision = session.document_revision();
     for (index, step) in steps.iter().enumerate() {
         let clock = Stopwatch::start();
         // A step's own intent, else the batch's.
@@ -215,47 +246,63 @@ pub(crate) fn run_batch(
             session.execute(step.command, step.params)
         });
         let ms = clock.ms();
+        let now_revision = session.document_revision();
+        let switched = SWITCHES_DOCUMENT.contains(&step.command);
+        let mut broke: Vec<Value> = Vec::new();
+        if switched || now_revision != revision {
+            let after = failing_now(session);
+            if switched {
+                broken_by.clear();
+            } else {
+                let ids = |list: &[Value]| -> Vec<String> {
+                    list.iter()
+                        .filter_map(|e| e.get("id").and_then(Value::as_str))
+                        .map(str::to_string)
+                        .collect()
+                };
+                let (was, is) = (ids(&before), ids(&after));
+                for id in was.iter().filter(|id| !is.contains(id)) {
+                    if broken_by.remove(id).is_some() {
+                        for (_, broken, entry) in breaks.iter_mut().rev() {
+                            if broken == id {
+                                if let Some(map) = entry.as_object_mut()
+                                    && !map.contains_key("repairedBy")
+                                {
+                                    map.insert("repairedBy".into(), index.into());
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                for entry in after.iter() {
+                    let Some(id) = entry.get("id").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    if was.iter().any(|w| w == id) {
+                        continue;
+                    }
+                    broken_by.insert(id.to_string(), index);
+                    let mut noted = entry.clone();
+                    if let Some(map) = noted.as_object_mut() {
+                        map.remove("type");
+                    }
+                    breaks.push((index, id.to_string(), noted.clone()));
+                    broke.push(noted);
+                }
+            }
+            before = after;
+            revision = now_revision;
+        }
         let stop = match outcome {
             Ok(result) => {
-                if SWITCHES_DOCUMENT.contains(&step.command) {
-                    reported.clear();
-                }
-                for id in reported_failing(&result) {
-                    reported.insert(id, index);
-                }
-                let broken = failing_features(step.command, &result);
-                if broken.is_empty() {
-                    completed = completed.saturating_add(1);
-                    if terse {
-                        last = json!({ "step": index, "result": result, "ms": ms });
-                    } else {
-                        results.push(json!({ "ok": true, "result": result, "ms": ms }));
-                    }
-                    false
+                completed = completed.saturating_add(1);
+                if terse {
+                    last = json!({ "step": index, "result": result, "ms": ms });
                 } else {
-                    // A feature that could not be built: the command did
-                    // what was asked, but the model is broken from here.
-                    failed = failed.saturating_add(1);
-                    let error = format!(
-                        "{}: {}; the step was applied and stays so (the feature is in the history as it is now: fix it with feature.edit, or take the step back with edit.undo)",
-                        step.command,
-                        broken.join("; ")
-                    );
-                    if terse {
-                        errors.push(
-                            json!({ "step": index, "error": error, "applied": true, "ms": ms }),
-                        );
-                    } else {
-                        results.push(json!({
-                            "ok": false,
-                            "error": error,
-                            "applied": true,
-                            "result": result,
-                            "ms": ms,
-                        }));
-                    }
-                    stop_on_error
+                    results.push(json!({ "ok": true, "result": result, "ms": ms }));
                 }
+                stops.on_break && !broke.is_empty()
             }
             Err(error) => {
                 failed = failed.saturating_add(1);
@@ -264,45 +311,91 @@ pub(crate) fn run_batch(
                 } else {
                     results.push(json!({ "ok": false, "error": error.message(), "ms": ms }));
                 }
-                stop_on_error
+                stops.on_error
             }
         };
+        if !terse && !broke.is_empty() {
+            // Filled in below, with `repairedBy` where a later step did.
+            if let Some(map) = results.last_mut().and_then(Value::as_object_mut) {
+                map.insert("broke".into(), Value::Array(Vec::new()));
+            }
+        }
         if stop {
             break;
         }
     }
-    let report = if terse {
-        let mut report =
-            json!({ "completed": completed, "failed": failed, "errors": errors, "last": last });
-        // What still fails at the end, of what the steps reported.
-        let features_failed: Vec<Value> = if reported.is_empty() {
-            Vec::new()
-        } else {
-            session
-                .failed_features()
-                .into_iter()
-                .filter_map(|mut entry| {
-                    let id = entry.get("id").and_then(Value::as_str)?.to_string();
-                    let step = *reported.get(&id)?;
-                    if let Some(map) = entry.as_object_mut() {
-                        map.insert("step".into(), step.into());
-                    }
-                    Some(entry)
-                })
-                .collect()
-        };
-        if let (false, Some(map)) = (features_failed.is_empty(), report.as_object_mut()) {
-            map.insert("featuresFailed".into(), features_failed.into());
+    // The breaks, with what repaired them, into their steps' entries.
+    if !terse {
+        for (step, _, entry) in &breaks {
+            let list = results
+                .get_mut(*step)
+                .and_then(|r| r.get_mut("broke"))
+                .and_then(Value::as_array_mut);
+            if let Some(list) = list {
+                list.push(entry.clone());
+            }
         }
-        report
+    }
+    // What still fails at the end, of what the steps broke.
+    let features_failed: Vec<Value> = before
+        .into_iter()
+        .filter_map(|mut entry| {
+            let id = entry.get("id").and_then(Value::as_str)?.to_string();
+            let step = *broken_by.get(&id)?;
+            let fix = fix_advice(&entry);
+            if let Some(map) = entry.as_object_mut() {
+                map.insert("step".into(), step.into());
+                map.insert("fix".into(), fix.into());
+            }
+            Some(entry)
+        })
+        .collect();
+    let broken = features_failed.len();
+    let mut report = if terse {
+        json!({ "completed": completed, "failed": failed, "errors": errors, "last": last })
     } else {
         json!({ "completed": completed, "failed": failed, "results": results })
     };
-    let mut report = report;
     if let Some(map) = report.as_object_mut() {
+        if !features_failed.is_empty() {
+            map.insert("featuresFailed".into(), features_failed.into());
+        }
         map.insert("ms".into(), whole.ms());
     }
-    BatchOutcome { failed, report }
+    BatchOutcome {
+        failed,
+        broken,
+        report,
+    }
+}
+
+/// What fixes a feature that fails at the end of a batch (an entry of
+/// `featuresFailed`): the feature it fails because of first; a sketch
+/// with the sketch commands, anything else with feature.edit. Undoing is
+/// said for what it is: the last step applied, once per step, never the
+/// step that broke it alone.
+fn fix_advice(entry: &Value) -> String {
+    let own = match entry.get("type").and_then(Value::as_str) {
+        Some("sketch") => {
+            "fix it with sketch.edit (its dimensions and constraints) or sketch.delete"
+        }
+        _ => "fix it with feature.edit (feature.delete removes it)",
+    };
+    let first = entry
+        .get("causedBy")
+        .and_then(Value::as_str)
+        .map(|cause| format!("it fails because {cause} does: fix {cause} first; else "))
+        .unwrap_or_default();
+    format!("{first}{own}; edit.undo takes back the last step applied, once per step")
+}
+
+/// The features of the active document that fail now (none without one).
+fn failing_now(session: &mut Session) -> Vec<Value> {
+    if session.has_document() {
+        session.failed_features()
+    } else {
+        Vec::new()
+    }
 }
 
 /// Wall-clock time for the `ms` of a reply, where the host has a clock:
@@ -337,79 +430,6 @@ impl Stopwatch {
     }
 }
 
-/// What makes a step whose command succeeded a failed step: each feature
-/// its result reports failing ([`reported_failing`]), said as a sentence
-/// ("the feature F3 `Fillet1` could not be built: why"). Empty when none
-/// does.
-/// Renaming a feature that failed before is no failure of the rename.
-fn failing_features(command: &str, result: &Value) -> Vec<String> {
-    if command == "feature.rename" {
-        return Vec::new();
-    }
-    let mut said = Vec::new();
-    collect_failing(result, &mut said);
-    said
-}
-
-fn collect_failing(result: &Value, said: &mut Vec<String>) {
-    let text = |value: &Value, key: &str| {
-        value
-            .get(key)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string()
-    };
-    let name = |value: &Value, key: &str| {
-        let name = text(value, key);
-        if name.is_empty() {
-            String::new()
-        } else {
-            format!(" `{name}`")
-        }
-    };
-    if result.get("status").and_then(Value::as_str) == Some("failed")
-        && let Some(id) = result.get("id").and_then(Value::as_str)
-        && is_feature_id(id)
-    {
-        let cause = result
-            .get("causedBy")
-            .and_then(Value::as_str)
-            .map(|c| format!(" (because {c} failed)"))
-            .unwrap_or_default();
-        said.push(format!(
-            "the feature {id}{} could not be built{cause}: {}",
-            name(result, "name"),
-            text(result, "error")
-        ));
-    }
-    if let Some(sweep) = result.get("sweep") {
-        collect_failing(sweep, said);
-    }
-    for entry in result
-        .get("failed")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        if let Some(id) = entry.get("id").and_then(Value::as_str)
-            && is_feature_id(id)
-        {
-            said.push(format!(
-                "it made the feature {id}{} fail: {}",
-                name(entry, "feature"),
-                text(entry, "error")
-            ));
-        }
-    }
-}
-
-/// Whether `id` is a feature's (`F<n>`; an assertion's or an instance's
-/// is not).
-fn is_feature_id(id: &str) -> bool {
-    id.strip_prefix('F')
-        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-}
-
 /// Commands after which the active document may be another one.
 const SWITCHES_DOCUMENT: &[&str] = &[
     "file.new",
@@ -419,36 +439,6 @@ const SWITCHES_DOCUMENT: &[&str] = &[
     "recovery.open",
 ];
 
-/// The ids of the features a step's result reports failing: the feature
-/// the result is about when its status is `failed` (only a feature's
-/// result has an id `F<n>`; an assertion's has none), the sweep an
-/// extrusion with `cut` made, and the features under `failed`.
-fn reported_failing(result: &Value) -> Vec<String> {
-    let mut ids = Vec::new();
-    if result.get("status").and_then(Value::as_str) == Some("failed")
-        && let Some(id) = result.get("id").and_then(Value::as_str)
-        && is_feature_id(id)
-    {
-        ids.push(id.to_string());
-    }
-    if let Some(sweep) = result.get("sweep") {
-        ids.extend(reported_failing(sweep));
-    }
-    for entry in result
-        .get("failed")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        if let Some(id) = entry.get("id").and_then(Value::as_str)
-            && is_feature_id(id)
-        {
-            ids.push(id.to_string());
-        }
-    }
-    ids
-}
-
 /// What a caught panic said, for the error that replaces it.
 pub(crate) fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
     payload
@@ -456,4 +446,43 @@ pub(crate) fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
         .map(|text| (*text).to_string())
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "no details".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review of 2026-11-05: the advice said feature.edit for a sketch and
+    /// "take the step back with edit.undo", which undoes the last step,
+    /// not the one that broke it.
+    #[test]
+    fn the_fix_is_said_for_the_kind_of_feature() {
+        let sketch = fix_advice(&json!({"id": "F3", "type": "sketch"}));
+        assert!(sketch.starts_with("fix it with sketch.edit"), "{sketch}");
+        assert!(!sketch.contains("feature.edit"), "{sketch}");
+        let fillet = fix_advice(&json!({"id": "F2", "type": "fillet"}));
+        assert!(fillet.starts_with("fix it with feature.edit"), "{fillet}");
+        assert!(
+            fillet.contains("the last step applied, once per step"),
+            "{fillet}"
+        );
+        let downstream = fix_advice(&json!({"id": "F4", "type": "extrude", "causedBy": "F3"}));
+        assert!(
+            downstream.starts_with("it fails because F3 does: fix F3 first"),
+            "{downstream}"
+        );
+    }
+
+    #[test]
+    fn a_brief_summary_is_its_first_sentence_within_the_limit() {
+        assert_eq!(
+            first_sentence("Saves it (e.g. as a.b). Then more."),
+            "Saves it (e.g. as a.b)."
+        );
+        assert_eq!(first_sentence("Uses e.g. this. Next."), "Uses e.g. this.");
+        let long = format!("{}.", "word ".repeat(100));
+        let cut = first_sentence(&long);
+        assert!(cut.ends_with('…'), "{cut}");
+        assert!(cut.chars().count() <= BRIEF_SUMMARY_CHARS, "{cut}");
+    }
 }

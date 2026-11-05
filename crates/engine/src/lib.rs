@@ -1026,7 +1026,8 @@ impl Session {
     }
 
     /// The features of the active document that fail now, each as the
-    /// entries of an edit's `failed` (`{feature, id, error, causedBy?}`),
+    /// entries of an edit's `failed` (`{feature, id, error, causedBy?}`)
+    /// with its kind (`type`),
     /// in history order; empty without a document. Regenerates when the
     /// document changed since it was last regenerated.
     pub fn failed_features(&mut self) -> Vec<Value> {
@@ -1036,10 +1037,28 @@ impl Session {
         {
             return Vec::new();
         }
-        out.get("failed")
+        let mut failed = out
+            .get("failed")
             .and_then(Value::as_array)
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // Each with its kind (`type`, as in files), so a caller can say how
+        // to fix it (a sketch is fixed with sketch.edit, not feature.edit).
+        if let Ok(open) = self.document() {
+            let doc = open.history.current();
+            for entry in &mut failed {
+                let id = entry.get("id").and_then(Value::as_str).unwrap_or_default();
+                let kind = doc
+                    .features
+                    .iter()
+                    .find(|f| f.id.to_string() == id)
+                    .map(|f| f.kind.type_name());
+                if let (Some(map), Some(kind)) = (entry.as_object_mut(), kind) {
+                    map.insert("type".into(), kind.into());
+                }
+            }
+        }
+        failed
     }
 
     /// Why `spec` cannot run right now, if it cannot.

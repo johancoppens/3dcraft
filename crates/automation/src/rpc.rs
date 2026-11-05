@@ -43,8 +43,8 @@ pub const METHODS: &[Method] = &[
     },
     Method {
         name: "batch",
-        params: r#"{"steps": [{"command": string, "params": object = {}}], "stopOnError": boolean = true, "terse": boolean = false}"#,
-        summary: "Runs up to 256 commands in order and returns {completed, failed, results: [{ok, result | error, ms}], ms}; with terse, {completed, failed, errors: [{step, error, ms}], last: {step, result, ms}, ms}. A step whose command succeeded but reports a feature that could not be built (the one it added or edited, or one its edit made fail) is a failed step too, with applied: true (it stays applied) and, but terse, its result; stopOnError stops there. ms is wall-clock milliseconds, per step and for the batch: the only fields that differ from run to run. Not a transaction: earlier steps stay applied.",
+        params: r#"{"steps": [{"command": string, "params": object = {}}], "stopOnError": boolean = true, "stopOnBreak": boolean = false, "terse": boolean = false}"#,
+        summary: "Runs up to 256 commands in order and returns {completed, failed, results: [{ok, result | error, broke?, ms}], featuresFailed?, ms}; with terse, {completed, failed, errors: [{step, error, ms}], last: {step, result, ms}, featuresFailed?, ms}. failed counts commands that returned an error (stopOnError stops at the first). A step that makes a feature fail lists it under broke (with repairedBy when a later step repaired it); featuresFailed is the features that fail at the end and that a step made fail, judged after the last step. stopOnBreak also stops at the first break. ms is wall-clock milliseconds, per step and for the batch: the only fields that differ from run to run. Not a transaction: earlier steps stay applied.",
     },
     Method {
         name: "methods",
@@ -265,13 +265,16 @@ fn dispatch(
                 method,
                 "parameter",
                 params,
-                &["steps", "stopOnError", "terse", "intent"],
+                &["steps", "stopOnError", "stopOnBreak", "terse", "intent"],
             )?;
-            let stop_on_error = p.bool("stopOnError")?.unwrap_or(true);
+            let stops = registry::BatchStops {
+                on_error: p.bool("stopOnError")?.unwrap_or(true),
+                on_break: p.bool("stopOnBreak")?.unwrap_or(false),
+            };
             let terse = p.bool("terse")?.unwrap_or(false);
             let intent = p.str("intent")?;
             let steps = registry::parse_steps(method, "parameter", &p, "command")?;
-            Ok(registry::run_batch(session, &steps, stop_on_error, terse, intent).report)
+            Ok(registry::run_batch(session, &steps, &stops, terse, intent).report)
         }
         "methods" => {
             Fields::new(method, "parameter", params, &[])?;
