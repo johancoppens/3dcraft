@@ -235,7 +235,7 @@ The server gives the agent these tools, and tells it how to start when it connec
 
 | Tool | What it does |
 |---|---|
-| `command_list` | The commands, with their parameters and a summary each (`filter` narrows it) |
+| `command_list` | The commands, with their parameters and a summary each (`filter` narrows it; `brief: true` gives the first sentence of each summary, `id` one command whole) |
 | `command_run` | Runs one command: `{"id": "feature.block", "params": {...}}` |
 | `command_batch` | Runs up to 256 commands in order (`terse: true` returns only failures and the last result) |
 | `doc_inspect` | The whole document: variables, features with their status, bodies with volume, area, faces |

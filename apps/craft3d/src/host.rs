@@ -341,6 +341,18 @@ pub fn route(line: &str) -> Route {
                     .flatten()
             });
             match tool {
+                // `ui.get` through MCP is answered while a command runs,
+                // as it is on the JSON channel (2026-11-05: through the
+                // bridge it waited for the command to finish).
+                Some("control_call")
+                    if message
+                        .as_ref()
+                        .and_then(|m| m.get("params")?.get("arguments")?.get("method"))
+                        .and_then(Value::as_str)
+                        == Some("ui.get") =>
+                {
+                    Route::Anytime
+                }
                 Some("control_call") | None => Route::Window,
                 Some(_) => Route::Engine,
             }

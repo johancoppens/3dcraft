@@ -178,7 +178,7 @@ pub use selection::{
     summary as selection_summary,
 };
 pub use typed::TypedKind;
-pub use workspace::{Access, Workspace};
+pub use workspace::{Access, FileHelp, Workspace};
 pub use workspace::{canonical, plain};
 
 use craft3d_doc::Document;
@@ -599,6 +599,9 @@ pub struct Session {
     pub(crate) documents: Vec<OpenDocument>,
     pub(crate) active: usize,
     pub(crate) workspace: Workspace,
+    /// The way out a refusal to touch a file names where the host is not
+    /// the command line ([`FileHelp`]); `None` keeps the command line's.
+    pub(crate) file_help: Option<FileHelp>,
     /// What a viewer draws for the active document (`scene.rs`).
     pub(crate) scene: scene::SceneCache,
     /// Autosave and crash recovery (`recovery.rs`); none in a clone.
@@ -695,6 +698,7 @@ impl Session {
             documents: Vec::new(),
             active: 0,
             workspace,
+            file_help: None,
             scene: scene::SceneCache::default(),
             recovery: recovery::RecoveryHandle::default(),
             trees_held_for: Vec::new(),
@@ -827,6 +831,14 @@ impl Session {
             .flat_map(|(_, _, keys)| keys.iter().copied())
             .collect();
         (held, kept)
+    }
+
+    /// Which open document is the active one, by its identity within the
+    /// process (never reused); `None` without one. A caller that compares
+    /// it before and after a command knows whether the command switched
+    /// documents, whichever command it was.
+    pub fn active_document_id(&self) -> Option<u64> {
+        self.documents.get(self.active).map(|d| d.id)
     }
 
     /// The revision of the active document: it moves with every edit
@@ -1022,7 +1034,8 @@ impl Session {
     }
 
     /// The features of the active document that fail now, each as the
-    /// entries of an edit's `failed` (`{feature, id, error, causedBy?}`),
+    /// entries of an edit's `failed` (`{feature, id, error, causedBy?}`)
+    /// with its kind (`type`),
     /// in history order; empty without a document. Regenerates when the
     /// document changed since it was last regenerated.
     pub fn failed_features(&mut self) -> Vec<Value> {
@@ -1032,10 +1045,28 @@ impl Session {
         {
             return Vec::new();
         }
-        out.get("failed")
+        let mut failed = out
+            .get("failed")
             .and_then(Value::as_array)
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // Each with its kind (`type`, as in files), so a caller can say how
+        // to fix it (a sketch is fixed with sketch.edit, not feature.edit).
+        if let Ok(open) = self.document() {
+            let doc = open.history.current();
+            for entry in &mut failed {
+                let id = entry.get("id").and_then(Value::as_str).unwrap_or_default();
+                let kind = doc
+                    .features
+                    .iter()
+                    .find(|f| f.id.to_string() == id)
+                    .map(|f| f.kind.type_name());
+                if let (Some(map), Some(kind)) = (entry.as_object_mut(), kind) {
+                    map.insert("type".into(), kind.into());
+                }
+            }
+        }
+        failed
     }
 
     /// Why `spec` cannot run right now, if it cannot.
@@ -1063,7 +1094,10 @@ impl Session {
                 .collect::<Vec<_>>(),
             self.document().ok().map(|open| open.id),
         );
-        let outcome = self.logged(id, |session| session.execute_unrecorded(id, params));
+        let mut outcome = self.logged(id, |session| session.execute_unrecorded(id, params));
+        if let (Err(error), Some(help)) = (&mut outcome, &self.file_help) {
+            *error = CommandError::new(help.explain(error.message()));
+        }
         self.track_who_opened(id, before);
         // The report itself is not what a report is about.
         if let Err(error) = &outcome

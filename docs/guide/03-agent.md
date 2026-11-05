@@ -48,7 +48,8 @@ This is what an agent sent for the request above, and what came back (results sh
 real). It ran headless, `craft3d-cli mcp --automation-read-root work --automation-write-root work`.
 
 **1. Learn the commands.** `command_list` with a filter, for the commands it needs; the parameters come
-with each:
+with each. (`brief: true` gives every command with its parameters and the first sentence of its summary,
+a fraction of the size; `id` then gives one command whole.)
 
 ```text
 command_list {"filter": "pattern"}
@@ -193,10 +194,9 @@ The parts worth knowing:
   feature could not be built. Its result has `"status": "failed"` and an `error` that names the parameter,
   the entities and often the largest value that would fit ("the largest radius that fits there is below
   26 mm"). Features built from it fail too, each with `causedBy`: the one to fix. See [chapter 6](06-concepts.md#failed-features). A
-  `command_batch` with `terse` lists under `featuresFailed` the features that still fail when the batch
-  ends and that one of its steps added, edited or broke (each with that step and its `causedBy`); they are
-  not counted in its `failed`, which counts commands that were refused. A failed assertion is not listed
-  there: read `assert.list` or `document.check`.
+  `command_batch` judges this at the end: it lists under `featuresFailed` the features that still fail
+  when the batch ends and that one of its steps broke, and is then an error; a break a later step
+  repairs is only noted. A failed assertion is not listed there: read `assert.list` or `document.check`.
 - **`failed`** in the result of `variable.set` and of the edits that can break other features
   (`variable.delete` with `force`, `feature.edit`, `feature.suppress`, `feature.move`, `feature.delete`, `history.rollback`,
   and every `sketch.*` command that changes an existing sketch: a dimension, a constraint, an entity drawn

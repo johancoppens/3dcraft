@@ -1079,8 +1079,13 @@ fn serve_answers_json_lines_on_stdin() {
     let ran = cli_in(&dir, &["serve"], Some(&input)).ok();
     let replies = ran.json_lines();
     assert_eq!(replies.len(), 6, "{}", ran.stdout);
+    // The time a command took is the one field that differs from run to
+    // run (2026-11-05).
+    assert!(replies[0]["ms"].as_f64().is_some(), "{}", replies[0]);
+    let mut first = replies[0].clone();
+    first.as_object_mut().unwrap().remove("ms");
     assert_eq!(
-        replies[0],
+        first,
         json!({"id": 1, "ok": true, "result": {"document": 0, "units": "mm"}})
     );
     assert_eq!(replies[1]["id"], Value::Null);

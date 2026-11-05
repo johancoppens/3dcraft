@@ -2738,6 +2738,23 @@ impl Session {
         self.workspace = workspace;
     }
 
+    /// Sets the way out a refusal to touch a file names, for a host that
+    /// is not the command line (the desktop window); `None` keeps the
+    /// command line's wording.
+    pub fn set_file_help(&mut self, help: Option<crate::FileHelp>) {
+        self.file_help = help;
+    }
+
+    /// `error` with the host's way out when it refuses a path
+    /// ([`crate::FileHelp::explain`]): for a shell's own errors that do
+    /// not come from a command (a screenshot's path).
+    pub fn explain_file_error(&self, error: CommandError) -> CommandError {
+        match &self.file_help {
+            Some(help) => CommandError::new(help.explain(error.message())),
+            None => error,
+        }
+    }
+
     /// Writes `bytes` to `path` under the write root, atomically: for a
     /// shell's own output files (a screenshot), which are not a command's.
     #[cfg(not(target_arch = "wasm32"))]
@@ -2747,7 +2764,10 @@ impl Session {
                 "this session keeps its files in memory; leave `path` out to get the data in the reply",
             ));
         }
-        let resolved = self.workspace.resolve_write(path)?;
+        let resolved = self
+            .workspace
+            .resolve_write(path)
+            .map_err(|e| self.explain_file_error(e))?;
         crate::workspace::write_atomic(&resolved, bytes)
     }
 
