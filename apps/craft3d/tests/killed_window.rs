@@ -97,6 +97,10 @@ impl App {
             .args(["--renderer", "cpu", "--control", "0"])
             .arg("--control-token-file")
             .arg(&token_file)
+            // A folder of its own for agents: a `--control` window without
+            // roots would make the real `~/Documents/3DCraft` (2026-11-05).
+            .arg("--automation-write-root")
+            .arg(dir.join("work"))
             .arg("--recovery-dir")
             .arg(dir.join("recovery"))
             .args(["--autosave-interval", "0.05"])
