@@ -955,3 +955,58 @@ fn file_new_takes_the_cap_on_entity_tolerances() {
         assert!(message.contains("loosest"), "{bad}: {message}");
     }
 }
+
+/// Undo or redo back to the state on disk is the saved state: the
+/// document is clean there and dirty everywhere else, also after the
+/// edits that branch off it (found by the end-to-end test: undo back to
+/// the saved state left the document dirty).
+#[test]
+fn undo_back_to_the_saved_state_is_clean() {
+    let dir = workdir("undo-clean");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "w", "expr": "10 mm"}),
+    );
+    run(&mut s, "file.save", json!({"path": "u.3dcraft"}));
+    let dirty = |s: &mut Session| run(s, "document.inspect", json!({}))["dirty"].clone();
+    assert_eq!(dirty(&mut s), false);
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "w", "expr": "20 mm"}),
+    );
+    assert_eq!(dirty(&mut s), true);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(dirty(&mut s), false, "undo back to the saved state");
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(dirty(&mut s), true, "redo away from it");
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(dirty(&mut s), false);
+    // Undo past the saved state: dirty, and clean again on the way back.
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(dirty(&mut s), true, "before the saved state");
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(dirty(&mut s), false, "redo back to the saved state");
+    // The same values by another edit are another state: dirty.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "w", "expr": "30 mm"}),
+    );
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "w", "expr": "10 mm"}),
+    );
+    assert_eq!(
+        dirty(&mut s),
+        true,
+        "edited back by hand: not the state saved"
+    );
+    let listed = run(&mut s, "file.list", json!({}));
+    assert_eq!(listed["documents"][0]["dirty"], true);
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -550,7 +550,7 @@ fn cut_list(session: &mut Session, params: &Value) -> Run {
     let csv_wanted = match p.str("format")? {
         None | Some("json") => false,
         Some("csv") => true,
-        Some(other) => return fail(format!("{ID}: `format` is json or csv, not `{other}`")),
+        Some(other) => return fail(format!("{ID}: `format` must be json or csv, not `{other}`")),
     };
     let geometry = p.bool("geometry")?.unwrap_or(false);
     if csv_wanted && geometry {
@@ -619,7 +619,7 @@ fn cut_export(session: &mut Session, params: &Value) -> Run {
     let format = match p.str("format")? {
         Some("dxf") => DrawingFormat::Dxf,
         Some("svg") => DrawingFormat::Svg,
-        Some(other) => return fail(format!("{ID}: `format` is dxf or svg, not `{other}`")),
+        Some(other) => return fail(format!("{ID}: `format` must be dxf or svg, not `{other}`")),
         None => std::path::Path::new(path)
             .extension()
             .and_then(|e| e.to_str())
@@ -634,7 +634,9 @@ fn cut_export(session: &mut Session, params: &Value) -> Run {
         None | Some("sheet") => false,
         Some("each") => true,
         Some(other) => {
-            return fail(format!("{ID}: `layout` is sheet or each, not `{other}`"));
+            return fail(format!(
+                "{ID}: `layout` must be sheet or each, not `{other}`"
+            ));
         }
     };
     let copies = p.bool("copies")?.unwrap_or(false);
@@ -642,13 +644,13 @@ fn cut_export(session: &mut Session, params: &Value) -> Run {
         None => None,
         Some(_) if format == DrawingFormat::Dxf => {
             return fail(format!(
-                "{ID}: `stroke` is the width of an SVG's lines; a DXF has none"
+                "{ID}: `stroke` is the width of an SVG's lines and a DXF has none; leave it out or write .svg"
             ));
         }
         Some(w) if w.is_finite() && w > 0.0 && w <= 100.0 => Some(w),
-        Some(_) => {
+        Some(w) => {
             return fail(format!(
-                "{ID}: `stroke` is a line width in millimetres, above 0 and at most 100"
+                "{ID}: `stroke` must be a line width in millimetres above 0 and at most 100, not {w}"
             ));
         }
     };
@@ -658,6 +660,7 @@ fn cut_export(session: &mut Session, params: &Value) -> Run {
         ));
     }
     let unit = session.document()?.history.current().units.length;
+    let u = unit.symbol();
     let length = |key: &str| -> Result<Option<f64>, CommandError> {
         match p.expr(key)? {
             None => Ok(None),
@@ -670,19 +673,15 @@ fn cut_export(session: &mut Session, params: &Value) -> Run {
     let kerf = match length("kerf")? {
         None => 0.0,
         Some(k) if k.is_finite() && k >= 0.0 => k,
-        Some(_) => return fail(format!("{ID}: `kerf` must be a length of 0 or more")),
+        Some(k) => {
+            return fail(format!(
+                "{ID}: `kerf` must be a length of 0 or more, not {}",
+                crate::drawing_cmds::short_length(k, u)
+            ));
+        }
     };
-    let gap = match length("gap")? {
-        Some(g) if g.is_finite() && g >= 0.0 => g,
-        Some(_) => return fail(format!("{ID}: `gap` must not be negative")),
-        None => 5.0 / crate::drawing_cmds::drawing_unit(unit).millimetres(),
-    };
-    let width = match length("width")? {
-        Some(w) if w.is_finite() && w > 0.0 => Some(w),
-        Some(_) => return fail(format!("{ID}: `width` must be positive")),
-        None => None,
-    };
-    if each && (p.has("gap") || p.has("width")) {
+    let (gap, width) = crate::drawing_cmds::sheet_gap_width(session, &p, ID)?;
+    if each && (p.get("gap").is_some() || p.get("width").is_some()) {
         return fail(format!(
             "{ID}: `gap` and `width` lay parts out on one sheet; with layout each every part has a file of its own"
         ));
@@ -745,7 +744,7 @@ fn cut_export(session: &mut Session, params: &Value) -> Run {
             let reach = (b[2] - b[0]).max(b[3] - b[1]);
             if !(reach.is_finite() && reach * f64::EPSILON <= slack) {
                 return fail(format!(
-                    "{ID}: part `{}` reaches {reach}, where a coordinate cannot be held to the document's tolerance {slack}",
+                    "{ID}: part `{}` reaches {reach} {u}, where a coordinate cannot be held to the document's tolerance {slack} {u}",
                     part.name
                 ));
             }
@@ -758,7 +757,7 @@ fn cut_export(session: &mut Session, params: &Value) -> Run {
             if let Some(width) = width {
                 if w > width + slack {
                     return fail(format!(
-                        "{ID}: part `{}` is {w} long, more than the sheet's width {width}",
+                        "{ID}: part `{}` is {w} {u} long, more than the sheet's width {width} {u}; give a larger `width` or leave it out",
                         part.name
                     ));
                 }
@@ -773,7 +772,7 @@ fn cut_export(session: &mut Session, params: &Value) -> Run {
             let reach = (x + w).max(y + h);
             if !(reach.is_finite() && reach * f64::EPSILON <= slack) {
                 return fail(format!(
-                    "{ID}: the sheet would reach {reach}, where a coordinate cannot be held to the document's tolerance {slack}; use a smaller `gap`"
+                    "{ID}: the sheet would reach {reach} {u}, where a coordinate cannot be held to the document's tolerance {slack} {u}; use a smaller `gap`"
                 ));
             }
             placed.push((i, [x - b[0], y - b[1]]));

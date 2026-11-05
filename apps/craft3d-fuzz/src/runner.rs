@@ -3,8 +3,13 @@
 //! designs):
 //!
 //! - **crash**: a command that panicked (the engine catches it and says
-//!   "internal error"); a process that died, hung or ran out of memory is
-//!   seen by the runner outside (`cargo xtask fuzz`);
+//!   "internal error (a bug in 3DCraft …): it panicked"); a process that
+//!   died, hung or ran out of memory is seen by the runner outside
+//!   (`cargo xtask fuzz`);
+//! - **bug**: a command or a feature that refused with a bug the code
+//!   caught itself (its reason says "internal error (a bug in 3DCraft",
+//!   `craft3d_math::BUG`, without a panic): no crash, but a bug all the
+//!   same, an error or a feature's `failed` status alike;
 //! - **wrong**: a group that was accepted and left a body that
 //!   `document.check` (deep: topology, self-intersection, the boolean's own
 //!   check) finds fault with, a boolean whose volumes break
@@ -26,8 +31,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// of its own, also when designs run on several threads at once.
 static SAVES: AtomicU64 = AtomicU64::new(0);
 
-/// The mark of a caught panic in an engine error (`Session::execute`).
+/// The mark of a bug in a message (`craft3d_math::BUG`): a panic the
+/// engine caught, or a bug the code caught itself.
 const INTERNAL: &str = "internal error (a bug in 3DCraft";
+
+/// The verdict a message carries: `crash` for a caught panic, `bug` for a
+/// bug the code caught itself, `None` for an ordinary refusal.
+pub(crate) fn bug_kind(message: &str) -> Option<&'static str> {
+    if !message.contains(INTERNAL) {
+        None
+    } else if message.contains(craft3d_engine::PANICKED) {
+        Some("crash")
+    } else {
+        Some("bug")
+    }
+}
 
 /// Longest reason or detail kept, in characters.
 const KEPT: usize = 600;
@@ -54,9 +72,9 @@ pub struct Options {
 /// Something found: a crash or a wrong result, at a group.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Finding {
-    /// `crash` or `wrong`.
+    /// `crash`, `bug` or `wrong`.
     pub kind: &'static str,
-    /// The oracle that saw it: `panic`, `topology`, `self-intersection`,
+    /// The oracle that saw it: `panic`, `bug`, `topology`, `self-intersection`,
     /// `boolean-check`, `unmeasurable`, `identity`, `regen`, `determinism`,
     /// `check-failed`.
     pub oracle: String,
@@ -174,7 +192,13 @@ pub struct Runner {
 /// Why a group stopped before its end.
 enum Stop {
     Refused(String, String),
-    Crashed(String, String),
+    /// A crash or a bug (`bug_kind`), the command and the message.
+    Found(&'static str, String, String),
+}
+
+/// The oracle that saw a crash (`panic`) or a bug (`bug`).
+fn oracle_of_bug(kind: &str) -> &'static str {
+    if kind == "crash" { "panic" } else { "bug" }
 }
 
 /// With `CRAFT3D_FUZZ_TRACE` set, how long a command took, on stderr
@@ -204,16 +228,18 @@ fn run_commands(
                         .get("error")
                         .and_then(Value::as_str)
                         .unwrap_or("failed without a reason");
-                    return Err(Stop::Refused(cmd.command.clone(), cut(reason)));
+                    return Err(match bug_kind(reason) {
+                        Some(kind) => Stop::Found(kind, cmd.command.clone(), cut(reason)),
+                        None => Stop::Refused(cmd.command.clone(), cut(reason)),
+                    });
                 }
                 done.push((cmd.command.clone(), params));
             }
             Err(error) => {
                 let message = error.message();
-                return Err(if message.contains(INTERNAL) {
-                    Stop::Crashed(cmd.command.clone(), cut(message))
-                } else {
-                    Stop::Refused(cmd.command.clone(), cut(message))
+                return Err(match bug_kind(message) {
+                    Some(kind) => Stop::Found(kind, cmd.command.clone(), cut(message)),
+                    None => Stop::Refused(cmd.command.clone(), cut(message)),
                 });
             }
         }
@@ -365,8 +391,8 @@ impl Runner {
             }
         }
         match run_commands(&mut self.session, &group.commands, &self.ids) {
-            Err(Stop::Crashed(command, detail)) => {
-                return self.found("crash", "panic", &command, &detail);
+            Err(Stop::Found(kind, command, detail)) => {
+                return self.found(kind, oracle_of_bug(kind), &command, &detail);
             }
             Err(Stop::Refused(command, reason)) => {
                 self.session = before;
@@ -387,6 +413,10 @@ impl Runner {
         // A feature that failed because of the group (an edit upstream of
         // it) is a refusal of the group as well.
         if let Some(reason) = self.failed_feature() {
+            if let Some(kind) = bug_kind(&reason) {
+                let command = group.main_command().to_string();
+                return self.found(kind, oracle_of_bug(kind), &command, &reason);
+            }
             self.session = before;
             self.script.truncate(script_len);
             self.report.refused.push(Refusal {
@@ -422,11 +452,7 @@ impl Runner {
             Ok(r) => r,
             Err(e) => {
                 let message = e.message().to_string();
-                let kind = if message.contains(INTERNAL) {
-                    "crash"
-                } else {
-                    "wrong"
-                };
+                let kind = bug_kind(&message).unwrap_or("wrong");
                 return self.found(kind, "check-failed", "document.check", &message);
             }
         };
@@ -485,16 +511,30 @@ impl Runner {
             let name = "__identity";
             let sibling = json!({"op": op, "target": target, "tool": tool, "name": name});
             match side.execute("feature.boolean", &sibling) {
-                Err(e) if e.message().contains(INTERNAL) => {
-                    let detail = format!("the sibling {op} of the boolean: {}", e.message());
-                    return Some(self.found("crash", "panic", "feature.boolean", &detail));
-                }
-                Err(_) => {
+                Err(e) => {
+                    if let Some(kind) = bug_kind(e.message()) {
+                        let detail = format!("the sibling {op} of the boolean: {}", e.message());
+                        return Some(self.found(
+                            kind,
+                            oracle_of_bug(kind),
+                            "feature.boolean",
+                            &detail,
+                        ));
+                    }
                     self.report.identities_skipped += 1;
                     return None;
                 }
                 Ok(result) if result.get("status").and_then(Value::as_str) == Some("failed") => {
                     let error = result.get("error").and_then(Value::as_str).unwrap_or("");
+                    if let Some(kind) = bug_kind(error) {
+                        let detail = format!("the sibling {op} of the boolean: {error}");
+                        return Some(self.found(
+                            kind,
+                            oracle_of_bug(kind),
+                            "feature.boolean",
+                            &detail,
+                        ));
+                    }
                     if error.contains("the result is empty") {
                         volumes.insert(op, 0.0);
                     } else {

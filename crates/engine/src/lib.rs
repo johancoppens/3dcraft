@@ -123,6 +123,14 @@ mod visibility_cmds;
 mod when_cmds;
 mod workspace;
 
+/// What the error of a command that panicked says after [`craft3d_math::BUG`]:
+/// a panic caught (a crash), told apart from a bug the code caught itself
+/// and refused with (the fuzz runner's `crash` and `bug`).
+pub const PANICKED: &str = "it panicked";
+
+/// The words of every bug (`craft3d_math::BUG`), for the engine's users.
+pub use craft3d_math::BUG;
+
 pub use asm_outline::{AssemblyOutline, JointHandle, OutlineInstance, OutlineMate};
 pub use assert_cmds::{AssertionState, AssertionStatus};
 pub use checks_elsewhere::{CheckRequest, measure_checks};
@@ -241,6 +249,10 @@ pub(crate) struct OpenDocument {
     pub file: Option<String>,
     /// The revision that is on disk.
     pub saved_revision: Option<u64>,
+    /// The document that is on disk, as it was when it was opened or
+    /// saved: undo or redo back to it is the saved state again, although
+    /// they count as revisions of their own ([`OpenDocument::dirty`]).
+    pub saved_document: Option<Arc<Document>>,
     /// What the file at `path` looked like when the document was opened
     /// from it or last saved to it.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -384,12 +396,14 @@ impl OpenDocument {
     pub(crate) fn new(document: Document, path: Option<String>) -> Self {
         let history = History::new(document);
         let saved_revision = path.is_some().then(|| history.revision());
+        let saved_document = path.is_some().then(|| Arc::clone(history.current()));
         Self {
             id: next_document_id(),
             history,
             path,
             file: None,
             saved_revision,
+            saved_document,
             disk: None,
             recovered: None,
             regen: None,
@@ -445,7 +459,29 @@ impl OpenDocument {
     /// Changes not on disk. A Jig in use has none: its file is never
     /// written, and setting its parameters is using it, as a form is.
     pub(crate) fn dirty(&self) -> bool {
-        !self.jig_in_use && self.saved_revision != Some(self.history.revision())
+        !self.jig_in_use && !self.at_saved()
+    }
+
+    /// The document is the one on disk: the revision saved, or the very
+    /// state saved come back by undo or redo (each a revision of its own).
+    fn at_saved(&self) -> bool {
+        self.saved_revision == Some(self.history.revision())
+            || self
+                .saved_document
+                .as_ref()
+                .is_some_and(|saved| Arc::ptr_eq(saved, self.history.current()))
+    }
+
+    /// Records the document as it is now as the one on disk.
+    pub(crate) fn mark_saved(&mut self) {
+        self.saved_revision = Some(self.history.revision());
+        self.saved_document = Some(Arc::clone(self.history.current()));
+    }
+
+    /// Records that nothing of it is on disk as it is.
+    pub(crate) fn mark_not_saved(&mut self) {
+        self.saved_revision = None;
+        self.saved_document = None;
     }
 
     /// True when `file.close` refuses it without `discard`: it has changes
@@ -470,7 +506,7 @@ impl OpenDocument {
     /// A Jig in use whose parameters were changed since it was opened (or
     /// last saved as a model).
     pub(crate) fn parameters_changed(&self) -> bool {
-        self.jig_in_use && self.saved_revision != Some(self.history.revision())
+        self.jig_in_use && !self.at_saved()
     }
 
     /// The bodies and statuses of the current document. A body that went
@@ -1125,7 +1161,7 @@ impl Session {
                     .or_else(|| payload.downcast_ref::<String>().cloned())
                     .unwrap_or_else(|| "no details".to_string());
                 Err(CommandError::new(format!(
-                    "{id}: internal error (a bug in 3DCraft, please report it): {detail}"
+                    "{id}: {BUG}: {PANICKED}: {detail}"
                 )))
             }
         }

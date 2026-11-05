@@ -5,6 +5,7 @@
 //! fail on degenerate input (normalising a zero vector) return `Option`.
 
 mod bits;
+mod bug;
 mod frame;
 pub mod pool;
 mod portable;
@@ -14,6 +15,7 @@ mod tolerance;
 mod transform;
 
 pub use bits::{Bits, bits_of};
+pub use bug::BUG;
 pub use frame::Frame;
 pub use portable::{Portable, fingerprint as portable_fingerprint};
 pub use threads::available_threads;

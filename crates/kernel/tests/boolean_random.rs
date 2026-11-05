@@ -946,8 +946,10 @@ fn random_pairs_with_every_shape_long_run() {
 ///   curve and the rim are within the tolerance of each other. Their
 ///   order about that point was read where they are a hundredth of a
 ///   tolerance apart, came out by the curve's approximation, and the
-///   face "could not be divided into regions; this is a bug". It is read
-///   now where the two are more than four tolerances apart.
+///   face "could not be divided into regions" (reported as a bug then;
+///   since 2026-11-05 such a face is refused as not built yet, and a bug
+///   is only what the code built for itself not fitting together). It is
+///   read now where the two are more than four tolerances apart.
 /// - Seed 2001169 on the grid with every shape: a cylinder (the round end
 ///   of a slot) inside the tube of a torus, its axis square to the
 ///   torus', touching the top of the tube: contact of the fourth order,

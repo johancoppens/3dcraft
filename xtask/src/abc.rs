@@ -8,7 +8,8 @@
 //!
 //! 1. **import**: `file.import`, `document.check`, a mesh, a measure:
 //!    ok, refused (with the reason), invalid (accepted, but the check finds
-//!    fault), crash (a panic or a signal), timeout, oom;
+//!    fault), bug (refused with a bug the code caught itself), crash (a
+//!    panic or a signal), timeout, oom;
 //! 2. **booleans** (with `--booleans`): on the models stage 1 read as valid
 //!    solids, three tools sized to the part (a drill, a slab, a corner
 //!    block), each united, subtracted and intersected, held to
@@ -1033,12 +1034,12 @@ fn scorecard(
     );
     let died: Vec<&Value> = import
         .iter()
-        .filter(|l| matches!(verdict(l), "crash" | "timeout" | "oom"))
+        .filter(|l| matches!(verdict(l), "crash" | "bug" | "timeout" | "oom"))
         .collect();
     if !died.is_empty() {
         let _ = writeln!(
             s,
-            "### Crashes, timeouts, out of memory\n\n| Model | Verdict | Detail |\n|---|---|---|"
+            "### Crashes, bugs, timeouts, out of memory\n\n| Model | Verdict | Detail |\n|---|---|---|"
         );
         for l in died {
             let r: String = reason(l).replace('|', "\\|").chars().take(200).collect();
@@ -1092,12 +1093,12 @@ fn scorecard(
         );
         let died: Vec<&Value> = booleans
             .iter()
-            .filter(|l| matches!(verdict(l), "crash" | "timeout" | "oom"))
+            .filter(|l| matches!(verdict(l), "crash" | "bug" | "timeout" | "oom"))
             .collect();
         if !died.is_empty() {
             let _ = writeln!(
                 s,
-                "### Boolean crashes, timeouts, out of memory\n\n| Model | Verdict | Detail |\n|---|---|---|"
+                "### Boolean crashes, bugs, timeouts, out of memory\n\n| Model | Verdict | Detail |\n|---|---|---|"
             );
             for l in died {
                 let r: String = boolean_reason(l)

@@ -375,7 +375,7 @@ fn fuzz_section(out: &mut String, main: &Path) {
     let _ = writeln!(
         out,
         "Random designs (`cargo xtask fuzz`, {} on {}): {} seeds, {} groups; refused {:.1} % of groups; \
-         wrong **{wrong}** ({:.2} % of seeds{}), crashes **{}**, timeouts **{}**, out of memory **{}**; \
+         wrong **{wrong}** ({:.2} % of seeds{}), bugs **{}**, crashes **{}**, timeouts **{}**, out of memory **{}**; \
          reproducers under {}",
         text("date"),
         text("commit"),
@@ -388,6 +388,7 @@ fn fuzz_section(out: &mut String, main: &Path) {
         } else {
             format!(": {by_oracle}")
         },
+        n("bugs"),
         n("crashes"),
         n("timeouts"),
         n("outOfMemory"),
@@ -639,4 +640,27 @@ pub fn run() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod fuzz_tests {
+    #![allow(clippy::unwrap_used)]
+
+    /// The morning report gives the fuzz run's bugs (a bug the code caught
+    /// itself) beside its crashes, timeouts and out-of-memory deaths.
+    #[test]
+    fn the_fuzz_line_counts_bugs_beside_crashes() {
+        let main = std::env::temp_dir().join(format!("xtask-health-{}", std::process::id()));
+        let dir = main.join("target/fuzz");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("summary.json"),
+            r#"{"seeds": 10, "groups": 50, "bugs": 3, "crashes": 1, "timeouts": 0, "outOfMemory": 0}"#,
+        )
+        .unwrap();
+        let mut out = String::new();
+        super::fuzz_section(&mut out, &main);
+        assert!(out.contains("bugs **3**, crashes **1**"), "{out}");
+        std::fs::remove_dir_all(&main).ok();
+    }
 }

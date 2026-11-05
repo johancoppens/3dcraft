@@ -383,6 +383,35 @@ fn flange_name(bend: usize) -> String {
     format!("flange {bend}")
 }
 
+/// The bends whose tangent lines `cut` crosses (each once, in order): a
+/// crossing inside one of its segments, or a vertex of it on the line,
+/// clear of the line's ends. For a part as built, whose cuts were checked
+/// to cross cleanly.
+pub(super) fn bends_crossed(
+    flats: &[Flat],
+    bends: &[Bend],
+    cut: &Cut,
+    tol: f64,
+) -> Result<Vec<usize>, KernelError> {
+    let mut out = std::collections::BTreeSet::new();
+    for tangent in tangents(flats, bends)? {
+        let len = tangent.length();
+        let inside = |p: P2| {
+            let a = tangent.along(p);
+            a > tol && a < len - tol
+        };
+        let crossed = cut.segments.iter().any(|seg| {
+            let across = crossings_of(seg, &tangent, tol)
+                .is_ok_and(|ts| ts.iter().any(|&t| inside(loop_point(seg, t))));
+            across || (tangent.side(seg.start).abs() <= tol && inside(seg.start))
+        });
+        if crossed {
+            out.insert(tangent.bend);
+        }
+    }
+    Ok(out.into_iter().collect())
+}
+
 /// Splits the cuts and the tangent lines they cross, and sorts every piece
 /// into its cell.
 fn analyse(
@@ -536,7 +565,7 @@ fn analyse(
                 refuse(
                     None,
                     format!(
-                        "{named}: a piece of it near ({}, {}) lies in no one flat or bend of the flat pattern; this is a bug",
+                        "{named}: a piece of it near ({}, {}) lies in no one flat or bend of the flat pattern (where two bends' strips overlap at a corner, or beside a trimmed bend's end), which a hole across a bend is not cut through; move the hole clear of there",
                         mid[0], mid[1]
                     ),
                 )
@@ -1127,7 +1156,9 @@ pub(super) fn folded_sheet(
             if starts.insert(p.from, i).is_some() {
                 return Err(refuse(
                     None,
-                    "the faces of a flat pattern with a hole across a bend could not be traced: two pieces start at one point; this is a bug",
+                    craft3d_math::bug_text!(
+                        "the faces of a flat pattern with a hole across a bend could not be traced: two pieces start at one point"
+                    ),
                 ));
             }
         }
@@ -1143,7 +1174,9 @@ pub(super) fn folded_sheet(
                 if used.get(at).copied().unwrap_or(true) {
                     return Err(refuse(
                         None,
-                        "the faces of a flat pattern with a hole across a bend could not be traced: a boundary does not close; this is a bug",
+                        craft3d_math::bug_text!(
+                            "the faces of a flat pattern with a hole across a bend could not be traced: a boundary does not close"
+                        ),
                     ));
                 }
                 if let Some(u) = used.get_mut(at) {
@@ -1154,7 +1187,9 @@ pub(super) fn folded_sheet(
                 let Some(&next) = starts.get(&p.to) else {
                     return Err(refuse(
                         None,
-                        "the faces of a flat pattern with a hole across a bend could not be traced: a boundary stops; this is a bug",
+                        craft3d_math::bug_text!(
+                            "the faces of a flat pattern with a hole across a bend could not be traced: a boundary stops"
+                        ),
                     ));
                 };
                 if next == first {
@@ -1207,7 +1242,9 @@ pub(super) fn folded_sheet(
                 None => {
                     return Err(refuse(
                         None,
-                        "a hole of a flat pattern with a hole across a bend lies in none of its faces; this is a bug",
+                        craft3d_math::bug_text!(
+                            "a hole of a flat pattern with a hole across a bend lies in none of its faces"
+                        ),
                     ));
                 }
             }

@@ -757,6 +757,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         "wrongByOracle": tally.wrong_by_oracle,
         "wrongRate": rate(tally.verdicts.get("wrong").copied().unwrap_or(0), tally.seeds),
         "crashes": tally.verdicts.get("crash").copied().unwrap_or(0),
+        "bugs": tally.verdicts.get("bug").copied().unwrap_or(0),
         "timeouts": tally.verdicts.get("timeout").copied().unwrap_or(0),
         "outOfMemory": tally.verdicts.get("oom").copied().unwrap_or(0),
         "refusedTop": top,

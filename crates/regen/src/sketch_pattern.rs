@@ -36,6 +36,7 @@ use craft3d_doc::{
 };
 use craft3d_expr::Evaluation;
 use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2};
+use craft3d_math::BUG;
 use craft3d_math::Portable;
 use craft3d_solve::ImageMap;
 use std::collections::BTreeMap;
@@ -1122,7 +1123,7 @@ pub(crate) fn instance_curves(
         let words = words_of(patterns, entity.id, levels)?;
         let id = ids.id(&words).ok_or_else(|| {
             format!(
-                "{} has no number of its own; this is a bug",
+                "{BUG}: {} has no number of its own",
                 CurvePath::read(&words)
                     .map_or_else(|| entity.id.to_string(), |(p, _)| p.to_string())
             )

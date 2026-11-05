@@ -179,7 +179,9 @@ fn a_panic_in_the_host_is_an_error_reply_and_the_session_keeps_its_document() {
     assert_eq!(reply["ok"], false);
     let error = reply["error"].as_str().unwrap();
     assert!(
-        error.contains("internal error") && error.contains("the host fell over"),
+        error.contains(craft3d_engine::BUG)
+            && error.contains(craft3d_engine::PANICKED)
+            && error.contains("the host fell over"),
         "{error}"
     );
     let reply = send(
@@ -367,6 +369,13 @@ fn an_mcp_server_with_a_host_has_the_tool_control_call() {
         control_call(7, json!({"method": "host.panic"})),
     );
     assert_eq!(reply["error"]["code"], -32603, "{reply}");
+    // A caught panic says the bug's words and that it panicked (a crash
+    // to the fuzz runner, not a bug the code caught itself).
+    let message = reply["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains(craft3d_engine::BUG) && message.contains(craft3d_engine::PANICKED),
+        "{message}"
+    );
     let reply = send_mcp(
         &mut session,
         &mut calls,

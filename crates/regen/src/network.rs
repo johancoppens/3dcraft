@@ -296,7 +296,7 @@ fn sheet(
     let (Some(&c00), Some(&c10), Some(&c01), Some(&c11)) =
         (ids.first(), ids.get(1), ids.get(2), ids.get(3))
     else {
-        return Err("a network sheet lost its corners; this is a bug".to_string());
+        return Err(craft3d_math::bug_text!("a network sheet lost its corners").to_string());
     };
     // Counter-clockwise in the surface's parameters: v = 0 forward, u = 1
     // forward, v = 1 back, u = 0 back.

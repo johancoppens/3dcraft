@@ -5196,6 +5196,36 @@ pub struct HoleToBend {
     pub exact: bool,
 }
 
+/// A hole across bends (`Part::cuts`) and the bends it crosses: what
+/// [`holes_to_bends`] does not measure, since it lies on no one flat (its
+/// distance to the bends it crosses is none: it runs through them).
+#[derive(Clone, Debug, PartialEq)]
+pub struct HoleAcross {
+    /// Its place in `Part::cuts`, and how messages name it.
+    pub cut: usize,
+    pub named: String,
+    /// The bends whose tangent lines it crosses, in order.
+    pub bends: Vec<usize>,
+}
+
+/// Every hole across bends of the part, with the bends it crosses.
+pub fn holes_across_bends(
+    part: &Part,
+    tolerance: &Tolerance,
+) -> Result<Vec<HoleAcross>, KernelError> {
+    part.cuts
+        .iter()
+        .enumerate()
+        .map(|(c, cut)| {
+            Ok(HoleAcross {
+                cut: c,
+                named: cut.named.clone(),
+                bends: cuts::bends_crossed(&part.flats, &part.bends, cut, tolerance.linear)?,
+            })
+        })
+        .collect()
+}
+
 /// For every hole of every flat (the base, then the flanges in order),
 /// the distance to the nearest bend beside that flat: to the tangent line
 /// on the flat's side of every bend that starts from it (its parent's

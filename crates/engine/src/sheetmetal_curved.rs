@@ -9,8 +9,8 @@ use crate::commands::fail;
 use crate::params::Params;
 use crate::verify_cmds::{Ctx, Dim, Outcome};
 use craft3d_doc::{
-    BendDirection, CurvedFlange, Document, Expr, FeatureId, FeatureKind, FlangeFrom, Geometry,
-    MAX_FLANGE_ID, MAX_SHEET_FLANGES, SheetMetal,
+    CurvedFlange, Document, Expr, FeatureId, FeatureKind, Geometry, MAX_FLANGE_ID,
+    MAX_SHEET_FLANGES, SheetMetal,
 };
 use craft3d_kernel::sheetmetal::Part;
 use serde_json::{Map, Value, json};
@@ -75,20 +75,9 @@ pub(crate) fn curved_value(p: &Params) -> Result<Option<Vec<CurvedFlange>>, Comm
             CommandError::new(format!("{id}: curvedFlanges.{g} needs its `edge`"))
         })?;
         let edge = crate::sketch_cmds::entity_id(id, &format!("curvedFlanges.{g}.edge"), edge)?;
-        let direction = match map.get("direction") {
-            None => BendDirection::Up,
-            Some(Value::String(s)) => BendDirection::from_name(s).ok_or_else(|| {
-                CommandError::new(format!("{id}: curvedFlanges.{g}.direction is up or down"))
-            })?,
-            Some(_) => return fail(format!("{id}: curvedFlanges.{g}.direction is up or down")),
-        };
-        let from = match map.get("from") {
-            None => FlangeFrom::Tangent,
-            Some(Value::String(s)) => FlangeFrom::from_name(s).ok_or_else(|| {
-                CommandError::new(format!("{id}: curvedFlanges.{g}.from is tangent or mould"))
-            })?,
-            Some(_) => return fail(format!("{id}: curvedFlanges.{g}.from is tangent or mould")),
-        };
+        let at = format!("curvedFlanges.{g}");
+        let direction = crate::sheetmetal_cmds::direction_of(map, id, &at)?;
+        let from = crate::sheetmetal_cmds::from_of(map, id, &at)?;
         let flange_id = match map.get("id") {
             None | Some(Value::Null) => 0,
             Some(v) => v

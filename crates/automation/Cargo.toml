@@ -12,6 +12,8 @@ workspace = true
 craft3d-engine.workspace = true
 # SHA-256 for the bridge's challenge–response (`proof.rs`).
 craft3d-doc.workspace = true
+# The one wording of a bug (craft3d_math::BUG).
+craft3d-math.workspace = true
 serde_json.workspace = true
 
 # The bridge's nonces; the bridge does not exist in the browser.

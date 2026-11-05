@@ -66,7 +66,7 @@ pub struct Shelled {
     pub vertices: Vec<Option<(Skin, VertexId)>>,
 }
 
-const LOST: &str = "the shell lost track of a face of the hollow; this is a bug";
+const LOST: &str = craft3d_math::bug_text!("the shell lost track of a face of the hollow");
 
 /// Normals nearer to each other than this sine are one direction (as
 /// delete face takes them).

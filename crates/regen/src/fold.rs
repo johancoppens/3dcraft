@@ -602,7 +602,9 @@ pub(crate) fn analyse(
             .get(hinge.crease)
             .zip(arrangement.creases.get(hinge.crease))
         else {
-            return Err("a crease lost its place in the pattern; this is a bug".to_string());
+            return Err(
+                craft3d_math::bug_text!("a crease lost its place in the pattern").to_string(),
+            );
         };
         let sign = kernel.kind.sign();
         angles.push(match &c.angle {

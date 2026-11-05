@@ -73,6 +73,31 @@ fn a_slot_across_a_bend_by_command() {
         );
         assert_close(&out["flatArea"], area, "flat area");
         run(&mut s, "file.save", json!({"path": "bracket.3dcraft"}));
+        // The slot runs through the bend: the bend table lists it under
+        // holesAcross with the bend it crosses (not under holes, which are
+        // on one flat), and holeToBend, which measures holes beside a
+        // bend, says why it has no value instead of "no holes".
+        let table = run(&mut s, "sheetMetal.bends", json!({"feature": "Bracket"}));
+        assert_eq!(table["holes"], json!([]), "{table}");
+        let across = table["holesAcross"].as_array().unwrap();
+        assert_eq!(across.len(), 1, "{table}");
+        assert_eq!(across[0]["bends"], json!([0]), "{table}");
+        assert!(
+            across[0]["hole"].as_str().unwrap().contains("Slot"),
+            "{table}"
+        );
+        let a = run(
+            &mut s,
+            "assert.add",
+            json!({"name": "hole to bend", "measure": "holeToBend", "of": "Bracket", "min": "1 mm"}),
+        );
+        assert_eq!(a["status"], "error", "{a}");
+        let why = a["message"].as_str().unwrap();
+        assert!(!why.contains("no holes,"), "{why}");
+        assert!(why.contains("`Bracket` has no hole on a flat"), "{why}");
+        assert!(why.contains("runs through the bend"), "{why}");
+        assert!(why.contains("holesAcross"), "{why}");
+        run(&mut s, "edit.undo", json!({}));
         let mut u = session_in(&dir);
         run(&mut u, "file.open", json!({"path": "bracket.3dcraft"}));
         let again = body(&mut u, "Bracket");

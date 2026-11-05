@@ -709,7 +709,9 @@ pub(crate) fn not_through_itself(
         })
         .collect();
     if roles.len() != body.faces.len() {
-        return Err("upTo: the extrusion lost track of its faces; this is a bug".to_string());
+        return Err(
+            craft3d_math::bug_text!("upTo: the extrusion lost track of its faces").to_string(),
+        );
     }
     crate::selfcheck::crossing_near(body, &names.faces, linear, &roles).refused(
         "upTo",

@@ -11,17 +11,17 @@
 //! The verdicts of a stage: `ok`; `refused` (a command said no, with its
 //! reason: not a bug, the scorecard's content); `invalid` (a command said
 //! yes and left a body `document.check` finds fault with, or a boolean
-//! whose volumes break an identity); `crash` (a command panicked: the
-//! engine catches it and says "internal error").
+//! whose volumes break an identity); `bug` (a command, or a feature's
+//! `failed` status, refused with a bug the code caught itself: its reason
+//! says "internal error (a bug in 3DCraft", `craft3d_engine::BUG`); `crash`
+//! (a command panicked: the engine catches it and says so after the same
+//! words, "it panicked").
 
-use crate::runner::Operands;
+use crate::runner::{Operands, bug_kind};
 use craft3d_engine::{Session, Workspace};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 use std::time::Instant;
-
-/// The mark of a caught panic in an engine error (`Session::execute`).
-const INTERNAL: &str = "internal error (a bug in 3DCraft";
 
 /// Longest reason kept, in characters.
 const KEPT: usize = 2000;
@@ -60,18 +60,13 @@ fn step(
                     .get("error")
                     .and_then(Value::as_str)
                     .unwrap_or("failed without a reason");
-                return Err(("refused", cut(reason)));
+                return Err((failed_verdict(reason), cut(reason)));
             }
             Ok(result)
         }
         Err(e) => {
             let message = e.message();
-            let verdict = if message.contains(INTERNAL) {
-                "crash"
-            } else {
-                "refused"
-            };
-            Err((verdict, cut(message)))
+            Err((failed_verdict(message), cut(message)))
         }
     }
 }
@@ -109,13 +104,20 @@ struct Target {
     bound: f64,
 }
 
-/// The verdict of a step that went wrong: a crash stays a crash, anything
-/// else is a refusal.
+/// The verdict of a reason something was not done (an error, a failed
+/// status, a failed import feature): a crash or a bug when it says so
+/// (`bug_kind`), else a refusal.
+fn failed_verdict(reason: &str) -> &'static str {
+    bug_kind(reason).unwrap_or("refused")
+}
+
+/// The verdict of a step that went wrong: a crash stays a crash and a bug
+/// a bug, anything else is a refusal.
 fn refused_or_crash(verdict: &str) -> &'static str {
-    if verdict == "crash" {
-        "crash"
-    } else {
-        "refused"
+    match verdict {
+        "crash" => "crash",
+        "bug" => "bug",
+        _ => "refused",
     }
 }
 
@@ -221,7 +223,7 @@ impl ModelRun {
                 .get("error")
                 .and_then(Value::as_str)
                 .unwrap_or("an import feature failed");
-            self.stop("import", "refused", reason);
+            self.stop("import", failed_verdict(reason), reason);
             return None;
         }
 
@@ -429,8 +431,9 @@ impl ModelRun {
         let mut results = Vec::new();
         let mut worst = "ok";
         let rank = |v: &str| match v {
-            "crash" => 3,
-            "invalid" => 2,
+            "crash" => 4,
+            "invalid" => 3,
+            "bug" => 2,
             "refused" => 1,
             _ => 0,
         };
@@ -466,11 +469,7 @@ impl ModelRun {
         if let Err((verdict, reason)) = step(&mut base, command, params) {
             entry.insert("at".into(), command.into());
             entry.insert("reason".into(), reason.into());
-            return if verdict == "crash" {
-                "crash"
-            } else {
-                "refused"
-            };
+            return refused_or_crash(verdict);
         }
         // The tool's measure: one that fails is a refusal (or a crash) of
         // the measure, never a broken identity.
@@ -506,11 +505,7 @@ impl ModelRun {
                 }
                 entry.insert("at".into(), op.into());
                 entry.insert("reason".into(), reason.into());
-                return if verdict == "crash" {
-                    "crash"
-                } else {
-                    "refused"
-                };
+                return refused_or_crash(verdict);
             }
             let check = step(&mut side, "document.check", &json!({"feature": "__result"}));
             match check {
@@ -660,7 +655,23 @@ mod tests {
             assert_eq!(measured(&m).map_err(|e| e.0), Err("refused"), "{m}");
         }
         assert_eq!(refused_or_crash("crash"), "crash");
+        assert_eq!(refused_or_crash("bug"), "bug");
         assert_eq!(refused_or_crash("invalid"), "refused");
+        // A bug the code caught itself is a bug, a caught panic a crash,
+        // also in a feature's failed status (step reads both).
+        let bug = format!("feature.boolean: {}: lost a curve", craft3d_engine::BUG);
+        assert_eq!(bug_kind(&bug), Some("bug"));
+        let panic = format!(
+            "feature.boolean: {}: {}: index out of range",
+            craft3d_engine::BUG,
+            craft3d_engine::PANICKED
+        );
+        assert_eq!(bug_kind(&panic), Some("crash"));
+        assert_eq!(bug_kind("the result is empty"), None);
+        // The same for a feature the import added that failed.
+        assert_eq!(failed_verdict(&bug), "bug");
+        assert_eq!(failed_verdict(&panic), "crash");
+        assert_eq!(failed_verdict("a face could not be sewn"), "refused");
     }
 
     #[test]

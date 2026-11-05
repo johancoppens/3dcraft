@@ -16,6 +16,7 @@ use crate::verify::{self, Part};
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{Document, FeatureId};
 use craft3d_kernel::boolean::{Contact, common_volume};
+use craft3d_math::BUG;
 use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Tolerance, Vec3};
 use craft3d_regen::Regen;
@@ -165,7 +166,7 @@ impl<'a> Ctx<'a> {
             }
         }
         Err(format!(
-            "the bodies `{}` went into do not end (a bug in 3DCraft, please report it)",
+            "{BUG}: the bodies `{}` went into do not end",
             self.feature_name(start)
         ))
     }
@@ -1294,7 +1295,7 @@ fn part_in<'p, 'b>(
     made: &'p mut [Option<Part<'b>>],
     i: usize,
 ) -> Result<&'p Part<'b>, String> {
-    const NONE: &str = "internal error (a bug in 3DCraft, please report it): no such part";
+    const NONE: &str = craft3d_math::bug_text!("no such part");
     let slot = made.get_mut(i).ok_or(NONE)?;
     if slot.is_none() {
         let (id, body, faces) = bodies.get(i).ok_or(NONE)?;
@@ -1313,7 +1314,7 @@ fn clearance_pair<'b>(
     (bb, pb, j): (&'b [Named], &mut [Option<Part<'b>>], usize),
     tol: f64,
 ) -> Result<(verify::Nearest, &'static str), String> {
-    const NONE: &str = "internal error (a bug in 3DCraft, please report it): no such body";
+    const NONE: &str = craft3d_math::bug_text!("no such body");
     let (ida, body_a, _) = ba.get(i).ok_or(NONE)?;
     let (idb, body_b, _) = bb.get(j).ok_or(NONE)?;
     let part_a = part_in(ctx, ba, pa, i)?;
@@ -1394,7 +1395,7 @@ fn clearance(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
                 ))
             })?;
             let PairAnswer::Clearance(answer) = answer else {
-                return Err("internal error (a bug in 3DCraft, please report it): a pair of another measure".into());
+                return Err(craft3d_math::bug_text!("a pair of another measure").into());
             };
             let (near, status) = answer?;
             let value = match status {
@@ -1614,7 +1615,7 @@ fn overlap(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
             match crate::measure_pieces::pair(|| PairAnswer::Overlap(common(n)))? {
                 PairAnswer::Overlap(answer) => answers.push(answer),
                 PairAnswer::Clearance(_) => {
-                    return Err("internal error (a bug in 3DCraft, please report it): a pair of another measure".into());
+                    return Err(craft3d_math::bug_text!("a pair of another measure").into());
                 }
             }
         }
@@ -1642,9 +1643,7 @@ fn overlap(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
             Some(Ok(None)) => {}
             Some(Err(e)) => return Err(cannot(e)),
             None => {
-                return Err(cannot(
-                    "internal error (a bug in 3DCraft, please report it)".into(),
-                ));
+                return Err(cannot(craft3d_math::BUG.into()));
             }
         }
     }
