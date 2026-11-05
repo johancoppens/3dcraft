@@ -423,3 +423,43 @@ fn a_thread_in_a_hole_is_internal_cosmetic_or_modeled() {
     let error = failure(&mut s, "Tapped");
     assert!(error.contains("tap drill's diameter, 10.25"), "{error}");
 }
+
+/// A shell made after a modelled thread offsets the thread's helical
+/// faces, whose curvature is too tight for the wall: it fails, and the
+/// reason says to put the shell before the thread (the thread then cuts
+/// the shelled wall), which builds.
+#[test]
+fn a_shell_after_a_modelled_thread_says_to_shell_first() {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({}));
+    shank(&mut s);
+    let made = thread(&mut s, json!({"length": "3 mm"}));
+    assert_eq!(made["status"], "ok", "{made}");
+    let shelled = run(
+        &mut s,
+        "feature.shell",
+        json!({"source": "Thread", "thickness": "1 mm", "open": ["F1:face(2)"], "name": "Hollow"}),
+    );
+    assert_eq!(shelled["status"], "failed", "{shelled}");
+    let reason = failure(&mut s, "Hollow");
+    assert!(reason.contains("fold over"), "{reason}");
+    assert!(
+        reason.contains("the face is made by the thread `Thread`: put the shell before the thread"),
+        "{reason}"
+    );
+    // The remedy builds: the shank shelled, then the thread on its wall.
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({}));
+    shank(&mut s);
+    let shelled = run(
+        &mut s,
+        "feature.shell",
+        json!({"source": "Shank", "thickness": "1 mm", "open": ["F1:face(2)"], "name": "Hollow"}),
+    );
+    assert_eq!(shelled["status"], "ok", "{shelled}");
+    let made = thread(
+        &mut s,
+        json!({"face": "F2:copy(0)/F1:face(0)", "start": "F2:copy(0)/F1:face(1)", "length": "3 mm"}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+}

@@ -204,7 +204,9 @@ largest that does. `document.edges` lists every edge of a body with its two face
 ## Shell and face operations
 
 - `feature.shell` makes a body hollow with walls of `thickness`; the faces in `open` are taken away. A
-  rounded box gets inner rounds of the radius less the wall. Example: [case](../examples/case.json).
+  rounded box gets inner rounds of the radius less the wall. Example: [case](../examples/case.json). Shell
+  before a modelled thread: a thread's flanks curve too tightly to be offset, and the shell after it
+  fails and says so.
 - `feature.offsetFace` moves faces along their normals (a boss taller, a bore wider); `feature.moveFace`
   moves or turns them; `feature.draft` tilts them about a `neutral` plane; `feature.deleteFace` takes faces
   out as if they had never been made (a hole filled, a fillet back to a sharp edge); `feature.thicken` makes a layer of `thickness` on faces.

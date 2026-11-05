@@ -5,8 +5,9 @@
 
 use crate::face_ops::{self, explain};
 use crate::{Contributors, FeatureResult, Kept, Names, length};
-use craft3d_doc::{Document, FeatureId, Shell};
+use craft3d_doc::{Document, FeatureId, FeatureKind, PersistentName, Shell};
 use craft3d_expr::Evaluation;
+use craft3d_kernel::KernelError;
 use craft3d_kernel::shell::{Skin, shell_with_capped};
 use craft3d_topo::Body;
 
@@ -49,7 +50,16 @@ pub(crate) fn build(
         &source.tolerance,
         Some(source.loosest),
     )
-    .map_err(|error| explain(error, "thickness", 1.0, unit, &source))?;
+    .map_err(|error| {
+        let thread = made_by_thread(doc, &error, &source);
+        let reason = explain(error, "thickness", 1.0, unit, &source);
+        match thread {
+            Some(thread) => format!(
+                "{reason}; the face is made by the thread `{thread}`: put the shell before the thread (shell the body the thread is cut in, then thread the shelled wall), so the shell offsets the plain wall"
+            ),
+            None => reason,
+        }
+    })?;
     let contributors: Contributors = made
         .faces
         .iter()
@@ -92,4 +102,34 @@ pub(crate) fn build(
         &source.tolerance,
     )?;
     Ok((made.body, Some(names)))
+}
+
+/// The name of the thread feature that made a face the kernel's error is
+/// about, when one did: a modelled thread's helical faces curve too tightly
+/// for most walls to be offset behind them, and shelling first is the
+/// remedy.
+fn made_by_thread<'a>(
+    doc: &'a Document,
+    error: &KernelError,
+    source: &face_ops::Source<'_>,
+) -> Option<&'a str> {
+    let faces = match error {
+        KernelError::FaceOp { faces, .. } | KernelError::FaceOpTooFar { faces, .. } => faces,
+        _ => return None,
+    };
+    faces.iter().find_map(|face| {
+        let mut name: Option<&PersistentName> = source.names.faces.get(face.0 as usize);
+        // A copy's or a piece's name says what it is the image of; the
+        // chain is as long as the history, and is walked at most that far.
+        for _ in 0..=doc.features.len() {
+            let at = name?;
+            if let Some(feature) = doc.feature(at.feature)
+                && matches!(feature.kind, FeatureKind::Thread(_))
+            {
+                return Some(feature.name.as_str());
+            }
+            name = at.of.as_deref();
+        }
+        None
+    })
 }
