@@ -4073,12 +4073,16 @@ mod tests {
         let get = ask(&requests, r#"{"id":2,"method":"ui.get"}"#);
         assert!(turn_until(&mut desk, &get).is_some());
         assert!(desk.capture.is_some());
-        // Work on the engine thread, and the picture comes meanwhile.
+        // Work on the engine thread, held there until the test lets it go
+        // (not a sleep: a loaded machine may run a sleeping task to its
+        // end within the desk's patience), and the picture comes meanwhile.
+        let (release, gate) = mpsc::channel::<()>();
+        assert!(!desk.away());
         desk.start(
             Waiting::Scene,
             "slow".to_string(),
-            Box::new(|_| {
-                std::thread::sleep(Duration::from_millis(200));
+            Box::new(move |_| {
+                let _ = gate.recv();
                 Outcome::Built
             }),
         );
@@ -4086,9 +4090,9 @@ mod tests {
         let image = egui::ColorImage::new([2, 2], vec![egui::Color32::from_rgb(1, 2, 3); 4]);
         desk.captured(Arc::new(image));
         desk.turn();
-        if desk.away() {
-            assert!(shot.try_recv().is_err(), "answered while away");
-        }
+        assert!(desk.away());
+        assert!(shot.try_recv().is_err(), "answered while away");
+        release.send(()).unwrap();
         let reply = turn_until(&mut desk, &shot).unwrap();
         assert!(reply.contains(r#""ok":true"#), "{reply}");
         assert!(!desk.away());

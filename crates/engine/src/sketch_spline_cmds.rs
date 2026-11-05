@@ -220,6 +220,20 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
             given.len()
         ));
     }
+    // A live spline is closed by its first point coming back as its last:
+    // asked open, one that starts and ends on the same point of the sketch
+    // would be fitted closed at every regeneration (re-review, 2026-11-04).
+    if live
+        && !closed
+        && let (Some(PointArg::Existing(first)), Some(PointArg::Existing(last))) =
+            (given.first(), given.last())
+        && first == last
+        && given.len() > 2
+    {
+        return fail(format!(
+            "{COMMAND}: the spline starts and ends on {first}: give closed: true (and {first} once) for a closed live spline"
+        ));
+    }
     if closed {
         let Some(first) = given.first().cloned() else {
             return fail(format!("{COMMAND}: a closed spline needs points"));
@@ -371,12 +385,12 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
                 }
                 if let PointArg::Existing(existing) = point {
                     return invalid(format!(
-                        "{existing} is point {} of the closed spline, but a periodic spline does not pass through it ({}); give it as coordinates, or give periodic: false to close the spline on it with a corner there",
+                        "{existing} is point {} of the closed spline, but a periodic spline does not keep it as one of its points ({}); give it as coordinates, or give periodic: false to close the spline on it with a corner there",
                         i + 1,
                         if fitted {
-                            "only the first point, its seam, is kept"
+                            "it passes through it, but only the first point, its seam, is a point of the sketch it keeps; the others are fitted once"
                         } else {
-                            "its seam lies across the first control point, and only control points away from it are kept"
+                            "its seam lies across the first control point, which it does not pass through, and only control points away from it are kept"
                         }
                     ));
                 }

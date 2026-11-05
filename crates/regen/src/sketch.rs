@@ -1831,6 +1831,9 @@ pub(crate) fn solve_sketch(
     }
     radii.sort_by_key(|(id, _)| *id);
     points.sort_by_key(|(id, ..)| *id);
+    if let Some(reason) = periodic_run_off(sketch, &points) {
+        return unsolved(reason);
+    }
     let state = |report: &solve::ConstraintReport| match report.status {
         solve::ConstraintStatus::Satisfied => ConstraintState::Satisfied,
         solve::ConstraintStatus::Redundant => ConstraintState::Redundant,
@@ -2353,4 +2356,66 @@ pub fn settle_sketches_cached(doc: &mut Document, cache: &mut crate::RegenCache)
         }
     }
     moved
+}
+
+/// How far a periodic spline's control points may spread, as a multiple
+/// of how far they were spread before the solve, before the solve is
+/// taken for one that ran off.
+const PERIODIC_SPREAD: f64 = 10.0;
+
+/// The largest width or height of the box of `points`; 0 for none.
+fn spread(points: impl Iterator<Item = (f64, f64)>) -> f64 {
+    let (mut lx, mut ly, mut hx, mut hy) = (
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for (x, y) in points {
+        lx = lx.min(x);
+        ly = ly.min(y);
+        hx = hx.max(x);
+        hy = hy.max(y);
+    }
+    if lx.is_finite() && ly.is_finite() && hx.is_finite() && hy.is_finite() {
+        (hx - lx).max(hy - ly)
+    } else {
+        0.0
+    }
+}
+
+/// Why the solve is not taken when it spread the control points of a
+/// periodic spline far beyond where they were: held smooth where it
+/// closes, such a spline can meet some constraints at its seam (a tangent
+/// to a line square to it) only by moving its points thousands of its
+/// sizes away, a solution of no use however exactly it holds (the
+/// re-review of 2026-11-04: a ring of radius 10 went to x = ±6940 with
+/// status ok). `None` when every periodic spline stayed in scale.
+/// `points` are the solved ones, sorted by id.
+fn periodic_run_off(sketch: &Sketch, points: &[(EntityId, f64, f64)]) -> Option<String> {
+    for entity in &sketch.entities {
+        let Geometry::Spline {
+            control,
+            periodic: true,
+            ..
+        } = &entity.geometry
+        else {
+            continue;
+        };
+        let before = spread(control.iter().filter_map(|id| sketch.point(*id).ok()));
+        let after = spread(control.iter().filter_map(|id| {
+            points
+                .binary_search_by_key(id, |(p, ..)| *p)
+                .ok()
+                .and_then(|i| points.get(i))
+                .map(|(_, x, y)| (*x, *y))
+        }));
+        if before > 0.0 && after > PERIODIC_SPREAD * before {
+            return Some(format!(
+                "{}: to meet its constraints its control points would spread from {before:.6} to {after:.6} across, far out of scale: a periodic spline stays smooth where it closes, so a constraint at its seam that asks another direction there (a tangent) pulls it apart; constrain it away from its seam, or make it with periodic: false",
+                entity.id
+            ));
+        }
+    }
+    None
 }

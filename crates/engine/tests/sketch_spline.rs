@@ -2026,7 +2026,7 @@ fn what_a_periodic_spline_cannot_take_is_refused_up_front() {
     );
     assert!(
         why.contains("e1")
-            && why.contains("does not pass through it")
+            && why.contains("does not keep it as one of its points")
             && why.contains("periodic: false"),
         "{why}"
     );
@@ -2041,4 +2041,138 @@ fn what_a_periodic_spline_cannot_take_is_refused_up_front() {
         json!({"sketch": "Profile", "control": ["e1", [10, 10], [0, 10], [0, 0]], "closed": true, "periodic": false}),
     );
     assert_eq!(made["start"], "e1", "{made}");
+}
+
+/// Re-review (S1): a periodic spline whose seam is made tangent to a
+/// horizontal line cannot be smooth there and tangent without moving
+/// far; the solve must not run off to control points thousands of radii
+/// away and call it ok (x = ±6940 for a ring of radius 10). Either it
+/// stays in scale or the sketch fails with the reason.
+#[test]
+fn a_periodic_spline_is_not_driven_out_of_scale_by_a_seam_tangent() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    let made = run(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "Profile", "through": ring(7, 10.0), "closed": true}),
+    );
+    let line = run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "Profile", "from": made["start"], "to": [20, 0.5]}),
+    );
+    run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Profile", "type": "horizontal", "entities": [line["entity"]]}),
+    );
+    let tangent = run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Profile", "type": "tangent", "entities": [made["entity"], line["entity"]]}),
+    );
+    let inspected = run(&mut s, "sketch.inspect", json!({"sketch": "Profile"}));
+    let largest = inspected["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "point")
+        .map(|e| {
+            e["x"]
+                .as_f64()
+                .unwrap()
+                .abs()
+                .max(e["y"].as_f64().unwrap().abs())
+        })
+        .fold(0.0_f64, f64::max);
+    // Refused with the reason, nothing moved.
+    assert_eq!(tangent["status"], "failed", "{tangent}");
+    let why = tangent["error"].as_str().unwrap();
+    assert!(
+        why.contains("far out of scale") && why.contains("periodic: false"),
+        "{why}"
+    );
+    assert!(largest < 100.0, "a point at {largest}");
+    // Clamped, the same tangent is met in scale.
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    let made = run(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "Profile", "through": ring(7, 10.0), "closed": true, "periodic": false}),
+    );
+    let line = run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "Profile", "from": made["start"], "to": [20, 0.5]}),
+    );
+    run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Profile", "type": "horizontal", "entities": [line["entity"]]}),
+    );
+    let tangent = run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Profile", "type": "tangent", "entities": [made["entity"], line["entity"]]}),
+    );
+    assert_eq!(tangent["status"], "ok", "{tangent}");
+}
+
+/// Re-review (S2, 4): a live spline asked open that starts and ends on the
+/// same point of the sketch is refused (it would be fitted closed at every
+/// regeneration, and an even degree would fail only later), at degrees 2
+/// and 3; given closed it is made. A point of the sketch inside a closed
+/// spline through points is refused with the reason that it is passed
+/// through but not kept.
+#[test]
+fn a_live_spline_that_ends_where_it_starts_must_say_closed() {
+    for degree in [2, 3] {
+        let mut s = session();
+        new_document(&mut s, 1.0);
+        run(
+            &mut s,
+            "sketch.point",
+            json!({"sketch": "Profile", "at": [0, 0]}),
+        );
+        let before = run(&mut s, "sketch.inspect", json!({"sketch": "Profile"}));
+        let why = error(
+            &mut s,
+            "sketch.spline",
+            json!({"sketch": "Profile", "through": ["e1", [5, 5], [10, 0], [5, -5], "e1"],
+                   "live": true, "degree": degree}),
+        );
+        assert!(
+            why.contains("starts and ends on e1") && why.contains("closed: true"),
+            "{why}"
+        );
+        assert_eq!(
+            run(&mut s, "sketch.inspect", json!({"sketch": "Profile"})),
+            before
+        );
+        let made = run(
+            &mut s,
+            "sketch.spline",
+            json!({"sketch": "Profile", "through": ["e1", [5, 5], [10, 0], [5, -5], [0, -3]],
+                   "live": true, "closed": true, "degree": 3}),
+        );
+        assert_eq!(made["status"], "ok", "{made}");
+    }
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    run(
+        &mut s,
+        "sketch.point",
+        json!({"sketch": "Profile", "at": [5, 5]}),
+    );
+    let why = error(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "Profile", "through": [[0, 0], "e1", [10, 0], [5, -5]], "closed": true}),
+    );
+    assert!(
+        why.contains("e1") && why.contains("passes through it") && why.contains("does not keep it"),
+        "{why}"
+    );
 }
