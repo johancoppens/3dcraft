@@ -468,6 +468,28 @@ fn a_sketch_that_cannot_be_extruded_says_why() {
     );
     assert_eq!(status(&mut s).0, "ok");
     assert_close(&body(&mut s, "Extrude1")["volume"], 2600.0, "volume");
+    // A bow tie whose halves cancel: the reason says it crosses itself.
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"name": "Bow", "plane": "xy", "offset": 50}),
+    );
+    run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Bow", "closed": true, "points": [[0, 0], [10, 10], [10, 0], [0, 10]]}),
+    );
+    let e = run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Bow", "distance": 5, "name": "BowTie"}),
+    );
+    assert_eq!(e["status"], "failed", "{e}");
+    let reason = e["error"].as_str().unwrap();
+    assert!(
+        reason.contains("encloses no area") && reason.contains("crosses itself"),
+        "{reason}"
+    );
 }
 
 #[test]

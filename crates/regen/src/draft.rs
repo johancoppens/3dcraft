@@ -86,7 +86,7 @@ pub(crate) fn build(
                     "angle: {} deg is too far: {reason}{at}; what fits is {} {} deg",
                     degrees(turn),
                     if turn < 0.0 { "above" } else { "below" },
-                    degrees(turn * part)
+                    face_ops::fits_shown(degrees(turn * part))
                 )
             }
             other => face_ops::explain(other, "angle", 1.0, "deg", &source),

@@ -298,6 +298,16 @@ fn commands_that_fail_change_nothing_and_say_why() {
     let before = run(&mut session, "document.inspect", json!({}));
     let cases = [
         ("feature.blok", json!({}), "did you mean `feature.block`"),
+        // A verb of the same meaning in the id's own area, and a common
+        // id spelled otherwise here (2026-11-04: `assert.remove` was
+        // offered `set.remove`, `measure.volume` `measure.clearance`).
+        ("assert.remove", json!({}), "did you mean `assert.delete`"),
+        ("set.delete", json!({}), "did you mean `set.remove`"),
+        (
+            "measure.volume",
+            json!({}),
+            "did you mean `document.measure`",
+        ),
         ("nonsense", json!({}), "unknown command `nonsense`"),
         (
             "feature.block",
@@ -543,14 +553,17 @@ fn files_stay_inside_the_roots() {
             "`{path}`"
         );
     }
-    assert!(
-        error(
-            &mut session,
-            "file.open",
-            json!({"path": "missing.3dcraft"})
-        )
-        .contains("cannot open `missing.3dcraft`")
+    let missing = error(
+        &mut session,
+        "file.open",
+        json!({"path": "missing.3dcraft"}),
     );
+    // Said once, in plain words: not the path twice ("cannot open `x`:
+    // cannot open `x`: …", 2026-11-04) and not the system's
+    // `No such file or directory (os error 2)`.
+    assert_eq!(missing.matches("cannot open").count(), 1, "{missing}");
+    assert!(missing.contains("there is no such file"), "{missing}");
+    assert_eq!(missing.matches("missing.3dcraft").count(), 1, "{missing}");
     assert!(error(&mut session, "file.save", json!({})).contains("give a `path`"));
     // Saving into a directory that does not exist fails cleanly.
     assert!(
@@ -560,6 +573,15 @@ fn files_stay_inside_the_roots() {
             json!({"path": "no/such/dir/a.3dcraft"})
         )
         .contains("cannot save")
+    );
+    let no_folder = error(
+        &mut session,
+        "file.save",
+        json!({"path": "no/such/dir/a.3dcraft"}),
+    );
+    assert!(
+        no_folder.contains("its folder does not exist"),
+        "{no_folder}"
     );
     assert_eq!(
         std::fs::read_dir(&dir).unwrap().count(),

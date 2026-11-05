@@ -456,9 +456,34 @@ fn spelled_unit(word: &str) -> Option<Unit> {
         "joule" => Unit::Joule,
         "litre" | "liter" | "l" => Unit::Litre,
         "millilitre" | "milliliter" | "ml" => Unit::Millilitre,
-        _ => return None,
+        _ => return one_letter_too_many(&lower),
     };
     Some(unit)
+}
+
+/// `10 mmm`, `90 degg`: a unit of two letters or more typed with one
+/// letter too many, when only one unit is left by taking a letter out.
+fn one_letter_too_many(word: &str) -> Option<Unit> {
+    if word.len() < 3 || word.len() > 8 || !word.is_ascii() {
+        return None;
+    }
+    let mut found: Option<Unit> = None;
+    for at in 0..word.len() {
+        let (Some(head), Some(tail)) = (word.get(..at), word.get(at.saturating_add(1)..)) else {
+            continue;
+        };
+        let shorter = format!("{head}{tail}");
+        if shorter.len() < 2 {
+            continue;
+        }
+        if let Some(unit) = Unit::from_symbol(&shorter) {
+            match found {
+                Some(other) if other != unit => return None,
+                _ => found = Some(unit),
+            }
+        }
+    }
+    found
 }
 
 struct Parser<'a> {
@@ -515,6 +540,31 @@ impl Parser<'_> {
     /// (`(pi / 4) rad`) or a unit that does not exist (`2 inch`), and the
     /// error says so.
     fn after_operand(&self, expected: &'static str, found: Token) -> ExprError {
+        // `2,5 mm`: a decimal comma, where a comma cannot separate
+        // arguments.
+        if found.kind == TokenKind::Comma {
+            let before = self.at.checked_sub(1).and_then(|i| self.tokens.get(i));
+            let after = self.at.checked_add(1).and_then(|i| self.tokens.get(i));
+            if let (Some(before), Some(after)) = (before, after)
+                && matches!(before.kind, TokenKind::Number(_))
+                && matches!(after.kind, TokenKind::Number(_))
+                && before.end == found.pos
+                && found.end == after.pos
+            {
+                let decimal = format!(
+                    "`,` (a decimal is written with a point: `{}.{}`)",
+                    self.text(*before),
+                    self.text(*after)
+                );
+                return ExprError::new(
+                    found.pos,
+                    ErrorKind::Expected {
+                        expected,
+                        found: decimal,
+                    },
+                );
+            }
+        }
         if found.kind == TokenKind::Ident {
             let word = self.text(found);
             let before = self
@@ -1426,6 +1476,8 @@ mod tests {
             ("3 MM", "MM", Unit::Millimetre),
             ("5 degrees", "degrees", Unit::Degree),
             ("1 feet", "feet", Unit::Foot),
+            ("10 mmm", "mmm", Unit::Millimetre),
+            ("90 degg", "degg", Unit::Degree),
         ] {
             let e = err(source);
             assert_eq!(
@@ -1438,6 +1490,11 @@ mod tests {
             );
             assert!(e.to_string().contains("um, mm, cm, m, in, ft, deg and rad"));
         }
+        // A decimal comma is pointed out; a comma between arguments is
+        // still a comma.
+        let e = err("2,5 mm");
+        assert!(e.to_string().contains("`2.5`"), "{e}");
+        assert!(Expr::parse("max(2,5)").is_ok());
         // A name after a name, or after a number, is still only a missing
         // operator (see `missing_operator`).
         for source in ["a b", "2 width", "2 mm mm"] {

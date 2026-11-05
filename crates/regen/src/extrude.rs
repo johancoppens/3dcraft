@@ -77,7 +77,10 @@ pub(crate) fn profile_error(error: &KernelError, ids: &CurveIds) -> String {
             list(curves)
         ),
         KernelError::ZeroAreaLoop { curves } => {
-            format!("the loop of {} encloses no area", list(curves))
+            format!(
+                "the loop of {} encloses no area: it folds back onto itself, or crosses itself into parts that cancel; a profile's boundary may not cross itself",
+                list(curves)
+            )
         }
         KernelError::DegenerateCurve { id, reason } => format!("{}: {reason}", curve_name(*id)),
         KernelError::ShortSplinePiece { id, knot } => {
