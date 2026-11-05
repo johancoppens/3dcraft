@@ -81,6 +81,22 @@ pub struct OutlineMate {
     pub settable: bool,
     /// The limits of its main free motion, evaluated.
     pub limits: Option<(f64, f64)>,
+    /// The instances on its two sides, a then b, as its references name
+    /// them (`world` for the world).
+    pub parts: [String; 2],
+    /// Where the view draws its marker: the frame of side a in the world
+    /// (of side b when a is the world), as the solve placed it; `None`
+    /// when that side is not placed (the mate or its instance failed).
+    pub frame: Option<MateFrame>,
+}
+
+/// A mate's frame in the world ([`OutlineMate::frame`]): its origin, its
+/// x axis and its z axis (the mate's axis or normal), both unit length.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MateFrame {
+    pub origin: [f64; 3],
+    pub x: [f64; 3],
+    pub z: [f64; 3],
 }
 
 /// A part of an assembly that the view can drag along a free motion
@@ -161,6 +177,8 @@ impl Session {
                     .collect(),
                 settable,
                 limits: crate::asm::mate_limits(&doc, mate),
+                parts: [mate.a.instance.clone(), mate.b.instance.clone()],
+                frame: marker_frame(&placed, &mate.name),
             });
         }
         Some(out)
@@ -214,6 +232,37 @@ impl Session {
             size: crate::asm::model_size(&placed),
         })
     }
+}
+
+/// The frame a mate's marker is drawn at ([`OutlineMate::frame`]): side
+/// a's frame of the solve's mate (the assembly's own, listed before those
+/// of its flexible subassemblies) moved by its instance's pose, or side
+/// b's when a is the world. `None` when the mate is not in the solve or
+/// the frame is not finite and square.
+fn marker_frame(placed: &Placed, mate: &str) -> Option<MateFrame> {
+    let named = placed.specs.iter().find(|s| s.spec.name == mate)?;
+    let (instance, frame) = match &named.a {
+        Some(a) => (Some(a), named.spec.a.1),
+        None => (named.b.as_ref(), named.spec.b.1),
+    };
+    let frame = match instance {
+        Some(name) => {
+            let st = placed.instance(name)?;
+            if st.error.is_some() {
+                return None;
+            }
+            frame.moved(&st.pose)
+        }
+        None => frame,
+    };
+    let x = frame.x.normalized()?;
+    let z = frame.z.normalized()?;
+    let square = x.dot(z).abs() < 1e-6;
+    (frame.origin.is_finite() && square).then_some(MateFrame {
+        origin: [frame.origin.x, frame.origin.y, frame.origin.z],
+        x: [x.x, x.y, x.z],
+        z: [z.x, z.y, z.z],
+    })
 }
 
 /// True when `mate`'s main free motion can be set by hand and the

@@ -302,6 +302,88 @@ impl Shell {
         &self.joints.hits
     }
 
+    /// The model's size: the diagonal of the shown scene's box (what a
+    /// distance without limits may be set to either way).
+    pub(super) fn joint_range_size(&self) -> f64 {
+        self.shown_scene
+            .as_ref()
+            .and_then(|s| s.bbox.corners())
+            .map_or(100.0, |(lo, hi)| (hi - lo).length().max(1e-9))
+    }
+
+    /// The slider of one joint, `label` before its rail: the kit's one
+    /// slider in a row, in degrees for an angle (typed values as they are)
+    /// and in the document's `unit` otherwise, between the mate's limits
+    /// or a turn either way (a distance: `size` either way). Dragging it
+    /// queues `joint.set`, every value after a drag's first with `merge`
+    /// (one drag is one undo step). True when this slider's drag ended.
+    pub(super) fn joint_slider(
+        &mut self,
+        ui: &mut egui::Ui,
+        kit: &crate::kit::Kit,
+        mate: &craft3d_engine::OutlineMate,
+        unit: &str,
+        size: f64,
+        label: &str,
+    ) -> bool {
+        let Some((value, angle)) = mate.value else {
+            return false;
+        };
+        let (lo, hi) = mate
+            .limits
+            .unwrap_or(if angle { (-TURN, TURN) } else { (-size, size) });
+        let mut shown = match &self.joints.dragging {
+            Some((name, v)) if *name == mate.name => *v,
+            _ => value,
+        };
+        let (mut on_slider, range, shown_unit) = if angle {
+            (shown.to_degrees(), [lo.to_degrees(), hi.to_degrees()], "°")
+        } else {
+            (shown, [lo, hi], unit)
+        };
+        let label_width = (ui.available_width() * 0.3).clamp(48.0, 120.0);
+        let value_width = 72.0;
+        let decimals = if angle { 1 } else { 2 };
+        let slider = ui
+            .push_id(("craft3d-joint", &mate.name), |ui| {
+                kit.slider_with(
+                    ui,
+                    crate::kit::Slider::new(label, &mut on_slider, range[0]..=range[1])
+                        .widths(label_width, value_width)
+                        .shown_as(1.0, decimals, shown_unit)
+                        // Typed values as they are (a joint's slider
+                        // never clamped them); no default to go back
+                        // to: a joint has no rest value of its own.
+                        .typed_free(true),
+                    None,
+                )
+            })
+            .inner;
+        let response = slider
+            .response
+            .clone()
+            .on_hover_text(format!("{} · joint.set {}", mate.kind, mate.name));
+        self.joints.hits.push((mate.name.clone(), response.rect));
+        if slider.changed && on_slider.is_finite() {
+            shown = if angle {
+                on_slider.to_radians()
+            } else {
+                on_slider
+            };
+            // A drag's later values merge into its first's undo step.
+            let merge = matches!(&self.joints.dragging, Some((name, _)) if *name == mate.name);
+            self.joints.dragging = Some((mate.name.clone(), shown));
+            self.timeline.queue(
+                "joint.set",
+                json!({"mate": mate.name, "value": written(shown, angle, unit),
+                       "merge": merge}),
+            );
+            ui.ctx().request_repaint();
+        }
+        let mine = matches!(&self.joints.dragging, Some((name, _)) if *name == mate.name);
+        mine && !slider.dragging
+    }
+
     /// The joints of an assembly, a slider each: dragging it sets the
     /// joint (`joint.set`), the assembly follows.
     pub(super) fn joints_ui(&mut self, ui: &mut egui::Ui) {
@@ -313,74 +395,10 @@ impl Shell {
         };
         let kit = crate::kit::Kit::panel(&tokens);
         kit.section_header(ui, "Joints");
-        let size = self
-            .shown_scene
-            .as_ref()
-            .and_then(|s| s.bbox.corners())
-            .map_or(100.0, |(lo, hi)| (hi - lo).length().max(1e-9));
+        let size = self.joint_range_size();
         let mut released = false;
         for mate in outline.mates.iter().filter(|m| m.settable) {
-            let Some((value, angle)) = mate.value else {
-                continue;
-            };
-            let (lo, hi) = mate
-                .limits
-                .unwrap_or(if angle { (-TURN, TURN) } else { (-size, size) });
-            let mut shown = match &self.joints.dragging {
-                Some((name, v)) if *name == mate.name => *v,
-                _ => value,
-            };
-            // A slider of degrees for an angle, of the document's unit
-            // otherwise: the kit's one slider in a row (label, rail,
-            // value).
-            let (mut on_slider, range, unit) = if angle {
-                (shown.to_degrees(), [lo.to_degrees(), hi.to_degrees()], "°")
-            } else {
-                (shown, [lo, hi], outline.unit.as_str())
-            };
-            let label_width = (ui.available_width() * 0.3).clamp(48.0, 120.0);
-            let value_width = 72.0;
-            let decimals = if angle { 1 } else { 2 };
-            let slider = ui
-                .push_id(("craft3d-joint", &mate.name), |ui| {
-                    kit.slider_with(
-                        ui,
-                        crate::kit::Slider::new(&mate.name, &mut on_slider, range[0]..=range[1])
-                            .widths(label_width, value_width)
-                            .shown_as(1.0, decimals, unit)
-                            // Typed values as they are (a joint's slider
-                            // never clamped them); no default to go back
-                            // to: a joint has no rest value of its own.
-                            .typed_free(true),
-                        None,
-                    )
-                })
-                .inner;
-            let response = slider
-                .response
-                .clone()
-                .on_hover_text(format!("{} · joint.set {}", mate.kind, mate.name));
-            self.joints.hits.push((mate.name.clone(), response.rect));
-            if slider.changed && on_slider.is_finite() {
-                shown = if angle {
-                    on_slider.to_radians()
-                } else {
-                    on_slider
-                };
-                // A drag's later values merge into its first's undo step.
-                let merge = matches!(&self.joints.dragging, Some((name, _)) if *name == mate.name);
-                self.joints.dragging = Some((mate.name.clone(), shown));
-                self.timeline.queue(
-                    "joint.set",
-                    json!({"mate": mate.name, "value": written(shown, angle, &outline.unit),
-                           "merge": merge}),
-                );
-                ui.ctx().request_repaint();
-            }
-            let mine = matches!(&self.joints.dragging, Some((name, _)) if *name == mate.name);
-            if mine && !slider.dragging {
-                released = true;
-            }
+            released |= self.joint_slider(ui, &kit, mate, &outline.unit, size, &mate.name);
         }
         if released {
             self.joints.dragging = None;

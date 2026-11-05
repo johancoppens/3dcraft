@@ -131,7 +131,7 @@ pub const PANICKED: &str = "it panicked";
 /// The words of every bug (`craft3d_math::BUG`), for the engine's users.
 pub use craft3d_math::BUG;
 
-pub use asm_outline::{AssemblyOutline, JointHandle, OutlineInstance, OutlineMate};
+pub use asm_outline::{AssemblyOutline, JointHandle, MateFrame, OutlineInstance, OutlineMate};
 pub use assert_cmds::{AssertionState, AssertionStatus};
 pub use checks_elsewhere::{CheckRequest, measure_checks};
 pub use commands::{DARK_BACKGROUND, EXPORT_QUALITIES, VIEWPORT_BACKGROUND};

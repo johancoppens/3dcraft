@@ -260,6 +260,12 @@ pub struct SidePanelView {
     pub hover: Option<String>,
     /// The feature whose context menu is open (by id).
     pub menu: Option<String>,
+    /// The mate chosen on the Assembly tab or by a click on its marker
+    /// (by name): its row is marked and its marker drawn highlighted.
+    pub mate: Option<String>,
+    /// The mate pointed at, by its row or its marker (by name): its
+    /// marker and its two parts are highlighted, as the pointer does.
+    pub mate_hover: Option<String>,
 }
 
 impl Default for SidePanelView {
@@ -275,6 +281,8 @@ impl Default for SidePanelView {
             body: None,
             hover: None,
             menu: None,
+            mate: None,
+            mate_hover: None,
         }
     }
 }
@@ -295,7 +303,13 @@ impl SidePanelView {
         }
         self.unfolded.truncate(MAX_UNFOLDED);
         self.folded.truncate(MAX_UNFOLDED);
-        for id in [&mut self.body, &mut self.hover, &mut self.menu] {
+        for id in [
+            &mut self.body,
+            &mut self.hover,
+            &mut self.menu,
+            &mut self.mate,
+            &mut self.mate_hover,
+        ] {
             if id
                 .as_ref()
                 .is_some_and(|id| id.chars().count() > MAX_SELECTION_CHARS)
@@ -594,6 +608,8 @@ pub struct Show {
     /// drawn either way: it points at something, it is not a line of the
     /// model.
     pub edges: bool,
+    /// An assembly's mate markers (shown by default; a part has none).
+    pub mates: bool,
 }
 
 impl Default for Show {
@@ -602,6 +618,7 @@ impl Default for Show {
             datums: true,
             sketches: true,
             edges: true,
+            mates: true,
         }
     }
 }
@@ -1769,6 +1786,8 @@ mod tests {
                 sketches: false,
                 // Added with the Edges toggle (2026-10-30).
                 edges: false,
+                // Added with the mate markers (2026-11-05).
+                mates: false,
             },
             // Added with the Help menu (2026-10-23).
             dialogs: Dialogs {
@@ -1860,6 +1879,9 @@ mod tests {
                 body: Some("F23".to_string()),
                 hover: Some("F3".to_string()),
                 menu: None,
+                // Added with the mate markers (2026-11-05).
+                mate: Some("Drive".to_string()),
+                mate_hover: None,
             },
         };
         let json = serde_json::to_value(&state).unwrap();
@@ -1875,7 +1897,8 @@ mod tests {
                 "sidePanel": {"filter": "bore", "variableFilter": "hole", "bodyFilter": "",
                               "unfolded": ["F3", "datums:F13"], "folded": ["Holes"],
                               "checksOpen": false, "showConsumed": true, "body": "F23",
-                              "hover": "F3", "menu": null},
+                              "hover": "F3", "menu": null, "mate": "Drive",
+                              "mateHover": null},
                 "selectedFeature": "F3",
                 "notice": "Step 2: the post",
                 "quality": {"chordal": 1e-4, "maxTriangles": 500_000, "angle": 20.0},
@@ -1893,7 +1916,7 @@ mod tests {
                                     "index": 1, "faces": ["F3:face(0)", "F3:face(2)"],
                                     "point": [1.0, 2.0, 3.0]},
                            "vertex": null},
-                "show": {"datums": false, "sketches": false, "edges": false},
+                "show": {"datums": false, "sketches": false, "edges": false, "mates": false},
                 "parameters": {"open": true, "collapsed": ["Finish"]},
                 "export": {"open": true, "what": {"sheetMetal": "Lid"}, "format": "dxf",
                            "quality": "fine",

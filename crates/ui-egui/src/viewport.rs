@@ -48,6 +48,10 @@ pub enum LineKind {
     /// The outline of a datum plane, a datum axis, or (as a dot) a datum
     /// point.
     Datum,
+    /// An assembly's mate marker ([`Marks::mates`]).
+    Mate,
+    /// A mate marker pointed at or chosen ([`Marks::mates_hot`]).
+    MateHot,
     /// A point's path over the motion (`view.trace`).
     Trace,
     /// A curvature comb's spike or its line through the tips
@@ -365,6 +369,8 @@ impl LineKind {
             LineKind::Edge => tokens.edge,
             LineKind::Highlight => tokens.face_highlight,
             LineKind::Datum => tokens.datum,
+            LineKind::Mate => tokens.mate,
+            LineKind::MateHot => tokens.face_highlight,
             LineKind::Trace => tokens.trace,
             LineKind::Comb => tokens.comb,
         }
@@ -379,6 +385,8 @@ impl LineKind {
             LineKind::Edge => tokens.edge_width,
             LineKind::Highlight => tokens.highlight_width,
             LineKind::Datum => tokens.datum_width,
+            LineKind::Mate => tokens.mate_width,
+            LineKind::MateHot => tokens.mate_hot_width,
             LineKind::Trace => tokens.trace_width,
             LineKind::Comb => tokens.comb_width,
         }
@@ -460,6 +468,12 @@ pub struct Marks {
     /// Curvature combs (`craft3d_engine::analysis::combs`), as polylines,
     /// tested like a trace.
     pub combs: Vec<Vec<Vec3>>,
+    /// An assembly's mate markers (`crate::mates`), as segments in the
+    /// world sized for the camera they were made for, tested like a datum;
+    /// the section does not cut them. `mates_hot` are those of the marker
+    /// pointed at or chosen, drawn over the others.
+    pub mates: Vec<[Vec3; 2]>,
+    pub mates_hot: Vec<[Vec3; 2]>,
 }
 
 impl Marks {
@@ -508,6 +522,8 @@ impl Marks {
         self.soft_edges |= other.soft_edges;
         self.traces.extend(other.traces);
         self.combs.extend(other.combs);
+        self.mates.extend(other.mates);
+        self.mates_hot.extend(other.mates_hot);
         self
     }
 
@@ -1435,6 +1451,13 @@ fn build_overlay(
     // The datums, tested like a sketch, under the sketches.
     for [a, b] in marks.map(Marks::datum_lines).unwrap_or_default() {
         line_of(a, b, LineKind::Datum, true, true, None);
+    }
+    // The mate markers, tested like a datum; the one pointed at over them.
+    for &[a, b] in marks.into_iter().flat_map(|marks| &marks.mates) {
+        line_of(a, b, LineKind::Mate, true, true, None);
+    }
+    for &[a, b] in marks.into_iter().flat_map(|marks| &marks.mates_hot) {
+        line_of(a, b, LineKind::MateHot, true, true, None);
     }
     for trace in marks.into_iter().flat_map(|marks| &marks.traces) {
         for pair in trace.windows(2) {

@@ -262,6 +262,12 @@ pub fn segments_marked(
     for [a, b] in marks.datum_lines() {
         line(a, b, LineKind::Datum, true, true, false);
     }
+    for &[a, b] in &marks.mates {
+        line(a, b, LineKind::Mate, true, true, false);
+    }
+    for &[a, b] in &marks.mates_hot {
+        line(a, b, LineKind::MateHot, true, true, false);
+    }
     for trace in &marks.traces {
         for pair in trace.windows(2) {
             if let [a, b] = *pair {

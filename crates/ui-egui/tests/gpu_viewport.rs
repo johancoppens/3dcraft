@@ -959,6 +959,88 @@ fn the_direct_path_draws_datums_and_matches_the_oracle() {
     }
 }
 
+/// A four-bar assembly (a bar part, four instances, a fixed mate and four
+/// revolutes), in a folder of its own.
+fn four_bar() -> Session {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gpu-viewport-mates");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::new(Workspace {
+        read: craft3d_engine::Access::Root(dir.clone()),
+        write: craft3d_engine::Access::Root(dir),
+    });
+    run(&mut s, "file.new", json!({}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "len", "expr": "24 mm" }),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({ "name": "len", "min": "10 mm", "max": "500 mm" }),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({ "name": "Bar", "size": ["len", 6, 4] }),
+    );
+    run(
+        &mut s,
+        "datum.axis",
+        json!({ "name": "End1", "through": [[3, 3, 0], [3, 3, 1]] }),
+    );
+    run(
+        &mut s,
+        "datum.axis",
+        json!({ "name": "End2", "through": [["len - 3 mm", 3, 0], ["len - 3 mm", 3, 1]] }),
+    );
+    run(&mut s, "file.save", json!({ "path": "bar.3dcraft" }));
+    run(&mut s, "assembly.new", json!({}));
+    for (name, len) in [
+        ("Ground", "64 mm"),
+        ("Crank", "24 mm"),
+        ("Coupler", "64 mm"),
+        ("Rocker", "24 mm"),
+    ] {
+        run(
+            &mut s,
+            "instance.add",
+            json!({ "source": "bar.3dcraft", "name": name, "body": "Bar", "params": { "len": len } }),
+        );
+    }
+    for (name, a, b) in [
+        ("Base", "world/z", "Ground/End1"),
+        ("Drive", "Ground/End1", "Crank/End1"),
+        ("Elbow", "Crank/End2", "Coupler/End1"),
+        ("Knee", "Coupler/End2", "Rocker/End2"),
+        ("Hip", "Ground/End2", "Rocker/End1"),
+    ] {
+        let kind = if name == "Base" { "fixed" } else { "revolute" };
+        run(
+            &mut s,
+            "mate.add",
+            json!({ "kind": kind, "a": a, "b": b, "name": name, "flip": true }),
+        );
+    }
+    run(
+        &mut s,
+        "joint.set",
+        json!({ "mate": "Drive", "value": "60 deg" }),
+    );
+    s
+}
+
+/// An assembly's mate markers drawn by the window's device against the
+/// oracle: the same lines, tested against the bodies alike, opaque and
+/// over see-through bodies (docs/design/assemblies.md › *Mate markers*).
+#[test]
+fn the_direct_path_draws_mate_markers_and_matches_the_oracle() {
+    for transparency in [0.0, 0.5] {
+        direct_path_against_the_oracle_of(four_bar(), "viewport-mates", transparency);
+    }
+}
+
 /// The same with the bodies see-through: the device draws the two layers
 /// and blends them, with the hidden parts of the bodies' edges dimmed,
 /// and the picture is still the oracle's within the tolerance (§7.2,
@@ -1004,6 +1086,8 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
     shell.tokens.construction_width = 3.0;
     shell.tokens.axis_width = 3.0;
     shell.tokens.datum_width = 3.0;
+    shell.tokens.mate_width = 3.0;
+    shell.tokens.mate_hot_width = 3.0;
     let tokens = shell.tokens;
     shell.attach_gpu(&state).unwrap();
     assert!(shell.draws_directly());
@@ -1074,8 +1158,13 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
         vec![cpu_frame.clone()]
     };
     let slack = viewport::depth_slack(Backend::Gpu, Some(&scene), &camera);
-    // The datums, as the shell shows them (none in a part without any).
-    let marks = viewport::datum_marks(Some(&scene), shell.state.show.datums);
+    // The datums, as the shell shows them (none in a part without any),
+    // and an assembly's mate markers (none in a part).
+    let marks =
+        viewport::datum_marks(Some(&scene), shell.state.show.datums).with(shell.mate_marks());
+    if base.starts_with("viewport-mates") {
+        assert!(!marks.mates.is_empty(), "the assembly's markers are drawn");
+    }
     let overlay = viewport::overlay_see_through(
         Some(&scene),
         &camera,

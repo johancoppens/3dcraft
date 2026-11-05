@@ -76,7 +76,7 @@ fn ui_set_hides_and_shows_the_sketches_and_shown_is_the_picture_of_before() {
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     assert_eq!(
         got["state"]["show"],
-        json!({"datums": true, "sketches": true, "edges": true})
+        json!({"datums": true, "sketches": true, "edges": true, "mates": true})
     );
     let before = screenshot(&mut shell, &mut session);
     call(
@@ -88,7 +88,7 @@ fn ui_set_hides_and_shows_the_sketches_and_shown_is_the_picture_of_before() {
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     assert_eq!(
         got["state"]["show"],
-        json!({"datums": true, "sketches": false, "edges": true})
+        json!({"datums": true, "sketches": false, "edges": true, "mates": true})
     );
     let hidden = screenshot(&mut shell, &mut session);
     let coverage = |shot: &Value| shot["overlayCoverage"].as_f64().unwrap();

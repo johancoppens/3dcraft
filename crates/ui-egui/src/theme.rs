@@ -80,6 +80,23 @@ pub struct Tokens {
     pub datum_width: f32,
     /// Radius of a datum point's dot, in points.
     pub datum_point_radius: f32,
+    /// An assembly's mate markers (docs/design/assemblies.md › *Mate
+    /// markers*): their lines in brass, apart from the sketches' indigo,
+    /// the datums' petrol and the selection's copper; a marker pointed at
+    /// or chosen is drawn in the selection's copper (`face_highlight`),
+    /// `mate_hot_width` wide, and the two parts it joins are tinted
+    /// `mate_part` (a pale copper, so the parts stay readable).
+    pub mate: Rgb,
+    pub mate_part: Rgb,
+    /// Width of a marker's lines, plain and pointed at, in points.
+    pub mate_width: f32,
+    pub mate_hot_width: f32,
+    /// A marker's size on screen, in points: the length of its axis at
+    /// the camera's target, whatever the zoom.
+    pub mate_size: f32,
+    /// How near the pointer must be to a marker's line to point at it,
+    /// in points.
+    pub mate_hit: f32,
     /// A point's path over the motion (`view.trace`): a deep violet,
     /// apart from the sketches' blue, the datums' petrol and the
     /// selection's copper, that stands out on the plain look's light
@@ -818,6 +835,14 @@ impl Tokens {
             datum_fill_opacity: 48,
             datum_width: 1.25,
             datum_point_radius: 4.0,
+            // Brass #7A6800; the parts of a marker pointed at in a pale
+            // copper over the bodies' warm grey.
+            mate: [122, 104, 0],
+            mate_part: [236, 196, 150],
+            mate_width: 1.5,
+            mate_hot_width: 2.5,
+            mate_size: 36.0,
+            mate_hit: 6.0,
             trace: [80, 0, 140],
             trace_width: 3.0,
             comb: [204, 51, 153],
@@ -1905,6 +1930,8 @@ mod tests {
             ("sketch", l.sketch, d.sketch),
             ("datum", l.datum, d.datum),
             ("datum_ink", l.datum_ink, d.datum_ink),
+            ("mate", l.mate, d.mate),
+            ("mate_part", l.mate_part, d.mate_part),
             ("viewport_text", l.viewport_text, d.viewport_text),
             ("viewport_failed", l.viewport_failed, d.viewport_failed),
             ("chrome_work", l.chrome_work, d.chrome_work),
@@ -2094,5 +2121,31 @@ mod tests {
         assert!(luminance(tokens.sketch_construction) > luminance(tokens.sketch));
         // The datum's name is its line's hue, darker.
         assert!(luminance(tokens.datum_ink) < luminance(tokens.datum));
+    }
+
+    /// A mate marker reads on the viewport and on a body (3:1), and is
+    /// told apart from the sketches, the datums and the selection: warm
+    /// (red over blue) but yellow rather than copper (green near red).
+    /// A marker pointed at is the selection's copper; the tint of its
+    /// parts stays light, so their edges and shading still read.
+    #[test]
+    fn mate_markers_read_over_the_viewport_and_a_body() {
+        let tokens = Tokens::default();
+        assert!(contrast(tokens.mate, tokens.viewport_background) >= 3.0);
+        assert!(contrast(tokens.mate, tokens.body) >= 3.0);
+        let [r, g, b] = tokens.mate.map(i32::from);
+        assert!(r > b && g > b && (r - g) < 40, "{:?}", tokens.mate);
+        for other in [
+            tokens.sketch,
+            tokens.datum,
+            tokens.face_highlight,
+            tokens.trace,
+            tokens.comb,
+        ] {
+            assert_ne!(tokens.mate, other);
+        }
+        assert!(luminance(tokens.mate_part) > 0.5);
+        assert!(tokens.mate_hot_width > tokens.mate_width);
+        assert!(tokens.mate_size > 0.0 && tokens.mate_hit > 0.0);
     }
 }
