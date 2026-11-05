@@ -813,3 +813,168 @@ fn a_trace_and_a_check_over_the_motion_are_made_in_the_worker() {
     );
     assert_eq!(page.host.session.work_here(), work);
 }
+
+/// An example from the start screen, `id`.
+fn example(id: &str) -> &'static craft3d_ui_egui::shell::Example {
+    craft3d_ui_egui::shell::EXAMPLES
+        .iter()
+        .find(|example| example.id == id)
+        .unwrap()
+}
+
+/// Frames until the example being built is done.
+fn built(page: &mut Page) -> Vec<(usize, usize)> {
+    let mut seen = Vec::new();
+    // The example is said done (not "Building …") only once its picture
+    // is there (the held report of an open, `WebHost::finish`).
+    let check = |page: &mut Page| {
+        let quality = page.host.shell.scene_quality();
+        if let Some(report) = &page.host.shell.last_command
+            && report.label == "example"
+            && report.ok
+            && !report.text.starts_with("Building")
+        {
+            assert!(
+                page.host.session.scene_ready(quality),
+                "said done before its picture: {report:?}"
+            );
+        }
+    };
+    for _ in 0..2000 {
+        match page.host.example_progress() {
+            Some(progress) => {
+                if seen.last() != Some(&progress) {
+                    seen.push(progress);
+                }
+                page.frame();
+                check(page);
+            }
+            None => {
+                for _ in 0..50 {
+                    page.frame();
+                    check(page);
+                }
+                page.settle();
+                return seen;
+            }
+        }
+    }
+    panic!("the example was never built");
+}
+
+/// An example from the start screen is built a step at a time, each step
+/// that needs the bodies (a feature, an assertion, a material fitted to
+/// the body) made in the worker: the page's session regenerates and
+/// meshes nothing, the page says the step it is at, and the document is
+/// the one building it at once in a session of its own gives (2026-11-04:
+/// the fuel tank's shell and measures froze the page for minutes).
+#[test]
+fn an_example_is_built_in_the_worker_a_step_at_a_time() {
+    let channel = example("channel");
+    let mut want = Session::new(Workspace::memory());
+    let wanted = craft3d_ui_egui::shell::run_example(&mut want, channel).unwrap();
+    let mut page = Page::new(false);
+    let work = page.host.session.work_here();
+    page.host.shell.choose_example(channel);
+    page.frame();
+    let seen = built(&mut page);
+    assert!(
+        seen.len() > 5,
+        "the steps were shown as they went: {seen:?}"
+    );
+    let steps = wanted["steps"].as_u64().unwrap() as usize;
+    assert!(seen.iter().all(|&(_, of)| of == steps), "{seen:?}");
+    assert!(
+        seen.windows(2).all(|pair| pair[0].0 < pair[1].0),
+        "{seen:?}"
+    );
+    assert_eq!(
+        page.host.session.document_bytes(),
+        want.document_bytes(),
+        "the document a session that builds it at once makes"
+    );
+    let report = page.host.shell.last_command.clone().unwrap();
+    assert!(report.ok && report.label == "example", "{report:?}");
+    assert!(page.host.shell.error_dialog().is_none());
+    assert_eq!(
+        page.host.session.work_here(),
+        work,
+        "nothing regenerated or meshed on the page"
+    );
+}
+
+/// An example cancelled while a step is made in the worker: its document
+/// is closed again, as when a step fails, and nothing more is built.
+#[test]
+fn an_example_cancelled_is_closed_again() {
+    let mut page = Page::new(false);
+    page.host.shell.choose_example(example("bracket"));
+    page.frame();
+    assert!(
+        page.host.session.edits_waiting(),
+        "a step waits for the worker"
+    );
+    assert!(page.host.example_progress().is_some());
+    page.host.cancel_edits();
+    assert_eq!(page.host.example_progress(), None);
+    assert!(page.host.session.document_status().is_none());
+    let report = page.host.shell.last_command.clone().unwrap();
+    assert!(
+        !report.ok && report.text.contains("example bracket"),
+        "{report:?}"
+    );
+    page.settle();
+    assert!(page.host.session.document_status().is_none());
+}
+
+/// An example cancelled while its last step, a read (`document.check`),
+/// is run in the worker: that job is dropped too (its late answer says
+/// nothing over the closed document), the worker that runs it is ended,
+/// and the failure names that step.
+#[test]
+fn an_example_cancelled_during_a_read_drops_it_and_names_it() {
+    let bracket = example("bracket");
+    let steps = craft3d_ui_egui::shell::example_steps(bracket)
+        .unwrap()
+        .unwrap();
+    let last = steps.len() - 1;
+    assert_eq!(steps[last].0, "document.check");
+    let mut page = Page::new(false);
+    page.host.shell.choose_example(bracket);
+    for _ in 0..2000 {
+        page.frame();
+        if page.host.example_progress() == Some((steps.len(), steps.len()))
+            && page.host.session.commands_waiting()
+        {
+            break;
+        }
+    }
+    assert_eq!(
+        page.host.example_progress(),
+        Some((steps.len(), steps.len()))
+    );
+    assert!(page.host.session.commands_waiting(), "the check waits");
+    assert!(!page.host.session.edits_waiting(), "it is a read");
+    page.host.cancel_edits();
+    assert!(
+        page.host.take_worker_restart(),
+        "the worker that runs it ends"
+    );
+    assert!(!page.host.session.commands_waiting());
+    assert_eq!(page.host.example_progress(), None);
+    assert!(page.host.session.document_status().is_none());
+    let report = page.host.shell.last_command.clone().unwrap();
+    assert!(
+        !report.ok
+            && report
+                .text
+                .contains(&format!("step {last} (document.check)")),
+        "{report:?}"
+    );
+    page.settle();
+    assert_eq!(
+        page.host.shell.last_command,
+        Some(report),
+        "nothing after it"
+    );
+}

@@ -566,6 +566,16 @@ impl Front {
 }
 
 impl Cover {
+    /// How often it was asked, and how many nodes it made below its first
+    /// ones: what its next answers depend on besides the question.
+    #[cfg(test)]
+    pub(super) fn history(&self) -> (usize, usize) {
+        (
+            self.asked.load(Ordering::Relaxed),
+            self.made.load(Ordering::Relaxed),
+        )
+    }
+
     /// The cover of `face`, or `None` where it has none (a freeform
     /// surface of too many pieces or of weights that are not positive,
     /// numbers that are not finite): its box then stands for it.

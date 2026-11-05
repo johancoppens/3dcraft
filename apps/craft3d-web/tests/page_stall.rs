@@ -499,3 +499,40 @@ fn the_page_stalls_on_the_planetary_gearbox() {
     }
     let _ = answers;
 }
+
+/// The fuel tank of the start screen (its shell, the area and cavity it
+/// measures), built from its card: with the worker each step that needs
+/// the bodies is made there and the page only applies it (2026-11-04);
+/// without, every step is made on the page, its shell in one frame (as
+/// the whole script was before, in a single frame).
+#[test]
+#[ignore = "timings: run in release with --ignored --nocapture"]
+fn the_page_stays_free_while_the_fuel_tank_is_built() {
+    let tank = craft3d_ui_egui::shell::EXAMPLES
+        .iter()
+        .find(|example| example.id == "tank")
+        .unwrap();
+    let mut documents = Vec::new();
+    for worker in [false, true] {
+        let mut page = Page::new();
+        page.host.session.set_commands_elsewhere(worker);
+        let work = page.host.session.work_here();
+        let started = Instant::now();
+        page.host.shell.choose_example(tank);
+        page.frame();
+        while page.host.example_progress().is_some() || !page.idle() {
+            let frame = Instant::now();
+            page.frame();
+            assert!(started.elapsed() < Duration::from_secs(1800), "never built");
+            std::thread::sleep(FRAME.saturating_sub(frame.elapsed()));
+        }
+        report("the fuel tank", worker, &mut page, started.elapsed());
+        let built = page.host.shell.last_command.clone().unwrap();
+        assert!(built.ok && built.label == "example", "{built:?}");
+        if worker {
+            assert_eq!(page.host.session.work_here(), work, "on the page");
+        }
+        documents.push(page.host.session.document_bytes());
+    }
+    assert_eq!(documents[0], documents[1]);
+}

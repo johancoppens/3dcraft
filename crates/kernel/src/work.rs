@@ -16,6 +16,21 @@ static FACE_CANDIDATES: AtomicU64 = AtomicU64::new(0);
 static EDGE_CANDIDATES: AtomicU64 = AtomicU64::new(0);
 static PATCH_TREES: AtomicU64 = AtomicU64::new(0);
 static BLEND_SECTIONS: AtomicU64 = AtomicU64::new(0);
+static HELPER_PANICS: AtomicU64 = AtomicU64::new(0);
+
+/// Helper threads of the kernel that panicked (a boolean section's
+/// helpers, `boolean/section.rs` › `Ahead`): the work goes on without
+/// them, so a bug in one would go unseen but for this count, which the
+/// fuzzer and the health report can read. Zero in a process without such
+/// a bug.
+pub fn helper_panics() -> u64 {
+    HELPER_PANICS.load(Ordering::Relaxed)
+}
+
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn helper_panicked() {
+    HELPER_PANICS.fetch_add(1, Ordering::Relaxed);
+}
 
 /// The kernel's work so far ([`work`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

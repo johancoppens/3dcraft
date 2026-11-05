@@ -342,40 +342,64 @@ pub fn example(id: &str) -> Option<&'static Example> {
     EXAMPLES.iter().find(|example| example.id == id)
 }
 
+/// The commands of `example`'s script, each with its params (`{}` where
+/// it gives none), run in a new document (`file.new` in millimetres) by
+/// [`run_example`], or a step at a time by a host that hands the steps
+/// that need the bodies to where they are (the web page's worker).
+/// `None` for a published file, which is opened as it is.
+pub fn example_steps(example: &Example) -> Option<Result<Vec<(String, Value)>, String>> {
+    let Source::Script(text) = example.source else {
+        return None;
+    };
+    let script = match serde_json::from_str::<Value>(text) {
+        Ok(script) => script,
+        Err(e) => return Some(Err(format!("example {}: {e}", example.id))),
+    };
+    Some(
+        craft3d_engine::task_score::parse_script(&script)
+            .map(|steps| {
+                steps
+                    .into_iter()
+                    .map(|step| {
+                        let params = if step.params.is_null() {
+                            json!({})
+                        } else {
+                            step.params
+                        };
+                        (step.command, params)
+                    })
+                    .collect()
+            })
+            .map_err(|e| format!("example {}: {}", example.id, e.message())),
+    )
+}
+
+/// The error of `example`'s step `index`, running `command`.
+pub fn example_step_failed(example: &Example, index: usize, command: &str, error: &str) -> String {
+    format!("example {}: step {index} ({command}): {error}", example.id)
+}
+
 /// Builds `example` in a new document (`file.new` in millimetres, then
 /// its script's commands). A step that fails closes the new document
 /// again and is the error.
 pub fn run_example(session: &mut Session, example: &Example) -> Result<Value, String> {
-    let text = match example.source {
-        Source::Script(text) => text,
-        Source::File { name, bytes } => {
+    let steps = match (example_steps(example), example.source) {
+        (Some(steps), _) => steps?,
+        (None, Source::File { name, bytes }) => {
             let opened = session
                 .open_bytes(name, bytes)
                 .map_err(|e| format!("example {}: {}", example.id, e.message()))?;
             return Ok(json!({ "example": example.id, "opened": opened }));
         }
+        (None, Source::Script(_)) => return Err(format!("example {}: no script", example.id)),
     };
-    let script: Value =
-        serde_json::from_str(text).map_err(|e| format!("example {}: {e}", example.id))?;
-    let steps = craft3d_engine::task_score::parse_script(&script)
-        .map_err(|e| format!("example {}: {}", example.id, e.message()))?;
     session
         .execute("file.new", &json!({ "units": "mm" }))
         .map_err(|e| format!("file.new: {}", e.message()))?;
-    for (index, step) in steps.iter().enumerate() {
-        let params = if step.params.is_null() {
-            json!({})
-        } else {
-            step.params.clone()
-        };
-        if let Err(e) = session.execute(&step.command, &params) {
+    for (index, (command, params)) in steps.iter().enumerate() {
+        if let Err(e) = session.execute(command, params) {
             let _ = session.execute("file.close", &json!({ "discard": true }));
-            return Err(format!(
-                "example {}: step {index} ({}): {}",
-                example.id,
-                step.command,
-                e.message()
-            ));
+            return Err(example_step_failed(example, index, command, e.message()));
         }
     }
     Ok(json!({ "example": example.id, "steps": steps.len() }))

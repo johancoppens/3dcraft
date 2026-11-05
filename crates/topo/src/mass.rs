@@ -4118,40 +4118,85 @@ thread_local! {
 static BUSY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// `work(0..count)`, in that order, shared out over as many threads as
-/// the machine has (within shared-out work already: as many as are idle),
-/// one item at a time, with at least `each` items a thread; each result
-/// goes to its own slot, so the results are the same however the items
-/// were shared out. Where no thread can be started (wasm, a machine out
-/// of threads) the items are done one after the other on this thread.
+/// the machine has (within shared-out work already: as many as are idle,
+/// and more as other threads become idle while it runs), one item at a
+/// time, with at least `each` items a thread; each result goes to its own
+/// slot, so the results are the same however the items were shared out.
+/// Where no thread can be started (wasm, a machine out of threads) the
+/// items are done one after the other on this thread.
+///
+/// **Threads that become idle are taken up** (2026-11-04). Within
+/// shared-out work the threads were counted once, when it began: the
+/// panels of the fuel tank's slowest face, started while the other
+/// faces still had every thread, ran on one thread for 18 s after the
+/// others were done. Now the thread that shares the items out starts
+/// another helper, between its own items, whenever a thread of the
+/// machine is idle and enough items are left.
 fn in_order<T: Send>(count: usize, each: usize, work: impl Fn(usize) -> T + Sync) -> Vec<T> {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        in_order_on(&BUSY, craft3d_math::available_threads(), count, each, work)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = each;
+        (0..count).map(work).collect()
+    }
+}
+
+/// [`in_order`] on a machine of `machine` threads, `busy` counting those
+/// that do a share of such work ([`BUSY`]; a count of their own for the
+/// tests).
+#[cfg(not(target_arch = "wasm32"))]
+fn in_order_on<T: Send>(
+    busy: &std::sync::atomic::AtomicUsize,
+    machine: usize,
+    count: usize,
+    each: usize,
+    work: impl Fn(usize) -> T + Sync,
+) -> Vec<T> {
+    {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::{Mutex, PoisonError};
-        let machine = craft3d_math::available_threads();
-        let room = if SHARING.with(std::cell::Cell::get) {
-            // This thread, and the idle ones.
-            machine
-                .saturating_sub(BUSY.load(Ordering::Relaxed))
-                .saturating_add(1)
-        } else {
-            machine
-        };
-        let threads = room.min(count / each.max(1) + 1).min(count);
+        let nested = SHARING.with(std::cell::Cell::get);
+        let each = each.max(1);
+        let threads = machine.min(count / each + 1).min(count);
         if threads > 1 {
             let next = AtomicUsize::new(0);
             let slots: Vec<Mutex<Option<T>>> = (0..count).map(|_| Mutex::new(None)).collect();
+            // A thread of the machine for one more helper within shared-out
+            // work: counted busy here, before it starts, so that two
+            // sharers do not both take the last idle one.
+            let admit = || {
+                let mut now = busy.load(Ordering::Relaxed);
+                while now < machine {
+                    match busy.compare_exchange_weak(
+                        now,
+                        now.saturating_add(1),
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => return true,
+                        Err(then) => now = then,
+                    }
+                }
+                false
+            };
+            // The items left are worth another thread.
+            let more = || count.saturating_sub(next.load(Ordering::Relaxed)) > each;
             // Each helper's count of work (`craft3d_geom::allowance`) is
             // added to this thread's when it is joined, so the count is the
-            // same however the items were shared out.
-            let run = || {
+            // same however the items were shared out. `admitted`: it was
+            // counted busy when it was let in.
+            let run = |admitted: bool, grow: &dyn Fn()| {
                 let before = craft3d_geom::allowance::spent();
                 let was = SHARING.with(|sharing| sharing.replace(true));
-                if !was {
-                    BUSY.fetch_add(1, Ordering::Relaxed);
+                if !was && !admitted {
+                    busy.fetch_add(1, Ordering::Relaxed);
                 }
-                let _back = Restore(was);
+                let _back = Restore(was, busy);
                 loop {
+                    grow();
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some(slot) = slots.get(index) else {
                         break;
@@ -4162,12 +4207,46 @@ fn in_order<T: Send>(count: usize, each: usize, work: impl Fn(usize) -> T + Sync
                 craft3d_geom::allowance::spent().saturating_sub(before)
             };
             std::thread::scope(|scope| {
+                let run = &run;
+                let helpers = Mutex::new(Vec::new());
+                let started = AtomicUsize::new(1);
+                let start = |admitted: bool| {
+                    let helper = std::thread::Builder::new()
+                        .spawn_scoped(scope, move || run(admitted, &|| {}))
+                        .ok();
+                    match helper {
+                        Some(helper) => {
+                            started.fetch_add(1, Ordering::Relaxed);
+                            helpers
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .push(helper);
+                        }
+                        // Not started: the thread let in is not busy.
+                        None if admitted => {
+                            busy.fetch_sub(1, Ordering::Relaxed);
+                        }
+                        None => {}
+                    }
+                };
                 // This thread works too; helpers that cannot be started
-                // leave more for it.
-                let helpers: Vec<_> = (1..threads)
-                    .filter_map(|_| std::thread::Builder::new().spawn_scoped(scope, run).ok())
-                    .collect();
-                let _ = run();
+                // leave more for it. Within shared-out work, as many as
+                // are idle now, and one more whenever another thread
+                // becomes idle while items are left.
+                for _ in 1..threads {
+                    if nested && !admit() {
+                        break;
+                    }
+                    start(nested);
+                }
+                let grow = || {
+                    if nested && started.load(Ordering::Relaxed) < threads && more() && admit() {
+                        start(true);
+                    }
+                };
+                let _ = run(false, &grow);
+                let helpers =
+                    std::mem::take(&mut *helpers.lock().unwrap_or_else(PoisonError::into_inner));
                 for helper in helpers {
                     // A panic on a helper leaves its face's slot empty;
                     // that face is done again below, where the panic
@@ -4188,24 +4267,22 @@ fn in_order<T: Send>(count: usize, each: usize, work: impl Fn(usize) -> T + Sync
                 .collect();
         }
     }
-    #[cfg(target_arch = "wasm32")]
-    let _ = each;
     (0..count).map(work).collect()
 }
 
-/// Puts [`SHARING`] back as it was, and counts the thread out of
-/// [`BUSY`] when it was counted in, when dropped: also when the work
-/// panics.
+/// Puts [`SHARING`] back as it was, and counts the thread out of the
+/// busy ones ([`BUSY`]) when it was counted in, when dropped: also when
+/// the work panics.
 #[cfg(not(target_arch = "wasm32"))]
-struct Restore(bool);
+struct Restore<'b>(bool, &'b std::sync::atomic::AtomicUsize);
 
 #[cfg(not(target_arch = "wasm32"))]
-impl Drop for Restore {
+impl Drop for Restore<'_> {
     fn drop(&mut self) {
         let was = self.0;
         SHARING.with(|sharing| sharing.set(was));
         if !was {
-            BUSY.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            self.1.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
 }
@@ -4932,6 +5009,60 @@ mod tests {
     use crate::{Body, BodyKind, Coedge};
     use craft3d_geom::{Circle, Cylinder, Ellipse};
     use std::f64::consts::{PI, TAU};
+
+    /// Shared-out work gives every result in its slot, in order, on a
+    /// machine of one thread and of many, also nested (where helpers are
+    /// let in as threads become idle), and leaves no thread counted busy.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn shared_out_work_keeps_its_order_on_one_thread_and_many() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for machine in [1, 2, 3, 8, 32] {
+            let busy = AtomicUsize::new(0);
+            let flat = in_order_on(&busy, machine, 100, 1, |i| i * i);
+            assert_eq!(flat, (0..100).map(|i| i * i).collect::<Vec<_>>());
+            // Unequal items, so that some helpers are done early and are
+            // let into the nested work of the others.
+            let nested = in_order_on(&busy, machine, 12, 1, |i| {
+                in_order_on(&busy, machine, 40 * (i % 3 + 1), 2, |j| {
+                    if i % 4 == 0 {
+                        std::thread::sleep(std::time::Duration::from_micros(200));
+                    }
+                    i * 1000 + j
+                })
+            });
+            let want: Vec<Vec<usize>> = (0..12)
+                .map(|i| (0..40 * (i % 3 + 1)).map(|j| i * 1000 + j).collect())
+                .collect();
+            assert_eq!(nested, want, "machine {machine}");
+            assert_eq!(busy.load(Ordering::Relaxed), 0, "machine {machine}");
+        }
+    }
+
+    /// A panic in nested shared-out work reaches the caller, and every
+    /// thread counted busy (the helpers let in as well) is counted out
+    /// again; the work goes on afterwards as before.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_panic_in_nested_shared_out_work_leaves_no_thread_busy() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for machine in [1, 4, 16] {
+            let busy = AtomicUsize::new(0);
+            let fell = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                in_order_on(&busy, machine, 16, 1, |i| {
+                    in_order_on(&busy, machine, 64, 1, |j| {
+                        assert!(!(i == 5 && j == 33), "on purpose, in nested work");
+                        i + j
+                    })
+                })
+            }));
+            assert!(fell.is_err(), "machine {machine}");
+            assert_eq!(busy.load(Ordering::Relaxed), 0, "machine {machine}");
+            let again = in_order_on(&busy, machine, 16, 1, |i| i + 1);
+            assert_eq!(again, (1..17).collect::<Vec<_>>());
+            assert_eq!(busy.load(Ordering::Relaxed), 0);
+        }
+    }
 
     const RADIUS: f64 = 2.0;
     const CENTRE: Vec3 = Vec3::new(0.3, -1.1, 0.7);

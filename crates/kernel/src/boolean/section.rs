@@ -53,7 +53,20 @@ impl Lazy {
             .as_ref()
             .map_err(|reason| *reason)
     }
+
+    /// The outline if it has been made (by whoever asked first), without
+    /// making it.
+    fn made(&self) -> Option<&Outline> {
+        self.made.get()?.as_ref().ok()
+    }
 }
+
+/// Per face of a solid, the boxes that cover it, made as they are asked
+/// for ([`Solid::cover`]).
+type Covers = Vec<CoverCell>;
+
+/// One face's cover, made the first time it is asked for.
+type CoverCell = OnceLock<Option<Cover>>;
 
 /// One operand, prepared.
 pub(super) struct Solid<'a> {
@@ -76,7 +89,7 @@ pub(super) struct Solid<'a> {
     edge_trees: Vec<OnceLock<(Vec<EdgeId>, FaceTree)>>,
     /// Per face: the boxes that cover it ([`Cover`]), made as they are
     /// asked for; `None` for a face its box stands for.
-    covers: Vec<OnceLock<Option<Cover>>>,
+    covers: Covers,
 }
 
 impl Solid<'_> {
@@ -96,6 +109,11 @@ impl Solid<'_> {
             .ok_or(Stop::of(LOST))?
             .get()
             .map_err(|reason| Stop::of(reason).at(&[self.name(face)]))
+    }
+
+    /// The outline of a face if it has been made, without making it.
+    fn outline_made(&self, face: usize) -> Option<&Outline> {
+        self.outlines.get(face)?.made()
     }
 
     /// The edges around a face, each once.
@@ -149,6 +167,20 @@ impl Solid<'_> {
     /// The boxes that cover a face at the linear tolerance `tol`, or
     /// `None` when its box stands for it ([`Cover`]).
     pub fn cover(&self, face: usize, tol: f64) -> Option<(&Cover, CoverFace<'_>)> {
+        self.cover_in(&self.covers, face, tol)
+    }
+
+    /// [`Solid::cover`] from `covers`: the solid's own, or a set of the
+    /// solid's faces kept apart from them (the pairs met ahead,
+    /// [`Ahead`]). A cover's answers depend on what it was asked before
+    /// (`Cover::front`, its cap on nodes), so the section's own covers are
+    /// asked only by the section.
+    fn cover_in<'c>(
+        &'c self,
+        covers: &'c [CoverCell],
+        face: usize,
+        tol: f64,
+    ) -> Option<(&'c Cover, CoverFace<'c>)> {
         #[cfg(test)]
         if tests::NO_COVERS.with(std::cell::Cell::get) {
             return None;
@@ -159,12 +191,22 @@ impl Solid<'_> {
             outline: self.outline(face).ok(),
             tol,
         };
-        let cover = self
-            .covers
-            .get(face)?
-            .get_or_init(|| Cover::new(of))
-            .as_ref()?;
+        let cover = covers.get(face)?.get_or_init(|| Cover::new(of)).as_ref()?;
         Some((cover, of))
+    }
+
+    /// Per face, what its cover was asked ([`Cover::history`]).
+    #[cfg(test)]
+    pub(super) fn cover_history(&self) -> Vec<Option<(usize, usize)>> {
+        self.covers
+            .iter()
+            .map(|cell| cell.get().and_then(Option::as_ref).map(Cover::history))
+            .collect()
+    }
+
+    /// A set of covers of the solid's faces, none made yet.
+    fn fresh_covers(&self) -> Covers {
+        (0..self.outlines.len()).map(|_| OnceLock::new()).collect()
     }
 
     /// False only when `p` is proven further than four times the tolerance
@@ -1425,6 +1467,64 @@ pub(super) fn section(
     vertices: &mut Vertices,
     tolerance: &Tolerance,
 ) -> Result<Sections, Stop> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(leases) = ahead_lease(a, b) {
+        let ahead = Ahead::new(a, b, tolerance.linear, leases.len());
+        let (made, warmed) = std::thread::scope(|scope| {
+            // Each helper holds its own thread of the pool and gives it
+            // back as soon as it stops (no freeform pair left ahead).
+            let helpers: Vec<_> = leases
+                .into_iter()
+                .filter_map(|lease| {
+                    let ahead = &ahead;
+                    std::thread::Builder::new()
+                        .spawn_scoped(scope, move || {
+                            if let Some(lease) = &lease {
+                                lease.helper_starts();
+                            }
+                            ahead.help(a, b, tolerance);
+                            drop(lease);
+                        })
+                        .ok()
+                })
+                .collect();
+            let made = {
+                // The helpers stop when the section does, however it ends.
+                let _ending = Ending(&ahead.done);
+                section_with(a, b, vertices, tolerance, Some(&ahead))
+            };
+            // Joined here, a helper that panicked is a pair the section
+            // met itself, nothing more: its panic does not reach the
+            // scope (which would panic in its place, the section's
+            // result lost). A helper in the middle of a meeting is
+            // waited for (a march cannot be stopped part way): after a
+            // refusal the answer can come that much later.
+            for helper in helpers {
+                if helper.join().is_err() {
+                    // Not lost: counted, for the fuzzer and the health
+                    // report (`crate::work::helper_panics`).
+                    crate::work::helper_panicked();
+                }
+            }
+            (made, &ahead.warmed)
+        });
+        #[cfg(test)]
+        tests::WARMED.with(|n| n.set(warmed.load(std::sync::atomic::Ordering::Relaxed)));
+        let _ = warmed;
+        return made;
+    }
+    section_with(a, b, vertices, tolerance, None)
+}
+
+/// [`section`], with the pairs ahead of it met on helper threads when
+/// `ahead` is given.
+fn section_with(
+    a: &Solid,
+    b: &Solid,
+    vertices: &mut Vertices,
+    tolerance: &Tolerance,
+    ahead: Option<&Ahead>,
+) -> Result<Sections, Stop> {
     let tol = tolerance.linear;
     let mut sections = Sections::default();
     // Only where both bodies are can their faces meet.
@@ -1439,48 +1539,29 @@ pub(super) fn section(
     // lies on the other is imprinted on it from the edge itself, once
     // every pair has been met (`lying_edges`).
     let mut coincident: Vec<(usize, usize)> = Vec::new();
+    // Where the section is among the pairs of `candidates`: the pairs met
+    // ahead of it follow it ([`Ahead`]).
+    let mut at = 0usize;
     for (fa, box_a) in a.boxes.iter().enumerate() {
         // The faces of B whose boxes meet this one's, in the order of B's
         // faces: the pairs, and their order, of testing every face of B.
-        for fb in b.candidates(|box_b| boxes_meet(box_a, box_b, 2.0 * tol)) {
+        for fb in candidates(b, box_a, tol) {
             tested.one();
-            let Some(box_b) = b.boxes.get(fb) else {
-                return Err(Stop::of(LOST));
-            };
-            // Only where both faces are can they meet: their surfaces are
-            // intersected there and nowhere else, so that what the surfaces
-            // do far from the faces (cross, touch, run tangent) does not
-            // depend on what else either body holds. (With room to spare,
-            // so that where a curve is cut off is not where anything of
-            // either face is.)
-            if !boxes_meet(box_a, box_b, 2.0 * tol) {
-                continue;
+            if let Some(ahead) = ahead {
+                ahead.reached(at, a, b, tol);
             }
-            let room = 16.0 * tol + 0.013 * box_a.diagonal().max(box_b.diagonal());
-            let Some(within) = overlap(box_a, box_b, room) else {
+            at = at.saturating_add(1);
+            let covers = (a.covers.as_slice(), b.covers.as_slice());
+            let Some(Pair {
+                box_b,
+                within,
+                room,
+                oa,
+                ob,
+            }) = to_meet((a, fa, box_a), (b, fb), covers, Outlines::Make, tol)?
+            else {
                 continue;
             };
-            let (Some(hull_a), Some(hull_b)) = (a.hulls.get(fa), b.hulls.get(fb)) else {
-                return Err(Stop::of(LOST));
-            };
-            let (oa, ob) = (a.outline(fa)?, b.outline(fb)?);
-            if clear_of(oa.sheet(), hull_b, 2.0 * tol) || clear_of(ob.sheet(), hull_a, 2.0 * tol) {
-                continue;
-            }
-            // Faces whose covers are further apart than this cannot meet
-            // (`Cover`), nor come near enough for any rule of the
-            // tolerance to read them together: nothing of the pair is
-            // asked for.
-            let apart = APART * tol;
-            let meet = match (a.cover(fa, tol), b.cover(fb, tol)) {
-                (Some((ca, of_a)), Some((cb, of_b))) => ca.meets(of_a, cb, of_b, apart),
-                (Some((ca, of_a)), None) => ca.reaches(of_a, box_b, Some(&ob.surface), apart),
-                (None, Some((cb, of_b))) => cb.reaches(of_b, box_a, Some(&oa.surface), apart),
-                (None, None) => true,
-            };
-            if !meet {
-                continue;
-            }
             let named = [a.name(fa), b.name(fb)];
             crate::work::face_pairs(1);
             #[cfg(test)]
@@ -1631,6 +1712,361 @@ pub(super) fn section(
         }
     }
     Ok(sections)
+}
+
+/// The faces of `b` whose boxes may meet `box_a`, ascending: the pairs of
+/// the section, and their order, for one face of A.
+fn candidates(b: &Solid, box_a: &Bbox3, tol: f64) -> Vec<usize> {
+    b.candidates(|box_b| boxes_meet(box_a, box_b, 2.0 * tol))
+}
+
+/// A pair of faces whose surfaces the section meets, and where.
+struct Pair<'s> {
+    box_b: &'s Bbox3,
+    /// The box the surfaces are met in, and the room it was grown by.
+    within: Bbox3,
+    room: f64,
+    oa: &'s Outline,
+    ob: &'s Outline,
+}
+
+/// The outlines [`to_meet`] takes: made when asked (the section), or only
+/// those made already ([`Ahead`]; a pair without them is not met).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Outlines {
+    Make,
+    Made,
+}
+
+/// Whether the section meets the surfaces of face `fa` of A and `fb` of
+/// B (one of the candidates of `fa`, [`candidates`]), by its tests in
+/// order: the boxes, the hulls against the surfaces, the covers (from
+/// `covers`, A's and B's). The one place these tests are, for the section
+/// and for the pairs met ahead of it.
+fn to_meet<'s>(
+    (a, fa, box_a): (&'s Solid<'s>, usize, &'s Bbox3),
+    (b, fb): (&'s Solid<'s>, usize),
+    covers: (&'s [CoverCell], &'s [CoverCell]),
+    outlines: Outlines,
+    tol: f64,
+) -> Result<Option<Pair<'s>>, Stop> {
+    let Some(box_b) = b.boxes.get(fb) else {
+        return Err(Stop::of(LOST));
+    };
+    // Only where both faces are can they meet: their surfaces are
+    // intersected there and nowhere else, so that what the surfaces do far
+    // from the faces (cross, touch, run tangent) does not depend on what
+    // else either body holds. (With room to spare, so that where a curve
+    // is cut off is not where anything of either face is.)
+    if !boxes_meet(box_a, box_b, 2.0 * tol) {
+        return Ok(None);
+    }
+    let room = 16.0 * tol + 0.013 * box_a.diagonal().max(box_b.diagonal());
+    let Some(within) = overlap(box_a, box_b, room) else {
+        return Ok(None);
+    };
+    let (Some(hull_a), Some(hull_b)) = (a.hulls.get(fa), b.hulls.get(fb)) else {
+        return Err(Stop::of(LOST));
+    };
+    let (oa, ob) = match outlines {
+        Outlines::Make => (a.outline(fa)?, b.outline(fb)?),
+        Outlines::Made => match (a.outline_made(fa), b.outline_made(fb)) {
+            (Some(oa), Some(ob)) => (oa, ob),
+            _ => return Ok(None),
+        },
+    };
+    if clear_of(oa.sheet(), hull_b, 2.0 * tol) || clear_of(ob.sheet(), hull_a, 2.0 * tol) {
+        return Ok(None);
+    }
+    // Faces whose covers are further apart than this cannot meet
+    // (`Cover`), nor come near enough for any rule of the tolerance to
+    // read them together: nothing of the pair is asked for.
+    let apart = APART * tol;
+    let meet = match (a.cover_in(covers.0, fa, tol), b.cover_in(covers.1, fb, tol)) {
+        (Some((ca, of_a)), Some((cb, of_b))) => ca.meets(of_a, cb, of_b, apart),
+        (Some((ca, of_a)), None) => ca.reaches(of_a, box_b, Some(&ob.surface), apart),
+        (None, Some((cb, of_b))) => cb.reaches(of_b, box_a, Some(&oa.surface), apart),
+        (None, None) => true,
+    };
+    Ok(meet.then_some(Pair {
+        box_b,
+        within,
+        room,
+        oa,
+        ob,
+    }))
+}
+
+/// How many pairs the helpers may run ahead of the section, per helper.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const AHEAD_PER_HELPER: usize = 4;
+
+/// The section's pairs met ahead of it on helper threads (2026-11-04: the
+/// fuel tank's shell met three freeform faces with their own offsets one
+/// after the other, six seconds each).
+///
+/// **What it changes.** A numeric meeting is a function of the two
+/// surfaces, the box and the tolerance alone, kept on the shelf of
+/// numeric intersections (`craft3d_geom::intersect`), whose answer is the
+/// one marching gives, refusals included; a hit charges the work the march
+/// took. So the section, meeting a pair a helper met, finds the same
+/// answer, charged the same. The helpers test the pairs with the
+/// section's own tests ([`to_meet`]) but on covers of their own: a
+/// cover's answers depend on what it was asked before, and the section's
+/// covers are asked exactly what they are asked without helpers. They
+/// take no outline that is not made yet: the section makes the outlines
+/// of the pairs within the helpers' lead itself, on its thread (where the
+/// trees an operation holds are counted, `freeform::holding`), a few
+/// pairs before it would have.
+///
+/// **What it does not keep.** The work counted on the section's thread
+/// (`craft3d_geom::allowance`) is what it was where it decides anything:
+/// under a bound nothing is met ahead. Outside one it can be less, by
+/// what a helper filled in a cache both use (a tree's memos), and nothing
+/// reads it there. Where the section stops (a refusal), the outlines of
+/// the pairs within the lead past it were made all the same.
+///
+/// **What it wastes.** The helpers run at most [`AHEAD_PER_HELPER`]
+/// pairs a helper ahead of the section, so where the section stops (a
+/// refusal) at most that many pairs were met for nothing; a pair the
+/// section reaches while a helper meets it waits for that helper instead
+/// of meeting it twice.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+struct Ahead {
+    /// The section's pairs, in its order.
+    pairs: Vec<(usize, usize)>,
+    /// Per pair: [`FREE`], [`TAKEN`] by a helper, [`MET`] by one, or the
+    /// [`SECTION`]'s.
+    state: Vec<std::sync::atomic::AtomicU8>,
+    /// The next pair a helper looks at.
+    next: std::sync::atomic::AtomicUsize,
+    /// The pairs below this have their outlines made (by the section).
+    prepared: std::sync::atomic::AtomicUsize,
+    /// Helpers take pairs below this.
+    frontier: std::sync::atomic::AtomicUsize,
+    /// Pairs a helper may run ahead.
+    lead: usize,
+    /// The section is done.
+    done: std::sync::atomic::AtomicBool,
+    /// The helpers' covers, A's and B's.
+    covers: (Covers, Covers),
+    /// Pairs the helpers met.
+    warmed: std::sync::atomic::AtomicUsize,
+    /// Past the last pair with a freeform face the helpers stop (and give
+    /// their threads back): the others meet in closed form.
+    freeform_until: usize,
+    /// The helpers panic on their first pair (`tests::HELPERS_PANIC`).
+    #[cfg(test)]
+    panics: bool,
+}
+
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const FREE: u8 = 0;
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const TAKEN: u8 = 1;
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const MET: u8 = 2;
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const SECTION: u8 = 3;
+
+/// How long a helper or the section waits before it looks again.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const WAIT: std::time::Duration = std::time::Duration::from_micros(200);
+
+/// Sets its flag when dropped: the section done, however it ends.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+struct Ending<'f>(&'f std::sync::atomic::AtomicBool);
+
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+impl Drop for Ending<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Marks a pair met when dropped, also when its meeting panicked: the
+/// section never waits for a helper that is gone.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+struct Met<'s>(&'s std::sync::atomic::AtomicU8);
+
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+impl Drop for Met<'_> {
+    fn drop(&mut self) {
+        self.0.store(MET, std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+impl Ahead {
+    fn new(a: &Solid, b: &Solid, tol: f64, helpers: usize) -> Self {
+        use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize};
+        let mut pairs = Vec::new();
+        for (fa, box_a) in a.boxes.iter().enumerate() {
+            pairs.extend(candidates(b, box_a, tol).into_iter().map(|fb| (fa, fb)));
+        }
+        let lead = helpers.saturating_mul(AHEAD_PER_HELPER).max(1);
+        let freeform = |solid: &Solid, face: usize| {
+            solid
+                .body
+                .faces
+                .get(face)
+                .is_some_and(|f| is_freeform(&f.surface))
+        };
+        let freeform_until = pairs
+            .iter()
+            .rposition(|&(fa, fb)| freeform(a, fa) || freeform(b, fb))
+            .map_or(0, |last| last + 1);
+        Ahead {
+            freeform_until,
+            #[cfg(test)]
+            panics: tests::HELPERS_PANIC.with(std::cell::Cell::get),
+            state: (0..pairs.len()).map(|_| AtomicU8::new(FREE)).collect(),
+            pairs,
+            next: AtomicUsize::new(0),
+            prepared: AtomicUsize::new(0),
+            frontier: AtomicUsize::new(0),
+            lead,
+            done: AtomicBool::new(false),
+            covers: (a.fresh_covers(), b.fresh_covers()),
+            warmed: AtomicUsize::new(0),
+        }
+    }
+
+    /// The section is at pair `at`: it makes the outlines of the pairs
+    /// up to the helpers' lead past it, as it would when it reached them
+    /// (on its thread, where the trees an operation holds are counted,
+    /// `freeform::holding`; a face whose outline fails fails the same
+    /// when the section asks), the helpers may run that far, and the pair
+    /// is the section's, once a helper that meets it now is done.
+    fn reached(&self, at: usize, a: &Solid, b: &Solid, tol: f64) {
+        use std::sync::atomic::Ordering;
+        let mut until = at
+            .saturating_add(1)
+            .saturating_add(self.lead)
+            .min(self.pairs.len());
+        let from = self.prepared.load(Ordering::Relaxed);
+        for (index, &(fa, fb)) in self.pairs.iter().enumerate().take(until).skip(from) {
+            let (Some(box_a), Some(box_b)) = (a.boxes.get(fa), b.boxes.get(fb)) else {
+                continue;
+            };
+            // The section's own first tests (`to_meet`): past them it asks
+            // both outlines.
+            let room = 16.0 * tol + 0.013 * box_a.diagonal().max(box_b.diagonal());
+            if boxes_meet(box_a, box_b, 2.0 * tol)
+                && overlap(box_a, box_b, room).is_some()
+                && a.hulls.get(fa).is_some()
+                && b.hulls.get(fb).is_some()
+                && (a.outline(fa).is_err() || b.outline(fb).is_err())
+            {
+                // The section stops there (or does without the face):
+                // nothing past it is made or met ahead.
+                until = index;
+                break;
+            }
+        }
+        self.prepared.store(until.max(from), Ordering::Relaxed);
+        self.frontier.store(until, Ordering::Release);
+        let Some(state) = self.state.get(at) else {
+            return;
+        };
+        if state
+            .compare_exchange(FREE, SECTION, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return;
+        }
+        while state.load(Ordering::Acquire) == TAKEN {
+            std::thread::sleep(WAIT);
+        }
+    }
+
+    /// A helper's loop: the pairs within the lead, in order, each tested
+    /// on the helpers' covers and met into the shelf when the section
+    /// would meet it numerically, until the section is done.
+    fn help(&self, a: &Solid, b: &Solid, tolerance: &Tolerance) {
+        use std::sync::atomic::Ordering;
+        let tol = tolerance.linear;
+        let covers = (self.covers.0.as_slice(), self.covers.1.as_slice());
+        while !self.done.load(Ordering::Acquire) {
+            let at = self.next.load(Ordering::Acquire);
+            if at >= self.freeform_until {
+                return;
+            }
+            let Some(state) = self.state.get(at) else {
+                return;
+            };
+            if at >= self.frontier.load(Ordering::Acquire) {
+                std::thread::sleep(WAIT);
+                continue;
+            }
+            if self
+                .next
+                .compare_exchange(at, at + 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+                || state
+                    .compare_exchange(FREE, TAKEN, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+            {
+                continue;
+            }
+            let _met = Met(state);
+            #[cfg(test)]
+            if self.panics {
+                tests::HELPERS_PANICKED.fetch_add(1, Ordering::Relaxed);
+                #[allow(clippy::panic)]
+                {
+                    panic!("a helper of the section, on purpose");
+                }
+            }
+            let Some(&(fa, fb)) = self.pairs.get(at) else {
+                continue;
+            };
+            let Some(box_a) = a.boxes.get(fa) else {
+                continue;
+            };
+            if let Ok(Some(pair)) = to_meet((a, fa, box_a), (b, fb), covers, Outlines::Made, tol)
+                && (is_freeform(&pair.oa.surface) || is_freeform(&pair.ob.surface))
+            {
+                // Kept on the shelf; the section takes it from there.
+                let _ = meet_surfaces(&pair.oa.surface, &pair.ob.surface, &pair.within, tolerance);
+                self.warmed.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+/// Threads from the process's pool (`craft3d_math::pool`) to meet the
+/// section's freeform pairs ahead of it, or `None`: not under a bound on
+/// the work (`allowance::scope`: an operation's count there depends on
+/// what it asked before, which the helpers do not see), not for operands
+/// without a freeform face (analytic faces meet in closed form, quickly),
+/// not when the pool has no thread free.
+#[cfg(not(target_arch = "wasm32"))]
+fn ahead_lease(a: &Solid, b: &Solid) -> Option<Vec<Option<craft3d_math::pool::Lease>>> {
+    #[cfg(test)]
+    if tests::NO_AHEAD.with(std::cell::Cell::get) {
+        return None;
+    }
+    // Helpers of their own for a test, whatever the pool has free.
+    #[cfg(test)]
+    if let Some(helpers) = tests::TEST_HELPERS.with(std::cell::Cell::get) {
+        return (helpers > 0).then(|| (0..helpers).map(|_| None).collect());
+    }
+    let machine = craft3d_math::available_threads();
+    let freeform = |solid: &Solid| solid.body.faces.iter().any(|f| is_freeform(&f.surface));
+    if machine < 2 || craft3d_geom::allowance::scope().is_some() || !(freeform(a) || freeform(b)) {
+        return None;
+    }
+    // One thread each, so that each helper gives its own back.
+    let mut leases = Vec::new();
+    while leases.len() < machine - 1 {
+        let lease = craft3d_math::pool::lease(1);
+        if lease.threads() == 0 {
+            break;
+        }
+        leases.push(Some(lease));
+    }
+    (!leases.is_empty()).then_some(leases)
 }
 
 /// Which edges of a pair of faces [`lying_edges`] looks at.
@@ -2151,10 +2587,187 @@ pub(super) mod tests {
         /// intersected.
         pub(in crate::boolean) static PAIRS_MET: std::cell::Cell<usize> =
             const { std::cell::Cell::new(0) };
+        /// Booleans on this thread meet no pairs ahead (`Ahead`).
+        pub(in crate::boolean) static NO_AHEAD: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
+        /// Booleans on this thread get this many helpers, not from the
+        /// process's pool (a test's own, whatever other tests hold).
+        pub(in crate::boolean) static TEST_HELPERS: std::cell::Cell<Option<usize>> =
+            const { std::cell::Cell::new(None) };
+        /// Helpers of booleans on this thread panic on their first pair.
+        pub(in crate::boolean) static HELPERS_PANIC: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
+        /// The pairs helpers met ahead of the last section on this
+        /// thread.
+        pub(in crate::boolean) static WARMED: std::cell::Cell<usize> =
+            const { std::cell::Cell::new(0) };
     }
 
     use super::*;
     use craft3d_geom::{Cylinder, Plane, Sphere, Torus};
+
+    /// Helpers that panicked, over the process (only those of a boolean
+    /// run with [`HELPERS_PANIC`]).
+    pub(in crate::boolean) static HELPERS_PANICKED: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    /// A block with a freeform roof, and a smaller one inside it whose roof
+    /// runs close below (as the hollow of a shell does): their roofs are
+    /// met numerically.
+    fn nested_roofs(k: f64, nurbs: bool) -> (craft3d_topo::Body, craft3d_topo::Body) {
+        use craft3d_math::Frame;
+        let frame = |origin: Vec3| Frame::new(origin * k, Vec3::Z, Vec3::X).unwrap();
+        let outer = craft3d_testkit::trimmed::domed_block(
+            &frame(Vec3::ZERO),
+            4.0 * k,
+            3.0 * k,
+            2.0 * k,
+            nurbs,
+        )
+        .unwrap()
+        .body;
+        let inner = craft3d_testkit::trimmed::domed_block(
+            &frame(Vec3::new(0.2, 0.2, 0.1)),
+            3.6 * k,
+            2.6 * k,
+            1.75 * k,
+            !nurbs,
+        )
+        .unwrap()
+        .body;
+        (outer, inner)
+    }
+
+    /// Helpers that panic (each on its first pair) change nothing of the
+    /// section: it meets those pairs itself, and its result is the one it
+    /// gives without helpers (before 2026-11-05 the scope panicked in its
+    /// place, its result lost).
+    #[test]
+    fn a_helper_that_panics_leaves_the_section_its_result() {
+        use super::super::{BooleanOp, boolean};
+        use std::sync::atomic::Ordering;
+        let tolerance = Tolerance::default();
+        let (outer, inner) = nested_roofs(1.0, true);
+        let before = HELPERS_PANICKED.load(Ordering::Relaxed);
+        for op in [BooleanOp::Subtract, BooleanOp::Intersect] {
+            HELPERS_PANIC.with(|c| c.set(true));
+            TEST_HELPERS.with(|c| c.set(Some(2)));
+            let with = boolean(&outer, &inner, op, &tolerance).map_err(|e| e.to_string());
+            TEST_HELPERS.with(|c| c.set(None));
+            HELPERS_PANIC.with(|c| c.set(false));
+            NO_AHEAD.with(|c| c.set(true));
+            let without = boolean(&outer, &inner, op, &tolerance).map_err(|e| e.to_string());
+            NO_AHEAD.with(|c| c.set(false));
+            match (&with, &without) {
+                (Ok(x), Ok(y)) => assert!(x == y, "{op:?}: the results differ"),
+                (Err(x), Err(y)) => assert_eq!(x, y, "{op:?}"),
+                _ => panic!("{op:?}: {:?} against {:?}", with.is_ok(), without.is_ok()),
+            }
+        }
+        assert!(
+            HELPERS_PANICKED.load(Ordering::Relaxed) > before,
+            "no helper panicked"
+        );
+    }
+
+    /// The helpers stop past the last pair with a freeform face (and give
+    /// their threads back), whatever the section still has to do: pairs
+    /// of analytic faces meet in closed form.
+    #[test]
+    fn helpers_stop_past_the_last_freeform_pair() {
+        use super::super::{Operand, Vertices};
+        use std::sync::atomic::Ordering;
+        let tolerance = Tolerance::default();
+        let (outer, _) = nested_roofs(1.0, true);
+        let frame = craft3d_math::Frame::new(Vec3::new(0.5, 0.5, -1.0), Vec3::Z, Vec3::X).unwrap();
+        let slab = crate::primitives::block(&frame, 3.0, 2.0, 1.5).unwrap();
+        let mut vertices = Vertices::new(0.5e-6, 2e-6);
+        let a = prepare(&outer, Operand::A, &mut vertices, &tolerance, true).unwrap();
+        let b = prepare(&slab, Operand::B, &mut vertices, &tolerance, true).unwrap();
+        let mut ahead = Ahead::new(&a, &b, tolerance.linear, 2);
+        let roof = outer
+            .faces
+            .iter()
+            .position(|f| is_freeform(&f.surface))
+            .unwrap();
+        // The roof is the block's last face: its pairs are the last.
+        let last = ahead.pairs.iter().rposition(|&(fa, _)| fa == roof).unwrap();
+        assert_eq!(ahead.freeform_until, last + 1, "{:?}", ahead.pairs);
+        // Were the last freeform pair earlier, the helpers would stop there.
+        ahead.freeform_until = ahead.pairs.len() / 3;
+        // Everything within reach: one helper (on this thread) looks at
+        // the pairs up to the last freeform one, and stops there.
+        ahead.frontier.store(ahead.pairs.len(), Ordering::Release);
+        ahead.help(&a, &b, &tolerance);
+        assert_eq!(ahead.next.load(Ordering::Acquire), ahead.freeform_until);
+        assert!(!ahead.done.load(Ordering::Acquire), "it stopped by itself");
+    }
+
+    /// Pairs met ahead of the section on helper threads (`Ahead`) change
+    /// nothing it gives or asks: the same results bit for bit, and the
+    /// section's own covers asked the very same questions (a cover's
+    /// answers depend on what it was asked before: past `OFTEN` questions
+    /// its finer front, past `NODES` nodes no more; so equal histories are
+    /// what makes a cover at its cap answer the same with helpers and
+    /// without, on one core, in the browser and under a bound), at three
+    /// scales, Bézier and NURBS roofs.
+    #[test]
+    fn pairs_met_ahead_change_nothing_the_section_gives_or_asks() {
+        use super::super::{BooleanOp, Operand, Vertices, boolean};
+        let mut warmed = 0;
+        for k in [1e-3, 1.0, 1e6] {
+            let tolerance = Tolerance {
+                linear: 1e-6 * k,
+                ..Tolerance::default()
+            };
+            for nurbs in [false, true] {
+                let (outer, inner) = nested_roofs(k, nurbs);
+                for op in [BooleanOp::Subtract, BooleanOp::Intersect, BooleanOp::Union] {
+                    let name = format!("{op:?} at {k}, nurbs {nurbs}");
+                    let run = |off: bool| {
+                        NO_AHEAD.with(|c| c.set(off));
+                        TEST_HELPERS.with(|c| c.set(Some(3)));
+                        WARMED.with(|n| n.set(0));
+                        let made =
+                            boolean(&outer, &inner, op, &tolerance).map_err(|e| e.to_string());
+                        TEST_HELPERS.with(|c| c.set(None));
+                        NO_AHEAD.with(|c| c.set(false));
+                        (made, WARMED.with(std::cell::Cell::get))
+                    };
+                    let ((with, met), (without, _)) = (run(false), run(true));
+                    warmed += met;
+                    match (&with, &without) {
+                        (Ok(x), Ok(y)) => assert!(x == y, "{name}: the results differ"),
+                        (Err(x), Err(y)) => assert_eq!(x, y, "{name}"),
+                        _ => panic!("{name}: {:?} against {:?}", with.is_ok(), without.is_ok()),
+                    }
+                }
+                // The section alone, on fresh operands: its covers asked
+                // the same, and the same sections.
+                let asked = |off: bool| {
+                    NO_AHEAD.with(|c| c.set(off));
+                    TEST_HELPERS.with(|c| c.set(Some(3)));
+                    let mut vertices = Vertices::new(0.5e-6 * k, 2e-6 * k);
+                    let a = prepare(&outer, Operand::A, &mut vertices, &tolerance, true).unwrap();
+                    let b = prepare(&inner, Operand::B, &mut vertices, &tolerance, true).unwrap();
+                    let made = section(&a, &b, &mut vertices, &tolerance)
+                        .map(|s| (s.touches.len(), s.edge_meets.len()))
+                        .map_err(|_| ());
+                    TEST_HELPERS.with(|c| c.set(None));
+                    NO_AHEAD.with(|c| c.set(false));
+                    (made, a.cover_history(), b.cover_history())
+                };
+                let (with, without) = (asked(false), asked(true));
+                assert_eq!(with, without, "at {k}, nurbs {nurbs}");
+                assert!(
+                    with.1.iter().chain(&with.2).any(Option::is_some),
+                    "covers were asked"
+                );
+            }
+        }
+        // Helpers of the test's own met pairs.
+        assert!(warmed > 0, "no pair was met ahead");
+    }
 
     /// A closed spline (a cubic through eight points round a circle of
     /// radius `r`, clamped where it starts and ends, as a trace of a
