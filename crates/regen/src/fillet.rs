@@ -54,7 +54,7 @@ fn explain(
             role(edge),
             craft3d_kernel::short_number(radius),
             face_name(face),
-            craft3d_kernel::short_number(largest)
+            craft3d_kernel::fits_number(largest)
         ),
         KernelError::FilletSpindle {
             edge,

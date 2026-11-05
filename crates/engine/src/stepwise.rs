@@ -170,7 +170,7 @@ impl Session {
             craft3d_regen::regenerate_cached_needing(&doc, cache, Need::Bodies)
         });
         if !stopped {
-            open.regen = Some((revision, Arc::new(regen)));
+            open.set_regen(revision, Arc::new(regen));
             return None;
         }
         // Built so far: up to the first feature it stopped before (one the
