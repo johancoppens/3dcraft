@@ -25,6 +25,7 @@ use craft3d_kernel::sheetmetal::{
     self, Closing, CornerSpec, Cutout, Direction, FlangeSpec, LengthFrom, On, Part, Relief,
     ReliefKind, SheetFace, Spec,
 };
+use craft3d_math::BUG;
 use craft3d_math::{Frame, Tolerance};
 use craft3d_topo::{Body, FaceId};
 use std::sync::Arc;
@@ -940,7 +941,7 @@ pub fn sheet_metal_part(
     }
     match &result.developed {
         Some(crate::Developed::SheetMetal(part)) => Ok(part.clone()),
-        _ => Err(format!("`{}` keeps no part; this is a bug", feature.name)),
+        _ => Err(format!("{BUG}: `{}` keeps no part", feature.name)),
     }
 }
 

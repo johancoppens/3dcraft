@@ -10,7 +10,8 @@
 //!
 //! The outcome of each action is ok (built, `document.check` deep finds
 //! nothing, the volume keeps its identity), refused (with the reason),
-//! wrong (built, but the check or the identity fails), crash or timeout.
+//! wrong (built, but the check or the identity fails), bug (refused with a
+//! bug the code caught itself), crash or timeout.
 //! The ratchet (`crates/engine/tests/action_matrix/ratchet.json`) holds,
 //! per model and kind, the entities that succeeded; one of them that does
 //! not succeed now is a regression and fails the run, and so does an entry
@@ -24,7 +25,7 @@
 //! What it leaves in `<main checkout>/target/actions/`: `summary.json`
 //! (read by `cargo xtask health`), `results/<model>.jsonl` (one line per
 //! action), `<verdict>/<model>-<kind>-<hash>.steps.json` with a `.sh` that
-//! replays it (for every wrong, crash and timeout), `models/` (the models
+//! replays it (for every wrong, bug, crash and timeout), `models/` (the models
 //! built from steps) and `logs/` (the servers' stderr).
 //!
 //! The plan, the run of one action and its verdict are in
@@ -906,7 +907,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
         std::fs::create_dir_all(out.join(dir))
             .map_err(|e| format!("cannot make {}: {e}", out.join(dir).display()))?;
     }
-    for verdict in [Verdict::Wrong, Verdict::Crash, Verdict::Timeout] {
+    for verdict in [
+        Verdict::Wrong,
+        Verdict::Bug,
+        Verdict::Crash,
+        Verdict::Timeout,
+    ] {
         let _ = std::fs::remove_dir_all(out.join(verdict.as_str()));
     }
     // What the run is of, read before anything is built: compared again at
@@ -1124,9 +1130,9 @@ fn finish(
     let mut table = String::new();
     let _ = writeln!(
         table,
-        "| model | action | ok | refused | wrong | crash | timeout |"
+        "| model | action | ok | refused | wrong | bug | crash | timeout |"
     );
-    let _ = writeln!(table, "|---|---|---:|---:|---:|---:|---:|");
+    let _ = writeln!(table, "|---|---|---:|---:|---:|---:|---:|---:|");
     for (name, report) in reports {
         if let Some(skip) = &report.skipped {
             let why = &skip.why;
@@ -1179,9 +1185,9 @@ fn finish(
                         .map_or((Path::new(""), None), |(f, s)| (f.as_path(), s.as_deref()));
                     let repro = reproducer(out, name, file, steps, r);
                     let repro = repro.map(|p| p.display().to_string());
-                    // A wrong result or a crash is a bug found: the run
-                    // fails on it (a timeout is reported, not failed on).
-                    if matches!(verdict, Verdict::Wrong | Verdict::Crash) {
+                    // A wrong result, a bug or a crash is a bug found: the
+                    // run fails on it (a timeout is reported, not failed on).
+                    if matches!(verdict, Verdict::Wrong | Verdict::Bug | Verdict::Crash) {
                         problems.push(json!({
                             "model": name,
                             "problem": format!("{} {kind} on {}: {}", verdict.as_str(), r.action.entity, r.outcome.reason),
@@ -1308,6 +1314,7 @@ fn finish(
         "models": models_json,
         "topRefusals": top.iter().map(|(c, n)| json!([c, n])).collect::<Vec<_>>(),
         "wrong": bad.get("wrong").cloned().unwrap_or_default(),
+        "bug": bad.get("bug").cloned().unwrap_or_default(),
         "crash": bad.get("crash").cloned().unwrap_or_default(),
         "timeout": bad.get("timeout").cloned().unwrap_or_default(),
         "regressions": regressions,
@@ -1325,7 +1332,7 @@ fn finish(
     for (class, n) in top.iter().take(15) {
         println!("  {n:5}  {class}");
     }
-    for verdict in ["wrong", "crash", "timeout"] {
+    for verdict in ["wrong", "bug", "crash", "timeout"] {
         for item in bad.get(verdict).map(Vec::as_slice).unwrap_or_default() {
             println!("{verdict}: {item}");
         }

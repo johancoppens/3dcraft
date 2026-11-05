@@ -24,7 +24,7 @@ Usage: craft3d-fuzz seed N [options]     generate and run the design of seed N
                                          --booleans cut it with three tools
                                          (cargo xtask abc)
 
-Prints one line of JSON: the verdict (ok, crash, wrong), the finding, the
+Prints one line of JSON: the verdict (ok, crash, bug, wrong), the finding, the
 groups run, accepted and refused (with their reasons).
 
 Options:

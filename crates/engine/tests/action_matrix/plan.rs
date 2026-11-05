@@ -255,6 +255,10 @@ pub enum Verdict {
     Refused,
     /// Built, but the check or the volume says it is not right.
     Wrong,
+    /// Refused with a bug the code caught itself (its reason says
+    /// `craft3d_engine::BUG` without `PANICKED`), in an error or a failed
+    /// status: a bug found, as for the fuzz runner.
+    Bug,
     /// A panic (caught or not), or the process died.
     Crash,
     /// Took longer than allowed.
@@ -267,15 +271,17 @@ impl Verdict {
             Verdict::Ok => "ok",
             Verdict::Refused => "refused",
             Verdict::Wrong => "wrong",
+            Verdict::Bug => "bug",
             Verdict::Crash => "crash",
             Verdict::Timeout => "timeout",
         }
     }
 
-    pub const ALL: [Verdict; 5] = [
+    pub const ALL: [Verdict; 6] = [
         Verdict::Ok,
         Verdict::Refused,
         Verdict::Wrong,
+        Verdict::Bug,
         Verdict::Crash,
         Verdict::Timeout,
     ];
@@ -310,8 +316,26 @@ pub struct Outcome {
     pub unrestored: bool,
 }
 
-/// Marks the message of a panic `Session::execute` caught.
+/// Marks a bug in a message: a panic `Session::execute` caught, or a bug
+/// the code caught itself (`craft3d_engine::BUG`).
 const INTERNAL: &str = "internal error (a bug in 3DCraft";
+
+/// What a caught panic says after the bug's words: `craft3d_engine::PANICKED`
+/// (written out here, since this file is also built into `xtask`, which
+/// does not depend on the engine; the matrix test holds the two equal).
+pub const PANICKED: &str = "it panicked";
+
+/// The verdict a message with a bug carries: `Crash` for a caught panic,
+/// `Bug` for a bug the code caught itself; `None` without one.
+pub fn bug_verdict(message: &str) -> Option<Verdict> {
+    if !message.contains(INTERNAL) {
+        None
+    } else if message.contains(PANICKED) {
+        Some(Verdict::Crash)
+    } else {
+        Some(Verdict::Bug)
+    }
+}
 
 fn num(value: &Value) -> Option<f64> {
     value.as_f64().filter(|x| x.is_finite())
@@ -1631,10 +1655,11 @@ where
 
 fn failed_call(error: CallError, what: &str) -> Outcome {
     match error {
-        CallError::Command(message) if message.contains(INTERNAL) => {
-            outcome(Verdict::Crash, message, true)
-        }
-        CallError::Command(message) => outcome(Verdict::Refused, message, false),
+        CallError::Command(message) => match bug_verdict(&message) {
+            Some(Verdict::Crash) => outcome(Verdict::Crash, message, true),
+            Some(verdict) => outcome(verdict, message, false),
+            None => outcome(Verdict::Refused, message, false),
+        },
         CallError::Dead(message) => outcome(Verdict::Crash, format!("{what}: {message}"), true),
         CallError::Timeout => outcome(Verdict::Timeout, format!("{what} did not finish"), true),
     }
@@ -1689,11 +1714,7 @@ where
     let status = result.get("status").and_then(Value::as_str).unwrap_or("");
     let error = result.get("error").and_then(Value::as_str).unwrap_or("");
     if status != "ok" {
-        let verdict = if error.contains(INTERNAL) {
-            Verdict::Crash
-        } else {
-            Verdict::Refused
-        };
+        let verdict = bug_verdict(error).unwrap_or(Verdict::Refused);
         let reason = if error.is_empty() {
             format!("status {status}")
         } else {

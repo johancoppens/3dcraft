@@ -132,9 +132,9 @@ fn in_range(p: P2) -> bool {
 }
 
 fn internal() -> KernelError {
-    KernelError::Geometry(GeomError::InvalidParameter(
-        "profile detection lost track of a curve; this is a bug",
-    ))
+    KernelError::Geometry(GeomError::InvalidParameter(craft3d_math::bug_text!(
+        "profile detection lost track of a curve"
+    )))
 }
 
 /// A curve of a sketch in the sketch's own 2D axes.

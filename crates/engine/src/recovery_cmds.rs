@@ -98,7 +98,7 @@ mod native {
         let mut open = OpenDocument::new(adopted.document, path);
         open.id = number;
         // Nothing of it is on disk under its own name as it is now.
-        open.saved_revision = None;
+        open.mark_not_saved();
         open.disk = adopted.original;
         open.recovered = Some(Recovered {
             original: adopted.original,

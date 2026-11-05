@@ -1033,3 +1033,38 @@ fn a_growing_trace_is_drawn_up_to_the_t_shown() {
     let traces = s.traces();
     assert!(!traces.iter().find(|t| t.name == "Whole").unwrap().grow);
 }
+
+/// At most 32 traces are kept: the 33rd is refused with the way out, a
+/// trace of a name kept replaces it, and after clear there is room again.
+#[test]
+fn a_trace_past_the_thirty_second_is_refused_until_some_are_cleared() {
+    let mut s = session();
+    crank(&mut s);
+    let edges = run(&mut s, "document.edges", json!({"feature": "Crank"}));
+    let name = edges["vertices"][0]["name"].as_str().unwrap().to_string();
+    for n in 0..32 {
+        run(
+            &mut s,
+            "view.trace",
+            json!({"point": name, "samples": 2, "name": format!("T{n}")}),
+        );
+    }
+    refused(
+        &mut s,
+        "view.trace",
+        json!({"point": name, "samples": 2, "name": "T32"}),
+        &["view.trace: 32 traces are kept", "clear"],
+    );
+    let again = run(
+        &mut s,
+        "view.trace",
+        json!({"point": name, "samples": 2, "name": "T5"}),
+    );
+    assert_eq!(again["name"], "T5");
+    run(&mut s, "view.trace", json!({"clear": "T0"}));
+    run(
+        &mut s,
+        "view.trace",
+        json!({"point": name, "samples": 2, "name": "T32"}),
+    );
+}

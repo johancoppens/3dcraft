@@ -54,7 +54,23 @@ const TIE: f64 = 1e-3;
 const APART: f64 = 4.0;
 
 const TANGENT: Reason = "two curves leave a point in the same direction and stay together (tangent contact of higher order)";
-const LOST: Reason = "an imprinted face could not be divided into regions; this is a bug";
+/// Reached by ordinary geometry (docs/design/booleans.md, the tube
+/// clusters; the fuzz seeds of `pairs_that_once_went_wrong`), so a refusal
+/// that says what is not built, not a bug report.
+/// What the code built for itself does not fit together (an index into
+/// its own arrays, a use met twice): a bug.
+const LOST: Reason = craft3d_math::bug_text!(
+    "an imprinted face's arcs and the rays about their points lost track of each other"
+);
+/// What ordinary geometry reaches (docs/design/booleans.md, the tube
+/// clusters; the fuzz seeds of `pairs_that_once_went_wrong`): the curves
+/// cut into a face do not close into loops one way, or the loops do not
+/// nest one way. Said as what is not built, not as a bug, without naming a
+/// cause it cannot know.
+const UNTRACED: Reason = "an imprinted face could not be divided into regions: the curves cut into it did not close into loops, or their loops did not nest, one way (often curves within the tolerance of each other over a stretch, or touching at a high order); not built yet: move one body a little";
+/// A point where curves cut into a face meet has no normal on the face (a
+/// cone's apex, a sphere's pole), so their order about it has no plane.
+const NO_NORMAL: Reason = "curves cut into a face meet where the face has no normal (a cone's apex, a sphere's pole), so their order about that point cannot be read; not built yet: move one body so that they meet elsewhere";
 const UNBOUNDED: Reason = "a piece of a face is not closed off by its boundary";
 
 fn wrap(a: f64) -> f64 {
@@ -323,8 +339,8 @@ fn trace(
     let mut place: Vec<(usize, usize)> = vec![(0, 0); rays.len()];
     for (&vertex, fan) in &mut fans {
         let point = *points.get(vertex).ok_or(LOST)?;
-        let outward = outward_normal(surface, reversed, point).ok_or(LOST)?;
-        let frame = Frame::from_z(point, outward).ok_or(LOST)?;
+        let outward = outward_normal(surface, reversed, point).ok_or(NO_NORMAL)?;
+        let frame = Frame::from_z(point, outward).ok_or(NO_NORMAL)?;
         for &index in fan.iter() {
             let ray = rays.get_mut(index).ok_or(LOST)?;
             ray.angle = ray
@@ -425,7 +441,7 @@ fn trace(
                 return Err(LOST);
             };
             if *flag {
-                return Err(LOST);
+                return Err(UNTRACED);
             }
             *flag = true;
             loop_.push(half);
@@ -434,7 +450,7 @@ fn trace(
                 break;
             }
             if loop_.len() > halves.len() {
-                return Err(LOST);
+                return Err(UNTRACED);
             }
         }
         loops.push(loop_);
@@ -492,7 +508,7 @@ pub(super) fn build(
             dropped.insert(slit);
         }
     }
-    Err(LOST)
+    Err(UNTRACED)
 }
 
 struct Measured {
@@ -593,7 +609,7 @@ fn group(
         match innermost(&candidates)? {
             Some(home) => holes.entry(home).or_default().push(index),
             None if candidates.is_empty() => open.push(index),
-            None => return Err(LOST),
+            None => return Err(UNTRACED),
         }
     }
     if !open.is_empty() {
@@ -612,7 +628,7 @@ fn group(
             }
             inner = innermost(&candidates)?;
             if inner.is_none() && !candidates.is_empty() {
-                return Err(LOST);
+                return Err(UNTRACED);
             }
         }
         if let Some(home) = inner {
@@ -703,5 +719,20 @@ mod tests {
         let (regions, dropped) = build(&[4, 5]);
         assert_eq!(regions.len(), 2);
         assert_eq!(dropped, BTreeSet::from([5]));
+    }
+}
+
+#[cfg(test)]
+mod lost_tests {
+    /// A face that cannot be divided is refused as what is not built yet,
+    /// with a way out, not reported as a bug: ordinary geometry reaches it.
+    #[test]
+    fn an_undivided_face_is_an_honest_refusal() {
+        for reason in [super::UNTRACED, super::NO_NORMAL] {
+            assert!(!reason.contains(craft3d_math::BUG), "{reason}");
+            assert!(reason.contains("not built yet: move one body"), "{reason}");
+        }
+        // What the code built for itself not fitting together is a bug.
+        assert!(super::LOST.contains(craft3d_math::BUG), "{}", super::LOST);
     }
 }

@@ -18,6 +18,7 @@ use craft3d_kernel::KernelError;
 use craft3d_kernel::offset_profile::{
     Corners, OffsetOrigin, OffsetOutline, OffsetSource, loop_curves, offset_profiles,
 };
+use craft3d_math::BUG;
 use std::sync::Arc;
 
 /// What an offset feature made.
@@ -161,7 +162,7 @@ pub(crate) fn rename(
         usize::try_from(id)
             .ok()
             .and_then(|i| origins.get(i))
-            .ok_or_else(|| format!("the offset has no curve {id}; this is a bug"))
+            .ok_or_else(|| format!("{BUG}: the offset has no curve {id}"))
     };
     for name in names.iter_mut() {
         // The link the kernel's numbers are in: under a piece, if any.

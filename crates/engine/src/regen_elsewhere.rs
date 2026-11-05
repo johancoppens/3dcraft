@@ -42,6 +42,7 @@ use crate::output_cmds::Resolved;
 use crate::view_elsewhere::Sources;
 use crate::{CommandError, OpenDocument, SceneQuality, Session, Workspace};
 use craft3d_doc::Document;
+use craft3d_math::BUG;
 use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -268,7 +269,7 @@ impl Session {
                 self.end_scene_job(
                     &job,
                     &format!(
-                        "internal error (a bug in 3DCraft, please report it): could not be regenerated off the page's thread: the worker building it stopped: {why}"
+                        "{BUG}: could not be regenerated off the page's thread: the worker building it stopped: {why}"
                     ),
                 );
                 return true;
@@ -282,7 +283,7 @@ impl Session {
                     self.end_scene_job(
                         &job,
                         &format!(
-                            "internal error (a bug in 3DCraft, please report it): what was made off the page's thread cannot be read: {why}"
+                            "{BUG}: what was made off the page's thread cannot be read: {why}"
                         ),
                     );
                 }
@@ -291,7 +292,7 @@ impl Session {
             Ok((VIEW | BAKE, _, _)) => {
                 self.end_scene_job(
                     &job,
-                    "internal error (a bug in 3DCraft, please report it): a part of its answer is not the view's",
+                    craft3d_math::bug_text!("a part of its answer is not the view's"),
                 );
                 return true;
             }
@@ -302,7 +303,7 @@ impl Session {
                     .map(Arc::new)
                     .map_err(|why| {
                         CommandError::new(format!(
-                            "internal error (a bug in 3DCraft, please report it): the scene built off the page's thread cannot be read: {why}"
+                            "{BUG}: the scene built off the page's thread cannot be read: {why}"
                         ))
                     });
                 (of, scene)
@@ -328,9 +329,7 @@ impl Session {
             Err(why) => {
                 self.end_scene_job(
                     &job,
-                    &format!(
-                        "internal error (a bug in 3DCraft, please report it): could not be regenerated off the page's thread: {why}"
-                    ),
+                    &format!("{BUG}: could not be regenerated off the page's thread: {why}"),
                 );
                 return true;
             }
@@ -353,7 +352,9 @@ impl Session {
         };
         self.end_scene_job(
             &job,
-            "internal error (a bug in 3DCraft, please report it): the worker that regenerates off the page's thread answered without this scene",
+            craft3d_math::bug_text!(
+                "the worker that regenerates off the page's thread answered without this scene"
+            ),
         );
         true
     }
@@ -982,7 +983,8 @@ pub fn run_on_state(
         }))
         .unwrap_or_else(|_| {
             Err(CommandError::new(format!(
-                "{command}: internal error (a bug in 3DCraft, please report it)"
+                "{command}: {BUG}: {}",
+                crate::PANICKED
             )))
         });
         for name in &inputs {
@@ -1090,7 +1092,7 @@ pub fn run_on_state(
     answered.unwrap_or_else(|why: String| crate::CommandAnswer {
         answer: crate::commands_elsewhere::answer_json(
             Err(CommandError::new(format!(
-                "internal error (a bug in 3DCraft, please report it): it could not be run beside the page: {why}"
+                "{BUG}: it could not be run beside the page: {why}"
             ))),
             false,
             None,
@@ -1163,6 +1165,21 @@ mod tests {
         ] {
             assert!(quality_from(&bad).is_none(), "{bad}");
         }
+    }
+
+    /// A command that panics where the bodies are is answered as a crash:
+    /// the bug's words and that it panicked.
+    #[test]
+    fn a_command_that_panics_there_is_answered_as_a_crash() {
+        let document = craft3d_format::to_bytes(&craft3d_doc::Document::default()).unwrap();
+        let work = json!({"command": "file.new", "params": {}}).to_string();
+        let answer = run_on_state(&document, &work, |_, _, _| panic!("fell over on purpose"));
+        assert!(
+            answer.answer.contains(crate::BUG) && answer.answer.contains(crate::PANICKED),
+            "{}",
+            answer.answer
+        );
+        scene_forget();
     }
 
     #[test]

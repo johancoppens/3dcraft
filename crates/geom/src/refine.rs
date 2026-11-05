@@ -38,7 +38,9 @@ fn singular() -> GeomError {
 }
 
 fn internal() -> GeomError {
-    GeomError::InvalidParameter("a spline lost track of its control points; this is a bug")
+    GeomError::InvalidParameter(craft3d_math::bug_text!(
+        "a spline lost track of its control points"
+    ))
 }
 
 /// A curve as plain data: degree, knots, homogeneous control points.

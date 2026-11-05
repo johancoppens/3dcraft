@@ -65,7 +65,7 @@ use crate::loft::{Band, skin};
 use crate::profile::Profile;
 use crate::sweep::{
     Builder, Element, Form, Map2, Motion, P2, Station, Swept, against_normal, coedge, curve_at,
-    edge_ends, part_band, profile_loops, quarters, refuse, stations_of,
+    edge_ends, part_band, point_text, profile_loops, quarters, refuse, stations_of,
 };
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::{Cylinder, NurbsCurve, Surface};
@@ -463,12 +463,8 @@ fn follow(
 fn internal() -> KernelError {
     refuse(
         &[],
-        "the sweep along a helix lost track of a curve; this is a bug",
+        craft3d_math::bug_text!("the sweep along a helix lost track of a curve"),
     )
-}
-
-fn point_text(p: Vec3) -> String {
-    format!("({}, {}, {})", p.x, p.y, p.z)
 }
 
 /// Points of the element at the home station, to check the profile

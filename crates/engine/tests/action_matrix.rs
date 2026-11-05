@@ -111,7 +111,10 @@ fn the_bracket_keeps_what_succeeded_before() {
             outcome.reason
         );
         // Never a crash and never a wrong result, whatever the action.
-        if matches!(outcome.verdict, Verdict::Crash | Verdict::Wrong) {
+        if matches!(
+            outcome.verdict,
+            Verdict::Crash | Verdict::Bug | Verdict::Wrong
+        ) {
             failures.push(format!(
                 "{kind} on {}: {}: {}",
                 action.entity,
@@ -989,4 +992,20 @@ fn ends_are_vertices_of_one_edge_and_arcs_turn_as_drawn() {
             "{t}: {turned}"
         );
     }
+}
+
+/// A bug the code caught itself is the verdict bug, a caught panic a
+/// crash, as for the fuzz runner; the panic's words are the engine's.
+#[test]
+fn a_bug_and_a_panic_are_told_apart() {
+    assert_eq!(plan::PANICKED, craft3d_engine::PANICKED);
+    let bug = format!("feature.fillet: {}: lost an edge", craft3d_engine::BUG);
+    assert_eq!(plan::bug_verdict(&bug), Some(Verdict::Bug));
+    let panic = format!(
+        "feature.fillet: {}: {}: index out of range",
+        craft3d_engine::BUG,
+        craft3d_engine::PANICKED
+    );
+    assert_eq!(plan::bug_verdict(&panic), Some(Verdict::Crash));
+    assert_eq!(plan::bug_verdict("the radius is too large"), None);
 }

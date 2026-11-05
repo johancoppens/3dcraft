@@ -33,6 +33,7 @@ use crate::assert_cmds::{AssertionState, AssertionStatus, Checked, check_one};
 use crate::output_cmds::{OutputValue, Resolved};
 use craft3d_doc::{Assertion, Document};
 use craft3d_expr::{Dimension, Quantity};
+use craft3d_math::BUG;
 use craft3d_regen::RegenCache;
 use serde_json::{Map, Value, json};
 use std::cell::RefCell;
@@ -159,9 +160,7 @@ impl Session {
             let (checked, outputs) = decoded.unwrap_or_else(|why| {
                 failed_state(
                     &doc,
-                    &format!(
-                        "internal error (a bug in 3DCraft, please report it): could not be measured off the page's thread: {why}"
-                    ),
+                    &format!("{BUG}: could not be measured off the page's thread: {why}"),
                 )
             });
             self.state_answered(at, doc, checked, outputs);
@@ -182,9 +181,8 @@ impl Session {
                 .map(|(_, assertion)| {
                     let mut failed = pending(assertion);
                     failed.state.status = AssertionStatus::Error;
-                    failed.state.message = format!(
-                        "internal error (a bug in 3DCraft, please report it): could not be measured off the page's thread: {why}"
-                    );
+                    failed.state.message =
+                        format!("{BUG}: could not be measured off the page's thread: {why}");
                     failed
                 })
                 .collect(),

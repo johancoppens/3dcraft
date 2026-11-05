@@ -1328,7 +1328,7 @@ pub(crate) fn check_one(
             status: Status::Error,
             measured: None,
             expected: String::new(),
-            message: "internal error while measuring (a bug in 3DCraft, please report it)".into(),
+            message: craft3d_math::bug_text!("while measuring").into(),
         },
         stored: assertion.measure.clone(),
         value: Value::Null,

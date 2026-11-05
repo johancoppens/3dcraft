@@ -213,8 +213,16 @@ pub(crate) fn refuse(curves: &[u64], reason: impl Into<String>) -> KernelError {
     }
 }
 
+/// A point as a message writes it: `(x, y, z)`.
+pub(crate) fn point_text(p: Vec3) -> String {
+    format!("({}, {}, {})", p.x, p.y, p.z)
+}
+
 pub(crate) fn internal() -> KernelError {
-    refuse(&[], "the sweep lost track of a curve; this is a bug")
+    refuse(
+        &[],
+        craft3d_math::bug_text!("the sweep lost track of a curve"),
+    )
 }
 
 fn named(ids: &[u64]) -> String {

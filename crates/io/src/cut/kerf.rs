@@ -7,7 +7,7 @@
 
 use super::Shape;
 use craft3d_drawing::{Path, Segment};
-use craft3d_kernel::offset_profile::{Corners, OffsetSource, offset_profiles};
+use craft3d_kernel::offset_profile::{Corners, OffsetOutline, OffsetSource, offset_profiles};
 use craft3d_kernel::profile::{Curve2, Loop2, Shape as Along, SketchCurve, detect_profiles};
 use craft3d_math::{Portable, Tolerance};
 
@@ -213,8 +213,7 @@ pub fn kerf(shape: &Shape, k: f64, tolerance: &Tolerance) -> Result<(Shape, Vec<
         ));
     }
     // Every curve of the part has its one offset on the path, or the beam
-    // does not cut it: a notch or slot narrower than the beam, filled; an
-    // inner round of a smaller radius than the kerf.
+    // does not cut it: a notch or slot narrower than the beam, filled.
     // An inner round of a smaller radius than the kerf is the exception:
     // a fillet (an arc tangent to both its neighbours, concave since its
     // offset vanished) that the beam cannot follow, as it cannot follow a
@@ -222,12 +221,9 @@ pub fn kerf(shape: &Shape, k: f64, tolerance: &Tolerance) -> Result<(Shape, Vec<
     // it is said, not refused. An arc that meets its neighbours at a
     // corner (a bite, a relief) would vanish from the part: refused.
     let mut notes = Vec::new();
+    let counts = pieces_per_curve(&out, labels.len());
     for (id, label) in labels.iter().enumerate() {
-        let pieces = out
-            .origins
-            .iter()
-            .filter(|o| o.source == OffsetSource::Curve(id as u64))
-            .count();
+        let pieces = counts.get(id).copied().unwrap_or(0);
         if pieces == 0
             && fillets.get(id).copied().unwrap_or(false)
             && let Some(r) = curves.get(id).and_then(|c| inner_round(c, k, tolerance))
@@ -267,6 +263,20 @@ pub fn kerf(shape: &Shape, k: f64, tolerance: &Tolerance) -> Result<(Shape, Vec<
     ))
 }
 
+/// How many pieces of the offset `out` come from each of the first `n`
+/// curves (numbered from 0, as [`curves_of`] numbers them), in one pass.
+fn pieces_per_curve(out: &OffsetOutline, n: usize) -> Vec<usize> {
+    let mut counts = vec![0_usize; n];
+    for origin in &out.origins {
+        if let OffsetSource::Curve(id) = origin.source
+            && let Some(count) = usize::try_from(id).ok().and_then(|i| counts.get_mut(i))
+        {
+            *count = count.saturating_add(1);
+        }
+    }
+    counts
+}
+
 /// The radius of `curve` when it is an arc of radius at most `k`: with no
 /// offset piece and tangent to both neighbours (`fillets_of`), an inner
 /// round the path turns about at radius `k`.
@@ -287,14 +297,11 @@ fn keeps_all(curves: &[SketchCurve], fillets: &[bool], k: f64, tolerance: &Toler
     let Ok(out) = offset_profiles(&profiles, k, Corners::Round, tolerance) else {
         return false;
     };
+    let counts = pieces_per_curve(&out, curves.len());
     out.loops_after == out.loops_before
         && out.regions_after == out.regions_before
         && curves.iter().enumerate().all(|(id, curve)| {
-            let pieces = out
-                .origins
-                .iter()
-                .filter(|o| o.source == OffsetSource::Curve(id as u64))
-                .count();
+            let pieces = counts.get(id).copied().unwrap_or(0);
             pieces == 1
                 || (pieces == 0
                     && fillets.get(id).copied().unwrap_or(false)

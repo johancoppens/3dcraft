@@ -61,9 +61,9 @@ fn refuse<T>(why: String) -> Result<T, TrimError> {
 }
 
 fn internal() -> TrimError {
-    TrimError::Geom(GeomError::InvalidParameter(
-        "a curve on a surface lost track of its pieces; this is a bug",
-    ))
+    TrimError::Geom(GeomError::InvalidParameter(craft3d_math::bug_text!(
+        "a curve on a surface lost track of its pieces"
+    )))
 }
 
 /// Most pieces a composed curve is cut into (crossings of knot lines and
