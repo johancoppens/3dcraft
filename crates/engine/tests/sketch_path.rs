@@ -1362,3 +1362,55 @@ fn no_segment_makes_the_command_panic() {
         }
     }
 }
+
+/// A path whose corners are written with units ("40 mm") is held whole by
+/// its x and y constraints; a start written as plain numbers beside them
+/// was left free, so the profile kept 2 degrees of freedom at its first
+/// corner while every other corner was held. Within one path, a point
+/// given as plain numbers is held like the ones written as expressions.
+#[test]
+fn a_plain_number_start_is_held_like_the_corners_written_with_units() {
+    for start in [json!([0, 0]), json!(["0 mm", "0 mm"])] {
+        let mut s = session();
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        run(&mut s, "sketch.create", json!({"name": "P"}));
+        let path = run(
+            &mut s,
+            "sketch.path",
+            json!({"sketch": "P", "start": start, "segments": [
+                {"line": ["40 mm", "0 mm"]},
+                {"line": ["40 mm", "20 mm"]},
+                {"line": ["0 mm", "20 mm"]},
+                {"line": "start"},
+            ]}),
+        );
+        assert_eq!(path["status"], "ok", "{start}: {path}");
+        assert_eq!(path["dof"], 0, "{start}: {path}");
+    }
+    // A path of plain numbers only stays a free drawing, as before: its
+    // corners are where they were put, for the solver to move.
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "sketch.create", json!({"name": "P"}));
+    let path = run(
+        &mut s,
+        "sketch.path",
+        json!({"sketch": "P", "start": [0, 0], "segments": [
+            {"line": [40, 0]}, {"line": [40, 20]}, {"line": [0, 20]}, {"line": "start"},
+        ]}),
+    );
+    assert_eq!(path["dof"], 8, "{path}");
+    // A plain-number corner between corners written with expressions is
+    // held too.
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "sketch.create", json!({"name": "P"}));
+    let path = run(
+        &mut s,
+        "sketch.path",
+        json!({"sketch": "P", "start": ["0 mm", 0], "segments": [
+            {"line": [40, 0]}, {"line": ["40 mm", "20 mm"]}, {"line": [0, 20]}, {"line": "start"},
+        ]}),
+    );
+    assert_eq!(path["dof"], 0, "{path}");
+}

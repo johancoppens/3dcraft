@@ -88,7 +88,8 @@ and is not undone. In a Jig, **↺**, **Reset all** and **Back to last good** ar
 
 `sketch.inspect` shows every entity with its solved coordinates, every constraint with its residual and
 state, and `dof`, the freedom left. A point drawn with plain numbers may be moved by the solver; write its
-coordinates as expressions (`"0 mm"`) to hold it there. A constraint that contradicts the ones before it
+coordinates as expressions (`"0 mm"`) to hold it there. In one `sketch.path`, once a corner is written
+with an expression, its corners given as plain numbers are held too. A constraint that contradicts the ones before it
 fails the sketch and is named (`"conflicting": ["c10"]`, state `conflicting`), and so are the ones it
 contradicts (`"conflicts": [{"constraint": "c10", "contradicts": ["c3"]}]`). Change one of them
 (`sketch.edit` with `constraint` and `value`) or delete it (`sketch.delete` with `constraint`). A
