@@ -960,8 +960,9 @@ fn the_direct_path_draws_datums_and_matches_the_oracle() {
 }
 
 /// A four-bar assembly (a bar part, four instances, a fixed mate and four
-/// revolutes), in a folder of its own. The bars are tall, so that the
-/// markers at their feet run inside them and are drawn dimmed there.
+/// revolutes), in a folder of its own. The joints' axes start under the
+/// bars, so that the markers run up through them and are drawn dimmed
+/// there.
 fn four_bar() -> Session {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gpu-viewport-mates");
     let _ = std::fs::remove_dir_all(&dir);
@@ -984,17 +985,17 @@ fn four_bar() -> Session {
     run(
         &mut s,
         "feature.block",
-        json!({ "name": "Bar", "size": ["len", 6, 20] }),
+        json!({ "name": "Bar", "size": ["len", 6, 4] }),
     );
     run(
         &mut s,
         "datum.axis",
-        json!({ "name": "End1", "through": [[3, 3, 0], [3, 3, 1]] }),
+        json!({ "name": "End1", "through": [[3, 3, -3], [3, 3, -2]] }),
     );
     run(
         &mut s,
         "datum.axis",
-        json!({ "name": "End2", "through": [["len - 3 mm", 3, 0], ["len - 3 mm", 3, 1]] }),
+        json!({ "name": "End2", "through": [["len - 3 mm", 3, -3], ["len - 3 mm", 3, -2]] }),
     );
     run(&mut s, "file.save", json!({ "path": "bar.3dcraft" }));
     run(&mut s, "assembly.new", json!({}));
