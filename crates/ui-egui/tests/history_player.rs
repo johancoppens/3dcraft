@@ -479,3 +479,49 @@ fn the_assertions_heading_is_there_with_a_hint_while_there_are_none() {
     assert!(drawn.iter().any(|t| t == "Big enough"), "{drawn:?}");
     assert!(!drawn.iter().any(|t| t == NO_ASSERTIONS_HINT), "{drawn:?}");
 }
+
+/// "Motion" chosen in another document (the choice is kept) and a document
+/// with a history and no timeline `t`: the player is the history's. Its
+/// Step back button steps through the history (the motion's slider and
+/// steps would ask for a moment the document cannot give: "the document
+/// has no timeline").
+#[test]
+fn motion_chosen_in_a_document_without_a_timeline_plays_the_history() {
+    let mut session = three_steps();
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"timeline": {"motion": true}}),
+    );
+    window.frame(&mut shell, &mut session, 0.0, Vec::new());
+    window.frame(&mut shell, &mut session, 0.02, Vec::new());
+    // The player's Step back button (the motion's would move t).
+    let back = shell
+        .player_hits()
+        .iter()
+        .find(|(n, _)| *n == "back")
+        .map(|(_, r)| r.center())
+        .expect("the player is shown");
+    let button = |pos, pressed| Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    window.frame(
+        &mut shell,
+        &mut session,
+        0.02,
+        vec![Event::PointerMoved(back)],
+    );
+    window.frame(&mut shell, &mut session, 0.02, vec![button(back, true)]);
+    window.frame(&mut shell, &mut session, 0.02, vec![button(back, false)]);
+    window.frame(&mut shell, &mut session, 0.02, Vec::new());
+    let t = timeline(&mut shell, &mut session);
+    assert_eq!(t["shown"], 2, "{t}");
+    assert_eq!(t["caption"], "Step 2/3 · Ball · sphere", "{t}");
+    assert_eq!(t["problem"], json!(null), "{t}");
+}

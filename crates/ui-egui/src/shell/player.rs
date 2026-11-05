@@ -832,9 +832,12 @@ impl Shell {
     }
 
     /// True while the player plays (or would play) the motion: chosen, or
-    /// an assembly, which has no history.
+    /// an assembly, which has no history; never in a document without a
+    /// timeline, whatever was chosen (the choice is kept across documents,
+    /// so it would show a motion slider whose every move is refused, and
+    /// hide the history's): as [`Self::playing_motion`].
     pub(crate) fn playing_motion_mode(&self) -> bool {
-        self.state.timeline.motion || (self.timeline.steps == 0 && self.timeline.has_timeline)
+        self.playing_motion()
     }
 
     /// One step back (`-1`) or forward: a step of the history, or a
