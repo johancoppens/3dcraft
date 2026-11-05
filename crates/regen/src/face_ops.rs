@@ -206,28 +206,7 @@ pub(crate) fn about(
     })
 }
 
-/// The largest value that fits, for reading: six significant digits,
-/// cut towards zero so what is shown still fits (4.99999 rather than
-/// 4.999996662139893).
-pub(crate) fn fits_shown(largest: f64) -> f64 {
-    if !largest.is_finite() || largest == 0.0 {
-        return largest;
-    }
-    let size = largest.abs();
-    let mut scale = 1.0_f64;
-    // Bounded: a finite f64 is within 10^±308.
-    for _ in 0..700 {
-        if size * scale < 1e5 {
-            scale *= 10.0;
-        } else if size * scale >= 1e6 {
-            scale /= 10.0;
-        } else {
-            break;
-        }
-    }
-    let shown = (largest * scale).trunc() / scale;
-    if shown.is_finite() { shown } else { largest }
-}
+pub(crate) use craft3d_kernel::fits_shown;
 
 /// A kernel error of a face operation in the words of the document:
 /// `param` is the parameter that says how far, `unit` its unit, and
@@ -397,5 +376,38 @@ mod tests {
             assert!(shown.is_nan() == odd.is_nan());
             assert!(shown.is_nan() || shown.abs() <= odd.abs());
         }
+    }
+
+    /// Cut towards zero at every size, and read as its digits: above 1e7
+    /// a scale made by dividing by ten again and again gave
+    /// 32778399999.999996 (which is 32778400000 but for its last bits).
+    #[test]
+    fn what_fits_reads_as_its_digits_at_every_size() {
+        for (largest, shown) in [
+            (1.234_567_89e-6, "0.00000123456"),
+            (9.999_996e-6, "0.00000999999"),
+            (1.0, "1"),
+            (0.999_999_9, "0.999999"),
+            (12_345_678.9, "12345600"),
+            (32_778_399_999.999_996, "32778400000"),
+            (32_778_399_998.0, "32778300000"),
+            (1.234_567_89e12, "1234560000000"),
+            (9.876_543_21e18, "9876540000000000000"),
+            (-4.999_996_662_139_893, "-4.99999"),
+            (-32_778_399_998.0, "-32778300000"),
+            (-1.234_567_89e-6, "-0.00000123456"),
+        ] {
+            let got = fits_shown(largest);
+            assert_eq!(got.to_string(), shown, "{largest:e}");
+            // At most noise of the last bits above it (a millionth of the
+            // sixth digit).
+            assert!(
+                got.abs() <= largest.abs() * (1.0 + 1e-11),
+                "{largest:e}: {got} does not fit"
+            );
+        }
+        // Noise in the last bits is not cut to the digit below.
+        assert_eq!(fits_shown(0.799_999_999_999_998_7).to_string(), "0.8");
+        assert_eq!(fits_shown(-0.799_999_999_999_998_7).to_string(), "-0.8");
     }
 }

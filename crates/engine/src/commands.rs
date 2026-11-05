@@ -1055,9 +1055,11 @@ pub(crate) fn save_to_disk(
     #[cfg(not(target_arch = "wasm32"))]
     {
         craft3d_format::save_with_thumbnail(resolved, document, thumbnail).map_err(|e| match e {
-            craft3d_format::FormatError::Io { error, .. } => {
-                crate::workspace::io_reason(&error, crate::workspace::IoAccess::Write)
-            }
+            // Written beside it and renamed over it (`craft3d_format::save`).
+            craft3d_format::FormatError::Io { error, .. } => crate::workspace::io_reason(
+                &error,
+                crate::workspace::IoAccess::Write { atomic: true },
+            ),
             other => other.to_string(),
         })
     }
@@ -1080,13 +1082,11 @@ pub(crate) fn file_open(session: &mut Session, params: &Value) -> Run {
     } else {
         load_from_disk(&resolved)
     };
-    // A file that could not be read says so itself, naming it (not
-    // "cannot open `x`: cannot open `x`: …", seen 2026-11-04).
-    let (document, read) = loaded.map_err(|e| {
-        let opened = format!("cannot open `{}`: ", resolved.display());
-        let why = e.strip_prefix(&opened).unwrap_or(&e);
-        CommandError::new(format!("file.open: cannot open `{path}`: {why}"))
-    })?;
+    // Named here once: what the file system said comes without the path
+    // (`load_from_disk`), not "cannot open `x`: cannot open `x`: …" (seen
+    // 2026-11-04).
+    let (document, read) =
+        loaded.map_err(|e| CommandError::new(format!("file.open: cannot open `{path}`: {e}")))?;
     // An assembly is a .3dcraftasm file, and a .3dcraftasm file holds an
     // assembly (docs/decisions.md, 2026-10-29).
     let asm_path = craft3d_format::is_assembly_path(path)

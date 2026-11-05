@@ -539,8 +539,30 @@ pub fn thumbnail(bytes: &[u8]) -> Result<Option<Vec<u8>>, FormatError> {
         .map(|entry| entry.data.to_vec()))
 }
 
-/// What a file that is not a ZIP archive is instead, by how it starts.
+/// What a file that is not a `.3dcraft` document is instead, by how it
+/// starts: another kind of file, or a ZIP archive of another program's
+/// (a 3MF mesh, a FreeCAD document). `None` when it is none of those.
 fn foreign(bytes: &[u8]) -> Option<FormatError> {
+    // A ZIP archive of another program's: a 3MF mesh, a FreeCAD document.
+    // First: its signature says what it is, while a binary STL is told
+    // only by its size, which an archive can happen to have.
+    if bytes.starts_with(b"PK\x03\x04") {
+        let has = |name: &[u8]| bytes.windows(name.len()).take(1 << 20).any(|w| w == name);
+        if has(b"3D/3dmodel.model") {
+            return Some(FormatError::Foreign {
+                kind: "a 3MF mesh",
+                hint: MESH_HINT,
+            });
+        }
+        if has(b"Document.xml") {
+            return Some(FormatError::Foreign {
+                kind: "a FreeCAD document",
+                hint: "import it into a document with `file.import`, which reads its \
+                       solids as bodies",
+            });
+        }
+        return None;
+    }
     let start = bytes.get(..bytes.len().min(512))?;
     let text = String::from_utf8_lossy(start);
     let text = text.trim_start_matches('\u{feff}').trim_start();
@@ -587,24 +609,6 @@ fn foreign(bytes: &[u8]) -> Option<FormatError> {
                 hint: MESH_HINT,
             });
         }
-    }
-    // A ZIP archive of another program's: a 3MF mesh, a FreeCAD document.
-    if bytes.starts_with(b"PK\x03\x04") {
-        let has = |name: &[u8]| bytes.windows(name.len()).take(1 << 20).any(|w| w == name);
-        if has(b"3D/3dmodel.model") {
-            return Some(FormatError::Foreign {
-                kind: "a 3MF mesh",
-                hint: MESH_HINT,
-            });
-        }
-        if has(b"Document.xml") {
-            return Some(FormatError::Foreign {
-                kind: "a FreeCAD document",
-                hint: "import it into a document with `file.import`, which reads its \
-                       solids as bodies",
-            });
-        }
-        return None;
     }
     let lines = || text.lines().map(str::trim).filter(|l| !l.is_empty());
     if lines()
