@@ -127,6 +127,14 @@ fn root_of(body: &Arc<Body>) -> Option<(Arc<Body>, Transform)> {
     None
 }
 
+/// The body `body` was placed from at the end of its chain and the rigid
+/// motion from there to it ([`note_placed`]); for a body that was not
+/// placed, itself and the identity. What a test that keeps data per body
+/// (`apart.rs`) keys by: the source's data, moved by the motion.
+pub(crate) fn placed_from(body: &Arc<Body>) -> (Arc<Body>, Transform) {
+    root_of(body).unwrap_or_else(|| (Arc::clone(body), Transform::IDENTITY))
+}
+
 /// The body whose measures (its area) `body` has: the body it was placed
 /// from at the end of its chain when it was placed by a rigid motion
 /// ([`note_placed`]), else itself.

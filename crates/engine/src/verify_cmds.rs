@@ -1595,6 +1595,11 @@ fn overlap(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     // told is the error, as one after the other.
     let common = |n: usize| {
         let (_, a, _, b) = pair(n)?;
+        // Proven apart by their meshes: no common volume, as the kernel
+        // would say (`apart.rs`).
+        if crate::apart::proven_apart(a, b, &ctx.tolerance) {
+            return Some(Ok(None));
+        }
         Some(
             common_volume(a, b, &ctx.tolerance)
                 .map(|common| {

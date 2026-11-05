@@ -15,6 +15,9 @@
 pub mod agent_log;
 pub mod analysis;
 mod analysis_cmds;
+mod apart;
+#[doc(hidden)]
+pub use apart::set_mesh_proof;
 mod angle_warnings;
 pub mod animation;
 mod appearance;
@@ -787,6 +790,7 @@ impl Session {
             .any(|(id, _)| !now.iter().any(|(n, _)| n == id))
         {
             crate::verify::forget_kept_lines();
+            crate::apart::forget_gone_shapes();
         }
         let mut keys = Vec::with_capacity(self.documents.len());
         for document in &self.documents {

@@ -137,6 +137,42 @@ pub(crate) struct Checks {
     measured: usize,
 }
 
+impl Checks {
+    /// The answers kept, without the keys of a revision or a job: what a
+    /// copy of the document at another state can be answered from
+    /// (`motion.check`'s samples, each in a session of its own).
+    pub(crate) fn answers_only(&self) -> Checks {
+        Checks {
+            keys: None,
+            memo: self
+                .memo
+                .iter()
+                .filter(|(_, (_, held))| alive(held))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            job: None,
+            measured: 0,
+        }
+    }
+
+    /// Takes in the answers `other` kept whose bodies are alive, and lets
+    /// go of those whose bodies are gone; past [`MEMO`] answers, only
+    /// `other`'s stay.
+    pub(crate) fn take_answers(&mut self, other: Checks) {
+        self.memo.retain(|_, (_, held)| alive(held));
+        let theirs: BTreeMap<String, (Checked, Vec<Weak<Body>>)> = other
+            .memo
+            .into_iter()
+            .filter(|(_, (_, held))| alive(held))
+            .collect();
+        if self.memo.len().saturating_add(theirs.len()) > MEMO {
+            self.memo = theirs;
+        } else {
+            self.memo.extend(theirs);
+        }
+    }
+}
+
 /// The bodies a subject names, written into the key with their addresses.
 fn subjects_into(ctx: &Ctx<'_>, value: &Value, out: &mut String, held: &mut Vec<Weak<Body>>) {
     match subject(ctx, value, &["body", "face", "feature"]) {

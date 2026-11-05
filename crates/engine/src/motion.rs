@@ -1557,6 +1557,11 @@ fn collisions_kept(
     let found = crate::interference_cmds::in_order(&indices, |n| {
         let (i, j) = ask.get(n).copied()?;
         let (a, b) = (bodies.get(i)?.1, bodies.get(j)?.1);
+        // Proven apart by their meshes: no common volume, as the kernel
+        // would say (`apart.rs`).
+        if crate::apart::proven_apart(a, b, &tolerance) {
+            return Some(Ok(0.0));
+        }
         // The common volume alone: how two bodies that do not overlap
         // touch is not asked (`common_volume`, not `interference`).
         Some(match common_volume(a, b, &tolerance) {
@@ -3660,6 +3665,49 @@ fn check_request(id: &str, doc: &Document, p: &Params) -> Result<(), CommandErro
     }
 }
 
+/// Most samples of a `motion.check` measured side by side: their moments
+/// are held together.
+const MAX_SAMPLE_GROUP: usize = 8;
+
+/// What every sample's session starts from: the scratch document's cache,
+/// its file's path and its assembly's files and configurations.
+struct SampleSetup {
+    cache: RegenCache,
+    path: Option<String>,
+    asm: AsmState,
+}
+
+/// The assertions of `state` (with its placement, for an assembly)
+/// measured in a session of its own, as `document.check` measures them,
+/// starting from the answers `kept`; and the answers it keeps.
+fn measure_sample(
+    setup: &SampleSetup,
+    kept: &crate::assert_check::Checks,
+    state: &Document,
+    placed: Option<&Arc<Placed>>,
+) -> Result<
+    (
+        Vec<crate::assert_cmds::Checked>,
+        crate::assert_check::Checks,
+    ),
+    CommandError,
+> {
+    let mut session = Session::new(Workspace::none());
+    let mut copy = OpenDocument::new(state.clone(), None);
+    copy.cache = setup.cache.clone();
+    copy.path.clone_from(&setup.path);
+    copy.asm = setup.asm.clone();
+    copy.assertions = kept.answers_only();
+    if let Some(placed) = placed {
+        let revision = copy.history.revision();
+        copy.asm.hold(revision, Arc::clone(placed));
+    }
+    session.add_document(copy)?;
+    let checks = session.assertion_checks(crate::assert_check::Wait::All)?;
+    let answered = std::mem::take(&mut session.document_mut()?.assertions);
+    Ok((checks, answered))
+}
+
 fn motion_check(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "motion.check";
     use crate::assert_cmds::AssertionStatus as S;
@@ -3761,6 +3809,27 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
         }
     }
 
+    // Only the assertions asked for, and the outputs they need, are
+    // measured at each sample: the copy keeps those alone. Each
+    // assertion's answer depends on the bodies and those outputs only,
+    // so it is the one the whole document gives; the others are not
+    // measured for nothing (every measure of the document at every
+    // sample, before 2026-11-05).
+    {
+        let open = scratch.document_mut()?;
+        open.history
+            .apply_merging("Motion", Some("motion.check.only"), true, |doc| {
+                let asked: Vec<&craft3d_doc::Assertion> = doc
+                    .assertions
+                    .iter()
+                    .filter(|a| names.contains(&a.name))
+                    .collect();
+                let needed = crate::output_cmds::outputs_needed(doc, asked);
+                doc.assertions.retain(|a| names.contains(&a.name));
+                doc.outputs.retain(|o| needed.contains(&o.name));
+                Ok::<(), CommandError>(())
+            })?;
+    }
     let mut over: Vec<Over> = names
         .iter()
         .map(|name| Over {
@@ -3779,48 +3848,76 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
         Sweep::of(open, &base)
     };
     let mut dead_points: Vec<Stuck> = Vec::new();
-    for t in samples_of(range, samples) {
-        let at = |e: String| CommandError::new(format!("{ID}: at t = {t}: {e}"));
-        // An assembly's moment is solved along the motion, and the copy
-        // measures that placement, not a solve from its placements.
-        let moment = if sweep.is_assembly() {
-            let (placed, stuck) = sweep.placed_at(t).map_err(at)?;
-            if let Some(stuck) = stuck
-                && !dead_points.contains(&stuck)
-            {
-                dead_points.push(stuck);
-            }
-            Some(placed)
-        } else {
-            None
-        };
-        let state = sweep.settled(t).map_err(at)?;
+    // The samples a group at a time: the group's moments are made in
+    // order (an assembly's solve is carried from one moment to the next,
+    // a part's sketches along the grid), then measured side by side, each
+    // in a session of its own on a copy of the scratch document set to
+    // its moment, its threads from the process's pool. Each sample's
+    // answers are a function of its moment alone, so they are the ones
+    // measured one after the other; the answers kept by what they depend
+    // on (a measure whose subjects `t` does not move) are handed from
+    // group to group, as from sample to sample before (2026-11-05).
+    let setup = {
         let open = scratch.document_mut()?;
-        open.history
-            .apply_merging("Motion", Some("motion.check.t"), true, |doc| {
-                *doc = state;
-                Ok::<(), CommandError>(())
-            })?;
-        if let Some(placed) = moment {
-            let revision = open.history.revision();
-            open.asm.hold(revision, placed);
+        SampleSetup {
+            cache: open.cache.clone(),
+            path: open.path.clone(),
+            asm: open.asm.clone(),
         }
-        let checks = scratch.assertion_checks(crate::assert_check::Wait::All)?;
-        for entry in &mut over {
-            let Some(checked) = checks.iter().find(|c| c.state.name == entry.name) else {
-                continue;
+    };
+    let mut kept = crate::assert_check::Checks::default();
+    let ts = samples_of(range, samples);
+    let group = craft3d_math::available_threads().clamp(1, MAX_SAMPLE_GROUP);
+    for times in ts.chunks(group) {
+        let mut moments: Vec<(f64, Document, Option<Arc<Placed>>)> = Vec::new();
+        for &t in times {
+            let at = |e: String| CommandError::new(format!("{ID}: at t = {t}: {e}"));
+            // An assembly's moment is solved along the motion, and the
+            // copy measures that placement, not a solve from its
+            // placements.
+            let moment = if sweep.is_assembly() {
+                let (placed, stuck) = sweep.placed_at(t).map_err(at)?;
+                if let Some(stuck) = stuck
+                    && !dead_points.contains(&stuck)
+                {
+                    dead_points.push(stuck);
+                }
+                Some(placed)
+            } else {
+                None
             };
-            if entry.measure.is_empty() {
-                entry.measure.clone_from(&checked.state.measure);
-                entry.expected.clone_from(&checked.state.expected);
-                entry.unit.clone_from(&checked.unit);
+            let state = sweep.settled(t).map_err(at)?;
+            moments.push((t, state, moment));
+        }
+        let indices: Vec<usize> = (0..moments.len()).collect();
+        let answers = crate::interference_cmds::in_order(&indices, |i| {
+            let (_, state, placed) = moments.get(i)?;
+            Some(measure_sample(&setup, &kept, state, placed.as_ref()))
+        });
+        for ((t, ..), answer) in moments.iter().zip(answers) {
+            let (checks, answered) = answer.ok_or_else(|| {
+                CommandError::new(format!(
+                    "{ID}: at t = {t}: {}",
+                    craft3d_math::bug_text!("the sample stopped unexpectedly")
+                ))
+            })??;
+            kept.take_answers(answered);
+            for entry in &mut over {
+                let Some(checked) = checks.iter().find(|c| c.state.name == entry.name) else {
+                    continue;
+                };
+                if entry.measure.is_empty() {
+                    entry.measure.clone_from(&checked.state.measure);
+                    entry.expected.clone_from(&checked.state.expected);
+                    entry.unit.clone_from(&checked.unit);
+                }
+                entry.samples.push((
+                    *t,
+                    checked.state.status,
+                    checked.value.clone(),
+                    checked.state.message.clone(),
+                ));
             }
-            entry.samples.push((
-                t,
-                checked.state.status,
-                checked.value.clone(),
-                checked.state.message.clone(),
-            ));
         }
     }
 

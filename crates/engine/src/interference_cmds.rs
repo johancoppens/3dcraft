@@ -41,7 +41,7 @@ const MAX_THREADS: usize = 8;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("document.interference", "Interference", r#"{"bodies": [feature id or name, ...] = all bodies, "pairs": [[a, b], ...], "details": boolean = true}"#,
-        "Checks bodies for clashes without changing the document (no feature, no undo step, not dirty). For every pair of the bodies (or only the pairs given; not both), in order, status is clear (no point in common), touch (contact without common volume; contact: face for a shared area, with its area, edge for contact along a curve such as an edge on a face or a cylinder lying on a plane, point for isolated points), overlap (volume: the common volume) or unknown (reason: the boolean refused the pair, e.g. contact at the edge of tolerance; never reported as clear). With details: for touch the contact points (at) and the faces of each body the contact is on, for overlap the common volume's bbox and centroid and the faces of each body that bound it, by persistent name. Pairs whose boxes do not meet cost no boolean (work: pairs, and checked: the pairs past that box test, each one boolean, two when faces of both lie on one surface facing each other). At most 2000 pairs whose boxes meet per question (more is an error: name fewer with bodies or pairs). Summary counts per status and the total overlap volume; with more than 5000 pairs, clear pairs are only counted, every other pair is listed.", doc: true, document_interference),
+        "Checks bodies for clashes without changing the document (no feature, no undo step, not dirty). For every pair of the bodies (or only the pairs given; not both), in order, status is clear (no point in common), touch (contact without common volume; contact: face for a shared area, with its area, edge for contact along a curve such as an edge on a face or a cylinder lying on a plane, point for isolated points), overlap (volume: the common volume) or unknown (reason: the boolean refused the pair, e.g. contact at the edge of tolerance; never reported as clear). With details: for touch the contact points (at) and the faces of each body the contact is on, for overlap the common volume's bbox and centroid and the faces of each body that bound it, by persistent name. Pairs whose boxes do not meet cost no boolean, nor do pairs whose meshes prove them further apart than the tolerance and neither inside the other (work: pairs; checked: the pairs past the box test; apart: those of them the meshes proved clear; each other one boolean, two when faces of both lie on one surface facing each other). At most 2000 pairs whose boxes meet per question (more is an error: name fewer with bodies or pairs). Summary counts per status and the total overlap volume; with more than 5000 pairs, clear pairs are only counted, every other pair is listed.", doc: true, document_interference),
 ];
 
 /// One body taking part: the feature that made it, its name and box.
@@ -162,11 +162,21 @@ fn document_interference(session: &mut Session, params: &Value) -> Run {
             candidates.len()
         ));
     }
+    // Pairs whose meshes prove them apart are clear, as the kernel would
+    // say (`apart.rs`); the others go to the kernel.
     let found = in_order(&candidates, |n| {
         let (a, b) = pairs.get(n).copied()?;
         let (a, b) = (parts.get(a)?, parts.get(b)?);
-        Some(interference(&a.body, &b.body, &tolerance))
+        if crate::apart::proven_apart(&a.body, &b.body, &tolerance) {
+            return Some((true, Ok(Interference::Clear)));
+        }
+        Some((false, interference(&a.body, &b.body, &tolerance)))
     });
+    let apart = found
+        .iter()
+        .filter(|f| matches!(f, Some((true, _))))
+        .count();
+    let found = found.into_iter().map(|f| f.map(|(_, result)| result));
 
     let mut answers: Vec<Option<Result<Interference, String>>> = vec![None; pairs.len()];
     for (n, result) in candidates.iter().zip(found) {
@@ -295,7 +305,7 @@ fn document_interference(session: &mut Session, params: &Value) -> Run {
             "unknown": unknown,
             "overlapVolume": overlap_volume,
         },
-        "work": {"pairs": pairs.len(), "checked": candidates.len()},
+        "work": {"pairs": pairs.len(), "checked": candidates.len(), "apart": apart},
         "lengthUnit": unit,
         "volumeUnit": format!("{unit}^3"),
     }))

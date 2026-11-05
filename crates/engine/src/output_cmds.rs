@@ -160,6 +160,36 @@ pub(crate) fn assertion_uses(doc: &Document, assertion: &Assertion) -> Vec<Strin
         .collect()
 }
 
+/// The outputs of `doc` that `assertions` need: those they use, the
+/// outputs those use, and so on (each once, so a cycle in a bad file
+/// ends). What an assertion measures depends on these alone among the
+/// outputs, so a copy of the document with only them (and only these
+/// assertions) measures these assertions as the document does
+/// (`motion.check`).
+pub(crate) fn outputs_needed<'a>(
+    doc: &Document,
+    assertions: impl IntoIterator<Item = &'a Assertion>,
+) -> BTreeSet<String> {
+    let mut needed: BTreeSet<String> = BTreeSet::new();
+    let mut queue: VecDeque<String> = VecDeque::new();
+    for assertion in assertions {
+        queue.extend(assertion_uses(doc, assertion));
+    }
+    while let Some(name) = queue.pop_front() {
+        if !needed.insert(name.clone()) {
+            continue;
+        }
+        if let Some(output) = doc.output(&name) {
+            queue.extend(
+                output_names(output)
+                    .into_iter()
+                    .filter(|n| doc.output(n).is_some() && !needed.contains(n)),
+            );
+        }
+    }
+    needed
+}
+
 /// The outputs each output uses (by index), and for each one on a cycle,
 /// the cycle in words.
 pub(crate) struct Plan {
