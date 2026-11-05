@@ -83,7 +83,7 @@ fn datums_that_refer_in_circles_fail_and_end() {
         .unwrap();
     assert_eq!(
         reason(&apart, 1),
-        "from: `Plane2` comes after this feature in the history; move it before (feature.move)"
+        "from: `Plane2` comes after this feature in the history; move it before: feature.move {\"feature\": \"F2\", \"position\": 0}"
     );
     assert_eq!(
         reason(&doc, 4),

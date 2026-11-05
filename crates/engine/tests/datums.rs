@@ -940,7 +940,7 @@ fn a_datum_that_is_switched_off_fails_what_lies_on_it() {
     let sketch = feature(&mut s, "Box profile");
     assert_eq!(
         sketch["error"],
-        "plane: `Shelf` comes after this feature in the history; move it before (feature.move)"
+        "plane: `Shelf` comes after this feature in the history; move it before: feature.move {\"feature\": \"F1\", \"position\": 0}"
     );
     run(
         &mut s,

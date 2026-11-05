@@ -14,7 +14,7 @@
 
 mod common;
 
-use common::checked::{assert_close, body, built, new_document, run, session_in, workdir};
+use common::checked::{assert_close, body, built, failure, new_document, run, session_in, workdir};
 use serde_json::json;
 use std::f64::consts::FRAC_PI_2;
 
@@ -362,4 +362,63 @@ fn review_findings_on_later_cuts_and_names() {
         );
         assert_eq!(piece(&mut s), 1, "and keeps its name with a flange added");
     }
+}
+
+/// A cut-out sketch drawn after the part it cuts (the usual order when an
+/// agent adds holes to a part that is there) fails the part; the reason
+/// gives the exact command that puts the sketch before the part, and
+/// running it builds the part with its hole.
+#[test]
+fn a_cutout_sketch_after_its_part_says_how_to_move_it_before() {
+    let dir = workdir("sheetmetal-cuts", "after");
+    let mut s = session_in(&dir);
+    new_document(&mut s, 1.0);
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "xy", "name": "Base"}),
+    );
+    run(
+        &mut s,
+        "sketch.rect",
+        json!({"sketch": "Base", "from": [0.0, 0.0], "to": [50.0, 40.0]}),
+    );
+    built(
+        &mut s,
+        "feature.sheetMetal",
+        json!({"sketch": "Base", "name": "Plate", "thickness": "1 mm", "radius": "2 mm",
+               "kFactor": 0.5}),
+    );
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "xy", "name": "Holes"}),
+    );
+    run(
+        &mut s,
+        "sketch.rect",
+        json!({"sketch": "Holes", "from": [10.0, 10.0], "to": [20.0, 20.0]}),
+    );
+    run(
+        &mut s,
+        "sheetMetal.edit",
+        json!({"feature": "Plate", "cutouts": ["Holes"]}),
+    );
+    let reason = failure(&mut s, "Plate");
+    assert_eq!(
+        reason,
+        "cutouts.0: sketch: `Holes` comes after this feature in the history; move it before: \
+         feature.move {\"feature\": \"F3\", \"position\": 1} (or, to add a feature in its place, \
+         history.rollback to `Base` first)",
+    );
+    run(
+        &mut s,
+        "feature.move",
+        json!({"feature": "F3", "position": 1}),
+    );
+    assert_close(
+        &body(&mut s, "Plate")["volume"],
+        (50.0 * 40.0 - 10.0 * 10.0) * 1.0,
+        "the plate with its hole",
+    );
 }

@@ -1388,24 +1388,31 @@ pub(crate) fn too_long(reason: &str) -> String {
 /// Moving it before is the remedy, unless it is itself made from the
 /// feature being built: then no order builds both, and the reason says
 /// so instead of sending the user round in a circle.
-pub(crate) fn comes_after(
-    doc: &Document,
-    earlier: &[FeatureResult],
-    later: FeatureId,
-) -> &'static str {
-    let this = doc.features.get(earlier.len()).map(|f| f.id);
+pub(crate) fn comes_after(doc: &Document, earlier: &[FeatureResult], later: FeatureId) -> String {
+    let at = earlier.len();
+    let this = doc.features.get(at).map(|f| f.id);
     if this == Some(later) {
-        return "is this feature itself; point the reference at something else";
+        return "is this feature itself; point the reference at something else".into();
     }
     let circle = match (this, doc.feature(later)) {
         (Some(this), Some(later)) => cache::dependencies(doc, later).contains(&this),
         _ => false,
     };
     if circle {
-        "comes after this feature in the history and is itself made from this feature, directly or through others: the two cannot both be built; point one of them at something else"
-    } else {
-        "comes after this feature in the history; move it before (feature.move)"
+        return "comes after this feature in the history and is itself made from this feature, directly or through others: the two cannot both be built; point one of them at something else".into();
     }
+    // The command that puts it right before this feature, and how to add
+    // the next one there in the first place.
+    let mut reason = format!(
+        "comes after this feature in the history; move it before: feature.move {{\"feature\": \"{later}\", \"position\": {at}}}"
+    );
+    if let Some(before) = at.checked_sub(1).and_then(|i| doc.features.get(i)) {
+        reason.push_str(&format!(
+            " (or, to add a feature in its place, history.rollback to `{}` first)",
+            before.name
+        ));
+    }
+    reason
 }
 
 /// Regenerates the whole document, from nothing.
