@@ -189,6 +189,9 @@ pub(crate) enum Reason {
     /// A face beside the blend has no normal where the check looks (a
     /// cone's tip, a sphere's pole, a collapsed edge of a freeform face).
     NoNormal,
+    /// At a joint of a chain, a piece of the blend's own surface collapses
+    /// (its normal has no length), so the pieces cannot be shown tangent.
+    JointNoNormal,
     /// The faces across a smooth edge meet only within the angular
     /// tolerance (typical of an imported model), so the ball's section on
     /// the faces beyond does not land where it left the ones before.
@@ -270,6 +273,9 @@ impl Reason {
             }
             Reason::NoNormal => {
                 "a face beside the chamfer has no normal where it meets it (a cone's tip, a sphere's pole, a collapsed edge of a freeform face); chamfer edges that keep clear of it"
+            }
+            Reason::JointNoNormal => {
+                "two pieces of the chamfer meet at a joint where one of them collapses (its surface has no normal there), so they cannot be shown to meet smoothly; chamfer those edges apart, or with another distance"
             }
             Reason::MeetsWithinAngle => {
                 "the faces across a smooth edge the chamfer runs over only meet within the angular tolerance (as in many imported models); end the chamfer before that edge"
@@ -382,6 +388,9 @@ impl Reason {
             }
             Reason::NoNormal => {
                 "a face the fillet runs into has no normal where it meets it (a cone's tip, a sphere's pole, a collapsed edge of a freeform face), so the fillet cannot be made tangent there; fillet edges that keep clear of it, or a smaller radius"
+            }
+            Reason::JointNoNormal => {
+                "two pieces of the fillet meet at a joint where one of them collapses (its surface has no normal there, as where the ball's path pinches), so they cannot be shown tangent; fillet those edges apart, or with another radius"
             }
             Reason::MeetsWithinAngle => {
                 "the faces across a smooth edge the fillet rolls over only meet within the angular tolerance (as in many imported models), so the ball does not land on the faces beyond where it left the ones before; end the fillet before that edge, or rebuild the faces to meet tangentially"
@@ -2957,7 +2966,11 @@ mod reason_tests {
     #[test]
     fn what_input_reaches_is_refused_and_only_the_post_check_is_a_bug() {
         for kind in [Kind::Fillet, Kind::Chamfer] {
-            for reason in [Reason::NoNormal, Reason::MeetsWithinAngle] {
+            for reason in [
+                Reason::NoNormal,
+                Reason::JointNoNormal,
+                Reason::MeetsWithinAngle,
+            ] {
                 let text = reason.text(kind);
                 assert!(!text.contains(craft3d_math::BUG), "{text}");
                 assert!(text.contains(';'), "a way out: {text}");

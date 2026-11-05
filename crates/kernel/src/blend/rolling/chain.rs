@@ -1320,19 +1320,24 @@ fn smooth_joints(
             return Err(lost());
         };
         let edge = chain.pieces.get((j + 1) % n).ok_or_else(lost)?.edge;
-        let normal = |face: FaceId, u: f64, v: f64| -> Option<Vec3> {
-            let f = body.face(face)?;
+        // The blend's own two faces at the joint: made here as NURBS, so a
+        // face missing or of another kind is a bug; only a normal of no
+        // length (the surface collapsing there) is the input's.
+        let normal = |face: FaceId, u: f64, v: f64| -> Result<Option<Vec3>, BlendError> {
+            let f = body.face(face).ok_or_else(lost)?;
             let Surface::Nurbs(surface) = &f.surface else {
-                return None;
+                return Err(lost());
             };
             let (_, du, dv) = surface.derivatives(u, v);
-            let n = du.cross(dv).normalized()?;
-            Some(if f.reversed { -n } else { n })
+            Ok(du
+                .cross(dv)
+                .normalized()
+                .map(|n| if f.reversed { -n } else { n }))
         };
         for k in 1..8 {
             let v = f64::from(k) / 8.0;
-            let (Some(m), Some(q)) = (normal(*a, 1.0, v), normal(*b, 0.0, v)) else {
-                return Err(refuse(edge, None, Reason::NoNormal));
+            let (Some(m), Some(q)) = (normal(*a, 1.0, v)?, normal(*b, 0.0, v)?) else {
+                return Err(refuse(edge, None, Reason::JointNoNormal));
             };
             if !(m.cross(q).length() <= limit && m.dot(q) > 0.0) {
                 return Err(refuse(edge, None, Reason::NotTangent));

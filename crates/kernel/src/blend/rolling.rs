@@ -1276,6 +1276,7 @@ fn blend_one(
                 | Reason::FreeApproximation
                 | Reason::NotTangent
                 | Reason::NoNormal
+                | Reason::JointNoNormal
                 | Reason::MeetsWithinAngle,
             ..
         } => refuse(
