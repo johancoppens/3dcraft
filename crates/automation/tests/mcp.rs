@@ -1086,6 +1086,95 @@ fn a_batch_is_judged_by_the_features_it_leaves_failing() {
     assert_eq!(doc["features"].as_array().unwrap().len(), 2, "{doc}");
 }
 
+/// Re-review of 2026-11-05: an edit meant to repair a feature that failed
+/// before the batch, which leaves it failing, was reported as success. A
+/// feature a step edited and left failing is in featuresFailed too; one
+/// only moved, switched, suppressed or renamed is not.
+#[test]
+fn an_edit_that_leaves_its_feature_failing_is_no_success() {
+    let mut s = session();
+    let setup = json!([
+        {"id": "file.new"},
+        {"id": "feature.block", "params": {"size": [10, 10, 10], "name": "Cube"}},
+        {"id": "feature.fillet", "params": {"edges": [["F1:face(2)", "F1:face(4)"]], "radius": 50, "name": "Round"}},
+    ]);
+    tool(&mut s, "command_batch", json!({"steps": setup}));
+    // Failing before the batch; the edit does not repair it.
+    let result = tool(
+        &mut s,
+        "command_batch",
+        json!({"steps": [
+            {"id": "feature.edit", "params": {"feature": "Round", "radius": 40}},
+            {"id": "document.measure"},
+        ]}),
+    );
+    assert_eq!(result["isError"], true, "{result}");
+    let report: Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    let failed = report["featuresFailed"].as_array().unwrap();
+    assert_eq!(failed.len(), 1, "{report}");
+    assert_eq!(failed[0]["id"], "F2");
+    assert_eq!(failed[0]["step"], 0);
+    assert!(
+        failed[0]["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("still fails after step 0"),
+        "{report}"
+    );
+    // A rename of it is no edit: nothing to answer for.
+    let renamed = tool_json(
+        &mut s,
+        "command_batch",
+        json!({"steps": [{"id": "feature.rename", "params": {"feature": "Round", "name": "Rounder"}}]}),
+    );
+    assert!(renamed.get("featuresFailed").is_none(), "{renamed}");
+    // An edit that repairs it: done.
+    let repaired = tool_json(
+        &mut s,
+        "command_batch",
+        json!({"steps": [{"id": "feature.edit", "params": {"feature": "Rounder", "radius": 1}}]}),
+    );
+    assert!(repaired.get("featuresFailed").is_none(), "{repaired}");
+}
+
+/// Re-review of 2026-11-05: a document switch was known by a list of
+/// commands that missed instance.open and jig.edit, so the failing
+/// features of the part an instance opened were reported as broken by the
+/// batch. A switch is now known by the active document's identity.
+#[test]
+fn opening_an_instance_source_with_failing_features_breaks_nothing() {
+    let dir = std::env::temp_dir().join(format!("craft3d-mcp-switch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = craft3d_engine::canonical(&dir).unwrap();
+    let mut s = Session::new(Workspace {
+        read: craft3d_engine::Access::Root(dir.clone()),
+        write: craft3d_engine::Access::Root(dir.clone()),
+    });
+    let setup = json!([
+        {"id": "file.new"},
+        {"id": "feature.block", "params": {"size": [10, 10, 10], "name": "Cube"}},
+        {"id": "feature.fillet", "params": {"edges": [["F1:face(2)", "F1:face(4)"]], "radius": 50, "name": "Round"}},
+        {"id": "file.save", "params": {"path": "part.3dcraft"}},
+        {"id": "assembly.new"},
+        {"id": "instance.add", "params": {"source": "part.3dcraft", "name": "P"}},
+    ]);
+    let made = tool_report(&mut s, "command_batch", json!({"steps": setup}));
+    assert_eq!(made["failed"], 0, "{made}");
+    let opened = tool(
+        &mut s,
+        "command_batch",
+        json!({"steps": [{"id": "instance.open", "params": {"name": "P"}}, {"id": "document.measure"}]}),
+    );
+    assert_eq!(opened["isError"], false, "{opened}");
+    let report: Value =
+        serde_json::from_str(opened["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(report.get("featuresFailed").is_none(), "{report}");
+    assert!(report["results"][0].get("broke").is_none(), "{report}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_terse_batch_reports_the_failures_and_the_last_result() {
     // Field test 2026-10-12, finding 8: every step's result is a lot to

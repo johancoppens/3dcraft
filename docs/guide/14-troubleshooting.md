@@ -65,8 +65,9 @@ fail with `causedBy` naming the first one. `document.check` lists them all. Fix 
   within the tolerance). The message says which faces; change the design around it (a slightly different
   size, another order of features), and report it: every refusal is work owed.
 
-Over MCP a failed feature is **not** a tool error (the command did what was asked: it added the feature),
-so an agent must read `status` in each result, or run `document.check` after a batch. A change that makes
+Over MCP a failed feature is **not** a tool error of `command_run` (the command did what was asked: it
+added the feature), so an agent reads `status` in each result; a `command_batch` that leaves a feature it
+broke or edited failing is an error, listed under `featuresFailed`. A change that makes
 *other* features fail (`variable.set`, `feature.edit`, `feature.suppress`, `feature.delete`, …) lists them
 in its result under `failed`, each with its `error`.
 

@@ -833,6 +833,14 @@ impl Session {
         (held, kept)
     }
 
+    /// Which open document is the active one, by its identity within the
+    /// process (never reused); `None` without one. A caller that compares
+    /// it before and after a command knows whether the command switched
+    /// documents, whichever command it was.
+    pub fn active_document_id(&self) -> Option<u64> {
+        self.documents.get(self.active).map(|d| d.id)
+    }
+
     /// The revision of the active document: it moves with every edit
     /// applied to it, and stays when a command fails. `None` without a
     /// document.

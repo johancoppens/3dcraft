@@ -200,12 +200,15 @@ pub(crate) struct BatchStops {
 /// and touching a feature that failed already is no break), each with
 /// `repairedBy`, the step after which it no longer failed, when one did.
 /// The report's `featuresFailed` lists the features that fail at the end
-/// and that a step made fail, each with the last such step, its kind and
-/// what fixes it; when there are any the batch did not do what was asked
-/// ([`BatchOutcome::is_error`]). With `stops.on_break` the batch also ends
-/// at the first step that makes a feature fail. A step that changes the
-/// active document (`file.new`, `file.open`, `file.activate`,
-/// `file.close`, `recovery.open`) starts the judging again, on that
+/// and that a step made fail, or that a step edited (`feature.edit`, a
+/// `sketch.*` command on it) and left failing, a repair that did not work
+/// even when it failed before the batch; each with the last such step,
+/// `reason`, its kind and what fixes it. When there are any the batch did
+/// not do what was asked ([`BatchOutcome::is_error`]). With
+/// `stops.on_break` the batch also ends at the first step that makes a
+/// feature fail. A step after which another document is active (by its
+/// identity, `Session::active_document_id`: `file.new`, `file.open`,
+/// `instance.open`, `jig.edit`, …) starts the judging again, on that
 /// document.
 ///
 /// The features that fail are read after each step that changed the
@@ -237,8 +240,12 @@ pub(crate) fn run_batch(
     let mut breaks: Vec<(usize, String, Value)> = Vec::new();
     let mut last = Value::Null;
     let (mut completed, mut failed) = (0_usize, 0_usize);
+    // Feature id -> the last step that edited it (feature.edit, sketch.*)
+    // and left it failing: a repair that did not work.
+    let mut edited: BTreeMap<String, usize> = BTreeMap::new();
     let mut before = failing_now(session);
     let mut revision = session.document_revision();
+    let mut document = session.active_document_id();
     for (index, step) in steps.iter().enumerate() {
         let clock = Stopwatch::start();
         // A step's own intent, else the batch's.
@@ -247,12 +254,16 @@ pub(crate) fn run_batch(
         });
         let ms = clock.ms();
         let now_revision = session.document_revision();
-        let switched = SWITCHES_DOCUMENT.contains(&step.command);
+        // Another document is active (file.new, file.open, instance.open,
+        // jig.edit, …: whichever command did it).
+        let now_document = session.active_document_id();
+        let switched = now_document != document;
         let mut broke: Vec<Value> = Vec::new();
         if switched || now_revision != revision {
             let after = failing_now(session);
             if switched {
                 broken_by.clear();
+                edited.clear();
             } else {
                 let ids = |list: &[Value]| -> Vec<String> {
                     list.iter()
@@ -262,6 +273,7 @@ pub(crate) fn run_batch(
                 };
                 let (was, is) = (ids(&before), ids(&after));
                 for id in was.iter().filter(|id| !is.contains(id)) {
+                    edited.remove(id);
                     if broken_by.remove(id).is_some() {
                         for (_, broken, entry) in breaks.iter_mut().rev() {
                             if broken == id {
@@ -290,9 +302,22 @@ pub(crate) fn run_batch(
                     breaks.push((index, id.to_string(), noted.clone()));
                     broke.push(noted);
                 }
+                // An edit of a feature that fails after it: whether it
+                // failed before or not, the step did not leave it built.
+                if let Some(target) = edited_target(step) {
+                    let hit = after.iter().find_map(|entry| {
+                        let id = entry.get("id").and_then(Value::as_str)?;
+                        let name = entry.get("feature").and_then(Value::as_str);
+                        (id == target || name == Some(target)).then(|| id.to_string())
+                    });
+                    if let Some(id) = hit {
+                        edited.insert(id, index);
+                    }
+                }
             }
             before = after;
             revision = now_revision;
+            document = now_document;
         }
         let stop = match outcome {
             Ok(result) => {
@@ -336,15 +361,23 @@ pub(crate) fn run_batch(
             }
         }
     }
-    // What still fails at the end, of what the steps broke.
+    // What still fails at the end, of what the steps broke or edited.
     let features_failed: Vec<Value> = before
         .into_iter()
         .filter_map(|mut entry| {
             let id = entry.get("id").and_then(Value::as_str)?.to_string();
-            let step = *broken_by.get(&id)?;
+            let (step, reason) = match (broken_by.get(&id), edited.get(&id)) {
+                (Some(&b), Some(&e)) if e > b => {
+                    (e, format!("still fails after step {e}, which edited it"))
+                }
+                (Some(&b), _) => (b, format!("broken by step {b}")),
+                (None, Some(&e)) => (e, format!("still fails after step {e}, which edited it")),
+                (None, None) => return None,
+            };
             let fix = fix_advice(&entry);
             if let Some(map) = entry.as_object_mut() {
                 map.insert("step".into(), step.into());
+                map.insert("reason".into(), reason.into());
                 map.insert("fix".into(), fix.into());
             }
             Some(entry)
@@ -430,14 +463,19 @@ impl Stopwatch {
     }
 }
 
-/// Commands after which the active document may be another one.
-const SWITCHES_DOCUMENT: &[&str] = &[
-    "file.new",
-    "file.open",
-    "file.activate",
-    "file.close",
-    "recovery.open",
-];
+/// The feature a step edits explicitly, as its params name it (id or
+/// name): `feature` of `feature.edit`, `sketch` of a `sketch.*` command.
+/// Moving, switching, suppressing or renaming a feature is no edit of it.
+fn edited_target<'a>(step: &Step<'a>) -> Option<&'a str> {
+    let key = if step.command == "feature.edit" {
+        "feature"
+    } else if step.command.starts_with("sketch.") {
+        "sketch"
+    } else {
+        return None;
+    };
+    step.params.get(key).and_then(Value::as_str)
+}
 
 /// What a caught panic said, for the error that replaces it.
 pub(crate) fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
