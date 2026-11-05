@@ -171,3 +171,77 @@ fn a_picture_waits_for_the_drawer_to_slide() {
     frame_sized(&ctx, &mut shell, &mut session, 4.1, phone);
     assert!(!shell.animating(&ctx, 4.1), "gone");
 }
+
+/// The agents popover over the pill and the dialogs fade in as the
+/// popovers do: a picture waits for them (they were taken half faded,
+/// 2026-11-04).
+#[test]
+fn a_picture_waits_for_the_agents_popover_to_fade_in() {
+    let mut session = Session::new(Workspace::none());
+    session
+        .execute("file.new", &json!({"units": "mm"}))
+        .unwrap();
+    let mut shell = Shell::new();
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut shell, &mut session, 1.0);
+    assert!(!shell.popover_fading(&ctx, 1.0));
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"dialogs": {"agents": true}}),
+    );
+    frame(&ctx, &mut shell, &mut session, 2.0);
+    frame(&ctx, &mut shell, &mut session, 2.0);
+    let fade = f64::from(ctx.global_style().animation_time);
+    assert!(shell.popover_fading(&ctx, 2.0), "fading in");
+    assert!(!shell.popover_fading(&ctx, 2.0 + fade), "faded in");
+    // A dialog (About) likewise.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"dialogs": {"agents": false, "about": true}}),
+    );
+    frame(&ctx, &mut shell, &mut session, 4.0);
+    frame(&ctx, &mut shell, &mut session, 4.0);
+    assert!(shell.popover_fading(&ctx, 4.0), "the dialog fading in");
+    assert!(!shell.popover_fading(&ctx, 4.0 + fade));
+}
+
+/// Any area that fades in is waited for, one no list knew included (the
+/// review of e27d1452): a dialog added later cannot be forgotten.
+#[test]
+fn a_picture_waits_for_any_area_fading_in() {
+    let mut session = Session::new(Workspace::none());
+    session
+        .execute("file.new", &json!({"units": "mm"}))
+        .unwrap();
+    let mut shell = Shell::new();
+    let ctx = egui::Context::default();
+    let mut show_new = false;
+    let pass = |shell: &mut Shell, session: &mut Session, time: f64, show_new: bool| {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))),
+            time: Some(time),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            shell.ui(ui, session);
+            if show_new {
+                egui::Area::new(egui::Id::new("a-dialog-nobody-listed"))
+                    .show(ui.ctx(), |ui| ui.label("new"));
+            }
+        });
+        output.textures_delta.clear();
+    };
+    pass(&mut shell, &mut session, 1.0, show_new);
+    pass(&mut shell, &mut session, 1.5, show_new);
+    assert!(!shell.popover_fading(&ctx, 1.5));
+    show_new = true;
+    pass(&mut shell, &mut session, 2.0, show_new);
+    pass(&mut shell, &mut session, 2.0, show_new);
+    let fade = f64::from(ctx.global_style().animation_time);
+    assert!(shell.popover_fading(&ctx, 2.0), "the new area fades in");
+    assert!(!shell.popover_fading(&ctx, 2.0 + fade));
+}

@@ -197,7 +197,12 @@ fn one_t_on_screen_while_a_motion_plays() {
             if k < 10 {
                 continue;
             }
-            let ts: Vec<&String> = drawn.iter().filter(|t| t.starts_with("t = ")).collect();
+            // The player's readout is `t 0.350` (board s8), the caption's
+            // and the status bar's sentences `t = 0.350`: either counts.
+            let ts: Vec<&String> = drawn
+                .iter()
+                .filter(|t| t.starts_with("t = ") || t.starts_with("t 0") || t.starts_with("t 1"))
+                .collect();
             assert_eq!(ts.len(), 1, "{width}: frame {k}: {ts:?}");
             checked += 1;
             assert_eq!(shell.status_shown(StatusSlot::Command), Some("Playing"));

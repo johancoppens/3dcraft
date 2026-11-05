@@ -658,6 +658,12 @@ fn a_jig_in_use_offers_open_for_editing_and_only_its_parameters_change() {
         .unwrap()
         .unwrap();
     assert_eq!(answer["result"]["changed"], true, "{answer}");
+    // Changed, its tab carries the unsaved mark: closing it asks, though
+    // a Jig in use is never saved over (not `dirty`).
+    window.idle(&mut shell, &mut session, 2);
+    let tab = shell.tabs().iter().find(|t| t.active).unwrap();
+    assert!(tab.asks_to_close && !tab.dirty, "{tab:?}");
+    assert!(tab.marked());
     // Open for editing asks the host for a model of it. The button says
     // what the File menu's item says (sentence case, as the window's
     // other menu items and buttons; 2026-10-23).
@@ -730,6 +736,33 @@ fn the_form_steps_drags_resets_and_types_with_the_one_slider() {
     let sent = window.ran.len();
     window.click(&mut shell, &mut session, minus);
     assert_eq!(window.ran.len(), sent);
+    // A click on its number types into it (as on a slider's value): a
+    // whole number held to the range, what is not a number refused,
+    // Escape gives up.
+    window.click(&mut shell, &mut session, count.center());
+    window.frame(&mut shell, &mut session, vec![Event::Text("5".to_string())]);
+    window.key(&mut shell, &mut session, Key::Enter);
+    assert_eq!(value(&mut session, "n"), 5.0);
+    window.click(&mut shell, &mut session, count.center());
+    window.frame(
+        &mut shell,
+        &mut session,
+        vec![Event::Text("99".to_string())],
+    );
+    window.key(&mut shell, &mut session, Key::Enter);
+    assert_eq!(value(&mut session, "n"), 6.0, "held to 2..6");
+    let sent = window.ran.len();
+    window.click(&mut shell, &mut session, count.center());
+    window.frame(&mut shell, &mut session, vec![Event::Text("x".to_string())]);
+    window.key(&mut shell, &mut session, Key::Enter);
+    window.key(&mut shell, &mut session, Key::Escape);
+    assert_eq!(value(&mut session, "n"), 6.0);
+    assert_eq!(window.ran.len(), sent, "nothing sent for a wrong number");
+    window.click(&mut shell, &mut session, minus);
+    window.click(&mut shell, &mut session, minus);
+    window.click(&mut shell, &mut session, minus);
+    window.click(&mut shell, &mut session, minus);
+    assert_eq!(value(&mut session, "n"), 2.0);
     // The drag field: a drag to the right makes it thicker.
     let field = hit(&shell, "t");
     let before = value(&mut session, "t");
@@ -802,4 +835,234 @@ fn the_form_steps_drags_resets_and_types_with_the_one_slider() {
     );
     window.key(&mut shell, &mut session, Key::Enter);
     assert_eq!(at(&mut session), 60.0);
+}
+
+/// An undo (or a redo, or an agent's edit) that brings back a value that
+/// breaks the model is said as a commit that broke it would be: the head
+/// does not say Valid, the banner is up, the moved field is marked; a
+/// redo that mends it takes it all away (the end-to-end test of
+/// 2026-11-04: case.3dcraftjig said ✓ Valid at wall 1 mm after an undo).
+#[test]
+fn an_undo_that_breaks_the_model_is_said_as_a_commit_would_be() {
+    let (mut session, mut shell, mut window) = started(jig());
+    let answer = shell
+        .handle_method(
+            &mut session,
+            "ui.param",
+            Some(&json!({"name": "r", "value": 15})),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(answer["result"]["failed"].is_array(), "{answer}");
+    window.idle(&mut shell, &mut session, 3);
+    assert_eq!(form(&mut shell, &mut session)["trouble"]["broke"], true);
+    shell
+        .handle_method(
+            &mut session,
+            "ui.param",
+            Some(&json!({"name": "r", "value": 2})),
+        )
+        .unwrap()
+        .unwrap();
+    window.idle(&mut shell, &mut session, 3);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
+    // Undone: back at 15 mm, broken, without a commit of the form's.
+    run(&mut session, "edit.undo", json!({}));
+    window.idle(&mut shell, &mut session, 4);
+    assert_eq!(value(&mut session, "r"), 15.0);
+    let shown = form(&mut shell, &mut session);
+    assert_eq!(shown["trouble"]["broke"], true, "{shown}");
+    assert_eq!(shown["trouble"]["name"], "r", "{shown}");
+    let banner = hit(&shell, "Back to last good");
+    // Below the view bar, not over it.
+    let bar = shell.controls_layout().unwrap().camera_plate.unwrap();
+    assert!(banner.top() >= bar.bottom(), "{banner:?} under {bar:?}");
+    // Redone: mended, all of it gone.
+    run(&mut session, "edit.redo", json!({}));
+    window.idle(&mut shell, &mut session, 4);
+    assert_eq!(value(&mut session, "r"), 2.0);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
+    // Back to last good over the control channel: refused while nothing
+    // breaks; after an undo that breaks it, it sets r back.
+    let refused = shell
+        .handle_method(&mut session, "ui.param", Some(&json!({"lastGood": true})))
+        .unwrap()
+        .unwrap_err();
+    assert!(refused.contains("nothing breaks"), "{refused}");
+    run(&mut session, "edit.undo", json!({}));
+    window.idle(&mut shell, &mut session, 4);
+    let answer = shell
+        .handle_method(&mut session, "ui.param", Some(&json!({"lastGood": true})))
+        .unwrap()
+        .unwrap();
+    assert_eq!(answer["sent"], json!({"r": 2.0}), "{answer}");
+    window.idle(&mut shell, &mut session, 4);
+    assert_eq!(value(&mut session, "r"), 2.0);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
+    // Wrong shapes are refused, never a panic.
+    for bad in [
+        json!({"lastGood": 1}),
+        json!({"lastGood": true, "name": "r"}),
+    ] {
+        assert!(
+            shell
+                .handle_method(&mut session, "ui.param", Some(&bad))
+                .unwrap()
+                .is_err(),
+            "{bad}"
+        );
+    }
+}
+
+/// A long Jig title never runs over the status at the form's head (the
+/// Gear reducer's "Two-stage spur gear reducer" over "Valid",
+/// 2026-11-04): it is cut to the room beside it.
+#[test]
+fn a_long_title_never_covers_the_status() {
+    let mut s = jig();
+    run(
+        &mut s,
+        "document.info",
+        json!({"title": "A two-stage spur gear reducer with a very long title indeed"}),
+    );
+    let (mut session, mut shell, mut window) = started(s);
+    window.idle(&mut shell, &mut session, 2);
+    let status = hit(&shell, "status");
+    let title = hit(&shell, "title");
+    assert!(
+        title.left() >= status.right(),
+        "title {title:?} over status {status:?}"
+    );
+}
+
+/// Nothing is said broken that nobody broke (the review of e27d1452):
+/// (a) a Jig that fails as it is opened is its own baseline; (b) another
+/// document shown and this one again says nothing; (c) an edit of a
+/// feature that is no parameter moves no parameter: no banner, and so no
+/// Back to last good that would change nothing.
+#[test]
+fn nothing_is_said_broken_that_nobody_broke() {
+    // (a) Failing from the start: r of 15 mm rounds the 20 mm side away.
+    let mut s = jig();
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "r", "expr": "15 mm"}),
+    );
+    let (mut session, mut shell, mut window) = started(s);
+    window.idle(&mut shell, &mut session, 4);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
+    // (b) Another document, then this one again.
+    let first = session.document_status().unwrap().index;
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    window.idle(&mut shell, &mut session, 3);
+    run(&mut session, "file.activate", json!({"document": first}));
+    window.idle(&mut shell, &mut session, 4);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
+    // (c) A good Jig, its fillet's radius edited (not the parameter).
+    let (mut session, mut shell, mut window) = started(jig());
+    window.idle(&mut shell, &mut session, 4);
+    run(
+        &mut session,
+        "feature.edit",
+        json!({"feature": "Round", "radius": "15 mm"}),
+    );
+    window.idle(&mut shell, &mut session, 4);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
+    assert!(
+        !shell
+            .parameter_hits()
+            .iter()
+            .any(|(n, _)| n == "Back to last good"),
+        "no button that would change nothing"
+    );
+}
+
+/// The jig with a check on the Round, as real Jigs have: its extent along
+/// z is at least 1 mm (a radius that rounds the side away fails it).
+fn jig_with_check() -> Session {
+    let mut s = jig();
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "round height", "measure": "extent", "of": "Round", "axis": "z", "min": "1"}),
+    );
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "fits the box", "measure": "extent", "of": "Round", "axis": "x", "max": "60"}),
+    );
+    s
+}
+
+/// Frames until the checks are measured (they are measured off this
+/// thread), at most a few seconds.
+fn settle(window: &mut Window, shell: &mut Shell, session: &mut Session) {
+    for _ in 0..200 {
+        window.idle(shell, session, 1);
+        let checks = run(session, "assert.list", json!({}));
+        let pending = checks["assertions"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|c| c["status"] == "pending"));
+        if !pending {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    window.idle(shell, session, 3);
+}
+
+/// A mend after an undo, a redo or an agent's edit is seen once the
+/// checks are measured (the review of 221e3cce: the banner stayed, the
+/// checks being measured in the frame the revision changed).
+#[test]
+fn a_mend_is_seen_once_the_checks_are_measured() {
+    let (mut session, mut shell, mut window) = started(jig_with_check());
+    settle(&mut window, &mut shell, &mut session);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
+    // The form's own commit breaks it; an undo mends it.
+    shell
+        .handle_method(
+            &mut session,
+            "ui.param",
+            Some(&json!({"name": "r", "value": 15})),
+        )
+        .unwrap()
+        .unwrap();
+    settle(&mut window, &mut shell, &mut session);
+    assert_eq!(form(&mut shell, &mut session)["trouble"]["broke"], true);
+    run(&mut session, "edit.undo", json!({}));
+    settle(&mut window, &mut shell, &mut session);
+    assert_eq!(
+        form(&mut shell, &mut session)["trouble"],
+        Value::Null,
+        "mended by the undo"
+    );
+    // An agent's param.set breaks it (said, from elsewhere, at r) and its
+    // undo mends it.
+    run(&mut session, "param.set", json!({"values": {"r": 15}}));
+    settle(&mut window, &mut shell, &mut session);
+    let shown = form(&mut shell, &mut session);
+    assert_eq!(shown["trouble"]["broke"], true, "{shown}");
+    assert_eq!(shown["trouble"]["elsewhere"], true, "{shown}");
+    assert_eq!(shown["trouble"]["name"], "r", "{shown}");
+    run(&mut session, "edit.undo", json!({}));
+    settle(&mut window, &mut shell, &mut session);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
+    // A check alone broken (the plate too wide): said by the check's name.
+    run(&mut session, "param.set", json!({"values": {"w": 80}}));
+    settle(&mut window, &mut shell, &mut session);
+    let shown = form(&mut shell, &mut session);
+    let message = shown["trouble"]["message"].as_str().unwrap_or_default();
+    assert!(message.starts_with("fits the box: "), "{shown}");
+    run(&mut session, "edit.undo", json!({}));
+    settle(&mut window, &mut shell, &mut session);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
+    // A redo breaks it again; another undo mends it again.
+    run(&mut session, "edit.redo", json!({}));
+    settle(&mut window, &mut shell, &mut session);
+    assert_eq!(form(&mut shell, &mut session)["trouble"]["broke"], true);
+    run(&mut session, "edit.undo", json!({}));
+    settle(&mut window, &mut shell, &mut session);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
 }

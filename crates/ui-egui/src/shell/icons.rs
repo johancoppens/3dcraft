@@ -63,8 +63,9 @@ pub fn paint(painter: &egui::Painter, icon: Icon, place: Rect, ink: Color32, tok
     let line = |points: Vec<Pos2>| Shape::line(points, stroke);
     let closed = |points: Vec<Pos2>| Shape::closed_line(points, stroke);
     let faint = ink.gamma_multiply(tokens.disabled_opacity);
-    // A filled triangle pointing right (`dir` 1) or left (-1), its tip at
-    // `tip` and its back `width` behind it.
+    // An outlined triangle pointing right (`dir` 1) or left (-1), its tip
+    // at `tip` and its back `width` behind it (board s8: the transport
+    // glyphs are outlines, as the other line icons).
     let triangle = |tip: f32, dir: f32, width: f32| {
         Shape::convex_polygon(
             vec![
@@ -72,16 +73,11 @@ pub fn paint(painter: &egui::Painter, icon: Icon, place: Rect, ink: Color32, tok
                 p(tip, 0.0),
                 p(tip - dir * width, 0.7),
             ],
-            ink,
-            Stroke::NONE,
+            Color32::TRANSPARENT,
+            Stroke::new(stroke.width, ink),
         )
     };
-    let bar = |x: f32| {
-        Shape::line_segment(
-            [p(x, -0.7), p(x, 0.7)],
-            Stroke::new(stroke.width * 1.6, ink),
-        )
-    };
+    let bar = |x: f32| Shape::line_segment([p(x, -0.7), p(x, 0.7)], stroke);
     // An arrow head at `at`, pointing along `(dx, dy)`.
     let head = |at: Pos2, dx: f32, dy: f32| {
         let len = (dx * dx + dy * dy).sqrt().max(f32::MIN_POSITIVE);
@@ -251,16 +247,31 @@ pub fn paint(painter: &egui::Painter, icon: Icon, place: Rect, ink: Color32, tok
             bar(0.75),
         ],
         Icon::Loop => {
-            // Most of a circle, from the top round to the right.
-            let points: Vec<Pos2> = (0..=20)
-                .map(|k| {
-                    let a = -1.4 + (k as f32) / 20.0 * 5.0;
-                    p(0.7 * a.pcos(), 0.7 * a.psin())
-                })
-                .collect();
-            let end = 3.6_f32;
-            let tip = p(0.7 * end.pcos(), 0.7 * end.psin());
-            vec![line(points), head(tip, -end.psin(), end.pcos())]
+            // Repeat (board s8): a rounded loop in two halves, the upper
+            // running right into an arrow head, the lower running left.
+            let r = 0.3_f32;
+            let corner = |cx: f32, cy: f32, from: f32| -> Vec<Pos2> {
+                (0..=6)
+                    .map(|k| {
+                        let a = from + (k as f32) / 6.0 * std::f32::consts::FRAC_PI_2;
+                        p(cx + r * a.pcos(), cy + r * a.psin())
+                    })
+                    .collect()
+            };
+            // Upper: from the left side up round the corner, then right.
+            let mut upper = vec![p(-0.85, 0.15)];
+            upper.extend(corner(-0.85 + r, -0.5 + r, std::f32::consts::PI));
+            upper.push(p(0.7, -0.5));
+            // Lower: from the right side down round the corner, then left.
+            let mut lower = vec![p(0.85, -0.15)];
+            lower.extend(corner(0.85 - r, 0.5 - r, 0.0));
+            lower.push(p(-0.7, 0.5));
+            vec![
+                line(upper),
+                head(p(0.75, -0.5), 1.0, 0.0),
+                line(lower),
+                head(p(-0.75, 0.5), -1.0, 0.0),
+            ]
         }
         Icon::Orbit => {
             // A flat ellipse about the vertical axis, an arrow on its

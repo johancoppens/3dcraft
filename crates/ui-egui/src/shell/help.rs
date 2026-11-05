@@ -370,7 +370,12 @@ impl Shell {
                 });
             });
             let label = 96.0;
+            // A value's first line centred on its label, which the row
+            // centres in a control's height (taller with touch sizes).
+            let row = kit.t.label_row_height.max(kit.t.control_height);
             let value = |ui: &mut egui::Ui, text: &str| {
+                let line = ui.fonts_mut(|f| f.row_height(&kit.font()));
+                ui.add_space(((row - line) * 0.5).max(0.0));
                 ui.add(
                     egui::Label::new(
                         egui::RichText::new(text)
@@ -455,6 +460,8 @@ impl Shell {
             for row in rows.iter().filter(|row| row.group == group) {
                 ui.horizontal(|ui| {
                     keycap(ui, &kit, &row.input_text(mac));
+                    // A long description wraps under itself rather than
+                    // being cut (End, the wheel).
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add(
                             egui::Label::new(
@@ -462,7 +469,8 @@ impl Shell {
                                     .font(kit.font())
                                     .color(color(tokens.text_dim)),
                             )
-                            .truncate(),
+                            .wrap()
+                            .halign(egui::Align::Max),
                         );
                     });
                 });

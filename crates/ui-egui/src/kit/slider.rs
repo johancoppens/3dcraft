@@ -98,6 +98,14 @@ pub fn stepped(value: f64, steps: i32, step: f64, range: [f64; 2]) -> f64 {
     if out.is_finite() { out } else { value }
 }
 
+/// A typed whole number held to `range`; `None` for a value or a range
+/// that is not a number, or a range whose ends are the wrong way round.
+pub fn held_whole(typed: f64, range: [f64; 2]) -> Option<f64> {
+    let [lo, hi] = range;
+    (typed.is_finite() && lo.is_finite() && hi.is_finite() && hi >= lo)
+        .then(|| typed.round().clamp(lo, hi))
+}
+
 /// A round number near `rough`: 1, 2 or 5 times a power of ten, at
 /// least `rough`.
 fn round_up(rough: f64) -> Option<f64> {
@@ -162,14 +170,23 @@ fn decimals_of_step(step: f64) -> usize {
     9
 }
 
+/// `v` to `decimals` places, never a negative zero (`-0.00001` to one
+/// place is `0.0`, not `-0.0`).
+pub fn fixed(v: f64, decimals: usize) -> String {
+    let text = format!("{v:.decimals$}");
+    match text.strip_prefix('-') {
+        Some(rest) if rest.chars().all(|c| c == '0' || c == '.') => rest.to_string(),
+        _ => text,
+    }
+}
+
 /// How a field shows its value: `decimals` places and the unit.
 pub fn shown(value: f64, scale: f64, decimals: usize, unit: &str) -> String {
-    let v = value * scale;
-    let v = if v == 0.0 { 0.0 } else { v };
+    let v = fixed(value * scale, decimals);
     if unit.is_empty() {
-        format!("{v:.decimals$}")
+        v
     } else {
-        format!("{v:.decimals$} {unit}")
+        format!("{v} {unit}")
     }
 }
 
@@ -523,11 +540,15 @@ impl Kit {
         state: Option<SliderState<'_>>,
     ) -> SliderShown {
         let t = &self.t;
-        let width = ui
-            .available_width()
-            .max(t.control_height * 3.0)
-            .min(ui.available_width().max(0.0).max(t.control_height * 3.0));
         let form = slider.form;
+        // The least room a slider takes: a rail needs some length; a drag
+        // field is a number box, as narrow as its caller asks (the three
+        // of a direction share one row of a popover).
+        let least = match form {
+            SliderForm::Drag => t.control_height * 1.5,
+            _ => t.control_height * 3.0,
+        };
+        let width = ui.available_width().max(least);
         let (outer, _) =
             ui.allocate_exact_size(sane(vec2(width, self.slider_height(form))), Sense::hover());
         let hint = slider.hint.map(str::to_string);
@@ -1288,8 +1309,12 @@ impl Kit {
     }
 
     /// A stepper for a whole number with a few values: `−  3  +`, its
-    /// response `changed` when a button moved the value. Each button
-    /// is a target of its own (44 px with touch sizes).
+    /// response `changed` when a button moved the value or a number was
+    /// typed. Each button is a target of its own (44 px with touch
+    /// sizes); a click on the number types into it, as on a slider's
+    /// value: Enter (or a click elsewhere) sets the whole number typed,
+    /// held to the range, Escape gives up, and what is not a number keeps
+    /// the field open with a red ring.
     pub fn stepper(
         &self,
         ui: &mut Ui,
@@ -1326,19 +1351,128 @@ impl Kit {
         if hi_r.clicked() && can_up {
             new = stepped(v, 1, 1.0, range);
         }
-        if new != v {
+        // The number between the buttons: a click types into it.
+        let number = Rect::from_min_max(
+            pos2(minus.right(), box_rect.top()),
+            pos2(plus.left(), box_rect.bottom()),
+        );
+        let number_r = ui.interact(number, id.with("number"), Sense::click());
+        let typing_id = id.with("typing");
+        let mut typing: Option<Typing> = ui.data(|d| d.get_temp(typing_id));
+        if !enabled {
+            typing = None;
+        }
+        let fresh = enabled && typing.is_none() && number_r.clicked();
+        if fresh {
+            typing = Some(Typing {
+                field: "stepper",
+                text: format!("{}", v.round()),
+                ..Typing::default()
+            });
+        }
+        if typing.is_none() && enabled && number_r.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+        }
+        if ui.is_rect_visible(outer) || typing.is_some() {
+            let ring = match &typing {
+                Some(typed) if typed.error.is_some() => Stroke::new(1.5, color(s.failed)),
+                Some(_) => Stroke::new(1.5, color(s.focus)),
+                None => Stroke::new(1.0, color(s.field_stroke)),
+            };
+            ui.painter().add(RectShape::new(
+                box_rect,
+                self.field_radius(),
+                color(s.field),
+                ring,
+                StrokeKind::Inside,
+            ));
+        }
+        if let Some(state) = typing.as_mut() {
+            let text_id = id.with("typed");
+            let panels = ui.visuals().clone();
+            {
+                let visuals = ui.visuals_mut();
+                visuals.selection.bg_fill = color_alpha(s.focus, 90);
+                visuals.selection.stroke.color = color(s.text);
+                visuals.text_cursor.stroke.color = color(s.text);
+            }
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(number.shrink2(vec2(2.0, 0.0)))
+                    .layout(egui::Layout::left_to_right(Align::Center)),
+            );
+            let edit = child.add(
+                egui::TextEdit::singleline(&mut state.text)
+                    .id(text_id)
+                    .frame(Frame::NONE)
+                    .margin(Margin::ZERO)
+                    .font(self.font())
+                    .char_limit(MAX_TYPED)
+                    .text_color(color(s.text))
+                    .horizontal_align(Align::Center)
+                    .vertical_align(Align::Center)
+                    .desired_width(number.width() - 4.0),
+            );
+            *ui.visuals_mut() = panels;
+            if !state.focused {
+                // The whole number selected, so what is typed replaces it.
+                edit.request_focus();
+                if let Some(mut text_state) =
+                    egui::text_edit::TextEditState::load(ui.ctx(), text_id)
+                {
+                    let all = state.text.chars().count();
+                    text_state.cursor.set_char_range(Some(
+                        egui::text_selection::CCursorRange::two(
+                            egui::text::CCursor::new(0),
+                            egui::text::CCursor::new(all),
+                        ),
+                    ));
+                    text_state.store(ui.ctx(), text_id);
+                }
+                state.focused = true;
+            }
+            if edit.changed() {
+                state.error = None;
+            }
+            let (enter, escape) = ui.input(|i| {
+                (
+                    i.key_pressed(egui::Key::Enter),
+                    i.key_pressed(egui::Key::Escape),
+                )
+            });
+            let away = edit.lost_focus() && !enter;
+            if escape && !fresh {
+                typing = None;
+            } else if !fresh && (enter || away) {
+                match typed_plain(&state.text, "", 1.0) {
+                    Some(typed) => {
+                        new = held_whole(typed, range).unwrap_or(v);
+                        typing = None;
+                    }
+                    // A click elsewhere lets the field go, what was typed
+                    // with it; Enter keeps it open, ringed in red.
+                    None if away => typing = None,
+                    None => {
+                        state.error = Some("type a whole number".to_string());
+                        state.focused = false;
+                    }
+                }
+            }
+        }
+        ui.data_mut(|d| match &typing {
+            Some(state) => {
+                d.insert_temp(typing_id, state.clone());
+            }
+            None => {
+                d.remove::<Typing>(typing_id);
+            }
+        });
+        if new != v && new.is_finite() {
             *value = new;
             response.mark_changed();
         }
         if ui.is_rect_visible(outer) {
             let painter = ui.painter();
-            painter.add(RectShape::new(
-                box_rect,
-                self.field_radius(),
-                color(s.field),
-                Stroke::new(1.0, color(s.field_stroke)),
-                StrokeKind::Inside,
-            ));
             for (rect, text, live, r) in [(minus, "−", can_down, &lo_r), (plus, "+", can_up, &hi_r)]
             {
                 let ink = if live { s.text } else { s.faint };
@@ -1357,9 +1491,11 @@ impl Kit {
                 let galley = self.galley(ui, text, self.font(), ink);
                 painter.galley(rect.center() - galley.size() * 0.5, galley, color(ink));
             }
-            let ink = if enabled { s.text } else { s.faint };
-            let galley = self.galley(ui, format!("{}", v.round()), self.font(), ink);
-            painter.galley(box_rect.center() - galley.size() * 0.5, galley, color(ink));
+            if typing.is_none() {
+                let ink = if enabled { s.text } else { s.faint };
+                let galley = self.galley(ui, format!("{}", v.round()), self.font(), ink);
+                painter.galley(box_rect.center() - galley.size() * 0.5, galley, color(ink));
+            }
         }
         response.widget_info(|| egui::WidgetInfo::slider(enabled, v, "stepper"));
         response
@@ -1384,6 +1520,25 @@ pub fn knob_centre(value: f64, range: [f64; 2], rail: Rect) -> Pos2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_typed_whole_number_is_held_to_a_range_that_makes_sense() {
+        assert_eq!(held_whole(4.6, [0.0, 4.0]), Some(4.0));
+        assert_eq!(held_whole(-2.2, [0.0, 4.0]), Some(0.0));
+        // Never a panic: ends the wrong way round, or not numbers.
+        assert_eq!(held_whole(3.0, [5.0, 1.0]), None);
+        assert_eq!(held_whole(3.0, [f64::NAN, 1.0]), None);
+        assert_eq!(held_whole(f64::INFINITY, [0.0, 1.0]), None);
+    }
+
+    #[test]
+    fn no_value_is_shown_as_a_negative_zero() {
+        assert_eq!(super::fixed(-0.00001, 1), "0.0");
+        assert_eq!(super::fixed(-0.0, 2), "0.00");
+        assert_eq!(super::fixed(-0.06, 1), "-0.1");
+        assert_eq!(super::fixed(3.25, 0), "3");
+        assert_eq!(shown(-1e-9, 1.0, 2, "mm"), "0.00 mm");
+    }
 
     #[test]
     fn a_drag_across_the_rail_is_the_range_shift_finer_ctrl_in_steps() {

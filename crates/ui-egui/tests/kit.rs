@@ -673,3 +673,53 @@ fn a_typed_value_is_clamped_unless_the_slider_takes_it_free() {
         assert_eq!(value, want, "free: {free}");
     }
 }
+
+/// The texts painted in `output`, as their glyphs read (a cut text ends
+/// in `…`).
+fn painted_texts(output: &egui::FullOutput) -> Vec<String> {
+    output
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) => Some(
+                text.galley
+                    .rows
+                    .iter()
+                    .flat_map(|row| row.glyphs.iter().map(|g| g.chr))
+                    .collect::<String>(),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A list row whose value is long cuts the value, not the name (the
+/// assembly tab's `Sun…  revolute · 0.0° · driven`, 2026-11-04); a value
+/// shorter than its room is whole.
+#[test]
+fn a_list_row_cuts_its_value_before_its_name() {
+    let tokens = Tokens::light();
+    let kit = Kit::panel(&tokens);
+    let ctx = egui::Context::default();
+    let mut texts = Vec::new();
+    for _ in 0..2 {
+        let output = run(&ctx, input([260.0, 200.0], Vec::new()), |ui| {
+            ui.set_width(240.0);
+            kit.list_row(
+                ui,
+                ListRow::new("SunMesh").value("revolute · 0.0° · driven by the input shaft"),
+            );
+            kit.list_row(ui, ListRow::new("Pin1").value("revolute · 0.0°"));
+        });
+        texts = painted_texts(&output);
+    }
+    assert!(texts.iter().any(|t| t == "SunMesh"), "{texts:?}");
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.starts_with("revolute") && t.ends_with('…')),
+        "{texts:?}"
+    );
+    assert!(texts.iter().any(|t| t == "Pin1"), "{texts:?}");
+    assert!(texts.iter().any(|t| t == "revolute · 0.0°"), "{texts:?}");
+}

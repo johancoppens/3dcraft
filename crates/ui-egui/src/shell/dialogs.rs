@@ -736,17 +736,33 @@ impl Shell {
                     format = formats.get(chosen).copied();
                 }
             });
-            row(ui, kit, "File name", label_width, |ui| {
+            // Not in a wrapping row: a sentence that wraps there puts its
+            // next line a whole control's height lower (with touch sizes,
+            // 44 points).
+            kit.dialog_row(ui, "File name", label_width, |ui| {
                 if names_file {
-                    kit.text_field(ui, "craft3d-export-name", &mut export.name, "", None, 280.0);
+                    ui.horizontal(|ui| {
+                        kit.text_field(
+                            ui,
+                            "craft3d-export-name",
+                            &mut export.name,
+                            "",
+                            None,
+                            280.0,
+                        );
+                    });
                 } else {
-                    ui.label(
-                        egui::RichText::new(format!(
+                    // Its first line centred on the label.
+                    let row = kit.t.label_row_height.max(kit.t.control_height);
+                    let line = ui.fonts_mut(|f| f.row_height(&kit.font()));
+                    ui.add_space(((row - line) * 0.5).max(0.0));
+                    kit.paragraph(
+                        ui,
+                        &format!(
                             "{}: the folder and the name are chosen next",
                             export_file_name(&export.name, export.format)
-                        ))
-                        .font(kit.font())
-                        .color(color(tokens.text_dim)),
+                        ),
+                        true,
                     );
                 }
             });

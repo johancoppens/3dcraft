@@ -240,9 +240,15 @@ impl Shell {
             });
         egui::Panel::bottom("craft3d-side-totals")
             .resizable(false)
-            .frame(egui::Frame::new())
+            // Clear of the split at the right, as the rows above (a
+            // panel's own width does not shrink to a smaller max width).
+            .frame(egui::Frame::new().inner_margin(egui::Margin {
+                left: 0,
+                right: side_inset(&tokens),
+                top: 0,
+                bottom: 0,
+            }))
             .show(ui, |ui| {
-                ui.set_max_width((ui.available_width() - inset).max(40.0));
                 kit.divider(ui);
                 let (rect, _) = ui
                     .allocate_exact_size(vec2(ui.available_width(), t.row_height), Sense::hover());

@@ -413,6 +413,23 @@ impl Shell {
             .active_tab()
             .and_then(|at| self.tabs.get(at))
             .map(|tab| tab.document);
+        if self.tabs.is_empty() {
+            // The phone's start screen: what to begin with.
+            for (label, action) in [
+                ("New part", crate::FileAction::New),
+                ("New assembly", crate::FileAction::NewAssembly),
+                ("Open…", crate::FileAction::Open),
+            ] {
+                if kit
+                    .menu_item(ui, MenuItem::new(label).icon_room())
+                    .clicked()
+                {
+                    self.request_file_action(action);
+                    ui.close();
+                }
+            }
+            return;
+        }
         let close = MenuItem::new("Close")
             .icon_room()
             .shortcut(&shortcut)
@@ -430,7 +447,7 @@ impl Shell {
         kit.menu_caption(ui, "Documents");
         let mut chosen = None;
         for tab in &self.tabs {
-            let mark = if tab.dirty {
+            let mark = if tab.marked() {
                 format!(" {UNSAVED_MARK}")
             } else {
                 String::new()
@@ -620,7 +637,7 @@ impl Shell {
                                     color_alpha(tokens.chrome_text_dim, 60),
                                 );
                             }
-                            if tab.dirty && !pointed {
+                            if tab.marked() && !pointed {
                                 painter.circle_filled(
                                     close_rect.center(),
                                     3.5,
@@ -675,7 +692,7 @@ impl Shell {
                     |kit, ui| {
                         kit.menu_caption(ui, "Documents");
                         for tab in tabs {
-                            let mark = if tab.dirty {
+                            let mark = if tab.marked() {
                                 format!(" {UNSAVED_MARK}")
                             } else {
                                 String::new()

@@ -28,6 +28,7 @@ use craft3d_ui_egui::files::{
     ASSEMBLY_EXTENSION, EXPORT_FORMATS, EXTENSION, ExportPlan, JIG_EXTENSION, export_params,
     extension_of, file_stem, suggested_jig_name, suggested_name,
 };
+use craft3d_ui_egui::kit::{Button, Dialog, Kit};
 use craft3d_ui_egui::shell::ExportRequest;
 use craft3d_ui_egui::{CommandReport, DocAction, FileAction, Shell, Work};
 use serde_json::{Value, json};
@@ -319,6 +320,20 @@ pub fn received_kind(name: &str) -> Option<Received> {
     }
 }
 
+/// The report of an open done a piece per frame, held until its picture
+/// is shown ([`WebHost::release_report`]): with the document it opened and
+/// what the status bar said when it was held.
+#[derive(Clone, Debug)]
+struct HeldReport {
+    label: String,
+    outcome: Result<Value, String>,
+    document: Option<u64>,
+    before: Option<CommandReport>,
+    /// [`WebHost::said`] when it was held: anything said since, the same
+    /// words included, is newer.
+    said: u64,
+}
+
 /// A dialog's answer kept while an edit made where the bodies are waits.
 #[derive(Clone, Debug)]
 enum HeldAnswer {
@@ -371,6 +386,12 @@ pub struct WebHost {
     /// What the work in progress is about, for the status bar: the command
     /// or `file.open`, and the file's name.
     about: Option<(String, Option<String>)>,
+    /// What an open done a piece per frame answered, said once its scene
+    /// is there ([`WebHost::release_report`]).
+    held_report: Option<HeldReport>,
+    /// How many times the host said something in the status bar (a
+    /// report, a note, a command done): what a held report compares by.
+    said: u64,
     /// A file named in the page's address is being fetched.
     fetching: Option<String>,
     /// The address of a published example to fetch, for the page.
@@ -467,6 +488,8 @@ impl WebHost {
             away: false,
             last_answer: None,
             example_run: None,
+            held_report: None,
+            said: 0,
         }
     }
 
@@ -604,6 +627,7 @@ impl WebHost {
         // the deadline now and then (`page.rs`).
         if self.session.regen_elsewhere() {
             self.away = !self.session.scene_ready(quality);
+            self.release_report();
             // A moment of the motion on its way: the player says it plays
             // (`Playing`), and the next one is asked for as soon as it
             // came, so the work never ends while it plays; not said as
@@ -630,6 +654,7 @@ impl WebHost {
         }
         let step = self.session.prepare_some(quality, stop);
         self.away = !self.session.scene_ready(quality);
+        self.release_report();
         match step {
             None => {
                 self.about = None;
@@ -790,6 +815,7 @@ impl WebHost {
     /// of the system's dialog) stays there; a failure of what the person
     /// asked for is [`Self::note_error`].
     pub fn note(&mut self, label: &str, ok: bool, text: String) {
+        self.said = self.said.wrapping_add(1);
         self.shell.last_command = Some(CommandReport {
             label: label.to_string(),
             ok,
@@ -805,6 +831,7 @@ impl WebHost {
     }
 
     fn report(&mut self, label: &str, outcome: &Result<Value, String>) {
+        self.said = self.said.wrapping_add(1);
         self.last_answer = outcome.as_ref().ok().cloned();
         let (ok, text) = match outcome {
             Ok(result) => (true, craft3d_ui_egui::answer::summary(label, result)),
@@ -840,14 +867,54 @@ impl WebHost {
     /// Reports `outcome` under `label`, empties the memory and shows what
     /// the session holds now.
     fn finish(&mut self, label: &str, outcome: &Result<Value, String>) {
-        self.report(label, outcome);
         self.forget_files();
-        // Done a piece per frame: shown once the scene is there.
+        // Done a piece per frame: shown once the scene is there, and only
+        // then said done (the status bar said "Opened" while the page
+        // still showed "Opening…", 2026-11-04). A failure is said at once.
         if self.stepwise && !self.session.scene_ready(self.shell.scene_quality()) {
+            // Only an open or an import waits: another edit (a parameter
+            // set) is said done when it is made, its picture following.
+            if outcome.is_ok() && matches!(label, "file.open" | "file.import" | "example") {
+                self.last_answer = outcome.as_ref().ok().cloned();
+                self.held_report = Some(HeldReport {
+                    label: label.to_string(),
+                    outcome: outcome.clone(),
+                    document: self.session.document_status().map(|s| s.id),
+                    before: self.shell.last_command.clone(),
+                    said: self.said,
+                });
+            } else {
+                self.report(label, outcome);
+            }
             self.away = true;
             return;
         }
+        self.report(label, outcome);
         self.shell.sync(&mut self.session);
+    }
+
+    /// The report of a file opened a piece per frame, once its scene is
+    /// there ([`Self::finish`]).
+    /// Said only if nothing was said since (a later open that failed, a
+    /// close, a parameter set: those are newer and stay) and the document
+    /// it opened is still the one shown; else it is dropped.
+    fn release_report(&mut self) {
+        let Some(held) = self.held_report.as_ref() else {
+            return;
+        };
+        let shown = self.session.document_status().map(|s| s.id);
+        if self.shell.last_command != held.before
+            || self.said != held.said
+            || shown != held.document
+        {
+            self.held_report = None;
+            return;
+        }
+        if !self.away
+            && let Some(held) = self.held_report.take()
+        {
+            self.report(&held.label, &held.outcome);
+        }
     }
 
     /// Takes every file out of the session's memory: nothing stays there
@@ -1047,6 +1114,7 @@ impl WebHost {
                 self.form_job = Some(token);
                 return outcome;
             }
+            self.said = self.said.wrapping_add(1);
             self.shell.command_done(done.clone());
             self.finish(asked.command, &done);
         }
@@ -1087,19 +1155,42 @@ impl WebHost {
             None => Session::command(&command).map_or(command.as_str(), |spec| spec.label),
         };
         let mut cancel = false;
-        egui::Window::new("Working")
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
+        // A small plate of the kit's (on the panel's ground) at the bottom
+        // of the page: the spinner, what it does, Cancel.
+        let tokens = self.shell.tokens;
+        let kit = Kit::panel(&tokens);
+        let fill = if craft3d_ui_egui::theme::is_light(tokens.panel_fill) {
+            tokens.panel_fill
+        } else {
+            tokens.popover_fill
+        };
+        egui::Area::new(egui::Id::new("craft3d-web-working"))
+            .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -48.0))
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(format!("Working on {label}…"));
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
-                    }
-                });
+                egui::Frame::new()
+                    .fill(craft3d_ui_egui::theme::color(fill))
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        craft3d_ui_egui::theme::color(tokens.field_stroke),
+                    ))
+                    .corner_radius(egui::CornerRadius::same(tokens.dialog_radius))
+                    .inner_margin(egui::Margin::same(
+                        (tokens.dialog_padding * 0.5).clamp(0.0, 32.0) as i8,
+                    ))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = tokens.nav_gap;
+                            ui.add(
+                                egui::Spinner::new()
+                                    .color(craft3d_ui_egui::theme::color(tokens.text_dim)),
+                            );
+                            kit.paragraph(ui, &format!("Working on {label}…"), false);
+                            if kit.button(ui, Button::secondary("Cancel")).clicked() {
+                                cancel = true;
+                            }
+                        });
+                    });
             });
         if cancel {
             return self.cancel_edits();
@@ -1604,24 +1695,32 @@ impl WebHost {
     pub fn companion_ui(&mut self, ctx: &egui::Context) -> Option<Download> {
         let file = self.companion.take()?;
         let mut answer = None;
-        egui::Window::new("Material library")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.label(format!(
+        let tokens = self.shell.tokens;
+        let kit = Kit::panel(&tokens);
+        let dialog =
+            Dialog::new(egui::Id::new("craft3d-web-companion"), "Material library").closable(false);
+        kit.dialog(ctx, dialog, |kit, ui| {
+            kit.paragraph(
+                ui,
+                &format!(
                     "The OBJ's colours are in `{}`. Save it next to the OBJ.",
                     file.name
-                ));
-                ui.horizontal(|ui| {
-                    if ui.button("Save…").clicked() {
+                ),
+                false,
+            );
+            kit.dialog_footer(ui, |ui| {
+                kit.footer_right(ui, |ui| {
+                    if kit.button(ui, Button::primary("Save…")).clicked() {
                         answer = Some(true);
                     }
-                    if ui.button("Skip").clicked() {
+                    if kit.button(ui, Button::secondary("Skip")).clicked() {
                         answer = Some(false);
                     }
                 });
             });
+        });
+        // Only its buttons decide (a click beside it or Escape would drop
+        // the file unseen).
         match answer {
             Some(true) => Some(file),
             Some(false) => {
@@ -1739,6 +1838,7 @@ impl WebHost {
             let form = self.form_job == Some(answer.token);
             if form {
                 self.form_job = None;
+                self.said = self.said.wrapping_add(1);
                 self.shell.command_done(answer.result.clone());
             }
             // Cancelled by the person: said, no error dialog.
@@ -1855,35 +1955,48 @@ impl WebHost {
             Purpose::Save { .. } => "Save As",
             Purpose::ExportJig => "Export as Jig",
         };
-        egui::Window::new(title)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.label("File name:");
-                let field = ui.text_edit_singleline(&mut dialog.name);
-                if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    answer = Some(true);
-                }
-                ui.horizontal(|ui| {
-                    // With the file dialogs, Export goes on to the
-                    // system's save dialog.
-                    let verb = match dialog.purpose {
-                        Purpose::Save { .. } => "Save",
-                        Purpose::ExportJig if self.pickers => "Export…",
-                        Purpose::ExportJig => "Export",
-                    };
-                    if ui.button(verb).clicked() {
+        // With the file dialogs, Export goes on to the system's save
+        // dialog.
+        let verb = match dialog.purpose {
+            Purpose::Save { .. } => "Save",
+            Purpose::ExportJig if self.pickers => "Export…",
+            Purpose::ExportJig => "Export",
+        };
+        let tokens = self.shell.tokens;
+        let kit = Kit::panel(&tokens);
+        let shown = kit.dialog(
+            ctx,
+            Dialog::new(egui::Id::new("craft3d-web-name"), title),
+            |kit, ui| {
+                // The label column of the About dialog's rows.
+                kit.dialog_row(ui, "File name", 96.0, |ui| {
+                    let field = kit.text_field(
+                        ui,
+                        "craft3d-web-name-field",
+                        &mut dialog.name,
+                        "",
+                        None,
+                        ui.available_width(),
+                    );
+                    if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         answer = Some(true);
                     }
-                    if ui.button("Cancel").clicked() {
-                        answer = Some(false);
-                    }
                 });
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    answer = Some(false);
-                }
-            });
+                kit.dialog_footer(ui, |ui| {
+                    kit.footer_right(ui, |ui| {
+                        if kit.button(ui, Button::primary(verb)).clicked() {
+                            answer = Some(true);
+                        }
+                        if kit.button(ui, Button::secondary("Cancel")).clicked() {
+                            answer = Some(false);
+                        }
+                    });
+                });
+            },
+        );
+        if answer.is_none() && shown.close {
+            answer = Some(false);
+        }
         match answer {
             Some(true) if self.session.edits_waiting() => {
                 self.hold(HeldAnswer::Name(dialog));
@@ -2237,6 +2350,116 @@ mod tests {
         host
     }
 
+    /// The material library's question is answered by its buttons only:
+    /// Escape or a click beside it keeps the file waiting (the review of
+    /// a6670ee3: it was dropped unseen).
+    #[test]
+    fn the_material_library_waits_for_a_button() {
+        let mut host = self::host();
+        host.companion = Some(Download::export(
+            "plate.mtl".to_string(),
+            b"newmtl a".to_vec(),
+        ));
+        let ctx = egui::Context::default();
+        for events in [
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            vec![egui::Event::PointerButton {
+                pos: egui::pos2(5.0, 5.0),
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            vec![egui::Event::PointerButton {
+                pos: egui::pos2(5.0, 5.0),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        ] {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 760.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut got = None;
+            let mut output = ctx.run_ui(input, |ui| got = host.companion_ui(ui.ctx()));
+            output.textures_delta.clear();
+            assert!(got.is_none());
+            assert!(host.companion.is_some(), "kept waiting");
+        }
+    }
+
+    /// A held "Opened" never replaces what was said after it (the review
+    /// of a6670ee3): a later open that failed, a close of the tab, a
+    /// parameter set; a document no longer shown is not said opened.
+    #[test]
+    fn a_held_open_report_gives_way_to_newer_ones() {
+        let bytes = modelled().save_as("a.3dcraft", None).remove(0).bytes;
+        let last = |host: &WebHost| host.shell.last_command.clone();
+        let settle = |host: &mut WebHost| {
+            let mut frames = 0;
+            while host.prepare(|| true) && frames < 60 {
+                frames += 1;
+            }
+        };
+        // (a) A, then B that fails: the failure stays.
+        let mut host = self::host();
+        host.set_stepwise(true);
+        host.receive("a.3dcraft", bytes.clone(), None).unwrap();
+        assert!(
+            host.receive("b.3dcraft", b"not a document".to_vec(), None)
+                .is_err()
+        );
+        let failed = last(&host);
+        assert!(failed.as_ref().is_some_and(|c| !c.ok), "{failed:?}");
+        settle(&mut host);
+        assert_eq!(last(&host), failed);
+        // (b) A, then its tab closed: "Closed" stays, A is not said opened.
+        let mut host = self::host();
+        host.set_stepwise(true);
+        host.session.execute("file.new", &json!({})).unwrap();
+        host.receive("a.3dcraft", bytes.clone(), None).unwrap();
+        let shown = host.session.document_status().unwrap().index;
+        host.doc_action(DocAction::Close {
+            document: shown,
+            discard: true,
+        });
+        let closed = last(&host);
+        settle(&mut host);
+        assert_eq!(last(&host), closed);
+        assert!(
+            last(&host).is_none_or(|c| c.label != "file.open"),
+            "{:?}",
+            last(&host)
+        );
+        // (c2) A, then a note in the very words the status bar has: newer
+        // all the same, it stays.
+        let mut host = self::host();
+        host.set_stepwise(true);
+        host.note("file.open", true, "Opened a".to_string());
+        host.receive("a.3dcraft", bytes.clone(), None).unwrap();
+        host.note("file.open", true, "Opened a".to_string());
+        let said = host.said;
+        settle(&mut host);
+        assert_eq!(host.said, said, "the held report was not said again");
+        // (c) A, then a note said while it loads: the note stays.
+        let mut host = self::host();
+        host.set_stepwise(true);
+        host.receive("a.3dcraft", bytes, None).unwrap();
+        host.note("param.set", true, "Set w".to_string());
+        settle(&mut host);
+        assert_eq!(last(&host).map(|c| c.text), Some("Set w".to_string()));
+    }
+
     /// What the page shows, frame by frame, while a file it was handed
     /// opens a piece per frame (`WebHost::set_stepwise`): at once that it
     /// is opening (the status bar's words, the bar, nothing drawn from
@@ -2279,6 +2502,14 @@ mod tests {
         // Still fetching: nothing to do but say so.
         assert!(host.prepare(|| true));
         host.receive("table.3dcraft", bytes, None).unwrap();
+        // Not said opened while it still opens.
+        let opened = |host: &WebHost| {
+            host.shell
+                .last_command
+                .as_ref()
+                .is_some_and(|c| c.label == "file.open" && c.ok)
+        };
+        assert!(!opened(&host), "{:?}", host.shell.last_command);
         // A frame as the page draws it (`page.rs`): as it was while the
         // scene is not there, from the session once it is.
         let ctx = egui::Context::default();
@@ -2309,12 +2540,18 @@ mod tests {
         while host.prepare(|| true) {
             frames += 1;
             assert!(frames < 50, "{said:?}");
+            assert_eq!(
+                opened(&host),
+                !host.away(),
+                "said opened only once it is shown"
+            );
             draw(&mut host);
             said.push(host.shell.busy().map(|(text, _)| text).unwrap_or_default());
         }
         draw(&mut host);
         assert_eq!(host.shell.busy(), None, "{said:?}");
         assert!(!host.away());
+        assert!(opened(&host), "{:?}", host.shell.last_command);
         // The features one by one, then the picture's meshes, then the
         // assertions.
         assert_eq!(

@@ -2345,6 +2345,10 @@ pub struct MotionView {
     pub t: f64,
     /// The pairs of bodies drawn red, by name.
     pub collisions: Vec<(String, String)>,
+    /// Whether the moment shown was asked with `collisions` (looked for
+    /// them, found or not); `None` while that is not known (made
+    /// elsewhere and not come yet).
+    pub checks_collisions: Option<bool>,
     /// How many features this `t` rebuilt.
     pub rebuilt: usize,
     /// For an assembly: the `t` of the dead point the motion stopped at on
@@ -2433,6 +2437,7 @@ impl Session {
             return view;
         }
         let open = self.documents.get_mut(self.active)?;
+        let asked = open.motion.collisions;
         let state = open.motion_state()?;
         let name = |id: FeatureId| {
             state
@@ -2458,6 +2463,7 @@ impl Session {
         Some(MotionView {
             t: state.t,
             collisions,
+            checks_collisions: Some(asked),
             rebuilt: state.rebuilt.len(),
             dead_point: state.stuck.as_ref().map(|stuck| stuck.t),
             exact: state.exact,
@@ -2526,6 +2532,9 @@ impl Session {
         Some(Some(MotionView {
             t,
             collisions,
+            checks_collisions: motion
+                .as_ref()
+                .map(|m| m.get("collisions").is_some_and(|c| !c.is_null())),
             rebuilt: count("rebuilt"),
             dead_point: motion
                 .as_ref()

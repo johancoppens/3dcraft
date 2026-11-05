@@ -825,6 +825,21 @@ fn example(id: &str) -> &'static craft3d_ui_egui::shell::Example {
 /// Frames until the example being built is done.
 fn built(page: &mut Page) -> Vec<(usize, usize)> {
     let mut seen = Vec::new();
+    // The example is said done (not "Building …") only once its picture
+    // is there (the held report of an open, `WebHost::finish`).
+    let check = |page: &mut Page| {
+        let quality = page.host.shell.scene_quality();
+        if let Some(report) = &page.host.shell.last_command
+            && report.label == "example"
+            && report.ok
+            && !report.text.starts_with("Building")
+        {
+            assert!(
+                page.host.session.scene_ready(quality),
+                "said done before its picture: {report:?}"
+            );
+        }
+    };
     for _ in 0..2000 {
         match page.host.example_progress() {
             Some(progress) => {
@@ -832,8 +847,13 @@ fn built(page: &mut Page) -> Vec<(usize, usize)> {
                     seen.push(progress);
                 }
                 page.frame();
+                check(page);
             }
             None => {
+                for _ in 0..50 {
+                    page.frame();
+                    check(page);
+                }
                 page.settle();
                 return seen;
             }

@@ -100,12 +100,12 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Deletes a feature (edit.undo brings it back). A feature that named it (as its target, tool, source or sketch) fails. The result lists the features that fail under failed. Where the host regenerates a piece at a time between its frames (the web page), the regeneration comes after the command: failed is left out then, and deferred: true says so.", doc: true, feature_delete),
     spec!("history.rollback", "Roll Back", r#"{"feature": id or name or null}"#,
         "Regenerates only up to and including this feature; null removes the marker. While the marker is set, a feature added by any command goes in right after it, and the marker moves onto the new feature. A feature added there that takes a body (a fillet, a chamfer, a move, a boolean's target, a union's tool) takes it before the features after the marker that named that body (a boolean's target or tool, the source of a transform, mirror, pattern, shell or split): those are pointed at the new feature, so they go on with the body it changed, and the new feature's result lists them under repointed ([{feature, param}]). One that would then name it twice (a boolean of the two bodies an inserted union joined), and one that used the tool of an inserted subtraction or intersection, are left as they are and fail with \"already went into\", saying which feature.edit points them on. A fillet, a chamfer or a face operation names faces, not a body, and follows them into the new feature's body by itself. What was re-pointed is kept in the document (saved with it): feature.delete of the inserted feature gives every such parameter that still names it the feature it named before, as if it had never been inserted (restored: [{feature, param, names}] in its result), and feature.edit of it gives back those re-pointed from a body it no longer takes (restored in its result) and re-points nothing else: a later feature that names a body it takes now was pointed there by the user. A parameter given back only while the feature it named before still comes before it in the history: one moved after it is left naming the inserted feature and listed under notRestored with why. A parameter a command points elsewhere itself (feature.edit of the later feature) is the user's from then on: deleting or editing the inserted feature leaves it as it is, also when it was pointed back. document.inspect lists what is kept under inserted. The result lists the features that fail now and did not before under failed. Where the host regenerates a piece at a time between its frames (the web page), the regeneration comes after the command: failed is left out then, and deferred: true says so.", doc: true, history_rollback),
-    spec!("document.inspect", "Inspect", r#"{"measures": boolean = true, "named": boolean = false}"#,
-        "Returns the whole document state (with named: true each feature's parameters also under named, in the commands' words: keys as the commands spell them, keepTool, and features by name, where they differ from params): units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (volume, area, centroid; with a material: mass and inertia) and bbox, appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), faceAppearances (the colours face.appearance gave single faces) and lostFaces (those whose face an edit took away, which colour nothing), inserted (when there are any: each feature inserted at the rollback marker that took a body, with repointed: [{feature, param, was}], the parameters of later features it pointed at itself and the feature each named before; a parameter pointed elsewhere by a command since is dropped from it, as the user's own choice), assertions (when there are any: each with status passed, failed, notProven, error or pending (still being measured after two seconds), what was measured and what was expected, as assert.list), undo history. With measures: false the bodies are listed without what takes measuring them (volume, area, centroid, mass, inertia, bbox and bboxTolerance; a body with a spline face can take seconds the first time), the rest as always: the quick way to read the features, their status and the face names of a large model.", doc: true, document_inspect),
+    spec!("document.inspect", "Inspect", r#"{"measures": boolean = true, "named": boolean = false, "inertia": boolean = true}"#,
+        "Returns the whole document state (with named: true each feature's parameters also under named, in the commands' words: keys as the commands spell them, keepTool, and features by name, where they differ from params): units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (volume, area, centroid; with a material: mass and inertia) and bbox, appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), faceAppearances (the colours face.appearance gave single faces) and lostFaces (those whose face an edit took away, which colour nothing), inserted (when there are any: each feature inserted at the rollback marker that took a body, with repointed: [{feature, param, was}], the parameters of later features it pointed at itself and the feature each named before; a parameter pointed elsewhere by a command since is dropped from it, as the user's own choice), assertions (when there are any: each with status passed, failed, notProven, error or pending (still being measured after two seconds), what was measured and what was expected, as assert.list), undo history. With measures: false the bodies are listed without what takes measuring them (volume, area, centroid, mass, inertia, bbox and bboxTolerance; a body with a spline face can take seconds the first time), the rest as always: the quick way to read the features, their status and the face names of a large model. inertia: false measures the bodies but leaves out each body's inertia (and does not integrate it), its mass then its volume times its density: what a viewer listing volumes and masses needs.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false, "feature": id or name = every feature}"#,
         "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies, each body held to the document's cap on any entity's own tolerance, broken assertions, and a sketch line the solver shrank to a point under two directions or more (horizontal and vertical, or a direction and a perpendicular or an angle: a contradiction it reports as holding; with line and constraints). ok is true when there is none. warnings (never part of ok), each with kind: assertion (one not proven either way), collapsedLine (a line with no length under one direction), lostFace (a face colour whose face is gone: it colours nothing, as lostFaces in document.inspect says, with feature and face), underConstrained (one entry for every sketch with degrees of freedom left, listed under sketches with feature, name and dof), plainAngle (a parameter read as an angle, in a document whose angle unit is degrees, whose value is a plain number with a pi in it that has no unit and is not inside sin, cos or tan, itself or in a variable it uses: `2 * pi / n` is a few degrees there; with feature, name, parameter and expr; the value is kept). loose lists the bodies with entities that have a tolerance of their own (edges, vertices, the largest), when there are. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal; and for two shells of a body that touch at a vertex or the middle of an edge (zero thickness). deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked), and meshes every body with loose entities at a thousandth of its size, every point of a face's mesh on its surface or, on its boundary, within the tolerance of the edge or vertex it lies on (counted under looseMeshesChecked).", doc: true, document_check),
-    spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies, "bound": boolean = false}"#,
-        "Returns volume, area and centroid, per body and in total, in document units. With bound also volumeBound and areaBound, per body and summed: how far the volume and the area can be off by the integrator's own account (every sum refined until two in a row agree; an estimate, not a guarantee). A body with a material (body.material) also has its mass (kg) and its inertia tensor about its centroid (kg times the length unit squared, along the model's axes), and its appearance (body.appearance); the total has the mass when every body has one.", doc: true, document_measure),
+    spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies, "bound": boolean = false, "inertia": boolean = true}"#,
+        "Returns volume, area and centroid, per body and in total, in document units. With bound also volumeBound and areaBound, per body and summed: how far the volume and the area can be off by the integrator's own account (every sum refined until two in a row agree; an estimate, not a guarantee). A body with a material (body.material) also has its mass (kg) and its inertia tensor about its centroid (kg times the length unit squared, along the model's axes), and its appearance (body.appearance); the total has the mass when every body has one. inertia: false leaves the inertia out and does not integrate it (on a body with large spline faces that takes seconds): the mass is then the measured volume times the density.", doc: true, document_measure),
     spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the picture's, "background": "light|dark" = "light", "look": {mode: "plain|studio" = "studio", environment: "studio|outdoor|workshop" = "studio", exposure: stops = 0, rotation: degrees = 0, ground: boolean = true, ao: boolean = true, shadows: boolean = true, tonemap: "agx|aces|linear" = "agx", light: [azimuth, elevation] = the environment's, background: "environment|plain" = "environment", reflections: boolean = true, contactShadows: boolean = true, specularShadow: boolean = true, groundReflection: 0 to 1 = 0, bloom: 0 to 1 = 0.04, dof: {fstop: positive f-number, clamped to 0.5 to 64 = 2.8, focus: distance or [x, y, z] or "selection" (the centre of the box of the session's selection, select.get; the model's centre when nothing is selected) or "centre" = "centre"} = null, accumulate: frames 1 to 256 = 1} = the plain look, "analysis": {mode: "zebra|highlight|curvature|draft|none" = "none", stripes: 1 to 512 = 16, direction: degrees = 0, width: 0 to 1 = 0.5, offset: periods = 0, pull: [x, y, z] = [0, 0, 1], minDraft: degrees = 1, curvature: "gaussian|mean|max" = "gaussian", range: [low, high] = from the values, combs: {edges: boolean or [edge name, ...], iso: [{face, feature, u or v from 0 to 1}], scale: number = automatic, density: 2 to 400 = 40} = null} = none, "renderer": "auto|cpu|gpu" = "auto", "camera": {eye, target, up, projection, fovY, height} = framed by view, projection, zoom and box}"#,
         "With camera ({eye, target, up} and fovY in degrees, or projection orthographic with height, as view.pick takes it) the picture is the one that camera sees, instead of one framed by view, projection, zoom and box (give one or the other). Renders the bodies, on the window's light viewport background (235, 233, 229; background: dark for the renderer's dark grey). Writes a PNG under the write root when path is given, otherwise returns it as base64. Without tolerance the bodies are meshed for the picture: between a quarter and half a pixel of the picture where it shows the model nearest, never finer than the floor (2e-4 of the diagonal of the box around the bodies), at most 12 degrees per chord, within a total budget of a million triangles (coarser, and coarsened true, when the picture would have more), so a close-up box, a zoom or a larger picture is finer; the same params give the same picture, and the same view, size, zoom and box (or camera, in view.pick) give the same tolerance. With tolerance, at that chordal tolerance alone. A body too fine for the tessellator at it is meshed coarser rather than refused. The result says the tolerance (document units), maxAngle (degrees, or null) and coarsened (true when the tolerance was coarsened for the triangle budget or for a body). orthographic shows lengths across the view to scale. box frames the region between two opposite corners (document units) instead of the whole model, seen from outside the model. zoom magnifies about the centre of the picture (2 shows half as much, twice as large; from 0.01 to 1000). section cuts the picture open with a plane, to look inside a shell, a pocket or a cavity; the document does not change. It is an object: the plane is plane (xy, yz or zx, a datum plane by id or name, or a flat face by its persistent name, with feature to say which body when several have that face) or point and normal ([x, y, z] each), moved by offset (a number, default 0) along its normal; what lies on the side the normal points to is not drawn (a face's normal points out of its body; flip: true keeps the other half). Where the plane passes through the inside of a body the cut is closed with a flat cap in a colour of its own (cap: false leaves it open). The result then has section: {point, normal, range}, the plane as it was used and the offsets between which it passes through the model. look lights the bodies: the studio look (an environment, soft shadows, ambient occlusion, a ground that catches shadows, a tone curve), and its second layer: reflections of the model in its glossy faces and in the ground (the environment where a reflected ray finds nothing on the picture), contact shadows, the key light's shadow on the specular light, bloom, depth of field of a thin lens with fstop focused at focus (a distance along the view or a point; the model's centre by default; a lens of the document's length unit), and accumulate frames averaged into a still, each with its samples moved within the pixel and the lens turned (refused on the CPU when the frames' samples together, width × height × 4 × frames, pass 2^26). A see-through or cut-open picture is lit the same way: the surface behind a see-through front is lit as the front is and blended under it in light, and the cap of a section is lit as a face of its colour. renderer says what draws: cpu the CPU renderer, the reference every other picture is checked against; gpu the session's wgpu renderer on a device without a window (craft3d-cli render, run and serve have one; a session without one refuses), the same picture within the renderers' documented parity; auto (the default) the GPU when the session has one and it can draw, else the CPU. mode ids is always drawn on the CPU (its pixels are read by machine). The result says renderer (gpu or cpu), adapter (the GPU's, when it drew) and rendererFallback (why auto drew on the CPU after all).", doc: true, names: ["section"], view_render),
 ];
@@ -3537,8 +3537,13 @@ fn history_rollback(session: &mut Session, params: &Value) -> Run {
 // --------------------------------------------------------------- document
 
 fn document_inspect(session: &mut Session, params: &Value) -> Run {
-    let p = Params::new("document.inspect", params, &["measures", "named"])?;
+    let p = Params::new(
+        "document.inspect",
+        params,
+        &["measures", "named", "inertia"],
+    )?;
     let measures = p.bool("measures")?.unwrap_or(true);
+    let inertia = p.bool("inertia")?.unwrap_or(true);
     let words = p.bool("named")?.unwrap_or(false);
     let index = session.active;
     let open = session.document_mut()?;
@@ -3580,6 +3585,7 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
                 let body = regen.feature(feature.id).and_then(|o| o.own_body())?;
                 Some((feature.id, body))
             }),
+            inertia,
         );
     }
     let bbox_tess = measures.then(|| TessParams {
@@ -3713,7 +3719,7 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
                 "shells": body.shells.len(),
             });
             if measures {
-                crate::appearance_cmds::measure_ahead(doc, &regen, feature.id, body);
+                crate::appearance_cmds::measure_ahead(doc, &regen, feature.id, body, inertia);
                 if let (Some(map), Ok(mass)) = (entry.as_object_mut(), mass_of(body)) {
                     map.insert("volume".into(), mass.volume.into());
                     map.insert("area".into(), mass.area.into());
@@ -3728,6 +3734,7 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
                     (feature.id, body),
                     unit,
                     measures,
+                    inertia,
                 );
             }
             // What each face is called by the features that come after:
@@ -3897,8 +3904,9 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
 }
 
 fn document_measure(session: &mut Session, params: &Value) -> Run {
-    let p = Params::new("document.measure", params, &["feature", "bound"])?;
+    let p = Params::new("document.measure", params, &["feature", "bound", "inertia"])?;
     let with_bound = p.bool("bound")?.unwrap_or(false);
+    let inertia = p.bool("inertia")?.unwrap_or(true);
     let only = match p.get("feature") {
         None => None,
         Some(_) => Some(feature_ref(
@@ -3927,6 +3935,7 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
             regen
                 .bodies()
                 .filter(|(id, _)| only.is_none_or(|o| o == *id)),
+            inertia,
         );
     }
     for (id, body) in regen
@@ -3943,7 +3952,7 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
             let (mass, bound) = craft3d_topo::mass_bound(body).map_err(failed)?;
             (mass, Some(bound))
         } else {
-            crate::appearance_cmds::measure_ahead(doc, &regen, id, body);
+            crate::appearance_cmds::measure_ahead(doc, &regen, id, body, inertia);
             (mass_of(body).map_err(failed)?, None)
         };
         volume += mass.volume;
@@ -3962,7 +3971,15 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
                 map.insert("volumeBound".into(), bound.volume.into());
                 map.insert("areaBound".into(), bound.area.into());
             }
-            crate::appearance_cmds::physical_fields(map, &values, &regen, (id, body), unit, true);
+            crate::appearance_cmds::physical_fields(
+                map,
+                &values,
+                &regen,
+                (id, body),
+                unit,
+                true,
+                inertia,
+            );
             total_mass = match (total_mass, map.get("mass").and_then(Value::as_f64)) {
                 (Some(sum), Some(m)) => Some(sum + m),
                 _ => None,
@@ -4166,7 +4183,7 @@ pub(crate) fn check_document(
             }
             // An unbounded or otherwise unmeasurable face shows up here.
             if measure {
-                crate::appearance_cmds::measure_ahead(doc, &regen, outcome.id, body);
+                crate::appearance_cmds::measure_ahead(doc, &regen, outcome.id, body, true);
             }
             if measure && let Err(error) = mass_of(body) {
                 problems.push(json!({

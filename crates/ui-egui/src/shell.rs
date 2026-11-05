@@ -389,6 +389,9 @@ struct Calm {
     changes: u64,
     /// The texts of the last frame, to count the changes by.
     last: Vec<(StatusSlot, String)>,
+    /// The steady texts of the last frame (units, path, autosave,
+    /// selection), for [`Shell::status_shown`].
+    steady: Vec<(StatusSlot, String)>,
 }
 
 impl Calm {
@@ -399,6 +402,7 @@ impl Calm {
         *self = Self {
             changes: self.changes,
             last: std::mem::take(&mut self.last),
+            steady: std::mem::take(&mut self.steady),
             ..Self::default()
         };
     }
@@ -2341,7 +2345,7 @@ impl Shell {
         self.mark_scrubbed_rows();
         self.mark_zoomable(scene.as_deref());
         self.assertion_rows = session.assertion_states();
-        self.sync_params(session, scene.as_ref());
+        self.sync_params(session);
         self.sync_side(session, scene.as_deref());
         self.sync_tabs(session);
         self.note_recent(session);
@@ -2754,9 +2758,10 @@ impl Shell {
             self.recovery_hits.clear();
             self.discard_armed = None;
         }
-        if self.narrow && !self.tabs.is_empty() {
+        if self.narrow {
             // The top bar names the document and lists the others (its
-            // ▾): no tab row on a phone or a tablet (boards m2, t1).
+            // ▾), or 3DCraft on the start screen: no tab row on a phone or
+            // a tablet (boards m1, m2, t1).
         } else if self.tabs.is_empty() {
             self.tab_hits.clear();
         } else {
@@ -3004,10 +3009,12 @@ impl Shell {
                 }
                 self.drawer_button = Some(rect);
             }
-            if self.narrow && !self.tabs.is_empty() {
-                // The phone's and the tablet's top bar (boards m2, t1): the
-                // document's name with its menu of the open documents
-                // (the tab row's All), and ⋯ with File, Edit, View, Help.
+            if self.narrow {
+                // The phone's and the tablet's top bar (boards m1, m2,
+                // t1): the document's name with its menu of the open
+                // documents (the tab row's All), and ⋯ with File, Edit,
+                // View, Help. On the start screen it says 3DCraft, its
+                // menu offers a new part or assembly and Open….
                 let tokens = self.tokens;
                 let name = self
                     .active_tab()
@@ -3270,6 +3277,13 @@ impl Shell {
                     ));
                 }
             }
+            // The phone's start screen (board m1): the program and its
+            // version.
+            None if self.narrow => items.push(StatusItem::fixed(
+                StatusSlot::Units,
+                format!("{PRODUCT} {}", help::VERSION),
+                dim,
+            )),
             None => items.push(StatusItem::fixed(
                 StatusSlot::Units,
                 "no document".to_string(),
@@ -3417,6 +3431,19 @@ impl Shell {
             self.calm.changes = self.calm.changes.saturating_add(1);
             self.calm.last = texts;
         }
+        self.calm.steady = items
+            .iter()
+            .filter(|i| {
+                matches!(
+                    i.slot,
+                    StatusSlot::Units
+                        | StatusSlot::Path
+                        | StatusSlot::Autosave
+                        | StatusSlot::Selection
+                )
+            })
+            .map(|i| (i.slot, i.text.clone()))
+            .collect();
         let fits: Vec<StatusFit> = items
             .iter()
             .map(|item| {
@@ -4202,12 +4229,15 @@ impl Shell {
         self.calm.changes
     }
 
-    /// What the status bar showed in the last frame for the last command
-    /// (or `Playing`), its answer, the work and the renderer's numbers.
+    /// What the status bar showed in the last frame in `slot`: the last
+    /// command (or `Playing`), its answer, the work, the renderer's
+    /// numbers, the units (or what stands there without a document), the
+    /// path, autosave and the selection.
     pub fn status_shown(&self, slot: StatusSlot) -> Option<&str> {
         self.calm
             .last
             .iter()
+            .chain(&self.calm.steady)
             .find(|(s, _)| *s == slot)
             .map(|(_, text)| text.as_str())
     }
@@ -5292,8 +5322,8 @@ fn mates_ui(
             _ => (crate::kit::Glyph::Warning, s.failed),
         };
         let value = match mate.value {
-            Some((v, true)) => format!(" · {:.1}°", v.to_degrees()),
-            Some((v, false)) => format!(" · {v:.3}"),
+            Some((v, true)) => format!(" · {}°", crate::kit::slider::fixed(v.to_degrees(), 1)),
+            Some((v, false)) => format!(" · {}", crate::kit::slider::fixed(v, 3)),
             None => String::new(),
         };
         let driven = if mate.driven { " · driven" } else { "" };
@@ -5334,8 +5364,7 @@ fn mates_ui(
 /// hint while there are none.
 fn assertions_heading(ui: &mut egui::Ui, tokens: &Tokens, empty: bool) {
     ui.add_space(tokens.inset * 0.5);
-    ui.label(egui::RichText::new("Assertions").strong());
-    ui.separator();
+    crate::kit::Kit::panel(tokens).section_header(ui, "Assertions");
     if empty {
         ui.add(
             egui::Label::new(

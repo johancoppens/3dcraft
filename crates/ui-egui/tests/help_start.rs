@@ -12,7 +12,7 @@
 
 use craft3d_engine::{Access, Session, Workspace};
 use craft3d_ui_egui::shell::{EXAMPLES, ExampleSection, RecentFiles, run_example};
-use craft3d_ui_egui::{FileAction, Shell};
+use craft3d_ui_egui::{FileAction, Shell, StatusSlot, TabPart};
 use egui::{Event, Pos2, vec2};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -281,6 +281,36 @@ fn on_a_phone_the_cards_stay_within_the_width() {
             );
         }
     }
+}
+
+/// The phone's start screen (board m1): the top bar names 3DCraft (its
+/// menu, the tab row's All, offers New and Open), and the status bar the
+/// program and its version instead of "no document".
+#[test]
+fn a_phone_start_screen_has_the_top_bar_and_the_version() {
+    let mut session = Session::new(Workspace::none());
+    let mut shell = Shell::new();
+    let mut window = Window::sized(390.0, 844.0);
+    for _ in 0..3 {
+        window.frame(&mut shell, &mut session, Vec::new());
+    }
+    assert!(
+        shell
+            .tab_hits()
+            .iter()
+            .any(|(part, _)| *part == TabPart::All),
+        "{:?}",
+        shell.tab_hits()
+    );
+    let units = shell.status_shown(StatusSlot::Units).unwrap_or_default();
+    assert!(units.starts_with("3DCraft "), "{units}");
+    // A window keeps "no document".
+    let mut shell = Shell::new();
+    let mut window = Window::sized(1280.0, 800.0);
+    for _ in 0..3 {
+        window.frame(&mut shell, &mut session, Vec::new());
+    }
+    assert_eq!(shell.status_shown(StatusSlot::Units), Some("no document"));
 }
 
 #[test]

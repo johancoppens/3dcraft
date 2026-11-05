@@ -111,18 +111,17 @@ pub fn split_chip(rect: Rect, tokens: &Tokens) -> (Rect, Rect) {
     )
 }
 
-/// The ids of the areas egui fades in as they appear: the popovers'
-/// (`Shell::popover`) and the narrow layout's drawer.
-pub const FADING_AREAS: [&str; 3] = ["studio-options", "analysis-options", "craft3d-drawer"];
-
 impl Shell {
-    /// Whether a popover or the drawer is still fading in at egui's time
-    /// `now` (egui fades an area in over its animation time once it
-    /// becomes visible): a picture of the window waits for it.
+    /// Whether a popover, a dialog, a menu or the drawer is still fading
+    /// in at egui's time `now` (egui fades an area in over its animation
+    /// time once it becomes visible): a picture of the window waits for
+    /// it. Every area shown is looked at, so a new dialog cannot be left
+    /// out of a list (the review of a6670ee3).
     pub fn popover_fading(&self, ctx: &egui::Context, now: f64) -> bool {
         let fade = f64::from(ctx.global_style().animation_time);
-        FADING_AREAS.iter().any(|id| {
-            egui::AreaState::load(ctx, egui::Id::new(id))
+        let shown = ctx.memory(|m| m.areas().visible_layer_ids());
+        shown.into_iter().any(|layer| {
+            egui::AreaState::load(ctx, layer.id)
                 .and_then(|area| area.last_became_visible_at)
                 .is_some_and(|at| now - at < fade)
         })

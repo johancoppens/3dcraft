@@ -916,6 +916,7 @@ fn mass_measure(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<Out
                             (id, &body),
                             unit,
                             true,
+                            true,
                         );
                         entry.get("mass").and_then(Value::as_f64).ok_or_else(|| {
                             format!("`{fname}` has no material, so no mass; give it one with body.material")
@@ -1152,7 +1153,7 @@ fn mass_of_in(
     id: craft3d_doc::FeatureId,
     body: &Arc<Body>,
 ) -> Result<craft3d_topo::MassProperties, craft3d_topo::MassError> {
-    crate::appearance_cmds::measure_ahead(ctx.doc, ctx.regen, id, body);
+    crate::appearance_cmds::measure_ahead(ctx.doc, ctx.regen, id, body, true);
     crate::mass::mass_of(body)
 }
 
