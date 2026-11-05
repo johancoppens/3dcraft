@@ -421,14 +421,16 @@ impl Shell {
             // Its joint, when it can be set by hand: the slider of the
             // Parameters tab, named by its motion.
             if mate.settable && mate.value.is_some() {
-                let motion = mate
-                    .variables
-                    .first()
-                    .and_then(|v| v.strip_prefix(mate.name.as_str()))
-                    .and_then(|v| v.strip_prefix('_'))
-                    .map_or_else(|| "Value".to_string(), capitalised);
+                let motion = motion_label(mate);
                 ui.indent(("craft3d-mate-joint", &mate.name), |ui| {
                     released |= self.joint_slider(ui, kit, mate, &outline.unit, size, &motion);
+                });
+            } else if drivable(mate) {
+                // Driven by a formula, or following another: held by hand
+                // for the view only (`view.drive`).
+                let motion = motion_label(mate);
+                ui.indent(("craft3d-mate-joint", &mate.name), |ui| {
+                    released |= self.drive_slider(ui, kit, mate, &outline.unit, size, &motion);
                 });
             }
         }
@@ -448,6 +450,25 @@ impl Shell {
         }
         statuses
     }
+}
+
+/// A joint's slider's label: its main free motion (`Angle`, `Distance`).
+fn motion_label(mate: &craft3d_engine::OutlineMate) -> String {
+    mate.variables
+        .first()
+        .and_then(|v| v.strip_prefix(mate.name.as_str()))
+        .and_then(|v| v.strip_prefix('_'))
+        .map_or_else(|| "Value".to_string(), capitalised)
+}
+
+/// True when a mate's joint can be held by hand for the view
+/// (`view.drive`): solved, with one value to hold (a revolute's angle, a
+/// slider's distance, a cylindrical's angle), and not settable as it is.
+pub(super) fn drivable(mate: &craft3d_engine::OutlineMate) -> bool {
+    !mate.settable
+        && mate.status == "ok"
+        && mate.value.is_some()
+        && matches!(mate.kind, "revolute" | "slider" | "cylindrical")
 }
 
 /// `word` with its first letter in capitals (`angle` → `Angle`).

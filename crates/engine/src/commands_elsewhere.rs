@@ -547,6 +547,7 @@ impl Session {
             moment: job.moment,
             sources: None,
             bake: None,
+            drive: None,
         };
         let work = json!({
             "command": job.command,

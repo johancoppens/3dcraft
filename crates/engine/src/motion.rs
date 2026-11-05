@@ -2138,6 +2138,10 @@ impl OpenDocument {
         if let Some(stand_in) = self.remote_shown() {
             return stand_in;
         }
+        // A joint held by hand (`view.drive`).
+        if let Some(placed) = self.driven_placed() {
+            return Arc::clone(&placed.doc);
+        }
         if let Some(state) = self.motion_state() {
             return state.doc;
         }
@@ -2154,6 +2158,9 @@ impl OpenDocument {
         if self.tried_without_view() {
             return None;
         }
+        if let Some(placed) = self.driven_placed() {
+            return Some(placed);
+        }
         if let Some(placed) = self.motion_state().and_then(|state| state.placed) {
             return Some(placed);
         }
@@ -2164,6 +2171,9 @@ impl OpenDocument {
     pub(crate) fn shown_regen(&mut self) -> Arc<Regen> {
         if self.tried_without_view() {
             return Arc::new(Regen::default());
+        }
+        if let Some(placed) = self.driven_placed() {
+            return Arc::clone(&placed.regen);
         }
         if let Some(state) = self.motion_state() {
             return state.regen;
@@ -2724,6 +2734,10 @@ fn view_motion(session: &mut Session, params: &Value) -> Run {
             .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
     }
     if let Some(t) = t {
+        // A moment of the motion lets go of a joint held by hand.
+        if t.is_some() {
+            open.let_go_of_drive();
+        }
         open.motion.t = t;
         if t.is_none() {
             open.motion.state = None;

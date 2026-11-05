@@ -2591,6 +2591,7 @@ impl Shell {
         // An assembly lists its instances, nested by subassembly, and its
         // mates (docs/design/assemblies.md › *The tree*).
         self.outline = session.assembly_outline();
+        self.joints.driven = session.driven_mate();
         if let Some(status) = session.document_status() {
             if self.outline.is_some() {
                 self.assembly_docs.insert(status.id);
@@ -4405,10 +4406,10 @@ impl Shell {
             ui.ctx().request_repaint();
         }
         // Esc closes an open popover of the Studio or Analysis chip first,
-        // wherever the pointer is; then it clears the selection over the
-        // viewport.
+        // wherever the pointer is, then lets go of a joint held by hand;
+        // then it clears the selection over the viewport.
         if !ui.ctx().egui_wants_keyboard_input() && ui.input(|i| i.key_pressed(help::CLEAR_KEY)) {
-            if self.close_popover() {
+            if self.close_popover() || self.let_go_of_drive() {
                 ui.ctx().request_repaint();
             } else if response.contains_pointer() {
                 self.escape_selection();

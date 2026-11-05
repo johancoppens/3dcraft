@@ -570,6 +570,8 @@ struct Builder {
     /// moment shown, and the bake to make after its scenes. A command run
     /// on another view puts it back.
     view: Option<View>,
+    /// The joint held by hand in the view of the job of scenes in hand.
+    drive: Option<crate::view_elsewhere::DriveAsk>,
     /// The quality the job of scenes in hand was asked for.
     asked: Option<SceneQuality>,
     /// Pieces of the bake in a row that left as much to do, and what the
@@ -584,7 +586,7 @@ use crate::view_elsewhere::View;
 type ReadJob = (
     Document,
     Option<Sources>,
-    Option<View>,
+    (Option<View>, Option<crate::view_elsewhere::DriveAsk>),
     SceneQuality,
     Option<usize>,
 );
@@ -639,7 +641,10 @@ pub fn scene_begin(document: &[u8], work: &str) {
                 .map_err(|e| format!("the document cannot be read: {e}"))?;
             let work: Value =
                 serde_json::from_str(work).map_err(|e| format!("the work cannot be read: {e}"))?;
-            let view = crate::view_elsewhere::view_of(&work);
+            let view = (
+                crate::view_elsewhere::view_of(&work),
+                crate::view_elsewhere::drive_of(&work),
+            );
             let quality = work
                 .get("quality")
                 .and_then(quality_from)
@@ -654,10 +659,11 @@ pub fn scene_begin(document: &[u8], work: &str) {
         builder.refused = None;
         builder.scenes_of = None;
         builder.view = None;
+        builder.drive = None;
         builder.stalled = (0, None);
         let mut bake = false;
         let quality = match read {
-            Ok((doc, sources, view, quality, budget)) => {
+            Ok((doc, sources, (view, drive), quality, budget)) => {
                 let same = builder.loaded.as_deref() == Some(document);
                 let session = builder.session.get_or_insert_with(builder_session);
                 if let Some(budget) = budget {
@@ -673,7 +679,7 @@ pub fn scene_begin(document: &[u8], work: &str) {
                 }
                 // A job without a view shows the state as it is (a moment
                 // shown for an earlier job is let go of).
-                show_view(session, view.unwrap_or((None, None)));
+                show_view(session, view.unwrap_or((None, None)), drive.as_ref());
                 if let Some(view) = view {
                     builder.left.push_back((VIEW, SceneQuality::Preview));
                     bake = view.1.is_some();
@@ -682,6 +688,7 @@ pub fn scene_begin(document: &[u8], work: &str) {
                     builder.loaded = Some(document.to_vec());
                 }
                 builder.view = view;
+                builder.drive = drive;
                 builder.scenes_of = Some(document.to_vec());
                 quality
             }
@@ -703,10 +710,25 @@ pub fn scene_begin(document: &[u8], work: &str) {
 
 /// Shows `view` in this side's session: the moment of the motion (or the
 /// document as it is), as `view.motion {t, collisions}` would.
-fn show_view(session: &mut Session, view: View) {
+fn show_view(session: &mut Session, view: View, drive: Option<&crate::view_elsewhere::DriveAsk>) {
     if let Some(open) = session.documents.get_mut(0) {
         let (moment, _) = view;
         open.set_motion_view(moment.map(|(t, _)| t), moment.is_some_and(|(_, c)| c));
+        open.let_go_of_drive();
+    }
+    // A joint held by hand, as `view.drive` holds it here; one it cannot
+    // hold is said by the facts (`view.drive {}` answers nothing held).
+    if let Some((mate, which, value)) = drive {
+        let unit = if which == "angle" { "rad" } else { "" };
+        let value = if unit.is_empty() {
+            json!(value)
+        } else {
+            json!(format!("{value} {unit}"))
+        };
+        let _ = session.execute(
+            "view.drive",
+            &json!({"mate": mate, "which": which, "value": value}),
+        );
     }
 }
 
@@ -953,7 +975,7 @@ pub fn run_on_state(
             shown_before != Some((moment.map(|(t, _)| t), moment.is_some_and(|(_, c)| c)))
         });
         if let (true, Some(moment)) = (moved, asked) {
-            show_view(session, (moment, None));
+            show_view(session, (moment, None), None);
         }
         let open = session.documents.get_mut(0).ok_or("no document")?;
         open.selection = selection;
@@ -1081,7 +1103,11 @@ pub fn run_on_state(
             builder.loaded = Some(scenes_of);
         }
         if moved && builder.scenes_of.is_some() {
-            show_view(session, builder.view.unwrap_or((None, None)));
+            show_view(
+                session,
+                builder.view.unwrap_or((None, None)),
+                builder.drive.as_ref(),
+            );
         }
         Ok::<_, String>(crate::CommandAnswer {
             answer: crate::commands_elsewhere::answer_json(result, edited, selection, &steps),

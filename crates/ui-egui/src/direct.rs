@@ -264,11 +264,16 @@ pub fn segments_marked(
     for [a, b] in marks.datum_lines() {
         line(a, b, LineKind::Datum, true, true, false);
     }
-    for &[a, b] in marks.mate_lines() {
-        line(a, b, LineKind::MateHalo, true, true, false);
+    if tokens.mate_rest_halo_width > 0.0 {
+        for &[a, b] in &marks.mates {
+            line(a, b, LineKind::MateRestHalo, true, true, false);
+        }
     }
     for &[a, b] in &marks.mates {
         line(a, b, LineKind::Mate, true, true, false);
+    }
+    for &[a, b] in &marks.mates_hot {
+        line(a, b, LineKind::MateHalo, true, true, false);
     }
     for &[a, b] in &marks.mates_hot {
         line(a, b, LineKind::MateHot, true, true, false);

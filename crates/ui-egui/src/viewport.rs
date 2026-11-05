@@ -48,8 +48,11 @@ pub enum LineKind {
     /// The outline of a datum plane, a datum axis, or (as a dot) a datum
     /// point.
     Datum,
-    /// The light halo under a mate marker's lines.
+    /// The light halo under the lines of a mate marker pointed at or
+    /// chosen.
     MateHalo,
+    /// The hairline under the lines of a mate marker at rest.
+    MateRestHalo,
     /// An assembly's mate marker ([`Marks::mates`]).
     Mate,
     /// A mate marker pointed at or chosen ([`Marks::mates_hot`]).
@@ -381,9 +384,9 @@ impl LineKind {
             LineKind::Edge => tokens.edge,
             LineKind::Highlight => tokens.face_highlight,
             LineKind::Datum => tokens.datum,
-            LineKind::MateHalo => tokens.mate_halo,
+            LineKind::MateHalo | LineKind::MateRestHalo => tokens.mate_halo,
             LineKind::Mate => tokens.mate,
-            LineKind::MateHot => tokens.face_highlight,
+            LineKind::MateHot => tokens.mate_hot,
             LineKind::Trace => tokens.trace,
             LineKind::Comb => tokens.comb,
         }
@@ -399,6 +402,7 @@ impl LineKind {
             LineKind::Highlight => tokens.highlight_width,
             LineKind::Datum => tokens.datum_width,
             LineKind::MateHalo => tokens.mate_halo_width,
+            LineKind::MateRestHalo => tokens.mate_rest_halo_width,
             LineKind::Mate => tokens.mate_width,
             LineKind::MateHot => tokens.mate_hot_width,
             LineKind::Trace => tokens.trace_width,
@@ -410,7 +414,7 @@ impl LineKind {
     /// `hidden_opacity`: the mate markers'.
     pub fn hidden_opacity(self, tokens: &Tokens) -> Option<u8> {
         match self {
-            LineKind::MateHalo | LineKind::Mate | LineKind::MateHot => {
+            LineKind::MateHalo | LineKind::MateRestHalo | LineKind::Mate | LineKind::MateHot => {
                 Some(tokens.mate_hidden_opacity)
             }
             _ => None,
@@ -550,12 +554,6 @@ impl Marks {
         self.mates.extend(other.mates);
         self.mates_hot.extend(other.mates_hot);
         self
-    }
-
-    /// Every mate marker's lines, the plain ones then the hot ones: what
-    /// the halo is drawn under.
-    pub fn mate_lines(&self) -> impl Iterator<Item = &[Vec3; 2]> {
-        self.mates.iter().chain(&self.mates_hot)
     }
 
     /// The section for the renderers.
@@ -1483,13 +1481,17 @@ fn build_overlay(
     for [a, b] in marks.map(Marks::datum_lines).unwrap_or_default() {
         line_of(a, b, LineKind::Datum, true, true, None);
     }
-    // The mate markers, tested like a datum, over a halo; the one pointed
-    // at over them.
-    for &[a, b] in marks.into_iter().flat_map(Marks::mate_lines) {
-        line_of(a, b, LineKind::MateHalo, true, true, None);
+    // The mate markers, tested like a datum, on a hairline; the one
+    // pointed at over them, on a halo.
+    // (A hairline of no width is left out where the lines are drawn.)
+    for &[a, b] in marks.into_iter().flat_map(|marks| &marks.mates) {
+        line_of(a, b, LineKind::MateRestHalo, true, true, None);
     }
     for &[a, b] in marks.into_iter().flat_map(|marks| &marks.mates) {
         line_of(a, b, LineKind::Mate, true, true, None);
+    }
+    for &[a, b] in marks.into_iter().flat_map(|marks| &marks.mates_hot) {
+        line_of(a, b, LineKind::MateHalo, true, true, None);
     }
     for &[a, b] in marks.into_iter().flat_map(|marks| &marks.mates_hot) {
         line_of(a, b, LineKind::MateHot, true, true, None);
@@ -1887,6 +1889,12 @@ pub fn rasterise(composed: Composed, tokens: &Tokens, scale: f64) -> Picture {
     let mut k = 0;
     while let Some(line) = lines.get(k) {
         let Some(edge) = line.edge else {
+            // A mate's hairline the theme has none of (as the GPU's
+            // segments leave it out).
+            if line.kind == LineKind::MateRestHalo && tokens.mate_rest_halo_width <= 0.0 {
+                k += 1;
+                continue;
+            }
             draw_line(
                 &mut rgb,
                 width,

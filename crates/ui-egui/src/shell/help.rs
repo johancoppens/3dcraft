@@ -165,7 +165,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
         keys(
             View,
             bare(CLEAR_KEY),
-            "Fold the Studio or Analysis options, else clear the selection",
+            "Fold the Studio or Analysis options, else let go of a joint held by hand, else clear the selection",
         ),
         keys(View, help_shortcut(), "Show these shortcuts"),
         keys(

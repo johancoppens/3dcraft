@@ -39,6 +39,8 @@ pub(crate) struct RemoteView {
     pub base: Arc<Document>,
     pub generation: u64,
     pub moment: Option<(f64, bool)>,
+    /// The joint held by hand for the view (`view.drive`), when one is.
+    pub drive: Option<DriveAsk>,
     /// The stand-in: the scenes answered for the view are kept under it.
     pub doc: Arc<Document>,
     /// What the other side said of the view, once it did.
@@ -113,7 +115,13 @@ pub(crate) struct ViewFacts {
     /// An assembly's placed part as shown there: what its scenes are read
     /// against (its features' kinds).
     pub shown: Option<Arc<Document>>,
+    /// `view.drive`'s answer there for the joint held by hand.
+    pub drive: Option<Value>,
 }
+
+/// A joint held by hand for the view as it is asked for elsewhere: the
+/// mate, its free motion and the value (radians or model units).
+pub(crate) type DriveAsk = (String, String, f64);
 
 /// Most joints and outline rows a facts part may carry.
 const MAX_ROWS: usize = 4_096;
@@ -228,10 +236,12 @@ impl OpenDocument {
         };
         let generation = self.asm.generation;
         let moment = self.shown_moment();
+        let drive = self.drive_asked(&base, generation);
         if let Some(view) = &self.remote.view
             && Arc::ptr_eq(&view.base, &base)
             && view.generation == generation
             && same_moment(view.moment, moment)
+            && same_drive(view.drive.as_ref(), drive.as_ref())
         {
             return Some(Arc::clone(&view.doc));
         }
@@ -261,6 +271,7 @@ impl OpenDocument {
             base,
             generation,
             moment,
+            drive,
             doc: Arc::clone(&doc),
             facts: None,
         });
@@ -380,6 +391,14 @@ impl OpenDocument {
     }
 }
 
+fn same_drive(a: Option<&DriveAsk>, b: Option<&DriveAsk>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some((m, w, v)), Some((n, x, u))) => m == n && w == x && v.to_bits() == u.to_bits(),
+        _ => false,
+    }
+}
+
 fn same_moment(a: Option<(f64, bool)>, b: Option<(f64, bool)>) -> bool {
     match (a, b) {
         (None, None) => true,
@@ -396,6 +415,7 @@ pub(crate) struct ViewJob {
     pub moment: Option<(f64, bool)>,
     pub sources: Option<Sources>,
     pub bake: Option<(u64, bool)>,
+    pub drive: Option<DriveAsk>,
 }
 
 impl ViewJob {
@@ -405,6 +425,7 @@ impl ViewJob {
             "t": self.moment.map(|(t, _)| format!("{:016x}", t.to_bits())),
             "collisions": self.moment.is_some_and(|(_, c)| c),
             "bake": self.bake.map(|(frames, collisions)| json!({"frames": frames, "collisions": collisions})),
+            "drive": self.drive.as_ref().map(|(mate, which, value)| json!({"mate": mate, "which": which, "value": bits(*value)})),
         })
     }
 }
@@ -431,6 +452,16 @@ pub(crate) fn view_of(work: &Value) -> Option<View> {
     Some((t.map(|t| (t, collisions)), bake))
 }
 
+/// The joint a job's work asks to be held by hand (`view.drive`), its
+/// value read back from its bits. `None` without one.
+pub(crate) fn drive_of(work: &Value) -> Option<DriveAsk> {
+    let drive = work.get("view")?.get("drive")?;
+    let mate = drive.get("mate")?.as_str()?;
+    let which = drive.get("which")?.as_str()?;
+    let value = from_bits(drive.get("value")?).filter(|v| v.is_finite())?;
+    (mate.len() <= 4_096 && which.len() <= 64).then(|| (mate.to_string(), which.to_string(), value))
+}
+
 impl Session {
     /// The view of the active document's job of scenes, when it is made
     /// elsewhere and `doc` is its stand-in.
@@ -450,6 +481,7 @@ impl Session {
             moment: view.moment,
             sources,
             bake,
+            drive: view.drive,
         })
     }
 
@@ -534,6 +566,16 @@ pub(crate) fn facts_bytes(
             Err(e) => error = Some(e.message().to_string()),
         }
     }
+    if let Some(open) = session.documents.get_mut(session.active)
+        && open.driven_mate().is_some()
+    {
+        match session.execute("view.drive", &json!({})) {
+            Ok(answer) => {
+                facts.insert("drive".into(), answer);
+            }
+            Err(e) => error = Some(e.message().to_string()),
+        }
+    }
     let mut shown = Vec::new();
     if is_assembly {
         let outline = session.assembly_outline();
@@ -614,6 +656,7 @@ pub(crate) fn decode_facts(bytes: &[u8]) -> Result<(ViewFacts, Option<Value>), S
     }
     let mut facts = ViewFacts {
         motion: value.get("motion").filter(|m| m.is_object()).cloned(),
+        drive: value.get("drive").filter(|m| m.is_object()).cloned(),
         error: value
             .get("error")
             .and_then(Value::as_str)

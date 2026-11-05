@@ -81,20 +81,31 @@ pub struct Tokens {
     /// Radius of a datum point's dot, in points.
     pub datum_point_radius: f32,
     /// An assembly's mate markers (docs/design/assemblies.md › *Mate
-    /// markers*): their lines in brass, apart from the sketches' indigo,
-    /// the datums' petrol and the selection's copper; a marker pointed at
-    /// or chosen is drawn in the selection's copper (`face_highlight`),
-    /// `mate_hot_width` wide, and the two parts it joins are tinted
-    /// `mate_part` (a pale copper, so the parts stay readable).
+    /// markers*): thin lines in a muted indigo (the info accent's family,
+    /// lighter than the sketches', which an assembly does not show), apart
+    /// from the datums' petrol and the selection's copper, quiet enough to
+    /// sit beside the parts without covering them. A marker pointed at
+    /// or chosen is the one the eye is led to: `mate_hot`, a deep copper
+    /// (3:1 or more on the viewport and on a body), `mate_hot_width`
+    /// wide, over a hairline halo; the two parts it joins are tinted
+    /// `mate_part` (a pale copper, so the parts stay readable). The lines
+    /// are opaque: a translucent line is drawn as overlapping pieces, and
+    /// an arc would bead at every joint.
     pub mate: Rgb,
+    pub mate_hot: Rgb,
     pub mate_part: Rgb,
-    /// A light halo under each marker's lines, `mate_halo_width` wide, so
-    /// a marker reads on a body of any colour (a brass gear among them).
+    /// A light outline under a marker pointed at or chosen,
+    /// `mate_halo_width` wide (a hairline either side of its line), so it
+    /// reads on a body of any colour (a brass gear among them); the
+    /// markers at rest have one `mate_rest_halo_width` wide (none at 0):
+    /// a hairline, seen only where a marker lies on a dark part.
     pub mate_halo: Rgb,
     pub mate_halo_width: f32,
+    pub mate_rest_halo_width: f32,
     /// How opaque a marker's lines are where a body is in front, 0 to 255:
-    /// much more than `hidden_opacity` (a sketch's), since a mate's origin
-    /// lies on or in a body almost always.
+    /// more than `hidden_opacity` (a sketch's), since a mate's origin
+    /// lies on or in a body almost always, yet clearly fainter than the
+    /// part in sight.
     pub mate_hidden_opacity: u8,
     /// Width of a marker's lines, plain and pointed at, in points.
     pub mate_width: f32,
@@ -847,16 +858,21 @@ impl Tokens {
             datum_fill_opacity: 48,
             datum_width: 1.25,
             datum_point_radius: 4.0,
-            // Brass #8C6E00; the parts of a marker pointed at in a pale
-            // copper over the bodies' warm grey.
-            mate: [140, 110, 0],
+            // A muted indigo #6870B0 at rest, the info accent's family
+            // (3.8:1 on the viewport, 3.3:1 on a body), on a hairline
+            // halo that shows only on a dark part; pointed at, the
+            // selection's family in a deep copper #B05C14 (3.9:1, 3.4:1),
+            // wider and on a halo, its parts in a pale copper.
+            mate: [104, 112, 176],
+            mate_hot: [176, 92, 20],
             mate_part: [236, 196, 150],
             mate_halo: [250, 248, 242],
-            mate_halo_width: 5.5,
-            mate_hidden_opacity: 170,
-            mate_width: 2.5,
-            mate_hot_width: 3.5,
-            mate_size: 64.0,
+            mate_halo_width: 3.5,
+            mate_rest_halo_width: 2.25,
+            mate_hidden_opacity: 120,
+            mate_width: 1.25,
+            mate_hot_width: 2.0,
+            mate_size: 40.0,
             mate_hit: 6.0,
             trace: [80, 0, 140],
             trace_width: 3.0,
@@ -1947,6 +1963,7 @@ mod tests {
             ("datum", l.datum, d.datum),
             ("datum_ink", l.datum_ink, d.datum_ink),
             ("mate", l.mate, d.mate),
+            ("mate_hot", l.mate_hot, d.mate_hot),
             ("mate_part", l.mate_part, d.mate_part),
             ("mate_halo", l.mate_halo, d.mate_halo),
             ("viewport_text", l.viewport_text, d.viewport_text),
@@ -2140,32 +2157,47 @@ mod tests {
         assert!(luminance(tokens.datum_ink) < luminance(tokens.datum));
     }
 
-    /// A mate marker reads on the viewport and on a body (3:1), and is
-    /// told apart from the sketches, the datums and the selection: warm
-    /// (red over blue) but yellow rather than copper (green near red).
-    /// A marker pointed at is the selection's copper; the tint of its
-    /// parts stays light, so their edges and shading still read.
+    /// A mate marker reads on the viewport and on a body (3:1) also at
+    /// rest, and is told apart from the sketches, the datums and the
+    /// selection: cool (blue over red and green), lighter than the
+    /// sketches' indigo. Its lines are thin (the developer, 2026-11-05:
+    /// subtle, not fat). A marker pointed at is the one the eye finds:
+    /// warm, the selection's family, 3:1 on the viewport and a body,
+    /// wider, on a halo it reads against; the tint of its parts stays
+    /// light, so their edges and shading still read.
     #[test]
     fn mate_markers_read_over_the_viewport_and_a_body() {
         let tokens = Tokens::default();
-        assert!(contrast(tokens.mate, tokens.viewport_background) >= 3.0);
-        assert!(contrast(tokens.mate, tokens.body) >= 3.0);
+        for ink in [tokens.mate, tokens.mate_hot] {
+            assert!(contrast(ink, tokens.viewport_background) >= 3.0, "{ink:?}");
+            assert!(contrast(ink, tokens.body) >= 3.0, "{ink:?}");
+            assert!(contrast(ink, tokens.mate_halo) >= 3.0, "{ink:?}");
+        }
         let [r, g, b] = tokens.mate.map(i32::from);
-        assert!(r > b && g > b && (r - g) < 40, "{:?}", tokens.mate);
+        assert!(b > r && b > g, "{:?}", tokens.mate);
+        assert!(luminance(tokens.mate) > luminance(tokens.sketch));
+        let [r, _, b] = tokens.mate_hot.map(i32::from);
+        assert!(r > b, "{:?}", tokens.mate_hot);
         for other in [
             tokens.sketch,
             tokens.datum,
             tokens.face_highlight,
             tokens.trace,
             tokens.comb,
+            tokens.edge,
         ] {
             assert_ne!(tokens.mate, other);
+            assert_ne!(tokens.mate_hot, other);
         }
         assert!(luminance(tokens.mate_part) > 0.5);
+        assert!(tokens.mate_width <= 1.5 && tokens.mate_hot_width <= 2.5);
         assert!(tokens.mate_hot_width > tokens.mate_width);
         assert!(tokens.mate_halo_width > tokens.mate_hot_width);
-        assert!(contrast(tokens.mate, tokens.mate_halo) >= 4.5);
+        // The hairline at rest: none, or at most a point wider than the
+        // line.
+        let rest = tokens.mate_rest_halo_width;
+        assert!(rest == 0.0 || (rest > tokens.mate_width && rest <= tokens.mate_width + 1.0));
         assert!(tokens.mate_hidden_opacity > tokens.hidden_opacity);
-        assert!(tokens.mate_size > 0.0 && tokens.mate_hit > 0.0);
+        assert!(tokens.mate_size > 0.0 && tokens.mate_size <= 48.0 && tokens.mate_hit > 0.0);
     }
 }

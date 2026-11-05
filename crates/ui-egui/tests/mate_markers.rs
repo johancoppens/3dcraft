@@ -461,7 +461,13 @@ fn a_joint_s_slider_under_its_mate_row_sets_it_in_one_undo_step() {
     };
     let hits = shell.joint_slider_hits().to_vec();
     let names: Vec<&str> = hits.iter().map(|(n, _)| n.as_str()).collect();
-    assert_eq!(names, ["Drive"], "the Assembly tab's sliders");
+    // The crank, set by hand; the loop's other joints follow it, and are
+    // held by hand for the view only (`view.drive`).
+    assert_eq!(
+        names,
+        ["Drive", "Elbow", "Knee", "Hip"],
+        "the Assembly tab's sliders"
+    );
     let row = shell
         .mate_row_hits()
         .iter()
@@ -490,6 +496,72 @@ fn a_joint_s_slider_under_its_mate_row_sets_it_in_one_undo_step() {
     );
 }
 
+/// A joint that follows the others (the four-bar's rocker `Hip`, held
+/// by the crank set by hand) has a slider too: dragging it holds the
+/// joint by hand for the view (`view.drive`). The crank follows; the
+/// document does not change (not dirty, no undo step, the crank's value
+/// as it was); Esc lets go and the document's pose is shown again.
+#[test]
+fn a_following_joint_s_slider_holds_it_by_hand_for_the_view() {
+    let (mut s, mut shell, mut window) = opened("drive");
+    let document = |s: &mut Session| {
+        let inspected = run(s, "document.inspect", json!({}));
+        json!([inspected["dirty"], inspected["history"]])
+    };
+    let shown = |shell: &Shell, name: &str| {
+        let outline = shell.assembly_outline().unwrap();
+        outline
+            .mates
+            .iter()
+            .find(|m| m.name == name)
+            .and_then(|m| m.value)
+            .unwrap()
+            .0
+    };
+    let before = document(&mut s);
+    let (hip, drive) = (shown(&shell, "Hip"), shown(&shell, "Drive"));
+    let rect = shell
+        .joint_slider_hits()
+        .iter()
+        .find(|(n, _)| n == "Hip")
+        .unwrap()
+        .1;
+    let from = egui::pos2(rect.right() - rect.width() * 0.45, rect.center().y);
+    let to = egui::pos2(rect.right() - rect.width() * 0.43, rect.center().y);
+    window.drag(&mut shell, &mut s, from, to);
+    assert_eq!(s.driven_mate().as_deref(), Some("Hip"));
+    assert!((shown(&shell, "Hip") - hip).abs() > 1e-3);
+    assert!(
+        (shown(&shell, "Drive") - drive).abs() > 1e-3,
+        "the crank follows"
+    );
+    assert_eq!(document(&mut s), before);
+    let inspected = run(&mut s, "assembly.inspect", json!({}));
+    let set = inspected["mates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["name"] == "Drive")
+        .and_then(|m| m["value"].as_f64())
+        .unwrap();
+    assert!((set.to_degrees() - 60.0).abs() < 1e-6);
+    window.events(
+        &mut shell,
+        &mut s,
+        vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    window.frames(&mut shell, &mut s, 3);
+    assert_eq!(s.driven_mate(), None);
+    assert!((shown(&shell, "Hip") - hip).abs() < 1e-9);
+    assert_eq!(document(&mut s), before);
+}
+
 /// Both paths of the viewport draw the markers from the same list: the
 /// GPU's segments and the CPU's overlay lines of the mates are the marks'
 /// lines, in the theme's colours and widths.
@@ -512,11 +584,9 @@ fn both_paths_draw_the_markers_from_one_list() {
         craft3d_ui_egui::direct::segments_marked(Some(&scene), None, &tokens, 1.0, &marks, false);
     for (lines, ink, width) in [
         (&marks.mates, tokens.mate, tokens.mate_width),
-        (
-            &marks.mates_hot,
-            tokens.face_highlight,
-            tokens.mate_hot_width,
-        ),
+        (&marks.mates_hot, tokens.mate_hot, tokens.mate_hot_width),
+        (&marks.mates, tokens.mate_halo, tokens.mate_rest_halo_width),
+        (&marks.mates_hot, tokens.mate_halo, tokens.mate_halo_width),
     ] {
         let drawn: Vec<[Vec3; 2]> = segments
             .iter()
@@ -533,8 +603,11 @@ fn both_paths_draw_the_markers_from_one_list() {
     let overlay = viewport::overlay_untested(Some(&scene), &shell.state.camera, w, h, None, &marks);
     let count = |kind: LineKind| overlay.lines.iter().filter(|l| l.kind == kind).count();
     assert!(count(LineKind::Mate) > 0 && count(LineKind::MateHot) > 0);
+    // A hairline under each plain line, a halo under each hot one only.
+    assert_eq!(count(LineKind::MateRestHalo), count(LineKind::Mate));
+    assert_eq!(count(LineKind::MateHalo), count(LineKind::MateHot));
     assert_eq!(LineKind::Mate.color(&tokens), tokens.mate);
-    assert_eq!(LineKind::MateHot.color(&tokens), tokens.face_highlight);
+    assert_eq!(LineKind::MateHot.color(&tokens), tokens.mate_hot);
 }
 
 /// Hostile mates never panic and draw nothing guessed: a frame with a

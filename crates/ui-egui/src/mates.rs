@@ -1,6 +1,6 @@
 //! An assembly's mate markers in the viewport (docs/design/assemblies.md ›
-//! *Mate markers*): per mate a small glyph at its frame, its axis an arrow
-//! along the frame's z, and a sign of its kind around it (an arc about the
+//! *Mate markers*): per mate a small glyph at its frame, a small ring at
+//! its origin and its axis an arrow along the frame's z, and a sign of its kind around it (an arc about the
 //! axis for a revolute, a double arrow along it for a slider, both for a
 //! cylindrical, a square in its plane for a planar, a crossed box for a
 //! fixed mate, three circles for a ball).
@@ -16,8 +16,11 @@ use crate::state::CameraState;
 use craft3d_engine::OutlineMate;
 use craft3d_math::{Portable, Vec3};
 
-/// Pieces of a whole circle.
-const CIRCLE: usize = 24;
+/// Pieces of a whole circle: smooth at the size a marker is drawn.
+const CIRCLE: usize = 64;
+
+/// Pieces of the small ring at a marker's origin.
+const RING: usize = 16;
 
 /// Most mates drawn: a viewer's markers, not a report.
 pub const MAX_MARKERS: usize = 2_000;
@@ -82,52 +85,56 @@ pub fn glyph(kind: &str, origin: Vec3, x: Vec3, z: Vec3, length: f64) -> Vec<[Ve
     }
     let l = length;
     let mut out = Vec::new();
-    // A small cross at the origin, in the frame's plane.
-    let tick = 0.12 * l;
-    out.push([origin - x * tick, origin + x * tick]);
-    out.push([origin - y * tick, origin + y * tick]);
-    // An arrow's head at `tip` pointing along `along`, opening along `side`.
-    let head = |out: &mut Vec<[Vec3; 2]>, tip: Vec3, along: Vec3, side: Vec3, size: f64| {
-        out.push([tip, tip - along * size + side * (size * 0.45)]);
-        out.push([tip, tip - along * size - side * (size * 0.45)]);
-    };
     // A circle (or an arc) about `centre` in the plane of `u` and `v`, from
-    // `from` to `to` radians, as pieces of the whole circle's size.
-    let arc =
-        |out: &mut Vec<[Vec3; 2]>, centre: Vec3, u: Vec3, v: Vec3, r: f64, from: f64, to: f64| {
-            let sweep = to - from;
-            let pieces = ((sweep.abs() / std::f64::consts::TAU) * CIRCLE as f64)
-                .ceil()
-                .max(1.0) as usize;
-            let at = |t: f64| {
-                let (s, c) = t.psin_cos();
-                centre + u * (r * c) + v * (r * s)
-            };
-            for k in 0..pieces {
-                let t0 = from + sweep * k as f64 / pieces as f64;
-                let t1 = from + sweep * (k + 1) as f64 / pieces as f64;
-                out.push([at(t0), at(t1)]);
-            }
+    // `from` to `to` radians, in pieces of a whole circle of `whole`.
+    let arc = |out: &mut Vec<[Vec3; 2]>,
+               centre: Vec3,
+               (u, v): (Vec3, Vec3),
+               r: f64,
+               (from, to): (f64, f64),
+               whole: usize| {
+        let sweep = to - from;
+        let pieces = ((sweep.abs() / std::f64::consts::TAU) * whole as f64)
+            .ceil()
+            .max(1.0) as usize;
+        let at = |t: f64| {
+            let (s, c) = t.psin_cos();
+            centre + u * (r * c) + v * (r * s)
         };
+        for k in 0..pieces {
+            let t0 = from + sweep * k as f64 / pieces as f64;
+            let t1 = from + sweep * (k + 1) as f64 / pieces as f64;
+            out.push([at(t0), at(t1)]);
+        }
+    };
+    let tau = std::f64::consts::TAU;
+    // A small ring at the origin, in the frame's plane.
+    arc(&mut out, origin, (x, y), 0.06 * l, (0.0, tau), RING);
+    // An arrow's head at `tip` pointing along `along`, opening along
+    // `side`: short and narrow.
+    let head = |out: &mut Vec<[Vec3; 2]>, tip: Vec3, along: Vec3, side: Vec3, size: f64| {
+        out.push([tip, tip - along * size + side * (size * 0.38)]);
+        out.push([tip, tip - along * size - side * (size * 0.38)]);
+    };
     let axis = |out: &mut Vec<[Vec3; 2]>, from: f64| {
         out.push([origin + z * from, origin + z * l]);
-        head(out, origin + z * l, z, x, 0.2 * l);
+        head(out, origin + z * l, z, x, 0.13 * l);
     };
     let turn = |out: &mut Vec<[Vec3; 2]>| {
         // Three quarters of a turn about the axis, with its head.
-        let (r, h) = (0.32 * l, 0.45 * l);
+        let (r, h) = (0.28 * l, 0.5 * l);
         let centre = origin + z * h;
-        let (from, to) = (0.0, 1.5 * std::f64::consts::PI);
-        arc(out, centre, x, y, r, from, to);
+        let to = 1.5 * std::f64::consts::PI;
+        arc(out, centre, (x, y), r, (0.0, to), CIRCLE);
         let (s, c) = to.psin_cos();
         let end = centre + x * (r * c) + y * (r * s);
         let tangent = y * c - x * s;
-        head(out, end, tangent, z, 0.14 * l);
+        head(out, end, tangent, z, 0.1 * l);
     };
     let both_ways = |out: &mut Vec<[Vec3; 2]>| {
         // The axis goes on below the origin, with a head there too.
         axis(out, -0.55 * l);
-        head(out, origin - z * (0.55 * l), -z, x, 0.2 * l);
+        head(out, origin - z * (0.55 * l), -z, x, 0.13 * l);
     };
     match kind {
         "revolute" => {
@@ -141,7 +148,7 @@ pub fn glyph(kind: &str, origin: Vec3, x: Vec3, z: Vec3, length: f64) -> Vec<[Ve
         }
         "planar" => {
             axis(&mut out, 0.0);
-            let h = 0.38 * l;
+            let h = 0.32 * l;
             let corners = [
                 origin + x * h + y * h,
                 origin - x * h + y * h,
@@ -156,7 +163,7 @@ pub fn glyph(kind: &str, origin: Vec3, x: Vec3, z: Vec3, length: f64) -> Vec<[Ve
         }
         "fixed" => {
             axis(&mut out, 0.0);
-            let h = 0.22 * l;
+            let h = 0.2 * l;
             let corners = [
                 origin + x * h + y * h,
                 origin - x * h + y * h,
@@ -174,10 +181,9 @@ pub fn glyph(kind: &str, origin: Vec3, x: Vec3, z: Vec3, length: f64) -> Vec<[Ve
         }
         "ball" => {
             let r = 0.3 * l;
-            let tau = std::f64::consts::TAU;
-            arc(&mut out, origin, x, y, r, 0.0, tau);
-            arc(&mut out, origin, y, z, r, 0.0, tau);
-            arc(&mut out, origin, z, x, r, 0.0, tau);
+            arc(&mut out, origin, (x, y), r, (0.0, tau), CIRCLE);
+            arc(&mut out, origin, (y, z), r, (0.0, tau), CIRCLE);
+            arc(&mut out, origin, (z, x), r, (0.0, tau), CIRCLE);
         }
         _ => axis(&mut out, 0.0),
     }
@@ -321,7 +327,12 @@ mod tests {
     fn a_marker_behind_a_body_is_dimmed_less_than_a_sketch() {
         use crate::viewport::{LineKind, line_opacity};
         let tokens = crate::Tokens::default();
-        for kind in [LineKind::Mate, LineKind::MateHot, LineKind::MateHalo] {
+        for kind in [
+            LineKind::Mate,
+            LineKind::MateHot,
+            LineKind::MateHalo,
+            LineKind::MateRestHalo,
+        ] {
             assert_eq!(
                 line_opacity(kind, true, &tokens),
                 tokens.mate_hidden_opacity

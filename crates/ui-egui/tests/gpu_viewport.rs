@@ -1381,7 +1381,10 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
     let is_mate = |kind: viewport::LineKind| {
         matches!(
             kind,
-            viewport::LineKind::Mate | viewport::LineKind::MateHot | viewport::LineKind::MateHalo
+            viewport::LineKind::Mate
+                | viewport::LineKind::MateHot
+                | viewport::LineKind::MateHalo
+                | viewport::LineKind::MateRestHalo
         )
     };
     /// (difference, where, the CPU's pixel, the GPU's).
