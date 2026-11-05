@@ -777,7 +777,7 @@ fn a_close_up_of_a_large_model_stays_within_the_budget() {
 /// (torus patches bounded both ways round) and of a half disc (a lune of
 /// a sphere). Each is compared with the box of the body's mesh, whose
 /// vertices lie on the faces: the frame holds it, and is no larger than
-/// it by more than the mesh's tolerance.
+/// it by more than the mesh's tolerance; so is a face on a spline.
 #[test]
 fn the_default_frame_is_the_box_of_what_the_faces_hold() {
     let stay = |s: &mut Session| {
@@ -835,8 +835,31 @@ fn the_default_frame_is_the_box_of_what_the_faces_hold() {
             json!({"sketch": "Profile", "axis": "y", "angle": "50 deg", "name": "Body"}),
         );
     };
+    // A face on a spline: the box of its control points is looser than
+    // the face (finding 16g, 2026-11-05: a modelled thread's box reached
+    // 0.94 above its neck); the reported box is the mesh's.
+    let blob = |s: &mut Session| {
+        run(s, "sketch.create", json!({"name": "Profile"}));
+        run(
+            s,
+            "sketch.spline",
+            json!({"sketch": "Profile", "closed": true, "through": [
+                [10, 0], [3, 9], [-8, 6], [-9, -5], [2, -10]
+            ]}),
+        );
+        run(
+            s,
+            "feature.extrude",
+            json!({"sketch": "Profile", "distance": 5, "name": "Body"}),
+        );
+    };
     type Build = fn(&mut Session);
-    let models: [(&str, Build); 3] = [("stay", stay), ("ring part", ring_part), ("lune", lune)];
+    let models: [(&str, Build); 4] = [
+        ("stay", stay),
+        ("ring part", ring_part),
+        ("lune", lune),
+        ("spline blob", blob),
+    ];
     for (name, build) in models {
         let mut s = Session::new(Workspace::none());
         run(&mut s, "file.new", json!({}));
@@ -851,7 +874,16 @@ fn the_default_frame_is_the_box_of_what_the_faces_hold() {
             .find(|b| b["name"] == "Body")
             .unwrap_or_else(|| panic!("{name}: {}", inspected["features"]));
         let meshed = &body["bbox"];
-        let slack = body["bboxTolerance"].as_f64().unwrap();
+        // A face on a spline is bounded by the picture's own mesh grown
+        // by the picture's chordal tolerance (its box by the control
+        // points is looser); the others are bounded by what their faces
+        // hold, as before.
+        let slack = body["bboxTolerance"].as_f64().unwrap()
+            + if name == "spline blob" {
+                drawn["tolerance"].as_f64().unwrap()
+            } else {
+                0.0
+            };
         for axis in 0..3 {
             let (lo, hi) = (
                 framed[0][axis].as_f64().unwrap(),

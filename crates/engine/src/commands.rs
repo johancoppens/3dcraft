@@ -4977,11 +4977,35 @@ fn render_picture(
     }
     .map_err(|e| CommandError::new(format!("view.render: {e}")))?;
 
+    // The box reported is the one given, else the model's box bounded
+    // both ways: the mesh's vertices lie on the faces and the faces are
+    // within the chordal tolerance of its triangles, so the mesh's box
+    // grown by that tolerance holds the model, as the frame's box does;
+    // where that one is loose (a face on a spline by its control points:
+    // finding 16g, 2026-11-05) the mesh's is not.
+    let reported = match (look_at, model.corners(), all.bbox().corners()) {
+        (Some(given), _, _) => given,
+        (None, Some((lo, hi)), Some((mlo, mhi))) => {
+            let t = if scene.tolerance.is_finite() && scene.tolerance > 0.0 {
+                scene.tolerance
+            } else {
+                0.0
+            };
+            let grown = craft3d_math::Vec3::new(t, t, t);
+            let (low, high) = ((mlo - grown).max(lo), (mhi + grown).min(hi));
+            if low.x <= high.x && low.y <= high.y && low.z <= high.z {
+                craft3d_math::Bbox3::from_corners(low, high)
+            } else {
+                framed
+            }
+        }
+        _ => framed,
+    };
     let mut result = json!({
         "width": width, "height": height, "view": view,
         "projection": if orthographic { "orthographic" } else { "perspective" },
         "zoom": zoom,
-        "box": framed.corners().map(|(lo, hi)| json!([vec3(lo), vec3(hi)])),
+        "box": reported.corners().map(|(lo, hi)| json!([vec3(lo), vec3(hi)])),
         "triangles": all.triangles.len(),
         "coverage": frame.coverage(),
         "bodies": legend,
