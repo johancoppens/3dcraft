@@ -48,6 +48,8 @@ pub enum LineKind {
     /// The outline of a datum plane, a datum axis, or (as a dot) a datum
     /// point.
     Datum,
+    /// The light halo under a mate marker's lines.
+    MateHalo,
     /// An assembly's mate marker ([`Marks::mates`]).
     Mate,
     /// A mate marker pointed at or chosen ([`Marks::mates_hot`]).
@@ -369,6 +371,7 @@ impl LineKind {
             LineKind::Edge => tokens.edge,
             LineKind::Highlight => tokens.face_highlight,
             LineKind::Datum => tokens.datum,
+            LineKind::MateHalo => tokens.mate_halo,
             LineKind::Mate => tokens.mate,
             LineKind::MateHot => tokens.face_highlight,
             LineKind::Trace => tokens.trace,
@@ -385,6 +388,7 @@ impl LineKind {
             LineKind::Edge => tokens.edge_width,
             LineKind::Highlight => tokens.highlight_width,
             LineKind::Datum => tokens.datum_width,
+            LineKind::MateHalo => tokens.mate_halo_width,
             LineKind::Mate => tokens.mate_width,
             LineKind::MateHot => tokens.mate_hot_width,
             LineKind::Trace => tokens.trace_width,
@@ -525,6 +529,12 @@ impl Marks {
         self.mates.extend(other.mates);
         self.mates_hot.extend(other.mates_hot);
         self
+    }
+
+    /// Every mate marker's lines, the plain ones then the hot ones: what
+    /// the halo is drawn under.
+    pub fn mate_lines(&self) -> impl Iterator<Item = &[Vec3; 2]> {
+        self.mates.iter().chain(&self.mates_hot)
     }
 
     /// The section for the renderers.
@@ -1452,7 +1462,11 @@ fn build_overlay(
     for [a, b] in marks.map(Marks::datum_lines).unwrap_or_default() {
         line_of(a, b, LineKind::Datum, true, true, None);
     }
-    // The mate markers, tested like a datum; the one pointed at over them.
+    // The mate markers, tested like a datum, over a halo; the one pointed
+    // at over them.
+    for &[a, b] in marks.into_iter().flat_map(Marks::mate_lines) {
+        line_of(a, b, LineKind::MateHalo, true, true, None);
+    }
     for &[a, b] in marks.into_iter().flat_map(|marks| &marks.mates) {
         line_of(a, b, LineKind::Mate, true, true, None);
     }

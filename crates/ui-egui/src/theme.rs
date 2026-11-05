@@ -88,6 +88,10 @@ pub struct Tokens {
     /// `mate_part` (a pale copper, so the parts stay readable).
     pub mate: Rgb,
     pub mate_part: Rgb,
+    /// A light halo under each marker's lines, `mate_halo_width` wide, so
+    /// a marker reads on a body of any colour (a brass gear among them).
+    pub mate_halo: Rgb,
+    pub mate_halo_width: f32,
     /// Width of a marker's lines, plain and pointed at, in points.
     pub mate_width: f32,
     pub mate_hot_width: f32,
@@ -839,6 +843,8 @@ impl Tokens {
             // copper over the bodies' warm grey.
             mate: [122, 104, 0],
             mate_part: [236, 196, 150],
+            mate_halo: [250, 248, 242],
+            mate_halo_width: 4.5,
             mate_width: 2.0,
             mate_hot_width: 3.0,
             mate_size: 52.0,
@@ -1932,6 +1938,7 @@ mod tests {
             ("datum_ink", l.datum_ink, d.datum_ink),
             ("mate", l.mate, d.mate),
             ("mate_part", l.mate_part, d.mate_part),
+            ("mate_halo", l.mate_halo, d.mate_halo),
             ("viewport_text", l.viewport_text, d.viewport_text),
             ("viewport_failed", l.viewport_failed, d.viewport_failed),
             ("chrome_work", l.chrome_work, d.chrome_work),
@@ -2146,6 +2153,8 @@ mod tests {
         }
         assert!(luminance(tokens.mate_part) > 0.5);
         assert!(tokens.mate_hot_width > tokens.mate_width);
+        assert!(tokens.mate_halo_width > tokens.mate_hot_width);
+        assert!(contrast(tokens.mate, tokens.mate_halo) >= 4.5);
         assert!(tokens.mate_size > 0.0 && tokens.mate_hit > 0.0);
     }
 }
