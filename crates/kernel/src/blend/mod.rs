@@ -183,7 +183,19 @@ pub(crate) enum Reason {
     NoCorner,
     CornerRadii,
     CornerKind,
+    /// A measured post-check: the blend face is not tangent to a face it
+    /// runs into (a bug).
     NotTangent,
+    /// A face beside the blend has no normal where the check looks (a
+    /// cone's tip, a sphere's pole, a collapsed edge of a freeform face).
+    NoNormal,
+    /// At a joint of a chain, a piece of the blend's own surface collapses
+    /// (its normal has no length), so the pieces cannot be shown tangent.
+    JointNoNormal,
+    /// The faces across a smooth edge meet only within the angular
+    /// tolerance (typical of an imported model), so the ball's section on
+    /// the faces beyond does not land where it left the ones before.
+    MeetsWithinAngle,
     Lost,
     FreeEnd,
     FreeClosed,
@@ -259,6 +271,15 @@ impl Reason {
             Reason::NoCorner | Reason::CornerRadii | Reason::CornerKind | Reason::NotTangent => {
                 "the corner where three chamfers meet could not be made flat"
             }
+            Reason::NoNormal => {
+                "a face beside the chamfer has no normal where it meets it (a cone's tip, a sphere's pole, a collapsed edge of a freeform face); chamfer edges that keep clear of it"
+            }
+            Reason::JointNoNormal => {
+                "two pieces of the chamfer meet at a joint where one of them collapses (its surface has no normal there), so they cannot be shown to meet smoothly; chamfer those edges apart, or with another distance"
+            }
+            Reason::MeetsWithinAngle => {
+                "the faces across a smooth edge the chamfer runs over only meet within the angular tolerance (as in many imported models); end the chamfer before that edge"
+            }
             Reason::FreeEnd => {
                 "the chamfer of a freeform edge does not end cleanly: each end of the edge has to be a corner of exactly three faces whose third face the chamfer runs into across the edge"
             }
@@ -304,7 +325,7 @@ impl Reason {
             Reason::FreeRunsOver => {
                 "the chamfer's border runs off a face beside the edge across one of its other edges along the way: the distance is too large for that face, or the chamfer would have to carry on onto the next face, which is not built yet"
             }
-            Reason::Lost => "the chamfer lost track of an entity; this is a bug",
+            Reason::Lost => craft3d_math::bug_text!("the chamfer lost track of an entity"),
         }
     }
 
@@ -361,7 +382,18 @@ impl Reason {
                 "three or more fillets meet at the end of this edge in a corner that is not built yet: a corner is made where exactly three straight edges meet, all convex or all concave, all filleted with one radius; leave one of the edges sharp (two fillets run out into each other)"
             }
             Reason::NotTangent => {
-                "the fillet face came out not tangent to a face it should run into smoothly; this is a bug"
+                craft3d_math::bug_text!(
+                    "the fillet face came out not tangent to a face it should run into smoothly"
+                )
+            }
+            Reason::NoNormal => {
+                "a face the fillet runs into has no normal where it meets it (a cone's tip, a sphere's pole, a collapsed edge of a freeform face), so the fillet cannot be made tangent there; fillet edges that keep clear of it, or a smaller radius"
+            }
+            Reason::JointNoNormal => {
+                "two pieces of the fillet meet at a joint where one of them collapses (its surface has no normal there, as where the ball's path pinches), so they cannot be shown tangent; fillet those edges apart, or with another radius"
+            }
+            Reason::MeetsWithinAngle => {
+                "the faces across a smooth edge the fillet rolls over only meet within the angular tolerance (as in many imported models), so the ball does not land on the faces beyond where it left the ones before; end the fillet before that edge, or rebuild the faces to meet tangentially"
             }
             Reason::FreeEnd => {
                 "the fillet of a freeform edge does not end cleanly: each end of the edge has to be a corner of exactly three faces whose third face the fillet runs into across the edge"
@@ -406,7 +438,7 @@ impl Reason {
             Reason::FreeRunsOver => {
                 "the fillet's border runs off a face beside the edge across one of its other edges along the way (where the ball would roll on over a smooth edge onto the next face, or the face is too narrow for the radius); a fillet that carries on onto the next face in the middle of an edge is not built yet: give a smaller radius"
             }
-            Reason::Lost => "the fillet lost track of an entity; this is a bug",
+            Reason::Lost => craft3d_math::bug_text!("the fillet lost track of an entity"),
         }
     }
 }
@@ -2921,4 +2953,39 @@ fn chain_of(
         }
     }
     Ok(Some(chain.into_iter().collect()))
+}
+
+#[cfg(test)]
+mod reason_tests {
+    use super::{Kind, Reason};
+
+    /// What input can reach is a refusal with a way out, never a bug
+    /// report: a face without a normal (a cone's tip, a pole) and faces that
+    /// meet only within the angular tolerance (an imported model). Only
+    /// the measured post-check of tangency says a bug.
+    #[test]
+    fn what_input_reaches_is_refused_and_only_the_post_check_is_a_bug() {
+        for kind in [Kind::Fillet, Kind::Chamfer] {
+            for reason in [
+                Reason::NoNormal,
+                Reason::JointNoNormal,
+                Reason::MeetsWithinAngle,
+            ] {
+                let text = reason.text(kind);
+                assert!(!text.contains(craft3d_math::BUG), "{text}");
+                assert!(text.contains(';'), "a way out: {text}");
+            }
+        }
+        assert!(
+            Reason::NotTangent
+                .text(Kind::Fillet)
+                .contains(craft3d_math::BUG)
+        );
+        assert!(Reason::NoNormal.text(Kind::Fillet).contains("no normal"));
+        assert!(
+            Reason::MeetsWithinAngle
+                .text(Kind::Fillet)
+                .contains("angular tolerance")
+        );
+    }
 }

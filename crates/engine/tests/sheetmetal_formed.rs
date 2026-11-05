@@ -394,3 +394,49 @@ fn bad_formed_louvres_are_errors() {
     );
     assert_eq!(check["status"], "error", "{check}");
 }
+
+/// `ends` through the command's own reading: closed and open as given,
+/// null and left out both the default (closed), anything else refused by
+/// its place; the bend table says what each became.
+#[test]
+fn a_louvres_ends_null_is_closed_as_not_given() {
+    let dir = workdir("sheetmetal-formed", "ends-null");
+    let mut s = session_in(&dir);
+    new_document(&mut s, 1.0);
+    let (_, lance) = sketch(&mut s, 1.0);
+    built(
+        &mut s,
+        "feature.sheetMetal",
+        json!({"sketch": "Base", "name": "Plate", "thickness": "1 mm", "radius": "2 mm",
+               "kFactor": 0.5}),
+    );
+    for (given, expected) in [
+        (json!("open"), "open"),
+        (json!("closed"), "closed"),
+        (Value::Null, "closed"),
+    ] {
+        built(
+            &mut s,
+            "sheetMetal.edit",
+            json!({"feature": "Plate", "formedLouvres": [{"line": lance, "width": "8 mm",
+                   "height": "3 mm", "ends": given, "direction": null}]}),
+        );
+        let table = run(&mut s, "sheetMetal.bends", json!({"feature": "Plate"}));
+        assert_eq!(
+            table["formedLouvres"][0]["ends"], expected,
+            "{given}: {table}"
+        );
+        assert_eq!(table["formedLouvres"][0]["direction"], "up", "{table}");
+    }
+    let why = error(
+        &mut s,
+        "sheetMetal.edit",
+        json!({"feature": "Plate", "formedLouvres": [{"line": lance, "width": "8 mm",
+               "height": "3 mm", "ends": 2}]}),
+    );
+    assert!(
+        why.contains("formedLouvres.0.ends is closed or open"),
+        "{why}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

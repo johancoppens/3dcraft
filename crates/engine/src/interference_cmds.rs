@@ -174,7 +174,7 @@ fn document_interference(session: &mut Session, params: &Value) -> Run {
             *slot = Some(match result {
                 Some(Ok(found)) => Ok(found),
                 Some(Err(error)) => Err(error.to_string()),
-                None => Err("the query stopped unexpectedly (a bug in 3DCraft)".to_string()),
+                None => Err(craft3d_math::bug_text!("the query stopped unexpectedly").to_string()),
             });
         }
     }

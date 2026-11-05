@@ -116,7 +116,7 @@ impl Session {
     pub fn mark_unsaved(&mut self, id: u64) -> bool {
         match self.documents.iter_mut().find(|open| open.id == id) {
             Some(open) => {
-                open.saved_revision = None;
+                open.mark_not_saved();
                 true
             }
             None => false,

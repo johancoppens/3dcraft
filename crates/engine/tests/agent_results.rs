@@ -263,7 +263,7 @@ fn the_gap_of_a_sheet_is_an_expression() {
         json!({"path": "sheet.dxf", "faces": faces, "gap": "-g"}),
     );
     assert!(
-        negative.contains("`gap` must not be negative"),
+        negative.contains("`gap` must be a length of 0 or more, not -4 mm"),
         "{negative}"
     );
     std::fs::remove_dir_all(&dir).unwrap();

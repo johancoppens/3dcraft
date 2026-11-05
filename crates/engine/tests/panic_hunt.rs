@@ -2,7 +2,9 @@
 //! whatever the document. Every command of the registry is run with
 //! adversarial values for each of its parameters, alone and combined, with
 //! and without a document. A panic inside a command is caught by
-//! `Session::execute` and reported as "internal error", which fails here.
+//! `Session::execute` and reported as "internal error", which fails here;
+//! so does a bug the code caught itself (the same words,
+//! `craft3d_engine::BUG`), in an error or in a feature's `failed` status.
 
 #![allow(
     clippy::unwrap_used,
@@ -684,6 +686,16 @@ fn no_command_panics_on_adversarial_parameters() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A message that says a bug: the words of `craft3d_engine::BUG` (a panic
+/// caught, or a bug the code caught itself).
+fn is_bug(message: &str) -> bool {
+    let prefix = craft3d_engine::BUG
+        .split(',')
+        .next()
+        .unwrap_or("internal error");
+    message.contains(prefix)
+}
+
 /// Runs one command in a fresh session in the given state: it must not
 /// have panicked, and the session must still answer afterwards.
 fn run_case(mut s: Session, state: usize, id: &str, params: &Value) {
@@ -712,7 +724,16 @@ fn run_case(mut s: Session, state: usize, id: &str, params: &Value) {
                 shown()
             );
         }
-        Ok(_) => {
+        Ok(result) => {
+            // A feature that failed with a bug the code caught itself is
+            // a bug found, as an error with those words is.
+            if let Some(error) = result.get("error").and_then(Value::as_str) {
+                assert!(
+                    !is_bug(error),
+                    "{id} met a bug in state {state} on {}: {error}",
+                    shown()
+                );
+            }
             // The command did something: the session still answers, and
             // the document still regenerates and reports.
             if s.has_document() {
@@ -722,6 +743,19 @@ fn run_case(mut s: Session, state: usize, id: &str, params: &Value) {
                     "document.inspect broke after {id} in state {state} on {}: {inspected:?}",
                     shown()
                 );
+                let features = inspected
+                    .as_ref()
+                    .ok()
+                    .and_then(|i| i.get("features"))
+                    .and_then(Value::as_array);
+                for f in features.into_iter().flatten() {
+                    let error = f.get("error").and_then(Value::as_str).unwrap_or("");
+                    assert!(
+                        !is_bug(error),
+                        "after {id} in state {state} on {} a feature failed with a bug: {error}",
+                        shown()
+                    );
+                }
             }
         }
     }

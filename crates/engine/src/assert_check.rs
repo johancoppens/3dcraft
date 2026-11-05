@@ -434,8 +434,7 @@ fn run(job: &Job) {
         if slot.is_none() {
             let mut failed = pending(assertion);
             failed.state.status = AssertionStatus::Error;
-            failed.state.message =
-                "internal error (a bug in 3DCraft, please report it): not measured".into();
+            failed.state.message = craft3d_math::bug_text!("not measured").into();
             *slot = Some(failed);
         }
     }
@@ -605,10 +604,12 @@ impl Session {
                     let keys = &mut stage.outputs;
                     let resolved = crate::output_cmds::resolve(&doc, &plan, |i, output, known| {
                         let Some(pseudo) = crate::output_cmds::as_assertion(output) else {
-                            return OutputValue::Unknown("internal error: not a measure".into());
+                            return OutputValue::Unknown(
+                                craft3d_math::bug_text!("not a measure").into(),
+                            );
                         };
                         let Some(slot) = keys.get_mut(i) else {
-                            return OutputValue::Unknown("internal error: no key".into());
+                            return OutputValue::Unknown(craft3d_math::bug_text!("no key").into());
                         };
                         let key = slot.get_or_insert_with(|| {
                             key_of(&doc, &regen, &pseudo, known, placed.as_ref())

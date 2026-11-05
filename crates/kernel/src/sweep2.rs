@@ -110,11 +110,12 @@ use crate::loft::Band;
 use crate::profile::{Curve2, Profile, Segment, Shape, SketchCurve, chain};
 use crate::spline2::{Spline2, distance_to};
 use crate::sweep::{
-    Builder, Form, Map2, Motion, P2, Station, Swept, coedge, part_band, profile_loops, quarters,
-    refuse, stations_of,
+    Builder, Form, Map2, Motion, P2, Station, Swept, coedge, part_band, point_text, profile_loops,
+    quarters, refuse, stations_of,
 };
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::NurbsCurve;
+use craft3d_math::BUG;
 use craft3d_math::quadrature::Rule;
 use craft3d_math::{Frame, Portable, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, EdgeId, FaceId};
@@ -174,12 +175,8 @@ const SAME_JOINT: f64 = 1e-12;
 fn internal() -> KernelError {
     refuse(
         &[],
-        "the sweep along two rails lost track of a curve; this is a bug",
+        craft3d_math::bug_text!("the sweep along two rails lost track of a curve"),
     )
-}
-
-fn point_text(p: Vec3) -> String {
-    format!("({}, {}, {})", p.x, p.y, p.z)
 }
 
 /// A direction as the caller gave it, short whatever its size: three
@@ -1950,7 +1947,7 @@ pub fn sweep_two_rails_up(
                 return Err(refuse(
                     &[leg.a.source, leg.b.source],
                     format!(
-                        "followed round the closed rails the section comes back {gap} from where it started; this is a bug"
+                        "{BUG}: followed round the closed rails the section comes back {gap} from where it started"
                     ),
                 ));
             }

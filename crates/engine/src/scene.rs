@@ -13,6 +13,7 @@ use crate::meshes::{
 };
 use crate::{CommandError, Session, Workspace};
 use craft3d_doc::{AngleUnit, Document, Entity, FeatureKind, Geometry, Sketch};
+use craft3d_math::BUG;
 use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_regen::{Regen, SketchResult, Status};
@@ -2092,7 +2093,8 @@ fn internal_error(payload: &(dyn std::any::Any + Send)) -> CommandError {
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "no details".to_string());
     CommandError::new(format!(
-        "the scene could not be built: internal error (a bug in 3DCraft, please report it): {detail}"
+        "the scene could not be built: {BUG}: {}: {detail}",
+        crate::PANICKED
     ))
 }
 
@@ -2934,7 +2936,8 @@ mod tests {
         let builds = BUILDS.get();
         let error = session.scene(None).unwrap_err();
         assert!(
-            error.message().contains("internal error")
+            error.message().contains(crate::BUG)
+                && error.message().contains(crate::PANICKED)
                 && error
                     .message()
                     .contains("the tessellator fell over, on purpose"),

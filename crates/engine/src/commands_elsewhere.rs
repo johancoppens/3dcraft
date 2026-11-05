@@ -35,6 +35,7 @@
 use crate::selection::Selection;
 use crate::{CommandError, Session};
 use craft3d_doc::Document;
+use craft3d_math::BUG;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -593,7 +594,10 @@ impl Session {
                         .get("trace")
                         .and_then(crate::motion::TraceWire::from_json)
                         .ok_or_else(|| {
-                            format!("{}: internal error (a bug in 3DCraft, please report it): its trace did not come or cannot be read", job.command)
+                            format!(
+                                "{}: {BUG}: its trace did not come or cannot be read",
+                                job.command
+                            )
                         }),
                     Err(why) => Err(why.clone()),
                 };
@@ -654,9 +658,8 @@ impl Session {
     ) -> Result<(Value, Vec<String>), String> {
         let id = &job.command;
         let answer = answer.map_err(|why| format!("{id}: {why}"))?;
-        let reply: Value = serde_json::from_str(&answer.answer).map_err(|e| {
-            format!("{id}: internal error (a bug in 3DCraft, please report it): its answer cannot be read: {e}")
-        })?;
+        let reply: Value = serde_json::from_str(&answer.answer)
+            .map_err(|e| format!("{id}: {BUG}: its answer cannot be read: {e}"))?;
         // An export (the host's own job, or `file.export`) is a function
         // of the state it was asked on alone: its files are taken while
         // its document is open, whatever was done to it since (a slider
@@ -669,7 +672,7 @@ impl Session {
             }
             if reply.get("edited") == Some(&Value::Bool(true)) {
                 return Err(format!(
-                    "{id}: internal error (a bug in 3DCraft, please report it): it changed the document beside the page"
+                    "{id}: {BUG}: it changed the document beside the page"
                 ));
             }
             if let Some(error) = reply.get("error") {

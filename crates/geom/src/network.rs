@@ -137,9 +137,9 @@ fn refuse<T>(why: String) -> Result<T, NetworkError> {
 }
 
 fn internal() -> NetworkError {
-    NetworkError::Geom(GeomError::InvalidParameter(
-        "a curve network lost track of its control points; this is a bug",
-    ))
+    NetworkError::Geom(GeomError::InvalidParameter(craft3d_math::bug_text!(
+        "a curve network lost track of its control points"
+    )))
 }
 
 /// What one boundary of a patch is held to.

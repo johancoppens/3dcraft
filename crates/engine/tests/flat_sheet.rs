@@ -922,7 +922,10 @@ fn a_sheet_that_cannot_be_drawn_is_refused_with_the_reason() {
             json!({"faces": [{"face": "F1:face(1)", "layer": "x"}, {"face": "F4:face(1)", "layer": "X"}]}),
             vec!["layer name"],
         ),
-        (json!({"faces": ok(), "gap": -1}), vec!["`gap`", "negative"]),
+        (
+            json!({"faces": ok(), "gap": -1}),
+            vec!["`gap` must be a length of 0 or more, not -1 mm"],
+        ),
         (json!({"faces": ok(), "gap": "wide"}), vec!["`gap`"]),
         (
             json!({"faces": ok(), "gap": 1e308}),
@@ -934,7 +937,7 @@ fn a_sheet_that_cannot_be_drawn_is_refused_with_the_reason() {
         ),
         (
             json!({"faces": ok(), "width": 0}),
-            vec!["`width`", "positive"],
+            vec!["`width` must be a length above 0, not 0 mm"],
         ),
         (
             json!({"faces": ok(), "width": 30}),

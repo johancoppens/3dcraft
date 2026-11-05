@@ -190,8 +190,10 @@ fn handle_line_extended(
     }))
     .unwrap_or_else(|payload| {
         Err(format!(
-            "{}: internal error (a bug in 3DCraft, please report it): {}",
+            "{}: {}: {}: {}",
             shorten(method),
+            craft3d_math::BUG,
+            craft3d_engine::PANICKED,
             panic_detail(payload.as_ref())
         ))
     });
@@ -289,14 +291,19 @@ fn failure(id: &Value, error: &str) -> String {
     serialize(&json!({ "id": id, "ok": false, "error": error }))
 }
 
+/// The reply when a reply cannot be written as JSON: a bug, said in its
+/// one wording.
+const UNWRITTEN: &str = concat!(
+    r#"{"id":null,"ok":false,"error":""#,
+    craft3d_math::bug_text!("the reply could not be written as JSON"),
+    r#""}"#
+);
+
 /// One line of JSON. Serialising a `Value` cannot fail (its keys are strings
 /// and its numbers finite), but the fallback keeps that an error reply
 /// rather than a panic if it ever does.
 fn serialize(value: &Value) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| {
-        r#"{"id":null,"ok":false,"error":"internal error: the reply could not be written as JSON"}"#
-            .to_string()
-    })
+    serde_json::to_string(value).unwrap_or_else(|_| UNWRITTEN.to_string())
 }
 
 #[cfg(test)]
@@ -353,5 +360,17 @@ mod tests {
         let mut session = Session::new(Workspace::none());
         let under = parse(handle_line_capped(&mut session, request, full.len() - 1));
         assert_eq!(under["ok"], false);
+    }
+}
+
+#[cfg(test)]
+mod unwritten_tests {
+    #![allow(clippy::unwrap_used)]
+
+    /// The fallback reply is JSON, and says a bug in the one wording.
+    #[test]
+    fn the_reply_that_could_not_be_written_is_json_naming_a_bug() {
+        let v: serde_json::Value = serde_json::from_str(super::UNWRITTEN).unwrap();
+        assert!(v.to_string().contains(craft3d_math::BUG), "{v}");
     }
 }
