@@ -190,8 +190,10 @@ fn handle_line_extended(
     }))
     .unwrap_or_else(|payload| {
         Err(format!(
-            "{}: internal error (a bug in 3DCraft, please report it): {}",
+            "{}: {}: {}: {}",
             shorten(method),
+            craft3d_math::BUG,
+            craft3d_engine::PANICKED,
             panic_detail(payload.as_ref())
         ))
     });

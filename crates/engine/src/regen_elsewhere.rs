@@ -981,7 +981,12 @@ pub fn run_on_state(
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run(session, &command, &params)
         }))
-        .unwrap_or_else(|_| Err(CommandError::new(format!("{command}: {BUG}"))));
+        .unwrap_or_else(|_| {
+            Err(CommandError::new(format!(
+                "{command}: {BUG}: {}",
+                crate::PANICKED
+            )))
+        });
         for name in &inputs {
             session.take_file(name);
         }
@@ -1160,6 +1165,21 @@ mod tests {
         ] {
             assert!(quality_from(&bad).is_none(), "{bad}");
         }
+    }
+
+    /// A command that panics where the bodies are is answered as a crash:
+    /// the bug's words and that it panicked.
+    #[test]
+    fn a_command_that_panics_there_is_answered_as_a_crash() {
+        let document = craft3d_format::to_bytes(&craft3d_doc::Document::default()).unwrap();
+        let work = json!({"command": "file.new", "params": {}}).to_string();
+        let answer = run_on_state(&document, &work, |_, _, _| panic!("fell over on purpose"));
+        assert!(
+            answer.answer.contains(crate::BUG) && answer.answer.contains(crate::PANICKED),
+            "{}",
+            answer.answer
+        );
+        scene_forget();
     }
 
     #[test]

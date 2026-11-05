@@ -2091,7 +2091,10 @@ fn internal_error(payload: &(dyn std::any::Any + Send)) -> CommandError {
         .map(|s| (*s).to_string())
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "no details".to_string());
-    CommandError::new(format!("the scene could not be built: {BUG}: {detail}"))
+    CommandError::new(format!(
+        "the scene could not be built: {BUG}: {}: {detail}",
+        crate::PANICKED
+    ))
 }
 
 /// The display scene of one state of a document, to be built away from
@@ -2932,7 +2935,8 @@ mod tests {
         let builds = BUILDS.get();
         let error = session.scene(None).unwrap_err();
         assert!(
-            error.message().contains("internal error")
+            error.message().contains(crate::BUG)
+                && error.message().contains(crate::PANICKED)
                 && error
                     .message()
                     .contains("the tessellator fell over, on purpose"),
