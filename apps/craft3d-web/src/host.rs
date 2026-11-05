@@ -1107,23 +1107,33 @@ impl WebHost {
         Outcome::default()
     }
 
-    /// Cancels every edit that waits for the worker's answer: not made,
-    /// said so, and what was kept waiting behind it runs.
+    /// Cancels every edit that waits for the worker's answer, and the step
+    /// of the example being built (an edit or a read): not made, said so,
+    /// and what was kept waiting behind it runs.
     pub fn cancel_edits(&mut self) -> Outcome {
         self.edit_since = None;
+        // The step of an example that waits for the worker, an edit or a
+        // read (`document.check`), is cancelled with the edits.
+        let step = self.example_run.as_ref().and_then(|run| run.waiting);
         // The worker may be working on it, or hang on it: it is ended,
         // and the next job starts a new one ([`Self::take_worker_restart`]).
-        self.worker_restart |= self.session.edit_posted();
-        let answered = self.session.edits_failed(CANCELLED);
+        self.worker_restart |= self.session.edit_posted()
+            || step.is_some_and(|(token, _)| self.session.command_posted(token));
+        let mut answered = self.session.edits_failed(CANCELLED);
+        if let Some((token, _)) = step
+            && !answered.iter().any(|answer| answer.token == token)
+        {
+            answered.extend(self.session.command_dropped(token, CANCELLED));
+        }
         let outcome = self.answered(answered);
         // An example between two steps: not built further.
         if let Some(run) = &self.example_run {
-            let next = run.next;
+            let index = run.waiting.map_or(run.next, |(_, index)| index);
             let command = run
                 .steps
-                .get(next)
+                .get(index)
                 .map_or_else(String::new, |(command, _)| command.clone());
-            self.example_failed(next, &command, CANCELLED);
+            self.example_failed(index, &command, CANCELLED);
         }
         outcome
     }

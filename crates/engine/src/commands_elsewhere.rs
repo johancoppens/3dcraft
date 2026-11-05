@@ -451,6 +451,23 @@ impl Session {
             .collect()
     }
 
+    /// The command numbered `token` that waits, answered with `why` (the
+    /// person cancelled it), kept out of the bug report as
+    /// [`Session::edits_failed`] does, whether it edits or reads: a late
+    /// answer is dropped. `None` when no such command waits.
+    pub fn command_dropped(&mut self, token: u64, why: &str) -> Option<Answered> {
+        self.answered_recording(token, Err(why.to_string()), false)
+    }
+
+    /// True when the command numbered `token` waits and was posted to the
+    /// other side: it may be what that side works on now.
+    pub fn command_posted(&self, token: u64) -> bool {
+        self.commands
+            .jobs
+            .iter()
+            .any(|job| job.token == token && job.posted)
+    }
+
     /// True when an edit that waits was posted to the other side: it may
     /// be what that side works on now (a cancel then ends it there).
     pub fn edit_posted(&self) -> bool {

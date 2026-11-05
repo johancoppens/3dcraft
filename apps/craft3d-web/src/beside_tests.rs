@@ -906,3 +906,55 @@ fn an_example_cancelled_is_closed_again() {
     page.settle();
     assert!(page.host.session.document_status().is_none());
 }
+
+/// An example cancelled while its last step, a read (`document.check`),
+/// is run in the worker: that job is dropped too (its late answer says
+/// nothing over the closed document), the worker that runs it is ended,
+/// and the failure names that step.
+#[test]
+fn an_example_cancelled_during_a_read_drops_it_and_names_it() {
+    let bracket = example("bracket");
+    let steps = craft3d_ui_egui::shell::example_steps(bracket)
+        .unwrap()
+        .unwrap();
+    let last = steps.len() - 1;
+    assert_eq!(steps[last].0, "document.check");
+    let mut page = Page::new(false);
+    page.host.shell.choose_example(bracket);
+    for _ in 0..2000 {
+        page.frame();
+        if page.host.example_progress() == Some((steps.len(), steps.len()))
+            && page.host.session.commands_waiting()
+        {
+            break;
+        }
+    }
+    assert_eq!(
+        page.host.example_progress(),
+        Some((steps.len(), steps.len()))
+    );
+    assert!(page.host.session.commands_waiting(), "the check waits");
+    assert!(!page.host.session.edits_waiting(), "it is a read");
+    page.host.cancel_edits();
+    assert!(
+        page.host.take_worker_restart(),
+        "the worker that runs it ends"
+    );
+    assert!(!page.host.session.commands_waiting());
+    assert_eq!(page.host.example_progress(), None);
+    assert!(page.host.session.document_status().is_none());
+    let report = page.host.shell.last_command.clone().unwrap();
+    assert!(
+        !report.ok
+            && report
+                .text
+                .contains(&format!("step {last} (document.check)")),
+        "{report:?}"
+    );
+    page.settle();
+    assert_eq!(
+        page.host.shell.last_command,
+        Some(report),
+        "nothing after it"
+    );
+}
