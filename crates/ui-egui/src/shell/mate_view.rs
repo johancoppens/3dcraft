@@ -28,11 +28,18 @@ pub(crate) struct MateView {
     /// What set `sidePanel.mateHover`, when the pointer did (a row or a
     /// marker) rather than `ui.set`: it goes when the pointer leaves that.
     pub(crate) hover_by: Option<Pointed>,
+    /// The mate the pointer set it to.
+    pub(crate) hover_name: Option<String>,
     /// Where the last frame drew each mate's row, by its name.
     pub(crate) rows: Vec<(String, egui::Rect)>,
     /// A point of each marker on screen at the last frame (the middle of
     /// its longest line there), in points, by its mate.
     pub(crate) markers: Vec<(String, egui::Pos2)>,
+    /// What the tooltip over the markers says, a line per mate under the
+    /// pointer; empty without one.
+    pub(crate) tip: Vec<String>,
+    /// The document the chosen and pointed-at mates are of.
+    pub(crate) document: Option<u64>,
 }
 
 impl Shell {
@@ -82,17 +89,30 @@ impl Shell {
     }
 
     /// The faces of the two parts of the mate pointed at or chosen, tinted
-    /// `mate_part`; `None` when there is none, or a part is the world.
+    /// `mate_part`: also of a mate that failed (its parts are still shown
+    /// where they are, which says what it joins); the world has none.
+    /// `None` when no mate is pointed at or chosen, or its parts show
+    /// nothing.
     pub(super) fn mate_part_highlight(&self, scene: Option<&Scene>) -> Option<Highlight> {
         let outline = self.outline.as_ref()?;
         let scene = scene?;
         let [chosen, pointed] = self.hot_mates();
         let name = pointed.or(chosen)?;
         let mate = outline.mates.iter().find(|m| m.name == name)?;
+        // A part that is a flexible subassembly has no bodies of its own:
+        // its instances (`Sub/Inner`) are tinted.
+        let of_part = |name: &str| {
+            mate.parts.iter().any(|p| {
+                name == p
+                    || name
+                        .strip_prefix(p.as_str())
+                        .is_some_and(|rest| rest.starts_with('/'))
+            })
+        };
         let features: Vec<&String> = outline
             .instances
             .iter()
-            .filter(|i| mate.parts.contains(&i.name))
+            .filter(|i| of_part(&i.name))
             .flat_map(|i| &i.features)
             .collect();
         if features.is_empty() {
@@ -108,6 +128,27 @@ impl Shell {
             });
         let (highlight, _) = Highlight::new(self.tokens.mate_part, ids);
         Some(highlight)
+    }
+
+    /// The document shown is `document`: a mate chosen or pointed at in
+    /// another one (another tab, a document opened or closed) goes.
+    /// No document known (a frame drawn while a command runs elsewhere)
+    /// changes nothing.
+    pub(super) fn mates_follow_document(&mut self, document: Option<u64>) {
+        if document.is_some() && self.mate_view.document != document {
+            self.mate_view.document = document;
+            self.state.side_panel.mate = None;
+            self.state.side_panel.mate_hover = None;
+            self.mate_view.hover_by = None;
+            self.mate_view.tip.clear();
+        }
+    }
+
+    /// What the tooltip over the markers under the pointer says, a line
+    /// per mate (overlapping markers, such as two coaxial joints, are
+    /// named together); empty when no marker is under it.
+    pub fn mate_tip(&self) -> &[String] {
+        &self.mate_view.tip
     }
 
     /// Where the last frame drew each mate's row on the Assembly tab.
@@ -129,6 +170,7 @@ impl Shell {
         ui: &egui::Ui,
         response: &egui::Response,
         rect: egui::Rect,
+        scene: Option<&Scene>,
     ) -> bool {
         let [width, height] = self.size;
         let markers = self.mate_markers_for(&self.state.camera, self.size, self.pixels_per_point);
@@ -167,48 +209,104 @@ impl Shell {
                             };
                             l(a, b).total_cmp(&l(c, d))
                         })?;
+                    // Toward the far end of the axis, out of the body it
+                    // starts on.
                     Some((
                         m.name.clone(),
-                        to_points((a.x + b.x) * 0.5, (a.y + b.y) * 0.5),
+                        to_points(a.x + (b.x - a.x) * 0.8, a.y + (b.y - a.y) * 0.8),
                     ))
                 })
                 .collect(),
             None => Vec::new(),
         };
         let reach = f64::from(self.tokens.mate_hit) * f64::from(self.pixels_per_point);
-        let under = |at: egui::Pos2| -> Option<String> {
-            let projector = projector.as_ref()?;
+        let camera = self.state.camera;
+        let section = self.section();
+        let length = mates::world_size(
+            &camera,
+            width,
+            height,
+            self.pixels_per_point,
+            self.tokens.mate_size,
+        )
+        .unwrap_or(0.0);
+        // The markers under the pointer where they are in sight: a marker
+        // behind the face there (drawn dimmed) leaves the pointer to the
+        // face, so faces around a joint are still picked. Nearest first,
+        // as near in the mates' order; those as near as the nearest (one
+        // pixel) overlap and are named together.
+        let under = |at: egui::Pos2| -> Vec<String> {
+            let Some(projector) = projector.as_ref() else {
+                return Vec::new();
+            };
             let (x, y) = to_pixels(at);
-            mates::marker_at(&markers, projector, x, y, reach).map(str::to_string)
+            let near = mates::markers_at(&markers, projector, x, y, reach);
+            if near.is_empty() {
+                return Vec::new();
+            }
+            let front = scene
+                .and_then(|scene| {
+                    scene
+                        .pick_cut(&camera.to_render(), width, height, x, y, section.as_ref())
+                        .ok()
+                })
+                .and_then(|(face, cap)| face.map(|f| f.point).or(cap.map(|c| c.point)))
+                .map(|p| projector.depth(p))
+                .filter(|d| d.is_finite());
+            let slack = 0.05 * length;
+            let seen: Vec<(&str, f64)> = near
+                .into_iter()
+                .filter(|(_, _, depth)| front.is_none_or(|f| *depth <= f + slack))
+                .map(|(name, d, _)| (name, d))
+                .collect();
+            let Some(&(_, best)) = seen.first() else {
+                return Vec::new();
+            };
+            seen.into_iter()
+                .filter(|(_, d)| *d <= best + 1.0)
+                .map(|(name, _)| name.to_string())
+                .collect()
         };
         // Not while the camera or a part is being dragged.
         let idle = !response.dragged() && !ui.input(|i| i.pointer.any_down());
-        let pointed = response.hover_pos().filter(|_| idle).and_then(under);
-        match &pointed {
+        let pointed = response
+            .hover_pos()
+            .filter(|_| idle)
+            .map(under)
+            .unwrap_or_default();
+        match pointed.first() {
             Some(name) => {
                 if self.state.side_panel.mate_hover.as_ref() != Some(name) {
                     ui.ctx().request_repaint();
                 }
                 self.state.side_panel.mate_hover = Some(name.clone());
                 self.mate_view.hover_by = Some(Pointed::Marker);
-                let kind = self
-                    .outline
-                    .as_ref()
-                    .and_then(|o| o.mates.iter().find(|m| m.name == *name))
-                    .map_or("", |m| m.kind);
-                let tip = if kind.is_empty() {
-                    name.clone()
-                } else {
-                    format!("{name} · {kind}")
+                self.mate_view.hover_name = Some(name.clone());
+                let kind = |name: &str| {
+                    self.outline
+                        .as_ref()
+                        .and_then(|o| o.mates.iter().find(|m| m.name == name))
+                        .map_or("", |m| m.kind)
                 };
-                response.clone().on_hover_text_at_pointer(tip);
+                let tip: Vec<String> = pointed
+                    .iter()
+                    .map(|name| match kind(name) {
+                        "" => name.clone(),
+                        kind => format!("{name} · {kind}"),
+                    })
+                    .collect();
+                self.mate_view.tip = tip.clone();
+                response.clone().on_hover_text_at_pointer(tip.join("\n"));
             }
-            None => self.pointer_left(Pointed::Marker),
+            None => {
+                self.mate_view.tip.clear();
+                self.pointer_left(Pointed::Marker);
+            }
         }
         let clicked = response.clicked()
             && response
                 .interact_pointer_pos()
-                .and_then(under)
+                .and_then(|at| under(at).into_iter().next())
                 .map(|name| {
                     self.state.side_panel.mate = Some(name);
                     self.state.panels.side_tab = crate::state::SideTab::Assembly;
@@ -225,10 +323,16 @@ impl Shell {
     /// The pointer is on no mate's row (or marker): a hover it made there
     /// goes, one set from outside or from the other stays.
     fn pointer_left(&mut self, from: Pointed) {
-        if self.mate_view.hover_by == Some(from) {
-            self.state.side_panel.mate_hover = None;
-            self.mate_view.hover_by = None;
+        if self.mate_view.hover_by != Some(from) {
+            return;
         }
+        // Only while the hover is still the one the pointer set: one set
+        // from outside since (`ui.set`) stays.
+        if self.state.side_panel.mate_hover == self.mate_view.hover_name {
+            self.state.side_panel.mate_hover = None;
+        }
+        self.mate_view.hover_by = None;
+        self.mate_view.hover_name = None;
     }
 
     /// An assembly's mates under its instances, a section that folds with
@@ -336,8 +440,9 @@ impl Shell {
                 if self.state.side_panel.mate_hover.as_ref() != Some(&name) {
                     ui.ctx().request_repaint();
                 }
-                self.state.side_panel.mate_hover = Some(name);
+                self.state.side_panel.mate_hover = Some(name.clone());
                 self.mate_view.hover_by = Some(Pointed::Row);
+                self.mate_view.hover_name = Some(name);
             }
             None => self.pointer_left(Pointed::Row),
         }

@@ -178,7 +178,7 @@ impl Session {
                 settable,
                 limits: crate::asm::mate_limits(&doc, mate),
                 parts: [mate.a.instance.clone(), mate.b.instance.clone()],
-                frame: marker_frame(&placed, &mate.name),
+                frame: marker_frame(&placed, mate),
             });
         }
         Some(out)
@@ -235,12 +235,17 @@ impl Session {
 }
 
 /// The frame a mate's marker is drawn at ([`OutlineMate::frame`]): side
-/// a's frame of the solve's mate (the assembly's own, listed before those
-/// of its flexible subassemblies) moved by its instance's pose, or side
-/// b's when a is the world. `None` when the mate is not in the solve or
-/// the frame is not finite and square.
-fn marker_frame(placed: &Placed, mate: &str) -> Option<MateFrame> {
-    let named = placed.specs.iter().find(|s| s.spec.name == mate)?;
+/// a's frame of the solve's mate moved by its instance's pose, or side
+/// b's when a is the world. Only among the assembly's own mates
+/// (`NamedSpec::own`): a flexible subassembly's mates are in the solve
+/// too, under their own names, so a mate of the assembly that failed
+/// never takes the frame of one of theirs of the same name. `None` when
+/// the mate is not in the solve or the frame is not finite and square.
+fn marker_frame(placed: &Placed, mate: &craft3d_doc::Mate) -> Option<MateFrame> {
+    let named = placed
+        .specs
+        .iter()
+        .find(|s| s.own && s.spec.name == mate.name)?;
     let (instance, frame) = match &named.a {
         Some(a) => (Some(a), named.spec.a.1),
         None => (named.b.as_ref(), named.spec.b.1),

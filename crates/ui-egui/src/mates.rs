@@ -185,9 +185,14 @@ pub fn glyph(kind: &str, origin: Vec3, x: Vec3, z: Vec3, length: f64) -> Vec<[Ve
 }
 
 /// The distance in pixels from `(x, y)` to the nearest segment of
-/// `marker` as `projector` shows it; `None` when none of it is in front of
-/// the camera.
-pub fn distance_on_screen(marker: &Marker, projector: &Projector, x: f64, y: f64) -> Option<f64> {
+/// `marker` as `projector` shows it, and the depth of that segment's point
+/// nearest it; `None` when none of it is in front of the camera.
+pub fn nearest_on_screen(
+    marker: &Marker,
+    projector: &Projector,
+    x: f64,
+    y: f64,
+) -> Option<(f64, f64)> {
     marker
         .lines
         .iter()
@@ -202,26 +207,32 @@ pub fn distance_on_screen(marker: &Marker, projector: &Projector, x: f64, y: f64
             };
             let (px, py) = (a.x + dx * t - x, a.y + dy * t - y);
             let d = px.phypot(py);
-            d.is_finite().then_some(d)
+            let depth = projector.depth_between(&a, &b, t);
+            (d.is_finite() && depth.is_finite()).then_some((d, depth))
         })
-        .min_by(f64::total_cmp)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
 }
 
-/// The marker nearest `(x, y)` (pixels of the image `projector` makes)
-/// within `reach` pixels, by its name.
-pub fn marker_at<'a>(
+/// The markers within `reach` pixels of `(x, y)` (pixels of the image
+/// `projector` makes), nearest first and, as near, in the mates' order:
+/// each with its distance and the depth of its point nearest the pointer.
+pub fn markers_at<'a>(
     markers: &'a [Marker],
     projector: &Projector,
     x: f64,
     y: f64,
     reach: f64,
-) -> Option<&'a str> {
-    markers
+) -> Vec<(&'a str, f64, f64)> {
+    let mut near: Vec<(&str, f64, f64)> = markers
         .iter()
-        .filter_map(|m| Some((m, distance_on_screen(m, projector, x, y)?)))
-        .filter(|(_, d)| *d <= reach)
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(m, _)| m.name.as_str())
+        .filter_map(|m| {
+            let (d, depth) = nearest_on_screen(m, projector, x, y)?;
+            (d <= reach).then_some((m.name.as_str(), d, depth))
+        })
+        .collect();
+    // A stable sort: as near, the mates' order.
+    near.sort_by(|a, b| a.1.total_cmp(&b.1));
+    near
 }
 
 #[cfg(test)]
@@ -300,6 +311,44 @@ mod tests {
                 f64::MAX
             )
             .is_empty()
+        );
+    }
+
+    /// A marker behind a body is dimmed much less than a sketch there:
+    /// its own hidden opacity, on both paths (the CPU's `line_opacity`,
+    /// the GPU's segment).
+    #[test]
+    fn a_marker_behind_a_body_is_dimmed_less_than_a_sketch() {
+        use crate::viewport::{LineKind, line_opacity};
+        let tokens = crate::Tokens::default();
+        for kind in [LineKind::Mate, LineKind::MateHot, LineKind::MateHalo] {
+            assert_eq!(
+                line_opacity(kind, true, &tokens),
+                tokens.mate_hidden_opacity
+            );
+            assert_eq!(line_opacity(kind, false, &tokens), 255);
+        }
+        assert_eq!(
+            line_opacity(LineKind::Sketch, true, &tokens),
+            tokens.hidden_opacity
+        );
+        assert!(tokens.mate_hidden_opacity > tokens.hidden_opacity);
+        let marks = crate::viewport::Marks {
+            mates: vec![[Vec3::ZERO, Vec3::X]],
+            ..crate::viewport::Marks::default()
+        };
+        let segments = crate::direct::segments_marked(None, None, &tokens, 1.0, &marks, false);
+        let mate: Vec<_> = segments.iter().filter(|g| g.color == tokens.mate).collect();
+        assert!(!mate.is_empty());
+        assert!(
+            mate.iter()
+                .all(|g| g.hidden_opacity == Some(tokens.mate_hidden_opacity))
+        );
+        assert!(
+            segments
+                .iter()
+                .filter(|g| g.axis)
+                .all(|g| g.hidden_opacity.is_none())
         );
     }
 }

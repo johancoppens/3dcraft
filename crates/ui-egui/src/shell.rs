@@ -2024,7 +2024,11 @@ impl Shell {
         }
         if ids.is_empty() {
             // The parts of the mate pointed at or chosen, tinted, when
-            // nothing else is lit.
+            // nothing else is lit; not under the lens with something
+            // selected, where the selection keeps its own colours.
+            if lens && !self.select.view.items.is_empty() {
+                return Highlight::NONE;
+            }
             return self.mate_part_highlight(scene).unwrap_or(Highlight::NONE);
         }
         Highlight::new(self.tokens.face_highlight, ids).0
@@ -2544,6 +2548,8 @@ impl Shell {
         }) {
             self.state.picked = None;
         }
+        // A mate chosen or pointed at is of the document it was chosen in.
+        self.mates_follow_document(session.document_status().map(|s| s.id));
         let selected = self.state.selected_feature.as_deref();
         let name_of = |id: &str| {
             scene
@@ -4354,7 +4360,7 @@ impl Shell {
         // In the narrow layout a tap beside the open drawer closes it and
         // selects nothing.
         // A release that ends a pinch or a two-finger pan is no tap.
-        let on_marker = self.mate_pointer(ui, &response, rect);
+        let on_marker = self.mate_pointer(ui, &response, rect, scene);
         let tapped = response.clicked() && !self.touch_gesture && !on_marker;
         let closes_drawer = self.narrow && self.state.panels.drawer && tapped;
         if closes_drawer {
@@ -5361,7 +5367,7 @@ fn paint_overlay(
     let piece = f64::from(viewport::tile_pixels(tokens, pixels_per_point)) * 0.5;
     let mut colors = viewport::EdgeColorCache::default();
     for line in &overlay.lines {
-        let alpha = f64::from(viewport::opacity(line.hidden, tokens));
+        let alpha = f64::from(viewport::line_opacity(line.kind, line.hidden, tokens));
         let ink = match line.edge {
             Some(edge) => colors.get(edge.body, tokens).pick(edge.silhouette),
             None => line.color(tokens),

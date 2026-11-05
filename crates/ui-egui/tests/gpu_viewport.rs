@@ -1377,7 +1377,7 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
         near
     };
     let (mut samples, mut agree, mut inked, mut dimmed, mut bare) = (0, 0, 0, 0, 0);
-    let mut mate_samples = 0_usize;
+    let (mut mate_samples, mut mate_agree) = (0_usize, 0_usize);
     let is_mate = |kind: viewport::LineKind| {
         matches!(
             kind,
@@ -1555,6 +1555,7 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
             mate_samples += usize::from(is_mate(line.kind));
             if diff <= 8 {
                 agree += 1;
+                mate_agree += usize::from(is_mate(line.kind));
             } else {
                 worst.push((f64::from(diff), p, c, g));
             }
@@ -1565,11 +1566,18 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
         "lines: {samples} samples ({inked} inked, {dimmed} dimmed, {bare} hidden edges), {agree} agree; worst {:?}",
         &worst[..worst.len().min(5)]
     );
-    println!("mate markers: {mate_samples} samples");
+    println!("mate markers: {mate_samples} samples, {mate_agree} agree");
     if !marks.mates.is_empty() {
         assert!(
             mate_samples > 20,
             "the markers are hardly sampled: {mate_samples}"
+        );
+        // Their own share, so that a marker one path drops cannot pass under
+        // the share of all the lines.
+        assert!(
+            mate_agree * 100 >= mate_samples * 99,
+            "the GPU's markers differ from the CPU's at {} of {mate_samples} samples",
+            mate_samples - mate_agree
         );
     }
     // Every body's edges are sampled, between faces and as outlines: the

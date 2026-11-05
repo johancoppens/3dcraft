@@ -92,6 +92,10 @@ pub struct Tokens {
     /// a marker reads on a body of any colour (a brass gear among them).
     pub mate_halo: Rgb,
     pub mate_halo_width: f32,
+    /// How opaque a marker's lines are where a body is in front, 0 to 255:
+    /// much more than `hidden_opacity` (a sketch's), since a mate's origin
+    /// lies on or in a body almost always.
+    pub mate_hidden_opacity: u8,
     /// Width of a marker's lines, plain and pointed at, in points.
     pub mate_width: f32,
     pub mate_hot_width: f32,
@@ -839,15 +843,16 @@ impl Tokens {
             datum_fill_opacity: 48,
             datum_width: 1.25,
             datum_point_radius: 4.0,
-            // Brass #7A6800; the parts of a marker pointed at in a pale
+            // Brass #8C6E00; the parts of a marker pointed at in a pale
             // copper over the bodies' warm grey.
-            mate: [122, 104, 0],
+            mate: [140, 110, 0],
             mate_part: [236, 196, 150],
             mate_halo: [250, 248, 242],
-            mate_halo_width: 4.5,
-            mate_width: 2.0,
-            mate_hot_width: 3.0,
-            mate_size: 52.0,
+            mate_halo_width: 5.5,
+            mate_hidden_opacity: 170,
+            mate_width: 2.5,
+            mate_hot_width: 3.5,
+            mate_size: 64.0,
             mate_hit: 6.0,
             trace: [80, 0, 140],
             trace_width: 3.0,
@@ -2155,6 +2160,7 @@ mod tests {
         assert!(tokens.mate_hot_width > tokens.mate_width);
         assert!(tokens.mate_halo_width > tokens.mate_hot_width);
         assert!(contrast(tokens.mate, tokens.mate_halo) >= 4.5);
+        assert!(tokens.mate_hidden_opacity > tokens.hidden_opacity);
         assert!(tokens.mate_size > 0.0 && tokens.mate_hit > 0.0);
     }
 }

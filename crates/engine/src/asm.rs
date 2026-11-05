@@ -395,6 +395,9 @@ pub(crate) struct NamedSpec {
     /// A parent that holds it as a flexible subassembly keeps the drive
     /// only when it sets one of them ([`flex`]).
     pub drive_deps: [BTreeSet<String>; solver::VARIABLES],
+    /// A mate of this assembly's own (listed first), not one a flexible
+    /// subassembly of it brought (which keeps its own name).
+    pub own: bool,
 }
 
 impl Placed {
@@ -1195,6 +1198,7 @@ fn flex(doc: &Document, assembly: &Assembly, instances: &mut Vec<InstanceState>)
                 b: named.b.as_deref().map(prefixed),
                 spec,
                 drive_deps,
+                own: false,
             });
         }
         for c in &sub.coupling_specs {
@@ -2149,11 +2153,14 @@ fn solve_mates(
     let named: Vec<NamedSpec> = specs
         .iter()
         .zip(&spec_deps)
-        .map(|(spec, deps)| NamedSpec {
+        .enumerate()
+        .map(|(k, (spec, deps))| NamedSpec {
             a: name_of(spec.a.0),
             b: name_of(spec.b.0),
             spec: spec.clone(),
             drive_deps: deps.clone(),
+            // Its own mates' specs come first, one per mate it took.
+            own: k < spec_mate.len(),
         })
         .collect();
     let coupling_specs = couplings.clone();

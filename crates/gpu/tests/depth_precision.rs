@@ -194,6 +194,7 @@ fn inside_a_building_lines_on_the_faces_stay_whole() {
                 tested,
                 dimmed: false,
                 axis: false,
+                hidden_opacity: None,
                 edge: None,
             })
             .collect()

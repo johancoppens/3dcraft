@@ -67,6 +67,8 @@ struct Lines {
 const TESTED: u32 = 1u;
 // Drawn dimmed where hidden, instead of left out.
 const DIMMED: u32 = 2u;
+// Its own opacity where hidden, in bits 8 to 15 (`Segment::hidden_opacity`).
+const OWN_HIDDEN: u32 = 16u;
 // An edge of a body: its outline told, faded, counted in the density.
 const EDGE: u32 = 4u;
 // `low` and `high` are the corners of the box of the segment's edge.
@@ -421,6 +423,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             }
             hidden = true;
             opacity = lines.look.x;
+            if (in.flags & OWN_HIDDEN) != 0u {
+                opacity = f32((in.flags >> 8u) & 255u) / 255.0;
+            }
         }
     }
     var color = in.color;

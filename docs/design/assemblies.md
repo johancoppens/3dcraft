@@ -548,23 +548,34 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
 - **Mate markers** (2026-11-05; `ui-egui/src/mates.rs`, `shell/mate_view.rs`): per mate a small glyph at its
   frame, drawn while `show.mates` is on (the default; the display bar's first toggle is *Mates* in an assembly, in
   the place of *Sketches*, which an assembly has none of). The frame is `OutlineMate::frame`: side a's frame of the
-  solve's mate moved by its instance's pose (side b's when a is the world), read from `Placed::specs`, so no face is
-  measured again per frame; `OutlineMate::parts` names the two instances. It crosses to the page with the outline
-  (`view_elsewhere`, bit for bit). The glyph: a small cross at the origin in the frame's plane, the axis an arrow
-  along z, and by kind three quarters of a turn about the axis with its head (revolute), the axis on below the
-  origin with a head there too (slider), both (cylindrical), a square in the plane (planar), a crossed box
-  (fixed), three circles (ball); a frame whose axes are not finite and square, or a length that is none, gives no
-  marker (never a guessed one). Its length is `tokens.mate_size` points at the camera's target
-  (`Projector::footprint` at the camera's distance, as the world axes keep their size), so an orbit leaves the
-  lines as they are and only a zoom or a resize makes them again; it is part of the frame key. The segments are
-  `Marks::mates` (and `mates_hot` for the one pointed at or chosen), drawn by both paths of the viewport from that
-  one list, after the datums, tested like a datum (dimmed behind a body), in `tokens.mate` (brass) and the
-  selection's copper; the GPU's picture is compared with the oracle (`gpu_viewport.rs`,
-  `the_direct_path_draws_mate_markers_and_matches_the_oracle`, opaque: over the four-bar's see-through bars the two pictures differ at 4 pixels beside the bars' edges also without markers, on Intel and AMD alike, a gap of the see-through oracle that is owed). A light halo (`tokens.mate_halo`) under the lines keeps a marker readable on a body of any colour. Pointing at a mate's row on the Assembly tab or at
-  its marker (within `tokens.mate_hit` points of a line) sets `sidePanel.mateHover`: the marker is drawn hot and its
-  two parts are tinted `tokens.mate_part` while no face is lit otherwise; a marker names its mate and kind under
-  the pointer; a click on a row or a marker chooses the mate (`sidePanel.mate`, the row marked; a click on its row
-  again or elsewhere in the viewport lets it go) and a click on a marker picks nothing.
+  solve's mate moved by its instance's pose (side b's when a is the world), read from the assembly's own entries of
+  `Placed::specs` (`NamedSpec::own`: a flexible subassembly's mates are there too, under their own names, and a mate
+  of the assembly that failed must never take one of theirs), so no face is measured again per frame; a failed mate
+  has none. `OutlineMate::parts` names the two instances. It crosses to the page with the outline (`view_elsewhere`,
+  bit for bit). The glyph: a small cross at the origin in the frame's plane, the axis an arrow along z, and by kind
+  three quarters of a turn about the axis with its head (revolute), the axis on below the origin with a head there
+  too (slider), both (cylindrical), a square in the plane (planar), a crossed box (fixed), three circles (ball); a
+  frame whose axes are not finite and square, or a length that is none, gives no marker (never a guessed one). Its
+  length is `tokens.mate_size` points at the camera's target (`Projector::footprint` at the camera's distance, as
+  the world axes keep their size), so an orbit leaves the lines as they are and only a zoom or a resize makes them
+  again; it is part of the frame key, and the markers go with the parts while a motion plays. The segments are
+  `Marks::mates` (and `mates_hot` for the one pointed at or chosen), over a light halo (`tokens.mate_halo`, so a
+  marker reads on a body of any colour), drawn by both paths of the viewport from that one list, after the datums,
+  tested like a datum but dimmed much less behind a body (`tokens.mate_hidden_opacity`; on the GPU a segment's own
+  hidden opacity, `Segment::hidden_opacity`): a mate's origin lies on or in a body almost always. Colours:
+  `tokens.mate` (brass) and the selection's copper. The GPU's picture is compared with the oracle (`gpu_viewport.rs`,
+  `the_direct_path_draws_mate_markers_and_matches_the_oracle`, the markers' samples held to their own 99 %), opaque:
+  over the four-bar's see-through bars the two pictures differ at 4 pixels beside the bars' edges also without
+  markers, on Intel and AMD alike, a gap of the see-through oracle that is owed.
+- **Pointing at mates**: the pointer on a mate's row on the Assembly tab, or within `tokens.mate_hit` points of a
+  marker's line where the marker is in sight, sets `sidePanel.mateHover`: the marker is drawn hot and its two parts
+  are tinted `tokens.mate_part` while no face is lit otherwise (a flexible subassembly on a side: its instances; a
+  failed mate too, its parts are where they are; not under the studio look's lens with something selected). Where a
+  body's face is in front of the marker the pointer and a click are the face's (its depth against the marker's), so
+  faces around a joint are still picked. The tooltip names the mate and its kind; markers as near as the nearest,
+  within a pixel (two coaxial joints), are named together in the mates' order, and the first is pointed at. A click
+  on a row or a marker chooses the mate (`sidePanel.mate`, the row marked; a click on its row again, elsewhere in the
+  viewport or another document lets it go) and a click on a marker picks nothing.
 - **Joint sliders on the Assembly tab** (2026-11-05): under each mate row whose joint can be set by hand
   (`settable`, as on the Parameters tab) is the same kit slider (`Shell::joint_slider`, one function for both tabs),
   named by its motion (*Angle*, *Distance*, *X*), in degrees for an angle, between the mate's limits or a turn

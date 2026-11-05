@@ -291,6 +291,7 @@ fn lines_are_tested(adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu
         tested: true,
         dimmed,
         axis: false,
+        hidden_opacity: None,
         edge: None,
     };
     let segments = [
@@ -402,6 +403,7 @@ fn lines_over_see_through(adapter: &wgpu::Adapter, device: &wgpu::Device, queue:
         tested: true,
         dimmed,
         axis: false,
+        hidden_opacity: None,
         edge: None,
     };
     // Between the sheets, dimmed and left out; in front of both.

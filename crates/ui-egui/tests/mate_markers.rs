@@ -570,32 +570,348 @@ fn hostile_mates_draw_no_marker_and_never_panic() {
             let _ = mates::markers([&m], length);
         }
     }
-    // A mate on a face that is not there fails; the window draws the rest
-    // and points at the failed one's row without a marker or a tint.
+    // The bar loses its datum End2: the mates on it (Elbow, Knee, Hip)
+    // fail, with no frame and no marker; Base and Drive keep theirs. A
+    // failed mate pointed at still tints its two parts (they are shown
+    // where they are, which says what it joins); a mate that is not
+    // there tints nothing.
     let (mut s, mut shell, mut window) = opened("hostile");
-    let added = s.execute(
-        "mate.add",
-        &json!({"kind": "revolute", "a": "Rocker/NoSuchFace", "b": "Coupler/End1", "name": "Ghost"}),
-    );
-    window.frames(&mut shell, &mut s, 3);
-    if added.is_ok() {
-        let outline = shell.assembly_outline().unwrap().clone();
-        let ghost = outline.mates.iter().find(|m| m.name == "Ghost").unwrap();
-        assert!(ghost.frame.is_none(), "{ghost:?}");
+    let before = shell.mate_marks().mates.len();
+    run(&mut s, "file.activate", json!({"document": 0}));
+    run(&mut s, "feature.delete", json!({"feature": "End2"}));
+    run(&mut s, "file.save", json!({"path": "demo/asm/bar.3dcraft"}));
+    run(&mut s, "file.activate", json!({"document": 1}));
+    run(&mut s, "assembly.reload", json!({}));
+    window.frames(&mut shell, &mut s, 4);
+    let outline = shell.assembly_outline().unwrap().clone();
+    for name in ["Elbow", "Knee", "Hip"] {
+        let m = outline.mates.iter().find(|m| m.name == name).unwrap();
+        assert_eq!(m.status, "failed", "{m:?}");
+        assert!(m.frame.is_none(), "{m:?}");
     }
+    for name in ["Base", "Drive"] {
+        let m = outline.mates.iter().find(|m| m.name == name).unwrap();
+        assert!(m.frame.is_some(), "{m:?}");
+    }
+    let marks = shell.mate_marks();
+    assert!(!marks.mates.is_empty() && marks.mates.len() < before);
+    let names: Vec<&str> = shell
+        .mate_marker_hits()
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .collect();
+    assert_eq!(names, ["Base", "Drive"]);
     call(
         &mut shell,
         &mut s,
         "ui.set",
-        json!({"sidePanel": {"mateHover": "Ghost", "mate": "Nobody"}}),
+        json!({"sidePanel": {"mateHover": "Elbow"}}),
     );
     window.frames(&mut shell, &mut s, 2);
-    let _ = shell.mate_marks();
+    assert!(shell.mate_marks().mates_hot.is_empty());
     let scene = shell.shown_scene_arc().unwrap();
-    let _ = shell.face_highlight(Some(&scene));
+    assert_eq!(
+        shell.face_highlight(Some(&scene)).color,
+        Tokens::default().mate_part
+    );
+    call(
+        &mut shell,
+        &mut s,
+        "ui.set",
+        json!({"sidePanel": {"mateHover": "Nobody", "mate": "Nobody"}}),
+    );
+    window.frames(&mut shell, &mut s, 2);
+    assert!(shell.mate_marks().mates_hot.is_empty());
+    let scene = shell.shown_scene_arc().unwrap();
+    assert_eq!(shell.face_highlight(Some(&scene)), Highlight::NONE);
     // And on a part nothing is drawn.
     run(&mut s, "file.new", json!({}));
     run(&mut s, "feature.block", json!({"size": [10, 10, 10]}));
     window.frames(&mut shell, &mut s, 3);
     assert_eq!(shell.mate_marks(), Marks::default());
+}
+
+/// The viewport's size in pixels and the place of a point of the world
+/// in the window, in points (the tests' pixels per point are 1).
+fn on_screen(shell: &Shell, p: Vec3) -> Option<Pos2> {
+    let [w, h] = shell.viewport_size();
+    let projector = craft3d_ui_egui::camera::Projector::new(
+        &shell.state.camera.to_render(),
+        f64::from(w),
+        f64::from(h),
+    )?;
+    let q = projector.project(p)?;
+    let rect = shell.viewport_rect()?;
+    Some(rect.min + vec2(q.x as f32, q.y as f32))
+}
+
+/// Where a click lands in the window for the pixel `(x, y)` of the
+/// viewport.
+fn at_pixel(shell: &Shell, x: f64, y: f64) -> Pos2 {
+    shell.viewport_rect().unwrap().min + vec2(x as f32, y as f32)
+}
+
+/// A marker behind a body leaves the pointer to the face in front: a
+/// click there picks the face and chooses no mate, and no marker is
+/// pointed at. Found along the markers' lines: a point that a body
+/// hides, with nothing of any marker in sight within reach.
+#[test]
+fn a_click_on_a_face_in_front_of_a_marker_picks_the_face() {
+    let (mut s, mut shell, mut window) = opened("behind");
+    let tokens = Tokens::default();
+    let scene = shell.shown_scene_arc().unwrap();
+    let camera = shell.state.camera;
+    let [w, h] = shell.viewport_size();
+    let projector =
+        craft3d_ui_egui::camera::Projector::new(&camera.to_render(), f64::from(w), f64::from(h))
+            .unwrap();
+    let marks = shell.mate_marks();
+    let samples: Vec<Vec3> = marks
+        .mates
+        .iter()
+        .flat_map(|&[a, b]| (0..=8).map(move |k| a + (b - a) * (f64::from(k) / 8.0)))
+        .collect();
+    let in_front = |x: f64, y: f64| {
+        scene
+            .pick_cut(&camera.to_render(), w, h, x, y, None)
+            .ok()
+            .and_then(|(face, _)| face)
+            .map(|f| projector.depth(f.point))
+    };
+    let hidden = |p: Vec3| {
+        let Some(q) = projector.project(p) else {
+            return false;
+        };
+        in_front(q.x, q.y).is_some_and(|d| d < q.depth - 0.5)
+    };
+    let reach = f64::from(tokens.mate_hit) + 2.0;
+    let spot = samples
+        .iter()
+        .filter(|p| hidden(**p))
+        .filter_map(|p| projector.project(*p))
+        .find(|q| {
+            samples.iter().all(|o| {
+                projector
+                    .project(*o)
+                    .is_none_or(|r| (r.x - q.x).phypot(r.y - q.y) > reach || hidden(*o))
+            })
+        })
+        .expect("a stretch of a marker behind a body, alone");
+    let at = at_pixel(&shell, spot.x, spot.y);
+    window.hover(&mut shell, &mut s, at);
+    assert_eq!(shell.state.side_panel.mate_hover, None);
+    assert!(shell.mate_tip().is_empty());
+    window.click(&mut shell, &mut s, at);
+    assert_eq!(shell.state.side_panel.mate, None);
+    let got = call(&mut shell, &mut s, "ui.get", json!({}));
+    assert_eq!(got["selection"]["count"], 1, "{}", got["selection"]);
+}
+
+/// Two markers at one place (Base and Drive both on the ground's End1,
+/// along the same axis): the pointer on their axis names both, in the
+/// mates' order, and points at the first.
+#[test]
+fn coaxial_markers_are_named_together_in_order() {
+    let (mut s, mut shell, mut window) = opened("coaxial");
+    let base = frame_of(&shell, "Base");
+    let drive = frame_of(&shell, "Drive");
+    assert!((v(base.origin) - v(drive.origin)).length() < 1e-9);
+    let [w, h] = shell.viewport_size();
+    let length =
+        mates::world_size(&shell.state.camera, w, h, 1.0, Tokens::default().mate_size).unwrap();
+    // Along the axis, three quarters up: both glyphs draw it.
+    let up = v(drive.origin) + v(drive.z) * (0.75 * length);
+    let at = on_screen(&shell, up).unwrap();
+    window.hover(&mut shell, &mut s, at);
+    assert_eq!(shell.mate_tip(), ["Base · fixed", "Drive · revolute"]);
+    assert_eq!(shell.state.side_panel.mate_hover.as_deref(), Some("Base"));
+    // The same again: the choice does not flicker.
+    window.hover(&mut shell, &mut s, at + vec2(0.0, 0.0));
+    assert_eq!(shell.state.side_panel.mate_hover.as_deref(), Some("Base"));
+}
+
+/// While the motion plays the markers go with the parts: at each moment
+/// the crank's far end (Elbow) is where the crank's angle puts it, and
+/// its marker is drawn there.
+#[test]
+fn the_markers_follow_the_motion() {
+    let (mut s, mut shell, mut window) = opened("motion");
+    run(&mut s, "variable.set", json!({ "name": "t", "expr": "0" }));
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "Drive_angle", "expr": "360 deg * t" }),
+    );
+    let mut seen = Vec::new();
+    for t in [0.05, 0.2, 0.35] {
+        run(&mut s, "view.motion", json!({ "t": t }));
+        window.frames(&mut shell, &mut s, 3);
+        let a = 360.0_f64.to_radians() * t;
+        let elbow = v(frame_of(&shell, "Elbow").origin);
+        assert!(
+            (elbow.x - 20.0 * a.pcos()).abs() < 1e-3 && (elbow.y - 20.0 * a.psin()).abs() < 1e-3,
+            "t = {t}: Elbow at {elbow:?}"
+        );
+        let marks = shell.mate_marks();
+        assert!(
+            marks
+                .mates
+                .iter()
+                .any(|[p, _]| (*p - elbow).length() < 1e-9),
+            "t = {t}: no marker at {elbow:?}"
+        );
+        seen.push(elbow);
+    }
+    assert!((seen[0] - seen[1]).length() > 1.0 && (seen[1] - seen[2]).length() > 1.0);
+}
+
+/// A mate with a flexible subassembly on one side tints the
+/// subassembly's instances (it has no bodies of its own).
+#[test]
+fn a_flexible_subassembly_s_instances_are_tinted() {
+    let mut s = window_session("flexible");
+    four_bar(&mut s);
+    run(
+        &mut s,
+        "file.save",
+        json!({ "path": "demo/asm/linkage.3dcraftasm" }),
+    );
+    run(&mut s, "assembly.new", json!({}));
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "demo/asm/linkage.3dcraftasm", "name": "Linkage", "mode": "flexible" }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "demo/asm/bar.3dcraft", "name": "Arm", "body": "Bar" }),
+    );
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "revolute", "a": "Linkage/Rocker/End1", "b": "Arm/End1", "name": "Pivot", "flip": true }),
+    );
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    window.frames(&mut shell, &mut s, 4);
+    call(
+        &mut shell,
+        &mut s,
+        "ui.set",
+        json!({"sidePanel": {"mateHover": "Pivot"}}),
+    );
+    window.frames(&mut shell, &mut s, 2);
+    let outline = shell.assembly_outline().unwrap().clone();
+    let scene = shell.shown_scene_arc().unwrap();
+    let lit = shell.face_highlight(Some(&scene));
+    assert_eq!(lit.color, Tokens::default().mate_part);
+    let first_face = |instance: &str| {
+        let i = outline
+            .instances
+            .iter()
+            .find(|i| i.name == instance)
+            .unwrap();
+        let feature = i.features.first().unwrap_or_else(|| panic!("{i:?}"));
+        scene
+            .bodies
+            .iter()
+            .find(|b| b.feature == *feature)
+            .unwrap()
+            .first_face_id
+    };
+    for name in [
+        "Linkage/Ground",
+        "Linkage/Crank",
+        "Linkage/Coupler",
+        "Linkage/Rocker",
+        "Arm",
+    ] {
+        assert!(lit.contains(first_face(name)), "{name} is not tinted");
+    }
+}
+
+/// Under the studio look's lens with something selected the parts of a
+/// mate pointed at are not tinted (the selection keeps its own colours,
+/// its outline says it); without a selection they are.
+#[test]
+fn no_tint_under_the_lens_with_a_selection() {
+    let (mut s, mut shell, mut window) = opened("lens");
+    call(
+        &mut shell,
+        &mut s,
+        "ui.set",
+        json!({"look": {"mode": "studio", "ground": false, "shadows": false,
+                        "background": "plain", "edges": "off",
+                        "dof": {"fstop": 1.4, "focus": "centre"}},
+               "sidePanel": {"mateHover": "Elbow"}}),
+    );
+    shell.state.look.spec().unwrap().prepared().unwrap();
+    window.frames(&mut shell, &mut s, 2);
+    assert!(shell.lens_on());
+    let scene = shell.shown_scene_arc().unwrap();
+    assert_eq!(
+        shell.face_highlight(Some(&scene)).color,
+        Tokens::default().mate_part
+    );
+    let crank = shell
+        .assembly_outline()
+        .unwrap()
+        .instances
+        .iter()
+        .find(|i| i.name == "Crank")
+        .unwrap()
+        .features[0]
+        .clone();
+    run(
+        &mut s,
+        "select.set",
+        json!({"items": [{"kind": "body", "feature": crank}]}),
+    );
+    window.frames(&mut shell, &mut s, 2);
+    let scene = shell.shown_scene_arc().unwrap();
+    assert_eq!(shell.face_highlight(Some(&scene)), Highlight::NONE);
+}
+
+/// A mate chosen or pointed at belongs to its document: switching to
+/// another tab lets both go.
+#[test]
+fn a_chosen_mate_goes_with_its_document() {
+    let (mut s, mut shell, mut window) = opened("switch");
+    call(
+        &mut shell,
+        &mut s,
+        "ui.set",
+        json!({"sidePanel": {"mate": "Knee", "mateHover": "Hip"}}),
+    );
+    window.frames(&mut shell, &mut s, 2);
+    assert_eq!(shell.state.side_panel.mate.as_deref(), Some("Knee"));
+    run(&mut s, "file.activate", json!({"document": 0}));
+    window.frames(&mut shell, &mut s, 3);
+    assert_eq!(shell.state.side_panel.mate, None);
+    assert_eq!(shell.state.side_panel.mate_hover, None);
+}
+
+/// A mate pointed at from outside (`ui.set`) while the pointer had
+/// pointed at a row stays when the pointer leaves the rows: only the
+/// hover the pointer made goes with it.
+#[test]
+fn a_hover_set_from_outside_outlives_the_pointer_leaving() {
+    let (mut s, mut shell, mut window) = opened("outside");
+    let row = shell
+        .mate_row_hits()
+        .iter()
+        .find(|(n, _)| n == "Knee")
+        .map(|(_, r)| r.center())
+        .unwrap();
+    window.hover(&mut shell, &mut s, row);
+    assert_eq!(shell.state.side_panel.mate_hover.as_deref(), Some("Knee"));
+    call(
+        &mut shell,
+        &mut s,
+        "ui.set",
+        json!({"sidePanel": {"mateHover": "Hip"}}),
+    );
+    window.hover(&mut shell, &mut s, egui::pos2(990.0, 10.0));
+    assert_eq!(shell.state.side_panel.mate_hover.as_deref(), Some("Hip"));
 }

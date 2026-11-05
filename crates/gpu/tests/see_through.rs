@@ -523,6 +523,7 @@ fn lines_over_a_see_through_picture_are_tested_against_the_front() {
         tested: true,
         dimmed,
         axis: false,
+        hidden_opacity: None,
         edge: None,
     };
     let segments = [

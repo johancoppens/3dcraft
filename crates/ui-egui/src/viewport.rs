@@ -357,6 +357,16 @@ pub fn opacity(hidden: bool, tokens: &Tokens) -> u8 {
     if hidden { tokens.hidden_opacity } else { 255 }
 }
 
+/// [`opacity`] of a line of `kind`: a mate marker behind a body is dimmed
+/// less (`tokens.mate_hidden_opacity`), since a mate's origin lies on or
+/// in a body almost always.
+pub fn line_opacity(kind: LineKind, hidden: bool, tokens: &Tokens) -> u8 {
+    match (hidden, kind.hidden_opacity(tokens)) {
+        (true, Some(own)) => own,
+        _ => opacity(hidden, tokens),
+    }
+}
+
 impl LineKind {
     pub fn color(self, tokens: &Tokens) -> Rgb {
         match self {
@@ -393,6 +403,17 @@ impl LineKind {
             LineKind::MateHot => tokens.mate_hot_width,
             LineKind::Trace => tokens.trace_width,
             LineKind::Comb => tokens.comb_width,
+        }
+    }
+
+    /// Its own opacity where it is hidden, when not the theme's
+    /// `hidden_opacity`: the mate markers'.
+    pub fn hidden_opacity(self, tokens: &Tokens) -> Option<u8> {
+        match self {
+            LineKind::MateHalo | LineKind::Mate | LineKind::MateHot => {
+                Some(tokens.mate_hidden_opacity)
+            }
+            _ => None,
         }
     }
 
@@ -1874,7 +1895,7 @@ pub fn rasterise(composed: Composed, tokens: &Tokens, scale: f64) -> Picture {
                 line.to,
                 f64::from(line.width(tokens)) * scale,
                 line.color(tokens),
-                opacity(line.hidden, tokens),
+                line_opacity(line.kind, line.hidden, tokens),
             );
             k += 1;
             continue;

@@ -224,6 +224,7 @@ pub fn segments_marked(
                         tested: true,
                         dimmed: see_through,
                         axis: false,
+                        hidden_opacity: None,
                         edge: Some(EdgeSegment {
                             outline_color: colors.silhouette,
                             outline_width: tokens.edge_silhouette_width * scale,
@@ -236,6 +237,7 @@ pub fn segments_marked(
     }
     let mut line = |a: Vec3, b: Vec3, kind: LineKind, tested: bool, dimmed: bool, axis: bool| {
         out.push(Segment {
+            hidden_opacity: kind.hidden_opacity(tokens),
             from: a,
             to: b,
             color: kind.color(tokens),
@@ -328,6 +330,7 @@ pub fn segments_marked(
                 tested: true,
                 dimmed: true,
                 axis: false,
+                hidden_opacity: None,
                 edge: None,
             });
         }
@@ -341,6 +344,7 @@ pub fn segments_marked(
             tested: true,
             dimmed: true,
             axis: false,
+            hidden_opacity: None,
             edge: None,
         });
     }
@@ -357,6 +361,7 @@ pub fn segments_marked(
             tested: true,
             dimmed: true,
             axis: false,
+            hidden_opacity: None,
             edge: None,
         });
     }
