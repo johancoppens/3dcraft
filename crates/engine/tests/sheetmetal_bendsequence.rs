@@ -851,8 +851,10 @@ fn a_mirrored_gooseneck_clears_with_the_part_turned_end_for_end() {
 /// A tray 180 × 160 with walls 34 high on its four edges and lips 8 wide
 /// on two of them: six bends, a gooseneck. The whole search (no order
 /// clears: the lips close over the punch) measures some 33 000 distances,
-/// more than the old default cap of 20000, so it now ends with its answer
-/// (finding 20, 2026-11-05: a chassis of 7 bends needed 3 000 000). A cap
+/// more than the old default cap of 20000, so with the default of 1 000 000
+/// it now ends with its answer (finding 20, 2026-11-05: a chassis of 7
+/// bends ran out at 20000; a box of 7 bends segmented takes some 676 000
+/// as a whole search, which the default holds). A cap
 /// too small says about how much the whole search would take, and that
 /// estimate is not below what it took.
 #[test]

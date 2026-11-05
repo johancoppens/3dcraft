@@ -670,9 +670,9 @@ bend's tools as long as the bend (segmented tooling set up per bend), and `lengt
 or a list of one per flange (`null` for the bend's own, segmented). `order` checks the order you give
 (each step a flange, or a list of flanges bent in one stroke; with one-piece tools the flanges of one line
 always together) instead of searching for one, and `maxWork`
-changes the search's cap of 3 000 000 distances (a box of 7 bends takes some 80 000 with one-piece
-tools and 700 000 segmented, 2000 to 3500 a second; one that runs out says about how much the whole
-search would take). The measure `bendable` keeps its cap of 20000. `sheetMetal.edit` changes a part (flanges as a
+changes the search's cap of 1 000 000 distances, some 5 to 8 minutes at most (a box of 7 bends takes
+some 80 000 with one-piece tools and 700 000 segmented, 2000 to 3500 a second; a search that runs out
+says about how much the whole search would take, so give that as `maxWork`, up to 10 000 000). The measure `bendable` keeps its cap of 20000. `sheetMetal.edit` changes a part (flanges as a
 whole list). Each flange has an `id` (`sheetMetal.bends` lists them, 1, 2, … in the order the part was
 made, a new flange's never one used before): every name of the flange's faces and edges is numbered by it
 (its bend `face(2 · id − 1)`, its flat `face(2 · id)`, its rims and edges), not by its place in the list,

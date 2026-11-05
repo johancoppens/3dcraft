@@ -1755,8 +1755,8 @@ fn rollback_bar(ui: &mut egui::Ui, kit: &Kit, at: usize, of: usize) -> Rect {
 /// bar is the document's roll-back marker; this one changes nothing).
 fn position_marker(ui: &egui::Ui, kit: &Kit, row: Rect) {
     let t = kit.t;
-    let r = row.shrink(1.5);
-    let stroke = Stroke::new(1.5, color(t.info_accent));
+    let r = row.shrink(t.player_mark_width);
+    let stroke = Stroke::new(t.player_mark_width, color(t.info_accent));
     let corners = [
         r.left_top(),
         r.right_top(),

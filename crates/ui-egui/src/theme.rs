@@ -286,6 +286,10 @@ pub struct Tokens {
     /// body text's font size.
     pub info_bar_width: f32,
     pub info_bar_radius: u8,
+    /// Width of the dashed outline of the history player's position in
+    /// the feature list (in the info accent), in points: wide enough to
+    /// read on the dark panel.
+    pub player_mark_width: f32,
     pub thumb_radius: u8,
     /// A control's fill (0 to 255, the colour is `glass`) and its text
     /// size in points; how opaque an inert control is drawn (0 to 1).
@@ -920,6 +924,7 @@ impl Tokens {
             agent_popover_width: 470.0,
             info_bar_width: 3.0,
             info_bar_radius: 1,
+            player_mark_width: 2.0,
             thumb_radius: 6,
             control_opacity: 32,
             control_font: 13.0,
