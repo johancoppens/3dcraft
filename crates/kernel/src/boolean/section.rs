@@ -1479,7 +1479,9 @@ pub(super) fn section(
                     let ahead = &ahead;
                     std::thread::Builder::new()
                         .spawn_scoped(scope, move || {
-                            lease.helper_starts();
+                            if let Some(lease) = &lease {
+                                lease.helper_starts();
+                            }
                             ahead.help(a, b, tolerance);
                             drop(lease);
                         })
@@ -1498,7 +1500,11 @@ pub(super) fn section(
             // waited for (a march cannot be stopped part way): after a
             // refusal the answer can come that much later.
             for helper in helpers {
-                let _ = helper.join();
+                if helper.join().is_err() {
+                    // Not lost: counted, for the fuzzer and the health
+                    // report (`crate::work::helper_panics`).
+                    crate::work::helper_panicked();
+                }
             }
             (made, &ahead.warmed)
         });
@@ -2036,10 +2042,15 @@ impl Ahead {
 /// without a freeform face (analytic faces meet in closed form, quickly),
 /// not when the pool has no thread free.
 #[cfg(not(target_arch = "wasm32"))]
-fn ahead_lease(a: &Solid, b: &Solid) -> Option<Vec<craft3d_math::pool::Lease>> {
+fn ahead_lease(a: &Solid, b: &Solid) -> Option<Vec<Option<craft3d_math::pool::Lease>>> {
     #[cfg(test)]
     if tests::NO_AHEAD.with(std::cell::Cell::get) {
         return None;
+    }
+    // Helpers of their own for a test, whatever the pool has free.
+    #[cfg(test)]
+    if let Some(helpers) = tests::TEST_HELPERS.with(std::cell::Cell::get) {
+        return (helpers > 0).then(|| (0..helpers).map(|_| None).collect());
     }
     let machine = craft3d_math::available_threads();
     let freeform = |solid: &Solid| solid.body.faces.iter().any(|f| is_freeform(&f.surface));
@@ -2053,7 +2064,7 @@ fn ahead_lease(a: &Solid, b: &Solid) -> Option<Vec<craft3d_math::pool::Lease>> {
         if lease.threads() == 0 {
             break;
         }
-        leases.push(lease);
+        leases.push(Some(lease));
     }
     (!leases.is_empty()).then_some(leases)
 }
@@ -2579,6 +2590,10 @@ pub(super) mod tests {
         /// Booleans on this thread meet no pairs ahead (`Ahead`).
         pub(in crate::boolean) static NO_AHEAD: std::cell::Cell<bool> =
             const { std::cell::Cell::new(false) };
+        /// Booleans on this thread get this many helpers, not from the
+        /// process's pool (a test's own, whatever other tests hold).
+        pub(in crate::boolean) static TEST_HELPERS: std::cell::Cell<Option<usize>> =
+            const { std::cell::Cell::new(None) };
         /// Helpers of booleans on this thread panic on their first pair.
         pub(in crate::boolean) static HELPERS_PANIC: std::cell::Cell<bool> =
             const { std::cell::Cell::new(false) };
@@ -2636,7 +2651,9 @@ pub(super) mod tests {
         let before = HELPERS_PANICKED.load(Ordering::Relaxed);
         for op in [BooleanOp::Subtract, BooleanOp::Intersect] {
             HELPERS_PANIC.with(|c| c.set(true));
+            TEST_HELPERS.with(|c| c.set(Some(2)));
             let with = boolean(&outer, &inner, op, &tolerance).map_err(|e| e.to_string());
+            TEST_HELPERS.with(|c| c.set(None));
             HELPERS_PANIC.with(|c| c.set(false));
             NO_AHEAD.with(|c| c.set(true));
             let without = boolean(&outer, &inner, op, &tolerance).map_err(|e| e.to_string());
@@ -2648,8 +2665,7 @@ pub(super) mod tests {
             }
         }
         assert!(
-            HELPERS_PANICKED.load(Ordering::Relaxed) > before
-                || craft3d_math::available_threads() < 2,
+            HELPERS_PANICKED.load(Ordering::Relaxed) > before,
             "no helper panicked"
         );
     }
@@ -2710,9 +2726,11 @@ pub(super) mod tests {
                     let name = format!("{op:?} at {k}, nurbs {nurbs}");
                     let run = |off: bool| {
                         NO_AHEAD.with(|c| c.set(off));
+                        TEST_HELPERS.with(|c| c.set(Some(3)));
                         WARMED.with(|n| n.set(0));
                         let made =
                             boolean(&outer, &inner, op, &tolerance).map_err(|e| e.to_string());
+                        TEST_HELPERS.with(|c| c.set(None));
                         NO_AHEAD.with(|c| c.set(false));
                         (made, WARMED.with(std::cell::Cell::get))
                     };
@@ -2728,12 +2746,14 @@ pub(super) mod tests {
                 // the same, and the same sections.
                 let asked = |off: bool| {
                     NO_AHEAD.with(|c| c.set(off));
+                    TEST_HELPERS.with(|c| c.set(Some(3)));
                     let mut vertices = Vertices::new(0.5e-6 * k, 2e-6 * k);
                     let a = prepare(&outer, Operand::A, &mut vertices, &tolerance, true).unwrap();
                     let b = prepare(&inner, Operand::B, &mut vertices, &tolerance, true).unwrap();
                     let made = section(&a, &b, &mut vertices, &tolerance)
                         .map(|s| (s.touches.len(), s.edge_meets.len()))
                         .map_err(|_| ());
+                    TEST_HELPERS.with(|c| c.set(None));
                     NO_AHEAD.with(|c| c.set(false));
                     (made, a.cover_history(), b.cover_history())
                 };
@@ -2745,12 +2765,8 @@ pub(super) mod tests {
                 );
             }
         }
-        // Helpers met pairs (the pool's threads are this binary's alone:
-        // only booleans take them here).
-        assert!(
-            warmed > 0 || craft3d_math::available_threads() < 2,
-            "no pair was met ahead"
-        );
+        // Helpers of the test's own met pairs.
+        assert!(warmed > 0, "no pair was met ahead");
     }
 
     /// A closed spline (a cubic through eight points round a circle of
