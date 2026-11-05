@@ -2470,7 +2470,12 @@ pub(crate) fn named_check(name: &str, message: &str) -> String {
         Some((kind, rest)) if !kind.is_empty() && kind.chars().all(char::is_alphanumeric) => rest,
         _ => message,
     };
-    if name.is_empty() {
+    // Said once: a message that names the check already (`wall is 1 mm,
+    // …`) is not led by its name again.
+    let names_it = rest
+        .strip_prefix(name)
+        .is_some_and(|after| after.starts_with([' ', ':', ',']));
+    if name.is_empty() || names_it {
         rest.to_string()
     } else {
         format!("{name}: {rest}")
@@ -2907,6 +2912,31 @@ mod tests {
             short_trouble("Round: the fillet does not fit"),
             "Round: the fillet does not fit"
         );
+        // Each kind names its check once.
+        assert_eq!(
+            named_check("lid volume", "volume: measured 12 mm^3, expected ≥ 15 mm^3"),
+            "lid volume: measured 12 mm^3, expected ≥ 15 mm^3"
+        );
+        assert_eq!(
+            named_check("wall", "wall is 1 mm, must be ≥ 2 mm"),
+            "wall is 1 mm, must be ≥ 2 mm"
+        );
+        // A name that only begins another word is still said.
+        assert_eq!(
+            named_check("w", "width is 1 mm, must be ≥ 2 mm"),
+            "w: width is 1 mm, must be ≥ 2 mm"
+        );
+        assert_eq!(
+            named_check("holes through", "through: measured false, expected true"),
+            "holes through: measured false, expected true"
+        );
+        assert_eq!(
+            named_check(
+                "apart",
+                "Bolt overlaps Plate by 12 mm^3, expected no overlap"
+            ),
+            "apart: Bolt overlaps Plate by 12 mm^3, expected no overlap"
+        );
         assert_eq!(
             readable_numbers("measured 1 mm (at least 0.994521895 mm), expected ≥ 1.5 mm"),
             "measured 1 mm (at least 0.99452 mm), expected ≥ 1.5 mm"
@@ -2957,10 +2987,11 @@ mod tests {
             "broken": [{"name": "wall", "message": "wall is 1 mm, must be ≥ 2 mm"}],
             "unproven": [], "pending": 0}});
         let faults = reported_faults(&assertion);
-        // Led by the check's name (the review of 221e3cce).
+        // Named by its check once (a message that names it already is
+        // not led by its name again).
         assert_eq!(
             verdict(&Ok(assertion), &faults, &none),
-            Verdict::Broke("wall: wall is 1 mm, must be ≥ 2 mm".into())
+            Verdict::Broke("wall is 1 mm, must be ≥ 2 mm".into())
         );
         assert_eq!(verdict(&Ok(json!({})), &faults, &faults), Verdict::Good);
     }
