@@ -560,7 +560,7 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
   `Marks::mates` (and `mates_hot` for the one pointed at or chosen), drawn by both paths of the viewport from that
   one list, after the datums, tested like a datum (dimmed behind a body), in `tokens.mate` (brass) and the
   selection's copper; the GPU's picture is compared with the oracle (`gpu_viewport.rs`,
-  `the_direct_path_draws_mate_markers_and_matches_the_oracle`). Pointing at a mate's row on the Assembly tab or at
+  `the_direct_path_draws_mate_markers_and_matches_the_oracle`, opaque: over the four-bar's see-through bars the two pictures differ at 4 pixels beside the bars' edges also without markers, on Intel and AMD alike, a gap of the see-through oracle that is owed). A light halo (`tokens.mate_halo`) under the lines keeps a marker readable on a body of any colour. Pointing at a mate's row on the Assembly tab or at
   its marker (within `tokens.mate_hit` points of a line) sets `sidePanel.mateHover`: the marker is drawn hot and its
   two parts are tinted `tokens.mate_part` while no face is lit otherwise; a marker names its mate and kind under
   the pointer; a click on a row or a marker chooses the mate (`sidePanel.mate`, the row marked; a click on its row
