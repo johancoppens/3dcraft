@@ -60,13 +60,13 @@ fn step(
                     .get("error")
                     .and_then(Value::as_str)
                     .unwrap_or("failed without a reason");
-                return Err((bug_kind(reason).unwrap_or("refused"), cut(reason)));
+                return Err((failed_verdict(reason), cut(reason)));
             }
             Ok(result)
         }
         Err(e) => {
             let message = e.message();
-            Err((bug_kind(message).unwrap_or("refused"), cut(message)))
+            Err((failed_verdict(message), cut(message)))
         }
     }
 }
@@ -102,6 +102,13 @@ struct Target {
     volume: f64,
     area: f64,
     bound: f64,
+}
+
+/// The verdict of a reason something was not done (an error, a failed
+/// status, a failed import feature): a crash or a bug when it says so
+/// (`bug_kind`), else a refusal.
+fn failed_verdict(reason: &str) -> &'static str {
+    bug_kind(reason).unwrap_or("refused")
 }
 
 /// The verdict of a step that went wrong: a crash stays a crash and a bug
@@ -216,7 +223,7 @@ impl ModelRun {
                 .get("error")
                 .and_then(Value::as_str)
                 .unwrap_or("an import feature failed");
-            self.stop("import", "refused", reason);
+            self.stop("import", failed_verdict(reason), reason);
             return None;
         }
 
@@ -661,6 +668,10 @@ mod tests {
         );
         assert_eq!(bug_kind(&panic), Some("crash"));
         assert_eq!(bug_kind("the result is empty"), None);
+        // The same for a feature the import added that failed.
+        assert_eq!(failed_verdict(&bug), "bug");
+        assert_eq!(failed_verdict(&panic), "crash");
+        assert_eq!(failed_verdict("a face could not be sewn"), "refused");
     }
 
     #[test]

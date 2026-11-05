@@ -1039,7 +1039,7 @@ fn scorecard(
     if !died.is_empty() {
         let _ = writeln!(
             s,
-            "### Crashes, timeouts, out of memory\n\n| Model | Verdict | Detail |\n|---|---|---|"
+            "### Crashes, bugs, timeouts, out of memory\n\n| Model | Verdict | Detail |\n|---|---|---|"
         );
         for l in died {
             let r: String = reason(l).replace('|', "\\|").chars().take(200).collect();
