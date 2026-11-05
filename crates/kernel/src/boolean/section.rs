@@ -1773,29 +1773,8 @@ fn to_meet<'s>(
 }
 
 /// How many pairs the helpers may run ahead of the section, per helper.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const AHEAD_PER_HELPER: usize = 4;
-
-/// Threads from the process's pool (`craft3d_math::pool`) to meet the
-/// section's freeform pairs ahead of it, or `None`: not under a bound on
-/// the work (`allowance::scope`: an operation's count there depends on
-/// what it asked before, which the helpers do not see), not for operands
-/// without a freeform face (analytic faces meet in closed form, quickly),
-/// not when the pool has no thread free.
-#[cfg(not(target_arch = "wasm32"))]
-fn ahead_lease(a: &Solid, b: &Solid) -> Option<craft3d_math::pool::Lease> {
-    #[cfg(test)]
-    if tests::NO_AHEAD.with(std::cell::Cell::get) {
-        return None;
-    }
-    let machine = craft3d_math::available_threads();
-    let freeform = |solid: &Solid| solid.body.faces.iter().any(|f| is_freeform(&f.surface));
-    if machine < 2 || craft3d_geom::allowance::scope().is_some() || !(freeform(a) || freeform(b)) {
-        return None;
-    }
-    let lease = craft3d_math::pool::lease(machine - 1);
-    (lease.threads() > 0).then_some(lease)
-}
 
 /// The section's pairs met ahead of it on helper threads (2026-11-04: the
 /// fuel tank's shell met three freeform faces with their own offsets one
@@ -1827,7 +1806,7 @@ fn ahead_lease(a: &Solid, b: &Solid) -> Option<craft3d_math::pool::Lease> {
 /// refusal) at most that many pairs were met for nothing; a pair the
 /// section reaches while a helper meets it waits for that helper instead
 /// of meeting it twice.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 struct Ahead {
     /// The section's pairs, in its order.
     pairs: Vec<(usize, usize)>,
@@ -1850,24 +1829,24 @@ struct Ahead {
     warmed: std::sync::atomic::AtomicUsize,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const FREE: u8 = 0;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const TAKEN: u8 = 1;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const MET: u8 = 2;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const SECTION: u8 = 3;
 
 /// How long a helper or the section waits before it looks again.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const WAIT: std::time::Duration = std::time::Duration::from_micros(200);
 
 /// Sets its flag when dropped: the section done, however it ends.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 struct Ending<'f>(&'f std::sync::atomic::AtomicBool);
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 impl Drop for Ending<'_> {
     fn drop(&mut self) {
         self.0.store(true, std::sync::atomic::Ordering::Release);
@@ -1876,17 +1855,17 @@ impl Drop for Ending<'_> {
 
 /// Marks a pair met when dropped, also when its meeting panicked: the
 /// section never waits for a helper that is gone.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 struct Met<'s>(&'s std::sync::atomic::AtomicU8);
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 impl Drop for Met<'_> {
     fn drop(&mut self) {
         self.0.store(MET, std::sync::atomic::Ordering::Release);
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 impl Ahead {
     fn new(a: &Solid, b: &Solid, tol: f64, helpers: usize) -> Self {
         use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize};
@@ -1994,6 +1973,27 @@ impl Ahead {
             }
         }
     }
+}
+
+/// Threads from the process's pool (`craft3d_math::pool`) to meet the
+/// section's freeform pairs ahead of it, or `None`: not under a bound on
+/// the work (`allowance::scope`: an operation's count there depends on
+/// what it asked before, which the helpers do not see), not for operands
+/// without a freeform face (analytic faces meet in closed form, quickly),
+/// not when the pool has no thread free.
+#[cfg(not(target_arch = "wasm32"))]
+fn ahead_lease(a: &Solid, b: &Solid) -> Option<craft3d_math::pool::Lease> {
+    #[cfg(test)]
+    if tests::NO_AHEAD.with(std::cell::Cell::get) {
+        return None;
+    }
+    let machine = craft3d_math::available_threads();
+    let freeform = |solid: &Solid| solid.body.faces.iter().any(|f| is_freeform(&f.surface));
+    if machine < 2 || craft3d_geom::allowance::scope().is_some() || !(freeform(a) || freeform(b)) {
+        return None;
+    }
+    let lease = craft3d_math::pool::lease(machine - 1);
+    (lease.threads() > 0).then_some(lease)
 }
 
 /// Which edges of a pair of faces [`lying_edges`] looks at.
