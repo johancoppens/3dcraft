@@ -94,6 +94,10 @@ const MAX_COLLISION_BODIES: usize = 500;
 /// kernel for its collisions.
 const MAX_COLLISION_PAIRS: usize = 2_000;
 
+/// Most frames of a bake whose collisions are looked for in one pass
+/// (their states are held together).
+const COLLISION_GROUP: usize = 8;
+
 /// Most answers about pairs of bodies kept from one state for the next
 /// (one state checks at most [`MAX_COLLISION_PAIRS`]).
 const MAX_MEMO: usize = MAX_COLLISION_PAIRS;
@@ -1230,14 +1234,36 @@ impl Sweep {
             self.bake_part(ts, limit, budget)?
         };
         if collisions_too && baked.remaining == 0 {
-            for &t in ts {
-                if self.collided.contains_key(&t.to_bits()) {
-                    continue;
+            // A group of frames at a time: their states made in order,
+            // then the pairs of all of them asked in one pass
+            // (`collisions_of`), each frame's answer the one it gets
+            // alone.
+            let todo: Vec<f64> = ts
+                .iter()
+                .copied()
+                .filter(|t| !self.collided.contains_key(&t.to_bits()))
+                .collect();
+            for group in todo.chunks(COLLISION_GROUP) {
+                let mut states = Vec::with_capacity(group.len());
+                for &t in group {
+                    if states
+                        .iter()
+                        .any(|(at, ..): &(f64, _, _)| at.to_bits() == t.to_bits())
+                    {
+                        continue;
+                    }
+                    let (doc, regen) = self.at(t)?;
+                    states.push((t, doc, regen));
                 }
-                let (doc, regen) = self.at(t)?;
-                let found = collisions(&doc, &regen, memo);
-                self.collided.insert(t.to_bits(), found);
-                baked.collisions = baked.collisions.saturating_add(1);
+                let asked: Vec<(&Document, &Regen)> = states
+                    .iter()
+                    .map(|(_, doc, regen)| (doc.as_ref(), regen.as_ref()))
+                    .collect();
+                let found = collisions_of(&asked, memo, MAX_MEMO);
+                for ((t, ..), found) in states.iter().zip(found) {
+                    self.collided.insert(t.to_bits(), found);
+                    baked.collisions = baked.collisions.saturating_add(1);
+                }
             }
         }
         Ok(baked)
@@ -1509,9 +1535,22 @@ fn collisions_kept(
     memo: &mut PairMemo,
     keep: usize,
 ) -> Result<Vec<Collision>, String> {
+    collisions_of(&[(doc, regen)], memo, keep)
+        .pop()
+        .unwrap_or_else(|| Err(craft3d_math::bug_text!("no answer for the state").into()))
+}
+
+/// The bodies of one state that collisions are looked for among, and the
+/// pairs of them whose boxes meet, in order.
+struct StatePairs<'a> {
+    tolerance: Tolerance,
+    bodies: Vec<(FeatureId, &'a Arc<Body>)>,
+    meeting: Vec<(usize, usize)>,
+}
+
+fn state_pairs<'a>(doc: &Document, regen: &'a Regen) -> Result<StatePairs<'a>, String> {
     let tolerance = Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
         .ok_or("the document's tolerance is not positive and finite")?;
-    let bits = (tolerance.linear.to_bits(), tolerance.angular.to_bits());
     let bodies: Vec<(FeatureId, &Arc<Body>, Option<craft3d_math::Bbox3>)> = regen
         .bodies()
         .filter(|(id, _)| !doc.is_hidden(*id))
@@ -1524,8 +1563,6 @@ fn collisions_kept(
         ));
     }
     let margin = 2.0 * tolerance.linear;
-    let key = |a: &Arc<Body>, b: &Arc<Body>| (address(a), address(b), bits.0, bits.1);
-    // The pairs whose boxes meet, in order.
     let mut meeting = Vec::new();
     for (i, (_, _, abox)) in bodies.iter().enumerate() {
         for (j, (_, _, bbox)) in bodies.iter().enumerate().skip(i.saturating_add(1)) {
@@ -1540,31 +1577,64 @@ fn collisions_kept(
             meeting.len()
         ));
     }
-    let mut answers: BTreeMap<(usize, usize), Answer> = BTreeMap::new();
-    let mut ask = Vec::new();
-    for &(i, j) in &meeting {
-        let (Some(a), Some(b)) = (bodies.get(i), bodies.get(j)) else {
-            continue;
-        };
-        match memo.answers.get(&key(a.1, b.1)) {
-            Some(held) => {
-                answers.insert((i, j), held.2.clone());
+    Ok(StatePairs {
+        tolerance,
+        bodies: bodies.into_iter().map(|(id, body, _)| (id, body)).collect(),
+        meeting,
+    })
+}
+
+/// [`collisions_kept`] for several states at once, in their order: the
+/// pairs of all of them asked in one pass on the shared pool, each pair
+/// of bodies (with the tolerance) once however many states have it. Each
+/// state's answer is what [`collisions_kept`] gives it alone after the
+/// state before it (an answer is a function of the two bodies and the
+/// tolerance); the memo is left as the last state that could be checked
+/// leaves it.
+pub(crate) fn collisions_of(
+    states: &[(&Document, &Regen)],
+    memo: &mut PairMemo,
+    keep: usize,
+) -> Vec<Result<Vec<Collision>, String>> {
+    let key = |a: &Arc<Body>, b: &Arc<Body>, t: &Tolerance| {
+        (
+            address(a),
+            address(b),
+            t.linear.to_bits(),
+            t.angular.to_bits(),
+        )
+    };
+    let prepared: Vec<Result<StatePairs<'_>, String>> = states
+        .iter()
+        .map(|(doc, regen)| state_pairs(doc, regen))
+        .collect();
+    // The pairs to ask, each once, in the order first met.
+    let mut asked: BTreeMap<PairKey, usize> = BTreeMap::new();
+    let mut jobs: Vec<(&Arc<Body>, &Arc<Body>, Tolerance)> = Vec::new();
+    for state in prepared.iter().flatten() {
+        for &(i, j) in &state.meeting {
+            let (Some(a), Some(b)) = (state.bodies.get(i), state.bodies.get(j)) else {
+                continue;
+            };
+            let k = key(a.1, b.1, &state.tolerance);
+            if memo.answers.contains_key(&k) || asked.contains_key(&k) {
+                continue;
             }
-            None => ask.push((i, j)),
+            asked.insert(k, jobs.len());
+            jobs.push((a.1, b.1, state.tolerance));
         }
     }
-    let indices: Vec<usize> = (0..ask.len()).collect();
+    let indices: Vec<usize> = (0..jobs.len()).collect();
     let found = crate::interference_cmds::in_order(&indices, |n| {
-        let (i, j) = ask.get(n).copied()?;
-        let (a, b) = (bodies.get(i)?.1, bodies.get(j)?.1);
+        let (a, b, tolerance) = jobs.get(n)?;
         // Proven apart by their meshes: no common volume, as the kernel
         // would say (`apart.rs`).
-        if crate::apart::proven_apart(a, b, &tolerance) {
+        if crate::apart::proven_apart(a, b, tolerance) {
             return Some(Ok(0.0));
         }
         // The common volume alone: how two bodies that do not overlap
         // touch is not asked (`common_volume`, not `interference`).
-        Some(match common_volume(a, b, &tolerance) {
+        Some(match common_volume(a, b, tolerance) {
             Ok(Some(common)) => craft3d_topo::mass_properties(&common.body)
                 .map(|mass| mass.volume)
                 .map_err(|e| format!("the common volume could not be measured: {e}")),
@@ -1572,42 +1642,81 @@ fn collisions_kept(
             Err(e) => Err(e.to_string()),
         })
     });
-    for (pair, answer) in ask.iter().zip(found) {
-        let answer = answer.unwrap_or_else(|| Err("the query stopped unexpectedly".to_string()));
-        answers.insert(*pair, answer);
-    }
-    // Kept for the next state: this state's pairs only, the first `keep`.
-    memo.answers = meeting
-        .iter()
-        .take(keep)
-        .filter_map(|&(i, j)| {
-            let (a, b) = (bodies.get(i)?.1, bodies.get(j)?.1);
-            let answer = answers.get(&(i, j))?.clone();
-            Some((key(a, b), (Arc::clone(a), Arc::clone(b), answer)))
-        })
+    let found: Vec<Answer> = found
+        .into_iter()
+        .map(|answer| answer.unwrap_or_else(|| Err("the query stopped unexpectedly".to_string())))
         .collect();
-    let mut out = Vec::new();
-    for (&(i, j), answer) in &answers {
-        let (Some((ida, ..)), Some((idb, ..))) = (bodies.get(i), bodies.get(j)) else {
-            continue;
+    let mut out = Vec::with_capacity(states.len());
+    let mut last: Option<BTreeMap<PairKey, Held>> = None;
+    for state in prepared {
+        let state = match state {
+            Ok(state) => state,
+            Err(e) => {
+                out.push(Err(e));
+                continue;
+            }
         };
-        match answer {
-            Ok(volume) if *volume > 0.0 => out.push(Collision {
-                a: *ida,
-                b: *idb,
-                volume: Some(*volume),
-                unknown: None,
-            }),
-            Err(reason) => out.push(Collision {
-                a: *ida,
-                b: *idb,
-                volume: None,
-                unknown: Some(reason.clone()),
-            }),
-            Ok(_) => {}
+        let mut answers: BTreeMap<(usize, usize), Answer> = BTreeMap::new();
+        for &(i, j) in &state.meeting {
+            let (Some(a), Some(b)) = (state.bodies.get(i), state.bodies.get(j)) else {
+                continue;
+            };
+            let k = key(a.1, b.1, &state.tolerance);
+            let answer = match memo.answers.get(&k) {
+                Some(held) => held.2.clone(),
+                None => asked
+                    .get(&k)
+                    .and_then(|&n| found.get(n))
+                    .cloned()
+                    .unwrap_or_else(|| Err("the query stopped unexpectedly".to_string())),
+            };
+            answers.insert((i, j), answer);
         }
+        // Kept for the next state: this state's pairs only, the first
+        // `keep`.
+        last = Some(
+            state
+                .meeting
+                .iter()
+                .take(keep)
+                .filter_map(|&(i, j)| {
+                    let (a, b) = (state.bodies.get(i)?.1, state.bodies.get(j)?.1);
+                    let answer = answers.get(&(i, j))?.clone();
+                    Some((
+                        key(a, b, &state.tolerance),
+                        (Arc::clone(a), Arc::clone(b), answer),
+                    ))
+                })
+                .collect(),
+        );
+        let mut collided = Vec::new();
+        for (&(i, j), answer) in &answers {
+            let (Some((ida, _)), Some((idb, _))) = (state.bodies.get(i), state.bodies.get(j))
+            else {
+                continue;
+            };
+            match answer {
+                Ok(volume) if *volume > 0.0 => collided.push(Collision {
+                    a: *ida,
+                    b: *idb,
+                    volume: Some(*volume),
+                    unknown: None,
+                }),
+                Err(reason) => collided.push(Collision {
+                    a: *ida,
+                    b: *idb,
+                    volume: None,
+                    unknown: Some(reason.clone()),
+                }),
+                Ok(_) => {}
+            }
+        }
+        out.push(Ok(collided));
     }
-    Ok(out)
+    if let Some(last) = last {
+        memo.answers = last;
+    }
+    out
 }
 
 /// `doc` with the bodies of the overlapping pairs of `collisions` drawn

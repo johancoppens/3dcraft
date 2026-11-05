@@ -72,6 +72,13 @@ checks (2000 pairs) and holds no body that no state shows. It is dropped on `{t:
 was cleared after the answers were looked up in it, and a pair whose answer was dropped read as clear). A pair the
 kernel refuses is reported `unknown` with the reason, never clear and never red.
 
+Since 2026-11-05 a pair past its boxes is first tried by the proof from meshes ([`booleans.md`](booleans.md) › *A
+proof of apart before the boolean*): a pair proven apart has no common volume without the boolean, every other pair
+is asked as before, so the answers are the same. A placed instance is meshed once, as the body it was placed from,
+and each moment only moves it. A bake with `collisions` asks the pairs of a group of eight frames in one pass
+(`collisions_of`: each pair of bodies once however many frames have it, on the shared pool), each frame's answer the
+one it gets alone.
+
 The red is put into the state itself: the copy shown gets `COLLISION_COLOR` as the appearance of each colliding
 body's feature, and that feature's face colours are dropped (the nearest entry on a face's way back wins, so the
 body's colour then holds for all its faces; `appearance.rs`). Because it is in the scene's face colours, every
@@ -142,6 +149,15 @@ when none did), so the change begins in `(after, t]`; and the least and greatest
 `t`. `measure` is an assertion written inline and checked only there. It proves what held **at the samples**, no
 more: a collision shorter than the spacing of the samples can be missed, so the result says `sampled: true` and
 the samples it took; the summary and the guide say "at the samples", never "everywhere".
+
+**Only what is asked, side by side** (2026-11-05). The copy keeps only the assertions asked for (`assertions`, or
+the inline `measure`) and the outputs they need (`output_cmds::outputs_needed`, through the outputs those use);
+before, every sample measured every assertion and output of the document and the answer showed only the asked ones.
+The samples are taken a group at a time (as many as the machine has threads, eight at most): the group's moments are
+made in order (an assembly's solve carried from one to the next, a part's sketches along the grid), then each is
+measured in a session of its own on a copy set to its moment, side by side on the shared pool, the answers kept by
+what they depend on handed from group to group (`Checks::answers_only`, `take_answers`). Each sample's answer is a
+function of its moment, so the result is the one taken one sample after the other.
 
 **Memory streams.** A sample keeps only what the next one needs: the copy's document state replaces the one before
 (one merged undo step), its placement is held in place of the one before, and the answers the checks remember are
@@ -456,6 +472,21 @@ moments, progress from `building` and from `remaining`, the Bake button running 
 pieces until the hint goes), and a dismissal per document that outlives an edit.
 
 ## Findings and history
+
+- 2026-11-05: collisions fast (post-freeze, approved by the developer). Measured (release, the developer's
+  laptop, 111 samples; before → after, the answers byte for byte the same, `document.interference` but for its new
+  `work.apart`): `motion.check` of the overlap assertion: planetary gearbox 214 → 3.2 s, gear reducer 157 → 15.4 s,
+  walker 4.8 → 3.1 s, the developer's tray with lid and knob (`measure` overlap, a real collision at 20 samples,
+  two pairs that touch at every moment) 129 to 187 → 37 to 58 s (three runs each on a laptop busy with other work). `motion.check` of all assertions (33 samples, `details`):
+  planetary 100 → 39 s, reducer 72 → 31 s (what is left is the clearances and the section measures of the Willis
+  output). 41 moments of `view.motion {collisions}` (less the same without collisions): planetary 35.0 → 1.2 s,
+  reducer 27.1 → 6.7 s, walker 1.6 → 1.3 s, tray 47.5 → 49 to 63 s, no faster (its two touching pairs need the boolean at
+  every moment: a touch cannot be proven from meshes). `motion.bake {frames: 40, collisions}`: planetary 35.5 → 1.8 s,
+  reducer 29.6 → 7.3 s, tray 51.9 → 16.8 s. `document.interference`: planetary 1.8 → 0.7 s (12 of 12 pairs past
+  the boxes proven apart), reducer 4.7 → 4.2 s (7 of 13; the 5 that touch and one more need the boolean), walker
+  (113 pairs past the boxes, 109 proven). Not done, on purpose: answers reused between moments whose pairs have the
+  same relative pose. A solve never gives two moments bit for bit the same relative pose, and an answer taken from
+  a nearby pose would make a moment depend on the moments before it (and the volumes differ in their last bits).
 
 - 2026-10-29: first version (track C, phase 1): the timeline `t`, `view.motion` with collisions drawn red,
   `view.trace` with its SVG and DXF export, `motion.check` over any assertion, `view.replay {motion}`, the player's

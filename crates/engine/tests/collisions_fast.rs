@@ -267,4 +267,78 @@ fn the_planetary_gearbox_answers_as_the_kernel_alone() {
     let (with, without) = both(&mut s, "motion.check", &check);
     assert_eq!(with, without);
     assert_eq!(with["ok"], true, "{with}");
+    // Its samples one after the other on one thread: the same.
+    let alone = std::thread::spawn(move || {
+        craft3d_math::pool::work_alone();
+        let mut s = Session::new(Workspace::unrestricted());
+        s.open_bytes("planetary-gearbox.3dcraftasm", &bytes)
+            .unwrap();
+        run(&mut s, "motion.check", &check)
+    })
+    .join()
+    .unwrap();
+    assert_eq!(with, alone);
+}
+
+/// A part whose block moves through another with `t` (apart, touching,
+/// overlapping, touching, apart): the collisions a bake finds for its
+/// frames, several frames in one pass, and those of each moment shown
+/// alone without the proof are the same.
+#[test]
+fn a_bake_finds_the_collisions_each_moment_has_alone() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let make = || {
+        let mut s = Session::new(Workspace::unrestricted());
+        run(&mut s, "file.new", &json!({"units": "mm"}));
+        run(&mut s, "variable.set", &json!({"name": "t", "expr": "0"}));
+        block(&mut s, "Fixed", [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]);
+        block(&mut s, "Far", [0.0, 30.0, 0.0], [10.0, 10.0, 10.0]);
+        run(
+            &mut s,
+            "feature.block",
+            &json!({"name": "Mover", "position": ["40 mm * t - 15 mm", "2 mm", "2 mm"], "size": ["5 mm", "5 mm", "5 mm"]}),
+        );
+        s
+    };
+    let frames = 8;
+    set_mesh_proof(true);
+    let mut baked = make();
+    run(
+        &mut baked,
+        "motion.bake",
+        &json!({"frames": frames, "collisions": true, "background": false}),
+    );
+    let mut with = Vec::new();
+    for k in 0..=frames {
+        let t = f64::from(k) / f64::from(frames);
+        with.push(
+            run(
+                &mut baked,
+                "view.motion",
+                &json!({"t": t, "collisions": true}),
+            )["collisions"]
+                .clone(),
+        );
+    }
+    set_mesh_proof(false);
+    let mut alone = make();
+    let mut without = Vec::new();
+    for k in 0..=frames {
+        let t = f64::from(k) / f64::from(frames);
+        without.push(
+            run(
+                &mut alone,
+                "view.motion",
+                &json!({"t": t, "collisions": true}),
+            )["collisions"]
+                .clone(),
+        );
+    }
+    set_mesh_proof(true);
+    assert_eq!(with, without);
+    let overlapping = with
+        .iter()
+        .filter(|c| c.as_array().is_some_and(|a| !a.is_empty()))
+        .count();
+    assert!(overlapping >= 2, "{with:?}");
 }
