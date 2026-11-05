@@ -350,6 +350,11 @@ impl Kit {
             .fill(color(fill))
             .stroke(match self.ground {
                 Ground::Plate => egui::Stroke::new(1.0, color(t.plate_field_stroke)),
+                // On the dark set's panel the chrome's black is one step
+                // from the panel itself: a ring keeps the line's edge.
+                Ground::Panel if !crate::theme::is_light(t.panel_fill) => {
+                    egui::Stroke::new(1.0, color(self.skin.field_stroke))
+                }
                 Ground::Panel => egui::Stroke::NONE,
             })
             .corner_radius(self.radius())

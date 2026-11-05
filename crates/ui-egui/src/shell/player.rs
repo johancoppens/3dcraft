@@ -339,6 +339,12 @@ impl Shell {
         self.timeline.has_timeline && (self.state.timeline.motion || self.timeline.steps == 0)
     }
 
+    /// The `t` the view shows, or will once what is queued has run: what
+    /// a moment asked for again starts from (the chip's click, `ui.set`).
+    pub(crate) fn motion_t_asked(&self) -> Option<f64> {
+        self.timeline.motion_t()
+    }
+
     /// Shows the moment `t` of the motion (clamped to 0 to 1).
     pub(crate) fn go_to_t(&mut self, t: f64) {
         let t = if t.is_finite() {
@@ -858,7 +864,7 @@ impl Shell {
     fn player_position(&self) -> String {
         if self.playing_motion_mode() {
             let shown = self.timeline.motion_t().unwrap_or(0.0);
-            t_text(self.shown_t().unwrap_or(shown))
+            t_readout(self.shown_t().unwrap_or(shown))
         } else {
             let steps = self.timeline.steps;
             let shown = self.timeline.shown_step().clamp(1, steps.max(1));
@@ -907,7 +913,7 @@ impl Shell {
                 if self.playing_motion_mode() {
                     let play = self.play_button(ui, &kit);
                     let shown = self.timeline.motion_t().unwrap_or(0.0);
-                    let label = t_text(self.shown_t().unwrap_or(shown));
+                    let label = t_readout(self.shown_t().unwrap_or(shown));
                     let room =
                         (ui.available_width() - tokens.compact_player_label - PLAYER_GROUP_GAP)
                             .max(40.0);
@@ -1005,6 +1011,13 @@ pub(crate) fn button_side_for(row: f32, tokens: &Tokens) -> f32 {
 /// `Shell::shown_t`, rounded the same way.
 pub(crate) fn t_text(t: f64) -> String {
     format!("t = {t:.3}")
+}
+
+/// The player row's position readout of a motion (board s8): `t 0.350`,
+/// the same rounding as [`t_text`], without the `=` the sentences of the
+/// caption and the status bar keep.
+pub(crate) fn t_readout(t: f64) -> String {
+    format!("t {t:.3}")
 }
 
 #[cfg(test)]

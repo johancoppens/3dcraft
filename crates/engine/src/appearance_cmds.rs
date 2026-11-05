@@ -702,8 +702,15 @@ fn material_json(values: &Values, regen: &Regen, at: FeatureId) -> Option<Value>
 /// it is, its inertia measured when it is asked for. Measured now it
 /// would integrate every face again, also for a command that only needs
 /// the mass properties (`document.check`).
-pub(crate) fn measure_ahead(doc: &Document, regen: &Regen, at: FeatureId, body: &Arc<Body>) {
-    if crate::mass::mass_known(body).is_none() && body_material(doc, regen, at).is_some() {
+pub(crate) fn measure_ahead(
+    doc: &Document,
+    regen: &Regen,
+    at: FeatureId,
+    body: &Arc<Body>,
+    inertia: bool,
+) {
+    if inertia && crate::mass::mass_known(body).is_none() && body_material(doc, regen, at).is_some()
+    {
         let _measured = mass_and_inertia_of(body);
     }
 }
@@ -718,10 +725,13 @@ pub(crate) fn measure_all_ahead<'a>(
     doc: &Document,
     regen: &Regen,
     bodies: impl IntoIterator<Item = (FeatureId, &'a Arc<Body>)>,
+    inertia: bool,
 ) {
     let mut plain = Vec::new();
     for (at, body) in bodies {
-        if body_material(doc, regen, at).is_some() {
+        // Without the inertia a body with a material is measured as one
+        // without: its mass is its volume times its density.
+        if inertia && body_material(doc, regen, at).is_some() {
             if !crate::mass::measure_ahead(&plain) {
                 return;
             }
@@ -746,7 +756,9 @@ pub(crate) fn measure_all_ahead<'a>(
 /// its appearance and material (and from which feature it has them,
 /// when that is another), and with a material its mass (kg) and inertia
 /// tensor about the centroid (kg · unit²); without `measured` only the
-/// appearance and the material, nothing that takes measuring the body.
+/// appearance and the material, nothing that takes measuring the body;
+/// without `inertia` the mass alone (from the body's remembered measure,
+/// its volume times the density), never the inertia's integration.
 pub(crate) fn physical_fields(
     entry: &mut Map<String, Value>,
     values: &Values,
@@ -754,6 +766,7 @@ pub(crate) fn physical_fields(
     (at, body): (FeatureId, &Arc<Body>),
     unit: &str,
     measured: bool,
+    inertia: bool,
 ) {
     let doc = values.doc();
     // A colour of its own that follows the variables is shown with its
@@ -787,7 +800,12 @@ pub(crate) fn physical_fields(
     };
     let m = metres_per_unit(doc.units.length);
     let per_volume = density * m * m * m;
-    let (mass, inertia) = mass_and_inertia_of(body);
+    let (mass, inertia) = if inertia {
+        let (mass, turned) = mass_and_inertia_of(body);
+        (mass, Some(turned))
+    } else {
+        (crate::mass::mass_of(body), None)
+    };
     match mass {
         Ok(mass) => {
             entry.insert("mass".into(), (mass.volume * per_volume).into());
@@ -799,7 +817,8 @@ pub(crate) fn physical_fields(
         }
     }
     match inertia {
-        Ok(inertia) => {
+        None => {}
+        Some(Ok(inertia)) => {
             let tensor: Vec<Vec<f64>> = inertia
                 .tensor
                 .iter()
@@ -808,7 +827,7 @@ pub(crate) fn physical_fields(
             entry.insert("inertia".into(), json!(tensor));
             entry.insert("inertiaUnit".into(), format!("kg {unit}^2").into());
         }
-        Err(e) => {
+        Some(Err(e)) => {
             entry.insert("inertiaError".into(), e.to_string().into());
         }
     }
@@ -820,6 +839,62 @@ mod tests {
 
     use crate::{Session, Workspace};
     use serde_json::json;
+
+    /// `inertia: false` (2026-11-05, the window's Bodies tab): the mass,
+    /// the same as with the inertia, without the inertia and without
+    /// integrating it; asked for afterwards, it is integrated then.
+    #[test]
+    fn without_the_inertia_the_mass_is_given_and_the_inertia_not_integrated() {
+        let mut s = Session::new(Workspace::none());
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            (
+                "feature.sphere",
+                json!({"name": "Ball", "position": [0, 0, 0], "radius": 10}),
+            ),
+            (
+                "body.material",
+                json!({"body": "Ball", "name": "Steel", "density": 7850}),
+            ),
+        ] {
+            s.execute(id, &params).unwrap();
+        }
+        let inertias = crate::mass::fresh_inertias;
+        let before = inertias();
+        let quick = s
+            .execute("document.inspect", &json!({"inertia": false}))
+            .unwrap();
+        let measured = s
+            .execute(
+                "document.measure",
+                &json!({"feature": "Ball", "inertia": false}),
+            )
+            .unwrap();
+        assert_eq!(inertias(), before, "no inertia integrated");
+        let body = &quick["bodies"][0];
+        assert!(
+            body.get("inertia").is_none() && body.get("inertiaUnit").is_none(),
+            "{body}"
+        );
+        assert!(measured["bodies"][0].get("inertia").is_none(), "{measured}");
+        let full = s.execute("document.inspect", &json!({})).unwrap();
+        assert_eq!(inertias(), before + 1, "asked for: integrated once");
+        let (Some(a), Some(b)) = (body["mass"].as_f64(), full["bodies"][0]["mass"].as_f64()) else {
+            panic!("{quick} {full}");
+        };
+        // Bit for bit: the same volume times the same density.
+        assert_eq!(a.to_bits(), b.to_bits(), "{a} {b}");
+        assert!(full["bodies"][0]["inertia"].is_array());
+        // A wrong kind of value is refused, never a panic.
+        assert!(
+            s.execute("document.inspect", &json!({"inertia": "no"}))
+                .is_err()
+        );
+        assert!(
+            s.execute("document.measure", &json!({"inertia": 1}))
+                .is_err()
+        );
+    }
 
     /// A body measured before it had a material is not integrated again
     /// for its inertia by a command that needs only its mass properties

@@ -67,8 +67,8 @@ pub const UI_METHODS: &[UiMethod] = &[
     },
     UiMethod {
         name: "ui.param",
-        params: r#"{"name": string, "value": number or true/false or a choice's label}"#,
-        summary: "Sets one public parameter as the Parameters tab does: a number (in the parameter's unit, param.list unit) is first clamped to its range and snapped to its step, a whole-number kind rounded, and the form says so under the field (note, as ui.get parameters gives it); then param.set runs (in the desktop window on its engine thread, the reply coming once it is done; through MCP's control_call it is queued as the form's commit and the reply says queued: true instead of result). Returns sent (the value given to param.set), note, result (param.set's result, or {error}) and parameters (as ui.get). A value that breaks the model marks the field and a banner over the viewport offers Back to last good (parameters.trouble, broke: true); the viewport shows the document as it is. To set a value exactly, or one out of range to see it refused, use the command param.set.",
+        params: r#"{"name": string, "value": number or true/false or a choice's label} | {"lastGood": true}"#,
+        summary: "Sets one public parameter as the Parameters tab does: a number (in the parameter's unit, param.list unit) is first clamped to its range and snapped to its step, a whole-number kind rounded, and the form says so under the field (note, as ui.get parameters gives it); then param.set runs (in the desktop window on its engine thread, the reply coming once it is done; through MCP's control_call it is queued as the form's commit and the reply says queued: true instead of result). Returns sent (the value given to param.set), note, result (param.set's result, or {error}) and parameters (as ui.get). A value that breaks the model marks the field and a banner over the viewport offers Back to last good (parameters.trouble, broke: true); the viewport shows the document as it is. {lastGood: true} is that button: it sets the parameters that differ back to the last values that built (sent lists them), an error while nothing breaks the model. To set a value exactly, or one out of range to see it refused, use the command param.set.",
     },
     UiMethod {
         name: "ui.notice",
@@ -539,6 +539,15 @@ impl Shell {
             if session.execute("select.set", &request).is_err() {
                 self.state.selected_feature = None;
             }
+        }
+        // Collisions switched while a moment of the motion is shown: that
+        // moment is asked for again with them (as a click on the chip
+        // does), so the view draws what the chip says. Asked before the sync,
+        // which shows the chip what the moment shown was asked with.
+        if self.state.timeline.collisions != before.timeline.collisions
+            && let Some(t) = self.motion_t_asked()
+        {
+            self.go_to_t(t);
         }
         // A selection that names no feature is dropped here, not later.
         let scene = self.sync(session);

@@ -62,6 +62,10 @@ pub const PROMPT_ARMING: f64 = 0.7;
 /// How long the pill shows what an agent did, in milliseconds.
 pub const ACTIVITY_MS: u64 = 1500;
 
+/// The switch's name, as the bridge's and the MCP server's messages say
+/// it ("switch on Allow AI agents").
+pub const ALLOW_AGENTS: &str = "Allow AI agents";
+
 /// How the pill looks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PillKind {
@@ -527,7 +531,8 @@ impl Shell {
     }
 
     /// The panel's heading: the info accent's bar, "Connect an AI agent",
-    /// and the switch at the right; where the switch was drawn.
+    /// and at the right the switch with its name, "Allow AI agents";
+    /// where the switch and its name were drawn.
     pub(super) fn agents_heading(&mut self, ui: &mut egui::Ui, kit: &Kit) -> egui::Rect {
         let mut on = self.agents.switch.unwrap_or(self.agents.status.allowed);
         let was = on;
@@ -535,12 +540,32 @@ impl Shell {
         ui.horizontal(|ui| {
             kit.section_header(ui, "Connect an AI agent");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let response = kit.toggle(ui, &mut on, "").on_hover_text(if was {
+                let hover = if was {
                     "Agents may drive this window over MCP. Click to turn it off and close their connections."
                 } else {
                     "Let AI agents drive this window over MCP while you watch."
-                });
+                };
+                let response = kit.toggle(ui, &mut on, "").on_hover_text(hover);
                 switch = response.rect;
+                // Its name before it, as the messages of the bridge and
+                // the MCP server call it ("switch on Allow AI agents");
+                // a click on the name turns it too.
+                ui.add_space(kit.t.nav_icon_gap - ui.spacing().item_spacing.x);
+                let name = ui
+                    .add(
+                        egui::Label::new(
+                            egui::RichText::new(ALLOW_AGENTS)
+                                .font(kit.font())
+                                .color(color(kit.skin.text_dim)),
+                        )
+                        .truncate()
+                        .sense(egui::Sense::click()),
+                    )
+                    .on_hover_text(hover);
+                if name.clicked() {
+                    on = !on;
+                }
+                switch = switch.union(name.rect);
             });
         });
         if on != was {
@@ -710,7 +735,7 @@ impl Shell {
         if !status.allowed {
             kit.paragraph(
                 ui,
-                "Off: nothing can connect to this window. Turn it on to let an agent such as Claude model here over MCP while you watch.",
+                "Off: nothing can connect to this window. Switch on Allow AI agents to let an agent such as Claude model here over MCP while you watch.",
                 true,
             );
             how(self, ui);

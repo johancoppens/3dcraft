@@ -176,6 +176,99 @@ fn colliding_bodies_are_drawn_red_by_the_window() {
     );
 }
 
+/// One truth for collisions (the end-to-end test of 2026-11-04: the chip
+/// lit, nothing red): Collisions switched on by `ui.set` while a moment is
+/// shown asks for that moment again with them; an agent's `view.motion`
+/// with or without `collisions` is what the chip then shows.
+#[test]
+fn the_collisions_chip_and_the_view_say_the_same() {
+    let mut session = crank();
+    let mut shell = Shell::new();
+    let mut window = Window {
+        ctx: egui::Context::default(),
+        time: 0.0,
+    };
+    run(&mut session, "view.motion", json!({"t": 0.5}));
+    window.frame(&mut shell, &mut session, 0.03);
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(
+        got["timeline"]["collisions"],
+        json!([]),
+        "{}",
+        got["timeline"]
+    );
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"timeline": {"collisions": true}}),
+    );
+    for _ in 0..4 {
+        window.frame(&mut shell, &mut session, 0.03);
+    }
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(got["timeline"]["collisions"], json!([["Wall", "Crank"]]));
+    assert_eq!(got["state"]["timeline"]["collisions"], true);
+    // An agent's moment without `collisions` keeps them (as before).
+    run(&mut session, "view.motion", json!({"t": 0.52}));
+    window.frame(&mut shell, &mut session, 0.03);
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(got["timeline"]["collisions"], json!([["Wall", "Crank"]]));
+    assert_eq!(got["state"]["timeline"]["collisions"], true);
+    // An agent's `collisions: false`: the chip goes off with the red.
+    run(
+        &mut session,
+        "view.motion",
+        json!({"t": 0.5, "collisions": false}),
+    );
+    window.frame(&mut shell, &mut session, 0.03);
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(got["timeline"]["collisions"], json!([]));
+    assert_eq!(got["state"]["timeline"]["collisions"], false);
+}
+
+/// Collisions switched by `ui.set` right after a step of the player ask
+/// for the moment the player went to, not the one still shown (the review
+/// of e27d1452: the player jumped a step back).
+#[test]
+fn collisions_switched_after_a_step_keep_the_step() {
+    let mut session = crank();
+    let mut shell = Shell::new();
+    let mut window = Window {
+        ctx: egui::Context::default(),
+        time: 0.0,
+    };
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"timeline": {"motion": true}}),
+    );
+    run(&mut session, "view.motion", json!({"t": 0.5}));
+    for _ in 0..3 {
+        window.frame(&mut shell, &mut session, 0.03);
+    }
+    let forward = shell
+        .player_hits()
+        .iter()
+        .find(|(n, _)| *n == "forward")
+        .map(|(_, r)| r.center())
+        .unwrap();
+    window.click(&mut shell, &mut session, forward);
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"timeline": {"collisions": true}}),
+    );
+    for _ in 0..4 {
+        window.frame(&mut shell, &mut session, 0.03);
+    }
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    let t = got["timeline"]["t"].as_f64().unwrap();
+    assert!(t > 0.5 + 1e-9, "stepped forward, kept: {t}");
+}
+
 struct Window {
     ctx: egui::Context,
     time: f64,

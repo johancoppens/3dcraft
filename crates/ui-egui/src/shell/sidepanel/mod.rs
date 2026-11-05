@@ -353,8 +353,12 @@ impl Shell {
             self.side.bodies_for = Some(key);
         }
         if tab == SideTab::Bodies && bodies_here && self.side.bodies_for != Some(key) {
-            self.side.bodies = match session.execute("document.inspect", &json!({"measures": true}))
-            {
+            // Without the inertia, which nothing here shows and which takes
+            // seconds on a large spline body after every edit or undo.
+            self.side.bodies = match session.execute(
+                "document.inspect",
+                &json!({"measures": true, "inertia": false}),
+            ) {
                 Ok(v) => Some(Arc::new(v)),
                 Err(e) => {
                     // Said on the tab's line, not taken for "elsewhere".

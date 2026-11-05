@@ -4470,9 +4470,12 @@ mod tests {
     }
 
     /// Undo and Redo of the Edit menu run on the engine thread and are not
-    /// a commit of the Parameters form: an undo back to a state in which a
-    /// feature fails is not judged as a value that broke the model (no
-    /// trouble, no Back to last good).
+    /// a commit of the Parameters form: their answer is no verdict of a
+    /// commit. The state an undo leaves is still the document's: one in
+    /// which a feature fails is said as broken, at the parameter that
+    /// moved off the last good values (changed 2026-11-04, the end-to-end
+    /// test: the form said ✓ Valid while document.check reported the
+    /// failure; before, this test asked for no trouble at all).
     #[test]
     fn undo_on_the_engine_thread_is_no_verdict_of_the_parameter_form() {
         let (requests, incoming) = mpsc::channel::<Request>();
@@ -4525,12 +4528,9 @@ mod tests {
             .handle_method(session, "ui.get", None)
             .unwrap()
             .unwrap();
-        assert_eq!(
-            state["parameters"]["trouble"],
-            Value::Null,
-            "{}",
-            state["parameters"]
-        );
+        let trouble = &state["parameters"]["trouble"];
+        assert_eq!(trouble["broke"], true, "{}", state["parameters"]);
+        assert_eq!(trouble["name"], "w", "{}", state["parameters"]);
     }
 
     /// The Parameters tab's commit runs on the engine thread, as every

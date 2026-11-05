@@ -608,11 +608,7 @@ impl Shell {
         part(painter, Dot::Ok, &format!("{} rebuilt", s.rebuilt), sk.text);
         if s.checks > 0 {
             if s.checks_failing > 0 {
-                let text = if s.checks_failing == 1 {
-                    format!("1 of {} checks fails", s.checks)
-                } else {
-                    format!("{} of {} checks fail", s.checks_failing, s.checks)
-                };
+                let text = checks_failing_text(s.checks_failing, s.checks);
                 part(painter, Dot::Failed, &text, sk.failed);
             } else {
                 let text = if s.checks == 1 {
@@ -1966,5 +1962,29 @@ mod tests {
         assert_eq!(sketch_key("2 splines", "12 DOF"), "2 splines · 12 DOF");
         assert_eq!(sketch_key("", "18 DOF"), "18 DOF");
         assert_eq!(sketch_key("4 lines", "failed"), "4 lines");
+    }
+}
+
+/// The summary of failing checks: `1 check fails` (the only one), `1 of 3
+/// checks fails`, `2 of 3 checks fail`, `2 checks fail` (all of them).
+pub(crate) fn checks_failing_text(failing: usize, of: usize) -> String {
+    match (failing, of) {
+        (1, 1) => "1 check fails".to_string(),
+        (f, n) if f == n => format!("{f} checks fail"),
+        (1, n) => format!("1 of {n} checks fails"),
+        (f, n) => format!("{f} of {n} checks fail"),
+    }
+}
+
+#[cfg(test)]
+mod checks_text_tests {
+    use super::checks_failing_text;
+
+    #[test]
+    fn failing_checks_are_counted_in_plain_english() {
+        assert_eq!(checks_failing_text(1, 1), "1 check fails");
+        assert_eq!(checks_failing_text(2, 2), "2 checks fail");
+        assert_eq!(checks_failing_text(1, 3), "1 of 3 checks fails");
+        assert_eq!(checks_failing_text(2, 3), "2 of 3 checks fail");
     }
 }

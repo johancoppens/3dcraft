@@ -1137,3 +1137,98 @@ fn on_the_web_the_side_panel_neither_regenerates_nor_spins() {
     );
     assert!(shell.side_bodies().0.is_empty());
 }
+
+/// The Bodies tab and the card of a selected body show volume, area and
+/// mass, never the inertia: an edit and an undo with them open integrate
+/// no inertia (the fuel tank, 2026-11-04: 23 s of inertia after every
+/// undo, felt as a slow undo).
+#[test]
+fn an_undo_with_the_bodies_tab_open_integrates_no_inertia() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(
+        &mut session,
+        "variable.set",
+        json!({"name": "r", "expr": "10 mm"}),
+    );
+    run(
+        &mut session,
+        "feature.sphere",
+        json!({"name": "Ball", "radius": "r"}),
+    );
+    run(
+        &mut session,
+        "body.material",
+        json!({"body": "Ball", "name": "Steel", "density": 7850}),
+    );
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    shell
+        .handle_method(
+            &mut session,
+            "ui.set",
+            Some(&json!({"panels": {"sideTab": "bodies"}})),
+        )
+        .unwrap()
+        .unwrap();
+    run(
+        &mut session,
+        "select.set",
+        json!({"items": [{"kind": "body", "feature": "Ball"}]}),
+    );
+    let before = craft3d_engine::fresh_inertias();
+    window.frames(&mut shell, &mut session, 4);
+    run(
+        &mut session,
+        "variable.set",
+        json!({"name": "r", "expr": "12 mm"}),
+    );
+    window.frames(&mut shell, &mut session, 4);
+    run(&mut session, "edit.undo", json!({}));
+    window.frames(&mut shell, &mut session, 4);
+    assert_eq!(
+        craft3d_engine::fresh_inertias(),
+        before,
+        "no inertia integrated"
+    );
+    // The tab still lists the body's mass.
+    let shown = format!("{:?}", shell.side_bodies());
+    assert!(shown.contains("mass: Some("), "{shown}");
+}
+
+/// A check's `eq` limit reads with its tolerance in the value's unit
+/// (`8000 mm³ ± 1 mm³`; `assert.list` writes the tolerance bare).
+#[test]
+fn an_eq_limit_carries_its_unit_on_the_tolerance() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(
+        &mut session,
+        "feature.block",
+        json!({"name": "B", "size": [20, 20, 20]}),
+    );
+    run(
+        &mut session,
+        "assert.add",
+        json!({"name": "vol", "measure": "volume", "of": "B", "eq": "7000", "tol": "1"}),
+    );
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    for _ in 0..40 {
+        window.frames(&mut shell, &mut session, 1);
+        if shell
+            .side_checks()
+            .0
+            .iter()
+            .all(|c| c.status != CheckStatus::Pending)
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let (lines, _) = shell.side_checks();
+    let vol = lines.iter().find(|l| l.name == "vol").unwrap();
+    assert_eq!(vol.limit, "7000 mm³ ± 1 mm³");
+    assert_eq!(vol.measured, "8000 mm³");
+    assert_eq!(vol.under(), vec!["must be 7000 mm³ ± 1 mm³".to_string()]);
+}

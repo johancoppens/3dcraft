@@ -22,11 +22,10 @@
 use super::Shell;
 use super::number_field::{self, FieldMemory, Typing};
 use crate::theme::color;
-use craft3d_engine::{FeatureState, Scene, Session};
+use craft3d_engine::{FeatureState, Session};
 use craft3d_math::Portable;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 /// Least time between two commits of one drag on the desktop, in seconds.
 pub const DEBOUNCE: f64 = 0.15;
@@ -570,9 +569,9 @@ pub fn reported_faults(result: &Value) -> Faults {
         .into_iter()
         .flatten()
     {
-        faults
-            .assertions
-            .insert(text(b.get("name")), text(b.get("message")));
+        let name = text(b.get("name"));
+        let message = named_check(&name, &text(b.get("message")));
+        faults.assertions.insert(name, message);
     }
     faults
 }
@@ -599,6 +598,10 @@ pub struct Trouble {
     /// last good); false when the command refused the value and nothing
     /// changed.
     pub broke: bool,
+    /// Broken by something other than the form's own commit (an undo, a
+    /// redo, an agent's edit): said as "the model is broken", not as
+    /// "this value breaks it".
+    pub elsewhere: bool,
 }
 
 /// The last state the form took as good: the parameters' expressions
@@ -667,6 +670,13 @@ pub struct ParamForm {
     note: Option<Note>,
     trouble: Option<Trouble>,
     last_good: Option<LastGood>,
+    /// A parameter moved off the last good values by something other than
+    /// the form (an undo, a redo, an agent), seen when the revision
+    /// changed: judged once the assertions are measured.
+    moved: Option<String>,
+    /// The document's revision changed since the last verdict (kept while
+    /// the checks are measured).
+    revised: bool,
     /// The drag and focus of the number fields, and the field typed into,
     /// with which parameter they belong to.
     memory: FieldMemory,
@@ -1018,7 +1028,9 @@ impl Shell {
         for a in &self.assertion_rows {
             match a.status {
                 A::Failed | A::Error => {
-                    faults.assertions.insert(a.name.clone(), a.message.clone());
+                    faults
+                        .assertions
+                        .insert(a.name.clone(), named_check(&a.name, &a.message));
                 }
                 A::Pending => pending = true,
                 A::Passed | A::NotProven | A::Inactive => {}
@@ -1030,7 +1042,7 @@ impl Shell {
     /// Reads `param.list` again when the active document or its revision
     /// changed, judges a commit that came back, and keeps the last good
     /// state. Part of every sync.
-    pub(super) fn sync_params(&mut self, session: &mut Session, scene: Option<&Arc<Scene>>) {
+    pub(super) fn sync_params(&mut self, session: &mut Session) {
         let doc = session.document_status().map(|s| s.id);
         let form = &mut self.params;
         if doc != form.doc {
@@ -1045,6 +1057,8 @@ impl Shell {
             form.note = None;
             form.trouble = None;
             form.last_good = None;
+            form.moved = None;
+            form.revised = false;
             form.judging = None;
             form.memory = FieldMemory::default();
             form.typing = None;
@@ -1062,7 +1076,10 @@ impl Shell {
         let Some(doc) = doc else {
             return;
         };
-        let revision = scene.map_or(0, |s| s.revision);
+        // The document's own revision, which the parameters and the
+        // checks' answers belong to (not the picture's, which can come
+        // later where it is made elsewhere).
+        let revision = session.document_revision().unwrap_or(0);
         let changed = form.read_for != Some((doc, revision));
         // An output being measured is read again until it is computed.
         let measuring_outputs = form.list.as_ref().is_some_and(ParamList::outputs_pending);
@@ -1088,6 +1105,28 @@ impl Shell {
             .as_ref()
             .map(|g| g.faults.clone())
             .unwrap_or_default();
+        // The revision changed since the last verdict: what mended or
+        // broke it is judged once the checks are measured, frames later.
+        if changed {
+            form.revised = true;
+        }
+        // What moved off the last good values since, seen as the revision
+        // changes while the form itself sends nothing.
+        if changed && form.done.is_none() && !form.busy() {
+            form.moved = form.list.as_ref().and_then(|list| {
+                let good = &form.last_good.as_ref()?.values;
+                list.params
+                    .iter()
+                    .find(|p| {
+                        let now = match p.value {
+                            Some(value) if p.takes_numbers() => sent_value(p, value),
+                            _ => Value::String(p.expr.clone()),
+                        };
+                        good.get(&p.name).is_some_and(|g| *g != now)
+                    })
+                    .map(|p| p.name.clone())
+            });
+        }
         if let Some((flight, result)) = form.done.take() {
             let reported = result.as_ref().map(reported_faults).unwrap_or_default();
             let now = faults.clone().joined(reported);
@@ -1140,6 +1179,7 @@ impl Shell {
                         name: flight.field,
                         message,
                         broke: false,
+                        elsewhere: false,
                     });
                 }
                 Verdict::Broke(message) => {
@@ -1148,6 +1188,7 @@ impl Shell {
                         name: flight.field,
                         message,
                         broke: true,
+                        elsewhere: false,
                     });
                 }
             }
@@ -1164,15 +1205,39 @@ impl Shell {
                     name: judging.field,
                     message,
                     broke: true,
+                    elsewhere: false,
                 });
             }
-        } else if changed && !form.busy() {
+        } else if !form.busy() && form.judging.is_none() && !measuring {
             match &form.trouble {
                 // Mended elsewhere (an undo, an agent): good again.
-                Some(t) if t.broke && faults.new_since(&baseline).is_none() => form.trouble = None,
-                Some(t) if !t.broke => form.trouble = None,
+                Some(t) if form.revised && t.broke && faults.new_since(&baseline).is_none() => {
+                    form.trouble = None;
+                }
+                Some(t) if form.revised && !t.broke => form.trouble = None,
+                // Broken elsewhere (an undo or a redo, an agent's edit) in
+                // a Jig: said at the parameter that moved off the last
+                // good values, only when one did (a Jig that fails as it
+                // is opened, a tab switched back to, an edit of a feature
+                // that is no parameter: nothing said), once measured.
+                None if form.list.as_ref().is_some_and(|l| l.jig) => {
+                    if let Some(name) = form.moved.clone()
+                        && let Some(message) = faults.new_since(&baseline)
+                    {
+                        form.trouble = Some(Trouble {
+                            name: Some(name),
+                            message,
+                            broke: true,
+                            elsewhere: true,
+                        });
+                    }
+                }
                 _ => {}
             }
+        }
+        if !measuring && !form.busy() && form.judging.is_none() {
+            form.moved = None;
+            form.revised = false;
         }
         if form.trouble.is_none() && !form.busy() && form.judging.is_none() && !measuring {
             // Each parameter's value as `param.set` takes it: the number
@@ -1215,6 +1280,7 @@ impl Shell {
             "note": form.note.as_ref().map(|n| json!({"name": n.name, "text": n.text})),
             "trouble": form.trouble.as_ref().map(|t| json!({
                 "name": t.name, "message": t.message, "broke": t.broke,
+                "elsewhere": t.elsewhere,
             })),
         })
     }
@@ -1236,15 +1302,28 @@ impl Shell {
             Some(Value::Object(map)) => map,
             _ => {
                 return Err(format!(
-                    "{method}: give {{\"name\": string, \"value\": ...}}"
+                    "{method}: give {{\"name\": string, \"value\": ...}} or {{\"lastGood\": true}}"
                 ));
             }
         };
-        if let Some(unknown) = map.keys().find(|k| *k != "name" && *k != "value") {
+        if let Some(unknown) = map
+            .keys()
+            .find(|k| *k != "name" && *k != "value" && *k != "lastGood")
+        {
             let unknown: String = unknown.chars().take(40).collect();
             return Err(format!(
-                "{method}: unknown parameter `{unknown}`; its parameters are: name, value"
+                "{method}: unknown parameter `{unknown}`; its parameters are: name, value, or lastGood"
             ));
+        }
+        match map.get("lastGood") {
+            None | Some(Value::Bool(false)) => {}
+            Some(Value::Bool(true)) if map.len() == 1 => return self.ui_param_last_good(session),
+            Some(Value::Bool(true)) => {
+                return Err(format!(
+                    "{method}: give `lastGood: true` alone, or `name` and `value`"
+                ));
+            }
+            Some(_) => return Err(format!("{method}: `lastGood` must be true or false")),
         }
         let Some(name) = map.get("name").and_then(Value::as_str) else {
             return Err(format!("{method}: `name` must be a parameter's name"));
@@ -1312,6 +1391,61 @@ impl Shell {
             command: clamping(command),
             sent,
             note: settled.note,
+        })
+    }
+
+    /// Of the last good `values`, those that differ from the values set
+    /// now: what Back to last good sets.
+    fn last_good_changes(&self, values: Map<String, Value>) -> Map<String, Value> {
+        values
+            .into_iter()
+            .filter(|(name, good)| {
+                let now = self.params.list.as_ref().and_then(|l| l.param(name));
+                now.is_none_or(|p| match p.value {
+                    Some(value) if p.takes_numbers() => sent_value(p, value) != *good,
+                    _ => Value::String(p.expr.clone()) != *good,
+                })
+            })
+            .collect()
+    }
+
+    /// `ui.param {lastGood: true}`: Back to last good, as the banner's
+    /// button does, while a value breaks the model.
+    fn ui_param_last_good(&mut self, session: &mut Session) -> Result<ParamAsk, String> {
+        let method = "ui.param";
+        self.sync(session);
+        if !self.params.trouble.as_ref().is_some_and(|t| t.broke) {
+            return Err(format!(
+                "{method}: lastGood: nothing breaks the model now; there is no last good state to go back to"
+            ));
+        }
+        let Some(values) = self
+            .params
+            .last_good
+            .as_ref()
+            .map(|g| g.values.clone())
+            .filter(|v| !v.is_empty())
+        else {
+            return Err(format!(
+                "{method}: lastGood: the model has not built with these parameters since it was opened"
+            ));
+        };
+        let changed = self.last_good_changes(values);
+        if changed.is_empty() {
+            return Err(format!(
+                "{method}: lastGood: the parameters already have their last good values"
+            ));
+        }
+        let sent = Value::Object(changed.clone());
+        let (command, field) = self.params.joined_with(changed);
+        self.params.in_flight = Some(InFlight {
+            doc: self.params.doc,
+            field,
+        });
+        Ok(ParamAsk {
+            command: clamping(command),
+            sent,
+            note: None,
         })
     }
 
@@ -1477,7 +1611,10 @@ impl Shell {
                 let (place, _) =
                     ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
                 crate::kit::glyphs::paint(ui.painter(), glyph, place, color(ink), &self.tokens);
-                ui.label(egui::RichText::new(text).font(kit.font()).color(color(ink)));
+                let said = ui.label(egui::RichText::new(text).font(kit.font()).color(color(ink)));
+                self.params
+                    .hits
+                    .push(("status".to_string(), place.union(said.rect)));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let about = [list.info.title.as_str(), list.info.description.as_str()]
@@ -1492,14 +1629,24 @@ impl Shell {
                     self.params.hits.push(("about".to_string(), info.rect));
                 }
                 if !compact && !list.info.title.is_empty() {
-                    let room = ui.available_width().max(0.0);
+                    // Cut to the room left of the status (a label would
+                    // lay a long title out whole, over "Valid"), the whole
+                    // title on hover.
+                    let room = (ui.available_width() - self.tokens.nav_icon_gap).max(0.0);
                     let mut job = egui::text::LayoutJob::simple_singleline(
                         list.info.title.clone(),
                         kit.font(),
                         color(s.text_dim),
                     );
-                    job.wrap = egui::text::TextWrapping::truncate_at_width(room);
-                    ui.label(job);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width(room.max(1.0));
+                    let galley = ui.painter().layout_job(job);
+                    let (rect, response) = ui.allocate_exact_size(
+                        egui::vec2(galley.size().x.min(room), galley.size().y),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter().galley(rect.min, galley, color(s.text_dim));
+                    response.on_hover_text(&list.info.title);
+                    self.params.hits.push(("title".to_string(), rect));
                 }
             });
         });
@@ -1703,9 +1850,16 @@ impl Shell {
     /// The trouble of the last commit, at its field.
     fn trouble_line(&mut self, ui: &mut egui::Ui, trouble: &Trouble) {
         let tokens = self.tokens;
+        // A break is said in full once, in the banner (with its button);
+        // under the field only what it must be. A refusal in full.
+        let text = if trouble.broke {
+            short_trouble(&trouble.message)
+        } else {
+            trouble.message.clone()
+        };
         ui.add(
             egui::Label::new(
-                egui::RichText::new(&trouble.message)
+                egui::RichText::new(text)
                     .size(tokens.secondary_font)
                     .color(color(tokens.failed)),
             )
@@ -1729,10 +1883,27 @@ impl Shell {
             .params
             .last_good
             .as_ref()
-            .map(|g| g.values.clone())
+            .map(|g| self.last_good_changes(g.values.clone()))
+            // No button that would change nothing (an edit of a feature,
+            // not of a parameter, broke it).
             .filter(|v| !v.is_empty());
         let width = (view.width() - 2.0 * tokens.inset).clamp(120.0, 560.0);
-        let at = egui::pos2(view.center().x - width * 0.5, view.top() + tokens.inset);
+        // Under the view bar (Fit, Iso, Persp…) where it would cover it.
+        let left = view.center().x - width * 0.5;
+        let top = view.top() + tokens.inset;
+        let top = match self.controls_layout.and_then(|l| l.camera_plate) {
+            // The bar across the banner's place at the viewport's top
+            // (within its own height of where the banner would go).
+            Some(bar)
+                if bar.left() < left + width
+                    && bar.right() > left
+                    && bar.top() < top + bar.height() =>
+            {
+                top.max(bar.bottom() + tokens.nav_gap)
+            }
+            _ => top,
+        };
+        let at = egui::pos2(left, top);
         let mut back = None;
         let kit = crate::kit::Kit::plate(&tokens);
         let shown = egui::Area::new(egui::Id::new("craft3d-param-trouble"))
@@ -1778,8 +1949,16 @@ impl Shell {
                                     ui.add(
                                         egui::Label::new(
                                             egui::RichText::new(format!(
-                                                "This value breaks the model: {}",
-                                                number_field::shortened(&trouble.message, 400)
+                                                "{}: {}",
+                                                if trouble.elsewhere {
+                                                    "The model is broken"
+                                                } else {
+                                                    "This value breaks the model"
+                                                },
+                                                number_field::shortened(
+                                                    &readable_numbers(&trouble.message),
+                                                    400
+                                                )
                                             ))
                                             .font(kit.font())
                                             .color(color(tokens.chrome_failed)),
@@ -1817,17 +1996,7 @@ impl Shell {
         if let Some((rect, clicked, values)) = back {
             self.params.banner_hit = Some(rect);
             if clicked {
-                // Only what differs from the values set now.
-                let changed: Map<String, Value> = values
-                    .into_iter()
-                    .filter(|(name, good)| {
-                        let now = self.params.list.as_ref().and_then(|l| l.param(name));
-                        now.is_none_or(|p| match p.value {
-                            Some(value) if p.takes_numbers() => sent_value(p, value) != *good,
-                            _ => Value::String(p.expr.clone()) != *good,
-                        })
-                    })
-                    .collect();
+                let changed = self.last_good_changes(values);
                 if !changed.is_empty() {
                     self.params.ask(json!({ "values": changed }), None);
                 }
@@ -2268,6 +2437,79 @@ pub fn stand_in_range(p: &Param, value: f64) -> [f64; 2] {
     }
 }
 
+/// The numbers of a message written as the checks list writes them
+/// (`at least 0.994521895 mm` is `at least 0.99452 mm`).
+pub(crate) fn readable_numbers(message: &str) -> String {
+    message
+        .split(' ')
+        .map(|word| {
+            // A number, maybe followed by a `)` or a `,`.
+            let end = word.trim_end_matches([')', ',', ';']);
+            let tail = &word[end.len()..];
+            let head = end.trim_start_matches('(');
+            let lead = &end[..end.len() - head.len()];
+            match head.parse::<f64>() {
+                Ok(v) if v.is_finite() => format!(
+                    "{lead}{}{tail}",
+                    crate::shell::sidepanel::checks::number_text(v)
+                ),
+                _ => word.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A check's message as the form says it: led by the check's name, not by
+/// the kind of its measure (`thickness: measured 1 mm …` of the check
+/// `wall` is `wall: measured 1 mm …`; `Bolt overlaps Plate …` is `apart:
+/// Bolt overlaps Plate …`).
+pub(crate) fn named_check(name: &str, message: &str) -> String {
+    let rest = match message.split_once(": ") {
+        // A measure's kind first (one word, `thickness`, `centerOfMass`).
+        Some((kind, rest)) if !kind.is_empty() && kind.chars().all(char::is_alphanumeric) => rest,
+        _ => message,
+    };
+    // Said once: a message that names the check already (`wall is 1 mm,
+    // …`) is not led by its name again.
+    let names_it = rest
+        .strip_prefix(name)
+        .is_some_and(|after| after.starts_with([' ', ':', ',']));
+    if name.is_empty() || names_it {
+        rest.to_string()
+    } else {
+        format!("{name}: {rest}")
+    }
+}
+
+/// What a field says of a break in a line, the whole reason being the
+/// banner's: what a check must be (`wall: must be ≥ 1.5 mm`), else what
+/// was found (`apart: Bolt overlaps Plate by 12 mm³`, `wall: cannot be
+/// measured …`, `Round: the fillet does not fit`).
+pub(crate) fn short_trouble(message: &str) -> String {
+    let (head, rest) = message.split_once(": ").unwrap_or(("", message));
+    let named = |text: &str| {
+        if head.is_empty() {
+            text.to_string()
+        } else {
+            format!("{head}: {text}")
+        }
+    };
+    let bound = |expected: &str| {
+        let e = expected.trim_start();
+        e.starts_with(['≥', '≤', '<', '>', '=', '±', '-'])
+            || e.chars().next().is_some_and(|c| c.is_ascii_digit())
+    };
+    let text = match rest.rsplit_once(", expected ") {
+        // A bound: what it must be.
+        Some((_, expected)) if bound(expected) => named(&format!("must be {}", expected.trim())),
+        // A flag or a sentence: what was found.
+        Some((found, _)) => named(found.trim().trim_start_matches("measured ")),
+        None => named(rest.trim()),
+    };
+    crate::shell::sidepanel::checks::pretty_units(&readable_numbers(&text))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2634,6 +2876,74 @@ mod tests {
     }
 
     #[test]
+    fn a_break_is_said_short_under_its_field_with_readable_numbers() {
+        let wall = named_check(
+            "wall",
+            "thickness: measured 1 mm (at least 0.994521895 mm), expected ≥ 1.5 mm",
+        );
+        assert_eq!(
+            wall,
+            "wall: measured 1 mm (at least 0.994521895 mm), expected ≥ 1.5 mm"
+        );
+        assert_eq!(short_trouble(&wall), "wall: must be ≥ 1.5 mm");
+        let apart = named_check(
+            "apart",
+            "Bolt overlaps Plate by 12 mm^3, expected no overlap",
+        );
+        assert_eq!(
+            short_trouble(&apart),
+            "apart: Bolt overlaps Plate by 12 mm³"
+        );
+        assert_eq!(
+            short_trouble(&named_check(
+                "wall",
+                "thickness: cannot be measured: no body"
+            )),
+            "wall: cannot be measured: no body"
+        );
+        assert_eq!(
+            short_trouble(&named_check(
+                "lid fits",
+                "value: measured false, expected true"
+            )),
+            "lid fits: false"
+        );
+        assert_eq!(
+            short_trouble("Round: the fillet does not fit"),
+            "Round: the fillet does not fit"
+        );
+        // Each kind names its check once.
+        assert_eq!(
+            named_check("lid volume", "volume: measured 12 mm^3, expected ≥ 15 mm^3"),
+            "lid volume: measured 12 mm^3, expected ≥ 15 mm^3"
+        );
+        assert_eq!(
+            named_check("wall", "wall is 1 mm, must be ≥ 2 mm"),
+            "wall is 1 mm, must be ≥ 2 mm"
+        );
+        // A name that only begins another word is still said.
+        assert_eq!(
+            named_check("w", "width is 1 mm, must be ≥ 2 mm"),
+            "w: width is 1 mm, must be ≥ 2 mm"
+        );
+        assert_eq!(
+            named_check("holes through", "through: measured false, expected true"),
+            "holes through: measured false, expected true"
+        );
+        assert_eq!(
+            named_check(
+                "apart",
+                "Bolt overlaps Plate by 12 mm^3, expected no overlap"
+            ),
+            "apart: Bolt overlaps Plate by 12 mm^3, expected no overlap"
+        );
+        assert_eq!(
+            readable_numbers("measured 1 mm (at least 0.994521895 mm), expected ≥ 1.5 mm"),
+            "measured 1 mm (at least 0.99452 mm), expected ≥ 1.5 mm"
+        );
+    }
+
+    #[test]
     fn a_commit_that_breaks_the_model_is_marked_and_a_refusal_is_said() {
         let none = Faults::default();
         assert_eq!(
@@ -2677,6 +2987,8 @@ mod tests {
             "broken": [{"name": "wall", "message": "wall is 1 mm, must be ≥ 2 mm"}],
             "unproven": [], "pending": 0}});
         let faults = reported_faults(&assertion);
+        // Named by its check once (a message that names it already is
+        // not led by its name again).
         assert_eq!(
             verdict(&Ok(assertion), &faults, &none),
             Verdict::Broke("wall is 1 mm, must be ≥ 2 mm".into())

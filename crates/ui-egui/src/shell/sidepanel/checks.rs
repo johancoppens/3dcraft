@@ -1,6 +1,8 @@
 //! The checks under the feature list (plan of 2026-11-02, boards 01 and
 //! 12): a header that folds them (`Checks 7 · all pass`, `1 failing`),
-//! then a row per check, measured against its limit (`7 mm  ≥ 5 mm`) with
+//! then a row per check with its measure (`7 mm`; under a check that does
+//! not pass, what it must be, `must be ≥ 5 mm`, and why; all of it in the
+//! tooltip) and
 //! a dot that carries a tick or a cross, so the state does not hang on
 //! colour alone. A failing check is a red row with its reason under it. A
 //! click on a check flies to what it measures. While something is
@@ -31,6 +33,9 @@ pub struct CheckLine {
     pub status: CheckStatus,
     /// Under a failing check: why.
     pub note: Option<String>,
+    /// What was measured said more than the row shows (a flag, or words
+    /// in parentheses cut off): the reason goes under it.
+    pub cut: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,38 +47,64 @@ pub enum CheckStatus {
     Off,
 }
 
+impl CheckLine {
+    /// The lines under a check that does not pass: what it must be, then
+    /// why where that says more than the measure (not proven, or nothing
+    /// measured); on the row, as a phone has no tooltip.
+    pub fn under(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if matches!(self.status, CheckStatus::Failed | CheckStatus::NotProven) {
+            if !self.limit.is_empty() {
+                lines.push(format!("must be {}", self.limit));
+            }
+            // The reason only where it says more than the measure and the
+            // limit: not proven, or nothing measured (an error).
+            let says_more = self.status == CheckStatus::NotProven
+                || self.measured.is_empty()
+                || self.measured == "—"
+                || self.cut;
+            if let Some(note) = self.note.as_ref().filter(|_| says_more) {
+                lines.push(note.clone());
+            }
+        }
+        lines
+    }
+}
+
 impl Shell {
     /// The checks as the list shows them, and the header's note
     /// (`all pass`, `1 failing`).
     pub fn side_checks(&self) -> (Vec<CheckLine>, String) {
-        let lines: Vec<CheckLine> =
-            self.assertion_rows
-                .iter()
-                .map(|a| {
-                    let status = match a.status {
-                        A::Passed => CheckStatus::Passed,
-                        A::Failed | A::Error => CheckStatus::Failed,
-                        A::NotProven => CheckStatus::NotProven,
-                        A::Pending => CheckStatus::Pending,
-                        A::Inactive => CheckStatus::Off,
-                    };
-                    CheckLine {
-                        name: a.name.clone(),
-                        measured: a.measured.as_deref().map(compact).unwrap_or_else(
-                            || match status {
-                                CheckStatus::Pending => "measuring".to_string(),
-                                CheckStatus::Off => "off".to_string(),
-                                _ => "—".to_string(),
-                            },
-                        ),
-                        limit: a.expected.clone(),
-                        status,
-                        // Which step made it fail is not known yet: its reason.
-                        note: matches!(status, CheckStatus::Failed | CheckStatus::NotProven)
-                            .then(|| a.message.clone()),
-                    }
-                })
-                .collect();
+        let lines: Vec<CheckLine> = self
+            .assertion_rows
+            .iter()
+            .map(|a| {
+                let status = match a.status {
+                    A::Passed => CheckStatus::Passed,
+                    A::Failed | A::Error => CheckStatus::Failed,
+                    A::NotProven => CheckStatus::NotProven,
+                    A::Pending => CheckStatus::Pending,
+                    A::Inactive => CheckStatus::Off,
+                };
+                let raw = a.measured.as_deref().unwrap_or("");
+                CheckLine {
+                    cut: raw.contains(" (") || matches!(raw.trim(), "true" | "false"),
+                    name: a.name.clone(),
+                    measured: a.measured.as_deref().map(measured_text).unwrap_or_else(|| {
+                        match status {
+                            CheckStatus::Pending => "measuring".to_string(),
+                            CheckStatus::Off => "off".to_string(),
+                            _ => "—".to_string(),
+                        }
+                    }),
+                    limit: limit_text(&a.expected),
+                    status,
+                    // Which step made it fail is not known yet: its reason.
+                    note: matches!(status, CheckStatus::Failed | CheckStatus::NotProven)
+                        .then(|| a.message.clone()),
+                }
+            })
+            .collect();
         let failing = lines
             .iter()
             .filter(|l| l.status == CheckStatus::Failed)
@@ -130,13 +161,7 @@ impl Shell {
         lines
             .iter()
             .take(MAX_LISTED)
-            .map(|l| {
-                kit.hit(if l.note.is_some() {
-                    t.row_height + t.label_row_height
-                } else {
-                    t.row_height
-                })
-            })
+            .map(|l| kit.hit(t.row_height + t.label_row_height * l.under().len() as f32))
             .sum()
     }
 
@@ -211,11 +236,8 @@ impl Shell {
                 for line in lines.iter().take(MAX_LISTED) {
                     pending |= line.status == CheckStatus::Pending;
                     let failing = line.status == CheckStatus::Failed;
-                    let height = if line.note.is_some() {
-                        t.row_height + t.label_row_height
-                    } else {
-                        t.row_height
-                    };
+                    let under = line.under();
+                    let height = t.row_height + t.label_row_height * under.len() as f32;
                     let (rect, response) = ui.allocate_exact_size(
                         vec2(ui.available_width(), kit.hit(height)),
                         Sense::click(),
@@ -245,57 +267,63 @@ impl Shell {
                     let x0 = rect.left() + t.nav_spacing * 2.0 + if failing { 4.0 } else { 0.0 };
                     status_dot(painter, &kit, pos2(x0 + r, y), r, dot);
                     let text_x = x0 + 2.0 * r + t.nav_icon_gap + 2.0;
-                    // At the right: the limit, and the measure before it,
-                    // each cut to its share of the row so the name keeps
-                    // room of its own (a long expected value never runs
-                    // over the name and the icon).
+                    // At the right the measure, whole (the limit and the
+                    // reason go under a check that does not pass). The name
+                    // gives way first, down to a share of its own; only
+                    // then is the measure cut.
                     let right = rect.right() - 2.0;
                     let room = (right - text_x).max(0.0);
-                    let cut = |text: String, ink, share: f32| {
+                    let galley =
+                        |text: String, ink| painter.layout_no_wrap(text, kit.font(), kit.c(ink));
+                    let measured_ink = if failing { sk.failed } else { sk.text };
+                    let gap = t.nav_icon_gap * 1.5;
+                    let widths = check_columns(
+                        room,
+                        gap,
+                        galley(line.name.clone(), sk.text).size().x,
+                        galley(line.measured.clone(), measured_ink).size().x,
+                        0.0,
+                    );
+                    let cut = |text: String, ink, width: f32| {
                         let mut job =
                             egui::text::LayoutJob::simple_singleline(text, kit.font(), kit.c(ink));
-                        job.wrap =
-                            egui::text::TextWrapping::truncate_at_width((room * share).max(1.0));
+                        job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(1.0));
                         painter.layout_job(job)
                     };
-                    let limit = cut(compact_all(&line.limit), sk.text_dim, 0.32);
-                    let limit_w = limit.size().x;
+                    let mut x = right;
+                    let measured = cut(line.measured.clone(), measured_ink, widths.measured);
+                    x -= measured.size().x;
                     painter.galley(
-                        pos2(right - limit_w, y - limit.size().y * 0.5),
-                        limit,
-                        kit.c(sk.text_dim),
-                    );
-                    let measured_ink = if failing { sk.failed } else { sk.text };
-                    let measured = cut(line.measured.clone(), measured_ink, 0.26);
-                    let measured_x = right - limit_w - t.nav_icon_gap * 1.5 - measured.size().x;
-                    painter.galley(
-                        pos2(measured_x, y - measured.size().y * 0.5),
+                        pos2(x, y - measured.size().y * 0.5),
                         measured,
                         kit.c(measured_ink),
                     );
-                    let mut job = egui::text::LayoutJob::simple_singleline(
-                        line.name.clone(),
-                        kit.font(),
-                        kit.c(sk.text),
-                    );
-                    job.wrap = egui::text::TextWrapping::truncate_at_width(
-                        (measured_x - t.nav_icon_gap - text_x).max(0.0),
-                    );
-                    let name = painter.layout_job(job);
+                    let name = cut(line.name.clone(), sk.text, widths.name);
                     painter.galley(pos2(text_x, y - name.size().y * 0.5), name, kit.c(sk.text));
+                    let mut tip = line.name.clone();
+                    tip.push_str(": ");
+                    tip.push_str(&line.measured);
+                    if !line.limit.is_empty() {
+                        tip.push_str(&format!(" (must be {})", line.limit));
+                    }
                     if let Some(note) = &line.note {
+                        tip.push('\n');
+                        tip.push_str(note);
+                    }
+                    let response = response.on_hover_text(tip);
+                    for (k, text) in under.iter().enumerate() {
                         let mut job = egui::text::LayoutJob::simple_singleline(
-                            note.clone(),
+                            text.clone(),
                             kit.font(),
                             kit.c(sk.failed),
                         );
                         job.wrap =
                             egui::text::TextWrapping::truncate_at_width((right - text_x).max(0.0));
-                        let note = painter.layout_job(job);
-                        let ny = rect.top() + t.row_height + t.label_row_height * 0.5;
+                        let galley = painter.layout_job(job);
+                        let ny = rect.top() + t.row_height + t.label_row_height * (k as f32 + 0.5);
                         painter.galley(
-                            pos2(text_x, ny - note.size().y * 0.5),
-                            note,
+                            pos2(text_x, ny - galley.size().y * 0.5),
+                            galley,
                             kit.c(sk.failed),
                         );
                     }
@@ -365,6 +393,146 @@ pub fn compact(text: &str) -> String {
         n
     } else {
         format!("{n} {rest}")
+    }
+}
+
+/// A check's measure as its row shows it, whole: what comes before a
+/// parenthesis, every number in it as [`number_text`] writes it
+/// (`6491.20578 mm^3` is `6491.2 mm³`, `0.000000153 mm` is `1.53e-7 mm`),
+/// powers of units written as superscripts. A check's limit is written the
+/// same way, so the two compare as they read.
+pub fn measured_text(text: &str) -> String {
+    let head = text.split(" (").next().unwrap_or(text).trim();
+    pretty_units(
+        &head
+            .split(' ')
+            .map(|word| match word.parse::<f64>() {
+                Ok(v) if v.is_finite() => number_text(v),
+                _ => word.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+/// A number to five significant digits, written plainly from 1e-4 to
+/// below 1e9 (`6491.2`, `0.30273`; a whole number of more digits than five
+/// stays whole there, `123457`), in scientific notation beyond (`1.5e-7`,
+/// `-1e-5`, `1.2346e12`); trailing zeros dropped, never a negative zero.
+pub fn number_text(v: f64) -> String {
+    if !v.is_finite() {
+        return format!("{v}");
+    }
+    if v == 0.0 {
+        return "0".to_string();
+    }
+    let magnitude = v.abs().log10_floor();
+    let trim = |n: String| {
+        if n.contains('.') {
+            n.trim_end_matches('0').trim_end_matches('.').to_string()
+        } else {
+            n
+        }
+    };
+    if !(-4..9).contains(&magnitude) {
+        // d.dddde±x: the mantissa to five digits.
+        let text = format!("{v:.4e}");
+        let (mantissa, exponent) = text.split_once('e').unwrap_or((text.as_str(), "0"));
+        return format!("{}e{exponent}", trim(mantissa.to_string()));
+    }
+    let decimals = (4 - magnitude).clamp(0, 8) as usize;
+    let n = trim(format!("{v:.decimals$}"));
+    if n == "-0" { "0".to_string() } else { n }
+}
+
+/// A check's limit as its row writes it ([`measured_text`]), the
+/// tolerance of an `eq` given the unit of its value when `assert.list`
+/// writes it bare (`5000 mm^3 ± 1` is `5000 mm³ ± 1 mm³`).
+pub fn limit_text(expected: &str) -> String {
+    let text = match expected.split_once(" ± ") {
+        Some((value, tol)) if tol.trim().parse::<f64>().is_ok() && value.trim().contains(' ') => {
+            let unit = value.trim().split_once(' ').map_or("", |(_, u)| u);
+            format!("{value} ± {} {unit}", tol.trim())
+        }
+        _ => expected.to_string(),
+    };
+    measured_text(&text)
+}
+
+/// Unit powers as superscripts: `mm^3` is `mm³`, `kg mm^2` is `kg mm²`,
+/// `m^-2` is `m⁻²`, any whole power.
+pub fn pretty_units(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        let power = c == '^'
+            && chars
+                .peek()
+                .is_some_and(|n| n.is_ascii_digit() || *n == '-');
+        if !power {
+            out.push(c);
+            continue;
+        }
+        let mut digits = String::new();
+        if chars.peek() == Some(&'-') {
+            chars.next();
+            digits.push('⁻');
+        }
+        let mut any = false;
+        while let Some(d) = chars.peek().copied().filter(char::is_ascii_digit) {
+            chars.next();
+            any = true;
+            digits.push(match d {
+                '0' => '⁰',
+                '1' => '¹',
+                '2' => '²',
+                '3' => '³',
+                '4' => '⁴',
+                '5' => '⁵',
+                '6' => '⁶',
+                '7' => '⁷',
+                '8' => '⁸',
+                _ => '⁹',
+            });
+        }
+        if any {
+            out.push_str(&digits);
+        } else {
+            // `^-` without a digit: as it was.
+            out.push('^');
+            out.push('-');
+        }
+    }
+    out
+}
+
+/// How wide each part of a check's row may be drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CheckColumns {
+    pub name: f32,
+    pub measured: f32,
+    pub limit: f32,
+}
+
+/// The widths of a check's row in `room` (parts `gap` apart) for a name,
+/// a measure and a limit (0: none) of these natural widths: the measure
+/// and the limit whole while they fit beside at least a share of the
+/// name; else the limit goes first, then the measure is cut, the name
+/// keeping its share. The name takes what is left.
+pub fn check_columns(room: f32, gap: f32, name: f32, measured: f32, limit: f32) -> CheckColumns {
+    let room = room.max(0.0);
+    // The least the name keeps before the numbers give way.
+    let name_least = name.min(room * 0.4);
+    let mut limit = limit;
+    if limit > 0.0 && measured + gap + limit + gap + name_least > room {
+        limit = 0.0;
+    }
+    let measured = measured.min((room - gap - name_least).max(0.0));
+    let used = (measured + if limit > 0.0 { gap + limit } else { 0.0 }).min(room);
+    CheckColumns {
+        name: (room - used - gap).max(0.0),
+        measured,
+        limit,
     }
 }
 
@@ -443,6 +611,100 @@ mod tests {
         assert_eq!(compact("22.0001 mm"), "22 mm");
         assert_eq!(compact("true"), "true");
         assert_eq!(compact("12345.6 mm"), "12346 mm");
+    }
+
+    #[test]
+    fn a_check_shows_its_measure_whole_to_five_digits() {
+        assert_eq!(measured_text("6491.20578 mm^3"), "6491.2 mm³");
+        assert_eq!(measured_text("7 mm"), "7 mm");
+        assert_eq!(measured_text("5.5 mm"), "5.5 mm");
+        assert_eq!(measured_text("0.302732308 kg"), "0.30273 kg");
+        assert_eq!(measured_text("123456.7 mm"), "123457 mm");
+        assert_eq!(measured_text("58 mm (at most 58.0035698 mm)"), "58 mm");
+        assert_eq!(measured_text("true"), "true");
+        // Small values keep their digits (the review: 5e-5 mm read 0 mm).
+        assert_eq!(measured_text("0.00005 mm"), "5e-5 mm");
+        assert_eq!(measured_text("1.5e-7 mm"), "1.5e-7 mm");
+        assert_eq!(measured_text("-0.00001 mm"), "-1e-5 mm");
+        assert_eq!(measured_text("0.000123456 mm"), "0.00012346 mm");
+        assert_eq!(measured_text("-0.0 deg"), "0 deg");
+        assert_eq!(measured_text("2.5e12 mm"), "2.5e12 mm");
+        // The limit the same way as the measure.
+        assert_eq!(measured_text("≥ 0.00001 mm"), "≥ 1e-5 mm");
+        assert_eq!(
+            measured_text("491.20578 mm^3 ± 0.00649120578"),
+            "491.21 mm³ ± 0.0064912"
+        );
+    }
+
+    #[test]
+    fn a_check_that_does_not_pass_says_its_limit_and_why_on_the_row() {
+        let line = |status, note: Option<&str>| CheckLine {
+            cut: false,
+            name: "wall".to_string(),
+            measured: "1 mm".to_string(),
+            limit: "≥ 1.5 mm".to_string(),
+            status,
+            note: note.map(str::to_string),
+        };
+        // A failing measure: what it must be (the reason would repeat it).
+        assert_eq!(
+            line(CheckStatus::Failed, Some("too thin")).under(),
+            vec!["must be ≥ 1.5 mm".to_string()]
+        );
+        assert_eq!(
+            line(CheckStatus::NotProven, Some("sampled")).under().len(),
+            2
+        );
+        assert!(line(CheckStatus::Passed, None).under().is_empty());
+        // Nothing measured (an error): the reason says what went wrong.
+        let mut error = line(CheckStatus::Failed, Some("names nothing yet"));
+        error.measured = "—".to_string();
+        assert_eq!(error.under().len(), 2);
+        // A flag, or a measure whose words were cut: the reason too.
+        let mut flag = line(CheckStatus::Failed, Some("the hole is blind"));
+        flag.measured = "false".to_string();
+        flag.cut = true;
+        assert_eq!(flag.under().len(), 2);
+    }
+
+    #[test]
+    fn a_limits_tolerance_carries_the_unit_of_its_value() {
+        assert_eq!(limit_text("5000 mm^3 ± 1"), "5000 mm³ ± 1 mm³");
+        assert_eq!(limit_text("0.25 mm ± 0.00001"), "0.25 mm ± 1e-5 mm");
+        assert_eq!(limit_text("2 ± 0"), "2 ± 0");
+        assert_eq!(limit_text("≥ 1.5 mm"), "≥ 1.5 mm");
+    }
+
+    #[test]
+    fn unit_powers_are_superscripts() {
+        assert_eq!(pretty_units("mm^4"), "mm⁴");
+        assert_eq!(pretty_units("m^-2"), "m⁻²");
+        assert_eq!(pretty_units("kg mm^2"), "kg mm²");
+        assert_eq!(pretty_units("x^12"), "x¹²");
+        assert_eq!(pretty_units("a ^ b"), "a ^ b");
+        assert_eq!(pretty_units("^-"), "^-");
+    }
+
+    #[test]
+    fn a_check_row_cuts_the_name_before_the_measure() {
+        // Room for all: each whole.
+        let c = check_columns(230.0, 6.0, 60.0, 70.0, 0.0);
+        assert_eq!((c.measured, c.limit), (70.0, 0.0));
+        assert!(c.name >= 60.0);
+        // A long name gives way; the measure stays whole.
+        let c = check_columns(230.0, 6.0, 200.0, 70.0, 0.0);
+        assert_eq!(c.measured, 70.0);
+        assert!((c.name - (230.0 - 70.0 - 6.0)).abs() < 1e-3);
+        // A failing check's limit goes before the measure is cut.
+        let c = check_columns(230.0, 6.0, 120.0, 70.0, 120.0);
+        assert_eq!((c.measured, c.limit), (70.0, 0.0));
+        let c = check_columns(230.0, 6.0, 40.0, 70.0, 90.0);
+        assert_eq!((c.measured, c.limit), (70.0, 90.0));
+        // Only a measure wider than the room less the name's share is cut.
+        let c = check_columns(100.0, 6.0, 80.0, 90.0, 0.0);
+        assert!((c.measured - (100.0 - 6.0 - 40.0)).abs() < 1e-3);
+        assert!(c.name >= 39.0);
     }
 
     #[test]

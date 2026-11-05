@@ -626,7 +626,16 @@ impl StartLayout {
             self.per_row.max(1)
         };
         let n = per_row as f32;
-        let each = ((width - (n - 1.0) * gap) / n).min(self.thumb.x);
+        // Fewer to a row than the layout's own (a phone, a tablet): the
+        // cards share the row's whole width, as boards m1 and t3 show,
+        // rather than keeping a desktop thumbnail's size with the rest of
+        // the row empty.
+        let most = if per_row < self.per_row {
+            f32::INFINITY
+        } else {
+            self.thumb.x
+        };
+        let each = ((width - (n - 1.0) * gap) / n).min(most);
         let each = if each.is_finite() {
             each.max(24.0)
         } else {
@@ -834,10 +843,18 @@ impl Shell {
             egui::Layout::left_to_right(egui::Align::Min)
         };
         ui.with_layout(row, |ui| {
+            // The gap is all there is between the columns: the item
+            // spacing beside it would push the right column past the
+            // examples' right edge.
+            let spacing = ui.spacing().item_spacing.x;
+            if !stacked {
+                ui.spacing_mut().item_spacing.x = 0.0;
+            }
             ui.allocate_ui_with_layout(
                 egui::vec2(left, 0.0),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
+                    ui.spacing_mut().item_spacing.x = spacing;
                     ui.set_width(left);
                     kit.section_header(ui, "Recent");
                     ui.add_space(tokens.nav_spacing);
@@ -853,6 +870,7 @@ impl Shell {
                 egui::vec2(right, 0.0),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
+                    ui.spacing_mut().item_spacing.x = spacing;
                     ui.set_width(right);
                     self.agent_block(ui, &kit);
                 },
@@ -1126,11 +1144,16 @@ mod tests {
             (thumb.x * 5.0 + 80.0 - START_WIDTH).abs() < 0.5,
             "{thumb:?}"
         );
-        // On a phone, two to a row.
+        // On a phone, two to a row, and three on a tablet: across the
+        // whole row.
         let phone = StartLayout::for_room(egui::vec2(358.0, 780.0));
-        assert_eq!(phone.cards(358.0, 20.0).0, 2);
+        let (two, each) = phone.cards(358.0, 20.0);
+        assert_eq!(two, 2);
+        assert!((each.x * 2.0 + 20.0 - 358.0).abs() < 0.5, "{each:?}");
         let tablet = StartLayout::for_room(egui::vec2(728.0, 900.0));
-        assert_eq!(tablet.cards(728.0, 20.0).0, 3);
+        let (three, each) = tablet.cards(728.0, 20.0);
+        assert_eq!(three, 3);
+        assert!((each.x * 3.0 + 40.0 - 728.0).abs() < 0.5, "{each:?}");
         for room in [
             egui::vec2(1240.0, 716.0),
             egui::vec2(1326.0, 684.0),
