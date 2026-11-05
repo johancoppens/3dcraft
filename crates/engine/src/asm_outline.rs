@@ -51,6 +51,9 @@ pub struct OutlineInstance {
     /// It can be edited from this assembly (its own instance, not one
     /// inside a subassembly).
     pub own: bool,
+    /// Held to the world (by a chain of fixed mates, or as the first
+    /// instance of a floating assembly): a housing, a ring gear held.
+    pub grounded: bool,
     /// The features of the shown part that hold its bodies (what a click
     /// selects and a double click flies to); none for an instance inside
     /// a rigid subassembly, whose bodies are the subassembly's.
@@ -151,6 +154,10 @@ impl Session {
         for st in placed.instances.iter().filter(|i| i.flex_of.is_none()) {
             let visible = assembly.instance(&st.name).is_none_or(|i| i.visible);
             push_instance(&mut out.instances, &placed, st, 0, visible, true);
+        }
+        let held = grounded(assembly, &placed);
+        for row in &mut out.instances {
+            row.grounded = held.contains(&row.name);
         }
         for mate in &assembly.mates {
             let st = placed.mates.iter().find(|m| m.name == mate.name);
@@ -364,6 +371,7 @@ fn push_instance(
         error: st.error.clone(),
         visible,
         own,
+        grounded: false,
         // A flexible subassembly's bodies are its instances'.
         features: if st.flexed {
             Vec::new()

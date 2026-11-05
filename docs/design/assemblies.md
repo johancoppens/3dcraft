@@ -573,7 +573,10 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
   of the light halo colour 2.25 pt wide (`tokens.mate_rest_halo_width`, `LineKind::MateRestHalo`): on the light
   viewport it is not seen, on a dark part (a brass gear) it gives the line its edge. The marker pointed at or
   chosen is the one the eye finds: the selection's family in a deep copper (`tokens.mate_hot`, #B05C14), 2 pt wide,
-  over a 3.5 pt light halo (`LineKind::MateHalo`, only under the hot marker), its two parts tinted. Contrast: the
+  over a 3.5 pt light halo (`LineKind::MateHalo`, only under the hot marker). Only a chosen mate tints its parts,
+  in a very pale copper (`tokens.mate_part`, #F6E4CC), and not a part held to the world (`OutlineInstance::grounded`:
+  a housing, a held ring gear); pointing at one lights its marker alone. The tint replaces the part's colour; a
+  blend over it (both renderers, with parity) is owed after R1. Contrast: the
   resting colour is 3.8:1 on the viewport and 3.3:1 on a body's grey, the hot colour 3.9:1 and 3.4:1, both 3:1 or
   more against the halo (`theme.rs`, `mate_markers_read_over_the_viewport_and_a_body`). The lines are opaque, not
   translucent: each segment is blended on its own on both paths, so a translucent arc would bead at every joint of
@@ -596,10 +599,12 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
   Every other mate with one value to hold (a revolute's angle, a slider's distance, a cylindrical's angle) that is
   solved has a slider too (`Shell::drive_slider`, 2026-11-06): one a formula of `t` drives, one that follows another
   through a coupling or a closure. Dragging it holds the joint by hand for the view (*Driving a joint by hand*,
-  below), not an edit; while it holds the joint the slider says so under it (*Shown by hand, not saved · Esc lets
-  go*); a double click on its knob, Esc (after an open popover), a moment of the motion or an edit lets go.
+  below), not an edit; while it holds the joint the slider says so under it (*View only · Esc releases*, or where
+  it stopped and why in a few words: *Stops at 138.6° (dead point) · Esc releases*, the whole reason in its
+  tooltip); a double click on its knob, Esc (after an open popover), a moment of the motion or an edit lets go.
 - **Driving a joint by hand** (`view.drive`, `engine/src/drive_cmds.rs`, 2026-11-06): view state of the open
-  document (`OpenDocument::drive`), as a moment of the motion is; the document, its undo history and its dirty
+  document (`OpenDocument::drive`, kept for its document state and the history's revision, so an undo and a redo
+  let go too), as a moment of the motion is; the document, its undo history and its dirty
   state never change. The assembly is placed with a `Hold` (`asm.rs`): the held mate's main free motion (or the one
   named) is driven at the value, and the drivers that would contradict it are let go of: none when the mate's own
   variable drives it (the value takes its place) or the solve leaves it free (`MateState::main_free`); else the
@@ -611,13 +616,21 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
   the same joint, then from the last grid value to the value: so a pose is a function of the value alone (as a
   moment is of `t`), and a periodic joint is never carried past a dead point onto the mirrored branch a whole turn
   further, which one long advance did (a crank-rocker's rocker asked for +180° landed on the mirror at −180°).
-  Where a step cannot be solved (a dead point, a limit) the last value reached is found by halving the step (30
-  times) and shown; `stopped` says where and why. At most 3,600 grid steps either way (50 turns). The viewport,
+  Each solve starts its joints the full turns nearest those of the solve it is carried from (`Carried::values`,
+  `Solver::solve_at_near`): the poses alone say an angle only within a turn, and a coupled shaft many turns round
+  (the reducer's input at ten times its output) started a turn off left its coupling a multiple of 2π·ratio
+  unmet ("did not converge", residual ±16, at 560° of the output). Where a step cannot be solved (a dead point, a
+  limit) the last value reached is found by halving the step (30 times) and shown, and kept (`Walk::limit`): a
+  later value past it is shown there without a solve; `stopped` says where and why. When even that pose cannot be
+  placed the command fails and the view stays as it was, never the document's pose instead. At most 720 grid
+  steps either way (10 turns, a solve without bodies each); further is refused at once. The viewport,
   `view.render`, `view.pick`, screenshots and the outline show the held pose (`shown`, `shown_regen` and
   `shown_placed` take it before a moment of the motion); measures, checks and exports see the document. In the
   browser the joint is held in the worker: the host keeps the ask (`Drive::remote`), the view's stand-in and the
   job of scenes carry it (`ViewJob::drive`, its value as its bits), the worker holds it with `view.drive` before it
-  makes the scenes, and its answer crosses with the facts (`ViewFacts::drive`); the page places nothing
+  makes the scenes (the same joint at another value goes on from the solves it keeps; another joint, or none, lets
+  go), and its answer crosses with the facts (`ViewFacts::drive`); one the worker refuses crosses as an error
+  (`Drive::refused`), and the page lets go of it and says why once (`view.drive {}`); the page places nothing
   (`engine/tests/view_drive.rs`).
 - **Selections** of an assembly are made in its placed part, whose features are numbered in instance order (an
   instance that is deleted or fails gives its id to the next). Each item is anchored to the name of the placed

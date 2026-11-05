@@ -354,8 +354,9 @@ fn ui_set_hides_and_shows_the_mates() {
     assert!(!shell.mate_marks().mates.is_empty());
 }
 
-/// Pointing at a mate's row highlights its marker and tints its two
-/// parts; a click chooses it; `ui.set` points at one as the pointer does.
+/// Pointing at a mate's row highlights its marker alone; a click chooses
+/// it and tints its parts, not one held to the world (the developer,
+/// 2026-11-06: subtle); `ui.set` points at one as the pointer does.
 #[test]
 fn a_mate_s_row_highlights_its_marker_and_parts() {
     let (mut s, mut shell, mut window) = opened("row");
@@ -381,16 +382,43 @@ fn a_mate_s_row_highlights_its_marker_and_parts() {
             .iter()
             .any(|[a, _]| (*a - elbow).length() < 1e-9)
     );
-    // The crank and the coupler are tinted, the ground is not.
+    // Pointed at, no part is tinted.
     let scene = shell.shown_scene_arc().unwrap();
-    let lit = shell.face_highlight(Some(&scene));
-    assert_eq!(lit.color, Tokens::default().mate_part);
+    assert_eq!(shell.face_highlight(Some(&scene)), Highlight::NONE);
     let faces_of = |name: &str| {
         let b = scene.bodies.iter().find(|b| b.name == name).unwrap();
         b.first_face_id
     };
+    // Chosen, its parts are; of the hip's, the rocker and not the ground,
+    // which is held to the world.
+    call(
+        &mut shell,
+        &mut s,
+        "ui.set",
+        json!({"sidePanel": {"mate": "Elbow"}}),
+    );
+    window.frames(&mut shell, &mut s, 2);
+    let lit = shell.face_highlight(Some(&scene));
+    assert_eq!(lit.color, Tokens::default().mate_part);
     assert!(lit.contains(faces_of("Crank")) && lit.contains(faces_of("Coupler")));
     assert!(!lit.contains(faces_of("Ground")));
+    call(
+        &mut shell,
+        &mut s,
+        "ui.set",
+        json!({"sidePanel": {"mate": "Hip"}}),
+    );
+    window.frames(&mut shell, &mut s, 2);
+    let lit = shell.face_highlight(Some(&scene));
+    assert!(lit.contains(faces_of("Rocker")));
+    assert!(!lit.contains(faces_of("Ground")), "held to the world");
+    call(
+        &mut shell,
+        &mut s,
+        "ui.set",
+        json!({"sidePanel": {"mate": null}}),
+    );
+    window.frames(&mut shell, &mut s, 2);
     // Off the rows the highlight goes.
     window.hover(&mut shell, &mut s, egui::pos2(990.0, 10.0));
     assert_eq!(shell.state.side_panel.mate_hover, None);
@@ -678,7 +706,7 @@ fn hostile_mates_draw_no_marker_and_never_panic() {
         &mut shell,
         &mut s,
         "ui.set",
-        json!({"sidePanel": {"mateHover": "Elbow"}}),
+        json!({"sidePanel": {"mate": "Elbow"}}),
     );
     window.frames(&mut shell, &mut s, 2);
     assert!(shell.mate_marks().mates_hot.is_empty());
@@ -872,7 +900,7 @@ fn a_flexible_subassembly_s_instances_are_tinted() {
         &mut shell,
         &mut s,
         "ui.set",
-        json!({"sidePanel": {"mateHover": "Pivot"}}),
+        json!({"sidePanel": {"mate": "Pivot"}}),
     );
     window.frames(&mut shell, &mut s, 2);
     let outline = shell.assembly_outline().unwrap().clone();
@@ -917,7 +945,7 @@ fn no_tint_under_the_lens_with_a_selection() {
         json!({"look": {"mode": "studio", "ground": false, "shadows": false,
                         "background": "plain", "edges": "off",
                         "dof": {"fstop": 1.4, "focus": "centre"}},
-               "sidePanel": {"mateHover": "Elbow"}}),
+               "sidePanel": {"mate": "Elbow"}}),
     );
     shell.state.look.spec().unwrap().prepared().unwrap();
     window.frames(&mut shell, &mut s, 2);

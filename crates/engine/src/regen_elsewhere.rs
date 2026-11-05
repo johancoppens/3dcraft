@@ -714,21 +714,30 @@ fn show_view(session: &mut Session, view: View, drive: Option<&crate::view_elsew
     if let Some(open) = session.documents.get_mut(0) {
         let (moment, _) = view;
         open.set_motion_view(moment.map(|(t, _)| t), moment.is_some_and(|(_, c)| c));
-        open.let_go_of_drive();
+        open.drive.refused = None;
+        // Let go only of a joint no longer asked for (or another one): the
+        // same joint at another value goes on from the solves it keeps.
+        let held = open.driven_mate();
+        if drive.is_none_or(|(mate, _, _)| held.as_deref() != Some(mate.as_str())) {
+            open.let_go_of_drive();
+        }
     }
     // A joint held by hand, as `view.drive` holds it here; one it cannot
-    // hold is said by the facts (`view.drive {}` answers nothing held).
+    // hold is said by the facts (`Drive::refused`).
     if let Some((mate, which, value)) = drive {
-        let unit = if which == "angle" { "rad" } else { "" };
-        let value = if unit.is_empty() {
-            json!(value)
+        let value = if which == "angle" {
+            json!(format!("{value} rad"))
         } else {
-            json!(format!("{value} {unit}"))
+            json!(value)
         };
-        let _ = session.execute(
+        if let Err(e) = session.execute(
             "view.drive",
             &json!({"mate": mate, "which": which, "value": value}),
-        );
+        ) && let Some(open) = session.documents.get_mut(0)
+        {
+            open.let_go_of_drive();
+            open.drive.refused = Some((mate.clone(), e.message().to_string()));
+        }
     }
 }
 

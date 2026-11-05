@@ -379,6 +379,9 @@ pub(crate) struct Placed {
 pub(crate) struct Carried {
     pub poses: Vec<Transform>,
     pub drives: Vec<f64>,
+    /// Every mate's values there, per spec (angles not wrapped: the turns
+    /// a joint had come, which the poses do not say).
+    pub values: Vec<Vec<f64>>,
     /// The degrees of freedom left there.
     pub dof: usize,
 }
@@ -2285,7 +2288,8 @@ fn solve_mates(
         drives
     });
     let solved_by = match (held_from, from) {
-        (Some(drives), _) => solver::advance(&problem, &drives),
+        (Some(drives), Some(from)) => solver::advance_near(&problem, &drives, &from.values),
+        (Some(drives), None) => solver::advance(&problem, &drives),
         (None, Some(from)) => solver::advance(&problem, &from.drives),
         (None, None) => solver::solve(&problem),
     };
@@ -2297,6 +2301,7 @@ fn solve_mates(
             let carried = Carried {
                 poses: solution.poses.clone(),
                 drives: solution.drives.clone(),
+                values: solution.values.clone(),
                 dof: solution.dof,
             };
             for (&k, pose) in solved.iter().zip(&solution.poses) {

@@ -44,7 +44,13 @@ pub(crate) struct Drive {
     /// Where the view is made elsewhere (the page's worker,
     /// `view_elsewhere.rs`): the joint asked to be held there, for the
     /// document state and the generation of the files it was asked on.
-    remote: Option<(Arc<Document>, u64, DriveAsk)>,
+    remote: Option<(Arc<Document>, u64, u64, DriveAsk)>,
+    /// Where the view is made for another session (the worker): why the
+    /// joint asked to be held could not be, for the facts.
+    pub(crate) refused: Option<(String, String)>,
+    /// Where the view is made elsewhere: why the worker could not hold
+    /// the joint last asked, said once by `view.drive {}`.
+    refused_there: Option<String>,
 }
 
 /// A joint held by hand and the assembly placed with it.
@@ -54,6 +60,9 @@ struct Driven {
     /// was made with: an edit or a reload lets go of it.
     base: Arc<Document>,
     generation: u64,
+    /// The history's revision it was made at: an undo and a redo bring
+    /// back the same document state, and still let go of it.
+    revision: u64,
     mate: String,
     which: &'static str,
     angle: bool,
@@ -77,6 +86,18 @@ struct Driven {
 struct Walk {
     solved: Vec<Carried>,
     dead: Option<(usize, String)>,
+    /// Where the mechanism stops on this way (a dead point, a limit),
+    /// once found: a later value past it is shown there without a solve.
+    limit: Option<Limit>,
+}
+
+/// The last value a held joint reaches on one way, its placement and
+/// why it cannot go further.
+#[derive(Clone)]
+struct Limit {
+    reached: f64,
+    placed: Arc<Placed>,
+    why: String,
 }
 
 /// Steps of the search for the last value reached when the value asked
@@ -93,8 +114,10 @@ const ANGLE_STEP: f64 = std::f64::consts::PI / 36.0;
 /// the assembly's size.
 const DISTANCE_STEP: f64 = 1.0 / 72.0;
 
-/// Most steps of the grid either way: 50 turns of an angle.
-const MAX_STEPS: usize = 3_600;
+/// Most steps of the grid either way: 10 turns of an angle (a solve
+/// without bodies a step, so a value at the far end costs at most this
+/// many on the engine's thread, about a second on a gearbox).
+const MAX_STEPS: usize = 720;
 
 impl OpenDocument {
     /// The assembly placed with its joint held by hand, while it is held
@@ -103,6 +126,7 @@ impl OpenDocument {
         let state = self.drive.state.as_ref()?;
         if Arc::ptr_eq(&state.base, self.history.current())
             && state.generation == self.asm.generation
+            && state.revision == self.history.revision()
         {
             return Some(Arc::clone(&state.placed));
         }
@@ -137,12 +161,22 @@ impl OpenDocument {
         base: &Arc<Document>,
         generation: u64,
     ) -> Option<DriveAsk> {
-        let (of, at, ask) = self.drive.remote.as_ref()?;
-        if Arc::ptr_eq(of, base) && *at == generation {
-            return Some(ask.clone());
+        let (of, at, revision, ask) = self.drive.remote.as_ref()?;
+        if !(Arc::ptr_eq(of, base) && *at == generation && *revision == self.history.revision()) {
+            self.drive.remote = None;
+            return None;
         }
-        self.drive.remote = None;
-        None
+        // The worker could not hold it: said by its facts for this view.
+        let refused = self
+            .remote_view_facts_drive()
+            .filter(|d| d.get("mate").and_then(Value::as_str) == Some(ask.0.as_str()))
+            .and_then(|d| d.get("error").and_then(Value::as_str).map(str::to_string));
+        if let Some(why) = refused {
+            self.drive.remote = None;
+            self.drive.refused_there = Some(why);
+            return None;
+        }
+        Some(ask.clone())
     }
 }
 
@@ -151,6 +185,20 @@ impl Session {
     /// the view (`view.drive`), when one is.
     pub fn driven_mate(&mut self) -> Option<String> {
         self.documents.get_mut(self.active)?.driven_mate()
+    }
+
+    /// What `view.drive {}` says of the joint held by hand in the active
+    /// document (its mate, value, reached and why it stopped), when one
+    /// is held; also pending where it is held elsewhere.
+    pub fn drive_state(&mut self) -> Option<Value> {
+        let open = self.documents.get_mut(self.active)?;
+        open.driven_mate()?;
+        let doc = Arc::clone(open.history.current());
+        let answer = answer(open, &doc);
+        answer
+            .get("mate")
+            .is_some_and(Value::is_string)
+            .then_some(answer)
     }
 }
 
@@ -224,13 +272,16 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
         }
     };
     let generation = open.asm.generation;
+    let revision = open.history.revision();
     // Made elsewhere (the page's worker): the joint is held there; what
     // it reached comes with the view's facts.
     if open.remote_wanted() {
         open.drive.state = None;
+        open.drive.refused_there = None;
         open.drive.remote = Some((
             Arc::clone(&doc),
             generation,
+            revision,
             (name.clone(), which.to_string(), value),
         ));
         return Ok(answer(open, &doc));
@@ -267,6 +318,7 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
         .filter(|s| {
             Arc::ptr_eq(&s.base, &doc)
                 && s.generation == generation
+                && s.revision == revision
                 && s.mate == name
                 && s.which == which
         })
@@ -299,7 +351,7 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
     let span = (value - start).abs() / step;
     if !span.is_finite() || span > MAX_STEPS as f64 {
         return fail(format!(
-            "{ID}: {} is too far from the joint's value {}: at most {MAX_STEPS} steps of {} either way",
+            "{ID}: {} is too far from the joint's value {}: it is held at most {MAX_STEPS} steps of {} either way",
             shown_value(&doc, value, angle),
             shown_value(&doc, start, angle),
             shown_value(&doc, step, angle),
@@ -321,90 +373,133 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
         release: release.clone(),
     };
     let at = |k: usize| start + sign * step * k as f64;
+    let shown = |v: f64| shown_value(&doc, v, angle);
+    let stopped_at = |reached: f64, why: &str| {
+        format!(
+            "`{name}` stopped at {} of {} asked for: {why}",
+            shown(reached),
+            shown(value)
+        )
+    };
     // Whole steps of the grid up to the value, as far as they go.
     let whole = (span.floor() as usize).min(MAX_STEPS);
     let walk = walks
         .get_mut(way)
         .ok_or_else(|| CommandError::new(format!("{ID}: no way")))?;
-    while walk.solved.len() < whole && walk.dead.is_none() {
-        let k = walk.solved.len();
-        let from = walk.solved.last().unwrap_or(&carried).clone();
-        let trial = open.asm.place_held(
-            &doc,
-            path.as_deref(),
-            &from,
-            &hold_at(at(k + 1), at(k)),
-            false,
-        );
-        match (&trial.solve_error, trial.carried) {
-            (None, Some(next)) => walk.solved.push(next),
-            (why, _) => {
-                walk.dead = Some((k, why.clone().unwrap_or_else(|| "the solve failed".into())));
+    let (held, reached, stopped) = match walk.limit.clone() {
+        // Past where it stops on this way, found before: shown there.
+        Some(limit) if sign * (value - limit.reached) >= 0.0 => (
+            limit.placed,
+            limit.reached,
+            Some(stopped_at(limit.reached, &limit.why)),
+        ),
+        _ => {
+            while walk.solved.len() < whole && walk.dead.is_none() {
+                let k = walk.solved.len();
+                let from = walk.solved.last().unwrap_or(&carried).clone();
+                let trial = open.asm.place_held(
+                    &doc,
+                    path.as_deref(),
+                    &from,
+                    &hold_at(at(k + 1), at(k)),
+                    false,
+                );
+                match (&trial.solve_error, trial.carried) {
+                    (None, Some(next)) => walk.solved.push(next),
+                    (why, _) => {
+                        walk.dead =
+                            Some((k, why.clone().unwrap_or_else(|| "the solve failed".into())));
+                    }
+                }
+            }
+            // From the last grid value reached, to the value or as near
+            // it as the mechanism goes.
+            let k = walk.solved.len().min(whole);
+            let from = match k.checked_sub(1) {
+                Some(last) => walk.solved.get(last).unwrap_or(&carried).clone(),
+                None => carried.clone(),
+            };
+            let base_value = at(k);
+            let target = if k < whole { at(k + 1) } else { value };
+            let held = open.asm.place_held(
+                &doc,
+                path.as_deref(),
+                &from,
+                &hold_at(target, base_value),
+                true,
+            );
+            match held.solve_error.clone() {
+                None => (Arc::new(held), target, None),
+                Some(why) => {
+                    // The last value reached past the grid's: the
+                    // fraction of the step halved, each solved from the
+                    // grid's last solve.
+                    let (mut good, mut bad) = (0.0f64, 1.0f64);
+                    for _ in 0..SEARCH_STEPS {
+                        let mid = 0.5 * (good + bad);
+                        let v = base_value + (target - base_value) * mid;
+                        let trial = open.asm.place_held(
+                            &doc,
+                            path.as_deref(),
+                            &from,
+                            &hold_at(v, base_value),
+                            false,
+                        );
+                        if trial.solve_error.is_none() {
+                            good = mid;
+                        } else {
+                            bad = mid;
+                        }
+                    }
+                    let mut reached = base_value + (target - base_value) * good;
+                    let mut held = open.asm.place_held(
+                        &doc,
+                        path.as_deref(),
+                        &from,
+                        &hold_at(reached, base_value),
+                        true,
+                    );
+                    if held.solve_error.is_some() {
+                        // The grid's last value, where its solve is.
+                        reached = base_value;
+                        held = if k == 0 {
+                            (*placed).clone()
+                        } else {
+                            open.asm.place_held(
+                                &doc,
+                                path.as_deref(),
+                                &from,
+                                &hold_at(base_value, base_value),
+                                true,
+                            )
+                        };
+                    }
+                    if let Some(again) = &held.solve_error {
+                        // Never the document's pose instead: the view
+                        // stays as it was.
+                        return fail(format!(
+                            "{ID}: `{name}` cannot be shown at {}: {again}",
+                            shown(reached)
+                        ));
+                    }
+                    let held = Arc::new(held);
+                    if walk.dead.is_none() {
+                        walk.dead = Some((k, why.clone()));
+                    }
+                    walk.limit = Some(Limit {
+                        reached,
+                        placed: Arc::clone(&held),
+                        why: why.clone(),
+                    });
+                    (held, reached, Some(stopped_at(reached, &why)))
+                }
             }
         }
-    }
-    // From the last grid value reached, to the value or as near it as
-    // the mechanism goes.
-    let k = walk.solved.len().min(whole);
-    let from = walk
-        .solved
-        .get(k.wrapping_sub(1))
-        .filter(|_| k > 0)
-        .unwrap_or(&carried)
-        .clone();
-    let base_value = at(k);
-    let target = if k < whole { at(k + 1) } else { value };
-    let mut held = open.asm.place_held(
-        &doc,
-        path.as_deref(),
-        &from,
-        &hold_at(target, base_value),
-        true,
-    );
-    let mut reached = target;
-    let mut stopped = None;
-    // Short of a whole step, the grid's next step is what is solved
-    // here: it fails as the walk's step did.
-    if let Some(why) = held.solve_error.clone() {
-        // The last value reached past the grid's: the fraction of the
-        // step halved, each solved from the grid's last solve.
-        let (mut good, mut bad) = (0.0f64, 1.0f64);
-        let towards = target;
-        for _ in 0..SEARCH_STEPS {
-            let mid = 0.5 * (good + bad);
-            let v = base_value + (towards - base_value) * mid;
-            let trial =
-                open.asm
-                    .place_held(&doc, path.as_deref(), &from, &hold_at(v, base_value), false);
-            if trial.solve_error.is_none() {
-                good = mid;
-            } else {
-                bad = mid;
-            }
-        }
-        reached = base_value + (towards - base_value) * good;
-        held = open.asm.place_held(
-            &doc,
-            path.as_deref(),
-            &from,
-            &hold_at(reached, base_value),
-            true,
-        );
-        if held.solve_error.is_some() {
-            // Not even the grid's last value: shown as the document has it.
-            reached = start;
-            held = (*placed).clone();
-        }
-        let shown = |v: f64| shown_value(&doc, v, angle);
-        stopped = Some(format!(
-            "`{name}` stopped at {} of {} asked for: {why}",
-            shown(reached),
-            shown(value)
-        ));
-    }
+    };
     open.drive.state = Some(Driven {
         base: Arc::clone(&doc),
         generation,
+        revision,
         mate: name,
         which,
         angle,
@@ -413,7 +508,7 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
         start,
         released,
         stopped,
-        placed: Arc::new(held),
+        placed: held,
         walks,
     });
     Ok(answer(open, &doc))
@@ -558,7 +653,11 @@ fn answer(open: &mut OpenDocument, doc: &Document) -> Value {
         let base = Arc::clone(open.history.current());
         let generation = open.asm.generation;
         let Some((mate, which, value)) = open.drive_asked(&base, generation) else {
-            return json!({"mate": Value::Null, "view": true});
+            // The worker could not hold the joint last asked: said once.
+            return match open.drive.refused_there.take() {
+                Some(why) => json!({"mate": Value::Null, "view": true, "error": why}),
+                None => json!({"mate": Value::Null, "view": true}),
+            };
         };
         let angle = which == "angle";
         // What was answered there for this view, once it came.

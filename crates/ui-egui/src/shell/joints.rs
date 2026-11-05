@@ -37,10 +37,43 @@ pub(crate) struct Joints {
     /// The mate whose joint is held by hand for the view (`view.drive`),
     /// as the engine said at the last refresh.
     pub(crate) driven: Option<String>,
+    /// What `view.drive {}` says of it (reached, why it stopped).
+    pub(crate) drive_state: Option<serde_json::Value>,
 }
 
 /// What a joint's slider says under it while it holds the joint by hand.
-pub(crate) const DRIVE_NOTE: &str = "Shown by hand, not saved · Esc lets go";
+pub(crate) const DRIVE_NOTE: &str = "View only · Esc releases";
+
+/// The note under a joint's slider held by hand: [`DRIVE_NOTE`], or where
+/// it stopped and why in a few words when it could not reach the value
+/// (`view.drive`'s `stopped`; the whole reason is the slider's tooltip).
+pub(crate) fn drive_note(state: Option<&serde_json::Value>, angle: bool, unit: &str) -> String {
+    let Some(state) = state else {
+        return DRIVE_NOTE.to_string();
+    };
+    let Some(why) = state.get("stopped").and_then(serde_json::Value::as_str) else {
+        return DRIVE_NOTE.to_string();
+    };
+    let cause = if why.contains("dead point") {
+        "dead point"
+    } else if why.contains("limit") {
+        "limit"
+    } else {
+        "cannot go on"
+    };
+    let reached = state
+        .get("reached")
+        .and_then(serde_json::Value::as_f64)
+        .map(|v| {
+            if angle {
+                format!("{}°", crate::kit::slider::fixed(v, 1))
+            } else {
+                format!("{} {unit}", crate::kit::slider::fixed(v, 2))
+            }
+        })
+        .unwrap_or_default();
+    format!("Stops at {reached} ({cause}) · Esc releases")
+}
 
 /// The kinds of mate the menu on two faces offers, as `mate.add` names
 /// them, with their words.
@@ -422,7 +455,14 @@ impl Shell {
             (shown, [lo, hi], unit)
         };
         let held = self.joints.driven.as_deref() == Some(mate.name.as_str());
-        let note = held.then_some(DRIVE_NOTE);
+        let note_text = held.then(|| drive_note(self.joints.drive_state.as_ref(), angle, unit));
+        let stopped = held
+            .then(|| self.joints.drive_state.as_ref())
+            .flatten()
+            .and_then(|s| s.get("stopped"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let note = note_text.as_deref();
         let label_width = (ui.available_width() * 0.3).clamp(48.0, 120.0);
         let value_width = 72.0;
         let decimals = if angle { 1 } else { 2 };
@@ -440,10 +480,15 @@ impl Shell {
                 )
             })
             .inner;
-        let response = slider.response.clone().on_hover_text(format!(
+        let mut tip = format!(
             "{} · view.drive {}: shown only, the document keeps its value; double-click the knob or Esc to let go",
             mate.kind, mate.name
-        ));
+        );
+        if let Some(why) = stopped {
+            tip.push('\n');
+            tip.push_str(&why);
+        }
+        let response = slider.response.clone().on_hover_text(tip);
         self.joints.hits.push((mate.name.clone(), response.rect));
         if slider.reset {
             self.joints.dragging = None;
@@ -535,6 +580,28 @@ mod tests {
     fn at(degrees: f64) -> Vec3 {
         let a = degrees.to_radians();
         Vec3::new(a.pcos(), a.psin(), 0.0)
+    }
+
+    /// A joint held by hand says so in a few words under its slider, and
+    /// where it stopped and why when it could not reach the value: short
+    /// enough for the slider's row at the panel's narrowest.
+    #[test]
+    fn a_held_joint_s_note_says_where_it_stopped() {
+        assert_eq!(drive_note(None, true, "mm"), DRIVE_NOTE);
+        let held = serde_json::json!({"mate": "Hip", "reached": 30.0, "stopped": null});
+        assert_eq!(drive_note(Some(&held), true, "mm"), DRIVE_NOTE);
+        let stopped = serde_json::json!({"mate": "Hip", "reached": 138.59038,
+            "stopped": "`Hip` stopped at 138.59° of 300° asked for: a dead point at the drives [2.41]"});
+        let note = drive_note(Some(&stopped), true, "mm");
+        assert_eq!(note, "Stops at 138.6° (dead point) · Esc releases");
+        let limit = serde_json::json!({"reached": 12.5, "stopped": "... outside its limits ..."});
+        assert_eq!(
+            drive_note(Some(&limit), false, "mm"),
+            "Stops at 12.50 mm (limit) · Esc releases"
+        );
+        for text in [DRIVE_NOTE, note.as_str()] {
+            assert!(text.chars().count() <= 44, "{text}");
+        }
     }
 
     /// A drag that goes on past half a turn keeps turning: each frame's

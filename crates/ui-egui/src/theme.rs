@@ -87,8 +87,9 @@ pub struct Tokens {
     /// sit beside the parts without covering them. A marker pointed at
     /// or chosen is the one the eye is led to: `mate_hot`, a deep copper
     /// (3:1 or more on the viewport and on a body), `mate_hot_width`
-    /// wide, over a hairline halo; the two parts it joins are tinted
-    /// `mate_part` (a pale copper, so the parts stay readable). The lines
+    /// wide, over a halo; the parts a chosen mate joins (not those held to
+    /// the world) are tinted `mate_part`, a very pale copper, so the parts
+    /// stay readable. The lines
     /// are opaque: a translucent line is drawn as overlapping pieces, and
     /// an arc would bead at every joint.
     pub mate: Rgb,
@@ -865,7 +866,7 @@ impl Tokens {
             // wider and on a halo, its parts in a pale copper.
             mate: [104, 112, 176],
             mate_hot: [176, 92, 20],
-            mate_part: [236, 196, 150],
+            mate_part: [246, 228, 204],
             mate_halo: [250, 248, 242],
             mate_halo_width: 3.5,
             mate_rest_halo_width: 2.25,

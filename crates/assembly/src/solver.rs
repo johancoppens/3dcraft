@@ -103,6 +103,27 @@ impl Solver {
         Ok(sol)
     }
 
+    /// [`Self::solve_at`], each angle no drive sets taken the full turns
+    /// nearest its value in `near` (per mate, per variable, as
+    /// [`Solution::values`]): a solve carried from an earlier one, whose
+    /// poses do not say how many turns a joint had come.
+    pub fn solve_at_near(
+        &mut self,
+        drives: &[f64],
+        near: &[Vec<f64>],
+    ) -> Result<Solution, Diagnosis> {
+        self.check_drives(drives)?;
+        let mut start = self.sys.start_state(drives);
+        self.sys.keep_turns(&mut start, near);
+        let c = self.correct(&start, drives)?;
+        let sol = self.solution(&c)?;
+        self.state = Some(c.state);
+        self.prev = None;
+        self.drives = drives.to_vec();
+        self.last = Some(sol.clone());
+        Ok(sol)
+    }
+
     /// Moves the drives to `drives` from the last solution, following the
     /// motion on its branch: the step is cut while the solution jumps
     /// further than the motion predicts. Without an earlier solution it

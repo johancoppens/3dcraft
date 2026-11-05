@@ -16,6 +16,24 @@ use common::{refused, session_in, workdir};
 use craft3d_engine::{SceneQuality, Session, Workspace, scene_begin, scene_bytes, scene_next};
 use serde_json::{Value, json};
 
+fn example(name: &str) -> Session {
+    let path = format!(
+        "{}/../../docs/examples/published/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let bytes = std::fs::read(path).unwrap();
+    let mut s = Session::new(Workspace::memory());
+    s.open_bytes(name, &bytes).unwrap();
+    s
+}
+
+/// Seconds `f` takes.
+fn timed<T>(f: impl FnOnce() -> T) -> (T, f64) {
+    let t = std::time::Instant::now();
+    let out = f();
+    (out, t.elapsed().as_secs_f64())
+}
+
 fn planetary() -> Session {
     let bytes = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -333,4 +351,198 @@ fn a_joint_held_by_hand_on_the_page_is_held_beside_it_bit_for_bit() {
     assert_eq!(page.driven_mate(), None);
     assert_eq!(page.assembly_outline(), here.assembly_outline());
     assert_eq!(page.work_here(), before);
+}
+
+/// A chain of couplings held many turns round: the reducer's output
+/// (`Shaft3`) at 720° turns the input some ten times as far, and the
+/// solve keeps the turns each joint had come (carried with the poses):
+/// it once failed past 560° ("did not converge", residual ±16) and the
+/// view fell back to the document's pose. The gears follow by the ratio
+/// at every whole turn, and the planetary's carrier holds at 3000°.
+#[test]
+fn a_coupling_chain_holds_many_turns_round() {
+    let mut s = example("gear-reducer.3dcraftasm");
+    let (answer, first) = timed(|| {
+        run(
+            &mut s,
+            "view.drive",
+            json!({"mate": "Shaft3", "value": 720}),
+        )
+    });
+    assert_eq!(answer["stopped"], Value::Null, "{answer}");
+    assert!((answer["reached"].as_f64().unwrap() - 720.0).abs() < 1e-9);
+    assert!((shown(&mut s, "Shaft3") - 720.0).abs() < 1e-6);
+    let ratio = (63.0 / 18.0) * (49.0 / 17.0);
+    let input = shown(&mut s, "Shaft1");
+    assert!((input.abs() - 720.0 * ratio).abs() < 1e-3, "{input}");
+    let (_, warm) = timed(|| {
+        run(
+            &mut s,
+            "view.drive",
+            json!({"mate": "Shaft3", "value": 722}),
+        )
+    });
+    eprintln!("reducer Shaft3 720°: {first:.3} s cold, 722° then {warm:.3} s");
+    let mut p = planetary();
+    let answer = run(
+        &mut p,
+        "view.drive",
+        json!({"mate": "Output", "value": 3000}),
+    );
+    assert_eq!(answer["stopped"], Value::Null, "{answer}");
+    let sun = shown(&mut p, "SunOnCarrier");
+    assert!((sun.abs() - 4.0 * 3000.0).abs() < 1e-3, "{sun}");
+}
+
+/// Past a dead point the limit found is kept: a later value beyond it is
+/// shown there without a solve (the first one searched for it).
+#[test]
+fn a_value_past_a_known_dead_point_costs_no_solve() {
+    let dir = workdir("view-drive", "four-bar-limit");
+    let mut s = session_in(&dir);
+    four_bar(&mut s);
+    let start = shown(&mut s, "Hip");
+    let (first, cold) = timed(|| {
+        run(
+            &mut s,
+            "view.drive",
+            json!({"mate": "Hip", "value": start + 100.0}),
+        )
+    });
+    assert!(first["stopped"].is_string(), "{first}");
+    let mut later = Vec::new();
+    for k in 1..=5 {
+        let (answer, t) = timed(|| {
+            run(
+                &mut s,
+                "view.drive",
+                json!({"mate": "Hip", "value": start + 100.0 + f64::from(k)}),
+            )
+        });
+        assert_eq!(answer["reached"], first["reached"], "{answer}");
+        assert!(answer["stopped"].is_string());
+        later.push(t);
+    }
+    let worst = later.iter().copied().fold(0.0, f64::max);
+    eprintln!(
+        "four-bar past its dead point: {cold:.3} s the first time, at most {worst:.4} s after"
+    );
+    assert!(worst < cold / 5.0, "{cold} {later:?}");
+}
+
+/// A value more than ten turns from the joint's is refused at once, and
+/// the view stays as it was.
+#[test]
+fn a_value_too_far_round_is_refused_at_once() {
+    let mut s = planetary();
+    run(&mut s, "view.drive", json!({"mate": "Output", "value": 10}));
+    let (why, t) = timed(|| {
+        refused(
+            &mut s,
+            "view.drive",
+            json!({"mate": "Output", "value": 4000}),
+        )
+    });
+    assert!(why.contains("at most 720 steps"), "{why}");
+    assert!(t < 1.0, "{t}");
+    assert!((shown(&mut s, "Output") - 10.0).abs() < 1e-6);
+}
+
+/// An undo and a redo bring back the document state the joint was held
+/// on, and still let go of it.
+#[test]
+fn an_undo_and_a_redo_let_go_of_the_joint_held_by_hand() {
+    let mut s = planetary();
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "w", "expr": "11 mm"}),
+    );
+    run(&mut s, "view.drive", json!({"mate": "Output", "value": 20}));
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.driven_mate(), None);
+    assert!(shown(&mut s, "Output").abs() < 1e-6);
+}
+
+fn page() -> Session {
+    let path = format!(
+        "{}/../../docs/examples/published/planetary-gearbox.3dcraftasm",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let bytes = std::fs::read(path).unwrap();
+    let mut page = Session::new(Workspace::memory());
+    page.set_stepwise(true);
+    page.set_checks_elsewhere(true);
+    page.set_regen_elsewhere(true);
+    page.set_commands_elsewhere(true);
+    page.open_bytes("planetary-gearbox.3dcraftasm", &bytes)
+        .unwrap();
+    page
+}
+
+fn answer_page_scenes(page: &mut Session) {
+    let quality = SceneQuality::Preview;
+    let mut jobs = 0;
+    while let Some(token) = page.scene_job(quality) {
+        jobs += 1;
+        assert!(jobs < 100);
+        let request = page.scene_request(token).unwrap();
+        scene_begin(&request.document, &request.work);
+        while let Some(part) = scene_next() {
+            page.scene_answered(token, Ok(&part));
+        }
+        page.scene_done(token);
+    }
+}
+
+/// A joint the worker cannot hold (too far round) is not left pending on
+/// the page: the facts say why, the page lets go of it and says so once.
+#[test]
+fn a_joint_the_worker_cannot_hold_is_let_go_of_on_the_page() {
+    let mut page = page();
+    answer_page_scenes(&mut page);
+    let asked = run(
+        &mut page,
+        "view.drive",
+        json!({"mate": "Output", "value": 5000}),
+    );
+    assert_eq!(asked["pending"], true, "{asked}");
+    answer_page_scenes(&mut page);
+    assert_eq!(page.driven_mate(), None);
+    let said = run(&mut page, "view.drive", json!({}));
+    assert_eq!(said["mate"], Value::Null, "{said}");
+    assert!(
+        said["error"].as_str().unwrap().contains("too far"),
+        "{said}"
+    );
+    let again = run(&mut page, "view.drive", json!({}));
+    assert!(again.get("error").is_none(), "{again}");
+}
+
+/// In the worker the next value of the same joint goes on from the
+/// solves it keeps, not from the document's pose each time.
+#[test]
+fn the_worker_keeps_its_solves_from_value_to_value() {
+    let mut page = page();
+    answer_page_scenes(&mut page);
+    run(
+        &mut page,
+        "view.drive",
+        json!({"mate": "Output", "value": 720}),
+    );
+    let (_, cold) = timed(|| answer_page_scenes(&mut page));
+    run(
+        &mut page,
+        "view.drive",
+        json!({"mate": "Output", "value": 725}),
+    );
+    let (_, warm) = timed(|| answer_page_scenes(&mut page));
+    let came = run(&mut page, "view.drive", json!({}));
+    assert!(
+        (came["reached"].as_f64().unwrap() - 725.0).abs() < 1e-9,
+        "{came}"
+    );
+    eprintln!("worker, planetary Output 720°: {cold:.3} s, then 725°: {warm:.3} s");
+    assert!(warm < cold * 0.6, "{cold} {warm}");
 }

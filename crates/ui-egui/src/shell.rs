@@ -2591,7 +2591,14 @@ impl Shell {
         // An assembly lists its instances, nested by subassembly, and its
         // mates (docs/design/assemblies.md › *The tree*).
         self.outline = session.assembly_outline();
-        self.joints.driven = session.driven_mate();
+        self.joints.drive_state = session.drive_state();
+        self.joints.driven = self
+            .joints
+            .drive_state
+            .as_ref()
+            .and_then(|s| s.get("mate"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
         if let Some(status) = session.document_status() {
             if self.outline.is_some() {
                 self.assembly_docs.insert(status.id);

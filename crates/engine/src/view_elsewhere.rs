@@ -278,6 +278,12 @@ impl OpenDocument {
         Some(doc)
     }
 
+    /// `view.drive`'s answer there in the facts of the view as it stands
+    /// (without making the view again), when they came.
+    pub(crate) fn remote_view_facts_drive(&self) -> Option<Value> {
+        self.remote.view.as_ref()?.facts.as_ref()?.drive.clone()
+    }
+
     /// The view made elsewhere as it stands (made by
     /// [`Self::remote_shown`] first).
     pub(crate) fn remote_view(&mut self) -> Option<&RemoteView> {
@@ -566,7 +572,13 @@ pub(crate) fn facts_bytes(
             Err(e) => error = Some(e.message().to_string()),
         }
     }
-    if let Some(open) = session.documents.get_mut(session.active)
+    let refused = session
+        .documents
+        .get_mut(session.active)
+        .and_then(|open| open.drive.refused.clone());
+    if let Some((mate, why)) = refused {
+        facts.insert("drive".into(), json!({"mate": mate, "error": why}));
+    } else if let Some(open) = session.documents.get_mut(session.active)
         && open.driven_mate().is_some()
     {
         match session.execute("view.drive", &json!({})) {
@@ -706,6 +718,7 @@ fn outline_json(o: &AssemblyOutline) -> Value {
             "error": i.error,
             "visible": i.visible,
             "own": i.own,
+            "grounded": i.grounded,
             "features": i.features,
         })).collect::<Vec<_>>(),
         "mates": o.mates.iter().map(|m| json!({
@@ -812,6 +825,7 @@ fn outline_from(value: &Value) -> Option<AssemblyOutline> {
             error: opt_text(i, "error")?,
             visible: i.get("visible")?.as_bool()?,
             own: i.get("own")?.as_bool()?,
+            grounded: i.get("grounded")?.as_bool()?,
             features: texts(i, "features")?,
         });
     }
@@ -1125,6 +1139,7 @@ mod tests {
                 error: None,
                 visible: true,
                 own: true,
+                grounded: false,
                 features: vec!["F1".into()],
             }],
             mates: vec![OutlineMate {
