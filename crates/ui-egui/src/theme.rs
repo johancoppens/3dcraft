@@ -839,9 +839,9 @@ impl Tokens {
             // copper over the bodies' warm grey.
             mate: [122, 104, 0],
             mate_part: [236, 196, 150],
-            mate_width: 1.5,
-            mate_hot_width: 2.5,
-            mate_size: 36.0,
+            mate_width: 2.0,
+            mate_hot_width: 3.0,
+            mate_size: 52.0,
             mate_hit: 6.0,
             trace: [80, 0, 140],
             trace_width: 3.0,

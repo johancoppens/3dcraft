@@ -960,7 +960,8 @@ fn the_direct_path_draws_datums_and_matches_the_oracle() {
 }
 
 /// A four-bar assembly (a bar part, four instances, a fixed mate and four
-/// revolutes), in a folder of its own.
+/// revolutes), in a folder of its own. The bars are tall, so that the
+/// markers at their feet run inside them and are drawn dimmed there.
 fn four_bar() -> Session {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gpu-viewport-mates");
     let _ = std::fs::remove_dir_all(&dir);
@@ -983,7 +984,7 @@ fn four_bar() -> Session {
     run(
         &mut s,
         "feature.block",
-        json!({ "name": "Bar", "size": ["len", 6, 4] }),
+        json!({ "name": "Bar", "size": ["len", 6, 20] }),
     );
     run(
         &mut s,
