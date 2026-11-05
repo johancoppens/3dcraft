@@ -329,6 +329,9 @@ struct HeldReport {
     outcome: Result<Value, String>,
     document: Option<u64>,
     before: Option<CommandReport>,
+    /// [`WebHost::said`] when it was held: anything said since, the same
+    /// words included, is newer.
+    said: u64,
 }
 
 /// A dialog's answer kept while an edit made where the bodies are waits.
@@ -386,6 +389,9 @@ pub struct WebHost {
     /// What an open done a piece per frame answered, said once its scene
     /// is there ([`WebHost::release_report`]).
     held_report: Option<HeldReport>,
+    /// How many times the host said something in the status bar (a
+    /// report, a note, a command done): what a held report compares by.
+    said: u64,
     /// A file named in the page's address is being fetched.
     fetching: Option<String>,
     /// The address of a published example to fetch, for the page.
@@ -456,6 +462,7 @@ impl WebHost {
             away: false,
             last_answer: None,
             held_report: None,
+            said: 0,
         }
     }
 
@@ -781,6 +788,7 @@ impl WebHost {
     /// of the system's dialog) stays there; a failure of what the person
     /// asked for is [`Self::note_error`].
     pub fn note(&mut self, label: &str, ok: bool, text: String) {
+        self.said = self.said.wrapping_add(1);
         self.shell.last_command = Some(CommandReport {
             label: label.to_string(),
             ok,
@@ -796,6 +804,7 @@ impl WebHost {
     }
 
     fn report(&mut self, label: &str, outcome: &Result<Value, String>) {
+        self.said = self.said.wrapping_add(1);
         self.last_answer = outcome.as_ref().ok().cloned();
         let (ok, text) = match outcome {
             Ok(result) => (true, craft3d_ui_egui::answer::summary(label, result)),
@@ -845,6 +854,7 @@ impl WebHost {
                     outcome: outcome.clone(),
                     document: self.session.document_status().map(|s| s.id),
                     before: self.shell.last_command.clone(),
+                    said: self.said,
                 });
             } else {
                 self.report(label, outcome);
@@ -866,7 +876,10 @@ impl WebHost {
             return;
         };
         let shown = self.session.document_status().map(|s| s.id);
-        if self.shell.last_command != held.before || shown != held.document {
+        if self.shell.last_command != held.before
+            || self.said != held.said
+            || shown != held.document
+        {
             self.held_report = None;
             return;
         }
@@ -1065,6 +1078,7 @@ impl WebHost {
                 self.form_job = Some(token);
                 return outcome;
             }
+            self.said = self.said.wrapping_add(1);
             self.shell.command_done(done.clone());
             self.finish(asked.command, &done);
         }
@@ -1621,6 +1635,7 @@ impl WebHost {
             let form = self.form_job == Some(answer.token);
             if form {
                 self.form_job = None;
+                self.said = self.said.wrapping_add(1);
                 self.shell.command_done(answer.result.clone());
             }
             // Cancelled by the person: said, no error dialog.
@@ -2223,6 +2238,16 @@ mod tests {
             "{:?}",
             last(&host)
         );
+        // (c2) A, then a note in the very words the status bar has: newer
+        // all the same, it stays.
+        let mut host = self::host();
+        host.set_stepwise(true);
+        host.note("file.open", true, "Opened a".to_string());
+        host.receive("a.3dcraft", bytes.clone(), None).unwrap();
+        host.note("file.open", true, "Opened a".to_string());
+        let said = host.said;
+        settle(&mut host);
+        assert_eq!(host.said, said, "the held report was not said again");
         // (c) A, then a note said while it loads: the note stays.
         let mut host = self::host();
         host.set_stepwise(true);

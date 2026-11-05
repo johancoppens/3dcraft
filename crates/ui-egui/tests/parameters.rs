@@ -934,3 +934,46 @@ fn a_long_title_never_covers_the_status() {
         "title {title:?} over status {status:?}"
     );
 }
+
+/// Nothing is said broken that nobody broke (the review of e27d1452):
+/// (a) a Jig that fails as it is opened is its own baseline; (b) another
+/// document shown and this one again says nothing; (c) an edit of a
+/// feature that is no parameter moves no parameter: no banner, and so no
+/// Back to last good that would change nothing.
+#[test]
+fn nothing_is_said_broken_that_nobody_broke() {
+    // (a) Failing from the start: r of 15 mm rounds the 20 mm side away.
+    let mut s = jig();
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "r", "expr": "15 mm"}),
+    );
+    let (mut session, mut shell, mut window) = started(s);
+    window.idle(&mut shell, &mut session, 4);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
+    // (b) Another document, then this one again.
+    let first = session.document_status().unwrap().index;
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    window.idle(&mut shell, &mut session, 3);
+    run(&mut session, "file.activate", json!({"document": first}));
+    window.idle(&mut shell, &mut session, 4);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
+    // (c) A good Jig, its fillet's radius edited (not the parameter).
+    let (mut session, mut shell, mut window) = started(jig());
+    window.idle(&mut shell, &mut session, 4);
+    run(
+        &mut session,
+        "feature.edit",
+        json!({"feature": "Round", "radius": "15 mm"}),
+    );
+    window.idle(&mut shell, &mut session, 4);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
+    assert!(
+        !shell
+            .parameter_hits()
+            .iter()
+            .any(|(n, _)| n == "Back to last good"),
+        "no button that would change nothing"
+    );
+}

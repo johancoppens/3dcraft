@@ -46,14 +46,20 @@ pub enum CheckStatus {
 
 impl CheckLine {
     /// The lines under a check that does not pass: what it must be, then
-    /// why (both on the row: a phone has no tooltip).
+    /// why where that says more than the measure (not proven, or nothing
+    /// measured); on the row, as a phone has no tooltip.
     pub fn under(&self) -> Vec<String> {
         let mut lines = Vec::new();
         if matches!(self.status, CheckStatus::Failed | CheckStatus::NotProven) {
             if !self.limit.is_empty() {
                 lines.push(format!("must be {}", self.limit));
             }
-            if let Some(note) = &self.note {
+            // The reason only where it says more than the measure and the
+            // limit: not proven, or nothing measured (an error).
+            let says_more = self.status == CheckStatus::NotProven
+                || self.measured.is_empty()
+                || self.measured == "—";
+            if let Some(note) = self.note.as_ref().filter(|_| says_more) {
                 lines.push(note.clone());
             }
         }
@@ -403,10 +409,10 @@ pub fn measured_text(text: &str) -> String {
     )
 }
 
-/// A number to five significant digits at any size: plainly from 1e-4 to
-/// below 1e9 (`6491.2`, `0.30273`, `123457`), in scientific notation
-/// beyond (`1.5e-7`, `-1e-5`, `1.2346e12`); trailing zeros dropped, never
-/// a negative zero.
+/// A number to five significant digits, written plainly from 1e-4 to
+/// below 1e9 (`6491.2`, `0.30273`; a whole number of more digits than five
+/// stays whole there, `123457`), in scientific notation beyond (`1.5e-7`,
+/// `-1e-5`, `1.2346e12`); trailing zeros dropped, never a negative zero.
 pub fn number_text(v: f64) -> String {
     if !v.is_finite() {
         return format!("{v}");
@@ -431,6 +437,20 @@ pub fn number_text(v: f64) -> String {
     let decimals = (4 - magnitude).clamp(0, 8) as usize;
     let n = trim(format!("{v:.decimals$}"));
     if n == "-0" { "0".to_string() } else { n }
+}
+
+/// A check's limit as its row writes it ([`measured_text`]), the
+/// tolerance of an `eq` given the unit of its value when `assert.list`
+/// writes it bare (`5000 mm^3 ± 1` is `5000 mm³ ± 1 mm³`).
+pub fn limit_text(expected: &str) -> String {
+    let text = match expected.split_once(" ± ") {
+        Some((value, tol)) if tol.trim().parse::<f64>().is_ok() && value.trim().contains(' ') => {
+            let unit = value.trim().split_once(' ').map_or("", |(_, u)| u);
+            format!("{value} ± {} {unit}", tol.trim())
+        }
+        _ => expected.to_string(),
+    };
+    measured_text(&text)
 }
 
 /// Unit powers as superscripts: `mm^3` is `mm³`, `kg mm^2` is `kg mm²`,
@@ -620,15 +640,28 @@ mod tests {
             status,
             note: note.map(str::to_string),
         };
+        // A failing measure: what it must be (the reason would repeat it).
         assert_eq!(
             line(CheckStatus::Failed, Some("too thin")).under(),
-            vec!["must be ≥ 1.5 mm".to_string(), "too thin".to_string()]
+            vec!["must be ≥ 1.5 mm".to_string()]
         );
         assert_eq!(
             line(CheckStatus::NotProven, Some("sampled")).under().len(),
             2
         );
         assert!(line(CheckStatus::Passed, None).under().is_empty());
+        // Nothing measured (an error): the reason says what went wrong.
+        let mut error = line(CheckStatus::Failed, Some("names nothing yet"));
+        error.measured = "—".to_string();
+        assert_eq!(error.under().len(), 2);
+    }
+
+    #[test]
+    fn a_limits_tolerance_carries_the_unit_of_its_value() {
+        assert_eq!(limit_text("5000 mm^3 ± 1"), "5000 mm³ ± 1 mm³");
+        assert_eq!(limit_text("0.25 mm ± 0.00001"), "0.25 mm ± 1e-5 mm");
+        assert_eq!(limit_text("2 ± 0"), "2 ± 0");
+        assert_eq!(limit_text("≥ 1.5 mm"), "≥ 1.5 mm");
     }
 
     #[test]

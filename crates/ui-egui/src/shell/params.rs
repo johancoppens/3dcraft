@@ -599,6 +599,10 @@ pub struct Trouble {
     /// last good); false when the command refused the value and nothing
     /// changed.
     pub broke: bool,
+    /// Broken by something other than the form's own commit (an undo, a
+    /// redo, an agent's edit): said as "the model is broken", not as
+    /// "this value breaks it".
+    pub elsewhere: bool,
 }
 
 /// The last state the form took as good: the parameters' expressions
@@ -667,6 +671,10 @@ pub struct ParamForm {
     note: Option<Note>,
     trouble: Option<Trouble>,
     last_good: Option<LastGood>,
+    /// A parameter moved off the last good values by something other than
+    /// the form (an undo, a redo, an agent), seen when the revision
+    /// changed: judged once the assertions are measured.
+    moved: Option<String>,
     /// The drag and focus of the number fields, and the field typed into,
     /// with which parameter they belong to.
     memory: FieldMemory,
@@ -1045,6 +1053,7 @@ impl Shell {
             form.note = None;
             form.trouble = None;
             form.last_good = None;
+            form.moved = None;
             form.judging = None;
             form.memory = FieldMemory::default();
             form.typing = None;
@@ -1088,6 +1097,23 @@ impl Shell {
             .as_ref()
             .map(|g| g.faults.clone())
             .unwrap_or_default();
+        // What moved off the last good values since, seen as the revision
+        // changes while the form itself sends nothing.
+        if changed && form.done.is_none() && !form.busy() {
+            form.moved = form.list.as_ref().and_then(|list| {
+                let good = &form.last_good.as_ref()?.values;
+                list.params
+                    .iter()
+                    .find(|p| {
+                        let now = match p.value {
+                            Some(value) if p.takes_numbers() => sent_value(p, value),
+                            _ => Value::String(p.expr.clone()),
+                        };
+                        good.get(&p.name).is_some_and(|g| *g != now)
+                    })
+                    .map(|p| p.name.clone())
+            });
+        }
         if let Some((flight, result)) = form.done.take() {
             let reported = result.as_ref().map(reported_faults).unwrap_or_default();
             let now = faults.clone().joined(reported);
@@ -1140,6 +1166,7 @@ impl Shell {
                         name: flight.field,
                         message,
                         broke: false,
+                        elsewhere: false,
                     });
                 }
                 Verdict::Broke(message) => {
@@ -1148,6 +1175,7 @@ impl Shell {
                         name: flight.field,
                         message,
                         broke: true,
+                        elsewhere: false,
                     });
                 }
             }
@@ -1164,6 +1192,7 @@ impl Shell {
                     name: judging.field,
                     message,
                     broke: true,
+                    elsewhere: false,
                 });
             }
         } else if !form.busy() && form.judging.is_none() && !measuring {
@@ -1174,34 +1203,27 @@ impl Shell {
                 }
                 Some(t) if changed && !t.broke => form.trouble = None,
                 // Broken elsewhere (an undo or a redo, an agent's edit) in
-                // a Jig: said as a commit that broke it would be, at the
-                // parameter that moved off the last good values (none: at
-                // the form's head). Measured first: a fault is judged only
-                // once the assertions are.
+                // a Jig: said at the parameter that moved off the last
+                // good values, only when one did (a Jig that fails as it
+                // is opened, a tab switched back to, an edit of a feature
+                // that is no parameter: nothing said), once measured.
                 None if form.list.as_ref().is_some_and(|l| l.jig) => {
-                    if let Some(message) = faults.new_since(&baseline) {
-                        let moved = form.list.as_ref().and_then(|list| {
-                            let good = &form.last_good.as_ref()?.values;
-                            list.params
-                                .iter()
-                                .find(|p| {
-                                    let now = match p.value {
-                                        Some(value) if p.takes_numbers() => sent_value(p, value),
-                                        _ => Value::String(p.expr.clone()),
-                                    };
-                                    good.get(&p.name).is_some_and(|g| *g != now)
-                                })
-                                .map(|p| p.name.clone())
-                        });
+                    if let Some(name) = form.moved.clone()
+                        && let Some(message) = faults.new_since(&baseline)
+                    {
                         form.trouble = Some(Trouble {
-                            name: moved,
+                            name: Some(name),
                             message,
                             broke: true,
+                            elsewhere: true,
                         });
                     }
                 }
                 _ => {}
             }
+        }
+        if !measuring && !form.busy() && form.judging.is_none() {
+            form.moved = None;
         }
         if form.trouble.is_none() && !form.busy() && form.judging.is_none() && !measuring {
             // Each parameter's value as `param.set` takes it: the number
@@ -1813,9 +1835,16 @@ impl Shell {
     /// The trouble of the last commit, at its field.
     fn trouble_line(&mut self, ui: &mut egui::Ui, trouble: &Trouble) {
         let tokens = self.tokens;
+        // A break is said in full once, in the banner (with its button);
+        // under the field only what it must be. A refusal in full.
+        let text = if trouble.broke {
+            short_trouble(&trouble.message)
+        } else {
+            trouble.message.clone()
+        };
         ui.add(
             egui::Label::new(
-                egui::RichText::new(&trouble.message)
+                egui::RichText::new(text)
                     .size(tokens.secondary_font)
                     .color(color(tokens.failed)),
             )
@@ -1839,15 +1868,21 @@ impl Shell {
             .params
             .last_good
             .as_ref()
-            .map(|g| g.values.clone())
+            .map(|g| self.last_good_changes(g.values.clone()))
+            // No button that would change nothing (an edit of a feature,
+            // not of a parameter, broke it).
             .filter(|v| !v.is_empty());
         let width = (view.width() - 2.0 * tokens.inset).clamp(120.0, 560.0);
         // Under the view bar (Fit, Iso, Persp…) where it would cover it.
         let left = view.center().x - width * 0.5;
         let top = view.top() + tokens.inset;
         let top = match self.controls_layout.and_then(|l| l.camera_plate) {
+            // The bar across the banner's place at the viewport's top
+            // (within its own height of where the banner would go).
             Some(bar)
-                if bar.left() < left + width && bar.right() > left && bar.top() < top + 60.0 =>
+                if bar.left() < left + width
+                    && bar.right() > left
+                    && bar.top() < top + bar.height() =>
             {
                 top.max(bar.bottom() + tokens.nav_gap)
             }
@@ -1899,8 +1934,16 @@ impl Shell {
                                     ui.add(
                                         egui::Label::new(
                                             egui::RichText::new(format!(
-                                                "This value breaks the model: {}",
-                                                number_field::shortened(&trouble.message, 400)
+                                                "{}: {}",
+                                                if trouble.elsewhere {
+                                                    "The model is broken"
+                                                } else {
+                                                    "This value breaks the model"
+                                                },
+                                                number_field::shortened(
+                                                    &readable_numbers(&trouble.message),
+                                                    400
+                                                )
                                             ))
                                             .font(kit.font())
                                             .color(color(tokens.chrome_failed)),
@@ -2379,6 +2422,41 @@ pub fn stand_in_range(p: &Param, value: f64) -> [f64; 2] {
     }
 }
 
+/// The numbers of a message written as the checks list writes them
+/// (`at least 0.994521895 mm` is `at least 0.99452 mm`).
+pub(crate) fn readable_numbers(message: &str) -> String {
+    message
+        .split(' ')
+        .map(|word| {
+            // A number, maybe followed by a `)` or a `,`.
+            let end = word.trim_end_matches([')', ',', ';']);
+            let tail = &word[end.len()..];
+            let head = end.trim_start_matches('(');
+            let lead = &end[..end.len() - head.len()];
+            match head.parse::<f64>() {
+                Ok(v) if v.is_finite() => format!(
+                    "{lead}{}{tail}",
+                    crate::shell::sidepanel::checks::number_text(v)
+                ),
+                _ => word.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// What a field says of a break in a line: what it must be (`thickness:
+/// must be ≥ 1.5 mm`), or what failed (`Round fails`); the whole reason is
+/// the banner's.
+pub(crate) fn short_trouble(message: &str) -> String {
+    let head = message.split(':').next().unwrap_or(message).trim();
+    match message.rsplit_once(", expected ") {
+        Some((_, expected)) => readable_numbers(&format!("{head}: must be {}", expected.trim())),
+        None if head.is_empty() => readable_numbers(message),
+        None => format!("{head} fails"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2742,6 +2820,22 @@ mod tests {
             json!({"reset": true, "values": {"depth": 41.0}})
         );
         assert_eq!(field.as_deref(), Some("depth"));
+    }
+
+    #[test]
+    fn a_break_is_said_short_under_its_field_with_readable_numbers() {
+        assert_eq!(
+            short_trouble("thickness: measured 1 mm (at least 0.994521895 mm), expected ≥ 1.5 mm"),
+            "thickness: must be ≥ 1.5 mm"
+        );
+        assert_eq!(
+            short_trouble("Round: the fillet does not fit"),
+            "Round fails"
+        );
+        assert_eq!(
+            readable_numbers("measured 1 mm (at least 0.994521895 mm), expected ≥ 1.5 mm"),
+            "measured 1 mm (at least 0.99452 mm), expected ≥ 1.5 mm"
+        );
     }
 
     #[test]

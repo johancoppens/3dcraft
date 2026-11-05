@@ -339,6 +339,12 @@ impl Shell {
         self.timeline.has_timeline && (self.state.timeline.motion || self.timeline.steps == 0)
     }
 
+    /// The `t` the view shows, or will once what is queued has run: what
+    /// a moment asked for again starts from (the chip's click, `ui.set`).
+    pub(crate) fn motion_t_asked(&self) -> Option<f64> {
+        self.timeline.motion_t()
+    }
+
     /// Shows the moment `t` of the motion (clamped to 0 to 1).
     pub(crate) fn go_to_t(&mut self, t: f64) {
         let t = if t.is_finite() {

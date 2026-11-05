@@ -882,7 +882,8 @@ mod tests {
         let (Some(a), Some(b)) = (body["mass"].as_f64(), full["bodies"][0]["mass"].as_f64()) else {
             panic!("{quick} {full}");
         };
-        assert!((a - b).abs() <= 1e-12 * b.abs(), "{a} {b}");
+        // Bit for bit: the same volume times the same density.
+        assert_eq!(a.to_bits(), b.to_bits(), "{a} {b}");
         assert!(full["bodies"][0]["inertia"].is_array());
         // A wrong kind of value is refused, never a panic.
         assert!(

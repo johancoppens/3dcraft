@@ -1438,8 +1438,9 @@ Phase 2a of the UI overhaul (plan `plan/mockups/sidepanel`, boards 01–20, the 
   *N failing*, then a row per check with a dot that carries ✓ or ×, its name and its measure, whole (2026-11-04:
   five significant digits at any size, scientific notation below 1e-4, unit powers as superscripts, the limit
   written the same way, never a negative zero; the name is cut before the measure); a check that does not pass
-  is red, with *must be …* (its limit) and its reason on lines of their own under it (a phone has no tooltip);
-  the tooltip says name, measure, limit and reason. Which step made a check fail is not known yet (owed: it needs the measure history), so no red dot
+  is red, with *must be …* (its limit; an `eq`'s bare tolerance given its value's unit) on a line of its own
+  under it, and its reason on another where it says more than the measure (not proven, or nothing measured); a
+  phone has no tooltip; the tooltip says name, measure, limit and reason. Which step made a check fail is not known yet (owed: it needs the measure history), so no red dot
   marks a step. A click flies to what the check measures (`assert.list`'s subject). They fold to their header
   while something is selected, and when open checks would leave the list fewer than six rows; without checks
   their heading stays with the hint that says how to add one. The card of what is selected shows only where the

@@ -545,7 +545,7 @@ impl Shell {
         // does), so the view draws what the chip says. Asked before the sync,
         // which shows the chip what the moment shown was asked with.
         if self.state.timeline.collisions != before.timeline.collisions
-            && let Some(t) = self.shown_t()
+            && let Some(t) = self.motion_t_asked()
         {
             self.go_to_t(t);
         }
