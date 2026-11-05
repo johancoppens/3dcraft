@@ -22,11 +22,10 @@
 use super::Shell;
 use super::number_field::{self, FieldMemory, Typing};
 use crate::theme::color;
-use craft3d_engine::{FeatureState, Scene, Session};
+use craft3d_engine::{FeatureState, Session};
 use craft3d_math::Portable;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 /// Least time between two commits of one drag on the desktop, in seconds.
 pub const DEBOUNCE: f64 = 0.15;
@@ -570,9 +569,9 @@ pub fn reported_faults(result: &Value) -> Faults {
         .into_iter()
         .flatten()
     {
-        faults
-            .assertions
-            .insert(text(b.get("name")), text(b.get("message")));
+        let name = text(b.get("name"));
+        let message = named_check(&name, &text(b.get("message")));
+        faults.assertions.insert(name, message);
     }
     faults
 }
@@ -675,6 +674,9 @@ pub struct ParamForm {
     /// the form (an undo, a redo, an agent), seen when the revision
     /// changed: judged once the assertions are measured.
     moved: Option<String>,
+    /// The document's revision changed since the last verdict (kept while
+    /// the checks are measured).
+    revised: bool,
     /// The drag and focus of the number fields, and the field typed into,
     /// with which parameter they belong to.
     memory: FieldMemory,
@@ -1026,7 +1028,9 @@ impl Shell {
         for a in &self.assertion_rows {
             match a.status {
                 A::Failed | A::Error => {
-                    faults.assertions.insert(a.name.clone(), a.message.clone());
+                    faults
+                        .assertions
+                        .insert(a.name.clone(), named_check(&a.name, &a.message));
                 }
                 A::Pending => pending = true,
                 A::Passed | A::NotProven | A::Inactive => {}
@@ -1038,7 +1042,7 @@ impl Shell {
     /// Reads `param.list` again when the active document or its revision
     /// changed, judges a commit that came back, and keeps the last good
     /// state. Part of every sync.
-    pub(super) fn sync_params(&mut self, session: &mut Session, scene: Option<&Arc<Scene>>) {
+    pub(super) fn sync_params(&mut self, session: &mut Session) {
         let doc = session.document_status().map(|s| s.id);
         let form = &mut self.params;
         if doc != form.doc {
@@ -1054,6 +1058,7 @@ impl Shell {
             form.trouble = None;
             form.last_good = None;
             form.moved = None;
+            form.revised = false;
             form.judging = None;
             form.memory = FieldMemory::default();
             form.typing = None;
@@ -1071,7 +1076,10 @@ impl Shell {
         let Some(doc) = doc else {
             return;
         };
-        let revision = scene.map_or(0, |s| s.revision);
+        // The document's own revision, which the parameters and the
+        // checks' answers belong to (not the picture's, which can come
+        // later where it is made elsewhere).
+        let revision = session.document_revision().unwrap_or(0);
         let changed = form.read_for != Some((doc, revision));
         // An output being measured is read again until it is computed.
         let measuring_outputs = form.list.as_ref().is_some_and(ParamList::outputs_pending);
@@ -1097,6 +1105,11 @@ impl Shell {
             .as_ref()
             .map(|g| g.faults.clone())
             .unwrap_or_default();
+        // The revision changed since the last verdict: what mended or
+        // broke it is judged once the checks are measured, frames later.
+        if changed {
+            form.revised = true;
+        }
         // What moved off the last good values since, seen as the revision
         // changes while the form itself sends nothing.
         if changed && form.done.is_none() && !form.busy() {
@@ -1198,10 +1211,10 @@ impl Shell {
         } else if !form.busy() && form.judging.is_none() && !measuring {
             match &form.trouble {
                 // Mended elsewhere (an undo, an agent): good again.
-                Some(t) if changed && t.broke && faults.new_since(&baseline).is_none() => {
+                Some(t) if form.revised && t.broke && faults.new_since(&baseline).is_none() => {
                     form.trouble = None;
                 }
-                Some(t) if changed && !t.broke => form.trouble = None,
+                Some(t) if form.revised && !t.broke => form.trouble = None,
                 // Broken elsewhere (an undo or a redo, an agent's edit) in
                 // a Jig: said at the parameter that moved off the last
                 // good values, only when one did (a Jig that fails as it
@@ -1224,6 +1237,7 @@ impl Shell {
         }
         if !measuring && !form.busy() && form.judging.is_none() {
             form.moved = None;
+            form.revised = false;
         }
         if form.trouble.is_none() && !form.busy() && form.judging.is_none() && !measuring {
             // Each parameter's value as `param.set` takes it: the number
@@ -1266,6 +1280,7 @@ impl Shell {
             "note": form.note.as_ref().map(|n| json!({"name": n.name, "text": n.text})),
             "trouble": form.trouble.as_ref().map(|t| json!({
                 "name": t.name, "message": t.message, "broke": t.broke,
+                "elsewhere": t.elsewhere,
             })),
         })
     }
@@ -2445,16 +2460,49 @@ pub(crate) fn readable_numbers(message: &str) -> String {
         .join(" ")
 }
 
-/// What a field says of a break in a line: what it must be (`thickness:
-/// must be ≥ 1.5 mm`), or what failed (`Round fails`); the whole reason is
-/// the banner's.
-pub(crate) fn short_trouble(message: &str) -> String {
-    let head = message.split(':').next().unwrap_or(message).trim();
-    match message.rsplit_once(", expected ") {
-        Some((_, expected)) => readable_numbers(&format!("{head}: must be {}", expected.trim())),
-        None if head.is_empty() => readable_numbers(message),
-        None => format!("{head} fails"),
+/// A check's message as the form says it: led by the check's name, not by
+/// the kind of its measure (`thickness: measured 1 mm …` of the check
+/// `wall` is `wall: measured 1 mm …`; `Bolt overlaps Plate …` is `apart:
+/// Bolt overlaps Plate …`).
+pub(crate) fn named_check(name: &str, message: &str) -> String {
+    let rest = match message.split_once(": ") {
+        // A measure's kind first (one word, `thickness`, `centerOfMass`).
+        Some((kind, rest)) if !kind.is_empty() && kind.chars().all(char::is_alphanumeric) => rest,
+        _ => message,
+    };
+    if name.is_empty() {
+        rest.to_string()
+    } else {
+        format!("{name}: {rest}")
     }
+}
+
+/// What a field says of a break in a line, the whole reason being the
+/// banner's: what a check must be (`wall: must be ≥ 1.5 mm`), else what
+/// was found (`apart: Bolt overlaps Plate by 12 mm³`, `wall: cannot be
+/// measured …`, `Round: the fillet does not fit`).
+pub(crate) fn short_trouble(message: &str) -> String {
+    let (head, rest) = message.split_once(": ").unwrap_or(("", message));
+    let named = |text: &str| {
+        if head.is_empty() {
+            text.to_string()
+        } else {
+            format!("{head}: {text}")
+        }
+    };
+    let bound = |expected: &str| {
+        let e = expected.trim_start();
+        e.starts_with(['≥', '≤', '<', '>', '=', '±', '-'])
+            || e.chars().next().is_some_and(|c| c.is_ascii_digit())
+    };
+    let text = match rest.rsplit_once(", expected ") {
+        // A bound: what it must be.
+        Some((_, expected)) if bound(expected) => named(&format!("must be {}", expected.trim())),
+        // A flag or a sentence: what was found.
+        Some((found, _)) => named(found.trim().trim_start_matches("measured ")),
+        None => named(rest.trim()),
+    };
+    crate::shell::sidepanel::checks::pretty_units(&readable_numbers(&text))
 }
 
 #[cfg(test)]
@@ -2824,13 +2872,40 @@ mod tests {
 
     #[test]
     fn a_break_is_said_short_under_its_field_with_readable_numbers() {
+        let wall = named_check(
+            "wall",
+            "thickness: measured 1 mm (at least 0.994521895 mm), expected ≥ 1.5 mm",
+        );
         assert_eq!(
-            short_trouble("thickness: measured 1 mm (at least 0.994521895 mm), expected ≥ 1.5 mm"),
-            "thickness: must be ≥ 1.5 mm"
+            wall,
+            "wall: measured 1 mm (at least 0.994521895 mm), expected ≥ 1.5 mm"
+        );
+        assert_eq!(short_trouble(&wall), "wall: must be ≥ 1.5 mm");
+        let apart = named_check(
+            "apart",
+            "Bolt overlaps Plate by 12 mm^3, expected no overlap",
+        );
+        assert_eq!(
+            short_trouble(&apart),
+            "apart: Bolt overlaps Plate by 12 mm³"
+        );
+        assert_eq!(
+            short_trouble(&named_check(
+                "wall",
+                "thickness: cannot be measured: no body"
+            )),
+            "wall: cannot be measured: no body"
+        );
+        assert_eq!(
+            short_trouble(&named_check(
+                "lid fits",
+                "value: measured false, expected true"
+            )),
+            "lid fits: false"
         );
         assert_eq!(
             short_trouble("Round: the fillet does not fit"),
-            "Round fails"
+            "Round: the fillet does not fit"
         );
         assert_eq!(
             readable_numbers("measured 1 mm (at least 0.994521895 mm), expected ≥ 1.5 mm"),
@@ -2882,9 +2957,10 @@ mod tests {
             "broken": [{"name": "wall", "message": "wall is 1 mm, must be ≥ 2 mm"}],
             "unproven": [], "pending": 0}});
         let faults = reported_faults(&assertion);
+        // Led by the check's name (the review of 221e3cce).
         assert_eq!(
             verdict(&Ok(assertion), &faults, &none),
-            Verdict::Broke("wall is 1 mm, must be ≥ 2 mm".into())
+            Verdict::Broke("wall: wall is 1 mm, must be ≥ 2 mm".into())
         );
         assert_eq!(verdict(&Ok(json!({})), &faults, &faults), Verdict::Good);
     }

@@ -977,3 +977,92 @@ fn nothing_is_said_broken_that_nobody_broke() {
         "no button that would change nothing"
     );
 }
+
+/// The jig with a check on the Round, as real Jigs have: its extent along
+/// z is at least 1 mm (a radius that rounds the side away fails it).
+fn jig_with_check() -> Session {
+    let mut s = jig();
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "round height", "measure": "extent", "of": "Round", "axis": "z", "min": "1"}),
+    );
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "fits the box", "measure": "extent", "of": "Round", "axis": "x", "max": "60"}),
+    );
+    s
+}
+
+/// Frames until the checks are measured (they are measured off this
+/// thread), at most a few seconds.
+fn settle(window: &mut Window, shell: &mut Shell, session: &mut Session) {
+    for _ in 0..200 {
+        window.idle(shell, session, 1);
+        let checks = run(session, "assert.list", json!({}));
+        let pending = checks["assertions"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|c| c["status"] == "pending"));
+        if !pending {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    window.idle(shell, session, 3);
+}
+
+/// A mend after an undo, a redo or an agent's edit is seen once the
+/// checks are measured (the review of 221e3cce: the banner stayed, the
+/// checks being measured in the frame the revision changed).
+#[test]
+fn a_mend_is_seen_once_the_checks_are_measured() {
+    let (mut session, mut shell, mut window) = started(jig_with_check());
+    settle(&mut window, &mut shell, &mut session);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
+    // The form's own commit breaks it; an undo mends it.
+    shell
+        .handle_method(
+            &mut session,
+            "ui.param",
+            Some(&json!({"name": "r", "value": 15})),
+        )
+        .unwrap()
+        .unwrap();
+    settle(&mut window, &mut shell, &mut session);
+    assert_eq!(form(&mut shell, &mut session)["trouble"]["broke"], true);
+    run(&mut session, "edit.undo", json!({}));
+    settle(&mut window, &mut shell, &mut session);
+    assert_eq!(
+        form(&mut shell, &mut session)["trouble"],
+        Value::Null,
+        "mended by the undo"
+    );
+    // An agent's param.set breaks it (said, from elsewhere, at r) and its
+    // undo mends it.
+    run(&mut session, "param.set", json!({"values": {"r": 15}}));
+    settle(&mut window, &mut shell, &mut session);
+    let shown = form(&mut shell, &mut session);
+    assert_eq!(shown["trouble"]["broke"], true, "{shown}");
+    assert_eq!(shown["trouble"]["elsewhere"], true, "{shown}");
+    assert_eq!(shown["trouble"]["name"], "r", "{shown}");
+    run(&mut session, "edit.undo", json!({}));
+    settle(&mut window, &mut shell, &mut session);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
+    // A check alone broken (the plate too wide): said by the check's name.
+    run(&mut session, "param.set", json!({"values": {"w": 80}}));
+    settle(&mut window, &mut shell, &mut session);
+    let shown = form(&mut shell, &mut session);
+    let message = shown["trouble"]["message"].as_str().unwrap_or_default();
+    assert!(message.starts_with("fits the box: "), "{shown}");
+    run(&mut session, "edit.undo", json!({}));
+    settle(&mut window, &mut shell, &mut session);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
+    // A redo breaks it again; another undo mends it again.
+    run(&mut session, "edit.redo", json!({}));
+    settle(&mut window, &mut shell, &mut session);
+    assert_eq!(form(&mut shell, &mut session)["trouble"]["broke"], true);
+    run(&mut session, "edit.undo", json!({}));
+    settle(&mut window, &mut shell, &mut session);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
+}

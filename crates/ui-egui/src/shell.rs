@@ -2342,7 +2342,7 @@ impl Shell {
         self.mark_scrubbed_rows();
         self.mark_zoomable(scene.as_deref());
         self.assertion_rows = session.assertion_states();
-        self.sync_params(session, scene.as_ref());
+        self.sync_params(session);
         self.sync_side(session, scene.as_deref());
         self.sync_tabs(session);
         self.note_recent(session);

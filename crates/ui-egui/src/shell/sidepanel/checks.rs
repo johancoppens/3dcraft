@@ -33,6 +33,9 @@ pub struct CheckLine {
     pub status: CheckStatus,
     /// Under a failing check: why.
     pub note: Option<String>,
+    /// What was measured said more than the row shows (a flag, or words
+    /// in parentheses cut off): the reason goes under it.
+    pub cut: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,7 +61,8 @@ impl CheckLine {
             // limit: not proven, or nothing measured (an error).
             let says_more = self.status == CheckStatus::NotProven
                 || self.measured.is_empty()
-                || self.measured == "—";
+                || self.measured == "—"
+                || self.cut;
             if let Some(note) = self.note.as_ref().filter(|_| says_more) {
                 lines.push(note.clone());
             }
@@ -82,7 +86,9 @@ impl Shell {
                     A::Pending => CheckStatus::Pending,
                     A::Inactive => CheckStatus::Off,
                 };
+                let raw = a.measured.as_deref().unwrap_or("");
                 CheckLine {
+                    cut: raw.contains(" (") || matches!(raw.trim(), "true" | "false"),
                     name: a.name.clone(),
                     measured: a.measured.as_deref().map(measured_text).unwrap_or_else(|| {
                         match status {
@@ -634,6 +640,7 @@ mod tests {
     #[test]
     fn a_check_that_does_not_pass_says_its_limit_and_why_on_the_row() {
         let line = |status, note: Option<&str>| CheckLine {
+            cut: false,
             name: "wall".to_string(),
             measured: "1 mm".to_string(),
             limit: "≥ 1.5 mm".to_string(),
@@ -654,6 +661,11 @@ mod tests {
         let mut error = line(CheckStatus::Failed, Some("names nothing yet"));
         error.measured = "—".to_string();
         assert_eq!(error.under().len(), 2);
+        // A flag, or a measure whose words were cut: the reason too.
+        let mut flag = line(CheckStatus::Failed, Some("the hole is blind"));
+        flag.measured = "false".to_string();
+        flag.cut = true;
+        assert_eq!(flag.under().len(), 2);
     }
 
     #[test]
