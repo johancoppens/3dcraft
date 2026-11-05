@@ -91,7 +91,7 @@ impl Shell {
                             _ => "—".to_string(),
                         }
                     }),
-                    limit: measured_text(&a.expected),
+                    limit: limit_text(&a.expected),
                     status,
                     // Which step made it fail is not known yet: its reason.
                     note: matches!(status, CheckStatus::Failed | CheckStatus::NotProven)

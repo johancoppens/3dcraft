@@ -1195,3 +1195,40 @@ fn an_undo_with_the_bodies_tab_open_integrates_no_inertia() {
     let shown = format!("{:?}", shell.side_bodies());
     assert!(shown.contains("mass: Some("), "{shown}");
 }
+
+/// A check's `eq` limit reads with its tolerance in the value's unit
+/// (`8000 mm³ ± 1 mm³`; `assert.list` writes the tolerance bare).
+#[test]
+fn an_eq_limit_carries_its_unit_on_the_tolerance() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(
+        &mut session,
+        "feature.block",
+        json!({"name": "B", "size": [20, 20, 20]}),
+    );
+    run(
+        &mut session,
+        "assert.add",
+        json!({"name": "vol", "measure": "volume", "of": "B", "eq": "7000", "tol": "1"}),
+    );
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    for _ in 0..40 {
+        window.frames(&mut shell, &mut session, 1);
+        if shell
+            .side_checks()
+            .0
+            .iter()
+            .all(|c| c.status != CheckStatus::Pending)
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let (lines, _) = shell.side_checks();
+    let vol = lines.iter().find(|l| l.name == "vol").unwrap();
+    assert_eq!(vol.limit, "7000 mm³ ± 1 mm³");
+    assert_eq!(vol.measured, "8000 mm³");
+    assert_eq!(vol.under(), vec!["must be 7000 mm³ ± 1 mm³".to_string()]);
+}
