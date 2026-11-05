@@ -2090,7 +2090,7 @@ fn a_periodic_spline_is_not_driven_out_of_scale_by_a_seam_tangent() {
     assert_eq!(tangent["status"], "failed", "{tangent}");
     let why = tangent["error"].as_str().unwrap();
     assert!(
-        why.contains("far out of scale") && why.contains("periodic: false"),
+        why.contains("far beyond the sketch's size") && why.contains("periodic: false"),
         "{why}"
     );
     assert!(largest < 100.0, "a point at {largest}");
@@ -2175,4 +2175,158 @@ fn a_live_spline_that_ends_where_it_starts_must_say_closed() {
         why.contains("e1") && why.contains("passes through it") && why.contains("does not keep it"),
         "{why}"
     );
+}
+
+/// Design changes are not taken for a periodic spline running off (the
+/// coordinator's question on the rule of S1): a dimension made twenty
+/// times larger, a spline drawn tiny and then dimensioned to its size, a
+/// point moved far with sketch.edit, and a closed live spline on points
+/// held by formulas of a radius taken from 10 to 200 all build, while the
+/// seam tangent of the absurd case is refused
+/// (`a_periodic_spline_is_not_driven_out_of_scale_by_a_seam_tangent`).
+#[test]
+fn design_changes_of_a_periodic_spline_are_not_taken_for_a_run_off() {
+    let ok = |s: &mut Session, what: &str| {
+        let inspected = run(s, "sketch.inspect", json!({"sketch": "Profile"}));
+        assert_eq!(inspected["status"], "ok", "{what}: {inspected}");
+        inspected
+    };
+    let spread = |inspected: &Value| {
+        let along = |key: &str| {
+            let vs: Vec<f64> = inspected["entities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|e| e["type"] == "point")
+                .map(|e| e[key].as_f64().unwrap())
+                .collect();
+            vs.iter().copied().fold(f64::MIN, f64::max)
+                - vs.iter().copied().fold(f64::MAX, f64::min)
+        };
+        along("x").max(along("y"))
+    };
+    let polygon =
+        |k: f64| -> Vec<P> { vec![[k, -k], [k, k], [-k, k], [-k, -k], [0.5 * k, -1.5 * k]] };
+
+    // A dimension between two of its points made twenty times larger.
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "d", "expr": "20 mm"}),
+    );
+    let made = run(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "Profile", "control": polygon(10.0), "closed": true}),
+    );
+    let ids: Vec<Value> = made["control"].as_array().unwrap().clone();
+    let (a, b) = (ids[3].clone(), ids[4].clone());
+    run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Profile", "type": "fixed", "entities": [a.clone()]}),
+    );
+    run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Profile", "type": "distance", "entities": [a, b], "value": "d"}),
+    );
+    ok(&mut s, "d = 20");
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "d", "expr": "400 mm"}),
+    );
+    let grown = ok(&mut s, "d = 400");
+    assert!(spread(&grown) > 300.0, "{}", spread(&grown));
+
+    // Drawn tiny, then dimensioned to its size.
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    let made = run(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "Profile", "control": polygon(0.05), "closed": true}),
+    );
+    let ids: Vec<Value> = made["control"].as_array().unwrap().clone();
+    run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Profile", "type": "fixed", "entities": [ids[3].clone()]}),
+    );
+    run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Profile", "type": "distance", "entities": [ids[3].clone(), ids[4].clone()], "value": "100 mm"}),
+    );
+    let sized = ok(&mut s, "dimensioned");
+    assert!(spread(&sized) > 50.0, "{}", spread(&sized));
+
+    // A point moved far.
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    let made = run(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "Profile", "control": polygon(10.0), "closed": true}),
+    );
+    let moved = run(
+        &mut s,
+        "sketch.edit",
+        json!({"sketch": "Profile", "entity": made["control"][4], "at": [500, 0]}),
+    );
+    assert_eq!(moved["status"], "ok", "{moved}");
+    let far = ok(&mut s, "moved");
+    assert!(spread(&far) > 400.0, "{}", spread(&far));
+
+    // A closed live spline on points held by formulas of r: 10 to 200.
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "r", "expr": "10 mm"}),
+    );
+    let through: Vec<Value> = (0..7)
+        .map(|i| {
+            let a = 360.0 * f64::from(i) / 7.0;
+            json!([format!("r * cos({a} deg)"), format!("r * sin({a} deg)")])
+        })
+        .collect();
+    let made = run(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "Profile", "through": through, "closed": true, "live": true}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "r", "expr": "200 mm"}),
+    );
+    let big = ok(&mut s, "r = 200");
+    assert!(spread(&big) > 300.0, "{}", spread(&big));
+    // And the same on a periodic spline through formula points, fitted
+    // once, whose seam point is held by r.
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "r", "expr": "10 mm"}),
+    );
+    let made = run(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "Profile", "through": [["r", "0 mm"], [5, 7], [-8, 0], [5, -7]], "closed": true}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "r", "expr": "200 mm"}),
+    );
+    ok(&mut s, "seam held by r = 200");
 }

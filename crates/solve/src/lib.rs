@@ -126,6 +126,16 @@ pub const RUNS_PER_SOLVE: usize = 32;
 /// blames before the solve fails with [`SolveError::DidNotConverge`].
 pub const MAX_BLAMED: usize = 8;
 
+/// The size of the sketch as its constraints and its starting places ask
+/// for it: the extent of its points where they start (fixed and image
+/// points included) and its lengths (distances, offsets, radii), as the
+/// solve measures it. What a solution can be held against: a part of it
+/// spread far beyond this is not what the constraints asked for. 0 for a
+/// sketch that cannot be prepared.
+pub fn asked_size(sketch: &Sketch) -> f64 {
+    equations::prepare(sketch, 0.0).map_or(0.0, |prepared| prepared.size)
+}
+
 /// Solves `sketch` from its current coordinates.
 ///
 /// A sketch with conflicting or undefined constraints is not an error: the

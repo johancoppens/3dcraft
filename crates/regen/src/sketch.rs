@@ -1831,7 +1831,7 @@ pub(crate) fn solve_sketch(
     }
     radii.sort_by_key(|(id, _)| *id);
     points.sort_by_key(|(id, ..)| *id);
-    if let Some(reason) = periodic_run_off(sketch, &points) {
+    if let Some(reason) = periodic_run_off(sketch, &points, solve::asked_size(&problem.input)) {
         return unsolved(reason);
     }
     let state = |report: &solve::ConstraintReport| match report.status {
@@ -2359,8 +2359,8 @@ pub fn settle_sketches_cached(doc: &mut Document, cache: &mut crate::RegenCache)
 }
 
 /// How far a periodic spline's control points may spread, as a multiple
-/// of how far they were spread before the solve, before the solve is
-/// taken for one that ran off.
+/// of the size the sketch asks for, before the solve is taken for one
+/// that ran off.
 const PERIODIC_SPREAD: f64 = 10.0;
 
 /// The largest width or height of the box of `points`; 0 for none.
@@ -2385,14 +2385,23 @@ fn spread(points: impl Iterator<Item = (f64, f64)>) -> f64 {
 }
 
 /// Why the solve is not taken when it spread the control points of a
-/// periodic spline far beyond where they were: held smooth where it
-/// closes, such a spline can meet some constraints at its seam (a tangent
-/// to a line square to it) only by moving its points thousands of its
-/// sizes away, a solution of no use however exactly it holds (the
+/// periodic spline far beyond the size the sketch asks for: held smooth
+/// where it closes, such a spline can meet some constraints at its seam
+/// (a tangent to a line square to it) only by moving its points thousands
+/// of its sizes away, a solution of no use however exactly it holds (the
 /// re-review of 2026-11-04: a ring of radius 10 went to x = ±6940 with
-/// status ok). `None` when every periodic spline stayed in scale.
-/// `points` are the solved ones, sorted by id.
-fn periodic_run_off(sketch: &Sketch, points: &[(EntityId, f64, f64)]) -> Option<String> {
+/// status ok). The size asked for, `asked` ([`solve::asked_size`]), is
+/// that of where the points start and of the lengths the constraints
+/// give, so a design change (a dimension made twenty times larger, a
+/// point moved far, a spline drawn tiny and dimensioned to its size) is
+/// not taken for one: only a spread far beyond everything the sketch
+/// says. `None` when every periodic spline stayed in scale. `points` are
+/// the solved ones, sorted by id.
+fn periodic_run_off(
+    sketch: &Sketch,
+    points: &[(EntityId, f64, f64)],
+    asked: f64,
+) -> Option<String> {
     for entity in &sketch.entities {
         let Geometry::Spline {
             control,
@@ -2410,9 +2419,10 @@ fn periodic_run_off(sketch: &Sketch, points: &[(EntityId, f64, f64)]) -> Option<
                 .and_then(|i| points.get(i))
                 .map(|(_, x, y)| (*x, *y))
         }));
-        if before > 0.0 && after > PERIODIC_SPREAD * before {
+        let scale = before.max(asked);
+        if scale > 0.0 && after > PERIODIC_SPREAD * scale {
             return Some(format!(
-                "{}: to meet its constraints its control points would spread from {before:.6} to {after:.6} across, far out of scale: a periodic spline stays smooth where it closes, so a constraint at its seam that asks another direction there (a tangent) pulls it apart; constrain it away from its seam, or make it with periodic: false",
+                "{}: to meet its constraints its control points would spread {after:.6} across, far beyond the sketch's size of {scale:.6}: a periodic spline stays smooth where it closes, so a constraint at its seam that asks another direction there (a tangent) pulls it apart; constrain it away from its seam, or make it with periodic: false",
                 entity.id
             ));
         }
