@@ -1468,19 +1468,38 @@ pub(super) fn section(
     tolerance: &Tolerance,
 ) -> Result<Sections, Stop> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(lease) = ahead_lease(a, b) {
-        let ahead = Ahead::new(a, b, tolerance.linear, lease.threads());
+    if let Some(leases) = ahead_lease(a, b) {
+        let ahead = Ahead::new(a, b, tolerance.linear, leases.len());
         let (made, warmed) = std::thread::scope(|scope| {
-            for _ in 0..lease.threads() {
-                let (ahead, lease) = (&ahead, &lease);
-                let _ = std::thread::Builder::new().spawn_scoped(scope, move || {
-                    lease.helper_starts();
-                    ahead.help(a, b, tolerance);
-                });
+            // Each helper holds its own thread of the pool and gives it
+            // back as soon as it stops (no freeform pair left ahead).
+            let helpers: Vec<_> = leases
+                .into_iter()
+                .filter_map(|lease| {
+                    let ahead = &ahead;
+                    std::thread::Builder::new()
+                        .spawn_scoped(scope, move || {
+                            lease.helper_starts();
+                            ahead.help(a, b, tolerance);
+                            drop(lease);
+                        })
+                        .ok()
+                })
+                .collect();
+            let made = {
+                // The helpers stop when the section does, however it ends.
+                let _ending = Ending(&ahead.done);
+                section_with(a, b, vertices, tolerance, Some(&ahead))
+            };
+            // Joined here, a helper that panicked is a pair the section
+            // met itself, nothing more: its panic does not reach the
+            // scope (which would panic in its place, the section's
+            // result lost). A helper in the middle of a meeting is
+            // waited for (a march cannot be stopped part way): after a
+            // refusal the answer can come that much later.
+            for helper in helpers {
+                let _ = helper.join();
             }
-            // The helpers stop when the section does, however it ends.
-            let _ending = Ending(&ahead.done);
-            let made = section_with(a, b, vertices, tolerance, Some(&ahead));
             (made, &ahead.warmed)
         });
         #[cfg(test)]
@@ -1827,6 +1846,12 @@ struct Ahead {
     covers: (Covers, Covers),
     /// Pairs the helpers met.
     warmed: std::sync::atomic::AtomicUsize,
+    /// Past the last pair with a freeform face the helpers stop (and give
+    /// their threads back): the others meet in closed form.
+    freeform_until: usize,
+    /// The helpers panic on their first pair (`tests::HELPERS_PANIC`).
+    #[cfg(test)]
+    panics: bool,
 }
 
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -1874,7 +1899,21 @@ impl Ahead {
             pairs.extend(candidates(b, box_a, tol).into_iter().map(|fb| (fa, fb)));
         }
         let lead = helpers.saturating_mul(AHEAD_PER_HELPER).max(1);
+        let freeform = |solid: &Solid, face: usize| {
+            solid
+                .body
+                .faces
+                .get(face)
+                .is_some_and(|f| is_freeform(&f.surface))
+        };
+        let freeform_until = pairs
+            .iter()
+            .rposition(|&(fa, fb)| freeform(a, fa) || freeform(b, fb))
+            .map_or(0, |last| last + 1);
         Ahead {
+            freeform_until,
+            #[cfg(test)]
+            panics: tests::HELPERS_PANIC.with(std::cell::Cell::get),
             state: (0..pairs.len()).map(|_| AtomicU8::new(FREE)).collect(),
             pairs,
             next: AtomicUsize::new(0),
@@ -1895,12 +1934,12 @@ impl Ahead {
     /// is the section's, once a helper that meets it now is done.
     fn reached(&self, at: usize, a: &Solid, b: &Solid, tol: f64) {
         use std::sync::atomic::Ordering;
-        let until = at
+        let mut until = at
             .saturating_add(1)
             .saturating_add(self.lead)
             .min(self.pairs.len());
         let from = self.prepared.load(Ordering::Relaxed);
-        for &(fa, fb) in self.pairs.get(from..until).unwrap_or_default() {
+        for (index, &(fa, fb)) in self.pairs.iter().enumerate().take(until).skip(from) {
             let (Some(box_a), Some(box_b)) = (a.boxes.get(fa), b.boxes.get(fb)) else {
                 continue;
             };
@@ -1911,8 +1950,12 @@ impl Ahead {
                 && overlap(box_a, box_b, room).is_some()
                 && a.hulls.get(fa).is_some()
                 && b.hulls.get(fb).is_some()
+                && (a.outline(fa).is_err() || b.outline(fb).is_err())
             {
-                let _ = (a.outline(fa), b.outline(fb));
+                // The section stops there (or does without the face):
+                // nothing past it is made or met ahead.
+                until = index;
+                break;
             }
         }
         self.prepared.store(until.max(from), Ordering::Relaxed);
@@ -1940,6 +1983,9 @@ impl Ahead {
         let covers = (self.covers.0.as_slice(), self.covers.1.as_slice());
         while !self.done.load(Ordering::Acquire) {
             let at = self.next.load(Ordering::Acquire);
+            if at >= self.freeform_until {
+                return;
+            }
             let Some(state) = self.state.get(at) else {
                 return;
             };
@@ -1958,6 +2004,14 @@ impl Ahead {
                 continue;
             }
             let _met = Met(state);
+            #[cfg(test)]
+            if self.panics {
+                tests::HELPERS_PANICKED.fetch_add(1, Ordering::Relaxed);
+                #[allow(clippy::panic)]
+                {
+                    panic!("a helper of the section, on purpose");
+                }
+            }
             let Some(&(fa, fb)) = self.pairs.get(at) else {
                 continue;
             };
@@ -1982,7 +2036,7 @@ impl Ahead {
 /// without a freeform face (analytic faces meet in closed form, quickly),
 /// not when the pool has no thread free.
 #[cfg(not(target_arch = "wasm32"))]
-fn ahead_lease(a: &Solid, b: &Solid) -> Option<craft3d_math::pool::Lease> {
+fn ahead_lease(a: &Solid, b: &Solid) -> Option<Vec<craft3d_math::pool::Lease>> {
     #[cfg(test)]
     if tests::NO_AHEAD.with(std::cell::Cell::get) {
         return None;
@@ -1992,8 +2046,16 @@ fn ahead_lease(a: &Solid, b: &Solid) -> Option<craft3d_math::pool::Lease> {
     if machine < 2 || craft3d_geom::allowance::scope().is_some() || !(freeform(a) || freeform(b)) {
         return None;
     }
-    let lease = craft3d_math::pool::lease(machine - 1);
-    (lease.threads() > 0).then_some(lease)
+    // One thread each, so that each helper gives its own back.
+    let mut leases = Vec::new();
+    while leases.len() < machine - 1 {
+        let lease = craft3d_math::pool::lease(1);
+        if lease.threads() == 0 {
+            break;
+        }
+        leases.push(lease);
+    }
+    (!leases.is_empty()).then_some(leases)
 }
 
 /// Which edges of a pair of faces [`lying_edges`] looks at.
@@ -2517,6 +2579,9 @@ pub(super) mod tests {
         /// Booleans on this thread meet no pairs ahead (`Ahead`).
         pub(in crate::boolean) static NO_AHEAD: std::cell::Cell<bool> =
             const { std::cell::Cell::new(false) };
+        /// Helpers of booleans on this thread panic on their first pair.
+        pub(in crate::boolean) static HELPERS_PANIC: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
         /// The pairs helpers met ahead of the last section on this
         /// thread.
         pub(in crate::boolean) static WARMED: std::cell::Cell<usize> =
@@ -2525,6 +2590,11 @@ pub(super) mod tests {
 
     use super::*;
     use craft3d_geom::{Cylinder, Plane, Sphere, Torus};
+
+    /// Helpers that panicked, over the process (only those of a boolean
+    /// run with [`HELPERS_PANIC`]).
+    pub(in crate::boolean) static HELPERS_PANICKED: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
 
     /// A block with a freeform roof, and a smaller one inside it whose roof
     /// runs close below (as the hollow of a shell does): their roofs are
@@ -2551,6 +2621,70 @@ pub(super) mod tests {
         .unwrap()
         .body;
         (outer, inner)
+    }
+
+    /// Helpers that panic (each on its first pair) change nothing of the
+    /// section: it meets those pairs itself, and its result is the one it
+    /// gives without helpers (before 2026-11-05 the scope panicked in its
+    /// place, its result lost).
+    #[test]
+    fn a_helper_that_panics_leaves_the_section_its_result() {
+        use super::super::{BooleanOp, boolean};
+        use std::sync::atomic::Ordering;
+        let tolerance = Tolerance::default();
+        let (outer, inner) = nested_roofs(1.0, true);
+        let before = HELPERS_PANICKED.load(Ordering::Relaxed);
+        for op in [BooleanOp::Subtract, BooleanOp::Intersect] {
+            HELPERS_PANIC.with(|c| c.set(true));
+            let with = boolean(&outer, &inner, op, &tolerance).map_err(|e| e.to_string());
+            HELPERS_PANIC.with(|c| c.set(false));
+            NO_AHEAD.with(|c| c.set(true));
+            let without = boolean(&outer, &inner, op, &tolerance).map_err(|e| e.to_string());
+            NO_AHEAD.with(|c| c.set(false));
+            match (&with, &without) {
+                (Ok(x), Ok(y)) => assert!(x == y, "{op:?}: the results differ"),
+                (Err(x), Err(y)) => assert_eq!(x, y, "{op:?}"),
+                _ => panic!("{op:?}: {:?} against {:?}", with.is_ok(), without.is_ok()),
+            }
+        }
+        assert!(
+            HELPERS_PANICKED.load(Ordering::Relaxed) > before
+                || craft3d_math::available_threads() < 2,
+            "no helper panicked"
+        );
+    }
+
+    /// The helpers stop past the last pair with a freeform face (and give
+    /// their threads back), whatever the section still has to do: pairs
+    /// of analytic faces meet in closed form.
+    #[test]
+    fn helpers_stop_past_the_last_freeform_pair() {
+        use super::super::{Operand, Vertices};
+        use std::sync::atomic::Ordering;
+        let tolerance = Tolerance::default();
+        let (outer, _) = nested_roofs(1.0, true);
+        let frame = craft3d_math::Frame::new(Vec3::new(0.5, 0.5, -1.0), Vec3::Z, Vec3::X).unwrap();
+        let slab = crate::primitives::block(&frame, 3.0, 2.0, 1.5).unwrap();
+        let mut vertices = Vertices::new(0.5e-6, 2e-6);
+        let a = prepare(&outer, Operand::A, &mut vertices, &tolerance, true).unwrap();
+        let b = prepare(&slab, Operand::B, &mut vertices, &tolerance, true).unwrap();
+        let mut ahead = Ahead::new(&a, &b, tolerance.linear, 2);
+        let roof = outer
+            .faces
+            .iter()
+            .position(|f| is_freeform(&f.surface))
+            .unwrap();
+        // The roof is the block's last face: its pairs are the last.
+        let last = ahead.pairs.iter().rposition(|&(fa, _)| fa == roof).unwrap();
+        assert_eq!(ahead.freeform_until, last + 1, "{:?}", ahead.pairs);
+        // Were the last freeform pair earlier, the helpers would stop there.
+        ahead.freeform_until = ahead.pairs.len() / 3;
+        // Everything within reach: one helper (on this thread) looks at
+        // the pairs up to the last freeform one, and stops there.
+        ahead.frontier.store(ahead.pairs.len(), Ordering::Release);
+        ahead.help(&a, &b, &tolerance);
+        assert_eq!(ahead.next.load(Ordering::Acquire), ahead.freeform_until);
+        assert!(!ahead.done.load(Ordering::Acquire), "it stopped by itself");
     }
 
     /// Pairs met ahead of the section on helper threads (`Ahead`) change
