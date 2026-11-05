@@ -111,6 +111,9 @@ const FROZEN: &[(u32, usize, u64)] = &[
     (65, 7845, 0xe7a4_3eda_4716_4089),
     (66, 3783, 0x425d_25d7_11cd_be5c),
     (67, 4031, 0x0c0d_edb4_6376_01dc),
+    // A sheet-metal plate with a curved flange on its half-round top and a
+    // collar round a hole (curved_flanges), under max_strain.
+    (68, 5102, 0xb68e_f3bd_a11f_0fb4),
 ];
 
 fn dir() -> PathBuf {

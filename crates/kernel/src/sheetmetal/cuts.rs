@@ -1235,6 +1235,9 @@ pub(super) fn folded_sheet(
         SheetFace::Bend(b) => (0, 1, *b, 0),
         SheetFace::FlatPiece(f, j) => (1, 0, *f, *j),
         SheetFace::BendPiece(b, j) => (1, 1, *b, *j),
+        // Added after the cells, never among them.
+        SheetFace::CurvedBend(c) => (2, 0, *c, 0),
+        SheetFace::CurvedFlat(c) => (2, 1, *c, 0),
     };
     order.sort_by_key(|(_, role)| rank(role));
 

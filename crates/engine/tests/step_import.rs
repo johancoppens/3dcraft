@@ -199,6 +199,8 @@ fn what_cannot_be_imported_is_refused_and_changes_nothing() {
     let dir = workdir("step-import", "refused");
     exported(&dir);
     std::fs::write(dir.join("empty.step"), b"").unwrap();
+    std::fs::write(dir.join("part.stl"), b"solid part\nfacet normal 0 0 1\n").unwrap();
+    std::fs::write(dir.join("notes.step"), b"hello").unwrap();
     std::fs::write(
         dir.join("nothing.step"),
         b"ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'2;1');\nFILE_NAME('','',(''),(''),'','','');\nFILE_SCHEMA(('X'));\nENDSEC;\nDATA;\n#1=CARTESIAN_POINT('',(0.,0.,0.));\nENDSEC;\nEND-ISO-10303-21;\n",
@@ -211,6 +213,16 @@ fn what_cannot_be_imported_is_refused_and_changes_nothing() {
         (json!({"path": 3}), "path"),
         (json!({"path": "missing.step"}), "missing.step"),
         (json!({"path": "empty.step"}), "not a readable STEP file"),
+        // Not STEP at all: what file.import reads, not where the parse broke.
+        (json!({"path": "empty.step"}), "it is empty"),
+        (
+            json!({"path": "part.stl"}),
+            "meshes (STL, OBJ, 3MF) cannot be imported yet",
+        ),
+        (
+            json!({"path": "notes.step"}),
+            "does not start with ISO-10303-21",
+        ),
         (json!({"path": "nothing.step"}), "no solids or sheets"),
         (json!({"path": "out.step", "names": ["one"]}), "names"),
         (json!({"path": "out.step", "names": "one"}), "names"),

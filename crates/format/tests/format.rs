@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 67,
+  "format_version": 68,
   "document": {
     "units": {
       "length": "mm",
@@ -775,6 +775,87 @@ fn a_step_or_stl_file_opened_as_a_document_says_what_it_is() {
     assert!(error.to_string().contains("STL"), "{error}");
     // A word that merely starts like one is still just not a ZIP archive.
     let error = from_bytes(b"solidly not a mesh").unwrap_err();
+    assert!(matches!(error, FormatError::Zip(_)), "{error}");
+}
+
+/// The other files a person may try to open as a document say what they
+/// are, not that they are a broken ZIP archive (2026-11-04: `craft3d-cli
+/// info part.stl` on a binary STL of 3DCraft's own said "no
+/// end-of-central-directory record").
+#[test]
+fn meshes_drawings_and_pictures_opened_as_a_document_say_what_they_are() {
+    let mut stl = vec![0_u8; 80];
+    stl.extend_from_slice(&2_u32.to_le_bytes());
+    stl.extend_from_slice(&[0; 100]);
+    let mut three_mf = b"PK\x03\x04".to_vec();
+    three_mf.extend_from_slice(b"\x14\0\0\0\x08\x003D/3dmodel.model deflated...");
+    let stored_3mf = write_stored(&[("3D/3dmodel.model", b"<model/>".as_slice())]).unwrap();
+    let fcstd = write_stored(&[("Document.xml", b"<Document/>".as_slice())]).unwrap();
+    let obj = b"# 3DCraft\no Part\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    let dxf = b"  0\nSECTION\n  2\nHEADER\n";
+    let svg = b"<?xml version=\"1.0\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>";
+    let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+    let cases: [(&[u8], &str); 8] = [
+        (&stl, "STL"),
+        (&three_mf, "3MF"),
+        (&stored_3mf, "3MF"),
+        (&fcstd, "FreeCAD"),
+        (obj, "OBJ"),
+        (dxf, "DXF"),
+        (svg, "SVG"),
+        (png, "PNG"),
+    ];
+    for (bytes, kind) in cases {
+        let error = from_bytes(bytes).unwrap_err();
+        assert!(
+            matches!(error, FormatError::Foreign { .. }),
+            "{kind}: {error}"
+        );
+        assert!(error.to_string().contains(kind), "{kind}: {error}");
+    }
+    // A binary STL whose count does not match its size is not one.
+    let error = from_bytes(&stl[..120]).unwrap_err();
+    assert!(matches!(error, FormatError::Zip(_)), "{error}");
+}
+
+/// A ZIP archive is told by its signature before a binary STL is told by
+/// its size: an archive whose length happens to be 84 bytes plus 50 per
+/// the number at bytes 80 to 84 is still the archive it is.
+#[test]
+fn an_archive_the_size_of_a_binary_stl_is_the_archive() {
+    let stl_sized = |entry: &[u8]| {
+        let mut bytes = b"PK\x03\x04\x14\0\0\0\0\0".to_vec();
+        bytes.extend_from_slice(entry);
+        bytes.resize(80, b' ');
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.resize(84 + 50, 0);
+        bytes
+    };
+    let fcstd = stl_sized(b"Document.xml");
+    let error = from_bytes(&fcstd).unwrap_err();
+    assert!(error.to_string().contains("FreeCAD"), "{error}");
+    let three_mf = stl_sized(b"3D/3dmodel.model");
+    let error = from_bytes(&three_mf).unwrap_err();
+    assert!(error.to_string().contains("3MF"), "{error}");
+    // An archive of something else is a broken or foreign archive, not a
+    // mesh.
+    let other = stl_sized(b"readme.txt");
+    let error = from_bytes(&other).unwrap_err();
+    assert!(matches!(error, FormatError::Zip(_)), "{error}");
+}
+
+#[test]
+fn a_command_script_opened_as_a_document_says_how_to_run_it() {
+    for script in [
+        &b"[\n [\"variable.set\", {\"name\": \"w\", \"expr\": \"40 mm\"}]\n]"[..],
+        b"[{\"command\": \"feature.block\", \"params\": {}}]",
+    ] {
+        let error = from_bytes(script).unwrap_err();
+        assert!(matches!(error, FormatError::Foreign { .. }), "{error}");
+        assert!(error.to_string().contains("--script"), "{error}");
+    }
+    // A list that is no script stays just not a ZIP archive.
+    let error = from_bytes(b"[1, 2]").unwrap_err();
     assert!(matches!(error, FormatError::Zip(_)), "{error}");
 }
 
@@ -2874,7 +2955,7 @@ fn a_sweep_is_written_like_this_and_round_trips() {
 #[test]
 fn a_sweep_along_two_rails_is_written_like_this_and_round_trips() {
     use craft3d_doc::{FeatureId, Sweep, SweepScale};
-    assert_eq!(FORMAT_VERSION, 67);
+    assert_eq!(FORMAT_VERSION, 68);
     for (scale, written) in [
         (
             SweepScale::Uniform,
@@ -2899,7 +2980,7 @@ fn a_sweep_along_two_rails_is_written_like_this_and_round_trips() {
         .unwrap();
         let json = to_manifest_json(&doc).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 67);
+        assert_eq!(value["format_version"], 68);
         let features = value["document"]["features"].as_array().unwrap();
         assert_eq!(features[features.len() - 1]["kind"], written);
         assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
@@ -2929,7 +3010,7 @@ fn a_sweep_along_two_rails_is_written_like_this_and_round_trips() {
 #[test]
 fn a_sweep_with_an_up_direction_is_written_like_this_and_round_trips() {
     use craft3d_doc::{AxisRef, FeatureId, PersistentName, Sweep, SweepScale, WorldAxis};
-    assert_eq!(FORMAT_VERSION, 67);
+    assert_eq!(FORMAT_VERSION, 68);
     let edge: [PersistentName; 2] = [
         "F2:side(e1)".parse().unwrap(),
         "F2:startCap".parse().unwrap(),
@@ -2969,7 +3050,7 @@ fn a_sweep_with_an_up_direction_is_written_like_this_and_round_trips() {
         .unwrap();
         let json = to_manifest_json(&doc).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 67);
+        assert_eq!(value["format_version"], 68);
         let features = value["document"]["features"].as_array().unwrap();
         assert_eq!(
             features[features.len() - 1]["kind"]["up"],
@@ -4510,7 +4591,7 @@ fn a_fill_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 67);
+    assert_eq!(FORMAT_VERSION, 68);
     let features = value["document"]["features"].as_array().unwrap();
     assert_eq!(
         features[1]["kind"],
@@ -4660,7 +4741,7 @@ fn a_screw_pattern_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 67);
+    assert_eq!(FORMAT_VERSION, 68);
     let features = value["document"]["features"].as_array().unwrap();
     assert_eq!(
         features[1]["kind"],
@@ -4718,7 +4799,7 @@ fn a_split_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 67);
+    assert_eq!(FORMAT_VERSION, 68);
     let features = value["document"]["features"].as_array().unwrap();
     let face_json = serde_json::json!({"feature": 3, "role": "copy", "sources": [0],
         "of": {"feature": 1, "role": "face", "sources": [4]}});
@@ -4773,7 +4854,7 @@ fn an_import_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 67);
+    assert_eq!(FORMAT_VERSION, 68);
     assert_eq!(
         value["document"]["features"][2]["kind"],
         serde_json::json!({"type": "import", "file_name": "part.step", "solid": 1, "sha256": sha})
@@ -4988,7 +5069,7 @@ fn hidden_features_are_written_like_this_and_round_trip() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 67);
+    assert_eq!(FORMAT_VERSION, 68);
     assert_eq!(value["document"]["hidden"], serde_json::json!([1]));
     let read = from_manifest_json(json.as_bytes()).unwrap();
     assert_eq!(read, doc);
@@ -5053,7 +5134,7 @@ fn tables_are_written_like_this_and_round_trip() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 67);
+    assert_eq!(FORMAT_VERSION, 68);
     assert_eq!(
         value["document"]["tables"],
         serde_json::json!([{"name": "belt", "key": "profile",
@@ -5090,7 +5171,7 @@ fn a_condition_is_written_like_this_and_round_trips() {
     doc.feature_mut(id).unwrap().when = Some(Expr::new("lid && 2 > 1"));
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(FORMAT_VERSION, 67);
+    assert_eq!(FORMAT_VERSION, 68);
     assert_eq!(value["document"]["features"][0]["when"], "lid && 2 > 1");
     assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
     assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
@@ -5130,7 +5211,7 @@ fn formula_curves_and_live_splines_are_written_like_this_and_round_trip() {
     .unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(FORMAT_VERSION, 67);
+    assert_eq!(FORMAT_VERSION, 68);
     let entities = &value["document"]["features"][1]["kind"]["entities"];
     assert_eq!(
         entities[3]["geometry"],
@@ -5179,7 +5260,7 @@ fn a_developable_and_an_unfold_are_written_like_this_and_round_trip() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 67);
+    assert_eq!(FORMAT_VERSION, 68);
     let features = value["document"]["features"].as_array().unwrap();
     let n = features.len();
     assert_eq!(features[n - 2]["kind"]["type"], "developable");
@@ -5257,6 +5338,8 @@ fn a_sheet_metal_part_is_written_like_this_and_round_trips() {
             bend_relief: None,
             jogs: Vec::new(),
             formed_louvres: Vec::new(),
+            curved_flanges: Vec::new(),
+            max_strain: None,
         }),
     )
     .unwrap();
@@ -5341,6 +5424,8 @@ fn sheet_metal_insets_sides_and_outlines_are_written_like_this_and_round_trip() 
             bend_relief: None,
             jogs: Vec::new(),
             formed_louvres: Vec::new(),
+            curved_flanges: Vec::new(),
+            max_strain: None,
         }),
     )
     .unwrap();
@@ -5407,6 +5492,8 @@ fn an_older_file_naming_a_sheet_metal_rim_or_edge_warns_by_name() {
                 bend_relief: None,
                 jogs: Vec::new(),
                 formed_louvres: Vec::new(),
+                curved_flanges: Vec::new(),
+                max_strain: None,
             }),
         )
         .unwrap();
@@ -5569,6 +5656,8 @@ fn closed_sheet_metal_corners_are_written_like_this_and_round_trip() {
             bend_relief: None,
             jogs: Vec::new(),
             formed_louvres: Vec::new(),
+            curved_flanges: Vec::new(),
+            max_strain: None,
         }),
     )
     .unwrap();
@@ -5677,6 +5766,8 @@ fn a_manifest_with_unsound_flange_ids_is_an_invalid_document() {
             bend_relief: None,
             jogs: Vec::new(),
             formed_louvres: Vec::new(),
+            curved_flanges: Vec::new(),
+            max_strain: None,
         }),
     )
     .unwrap();
@@ -5752,6 +5843,8 @@ fn sheet_metal_jogs_are_written_like_this_and_round_trip() {
             next_flange_id: 6,
             bend_relief: None,
             formed_louvres: Vec::new(),
+            curved_flanges: Vec::new(),
+            max_strain: None,
             jogs: vec![
                 Jog {
                     line: EntityId(9),
@@ -5918,6 +6011,8 @@ fn sheet_metal_formed_louvres_are_written_like_this_and_round_trip() {
                     id: 3,
                 },
             ],
+            curved_flanges: Vec::new(),
+            max_strain: None,
         }),
     )
     .unwrap();
@@ -5958,6 +6053,93 @@ fn sheet_metal_formed_louvres_are_written_like_this_and_round_trip() {
         }),
         ("an unknown field", &|k| {
             k["formed_louvres"][0]["spin"] = serde_json::json!(1)
+        }),
+    ];
+    for (what, change) in cases {
+        assert!(edited(change).is_err(), "{what} was read");
+    }
+}
+
+#[test]
+fn sheet_metal_curved_flanges_are_written_like_this_and_round_trip() {
+    use craft3d_doc::{BendDirection, CurvedFlange, FlangeFrom, SheetMetal};
+    let mut doc = small();
+    doc.add_feature(
+        Some("Pan"),
+        FeatureKind::SheetMetal(SheetMetal {
+            sketch: FeatureId(1),
+            thickness: Expr::new("1 mm"),
+            radius: Expr::new("2 mm"),
+            k_factor: Expr::new("0.4"),
+            flanges: Vec::new(),
+            relief: None,
+            cutouts: Vec::new(),
+            corner: None,
+            corners: Vec::new(),
+            next_flange_id: 3,
+            bend_relief: None,
+            jogs: Vec::new(),
+            formed_louvres: Vec::new(),
+            curved_flanges: vec![
+                CurvedFlange {
+                    edge: EntityId(3),
+                    length: Expr::new("10 mm"),
+                    angle: Expr::new("90 deg"),
+                    direction: BendDirection::Up,
+                    radius: None,
+                    k_factor: None,
+                    from: FlangeFrom::Tangent,
+                    id: 1,
+                },
+                CurvedFlange {
+                    edge: EntityId(7),
+                    length: Expr::new("h"),
+                    angle: Expr::new("60 deg"),
+                    direction: BendDirection::Down,
+                    radius: Some(Expr::new("3 mm")),
+                    k_factor: Some(Expr::new("0.33")),
+                    from: FlangeFrom::Mould,
+                    id: 2,
+                },
+            ],
+            max_strain: Some(Expr::new("0.08")),
+        }),
+    )
+    .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], FORMAT_VERSION);
+    let part = value["document"]["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|f| f["kind"]["type"] == "sheetMetal")
+        .unwrap();
+    let kind = &value["document"]["features"][part]["kind"];
+    assert_eq!(
+        kind["curved_flanges"],
+        serde_json::json!([
+            {"edge": 3, "length": "10 mm", "angle": "90 deg", "direction": "up", "id": 1},
+            {"edge": 7, "length": "h", "angle": "60 deg", "direction": "down", "radius": "3 mm", "k_factor": "0.33", "from": "mould", "id": 2}
+        ])
+    );
+    assert_eq!(kind["max_strain"], "0.08");
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    let edited = |change: &dyn Fn(&mut serde_json::Value)| {
+        let mut v = value.clone();
+        change(&mut v["document"]["features"][part]["kind"]);
+        from_manifest_json(v.to_string().as_bytes())
+    };
+    type Change<'a> = &'a dyn Fn(&mut serde_json::Value);
+    let cases: [(&str, Change); 3] = [
+        ("twice one id", &|k| {
+            k["curved_flanges"][1]["id"] = serde_json::json!(1)
+        }),
+        ("not below the next", &|k| {
+            k["curved_flanges"][1]["id"] = serde_json::json!(3)
+        }),
+        ("an unknown field", &|k| {
+            k["curved_flanges"][0]["spin"] = serde_json::json!(1)
         }),
     ];
     for (what, change) in cases {

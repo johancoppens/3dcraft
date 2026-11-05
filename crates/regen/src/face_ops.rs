@@ -206,6 +206,8 @@ pub(crate) fn about(
     })
 }
 
+pub(crate) use craft3d_kernel::fits_shown;
+
 /// A kernel error of a face operation in the words of the document:
 /// `param` is the parameter that says how far, `unit` its unit, and
 /// `sign` whether it was given negative (-1) or positive (1).
@@ -228,7 +230,7 @@ pub(crate) fn explain(
             let at = about(source.body, source.names, &faces, edge)
                 .map(|at| format!(" ({at})"))
                 .unwrap_or_default();
-            let (value, largest) = (value * sign, largest * sign);
+            let (value, largest) = (value * sign, fits_shown(largest) * sign);
             let bound = if sign < 0.0 { "above" } else { "below" };
             format!(
                 "{param}: {value} {unit} is too far: {reason}{at}; what fits is {bound} {largest} {unit}"
@@ -354,5 +356,58 @@ fn said(
                 "{param}: {why}the {noun} passes through itself{between}"
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fits_shown;
+
+    #[test]
+    fn what_fits_is_shown_in_six_digits_and_still_fits() {
+        assert_eq!(fits_shown(4.999_996_662_139_893).to_string(), "4.99999");
+        assert_eq!(fits_shown(10.0).to_string(), "10");
+        assert_eq!(fits_shown(0.833_333_333_3).to_string(), "0.833333");
+        assert_eq!(fits_shown(44.999_999_87).to_string(), "44.9999");
+        assert!(fits_shown(123_456_789.9) <= 123_456_789.9);
+        assert!(fits_shown(1.234_567_89e-7) <= 1.234_567_89e-7);
+        for odd in [0.0, f64::NAN, f64::INFINITY, 5e-324, f64::MAX] {
+            let shown = fits_shown(odd);
+            assert!(shown.is_nan() == odd.is_nan());
+            assert!(shown.is_nan() || shown.abs() <= odd.abs());
+        }
+    }
+
+    /// Cut towards zero at every size, and read as its digits: above 1e7
+    /// a scale made by dividing by ten again and again gave
+    /// 32778399999.999996 (which is 32778400000 but for its last bits).
+    #[test]
+    fn what_fits_reads_as_its_digits_at_every_size() {
+        for (largest, shown) in [
+            (1.234_567_89e-6, "0.00000123456"),
+            (9.999_996e-6, "0.00000999999"),
+            (1.0, "1"),
+            (0.999_999_9, "0.999999"),
+            (12_345_678.9, "12345600"),
+            (32_778_399_999.999_996, "32778400000"),
+            (32_778_399_998.0, "32778300000"),
+            (1.234_567_89e12, "1234560000000"),
+            (9.876_543_21e18, "9876540000000000000"),
+            (-4.999_996_662_139_893, "-4.99999"),
+            (-32_778_399_998.0, "-32778300000"),
+            (-1.234_567_89e-6, "-0.00000123456"),
+        ] {
+            let got = fits_shown(largest);
+            assert_eq!(got.to_string(), shown, "{largest:e}");
+            // At most noise of the last bits above it (a millionth of the
+            // sixth digit).
+            assert!(
+                got.abs() <= largest.abs() * (1.0 + 1e-11),
+                "{largest:e}: {got} does not fit"
+            );
+        }
+        // Noise in the last bits is not cut to the digit below.
+        assert_eq!(fits_shown(0.799_999_999_999_998_7).to_string(), "0.8");
+        assert_eq!(fits_shown(-0.799_999_999_999_998_7).to_string(), "-0.8");
     }
 }
