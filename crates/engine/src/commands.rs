@@ -110,8 +110,53 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "With camera ({eye, target, up} and fovY in degrees, or projection orthographic with height, as view.pick takes it) the picture is the one that camera sees, instead of one framed by view, projection, zoom and box (give one or the other). Renders the bodies, on the window's light viewport background (235, 233, 229; background: dark for the renderer's dark grey). Writes a PNG under the write root when path is given, otherwise returns it as base64. Without tolerance the bodies are meshed for the picture: between a quarter and half a pixel of the picture where it shows the model nearest, never finer than the floor (2e-4 of the diagonal of the box around the bodies), at most 12 degrees per chord, within a total budget of a million triangles (coarser, and coarsened true, when the picture would have more), so a close-up box, a zoom or a larger picture is finer; the same params give the same picture, and the same view, size, zoom and box (or camera, in view.pick) give the same tolerance. With tolerance, at that chordal tolerance alone. A body too fine for the tessellator at it is meshed coarser rather than refused. The result says the tolerance (document units), maxAngle (degrees, or null) and coarsened (true when the tolerance was coarsened for the triangle budget or for a body). orthographic shows lengths across the view to scale. box frames the region between two opposite corners (document units) instead of the whole model, seen from outside the model. zoom magnifies about the centre of the picture (2 shows half as much, twice as large; from 0.01 to 1000). section cuts the picture open with a plane, to look inside a shell, a pocket or a cavity; the document does not change. It is an object: the plane is plane (xy, yz or zx, a datum plane by id or name, or a flat face by its persistent name, with feature to say which body when several have that face) or point and normal ([x, y, z] each), moved by offset (a number, default 0) along its normal; what lies on the side the normal points to is not drawn (a face's normal points out of its body; flip: true keeps the other half). Where the plane passes through the inside of a body the cut is closed with a flat cap in a colour of its own (cap: false leaves it open). The result then has section: {point, normal, range}, the plane as it was used and the offsets between which it passes through the model. look lights the bodies: the studio look (an environment, soft shadows, ambient occlusion, a ground that catches shadows, a tone curve), and its second layer: reflections of the model in its glossy faces and in the ground (the environment where a reflected ray finds nothing on the picture), contact shadows, the key light's shadow on the specular light, bloom, depth of field of a thin lens with fstop focused at focus (a distance along the view or a point; the model's centre by default; a lens of the document's length unit), and accumulate frames averaged into a still, each with its samples moved within the pixel and the lens turned (refused on the CPU when the frames' samples together, width × height × 4 × frames, pass 2^26). A see-through or cut-open picture is lit the same way: the surface behind a see-through front is lit as the front is and blended under it in light, and the cap of a section is lit as a face of its colour. renderer says what draws: cpu the CPU renderer, the reference every other picture is checked against; gpu the session's wgpu renderer on a device without a window (craft3d-cli render, run and serve have one; a session without one refuses), the same picture within the renderers' documented parity; auto (the default) the GPU when the session has one and it can draw, else the CPU. mode ids is always drawn on the CPU (its pixels are read by machine). The result says renderer (gpu or cpu), adapter (the GPU's, when it drew) and rendererFallback (why auto drew on the CPU after all).", doc: true, names: ["section"], view_render),
 ];
 
+/// Ids a user or an agent reaches for that are spelled otherwise here:
+/// the command that does it (seen in an end-to-end run, 2026-11-04).
+const ELSEWHERE: &[(&str, &str)] = &[
+    ("measure.volume", "document.measure"),
+    ("measure.area", "document.measure"),
+    ("measure.mass", "document.measure"),
+    ("measure.centroid", "document.measure"),
+    ("document.measureVolume", "document.measure"),
+    ("document.save", "file.save"),
+    ("document.new", "file.new"),
+    ("document.open", "file.open"),
+    ("file.saveAs", "file.save"),
+    ("undo", "edit.undo"),
+    ("redo", "edit.redo"),
+];
+
+/// Verbs that mean the same, tried in the id's own area before the
+/// spelling: `assert.remove` is `assert.delete`, not `set.remove`.
+const SAME_VERB: &[(&str, &str)] = &[
+    ("remove", "delete"),
+    ("delete", "remove"),
+    ("add", "create"),
+    ("create", "add"),
+    ("add", "define"),
+    ("define", "add"),
+    ("new", "create"),
+    ("new", "add"),
+    ("update", "edit"),
+    ("change", "edit"),
+    ("modify", "edit"),
+    ("show", "list"),
+    ("get", "list"),
+];
+
 /// The command id most like `id`, for "did you mean".
 pub(crate) fn closest(id: &str) -> Option<&'static str> {
+    if let Some((_, to)) = ELSEWHERE.iter().find(|(from, _)| *from == id) {
+        return Session::command(to).map(|c| c.id);
+    }
+    if let Some((area, verb)) = id.rsplit_once('.') {
+        for (_, other) in SAME_VERB.iter().filter(|(from, _)| *from == verb) {
+            let wanted = format!("{area}.{other}");
+            if let Some(spec) = Session::command(&wanted) {
+                return Some(spec.id);
+            }
+        }
+    }
     // Shared prefix length plus shared suffix length is a cheap similarity
     // that favours a typo inside an otherwise right id.
     let score = |candidate: &str| {
@@ -985,7 +1030,13 @@ fn load_from_disk(
 ) -> Result<(craft3d_doc::Document, Vec<String>), String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        craft3d_format::load_noted(resolved).map_err(|e| e.to_string())
+        craft3d_format::load_noted(resolved).map_err(|e| match e {
+            // The path is in the message that wraps this already.
+            craft3d_format::FormatError::Io { error, .. } => {
+                crate::workspace::io_reason(&error, crate::workspace::IoAccess::Read)
+            }
+            other => other.to_string(),
+        })
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -1003,8 +1054,14 @@ pub(crate) fn save_to_disk(
 ) -> Result<(), String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        craft3d_format::save_with_thumbnail(resolved, document, thumbnail)
-            .map_err(|e| e.to_string())
+        craft3d_format::save_with_thumbnail(resolved, document, thumbnail).map_err(|e| match e {
+            // Written beside it and renamed over it (`craft3d_format::save`).
+            craft3d_format::FormatError::Io { error, .. } => crate::workspace::io_reason(
+                &error,
+                crate::workspace::IoAccess::Write { atomic: true },
+            ),
+            other => other.to_string(),
+        })
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -1025,6 +1082,9 @@ pub(crate) fn file_open(session: &mut Session, params: &Value) -> Run {
     } else {
         load_from_disk(&resolved)
     };
+    // Named here once: what the file system said comes without the path
+    // (`load_from_disk`), not "cannot open `x`: cannot open `x`: …" (seen
+    // 2026-11-04).
     let (document, read) =
         loaded.map_err(|e| CommandError::new(format!("file.open: cannot open `{path}`: {e}")))?;
     // An assembly is a .3dcraftasm file, and a .3dcraftasm file holds an

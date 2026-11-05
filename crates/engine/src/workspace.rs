@@ -400,6 +400,53 @@ fn leaves_root(root: &Path, resolved: &Path) -> bool {
     }
 }
 
+/// Whether a file was being read or written, for [`io_reason`].
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IoAccess {
+    Read,
+    /// `atomic`: written to a temporary file renamed over the file
+    /// ([`write_atomic`]), so a write that fails leaves the file that was
+    /// there as it was.
+    Write {
+        atomic: bool,
+    },
+}
+
+/// Why a file could not be read or written, in words a first-time user
+/// can act on (the system's own text, such as `Permission denied (os
+/// error 13)`, names the cause but not the way out).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn io_reason(error: &std::io::Error, access: IoAccess) -> String {
+    use std::io::ErrorKind;
+    match (error.kind(), access) {
+        (ErrorKind::NotFound, IoAccess::Read) => {
+            "there is no such file; check the name and the folder".to_string()
+        }
+        (ErrorKind::NotFound, IoAccess::Write { .. }) => {
+            "its folder does not exist; create the folder first, or choose another".to_string()
+        }
+        (ErrorKind::PermissionDenied, IoAccess::Read) => {
+            "permission denied: this user may not read it".to_string()
+        }
+        // On Windows also a rename over a file another program has open.
+        (ErrorKind::PermissionDenied, IoAccess::Write { .. }) => {
+            "permission denied: this user may not write in that folder (or replace that file), or another program has the file open; close it there, or choose another folder".to_string()
+        }
+        (ErrorKind::StorageFull | ErrorKind::QuotaExceeded, IoAccess::Write { atomic: true }) => {
+            "the disk is full (or the disk quota is used up); free some space, or choose another disk; the file that was there is unchanged".to_string()
+        }
+        (ErrorKind::StorageFull | ErrorKind::QuotaExceeded, _) => {
+            "the disk is full (or the disk quota is used up); free some space, or choose another disk".to_string()
+        }
+        (ErrorKind::ReadOnlyFilesystem, _) => {
+            "the disk is read-only; choose a folder on another disk".to_string()
+        }
+        (ErrorKind::FileTooLarge, _) => "the file is larger than the disk allows".to_string(),
+        _ => error.to_string(),
+    }
+}
+
 /// Writes a file so that a crash or a full disk leaves either the old file
 /// or the new one, never half of it: write a temporary file next to the
 /// target, sync it, rename it over the target.
@@ -407,7 +454,11 @@ fn leaves_root(root: &Path, resolved: &Path) -> bool {
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CommandError> {
     use std::io::Write;
     let fail = |what: &str, e: std::io::Error| {
-        CommandError::new(format!("cannot {what} `{}`: {e}", path.display()))
+        CommandError::new(format!(
+            "cannot {what} `{}`: {}",
+            path.display(),
+            io_reason(&e, IoAccess::Write { atomic: true })
+        ))
     };
     let name = path
         .file_name()
@@ -447,6 +498,42 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CommandError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_system_refusal_says_the_way_out() {
+        use std::io::{Error, ErrorKind};
+        let said = |kind, access| io_reason(&Error::from(kind), access);
+        assert!(said(ErrorKind::NotFound, IoAccess::Read).contains("no such file"));
+        let atomic = IoAccess::Write { atomic: true };
+        let in_place = IoAccess::Write { atomic: false };
+        assert!(said(ErrorKind::NotFound, atomic).contains("folder does not exist"));
+        let denied = said(ErrorKind::PermissionDenied, atomic);
+        assert!(denied.contains("choose another folder"), "{denied}");
+        // Windows refuses a rename over a file another program has open.
+        assert!(
+            denied.contains("another program has the file open"),
+            "{denied}"
+        );
+        // The file that was there is unchanged only where it was written
+        // beside it and renamed over it.
+        let full = said(ErrorKind::StorageFull, atomic);
+        assert!(full.contains("disk is full"), "{full}");
+        assert!(
+            full.contains("the file that was there is unchanged"),
+            "{full}"
+        );
+        for access in [in_place, IoAccess::Read] {
+            let full = said(ErrorKind::StorageFull, access);
+            assert!(full.contains("disk is full"), "{full}");
+            assert!(!full.contains("unchanged"), "{full}");
+        }
+        assert!(said(ErrorKind::ReadOnlyFilesystem, atomic).contains("read-only"));
+        // Others keep the system's words.
+        assert_eq!(
+            said(ErrorKind::Interrupted, IoAccess::Read),
+            Error::from(ErrorKind::Interrupted).to_string()
+        );
+    }
 
     /// A fresh directory `name` with a file `a.3dcraft` in it, its
     /// canonical spelling, and the same directory written relative to the

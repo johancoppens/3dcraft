@@ -778,6 +778,87 @@ fn a_step_or_stl_file_opened_as_a_document_says_what_it_is() {
     assert!(matches!(error, FormatError::Zip(_)), "{error}");
 }
 
+/// The other files a person may try to open as a document say what they
+/// are, not that they are a broken ZIP archive (2026-11-04: `craft3d-cli
+/// info part.stl` on a binary STL of 3DCraft's own said "no
+/// end-of-central-directory record").
+#[test]
+fn meshes_drawings_and_pictures_opened_as_a_document_say_what_they_are() {
+    let mut stl = vec![0_u8; 80];
+    stl.extend_from_slice(&2_u32.to_le_bytes());
+    stl.extend_from_slice(&[0; 100]);
+    let mut three_mf = b"PK\x03\x04".to_vec();
+    three_mf.extend_from_slice(b"\x14\0\0\0\x08\x003D/3dmodel.model deflated...");
+    let stored_3mf = write_stored(&[("3D/3dmodel.model", b"<model/>".as_slice())]).unwrap();
+    let fcstd = write_stored(&[("Document.xml", b"<Document/>".as_slice())]).unwrap();
+    let obj = b"# 3DCraft\no Part\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    let dxf = b"  0\nSECTION\n  2\nHEADER\n";
+    let svg = b"<?xml version=\"1.0\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>";
+    let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+    let cases: [(&[u8], &str); 8] = [
+        (&stl, "STL"),
+        (&three_mf, "3MF"),
+        (&stored_3mf, "3MF"),
+        (&fcstd, "FreeCAD"),
+        (obj, "OBJ"),
+        (dxf, "DXF"),
+        (svg, "SVG"),
+        (png, "PNG"),
+    ];
+    for (bytes, kind) in cases {
+        let error = from_bytes(bytes).unwrap_err();
+        assert!(
+            matches!(error, FormatError::Foreign { .. }),
+            "{kind}: {error}"
+        );
+        assert!(error.to_string().contains(kind), "{kind}: {error}");
+    }
+    // A binary STL whose count does not match its size is not one.
+    let error = from_bytes(&stl[..120]).unwrap_err();
+    assert!(matches!(error, FormatError::Zip(_)), "{error}");
+}
+
+/// A ZIP archive is told by its signature before a binary STL is told by
+/// its size: an archive whose length happens to be 84 bytes plus 50 per
+/// the number at bytes 80 to 84 is still the archive it is.
+#[test]
+fn an_archive_the_size_of_a_binary_stl_is_the_archive() {
+    let stl_sized = |entry: &[u8]| {
+        let mut bytes = b"PK\x03\x04\x14\0\0\0\0\0".to_vec();
+        bytes.extend_from_slice(entry);
+        bytes.resize(80, b' ');
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.resize(84 + 50, 0);
+        bytes
+    };
+    let fcstd = stl_sized(b"Document.xml");
+    let error = from_bytes(&fcstd).unwrap_err();
+    assert!(error.to_string().contains("FreeCAD"), "{error}");
+    let three_mf = stl_sized(b"3D/3dmodel.model");
+    let error = from_bytes(&three_mf).unwrap_err();
+    assert!(error.to_string().contains("3MF"), "{error}");
+    // An archive of something else is a broken or foreign archive, not a
+    // mesh.
+    let other = stl_sized(b"readme.txt");
+    let error = from_bytes(&other).unwrap_err();
+    assert!(matches!(error, FormatError::Zip(_)), "{error}");
+}
+
+#[test]
+fn a_command_script_opened_as_a_document_says_how_to_run_it() {
+    for script in [
+        &b"[\n [\"variable.set\", {\"name\": \"w\", \"expr\": \"40 mm\"}]\n]"[..],
+        b"[{\"command\": \"feature.block\", \"params\": {}}]",
+    ] {
+        let error = from_bytes(script).unwrap_err();
+        assert!(matches!(error, FormatError::Foreign { .. }), "{error}");
+        assert!(error.to_string().contains("--script"), "{error}");
+    }
+    // A list that is no script stays just not a ZIP archive.
+    let error = from_bytes(b"[1, 2]").unwrap_err();
+    assert!(matches!(error, FormatError::Zip(_)), "{error}");
+}
+
 #[test]
 fn something_that_is_not_a_zip_is_an_error_that_says_what_the_file_should_be() {
     for bytes in [&b""[..], b"hello", b"{\"format\": \"3dcraft\"}", &[0; 100]] {

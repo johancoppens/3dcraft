@@ -14,7 +14,9 @@ pub mod below;
 mod blend;
 pub mod boolean;
 mod boxtree;
-pub use boolean::{HELD_TOGETHER, held_together, release_unused, shelf_size};
+pub use boolean::{
+    HELD_TOGETHER, held_keys, held_together, release_unheld, release_unused, shelf_keys, shelf_size,
+};
 pub mod chamfer;
 pub mod delete_face;
 pub mod developable;
@@ -512,7 +514,11 @@ impl fmt::Display for KernelError {
                     write!(f, " (curves {})", id_list(curves))?;
                 }
                 if let Some(largest) = largest {
-                    write!(f, "; the largest distance that fits is {largest}")?;
+                    write!(
+                        f,
+                        "; the largest distance that fits is {}",
+                        fits_number(*largest)
+                    )?;
                 }
                 Ok(())
             }
@@ -606,8 +612,10 @@ impl fmt::Display for KernelError {
             } => write!(
                 f,
                 "the chamfer of edge {} is too large for face {}: the cut line at {distance} \
-                 leaves the face; the distance has to stay below {largest}",
-                edge.0, face.0
+                 leaves the face; the distance has to stay below {}",
+                edge.0,
+                face.0,
+                fits_number(*largest)
             ),
             KernelError::Chamfer { edge, face, reason } => {
                 write!(f, "chamfer")?;
@@ -639,8 +647,10 @@ impl fmt::Display for KernelError {
                 f,
                 "the fillet of edge {} is too large for face {}: with a radius of {radius} the \
                  line where it touches the face leaves the face; the radius has to stay below \
-                 {largest}",
-                edge.0, face.0
+                 {}",
+                edge.0,
+                face.0,
+                fits_number(*largest)
             ),
             KernelError::FilletSpindle {
                 edge,
@@ -696,7 +706,8 @@ impl fmt::Display for KernelError {
                 face_op_entities(f, faces, *edge)?;
                 write!(
                     f,
-                    ": {value} is too far: {reason}; the largest that fits is below {largest}"
+                    ": {value} is too far: {reason}; the largest that fits is below {}",
+                    fits_number(*largest)
                 )
             }
             KernelError::FaceOpBoolean { operation, error } => {
@@ -732,6 +743,76 @@ fn short(value: f64) -> String {
     }
 }
 
+/// A number as a message to a person says it (see `short`): at most nine
+/// significant digits, so 0.7999999999999998 reads 0.8.
+pub fn short_number(value: f64) -> String {
+    short(value)
+}
+
+/// The largest value that fits, for reading: six significant digits, cut
+/// towards zero so what is shown still fits (4.99999 rather than
+/// 4.999996662139893). The one rule for every value a message offers as
+/// fitting. Noise of the last bits is not cut down to the digit below: a
+/// value within a millionth of the sixth digit of the next one up (a
+/// size worked out across a rounded corner as 0.7999999999999987) is that
+/// one (0.8), some 1e-12 of it, far within any tolerance. Scaled by an
+/// exact power of ten, so the value reads as its digits at every size
+/// (32778300000, not 32778399999.999996). Not finite, zero, or beyond
+/// ten to the ±300: the value itself.
+pub fn fits_shown(largest: f64) -> f64 {
+    if !largest.is_finite() || largest == 0.0 {
+        return largest;
+    }
+    let size = largest.abs();
+    // The power of ten that puts the size in [1e5, 1e6): its logarithm,
+    // corrected by one either way where the logarithm rounds.
+    let guess = size.plog10().floor();
+    if !guess.is_finite() || guess.abs() > 300.0 {
+        return largest;
+    }
+    // Bounded by the check above.
+    let mut shift = 5 - guess as i32;
+    for _ in 0..3 {
+        let scaled = scale_by_ten(size, shift);
+        if scaled < 1e5 {
+            shift += 1;
+        } else if scaled >= 1e6 {
+            shift -= 1;
+        } else {
+            break;
+        }
+    }
+    let scaled = scale_by_ten(size, shift);
+    if !(1e5..1e6).contains(&scaled) {
+        return largest;
+    }
+    // In millionths of the sixth digit: below 1e12, an exact integer.
+    let millionths = (scaled * 1e6).round();
+    // Bounded: [1e11, 1e12] by the check above.
+    let digits = ((millionths as u64) / 1_000_000) as f64;
+    let shown = scale_by_ten(digits, -shift);
+    if shown.is_finite() {
+        shown.copysign(largest)
+    } else {
+        largest
+    }
+}
+
+/// `value` times ten to the `power`, by an exact power of ten (exact up to
+/// 1e22), so that whole digits come out as the decimal they are.
+fn scale_by_ten(value: f64, power: i32) -> f64 {
+    let mut ten = 1.0_f64;
+    for _ in 0..power.unsigned_abs().min(400) {
+        ten *= 10.0;
+    }
+    if power >= 0 { value * ten } else { value / ten }
+}
+
+/// [`fits_shown`] as a message says it.
+pub fn fits_number(largest: f64) -> String {
+    fits_shown(largest).to_string()
+}
+
 /// What [`KernelError::FilletSpindle`] says, its sizes followed by
 /// `unit` (" mm"; empty for numbers alone).
 pub fn spindle_text(radius: f64, below: f64, own: f64, unit: &str) -> String {
@@ -743,7 +824,7 @@ pub fn spindle_text(radius: f64, below: f64, own: f64, unit: &str) -> String {
          {own}{unit} puts it on the axis (the fillet is then a piece of a ball, as along an \
          earlier round of that radius)",
         short(radius),
-        below = short(below),
+        below = fits_number(below),
         own = short(own)
     )
 }

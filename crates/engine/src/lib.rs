@@ -248,6 +248,11 @@ pub(crate) struct OpenDocument {
     pub recovered: Option<recovery::Recovered>,
     /// Regeneration of `history.revision()`.
     regen: Option<(u64, Arc<Regen>)>,
+    /// How many regenerations were made for it ([`OpenDocument::set_regen`]):
+    /// with the revision, the key of the trees its bodies hold. A
+    /// regeneration made again at the same revision, with the bodies the
+    /// budget had let go of derived again, holds more than the one before.
+    regens_made: u64,
     /// What the last regeneration found per feature, so the next one
     /// rebuilds only what changed.
     pub(crate) cache: craft3d_regen::RegenCache,
@@ -386,6 +391,7 @@ impl OpenDocument {
             disk: None,
             recovered: None,
             regen: None,
+            regens_made: 0,
             cache: new_cache(),
             selection: selection::Selection::default(),
             assertions: assert_check::Checks::default(),
@@ -509,12 +515,43 @@ impl OpenDocument {
                     &mut self.cache,
                     need,
                 ));
-                self.regen = Some((revision, Arc::clone(&regen)));
+                self.set_regen(revision, Arc::clone(&regen));
                 regen
             }
         }
     }
+
+    /// The keys of the trees of the freeform surfaces of the bodies of the
+    /// regeneration it keeps (`craft3d_regen::held_tree_keys`).
+    fn tree_keys_held(&self) -> std::collections::BTreeSet<u64> {
+        let bodies: Vec<&craft3d_topo::Body> = self
+            .regen
+            .iter()
+            .flat_map(|(_, regen)| regen.features.iter())
+            .filter_map(|f| f.body.as_deref())
+            .collect();
+        craft3d_regen::held_tree_keys(&bodies)
+    }
+
+    /// Keeps `regen` as the regeneration of `revision`.
+    pub(crate) fn set_regen(&mut self, revision: u64, regen: Arc<Regen>) {
+        self.regens_made = self.regens_made.wrapping_add(1);
+        self.regen = Some((revision, regen));
+    }
+
+    /// Which regeneration it keeps: its revision and how many were made
+    /// before it, so one made again at the same revision with more bodies
+    /// is told apart. `None` while it keeps none.
+    fn regen_key(&self) -> Option<(u64, u64)> {
+        self.regen
+            .as_ref()
+            .map(|(revision, _)| (*revision, self.regens_made))
+    }
 }
+
+/// Per open document (its id) and regeneration ([`OpenDocument::regen_key`]),
+/// the hashed keys of the trees its bodies hold.
+type HeldTrees = (u64, Option<(u64, u64)>, std::collections::BTreeSet<u64>);
 
 /// Open documents plus the rules for touching files. A clone is an
 /// independent session with the same documents (bodies and meshes are
@@ -532,7 +569,14 @@ pub struct Session {
     /// The open documents and the revisions of their regenerations when
     /// the kernel last let go of the trees of surfaces no body holds
     /// ([`Session::release_unused_trees`]).
-    trees_held_for: Vec<(u64, Option<u64>)>,
+    trees_held_for: Vec<(u64, Option<(u64, u64)>)>,
+    /// Per open document and regeneration ([`OpenDocument::regen_key`]),
+    /// the keys of the trees its bodies hold
+    /// (`craft3d_regen::held_tree_keys`), worked out once per
+    /// regeneration: an edit of one document does not write out the
+    /// surfaces of the others again (40 ms an edit with the fuel tank open,
+    /// 2026-11-04).
+    tree_keys: Vec<HeldTrees>,
     /// [`Session::set_body_budget`], for documents opened later.
     body_budget: Option<usize>,
     /// [`Session::set_lean_sampling`].
@@ -616,6 +660,7 @@ impl Session {
             scene: scene::SceneCache::default(),
             recovery: recovery::RecoveryHandle::default(),
             trees_held_for: Vec::new(),
+            tree_keys: Vec::new(),
             body_budget: None,
             lean_sampling: false,
             bake_in_background: false,
@@ -684,10 +729,10 @@ impl Session {
     }
 
     fn release_unused_trees(&mut self) {
-        let now: Vec<(u64, Option<u64>)> = self
+        let now: Vec<(u64, Option<(u64, u64)>)> = self
             .documents
             .iter()
-            .map(|d| (d.id, d.regen.as_ref().map(|(revision, _)| *revision)))
+            .map(|d| (d.id, d.regen_key()))
             .collect();
         if now == self.trees_held_for {
             return;
@@ -701,15 +746,49 @@ impl Session {
         {
             crate::verify::forget_kept_lines();
         }
-        let bodies: Vec<&craft3d_topo::Body> = self
+        let mut keys = Vec::with_capacity(self.documents.len());
+        for document in &self.documents {
+            let revision = document.regen_key();
+            let known = self
+                .tree_keys
+                .iter()
+                .position(|(id, at, _)| *id == document.id && *at == revision);
+            let held = match known {
+                Some(at) => self.tree_keys.swap_remove(at).2,
+                None => document.tree_keys_held(),
+            };
+            keys.push((document.id, revision, held));
+        }
+        let held: std::collections::BTreeSet<u64> = keys
+            .iter()
+            .flat_map(|(_, _, held)| held.iter().copied())
+            .collect();
+        craft3d_regen::release_unheld_trees(&held);
+        self.tree_keys = keys;
+        self.trees_held_for = now;
+    }
+
+    /// The keys of the trees the bodies of the open documents hold now,
+    /// worked out afresh, and those the session last kept for them
+    /// ([`Session::release_unused_trees`], from its cache per
+    /// regeneration). For tests: after a command the two are the same.
+    pub fn tree_keys_held_and_kept(
+        &self,
+    ) -> (
+        std::collections::BTreeSet<u64>,
+        std::collections::BTreeSet<u64>,
+    ) {
+        let held = self
             .documents
             .iter()
-            .filter_map(|d| d.regen.as_ref())
-            .flat_map(|(_, regen)| regen.features.iter())
-            .filter_map(|f| f.body.as_deref())
+            .flat_map(|d| d.tree_keys_held())
             .collect();
-        craft3d_regen::release_unused_trees(&bodies);
-        self.trees_held_for = now;
+        let kept = self
+            .tree_keys
+            .iter()
+            .flat_map(|(_, _, keys)| keys.iter().copied())
+            .collect();
+        (held, kept)
     }
 
     /// The revision of the active document: it moves with every edit

@@ -216,7 +216,8 @@ fn describe(error: KernelError, sketch: &str, unit: &str, ids: &CurveIds) -> Str
             }
             if let Some(largest) = largest {
                 text.push_str(&format!(
-                    "; the largest distance at which every loop is still there is {largest} {unit}"
+                    "; the largest distance at which every loop is still there is {} {unit}",
+                    craft3d_kernel::fits_number(largest)
                 ));
             }
             text
