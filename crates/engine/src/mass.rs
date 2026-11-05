@@ -71,6 +71,20 @@ type Shells = Vec<Result<ShellVolume, MassError>>;
 thread_local! {
     /// Bodies this thread measured afresh ([`fresh_measures`]).
     static FRESH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Bodies this thread integrated for their inertia
+    /// ([`fresh_inertias`]).
+    static FRESH_INERTIA: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times this thread integrated a body's inertia (alone or with
+/// its mass) rather than finding it remembered: for tests that hold a
+/// command, or the window after an edit, to no inertia at all.
+pub fn fresh_inertias() -> usize {
+    FRESH_INERTIA.with(std::cell::Cell::get)
+}
+
+fn counted_inertia() {
+    FRESH_INERTIA.with(|fresh| fresh.set(fresh.get().saturating_add(1)));
 }
 
 /// How many times this thread integrated a body (for the mass, the
@@ -350,6 +364,7 @@ pub(crate) fn mass_and_inertia_of(body: &Arc<Body>) -> (Measured, Turned) {
         return (mass_of(body), turned);
     }
     counted();
+    counted_inertia();
     let (measured, turned) = match recall(&REMEMBERED, body) {
         Some(measured) => (measured, inertia(body)),
         None => mass_and_inertia(body),

@@ -54,6 +54,8 @@ mod jig_cmds;
 mod loft_cmds;
 pub mod look;
 mod mass;
+/// How many times this thread integrated a body's inertia (tests).
+pub use mass::fresh_inertias;
 mod material_cmds;
 mod measure_pieces;
 mod memory_files;

@@ -121,7 +121,12 @@ pub(crate) fn read(
     if first.kind == SelectionKind::Body {
         let id = first.feature.clone();
         subtitle = name_of(&id);
-        if bodies_here && let Ok(m) = session.execute("document.measure", &json!({"feature": id})) {
+        if bodies_here
+            && let Ok(m) = session.execute(
+                "document.measure",
+                &json!({"feature": id, "inertia": false}),
+            )
+        {
             if let Some(v) = m.get("volume").and_then(Value::as_f64) {
                 rows.push(plain("Volume", volume_text(v, &unit)));
             }

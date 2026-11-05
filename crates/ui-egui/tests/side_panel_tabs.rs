@@ -1137,3 +1137,61 @@ fn on_the_web_the_side_panel_neither_regenerates_nor_spins() {
     );
     assert!(shell.side_bodies().0.is_empty());
 }
+
+/// The Bodies tab and the card of a selected body show volume, area and
+/// mass, never the inertia: an edit and an undo with them open integrate
+/// no inertia (the fuel tank, 2026-11-04: 23 s of inertia after every
+/// undo, felt as a slow undo).
+#[test]
+fn an_undo_with_the_bodies_tab_open_integrates_no_inertia() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(
+        &mut session,
+        "variable.set",
+        json!({"name": "r", "expr": "10 mm"}),
+    );
+    run(
+        &mut session,
+        "feature.sphere",
+        json!({"name": "Ball", "radius": "r"}),
+    );
+    run(
+        &mut session,
+        "body.material",
+        json!({"body": "Ball", "name": "Steel", "density": 7850}),
+    );
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    shell
+        .handle_method(
+            &mut session,
+            "ui.set",
+            Some(&json!({"panels": {"sideTab": "bodies"}})),
+        )
+        .unwrap()
+        .unwrap();
+    run(
+        &mut session,
+        "select.set",
+        json!({"items": [{"kind": "body", "feature": "Ball"}]}),
+    );
+    let before = craft3d_engine::fresh_inertias();
+    window.frames(&mut shell, &mut session, 4);
+    run(
+        &mut session,
+        "variable.set",
+        json!({"name": "r", "expr": "12 mm"}),
+    );
+    window.frames(&mut shell, &mut session, 4);
+    run(&mut session, "edit.undo", json!({}));
+    window.frames(&mut shell, &mut session, 4);
+    assert_eq!(
+        craft3d_engine::fresh_inertias(),
+        before,
+        "no inertia integrated"
+    );
+    // The tab still lists the body's mass.
+    let shown = format!("{:?}", shell.side_bodies());
+    assert!(shown.contains("mass: Some("), "{shown}");
+}
