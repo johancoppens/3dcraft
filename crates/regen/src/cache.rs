@@ -87,6 +87,11 @@ struct Context {
     /// its result depends on (a lump is one split's, and the last split
     /// answers for lumps none names). Empty for every other kind.
     group: Vec<(Feature, bool)>,
+    /// When an input comes later in the history: this feature's place and
+    /// the name of the feature before it, which the reason of its failure
+    /// gives as the remedy (`feature.move` to this place, or a roll-back to
+    /// that feature: [`crate::comes_after`]). `None` otherwise.
+    later_at: Option<(usize, Option<Arc<str>>)>,
 }
 
 #[derive(Clone)]
@@ -887,6 +892,7 @@ pub(crate) fn features(
                         inputs: Vec::new(),
                         fonts,
                         group,
+                        later_at: None,
                     },
                 );
                 let hit = cache
@@ -1307,5 +1313,19 @@ fn context(
             circle,
         });
     }
-    Context { inputs, ..partial }
+    let later = inputs
+        .iter()
+        .any(|input| input.stamp.is_none() && input.named.is_some() && !input.circle);
+    let later_at = later.then(|| {
+        let before = index
+            .checked_sub(1)
+            .and_then(|i| results.get(i))
+            .and_then(|r| lookup.names.get(&r.id).cloned());
+        (index, before)
+    });
+    Context {
+        inputs,
+        later_at,
+        ..partial
+    }
 }
