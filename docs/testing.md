@@ -212,7 +212,8 @@ The outcome of each is one of:
 | ok | built; `document.check` deep on the new feature (`feature`) checks its one body and finds nothing; the volume keeps its identity |
 | refused | the feature failed or the command returned an error, with the reason (counted by class: the reason without names and numbers) |
 | wrong | built, but the check finds a problem or the volume breaks its identity |
-| crash | a panic (caught: "internal error"), or the process died (the memory cap) |
+| bug | refused with a bug the code caught itself (the reason says `internal error (a bug in 3DCraft` without "it panicked"), as an error or a failed status; a bug found, failed on like wrong and crash |
+| crash | a panic (caught: "internal error (a bug in 3DCraft …): it panicked"), or the process died (the memory cap) |
 | timeout | a call took more than a minute |
 
 The identities, each from what the operation does, none tuned (a change no larger than 1e-9 of the body's volume, or than the sum of the integrator's own bounds on the volume before and after, `document.measure` with `bound`, where that is less, is within the measure and decides nothing; it is not a change either. The bounds count every face of both bodies, while the faces an action leaves alone cancel from the change, so on freeform bodies they are far looser than 1e-9 and 1e-9 stays the threshold there):
