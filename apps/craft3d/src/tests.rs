@@ -1095,7 +1095,10 @@ fn after_a_caught_panic_the_document_is_autosaved_at_once_and_can_be_recovered()
         let line = json!({"id": 1, "method": "engine.execute",
                           "params": {"command": command, "params": params}})
         .to_string();
-        serde_json::from_str(&host.handle_line(&line).unwrap()).unwrap()
+        let mut reply: Value = serde_json::from_str(&host.handle_line(&line).unwrap()).unwrap();
+        // The time it took (2026-11-05) is the one field that differs.
+        reply.as_object_mut().unwrap().remove("ms");
+        reply
     };
     let mut host = host_on(&recovery);
     for (command, params) in [
