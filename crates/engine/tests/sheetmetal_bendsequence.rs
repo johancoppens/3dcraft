@@ -847,3 +847,69 @@ fn a_mirrored_gooseneck_clears_with_the_part_turned_end_for_end() {
         assert!(collisions.iter().all(|c| c["turned"] == false), "{out}");
     }
 }
+
+/// A tray 180 × 160 with walls 34 high on its four edges and lips 8 wide
+/// on two of them: six bends, a gooseneck. The whole search (no order
+/// clears: the lips close over the punch) measures some 33 000 distances,
+/// more than the old default cap of 20000, so it now ends with its answer
+/// (finding 20, 2026-11-05: a chassis of 7 bends needed 3 000 000). A cap
+/// too small says about how much the whole search would take, and that
+/// estimate is not below what it took.
+#[test]
+fn a_search_over_six_bends_fits_the_default_work_and_a_short_one_says_how_much_more() {
+    let dir = workdir("sheetmetal-bendsequence", "six-bends");
+    let mut s = session_in(&dir);
+    new_document(&mut s, 1.0);
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "xy", "name": "Base"}),
+    );
+    let made = run(
+        &mut s,
+        "sketch.rect",
+        json!({"sketch": "Base", "from": [0.0, 0.0], "to": [180.0, 160.0]}),
+    );
+    let lines: Vec<String> = made["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l.as_str().unwrap().to_string())
+        .collect();
+    let mut flanges: Vec<Value> = lines
+        .iter()
+        .map(|edge| {
+            json!({"edge": edge, "length": "34 mm", "angle": "90 deg",
+                   "insetStart": "2 mm", "insetEnd": "2 mm"})
+        })
+        .collect();
+    for wall in 0..2 {
+        flanges.push(json!({"tip": wall, "length": "8 mm", "angle": "90 deg",
+                            "insetStart": "12 mm", "insetEnd": "12 mm"}));
+    }
+    built(
+        &mut s,
+        "feature.sheetMetal",
+        json!({"sketch": "Base", "name": "Tray", "thickness": "1 mm", "radius": "1 mm",
+               "kFactor": 0.4, "flanges": flanges}),
+    );
+    let params =
+        json!({"feature": "Tray", "punch": scaled(&GOOSENECK, 1.0), "die": scaled(&DIE, 1.0)});
+    let whole = run(&mut s, "sheetMetal.bendSequence", params.clone());
+    let work = whole["work"].as_u64().unwrap();
+    assert!(work > 20_000, "{work}");
+    let mut short = params;
+    short["maxWork"] = json!(5000);
+    let got = error(&mut s, "sheetMetal.bendSequence", short);
+    assert!(
+        got.contains("more than 5000") && got.contains("maxWork"),
+        "{got}"
+    );
+    let estimate: f64 = got
+        .split("the whole search may need up to about ")
+        .nth(1)
+        .and_then(|rest| rest.split(';').next())
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no estimate: {got}"));
+    assert!(estimate >= work as f64, "{estimate} < {work}: {got}");
+}
