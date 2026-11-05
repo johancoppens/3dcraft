@@ -158,6 +158,10 @@ pub(crate) struct SideMemory {
     pub(crate) editing: Option<Editing>,
     /// The field just opened takes the keyboard in its first frame.
     pub(crate) focus_pending: bool,
+    /// The history step the list last scrolled to while the view is
+    /// scrubbed: it scrolls again only when the step shown changes, so a
+    /// list scrolled by hand stays.
+    pub(crate) scrub_scrolled: Option<usize>,
     pub(crate) drag: Option<Drag>,
     /// The checks were opened by hand while they would fold for room:
     /// they stay open until the selection changes.

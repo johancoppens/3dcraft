@@ -240,6 +240,9 @@ you are stay; the timeline's ends and Home and End take you to the first step an
 The keys work while the pointer is over the view or the feature list and you are not typing in a field.
 Each step is shown once its model is built, and for at least 0.8 s at 1×, so a heavy model never skips a
 step. Playing stops at the end, when the document changes or when you switch tabs.
+While you play or drag through the history, the row of the step shown is outlined with a dashed
+line in the feature list, which scrolls to keep it in view; the roll-back bar stays where it is, since
+looking back changes nothing.
 
 Every step is shown as finely meshed as the whole design, so a part that does not change between steps
 keeps its look, and stepping through a history you have seen before is immediate.

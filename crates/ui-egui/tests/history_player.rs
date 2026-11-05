@@ -525,3 +525,73 @@ fn motion_chosen_in_a_document_without_a_timeline_plays_the_history() {
     assert_eq!(t["caption"], "Step 2/3 · Ball · sphere", "{t}");
     assert_eq!(t["problem"], json!(null), "{t}");
 }
+
+/// The player's position in the feature list: while the view is scrubbed
+/// (played or dragged), the row of the step shown is marked (`position`),
+/// apart from the roll-back bar, which stays at the end of the history;
+/// the list scrolls so that row is in view. Not scrubbed, no mark.
+#[test]
+fn the_step_shown_is_marked_in_the_list_and_kept_in_view() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({}));
+    for i in 0..60 {
+        run(
+            &mut session,
+            "feature.block",
+            json!({"size": [1, 1, 1], "position": [2 * i, 0, 0], "name": format!("Box{i}")}),
+        );
+    }
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    window.frame(&mut shell, &mut session, 0.0, Vec::new());
+    let position = |shell: &Shell| {
+        shell
+            .side_hits()
+            .targets
+            .iter()
+            .find(|(t, _)| t == "player-mark")
+            .map(|(_, r)| *r)
+    };
+    assert_eq!(position(&shell), None, "not scrubbed: no mark");
+    let bar = |shell: &Shell| {
+        shell
+            .side_hits()
+            .targets
+            .iter()
+            .find(|(t, _)| t == "rollback")
+            .map(|(_, r)| *r)
+    };
+    // One step back from the end: the 59th row, near the foot of a list
+    // longer than the panel.
+    window.key(&mut shell, &mut session, egui::Key::ArrowLeft);
+    // The list scrolls in the frames after the step changed.
+    for _ in 0..4 {
+        window.frame(&mut shell, &mut session, 0.02, Vec::new());
+    }
+    assert_eq!(timeline(&mut shell, &mut session)["shown"], 59);
+    let at = position(&shell).expect("the step shown is marked");
+    assert!(at.bottom() <= 760.0 && at.top() >= 0.0, "in view: {at:?}");
+    let shown_row = shell
+        .side_hits()
+        .rows
+        .iter()
+        .find(|(_, r)| r.center().y == at.center().y)
+        .map(|(id, _)| id.clone());
+    assert_eq!(shown_row.as_deref(), Some("F59"), "{shown_row:?}");
+    // The roll-back bar is below it, after the last feature.
+    if let Some(bar) = bar(&shell) {
+        assert!(bar.top() > at.bottom(), "{bar:?} {at:?}");
+    }
+    // Back to the first step: the list scrolls up to it.
+    window.key(&mut shell, &mut session, egui::Key::Home);
+    for _ in 0..4 {
+        window.frame(&mut shell, &mut session, 0.02, Vec::new());
+    }
+    assert_eq!(timeline(&mut shell, &mut session)["shown"], 1);
+    let at = position(&shell).expect("the first step is marked");
+    assert!(at.bottom() <= 760.0 && at.top() >= 0.0, "in view: {at:?}");
+    // At the end the view is the document again: no mark.
+    window.key(&mut shell, &mut session, egui::Key::End);
+    window.frame(&mut shell, &mut session, 0.02, Vec::new());
+    assert_eq!(position(&shell), None);
+}

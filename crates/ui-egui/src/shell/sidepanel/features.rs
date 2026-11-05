@@ -680,6 +680,34 @@ impl Shell {
         let mut rows_drawn: Vec<(String, Rect)> = Vec::new();
         let mut zooms_drawn: Vec<(String, Rect)> = Vec::new();
         let errors = self.side.errors.clone();
+        // The history player's position (the step the scrubbed view shows,
+        // while playing or dragging the timeline): the line of its last
+        // feature is outlined, dashed in the info colour, apart from the
+        // gold roll-back bar, which stays where the document has it. A
+        // folded group stands for a feature in it.
+        let scrub_step = self
+            .timeline
+            .position
+            .as_ref()
+            .map(|p| p.step)
+            .filter(|&s| s >= 1 && s <= steps);
+        let position_line = scrub_step
+            .and_then(|s| self.rows.get(s - 1))
+            .and_then(|shown| {
+                let own = index.get(&shown.id).copied();
+                lines
+                    .iter()
+                    .position(|l| l.row.is_some() && l.row == own)
+                    .or_else(|| lines.iter().position(|l| l.members.contains(&shown.id)))
+            });
+        // Scrolled to until it is in view once (a frame may be drawn
+        // twice, and a request in the first pass is lost); after that a
+        // list scrolled by hand stays until the step changes.
+        let scroll_to_position = scrub_step.is_some() && self.side.scrub_scrolled != scrub_step;
+        if scrub_step.is_none() {
+            self.side.scrub_scrolled = None;
+        }
+        let mut position_rect: Option<Rect> = None;
         // Taken out while the list is drawn (and put back after): no copy
         // of every row each frame.
         let rows = std::mem::take(&mut self.rows);
@@ -818,6 +846,17 @@ impl Shell {
                                 );
                             }
                             let rect = hits.response.rect;
+                            if position_line == Some(n) {
+                                position_rect = Some(rect);
+                                if scroll_to_position
+                                    && !view_before.is_some_and(|v| mostly_in(rect, v))
+                                {
+                                    hits.response.scroll_to_me_animation(
+                                        None,
+                                        egui::style::ScrollAnimation::none(),
+                                    );
+                                }
+                            }
                             line_rects.push((n, rect));
                             rows_drawn.push((id.clone(), rect));
                             if hits.response.hovered() {
@@ -1089,6 +1128,9 @@ impl Shell {
                         if !bar_drawn {
                             bar_rect = Some(rollback_bar(ui, &kit, marker, steps));
                         }
+                        if let Some(rect) = position_rect {
+                            position_marker(ui, &kit, rect);
+                        }
                         // Room under the last row for the strip of the
                         // dependencies, which lies over the list's foot.
                         ui.add_space(tokens.row_height * 3.5);
@@ -1096,6 +1138,15 @@ impl Shell {
             });
         self.rows = rows;
         let list_rect = list.inner_rect;
+        if let Some(rect) = position_rect {
+            self.side
+                .hits
+                .targets
+                .push(("player-mark".to_string(), rect));
+            if mostly_in(rect, list_rect) {
+                self.side.scrub_scrolled = scrub_step;
+            }
+        }
         self.tree_view = Some(list_rect);
         // The roll-back bar's grip drags the marker.
         if let Some(bar) = bar_rect {
@@ -1697,6 +1748,24 @@ fn rollback_bar(ui: &mut egui::Ui, kit: &Kit, at: usize, of: usize) -> Rect {
         Stroke::new(2.0, color(t.accent)),
     );
     rect
+}
+
+/// The history player's position in the list: the row of the step the
+/// view shows, outlined with a dashed line in the info colour (the gold
+/// bar is the document's roll-back marker; this one changes nothing).
+fn position_marker(ui: &egui::Ui, kit: &Kit, row: Rect) {
+    let t = kit.t;
+    let r = row.shrink(1.5);
+    let stroke = Stroke::new(1.5, color(t.info_accent));
+    let corners = [
+        r.left_top(),
+        r.right_top(),
+        r.right_bottom(),
+        r.left_bottom(),
+        r.left_top(),
+    ];
+    ui.painter()
+        .extend(egui::Shape::dashed_line(&corners, stroke, 4.0, 3.0));
 }
 
 /// The menu item that takes the rollback marker away.
