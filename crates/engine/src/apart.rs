@@ -388,26 +388,54 @@ fn shape(body: &Arc<Body>, rung: i32) -> Option<Arc<Shape>> {
         break (cell, true);
     };
     drop(guard);
+    // What the build holds of the budget is given back however the build
+    // ends, a panic (caught by the shell's last guard) included: else the
+    // budget would stay taken and every later build over it would wait for
+    // ever.
+    let release = builds.then_some(Release);
     // Made by the caller that put it there; any other waits for it.
     let made = cell
-        .get_or_init(|| Shape::of(body, pow2(rung)).map(Arc::new))
+        .get_or_init(|| {
+            #[cfg(test)]
+            if tests::PANIC_IN_BUILD.with(std::cell::Cell::get) {
+                #[allow(clippy::panic)]
+                {
+                    panic!("a build that panics (test)");
+                }
+            }
+            Shape::of(body, pow2(rung)).map(Arc::new)
+        })
         .clone();
+    drop(release);
     if builds {
         let mut guard = SHAPES.lock().unwrap_or_else(PoisonError::into_inner);
         let store = guard.get_or_insert_with(Store::default);
-        store.building = store.building.saturating_sub(1);
-        store.reserved = store.reserved.saturating_sub(SHAPE_RESERVE);
         let bytes = made.as_ref().map_or(64, |s| s.bytes()).max(64);
         if let Some(kept) = store.by_body.get_mut(&key)
             && Arc::ptr_eq(&kept.shape, &cell)
+            && kept.bytes == 0
         {
             kept.bytes = bytes;
             store.bytes = store.bytes.saturating_add(bytes);
         }
+    }
+    made
+}
+
+/// Gives back what one build holds of the budget ([`SHAPE_RESERVE`] and
+/// its count) when dropped, and wakes those waiting for room.
+struct Release;
+
+impl Drop for Release {
+    fn drop(&mut self) {
+        let mut guard = SHAPES.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(store) = guard.as_mut() {
+            store.building = store.building.saturating_sub(1);
+            store.reserved = store.reserved.saturating_sub(SHAPE_RESERVE);
+        }
         drop(guard);
         ROOM.notify_all();
     }
-    made
 }
 
 impl Store {
@@ -914,6 +942,49 @@ mod tests {
                 .abs()
                 < 1e-15
         );
+    }
+
+    thread_local! {
+        /// Makes the next build of a shape on this thread panic.
+        pub(super) static PANIC_IN_BUILD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// What builds hold of the budget: (being made, reserved).
+    fn held() -> (usize, usize) {
+        let guard = SHAPES.lock().unwrap_or_else(PoisonError::into_inner);
+        guard.as_ref().map_or((0, 0), |s| (s.building, s.reserved))
+    }
+
+    /// A build that panics gives back what it held of the budget, and the
+    /// shape is made by the next caller.
+    #[test]
+    fn a_build_that_panics_gives_back_its_room() {
+        let body = Arc::new(
+            craft3d_kernel::primitives::block(&craft3d_math::Frame::WORLD, 1.0, 2.0, 3.0).unwrap(),
+        );
+        // A rung of its own, so no other test's shape answers.
+        let rung = -7;
+        let (building, reserved) = held();
+        PANIC_IN_BUILD.with(|p| p.set(true));
+        let caught = std::panic::catch_unwind(|| shape(&body, rung));
+        PANIC_IN_BUILD.with(|p| p.set(false));
+        assert!(caught.is_err());
+        // Other tests may be building beside this one and hold some of
+        // the budget for a while: what this build held is given back once
+        // theirs end (a build that kept its room would hold it for ever).
+        let settles = |building: usize, reserved: usize| {
+            (0..2000).any(|_| {
+                let (b, r) = held();
+                let done = b <= building && r <= reserved;
+                if !done {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                done
+            })
+        };
+        assert!(settles(building, reserved), "{:?}", held());
+        assert!(shape(&body, rung).is_some());
+        assert!(settles(building, reserved), "{:?}", held());
     }
 
     #[test]
