@@ -22,7 +22,7 @@ pub(crate) const SPECS: &[CommandSpec] = &[spec!(
     "Follow Sources",
     r#"{}"#,
     "Checks the source files of every open assembly (each tab, with the sources of its subassemblies) and reads again those that changed since they were read: a file whose size and modification time are as they were is not read, one read again with the same bytes changes nothing. An instance follows its file unless it is pinned; only a changed source is regenerated, when its assembly is shown. A source that changed and cannot be read again (gone, unreadable, outside the roots) keeps the last version read, and its instances their bodies; the Instances panel marks them, with the reason. file.save does the same for the other open documents after it wrote its file, file.activate for the document it activates, and the window when it gets the focus back. Not an undo step. Returns followed: per assembly whose sources changed or failed, {document, path, changed: the source files read again with other bytes, failed: [{path, error}]}, and failed: how many sources could not be read again.",
-    doc: false,
+    doc: true,
     assembly_follow
 )];
 
