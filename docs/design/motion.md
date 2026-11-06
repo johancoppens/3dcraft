@@ -158,8 +158,12 @@ grid) and handed to up to seven workers from the shared pool (`SampleWorker`), e
 copy of the document that measures its samples one after the other as the scratch session did (the state put in as
 one merged undo step, the placement held, answers kept by what they depend on carried from sample to sample), on the
 worker's own thread as background work, as an assertion job's thread is. Each sample's answer is a function of its
-moment, so the result is the one taken one sample after the other. The workers' allocator arenas reach their
-high-water marks over the first hundred or so moments (`motion_check_memory` now measures from 129 to 513 moments).
+moment, so the result is the one taken one sample after the other. The workers' allocator arenas raise the process's
+peak memory over the first hundreds of moments (more on a machine with more cores: +72 MiB from 129 to 513 moments
+in the Gate, +3 MiB with `MALLOC_ARENA_MAX=2`), while the bodies alive stay those of the moments in flight; so
+`motion_check_memory` counts the placed bodies alive during and after its runs (`track_placed_bodies`,
+`placed_high_water`, `live_placed_bodies`: 19 at most in runs of 129 and of 513 moments, 2 after each; a run that
+kept its moments' bodies, tried, held 269 and 782) instead of the peak, which it prints.
 
 **Memory streams.** A sample keeps only what the next one needs: the copy's document state replaces the one before
 (one merged undo step), its placement is held in place of the one before, and the answers the checks remember are

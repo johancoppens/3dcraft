@@ -1,11 +1,10 @@
 //! The memory `motion.check` holds over an assembly's motion
 //! (docs/design/motion.md › *Checks over the motion*): each moment places
 //! fresh copies of the bodies, and what the checks remember between
-//! moments must not keep them alive. Measured as the process's peak
-//! resident memory after 129 and then 513 moments of two wheels of 258
-//! faces each (9 and 129 before 2026-11-05, see the test): the difference
-//! is what more moments cost. In its own test binary, so the process holds
-//! nothing else.
+//! moments must not keep them alive. Measured as the placed bodies alive
+//! during and after runs of 129 and 513 moments of two wheels of 258 faces
+//! each (the process's peak memory before 2026-11-06, see the test). In
+//! its own test binary, so the process holds nothing else.
 
 #![allow(
     clippy::unwrap_used,
@@ -110,38 +109,54 @@ fn more_moments_of_a_motion_check_hold_no_more_bodies() {
         let out = run(s, "motion.check", json!({ "samples": samples }));
         assert_eq!(out["ok"], true, "{out}");
     };
-    // The samples are measured side by side on up to eight threads
-    // (since 2026-11-05): the allocator's arenas of those threads reach
-    // their high-water marks over the first hundred or so moments (+46 MiB
-    // from a run of 9 moments to one of 129, +6 MiB with
-    // MALLOC_ARENA_MAX=8, measured on a 14-thread laptop), and grow little
-    // after that (+5 to +11 MiB from a run of 129 to one of 513). So the
-    // runs of 9 and 129 moments are a warm-up, and what is measured is a
-    // run of 513 moments against one of 129: bodies kept alive for every
-    // moment of a run, about half a megabyte a moment, would raise the
-    // peak by about (513 - 129) x 0.5 = 192 MiB.
+    // What is measured (since 2026-11-06): the placed bodies alive, the
+    // moments' copies of the two wheels, counted by the engine at every
+    // placement (`track_placed_bodies`): the most alive at once during a
+    // run and those alive after it. A run that keeps its moments' bodies
+    // holds two more for every moment; one that does not holds those of
+    // the moments in flight, a number that does not grow with the
+    // moments. Until 2026-11-05 this test held the process's peak resident
+    // memory instead, which stood for the bodies kept while one thread
+    // measured the samples. Measured side by side on up to eight threads,
+    // the peak measures the allocator's arenas as well: +46 MiB from a run
+    // of 9 moments to one of 129 and +5 to +11 MiB from 129 to 513 on a
+    // 14-thread laptop, +72 MiB from 129 to 513 in the Gate on the Strix,
+    // but +3 MiB from 129 to 513 with MALLOC_ARENA_MAX=2, while the placed
+    // bodies alive after each run stayed 2 (the probe of 2026-11-06 in the
+    // dev log). The count is what the peak stood for, measured directly;
+    // the peak is printed.
+    craft3d_engine::track_placed_bodies(true);
     check(&mut s, 9);
     check(&mut s, 129);
+    let _ = craft3d_engine::placed_high_water();
+    check(&mut s, 129);
+    let at_129 = craft3d_engine::placed_high_water();
+    let after_129 = craft3d_engine::live_placed_bodies();
     let few = peak_kib();
     check(&mut s, 513);
+    let at_513 = craft3d_engine::placed_high_water();
+    let after_513 = craft3d_engine::live_placed_bodies();
     let many = peak_kib();
-    let (Some(few), Some(many)) = (few, many) else {
-        eprintln!("motion.check memory: no VmHWM on this system; not measured");
-        return;
-    };
-    let grown = many.saturating_sub(few);
+    craft3d_engine::track_placed_bodies(false);
     eprintln!(
-        "motion.check memory: peak {} MiB after 129 moments, {} MiB after 513 more (+{} MiB)",
-        few / 1024,
-        many / 1024,
-        grown / 1024
+        "motion.check memory: placed bodies alive at most {at_129} in a run of 129 moments, {at_513} in one of 513; {after_129} and {after_513} after them; peak {} MiB and {} MiB",
+        few.unwrap_or(0) / 1024,
+        many.unwrap_or(0) / 1024,
     );
-    // Before the answers' keys held their bodies weakly (2026-10-30) the
-    // checks kept every moment's two wheels alive, about half a megabyte a
-    // moment: 129 moments raised the peak by 60 MiB.
+    // Two wheels for each moment in flight: at most a group of eight
+    // being measured, eight waiting and the two placements a sweep keeps,
+    // whatever the number of moments. Kept moments would be 2 x 129 and
+    // 2 x 513.
     assert!(
-        grown < 24 * 1024,
-        "513 moments raised the peak by {} MiB over 129",
-        grown / 1024
+        at_129 <= 2 * (8 + 8 + 4),
+        "{at_129} placed bodies alive at once in 129 moments"
+    );
+    assert!(
+        at_513 <= at_129 + 2,
+        "{at_513} alive at once in 513 moments, {at_129} in 129"
+    );
+    assert!(
+        after_513 <= after_129 && after_129 <= 4,
+        "{after_129} then {after_513} alive after the runs"
     );
 }

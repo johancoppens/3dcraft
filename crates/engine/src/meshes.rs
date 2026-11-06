@@ -30,6 +30,7 @@ use craft3d_tess::{
 };
 use craft3d_topo::Body;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 /// A body's edges as polylines, one per edge in the order of the B-rep
@@ -101,6 +102,41 @@ pub(crate) fn note_placed(placed: &Arc<Body>, source: &Arc<Body>, pose: &Transfo
             pose: *pose,
         },
     );
+    if TRACK_LIVE.load(Ordering::Relaxed) {
+        let live = map.values().filter(|p| p.placed.strong_count() > 0).count();
+        LIVE_HIGH.fetch_max(live, Ordering::Relaxed);
+    }
+}
+
+/// Whether [`note_placed`] keeps [`LIVE_HIGH`] (a test's question: it
+/// counts the placed bodies alive at every placement).
+static TRACK_LIVE: AtomicBool = AtomicBool::new(false);
+
+/// The most placed bodies alive at once since [`placed_high_water`] was
+/// last asked, while tracked.
+static LIVE_HIGH: AtomicUsize = AtomicUsize::new(0);
+
+/// Starts or stops counting the placed bodies alive at every placement.
+#[doc(hidden)]
+pub fn track_placed_bodies(on: bool) {
+    TRACK_LIVE.store(on, Ordering::Relaxed);
+}
+
+/// The most placed bodies (an assembly's instances at its moments) alive
+/// at once since the last call, while tracked ([`track_placed_bodies`]);
+/// counting starts again from those alive now.
+#[doc(hidden)]
+pub fn placed_high_water() -> usize {
+    LIVE_HIGH.swap(live_placed_bodies(), Ordering::Relaxed)
+}
+
+/// How many bodies placed as rigid copies ([`note_placed`]: an assembly's
+/// instances at its moments) are alive in the process now: what a run
+/// over a motion keeps of its moments (`motion_check_memory`).
+#[doc(hidden)]
+pub fn live_placed_bodies() -> usize {
+    let map = PLACED.lock().unwrap_or_else(PoisonError::into_inner);
+    map.values().filter(|p| p.placed.strong_count() > 0).count()
 }
 
 /// The body `body` was placed from and the motion, when it was placed

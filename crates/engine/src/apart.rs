@@ -450,6 +450,15 @@ impl Store {
     }
 }
 
+/// How many shapes are kept, and how many bytes they take.
+#[doc(hidden)]
+pub fn kept_shapes() -> (usize, usize) {
+    let guard = SHAPES.lock().unwrap_or_else(PoisonError::into_inner);
+    guard
+        .as_ref()
+        .map_or((0, 0), |s| (s.by_body.len(), s.bytes))
+}
+
 /// Lets go of the shapes of bodies that are gone (a document closed):
 /// those of live bodies stay, whichever session has them.
 pub(crate) fn forget_gone_shapes() {

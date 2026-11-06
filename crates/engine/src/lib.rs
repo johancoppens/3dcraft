@@ -17,7 +17,9 @@ pub mod analysis;
 mod analysis_cmds;
 mod apart;
 #[doc(hidden)]
-pub use apart::set_mesh_proof;
+pub use apart::{kept_shapes, set_mesh_proof};
+#[doc(hidden)]
+pub use meshes::{live_placed_bodies, placed_high_water, track_placed_bodies};
 mod angle_warnings;
 pub mod animation;
 mod appearance;
