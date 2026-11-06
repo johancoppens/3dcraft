@@ -473,14 +473,19 @@ impl Shell {
                 .clicked()
             {
                 self.state.timeline.collisions = !collisions_on;
+                // A joint held by hand is checked by the same switch.
+                if self.joints.driven.is_some() {
+                    self.timeline
+                        .queue("view.drive", json!({"collisions": !collisions_on}));
+                }
                 self.go_to_t(shown);
             }
         });
-        let pairs = self
-            .timeline
-            .motion
-            .as_ref()
-            .map_or(0, |m| m.collisions.len());
+        let pairs = match self.timeline.motion.as_ref() {
+            Some(m) => m.collisions.len(),
+            // A joint held by hand: its pose's.
+            None => self.held_collisions().len(),
+        };
         if pairs > 0 {
             ui.label(
                 egui::RichText::new(format!("{pairs} colliding"))
@@ -664,6 +669,12 @@ impl Shell {
                 text.push_str(&format!(" · collision: {}", pairs.join(", ")));
             }
             return Some(text);
+        }
+        // A joint held by hand whose pose collides.
+        let held = self.held_collisions();
+        if let (Some(mate), false) = (&self.joints.driven, held.is_empty()) {
+            let pairs: Vec<String> = held.iter().map(|(a, b)| format!("{a} and {b}")).collect();
+            return Some(format!("{mate} held · collision: {}", pairs.join(", ")));
         }
         let steps = self.timeline.steps;
         if steps == 0 || (self.timeline.position.is_none() && !self.state.timeline.playing) {

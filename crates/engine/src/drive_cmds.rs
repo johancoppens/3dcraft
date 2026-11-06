@@ -19,6 +19,10 @@
 
 use crate::asm::{Carried, Held, Hold, Placed};
 use crate::commands::{Run, fail, length_unit, spec};
+use crate::motion::Collision;
+
+/// The collisions found in a state, or why they could not be.
+type Found = Result<Vec<Collision>, String>;
 use crate::params::Params;
 use crate::view_elsewhere::DriveAsk;
 use crate::{CommandError, CommandSpec, OpenDocument, Session};
@@ -31,8 +35,8 @@ use std::sync::Arc;
 pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "view.drive",
     "Drive Joint (View)",
-    r#"{"mate": string or null, "value": number or expr, "which": "angle|distance|x|y" = the mate's main free motion}"#,
-    "Shows the active assembly with one mate's joint held by hand at a value, without changing the document: not its variables, its undo history or its dirty state (view state, as view.motion and view.scrub). Any mate with a free motion can be held: one whose joint a formula drives (a driver of t), one that follows another through a coupling or a closed loop, or one that is free. value is a number (degrees for an angle, the document's length unit for a distance) or an expression (\"30 deg\", \"2.5 mm\"). The solve holds the joint at the value and lets go of the drivers that would contradict it: none when the mate's own variable drives it (the value takes its place) or the joint is free; else the first other driver, in the assembly's order, whose release frees the joint, or all of them (listed in released). Everything else follows: couplings (a planetary's carrier turned by hand turns the sun by the ratio) and closures (a four-bar's rocker turned by hand turns the crank). The solve is carried from the document's placement along the branch; where the mechanism cannot go on (a dead point, a limit) the view stops at the last value reached and stopped says why. mate null lets go: the document's pose is shown again. A view.motion with a t, an edit or another document lets go too. The viewport, view.render, view.pick, screenshots and the assembly's outline show the held state; measures, checks and exports still see the document. Without parameters it changes nothing and says what is held. Returns mate (null when nothing is held), motion, unit (deg or the length unit), value (asked), reached, start (the joint's value in the document), released (the mates whose drivers were let go of) and stopped (why it stopped short, or null).",
+    r#"{"mate": string or null, "value": number or expr, "which": "angle|distance|x|y" = the mate's main free motion, "collisions": boolean = as before (view.motion's switch), "later": boolean = false}"#,
+    "Shows the active assembly with one mate's joint held by hand at a value, without changing the document: not its variables, its undo history or its dirty state (view state, as view.motion and view.scrub). Any mate with a free motion can be held: one whose joint a formula drives (a driver of t), one that follows another through a coupling or a closed loop, or one that is free. value is a number (degrees for an angle, the document's length unit for a distance) or an expression (\"30 deg\", \"2.5 mm\"). The solve holds the joint at the value and lets go of the drivers that would contradict it: none when the mate's own variable drives it (the value takes its place) or the joint is free; else the first other driver, in the assembly's order, whose release frees the joint, or all of them (listed in released). Everything else follows: couplings (a planetary's carrier turned by hand turns the sun by the ratio) and closures (a four-bar's rocker turned by hand turns the crank). The solve is carried from the document's placement along the branch; where the mechanism cannot go on (a dead point, a limit) the view stops at the last value reached and stopped says why. mate null lets go: the document's pose is shown again. A view.motion with a t, an edit or another document lets go too. The viewport, view.render, view.pick, screenshots and the assembly's outline show the held state; measures, checks and exports still see the document. Without parameters it changes nothing and says what is held. collisions (one switch with view.motion's and the player's): the held pose is checked as a moment of the motion is, the bodies that overlap drawn red and listed; later: true holds the pose without looking for them yet (a slider being dragged: checkLater says so), and the next view.drive without it (view.drive {} when the drag ends) looks for them. Returns mate (null when nothing is held), motion, unit (deg or the length unit), value (asked), reached, start (the joint's value in the document), released (the mates whose drivers were let go of), stopped (why it stopped short, or null), collisions (as view.motion's: null when not looked for, else [{a, aName, b, bName, volume}] or unknown pairs with a reason) and volumeUnit.",
     doc: true,
     view_drive
 )];
@@ -51,6 +55,10 @@ pub(crate) struct Drive {
     /// Where the view is made elsewhere: why the worker could not hold
     /// the joint last asked, said once by `view.drive {}`.
     refused_there: Option<(u64, String)>,
+    /// The collisions of the held pose are looked for later: the last
+    /// `view.drive` asked for the pose alone (a slider being dragged);
+    /// the next without `later` looks for them.
+    later: bool,
     /// The same, for the person (a notice of the window), taken once.
     refused_notice: Option<String>,
 }
@@ -78,6 +86,10 @@ struct Driven {
     /// The solves at the grid's values either way from `start`, kept for
     /// the next value of the same joint (a slider being dragged).
     walks: [Walk; 2],
+    /// The collisions of the held pose, for the switch they were looked
+    /// for with (`None`: not yet), and the state shown: the held pose
+    /// with its colliding bodies red, as a moment of the motion is.
+    collisions: Option<(bool, Option<Found>, Arc<Document>)>,
 }
 
 /// The solves of a held joint at the values `start ± (k + 1) · step` of
@@ -136,6 +148,43 @@ impl OpenDocument {
         None
     }
 
+    /// The state the view shows of a joint held by hand: its pose, with
+    /// the bodies that collide there red when collisions are looked for
+    /// (the switch `view.motion` and the player use), found as a moment's
+    /// are (`motion::collisions`) once per pose and switch, after the
+    /// pose was solved.
+    pub(crate) fn driven_shown(&mut self) -> Option<Arc<Document>> {
+        let placed = self.driven_placed()?;
+        let want = self.collisions_asked();
+        let fresh = self
+            .drive
+            .state
+            .as_ref()
+            .and_then(|s| s.collisions.as_ref())
+            .is_some_and(|(asked, _, _)| *asked == want);
+        // The pose at once, the check when the drag ends.
+        if !fresh && want && self.drive.later {
+            return Some(Arc::clone(&placed.doc));
+        }
+        if !fresh {
+            let found = want.then(|| self.collisions_here(&placed.doc, &placed.regen));
+            let shown = match &found {
+                Some(Ok(pairs)) if pairs.iter().any(|c| c.volume.is_some()) => {
+                    Arc::new(crate::motion::marked(&placed.doc, pairs))
+                }
+                _ => Arc::clone(&placed.doc),
+            };
+            if let Some(state) = self.drive.state.as_mut() {
+                state.collisions = Some((want, found, shown));
+            }
+        }
+        self.drive
+            .state
+            .as_ref()
+            .and_then(|s| s.collisions.as_ref())
+            .map(|(_, _, shown)| Arc::clone(shown))
+    }
+
     /// Lets go of a joint held by hand: the document's pose is shown.
     pub(crate) fn let_go_of_drive(&mut self) {
         self.drive.state = None;
@@ -187,7 +236,11 @@ impl OpenDocument {
             self.drive.refused_there = Some((self.history.revision(), why));
             return None;
         }
-        Some(ask.clone())
+        // Collisions as the switch now says (a toggle makes the view
+        // again there).
+        let mut ask = ask.clone();
+        ask.3 = self.collisions_asked() && !self.drive.later;
+        Some(ask)
     }
 }
 
@@ -226,8 +279,19 @@ impl Session {
 
 fn view_drive(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "view.drive";
-    let p = Params::new(ID, params, &["mate", "value", "which"])?;
+    let p = Params::new(
+        ID,
+        params,
+        &["mate", "value", "which", "collisions", "later"],
+    )?;
+    let collisions = p.bool("collisions")?;
+    let later = p.bool("later")?.unwrap_or(false);
     let open = session.document_mut()?;
+    open.drive.later = later;
+    // One switch with the motion's (and the player's).
+    if let Some(on) = collisions {
+        open.ask_collisions(on);
+    }
     let doc = Arc::clone(open.history.current());
     if !doc.is_assembly() {
         return fail(format!(
@@ -305,7 +369,7 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
             Arc::clone(&doc),
             generation,
             revision,
-            (name.clone(), which.to_string(), value),
+            (name.clone(), which.to_string(), value, false),
         ));
         return Ok(answer(open, &doc));
     }
@@ -549,6 +613,7 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
         stopped,
         placed: held,
         walks,
+        collisions: None,
     });
     Ok(answer(open, &doc))
 }
@@ -691,7 +756,7 @@ fn answer(open: &mut OpenDocument, doc: &Document) -> Value {
     if open.remote_wanted() {
         let base = Arc::clone(open.history.current());
         let generation = open.asm.generation;
-        let Some((mate, which, value)) = open.drive_asked(&base, generation) else {
+        let Some((mate, which, value, _)) = open.drive_asked(&base, generation) else {
             // The worker could not hold the joint last asked: said once.
             // Not after an edit (another revision).
             let revision = open.history.revision();
@@ -725,10 +790,19 @@ fn answer(open: &mut OpenDocument, doc: &Document) -> Value {
             "view": true,
         });
     }
-    open.driven_placed();
+    let shown = open.driven_shown();
     let Some(s) = open.drive.state.as_ref() else {
         return json!({"mate": Value::Null, "view": true});
     };
+    let found = s
+        .collisions
+        .as_ref()
+        .and_then(|(_, found, _)| found.as_ref());
+    let collisions = match &shown {
+        Some(shown) => crate::motion::collisions_json(shown, found),
+        None => Value::Null,
+    };
+    let check_later = found.is_none() && open.drive.later && open.collisions_asked();
     let unit = if s.angle {
         "deg".to_string()
     } else {
@@ -745,6 +819,9 @@ fn answer(open: &mut OpenDocument, doc: &Document) -> Value {
         "released": s.released,
         "stopped": s.stopped,
         "solveNote": s.placed.solve_note,
+        "collisions": collisions,
+        "checkLater": check_later,
+        "volumeUnit": format!("{}^3", length_unit(doc)),
         "view": true,
     })
 }

@@ -120,8 +120,9 @@ pub(crate) struct ViewFacts {
 }
 
 /// A joint held by hand for the view as it is asked for elsewhere: the
-/// mate, its free motion and the value (radians or model units).
-pub(crate) type DriveAsk = (String, String, f64);
+/// mate, its free motion, the value (radians or model units) and whether
+/// its collisions are looked for.
+pub(crate) type DriveAsk = (String, String, f64, bool);
 
 /// Most joints and outline rows a facts part may carry.
 const MAX_ROWS: usize = 4_096;
@@ -400,7 +401,9 @@ impl OpenDocument {
 fn same_drive(a: Option<&DriveAsk>, b: Option<&DriveAsk>) -> bool {
     match (a, b) {
         (None, None) => true,
-        (Some((m, w, v)), Some((n, x, u))) => m == n && w == x && v.to_bits() == u.to_bits(),
+        (Some((m, w, v, c)), Some((n, x, u, d))) => {
+            m == n && w == x && v.to_bits() == u.to_bits() && c == d
+        }
         _ => false,
     }
 }
@@ -431,7 +434,7 @@ impl ViewJob {
             "t": self.moment.map(|(t, _)| format!("{:016x}", t.to_bits())),
             "collisions": self.moment.is_some_and(|(_, c)| c),
             "bake": self.bake.map(|(frames, collisions)| json!({"frames": frames, "collisions": collisions})),
-            "drive": self.drive.as_ref().map(|(mate, which, value)| json!({"mate": mate, "which": which, "value": bits(*value)})),
+            "drive": self.drive.as_ref().map(|(mate, which, value, collisions)| json!({"mate": mate, "which": which, "value": bits(*value), "collisions": collisions})),
         })
     }
 }
@@ -465,7 +468,9 @@ pub(crate) fn drive_of(work: &Value) -> Option<DriveAsk> {
     let mate = drive.get("mate")?.as_str()?;
     let which = drive.get("which")?.as_str()?;
     let value = from_bits(drive.get("value")?).filter(|v| v.is_finite())?;
-    (mate.len() <= 4_096 && which.len() <= 64).then(|| (mate.to_string(), which.to_string(), value))
+    let collisions = drive.get("collisions") == Some(&Value::Bool(true));
+    (mate.len() <= 4_096 && which.len() <= 64)
+        .then(|| (mate.to_string(), which.to_string(), value, collisions))
 }
 
 impl Session {
@@ -576,7 +581,7 @@ pub(crate) fn facts_bytes(
         .documents
         .get_mut(session.active)
         .and_then(|open| open.drive.refused.clone());
-    if let Some(((mate, which, value), why)) = refused {
+    if let Some(((mate, which, value, _), why)) = refused {
         facts.insert(
             "drive".into(),
             json!({"mate": mate, "which": which, "value": bits(value), "error": why}),

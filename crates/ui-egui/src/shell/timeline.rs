@@ -135,6 +135,15 @@ impl Timeline {
                 map.insert("merge".into(), merge.into());
             }
         }
+        // Likewise the last value of a joint held by hand (`view.drive`):
+        // the window never waits for poses it would throw away.
+        if id == "view.drive" && params.get("value").is_some() {
+            self.pending.retain(|(queued, earlier)| {
+                !(*queued == "view.drive"
+                    && earlier.get("value").is_some()
+                    && earlier.get("mate") == params.get("mate"))
+            });
+        }
         // One moment of the motion waits at most: a later one takes the
         // place of an earlier one, keeping what the earlier one set and
         // the later one does not (its collisions).

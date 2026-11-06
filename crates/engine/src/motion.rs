@@ -2253,8 +2253,8 @@ impl OpenDocument {
             return stand_in;
         }
         // A joint held by hand (`view.drive`).
-        if let Some(placed) = self.driven_placed() {
-            return Arc::clone(&placed.doc);
+        if let Some(doc) = self.driven_shown() {
+            return doc;
         }
         if let Some(state) = self.motion_state() {
             return state.doc;
@@ -2881,14 +2881,35 @@ fn view_motion(session: &mut Session, params: &Value) -> Run {
     let Some(state) = state else {
         return Ok(json!({"t": Value::Null, "timeline": timeline_json, "collisions": Value::Null}));
     };
-    // Named as the state shows them: an assembly's bodies by instance.
+    let collisions = collisions_json(&state.doc, state.collisions.as_ref());
+    Ok(json!({
+        "t": state.t,
+        "timeline": timeline_json,
+        "rebuilt": state.rebuilt.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        "collisions": collisions,
+        "volumeUnit": format!("{}^3", length_unit(doc)),
+        "deadPoint": state.stuck.as_ref().map_or(Value::Null, |stuck| json!({"t": stuck.t, "why": stuck.why})),
+        "solveNote": state.placed.as_ref().and_then(|p| p.solve_note.clone()),
+        "exact": state.exact,
+        "stale": state.placed.as_ref().map_or_else(Vec::new, |p| p.stale.clone()),
+        "building": open.motion_building(),
+        "baked": open.motion.sweep.as_ref().and_then(|(_, _, sweep)| sweep.bake_frames()),
+    }))
+}
+
+/// The collisions of a state as `view.motion` (and `view.drive`) answer
+/// them: null when not looked for, `{error}`, or the pairs with their
+/// common volume (or why a pair is unknown), named as `doc` (the state
+/// shown) names them: an assembly's bodies by instance.
+pub(crate) fn collisions_json(
+    doc: &Document,
+    collisions: Option<&Result<Vec<Collision>, String>>,
+) -> Value {
     let name = |id: FeatureId| {
-        state
-            .doc
-            .feature(id)
+        doc.feature(id)
             .map_or_else(|| id.to_string(), |f| f.name.clone())
     };
-    let collisions = match &state.collisions {
+    match collisions {
         None => Value::Null,
         Some(Err(why)) => json!({"error": why}),
         Some(Ok(found)) => found
@@ -2909,20 +2930,30 @@ fn view_motion(session: &mut Session, params: &Value) -> Run {
                 entry
             })
             .collect(),
-    };
-    Ok(json!({
-        "t": state.t,
-        "timeline": timeline_json,
-        "rebuilt": state.rebuilt.iter().map(ToString::to_string).collect::<Vec<_>>(),
-        "collisions": collisions,
-        "volumeUnit": format!("{}^3", length_unit(doc)),
-        "deadPoint": state.stuck.as_ref().map_or(Value::Null, |stuck| json!({"t": stuck.t, "why": stuck.why})),
-        "solveNote": state.placed.as_ref().and_then(|p| p.solve_note.clone()),
-        "exact": state.exact,
-        "stale": state.placed.as_ref().map_or_else(Vec::new, |p| p.stale.clone()),
-        "building": open.motion_building(),
-        "baked": open.motion.sweep.as_ref().and_then(|(_, _, sweep)| sweep.bake_frames()),
-    }))
+    }
+}
+
+impl OpenDocument {
+    /// The collisions of `doc` (a state of this document, its bodies by
+    /// `regen`), found as a moment's are ([`collisions`]), with the
+    /// motion's memo of pairs.
+    pub(crate) fn collisions_here(
+        &mut self,
+        doc: &Document,
+        regen: &Regen,
+    ) -> Result<Vec<Collision>, String> {
+        collisions(doc, regen, &mut self.motion.memo)
+    }
+
+    /// Whether the view looks for collisions (`view.motion {collisions}`,
+    /// `view.drive {collisions}`): one switch for both.
+    pub(crate) fn collisions_asked(&self) -> bool {
+        self.motion.collisions
+    }
+
+    pub(crate) fn ask_collisions(&mut self, on: bool) {
+        self.motion.collisions = on;
+    }
 }
 
 /// `view.motion`'s answer while the view is made elsewhere: the moment

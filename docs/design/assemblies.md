@@ -621,7 +621,13 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
   limit) the last value reached is found by halving that whole grid step (30 times, over the step whatever value was asked, so where it stops does not depend on the value that found it first) and shown, and kept (`Walk::limit`): a
   later value past it is shown there without a solve; `stopped` says where and why. When even that pose cannot be
   placed the command fails and the view stays as it was, never the document's pose instead. At most 720 grid
-  steps either way (10 turns, a solve without bodies each); further is refused at once. The viewport,
+  steps either way (10 turns, a solve without bodies each); further is refused at once. With collisions on (the switch of `view.motion` and the player) the held pose is checked as a
+  moment is (`motion::collisions`, the motion's memo of pairs), lazily when the pose is shown or answered, once per
+  pose and switch (`Driven::collisions`), the colliding bodies red (`motion::marked`); the window's player counts
+  them and its caption names them (*Hinge held · collision: Tray and Lid*). A slider being dragged asks with
+  `later` (the pose alone: the check costs about a second on the developer's Pi case, the pose 15–50 ms) and the
+  drag's end asks `view.drive {}`, which checks; in the browser the switch goes with the ask (`DriveAsk`'s fourth
+  field) and the worker checks. The viewport,
   `view.render`, `view.pick`, screenshots and the outline show the held pose (`shown`, `shown_regen` and
   `shown_placed` take it before a moment of the motion); measures, checks and exports see the document. In the
   browser the joint is held in the worker: the host keeps the ask (`Drive::remote`), the view's stand-in and the

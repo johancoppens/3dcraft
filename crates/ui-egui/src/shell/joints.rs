@@ -493,12 +493,49 @@ impl Shell {
                 on_slider
             };
             self.joints.dragging = Some((mate.name.clone(), shown));
-            self.timeline
-                .queue("view.drive", json!({"mate": mate.name, "value": on_slider}));
+            self.timeline.queue(
+                "view.drive",
+                // While dragged the pose alone; its collisions when the
+                // drag ends.
+                json!({"mate": mate.name, "value": on_slider,
+                       "collisions": self.state.timeline.collisions,
+                       "later": slider.dragging}),
+            );
             ui.ctx().request_repaint();
         }
         let mine = matches!(&self.joints.dragging, Some((name, _)) if *name == mate.name);
-        mine && !slider.dragging
+        let ended = mine && !slider.dragging;
+        if ended {
+            // The drag ended: its pose's collisions now.
+            self.timeline.queue("view.drive", json!({}));
+        }
+        ended
+    }
+
+    /// The pairs of parts that collide in the pose of a joint held by hand
+    /// (`view.drive`'s `collisions`, those with a volume), by name.
+    pub(crate) fn held_collisions(&self) -> Vec<(String, String)> {
+        self.joints
+            .drive_state
+            .as_ref()
+            .and_then(|s| s.get("collisions"))
+            .and_then(serde_json::Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter(|c| {
+                        c.get("volume")
+                            .and_then(serde_json::Value::as_f64)
+                            .is_some_and(|v| v > 0.0)
+                    })
+                    .filter_map(|c| {
+                        Some((
+                            c.get("aName")?.as_str()?.to_string(),
+                            c.get("bName")?.as_str()?.to_string(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Lets go of a joint held by hand, when one is: true then.

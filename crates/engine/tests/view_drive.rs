@@ -720,3 +720,214 @@ fn a_failed_fixed_mate_grounds_nothing() {
     assert!(grounded(&mut s, "Ground"));
     assert!(!grounded(&mut s, "Tag"), "held by a mate that failed");
 }
+
+/// A tray (40 × 40 × 10) held to the world and a lid (40 × 40 × 2) on a
+/// revolute hinge along the tray's back top edge, its angle a formula of
+/// `t` from −60° to 60°: turned one way it opens, the other way it turns
+/// into the tray.
+fn tray_and_lid(s: &mut Session) {
+    run(s, "file.new", json!({}));
+    run(
+        s,
+        "feature.block",
+        json!({"name": "Tray", "size": [40, 40, 10]}),
+    );
+    run(
+        s,
+        "datum.axis",
+        json!({"name": "Back", "through": [[0, 40, 10], [1, 40, 10]]}),
+    );
+    run(
+        s,
+        "datum.axis",
+        json!({"name": "Seat", "through": [[0, 0, 0], [0, 0, 1]]}),
+    );
+    run(s, "file.save", json!({"path": "tray.3dcraft"}));
+    run(s, "file.new", json!({}));
+    run(
+        s,
+        "feature.block",
+        json!({"name": "Lid", "size": [40, 40, 2], "position": [-40, 0, 0]}),
+    );
+    // Its hinge on its top edge: turned face to face onto the tray's, it
+    // lies on the tray's top.
+    run(
+        s,
+        "datum.axis",
+        json!({"name": "Back", "through": [[0, 40, 2], [1, 40, 2]]}),
+    );
+    run(s, "file.save", json!({"path": "lid.3dcraft"}));
+    run(s, "assembly.new", json!({}));
+    run(
+        s,
+        "instance.add",
+        json!({"source": "tray.3dcraft", "name": "Tray", "body": "Tray"}),
+    );
+    run(
+        s,
+        "instance.add",
+        json!({"source": "lid.3dcraft", "name": "Lid", "body": "Lid"}),
+    );
+    run(
+        s,
+        "mate.add",
+        json!({"kind": "fixed", "a": "world/z", "b": "Tray/Seat", "name": "Held", "flip": true}),
+    );
+    run(
+        s,
+        "mate.add",
+        json!({"kind": "revolute", "a": "Tray/Back", "b": "Lid/Back", "name": "Hinge"}),
+    );
+    run(s, "variable.set", json!({"name": "t", "expr": "0.5"}));
+    run(
+        s,
+        "variable.set",
+        json!({"name": "Hinge_angle", "expr": "-60 deg + 120 deg * t"}),
+    );
+    let solve = run(s, "assembly.solve", json!({}));
+    assert_eq!(solve["ok"], true, "{solve}");
+}
+
+/// How many faces of the scene shown are drawn in the collision's red.
+fn red_faces(s: &mut Session) -> usize {
+    let scene = s.scene_with(SceneQuality::Preview).unwrap().unwrap();
+    scene
+        .face_colors
+        .looks()
+        .filter(|(_, (color, _))| *color == craft3d_engine::COLLISION_COLOR)
+        .count()
+}
+
+/// The overlapping pairs of an answer's `collisions`, with their volumes.
+fn pairs(answer: &Value) -> Vec<(String, String, f64)> {
+    answer["collisions"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|c| {
+                    let mut names = [
+                        c["aName"].as_str()?.to_string(),
+                        c["bName"].as_str()?.to_string(),
+                    ];
+                    names.sort();
+                    let [a, b] = names;
+                    Some((a, b, c["volume"].as_f64()?))
+                })
+                .filter(|(_, _, v)| *v > 0.0)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A lid held by hand into its tray collides, found as a moment of the
+/// motion finds it: the same pair with the same volume as `view.motion`
+/// at the same angle, the bodies drawn red; with collisions off none are
+/// looked for; letting go clears them; held the other way (open) none.
+#[test]
+fn a_hinge_held_into_its_tray_collides_as_the_motion_says() {
+    let dir = workdir("view-drive", "tray");
+    let mut s = session_in(&dir);
+    tray_and_lid(&mut s);
+    let doc_before = run(&mut s, "document.inspect", json!({}))["dirty"].clone();
+    // Off: nothing looked for.
+    let off = run(&mut s, "view.drive", json!({"mate": "Hinge", "value": -30}));
+    assert_eq!(off["collisions"], Value::Null, "{off}");
+    // On, both ways: one way the lid turns into the tray.
+    let mut found = Vec::new();
+    for (angle, t) in [(-30.0, 0.25), (30.0, 0.75)] {
+        let held = run(
+            &mut s,
+            "view.drive",
+            json!({"mate": "Hinge", "value": angle, "collisions": true}),
+        );
+        assert!(held["collisions"].is_array(), "{held}");
+        let mine = pairs(&held);
+        let red = red_faces(&mut s);
+        run(&mut s, "view.drive", json!({"mate": null}));
+        let moment = run(&mut s, "view.motion", json!({"t": t, "collisions": true}));
+        let theirs = pairs(&moment);
+        run(&mut s, "view.motion", json!({"t": null}));
+        assert_eq!(mine.len(), theirs.len(), "{angle}: {mine:?} {theirs:?}");
+        for ((a, b, v), (c, d, w)) in mine.iter().zip(&theirs) {
+            assert_eq!((a, b), (c, d));
+            assert!((v - w).abs() <= 1e-9 * w.abs().max(1.0), "{angle}: {v} {w}");
+        }
+        assert_eq!(red > 0, !mine.is_empty(), "{angle}: {red} faces red");
+        found.push(mine);
+    }
+    let colliding: Vec<_> = found.iter().filter(|f| !f.is_empty()).collect();
+    assert_eq!(colliding.len(), 1, "one way into the tray: {found:?}");
+    let names = (colliding[0][0].0.as_str(), colliding[0][0].1.as_str());
+    assert_eq!(names, ("Lid", "Tray"));
+    // Let go: nothing held, no collisions shown.
+    let into = if found[0].is_empty() { 30 } else { -30 };
+    run(
+        &mut s,
+        "view.drive",
+        json!({"mate": "Hinge", "value": into, "collisions": true}),
+    );
+    run(&mut s, "view.drive", json!({"mate": null}));
+    let after = run(&mut s, "view.drive", json!({}));
+    assert_eq!(after["mate"], Value::Null);
+    assert_eq!(red_faces(&mut s), 0);
+    assert_eq!(
+        run(&mut s, "document.inspect", json!({}))["dirty"],
+        doc_before
+    );
+}
+
+/// In the browser the held pose's collisions are found in the worker, as
+/// the pose is: the page's answer and its red faces are those of a
+/// session that holds the joint itself.
+#[test]
+fn a_held_pose_s_collisions_cross_from_the_worker() {
+    let dir = workdir("view-drive", "tray-page");
+    let mut here = session_in(&dir);
+    tray_and_lid(&mut here);
+    run(&mut here, "assembly.pack", json!({}));
+    run(&mut here, "file.save", json!({"path": "tray.3dcraftasm"}));
+    let bytes = std::fs::read(dir.join("tray.3dcraftasm")).unwrap();
+    let mut page = Session::new(Workspace::memory());
+    page.set_stepwise(true);
+    page.set_checks_elsewhere(true);
+    page.set_regen_elsewhere(true);
+    page.set_commands_elsewhere(true);
+    page.open_bytes("tray.3dcraftasm", &bytes).unwrap();
+    answer_page_scenes(&mut page);
+    let before = page.work_here();
+    let into = json!({"mate": "Hinge", "value": 30, "collisions": true});
+    run(&mut page, "view.drive", into.clone());
+    answer_page_scenes(&mut page);
+    let came = run(&mut page, "view.drive", json!({}));
+    let mine = run(&mut here, "view.drive", into);
+    assert!(!pairs(&mine).is_empty(), "{mine}");
+    assert_eq!(came["collisions"], mine["collisions"], "{came}");
+    assert_eq!(red_faces(&mut page), red_faces(&mut here));
+    assert!(red_faces(&mut page) > 0);
+    run(&mut page, "view.drive", json!({"mate": null}));
+    answer_page_scenes(&mut page);
+    assert_eq!(red_faces(&mut page), 0);
+    assert_eq!(page.work_here(), before);
+}
+
+/// A slider being dragged asks for the pose alone (`later`): no check is
+/// made and nothing is drawn red; the call when the drag ends finds the
+/// collisions of that pose.
+#[test]
+fn a_dragged_joint_is_checked_when_the_drag_ends() {
+    let dir = workdir("view-drive", "tray-later");
+    let mut s = session_in(&dir);
+    tray_and_lid(&mut s);
+    let dragged = run(
+        &mut s,
+        "view.drive",
+        json!({"mate": "Hinge", "value": 30, "collisions": true, "later": true}),
+    );
+    assert_eq!(dragged["collisions"], Value::Null, "{dragged}");
+    assert_eq!(dragged["checkLater"], true);
+    assert_eq!(red_faces(&mut s), 0);
+    let ended = run(&mut s, "view.drive", json!({}));
+    assert_eq!(ended["checkLater"], false);
+    assert_eq!(pairs(&ended).len(), 1, "{ended}");
+    assert!(red_faces(&mut s) > 0);
+}
