@@ -47,10 +47,12 @@ pub(crate) struct Drive {
     remote: Option<(Arc<Document>, u64, u64, DriveAsk)>,
     /// Where the view is made for another session (the worker): why the
     /// joint asked to be held could not be, for the facts.
-    pub(crate) refused: Option<(String, String)>,
+    pub(crate) refused: Option<(DriveAsk, String)>,
     /// Where the view is made elsewhere: why the worker could not hold
     /// the joint last asked, said once by `view.drive {}`.
-    refused_there: Option<String>,
+    refused_there: Option<(u64, String)>,
+    /// The same, for the person (a notice of the window), taken once.
+    refused_notice: Option<String>,
 }
 
 /// A joint held by hand and the assembly placed with it.
@@ -138,6 +140,7 @@ impl OpenDocument {
     pub(crate) fn let_go_of_drive(&mut self) {
         self.drive.state = None;
         self.drive.remote = None;
+        self.drive.refused_there = None;
     }
 
     /// The name of the mate held by hand, when one is (asked to be held
@@ -167,13 +170,21 @@ impl OpenDocument {
             return None;
         }
         // The worker could not hold it: said by its facts for this view.
+        // Only for this very request: the same mate asked again at another
+        // value is not refused with an older answer.
+        let bits = format!("{:016x}", ask.2.to_bits());
         let refused = self
             .remote_view_facts_drive()
-            .filter(|d| d.get("mate").and_then(Value::as_str) == Some(ask.0.as_str()))
+            .filter(|d| {
+                d.get("mate").and_then(Value::as_str) == Some(ask.0.as_str())
+                    && d.get("which").and_then(Value::as_str) == Some(ask.1.as_str())
+                    && d.get("value").and_then(Value::as_str) == Some(bits.as_str())
+            })
             .and_then(|d| d.get("error").and_then(Value::as_str).map(str::to_string));
         if let Some(why) = refused {
             self.drive.remote = None;
-            self.drive.refused_there = Some(why);
+            self.drive.refused_notice = Some(why.clone());
+            self.drive.refused_there = Some((self.history.revision(), why));
             return None;
         }
         Some(ask.clone())
@@ -185,6 +196,17 @@ impl Session {
     /// the view (`view.drive`), when one is.
     pub fn driven_mate(&mut self) -> Option<String> {
         self.documents.get_mut(self.active)?.driven_mate()
+    }
+
+    /// Why the joint last asked to be held by hand could not be, where the
+    /// view is made elsewhere (the worker refused it): once, for a notice
+    /// the person sees.
+    pub fn take_drive_refusal(&mut self) -> Option<String> {
+        let open = self.documents.get_mut(self.active)?;
+        let base = Arc::clone(open.history.current());
+        let generation = open.asm.generation;
+        open.drive_asked(&base, generation);
+        open.drive.refused_notice.take()
     }
 
     /// What `view.drive {}` says of the joint held by hand in the active
@@ -278,6 +300,7 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
     if open.remote_wanted() {
         open.drive.state = None;
         open.drive.refused_there = None;
+        open.drive.refused_notice = None;
         open.drive.remote = Some((
             Arc::clone(&doc),
             generation,
@@ -314,7 +337,7 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
     let kept = open
         .drive
         .state
-        .as_ref()
+        .as_mut()
         .filter(|s| {
             Arc::ptr_eq(&s.base, &doc)
                 && s.generation == generation
@@ -322,7 +345,7 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
                 && s.mate == name
                 && s.which == which
         })
-        .map(|s| (s.released.clone(), s.walks.clone()));
+        .map(|s| (s.released.clone(), std::mem::take(&mut s.walks)));
     let released = match &kept {
         Some((released, _)) => released.clone(),
         None => to_release(
@@ -430,14 +453,30 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
             );
             match held.solve_error.clone() {
                 None => (Arc::new(held), target, None),
-                Some(why) => {
-                    // The last value reached past the grid's: the
-                    // fraction of the step halved, each solved from the
-                    // grid's last solve.
+                Some(failed) => {
+                    // Where it stops is searched over the whole grid step
+                    // past the grid's last solve, whatever was asked, so
+                    // the limit (and why) is the same whichever value
+                    // finds it first; the step's end says why.
+                    let end = at(k + 1);
+                    let why = if target.to_bits() == end.to_bits() {
+                        failed
+                    } else {
+                        open.asm
+                            .place_held(
+                                &doc,
+                                path.as_deref(),
+                                &from,
+                                &hold_at(end, base_value),
+                                false,
+                            )
+                            .solve_error
+                            .unwrap_or(failed)
+                    };
                     let (mut good, mut bad) = (0.0f64, 1.0f64);
                     for _ in 0..SEARCH_STEPS {
                         let mid = 0.5 * (good + bad);
-                        let v = base_value + (target - base_value) * mid;
+                        let v = base_value + (end - base_value) * mid;
                         let trial = open.asm.place_held(
                             &doc,
                             path.as_deref(),
@@ -451,7 +490,7 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
                             bad = mid;
                         }
                     }
-                    let mut reached = base_value + (target - base_value) * good;
+                    let mut reached = base_value + (end - base_value) * good;
                     let mut held = open.asm.place_held(
                         &doc,
                         path.as_deref(),
@@ -654,9 +693,13 @@ fn answer(open: &mut OpenDocument, doc: &Document) -> Value {
         let generation = open.asm.generation;
         let Some((mate, which, value)) = open.drive_asked(&base, generation) else {
             // The worker could not hold the joint last asked: said once.
+            // Not after an edit (another revision).
+            let revision = open.history.revision();
             return match open.drive.refused_there.take() {
-                Some(why) => json!({"mate": Value::Null, "view": true, "error": why}),
-                None => json!({"mate": Value::Null, "view": true}),
+                Some((at, why)) if at == revision => {
+                    json!({"mate": Value::Null, "view": true, "error": why})
+                }
+                _ => json!({"mate": Value::Null, "view": true}),
             };
         };
         let angle = which == "angle";

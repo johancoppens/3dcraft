@@ -2591,6 +2591,15 @@ impl Shell {
         // An assembly lists its instances, nested by subassembly, and its
         // mates (docs/design/assemblies.md › *The tree*).
         self.outline = session.assembly_outline();
+        // A joint the worker could not hold (the browser): said to the
+        // person in the status bar, as a command's error is.
+        if let Some(why) = session.take_drive_refusal() {
+            self.last_command = Some(CommandReport {
+                label: "view.drive".to_string(),
+                ok: false,
+                text: why.chars().take(160).collect(),
+            });
+        }
         self.joints.drive_state = session.drive_state();
         self.joints.driven = self
             .joints

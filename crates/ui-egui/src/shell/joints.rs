@@ -42,37 +42,26 @@ pub(crate) struct Joints {
 }
 
 /// What a joint's slider says under it while it holds the joint by hand.
-pub(crate) const DRIVE_NOTE: &str = "View only · Esc releases";
+pub(crate) const DRIVE_NOTE: &str = "View only · Esc";
 
-/// The note under a joint's slider held by hand: [`DRIVE_NOTE`], or where
-/// it stopped and why in a few words when it could not reach the value
-/// (`view.drive`'s `stopped`; the whole reason is the slider's tooltip).
-pub(crate) fn drive_note(state: Option<&serde_json::Value>, angle: bool, unit: &str) -> String {
-    let Some(state) = state else {
-        return DRIVE_NOTE.to_string();
+/// The note under a joint's slider held by hand: [`DRIVE_NOTE`], or why
+/// it stopped short of the value in a word (`view.drive`'s `stopped`; the
+/// value it stopped at is the slider's, the whole reason its tooltip).
+/// Short enough for one line beside the rail at the panel's narrowest.
+pub(crate) fn drive_note(state: Option<&serde_json::Value>) -> &'static str {
+    let Some(why) = state
+        .and_then(|s| s.get("stopped"))
+        .and_then(serde_json::Value::as_str)
+    else {
+        return DRIVE_NOTE;
     };
-    let Some(why) = state.get("stopped").and_then(serde_json::Value::as_str) else {
-        return DRIVE_NOTE.to_string();
-    };
-    let cause = if why.contains("dead point") {
-        "dead point"
+    if why.contains("dead point") {
+        "Dead point · Esc"
     } else if why.contains("limit") {
-        "limit"
+        "Limit · Esc"
     } else {
-        "cannot go on"
-    };
-    let reached = state
-        .get("reached")
-        .and_then(serde_json::Value::as_f64)
-        .map(|v| {
-            if angle {
-                format!("{}°", crate::kit::slider::fixed(v, 1))
-            } else {
-                format!("{} {unit}", crate::kit::slider::fixed(v, 2))
-            }
-        })
-        .unwrap_or_default();
-    format!("Stops at {reached} ({cause}) · Esc releases")
+        "Stopped · Esc"
+    }
 }
 
 /// The kinds of mate the menu on two faces offers, as `mate.add` names
@@ -455,14 +444,14 @@ impl Shell {
             (shown, [lo, hi], unit)
         };
         let held = self.joints.driven.as_deref() == Some(mate.name.as_str());
-        let note_text = held.then(|| drive_note(self.joints.drive_state.as_ref(), angle, unit));
+        let note_text = held.then(|| drive_note(self.joints.drive_state.as_ref()));
         let stopped = held
             .then_some(self.joints.drive_state.as_ref())
             .flatten()
             .and_then(|s| s.get("stopped"))
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
-        let note = note_text.as_deref();
+        let note = note_text;
         let label_width = (ui.available_width() * 0.3).clamp(48.0, 120.0);
         let value_width = 72.0;
         let decimals = if angle { 1 } else { 2 };
@@ -587,20 +576,38 @@ mod tests {
     /// enough for the slider's row at the panel's narrowest.
     #[test]
     fn a_held_joint_s_note_says_where_it_stopped() {
-        assert_eq!(drive_note(None, true, "mm"), DRIVE_NOTE);
+        assert_eq!(drive_note(None), DRIVE_NOTE);
         let held = serde_json::json!({"mate": "Hip", "reached": 30.0, "stopped": null});
-        assert_eq!(drive_note(Some(&held), true, "mm"), DRIVE_NOTE);
+        assert_eq!(drive_note(Some(&held)), DRIVE_NOTE);
         let stopped = serde_json::json!({"mate": "Hip", "reached": 138.59038,
             "stopped": "`Hip` stopped at 138.59° of 300° asked for: a dead point at the drives [2.41]"});
-        let note = drive_note(Some(&stopped), true, "mm");
-        assert_eq!(note, "Stops at 138.6° (dead point) · Esc releases");
+        assert_eq!(drive_note(Some(&stopped)), "Dead point · Esc");
         let limit = serde_json::json!({"reached": 12.5, "stopped": "... outside its limits ..."});
-        assert_eq!(
-            drive_note(Some(&limit), false, "mm"),
-            "Stops at 12.50 mm (limit) · Esc releases"
-        );
-        for text in [DRIVE_NOTE, note.as_str()] {
-            assert!(text.chars().count() <= 44, "{text}");
+        assert_eq!(drive_note(Some(&limit)), "Limit · Esc");
+        let other = serde_json::json!({"stopped": "did not converge"});
+        assert_eq!(drive_note(Some(&other)), "Stopped · Esc");
+        // One line beside the rail at the panel's narrowest: laid out in
+        // the kit's small font (egui's own fonts) within the room the note
+        // has there (the panel less its margins, the indent and the
+        // slider's narrowest label).
+        let tokens = crate::Tokens::default();
+        let font = crate::kit::Kit::panel(&tokens).small_font();
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        let room = tokens.tree_min_width - 56.0 - 48.0;
+        for text in [
+            DRIVE_NOTE,
+            "Dead point · Esc",
+            "Limit · Esc",
+            "Stopped · Esc",
+        ] {
+            let width = ctx.fonts_mut(|f| {
+                f.layout_no_wrap(text.to_string(), font.clone(), egui::Color32::WHITE)
+                    .size()
+                    .x
+            });
+            assert!(width <= room, "{text}: {width} > {room}");
         }
     }
 

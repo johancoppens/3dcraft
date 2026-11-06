@@ -599,9 +599,7 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
   Every other mate with one value to hold (a revolute's angle, a slider's distance, a cylindrical's angle) that is
   solved has a slider too (`Shell::drive_slider`, 2026-11-06): one a formula of `t` drives, one that follows another
   through a coupling or a closure. Dragging it holds the joint by hand for the view (*Driving a joint by hand*,
-  below), not an edit; while it holds the joint the slider says so under it (*View only · Esc releases*, or where
-  it stopped and why in a few words: *Stops at 138.6° (dead point) · Esc releases*, the whole reason in its
-  tooltip); a double click on its knob, Esc (after an open popover), a moment of the motion or an edit lets go.
+  below), not an edit; while it holds the joint the slider says so under it (*View only · Esc*, or why it stopped short in a word: *Dead point · Esc*, *Limit · Esc*; the value it stopped at is the slider's, the whole reason its tooltip); a double click on its knob, Esc (after an open popover), a moment of the motion or an edit lets go.
 - **Driving a joint by hand** (`view.drive`, `engine/src/drive_cmds.rs`, 2026-11-06): view state of the open
   document (`OpenDocument::drive`, kept for its document state and the history's revision, so an undo and a redo
   let go too), as a moment of the motion is; the document, its undo history and its dirty
@@ -620,7 +618,7 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
   `Solver::solve_at_near`): the poses alone say an angle only within a turn, and a coupled shaft many turns round
   (the reducer's input at ten times its output) started a turn off left its coupling a multiple of 2π·ratio
   unmet ("did not converge", residual ±16, at 560° of the output). Where a step cannot be solved (a dead point, a
-  limit) the last value reached is found by halving the step (30 times) and shown, and kept (`Walk::limit`): a
+  limit) the last value reached is found by halving that whole grid step (30 times, over the step whatever value was asked, so where it stops does not depend on the value that found it first) and shown, and kept (`Walk::limit`): a
   later value past it is shown there without a solve; `stopped` says where and why. When even that pose cannot be
   placed the command fails and the view stays as it was, never the document's pose instead. At most 720 grid
   steps either way (10 turns, a solve without bodies each); further is refused at once. The viewport,
@@ -630,7 +628,7 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
   job of scenes carry it (`ViewJob::drive`, its value as its bits), the worker holds it with `view.drive` before it
   makes the scenes (the same joint at another value goes on from the solves it keeps; another joint, or none, lets
   go), and its answer crosses with the facts (`ViewFacts::drive`); one the worker refuses crosses as an error
-  (`Drive::refused`), and the page lets go of it and says why once (`view.drive {}`); the page places nothing
+  with the request it answers (`Drive::refused`: mate, motion and the value's bits), and the page lets go of it and says why once (`view.drive {}`); the page places nothing
   (`engine/tests/view_drive.rs`).
 - **Selections** of an assembly are made in its placed part, whose features are numbered in instance order (an
   instance that is deleted or fails gives its id to the next). Each item is anchored to the name of the placed

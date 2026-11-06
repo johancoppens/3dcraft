@@ -546,3 +546,177 @@ fn the_worker_keeps_its_solves_from_value_to_value() {
     eprintln!("worker, planetary Output 720°: {cold:.3} s, then 725°: {warm:.3} s");
     assert!(warm < cold * 0.6, "{cold} {warm}");
 }
+
+/// What the view shows of a held joint, whole: `view.drive`'s answer,
+/// the outline and the scene's bytes.
+fn held_view(s: &mut Session) -> (Value, String, Vec<u8>) {
+    let answer = run(s, "view.drive", json!({}));
+    let outline = format!("{:?}", s.assembly_outline());
+    let scene = scene_bytes(&s.scene_with(SceneQuality::Preview).unwrap().unwrap());
+    (answer, outline, scene)
+}
+
+/// A pose is a function of the value alone, whatever was asked before:
+/// the reducer's Shaft3 at 400° asked at once, after 720°, and after a
+/// detour (−100°, 50°, 610°, 133°) shows the same answer, outline and
+/// scene, bit for bit.
+#[test]
+fn a_held_joint_s_pose_does_not_depend_on_the_way_there() {
+    let routes: [&[f64]; 3] = [
+        &[400.0],
+        &[720.0, 400.0],
+        &[-100.0, 50.0, 610.0, 133.0, 400.0],
+    ];
+    let mut views = Vec::new();
+    for route in routes {
+        let mut s = example("gear-reducer.3dcraftasm");
+        for v in route {
+            run(&mut s, "view.drive", json!({"mate": "Shaft3", "value": v}));
+        }
+        views.push(held_view(&mut s));
+    }
+    assert!((views[0].0["reached"].as_f64().unwrap() - 400.0).abs() < 1e-9);
+    for view in &views[1..] {
+        assert_eq!(view.0, views[0].0);
+        assert_eq!(view.1, views[0].1);
+        assert!(view.2 == views[0].2, "the scenes differ");
+    }
+}
+
+/// Where a joint stops does not depend on the first value that found it:
+/// the four-bar's rocker asked at once far past its dead point, or first
+/// just past it and then far past it, or from the other side of it first,
+/// stops at the same value with the same pose and reason, bit for bit.
+#[test]
+fn a_dead_point_does_not_depend_on_the_value_that_found_it() {
+    let dir = workdir("view-drive", "four-bar-paths");
+    let mut views = Vec::new();
+    for route in [
+        &[100.0][..],
+        &[57.5, 100.0],
+        &[20.0, 56.0, 100.0],
+        &[-30.0, 100.0],
+    ] {
+        let mut s = session_in(&dir);
+        four_bar(&mut s);
+        let start = shown(&mut s, "Hip");
+        for d in route {
+            run(
+                &mut s,
+                "view.drive",
+                json!({"mate": "Hip", "value": start + d}),
+            );
+        }
+        views.push(held_view(&mut s));
+    }
+    assert!(views[0].0["stopped"].is_string(), "{}", views[0].0);
+    for view in &views[1..] {
+        assert_eq!(
+            view.0["reached"].as_f64().map(f64::to_bits),
+            views[0].0["reached"].as_f64().map(f64::to_bits),
+            "{} {}",
+            view.0,
+            views[0].0
+        );
+        assert_eq!(view.0, views[0].0);
+        assert_eq!(view.1, views[0].1);
+        assert!(view.2 == views[0].2, "the scenes differ");
+    }
+}
+
+/// The same mate asked again, at a value the worker can hold, before the
+/// page took in the refusal of the one before: held, not refused with
+/// the older reason. A refusal is not said after an edit.
+#[test]
+fn a_refusal_on_the_page_is_of_its_own_request_only() {
+    let mut page = page();
+    answer_page_scenes(&mut page);
+    run(
+        &mut page,
+        "view.drive",
+        json!({"mate": "Output", "value": 5000}),
+    );
+    answer_page_scenes(&mut page);
+    let asked = run(
+        &mut page,
+        "view.drive",
+        json!({"mate": "Output", "value": 10}),
+    );
+    assert_eq!(asked["pending"], true, "{asked}");
+    assert_eq!(page.driven_mate().as_deref(), Some("Output"));
+    answer_page_scenes(&mut page);
+    let came = run(&mut page, "view.drive", json!({}));
+    assert!(
+        (came["reached"].as_f64().unwrap() - 10.0).abs() < 1e-9,
+        "{came}"
+    );
+    // Refused, then an edit: nothing is said of it any more.
+    run(
+        &mut page,
+        "view.drive",
+        json!({"mate": "Output", "value": 5000}),
+    );
+    answer_page_scenes(&mut page);
+    assert_eq!(page.driven_mate(), None);
+    assert!(
+        page.take_drive_refusal().is_some(),
+        "said to the person once"
+    );
+    assert!(page.take_drive_refusal().is_none());
+    run(
+        &mut page,
+        "variable.set",
+        json!({"name": "w", "expr": "11 mm"}),
+    );
+    let said = run(&mut page, "view.drive", json!({}));
+    assert!(said.get("error").is_none(), "{said}");
+}
+
+/// A part is held to the world by a fixed mate that holds: one whose
+/// face is gone (it failed) holds nothing.
+#[test]
+fn a_failed_fixed_mate_grounds_nothing() {
+    let dir = workdir("view-drive", "grounded");
+    let mut s = session_in(&dir);
+    four_bar(&mut s);
+    run(&mut s, "file.activate", json!({"document": 0}));
+    run(
+        &mut s,
+        "datum.axis",
+        json!({ "name": "Mid", "through": [[8, 2, 0], [8, 2, 1]] }),
+    );
+    run(&mut s, "file.save", json!({"path": "bar.3dcraft"}));
+    run(&mut s, "file.activate", json!({"document": 1}));
+    run(&mut s, "assembly.reload", json!({}));
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "bar.3dcraft", "name": "Tag", "body": "Bar" }),
+    );
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "a": "Ground/End1", "b": "Tag/Mid", "name": "Glue", "flip": true }),
+    );
+    let grounded = |s: &mut Session, name: &str| {
+        let outline = s.assembly_outline().unwrap();
+        outline
+            .instances
+            .iter()
+            .find(|i| i.name == name)
+            .unwrap()
+            .grounded
+    };
+    assert!(grounded(&mut s, "Ground") && grounded(&mut s, "Tag"));
+    assert!(!grounded(&mut s, "Crank"));
+    run(&mut s, "file.activate", json!({"document": 0}));
+    run(&mut s, "feature.delete", json!({"feature": "Mid"}));
+    run(&mut s, "file.save", json!({"path": "bar.3dcraft"}));
+    run(&mut s, "file.activate", json!({"document": 1}));
+    run(&mut s, "assembly.reload", json!({}));
+    let outline = s.assembly_outline().unwrap();
+    let glue = outline.mates.iter().find(|m| m.name == "Glue").unwrap();
+    assert_eq!(glue.status, "failed", "{glue:?}");
+    assert!(grounded(&mut s, "Ground"));
+    assert!(!grounded(&mut s, "Tag"), "held by a mate that failed");
+}

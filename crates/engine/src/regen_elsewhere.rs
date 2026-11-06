@@ -725,18 +725,21 @@ fn show_view(session: &mut Session, view: View, drive: Option<&crate::view_elsew
     // A joint held by hand, as `view.drive` holds it here; one it cannot
     // hold is said by the facts (`Drive::refused`).
     if let Some((mate, which, value)) = drive {
-        let value = if which == "angle" {
+        let asked = if which == "angle" {
             json!(format!("{value} rad"))
         } else {
             json!(value)
         };
         if let Err(e) = session.execute(
             "view.drive",
-            &json!({"mate": mate, "which": which, "value": value}),
+            &json!({"mate": mate, "which": which, "value": asked}),
         ) && let Some(open) = session.documents.get_mut(0)
         {
             open.let_go_of_drive();
-            open.drive.refused = Some((mate.clone(), e.message().to_string()));
+            open.drive.refused = Some((
+                (mate.clone(), which.clone(), *value),
+                e.message().to_string(),
+            ));
         }
     }
 }

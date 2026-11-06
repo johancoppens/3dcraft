@@ -576,8 +576,11 @@ pub(crate) fn facts_bytes(
         .documents
         .get_mut(session.active)
         .and_then(|open| open.drive.refused.clone());
-    if let Some((mate, why)) = refused {
-        facts.insert("drive".into(), json!({"mate": mate, "error": why}));
+    if let Some(((mate, which, value), why)) = refused {
+        facts.insert(
+            "drive".into(),
+            json!({"mate": mate, "which": which, "value": bits(value), "error": why}),
+        );
     } else if let Some(open) = session.documents.get_mut(session.active)
         && open.driven_mate().is_some()
     {

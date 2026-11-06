@@ -318,7 +318,15 @@ fn grounded(assembly: &craft3d_doc::Assembly, placed: &Placed) -> BTreeSet<Strin
     let rigid: Vec<(&str, &str)> = assembly
         .mates
         .iter()
-        .filter(|m| m.kind.free().is_empty())
+        // A fixed mate that failed (its face is gone) holds nothing.
+        .filter(|m| {
+            m.kind.free().is_empty()
+                && placed
+                    .mates
+                    .iter()
+                    .find(|st| st.name == m.name)
+                    .is_none_or(|st| st.error.is_none())
+        })
         .map(|m| (m.a.instance.as_str(), m.b.instance.as_str()))
         .collect();
     let world = |n: &str| n == craft3d_doc::WORLD;
