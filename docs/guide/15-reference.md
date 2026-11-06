@@ -8,7 +8,7 @@ The full description of any command, with every value it takes and what it refus
 
 ## Commands
 
-3DCraft 0.1.0 has 172 commands. A command's id is its family and its name: `feature.fillet`.
+3DCraft 0.1.0 has 173 commands. A command's id is its family and its name: `feature.fillet`.
 
 ### Documents and files
 
@@ -107,7 +107,7 @@ The full description of any command, with every value it takes and what it refus
 | `set.define`, `set.edit`, `set.remove`, `set.list` | Named sets |
 | `view.render`, `view.pick` | A picture, and what is at a point of it |
 | `view.scrub`, `view.replay` | The model at a step of its history; a video of how it was built |
-| `view.motion`, `view.trace`, `motion.check`, `motion.bake` | The model at a moment `t` of its motion (collisions in red); a point's path; assertions checked over the motion (`view.replay {motion}` films it); the motion's moments made ahead, so it plays smoothly |
+| `view.motion`, `view.trace`, `motion.check`, `motion.bake`, `view.drive` | The model at a moment `t` of its motion (collisions in red); a point's path; assertions checked over the motion (`view.replay {motion}` films it); the motion's moments made ahead, so it plays smoothly; an assembly with one joint held by hand for the view, the others following |
 
 ## MCP tools
 
@@ -132,7 +132,7 @@ The window lists these under **Help › Keyboard shortcuts** (F1). On a Mac, ⌘
 | Ctrl+Z | Undo the last change to the document (not while typing in a field) |
 | Ctrl+Shift+Z, Ctrl+Y | Redo the change last undone |
 | F | Fly to the selection, or frame everything |
-| Escape | Fold the Studio or Analysis options, else clear the selection |
+| Escape | Fold the Studio or Analysis options, else let go of a joint held by hand, else clear the selection |
 | F1 | Show the shortcuts |
 | Space | Play or pause the history |
 | ← / → | A step back / forward in the history |

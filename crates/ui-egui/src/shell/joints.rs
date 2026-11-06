@@ -34,6 +34,34 @@ pub(crate) struct Joints {
     pub(crate) handles: Option<(u64, Vec<(String, JointHandle)>)>,
     /// Where the last frame drew each entry of the mate menu.
     pub(crate) mate_hits: Vec<(&'static str, egui::Rect)>,
+    /// The mate whose joint is held by hand for the view (`view.drive`),
+    /// as the engine said at the last refresh.
+    pub(crate) driven: Option<String>,
+    /// What `view.drive {}` says of it (reached, why it stopped).
+    pub(crate) drive_state: Option<serde_json::Value>,
+}
+
+/// What a joint's slider says under it while it holds the joint by hand.
+pub(crate) const DRIVE_NOTE: &str = "View only · Esc";
+
+/// The note under a joint's slider held by hand: [`DRIVE_NOTE`], or why
+/// it stopped short of the value in a word (`view.drive`'s `stopped`; the
+/// value it stopped at is the slider's, the whole reason its tooltip).
+/// Short enough for one line beside the rail at the panel's narrowest.
+pub(crate) fn drive_note(state: Option<&serde_json::Value>) -> &'static str {
+    let Some(why) = state
+        .and_then(|s| s.get("stopped"))
+        .and_then(serde_json::Value::as_str)
+    else {
+        return DRIVE_NOTE;
+    };
+    if why.contains("dead point") {
+        "Dead point · Esc"
+    } else if why.contains("limit") {
+        "Limit · Esc"
+    } else {
+        "Stopped · Esc"
+    }
 }
 
 /// The kinds of mate the menu on two faces offers, as `mate.add` names
@@ -384,6 +412,105 @@ impl Shell {
         mine && !slider.dragging
     }
 
+    /// The slider of a joint that cannot be set without contradicting the
+    /// document (a formula of `t` drives it, or it follows another through
+    /// a coupling or a closure): dragging it holds the joint by hand for
+    /// the view (`view.drive`), a view state and not an edit, the others
+    /// following. It says so under it while it holds the joint; a double
+    /// click on its knob, Esc or an edit lets go (the document's pose is
+    /// shown again). True when this slider's drag ended.
+    pub(super) fn drive_slider(
+        &mut self,
+        ui: &mut egui::Ui,
+        kit: &crate::kit::Kit,
+        mate: &craft3d_engine::OutlineMate,
+        unit: &str,
+        size: f64,
+        label: &str,
+    ) -> bool {
+        let Some((value, angle)) = mate.value else {
+            return false;
+        };
+        let (lo, hi) = mate
+            .limits
+            .unwrap_or(if angle { (-TURN, TURN) } else { (-size, size) });
+        let mut shown = match &self.joints.dragging {
+            Some((name, v)) if *name == mate.name => *v,
+            _ => value,
+        };
+        let (mut on_slider, range, shown_unit) = if angle {
+            (shown.to_degrees(), [lo.to_degrees(), hi.to_degrees()], "°")
+        } else {
+            (shown, [lo, hi], unit)
+        };
+        let held = self.joints.driven.as_deref() == Some(mate.name.as_str());
+        let note_text = held.then(|| drive_note(self.joints.drive_state.as_ref()));
+        let stopped = held
+            .then_some(self.joints.drive_state.as_ref())
+            .flatten()
+            .and_then(|s| s.get("stopped"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let note = note_text;
+        let label_width = (ui.available_width() * 0.3).clamp(48.0, 120.0);
+        let value_width = 72.0;
+        let decimals = if angle { 1 } else { 2 };
+        let slider = ui
+            .push_id(("craft3d-drive", &mate.name), |ui| {
+                kit.slider_with(
+                    ui,
+                    crate::kit::Slider::new(label, &mut on_slider, range[0]..=range[1])
+                        .widths(label_width, value_width)
+                        .shown_as(1.0, decimals, shown_unit)
+                        .typed_free(true)
+                        .reset_asked(true)
+                        .note(note),
+                    None,
+                )
+            })
+            .inner;
+        let mut tip = format!(
+            "{} · view.drive {}: shown only, the document keeps its value; double-click the knob or Esc to let go",
+            mate.kind, mate.name
+        );
+        if let Some(why) = stopped {
+            tip.push('\n');
+            tip.push_str(&why);
+        }
+        let response = slider.response.clone().on_hover_text(tip);
+        self.joints.hits.push((mate.name.clone(), response.rect));
+        if slider.reset {
+            self.joints.dragging = None;
+            self.timeline
+                .queue("view.drive", json!({"mate": serde_json::Value::Null}));
+            ui.ctx().request_repaint();
+            return false;
+        }
+        if slider.changed && on_slider.is_finite() {
+            shown = if angle {
+                on_slider.to_radians()
+            } else {
+                on_slider
+            };
+            self.joints.dragging = Some((mate.name.clone(), shown));
+            self.timeline
+                .queue("view.drive", json!({"mate": mate.name, "value": on_slider}));
+            ui.ctx().request_repaint();
+        }
+        let mine = matches!(&self.joints.dragging, Some((name, _)) if *name == mate.name);
+        mine && !slider.dragging
+    }
+
+    /// Lets go of a joint held by hand, when one is: true then.
+    pub(super) fn let_go_of_drive(&mut self) -> bool {
+        if self.joints.driven.take().is_none() {
+            return false;
+        }
+        self.timeline
+            .queue("view.drive", json!({"mate": serde_json::Value::Null}));
+        true
+    }
+
     /// The joints of an assembly, a slider each: dragging it sets the
     /// joint (`joint.set`), the assembly follows.
     pub(super) fn joints_ui(&mut self, ui: &mut egui::Ui) {
@@ -442,6 +569,46 @@ mod tests {
     fn at(degrees: f64) -> Vec3 {
         let a = degrees.to_radians();
         Vec3::new(a.pcos(), a.psin(), 0.0)
+    }
+
+    /// A joint held by hand says so in a few words under its slider, and
+    /// where it stopped and why when it could not reach the value: short
+    /// enough for the slider's row at the panel's narrowest.
+    #[test]
+    fn a_held_joint_s_note_says_where_it_stopped() {
+        assert_eq!(drive_note(None), DRIVE_NOTE);
+        let held = serde_json::json!({"mate": "Hip", "reached": 30.0, "stopped": null});
+        assert_eq!(drive_note(Some(&held)), DRIVE_NOTE);
+        let stopped = serde_json::json!({"mate": "Hip", "reached": 138.59038,
+            "stopped": "`Hip` stopped at 138.59° of 300° asked for: a dead point at the drives [2.41]"});
+        assert_eq!(drive_note(Some(&stopped)), "Dead point · Esc");
+        let limit = serde_json::json!({"reached": 12.5, "stopped": "... outside its limits ..."});
+        assert_eq!(drive_note(Some(&limit)), "Limit · Esc");
+        let other = serde_json::json!({"stopped": "did not converge"});
+        assert_eq!(drive_note(Some(&other)), "Stopped · Esc");
+        // One line beside the rail at the panel's narrowest: laid out in
+        // the kit's small font (egui's own fonts) within the room the note
+        // has there (the panel less its margins, the indent and the
+        // slider's narrowest label).
+        let tokens = crate::Tokens::default();
+        let font = crate::kit::Kit::panel(&tokens).small_font();
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        let room = tokens.tree_min_width - 56.0 - 48.0;
+        for text in [
+            DRIVE_NOTE,
+            "Dead point · Esc",
+            "Limit · Esc",
+            "Stopped · Esc",
+        ] {
+            let width = ctx.fonts_mut(|f| {
+                f.layout_no_wrap(text.to_string(), font.clone(), egui::Color32::WHITE)
+                    .size()
+                    .x
+            });
+            assert!(width <= room, "{text}: {width} > {room}");
+        }
     }
 
     /// A drag that goes on past half a turn keeps turning: each frame's

@@ -552,21 +552,37 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
   `Placed::specs` (`NamedSpec::own`: a flexible subassembly's mates are there too, under their own names, and a mate
   of the assembly that failed must never take one of theirs), so no face is measured again per frame; a failed mate
   has none. `OutlineMate::parts` names the two instances. It crosses to the page with the outline (`view_elsewhere`,
-  bit for bit). The glyph: a small cross at the origin in the frame's plane, the axis an arrow along z, and by kind
-  three quarters of a turn about the axis with its head (revolute), the axis on below the origin with a head there
-  too (slider), both (cylindrical), a square in the plane (planar), a crossed box (fixed), three circles (ball); a
-  frame whose axes are not finite and square, or a length that is none, gives no marker (never a guessed one). Its
-  length is `tokens.mate_size` points at the camera's target (`Projector::footprint` at the camera's distance, as
-  the world axes keep their size), so an orbit leaves the lines as they are and only a zoom or a resize makes them
-  again; it is part of the frame key, and the markers go with the parts while a motion plays. The segments are
-  `Marks::mates` (and `mates_hot` for the one pointed at or chosen), over a light halo (`tokens.mate_halo`, so a
-  marker reads on a body of any colour), drawn by both paths of the viewport from that one list, after the datums,
-  tested like a datum but dimmed much less behind a body (`tokens.mate_hidden_opacity`; on the GPU a segment's own
-  hidden opacity, `Segment::hidden_opacity`): a mate's origin lies on or in a body almost always. Colours:
-  `tokens.mate` (brass) and the selection's copper. The GPU's picture is compared with the oracle (`gpu_viewport.rs`,
+  bit for bit). The glyph: a small ring at the origin in the frame's plane, the axis an arrow along z with a short,
+  narrow head, and by kind three quarters of a turn about the axis with its head (revolute), the axis on below the
+  origin with a head there too (slider), both (cylindrical), a square in the plane (planar), a crossed box (fixed),
+  three circles (ball); circles and arcs in 64 pieces a turn, so they stay round at the size drawn. A frame whose
+  axes are not finite and square, or a length that is none, gives no marker (never a guessed one). Its length is
+  `tokens.mate_size` points at the camera's target (`Projector::footprint` at the camera's distance, as the world
+  axes keep their size), so an orbit leaves the lines as they are and only a zoom or a resize makes them again; it
+  is part of the frame key, and the markers go with the parts while a motion plays. The segments are
+  `Marks::mates` (and `mates_hot` for the one pointed at or chosen), drawn by both paths of the viewport from that
+  one list, after the datums, tested like a datum but dimmed less behind a body (`tokens.mate_hidden_opacity`; on
+  the GPU a segment's own hidden opacity, `Segment::hidden_opacity`): a mate's origin lies on or in a body almost
+  always. The GPU's picture is compared with the oracle (`gpu_viewport.rs`,
   `the_direct_path_draws_mate_markers_and_matches_the_oracle`, the markers' samples held to their own 99 %), opaque:
   over the four-bar's see-through bars the two pictures differ at 4 pixels beside the bars' edges also without
   markers, on Intel and AMD alike, a gap of the see-through oracle that is owed.
+- **The markers' look** (2026-11-06, the developer: the first look was far too heavy). At rest a marker is quiet:
+  1.25 pt lines (`tokens.mate_width`, times the pixels per point) in a muted indigo (`tokens.mate`, #6870B0, the
+  info accent's family and lighter than the sketches', which an assembly does not show), 40 pt long, on a hairline
+  of the light halo colour 2.25 pt wide (`tokens.mate_rest_halo_width`, `LineKind::MateRestHalo`): on the light
+  viewport it is not seen, on a dark part (a brass gear) it gives the line its edge. The marker pointed at or
+  chosen is the one the eye finds: the selection's family in a deep copper (`tokens.mate_hot`, #B05C14), 2 pt wide,
+  over a 3.5 pt light halo (`LineKind::MateHalo`, only under the hot marker). Only a chosen mate tints its parts,
+  in a very pale copper (`tokens.mate_part`, #F6E4CC), and not a part held to the world (`OutlineInstance::grounded`:
+  a housing, a held ring gear); pointing at one lights its marker alone. The tint replaces the part's colour; a
+  blend over it (both renderers, with parity) is owed after R1. Contrast: the
+  resting colour is 3.8:1 on the viewport and 3.3:1 on a body's grey, the hot colour 3.9:1 and 3.4:1, both 3:1 or
+  more against the halo (`theme.rs`, `mate_markers_read_over_the_viewport_and_a_body`). The lines are opaque, not
+  translucent: each segment is blended on its own on both paths, so a translucent arc would bead at every joint of
+  its pieces; the muted tone and the thin line make it quiet instead. Behind a body a marker is drawn at 120 of
+  255. The variants compared (a neutral slate, this indigo, a muted bronze, the slate without a hairline) are in
+  `plan/ui-audit/mates-v2/` (local).
 - **Pointing at mates**: the pointer on a mate's row on the Assembly tab, or within `tokens.mate_hit` points of a
   marker's line where the marker is in sight, sets `sidePanel.mateHover`: the marker is drawn hot and its two parts
   are tinted `tokens.mate_part` while no face is lit otherwise (a flexible subassembly on a side: its instances; a
@@ -580,6 +596,40 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
   (`settable`, as on the Parameters tab) is the same kit slider (`Shell::joint_slider`, one function for both tabs),
   named by its motion (*Angle*, *Distance*, *X*), in degrees for an angle, between the mate's limits or a turn
   either way, through the same queue and `merge`: one drag is one undo step. The Parameters tab keeps its sliders.
+  Every other mate with one value to hold (a revolute's angle, a slider's distance, a cylindrical's angle) that is
+  solved has a slider too (`Shell::drive_slider`, 2026-11-06): one a formula of `t` drives, one that follows another
+  through a coupling or a closure. Dragging it holds the joint by hand for the view (*Driving a joint by hand*,
+  below), not an edit; while it holds the joint the slider says so under it (*View only · Esc*, or why it stopped short in a word: *Dead point · Esc*, *Limit · Esc*; the value it stopped at is the slider's, the whole reason its tooltip); a double click on its knob, Esc (after an open popover), a moment of the motion or an edit lets go.
+- **Driving a joint by hand** (`view.drive`, `engine/src/drive_cmds.rs`, 2026-11-06): view state of the open
+  document (`OpenDocument::drive`, kept for its document state and the history's revision, so an undo and a redo
+  let go too), as a moment of the motion is; the document, its undo history and its dirty
+  state never change. The assembly is placed with a `Hold` (`asm.rs`): the held mate's main free motion (or the one
+  named) is driven at the value, and the drivers that would contradict it are let go of: none when the mate's own
+  variable drives it (the value takes its place) or the solve leaves it free (`MateState::main_free`); else the
+  first other driver, in the assembly's order, whose release frees it (each tried with a solve without bodies), or
+  all of them; when none frees it the command says the joint is held by its mates. The others follow: couplings
+  (the planetary's carrier turned by hand turns the sun by Zr/Zs on it), closures (a four-bar's rocker turns the
+  crank). The solve is carried from the document's placement along a fixed grid of the held value (5° for an
+  angle, 1/72 of the assembly's size for a distance), each step from the one before and kept for the next value of
+  the same joint, then from the last grid value to the value: so a pose is a function of the value alone (as a
+  moment is of `t`), and a periodic joint is never carried past a dead point onto the mirrored branch a whole turn
+  further, which one long advance did (a crank-rocker's rocker asked for +180° landed on the mirror at −180°).
+  Each solve starts its joints the full turns nearest those of the solve it is carried from (`Carried::values`,
+  `Solver::solve_at_near`): the poses alone say an angle only within a turn, and a coupled shaft many turns round
+  (the reducer's input at ten times its output) started a turn off left its coupling a multiple of 2π·ratio
+  unmet ("did not converge", residual ±16, at 560° of the output). Where a step cannot be solved (a dead point, a
+  limit) the last value reached is found by halving that whole grid step (30 times, over the step whatever value was asked, so where it stops does not depend on the value that found it first) and shown, and kept (`Walk::limit`): a
+  later value past it is shown there without a solve; `stopped` says where and why. When even that pose cannot be
+  placed the command fails and the view stays as it was, never the document's pose instead. At most 720 grid
+  steps either way (10 turns, a solve without bodies each); further is refused at once. The viewport,
+  `view.render`, `view.pick`, screenshots and the outline show the held pose (`shown`, `shown_regen` and
+  `shown_placed` take it before a moment of the motion); measures, checks and exports see the document. In the
+  browser the joint is held in the worker: the host keeps the ask (`Drive::remote`), the view's stand-in and the
+  job of scenes carry it (`ViewJob::drive`, its value as its bits), the worker holds it with `view.drive` before it
+  makes the scenes (the same joint at another value goes on from the solves it keeps; another joint, or none, lets
+  go), and its answer crosses with the facts (`ViewFacts::drive`); one the worker refuses crosses as an error
+  with the request it answers (`Drive::refused`: mate, motion and the value's bits), and the page lets go of it and says why once (`view.drive {}`); the page places nothing
+  (`engine/tests/view_drive.rs`).
 - **Selections** of an assembly are made in its placed part, whose features are numbered in instance order (an
   instance that is deleted or fails gives its id to the next). Each item is anchored to the name of the placed
   feature it was made on (its instance: `Crank`, `Crank/Bar`) and found by that name at every check, never by the

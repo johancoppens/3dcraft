@@ -2591,6 +2591,23 @@ impl Shell {
         // An assembly lists its instances, nested by subassembly, and its
         // mates (docs/design/assemblies.md › *The tree*).
         self.outline = session.assembly_outline();
+        // A joint the worker could not hold (the browser): said to the
+        // person in the status bar, as a command's error is.
+        if let Some(why) = session.take_drive_refusal() {
+            self.last_command = Some(CommandReport {
+                label: "view.drive".to_string(),
+                ok: false,
+                text: why.chars().take(160).collect(),
+            });
+        }
+        self.joints.drive_state = session.drive_state();
+        self.joints.driven = self
+            .joints
+            .drive_state
+            .as_ref()
+            .and_then(|s| s.get("mate"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
         if let Some(status) = session.document_status() {
             if self.outline.is_some() {
                 self.assembly_docs.insert(status.id);
@@ -4405,10 +4422,10 @@ impl Shell {
             ui.ctx().request_repaint();
         }
         // Esc closes an open popover of the Studio or Analysis chip first,
-        // wherever the pointer is; then it clears the selection over the
-        // viewport.
+        // wherever the pointer is, then lets go of a joint held by hand;
+        // then it clears the selection over the viewport.
         if !ui.ctx().egui_wants_keyboard_input() && ui.input(|i| i.key_pressed(help::CLEAR_KEY)) {
-            if self.close_popover() {
+            if self.close_popover() || self.let_go_of_drive() {
                 ui.ctx().request_repaint();
             } else if response.contains_pointer() {
                 self.escape_selection();

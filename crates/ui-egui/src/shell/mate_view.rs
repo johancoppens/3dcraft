@@ -88,16 +88,18 @@ impl Shell {
         self.mate_marks_for(&self.state.camera, self.size, self.pixels_per_point)
     }
 
-    /// The faces of the two parts of the mate pointed at or chosen, tinted
-    /// `mate_part`: also of a mate that failed (its parts are still shown
+    /// The faces of the parts of the chosen mate that are not held to the
+    /// world, tinted `mate_part`: also of a mate that failed (its parts are still shown
     /// where they are, which says what it joins); the world has none.
     /// `None` when no mate is pointed at or chosen, or its parts show
     /// nothing.
     pub(super) fn mate_part_highlight(&self, scene: Option<&Scene>) -> Option<Highlight> {
         let outline = self.outline.as_ref()?;
         let scene = scene?;
-        let [chosen, pointed] = self.hot_mates();
-        let name = pointed.or(chosen)?;
+        // Only the chosen mate's parts: pointing at one lights its marker
+        // alone (the developer, 2026-11-06: subtle).
+        let [chosen, _] = self.hot_mates();
+        let name = chosen?;
         let mate = outline.mates.iter().find(|m| m.name == name)?;
         // A part that is a flexible subassembly has no bodies of its own:
         // its instances (`Sub/Inner`) are tinted.
@@ -112,7 +114,9 @@ impl Shell {
         let features: Vec<&String> = outline
             .instances
             .iter()
-            .filter(|i| of_part(&i.name))
+            // A part held to the world (a housing, a ring gear) is not
+            // tinted: it is not what the joint moves.
+            .filter(|i| of_part(&i.name) && !i.grounded)
             .flat_map(|i| &i.features)
             .collect();
         if features.is_empty() {
@@ -421,14 +425,16 @@ impl Shell {
             // Its joint, when it can be set by hand: the slider of the
             // Parameters tab, named by its motion.
             if mate.settable && mate.value.is_some() {
-                let motion = mate
-                    .variables
-                    .first()
-                    .and_then(|v| v.strip_prefix(mate.name.as_str()))
-                    .and_then(|v| v.strip_prefix('_'))
-                    .map_or_else(|| "Value".to_string(), capitalised);
+                let motion = motion_label(mate);
                 ui.indent(("craft3d-mate-joint", &mate.name), |ui| {
                     released |= self.joint_slider(ui, kit, mate, &outline.unit, size, &motion);
+                });
+            } else if drivable(mate) {
+                // Driven by a formula, or following another: held by hand
+                // for the view only (`view.drive`).
+                let motion = motion_label(mate);
+                ui.indent(("craft3d-mate-joint", &mate.name), |ui| {
+                    released |= self.drive_slider(ui, kit, mate, &outline.unit, size, &motion);
                 });
             }
         }
@@ -448,6 +454,25 @@ impl Shell {
         }
         statuses
     }
+}
+
+/// A joint's slider's label: its main free motion (`Angle`, `Distance`).
+fn motion_label(mate: &craft3d_engine::OutlineMate) -> String {
+    mate.variables
+        .first()
+        .and_then(|v| v.strip_prefix(mate.name.as_str()))
+        .and_then(|v| v.strip_prefix('_'))
+        .map_or_else(|| "Value".to_string(), capitalised)
+}
+
+/// True when a mate's joint can be held by hand for the view
+/// (`view.drive`): solved, with one value to hold (a revolute's angle, a
+/// slider's distance, a cylindrical's angle), and not settable as it is.
+pub(super) fn drivable(mate: &craft3d_engine::OutlineMate) -> bool {
+    !mate.settable
+        && mate.status == "ok"
+        && mate.value.is_some()
+        && matches!(mate.kind, "revolute" | "slider" | "cylindrical")
 }
 
 /// `word` with its first letter in capitals (`angle` → `Angle`).

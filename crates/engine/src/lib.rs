@@ -44,6 +44,7 @@ mod cut_cmds;
 mod datum_cmds;
 mod develop_cmds;
 mod drawing_cmds;
+mod drive_cmds;
 mod export_bodies;
 mod face_cmds;
 mod file_cmds;
@@ -297,6 +298,9 @@ pub(crate) struct OpenDocument {
     /// traces made over it: view state, not saved and not undone
     /// (`motion.rs`).
     pub(crate) motion: motion::Motion,
+    /// A joint of an assembly held by hand for the view (`view.drive`):
+    /// view state, not saved and not undone (`drive_cmds.rs`).
+    pub(crate) drive: drive_cmds::Drive,
     /// For an assembly: what was read and derived for it (`asm.rs`).
     pub(crate) asm: asm::AsmState,
     /// What agents did to it (`agent_log.rs`): session state, not saved
@@ -419,6 +423,7 @@ impl OpenDocument {
             jig_in_use: false,
             state_checks: regen_elsewhere::StateChecks::default(),
             motion: motion::Motion::default(),
+            drive: drive_cmds::Drive::default(),
             asm: asm::AsmState::default(),
             agent_log: agent_log::AgentLog::default(),
             person_file: None,
@@ -930,6 +935,7 @@ impl Session {
                 when_cmds::SPECS,
                 scrub::SPECS,
                 motion::SPECS,
+                drive_cmds::SPECS,
                 bake_cmds::SPECS,
                 report::SPECS,
                 unit_cmds::SPECS,

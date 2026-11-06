@@ -136,7 +136,7 @@ fn pose_from_solver(p: &asm::Pose) -> Option<Transform> {
 }
 
 pub(crate) fn solve(p: &Problem) -> Result<Solution, Diagnosis> {
-    solve_from(p, None)
+    solve_from(p, None, None)
 }
 
 /// Solves `p` as a moment of a motion: from its start poses, which a
@@ -145,10 +145,26 @@ pub(crate) fn solve(p: &Problem) -> Result<Solution, Diagnosis> {
 /// the step while the solution jumps). With `from` of another length
 /// than the problem's drives, a plain solve.
 pub(crate) fn advance(p: &Problem, from: &[f64]) -> Result<Solution, Diagnosis> {
-    solve_from(p, Some(from))
+    solve_from(p, Some(from), None)
 }
 
-fn solve_from(p: &Problem, from: Option<&[f64]>) -> Result<Solution, Diagnosis> {
+/// [`advance`], the angles no drive sets started the full turns nearest
+/// their values in `near` (per mate, as [`Solution::values`]): carried
+/// from a solve whose joints had come many turns (a joint held by hand,
+/// `drive_cmds.rs`), which the start poses alone do not say.
+pub(crate) fn advance_near(
+    p: &Problem,
+    from: &[f64],
+    near: &[Vec<f64>],
+) -> Result<Solution, Diagnosis> {
+    solve_from(p, Some(from), Some(near))
+}
+
+fn solve_from(
+    p: &Problem,
+    from: Option<&[f64]>,
+    near: Option<&[Vec<f64>]>,
+) -> Result<Solution, Diagnosis> {
     if p.start.len() != p.instances {
         return Err(Diagnosis("a start pose is needed per instance".to_string()));
     }
@@ -212,10 +228,12 @@ fn solve_from(p: &Problem, from: Option<&[f64]>) -> Result<Solution, Diagnosis> 
             let mut solver =
                 asm::Solver::new(&problem).map_err(|d| Diagnosis(d.message(&problem)))?;
             let to = solver.problem_drives();
-            solver
-                .solve_at(from)
-                .and_then(|_| solver.advance(&to))
-                .map_err(|d| Diagnosis(d.message(&problem)))?
+            match near {
+                Some(near) => solver.solve_at_near(from, near),
+                None => solver.solve_at(from),
+            }
+            .and_then(|_| solver.advance(&to))
+            .map_err(|d| Diagnosis(d.message(&problem)))?
         }
         _ => asm::solve(&problem).map_err(|d| Diagnosis(d.message(&problem)))?,
     };

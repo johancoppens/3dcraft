@@ -379,8 +379,33 @@ pub(crate) struct Placed {
 pub(crate) struct Carried {
     pub poses: Vec<Transform>,
     pub drives: Vec<f64>,
+    /// Every mate's values there, per spec (angles not wrapped: the turns
+    /// a joint had come, which the poses do not say).
+    pub values: Vec<Vec<f64>>,
     /// The degrees of freedom left there.
     pub dof: usize,
+}
+
+/// A joint held by hand for the view (`view.drive`, `drive_cmds.rs`):
+/// the drivers of the mates in `release` are let go of, and the main free
+/// motion of `held`'s mate (when given) is driven at its value. The
+/// solve is carried from the document's placement, the held motion moved
+/// from `start` (its value there) to the value along the branch.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Hold {
+    pub held: Option<Held>,
+    pub release: BTreeSet<String>,
+}
+
+/// The joint a [`Hold`] drives: the mate, which of its free motions (by
+/// index), the value to drive it to and its value at the start (radians
+/// or model units).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Held {
+    pub mate: String,
+    pub slot: usize,
+    pub value: f64,
+    pub start: f64,
 }
 
 /// A mate as the solver takes it, its two sides by instance name (`None`
@@ -538,8 +563,14 @@ fn eval(values: Option<&craft3d_expr::Evaluation>, source: &str) -> Result<Quant
     }
 }
 
+/// `source` evaluated with `doc`'s variables, in base units
+/// (millimetres, radians).
+pub(crate) fn evaluate_in(doc: &Document, source: &str) -> Result<Quantity, String> {
+    eval(evaluation(doc).as_ref(), source)
+}
+
 /// A length in base units (mm) in `doc`'s length unit.
-fn in_units(doc: &Document, millimetres: f64) -> f64 {
+pub(crate) fn in_units(doc: &Document, millimetres: f64) -> f64 {
     let factor = doc.units.length.as_expr_unit().factor();
     if factor.is_finite() && factor > 0.0 {
         millimetres / factor
@@ -763,7 +794,7 @@ pub(crate) fn place(
     state: &mut AsmState,
     chain: &mut Vec<String>,
 ) -> Placed {
-    place_from(doc, base, state, chain, None, true, None)
+    place_from(doc, base, state, chain, None, true, None, None)
 }
 
 /// [`place`], its solve carried from `from` when given: the instances
@@ -775,7 +806,9 @@ pub(crate) fn place(
 /// that asks for one is shown with the configuration `ready` gives for it
 /// by its name when that is kept (else it is left out, its configuration
 /// being built), and is listed in [`Placed::stale`]
-/// (`view.motion {shapes: "ready"}`).
+/// (`view.motion {shapes: "ready"}`). With `hold` a joint is held by
+/// hand for the view ([`Hold`]).
+#[allow(clippy::too_many_arguments)]
 fn place_from(
     doc: &Document,
     base: &str,
@@ -784,6 +817,7 @@ fn place_from(
     from: Option<&Carried>,
     bodies: bool,
     ready: Option<&BTreeMap<String, String>>,
+    hold: Option<&Hold>,
 ) -> Placed {
     let Some(assembly) = doc.assembly.as_ref() else {
         return empty(doc, Some("the document is not an assembly".to_string()));
@@ -880,8 +914,15 @@ fn place_from(
     // A flexible subassembly gives its instances and mates to the solve.
     let extra = flex(doc, assembly, &mut instances);
     // 3. and 4. Frames and the solve.
-    let (mates, couplings, solve_error, floating, dof, specs, carried, solve_note) =
-        solve_mates(doc, assembly, values.as_ref(), &mut instances, &extra, from);
+    let (mates, couplings, solve_error, floating, dof, specs, carried, solve_note) = solve_mates(
+        doc,
+        assembly,
+        values.as_ref(),
+        &mut instances,
+        &extra,
+        from,
+        hold,
+    );
     // 5. Placed bodies.
     let mut placed = if bodies {
         let placed = build_shown(doc, assembly, &mut instances, &mut state.placed_copies);
@@ -2002,6 +2043,7 @@ fn solve_mates(
     instances: &mut [InstanceState],
     extra: &Flexed,
     from: Option<&Carried>,
+    hold: Option<&Hold>,
 ) -> Solved {
     let solvable = |i: &InstanceState| i.error.is_none() && !i.flexed;
     let index: BTreeMap<String, usize> = instances
@@ -2044,6 +2086,23 @@ fn solve_mates(
             Err(why) => st.error = Some(why),
         }
         states.push(st);
+    }
+    // A joint held by hand for the view: the drivers let go of, the held
+    // motion driven at its value.
+    if let Some(hold) = hold {
+        for (spec, &m) in specs.iter_mut().zip(&spec_mate) {
+            let Some(name) = assembly.mates.get(m).map(|mate| mate.name.as_str()) else {
+                continue;
+            };
+            if hold.release.contains(name) {
+                spec.driven = [None; solver::VARIABLES];
+            }
+            if let Some(held) = hold.held.as_ref().filter(|h| h.mate == name)
+                && let Some(slot) = spec.driven.get_mut(held.slot)
+            {
+                *slot = Some(held.value);
+            }
+        }
     }
     let mut couplings = Vec::new();
     let mut coupling_states = Vec::with_capacity(assembly.couplings.len());
@@ -2204,9 +2263,35 @@ fn solve_mates(
         tolerance: doc.tolerance.linear,
         scale: size,
     };
-    let solved_by = match from {
-        Some(from) => solver::advance(&problem, &from.drives),
-        None => solver::solve(&problem),
+    // Held by hand: from the placement `from` holds, at its drives with
+    // the held motion at its start, to the value along the branch.
+    let held_from = hold.zip(from).map(|(hold, _)| {
+        let held = hold.held.as_ref();
+        let mut drives = Vec::new();
+        for (k, spec) in problem.mates.iter().enumerate() {
+            for (v, d) in spec.driven.iter().enumerate() {
+                let Some(d) = d else { continue };
+                let is_held = held.is_some_and(|h| {
+                    h.slot == v
+                        && k < spec_mate.len()
+                        && spec_mate
+                            .get(k)
+                            .and_then(|&m| assembly.mates.get(m))
+                            .is_some_and(|mate| mate.name == h.mate)
+                });
+                drives.push(match held {
+                    Some(h) if is_held => h.start,
+                    _ => *d,
+                });
+            }
+        }
+        drives
+    });
+    let solved_by = match (held_from, from) {
+        (Some(drives), Some(from)) => solver::advance_near(&problem, &drives, &from.values),
+        (Some(drives), None) => solver::advance(&problem, &drives),
+        (None, Some(from)) => solver::advance(&problem, &from.drives),
+        (None, None) => solver::solve(&problem),
     };
     match solved_by {
         Ok(solution) => {
@@ -2216,6 +2301,7 @@ fn solve_mates(
             let carried = Carried {
                 poses: solution.poses.clone(),
                 drives: solution.drives.clone(),
+                values: solution.values.clone(),
                 dof: solution.dof,
             };
             for (&k, pose) in solved.iter().zip(&solution.poses) {
@@ -2335,7 +2421,7 @@ impl AsmState {
     ) -> Placed {
         let mut chain = Vec::new();
         let base = self.base(path);
-        place_from(doc, &base, self, &mut chain, from, true, None)
+        place_from(doc, &base, self, &mut chain, from, true, None, None)
     }
 
     /// [`Self::place_moment`] without building a part's configuration
@@ -2352,7 +2438,16 @@ impl AsmState {
     ) -> Placed {
         let mut chain = Vec::new();
         let base = self.base(path);
-        place_from(doc, &base, self, &mut chain, from, true, Some(substitutes))
+        place_from(
+            doc,
+            &base,
+            self,
+            &mut chain,
+            from,
+            true,
+            Some(substitutes),
+            None,
+        )
     }
 
     /// The parts' configurations `docs` (states of this assembly) ask for
@@ -2571,7 +2666,32 @@ impl AsmState {
     ) -> Placed {
         let mut chain = Vec::new();
         let base = self.base(path);
-        place_from(doc, &base, self, &mut chain, from, false, None)
+        place_from(doc, &base, self, &mut chain, from, false, None, None)
+    }
+
+    /// The assembly `doc` with a joint held by hand for the view
+    /// ([`Hold`]), its solve carried from `from` (the document's
+    /// placement); its bodies placed only with `bodies`. Not kept.
+    pub(crate) fn place_held(
+        &mut self,
+        doc: &Document,
+        path: Option<&str>,
+        from: &Carried,
+        hold: &Hold,
+        bodies: bool,
+    ) -> Placed {
+        let mut chain = Vec::new();
+        let base = self.base(path);
+        place_from(
+            doc,
+            &base,
+            self,
+            &mut chain,
+            Some(from),
+            bodies,
+            None,
+            Some(hold),
+        )
     }
 
     /// Takes `placed` as the placement of the document at `revision`

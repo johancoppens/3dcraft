@@ -407,6 +407,31 @@ impl System {
         State { poses, values }
     }
 
+    /// Takes each angle of `state` that no drive sets the full turns
+    /// nearest its value in `near` (per mate, per variable, as
+    /// [`crate::Solution::values`]): a solve started from the poses of an
+    /// earlier one keeps the turns it had come, which the poses alone do
+    /// not say (a coupled shaft many turns round). Values `near` lacks,
+    /// or that are not finite, stay as measured.
+    pub(crate) fn keep_turns(&self, state: &mut State, near: &[Vec<f64>]) {
+        for (m, (mate, vals)) in self.mates.iter().zip(state.values.iter_mut()).enumerate() {
+            for (v, val) in vals.iter_mut().enumerate() {
+                if mate.kind.variables().get(v).copied() != Some(VarKind::Angle)
+                    || self.slots.contains(&(m, v))
+                {
+                    continue;
+                }
+                let Some(&hint) = near.get(m).and_then(|h| h.get(v)) else {
+                    continue;
+                };
+                let turns = ((hint - *val) / (2.0 * PI)).round();
+                if hint.is_finite() && turns.is_finite() {
+                    *val += (2.0 * PI) * turns;
+                }
+            }
+        }
+    }
+
     /// A mate's variables measured from where its frames are.
     fn measure(&self, mate: &Mate, poses: &[Pose]) -> Vec<f64> {
         let (Some(pa), Some(pb)) = (poses.get(mate.a), poses.get(mate.b)) else {
