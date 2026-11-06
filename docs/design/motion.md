@@ -153,11 +153,13 @@ the samples it took; the summary and the guide say "at the samples", never "ever
 **Only what is asked, side by side** (2026-11-05). The copy keeps only the assertions asked for (`assertions`, or
 the inline `measure`) and the outputs they need (`output_cmds::outputs_needed`, through the outputs those use);
 before, every sample measured every assertion and output of the document and the answer showed only the asked ones.
-The samples are taken a group at a time (as many as the machine has threads, eight at most): the group's moments are
-made in order (an assembly's solve carried from one to the next, a part's sketches along the grid), then each is
-measured in a session of its own on a copy set to its moment, side by side on the shared pool, the answers kept by
-what they depend on handed from group to group (`Checks::answers_only`, `take_answers`). Each sample's answer is a
-function of its moment, so the result is the one taken one sample after the other.
+The moments are made here in order (an assembly's solve carried from one to the next, a part's sketches along the
+grid) and handed to up to seven workers from the shared pool (`SampleWorker`), each with a session of its own on a
+copy of the document that measures its samples one after the other as the scratch session did (the state put in as
+one merged undo step, the placement held, answers kept by what they depend on carried from sample to sample), on the
+worker's own thread as background work, as an assertion job's thread is. Each sample's answer is a function of its
+moment, so the result is the one taken one sample after the other. The workers' allocator arenas reach their
+high-water marks over the first hundred or so moments (`motion_check_memory` now measures from 129 to 513 moments).
 
 **Memory streams.** A sample keeps only what the next one needs: the copy's document state replaces the one before
 (one merged undo step), its placement is held in place of the one before, and the answers the checks remember are
@@ -475,10 +477,10 @@ pieces until the hint goes), and a dismissal per document that outlives an edit.
 
 - 2026-11-05: collisions fast (post-freeze, approved by the developer). Measured (release, the developer's
   laptop, 111 samples; before → after, the answers byte for byte the same, `document.interference` but for its new
-  `work.apart`): `motion.check` of the overlap assertion: planetary gearbox 214 → 3.2 s, gear reducer 157 → 15.4 s,
-  walker 4.8 → 3.1 s, the developer's tray with lid and knob (`measure` overlap, a real collision at 20 samples,
-  two pairs that touch at every moment) 129 to 187 → 37 to 58 s (three runs each on a laptop busy with other work). `motion.check` of all assertions (33 samples, `details`):
-  planetary 100 → 39 s, reducer 72 → 31 s (what is left is the clearances and the section measures of the Willis
+  `work.apart`): `motion.check` of the overlap assertion: planetary gearbox 214 → 2.6 s, gear reducer 157 → 13.8 s,
+  walker 4.8 → 2.8 s, the developer's tray with lid and knob (`measure` overlap, a real collision at 20 samples,
+  two pairs that touch at every moment) 129 to 187 → 34 to 58 s (three runs each on a laptop busy with other work). `motion.check` of all assertions (33 samples, `details`):
+  planetary 100 → 30 s, reducer 72 → 22 s (what is left is the clearances and the section measures of the Willis
   output). 41 moments of `view.motion {collisions}` (less the same without collisions): planetary 35.0 → 1.2 s,
   reducer 27.1 → 6.7 s, walker 1.6 → 1.3 s, tray 47.5 → 49 to 63 s, no faster (its two touching pairs need the boolean at
   every moment: a touch cannot be proven from meshes). `motion.bake {frames: 40, collisions}`: planetary 35.5 → 1.8 s,

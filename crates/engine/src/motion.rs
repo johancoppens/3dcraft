@@ -3774,9 +3774,16 @@ fn check_request(id: &str, doc: &Document, p: &Params) -> Result<(), CommandErro
     }
 }
 
-/// Most samples of a `motion.check` measured side by side: their moments
-/// are held together.
+/// Most samples of a `motion.check` measured side by side (the workers'
+/// threads come from the process's pool, `craft3d_math::pool`).
 const MAX_SAMPLE_GROUP: usize = 8;
+
+/// A moment of a `motion.check`: its state, and its placement for an
+/// assembly.
+type Moment = (Document, Option<Arc<Placed>>);
+
+/// What a sample measured.
+type SampleAnswer = Result<Vec<crate::assert_cmds::Checked>, CommandError>;
 
 /// What every sample's session starts from: the scratch document's cache,
 /// its file's path and its assembly's files and configurations.
@@ -3786,35 +3793,54 @@ struct SampleSetup {
     asm: AsmState,
 }
 
-/// The assertions of `state` (with its placement, for an assembly)
-/// measured in a session of its own, as `document.check` measures them,
-/// starting from the answers `kept`; and the answers it keeps.
-fn measure_sample(
-    setup: &SampleSetup,
-    kept: &crate::assert_check::Checks,
-    state: &Document,
-    placed: Option<&Arc<Placed>>,
-) -> Result<
-    (
-        Vec<crate::assert_cmds::Checked>,
-        crate::assert_check::Checks,
-    ),
-    CommandError,
-> {
-    let mut session = Session::new(Workspace::none());
-    let mut copy = OpenDocument::new(state.clone(), None);
-    copy.cache = setup.cache.clone();
-    copy.path.clone_from(&setup.path);
-    copy.asm = setup.asm.clone();
-    copy.assertions = kept.answers_only();
-    if let Some(placed) = placed {
-        let revision = copy.history.revision();
-        copy.asm.hold(revision, Arc::clone(placed));
+/// A session of its own that measures samples of a `motion.check` one
+/// after the other, as the scratch session did before samples were
+/// measured side by side: each sample's state put into its copy as one
+/// merged undo step, its placement held, its assertions measured as
+/// `document.check` measures them (the answers kept by what they depend
+/// on carried from one of its samples to the next).
+#[derive(Default)]
+struct SampleWorker {
+    session: Option<Session>,
+}
+
+impl SampleWorker {
+    fn measure(
+        &mut self,
+        setup: &SampleSetup,
+        state: Document,
+        placed: Option<Arc<Placed>>,
+    ) -> Result<Vec<crate::assert_cmds::Checked>, CommandError> {
+        let session = match &mut self.session {
+            Some(session) => {
+                let open = session.document_mut()?;
+                open.history
+                    .apply_merging("Motion", Some("motion.check.t"), true, |doc| {
+                        *doc = state;
+                        Ok::<(), CommandError>(())
+                    })?;
+                session
+            }
+            None => {
+                let mut session = Session::new(Workspace::none());
+                // On a worker of `motion.check`, which is background
+                // work as an assertion job's thread is: measured there.
+                session.measure_here = craft3d_math::pool::background();
+                let mut copy = OpenDocument::new(state, None);
+                copy.cache = setup.cache.clone();
+                copy.path.clone_from(&setup.path);
+                copy.asm = setup.asm.clone();
+                session.add_document(copy)?;
+                self.session.insert(session)
+            }
+        };
+        if let Some(placed) = placed {
+            let open = session.document_mut()?;
+            let revision = open.history.revision();
+            open.asm.hold(revision, placed);
+        }
+        session.assertion_checks(crate::assert_check::Wait::All)
     }
-    session.add_document(copy)?;
-    let checks = session.assertion_checks(crate::assert_check::Wait::All)?;
-    let answered = std::mem::take(&mut session.document_mut()?.assertions);
-    Ok((checks, answered))
 }
 
 fn motion_check(session: &mut Session, params: &Value) -> Run {
@@ -3974,61 +4000,143 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
             asm: open.asm.clone(),
         }
     };
-    let mut kept = crate::assert_check::Checks::default();
     let ts = samples_of(range, samples);
-    let group = craft3d_math::available_threads().clamp(1, MAX_SAMPLE_GROUP);
-    for times in ts.chunks(group) {
-        let mut moments: Vec<(f64, Document, Option<Arc<Placed>>)> = Vec::new();
-        for &t in times {
-            let at = |e: String| CommandError::new(format!("{ID}: at t = {t}: {e}"));
-            // An assembly's moment is solved along the motion, and the
-            // copy measures that placement, not a solve from its
-            // placements.
-            let moment = if sweep.is_assembly() {
-                let (placed, stuck) = sweep.placed_at(t).map_err(at)?;
-                if let Some(stuck) = stuck
-                    && !dead_points.contains(&stuck)
-                {
-                    dead_points.push(stuck);
+    // The moments are made here, in order; the same few workers measure
+    // them for the whole run (a thread started per group grew the
+    // allocator's high-water mark with every group: 47 MiB over 129
+    // moments of `motion_check_memory`, 2 MiB with these).
+    let lease = craft3d_math::pool::lease(MAX_SAMPLE_GROUP.saturating_sub(1));
+    let workers = lease.threads();
+    let mut measured: Vec<Option<SampleAnswer>> = Vec::new();
+    let mut made: Result<(), CommandError> = Ok(());
+    let mut make = |sweep: &mut Sweep, t: f64| -> Result<Moment, CommandError> {
+        let at = |e: String| CommandError::new(format!("{ID}: at t = {t}: {e}"));
+        // An assembly's moment is solved along the motion, and the copy
+        // measures that placement, not a solve from its placements.
+        let moment = if sweep.is_assembly() {
+            let (placed, stuck) = sweep.placed_at(t).map_err(at)?;
+            if let Some(stuck) = stuck
+                && !dead_points.contains(&stuck)
+            {
+                dead_points.push(stuck);
+            }
+            Some(placed)
+        } else {
+            None
+        };
+        let state = sweep.settled(t).map_err(at)?;
+        Ok((state, moment))
+    };
+    if workers == 0 {
+        let mut worker = SampleWorker::default();
+        for &t in &ts {
+            match make(&mut sweep, t) {
+                Ok((state, placed)) => {
+                    let answer = worker.measure(&setup, state, placed);
+                    let stop = answer.is_err();
+                    measured.push(Some(answer));
+                    if stop {
+                        break;
+                    }
                 }
-                Some(placed)
-            } else {
-                None
-            };
-            let state = sweep.settled(t).map_err(at)?;
-            moments.push((t, state, moment));
-        }
-        let indices: Vec<usize> = (0..moments.len()).collect();
-        let answers = crate::interference_cmds::in_order(&indices, |i| {
-            let (_, state, placed) = moments.get(i)?;
-            Some(measure_sample(&setup, &kept, state, placed.as_ref()))
-        });
-        for ((t, ..), answer) in moments.iter().zip(answers) {
-            let (checks, answered) = answer.ok_or_else(|| {
-                CommandError::new(format!(
-                    "{ID}: at t = {t}: {}",
-                    craft3d_math::bug_text!("the sample stopped unexpectedly")
-                ))
-            })??;
-            kept.take_answers(answered);
-            for entry in &mut over {
-                let Some(checked) = checks.iter().find(|c| c.state.name == entry.name) else {
-                    continue;
-                };
-                if entry.measure.is_empty() {
-                    entry.measure.clone_from(&checked.state.measure);
-                    entry.expected.clone_from(&checked.state.expected);
-                    entry.unit.clone_from(&checked.unit);
+                Err(e) => {
+                    made = Err(e);
+                    break;
                 }
-                entry.samples.push((
-                    *t,
-                    checked.state.status,
-                    checked.value.clone(),
-                    checked.state.message.clone(),
-                ));
             }
         }
+    } else {
+        let (to_work, jobs) = std::sync::mpsc::sync_channel::<(usize, Moment)>(workers);
+        let jobs = std::sync::Mutex::new(jobs);
+        let (to_main, answers) = std::sync::mpsc::channel::<(usize, SampleAnswer)>();
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let to_main = to_main.clone();
+                let (jobs, setup, lease) = (&jobs, &setup, &lease);
+                let _ = std::thread::Builder::new().spawn_scoped(scope, move || {
+                    lease.helper_starts();
+                    // Measured as an assertion job's thread measures:
+                    // background work (`assert_check::start`).
+                    craft3d_math::pool::mark_background();
+                    let mut worker = SampleWorker::default();
+                    loop {
+                        let job = jobs
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .recv();
+                        let Ok((n, (state, placed))) = job else {
+                            return;
+                        };
+                        let answer = worker.measure(setup, state, placed);
+                        if to_main.send((n, answer)).is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+            drop(to_main);
+            for (n, &t) in ts.iter().enumerate() {
+                match make(&mut sweep, t) {
+                    Ok(moment) => {
+                        if to_work.send((n, moment)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        made = Err(e);
+                        break;
+                    }
+                }
+            }
+            drop(to_work);
+            for (n, answer) in answers {
+                if measured.len() <= n {
+                    measured.resize_with(n.saturating_add(1), || None);
+                }
+                if let Some(slot) = measured.get_mut(n) {
+                    *slot = Some(answer);
+                }
+            }
+        });
     }
+    drop(lease);
+    // In the order of the samples: the first error, from measuring a
+    // sample or from making the next moment, is the run's.
+    let count = if made.is_err() {
+        measured.len()
+    } else {
+        ts.len()
+    };
+    for (n, t) in ts.iter().enumerate().take(count) {
+        let answer = measured.get_mut(n).and_then(Option::take);
+        let Some(answer) = answer else {
+            if made.is_err() {
+                break;
+            }
+            return fail(format!(
+                "{ID}: at t = {t}: {}",
+                craft3d_math::bug_text!("the sample stopped unexpectedly")
+            ));
+        };
+        let checks = answer?;
+        for entry in &mut over {
+            let Some(checked) = checks.iter().find(|c| c.state.name == entry.name) else {
+                continue;
+            };
+            if entry.measure.is_empty() {
+                entry.measure.clone_from(&checked.state.measure);
+                entry.expected.clone_from(&checked.state.expected);
+                entry.unit.clone_from(&checked.unit);
+            }
+            entry.samples.push((
+                *t,
+                checked.state.status,
+                checked.value.clone(),
+                checked.state.message.clone(),
+            ));
+        }
+    }
+    made?;
 
     let mut all_passed = true;
     let results: Vec<Value> = over

@@ -2,9 +2,10 @@
 //! (docs/design/motion.md › *Checks over the motion*): each moment places
 //! fresh copies of the bodies, and what the checks remember between
 //! moments must not keep them alive. Measured as the process's peak
-//! resident memory over 9 and then 129 moments of two wheels of 258 faces
-//! each: the difference is what more moments cost. In its own test binary,
-//! so the process holds nothing else.
+//! resident memory after 129 and then 513 moments of two wheels of 258
+//! faces each (9 and 129 before 2026-11-05, see the test): the difference
+//! is what more moments cost. In its own test binary, so the process holds
+//! nothing else.
 
 #![allow(
     clippy::unwrap_used,
@@ -109,9 +110,18 @@ fn more_moments_of_a_motion_check_hold_no_more_bodies() {
         let out = run(s, "motion.check", json!({ "samples": samples }));
         assert_eq!(out["ok"], true, "{out}");
     };
+    // The samples are measured side by side on up to eight threads
+    // (since 2026-11-05): the allocator's arenas of those threads reach
+    // their high-water marks over the first hundred or so moments (+46 MiB
+    // from 9 to 129 moments, +6 MiB with MALLOC_ARENA_MAX=8, measured on
+    // a 14-thread laptop), and grow little after that (+11 MiB from 129
+    // to 513). So the moments before are a warm-up, and what is measured
+    // is 384 moments more: the bodies of each moment kept alive, about
+    // half a megabyte a moment, would raise the peak by about 190 MiB.
     check(&mut s, 9);
-    let few = peak_kib();
     check(&mut s, 129);
+    let few = peak_kib();
+    check(&mut s, 513);
     let many = peak_kib();
     let (Some(few), Some(many)) = (few, many) else {
         eprintln!("motion.check memory: no VmHWM on this system; not measured");
@@ -119,7 +129,7 @@ fn more_moments_of_a_motion_check_hold_no_more_bodies() {
     };
     let grown = many.saturating_sub(few);
     eprintln!(
-        "motion.check memory: peak {} MiB after 9 moments, {} MiB after 129 more (+{} MiB)",
+        "motion.check memory: peak {} MiB after 129 moments, {} MiB after 513 more (+{} MiB)",
         few / 1024,
         many / 1024,
         grown / 1024
@@ -129,7 +139,7 @@ fn more_moments_of_a_motion_check_hold_no_more_bodies() {
     // moment: 129 moments raised the peak by 60 MiB.
     assert!(
         grown < 24 * 1024,
-        "129 moments raised the peak by {} MiB over 9",
+        "513 moments raised the peak by {} MiB over 129",
         grown / 1024
     );
 }

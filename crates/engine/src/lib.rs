@@ -652,6 +652,10 @@ pub struct Session {
     /// ([`Session::prepare_some`], `stepwise.rs`): assertions are not
     /// measured on a thread of their own nor all at once when asked.
     pub(crate) stepwise: bool,
+    /// The assertions are measured on the calling thread, which is
+    /// background work already (`motion.check`'s workers): no thread is
+    /// started per measure.
+    pub(crate) measure_here: bool,
     /// How far the last call of [`Session::prepare_some`] that stopped
     /// while meshing got: the scene revision, the phase and the bodies.
     pub(crate) reached: Option<(u64, &'static str, usize)>,
@@ -718,6 +722,7 @@ impl Session {
             actor: None,
             agent_activated: false,
             stepwise: false,
+            measure_here: false,
             reached: None,
             prepare_broken: None,
             checks_elsewhere: false,
