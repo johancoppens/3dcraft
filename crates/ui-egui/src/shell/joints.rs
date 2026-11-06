@@ -457,7 +457,7 @@ impl Shell {
         let held = self.joints.driven.as_deref() == Some(mate.name.as_str());
         let note_text = held.then(|| drive_note(self.joints.drive_state.as_ref(), angle, unit));
         let stopped = held
-            .then(|| self.joints.drive_state.as_ref())
+            .then_some(self.joints.drive_state.as_ref())
             .flatten()
             .and_then(|s| s.get("stopped"))
             .and_then(serde_json::Value::as_str)
