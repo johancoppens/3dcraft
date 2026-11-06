@@ -342,3 +342,110 @@ fn a_bake_finds_the_collisions_each_moment_has_alone() {
         .count();
     assert!(overlapping >= 2, "{with:?}");
 }
+
+/// `name` = the union of `a` and `b` (bodies that need not meet: one body
+/// of two lumps).
+fn union(s: &mut Session, a: &str, b: &str, name: &str) {
+    run(
+        s,
+        "feature.boolean",
+        &json!({"op": "union", "target": a, "tool": b, "name": name}),
+    );
+}
+
+fn ball(s: &mut Session, name: &str, at: [f64; 3], r: f64) {
+    run(
+        s,
+        "feature.sphere",
+        &json!({"name": name, "radius": format!("{r} mm"), "position": mm(at)}),
+    );
+}
+
+/// `name` = a ball of radius `outer` at `at` less one of radius `inner`
+/// (a closed cavity, a second shell), the cavity made first or last.
+fn hollow_ball(s: &mut Session, name: &str, at: [f64; 3], outer: f64, inner: f64) {
+    ball(s, &format!("{name}Out"), at, outer);
+    ball(s, &format!("{name}In"), at, inner);
+    run(
+        s,
+        "feature.boolean",
+        &json!({"op": "subtract", "target": format!("{name}Out"), "tool": format!("{name}In"), "name": name}),
+    );
+}
+
+/// Bodies of several shells: two lumps of which one lies inside the
+/// other body (in both orders, so either lump may be the first piece of
+/// its mesh), hollow balls nested in each other's cavity (apart) and too
+/// large for it (overlapping), and a body of two lumps one of which lies
+/// in a block's cavity: every pair as the kernel alone answers it.
+#[test]
+fn bodies_of_several_shells_answer_as_the_kernel_alone() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let make = || {
+        let mut s = Session::new(Workspace::unrestricted());
+        run(&mut s, "file.new", &json!({"units": "mm"}));
+        // A block with two balls as one body: one far outside, one in its
+        // middle; once with the far ball first, once with the inner one.
+        block(&mut s, "A", [0.0, 0.0, 0.0], [30.0, 30.0, 30.0]);
+        ball(&mut s, "Far", [50.0, 15.0, 15.0], 3.0);
+        ball(&mut s, "In", [15.0, 15.0, 15.0], 3.0);
+        union(&mut s, "Far", "In", "FarFirst");
+        block(&mut s, "A2", [0.0, 100.0, 0.0], [30.0, 30.0, 30.0]);
+        ball(&mut s, "In2", [15.0, 115.0, 15.0], 3.0);
+        ball(&mut s, "Far2", [50.0, 115.0, 15.0], 3.0);
+        union(&mut s, "In2", "Far2", "InFirst");
+        // Hollow balls: one in the other's cavity, and one too large for
+        // it.
+        hollow_ball(&mut s, "Shell", [0.0, 300.0, 0.0], 20.0, 15.0);
+        hollow_ball(&mut s, "Small", [0.0, 300.0, 0.0], 10.0, 5.0);
+        hollow_ball(&mut s, "Shell2", [0.0, 400.0, 0.0], 20.0, 15.0);
+        hollow_ball(&mut s, "Big", [0.0, 400.0, 0.0], 18.0, 5.0);
+        // A closed box with a ball in its cavity and another far off, as
+        // one body.
+        block(&mut s, "Box", [200.0, 0.0, 0.0], [30.0, 30.0, 30.0]);
+        run(
+            &mut s,
+            "feature.shell",
+            &json!({"source": "Box", "thickness": "3 mm", "name": "Closed"}),
+        );
+        ball(&mut s, "Inside", [215.0, 15.0, 15.0], 4.0);
+        ball(&mut s, "Outside", [260.0, 15.0, 15.0], 4.0);
+        union(&mut s, "Outside", "Inside", "Pair");
+        s
+    };
+    let pairs = json!({"pairs": [["A", "FarFirst"], ["A2", "InFirst"], ["Shell", "Small"], ["Shell2", "Big"], ["Closed", "Pair"]]});
+    let mut s = make();
+    let (with, without) = both(&mut s, "document.interference", &pairs);
+    assert_eq!(answer_alone(with.clone()), answer_alone(without.clone()));
+    let status = |a: &str| {
+        with["pairs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["aName"] == a)
+            .unwrap_or_else(|| panic!("no pair of {a}: {with}"))["status"]
+            .clone()
+    };
+    assert_eq!(status("A"), "overlap", "{with}");
+    assert_eq!(status("A2"), "overlap", "{with}");
+    assert_eq!(status("Shell"), "clear", "{with}");
+    assert_eq!(status("Shell2"), "overlap", "{with}");
+    assert_eq!(status("Closed"), "clear", "{with}");
+    // The overlap measure and the collisions of the motion's machinery:
+    // the same.
+    for (a, b) in [("A", "FarFirst"), ("A2", "InFirst"), ("Shell", "Small")] {
+        let mut checked = Vec::new();
+        for on in [true, false] {
+            set_mesh_proof(on);
+            let mut s = make();
+            run(
+                &mut s,
+                "assert.add",
+                &json!({"name": "No overlap", "measure": "overlap", "of": [a, b], "is": false}),
+            );
+            checked.push(run(&mut s, "document.check", &json!({})));
+        }
+        set_mesh_proof(true);
+        assert_eq!(checked[0], checked[1], "{a} {b}");
+    }
+}

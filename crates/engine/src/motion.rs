@@ -4027,33 +4027,16 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
         let state = sweep.settled(t).map_err(at)?;
         Ok((state, moment))
     };
-    if workers == 0 {
-        let mut worker = SampleWorker::default();
-        for &t in &ts {
-            match make(&mut sweep, t) {
-                Ok((state, placed)) => {
-                    let answer = worker.measure(&setup, state, placed);
-                    let stop = answer.is_err();
-                    measured.push(Some(answer));
-                    if stop {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    made = Err(e);
-                    break;
-                }
-            }
-        }
-    } else {
+    {
         let (to_work, jobs) = std::sync::mpsc::sync_channel::<(usize, Moment)>(workers);
         let jobs = std::sync::Mutex::new(jobs);
         let (to_main, answers) = std::sync::mpsc::channel::<(usize, SampleAnswer)>();
         std::thread::scope(|scope| {
+            let mut started = 0_usize;
             for _ in 0..workers {
                 let to_main = to_main.clone();
                 let (jobs, setup, lease) = (&jobs, &setup, &lease);
-                let _ = std::thread::Builder::new().spawn_scoped(scope, move || {
+                let spawned = std::thread::Builder::new().spawn_scoped(scope, move || {
                     lease.helper_starts();
                     // Measured as an assertion job's thread measures:
                     // background work (`assert_check::start`).
@@ -4073,8 +4056,31 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
                         }
                     }
                 });
+                started = started.saturating_add(usize::from(spawned.is_ok()));
             }
             drop(to_main);
+            // No worker (none to be had, or none could start): the
+            // samples one after the other here.
+            if started == 0 {
+                let mut worker = SampleWorker::default();
+                for &t in &ts {
+                    match make(&mut sweep, t) {
+                        Ok((state, placed)) => {
+                            let answer = worker.measure(&setup, state, placed);
+                            let stop = answer.is_err();
+                            measured.push(Some(answer));
+                            if stop {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            made = Err(e);
+                            break;
+                        }
+                    }
+                }
+                return;
+            }
             for (n, &t) in ts.iter().enumerate() {
                 match make(&mut sweep, t) {
                     Ok(moment) => {

@@ -7,24 +7,21 @@
 //! area and refusal reported is the kernel's own (docs/design/booleans.md
 //! › *A proof of apart before the boolean*).
 //!
-//! **The argument.** Each body is meshed (`craft3d_tess::tessellate_body`)
-//! at a chordal tolerance `ε` of its own; the tessellator's promise is that
-//! every point of a face lies within `ε` of the face's triangles (the
-//! promise `verify::Part::err` builds the clearance measure's lower bound
-//! on). So if the meshes are further apart than `D`, the surfaces are
-//! further apart than `D − εa − εb`. `D` is taken as
-//! `2 (εa + εb) + 2 w + s`: twice the promise, twice the working
-//! tolerance `w` (the largest of the document's and every entity
-//! tolerance of either body) within which the boolean takes faces for
-//! touching (the box test before it grows the boxes by the same), and `s`
-//! a rounding slack of 1e-8 of the bodies' extent and their distance from
-//! the origin. Surfaces that far apart have no point in common, unless one
-//! solid lies inside the other: a corner of each mesh is then tested
-//! against the other (its winding number, a sum of solid angles, must be 0
-//! within a tenth; the corner is further than `D` from the other mesh, so
-//! the sum is well conditioned). Whatever the test cannot settle (a mesh
-//! that fails, a winding number not near 0, meshes within `D`) is not
-//! proven, never "apart".
+//! **The argument** (docs/design/booleans.md has it in full). Each body
+//! is meshed at a chordal tolerance `ε` of its own; the tessellator holds
+//! its triangles to `ε` at samples, the promise the clearance measure
+//! rests on too (`verify::Part::err`): a margin, not a proof, so it is
+//! taken four times over ([`PROMISE_FACTOR`]). Meshes further apart than
+//! `D = 4 (εa + εb) + 2 w + s` (`w` the working tolerance, `s` a rounding
+//! slack) are taken as surfaces further apart than `2 w`, within which the
+//! boolean takes faces for touching. Then every connected piece of either
+//! boundary (a lump or a cavity each) lies wholly inside or wholly outside
+//! the other solid, and the solids share a point only if some piece lies
+//! inside the other: a corner of every piece of each mesh is tested against
+//! the other by its winding number, and anything but 0 (within a tenth)
+//! is not proven. Whatever the test cannot settle (a mesh that fails, a
+//! winding number not near 0, meshes within `D`) is not proven, never
+//! "apart".
 //!
 //! **Static data once.** A placed body (an assembly's instance, moved by
 //! its pose, `meshes::note_placed`) is tested through the body it was
@@ -40,6 +37,16 @@ use craft3d_tess::TessParams;
 use craft3d_topo::{Body, BodyKind};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
+
+/// How many chordal tolerances a face is taken to lie from its triangles
+/// at most. The tessellator holds each triangle to its tolerance at
+/// samples (the middles of its sides and its centroid; a spline face's
+/// first grid by a proven bound): a smooth face is off by at most 4/3 of
+/// what those samples show where the surface is close to quadratic over
+/// a triangle, and the angle criterion (12 degrees between corner
+/// normals) keeps triangles that small on curved faces. Four times is
+/// that with a margin of three: a margin, not a proof.
+const PROMISE_FACTOR: f64 = 4.0;
 
 /// Triangles per leaf of a tree of boxes.
 const LEAF: usize = 8;
@@ -79,6 +86,10 @@ pub(crate) struct Shape {
     /// The chordal tolerance the mesh was made at.
     chord: f64,
     bbox: Bbox3,
+    /// One corner of every connected piece of the mesh (its corners
+    /// joined where their positions are the same bits): a body's shells
+    /// (lumps and cavities) are each at least one piece.
+    probes: Vec<Vec3>,
 }
 
 #[derive(Clone, Copy)]
@@ -118,6 +129,8 @@ impl Shape {
         let params = TessParams {
             chordal_tolerance: chord,
             max_triangles: Some(MAX_TRIANGLES),
+            // As the clearance measure's meshes (`verify::Part`).
+            max_angle: Some(crate::verify::MESH_ANGLE),
             ..TessParams::default()
         };
         let mesh = craft3d_tess::tessellate_body(body, &params).ok()?;
@@ -132,7 +145,9 @@ impl Shape {
             nodes: Vec::new(),
             order: (0..count).collect(),
             chord,
+            probes: Vec::new(),
         };
+        shape.probes = pieces(&shape.positions, &shape.triangles)?;
         // Every corner is a position.
         for t in 0..count {
             shape.corners(t)?;
@@ -220,6 +235,71 @@ impl Shape {
     }
 }
 
+/// One position of every connected piece of a mesh: corners are joined
+/// by the triangles they share and where their positions are equal bit
+/// for bit (each face has corners of its own; faces meet on the same
+/// points, `craft3d_tess` › `body.rs`). In the order of the first corner
+/// of each piece.
+fn pieces(positions: &[Vec3], triangles: &[[u32; 3]]) -> Option<Vec<Vec3>> {
+    let n = positions.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        // Halving the path as it goes: bounded by the number of corners.
+        for _ in 0..parent.len() {
+            let Some(&up) = parent.get(i) else {
+                return i;
+            };
+            if up == i {
+                return i;
+            }
+            let grand = parent.get(up).copied().unwrap_or(up);
+            if let Some(slot) = parent.get_mut(i) {
+                *slot = grand;
+            }
+            i = grand;
+        }
+        i
+    }
+    let join = |parent: &mut Vec<usize>, a: usize, b: usize| {
+        let (ra, rb) = (root(parent, a), root(parent, b));
+        if ra != rb {
+            let (lo, hi) = (ra.min(rb), ra.max(rb));
+            if let Some(slot) = parent.get_mut(hi) {
+                *slot = lo;
+            }
+        }
+    };
+    let mut same: BTreeMap<[u64; 3], usize> = BTreeMap::new();
+    for (i, p) in positions.iter().enumerate() {
+        let key = [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+        match same.get(&key) {
+            Some(&first) => join(&mut parent, first, i),
+            None => {
+                same.insert(key, i);
+            }
+        }
+    }
+    for t in triangles {
+        let [a, b, c] = t.map(|i| i as usize);
+        if a >= n || b >= n || c >= n {
+            return None;
+        }
+        join(&mut parent, a, b);
+        join(&mut parent, b, c);
+    }
+    let mut out = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let used: std::collections::BTreeSet<usize> =
+        triangles.iter().flatten().map(|&i| i as usize).collect();
+    for i in used {
+        let r = root(&mut parent, i);
+        if seen.insert(r) {
+            out.push(*positions.get(r)?);
+        }
+    }
+    Some(out)
+}
+
 /// A shape kept: the body it is of (held weakly, so the address is not
 /// another body's while the entry exists), the tolerance's rung, and the
 /// shape, made once by whichever caller asks first (others wait for it).
@@ -233,7 +313,11 @@ struct Kept {
 #[derive(Default)]
 struct Store {
     by_body: BTreeMap<(usize, i32), Kept>,
+    /// What the shapes made take.
     bytes: usize,
+    /// What the shapes being made may take ([`SHAPE_RESERVE`] each).
+    reserved: usize,
+    building: usize,
     tick: u64,
 }
 
@@ -242,75 +326,100 @@ struct Store {
 /// caller made one changes nothing.
 static SHAPES: Mutex<Option<Store>> = Mutex::new(None);
 
-/// The shape of `body` at the chordal tolerance `2^rung`.
+/// What a shape being made may take at most, held against the budget
+/// before it is made: the mesh of [`MAX_TRIANGLES`] triangles with three
+/// corners each, its tree and its order.
+const SHAPE_RESERVE: usize = MAX_TRIANGLES * 112;
+
+/// Wakes callers waiting for room in the budget ([`SHAPES`]).
+static ROOM: std::sync::Condvar = std::sync::Condvar::new();
+
+/// The shape of `body` at the chordal tolerance `2^rung`. A shape not made
+/// yet holds [`SHAPE_RESERVE`] of the budget while it is made: a caller
+/// waits while shapes being made and those kept would exceed the budget,
+/// letting go of the least recently used kept ones first; with nothing
+/// being made, it goes ahead.
 fn shape(body: &Arc<Body>, rung: i32) -> Option<Arc<Shape>> {
     let key = (Arc::as_ptr(body) as usize, rung);
-    let cell = {
-        let mut guard = SHAPES.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut guard = SHAPES.lock().unwrap_or_else(PoisonError::into_inner);
+    let (cell, builds) = loop {
         let store = guard.get_or_insert_with(Store::default);
         store.tick = store.tick.wrapping_add(1);
         let tick = store.tick;
-        let fresh = store
-            .by_body
-            .get(&key)
-            .is_none_or(|k| !std::ptr::eq(k.body.as_ptr(), Arc::as_ptr(body)));
-        if fresh {
-            if let Some(old) = store.by_body.remove(&key) {
+        store.forget_gone();
+        if let Some(kept) = store.by_body.get_mut(&key)
+            && std::ptr::eq(kept.body.as_ptr(), Arc::as_ptr(body))
+        {
+            kept.used = tick;
+            break (Arc::clone(&kept.shape), false);
+        }
+        // Room for one more being made: the least recently used kept
+        // ones go first; past that, wait for a build to end.
+        while store.bytes + store.reserved + SHAPE_RESERVE > KEPT_BYTES {
+            let Some(oldest) = store
+                .by_body
+                .iter()
+                .filter(|(_, k)| k.bytes > 0)
+                .min_by_key(|(_, k)| k.used)
+                .map(|(key, _)| *key)
+            else {
+                break;
+            };
+            if let Some(old) = store.by_body.remove(&oldest) {
                 store.bytes = store.bytes.saturating_sub(old.bytes);
             }
-            store.by_body.insert(
-                key,
-                Kept {
-                    body: Arc::downgrade(body),
-                    shape: Arc::new(OnceLock::new()),
-                    bytes: 0,
-                    used: tick,
-                },
-            );
         }
-        let kept = store.by_body.get_mut(&key)?;
-        kept.used = tick;
-        Arc::clone(&kept.shape)
+        if store.building > 0 && store.bytes + store.reserved + SHAPE_RESERVE > KEPT_BYTES {
+            guard = ROOM.wait(guard).unwrap_or_else(PoisonError::into_inner);
+            continue;
+        }
+        let cell = Arc::new(OnceLock::new());
+        store.by_body.insert(
+            key,
+            Kept {
+                body: Arc::downgrade(body),
+                shape: Arc::clone(&cell),
+                bytes: 0,
+                used: tick,
+            },
+        );
+        store.building = store.building.saturating_add(1);
+        store.reserved = store.reserved.saturating_add(SHAPE_RESERVE);
+        break (cell, true);
     };
+    drop(guard);
+    // Made by the caller that put it there; any other waits for it.
     let made = cell
         .get_or_init(|| Shape::of(body, pow2(rung)).map(Arc::new))
         .clone();
-    // Counted, and the store held to its budget.
-    let mut guard = SHAPES.lock().unwrap_or_else(PoisonError::into_inner);
-    let store = guard.get_or_insert_with(Store::default);
-    if let Some(kept) = store.by_body.get_mut(&key)
-        && kept.bytes == 0
-        && Arc::ptr_eq(&kept.shape, &cell)
-    {
-        kept.bytes = made.as_ref().map_or(64, |s| s.bytes()).max(64);
-        store.bytes = store.bytes.saturating_add(kept.bytes);
-    }
-    let gone: Vec<(usize, i32)> = store
-        .by_body
-        .iter()
-        .filter(|(_, k)| k.body.strong_count() == 0)
-        .map(|(key, _)| *key)
-        .collect();
-    for key in gone {
-        if let Some(old) = store.by_body.remove(&key) {
-            store.bytes = store.bytes.saturating_sub(old.bytes);
+    if builds {
+        let mut guard = SHAPES.lock().unwrap_or_else(PoisonError::into_inner);
+        let store = guard.get_or_insert_with(Store::default);
+        store.building = store.building.saturating_sub(1);
+        store.reserved = store.reserved.saturating_sub(SHAPE_RESERVE);
+        let bytes = made.as_ref().map_or(64, |s| s.bytes()).max(64);
+        if let Some(kept) = store.by_body.get_mut(&key)
+            && Arc::ptr_eq(&kept.shape, &cell)
+        {
+            kept.bytes = bytes;
+            store.bytes = store.bytes.saturating_add(bytes);
         }
-    }
-    while store.bytes > KEPT_BYTES && store.by_body.len() > 1 {
-        let Some(oldest) = store
-            .by_body
-            .iter()
-            .filter(|(k, _)| **k != key)
-            .min_by_key(|(_, k)| k.used)
-            .map(|(key, _)| *key)
-        else {
-            break;
-        };
-        if let Some(old) = store.by_body.remove(&oldest) {
-            store.bytes = store.bytes.saturating_sub(old.bytes);
-        }
+        drop(guard);
+        ROOM.notify_all();
     }
     made
+}
+
+impl Store {
+    /// Lets go of the shapes of bodies that are gone (not of one being
+    /// made: its body is alive while it is made).
+    fn forget_gone(&mut self) {
+        let before = self.by_body.len();
+        self.by_body.retain(|_, k| k.body.strong_count() > 0);
+        if self.by_body.len() != before {
+            self.bytes = self.by_body.values().map(|k| k.bytes).sum();
+        }
+    }
 }
 
 /// Lets go of the shapes of bodies that are gone (a document closed):
@@ -318,8 +427,7 @@ fn shape(body: &Arc<Body>, rung: i32) -> Option<Arc<Shape>> {
 pub(crate) fn forget_gone_shapes() {
     let mut guard = SHAPES.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(store) = guard.as_mut() {
-        store.by_body.retain(|_, k| k.body.strong_count() > 0);
-        store.bytes = store.by_body.values().map(|k| k.bytes).sum();
+        store.forget_gone();
     }
 }
 
@@ -419,7 +527,7 @@ fn proven_apart_inner(a: &Arc<Body>, b: &Arc<Body>, tolerance: &Tolerance) -> bo
         let (Some(ma), Some(mb)) = (shape(&sa, ka), shape(&sb, kb)) else {
             return false;
         };
-        let reach_d = 2.0 * (ma.chord + mb.chord) + touch;
+        let reach_d = PROMISE_FACTOR * (ma.chord + mb.chord) + touch;
         match nearer_than(&ma, &mb, &rel, reach_d, touch) {
             Near::Apart => return !inside_either(&ma, &mb, &rel),
             Near::Touching | Near::Unknown => return false,
@@ -430,9 +538,10 @@ fn proven_apart_inner(a: &Arc<Body>, b: &Arc<Body>, tolerance: &Tolerance) -> bo
                 if found <= touch + ma.chord + mb.chord {
                     return false;
                 }
-                // Meshes fine enough to tell `found` from touching: an
-                // eighth of the room between them each, on the ladder.
-                let room = (found - touch) / 8.0;
+                // Meshes fine enough to tell `found` from touching: the
+                // room between them shared out so that the new `D` is at
+                // most half of it, on the ladder.
+                let room = (found - touch) / (4.0 * PROMISE_FACTOR);
                 let Some(wanted) = rung_below(room) else {
                     return false;
                 };
@@ -590,17 +699,19 @@ fn tri_box(t: &[Vec3; 3]) -> (Vec3, Vec3) {
     (t[0].min(t[1]).min(t[2]), t[0].max(t[1]).max(t[2]))
 }
 
-/// Whether a corner of either mesh lies inside the other, or that cannot
-/// be told: true unless both winding numbers are 0 (within a tenth).
+/// Whether a piece of either mesh may lie inside the other: true unless
+/// one corner of every piece of each (`Shape::probes`) has a winding
+/// number of 0 (within a tenth) against the other mesh.
 fn inside_either(a: &Shape, b: &Shape, rel: &Transform) -> bool {
     let Some(back) = rel.inverse() else {
         return true;
     };
-    let (Some(&pa), Some(&pb)) = (a.positions.first(), b.positions.first()) else {
+    if a.probes.is_empty() || b.probes.is_empty() {
         return true;
-    };
-    // A corner of b in a's frame, against a; one of a in b's, against b.
-    !(outside(a, rel.point(pb)) && outside(b, back.point(pa)))
+    }
+    // Corners of b in a's frame, against a; those of a in b's, against b.
+    !(b.probes.iter().all(|&p| outside(a, rel.point(p)))
+        && a.probes.iter().all(|&p| outside(b, back.point(p))))
 }
 
 /// Whether `p` is outside the closed mesh `shape`: outside its box, or its

@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 const MAX_TRIANGLES: usize = 400_000;
 /// The angle criterion of the meshes (radians): what bounds how far a
 /// round face can lie from its triangles.
-const MESH_ANGLE: f64 = 12.0 * std::f64::consts::PI / 180.0;
+pub(crate) const MESH_ANGLE: f64 = 12.0 * std::f64::consts::PI / 180.0;
 /// Most pairs of triangles one distance compares.
 const MAX_PAIRS: u64 = 60_000_000;
 /// Most points a thickness or a symmetry samples.

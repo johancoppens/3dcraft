@@ -113,11 +113,13 @@ fn more_moments_of_a_motion_check_hold_no_more_bodies() {
     // The samples are measured side by side on up to eight threads
     // (since 2026-11-05): the allocator's arenas of those threads reach
     // their high-water marks over the first hundred or so moments (+46 MiB
-    // from 9 to 129 moments, +6 MiB with MALLOC_ARENA_MAX=8, measured on
-    // a 14-thread laptop), and grow little after that (+11 MiB from 129
-    // to 513). So the moments before are a warm-up, and what is measured
-    // is 384 moments more: the bodies of each moment kept alive, about
-    // half a megabyte a moment, would raise the peak by about 190 MiB.
+    // from a run of 9 moments to one of 129, +6 MiB with
+    // MALLOC_ARENA_MAX=8, measured on a 14-thread laptop), and grow little
+    // after that (+5 to +11 MiB from a run of 129 to one of 513). So the
+    // runs of 9 and 129 moments are a warm-up, and what is measured is a
+    // run of 513 moments against one of 129: bodies kept alive for every
+    // moment of a run, about half a megabyte a moment, would raise the
+    // peak by about (513 - 129) x 0.5 = 192 MiB.
     check(&mut s, 9);
     check(&mut s, 129);
     let few = peak_kib();
