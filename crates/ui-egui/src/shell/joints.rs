@@ -44,6 +44,9 @@ pub(crate) struct Joints {
 /// What a joint's slider says under it while it holds the joint by hand.
 pub(crate) const DRIVE_NOTE: &str = "View only · Esc";
 
+/// The note while the held pose's collisions are not checked yet.
+pub(crate) const CHECKING_NOTE: &str = "Checking · Esc";
+
 /// The note under a joint's slider held by hand: [`DRIVE_NOTE`], or why
 /// it stopped short of the value in a word (`view.drive`'s `stopped`; the
 /// value it stopped at is the slider's, the whole reason its tooltip).
@@ -53,6 +56,15 @@ pub(crate) fn drive_note(state: Option<&serde_json::Value>) -> &'static str {
         .and_then(|s| s.get("stopped"))
         .and_then(serde_json::Value::as_str)
     else {
+        // The pose's collisions are not looked for yet (a drag, or the
+        // check at its end still running): never shown as free.
+        if state
+            .and_then(|s| s.get("checkLater"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            return CHECKING_NOTE;
+        }
         return DRIVE_NOTE;
     };
     if why.contains("dead point") {
@@ -538,6 +550,17 @@ impl Shell {
             .unwrap_or_default()
     }
 
+    /// The pose of a joint held by hand is shown before its collisions
+    /// are checked (`view.drive`'s `checkLater`).
+    pub(crate) fn held_check_pending(&self) -> bool {
+        self.joints
+            .drive_state
+            .as_ref()
+            .and_then(|s| s.get("checkLater"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+    }
+
     /// Lets go of a joint held by hand, when one is: true then.
     pub(super) fn let_go_of_drive(&mut self) -> bool {
         if self.joints.driven.take().is_none() {
@@ -623,6 +646,8 @@ mod tests {
         assert_eq!(drive_note(Some(&limit)), "Limit · Esc");
         let other = serde_json::json!({"stopped": "did not converge"});
         assert_eq!(drive_note(Some(&other)), "Stopped · Esc");
+        let later = serde_json::json!({"mate": "Hip", "checkLater": true, "stopped": null});
+        assert_eq!(drive_note(Some(&later)), CHECKING_NOTE);
         // One line beside the rail at the panel's narrowest: laid out in
         // the kit's small font (egui's own fonts) within the room the note
         // has there (the panel less its margins, the indent and the
@@ -635,6 +660,7 @@ mod tests {
         let room = tokens.tree_min_width - 56.0 - 48.0;
         for text in [
             DRIVE_NOTE,
+            CHECKING_NOTE,
             "Dead point · Esc",
             "Limit · Esc",
             "Stopped · Esc",

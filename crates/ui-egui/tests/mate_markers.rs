@@ -1016,3 +1016,38 @@ fn a_hover_set_from_outside_outlives_the_pointer_leaving() {
     window.hover(&mut shell, &mut s, egui::pos2(990.0, 10.0));
     assert_eq!(shell.state.side_panel.mate_hover.as_deref(), Some("Hip"));
 }
+
+/// Collisions switched while a joint is held by hand (the player's chip
+/// and `ui.set` share one path) keep it held and check its pose; the
+/// chip follows the switch an agent sets through `view.drive` too.
+#[test]
+fn collisions_switched_while_a_joint_is_held_keep_it_held() {
+    let (mut s, mut shell, mut window) = opened("drive-collisions");
+    run(
+        &mut s,
+        "view.drive",
+        json!({"mate": "Hip", "value": 70, "collisions": false}),
+    );
+    window.frames(&mut shell, &mut s, 3);
+    call(
+        &mut shell,
+        &mut s,
+        "ui.set",
+        json!({"timeline": {"collisions": true}}),
+    );
+    window.frames(&mut shell, &mut s, 3);
+    assert_eq!(s.driven_mate().as_deref(), Some("Hip"), "still held");
+    let held = run(&mut s, "view.drive", json!({}));
+    assert_eq!(held["checksCollisions"], true, "{held}");
+    assert!(held["collisions"].is_array(), "checked: {held}");
+    // An agent switches it off through view.drive: the chip follows.
+    run(&mut s, "view.drive", json!({"collisions": false}));
+    window.frames(&mut shell, &mut s, 3);
+    let got = call(&mut shell, &mut s, "ui.get", json!({}));
+    assert_eq!(got["state"]["timeline"]["collisions"], false);
+    run(&mut s, "view.drive", json!({"collisions": true}));
+    window.frames(&mut shell, &mut s, 3);
+    let got = call(&mut shell, &mut s, "ui.get", json!({}));
+    assert_eq!(got["state"]["timeline"]["collisions"], true);
+    assert_eq!(s.driven_mate().as_deref(), Some("Hip"));
+}

@@ -931,3 +931,71 @@ fn a_dragged_joint_is_checked_when_the_drag_ends() {
     assert_eq!(pairs(&ended).len(), 1, "{ended}");
     assert!(red_faces(&mut s) > 0);
 }
+
+/// A call that is refused changes nothing: not the collisions switch and
+/// not whether the check waits.
+#[test]
+fn a_refused_call_leaves_the_check_as_it_was() {
+    let dir = workdir("view-drive", "tray-refused");
+    let mut s = session_in(&dir);
+    tray_and_lid(&mut s);
+    run(
+        &mut s,
+        "view.drive",
+        json!({"mate": "Hinge", "value": 30, "collisions": false}),
+    );
+    for bad in [
+        json!({"mate": "Nope", "value": 1, "collisions": true, "later": true}),
+        json!({"mate": "Hinge", "value": "5 mm", "collisions": true, "later": true}),
+        json!({"mate": "Hinge", "value": 30, "collisions": "yes"}),
+    ] {
+        refused(&mut s, "view.drive", bad);
+    }
+    let after = run(&mut s, "view.drive", json!({}));
+    assert_eq!(after["checksCollisions"], false, "{after}");
+    assert_eq!(after["checkLater"], false, "{after}");
+    assert_eq!(after["collisions"], Value::Null);
+}
+
+/// In the browser a slider being dragged holds the pose alone there too:
+/// the answer says the check waits (not "no collisions"), and the call
+/// at the drag's end has the worker check it.
+#[test]
+fn a_dragged_joint_on_the_page_is_checked_when_the_drag_ends() {
+    let dir = workdir("view-drive", "tray-page-later");
+    let mut here = session_in(&dir);
+    tray_and_lid(&mut here);
+    run(&mut here, "assembly.pack", json!({}));
+    run(&mut here, "file.save", json!({"path": "tray.3dcraftasm"}));
+    let bytes = std::fs::read(dir.join("tray.3dcraftasm")).unwrap();
+    let mut page = Session::new(Workspace::memory());
+    page.set_stepwise(true);
+    page.set_checks_elsewhere(true);
+    page.set_regen_elsewhere(true);
+    page.set_commands_elsewhere(true);
+    page.open_bytes("tray.3dcraftasm", &bytes).unwrap();
+    answer_page_scenes(&mut page);
+    let asked = run(
+        &mut page,
+        "view.drive",
+        json!({"mate": "Hinge", "value": 30, "collisions": true, "later": true}),
+    );
+    assert_eq!(asked["checkLater"], true, "{asked}");
+    answer_page_scenes(&mut page);
+    // What the worker answered for the drag (read without a call, which
+    // would end it): the check waits, the switch is on.
+    let during = page.drive_state().unwrap();
+    assert!(during.get("pending").is_none(), "{during}");
+    assert_eq!(during["checkLater"], true, "{during}");
+    assert_eq!(during["checksCollisions"], true, "{during}");
+    assert_eq!(during["collisions"], Value::Null, "{during}");
+    assert_eq!(red_faces(&mut page), 0);
+    // The drag ends.
+    run(&mut page, "view.drive", json!({}));
+    answer_page_scenes(&mut page);
+    let ended = run(&mut page, "view.drive", json!({}));
+    assert_eq!(ended["checkLater"], false, "{ended}");
+    assert_eq!(ended["checksCollisions"], true, "{ended}");
+    assert_eq!(pairs(&ended).len(), 1, "{ended}");
+    assert!(red_faces(&mut page) > 0);
+}

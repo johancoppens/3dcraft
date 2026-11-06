@@ -2601,6 +2601,19 @@ impl Shell {
             });
         }
         self.joints.drive_state = session.drive_state();
+        // One truth for the collisions while a joint is held by hand: the
+        // switch it was answered with (an agent's `view.drive {collisions}`
+        // too), once nothing the shell asked for is on its way.
+        if let Some(checks) = self
+            .joints
+            .drive_state
+            .as_ref()
+            .and_then(|s| s.get("checksCollisions"))
+            .and_then(serde_json::Value::as_bool)
+            && !self.timeline.drive_waiting()
+        {
+            self.state.timeline.collisions = checks;
+        }
         self.joints.driven = self
             .joints
             .drive_state

@@ -239,7 +239,8 @@ impl OpenDocument {
         // Collisions as the switch now says (a toggle makes the view
         // again there).
         let mut ask = ask.clone();
-        ask.3 = self.collisions_asked() && !self.drive.later;
+        ask.3 = self.collisions_asked();
+        ask.4 = self.drive.later;
         Some(ask)
     }
 }
@@ -287,11 +288,15 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
     let collisions = p.bool("collisions")?;
     let later = p.bool("later")?.unwrap_or(false);
     let open = session.document_mut()?;
-    open.drive.later = later;
-    // One switch with the motion's (and the player's).
-    if let Some(on) = collisions {
-        open.ask_collisions(on);
-    }
+    // What the call asks of the check (one switch with the motion's and
+    // the player's, and whether it waits), taken only once the call is
+    // known to be good: a refused one changes nothing.
+    let settle = |open: &mut OpenDocument| {
+        open.drive.later = later;
+        if let Some(on) = collisions {
+            open.ask_collisions(on);
+        }
+    };
     let doc = Arc::clone(open.history.current());
     if !doc.is_assembly() {
         return fail(format!(
@@ -302,9 +307,11 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
         if p.has("value") || p.has("which") {
             return Err(p.missing("mate"));
         }
+        settle(open);
         return Ok(answer(open, &doc));
     }
     let Some(name) = p.str("mate")? else {
+        settle(open);
         open.let_go_of_drive();
         return Ok(answer(open, &doc));
     };
@@ -362,6 +369,7 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
     // Made elsewhere (the page's worker): the joint is held there; what
     // it reached comes with the view's facts.
     if open.remote_wanted() {
+        settle(open);
         open.drive.state = None;
         open.drive.refused_there = None;
         open.drive.refused_notice = None;
@@ -369,7 +377,7 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
             Arc::clone(&doc),
             generation,
             revision,
-            (name.clone(), which.to_string(), value, false),
+            (name.clone(), which.to_string(), value, false, false),
         ));
         return Ok(answer(open, &doc));
     }
@@ -599,6 +607,7 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
             }
         }
     };
+    settle(open);
     open.drive.state = Some(Driven {
         base: Arc::clone(&doc),
         generation,
@@ -756,7 +765,7 @@ fn answer(open: &mut OpenDocument, doc: &Document) -> Value {
     if open.remote_wanted() {
         let base = Arc::clone(open.history.current());
         let generation = open.asm.generation;
-        let Some((mate, which, value, _)) = open.drive_asked(&base, generation) else {
+        let Some((mate, which, value, _, _)) = open.drive_asked(&base, generation) else {
             // The worker could not hold the joint last asked: said once.
             // Not after an edit (another revision).
             let revision = open.history.revision();
@@ -787,6 +796,8 @@ fn answer(open: &mut OpenDocument, doc: &Document) -> Value {
             "value": if angle { value.to_degrees() } else { value },
             "elsewhere": true,
             "pending": true,
+            "checkLater": open.drive.later && open.collisions_asked(),
+            "checksCollisions": open.collisions_asked(),
             "view": true,
         });
     }
@@ -821,6 +832,7 @@ fn answer(open: &mut OpenDocument, doc: &Document) -> Value {
         "solveNote": s.placed.solve_note,
         "collisions": collisions,
         "checkLater": check_later,
+        "checksCollisions": open.collisions_asked(),
         "volumeUnit": format!("{}^3", length_unit(doc)),
         "view": true,
     })

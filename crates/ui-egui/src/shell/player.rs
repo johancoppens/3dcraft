@@ -345,6 +345,20 @@ impl Shell {
         self.timeline.motion_t()
     }
 
+    /// Collisions switched on or off (the chip, `ui.set`): a joint held by
+    /// hand is checked by the same switch and stays held (`view.drive
+    /// {collisions}`, never a moment of the motion, which would let go of
+    /// it); else the moment `again` (the one shown), when given, is asked
+    /// for again with them.
+    pub(crate) fn switch_collisions(&mut self, on: bool, again: Option<f64>) {
+        self.state.timeline.collisions = on;
+        if self.joints.driven.is_some() {
+            self.timeline.queue("view.drive", json!({"collisions": on}));
+        } else if let Some(t) = again {
+            self.go_to_t(t);
+        }
+    }
+
     /// Shows the moment `t` of the motion (clamped to 0 to 1).
     pub(crate) fn go_to_t(&mut self, t: f64) {
         let t = if t.is_finite() {
@@ -472,13 +486,7 @@ impl Shell {
                 .on_hover_text("Draw the bodies that overlap at this t in red")
                 .clicked()
             {
-                self.state.timeline.collisions = !collisions_on;
-                // A joint held by hand is checked by the same switch.
-                if self.joints.driven.is_some() {
-                    self.timeline
-                        .queue("view.drive", json!({"collisions": !collisions_on}));
-                }
-                self.go_to_t(shown);
+                self.switch_collisions(!collisions_on, Some(shown));
             }
         });
         let pairs = match self.timeline.motion.as_ref() {
@@ -491,6 +499,14 @@ impl Shell {
                 egui::RichText::new(format!("{pairs} colliding"))
                     .font(kit.font())
                     .color(color(tokens.failed)),
+            );
+        }
+        // A held pose not checked yet: said, so it is not taken as free.
+        else if self.timeline.motion.is_none() && self.held_check_pending() {
+            ui.label(
+                egui::RichText::new("checking collisions…")
+                    .font(kit.font())
+                    .color(color(tokens.text_dim)),
             );
         }
         // This motion is heavy — bake first? (`bake_hint.rs`)

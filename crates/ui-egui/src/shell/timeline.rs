@@ -90,6 +90,12 @@ impl Timeline {
     }
 
     /// Whether a moment of the motion waits to be shown.
+    /// A `view.drive` is queued: what the session says of a joint held by
+    /// hand may still change.
+    pub(super) fn drive_waiting(&self) -> bool {
+        self.pending.iter().any(|(id, _)| *id == "view.drive")
+    }
+
     pub(super) fn motion_waiting(&self) -> bool {
         self.pending.iter().any(|(id, _)| *id == "view.motion")
             // Made elsewhere (the page's worker) and not drawn yet.

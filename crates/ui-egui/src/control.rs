@@ -544,10 +544,9 @@ impl Shell {
         // moment is asked for again with them (as a click on the chip
         // does), so the view draws what the chip says. Asked before the sync,
         // which shows the chip what the moment shown was asked with.
-        if self.state.timeline.collisions != before.timeline.collisions
-            && let Some(t) = self.motion_t_asked()
-        {
-            self.go_to_t(t);
+        if self.state.timeline.collisions != before.timeline.collisions {
+            let again = self.motion_t_asked();
+            self.switch_collisions(self.state.timeline.collisions, again);
         }
         // A selection that names no feature is dropped here, not later.
         let scene = self.sync(session);
