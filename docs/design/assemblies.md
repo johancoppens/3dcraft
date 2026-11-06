@@ -299,6 +299,24 @@ What an open assembly shows is derived and may be thrown away (rule 2). `OpenDoc
   `assembly.reload`, `assembly.pack`) goes through the workspace's read root and the platform's file access
   (`resolve_read`, `read_input`: the session's memory in the browser), recursively through subassemblies to
   `MAX_DEPTH` (8) levels with a seen-set, at most `MAX_SOURCE_FILES` (1000) files. Everything after it is pure.
+  **Following the sources** (2026-11-06, `asm_follow.rs`): `Session::read_sources_of` reads the sources of any open
+  document, all of them (`assembly.reload`), only the missing ones (opening, adding) or those that look changed
+  (`Reread::Stale`: another size or modification time than `AsmState::stamps` holds; in memory, every one, compared
+  by hash). `file.save` makes every open assembly read what changed, the file it wrote whatever its stamp says (a
+  file system with coarse times); `file.activate` the one it activates; `assembly.follow` all of them, which the
+  window runs when it gets the focus back. A file read again with the same bytes changes nothing, so nothing is
+  placed or built again; a changed one invalidates the placement and only its configurations are built, when the
+  assembly is shown (not an undo step: the document does not change). A source that changed and cannot be read again
+  (gone, unreadable, refused by the roots) keeps its last bytes in `files`, and its instances their bodies; the
+  reason is kept in `AsmState::unfollowed` (and listed by `assembly.reload` under `unread`, by `file.save` under
+  `warnings`) and read again at the next look. `InstanceState::held` says why an instance does not show what its file
+  holds now, pinned or not read again (`assembly.inspect` › `held`, the outline's `held`, the Instances panel's ⚠ and
+  tooltip); in the browser the outline comes from the worker, which does not know `unfollowed`, so there only a
+  pinned instance is marked. Before, only `assembly.reload` read a source again, and the window never ran it: a part
+  saved in its own tab did not show in the assembly's (the developer, 2026-11-06). Measured on the pi case (two
+  parts, three instances; test profile): a check that finds nothing 0.07 ms (it parsed each part to see whether it
+  is a subassembly, 4 ms, until it took the parsed sources of the placement), the save of `case.3dcraft` 137 ms
+  with the follow, the placement after it 0.96 s (one configuration built again, the first placement 6.6 s).
   An assembly without a file reads its sources from the folder `Session::asm_base` gives (the read root's top, or
   the current folder with access to every file, as the command line has) and is placed from that same folder
   (`AsmState::unsaved_base`, set by `read_sources`) until it is saved. Before 2026-10-30 its placement joined the
@@ -394,7 +412,7 @@ while a mate names it), `instance.open` (the source in its own tab, so it is edi
 document), `mate.add`, `mate.edit` (a rename takes its variables along), `mate.delete` (with its variables; refused while
 a coupling names it), `coupling.add`, `coupling.delete`, `joint.set` (sets or removes the assembly variable
 `<mate>_angle`, `_distance`, `_x` or `_y`, which formulas may use and `variable.publish` may publish),
-`assembly.solve`, `assembly.inspect` (`measures`: each instance's volume and box), `assembly.reload`,
+`assembly.solve`, `assembly.inspect` (`measures`: each instance's volume and box), `assembly.reload`, `assembly.follow`,
 `assembly.pack`, `assembly.unpack`; `measure.joint` and `measure.pose` (`asm_measure.rs`, *Measures* below). A mate whose name or geometry fails is kept and reported failed by name, as a
 feature is; so is a coupling whose mate takes no part or whose value does not evaluate (`status`, `error`, and in
 `assembly.solve`'s `failed`). A rename of an instance also rewrites the assertions and outputs that name it (`Inst`,

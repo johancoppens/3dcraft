@@ -34,9 +34,9 @@ different set of values is a *configuration*, built once however many instances 
 it. This is how the bodies of an existing Jig become parts of an assembly. If the part changes so that `Gear` makes no
 body any more, the instance says so by name; it never shows another body instead.
 
-**Following the part.** `assembly.reload` reads the sources again and lists the instances whose part changed.
+**Following the part.** An open assembly follows its parts by itself: save a part (also in the tab `instance.open` opened) and every open assembly that uses it shows the new version; a part changed by another program is read again when you switch to the assembly's tab or come back to the window. A part that changed and cannot be read again (moved, deleted) keeps showing the last version, and its row in the Instances panel says why (⚠). `assembly.reload` reads the sources again by hand and lists the instances whose part changed.
 `"pinned": true` keeps an instance to the part as it is now: those bytes are kept in the assembly's file, so the
-instance shows them whatever the part's file holds later, and `assembly.pack` packs them. `instance.open` opens an instance's part in its own tab.
+instance shows them whatever the part's file holds later (its row is marked ⚠ once the file changed), and `assembly.pack` packs them. `instance.open` opens an instance's part in its own tab.
 
 ## Mates
 

@@ -27,6 +27,7 @@ mod appearance_cmds;
 mod asm;
 mod asm_cmds;
 mod asm_export;
+mod asm_follow;
 mod asm_measure;
 mod asm_outline;
 mod asm_solve;
@@ -887,6 +888,7 @@ impl Session {
                 file_cmds::SPECS,
                 agent_log::SPECS,
                 asm_cmds::SPECS,
+                asm_follow::SPECS,
                 asm_measure::SPECS,
                 import_cmds::SPECS,
                 sketch_cmds::SPECS,

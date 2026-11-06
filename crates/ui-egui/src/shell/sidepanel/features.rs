@@ -1937,6 +1937,7 @@ mod tests {
             instance: None,
             depth: 0,
             made_by: None,
+            held: None,
         }
     }
 

@@ -23,7 +23,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("instance.delete", "Delete Instance", r#"{"name": string}"#,
         "Removes an instance (one undo step). An instance a mate, an assertion or an output still names is refused, with them named: delete them first.", doc: true, instance_delete),
     spec!("instance.open", "Open Instance Source", r#"{"name": string}"#,
-        "Opens an instance's source document in its own tab, as file.open does, so it is edited there (an assembly never edits a part's history); a packed source opens as a new document without a file. The assembly follows the file once it is saved (assembly.reload).", doc: true, instance_open),
+        "Opens an instance's source document in its own tab, as file.open does, so it is edited there (an assembly never edits a part's history); a packed source opens as a new document without a file. The assembly follows the file once it is saved (file.save reads it again for every open assembly; assembly.reload does it by hand).", doc: true, instance_open),
     spec!("mate.add", "Add Mate", r#"{"kind": "fixed|revolute|slider|cylindrical|planar|ball", "a": "Instance/Feature:name" or "world/xy|yz|zx|x|y|z|origin", "b": same, "name": string = Mate<n>, "offset": length expr = 0, "angle": angle expr = 0, "limits": [expr, expr], "flip": boolean = false}"#,
         "Joins two instances (one undo step). a and b name geometry through an instance, by the persistent names of the source (Bar[1]/F1:face(3)), or a datum of the source by its name or id (Bar[1]/Pivot); world/... is the world. Each gives a frame: a plane at a planar face's centroid with its outward normal, the axis of a cylindrical or conical face at the point nearest its centroid, the centre and axis of a circular edge, a point at a vertex, a datum's own. b's frame is put against a's, turned over (flip keeps it as it is), shifted by offset along and turned by angle about a's z; the kind says what stays free. A name that is gone fails the mate by that name; it never retargets. A free motion is driven by the variable <mate>_angle (or _distance) when it exists (joint.set). Returns the mate with its status.", doc: true, mate_add),
     spec!("mate.edit", "Edit Mate", r#"{"name": string, "rename": string, ...the parameters of mate.add, "offset"/"angle"/"limits": null to remove}"#,
@@ -41,7 +41,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("assembly.inspect", "Inspect Assembly", r#"{"measures": boolean = false}"#,
         "Describes the active assembly: its instances (source, hash, whether the file changed since, pinned, body, parameters, configuration, status, pose, the features of the shown part that hold its bodies), its mates and couplings, the number of distinct configurations and how many regenerations they cost so far, and the packed sources; with measures each instance's placed volume and box.", doc: true, assembly_inspect),
     spec!("assembly.reload", "Reload Sources", r#"{}"#,
-        "Reads the active assembly's source files again (and those of its subassemblies) and lists the instances whose source changed: an instance follows its file unless it is pinned, and only a changed source is regenerated. Not an undo step.", doc: true, assembly_reload),
+        "Reads the active assembly's source files again (and those of its subassemblies) and lists the instances whose source changed: an instance follows its file unless it is pinned, and only a changed source is regenerated. A source that changed and cannot be read again keeps the last version read (listed under unread, with why). Not an undo step. Saving a source in this session, activating the assembly's tab and assembly.follow read what changed by themselves.", doc: true, assembly_reload),
     spec!("assembly.pack", "Pack Sources", r#"{}"#,
         "Packs every source document into the assembly (one undo step): each instance then refers to its source by hash, and the saved .3dcraftasm file carries the sources, subassemblies packed with their own sources, so it rebuilds anywhere. Returns the packed sources.", doc: true, assembly_pack),
     spec!("assembly.unpack", "Unpack Sources", r#"{"folder": path = "parts", "overwrite": boolean = false}"#,
@@ -130,7 +130,14 @@ impl Session {
     /// its file's, or for one not saved yet the read root (the working
     /// folder, absolute, with unrestricted access).
     pub(crate) fn asm_base(&self) -> Result<String, CommandError> {
-        let open = self.document()?;
+        self.asm_base_of(self.active)
+    }
+
+    /// [`Session::asm_base`] of the open document `index`.
+    pub(crate) fn asm_base_of(&self, index: usize) -> Result<String, CommandError> {
+        let open = self.documents.get(index).ok_or_else(|| {
+            CommandError::new("no document is open; run file.new or file.open first")
+        })?;
         if let Some(path) = &open.path {
             return Ok(asm::dir_of(path));
         }
@@ -172,7 +179,7 @@ impl Session {
     }
 
     /// Reads one file for an assembly, by its full path.
-    fn read_source_file(&self, full: &str) -> Result<Blob, String> {
+    pub(crate) fn read_source_file(&self, full: &str) -> Result<Blob, String> {
         let resolved = self
             .workspace
             .resolve_read(full)
@@ -184,83 +191,14 @@ impl Session {
     /// Reads the source files of the active assembly that are not read
     /// yet (all of them with `again`), with those of its subassemblies,
     /// to [`asm::MAX_DEPTH`] levels, each file once. Returns the paths
-    /// whose bytes changed.
+    /// whose bytes changed (`asm_follow.rs` reads them).
     pub(crate) fn read_sources(&mut self, again: bool) -> Result<Vec<String>, CommandError> {
-        let base = self.asm_base()?;
-        let open = self.document()?;
-        let doc = Arc::clone(open.history.current());
-        if !doc.is_assembly() {
-            return Ok(Vec::new());
-        }
-        let mut files = open.asm.files.clone();
-        let base_read = base.clone();
-        let mut changed = Vec::new();
-        let mut seen = std::collections::BTreeSet::new();
-        // (document, the folder its sources are relative to, depth)
-        let mut stack: Vec<(Arc<Document>, String, usize)> = vec![(doc, base, 0)];
-        while let Some((doc, base, depth)) = stack.pop() {
-            let Some(assembly) = &doc.assembly else {
-                continue;
-            };
-            if depth > asm::MAX_DEPTH {
-                continue;
-            }
-            for instance in &assembly.instances {
-                let (blob, sub_base) = match &instance.source {
-                    Source::Packed { hash } => match assembly.packed(hash) {
-                        Some(blob) => (blob.clone(), base.clone()),
-                        None => continue,
-                    },
-                    Source::File { path, .. } => {
-                        let Ok(full) = asm::join(&base, path) else {
-                            continue;
-                        };
-                        if !seen.insert(full.clone()) || seen.len() > asm::MAX_SOURCE_FILES {
-                            continue;
-                        }
-                        let read = match files.get(&full) {
-                            Some(found) if !again => found.clone(),
-                            before => {
-                                let now = self.read_source_file(&full);
-                                let differs = match (before, &now) {
-                                    (Some(Ok(a)), Ok(b)) => a.sha256() != b.sha256(),
-                                    (Some(_), _) => true,
-                                    (None, _) => false,
-                                };
-                                if differs {
-                                    changed.push(full.clone());
-                                }
-                                files.insert(full.clone(), now.clone());
-                                now
-                            }
-                        };
-                        match read {
-                            Ok(blob) => (blob, asm::dir_of(&full)),
-                            Err(_) => continue,
-                        }
-                    }
-                };
-                // A subassembly's own sources, below it.
-                if let Ok(sub) = craft3d_format::from_bytes(blob.bytes())
-                    && sub.is_assembly()
-                {
-                    stack.push((Arc::new(sub), sub_base, depth.saturating_add(1)));
-                }
-            }
-        }
-        let open = self.document_mut()?;
-        // Without a file, its sources are placed from where they were
-        // read until it is saved.
-        if open.path.is_none() && open.asm.unsaved_base != base_read {
-            open.asm.unsaved_base = base_read;
-            open.asm.invalidate();
-        }
-        if open.asm.files != files {
-            open.asm.files = files;
-            open.asm.invalidate();
-            open.assertions = crate::assert_check::Checks::default();
-        }
-        Ok(changed)
+        let mode = if again {
+            crate::asm_follow::Reread::All
+        } else {
+            crate::asm_follow::Reread::Missing
+        };
+        Ok(self.read_sources_of(self.active, mode, None)?.changed)
     }
 
     /// Refuses a source that contains, through its subassemblies, the
@@ -371,6 +309,7 @@ fn instance_json(placed: &Placed, instance: &Instance) -> Value {
         "source": { "kind": kind, "path": path, "hash": instance.source.hash() },
         "builtFrom": st.and_then(|s| s.hash.clone()),
         "changed": st.is_some_and(|s| s.changed),
+        "held": st.and_then(|s| s.held.clone()),
         "pinned": instance.pinned,
         "body": instance.body,
         "params": params,
@@ -1467,7 +1406,8 @@ fn assembly_reload(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "assembly.reload";
     Params::new(ID, params, &[])?;
     assembly_of(session, ID)?;
-    let changed = session.read_sources(true)?;
+    let read = session.read_sources_of(session.active, crate::asm_follow::Reread::All, None)?;
+    let changed = read.changed;
     let assembly = assembly_of(session, ID)?.clone();
     let placed = session.placed()?;
     let instances: Vec<Value> = placed
@@ -1481,10 +1421,18 @@ fn assembly_reload(session: &mut Session, params: &Value) -> Run {
         .iter()
         .filter_map(|i| Some(json!({ "instance": i.name, "error": i.error.clone()? })))
         .collect();
+    // Sources that changed and could not be read again: their instances
+    // keep the last version read (`asm_follow.rs`).
+    let kept: Vec<Value> = read
+        .failed
+        .iter()
+        .map(|(path, error)| json!({ "path": path, "error": error }))
+        .collect();
     Ok(json!({
         "filesChanged": changed,
         "changed": instances,
         "failed": failed,
+        "unread": kept,
         "instances": assembly.instances.len(),
     }))
 }

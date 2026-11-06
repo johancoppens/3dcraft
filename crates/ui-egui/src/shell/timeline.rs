@@ -506,6 +506,14 @@ impl Shell {
                     .answers
                     .push(answer.clone().map_err(|e| e.message().to_string()));
             }
+            // Sources followed when the window got the focus back: said in
+            // the status bar when any changed or could not be read again.
+            if *id == "assembly.follow"
+                && let Ok(result) = &answer
+                && let Some(report) = followed_report(result)
+            {
+                self.last_command = Some(report);
+            }
             match answer {
                 Ok(_) => self.timeline.problem = None,
                 Err(e) => {
@@ -959,4 +967,54 @@ mod trace_tests {
         assert!(!same_traces(std::slice::from_ref(&trace), &[moved]));
         assert!(!same_traces(&[trace], &[]));
     }
+}
+
+/// What the status bar says of an `assembly.follow` answer: the sources
+/// read again and those that could not be, `None` when nothing changed.
+pub(crate) fn followed_report(result: &Value) -> Option<super::CommandReport> {
+    let followed = result.get("followed")?.as_array()?;
+    let mut changed = Vec::new();
+    let mut failed = Vec::new();
+    for row in followed {
+        for path in row
+            .get("changed")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(path) = path.as_str() {
+                changed.push(file_name(path));
+            }
+        }
+        for f in row
+            .get("failed")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let path = f.get("path").and_then(Value::as_str).unwrap_or_default();
+            let error = f.get("error").and_then(Value::as_str).unwrap_or_default();
+            failed.push(format!(
+                "{} could not be read again: {error}",
+                file_name(path)
+            ));
+        }
+    }
+    changed.sort();
+    changed.dedup();
+    let text = match (changed.is_empty(), failed.first()) {
+        (true, None) => return None,
+        (false, None) => format!("{} changed · the assembly follows it", changed.join(", ")),
+        (_, Some(first)) => format!("{first}; it shows the last version read"),
+    };
+    Some(super::CommandReport {
+        label: "assembly.follow".to_string(),
+        ok: failed.is_empty(),
+        text: text.chars().take(160).collect(),
+    })
+}
+
+/// The file name of a source path, `/` or `\` between its parts.
+fn file_name(path: &str) -> String {
+    path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }

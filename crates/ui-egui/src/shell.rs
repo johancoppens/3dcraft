@@ -337,7 +337,15 @@ pub struct TreeRow {
     pub made_by: Option<String>,
     /// In an assembly's tree: how deep in subassemblies the row is.
     pub depth: usize,
+    /// In an assembly's tree: why the instance does not show what its
+    /// source file holds now (pinned, or the file changed and could not
+    /// be read again). The row is marked, and its tooltip says why.
+    pub held: Option<String>,
 }
+
+/// The mark after the source of an instance row whose source changed and
+/// is not followed ([`TreeRow::held`]). In egui's default fonts.
+pub const HELD_MARK: char = '⚠';
 
 /// The marks of the feature tree, by state: built, failed, suppressed,
 /// rolled back. All four are in egui's default fonts (a test checks: the
@@ -943,6 +951,10 @@ pub struct Shell {
     /// The open documents (by `DocumentStatus::id`) seen to be assemblies
     /// while they were the active one: their tabs' icon.
     assembly_docs: std::collections::BTreeSet<u64>,
+    /// Whether the window had the focus last frame: when it gets it back
+    /// the open assemblies follow what changed of their sources meanwhile
+    /// (`assembly.follow`).
+    focus_seen: Option<bool>,
     /// Where the menus were drawn (`shell/menus.rs`).
     menu_hits: menus::MenuHits,
     /// The question before closing a document, while it is asked.
@@ -1438,6 +1450,7 @@ impl Shell {
             work: None,
             tabs: Vec::new(),
             assembly_docs: std::collections::BTreeSet::new(),
+            focus_seen: None,
             menu_hits: menus::MenuHits::default(),
             closing: None,
             doc_action: None,
@@ -2586,6 +2599,7 @@ impl Shell {
                 passes: f.passes.clone(),
                 instance: None,
                 depth: 0,
+                held: None,
             })
             .collect();
         // An assembly lists its instances, nested by subassembly, and its
@@ -2651,7 +2665,10 @@ impl Shell {
                         } else {
                             FeatureState::Ok
                         },
-                        status: i.source.clone(),
+                        status: match &i.held {
+                            Some(_) => format!("{} {HELD_MARK}", i.source),
+                            None => i.source.clone(),
+                        },
                         error: i.error.clone(),
                         caused_by: None,
                         hidden: !i.visible,
@@ -2662,6 +2679,7 @@ impl Shell {
                         instance: i.own.then(|| i.name.clone()),
                         depth: i.depth,
                         made_by: None,
+                        held: i.held.clone(),
                     }
                 })
                 .collect();
@@ -2732,6 +2750,15 @@ impl Shell {
             self.themed = true;
         }
         self.fonts.update(ui);
+        // The focus back (from another program, another window): the
+        // open assemblies read again what changed of their sources.
+        let focused = ui.input(|i| i.focused);
+        if focused && self.focus_seen == Some(false) && !self.assembly_docs.is_empty() {
+            self.timeline
+                .queue("assembly.follow", serde_json::json!({}));
+            ui.ctx().request_repaint();
+        }
+        self.focus_seen = Some(focused);
         self.player_shown_last = std::mem::take(&mut self.player_shown);
         self.status_render = None;
         self.player_hits.clear();
@@ -3915,9 +3942,10 @@ impl Shell {
                                     | FeatureState::Inactive
                                     | FeatureState::RolledBack
                             );
-                            let hover = match &row.error {
-                                Some(error) => error.clone(),
-                                None => format!("{} · {}", row.kind, row.status),
+                            let hover = match (&row.error, &row.held) {
+                                (Some(error), _) => error.clone(),
+                                (None, Some(held)) => format!("{} · {held}", row.kind),
+                                (None, None) => format!("{} · {}", row.kind, row.status),
                             };
                             let icon = match row.kind {
                                 "subassembly" => crate::kit::Glyph::Assembly,

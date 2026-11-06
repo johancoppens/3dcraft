@@ -60,8 +60,17 @@ pub(crate) struct AsmState {
     /// The source files read, by their path as [`join`] writes it (from
     /// the read root): their bytes, or why they could not be read.
     pub files: BTreeMap<String, Result<Blob, String>>,
+    /// What each source file looked like on disk when it was read (its
+    /// size and modification time), so a check for changes reads again
+    /// only those that look changed (`Session::follow_sources`). None for
+    /// files in memory, which are read again to be compared.
+    pub stamps: BTreeMap<String, crate::recovery::FileStamp>,
+    /// Sources that changed but could not be read again (gone,
+    /// unreadable, refused by the roots), by path: why. Their last bytes
+    /// read stay in `files`, so their instances keep the last good bodies.
+    pub unfollowed: BTreeMap<String, String>,
     /// Source documents, by the SHA-256 of their bytes.
-    parsed: BTreeMap<String, Result<Arc<Document>, String>>,
+    pub(crate) parsed: BTreeMap<String, Result<Arc<Document>, String>>,
     /// Configurations built, by [`config_key`].
     configs: BTreeMap<String, Config>,
     /// Per source that is given parameters (its hash and the length unit
@@ -287,6 +296,10 @@ pub(crate) struct InstanceState {
     pub hash: Option<String>,
     /// The source file's bytes differ from the hash the document holds.
     pub changed: bool,
+    /// Why it does not show what its source file holds now, while it
+    /// still shows a version of it: pinned to another, or the file
+    /// changed and could not be read again (the last version read stays).
+    pub held: Option<String>,
     pub pose: Transform,
     /// The features of [`Placed::doc`] that hold its bodies.
     pub bodies: Vec<FeatureId>,
@@ -592,14 +605,17 @@ fn parse(state: &mut AsmState, blob: &Blob) -> Result<Arc<Document>, String> {
     parsed
 }
 
-/// The bytes of an instance's source and whether they differ from the
-/// hash the document holds.
+/// The bytes of an instance's source, whether they differ from the hash
+/// the document holds, and why it does not follow its file when it does
+/// not ([`InstanceState::held`]).
 fn source_bytes(
     assembly: &Assembly,
     instance: &Instance,
     base: &str,
     files: &BTreeMap<String, Result<Blob, String>>,
-) -> Result<(Blob, bool), String> {
+    unfollowed: &BTreeMap<String, String>,
+) -> Result<(Blob, bool, Option<String>), String> {
+    let mut held = None;
     let (blob, recorded) = match &instance.source {
         Source::Packed { hash } => (
             assembly
@@ -610,6 +626,11 @@ fn source_bytes(
         ),
         Source::File { path, hash } => {
             let full = join(base, path)?;
+            if let Some(why) = unfollowed.get(&full) {
+                held = Some(format!(
+                    "its source `{path}` changed and could not be read again ({why}); it shows the last version read"
+                ));
+            }
             let blob = match files.get(&full) {
                 Some(Ok(blob)) => blob.clone(),
                 Some(Err(why)) => return Err(format!("its source `{path}` cannot be read: {why}")),
@@ -629,7 +650,17 @@ fn source_bytes(
         // A pinned instance never follows: the packed copy of the pinned
         // version is used when the file holds one.
         if let Some(packed) = assembly.packed(pinned) {
-            return Ok((packed.clone(), false));
+            let note = match &instance.source {
+                Source::File { path, .. } => format!(
+                    "pinned to {}…: its source `{path}` changed and is not followed (instance.edit with pinned: null follows it)",
+                    pinned.get(..12).unwrap_or(pinned)
+                ),
+                Source::Packed { .. } => format!(
+                    "pinned to {}…, not to the packed version it names",
+                    pinned.get(..12).unwrap_or(pinned)
+                ),
+            };
+            return Ok((packed.clone(), false, held.or(Some(note))));
         }
         return Err(format!(
             "it is pinned to {}…, and its source is now {}… (instance.edit with pinned: null follows it)",
@@ -637,7 +668,7 @@ fn source_bytes(
             now.get(..12).unwrap_or(&now)
         ));
     }
-    Ok((blob, *recorded != now))
+    Ok((blob, *recorded != now, held))
 }
 
 /// The parameter values an instance gives its source, written for it.
@@ -699,7 +730,7 @@ fn prepare(
     doc: &Document,
     values: Option<&craft3d_expr::Evaluation>,
 ) -> Result<Prepared, String> {
-    let (blob, changed) = source_bytes(assembly, instance, base, files)?;
+    let (blob, changed, held) = source_bytes(assembly, instance, base, files, &state.unfollowed)?;
     let hash = blob.sha256();
     if chain.contains(&hash) {
         return Err(
@@ -721,7 +752,7 @@ fn prepare(
         ));
     }
     let params = override_values(instance, values)?;
-    Ok((hash, source, params, changed))
+    Ok((hash, source, params, changed, held))
 }
 
 /// A body an instance shows: what to call it, the body in the instance's
@@ -734,8 +765,14 @@ pub(crate) type ShownBody = (
 );
 
 /// An instance's source: its hash, its document, the parameters it is
-/// given, and whether its file changed.
-type Prepared = (String, Arc<Document>, BTreeMap<String, String>, bool);
+/// given, whether its file changed, and why it does not follow it.
+type Prepared = (
+    String,
+    Arc<Document>,
+    BTreeMap<String, String>,
+    bool,
+    Option<String>,
+);
 
 /// What one configuration needs to be built: its source document (set)
 /// and, for a subassembly, the folder its own sources are relative to.
@@ -974,6 +1011,7 @@ fn gather(
             config: None,
             hash: None,
             changed: false,
+            held: None,
             pose: placement_pose(&instance.placement),
             bodies: Vec::new(),
             built: None,
@@ -991,8 +1029,9 @@ fn gather(
             doc,
             values.as_ref(),
         )
-        .map(|(hash, source, params, changed)| {
+        .map(|(hash, source, params, changed, held)| {
             st.changed = changed;
+            st.held = held;
             (hash, source, params)
         });
         match prepared {

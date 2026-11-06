@@ -110,5 +110,12 @@ fn file_activate(session: &mut Session, params: &Value) -> Run {
         }
     };
     session.active = index;
-    Ok(listing(session))
+    // An assembly shown again follows what changed of its sources since
+    // (`asm_follow.rs`).
+    let followed = session.follow_sources(Some(index), None);
+    let mut result = listing(session);
+    if let (false, Some(map)) = (followed.is_empty(), result.as_object_mut()) {
+        map.insert("followed".into(), session.followed_json(&followed).into());
+    }
+    Ok(result)
 }

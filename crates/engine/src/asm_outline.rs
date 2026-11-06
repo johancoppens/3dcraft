@@ -45,6 +45,10 @@ pub struct OutlineInstance {
     pub subassembly: bool,
     /// Why it is not placed, when it is not.
     pub error: Option<String>,
+    /// Why it does not show what its source file holds now, while it
+    /// shows a version of it: pinned, or the file changed and could not
+    /// be read again.
+    pub held: Option<String>,
     /// Shown (`instance.edit` with `visible` hides it); only for the
     /// assembly's own instances.
     pub visible: bool,
@@ -377,6 +381,7 @@ fn push_instance(
         source,
         subassembly: sub.is_some(),
         error: st.error.clone(),
+        held: st.held.clone(),
         visible,
         own,
         grounded: false,

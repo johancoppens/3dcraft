@@ -1253,6 +1253,24 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     // Saved as a model: it is edited like any other from now on.
     open.jig_in_use = false;
     let mut result = json!({ "path": kept });
+    // The open assemblies that have this file as a source follow it
+    // (`asm_follow.rs`): what an instance shows is what was saved.
+    let followed = session.follow_sources(None, Some(&resolved));
+    if let (false, Some(map)) = (followed.is_empty(), result.as_object_mut()) {
+        let warnings: Vec<Value> = followed
+            .iter()
+            .flat_map(|(_, read)| read.failed.iter())
+            .map(|(path, why)| {
+                Value::from(format!(
+                    "the source `{path}` of an open assembly could not be read again: {why}; it shows the last version read"
+                ))
+            })
+            .collect();
+        map.insert("followed".into(), session.followed_json(&followed).into());
+        if !warnings.is_empty() {
+            map.insert("warnings".into(), warnings.into());
+        }
+    }
     if let Some(map) = result.as_object_mut()
         && wants_thumbnail
     {
