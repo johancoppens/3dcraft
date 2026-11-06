@@ -296,7 +296,10 @@ fn ui_get_reports_the_state_the_scene_and_the_tree() {
                // Added with conditions, `feature.when` (2026-10-23).
                "when": null,
                // What it passes on and leaves out (2026-10-25).
-               "passes": null})
+               "passes": null,
+               // Added with an assembly's instances following their
+               // sources (2026-11-06): null for a feature.
+               "held": null})
     );
     assert_eq!(features[2]["state"], "failed");
     assert_eq!(
