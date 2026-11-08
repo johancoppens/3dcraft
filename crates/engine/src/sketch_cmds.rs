@@ -28,7 +28,7 @@ const MAX_POLYLINE_POINTS: usize = 1_000;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("sketch.create", "New Sketch", r#"{"plane": "xy|yz|zx" or datum plane = "xy", "face": face name, "offset": expr = 0, "xAxis": [number, number, number] = the face's own, "name": string = automatic}"#,
-        "Adds an empty sketch on a world plane, on a datum plane (plane: its name or id; the sketch has the datum's origin and axes and follows it), or on a flat face of a body given by its name from document.inspect (faceNames, such as \"F2:endCap(e7,e8,e9)\"; \"F2:endCap()\" is the plane where F2 ends, whatever its outline; an alias from faceAliases names the same face), moved by offset along the normal. A primitive's faces are numbered (\"F3:face(1)\"): for a block 0 bottom, 1 top, 2 front, 3 back, 4 left, 5 right in its own axes; for a cylinder 0 the wall, 1 the bottom, 2 the top. On xy the sketch axes are world X and Y, on yz they are Y and Z, on zx they are Z and X. On the end cap of an extrusion they are those of the extruded sketch; on a side face x runs along its line and y along the extrusion, from the extruded sketch's origin dropped onto the face. xAxis (a face only) turns the sketch's x axis to a world direction projected onto the face (three plain numbers, any length; [1, 0, 0] puts x along world X on the bottom of a block, whose own x is along world Y), about the face's origin, with y the normal × x; the normal stays the face's. A direction along the normal fails the sketch. Without it the axes are the face's own.", doc: true, names: ["face", "plane"], sketch_create),
+        "Adds an empty sketch on a world plane, on a datum plane (plane: its name or id; the sketch has the datum's origin and axes and follows it), or on a flat face of a body given by its name from document.inspect (faceNames, such as \"F2:endCap(e7,e8,e9)\"; \"F2:endCap()\" is the plane where F2 ends, whatever its outline; an alias from faceAliases names the same face), moved by offset along the normal. A primitive's faces are numbered (\"F3:face(1)\"): for a block 0 bottom, 1 top, 2 front, 3 back, 4 left, 5 right in its own axes; for a cylinder 0 the wall, 1 the bottom, 2 the top. On xy the sketch axes are world X and Y, on yz they are Y and Z, on zx they are Z and X. On the end cap of an extrusion they are those of the extruded sketch; on a side face x runs along its line and y along the extrusion, from the extruded sketch's origin dropped onto the face. xAxis (a face only) turns the sketch's x axis to a world direction projected onto the face (three plain numbers, any length; [1, 0, 0] puts x along world X on the bottom of a block, whose own x is along world Y), about the face's origin, with y the normal × x; the normal stays the face's. A direction along the normal fails the sketch. Without it the axes are the face's own. A face named as an earlier body had it is that face as it was there; when a later feature has put it in another plane the result says so under warnings, with the name of the face as it is now.", doc: true, names: ["face", "plane"], sketch_create),
     spec!("sketch.point", "Sketch Point", r#"{"sketch": id or name, "at": [x, y]}"#,
         "Adds a point to a sketch. Coordinates [x, y] that are both numbers, in document units, are where the point is drawn; the solver may move it. When either is an expression (a string such as \"-width / 2\" or \"10 mm\"; signed, from the sketch origin along the sketch axes) the point is held: drawn at the values and kept there by an x and a y constraint (a number beside an expression is held at that number), so it follows the variables; to hold one coordinate only, use sketch.constrain with type x or y. Returns its entity id, held (true for a held point, false for a free one the solver may move: [0, 0] is free, [0, \"0 mm\"] is held) and the constraints that hold it. Everywhere a sketch command takes coordinates [x, y] for a new point (line, polyline, rect, circle, arc, path, spline) they work the same way.", doc: true, sketch_point),
     spec!("sketch.line", "Sketch Line", r#"{"sketch": id or name, "from": point id or [x, y], "to": point id or [x, y], "construction": boolean = false}"#,
@@ -633,6 +633,10 @@ fn sketch_create(session: &mut Session, params: &Value) -> Run {
         },
     };
     let name = p.str("name")?;
+    let on_face = match &plane {
+        SketchPlane::Face { face, .. } => Some(face.clone()),
+        SketchPlane::World { .. } | SketchPlane::Datum { .. } => None,
+    };
     let id = edit(session, COMMAND, "Add sketch", |doc| {
         insert_feature(doc, name, FeatureKind::Sketch(Sketch::new(plane)))
     })?;
@@ -645,7 +649,11 @@ fn sketch_create(session: &mut Session, params: &Value) -> Run {
         .feature(id)
         .and_then(|f| f.sketch.as_deref())
         .map(frame_json);
-    sketch_result(session, id, None, frame.unwrap_or(Value::Null))
+    let mut result = sketch_result(session, id, None, frame.unwrap_or(Value::Null))?;
+    if let Some(face) = &on_face {
+        crate::datum_cmds::warn_when_face_changed(session, face, &mut result)?;
+    }
+    Ok(result)
 }
 
 /// A solved sketch's place in world coordinates, as keys of a result:

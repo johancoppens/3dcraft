@@ -167,7 +167,7 @@ pub use regen_elsewhere::{
 };
 pub use report::{
     FailedCommand, MAX_REPORT_FIELD_CHARS, VERSION, bug_report, build_commit, platform,
-    set_build_commit,
+    set_build_commit, version_line,
 };
 pub use sample_cmds::with_point_sink;
 pub use scene::{

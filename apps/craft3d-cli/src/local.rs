@@ -413,7 +413,8 @@ pub(crate) fn info(args: Args) -> Result<Parsed<()>, CliError> {
     };
     let mut session = crate::session(Workspace::unrestricted());
     open(&mut session, file)?;
-    let inspect = execute(&mut session, "document.inspect", &Value::Null)?;
+    // A one-shot look at a file: what it says is final, not "pending".
+    let inspect = execute(&mut session, "document.inspect", &json!({"wait": true}))?;
     let pretty = serde_json::to_string_pretty(&inspect)
         .map_err(|e| CliError::Failed(format!("cannot write the result as JSON: {e}")))?;
     print(&pretty).map(Parsed::Run)

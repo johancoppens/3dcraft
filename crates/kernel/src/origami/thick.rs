@@ -387,6 +387,27 @@ pub fn thick_panels(
         let made = extrude(&[profile], &frame, from, to, tolerance)
             .map_err(|e| FoldError::Build(format!("panel of facet {f}: {e}")))?;
         let mut o = made.origins;
+        // The start of a panel is the face on the sheet, as the start of
+        // an extrusion is the face on its sketch: on the back the prism
+        // runs towards the sheet, so its ends change names.
+        if panels.side == PanelSide::Back {
+            for origin in o
+                .faces
+                .iter_mut()
+                .chain(&mut o.edges)
+                .chain(&mut o.vertices)
+            {
+                origin.role = match origin.role {
+                    Role::StartCap => Role::EndCap,
+                    Role::EndCap => Role::StartCap,
+                    Role::StartEdge => Role::EndEdge,
+                    Role::EndEdge => Role::StartEdge,
+                    Role::StartVertex => Role::EndVertex,
+                    Role::EndVertex => Role::StartVertex,
+                    other => other,
+                };
+            }
+        }
         // Two panels whose outer boundaries have the same curves: their
         // caps numbered in facet order.
         let sources = o

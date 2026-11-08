@@ -667,7 +667,7 @@ fn check_point(
         problems.extend(found.iter().cloned());
     }
     let unproven = result
-        .get("assertions")
+        .get("assertionSummary")
         .and_then(|a| a.get("unproven"))
         .and_then(Value::as_array)
         .map(|list| {

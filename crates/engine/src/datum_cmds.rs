@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("datum.plane", "Datum Plane", r#"{"from": "xy|yz|zx" or face name or datum plane, "distance": expr, "angle": expr, "about": "x|y|z" or [face name, face name] or datum axis, "through": [point, point, point], "replace": id or name, "name": string = automatic, "when": expr = always on}"#,
-        "Adds a datum plane: a plane to sketch on (sketch.create, plane) and to mirror in (feature.mirror, plane). It makes no body. Three ways. At a distance: from and distance; from is a base plane, a flat face by its name from document.inspect (faceNames; its normal points out of the body) or an earlier datum plane (id or name), and the plane keeps the origin and axes of from, moved along its normal. At an angle: from, about and angle; about is a world axis, the straight edge between two faces of one body ([face name, face name]; between two flat faces it points along the cross product of their outward normals in that order) or a datum axis (id or name), it has to be parallel to from, and the plane is from turned by angle about it (counter-clockwise seen from the tip of the axis) and goes through it. Through three points: through, each point [x, y, z] (expressions), a vertex name such as \"F1:vertex(6)\" (the vertices of a block are numbered x + 2 y + 4 z, each 0 on the low and 1 on the high side in its own axes: 6 is the corner at low x, high y, high z; datum.references lists the vertices of any body), {\"center\": [face name, face name]} (the centre of the circular edge between two faces) or a datum point (id or name); the origin is the first point, x points at the second and the three go counter-clockwise round the normal. distance and angle are expressions and follow variables. A reference that is lost after an upstream edit fails the datum with the reason and the name it lost, and what is placed by the datum fails naming it; everything else is still built. replace gives an existing datum plane this definition instead of adding one. The result has the plane under datum: origin, normal, x.", doc: true, names: ["from", "about"], datum_plane),
+        "Adds a datum plane: a plane to sketch on (sketch.create, plane) and to mirror in (feature.mirror, plane). It makes no body. Three ways. At a distance: from and distance; from is a base plane, a flat face by its name from document.inspect (faceNames; its normal points out of the body) or an earlier datum plane (id or name), and the plane keeps the origin and axes of from, moved along its normal. A face named as an earlier body had it is that face as it was there; when a later feature has put it in another plane the result says so under warnings, with the name of the face as it is now. At an angle: from, about and angle; about is a world axis, the straight edge between two faces of one body ([face name, face name]; between two flat faces it points along the cross product of their outward normals in that order) or a datum axis (id or name), it has to be parallel to from, and the plane is from turned by angle about it (counter-clockwise seen from the tip of the axis) and goes through it. Through three points: through, each point [x, y, z] (expressions), a vertex name such as \"F1:vertex(6)\" (the vertices of a block are numbered x + 2 y + 4 z, each 0 on the low and 1 on the high side in its own axes: 6 is the corner at low x, high y, high z; datum.references lists the vertices of any body), {\"center\": [face name, face name]} (the centre of the circular edge between two faces) or a datum point (id or name); the origin is the first point, x points at the second and the three go counter-clockwise round the normal. distance and angle are expressions and follow variables. A reference that is lost after an upstream edit fails the datum with the reason and the name it lost, and what is placed by the datum fails naming it; everything else is still built. replace gives an existing datum plane this definition instead of adding one. The result has the plane under datum: origin, normal, x.", doc: true, names: ["from", "about"], datum_plane),
     spec!("datum.axis", "Datum Axis", r#"{"through": [point, point], "edge": [face name, face name], "face": face name, "planes": [plane, plane], "replace": id or name, "name": string = automatic, "when": expr = always on}"#,
         "Adds a datum axis: a straight line with a direction, to revolve about (feature.revolve, axis), to pattern about (feature.pattern, axis) and to turn a datum plane about (datum.plane, about). It makes no body. Give one of four. through: two points, each [x, y, z] (expressions), a vertex name, {\"center\": [face name, face name]} or a datum point (id or name); it points from the first to the second. edge: the straight edge between two faces of one body, by the names of the two faces from document.inspect (between two flat faces it points along the cross product of their outward normals in that order). face: the axis of a cylinder, cone or torus face, by its name; it points the way the surface's own axis does. planes: the line two planes meet in, each a base plane (xy, yz, zx), a flat face by its name or a datum plane; it points along the cross product of their normals in that order, and the planes must not be parallel. A reference that is lost after an upstream edit fails the datum with the reason and the name it lost. replace gives an existing datum axis this definition instead of adding one. The result has the line under datum: origin, direction.", doc: true, names: ["edge", "face", "planes"], datum_axis),
     spec!("datum.point", "Datum Point", r#"{"at": [expr, expr, expr], "vertex": vertex name, "center": [face name, face name], "replace": id or name, "name": string = automatic, "when": expr = always on}"#,
@@ -284,6 +284,44 @@ pub(crate) fn datum_json(datum: &Datum) -> Value {
     }
 }
 
+/// Adds to `result` a warning when the face `name`, on which a sketch or a
+/// datum was just placed, has been changed by a later feature: the name
+/// still means the face as it was there, which may not be what was meant.
+pub(crate) fn warn_when_face_changed(
+    session: &mut Session,
+    name: &craft3d_doc::PersistentName,
+    result: &mut Value,
+) -> Result<(), CommandError> {
+    let open = session.document_mut()?;
+    let regen = open.regen();
+    let doc = open.history.current();
+    // As it stands at the place of what was placed there (`result` names
+    // it), which `replace` leaves where it was in the history.
+    let id = result.get("id").and_then(Value::as_str);
+    let before = regen
+        .features
+        .iter()
+        .position(|f| id == Some(f.id.to_string().as_str()))
+        .unwrap_or(regen.features.len());
+    let earlier = regen.features.get(..before).unwrap_or(&regen.features);
+    let Some(newest) = craft3d_regen::face_changed_since(doc, earlier, name) else {
+        return Ok(());
+    };
+    if let Some(warnings) = result.as_object_mut().and_then(|map| {
+        map.entry("warnings")
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+    }) {
+        warnings.push(
+            format!(
+                "`{name}` is the face as it was before later features changed it; it lies in another plane now, as `{newest}`: give that name for the face as it is"
+            )
+            .into(),
+        );
+    }
+    Ok(())
+}
+
 /// What a datum command returns: the feature, how it regenerated, and
 /// where the datum lies.
 fn datum_result(session: &mut Session, id: FeatureId) -> Run {
@@ -346,6 +384,10 @@ fn datum_plane(session: &mut Session, params: &Value) -> Run {
         None => None,
         Some(value) => Some(plane_value(doc, ID, "from", value)?),
     };
+    let on_face = match &from {
+        Some(PlaneRef::Face { face }) => Some(face.clone()),
+        _ => None,
+    };
     let through = match p.get("through") {
         None => None,
         Some(value) => {
@@ -400,7 +442,11 @@ fn datum_plane(session: &mut Session, params: &Value) -> Run {
             }
         },
     };
-    store(session, ID, &p, FeatureKind::DatumPlane(DatumPlane { by }))
+    let mut result = store(session, ID, &p, FeatureKind::DatumPlane(DatumPlane { by }))?;
+    if let Some(face) = &on_face {
+        warn_when_face_changed(session, face, &mut result)?;
+    }
+    Ok(result)
 }
 
 /// The one way of placing a datum that is given, of the parameters that

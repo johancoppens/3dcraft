@@ -57,8 +57,14 @@ mod tests {
         // Nothing is fetched until a text asks for a font.
         assert!(mono(fetches.due()).is_empty());
         craft3d_engine::fonts::want("mono").unwrap();
+        let due = mono(fetches.due());
+        // Another test of this binary may have brought the font in; then
+        // it is rightly not wanted, and there is nothing to count here.
+        if craft3d_engine::fonts::ready("mono") {
+            return;
+        }
         assert_eq!(
-            mono(fetches.due()),
+            due,
             vec![("mono", "fonts/JetBrainsMono-Regular.ttf".to_string())]
         );
         // Once: asking again does not fetch it again.

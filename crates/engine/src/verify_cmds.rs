@@ -655,6 +655,22 @@ pub(crate) struct Outcome {
     /// notProven with this reason, never passed or failed, and an output
     /// of it unknown.
     pub unproven: Option<String>,
+    /// The value comes from samples, and which side of it they leave
+    /// open; an assertion that needs that side is notProven. An output
+    /// still takes the number.
+    pub sampled: Sampled,
+}
+
+/// What samples say about the true value: the one found is real, so the
+/// extreme it is of lies at or past it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Sampled {
+    /// Not sampled: the bounds of [`Outcome`] say it.
+    No,
+    /// The least of samples: the true least may lie below.
+    OpenBelow,
+    /// The largest of samples: the true largest may lie above.
+    OpenAbove,
 }
 
 impl Outcome {
@@ -668,6 +684,7 @@ impl Outcome {
             upper: Some(value),
             detail: Map::new(),
             unproven: None,
+            sampled: Sampled::No,
         }
     }
 
@@ -681,6 +698,7 @@ impl Outcome {
             upper: None,
             detail: Map::new(),
             unproven: None,
+            sampled: Sampled::No,
         }
     }
 
@@ -696,6 +714,7 @@ impl Outcome {
             upper: None,
             detail: Map::new(),
             unproven: Some(why),
+            sampled: Sampled::No,
         }
     }
 }

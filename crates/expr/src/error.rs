@@ -290,7 +290,7 @@ impl fmt::Display for ErrorKind {
             ErrorKind::InvalidExponent => write!(
                 f,
                 "the exponent of `^` must be an integer literal without a unit, as in `x ^ 2` \
-                 or `x ^ -1`"
+                 or `x ^ -1`; for any other exponent write `pow(x, y)`"
             ),
             ErrorKind::ChainedPower => write!(
                 f,

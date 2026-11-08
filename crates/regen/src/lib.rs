@@ -97,8 +97,9 @@ pub use pass::{Passed, absent_name, left_out};
 pub use query::{ambiguous_cap, edges_between, faces_named, faces_of_edges};
 pub use sheetmetal::{SheetMetalPart, sheet_face_name, sheet_metal_part};
 pub use sketch::{
-    ConstraintResult, ConstraintState, FittedCurve, SketchResult, fit_formula_curve,
-    image_places_to_record, record_image_places, settle_sketches, settle_sketches_cached,
+    ConstraintResult, ConstraintState, FittedCurve, SketchResult, face_changed_since,
+    fit_formula_curve, image_places_to_record, record_image_places, settle_sketches,
+    settle_sketches_cached,
 };
 pub use sketch_pattern::{MAX_PATTERN_CURVES, PatternResult, Placed};
 pub use split::{
@@ -890,6 +891,8 @@ pub struct ThreadReport {
     /// An internal thread: the face is a hole (its material is outside
     /// it), tapped; otherwise an external one, on a shank.
     pub internal: bool,
+    /// The drill to tap it with (ISO 2306), for an internal thread.
+    pub tap_drill: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

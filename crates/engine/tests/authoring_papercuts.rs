@@ -500,7 +500,7 @@ fn an_edit_can_wait_for_its_assertions() {
         "param.set",
         json!({ "values": { "width": "20 mm" }, "wait": true }),
     );
-    let assertions = &set["assertions"];
+    let assertions = &set["assertionSummary"];
     assert_eq!(assertions["pending"], 0, "{set}");
     assert_eq!(assertions["passed"], 1, "{set}");
     assert!(assertions.get("whenPending").is_none(), "{set}");
@@ -509,8 +509,8 @@ fn an_edit_can_wait_for_its_assertions() {
         "variable.set",
         json!({ "name": "width", "expr": "30 mm", "wait": true }),
     );
-    assert_eq!(set["assertions"]["pending"], 0, "{set}");
-    assert_eq!(set["assertions"]["passed"], 1, "{set}");
+    assert_eq!(set["assertionSummary"]["pending"], 0, "{set}");
+    assert_eq!(set["assertionSummary"]["passed"], 1, "{set}");
     error(
         &mut s,
         "param.set",

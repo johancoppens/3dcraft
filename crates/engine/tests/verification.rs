@@ -460,7 +460,7 @@ fn assertions_pass_break_on_an_edit_and_pass_again() {
         "variable.set",
         json!({"name": "t", "expr": "16 mm"}),
     );
-    let broken: Vec<&str> = edit["assertions"]["broken"]
+    let broken: Vec<&str> = edit["assertionSummary"]["broken"]
         .as_array()
         .unwrap()
         .iter()
@@ -735,7 +735,7 @@ fn the_housings_bolt_holes_stop_going_through_when_the_plate_is_made_thicker() {
         thicker["status"], "ok",
         "regeneration is not blocked: {thicker}"
     );
-    let broken = &thicker["assertions"]["broken"][0];
+    let broken = &thicker["assertionSummary"]["broken"][0];
     assert_eq!(broken["name"], "the bolt holes go through", "{thicker}");
     assert_eq!(broken["measured"], false);
     let blind = run(&mut s, "measure.through", json!({"of": bolts}));
@@ -1299,7 +1299,7 @@ fn each_side_of_the_box_is_asserted_on_its_own() {
             "variable.set",
             json!({"name": "p", "expr": format!("{} mm", 8.0 * k)}),
         );
-        let broken: Vec<&str> = edit["assertions"]["broken"]
+        let broken: Vec<&str> = edit["assertionSummary"]["broken"]
             .as_array()
             .unwrap()
             .iter()
@@ -1742,7 +1742,7 @@ fn an_edit_measures_again_only_the_assertions_whose_subjects_it_changed() {
         "feature.edit",
         json!({"feature": "B", "size": [6, 5, 5]}),
     );
-    assert_eq!(edit["assertions"]["broken"][0]["name"], "b", "{edit}");
+    assert_eq!(edit["assertionSummary"]["broken"][0]["name"], "b", "{edit}");
     assert_eq!(s.assertions_measured().unwrap(), before + 1);
     // A body added elsewhere: nothing.
     run(

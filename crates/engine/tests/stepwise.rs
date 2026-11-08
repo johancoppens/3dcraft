@@ -339,7 +339,7 @@ fn an_edit_leaves_its_regeneration_to_the_pieces() {
             assert_eq!(built, 0, "scale {s}, w {value}: the command regenerated");
             assert_eq!(done["deferred"], true, "{done}");
             assert!(done.get("failed").is_none(), "{done}");
-            assert!(done.get("assertions").is_none(), "{done}");
+            assert!(done.get("assertionSummary").is_none(), "{done}");
             assert_eq!(done["set"], all_at_once["set"], "{done}");
             assert_eq!(done["changed"], true, "{done}");
             let mut phases = Vec::new();
@@ -413,7 +413,7 @@ fn an_edit_that_waits_reports_what_fails_on_a_host_that_works_a_piece_at_a_time(
                 fails,
                 "scale {s}, w {value}: {done}"
             );
-            assert_eq!(done["assertions"]["pending"], 0, "{done}");
+            assert_eq!(done["assertionSummary"]["pending"], 0, "{done}");
             // The same through variable.set, which takes wait too.
             let var = json!({"name": "w", "expr": mm(value), "wait": true});
             let all_at_once = whole.execute("variable.set", &var).unwrap();

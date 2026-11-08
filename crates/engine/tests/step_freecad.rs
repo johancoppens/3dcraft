@@ -300,6 +300,7 @@ impl Set {
                     volume,
                     area,
                     bbox,
+                    bbox_slack: slack,
                 });
             }
         }

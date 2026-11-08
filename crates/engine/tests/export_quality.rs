@@ -73,7 +73,13 @@ fn qualities_keep_a_small_pin_round_on_a_big_part() {
     let normal = export(&mut s, json!({"path": "normal.stl"}));
     assert_eq!(normal["quality"], "normal");
     assert_eq!(normal["angle"], 10.0);
-    let auto = normal["tolerance"].as_f64().unwrap();
+    // The automatic tolerance, which a format that is not printed keeps
+    // (an STL or 3MF at normal is held to 0.1 mm: `PRINT_CHORD_MM`).
+    let auto = export(&mut s, json!({"path": "auto.obj"}))["tolerance"]
+        .as_f64()
+        .unwrap();
+    let printed = normal["tolerance"].as_f64().unwrap();
+    assert!((printed - 0.1).abs() < 1e-12, "{normal}");
     // The mesh made before 2026-10-23: the same tolerance, no angle.
     let before = export(&mut s, json!({"path": "before.stl", "tolerance": auto}));
     assert_eq!(before["angle"], Value::Null);
@@ -82,7 +88,7 @@ fn qualities_keep_a_small_pin_round_on_a_big_part() {
     assert_eq!(coarse["angle"], 20.0);
     assert_eq!(fine["angle"], 5.0);
     assert!((coarse["tolerance"].as_f64().unwrap() - 2.0 * auto).abs() < 1e-12 * auto);
-    assert!((fine["tolerance"].as_f64().unwrap() - 0.25 * auto).abs() < 1e-12 * auto);
+    assert!((fine["tolerance"].as_f64().unwrap() - 0.25 * printed).abs() < 1e-12);
     let triangles = |v: &Value| v["triangles"].as_u64().unwrap();
     assert!(triangles(&before) < triangles(&normal), "{before} {normal}");
     assert!(triangles(&coarse) <= triangles(&normal));
@@ -107,14 +113,12 @@ fn qualities_keep_a_small_pin_round_on_a_big_part() {
     // A tolerance with a quality takes the quality's angle.
     let both = export(
         &mut s,
-        json!({"path": "both.stl", "tolerance": auto, "quality": "normal"}),
+        json!({"path": "both.stl", "tolerance": printed, "quality": "normal"}),
     );
     assert_eq!(triangles(&both), triangles(&normal));
-    // The other mesh formats follow the same rule.
-    for name in ["normal.3mf", "normal.obj"] {
-        let other = export(&mut s, json!({"path": name}));
-        assert_eq!(triangles(&other), triangles(&normal), "{name}");
-    }
+    // The other mesh format that is printed follows the same rule.
+    let other = export(&mut s, json!({"path": "normal.3mf"}));
+    assert_eq!(triangles(&other), triangles(&normal));
 }
 
 /// What file.export documents for a mesh: with nothing given it is
@@ -144,8 +148,9 @@ fn nothing_given_is_quality_normal_and_a_tolerance_alone_the_old_mesh() {
     assert_eq!(default["angle"], normal_degrees, "{default}");
     assert_eq!(default["tolerance"], normal["tolerance"]);
     let tolerance = |v: &Value| v["tolerance"].as_f64().unwrap();
-    // One automatic tolerance, times each quality's multiple.
-    let auto = tolerance(&default) / normal_scale;
+    // One automatic tolerance, times each quality's multiple (OBJ, since
+    // an STL at normal is held to what a print shows).
+    let auto = tolerance(&export(&mut s, json!({"path": "default.obj"}))) / normal_scale;
     assert!(
         (tolerance(&coarse) / coarse_scale - auto).abs() <= 1e-12 * auto,
         "{default} {coarse}"

@@ -812,6 +812,13 @@ fn variable_publish(session: &mut Session, params: &Value) -> Run {
     if public.kind != ParamKind::Choice && !p.has("choicesFrom") {
         public.choices_from = None;
     }
+    for key in ["default", "min", "max", "step"] {
+        if let Some(source) = p.expr(key)?
+            && let Some(why) = crate::verify_cmds::power_of_a_quantity(&source)
+        {
+            return fail(format!("{command}: `{key}`: {why}"));
+        }
+    }
     optional_expr(&p, "min", &mut public.min)?;
     optional_expr(&p, "max", &mut public.max)?;
     optional_expr(&p, "step", &mut public.step)?;
@@ -1506,6 +1513,11 @@ fn param_set(session: &mut Session, params: &Value) -> Run {
     let key = format!("param.set {}", names.join(","));
     let failed_before = failing_waiting(session, wait)?;
     let changed_before = session.document()?.history.revision();
+    for (name, source) in &sources {
+        if let Some(why) = crate::verify_cmds::power_of_a_quantity(source) {
+            return fail(format!("{command}: `{name}`: {why}"));
+        }
+    }
     edit_merging(session, command, &label, Some(&key), merge, |doc| {
         for (name, source) in &sources {
             doc.set_variable(name, source)?;

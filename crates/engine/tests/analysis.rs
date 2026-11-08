@@ -223,9 +223,9 @@ fn the_draft_of_a_drafted_block() {
     }
 }
 
-/// A cone's draft is sampled, not proven: a pin drafted 5° from its top.
+/// A cone's draft is proven exactly: a pin drafted 5° from its top.
 #[test]
-fn a_cone_is_sampled() {
+fn a_drafted_cylinder_is_a_cone_whose_draft_is_proven() {
     let mut s = session_in(&workdir("analysis", "cone"));
     new_document(&mut s, 1.0);
     built(
@@ -245,8 +245,9 @@ fn a_cone_is_sampled() {
         "measure.draft",
         json!({"faces": faces(&[wall]), "direction": "-z"}),
     );
-    assert_eq!(m["proven"], false, "{m}");
+    assert_eq!(m["proven"], true, "{m}");
     assert!((number(&m["draft"]).abs() - 5.0).abs() < 0.01, "{m}");
+    assert!((number(&m["atLeast"]) + 5.0).abs() < 1e-9, "{m}");
 }
 
 /// Builds two quarter cylinders of radius `r` and height `h` (a Coons
@@ -679,5 +680,108 @@ fn the_draft_of_curved_faces_is_bounded() {
             .cloned()
             .unwrap();
         assert_eq!(found["status"], "passed", "{found}");
+    }
+}
+
+/// A cone's normal leans by its half angle `a` against the axis, so against
+/// a pull at `b` from the axis the least draft of a whole turn is `-(a + b)`
+/// outside (widening along the pull), by hand, and exactly `a` on the wall
+/// of a hole that widens along the pull. Proven, not sampled, at each scale.
+#[test]
+fn the_draft_of_a_cone_is_exact() {
+    let bounded = |m: &Value| {
+        let cone = m["faces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["method"] == "bound")
+            .cloned()
+            .unwrap_or_else(|| panic!("no bounded face: {m}"));
+        assert_eq!(m["proven"], true, "{m}");
+        (number(&cone["least"]), number(&cone["atLeast"]))
+    };
+    for k in SCALES {
+        let mut s = session_in(&workdir("analysis", &format!("cone-{k}")));
+        new_document(&mut s, k);
+        let a = 3f64.patan2(10.0).to_degrees();
+        // Radius 10 at y = 0 widening to 13 at y = 10, about the y axis.
+        run(&mut s, "sketch.create", json!({"name": "Section"}));
+        run(
+            &mut s,
+            "sketch.polyline",
+            json!({"sketch": "Section", "closed": true,
+                   "points": [[0.0, 0.0], [10.0 * k, 0.0], [13.0 * k, 10.0 * k], [0.0, 10.0 * k]]}),
+        );
+        built(
+            &mut s,
+            "feature.revolve",
+            json!({"sketch": "Section", "axis": "y", "name": "Outer"}),
+        );
+        let m = run(
+            &mut s,
+            "measure.draft",
+            json!({"faces": "Outer", "direction": "y"}),
+        );
+        let (least, lower) = bounded(&m);
+        assert!((lower + a).abs() <= 1e-9, "the bound is exact: {m}");
+        assert!((least + a).abs() <= 1e-9, "{m}");
+        let (sin, cos) = 30f64.to_radians().psin_cos();
+        let m = run(
+            &mut s,
+            "measure.draft",
+            json!({"faces": "Outer", "direction": [sin, cos, 0.0]}),
+        );
+        let (least, lower) = bounded(&m);
+        assert!((lower + a + 30.0).abs() <= 1e-9, "the bound is exact: {m}");
+        assert!(lower <= least && least <= lower + 1.0, "{m}");
+
+        // Down to its apex, where the triangles of the fan have one corner
+        // with no angle: narrowing along the pull, `atan(radius / height)`.
+        built(
+            &mut s,
+            "feature.cone",
+            json!({"radius": mm(10.0 * k), "height": mm(20.0 * k),
+                   "position": [mm(50.0 * k), "0 mm", "0 mm"], "name": "Point"}),
+        );
+        let m = run(
+            &mut s,
+            "measure.draft",
+            json!({"faces": "Point", "direction": "z"}),
+        );
+        let (least, lower) = bounded(&m);
+        let point = 10f64.patan2(20.0).to_degrees();
+        assert!((lower - point).abs() <= 1e-9, "the bound is exact: {m}");
+        assert!((least - point).abs() <= 1e-9, "{m}");
+
+        // A hole of the same cone through a block: its wall faces the axis.
+        let mut s = session_in(&workdir("analysis", &format!("cone-hole-{k}")));
+        new_document(&mut s, k);
+        built(
+            &mut s,
+            "feature.block",
+            json!({"size": [mm(40.0 * k), mm(10.0 * k), mm(40.0 * k)],
+                   "position": [mm(-20.0 * k), "0 mm", mm(-20.0 * k)], "name": "Block"}),
+        );
+        run(&mut s, "sketch.create", json!({"name": "Bore"}));
+        run(
+            &mut s,
+            "sketch.polyline",
+            json!({"sketch": "Bore", "closed": true,
+                   "points": [[0.0, -k], [9.7 * k, -k],
+                              [13.3 * k, 11.0 * k], [0.0, 11.0 * k]]}),
+        );
+        built(
+            &mut s,
+            "feature.revolve",
+            json!({"sketch": "Bore", "axis": "y", "cut": "Block", "name": "Holed"}),
+        );
+        let m = run(
+            &mut s,
+            "measure.draft",
+            json!({"faces": "Holed", "direction": "y"}),
+        );
+        let (least, lower) = bounded(&m);
+        assert!((lower - a).abs() <= 1e-9, "the bound is exact: {m}");
+        assert!((least - a).abs() <= 1e-9, "{m}");
     }
 }

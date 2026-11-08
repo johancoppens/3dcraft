@@ -50,6 +50,8 @@ pub struct MeshCase {
     pub volume: f64,
     pub area: f64,
     pub bbox: Option<[f64; 6]>,
+    /// The chordal tolerance of the mesh `bbox` is the box of.
+    pub bbox_slack: f64,
 }
 
 /// What a body must measure by a formula that owes nothing to the kernel,
@@ -1915,7 +1917,7 @@ pub fn check_meshes(dir: &std::path::Path, meshes: &[MeshCase]) -> (String, Vec<
         let mut box_off = f64::NAN;
         if let (Some(ours), 6) = (mesh.bbox, theirs.len()) {
             let size = (0..3).map(|i| ours[i + 3] - ours[i]).fold(0.0, f64::max);
-            let bound = mesh.tolerance + rounding + 1e-6 * size;
+            let bound = mesh.tolerance.max(mesh.bbox_slack) + rounding + 1e-6 * size;
             box_off = (0..6)
                 .map(|i| (theirs[i] - ours[i]).abs())
                 .fold(0.0, f64::max)

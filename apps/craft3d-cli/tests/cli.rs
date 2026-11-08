@@ -186,13 +186,20 @@ fn build_part(dir: &Path) -> String {
 // ------------------------------------------------------ version and help
 
 #[test]
-fn version_prints_the_package_version() {
+fn version_prints_the_package_version_and_the_format() {
     for flag in ["--version", "-V"] {
         let ran = cli(&[flag]).ok();
-        assert_eq!(
-            ran.stdout,
-            format!("craft3d-cli {}\n", env!("CARGO_PKG_VERSION"))
+        let line = ran.stdout.as_str();
+        assert!(
+            line.starts_with(&format!("craft3d-cli {} (", env!("CARGO_PKG_VERSION"))),
+            "{line}"
         );
+        let format = line
+            .trim_end()
+            .strip_suffix(')')
+            .and_then(|l| l.rsplit("format ").next())
+            .unwrap_or("");
+        assert!(format.parse::<u32>().is_ok(), "{line}");
     }
 }
 

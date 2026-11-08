@@ -38,6 +38,16 @@ pub fn build_commit() -> Option<&'static str> {
     BUILD_COMMIT.get().copied()
 }
 
+/// What `--version` prints for `program`: the version, the commit it was
+/// built from when known, and the `.3dcraft` format version it writes.
+pub fn version_line(program: &str) -> String {
+    let format = craft3d_format::FORMAT_VERSION;
+    match build_commit() {
+        Some(commit) => format!("{program} {VERSION} ({commit}, format {format})"),
+        None => format!("{program} {VERSION} (format {format})"),
+    }
+}
+
 /// The most characters of params and of an error a report keeps.
 pub const MAX_REPORT_FIELD_CHARS: usize = 4000;
 
@@ -336,6 +346,14 @@ mod tests {
         if let Some(first) = first {
             assert_eq!(now, Some(first));
         }
+        assert_eq!(
+            version_line("x"),
+            format!(
+                "x {VERSION} ({}, format {})",
+                now.unwrap(),
+                craft3d_format::FORMAT_VERSION
+            )
+        );
         let text = Session::new(Workspace::memory()).bug_report();
         assert!(
             text.contains(&format!("commit: {}\n", now.unwrap())),

@@ -1646,6 +1646,10 @@ pub struct FaceCurvature {
     pub stretch: f64,
     /// Whether the curvature could be taken at every point of the grid.
     pub everywhere: bool,
+    /// Whether the surface's curvature is the same over all of it (a
+    /// plane, cylinder, cone or sphere), so the samples are the whole
+    /// answer; elsewhere what lies between them is not bounded.
+    pub exact: bool,
     lengths: (f64, f64),
 }
 
@@ -1734,6 +1738,10 @@ fn curvature_over(surface: &Surface, (u0, u1): (f64, f64), (v0, v1): (f64, f64))
             stretch
         },
         everywhere,
+        exact: matches!(
+            surface,
+            Surface::Plane(_) | Surface::Cylinder(_) | Surface::Cone(_) | Surface::Sphere(_)
+        ),
         lengths: (length_u, length_v),
     }
 }

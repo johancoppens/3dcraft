@@ -145,8 +145,11 @@ fn the_developable_between_coaxial_arcs_is_a_cone_frustum_and_unfolds_flat() {
             "assert.add",
             json!({"name": "no curvature", "measure": "curvature", "of": "Panel", "max": format!("{}", 1e-6 / (k * k))}),
         );
+        // Measured on a grid of samples of a freeform face: what lies
+        // between them is not bounded, so neither is proven.
         let listed = run(&mut s, "assert.list", json!({}));
-        assert_eq!(listed["ok"], true, "{listed}");
+        assert_eq!(listed["failed"], 0, "{listed}");
+        assert_eq!(listed["notProven"], 2, "{listed}");
 
         // Saved and opened again: the same bodies.
         run(

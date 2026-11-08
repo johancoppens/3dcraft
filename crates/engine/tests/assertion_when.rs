@@ -101,7 +101,7 @@ fn an_assertion_whose_condition_is_zero_is_inactive_and_counts_as_nothing() {
         "variable.set",
         json!({"name": "on", "expr": "0", "wait": true}),
     );
-    let summary = &edit["assertions"];
+    let summary = &edit["assertionSummary"];
     assert_eq!(summary["inactive"], 1, "{edit}");
     // The one switched on is measured, and broken.
     assert_eq!(summary["broken"][0]["name"], "wrong", "{edit}");

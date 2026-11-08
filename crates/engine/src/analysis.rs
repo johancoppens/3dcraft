@@ -1001,22 +1001,111 @@ fn parameter_box(
 
 use crate::verify_cmds::{Ctx, Dim, Outcome};
 
+/// The least of `asin(n·d)` over a triangle of a cylinder or cone about
+/// `frame`'s z, whose outward normal depends on the angle `θ` about the axis
+/// alone: `n = s (cos α · radial(θ) − sin α · z)`, `s` the side the normals
+/// face and `α` the surface's half angle, given as `(sin α, cos α)` (0 for
+/// a cylinder). So `n·d = s cos α · R cos(θ − φ) − s sin α · d_z` over the
+/// corners' angles, with `R` the length of `d` across the axis: the ends,
+/// or `−R cos α` plus the constant where the cosine's least lies within.
+/// Corners with no `radius_there` above 0 have no angle and are left out.
+/// A curved trim edge between two corners can reach further round than
+/// they do, by at most `chordal` (the mesh's chordal tolerance) over the
+/// distance from the axis, so the range is widened by that.
+/// `turn(π)`, the bound of any normal, when the angles are half a turn apart.
+fn turned_lower(
+    f: &craft3d_math::Frame,
+    (sin_a, cos_a): (f64, f64),
+    corners: &[(Vec3, Vec3); 3],
+    d: Vec3,
+    radius_there: &dyn Fn(Vec3) -> f64,
+    chordal: f64,
+    turn: impl Fn(f64) -> Option<f64>,
+) -> Option<f64> {
+    let (x, y) = (f.x(), f.y());
+    let angle = |p: Vec3| {
+        let q = p - f.origin();
+        q.dot(y).patan2(q.dot(x))
+    };
+    // The side: the normals point away from the axis or towards it.
+    let radial = |p: Vec3| {
+        let q = p - f.origin();
+        q - f.z() * q.dot(f.z())
+    };
+    let s = if corners.iter().map(|(p, n)| radial(*p).dot(*n)).sum::<f64>() >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    let (a, b) = (x.dot(d), y.dot(d));
+    let r = a.phypot(b);
+    let phi = b.patan2(a);
+    let along = -s * sin_a * f.z().dot(d);
+    // Unwrap the corners' angles about the first.
+    let mut kept = corners
+        .iter()
+        .map(|(p, _)| *p)
+        .filter(|p| radius_there(*p) > 0.0);
+    let start = kept.next()?;
+    let first = angle(start);
+    let tau = std::f64::consts::TAU;
+    let mut lo = first;
+    let mut hi = first;
+    let mut nearest = radial(start).length();
+    for p in kept {
+        let t = angle(p);
+        let t = t - tau * ((t - first) / tau).round();
+        lo = lo.min(t);
+        hi = hi.max(t);
+        nearest = nearest.min(radial(p).length());
+    }
+    if nearest <= chordal {
+        return turn(std::f64::consts::PI);
+    }
+    let margin = chordal / (nearest - chordal);
+    let (lo, hi) = (lo - margin, hi + margin);
+    if hi - lo >= std::f64::consts::PI {
+        return turn(std::f64::consts::PI);
+    }
+    let value = |t: f64| s * cos_a * r * (t - phi).pcos() + along;
+    let mut m = value(lo).min(value(hi));
+    // Where s·cos(θ − φ) is −1: θ = φ + π for s > 0, φ for s < 0.
+    let at = if s > 0.0 {
+        phi + std::f64::consts::PI
+    } else {
+        phi
+    };
+    let k = ((lo - at) / tau).ceil();
+    if at + k * tau <= hi {
+        m = -cos_a * r + along;
+    }
+    Some(m.clamp(-1.0, 1.0).pasin())
+}
+
 /// How the least draft over one triangle of a curved face is bounded from
 /// below, given its corners and their exact normals (unit, outward) and
-/// the unit pull `d`: `None` where no bound is known (a cone, a spline).
+/// the unit pull `d`: `None` where no bound is known (a spline).
 ///
 /// - *Cylinder*: the normal depends on the angle about the axis only,
 ///   `n·d = s R cos(θ − φ)` (`R` the length of `d` across the axis, `s` the
 ///   side the normals face), so its least over the triangle's angular
-///   range (the corners' angles, less than half a turn apart) is exact:
-///   the ends, or `−R` where `φ` (or `φ + π`) lies within. Exact.
+///   range (the corners' angles, less than half a turn apart) is known:
+///   the ends, or `−R` where `φ` (or `φ + π`) lies within. Exact over a
+///   whole turn; past a curved trim it allows for the mesh's reach.
+/// - *Cone*: as the cylinder, the normal leaning by the half angle
+///   ([`turned_lower`]).
 /// - *Sphere*: two points of a triangle are at most its longest side `c`
 ///   apart, so their normals at most `2 asin(c / 2r)`: the least corner's
 ///   draft less that.
 /// - *Torus*: at most `κ_max · π/2 · c`, `κ_max` the larger of `1/minor`
 ///   and `1/|major − minor|` (the arc between two points at most `π/2`
 ///   times their chord), capped at π.
-fn triangle_lower(surface: &Surface, corners: &[(Vec3, Vec3); 3], d: Vec3) -> Option<f64> {
+fn triangle_lower(
+    surface: &Surface,
+    corners: &[(Vec3, Vec3); 3],
+    d: Vec3,
+    chordal: f64,
+) -> Option<f64> {
     let draft = |n: Vec3| n.dot(d).clamp(-1.0, 1.0).pasin();
     let least = corners
         .iter()
@@ -1033,52 +1122,29 @@ fn triangle_lower(surface: &Surface, corners: &[(Vec3, Vec3); 3], d: Vec3) -> Op
     };
     match surface {
         Surface::Cylinder(c) => {
+            turned_lower(c.frame(), (0.0, 1.0), corners, d, &|_| 1.0, chordal, turn)
+        }
+        Surface::Cone(c) => {
             let f = c.frame();
-            let (x, y) = (f.x(), f.y());
-            let angle = |p: Vec3| {
-                let q = p - f.origin();
-                q.dot(y).patan2(q.dot(x))
-            };
-            // The side: the normals point away from the axis or towards it.
-            let radial = |p: Vec3| {
-                let q = p - f.origin();
-                q - f.z() * q.dot(f.z())
-            };
-            let s = if corners.iter().map(|(p, n)| radial(*p).dot(*n)).sum::<f64>() >= 0.0 {
-                1.0
-            } else {
-                -1.0
-            };
-            let (a, b) = (x.dot(d), y.dot(d));
-            let r = a.phypot(b);
-            let phi = b.patan2(a);
-            // Unwrap the corners' angles about the first.
-            let first = angle(pa);
-            let tau = std::f64::consts::TAU;
-            let mut lo = first;
-            let mut hi = first;
-            for (p, _) in corners.iter().skip(1) {
-                let t = angle(*p);
-                let t = t - tau * ((t - first) / tau).round();
-                lo = lo.min(t);
-                hi = hi.max(t);
+            let (sin, cos) = c.half_angle().psin_cos();
+            let slope = sin / cos;
+            let radius_there = |p: Vec3| c.radius() + (p - f.origin()).dot(f.z()) * slope;
+            // A corner at the apex has no angle; the rulings through it run
+            // to the triangle's other corners, which bound the angles of
+            // its points. Past the apex the angle turns over: not bounded.
+            let tiny = 1e-9 * longest;
+            if corners.iter().any(|(p, _)| radius_there(*p) < -tiny) {
+                return None;
             }
-            if hi - lo >= std::f64::consts::PI {
-                return turn(std::f64::consts::PI);
-            }
-            let value = |t: f64| s * r * (t - phi).pcos();
-            let mut m = value(lo).min(value(hi));
-            // Where s·cos(θ − φ) is −1: θ = φ + π for s > 0, φ for s < 0.
-            let at = if s > 0.0 {
-                phi + std::f64::consts::PI
-            } else {
-                phi
-            };
-            let k = ((lo - at) / tau).ceil();
-            if at + k * tau <= hi {
-                m = -r;
-            }
-            Some(m.clamp(-1.0, 1.0).pasin())
+            turned_lower(
+                f,
+                (sin, cos),
+                corners,
+                d,
+                &|p| radius_there(p) - tiny,
+                chordal,
+                turn,
+            )
         }
         Surface::Sphere(sp) => turn(2.0 * (longest / (2.0 * sp.radius())).min(1.0).pasin()),
         Surface::Torus(t) => {
@@ -1090,17 +1156,22 @@ fn triangle_lower(surface: &Surface, corners: &[(Vec3, Vec3); 3], d: Vec3) -> Op
     }
 }
 
-/// The mesh a measure of the view's kind looks at: within 2e-4 of the
-/// body's size and 8° between neighbouring normals, at most 2 million
-/// triangles.
-fn measure_mesh(body: &Arc<Body>, tolerance: f64) -> Result<craft3d_tess::Mesh, String> {
+/// The chordal tolerance of [`measure_mesh`].
+fn measure_chordal(body: &Arc<Body>, tolerance: f64) -> f64 {
     let size = crate::mass::mass_of(body)
         .ok()
         .map(|m| m.area.sqrt())
         .filter(|a| a.is_finite() && *a > 0.0)
         .unwrap_or(1.0);
+    (size * 2e-4).max(10.0 * tolerance)
+}
+
+/// The mesh a measure of the view's kind looks at: within 2e-4 of the
+/// body's size and 8° between neighbouring normals, at most 2 million
+/// triangles.
+fn measure_mesh(body: &Arc<Body>, tolerance: f64) -> Result<craft3d_tess::Mesh, String> {
     let params = craft3d_tess::TessParams {
-        chordal_tolerance: (size * 2e-4).max(10.0 * tolerance),
+        chordal_tolerance: measure_chordal(body, tolerance),
         max_angle: Some(8f64.to_radians()),
         max_triangles: Some(2_000_000),
         ..craft3d_tess::TessParams::default()
@@ -1116,9 +1187,9 @@ fn measure_mesh(body: &Arc<Body>, tolerance: f64) -> Result<craft3d_tess::Mesh, 
 /// is). A plane is exact. Elsewhere the normals are the exact surface's at
 /// the vertices of a mesh within 2e-4 of the body's size and 8° between
 /// neighbours, and the least is at a real place (the measure's upper
-/// bound); on a cylinder, a sphere and a torus every triangle bounds the
-/// least below ([`triangle_lower`]: exact on a cylinder, the normal's turn
-/// over the triangle on the others), proven; on a cone and a spline the
+/// bound); on a cylinder, a cone, a sphere and a torus every triangle bounds the
+/// least below ([`triangle_lower`]: from the angles a triangle covers on
+/// a cylinder and a cone, the normal's turn over it on the others), proven; on a spline the
 /// least is sampled and an assertion on it is not proven.
 pub(crate) fn draft_measure(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     crate::verify_cmds::only(p, &["faces", "direction", "minDraft"])?;
@@ -1143,6 +1214,7 @@ pub(crate) fn draft_measure(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Out
     let mut listed = Vec::new();
     for (feature, body, faces, name) in &found {
         let mesh = measure_mesh(body, ctx.tolerance.linear).map_err(|e| format!("{name}: {e}"))?;
+        let chordal = measure_chordal(body, ctx.tolerance.linear);
         // The triangles of each face, gathered once.
         let mut by_face: Vec<Vec<usize>> = vec![Vec::new(); body.faces.len()];
         for (t, &f) in mesh.face_ids.iter().enumerate() {
@@ -1160,14 +1232,21 @@ pub(crate) fn draft_measure(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Out
                 let Some(tri) = mesh.triangles.get(t) else {
                     continue;
                 };
-                let corner = |k: u32| -> Option<(Vec3, Vec3)> {
-                    let n = mesh.normals.get(k as usize)?.normalized()?;
+                let corner = |k: u32| -> Option<(Vec3, Option<Vec3>)> {
+                    let n = mesh.normals.get(k as usize)?.normalized();
                     Some((*mesh.positions.get(k as usize)?, n))
                 };
                 let (Some(a), Some(b), Some(c)) = (corner(tri[0]), corner(tri[1]), corner(tri[2]))
                 else {
                     continue;
                 };
+                // A corner with no normal (a cone's apex) takes a neighbour's,
+                // a normal of the face along the ruling to that corner.
+                let Some(known) = [a.1, b.1, c.1].into_iter().flatten().next() else {
+                    continue;
+                };
+                let with = |(p, n): (Vec3, Option<Vec3>)| (p, n.unwrap_or(known));
+                let (a, b, c) = (with(a), with(b), with(c));
                 let corners = [a, b, c];
                 for (q, n) in corners {
                     let angle = draft_of(n);
@@ -1175,7 +1254,7 @@ pub(crate) fn draft_measure(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Out
                         (f_least, f_at) = (angle, q);
                     }
                 }
-                match triangle_lower(&topo.surface, &corners, d) {
+                match triangle_lower(&topo.surface, &corners, d, chordal) {
                     Some(l) => f_lower = f_lower.min(l),
                     None => bounded = false,
                 }
@@ -1196,7 +1275,10 @@ pub(crate) fn draft_measure(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Out
                     f_below = if exact < min { f_area } else { 0.0 };
                     ("exact", Some(exact))
                 }
-                Surface::Cylinder(_) | Surface::Sphere(_) | Surface::Torus(_)
+                Surface::Cylinder(_)
+                | Surface::Cone(_)
+                | Surface::Sphere(_)
+                | Surface::Torus(_)
                     if bounded && f_lower.is_finite() =>
                 {
                     ("bound", Some(f_lower.min(f_least)))
@@ -1234,6 +1316,9 @@ pub(crate) fn draft_measure(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Out
     let mut out = Outcome::number(dim, least);
     out.upper = Some(least);
     out.lower = proven.then_some(lower.min(least));
+    if !proven {
+        out.sampled = crate::verify_cmds::Sampled::OpenBelow;
+    }
     out.detail.insert("least".into(), json!(least.to_degrees()));
     out.detail.insert(
         "atLeast".into(),
@@ -1417,5 +1502,41 @@ mod tests {
     fn the_largest_curvature_of_a_saddle() {
         assert_eq!(CurvatureKind::Max.of(-4.0, 0.0), 2.0);
         assert_eq!(CurvatureKind::Max.of(1.0, -1.0), 1.0);
+    }
+}
+
+#[cfg(test)]
+mod draft_bound_tests {
+    use super::*;
+
+    /// A pull across the axis and a triangle that covers 85 to 95 degrees
+    /// round a cylinder of radius 10: `n·d = cos θ`, least at 95 degrees.
+    /// A curved trim may reach further round by `chordal / r`, so with a
+    /// chordal tolerance the bound lies lower by what that reach is worth,
+    /// and never above the least over the widened range.
+    #[test]
+    fn a_curved_trim_lowers_the_bound_by_the_reach_of_the_mesh() {
+        let f = craft3d_math::Frame::new(Vec3::ZERO, Vec3::Z, Vec3::X).unwrap();
+        let at = |deg: f64| {
+            let (s, c) = deg.to_radians().psin_cos();
+            (Vec3::new(10.0 * c, 10.0 * s, 0.0), Vec3::new(c, s, 0.0))
+        };
+        let corners = [at(85.0), at(95.0), (at(90.0).0 + Vec3::Z, at(90.0).1)];
+        let bound = |chordal: f64| {
+            turned_lower(&f, (0.0, 1.0), &corners, Vec3::X, &|_| 1.0, chordal, |_| {
+                Some(-9.0)
+            })
+            .unwrap()
+        };
+        let at_mesh = bound(0.0);
+        let hi = 95f64.to_radians();
+        assert!((at_mesh - hi.pcos().pasin()).abs() < 1e-12, "{at_mesh}");
+        let chordal = 0.1;
+        let margin = chordal / (10.0 - chordal);
+        let widened = bound(chordal);
+        assert!((widened - (hi + margin).pcos().pasin()).abs() < 1e-12);
+        assert!(widened < at_mesh);
+        // Nearer the axis than the mesh can tell: no angle to go by.
+        assert_eq!(bound(20.0), -9.0);
     }
 }

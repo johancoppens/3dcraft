@@ -129,8 +129,10 @@ pub fn refers_to_variable(source: &str, name: &str) -> bool {
 }
 
 /// Every name token in `source`, in order, repeats included: variables,
-/// functions, units, `pi`. Works on source that does not parse. For
-/// finding a name that no expression uses yet.
+/// functions, units, `pi`, but not a table's column (the `h` of
+/// `ipe[pick].h`, which never refers to anything outside its table).
+/// Works on source that does not parse. For finding what an expression
+/// depends on, and a name that no expression uses yet.
 pub fn names_in(source: &str) -> Vec<&str> {
     let mut names = Vec::new();
     let mut at = 0;
@@ -149,7 +151,8 @@ pub fn names_in(source: &str) -> Vec<&str> {
         at = token.end;
         let text = source.get(token.pos..token.end).unwrap_or("");
         let before = previous.replace((token.kind, text));
-        if token.kind == TokenKind::Ident && !is_unit_after(before, text) {
+        let column = matches!(before, Some((TokenKind::Dot, _)));
+        if token.kind == TokenKind::Ident && !column && !is_unit_after(before, text) {
             names.push(text);
         }
     }

@@ -517,7 +517,7 @@ fn run(mut args: Args) -> Result<(), CliError> {
                 }
                 "--version" | "-V" => {
                     args::no_value(&name, inline.as_ref())?;
-                    print(concat!("craft3d-cli ", env!("CARGO_PKG_VERSION")))
+                    print(&craft3d_engine::version_line("craft3d-cli"))
                 }
                 _ => Err(CliError::Usage(format!(
                     "unknown flag `{name}`; a subcommand comes first"

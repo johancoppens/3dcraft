@@ -149,7 +149,7 @@ fn an_edit_says_which_features_it_made_fail() {
         "{broke}"
     );
     // The assertions are still reported beside it.
-    assert!(broke.get("assertions").is_some(), "{broke}");
+    assert!(broke.get("assertionSummary").is_some(), "{broke}");
     // Already failing: not made to fail by the next change.
     let again = run(
         &mut s,

@@ -1345,6 +1345,24 @@ pub(crate) fn same_plane(a: &PersistentName, b: &PersistentName) -> bool {
     false
 }
 
+/// The full name of the face `name` of an earlier body as it is now, when
+/// a later feature has left it in another plane (a draft tilted it, a move
+/// took it along). A sketch or a datum on `name` keeps meaning the face as
+/// it was, so what placed one can say so. `None` when the face still lies
+/// in that plane, or there is no one newest face to point to.
+pub fn face_changed_since(
+    doc: &Document,
+    results: &[FeatureResult],
+    name: &PersistentName,
+) -> Option<PersistentName> {
+    let newest = crate::follow::face(doc, results, name, "face").ok()??;
+    let then = resolve_face(doc, results, name).ok()?;
+    let now = resolve_face(doc, results, &newest).ok()?;
+    let turned = then.z().cross(now.z()).length() > doc.tolerance.angular;
+    let moved = (now.origin() - then.origin()).dot(then.z()).abs() > doc.tolerance.linear;
+    (turned || moved).then_some(newest)
+}
+
 /// The frame of the face a name points at, among the features regenerated
 /// so far. A name that points at nothing is an error that says what is
 /// there instead; it never resolves to another face.

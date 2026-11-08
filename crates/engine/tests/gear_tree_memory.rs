@@ -200,7 +200,7 @@ fn a_hub_over_the_teeth_of_a_formula_gear_holds_small_trees() {
     }
     let check = run(&mut s, "document.check", json!({}));
     assert_eq!(check["ok"], true, "{check}");
-    assert_eq!(check["assertions"]["passed"], 2, "{check}");
+    assert_eq!(check["assertionSummary"]["passed"], 2, "{check}");
     let built = craft3d_kernel::work::work().patch_trees - before;
     let (trees, bytes) = craft3d_kernel::shelf_size();
     // Before: 160 trees of 6 to 22 MB built, 2.2 GB held by the union,

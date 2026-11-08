@@ -19,7 +19,7 @@ turbofan patch_trees 40
 turbofan refusals 0
 turbofan regenerations 242
 turbofan sketch_solves 101
-turbofan triangles 211803
+turbofan triangles 244433
 engine-block blend_sections 28
 engine-block boolean_edge_candidates 28833
 engine-block boolean_face_candidates 547079
@@ -57,7 +57,7 @@ impeller patch_trees 29
 impeller refusals 0
 impeller regenerations 82
 impeller sketch_solves 63
-impeller triangles 195540
+impeller triangles 222504
 rotor blend_sections 0
 rotor boolean_edge_candidates 0
 rotor boolean_face_candidates 1068

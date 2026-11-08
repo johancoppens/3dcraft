@@ -541,7 +541,8 @@ pub enum Verdict {
 }
 
 /// The faults a commit's `result` reports itself: the features it made
-/// fail (`failed`) and the assertions it found broken (`assertions.broken`).
+/// fail (`failed`) and the assertions it found broken
+/// (`assertionSummary.broken`).
 pub fn reported_faults(result: &Value) -> Faults {
     let mut faults = Faults::default();
     for f in result
@@ -563,7 +564,7 @@ pub fn reported_faults(result: &Value) -> Faults {
             .insert(if id.is_empty() { name } else { id }, message);
     }
     for b in result
-        .get("assertions")
+        .get("assertionSummary")
         .and_then(|a| a.get("broken"))
         .and_then(Value::as_array)
         .into_iter()
@@ -2983,7 +2984,7 @@ mod tests {
             verdict(&Ok(json!({})), &swapped, &old),
             Verdict::Broke("New: y".into())
         );
-        let assertion = json!({"assertions": {"count": 1, "passed": 0,
+        let assertion = json!({"assertionSummary": {"count": 1, "passed": 0,
             "broken": [{"name": "wall", "message": "wall is 1 mm, must be ≥ 2 mm"}],
             "unproven": [], "pending": 0}});
         let faults = reported_faults(&assertion);

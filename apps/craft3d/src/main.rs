@@ -41,7 +41,7 @@ fn main() -> ExitCode {
         Ok(Parsed::Version) => {
             say(
                 &mut std::io::stdout(),
-                &format!("craft3d {}", env!("CARGO_PKG_VERSION")),
+                &craft3d_engine::version_line("craft3d"),
             );
             return ExitCode::SUCCESS;
         }

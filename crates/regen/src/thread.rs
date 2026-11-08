@@ -129,6 +129,23 @@ struct Size {
     iso: IsoThread,
 }
 
+/// The drill ISO 2306 gives for tapping `iso`, in model units (`mm` of them
+/// to the millimetre): `D − P`, except at the coarse pitches where that
+/// falls between the drills that exist (M8: 6.75, drilled 6.8).
+fn tap_drill(iso: &IsoThread, mm: f64) -> f64 {
+    const BETWEEN_DRILLS: [(f64, f64, f64); 4] = [
+        (4.5, 0.75, 3.7),
+        (8.0, 1.25, 6.8),
+        (9.0, 1.25, 7.8),
+        (12.0, 1.75, 10.2),
+    ];
+    let is = |a: f64, b: f64| (a / mm - b).abs() < 1e-9;
+    BETWEEN_DRILLS
+        .iter()
+        .find(|(major, pitch, _)| is(iso.major, *major) && is(iso.pitch, *pitch))
+        .map_or_else(|| iso.tap_drill(), |(_, _, drill)| drill * mm)
+}
+
 /// Whether a face of `radius` takes the thread `iso`. A shank: the
 /// nominal diameter within half the tooth's depth below (a shank turned a
 /// little under size) and the groove's overshoot above (it has to break
@@ -440,13 +457,14 @@ pub(crate) fn build(
         return Err(format!("length: {run} {unit} is not a length above 0"));
     }
     let diameter = 2.0 * radius;
+    let mm = length(doc, variables, "size", &Expr::new("1 mm"))?;
     if !fits(&iso, radius, hole) {
         return Err(if hole {
             format!(
                 "face: {} is a hole {diameter} {unit} across; {} is tapped in a hole of its tap drill's diameter, {} {unit} (the minor diameter {} {unit} up to that)",
                 thread.face,
                 size.designation,
-                iso.tap_drill(),
+                tap_drill(&iso, mm),
                 iso.minor()
             )
         } else {
@@ -478,6 +496,7 @@ pub(crate) fn build(
         cosmetic: !thread.modeled,
         deviation: 0.0,
         internal: hole,
+        tap_drill: hole.then(|| tap_drill(&iso, mm)),
     };
 
     if !thread.modeled {

@@ -355,6 +355,37 @@ fn tube(s: &mut Session, hole: f64) {
     );
 }
 
+#[test]
+fn the_tap_drill_is_one_that_exists() {
+    // ISO 2306 and every tap drill table: D - P, except where that falls
+    // between the drills sold.
+    for (hole, size, drill) in [
+        (3.7, "M4.5", 3.7),
+        (6.8, "M8", 6.8),
+        (7.8, "M9", 7.8),
+        (10.2, "M12", 10.2),
+        (8.5, "M10", 8.5),
+        (5.0, "M6", 5.0),
+    ] {
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({}));
+        tube(&mut s, hole);
+        let made = run(
+            &mut s,
+            "feature.thread",
+            json!({"face": "F3:copy(1)/F2:face(0)", "start": "F3:copy(0)/F1:face(1)",
+                   "size": size, "length": "12 mm", "name": "Tapped"}),
+        );
+        assert_eq!(made["status"], "ok", "{made}");
+        let thread = feature(&mut s, "Tapped")["thread"].clone();
+        assert_eq!(thread["size"], size, "{thread}");
+        assert!(
+            (thread["tapDrill"].as_f64().unwrap() - drill).abs() < 1e-12,
+            "{thread}"
+        );
+    }
+}
+
 /// Tapped holes: a thread on the wall of a hole is internal, found from
 /// the face. Left without a size, a hole of M10's tap drill (8.5) is M10
 /// and one of M6's minor diameter (4.917) M6, coarse; the thread reports
@@ -421,7 +452,7 @@ fn a_thread_in_a_hole_is_internal_cosmetic_or_modeled() {
         json!({"feature": "Tapped", "size": "M12"}),
     );
     let error = failure(&mut s, "Tapped");
-    assert!(error.contains("tap drill's diameter, 10.25"), "{error}");
+    assert!(error.contains("tap drill's diameter, 10.2 mm"), "{error}");
 }
 
 /// A shell made after a modelled thread offsets the thread's helical

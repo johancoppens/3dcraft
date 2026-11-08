@@ -139,7 +139,13 @@ fn steps(file: &str) -> (Session, Vec<String>) {
                 if id == "document.check" && v["ok"] != true {
                     failed.push(format!("{id}: {v}"));
                 }
-                if id == "assert.add" && v["status"] != "passed" {
+                // On a freeform panel the developability is measured at
+                // samples: not proven, which is an answer, not a failure.
+                let sampled = v["status"] == "notProven"
+                    && v["message"]
+                        .as_str()
+                        .is_some_and(|m| m.contains("sampled points only"));
+                if id == "assert.add" && v["status"] != "passed" && !sampled {
                     failed.push(format!("{id}: {v}"));
                 }
             }

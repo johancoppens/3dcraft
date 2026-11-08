@@ -422,7 +422,7 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
                     // The point made is a control point, not the point
                     // given: an expression could not hold it.
                     return invalid(format!(
-                        "point {} of `through` has a coordinate written as an expression; a point the spline passes through between its ends is fitted, not held: give it as numbers, or give `control` points",
+                        "point {} of `through` has a coordinate written as an expression; a point the spline passes through between its ends is fitted, not held: give `live: true` to fit the spline through its expressions again at every regeneration, give it as numbers, or give `control` points",
                         i + 1
                     ));
                 } else {

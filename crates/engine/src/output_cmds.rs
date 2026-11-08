@@ -735,6 +735,9 @@ fn variable_output(session: &mut Session, params: &Value) -> Run {
     let wait = wait_of(&p)?;
     let name = p.required_str("name")?.to_string();
     let expr = p.expr("expr")?.ok_or_else(|| p.missing("expr"))?;
+    if let Some(why) = crate::verify_cmds::power_of_a_quantity(&expr) {
+        return fail(format!("{ID}: `expr`: {why}"));
+    }
     check_name(session.document()?.history.current(), ID, &name)?;
     let output = shown_as(
         session,

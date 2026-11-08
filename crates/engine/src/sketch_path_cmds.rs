@@ -677,6 +677,16 @@ fn build(s: &mut Sketch, path: &Path) -> Result<Built, SketchError> {
         if let Some(warning) = step.warning {
             built.warnings.push(format!("segments[{index}]: {warning}"));
         }
+        if any_corner_held(&path.start, &path.segments)
+            && matches!(
+                &segment.shape,
+                Shape::Center { center: PointArg::New(_, _, held), .. } if *held == Held::default()
+            )
+        {
+            built.warnings.push(format!(
+                "segments[{index}]: the centre is given as plain numbers in a path whose corners are held, so it is only a starting point and the solver may move it when a variable changes; write it as expressions (\"0 mm\") to hold it there"
+            ));
+        }
         if let Some(snap) = step.snapped {
             built.snapped.push((index, snap));
         }
@@ -744,13 +754,7 @@ fn build(s: &mut Sketch, path: &Path) -> Result<Built, SketchError> {
 /// start of a profile written in units is not left free beside its held
 /// corners. A path of plain numbers only stays a free drawing.
 fn hold_plain_corners(start: &mut PointArg, segments: &mut [Segment]) {
-    let held =
-        |point: &PointArg| matches!(point, PointArg::New(_, _, held) if *held != Held::default());
-    let any = held(start)
-        || segments
-            .iter()
-            .any(|segment| matches!(&segment.end, End::Point(point) if held(point)));
-    if !any {
+    if !any_corner_held(start, segments) {
         return;
     }
     let hold = |point: &mut PointArg| {
@@ -769,6 +773,16 @@ fn hold_plain_corners(start: &mut PointArg, segments: &mut [Segment]) {
             hold(point);
         }
     }
+}
+
+/// Whether the start or a segment's end is held at an expression.
+fn any_corner_held(start: &PointArg, segments: &[Segment]) -> bool {
+    let held =
+        |point: &PointArg| matches!(point, PointArg::New(_, _, held) if *held != Held::default());
+    held(start)
+        || segments
+            .iter()
+            .any(|segment| matches!(&segment.end, End::Point(point) if held(point)))
 }
 
 // ---------------------------------------------------------------- command

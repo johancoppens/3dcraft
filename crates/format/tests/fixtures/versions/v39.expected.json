@@ -52,9 +52,9 @@
       "expected": "true",
       "measure": "developable",
       "measured": "true",
-      "message": "developable: true",
+      "message": "developable: not proven: found true, expected true; it was measured at sampled points only, and what lies between them is not bounded",
       "name": "flat panel",
-      "status": "passed"
+      "status": "notProven"
     }
   ]
 }

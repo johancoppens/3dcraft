@@ -308,6 +308,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
     let mut all = true;
     let mut listed = Vec::new();
     let mut proven = true;
+    let mut exact = true;
     for (feature, body, faces, face_name) in &found {
         for &face in faces {
             let c = craft3d_kernel::unfold::face_curvature(body, craft3d_topo::FaceId(face as u32))
@@ -316,6 +317,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
             let ok = c.stretch <= craft3d_kernel::unfold::DEVELOPABLE_SHARE * tol;
             all &= ok;
             proven &= c.everywhere;
+            exact &= c.exact;
             if listed.len() < 200 {
                 listed.push(json!({
                     "face": face_name,
@@ -333,9 +335,12 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
     } else {
         Outcome::number(Dim::Length(-2), largest)
     };
+    if !exact {
+        out.sampled = crate::verify_cmds::Sampled::OpenAbove;
+    }
     out.detail.insert("faces".into(), listed.into());
     out.detail.insert("developable".into(), all.into());
-    out.detail.insert("proven".into(), false.into());
+    out.detail.insert("proven".into(), exact.into());
     out.detail.insert("sampledEverywhere".into(), proven.into());
     Ok(out)
 }
