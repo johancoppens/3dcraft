@@ -2687,12 +2687,24 @@ impl Shell {
         self.sync_joint_handles(session, &scene);
         // Framed on a box that does not depend on how finely the scene
         // was sampled: the quick first picture turning into the display
-        // scene moves no camera.
-        if self.state.camera.auto_fit && scene.frame_box() != self.framed {
-            self.framed = scene.frame_box();
-            let aspect = self.aspect();
-            self.state.camera.fit(&self.framed, aspect);
+        // scene moves no camera. A moment of a motion is not a new model
+        // (an edit that changes its box is): the camera only ever backs
+        // away from it.
+        let frame = scene.frame_box();
+        if self.state.camera.auto_fit {
+            let reshaped = self.player.edited() && frame != self.player.shown_box;
+            let to = if self.timeline.motion.is_some() && !reshaped {
+                player::frame_for_moment(&self.framed, &frame)
+            } else {
+                (frame != self.framed).then_some(frame)
+            };
+            if let Some(to) = to {
+                self.framed = to;
+                let aspect = self.aspect();
+                self.state.camera.fit(&self.framed, aspect);
+            }
         }
+        self.player.shown_box = frame;
         Some(scene)
     }
 
@@ -4381,12 +4393,17 @@ impl Shell {
         let resized = size != self.size && (self.texture.is_some() || self.direct_shown);
         if size != self.size {
             self.size = size;
-            // The model was framed for another shape of viewport.
-            self.framed = Bbox3::EMPTY;
+            // The model was framed for another shape of viewport; what a
+            // motion has framed so far is more than the moment shown.
+            if self.timeline.motion.is_none() {
+                self.framed = Bbox3::EMPTY;
+            }
             if self.state.camera.auto_fit
                 && let Some(scene) = scene
             {
-                self.framed = scene.frame_box();
+                if self.framed.is_empty() {
+                    self.framed = scene.frame_box();
+                }
                 let aspect = self.aspect();
                 self.state.camera.fit(&self.framed, aspect);
             }

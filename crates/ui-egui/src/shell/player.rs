@@ -34,6 +34,7 @@ use crate::kit::{ChipKind, Glyph, Kit, Segment, Slider, SliderForm};
 use crate::state::{MOTION_SECONDS, Playback};
 use crate::theme::{Tokens, color};
 use craft3d_engine::Session;
+use craft3d_math::{Bbox3, Vec3};
 use egui::{Sense, vec2};
 use serde_json::{Value, json};
 
@@ -61,6 +62,41 @@ pub(crate) const START_KEY: egui::Key = egui::Key::Home;
 /// edits the document (the roll-back bar's *Roll forward to end* does).
 pub(crate) const END_KEY: egui::Key = egui::Key::End;
 
+/// How far the box a motion is framed on grows on every side when a
+/// moment leaves it, as a part of its diagonal: a part swinging out
+/// backs the camera away a few times, not at every moment.
+const MOTION_FRAME_MARGIN: f64 = 0.1;
+
+/// How far a moment may stick out of what was framed before it counts as
+/// leaving it, as a part of the diagonal: more than the moments' coarser
+/// meshes add to a freeform body's box (a thousandth of the model).
+const MOTION_FRAME_SLACK: f64 = 0.01;
+
+/// Where a camera that follows the model goes for a moment of a motion
+/// whose box is `moment`, when it framed `framed` so far; `None` when it
+/// stays. Every moment is a scene with its own box, and the box over the
+/// whole motion is not known without making all of them, so the camera
+/// keeps what it framed and only backs away from a moment that leaves
+/// it: it does not come closer, and once the motion has gone round it
+/// does not move (docs/design/motion.md › *The player*).
+pub(crate) fn frame_for_moment(framed: &Bbox3, moment: &Bbox3) -> Option<Bbox3> {
+    let (lo, hi) = moment.corners()?;
+    if !(lo.is_finite() && hi.is_finite()) {
+        return None;
+    }
+    let Some((low, high)) = framed.corners() else {
+        return Some(*moment);
+    };
+    let slack = framed.diagonal() * MOTION_FRAME_SLACK;
+    if framed.contains(lo, slack) && framed.contains(hi, slack) {
+        return None;
+    }
+    let (low, high) = (low.min(lo), high.max(hi));
+    let pad = low.distance(high) * MOTION_FRAME_MARGIN;
+    let pad = Vec3::new(pad, pad, pad);
+    Some(Bbox3::from_corners(low - pad, high + pad))
+}
+
 /// What the player keeps between frames besides its settings.
 #[derive(Default)]
 pub(crate) struct Player {
@@ -78,6 +114,11 @@ pub(crate) struct Player {
     turned: Option<f64>,
     /// The document's revision at the last sync: another one is an edit.
     revision: Option<Option<u64>>,
+    /// The sync under way found an edit of the document.
+    edited: bool,
+    /// The box of the scene the last sync showed: an edit that leaves it
+    /// as it was (a name, a colour) does not move the camera.
+    pub(crate) shown_box: Bbox3,
     /// The input time of the last moment of the motion asked for.
     moved: Option<f64>,
     /// The motion runs from 1 back to 0 (back and forth).
@@ -181,6 +222,11 @@ pub(crate) enum Tick {
 }
 
 impl Player {
+    /// Whether the sync under way found an edit of the document.
+    pub(crate) fn edited(&self) -> bool {
+        self.edited
+    }
+
     /// Forgets where it was: not playing.
     pub(crate) fn reset(&mut self) {
         self.was_playing = false;
@@ -569,7 +615,8 @@ impl Shell {
     /// waits to be run.
     pub(crate) fn sync_player(&mut self, session: &Session) {
         let revision = session.document_revision();
-        if self.player.revision.is_some_and(|seen| seen != revision) {
+        self.player.edited = self.player.revision.is_some_and(|seen| seen != revision);
+        if self.player.edited {
             self.stop_playing();
             // An edit lets go of the bake, and the motion is another.
             self.player.hint.forget();
@@ -1054,7 +1101,7 @@ pub(crate) fn t_readout(t: f64) -> String {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::{PLAYER_FULL_WIDTH, PLAYER_TOUCH_FULL_WIDTH, Player, Tick, player_parts};
-    use crate::state::Playback;
+    use crate::state::{CameraState, Playback};
     use serde_json::json;
 
     fn playing() -> Playback {
@@ -1332,6 +1379,191 @@ mod tests {
             looping: true,
             ..playing()
         }
+    }
+
+    /// A document with a timeline, its `steps` run, framed at rest and
+    /// then playing its motion in a loop.
+    fn motion_at_rest(steps: Vec<(&str, serde_json::Value)>) -> (Played, CameraState) {
+        let mut p = Played::new(Playback::default());
+        p.session.execute("file.new", &json!({})).unwrap();
+        p.session
+            .execute("variable.set", &json!({"name": "t", "expr": "0"}))
+            .unwrap();
+        for (id, params) in steps {
+            p.session.execute(id, &params).unwrap();
+        }
+        for _ in 0..3 {
+            p.frame();
+        }
+        let rest = p.shell.state.camera;
+        assert!(rest.auto_fit);
+        p.shell.state.timeline = Playback {
+            motion: true,
+            ..looping()
+        };
+        (p, rest)
+    }
+
+    /// Frames until the motion starts again at 0, each camera to `each`.
+    fn one_pass(p: &mut Played, mut each: impl FnMut(&CameraState)) {
+        let mut last = -1.0;
+        for _ in 0..2000 {
+            p.frame();
+            each(&p.shell.state.camera);
+            let t = p.shell.timeline.motion.as_ref().map_or(-1.0, |m| m.t);
+            if t < last {
+                return;
+            }
+            last = t;
+        }
+        panic!("the motion did not go round");
+    }
+
+    #[test]
+    fn the_box_of_a_moment_moves_the_camera_only_when_it_leaves_what_was_framed() {
+        use super::frame_for_moment;
+        use craft3d_math::{Bbox3, Vec3};
+        let cube =
+            |lo: f64, hi: f64| Bbox3::from_corners(Vec3::new(lo, lo, lo), Vec3::new(hi, hi, hi));
+        let framed = cube(0.0, 10.0);
+        assert_eq!(frame_for_moment(&framed, &framed), None, "the same box");
+        assert_eq!(frame_for_moment(&framed, &cube(2.0, 8.0)), None, "inside");
+        assert_eq!(
+            frame_for_moment(&framed, &Bbox3::EMPTY),
+            None,
+            "nothing is shown"
+        );
+        assert_eq!(
+            frame_for_moment(&Bbox3::EMPTY, &framed),
+            Some(framed),
+            "nothing framed yet: framed tight, as a model is"
+        );
+        // Out on one side: around both, with room to spare, and that box
+        // holds the moment, so the same moment moves nothing again.
+        let out = cube(5.0, 20.0);
+        let grown = frame_for_moment(&framed, &out).unwrap();
+        let (lo, hi) = grown.corners().unwrap();
+        let pad = cube(0.0, 20.0).diagonal() * 0.1;
+        assert!((lo.x + pad).abs() < 1e-9 && (hi.x - 20.0 - pad).abs() < 1e-9);
+        assert_eq!(frame_for_moment(&grown, &out), None);
+        // A hair out, as a coarser mesh of a freeform body is: no move.
+        let hair = framed.diagonal() * 0.001;
+        assert_eq!(frame_for_moment(&framed, &cube(0.0, 10.0 + hair)), None);
+        // A box that cannot be framed moves nothing.
+        for bad in [f64::NAN, f64::INFINITY] {
+            assert_eq!(frame_for_moment(&framed, &cube(0.0, bad)), None);
+        }
+    }
+
+    /// An edit is a new model, also with a moment of the motion left
+    /// shown (the engine keeps it): the camera comes closer to a model
+    /// made smaller, as it does without a motion.
+    #[test]
+    fn an_edit_under_a_moment_frames_the_model_again() {
+        let (mut p, _) = motion_at_rest(vec![
+            ("variable.set", json!({"name": "w", "expr": "100 mm"})),
+            (
+                "feature.block",
+                json!({"size": ["w", "w", "w"], "name": "Box",
+                       "position": ["5 mm * t", "0 mm", "0 mm"]}),
+            ),
+        ]);
+        one_pass(&mut p, |_| {});
+        p.shell.stop_playing();
+        p.frame();
+        // A colour changes no box: the camera stays on what it framed.
+        let held = p.shell.state.camera;
+        assert_ne!(p.shell.framed, p.shell.player.shown_box, "framed wider");
+        p.session
+            .execute(
+                "body.appearance",
+                &json!({"body": "Box", "color": "#2f6fd6"}),
+            )
+            .unwrap();
+        for _ in 0..3 {
+            p.frame();
+        }
+        assert_eq!(p.shell.state.camera, held, "moved by a colour");
+        let before = p.shell.state.camera.distance;
+        p.session
+            .execute("variable.set", &json!({"name": "w", "expr": "10 mm"}))
+            .unwrap();
+        for _ in 0..3 {
+            p.frame();
+        }
+        assert!(p.shell.timeline.motion.is_some(), "the moment stays shown");
+        let after = p.shell.state.camera.distance;
+        assert!(after < before / 2.0, "from {before} to {after}");
+    }
+
+    /// A slider that starts sticking out of a plate and moves in: every
+    /// moment has a smaller box than the one framed.
+    #[test]
+    fn a_moment_inside_what_was_framed_moves_no_camera() {
+        let (mut p, rest) = motion_at_rest(vec![
+            (
+                "feature.block",
+                json!({"size": ["40 mm", "40 mm", "4 mm"], "name": "Plate"}),
+            ),
+            (
+                "feature.block",
+                json!({"size": ["10 mm", "10 mm", "10 mm"], "name": "Slider",
+                       "position": ["60 mm * (1 - t)", "0 mm", "0 mm"]}),
+            ),
+        ]);
+        let mut seen = Vec::new();
+        one_pass(&mut p, |camera| seen.push(*camera));
+        assert!(seen.len() > 10, "the motion played");
+        assert!(
+            seen.iter().all(|camera| *camera == rest),
+            "the camera moved while the motion played: {:?}",
+            seen.iter().find(|camera| **camera != rest)
+        );
+    }
+
+    /// A small part going round a circle: it leaves the first frame at
+    /// once. The camera backs away a few times and never comes closer;
+    /// the next time round it does not move, and with the motion put away
+    /// the part at rest is framed again.
+    #[test]
+    fn a_part_that_leaves_the_frame_backs_the_camera_away_once() {
+        let (mut p, rest) = motion_at_rest(vec![(
+            "feature.block",
+            json!({"size": ["4 mm", "4 mm", "4 mm"], "name": "Crank",
+                   "position": ["15 mm * cos(360 deg * t)", "15 mm * sin(360 deg * t)", "0 mm"]}),
+        )]);
+        let mut cameras = vec![rest];
+        one_pass(&mut p, |camera| {
+            if cameras.last() != Some(camera) {
+                cameras.push(*camera);
+            }
+        });
+        let moves = cameras.len() - 1;
+        assert!(moves >= 1, "the part left the view and the camera stayed");
+        assert!(moves <= 25, "the camera moved {moves} times in one pass");
+        assert!(
+            cameras.windows(2).all(|c| c[1].distance >= c[0].distance),
+            "the camera came closer: {cameras:?}"
+        );
+        let settled = p.shell.state.camera;
+        one_pass(&mut p, |camera| assert_eq!(*camera, settled, "second pass"));
+
+        // The viewport changing shape keeps what the motion framed, not
+        // the box of the moment it happens to show.
+        let framed = p.shell.framed;
+        p.shell.size = [2, 2];
+        p.frame();
+        assert_eq!(p.shell.framed, framed, "after a resize");
+
+        p.shell.stop_playing();
+        p.session
+            .execute("view.motion", &json!({"t": null}))
+            .unwrap();
+        for _ in 0..3 {
+            p.frame();
+        }
+        assert!(p.shell.timeline.motion.is_none());
+        assert_eq!(p.shell.state.camera, rest, "framed at rest again");
     }
 
     #[test]
