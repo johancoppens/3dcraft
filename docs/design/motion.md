@@ -196,8 +196,8 @@ offered only for a document with a timeline.
 
 **The camera while a moment is shown** (2026-11-08, `player::frame_for_moment`). A camera that follows the model
 (`autoFit`) does not refit on every moment, whose box is its own: it keeps what it framed and backs away only from a
-moment that leaves that box by more than a hundredth of its diagonal, to both boxes together plus a tenth of their
-diagonal on every side, so a part swinging out moves the camera a few times, and after one pass over the motion it
+moment that leaves that box by more than a hundredth of its diagonal, to both boxes together plus a fortieth of their
+diagonal on every side, so a part swinging out moves the camera in steps, and after one pass over the motion it
 stands still. A viewport changing shape refits on what was framed. `view.replay` frames on the box over every state
 instead; the window cannot, because that means making all the moments before the first is shown. An edit that
 changes the box of the moment left shown is a new model and is framed tight, as any edit is; one that does not (a

@@ -64,8 +64,11 @@ pub(crate) const END_KEY: egui::Key = egui::Key::End;
 
 /// How far the box a motion is framed on grows on every side when a
 /// moment leaves it, as a part of its diagonal: a part swinging out
-/// backs the camera away a few times, not at every moment.
-const MOTION_FRAME_MARGIN: f64 = 0.1;
+/// backs the camera away in steps, not at every moment. Small, for the
+/// camera does not come back and the model is shown smaller by this for
+/// as long as the motion is (a tenth left the toggle clamp at 60 % of
+/// its size, 2026-11-08).
+const MOTION_FRAME_MARGIN: f64 = 0.025;
 
 /// How far a moment may stick out of what was framed before it counts as
 /// leaving it, as a part of the diagonal: more than the moments' coarser
@@ -1443,7 +1446,7 @@ mod tests {
         let out = cube(5.0, 20.0);
         let grown = frame_for_moment(&framed, &out).unwrap();
         let (lo, hi) = grown.corners().unwrap();
-        let pad = cube(0.0, 20.0).diagonal() * 0.1;
+        let pad = cube(0.0, 20.0).diagonal() * 0.025;
         assert!((lo.x + pad).abs() < 1e-9 && (hi.x - 20.0 - pad).abs() < 1e-9);
         assert_eq!(frame_for_moment(&grown, &out), None);
         // A hair out, as a coarser mesh of a freeform body is: no move.
@@ -1533,14 +1536,19 @@ mod tests {
                    "position": ["15 mm * cos(360 deg * t)", "15 mm * sin(360 deg * t)", "0 mm"]}),
         )]);
         let mut cameras = vec![rest];
+        let mut frames = 0;
         one_pass(&mut p, |camera| {
+            frames += 1;
             if cameras.last() != Some(camera) {
                 cameras.push(*camera);
             }
         });
         let moves = cameras.len() - 1;
         assert!(moves >= 1, "the part left the view and the camera stayed");
-        assert!(moves <= 25, "the camera moved {moves} times in one pass");
+        assert!(
+            moves * 4 <= frames * 3,
+            "the camera moved {moves} times in {frames} frames"
+        );
         assert!(
             cameras.windows(2).all(|c| c[1].distance >= c[0].distance),
             "the camera came closer: {cameras:?}"
