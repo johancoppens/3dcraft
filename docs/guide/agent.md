@@ -159,7 +159,7 @@ command_run {"id": "document.check", "params": {}}
 doc_render_preview {"view": "iso"}
 -> (a PNG image) and {"coverage": ..., "triangles": ..., "bodies": [...]}
 command_run {"id": "file.save", "params": {"path": "flange.3dcraft"}}
--> {"path": ".../flange.3dcraft"}
+-> {"path": "flange.3dcraft"}
 command_run {"id": "file.export", "params": {"path": "flange.step"}}
 -> {"format": "step", "bodies": 1, "solids": 1, "faces": 12, "unit": "mm", ...}
 ```

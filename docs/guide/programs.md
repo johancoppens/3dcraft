@@ -34,8 +34,8 @@ standard output. Each request has an `id`, a `method` and its `params`; the repl
 {"id": 1, "ok": true, "result": {"document": 0, "units": "mm"}, "ms": 0.1}
 {"id": 2, "method": "engine.execute", "params": {"command": "feature.block", "params": {"size": ["40 mm", "20 mm", "10 mm"], "name": "Block"}}}
 {"id": 2, "ok": true, "result": {"id": "F1", "name": "Block", "status": "ok"}, "ms": 0.3}
-{"id": 3, "method": "engine.execute", "params": {"command": "feature.extrud"}}
-{"id": 3, "ok": false, "error": "unknown command `feature.extrud`; did you mean `feature.extrude`?", "ms": 0.0}
+{"id": 3, "method": "engine.execute", "params": {"command": "feature.block", "params": {"sise": ["40 mm", "20 mm", "10 mm"]}}}
+{"id": 3, "ok": false, "error": "feature.block: unknown parameter `sise`; its parameters are: size, position, axis, angle, name", "ms": 0.0}
 ```
 
 The methods are few, because everything goes through `engine.execute` with a command:
@@ -98,20 +98,20 @@ program that speaks MCP can use it the same way an agent does.
 ## The Rust library
 
 The engine is the crate `craft3d-engine`. A `Session` holds the open documents and runs commands by id,
-with JSON parameters, and answers with JSON:
+with JSON parameters, and answers with JSON (here the session is called `cad`):
 
 ```rust
 use craft3d_engine::{Session, Workspace};
 use serde_json::json;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut session = Session::new(Workspace::unrestricted());
-    session.execute("file.new", &json!({"units": "mm"}))?;
-    session.execute("variable.set", &json!({"name": "width", "expr": "60 mm"}))?;
-    session.execute("feature.block", &json!({"size": ["width", "40 mm", "8 mm"], "name": "Plate"}))?;
-    let measured = session.execute("document.measure", &json!({"feature": "Plate"}))?;
+    let mut cad = Session::new(Workspace::unrestricted());
+    cad.execute("file.new", &json!({"units": "mm"}))?;
+    cad.execute("variable.set", &json!({"name": "width", "expr": "60 mm"}))?;
+    cad.execute("feature.block", &json!({"size": ["width", "40 mm", "8 mm"], "name": "Plate"}))?;
+    let measured = cad.execute("document.measure", &json!({"feature": "Plate"}))?;
     println!("volume: {} mm³", measured["volume"]);
-    session.execute("file.export", &json!({"path": "plate.step"}))?;
+    cad.execute("file.export", &json!({"path": "plate.step"}))?;
     Ok(())
 }
 ```
