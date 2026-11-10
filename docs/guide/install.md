@@ -25,7 +25,7 @@ names carry the version number, here 0.1.0:
 |---|---|---|
 | Windows (64-bit) | `3DCraft-0.1.0-x86_64.msi`, or `3dcraft-0.1.0-x86_64-windows.zip` | `C:\Program Files\3DCraft\craft3d-cli.exe` (on your `PATH`), or the unzipped folder |
 | macOS (Apple Silicon: M1 or later) | `3DCraft-0.1.0-aarch64.dmg` | `/Applications/3DCraft.app/Contents/MacOS/craft3d-cli` |
-| Linux (64-bit Intel or AMD) | `3DCraft-0.1.0-x86_64.AppImage`, or `3dcraft-0.1.0-x86_64-linux.tar.gz` | the AppImage itself (`… cli`), or `~/.local/bin/craft3d-cli` |
+| Linux (64-bit Intel or AMD) | `3DCraft-0.1.0-x86_64.AppImage`, or `3dcraft-0.1.0-x86_64-linux.tar.gz` | the AppImage itself, started with `cli`, or `~/.local/bin/craft3d-cli` |
 | Any computer, nothing to install | the web version, [3dcraft.dev/app](https://3dcraft.dev/app/) | none: the web version has no MCP |
 
 ### Why your computer warns you
@@ -112,8 +112,8 @@ Make sure `~/.local/bin` is on your `PATH` (most distributions do this already).
 The web version is 3DCraft as a web page. Open [3dcraft.dev/app](https://3dcraft.dev/app/) in a recent
 Chrome, Edge, Firefox or Safari. It can:
 
-- open, show, save, import and export `.3dcraft`, `.3dcraftjig` and STEP files (drop a file on the page,
-  or use the File menu);
+- open, show, save and export `.3dcraft`, `.3dcraftjig` and `.3dcraftasm` files, and import STEP files and
+  FreeCAD files (drop a file on the page, or use the File menu);
 - **use Jigs**: set a Jig's parameters and export the result, so you can make a laser-cut box or a
   Gridfinity bin without installing anything ([Using a Jig](jigs.md));
 - open the examples, Jigs and assemblies of its start screen.
@@ -132,8 +132,6 @@ it, and with WebGL2 otherwise.
 Start **3DCraft** from your Start menu, Applications folder or app launcher. The window opens on the
 **start screen**. Click the **T-slot aluminium profile** card: 3DCraft opens it in a new tab.
 [Your first five minutes](first-steps.md) shows you around from there.
-
-<!-- CHECK: the card's name on the new start screen is "T-slot aluminium profile" (its title in the examples repository; the brief calls it "T-slot profile"), and a click opens it in a new tab -->
 
 To check the command line too, open a terminal and type the lines below. Write the full path of
 `craft3d-cli` from the table above when it is not on your `PATH`.
@@ -158,7 +156,7 @@ starts it, and through it the agent can run every 3DCraft command.
 
 With the steps below, **the agent models in the window you are watching**. That is the way to use it.
 
-<!-- SHOT: agent-panel.png | the agent panel open over the status bar's pill: Allow AI agents on, the work folder ~/Documents/3DCraft, Connect with Copy command, Copy MCP configuration and Other clients, Connected none yet; the steel bookend open behind it; theme light, window 1400x900 | ui.set {"appearance": "light"}; file.open the bookend; ui.set {"dialogs": {"agents": true}}; run with a neutral HOME and craft3d-cli in a neutral folder so no personal path shows (plan: shots/pictures/08-agent-panel.json) -->
+<!-- SHOT: agent-panel.png | the agent panel open over the status bar's pill: Allow AI agents on, the work folder ~/Documents/3DCraft, Connect with Copy command, Copy MCP configuration and Other clients, Connected none yet; the steel bookend open behind it; theme light, window 1400x900 | ui.set {"appearance": "light"}; file.open the bookend; ui.set {"dialogs": {"agents": true}}; run with a neutral HOME and craft3d-cli in a neutral folder so no personal path shows -->
 ![The agent panel: Allow AI agents switched on, the work folder, and the buttons that copy the configuration for your AI tool](images/agent-panel.png)
 
 1. **Allow AI agents.** Click the **agent pill** at the right end of the status bar. It says **Agents
@@ -206,8 +204,9 @@ Click the pill at any time to see who is connected and since when. The **✕** b
 it; **Disconnect all** disconnects every one; the switch turns agents off.
 
 If no window allows agents, the agent is told to turn on **Allow AI agents**, and it can carry on as soon
-as you do. With several 3DCraft windows open, the agent works in the one you used last: click into it
-before you ask.
+as you do. With several 3DCraft windows open, the agent works in the one you used last when the agent
+connected. To move it to another window, click into that window and restart your AI tool (or close the
+first window).
 
 ### Other AI tools
 
@@ -236,7 +235,8 @@ On Windows, write every `\` in a path twice, in TOML as in JSON:
 
 An agent reads and writes files only in the folders the panel names:
 
-- the **Work folder**, `~/Documents/3DCraft` at first. 3DCraft makes it the first time. **Change…**
+- the **Work folder**, at first the folder *3DCraft* in your Documents folder. 3DCraft makes it the first
+  time. **Change…**
   picks another folder, which 3DCraft remembers; **Open folder** shows it;
 - while **Also the open document's folder** is ticked, the folder of the document you have open, so the
   agent can export next to it. This counts only for a document you opened or saved yourself;

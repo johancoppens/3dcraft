@@ -171,8 +171,8 @@ holes.
 
 Do not take "done" on trust. 3DCraft gives you the means to check, without reading code:
 
-1. **The feature list** in the window ([The window](window.md#features)): every feature built (✔), none
-   failed (⚠), every check passed.
+1. **The feature list** in the window ([The window](window.md#features)): no row is red, and the line
+   under the filter says *N rebuilt · M checks pass*.
 2. **The checks** (assertions): they are the agent's claims about the part, written as numbers you can
    read ("volume = π((d/2)² − …) t"). `assert.list` shows them; ask for the ones you care about.
 3. **Your own numbers**: ask for `measure.distance`, `measure.thickness` or `measure.through` between
@@ -201,7 +201,7 @@ Do not take "done" on trust. 3DCraft gives you the means to check, without readi
 You do not need this to work with an agent, but it helps to read along. Every command answers with JSON.
 
 - **A command that fails** changes nothing. Its error starts with the command and the parameter, such as
-  *feature.boolean: there is no feature named 'Sheet'; features: Block*.
+  *feature.boolean: there is no feature named `Sheet`; features: Block*.
 - **A feature that fails** is different: the command did what was asked (the feature is in the history),
   but the feature could not be built. Its result says `"status": "failed"`, with an `error` that names the
   parameter, the entities and often the largest value that would fit

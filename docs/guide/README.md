@@ -32,6 +32,9 @@ sends them, or you write them yourself. The window is there to watch, to point a
 3DCraft is open source, under the MIT licence. You do not need to know anything about programming or CAD
 to start.
 
+3DCraft is at version 0.1.0. It does not replace professional CAD today. What it cannot do yet, it refuses,
+and says so.
+
 ## Three ways to use 3DCraft
 
 1. **Make models with AI.** Describe a part to an AI agent. It builds the part in the window you are
@@ -115,8 +118,8 @@ The guide has six parts. Read the first part in order; after that, go to what yo
 
 ## Examples and lessons
 
-- **The start screen** shows examples, Jigs and assemblies as cards: a click opens one in a new tab. Its
-  **More examples** button opens the gallery, [3dcraft.dev/examples](https://3dcraft.dev/examples/), with
+- **The start screen** shows examples, Jigs and assemblies as cards, each kind under its own tab: a click
+  on a card opens it in a new tab. Its **More examples** link opens the gallery, [3dcraft.dev/examples](https://3dcraft.dev/examples/), with
   every example, Jig and assembly made for 3DCraft so far.
 - **The lessons** are seven short command scripts that go with this guide: an L-bracket, a flange, a
   case, a spring, a gear, a bushing and a hopper ([the lessons](../examples/README.md)). Each checks its
