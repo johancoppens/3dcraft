@@ -2059,8 +2059,6 @@ mod tests {
     }
 }
 
-/// The summary of failing checks: `1 check fails` (the only one), `1 of 3
-/// checks fails`, `2 of 3 checks fail`, `2 checks fail` (all of them).
 /// The checks' part of the line at the top of the list, with its dot:
 /// `7 checks pass` when every one passes; what fails when one does
 /// (`1 of 7 checks fails`); else what passes and, in the words of the
@@ -2097,6 +2095,8 @@ pub(crate) fn checks_part(s: &Summary) -> Option<(Dot, String)> {
     Some((Dot::Grey, words.join(" · ")))
 }
 
+/// The summary of failing checks: `1 check fails` (the only one), `1 of 3
+/// checks fails`, `2 of 3 checks fail`, `2 checks fail` (all of them).
 pub(crate) fn checks_failing_text(failing: usize, of: usize) -> String {
     match (failing, of) {
         (1, 1) => "1 check fails".to_string(),
