@@ -19,9 +19,20 @@ fn docs() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs")
 }
 
+/// The script of an example: a guide's lesson in `docs/examples`, or one
+/// of the models kept as tests in `tests/example_models` (the wedge, since
+/// 2026-11-10).
 fn example(name: &str) -> craft3d_engine::Session {
-    let text =
-        std::fs::read_to_string(docs().join("examples").join(format!("{name}.json"))).unwrap();
+    let file = format!("{name}.json");
+    let lesson = docs().join("examples").join(&file);
+    let path = if lesson.is_file() {
+        lesson
+    } else {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/example_models")
+            .join(&file)
+    };
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let script: Value = serde_json::from_str(&text).unwrap();
     let mut s = common::session();
     run(&mut s, "file.new", json!({"units": "mm"}));
