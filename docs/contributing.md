@@ -21,7 +21,7 @@ This page holds the rules for the code and the checklists. How to report a probl
 
 ## Adding a command
 
-1. **Pick the id.** `<family>.<verbNoun>` in the style of the existing ones ([`design/engine.md`](design/engine.md)), stable once released. No menu path is needed in phase 1.
+1. **Pick the id.** `<family>.<verbNoun>` in the style of the existing ones ([`design/engine.md`](design/engine.md)), stable once released. No menu path is needed: there are (almost) no menus, and whether 3DCraft ever gets an interactive modelling interface is open ([`decisions.md`](decisions.md) › *Open decisions*).
 2. **Algorithm** goes in the lowest crate that fits (`geom`, `topo`, `solve`, `kernel`, `tess`, `expr`), as a pure function with unit tests. It takes its tolerance as an argument, handles every geometry kind or returns `Unsupported`, and is deterministic.
 3. **Command** goes in an engine module (`crates/engine/src/<area>_cmds.rs`, a new module for a new area) with its own `pub(crate) static SPECS: &[CommandSpec]`, each made with the `spec!` macro of `commands.rs`; a new module's `SPECS` is added to the list in `Session::commands` (`crates/engine/src/lib.rs`). Fill in:
    - `id`, `label`,

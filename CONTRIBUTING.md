@@ -38,7 +38,8 @@ A pull request holds the change with its tests, and its description says:
 - what changed and why, with a link to the issue;
 - what you ran: at least `cargo fmt --all --check`, `cargo clippy -p <crates> --all-targets -- -D warnings`
   and `cargo test -p <crates>` for the crates you touched; `cargo xtask ci` runs everything, if your machine
-  can take it ([`docs/development.md`](docs/development.md));
+  can take it ([`docs/development.md`](docs/development.md)). Run `cargo xtask fonts` once before the tests:
+  it fetches the built-in fonts, which are never committed, and the text tests fail without them;
 - every test expectation you changed, with its reason, under the four conditions of
   [`docs/testing.md`](docs/testing.md) › *Changing an expectation*. Where the docs say an expectation change
   is "logged in the dev log", from outside it goes here.

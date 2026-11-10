@@ -56,7 +56,7 @@ pub struct CommandInvocation { pub id: CommandId, pub params: serde_json::Value 
 
 #### 8.2 `CommandRegistry`
 
-Each command registers `id` (`"feature.extrude"`), `label`, an optional `menu_path` and shortcut (unused in phase 1), a parameter schema with a one-line params doc agents can read, `enabled(&DocSnapshot) -> bool` with a reason when disabled, and `run`. *(As built: `id`, `label`, `params` (the one-line doc), `summary`, `needs_document` and `run`; menu paths, schemas and an `enabled` predicate are planned.)* `run` returns a JSON result and records exactly **one** history step.
+Each command registers `id` (`"feature.extrude"`), `label`, an optional `menu_path` and shortcut (unused: there are (almost) no menus, and an interactive modelling interface is an open question, [`../decisions.md`](../decisions.md) › *Open decisions*), a parameter schema with a one-line params doc agents can read, `enabled(&DocSnapshot) -> bool` with a reason when disabled, and `run`. *(As built: `id`, `label`, `params` (the one-line doc), `summary`, `needs_document` and `run`; menu paths, schemas and an `enabled` predicate are planned.)* `run` returns a JSON result and records exactly **one** history step.
 
 Command families (ids are settled when each is implemented, and are stable afterwards):
 
