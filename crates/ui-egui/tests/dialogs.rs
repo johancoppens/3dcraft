@@ -167,6 +167,21 @@ fn the_export_dialog_remembers_the_format_and_quality_and_escape_cancels() {
     );
 }
 
+/// An example from the start screen has no file but a title: Export
+/// proposes the title as Save does, not `untitled`.
+#[test]
+fn the_export_dialog_proposes_an_examples_title() {
+    use craft3d_ui_egui::shell::{EXAMPLES, run_example};
+    let ctx = egui::Context::default();
+    let mut session = Session::new(Workspace::memory());
+    let mut shell = Shell::new();
+    let profile = EXAMPLES.iter().find(|e| e.id == "t-slot-profile").unwrap();
+    run_example(&mut session, profile).unwrap();
+    frame(&ctx, &mut shell, &mut session, Vec::new());
+    shell.open_export(&mut session).unwrap();
+    assert_eq!(shell.state.export.name, format!("{}.step", profile.title));
+}
+
 #[test]
 fn one_export_question_at_a_time_and_only_for_the_document_it_was_asked_for() {
     let ctx = egui::Context::default();

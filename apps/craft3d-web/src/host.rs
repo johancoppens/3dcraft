@@ -1467,7 +1467,7 @@ impl WebHost {
                 };
                 self.dialog = Some(NameDialog {
                     purpose: Purpose::ExportJig,
-                    name: suggested_jig_name(status.path.as_deref()),
+                    name: suggested_jig_name(status.path.as_deref(), status.title.as_deref()),
                 });
             }
             FileAction::OpenForEditing => {
@@ -3306,6 +3306,12 @@ mod tests {
                 example.section == ExampleSection::Assemblies,
                 "{}: an assembly opens on its motion",
                 example.id
+            );
+            // Export as Jig proposes its title too.
+            let _ = host.file_action(FileAction::ExportJig);
+            assert_eq!(
+                host.dialog.take().unwrap().name,
+                format!("{}.3dcraftjig", example.title)
             );
             // Save asks for a name (the page has no file dialogs here),
             // proposing its title with the extension of what it is.

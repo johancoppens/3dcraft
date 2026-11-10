@@ -256,7 +256,11 @@ impl Shell {
         export.name = if preset.name {
             export_file_name(&export.name, export.format)
         } else {
-            suggested_export_name(status.path.as_deref(), Some(export.format.extension()))
+            suggested_export_name(
+                status.path.as_deref(),
+                status.title.as_deref(),
+                Some(export.format.extension()),
+            )
         };
         export.open = true;
         let hidden = self.hidden_bodies();

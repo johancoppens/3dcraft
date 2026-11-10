@@ -199,27 +199,31 @@ pub fn save_extension(assembly: bool) -> &'static str {
 }
 
 /// The name the save dialog proposes for the document `status` says: its
-/// file's ([`suggested_name`]); without one, the title it is shown under
-/// (an example from the start screen) made a file's name, else
-/// `untitled`, with the extension of what it is saved as: `.3dcraftasm`
-/// for an assembly, `.3dcraft` for a part and for a Jig in use, which is
-/// saved as a model.
+/// file's ([`suggested_name`]); without one, [`document_stem`] (the title
+/// of an example from the start screen, else `untitled`) with the
+/// extension of what it is saved as ([`save_extension`]).
 pub fn suggested_save_name(status: &DocumentStatus) -> String {
     if status.path.is_some() {
         return suggested_name(status.path.as_deref());
     }
-    let extension = if status.assembly {
-        ASSEMBLY_EXTENSION
-    } else {
-        EXTENSION
-    };
-    let stem = status
-        .title
-        .as_deref()
-        .map(file_name_of)
+    format!(
+        "{}.{}",
+        document_stem(None, status.title.as_deref()),
+        save_extension(status.assembly)
+    )
+}
+
+/// The stem of every name proposed for a document (Save, Export, Export
+/// as Jig): its file's; without one, the title it is shown under (an
+/// example from the start screen) made a file's name
+/// ([`file_name_of`]); else `untitled`.
+pub fn document_stem(path: Option<&str>, title: Option<&str>) -> String {
+    path.and_then(|path| Path::new(path).file_stem())
+        .and_then(|stem| stem.to_str())
         .filter(|stem| !stem.is_empty())
-        .unwrap_or_else(|| "untitled".to_string());
-    format!("{stem}.{extension}")
+        .map(str::to_string)
+        .or_else(|| title.map(file_name_of).filter(|stem| !stem.is_empty()))
+        .unwrap_or_else(|| "untitled".to_string())
 }
 
 /// Most bytes of a stem made from a title: with an extension well under
@@ -266,26 +270,24 @@ fn not_a_device(name: &str) -> String {
     }
 }
 
-/// The name Export as Jig proposes: the document's file's, as a
+/// The name Export as Jig proposes: [`document_stem`], as a
 /// `.3dcraftjig`.
-pub fn suggested_jig_name(path: Option<&str>) -> String {
-    let stem = path
-        .and_then(|path| Path::new(path).file_stem())
-        .and_then(|stem| stem.to_str())
-        .filter(|stem| !stem.is_empty())
-        .unwrap_or("untitled");
-    format!("{stem}.{JIG_EXTENSION}")
+pub fn suggested_jig_name(path: Option<&str>, title: Option<&str>) -> String {
+    format!("{}.{JIG_EXTENSION}", document_stem(path, title))
 }
 
-/// The name the export dialog proposes: the document's file's, with the
+/// The name the export dialog proposes: [`document_stem`], with the
 /// extension of the last export (STEP the first time).
-pub fn suggested_export_name(path: Option<&str>, extension: Option<&str>) -> String {
-    let stem = path
-        .and_then(|path| Path::new(path).file_stem())
-        .and_then(|stem| stem.to_str())
-        .filter(|stem| !stem.is_empty())
-        .unwrap_or("untitled");
-    format!("{stem}.{}", extension.unwrap_or("step"))
+pub fn suggested_export_name(
+    path: Option<&str>,
+    title: Option<&str>,
+    extension: Option<&str>,
+) -> String {
+    format!(
+        "{}.{}",
+        document_stem(path, title),
+        extension.unwrap_or("step")
+    )
 }
 
 /// What an export to a file of this name holds, by its extension.
@@ -1596,7 +1598,7 @@ mod tests {
                 json!(format.extension())
             );
             assert_eq!(
-                suggested_export_name(Some("/m/gear.3dcraft"), Some(format.extension())),
+                suggested_export_name(Some("/m/gear.3dcraft"), None, Some(format.extension())),
                 format!("gear.{}", format.extension())
             );
         }
@@ -1611,13 +1613,34 @@ mod tests {
     fn names_are_proposed_from_the_document() {
         assert_eq!(suggested_name(None), "untitled.3dcraft");
         assert_eq!(suggested_name(Some("jigs/box.3dcraftjig")), "box.3dcraft");
-        assert_eq!(suggested_jig_name(Some("w/box.3dcraft")), "box.3dcraftjig");
-        assert_eq!(suggested_jig_name(None), "untitled.3dcraftjig");
-        assert_eq!(suggested_name(Some("parts/a.3dcraft")), "a.3dcraft");
-        assert_eq!(suggested_export_name(None, None), "untitled.step");
         assert_eq!(
-            suggested_export_name(Some("a.3dcraft"), Some("stl")),
+            suggested_jig_name(Some("w/box.3dcraft"), None),
+            "box.3dcraftjig"
+        );
+        assert_eq!(suggested_jig_name(None, None), "untitled.3dcraftjig");
+        assert_eq!(suggested_name(Some("parts/a.3dcraft")), "a.3dcraft");
+        assert_eq!(suggested_export_name(None, None, None), "untitled.step");
+        assert_eq!(
+            suggested_export_name(Some("a.3dcraft"), None, Some("stl")),
             "a.stl"
+        );
+        // Without a file, the title an example is shown under, made a
+        // file's name as Save makes it; a file's name goes first.
+        assert_eq!(
+            suggested_jig_name(None, Some("Gridfinity bin")),
+            "Gridfinity bin.3dcraftjig"
+        );
+        assert_eq!(
+            suggested_export_name(None, Some("Gear: 20/40"), Some("stl")),
+            "Gear- 20-40.stl"
+        );
+        assert_eq!(
+            suggested_export_name(Some("/a/gear.3dcraft"), Some("Gear"), None),
+            "gear.step"
+        );
+        assert_eq!(
+            suggested_jig_name(None, Some(" ... ")),
+            "untitled.3dcraftjig"
         );
     }
 

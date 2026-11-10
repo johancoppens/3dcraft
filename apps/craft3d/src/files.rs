@@ -794,7 +794,10 @@ impl Host {
                     return;
                 };
                 picker
-                    .ask_export_jig(suggested_jig_name(status.path.as_deref()))
+                    .ask_export_jig(suggested_jig_name(
+                        status.path.as_deref(),
+                        status.title.as_deref(),
+                    ))
                     .map_err(|e| ("jig.export", e))
             }
             FileAction::OpenForEditing => {
@@ -1429,6 +1432,7 @@ mod tests {
         let mine = subdir(&dir, "mine");
         let mut host = Host::new(Session::new(Workspace::none()));
         let person = Person::who_answers(&[
+            None,
             Some(&mine.join("profile.3dcraft")),
             Some(&mine.join("clamp.3dcraftasm")),
             Some(&mine.join("clamp-2")),
@@ -1449,8 +1453,20 @@ mod tests {
         );
         assert!(host.shell.recent_files().is_empty(), "no file of its own");
         assert!(!host.shell.state.timeline.motion);
+        // Export as Jig proposes its title too (cancelled here).
+        act(&mut host, &mut dialogs, FileAction::ExportJig);
+        assert_eq!(
+            person.asked(),
+            [format!("export-jig {}.3dcraftjig", profile.title)]
+        );
         act(&mut host, &mut dialogs, FileAction::Save);
-        assert_eq!(person.asked(), [format!("save {}.3dcraft", profile.title)]);
+        assert_eq!(
+            person.asked(),
+            [
+                format!("export-jig {}.3dcraftjig", profile.title),
+                format!("save {}.3dcraft", profile.title)
+            ]
+        );
         assert_eq!(listing(&mine), ["profile.3dcraft"]);
         let saved = host.session.document_status().unwrap();
         assert!(!saved.dirty && saved.title.is_none() && saved.path.is_some());
@@ -1932,12 +1948,15 @@ mod tests {
             PathBuf::from("/a/clamp.3dcraftasm")
         );
         // The export dialog: the document's name, the last format.
-        assert_eq!(suggested_export_name(None, None), "untitled.step");
+        assert_eq!(suggested_export_name(None, None, None), "untitled.step");
         assert_eq!(
-            suggested_export_name(Some("/home/me/gear.3dcraft"), Some("stl")),
+            suggested_export_name(Some("/home/me/gear.3dcraft"), None, Some("stl")),
             "gear.stl"
         );
-        assert_eq!(suggested_export_name(Some(""), Some("dxf")), "untitled.dxf");
+        assert_eq!(
+            suggested_export_name(Some(""), None, Some("dxf")),
+            "untitled.dxf"
+        );
         let kind = |p: &str| craft3d_ui_egui::files::export_kind(p);
         use craft3d_ui_egui::files::ExportKind;
         assert_eq!(kind("a.STEP"), Some(ExportKind::Bodies));
