@@ -133,15 +133,10 @@ pub fn tab_glyph(tab: &DocTab) -> crate::kit::Glyph {
 
 /// The name a tab shows for a document without a file that has a title
 /// (an example from the start screen, `DocumentStatus::title`): on one
-/// line, as long as a file's name may be. `None` without one.
+/// line (`craft3d_engine::one_line`: "Two\nlines" reads "Two lines"), as
+/// long as a file's name may be. `None` without one.
 pub fn tab_title(title: Option<&str>) -> Option<String> {
-    let name: String = title?
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(MAX_NAME_CHARS)
-        .collect::<String>()
-        .trim()
-        .to_string();
+    let name = craft3d_engine::one_line(title?, MAX_NAME_CHARS);
     (!name.is_empty()).then_some(name)
 }
 

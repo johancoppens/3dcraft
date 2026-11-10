@@ -31,17 +31,33 @@ use serde_json::{Value, json};
 /// Longest title kept, in characters.
 pub(crate) const MAX_TITLE_CHARS: usize = 120;
 
-/// `text` as a title: on one line (control characters dropped), trimmed,
-/// at most [`MAX_TITLE_CHARS`]; `None` when nothing is left.
+/// `text` as a title: on one line ([`one_line`]), at most
+/// [`MAX_TITLE_CHARS`]; `None` when nothing is left.
 pub(crate) fn clean_title(text: &str) -> Option<String> {
-    let title: String = text
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(MAX_TITLE_CHARS)
-        .collect::<String>()
-        .trim()
-        .to_string();
+    let title = one_line(text, MAX_TITLE_CHARS);
     (!title.is_empty()).then_some(title)
+}
+
+/// `text` on one line, as a name is shown: a line break, a tab or another
+/// control character that is white space made a space (one for a run of
+/// them, so "Two\r\nlines" reads "Two lines"), the other control
+/// characters dropped, at most `max_chars` characters, trimmed.
+pub fn one_line(text: &str, max_chars: usize) -> String {
+    let mut line = String::new();
+    let mut count = 0usize;
+    for c in text.chars() {
+        let c = match c {
+            c if !c.is_control() => c,
+            c if c.is_whitespace() && !line.ends_with(char::is_whitespace) => ' ',
+            _ => continue,
+        };
+        if count >= max_chars {
+            break;
+        }
+        line.push(c);
+        count = count.saturating_add(1);
+    }
+    line.trim().to_string()
 }
 
 impl Session {
@@ -156,7 +172,11 @@ mod tests {
     #[test]
     fn a_title_is_one_trimmed_line_of_at_most_120_characters() {
         assert_eq!(clean_title("  Moka pot\n").as_deref(), Some("Moka pot"));
-        assert_eq!(clean_title("a\u{0}b\tc").as_deref(), Some("abc"));
+        // A line break or a tab is a space (one for a run of them), other
+        // control characters are dropped.
+        assert_eq!(clean_title("a\u{0}b\tc").as_deref(), Some("ab c"));
+        assert_eq!(clean_title("Two\nlines").as_deref(), Some("Two lines"));
+        assert_eq!(clean_title("Two\r\n\tlines").as_deref(), Some("Two lines"));
         assert_eq!(clean_title(" \n\t"), None);
         assert_eq!(clean_title(""), None);
         assert_eq!(

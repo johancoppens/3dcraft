@@ -597,12 +597,22 @@ fn a_tab_without_a_file_is_named_by_its_title_else_untitled() {
         status(2, None, None),
         status(3, None, Some(" \n ")),
         status(4, None, Some("Two\nlines")),
+        status(5, None, Some("a\u{7}b\r\n\tc")),
     ];
     let tabs = craft3d_ui_egui::doc_tabs(&statuses, Some(1));
     let names: Vec<&str> = tabs.iter().map(|t| t.name.as_str()).collect();
+    // A line break or a tab is a space, one for a run of them; another
+    // control character is dropped.
     assert_eq!(
         names,
-        ["gear", "Moka pot", "Untitled 1", "Untitled 2", "Twolines"]
+        [
+            "gear",
+            "Moka pot",
+            "Untitled 1",
+            "Untitled 2",
+            "Two lines",
+            "ab c"
+        ]
     );
     assert!(tabs[1].active && !tabs[1].marked());
 }
