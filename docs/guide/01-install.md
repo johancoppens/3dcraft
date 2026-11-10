@@ -206,6 +206,8 @@ a file anywhere else, 3DCraft shows the file, *"Claude Code asks to write a file
 the agent waits for you (up to two minutes) and is told when you say no. Only you can answer these
 questions: the agent cannot answer them for itself. 3DCraft never
 offers your home folder itself, the folders of your keys, settings and programs, or the system's folders.
+On a Mac a folder in iCloud Drive or in your Dropbox, OneDrive, Google Drive or Box folder can be
+given, although the rest of `~/Library` cannot.
 The folder of the document you have open counts only for a document you opened or saved yourself.
 
 If no window allows agents, the agent's requests get an answer that says to turn on **Allow AI agents**,

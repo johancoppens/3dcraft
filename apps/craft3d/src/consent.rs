@@ -140,6 +140,14 @@ pub struct Protected {
     /// [`SYSTEM`], each as written and resolved: for what lies outside
     /// the home folder.
     system: Vec<(PathBuf, &'static str)>,
+    /// `~/Library`, as written and resolved: what the cloud folders are
+    /// let out of.
+    library: Vec<PathBuf>,
+    /// `~/Library/CloudStorage` (one folder per provider beneath it) and
+    /// iCloud Drive (`~/Library/Mobile Documents/com~apple~CloudDocs`), as
+    /// written and resolved.
+    cloud_storage: Vec<PathBuf>,
+    icloud_drive: Vec<PathBuf>,
 }
 
 impl Default for Protected {
@@ -209,12 +217,38 @@ impl Protected {
                 system.push((spelling, OF_THE_SYSTEM));
             }
         }
+        let beneath_home = |part: &str| {
+            home.as_ref()
+                .map(|home| both_spellings(home.join(part)))
+                .unwrap_or_default()
+        };
         Self {
+            library: beneath_home("Library"),
+            cloud_storage: beneath_home("Library/CloudStorage"),
+            icloud_drive: beneath_home("Library/Mobile Documents/com~apple~CloudDocs"),
             home,
             state: state.map(both_spellings).unwrap_or_default(),
             places,
             system,
         }
+    }
+
+    /// Whether `folder` is a cloud folder of macOS, or in one: a
+    /// provider's folder beneath `~/Library/CloudStorage` (Dropbox,
+    /// OneDrive, Google Drive, Box; not `CloudStorage` itself, the list of
+    /// them) or iCloud Drive (not the other folders of
+    /// `~/Library/Mobile Documents`, which are apps' own). The developer's
+    /// decision of 2026-11-10: these may be a work folder although
+    /// `~/Library` is protected.
+    fn in_cloud(&self, folder: &Path) -> bool {
+        self.cloud_storage.iter().any(|storage| {
+            folder
+                .strip_prefix(storage)
+                .is_ok_and(|rest| rest.components().next().is_some())
+        }) || self
+            .icloud_drive
+            .iter()
+            .any(|drive| folder.starts_with(drive))
     }
 
     /// The same places with 3DCraft's state folder `state`.
@@ -323,9 +357,13 @@ impl Protected {
         if let Some(why) = self.state.iter().find_map(|state| clash(state, OWN)) {
             return Some(why);
         }
+        // A cloud folder is let out of `~/Library` alone; where a link in
+        // it leads is judged again, resolved.
+        let cloud = self.in_cloud(folder);
         if let Some(why) = self
             .places
             .iter()
+            .filter(|(place, _)| !(cloud && self.library.contains(place)))
             .find_map(|(place, what)| clash(place, what))
         {
             return Some(why);
@@ -619,6 +657,72 @@ mod tests {
         ] {
             assert_eq!(mac.reason(Path::new(offered)), None, "{offered}");
         }
+    }
+
+    /// The cloud folders of macOS may be a work folder although
+    /// `~/Library` is protected (the developer, 2026-11-10): each
+    /// provider's folder beneath `CloudStorage` and iCloud Drive, with
+    /// what is in them; not the list of providers, not the other folders
+    /// of `Mobile Documents` (apps' own), nothing else of `~/Library`.
+    /// Paths as data: they need not exist.
+    #[cfg(unix)]
+    #[test]
+    fn the_cloud_folders_of_macos_may_be_offered() {
+        let mac = Protected::new(Some(PathBuf::from("/Users/ann")), None, Vec::new());
+        for offered in [
+            "/Users/ann/Library/CloudStorage/Dropbox",
+            "/Users/ann/Library/CloudStorage/Dropbox/brackets",
+            "/Users/ann/Library/CloudStorage/OneDrive-Personal/work",
+            "/Users/ann/Library/CloudStorage/GoogleDrive-ann@example.com/My Drive/3DCraft",
+            "/Users/ann/Library/CloudStorage/Box-Box/parts",
+            "/Users/ann/Library/Mobile Documents/com~apple~CloudDocs",
+            "/Users/ann/Library/Mobile Documents/com~apple~CloudDocs/3DCraft",
+        ] {
+            assert_eq!(mac.reason(Path::new(offered)), None, "{offered}");
+        }
+        for refused in [
+            "/Users/ann/Library",
+            "/Users/ann/Library/CloudStorage",
+            "/Users/ann/Library/Mobile Documents",
+            "/Users/ann/Library/Mobile Documents/com~apple~Pages",
+            "/Users/ann/Library/Mobile Documents/com~apple~Pages/Documents",
+            "/Users/ann/Library/Preferences",
+            "/Users/ann/Library/Keychains",
+            "/Users/ann/Library/CloudStorage/../Preferences",
+        ] {
+            assert!(mac.reason(Path::new(refused)).is_some(), "{refused}");
+        }
+    }
+
+    /// In a cloud folder a link is judged where it leads: into a folder
+    /// of keys or elsewhere in `~/Library`, refused; a link from
+    /// elsewhere into a cloud folder, offered.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_or_into_a_cloud_folder_is_judged_where_it_leads() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/tmp/craft3d-consent-cloud-links");
+        let _ = std::fs::remove_dir_all(&dir);
+        let dropbox = dir.join("Library/CloudStorage/Dropbox");
+        std::fs::create_dir_all(dropbox.join("work")).unwrap();
+        std::fs::create_dir_all(dir.join("Library/Preferences")).unwrap();
+        std::fs::create_dir_all(dir.join(".ssh")).unwrap();
+        std::fs::create_dir_all(dir.join("projects")).unwrap();
+        let home = craft3d_engine::canonical(&dir).unwrap();
+        let dropbox = home.join("Library/CloudStorage/Dropbox");
+        std::os::unix::fs::symlink(home.join(".ssh"), dropbox.join("keys")).unwrap();
+        std::os::unix::fs::symlink(home.join("Library/Preferences"), dropbox.join("prefs"))
+            .unwrap();
+        std::os::unix::fs::symlink(&dropbox, home.join("projects/dropbox")).unwrap();
+        let p = Protected::new(Some(home.clone()), None, Vec::new());
+        assert_eq!(p.reason(&dropbox.join("work")), None);
+        let why = p.reason(&dropbox.join("keys")).unwrap();
+        assert!(why.contains("keys and settings"), "{why}");
+        assert!(p.reason(&dropbox.join("prefs")).is_some());
+        assert!(p.reason(&dropbox.join("keys/new")).is_some());
+        assert_eq!(p.reason(&home.join("projects/dropbox")), None);
+        assert_eq!(p.reason(&home.join("projects/dropbox/work")), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A folder spelled through a link is judged by where the link leads:
