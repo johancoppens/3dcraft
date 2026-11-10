@@ -8,7 +8,7 @@
 
 | Doc | What it holds |
 |---|---|
-| [`guide/`](guide/README.md) | The user guide: start here, install and connect an agent, first steps, working with an agent, the window, Jigs, concepts, a first part, formulas, features, measuring, selection, files, the command line, troubleshooting, reference |
+| [`guide/`](guide/README.md) | The user guide, in six parts: start (install and connect an agent, first steps, working with an agent), using it (the window, Jigs, assemblies, files), modelling (concepts, a first part, formulas, features, sheet metal, surfaces, origami, selection), checking (measuring, engineering checks), building on 3DCraft (making Jigs, the command line, programs) and help (troubleshooting, reference) |
 | [`examples/`](examples/README.md) | Eighteen example models as command scripts, each with a picture and its volume asserted; thirteen of them are cards on the start screen, beside the published Jigs and assemblies in `examples/published/` |
 | [`architecture.md`](architecture.md) | The map: the rules that always hold, crates and layers, data, pipelines, the kernel's methods, known structural debt |
 | [`design/`](design/README.md) | One detail document per part (geometry, topology, booleans, blends, sweeps, face operations, developable surfaces, surfacing, names, document, regeneration, tessellator, rendering, engine, motion, selection, origami, verification, sections and levels, plates, sheet metal, cutting, assemblies, STEP import, text, files): how it works now, then its dated findings |
