@@ -292,14 +292,26 @@ pub fn memory_name(name: &str) -> Option<String> {
 }
 
 /// `name` ending in `.extension`: as it is when it has that extension
-/// (in any case), else with it appended, so a document saved as `x.stl`
-/// is `x.stl.3dcraft` and never a `.3dcraft` file under another format's
-/// name.
+/// (in any case); with another of 3DCraft's (`.3dcraft`, `.3dcraftjig`,
+/// `.3dcraftasm`) that one replaced, so an assembly typed as
+/// `clamp.3dcraft` is `clamp.3dcraftasm`; else with it appended, so a
+/// document saved as `x.stl` is `x.stl.3dcraft` and never a `.3dcraft`
+/// file under another format's name.
 fn with_extension(name: &str, extension: &str) -> String {
-    if extension_of(name).as_deref() == Some(extension) {
-        name.to_string()
-    } else {
-        format!("{name}.{extension}")
+    match extension_of(name) {
+        Some(had) if had == extension => name.to_string(),
+        Some(had) if [EXTENSION, JIG_EXTENSION, ASSEMBLY_EXTENSION].contains(&had.as_str()) => {
+            // The extension's bytes are the name's last ones (lower case
+            // keeps their length).
+            let stem = name
+                .len()
+                .checked_sub(had.len().saturating_add(1))
+                .and_then(|end| name.get(..end))
+                .filter(|stem| !stem.is_empty())
+                .unwrap_or("untitled");
+            format!("{stem}.{extension}")
+        }
+        _ => format!("{name}.{extension}"),
     }
 }
 
@@ -2695,7 +2707,41 @@ mod tests {
         assert_eq!(with_extension("a", EXTENSION), "a.3dcraft");
         assert_eq!(with_extension("a.3DCRAFT", EXTENSION), "a.3DCRAFT");
         assert_eq!(with_extension("x.stl", EXTENSION), "x.stl.3dcraft");
+        // Another of 3DCraft's extensions is replaced, in any case: never
+        // `clamp.3dcraft.3dcraftasm`.
+        assert_eq!(
+            with_extension("clamp.3dcraft", ASSEMBLY_EXTENSION),
+            "clamp.3dcraftasm"
+        );
+        assert_eq!(with_extension("Box.3DCraftJig", EXTENSION), "Box.3dcraft");
+        assert_eq!(
+            with_extension("box.3dcraft", JIG_EXTENSION),
+            "box.3dcraftjig"
+        );
+        assert_eq!(with_extension("rig.3dcraftasm", EXTENSION), "rig.3dcraft");
+        assert_eq!(
+            with_extension("a.b.3dcraftasm", ASSEMBLY_EXTENSION),
+            "a.b.3dcraftasm"
+        );
         assert_eq!(export_file_name("", ExportFormat::Obj), "untitled.obj");
+    }
+
+    /// An assembly saved under a part's name is saved as an assembly, the
+    /// extension replaced (it was `clamp.3dcraft.3dcraftasm`).
+    #[test]
+    fn an_assembly_typed_with_a_parts_extension_is_saved_as_an_assembly() {
+        let mut host = host();
+        host.run("assembly.new", &json!({})).unwrap();
+        for typed in ["clamp.3dcraft", "clamp", "clamp.3DCRAFTASM"] {
+            let saved = host.save_as(typed, None);
+            assert_eq!(saved.len(), 1, "{typed}: {:?}", host.shell.last_command);
+            let wanted = if typed == "clamp.3DCRAFTASM" {
+                typed
+            } else {
+                "clamp.3dcraftasm"
+            };
+            assert_eq!(saved[0].name, wanted);
+        }
     }
 
     #[test]
@@ -2721,6 +2767,13 @@ mod tests {
         let renamed = first.save_as("plate.stl", None);
         assert_eq!(renamed[0].name, "plate.stl.3dcraft");
         assert!(renamed[0].bytes.starts_with(b"PK"));
+        // Under an assembly's or a Jig's name, a part's: the extension
+        // replaced, not appended.
+        for typed in ["plate.3dcraftasm", "plate.3dcraftjig"] {
+            let renamed = first.save_as(typed, None);
+            assert_eq!(renamed.len(), 1, "{typed}: {:?}", first.shell.last_command);
+            assert_eq!(renamed[0].name, "plate.3dcraft");
+        }
         first.save_as("plate.3dcraft", None);
         // Saved once, Save goes to the same name without asking.
         let again = first.file_action(FileAction::Save).downloads;
