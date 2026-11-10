@@ -2,7 +2,9 @@
 //! Packaging). Builds `craft3d` and `craft3d-cli` in release and packs them
 //! for the platform it runs on:
 //!
-//! - Linux: a tarball (with `install.sh`) and an AppImage;
+//! - Linux: a tarball (with `install.sh`) and an AppImage, which installs
+//!   nothing but carries the menu entry, the file types and their icons
+//!   for a desktop integration tool ([`desktop_files`]);
 //! - macOS: `3DCraft.app` in a `.dmg`;
 //! - Windows: a zip and an `.msi`;
 //! - everywhere: `--formats web`, the browser build as a static site in
@@ -32,6 +34,72 @@ const ICON_SIZES: [u32; 8] = [16, 32, 48, 64, 128, 256, 512, 1024];
 /// The PNG sizes in the macOS `.icns` and the Windows `.ico`.
 const ICNS_SIZES: [u32; 7] = [16, 32, 64, 128, 256, 512, 1024];
 const ICO_SIZES: [u32; 5] = [16, 32, 48, 64, 256];
+
+/// Where the AppImage carries the tree the tarball installs.
+const APPIMAGE_PREFIX: &str = "usr";
+
+/// The files a Linux desktop reads below a prefix, each as where it is in
+/// the repository and where it goes below the prefix: the menu entry (its
+/// `MimeType=` names the three file types), the MIME types of `.3dcraft`,
+/// `.3dcraftjig` and `.3dcraftasm` (shared-mime-info), the AppStream
+/// metainfo, and the icons of the hicolor theme: the app's, and each file
+/// type's own, named as its MIME type's `icon` element says.
+///
+/// The tarball's `install.sh` installs them. The AppImage installs
+/// nothing: it carries them below `usr/`, where a desktop integration tool
+/// takes them from (libappimage, which AppImageLauncher uses, takes the
+/// entry at the AppImage's root, [`appimage_root_files`], every
+/// `usr/share/mime/packages/*.xml` and the icons below `usr/share/icons`
+/// whose names hold the entry's icon name).
+fn desktop_files() -> Vec<(String, String)> {
+    let mut files = vec![
+        (
+            format!("packaging/linux/{APP_ID}.desktop"),
+            format!("share/applications/{APP_ID}.desktop"),
+        ),
+        (
+            format!("packaging/linux/{APP_ID}.xml"),
+            format!("share/mime/packages/{APP_ID}.xml"),
+        ),
+        (
+            format!("packaging/linux/{APP_ID}.metainfo.xml"),
+            format!("share/metainfo/{APP_ID}.metainfo.xml"),
+        ),
+    ];
+    for (icon, context, name) in [
+        ("craft3d", "apps", APP_ID.to_string()),
+        ("craft3d-jig", "mimetypes", format!("{APP_ID}-jig")),
+        ("craft3d-asm", "mimetypes", format!("{APP_ID}-asm")),
+    ] {
+        for size in ICON_SIZES.iter().filter(|s| **s <= 512) {
+            files.push((
+                format!("packaging/icons/{icon}-{size}.png"),
+                format!("share/icons/hicolor/{size}x{size}/{context}/{name}.png"),
+            ));
+        }
+        files.push((
+            format!("packaging/icons/{icon}.svg"),
+            format!("share/icons/hicolor/scalable/{context}/{name}.svg"),
+        ));
+    }
+    files
+}
+
+/// What the AppImage carries at its root for appimagetool and desktop
+/// integration tools: the menu entry (the file below
+/// `usr/share/applications` too) and the icon it names, also as
+/// `.DirIcon`.
+fn appimage_root_files() -> [(String, String); 3] {
+    let icon = "packaging/icons/craft3d-256.png".to_string();
+    [
+        (
+            format!("packaging/linux/{APP_ID}.desktop"),
+            format!("{APP_ID}.desktop"),
+        ),
+        (icon.clone(), format!("{APP_ID}.png")),
+        (icon, ".DirIcon".to_string()),
+    ]
+}
 
 /// What the command line asked for.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -430,67 +498,11 @@ impl Packer {
         for name in ["craft3d", "craft3d-cli"] {
             copy(&self.binary(name)?, &prefix.join("bin").join(name), true)?;
         }
-        let share = prefix.join("share");
-        copy_fonts(&share.join("craft3d").join("fonts"))?;
-        let linux = |f: &str| self.packaging(&format!("linux/{f}"));
-        copy(
-            &linux(&format!("{APP_ID}.desktop")),
-            &share.join(format!("applications/{APP_ID}.desktop")),
-            false,
-        )?;
-        copy(
-            &linux(&format!("{APP_ID}.xml")),
-            &share.join(format!("mime/packages/{APP_ID}.xml")),
-            false,
-        )?;
-        copy(
-            &linux(&format!("{APP_ID}.metainfo.xml")),
-            &share.join(format!("metainfo/{APP_ID}.metainfo.xml")),
-            false,
-        )?;
-        for size in ICON_SIZES.iter().filter(|s| **s <= 512) {
-            copy(
-                &self.icon(*size),
-                &share.join(format!("icons/hicolor/{size}x{size}/apps/{APP_ID}.png")),
-                false,
-            )?;
+        copy_fonts(&prefix.join("share").join("craft3d").join("fonts"))?;
+        for (from, to) in desktop_files() {
+            copy(&self.repo.join(from), &prefix.join(to), false)?;
         }
-        copy(
-            &self.packaging("icons/craft3d.svg"),
-            &share.join(format!("icons/hicolor/scalable/apps/{APP_ID}.svg")),
-            false,
-        )?;
-        // The Jig's file type has an icon of its own, named as the MIME
-        // type's `icon` element says.
-        for size in ICON_SIZES.iter().filter(|s| **s <= 512) {
-            copy(
-                &self.jig_icon(*size),
-                &share.join(format!(
-                    "icons/hicolor/{size}x{size}/mimetypes/{APP_ID}-jig.png"
-                )),
-                false,
-            )?;
-        }
-        copy(
-            &self.packaging("icons/craft3d-jig.svg"),
-            &share.join(format!("icons/hicolor/scalable/mimetypes/{APP_ID}-jig.svg")),
-            false,
-        )?;
-        // And so has the assembly's.
-        for size in ICON_SIZES.iter().filter(|s| **s <= 512) {
-            copy(
-                &self.asm_icon(*size),
-                &share.join(format!(
-                    "icons/hicolor/{size}x{size}/mimetypes/{APP_ID}-asm.png"
-                )),
-                false,
-            )?;
-        }
-        copy(
-            &self.packaging("icons/craft3d-asm.svg"),
-            &share.join(format!("icons/hicolor/scalable/mimetypes/{APP_ID}-asm.svg")),
-            false,
-        )
+        Ok(())
     }
 
     fn tarball(&self) -> Result<PathBuf, String> {
@@ -539,23 +551,17 @@ impl Packer {
             return Err(format!("there is no AppImage runtime {}", r.display()));
         }
         let app_dir = self.stage.join("AppDir");
-        self.linux_tree(&app_dir.join("usr"))?;
+        // The same tree as the tarball's below `usr/`, menu entry, MIME
+        // types and icons included (`desktop_files`).
+        self.linux_tree(&app_dir.join(APPIMAGE_PREFIX))?;
         copy(
             &self.packaging("linux/AppRun"),
             &app_dir.join("AppRun"),
             true,
         )?;
-        copy(
-            &self.packaging(&format!("linux/{APP_ID}.desktop")),
-            &app_dir.join(format!("{APP_ID}.desktop")),
-            false,
-        )?;
-        copy(
-            &self.icon(256),
-            &app_dir.join(format!("{APP_ID}.png")),
-            false,
-        )?;
-        copy(&self.icon(256), &app_dir.join(".DirIcon"), false)?;
+        for (from, to) in appimage_root_files() {
+            copy(&self.repo.join(from), &app_dir.join(to), false)?;
+        }
         copy(&self.repo.join("LICENSE"), &app_dir.join("LICENSE"), false)?;
         copy(
             &self.examples_licence(),
@@ -1193,6 +1199,107 @@ mod tests {
         let app = std::fs::read_to_string(repo_root().join("apps/craft3d/src/app.rs")).unwrap();
         assert!(app.contains(&format!("pub const APP_ID: &str = \"{APP_ID}\";")));
         assert!(app.contains(".with_app_id(APP_ID)"));
+    }
+
+    /// The AppImage registers nothing itself, but carries the menu entry,
+    /// the three file types and their icons where desktop integration tools
+    /// look for them ([`desktop_files`]): the entry at its root and in
+    /// `usr/share/applications`, opening the three types; the MIME package
+    /// in `usr/share/mime/packages`, defining each by its file name; and
+    /// every icon the entry and the types name, at each size of the theme,
+    /// below `usr/share/icons`, with the entry's icon name in its own (what
+    /// libappimage, which AppImageLauncher uses, looks for).
+    #[test]
+    fn the_appimage_carries_the_file_types_where_desktop_integration_looks() {
+        let root = repo_root();
+        let files: Vec<(String, String)> = desktop_files()
+            .into_iter()
+            .map(|(from, to)| (from, format!("{APPIMAGE_PREFIX}/{to}")))
+            .chain(appimage_root_files())
+            .collect();
+        let from = |inside: &str| {
+            files
+                .iter()
+                .find(|(_, to)| to == inside)
+                .map(|(from, _)| from.clone())
+        };
+        let has = |inside: &dyn Fn(&str) -> bool| files.iter().any(|(_, to)| inside(to));
+        for (source, inside) in &files {
+            assert!(root.join(source).is_file(), "{source}");
+            let placed = files.iter().filter(|(_, to)| to == inside).count();
+            assert_eq!(placed, 1, "{inside}");
+        }
+        // The menu entry opens the three types.
+        let desktop = format!("packaging/linux/{APP_ID}.desktop");
+        assert_eq!(from(&format!("{APP_ID}.desktop")), Some(desktop.clone()));
+        assert_eq!(
+            from(&format!("usr/share/applications/{APP_ID}.desktop")),
+            Some(desktop.clone())
+        );
+        let entry = std::fs::read_to_string(root.join(&desktop)).unwrap();
+        let key = |name: &str| {
+            entry
+                .lines()
+                .find_map(|line| line.strip_prefix(name))
+                .unwrap()
+                .to_string()
+        };
+        let kinds = [
+            ("application/x-craft3d", "*.3dcraft"),
+            ("application/x-craft3d-jig", "*.3dcraftjig"),
+            ("application/x-craft3d-assembly", "*.3dcraftasm"),
+        ];
+        let types: Vec<String> = key("MimeType=")
+            .split(';')
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .collect();
+        assert_eq!(types, kinds.map(|(kind, _)| kind));
+        // The MIME package defines each type by its file name, with an
+        // icon.
+        let package = format!("packaging/linux/{APP_ID}.xml");
+        assert_eq!(
+            from(&format!("usr/share/mime/packages/{APP_ID}.xml")),
+            Some(package.clone())
+        );
+        let xml = std::fs::read_to_string(root.join(&package)).unwrap();
+        let entry_icon = key("Icon=");
+        let mut icons = vec![entry_icon.clone()];
+        for (kind, glob) in kinds {
+            let start = xml.find(&format!("<mime-type type=\"{kind}\">")).unwrap();
+            let rest = &xml[start..];
+            let block = &rest[..rest.find("</mime-type>").unwrap()];
+            assert!(
+                block.contains(&format!("<glob pattern=\"{glob}\"")),
+                "{kind}"
+            );
+            let icon = ["<icon name=\"", "<generic-icon name=\""]
+                .iter()
+                .find_map(|tag| block.find(tag).map(|at| &block[at + tag.len()..]))
+                .and_then(|name| name.split('"').next())
+                .unwrap_or_else(|| panic!("{kind} names no icon"));
+            icons.push(icon.to_string());
+        }
+        // Every icon named, at each size and scalable.
+        for name in &icons {
+            assert!(name.contains(&entry_icon), "{name}");
+            for size in ICON_SIZES.iter().filter(|s| **s <= 512) {
+                let png = format!("/{name}.png");
+                let dir = format!("usr/share/icons/hicolor/{size}x{size}/");
+                assert!(
+                    has(&|to| to.starts_with(&dir) && to.ends_with(&png)),
+                    "{name} {size}"
+                );
+            }
+            let svg = format!("/{name}.svg");
+            assert!(
+                has(&|to| to.starts_with("usr/share/icons/hicolor/scalable/") && to.ends_with(&svg)),
+                "{name} scalable"
+            );
+        }
+        // The entry's icon at the root too, and as `.DirIcon`.
+        assert!(from(&format!("{entry_icon}.png")).is_some());
+        assert!(from(".DirIcon").is_some());
     }
 
     /// gdk-pixbuf recognises an SVG by finding `<svg` near the start of the

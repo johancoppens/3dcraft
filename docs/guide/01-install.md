@@ -87,6 +87,11 @@ Both packages need a Linux from about 2022 or newer (glibc 2.35, as in Ubuntu 22
 If it complains about FUSE, install your distribution's `fuse` (or `libfuse2`) package, or run it with
 `APPIMAGE_EXTRACT_AND_RUN=1`.
 
+The AppImage adds nothing to your system by itself: its menu entry, its icon and the file types `.3dcraft`,
+`.3dcraftjig` and `.3dcraftasm` are inside it where a desktop integration tool such as AppImageLauncher
+looks, so integrating the AppImage with one gives you the menu entry and opens those files with 3DCraft;
+without such a tool, the tarball installs them.
+
 **Tarball** (installs for your user into `~/.local`, with a menu entry and the `.3dcraft` file type):
 
 ```sh
