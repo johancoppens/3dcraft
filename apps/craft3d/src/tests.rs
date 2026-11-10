@@ -954,11 +954,15 @@ fn refusals_do_not_hold_up_the_next_connection() {
         client.send(b"{\"id\":0,\"method\":\"ping\"}\n");
     }
     // The listener takes connections in the order they came, and tells each
-    // refused one before it takes the next; one closed at once, unread,
-    // may lose its line to the reset (`None`), which the listener sends
-    // only after it has handled the connection too.
-    for client in &mut refused {
-        if let Some(reply) = client.read() {
+    // refused one before it takes the next. The first is closed on a thread
+    // of its own, which reads what it sent, so it always reads why; one
+    // closed at once, unread, may lose its line to the reset (`None`),
+    // which the listener sends only after it has handled the connection
+    // too.
+    for (i, client) in refused.iter_mut().enumerate() {
+        let reply = client.read();
+        assert!(i > 0 || reply.is_some(), "the first refusal was not told");
+        if let Some(reply) = reply {
             let error = reply["error"].as_str().unwrap_or_default();
             assert!(
                 error.contains("too many connections (1 at most)"),
