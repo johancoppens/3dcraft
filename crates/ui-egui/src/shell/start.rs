@@ -1294,7 +1294,8 @@ fn card_text(
 
 /// A small tag on a thumbnail (*Start here*, how long it takes): `text`
 /// in the small font on a pill of `fill` with `ink`, placed at `at` by
-/// `align`.
+/// `align`. Sized as the kit's chip: its height, half of it beside the
+/// text on either side, and the radius of a pill of that height.
 fn tag(
     painter: &egui::Painter,
     kit: &Kit,
@@ -1304,11 +1305,15 @@ fn tag(
     (fill, ink): (crate::theme::Rgb, crate::theme::Rgb),
 ) {
     let galley = painter.layout_no_wrap(text.to_string(), kit.small_font(), color(ink));
-    let pad = egui::vec2(6.0, 2.0);
-    let size = galley.size() + pad * 2.0;
+    let h = kit.t.chip_height;
+    let size = egui::vec2(galley.size().x + h, h);
     let rect = align.anchor_size(at, size);
-    painter.rect_filled(rect, egui::CornerRadius::same(255), color(fill));
-    painter.galley(rect.min + pad, galley, color(ink));
+    painter.rect_filled(
+        rect,
+        egui::CornerRadius::same(crate::kit::controls::radius_of(h)),
+        color(fill),
+    );
+    painter.galley(rect.center() - galley.size() * 0.5, galley, color(ink));
 }
 
 /// The headings' family where the fonts in force have one (Semi Bold).
