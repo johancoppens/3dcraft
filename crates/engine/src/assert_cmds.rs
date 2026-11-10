@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("assert.add", "Add Assertion", r#"{"name": string, "measure": "volume|cavity|area|mass|count|extent|boxMin|boxMax|centerOfMass|distance|clearance|thickness|through|overlap|symmetric|volumeBelow|centroidBelow|sectionArea|sectionCentroid|sectionInertia|sectionTorsion|sectionShearCentre|sectionExtent|levelFor|curvature|developable|bendRadius|flangeLength|holeToBend|relief|cornerGap|flatExtent|flatArea|louvreStretch|bendStrain|kawasakiFails|maekawaFails|flatFoldable|floatingOffset|floatingHeel|floatingTrim|floatingGM|floatingGML|floatingStable|bendable|value|continuity|draft|textExtent|jointAngle|jointDistance|position|rotation", "expr": expr, "of": subject, "edge": edge name, "face": face name, "sketch": id or name, "text": text id, "what": "width|height|capHeight|lines|inkWidth|inkHeight", "from": subject, "to": subject, "axis": "x|y|z", "plane": plane, "offset": expr, "xAxis": direction, "about": "x|y|xy|major|minor", "volume": expr, "measured": "tangent|mould", "mass": expr, "density": expr, "centerOfGravity": [expr, expr, expr], "heel": angle expr, "trim": angle expr, "punch": [[expr, expr], ...], "die": [[expr, expr], ...], "length": expr, "clearance": expr, "segmented": boolean, "formed": [flange, ...], "order": [flange or [flange, ...], ...], "maxWork": integer, "faces": subject, "direction": "x|y|z|-x|-y|-z" or [x, y, z], "minDraft": degrees, "at": [x, y, z], "tol": expr, "mate": mate name, "motion": "distance|x|y", "instance": instance name, "point": "Instance/Feature:name", "eq": expr, "min": expr, "max": expr, "is": boolean, "when": expr (a condition) = always on}"#,
-        "Adds an assertion to the document: a measure of part of the design and what it must be, checked after every regeneration (one undo step; saved with the document). Measures and their parameters: volume, area, mass (of: bodies, default all; area also of faces; mass needs a material), cavity (of: bodies, default all: what their cavities hold, the volume enclosed by the shells inside them, the capacity of a tank made hollow by feature.shell), count (of: a query, the number of things it finds), extent (of: bodies, axis: the size of their box along it), boxMin and boxMax (of: bodies, axis: where their box begins and ends along it, in the model's frame, so each side is bounded on its own), centerOfMass (of: bodies, default all, axis: the coordinate of their centre of mass along it, each body's centroid weighted by its mass; every body needs a material), distance (from, to: faces or bodies, the least distance between their surfaces, so a body inside another is at the gap to its surface; whether bodies touch or overlap is clearance's), clearance (from, to: bodies; a pair that overlaps fails), thickness (of: a body, the thinnest wall), through (of: cylindrical or conical faces, every one cut through along its axis), overlap (of: bodies, to: bodies = each other; whether any pair has a volume in common, so is false asserts that none overlap; the message names the pairs and their common volume, \"Bolt overlaps Plate by 12 mm^3\", or says no overlap), symmetric (of, plane, tol: as measure.symmetry), and what lies on one side of a plane (of: bodies, default all; plane, default xy, as symmetric takes it, or a flat face by name; offset, a length along its normal, default 0; xAxis: the section's x axis; as measure.below, measure.section and measure.levelFor): volumeBelow (the volume below the plane), centroidBelow (axis: the coordinate of its centroid), sectionArea, sectionCentroid (axis), sectionInertia (about: x, y or xy about the section's centroid in its own axes, or major or minor, the principal moments; in the document's unit to the fourth power), sectionTorsion (the section's St Venant torsion constant J, in the document's unit to the fourth power) and sectionShearCentre (axis: the coordinate of its shear centre), as measure.section solves them by finite elements with its default tolerance and element cap (a solve that reaches the cap is notProven, with the J it reached), sectionExtent (axis: x, y, z or [x, y, z]; how far the section reaches along it, from where it begins to where it ends, as from and to in the details: the waterline's length of a hull cut at its level; a plane that cuts nothing is an error), levelFor (volume: the offset at which the volume below is that); of sheet-metal parts (of: feature.sheetMetal features by name or id, read as they were built whatever takes their body later; default all those switched on, a part switched off by when or suppressed left out, one named refused): bendRadius (the smallest inner radius of their bends, measured on the part), flangeLength (the shortest flange: its flat from the bend's tangent line, or with measured mould from the virtual sharp of the outside surfaces), holeToBend (the least distance from a hole of the base or of a flange's flat to the tangent line of a bend beside that flat) relief (whether every corner where two flanged edges meet, and every end of a bend inside its edge, has a relief: bendRelief; is) cornerGap (the least gap at their closed corners, measured on the solid between the faces of each corner's two flats), flatExtent (axis: x or y, the largest width or height of their flat patterns in their sketches' axes: the blank each needs), flatArea (the sum of their flat patterns' areas, less the holes) louvreStretch (the largest stretch of their formed louvres' hoods, the section's length over its width less 1, a plain number: max 0.3 for a material that elongates 30 percent; an error for parts without a formed louvre) and bendStrain (the largest stretch or compression along the edge that their curved flanges' approximated flat patterns imply, proven, a plain number; an error for parts without a curved flange); of a fold (of: a feature.fold by name or id): kawasakiFails and maekawaFails (how many interior vertices of its crease pattern fail Kawasaki's or Maekawa's condition, at the document's tolerances, as fold.check counts them: eq 0 asserts both hold everywhere, which is necessary for folding flat and proves nothing more) and flatFoldable (is: whether the pattern with its mountain-valley assignment folds flat, every crease by 180 degrees, with an order of the layers, as feature.fold at 180 degrees decides it; an error, never a guess, when the search for an order runs out of work, since the question is NP-hard); of a floating body, with the parameters of measure.floating (of, plane, volume or mass and density, centerOfGravity, heel, trim, xAxis; each value an expression of the variables and outputs, centerOfGravity a point of them), of the equilibrium it reaches from the start (its first): floatingOffset (the plane's offset along its normal), floatingHeel and floatingTrim (angles from the upright plane, in radians; bounds with a unit, \"3 deg\"), floatingGM and floatingGML (the metacentric heights for a turn about the equilibrium plane's x axis, a heel, and about its y axis, a trim: I / V - BG with I the waterplane's second moment about that axis) and floatingStable (is: stable in both principal directions; neutral is not); a search for the equilibrium that does not settle is notProven with the kernel's reason; of a press brake, bendable (is; of: sheet-metal parts as above; punch and die: polygons [[x, y], ...] as sheetMetal.bendSequence takes them, each coordinate a number or a length expression such as a tool table's row; length and clearance, length expressions (the tools one piece reaching past the part unless length is given); segmented: true for segmented tooling, a segment per bend as long as length or the bend; formed: flanges of the one part of `of` made before the press brake by tools of their own, made from the start and not checked; maxWork, the distances the search may measure, shared by the parts, default and at most 20000, or with order (the strokes of the one part of `of` to check, as sheetMetal.bendSequence takes it, instead of a search) at most 1000000 (about 2400 distances a second on a part of 20 bends; the command's own cap is 10000000)): true when sheetMetal.bendSequence finds an order for every part, false when for one none exists with these tools and every step it tried failed for certain (a tool found nearer than the clearance at a real place), otherwise notProven with the step it could not tell (a collision only not proven clear, a stroke interval no halving proved) or the work used up, never passed; the order and the reasons are in the details; and value (expr: an expression of the variables and of the document's outputs, variable.measure and variable.output, exactly; in the document's units of its dimension); and continuity (edge, face = the edge's other face: how two faces meet along an edge as measure.continuity proves it, the order as a number, -1 none, 0 G0, 1 G1, 2 G2: min 2 asserts G2; an order not proven either way is notProven). An output that is unknown (its measure failed or was not proven) makes an assertion that uses it, in expr, in a bound or in a measure's expression, notProven with the reason, never a number. The limits for a material and a thickness are the caller's: min and max are expressions in the document's variables, tables included (table.set), never a built-in catalogue. A subject is a body (feature name or id: that feature's own body, or {body, follow: true}: the newest body that grew from it through later features), a list of them, a query {kind, where} as select.query takes, or a bare filter. What it must be: eq (with tol, default a millionth of eq or ten times the document's tolerance for a length) or min and/or max, expressions in the document's variables (\"wall\", \"2 mm\"), in the measure's unit (length, area or volume in the document's unit, mass in kg); through and symmetric take is (default true); overlap takes is, which must be given. The old form interference (is true for no overlap) is still accepted and written as overlap with the opposite is; saved documents are migrated on load (format 36). A tol may be 0 (exactly; the document's tolerance still applies), and 0 and 1 may carry a power of a unit (0 mm^3). Feature names in the subject are kept as ids, so a renamed feature stays measured. Returns the assertion and its check: status passed, failed (measured, expected), notProven (a least searched for, such as a thickness, lies within the bound but what is proven does not: a warning, never passed) or error (the measure could not be taken, such as a subject that names nothing yet: an assertion may be written before the model meets it). A bound written N unit^k (50 cm^3, which is (50 cm)^3) is refused for any N but 0 and 1: write 50 * (1 cm)^3. Assertions are measured off the caller's thread and only when what they depend on changed; this command waits for its own. when is a condition, as a feature's (feature.when): an expression of the variables and outputs that switches the assertion on and off; while it is 0 the assertion is inactive (status inactive: not measured, and counted as neither passed nor failed nor notProven), so an assertion on what only one choice of a Jig makes (a closed corner's cornerGap, a hole's holeToBend) is written with that choice's condition; a condition with a unit, or one that does not evaluate, is an error, and one that needs an unknown output notProven. Expressions are lazy: an output in a branch of if that is not taken is not needed, so its being unknown does not make the assertion notProven (if(corner == 1, gap, cg)).", doc: true, names: ["of", "from", "to", "plane"], assert_add),
+        "Adds an assertion to the document: a measure of part of the design and what it must be, checked after every regeneration (one undo step; saved with the document). Measures and their parameters: volume, area, mass (of: bodies, default all; area also of faces; mass needs a material), cavity (of: bodies, default all: what their cavities hold, the volume enclosed by the shells inside them, the capacity of a tank made hollow by feature.shell), count (of: a query, the number of things it finds), extent (of: bodies, axis: the size of their box along it), boxMin and boxMax (of: bodies, axis: where their box begins and ends along it, in the model's frame, so each side is bounded on its own), centerOfMass (of: bodies, default all, axis: the coordinate of their centre of mass along it, each body's centroid weighted by its mass; every body needs a material), distance (from, to: faces or bodies, the least distance between their surfaces, so a body inside another is at the gap to its surface; whether bodies touch or overlap is clearance's), clearance (from, to: bodies; a pair that overlaps fails), thickness (of: a body, the thinnest wall), through (of: cylindrical or conical faces, every one cut through along its axis), overlap (of: bodies, to: bodies = each other; whether any pair has a volume in common, so is false asserts that none overlap; the message names the pairs and their common volume, \"Bolt overlaps Plate by 12 mm^3\", or says no overlap), symmetric (of, plane, tol: as measure.symmetry), and what lies on one side of a plane (of: bodies, default all; plane, default xy, as symmetric takes it, or a flat face by name; offset, a length along its normal, default 0; xAxis: the section's x axis; as measure.below, measure.section and measure.levelFor): volumeBelow (the volume below the plane), centroidBelow (axis: the coordinate of its centroid), sectionArea, sectionCentroid (axis), sectionInertia (about: x, y or xy about the section's centroid in its own axes, or major or minor, the principal moments; in the document's unit to the fourth power), sectionTorsion (the section's St Venant torsion constant J, in the document's unit to the fourth power) and sectionShearCentre (axis: the coordinate of its shear centre), as measure.section solves them by finite elements with its default tolerance and element cap (a solve that reaches the cap is notProven, with the J it reached), sectionExtent (axis: x, y, z or [x, y, z]; how far the section reaches along it, from where it begins to where it ends, as from and to in the details: the waterline's length of a hull cut at its level; a plane that cuts nothing is an error), levelFor (volume: the offset at which the volume below is that); of sheet-metal parts (of: feature.sheetMetal features by name or id, read as they were built whatever takes their body later; default all those switched on, a part switched off by when or suppressed left out, one named refused): bendRadius (the smallest inner radius of their bends, measured on the part), flangeLength (the shortest flange: its flat from the bend's tangent line, or with measured mould from the virtual sharp of the outside surfaces), holeToBend (the least distance from a hole of the base or of a flange's flat to the tangent line of a bend beside that flat) relief (whether every corner where two flanged edges meet, and every end of a bend inside its edge, has a relief: bendRelief; is) cornerGap (the least gap at their closed corners, measured on the solid between the faces of each corner's two flats), flatExtent (axis: x or y, the largest width or height of their flat patterns in their sketches' axes: the blank each needs), flatArea (the sum of their flat patterns' areas, less the holes) louvreStretch (the largest stretch of their formed louvres' hoods, the section's length over its width less 1, a plain number: max 0.3 for a material that elongates 30 percent; an error for parts without a formed louvre) and bendStrain (the largest stretch or compression along the edge that their curved flanges' approximated flat patterns imply, proven, a plain number; an error for parts without a curved flange); of a fold (of: a feature.fold by name or id): kawasakiFails and maekawaFails (how many interior vertices of its crease pattern fail Kawasaki's or Maekawa's condition, at the document's tolerances, as fold.check counts them: eq 0 asserts both hold everywhere, which is necessary for folding flat and proves nothing more) and flatFoldable (is: whether the pattern with its mountain-valley assignment folds flat, every crease by 180 degrees, with an order of the layers, as feature.fold at 180 degrees decides it; an error, never a guess, when the search for an order runs out of work, since the question is NP-hard); of a floating body, with the parameters of measure.floating (of, plane, volume or mass and density, centerOfGravity, heel, trim, xAxis; each value an expression of the variables and outputs, centerOfGravity a point of them), of the equilibrium it reaches from the start (its first): floatingOffset (the plane's offset along its normal), floatingHeel and floatingTrim (angles from the upright plane, in radians; bounds with a unit, \"3 deg\"), floatingGM and floatingGML (the metacentric heights for a turn about the equilibrium plane's x axis, a heel, and about its y axis, a trim: I / V - BG with I the waterplane's second moment about that axis) and floatingStable (is: stable in both principal directions; neutral is not); a search for the equilibrium that does not settle is notProven with the kernel's reason; of a press brake, bendable (is; of: sheet-metal parts as above; punch and die: polygons [[x, y], ...] as sheetMetal.bendSequence takes them, each coordinate a number or a length expression such as a tool table's row; length and clearance, length expressions (the tools one piece reaching past the part unless length is given); segmented: true for segmented tooling, a segment per bend as long as length or the bend; formed: flanges of the one part of `of` made before the press brake by tools of their own, made from the start and not checked; maxWork, the distances the search may measure, shared by the parts, default and at most 20000, or with order (the strokes of the one part of `of` to check, as sheetMetal.bendSequence takes it, instead of a search) at most 1000000 (about 2400 distances a second on a part of 20 bends; the command's own cap is 10000000)): true when sheetMetal.bendSequence finds an order for every part, false when for one none exists with these tools and every step it tried failed for certain (a tool found nearer than the clearance at a real place), otherwise notProven with the step it could not tell (a collision only not proven clear, a stroke interval no halving proved) or the work used up, never passed; the order and the reasons are in the details; and value (expr: an expression of the variables and of the document's outputs, variable.measure and variable.output, exactly; in the document's units of its dimension); and continuity (edge, face = the edge's other face: how two faces meet along an edge as measure.continuity proves it, the order as a number, -1 none, 0 G0, 1 G1, 2 G2: min 2 asserts G2; an order not proven either way is notProven). An output that is unknown (its measure failed or was not proven) makes an assertion that uses it, in expr, in a bound or in a measure's expression, notProven with the reason, never a number. The limits for a material and a thickness are the caller's: min and max are expressions in the document's variables, tables included (table.set), never a built-in catalogue. A subject is a body (feature name or id: that feature's own body, or {body, follow: true}: the newest body that grew from it through later features), a list of them, a query {kind, where} as select.query takes, or a bare filter. What it must be: eq (with tol, default a millionth of eq or ten times the document's tolerance for a length) or min and/or max, expressions in the document's variables (\"wall\", \"2 mm\"), in the measure's unit (length, area or volume in the document's unit, mass in kg); through and symmetric take is (default true); overlap takes is, which must be given. The old form interference (is true for no overlap) is still accepted and written as overlap with the opposite is; saved documents are migrated on load (format 36). A tol may be 0 (exactly; the document's tolerance still applies), and 0 and 1 may carry a power of a unit (0 mm^3). A min, max or tol (other than 0) smaller in size than the document's tolerance (to the power of a length measure: squared for an area, cubed for a volume) is met within that tolerance like any bound, and the assertion's row carries warnings saying what passes (here, in assert.edit, assert.list and document.check). Feature names in the subject are kept as ids, so a renamed feature stays measured. Returns the assertion and its check: status passed, failed (measured, expected), notProven (a least searched for, such as a thickness, lies within the bound but what is proven does not: a warning, never passed) or error (the measure could not be taken, such as a subject that names nothing yet: an assertion may be written before the model meets it). A bound written N unit^k (50 cm^3, which is (50 cm)^3) is refused for any N but 0 and 1: write 50 * (1 cm)^3. Assertions are measured off the caller's thread and only when what they depend on changed; this command waits for its own. when is a condition, as a feature's (feature.when): an expression of the variables and outputs that switches the assertion on and off; while it is 0 the assertion is inactive (status inactive: not measured, and counted as neither passed nor failed nor notProven), so an assertion on what only one choice of a Jig makes (a closed corner's cornerGap, a hole's holeToBend) is written with that choice's condition; a condition with a unit, or one that does not evaluate, is an error, and one that needs an unknown output notProven. Expressions are lazy: an output in a branch of if that is not taken is not needed, so its being unknown does not make the assertion notProven (if(corner == 1, gap, cg)).", doc: true, names: ["of", "from", "to", "plane"], assert_add),
     spec!("assert.edit", "Edit Assertion", r#"{"name": string, "rename": string, ...the parameters of assert.add}"#,
         "Changes an assertion (one undo step): what is given replaces what it had and what is not given stays, null taking a parameter away: a measure parameter leaves the others as they were (a different measure starts afresh), min keeps the old max and tol the old eq (eq in place of bounds, or bounds in place of eq, replaces them), the condition changes when when is given (null: always on). Returns it with its check.", doc: true, names: ["of", "from", "to", "plane"], assert_edit),
     spec!("assert.delete", "Delete Assertion", r#"{"name": string}"#,
@@ -906,6 +906,9 @@ pub(crate) struct Checked {
     pub value: Value,
     pub unit: Option<String>,
     pub detail: Map<String, Value>,
+    /// What the reader should know about how it is decided: a bound finer
+    /// than the document's tolerance, which anything within that passes.
+    pub warnings: Vec<String>,
 }
 
 impl Checked {
@@ -927,6 +930,9 @@ impl Checked {
             "message": self.state.message,
             "when": when,
         });
+        if let (false, Some(map)) = (self.warnings.is_empty(), out.as_object_mut()) {
+            map.insert("warnings".into(), self.warnings.clone().into());
+        }
         if let (true, Some(map)) = (details, out.as_object_mut()) {
             map.insert("detail".into(), Value::Object(self.detail.clone()));
         }
@@ -1051,6 +1057,7 @@ fn check(
         value: Value::Null,
         unit: unit.clone(),
         detail: Map::new(),
+        warnings: Vec::new(),
     };
     // An angle reads in degrees, as its bound is written.
     let with_unit = |v: f64| match unit.as_deref() {
@@ -1192,6 +1199,14 @@ fn check(
             return checked;
         }
     };
+    checked.warnings = finer_than_tolerance(
+        &assertion.expect,
+        (lo, hi),
+        dim,
+        doc.tolerance.linear,
+        &with_unit,
+        length,
+    );
     let Some(mut params) = parsed else {
         checked.state.message = "what it measures is not readable".into();
         return checked;
@@ -1355,17 +1370,7 @@ pub(crate) fn decide(
         Sampled::OpenAbove => f64::INFINITY,
         _ => outcome.upper.unwrap_or(v),
     };
-    let slack = |b: f64| {
-        // A length to a positive power is met within the tolerance to
-        // that power; a negative power (a curvature, one over a length)
-        // would make the slack grow as the tolerance shrinks, so it, like
-        // a number, is met within rounding only.
-        let tol = match dim {
-            Dim::Length(k) if k > 0 => linear.ppowi(k),
-            _ => 0.0,
-        };
-        tol.max(1e-12 * b.abs())
-    };
+    let slack = |b: f64| slack(dim, linear, b);
     let at_least = |lo: f64| {
         if lower >= lo - slack(lo) {
             Some(true)
@@ -1394,6 +1399,91 @@ pub(crate) fn decide(
     }
 }
 
+/// How far past the bound `b` a value of dimension `dim` still meets it:
+/// a length to a positive power within the tolerance `linear` to that
+/// power; a negative power (a curvature, one over a length) would make the
+/// slack grow as the tolerance shrinks, so it, like a number, is met
+/// within rounding only.
+fn slack(dim: Dim, linear: f64, b: f64) -> f64 {
+    tolerance_slack(dim, linear).max(1e-12 * b.abs())
+}
+
+/// The part of [`slack`] that is the document's tolerance: 0 where a
+/// bound is met within rounding only.
+fn tolerance_slack(dim: Dim, linear: f64) -> f64 {
+    match dim {
+        Dim::Length(k) if k > 0 => linear.ppowi(k),
+        _ => 0.0,
+    }
+}
+
+/// Warnings for the bounds of an assertion finer than the slack the
+/// document's tolerance gives them (J-020): `min`, `max` or `tol` given
+/// smaller in size than the tolerance (to the power of the measure's
+/// length), which any value within that of it passes. A bound of exactly
+/// 0 is not warned about: it says "none" (no gap, no overlap, exactly
+/// equal), which is what the document can tell to its tolerance; nor is
+/// `eq` without `tol`, whose own tolerance is the measure's default.
+/// `lo` and `hi` are the bounds as numbers, `eq`'s with its tolerance.
+fn finer_than_tolerance(
+    expect: &Expect,
+    (lo, hi): (Option<f64>, Option<f64>),
+    dim: Dim,
+    linear: f64,
+    with_unit: &dyn Fn(f64) -> String,
+    length: &str,
+) -> Vec<String> {
+    let tolerance = tolerance_slack(dim, linear);
+    if tolerance <= 0.0 || !tolerance.is_finite() {
+        return Vec::new();
+    }
+    let fine = |b: f64| b != 0.0 && b.abs() < tolerance;
+    // The document's tolerance, and what it is for this measure's power.
+    let of = match dim {
+        Dim::Length(2) => format!(" ({} for an area)", with_unit(tolerance)),
+        Dim::Length(3) => format!(" ({} for a volume)", with_unit(tolerance)),
+        Dim::Length(k) if k > 1 => format!(" ({} for this measure)", with_unit(tolerance)),
+        _ => String::new(),
+    };
+    let doc_tol = format!("the document's tolerance of {} {length}{of}", shown(linear));
+    let low = |b: f64| b - slack(dim, linear, b);
+    let high = |b: f64| b + slack(dim, linear, b);
+    let mut out = Vec::new();
+    match expect {
+        Expect::Within { .. } => {
+            if let Some(b) = lo.filter(|b| fine(*b)) {
+                out.push(format!(
+                    "the bound {} is finer than {doc_tol}: anything down to {} passes",
+                    with_unit(b),
+                    with_unit(low(b))
+                ));
+            }
+            if let Some(b) = hi.filter(|b| fine(*b)) {
+                out.push(format!(
+                    "the bound {} is finer than {doc_tol}: anything up to {} passes",
+                    with_unit(b),
+                    with_unit(high(b))
+                ));
+            }
+        }
+        Expect::Equal { tol: Some(_), .. } => {
+            if let (Some(lo), Some(hi)) = (lo, hi) {
+                let t = 0.5 * (hi - lo);
+                if fine(t) {
+                    out.push(format!(
+                        "the tolerance {} is finer than {doc_tol}: anything from {} to {} passes",
+                        with_unit(t),
+                        with_unit(low(lo)),
+                        with_unit(high(hi))
+                    ));
+                }
+            }
+        }
+        Expect::Equal { tol: None, .. } | Expect::Is(_) => {}
+    }
+    out
+}
+
 /// Checks one assertion; one that panics is an error, not a lost
 /// document.
 pub(crate) fn check_one(
@@ -1419,6 +1509,7 @@ pub(crate) fn check_one(
         value: Value::Null,
         unit: None,
         detail: Map::new(),
+        warnings: Vec::new(),
     })
 }
 
@@ -1449,14 +1540,28 @@ pub(crate) fn summary(session: &mut Session, wait: Wait) -> Option<Value> {
             .collect()
     };
     let count = |s: Status| checked.iter().filter(|c| c.state.status == s).count();
-    Some(json!({
+    // A bound finer than the tolerance, said beside the verdict (only
+    // when there is one, so a summary without stays as it was).
+    let warned: Vec<Value> = checked
+        .iter()
+        .flat_map(|c| {
+            c.warnings
+                .iter()
+                .map(|w| json!({ "assertion": c.state.name, "warning": w }))
+        })
+        .collect();
+    let mut summary = json!({
         "count": checked.len(),
         "passed": count(Status::Passed),
         "broken": of(&[Status::Failed, Status::Error]),
         "unproven": of(&[Status::NotProven]),
         "pending": count(Status::Pending),
         "inactive": count(Status::Inactive),
-    }))
+    });
+    if let (false, Some(map)) = (warned.is_empty(), summary.as_object_mut()) {
+        map.insert("warnings".into(), warned.into());
+    }
+    Some(summary)
 }
 
 /// Adds the assertions' summary to the result of an edit, under

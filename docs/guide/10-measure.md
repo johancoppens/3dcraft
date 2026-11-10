@@ -213,6 +213,11 @@ solves the equilibrium itself, and again only when what it depends on changes.
   `max`; `is` for the yes-or-no measures (`true` by default, except for `overlap`, which wants it
   said). Bounds are expressions in the document's variables, so they follow the design: the case's
   volume is right for any `wall`.
+- A bound on a length is met within the document's tolerance (an area within its square, a volume
+  within its cube): what the geometry cannot tell apart does not fail it. A `min`, `max` or `tol`
+  finer than that (other than 0) passes the same way, with a warning on the assertion that says what
+  really passes: at a tolerance of 0.01 mm, *the bound 0.000015 mm is finer than the document's
+  tolerance of 0.01 mm: anything up to 0.010015 mm passes*.
 - An assertion may be written before the model meets it, even before its subject exists (it is in
   *error* until then).
 - An assertion names a feature's body as it is at that feature. A feature added on top of it later (a

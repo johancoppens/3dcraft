@@ -4384,6 +4384,16 @@ pub(crate) fn check_document(
                 .collect()
         })
         .unwrap_or_default();
+    // A bound finer than the document's tolerance (J-020).
+    if let Some(list) = assertions
+        .as_ref()
+        .and_then(|s| s.get("warnings"))
+        .and_then(Value::as_array)
+    {
+        warnings.extend(list.iter().map(|w| {
+            json!({"kind": "assertion", "assertion": w.get("assertion"), "warning": w.get("warning")})
+        }));
+    }
     warnings.extend(sketch_warnings);
     if let Some(broken) = assertions
         .as_ref()

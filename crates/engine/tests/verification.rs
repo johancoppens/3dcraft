@@ -483,6 +483,124 @@ fn symmetry_about_a_plane_is_found_and_a_one_sided_hole_breaks_it() {
     assert!(one_side["deviation"].as_f64().unwrap() > 0.5, "{one_side}");
 }
 
+/// J-020: a bound finer than the document's tolerance is met within that
+/// tolerance (the verdict does not change) and says so in a warning, in
+/// the result of assert.add and assert.edit, in assert.list's row and in
+/// document.check. A bound comfortably above it, and a bound of 0, do
+/// not warn.
+#[test]
+fn a_bound_finer_than_the_tolerance_passes_with_a_warning() {
+    let warnings = |row: &Value| -> Vec<String> {
+        row.get("warnings")
+            .map(|w| {
+                w.as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|t| t.as_str().unwrap().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let residual = |tolerance: f64| {
+        let mut s = Session::new(Workspace::none());
+        run(
+            &mut s,
+            "file.new",
+            json!({"units": "mm", "tolerance": tolerance}),
+        );
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": "Plate", "size": ["10 mm", "10 mm", "10 mm"]}),
+        );
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "residual", "expr": "0.005 mm"}),
+        );
+        s
+    };
+    let fine =
+        json!({"name": "residual", "measure": "value", "expr": "residual", "max": "0.000015 mm"});
+    // At 0.01 mm, 0.005 mm is within the tolerance of 0.000015 mm: it
+    // passes, and anything up to 0.000015 + 0.01 = 0.010015 mm would.
+    let mut s = residual(0.01);
+    let added = run(&mut s, "assert.add", fine.clone());
+    assert_eq!(added["status"], "passed", "{added}");
+    let want = "the bound 0.000015 mm is finer than the document's tolerance of 0.01 mm: anything up to 0.010015 mm passes";
+    assert_eq!(warnings(&added), [want], "{added}");
+    let listed = run(&mut s, "assert.list", json!({}));
+    assert_eq!(warnings(&listed["assertions"][0]), [want], "{listed}");
+    let checked = run(&mut s, "document.check", json!({}));
+    assert_eq!(checked["ok"], true, "{checked}");
+    assert_eq!(
+        checked["warnings"],
+        json!([{"kind": "assertion", "assertion": "residual", "warning": want}]),
+        "{checked}"
+    );
+    // A bound comfortably above the tolerance does not warn (and passes);
+    // nor does a min of 0, a natural bound.
+    let edited = run(
+        &mut s,
+        "assert.edit",
+        json!({"name": "residual", "max": "0.05 mm", "min": "0 mm"}),
+    );
+    assert_eq!(edited["status"], "passed", "{edited}");
+    assert!(edited.get("warnings").is_none(), "{edited}");
+    let checked = run(&mut s, "document.check", json!({}));
+    assert!(checked.get("warnings").is_none(), "{checked}");
+    // A min finer than the tolerance: anything down to 0.000015 - 0.01 =
+    // -0.009985 mm passes.
+    let edited = run(
+        &mut s,
+        "assert.edit",
+        json!({"name": "residual", "min": "0.000015 mm", "max": null}),
+    );
+    assert_eq!(
+        warnings(&edited),
+        [
+            "the bound 0.000015 mm is finer than the document's tolerance of 0.01 mm: anything down to -0.009985 mm passes"
+        ],
+        "{edited}"
+    );
+    // eq with a tol finer than the tolerance: 0.005 ± 0.001, met from
+    // 0.004 - 0.01 = -0.006 to 0.006 + 0.01 = 0.016 mm.
+    let edited = run(
+        &mut s,
+        "assert.edit",
+        json!({"name": "residual", "eq": "0.005 mm", "tol": "0.001 mm"}),
+    );
+    assert_eq!(edited["status"], "passed", "{edited}");
+    assert_eq!(
+        warnings(&edited),
+        [
+            "the tolerance 0.001 mm is finer than the document's tolerance of 0.01 mm: anything from -0.006 mm to 0.016 mm passes"
+        ],
+        "{edited}"
+    );
+    // An area: the plate's 600 mm^2 to ± 0.00005, finer than the 0.0001
+    // mm^2 the tolerance of 0.01 mm gives an area.
+    let area = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "area", "measure": "area", "of": "Plate", "eq": 600, "tol": 0.00005}),
+    );
+    assert_eq!(area["status"], "passed", "{area}");
+    assert_eq!(
+        warnings(&area),
+        [
+            "the tolerance 0.00005 mm^2 is finer than the document's tolerance of 0.01 mm (0.0001 mm^2 for an area): anything from 599.99985 mm^2 to 600.00015 mm^2 passes"
+        ],
+        "{area}"
+    );
+    // At the default tolerance (1e-6 mm) the same assertion fails, and
+    // its bound is not finer than the tolerance.
+    let mut s = residual(1e-6);
+    let added = run(&mut s, "assert.add", fine);
+    assert_eq!(added["status"], "failed", "{added}");
+    assert!(added.get("warnings").is_none(), "{added}");
+}
+
 fn states(s: &mut Session) -> Vec<(String, AssertionStatus)> {
     s.assertion_states()
         .into_iter()

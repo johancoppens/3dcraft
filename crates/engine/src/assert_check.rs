@@ -304,6 +304,7 @@ pub(crate) fn pending(assertion: &Assertion) -> Checked {
         value: Value::Null,
         unit: None,
         detail: Map::new(),
+        warnings: Vec::new(),
     }
 }
 

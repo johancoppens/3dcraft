@@ -421,6 +421,7 @@ fn checked_json(c: &Checked) -> Value {
         "value": c.value,
         "unit": c.unit,
         "detail": c.detail,
+        "warnings": c.warnings,
     })
 }
 
@@ -439,6 +440,14 @@ fn checked_from(value: &Value) -> Option<Checked> {
         _ => return None,
     };
     let detail: Map<String, Value> = value.get("detail")?.as_object()?.clone();
+    let warnings = match value.get("warnings") {
+        None => Vec::new(),
+        Some(list) => list
+            .as_array()?
+            .iter()
+            .map(|w| w.as_str().map(str::to_string))
+            .collect::<Option<Vec<_>>>()?,
+    };
     Some(Checked {
         state: AssertionState {
             name: text("name")?,
@@ -452,6 +461,7 @@ fn checked_from(value: &Value) -> Option<Checked> {
         value: value.get("value")?.clone(),
         unit,
         detail,
+        warnings,
     })
 }
 
