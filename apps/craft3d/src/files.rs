@@ -986,7 +986,7 @@ impl Host {
                 Err("internal error (a bug in 3DCraft, please report it)".to_string())
             });
             self.shell.example_opened(&built);
-            self.report("example", &built);
+            self.report(craft3d_ui_egui::shell::EXAMPLE_LABEL, &built);
             self.shell.sync(&mut self.session);
             did = true;
         }

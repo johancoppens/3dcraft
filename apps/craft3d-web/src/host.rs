@@ -29,7 +29,7 @@ use craft3d_ui_egui::files::{
     extension_of, file_stem, suggested_jig_name, suggested_save_name,
 };
 use craft3d_ui_egui::kit::{Button, Dialog, Kit};
-use craft3d_ui_egui::shell::ExportRequest;
+use craft3d_ui_egui::shell::{EXAMPLE_LABEL, ExportRequest};
 use craft3d_ui_egui::{CommandReport, DocAction, FileAction, Shell, Work};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -561,7 +561,7 @@ impl WebHost {
         }
         if self.example_fonts.as_ref() != Some(&missing) {
             self.note(
-                "example",
+                EXAMPLE_LABEL,
                 true,
                 format!(
                     "fetching the font {} for {}",
@@ -905,7 +905,7 @@ impl WebHost {
         if self.stepwise && !self.session.scene_ready(self.shell.scene_quality()) {
             // Only an open or an import waits: another edit (a parameter
             // set) is said done when it is made, its picture following.
-            if outcome.is_ok() && matches!(label, "file.open" | "file.import" | "example") {
+            if outcome.is_ok() && matches!(label, "file.open" | "file.import" | EXAMPLE_LABEL) {
                 self.last_answer = outcome.as_ref().ok().cloned();
                 self.held_report = Some(HeldReport {
                     label: label.to_string(),
@@ -1142,7 +1142,7 @@ impl WebHost {
             });
             // An assembly plays its motion once it is open.
             self.shell.example_opened(&built);
-            self.finish("example", &built);
+            self.finish(EXAMPLE_LABEL, &built);
         }
         // The Parameters tab's param.set: the frame before this one
         // showed that it is regenerating, now the page's one thread does
@@ -1282,14 +1282,14 @@ impl WebHost {
     ) {
         let steps = match steps {
             Ok(steps) => steps,
-            Err(why) => return self.finish("example", &Err(why)),
+            Err(why) => return self.finish(EXAMPLE_LABEL, &Err(why)),
         };
-        self.about = Some(("example".to_string(), Some(example.title.to_string())));
+        self.about = Some((EXAMPLE_LABEL.to_string(), Some(example.title.to_string())));
         if let Err(why) = self.run("file.new", &json!({ "units": "mm" })) {
-            return self.finish("example", &Err(format!("file.new: {why}")));
+            return self.finish(EXAMPLE_LABEL, &Err(format!("file.new: {why}")));
         }
         let Some(doc) = self.session.document_status().map(|status| status.id) else {
-            return self.finish("example", &Err("file.new: no document".to_string()));
+            return self.finish(EXAMPLE_LABEL, &Err("file.new: no document".to_string()));
         };
         self.example_run = Some(ExampleRun {
             example,
@@ -1322,13 +1322,13 @@ impl WebHost {
                     "example {}: its document was closed, or another one shown, before it was built",
                     example.id
                 );
-                return self.finish("example", &Err(why));
+                return self.finish(EXAMPLE_LABEL, &Err(why));
             }
             let Some((command, params)) = run.steps.get(index).cloned() else {
                 self.example_run = None;
                 let built =
                     json!({ "example": example.id, "title": example.title, "steps": total });
-                return self.finish("example", &Ok(built));
+                return self.finish(EXAMPLE_LABEL, &Ok(built));
             };
             let work = self.session.work_here();
             match self.run(&command, &params) {
@@ -1359,7 +1359,7 @@ impl WebHost {
             .as_ref()
             .map_or("", |run| run.example.title);
         self.note(
-            "example",
+            EXAMPLE_LABEL,
             true,
             format!("Building {title}: step {step} of {of}"),
         );
@@ -1379,7 +1379,7 @@ impl WebHost {
             let _ = self.run("file.close", &json!({ "discard": true }));
         }
         let message = craft3d_ui_egui::shell::example_step_failed(run.example, index, command, why);
-        self.finish("example", &Err(message));
+        self.finish(EXAMPLE_LABEL, &Err(message));
     }
 
     /// The step of the example being built (from 1) and how many it has;

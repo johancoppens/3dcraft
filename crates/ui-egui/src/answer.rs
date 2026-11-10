@@ -31,8 +31,20 @@ pub fn summary(label: &str, result: &Value) -> String {
                 .iter()
                 .find_map(|key| map.get(*key).and_then(Value::as_str))
                 .filter(|s| !s.trim().is_empty());
+            let title = result
+                .get("title")
+                .and_then(Value::as_str)
+                .filter(|t| !t.is_empty());
             let base = match said {
                 Some(said) => said.to_string(),
+                // An example opened from the start screen, the hosts' own
+                // work under exactly this label: by its title, as File ›
+                // Open says a file (`ui.example`, an agent's listing or
+                // choice, is not it).
+                None if label == crate::shell::EXAMPLE_LABEL => match title {
+                    Some(title) => format!("Opened {title}"),
+                    None => "Opened".to_string(),
+                },
                 None => match (verb(label), subject(result)) {
                     (Some(verb), Some(subject)) => format!("{verb} {subject}"),
                     (None, Some(subject)) => subject,
@@ -80,9 +92,6 @@ fn verb(label: &str) -> Option<&'static str> {
         "set" => "Set",
         "undo" => "Undone",
         "redo" => "Redone",
-        // An example from the start screen, opened as a document (the
-        // window's own work, `shell::run_example`).
-        "example" => "Opened",
         _ => return None,
     })
 }
@@ -152,9 +161,8 @@ fn trouble(result: &Value) -> String {
     out
 }
 
-/// What an answer is about: its `name`, the file of its `path`, the
-/// active document of a listing of `documents`, or for an example opened
-/// from the start screen its `title`.
+/// What an answer is about: its `name`, the file of its `path`, or the
+/// active document of a listing of `documents`.
 fn subject(result: &Value) -> Option<String> {
     if let Some(name) = result
         .get("name")
@@ -165,13 +173,6 @@ fn subject(result: &Value) -> Option<String> {
     }
     if let Some(path) = result.get("path").and_then(Value::as_str) {
         return file_stem(path);
-    }
-    if result.get("example").is_some() {
-        return result
-            .get("title")
-            .and_then(Value::as_str)
-            .filter(|t| !t.is_empty())
-            .map(str::to_string);
     }
     let documents = result.get("documents")?.as_array()?;
     let active = result.get("active").and_then(Value::as_u64);
@@ -255,16 +256,35 @@ mod tests {
     fn an_example_opened_is_said_by_its_title() {
         let opened = json!({"example": "moka-pot", "title": "Moka pot",
             "opened": {"features": 89, "assembly": false}});
-        assert_eq!(summary("example", &opened), "Opened Moka pot");
+        assert_eq!(
+            summary(crate::shell::EXAMPLE_LABEL, &opened),
+            "Opened Moka pot"
+        );
         let built = json!({"example": "channel", "title": "Channel", "steps": 12});
-        assert_eq!(summary("example", &built), "Opened Channel");
+        assert_eq!(
+            summary(crate::shell::EXAMPLE_LABEL, &built),
+            "Opened Channel"
+        );
         // Without its title: the verb alone.
-        assert_eq!(summary("example", &json!({"example": "x"})), "Opened");
+        assert_eq!(
+            summary(crate::shell::EXAMPLE_LABEL, &json!({"example": "x"})),
+            "Opened"
+        );
         // A title elsewhere is not a subject.
         assert_eq!(
             summary("document.info", &json!({"title": "Bin", "author": "a"})),
             "Done"
         );
+        // An agent's `ui.example`, a listing, a section shown or an
+        // example chosen (the host opens it after the reply, and says
+        // that), opens nothing itself.
+        for answer in [
+            json!({"shown": true, "section": "parts", "examples": [{"id": "moka-pot", "title": "Moka pot"}]}),
+            json!({"chosen": {"id": "moka-pot", "title": "Moka pot"}}),
+        ] {
+            let said = summary("ui.example", &answer);
+            assert!(!said.contains("Opened"), "{said}");
+        }
     }
 
     #[test]

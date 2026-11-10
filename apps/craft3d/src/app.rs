@@ -1006,7 +1006,7 @@ impl Desk {
                 };
                 // An assembly from the start screen plays its motion,
                 // once it is open.
-                if label == "example" {
+                if label == craft3d_ui_egui::shell::EXAMPLE_LABEL {
                     host.shell.example_opened(&outcome);
                 }
                 host.report(label, &outcome);
@@ -1226,7 +1226,7 @@ impl Desk {
         }
         if let Some(example) = self.host.shell.take_example() {
             self.start(
-                Waiting::File("example"),
+                Waiting::File(craft3d_ui_egui::shell::EXAMPLE_LABEL),
                 format!("example {}", example.title),
                 Box::new(move |session| {
                     Outcome::Ran(craft3d_ui_egui::shell::run_example(session, example))

@@ -145,7 +145,7 @@ pub fn error_title(label: &str) -> String {
         "file.new" => "Could not make a new document",
         "file.close" => "Could not close the document",
         "file.activate" => "Could not show the document",
-        "example" => "Could not build the example",
+        super::EXAMPLE_LABEL => "Could not build the example",
         "download" => "Could not download",
         _ => "Something went wrong",
     }

@@ -745,6 +745,16 @@ fn an_example_opened_is_said_without_the_work_label() {
         let mut output = ctx.run_ui(input, |ui| shell.ui(ui, session));
         output.textures_delta.clear();
     };
+    // An agent's `ui.example` (a listing, a section shown) opens nothing:
+    // its answer never says so.
+    for params in [json!({}), json!({"section": "jigs"})] {
+        let answer = shell
+            .handle_method(&mut session, "ui.example", Some(&params))
+            .unwrap()
+            .unwrap();
+        let said = craft3d_ui_egui::answer::summary("ui.example", &answer);
+        assert!(!said.contains("Opened"), "{params}: {said}");
+    }
     let profile = EXAMPLES.iter().find(|e| e.id == "t-slot-profile").unwrap();
     let opened = run_example(&mut session, profile).unwrap();
     // As the hosts report it.
