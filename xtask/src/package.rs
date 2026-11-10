@@ -406,14 +406,56 @@ enum Source {
     Font(&'static str),
     /// A file of the repository.
     Repo(String),
+    /// `THIRD-PARTY-NOTICES.txt`, made for the packages.
+    Notices,
+    /// The list of the files the tarball installs ([`INSTALLED_LIST`]).
+    List,
+}
+
+/// Where the published examples' licence is in the repository.
+const EXAMPLES_LICENCE_SOURCE: &str = "docs/examples/published/LICENSE.md";
+
+/// The file of the tarball, installed with the rest, that names every
+/// file `install.sh` installs, itself included, one path below the prefix
+/// per line: what `uninstall.sh` removes (from the copy in the prefix, so
+/// the unpacked tarball is not needed then).
+const INSTALLED_LIST: &str = "share/craft3d/files";
+
+/// Every file the tarball's `install.sh` installs below the prefix: the
+/// Linux tree ([`linux_tree_files`]), the licences in
+/// `share/doc/craft3d/`, and the list of them all ([`INSTALLED_LIST`]).
+/// The AppImage installs nothing and carries no list.
+fn tarball_files() -> Vec<(Source, String)> {
+    let mut files = linux_tree_files();
+    files.extend([
+        (
+            Source::Repo("LICENSE".to_string()),
+            "share/doc/craft3d/LICENSE".to_string(),
+        ),
+        (
+            Source::Notices,
+            format!("share/doc/craft3d/{}", crate::notices::FILE_NAME),
+        ),
+        (
+            Source::Repo(EXAMPLES_LICENCE_SOURCE.to_string()),
+            format!("share/doc/craft3d/{EXAMPLES_LICENCE}"),
+        ),
+        (Source::List, INSTALLED_LIST.to_string()),
+    ]);
+    files
+}
+
+/// The text of [`INSTALLED_LIST`] for `files`: their paths, one per line.
+fn list_text(files: &[(Source, String)]) -> String {
+    files.iter().map(|(_, to)| format!("{to}\n")).collect()
 }
 
 /// Every file of the Linux tree below a prefix, from where it comes:
 /// the programs in `bin/`, the fonts they read at run time in
 /// `share/craft3d/fonts` (where `craft3d_engine::fonts` looks from
 /// `bin/`), and the desktop's files ([`desktop_files`]). The tarball
-/// carries it as it is and its `install.sh` installs all of it; the
-/// AppImage carries it below `usr/`.
+/// carries it with the licences and a list of it all ([`tarball_files`]),
+/// which its `install.sh` installs; the AppImage carries it below `usr/`.
 fn linux_tree_files() -> Vec<(Source, String)> {
     let mut files: Vec<(Source, String)> = ["craft3d", "craft3d-cli"]
         .into_iter()
@@ -498,7 +540,7 @@ impl Packer {
     }
 
     fn examples_licence(&self) -> PathBuf {
-        self.repo.join("docs/examples/published/LICENSE.md")
+        self.repo.join(EXAMPLES_LICENCE_SOURCE)
     }
 
     fn icon(&self, size: u32) -> PathBuf {
@@ -529,16 +571,22 @@ impl Packer {
         }
     }
 
-    /// The freedesktop tree below a prefix (`bin/` and `share/`), shared
-    /// by the tarball and the AppImage.
-    fn linux_tree(&self, prefix: &Path) -> Result<(), String> {
+    /// Places `files` below `prefix` (`bin/` and `share/`): the
+    /// freedesktop tree of the tarball and the AppImage.
+    fn place(&self, files: &[(Source, String)], prefix: &Path) -> Result<(), String> {
         crate::fonts::run()?;
         let fonts = crate::fonts::dir();
-        for (from, to) in linux_tree_files() {
+        for (from, to) in files {
             let (source, executable) = match from {
                 Source::Program(name) => (self.binary(name)?, true),
                 Source::Font(file) => (fonts.join(file), false),
                 Source::Repo(path) => (self.repo.join(path), false),
+                Source::Notices => (self.notices.clone(), false),
+                Source::List => {
+                    write(&prefix.join(to), list_text(files).as_bytes())?;
+                    set_mode(&prefix.join(to), false)?;
+                    continue;
+                }
             };
             copy(&source, &prefix.join(to), executable)?;
         }
@@ -548,7 +596,7 @@ impl Packer {
     fn tarball(&self) -> Result<PathBuf, String> {
         let name = format!("3dcraft-{}-{}-linux", self.version, self.arch);
         let root = self.stage.join(&name);
-        self.linux_tree(&root)?;
+        self.place(&tarball_files(), &root)?;
         for script in ["install.sh", "uninstall.sh"] {
             copy(
                 &self.packaging(&format!("linux/{script}")),
@@ -593,7 +641,7 @@ impl Packer {
         let app_dir = self.stage.join("AppDir");
         // The same tree as the tarball's below `usr/`, menu entry, MIME
         // types and icons included (`desktop_files`).
-        self.linux_tree(&app_dir.join(APPIMAGE_PREFIX))?;
+        self.place(&linux_tree_files(), &app_dir.join(APPIMAGE_PREFIX))?;
         copy(
             &self.packaging("linux/AppRun"),
             &app_dir.join("AppRun"),
@@ -1352,85 +1400,153 @@ mod tests {
         assert!(from(".DirIcon").is_some());
     }
 
-    /// The tarball's `install.sh` installs every file of its tree
-    /// ([`linux_tree_files`]: the programs, the fonts they read at run
-    /// time, the desktop's files) to the same place below the prefix, so
-    /// the installed programs find their fonts as `craft3d_engine::fonts`
-    /// looks from `bin/`; `uninstall.sh` removes every one of them again,
-    /// and the folder of fonts. Run on a tree of stand-ins, into a prefix
-    /// of its own (2026-11-10: the fonts were not installed, and a text in
-    /// a built-in font was refused after `./install.sh`).
+    /// A work folder of the install scripts' tests, removed on drop (also
+    /// when an assertion fails).
     #[cfg(target_os = "linux")]
-    #[test]
-    fn install_sh_installs_the_whole_tree_and_uninstall_sh_removes_it() {
-        use std::collections::BTreeSet;
+    struct Work(PathBuf);
+
+    #[cfg(target_os = "linux")]
+    impl Drop for Work {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Work {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("craft3d-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            mkdir(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn join(&self, rel: &str) -> PathBuf {
+            self.0.join(rel)
+        }
+    }
+
+    /// An unpacked tarball at `dir`: every file [`tarball_files`] names
+    /// (stand-ins for the programs, the fonts and the notices; the list as
+    /// `cargo xtask package` writes it) and the two scripts.
+    #[cfg(target_os = "linux")]
+    fn unpacked_tarball(dir: &Path) {
         let root = repo_root();
-        let work = std::env::temp_dir().join(format!("craft3d-install-sh-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&work);
-        let (tree, prefix, home) = (work.join("tree"), work.join("prefix"), work.join("home"));
-        let files = linux_tree_files();
+        let files = tarball_files();
         for (from, to) in &files {
             match from {
-                Source::Repo(path) => copy(&root.join(path), &tree.join(to), false).unwrap(),
-                Source::Program(_) | Source::Font(_) => write(&tree.join(to), b"stand-in").unwrap(),
-            }
-        }
-        for script in ["install.sh", "uninstall.sh"] {
-            copy(
-                &root.join("packaging/linux").join(script),
-                &tree.join(script),
-                true,
-            )
-            .unwrap();
-        }
-        fn below(dir: &Path, base: &Path, out: &mut BTreeSet<String>) {
-            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    below(&path, base, out);
-                } else {
-                    let rel = path.strip_prefix(base).unwrap();
-                    out.insert(rel.to_string_lossy().replace('\\', "/"));
+                Source::Repo(path) => copy(&root.join(path), &dir.join(to), false).unwrap(),
+                Source::List => write(&dir.join(to), list_text(&files).as_bytes()).unwrap(),
+                Source::Program(_) | Source::Font(_) | Source::Notices => {
+                    write(&dir.join(to), b"stand-in").unwrap()
                 }
             }
         }
-        let run = |script: &str| {
-            let out = Command::new("sh")
-                .arg(tree.join(script))
-                .arg(&prefix)
-                .env("HOME", &home)
-                .output()
-                .unwrap();
-            assert!(
-                out.status.success(),
-                "{script}: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-        };
-        // The caches the desktop's tools write when they are there.
-        let cache = |rel: &str| {
-            (rel.starts_with("share/mime/") && !rel.starts_with("share/mime/packages/"))
-                || rel == "share/applications/mimeinfo.cache"
-                || rel == "share/icons/hicolor/icon-theme.cache"
-        };
-        let expected: BTreeSet<String> = files.iter().map(|(_, to)| to.clone()).collect();
+        for script in ["install.sh", "uninstall.sh"] {
+            let from = root.join("packaging/linux").join(script);
+            copy(&from, &dir.join(script), true).unwrap();
+        }
+    }
 
-        run("install.sh");
-        let mut installed = BTreeSet::new();
-        below(&prefix, &prefix, &mut installed);
-        installed.retain(|rel| !cache(rel));
-        assert_eq!(installed, expected);
+    /// Every file below `dir`, relative to it, but the caches the
+    /// desktop's tools write when they are there.
+    #[cfg(target_os = "linux")]
+    fn files_below(dir: &Path) -> std::collections::BTreeSet<String> {
+        fn walk(dir: &Path, base: &Path, out: &mut std::collections::BTreeSet<String>) {
+            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, base, out);
+                } else if let Ok(rel) = path.strip_prefix(base) {
+                    out.insert(rel.to_string_lossy().into_owned());
+                }
+            }
+        }
+        let mut out = std::collections::BTreeSet::new();
+        walk(dir, dir, &mut out);
+        out.retain(|rel| {
+            !((rel.starts_with("share/mime/") && !rel.starts_with("share/mime/packages/"))
+                || rel == "share/applications/mimeinfo.cache"
+                || rel == "share/icons/hicolor/icon-theme.cache")
+        });
+        out
+    }
+
+    /// Runs `sh script args…` with `HOME` at `home`: its status and what
+    /// it wrote.
+    #[cfg(target_os = "linux")]
+    fn sh(script: &Path, args: &[&Path], home: &Path) -> std::process::Output {
+        Command::new("sh")
+            .arg(script)
+            .args(args)
+            .env("HOME", home)
+            .output()
+            .unwrap()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn said(out: &std::process::Output) -> String {
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    }
+
+    /// The files of other programs and of the person that a prefix holds
+    /// besides 3DCraft's: none of them may be touched.
+    #[cfg(target_os = "linux")]
+    const NOT_OURS: [&str; 5] = [
+        "share/icons/hicolor/48x48/apps/other.png",
+        "bin/othertool",
+        "share/applications/other.desktop",
+        "share/mime/packages/other.xml",
+        "share/craft3d/my-notes.txt",
+    ];
+
+    /// The tarball's `install.sh` installs every file the tarball's list
+    /// names ([`tarball_files`]: the programs, the fonts they read at run
+    /// time, the desktop's files, the licences, the list) to the same
+    /// place below the prefix, so the programs find their fonts as
+    /// `craft3d_engine::fonts` looks from `bin/`; `uninstall.sh` removes
+    /// exactly those again and 3DCraft's emptied folders, and leaves every
+    /// other file of the prefix alone (2026-11-10: the fonts were not
+    /// installed; then a review found an uninstall that removed whatever
+    /// mirrored the folder beside it).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn install_sh_installs_the_tarball_and_uninstall_sh_removes_only_that() {
+        let work = Work::new("install-sh");
+        let (tree, prefix, home) = (work.join("tree"), work.join("prefix"), work.join("home"));
+        unpacked_tarball(&tree);
+        for rel in NOT_OURS {
+            write(&prefix.join(rel), b"not 3DCraft's").unwrap();
+        }
+        let ours: std::collections::BTreeSet<String> =
+            tarball_files().into_iter().map(|(_, to)| to).collect();
+        // The AppImage installs nothing and carries no list.
+        assert!(
+            !linux_tree_files()
+                .iter()
+                .any(|(_, to)| to == INSTALLED_LIST)
+        );
+
+        let help = sh(&tree.join("install.sh"), &[Path::new("--help")], &home);
+        assert!(help.status.success() && said(&help).starts_with("usage: ./install.sh"));
+        let out = sh(&tree.join("install.sh"), &[&prefix], &home);
+        assert!(out.status.success(), "{}", said(&out));
+        let mut expected = ours.clone();
+        expected.extend(NOT_OURS.map(String::from));
+        assert_eq!(files_below(&prefix), expected);
+        let list = std::fs::read_to_string(prefix.join(INSTALLED_LIST)).unwrap();
+        assert_eq!(list, list_text(&tarball_files()));
         // The programs are runnable, and their fonts are where they look.
-        let engine = std::fs::read_to_string(root.join("crates/engine/src/fonts.rs")).unwrap();
+        let engine =
+            std::fs::read_to_string(repo_root().join("crates/engine/src/fonts.rs")).unwrap();
         assert!(engine.contains("exe.join(\"../share/craft3d/fonts\")"));
         for file in font_files() {
-            assert!(
-                prefix
-                    .join("bin/../share/craft3d/fonts")
-                    .join(file)
-                    .is_file(),
-                "{file}"
-            );
+            let font = prefix.join("bin/../share/craft3d/fonts").join(file);
+            assert!(font.is_file(), "{file}");
         }
         for program in ["craft3d", "craft3d-cli"] {
             use std::os::unix::fs::PermissionsExt;
@@ -1441,13 +1557,110 @@ mod tests {
             assert_eq!(mode & 0o777, 0o755, "{program}");
         }
 
-        run("uninstall.sh");
-        let mut left = BTreeSet::new();
-        below(&prefix, &prefix, &mut left);
-        left.retain(|rel| !cache(rel));
-        assert!(left.is_empty(), "left behind: {left:?}");
-        assert!(!prefix.join("share/craft3d").exists());
-        let _ = std::fs::remove_dir_all(&work);
+        let out = sh(&tree.join("uninstall.sh"), &[&prefix], &home);
+        assert!(out.status.success(), "{}", said(&out));
+        assert!(said(&out).contains(&format!("({} files)", ours.len())));
+        let left = files_below(&prefix);
+        let theirs: std::collections::BTreeSet<String> =
+            NOT_OURS.map(String::from).into_iter().collect();
+        assert_eq!(left, theirs);
+        assert!(!prefix.join("share/craft3d/fonts").exists());
+        assert!(!prefix.join("share/doc/craft3d").exists());
+        // Still there: the person's file in it.
+        assert!(prefix.join("share/craft3d").is_dir());
+    }
+
+    /// A tarball unpacked straight into the prefix (`tar -xzf … -C
+    /// ~/.local --strip-components=1`): both scripts refuse and touch
+    /// nothing, also run as `sh < uninstall.sh` in the prefix.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_install_scripts_refuse_a_tarball_unpacked_into_the_prefix() {
+        let work = Work::new("install-sh-into");
+        let home = work.join("home");
+        let prefix = home.join(".local");
+        unpacked_tarball(&prefix);
+        for rel in NOT_OURS {
+            write(&prefix.join(rel), b"not 3DCraft's").unwrap();
+        }
+        let before = files_below(&prefix);
+        let given = [prefix.as_path()];
+        for script in ["install.sh", "uninstall.sh"] {
+            for args in [&[][..], &given[..]] {
+                let out = sh(&prefix.join(script), args, &home);
+                assert!(!out.status.success(), "{script} {args:?}: {}", said(&out));
+                assert!(said(&out).contains("PREFIX itself"), "{}", said(&out));
+                assert_eq!(files_below(&prefix), before, "{script} {args:?}");
+            }
+        }
+        let piped = Command::new("sh")
+            .stdin(std::fs::File::open(prefix.join("uninstall.sh")).unwrap())
+            .current_dir(&prefix)
+            .env("HOME", &home)
+            .output()
+            .unwrap();
+        assert!(!piped.status.success(), "{}", said(&piped));
+        assert_eq!(files_below(&prefix), before);
+    }
+
+    /// `uninstall.sh` needs no unpacked tarball: it removes what the list
+    /// installed in the prefix names. Without that list and without a
+    /// tarball beside it, it refuses and removes nothing; `install.sh`
+    /// away from its tarball refuses too.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn uninstall_sh_takes_the_installed_list_and_refuses_without_one() {
+        let work = Work::new("install-sh-alone");
+        let (tree, prefix, home, alone) = (
+            work.join("tree"),
+            work.join("prefix"),
+            work.join("home"),
+            work.join("alone"),
+        );
+        for script in ["install.sh", "uninstall.sh"] {
+            let from = repo_root().join("packaging/linux").join(script);
+            copy(&from, &alone.join(script), true).unwrap();
+        }
+        let out = sh(&alone.join("install.sh"), &[&prefix], &home);
+        assert!(!out.status.success(), "{}", said(&out));
+        assert!(
+            !prefix.exists(),
+            "install.sh away from its tarball made {prefix:?}"
+        );
+
+        let ours: std::collections::BTreeSet<String> =
+            tarball_files().into_iter().map(|(_, to)| to).collect();
+        unpacked_tarball(&tree);
+        assert!(
+            sh(&tree.join("install.sh"), &[&prefix], &home)
+                .status
+                .success()
+        );
+        std::fs::remove_dir_all(&tree).unwrap();
+        let out = sh(&alone.join("uninstall.sh"), &[&prefix], &home);
+        assert!(out.status.success(), "{}", said(&out));
+        assert!(files_below(&prefix).is_empty());
+
+        unpacked_tarball(&tree);
+        assert!(
+            sh(&tree.join("install.sh"), &[&prefix], &home)
+                .status
+                .success()
+        );
+        std::fs::remove_dir_all(&tree).unwrap();
+        std::fs::remove_file(prefix.join(INSTALLED_LIST)).unwrap();
+        let before = files_below(&prefix);
+        assert_eq!(before.len(), ours.len() - 1);
+        let out = sh(&alone.join("uninstall.sh"), &[&prefix], &home);
+        assert!(!out.status.success(), "{}", said(&out));
+        assert!(said(&out).contains("nothing was removed"), "{}", said(&out));
+        assert_eq!(files_below(&prefix), before);
+        let none = work.join("no-such-prefix");
+        assert!(
+            !sh(&alone.join("uninstall.sh"), &[&none], &home)
+                .status
+                .success()
+        );
     }
 
     /// The Windows installer installs every shipped font and its licence
