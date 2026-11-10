@@ -797,5 +797,5 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 | 2026-10-12 | minor | T1 mesh export done and validated with FreeCAD |
 | 2026-10-12 | minor | M0 done: all crate stubs, full layer table, lint opt-in check, `xtask stats`, pinned toolchain, CI on GitHub |
 | 2026-10-12 | minor | T0 teapot track done; M0 in progress; current focus rewritten after the developer's decisions (MIT, AI-first, FreeCAD as oracle) |
-| 2026-10-12 | major | First version, from `BRAINSTORM.md` |
+| 2026-10-12 | major | First version, from the developer's original brief |
 | 2026-10-14 | minor | V1, design verification (queries and `document.assert`), added after R1; generators (parametric apps without AI) listed as an idea under M12+; document tabs, helix and thread, references that follow a body (the developer's requests of the day) |

@@ -14,7 +14,6 @@ Read this file first, then `docs/`.
 
 | Read | Why |
 |---|---|
-| `BRAINSTORM.md` | The developer's original intent, in a dozen lines |
 | `docs/README.md` | Index of the docs |
 | `docs/architecture.md` | The map: invariants, crates and layers, data, pipelines, the kernel's methods, structural debt |
 | `docs/design/` | One detail document per part (geometry, booleans, blends, sweeps, names, regeneration, tessellator, rendering, engine, …): its Method, then its dated findings |

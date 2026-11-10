@@ -476,7 +476,7 @@ Made by the agent; the developer can overturn any of them.
 
 ### 2026-10-12: Starting points from the brainstorm
 
-From `BRAINSTORM.md`, the developer's own statements:
+From the developer's original brief (2026-10-12):
 
 - **Pure Rust; own CAD kernel and tessellator.** No existing geometry kernel or mesher.
 - **Everything is a command;** the same engine behind UI, CLI, JSON control channel and MCP.

@@ -258,4 +258,4 @@ Tracked in [`decisions.md`](../decisions.md): target app (if any), licence, UI t
 | 2026-10-12 | minor | Current state after M5 (sketches in the document model, the solver, sketch results in regeneration) |
 | 2026-10-12 | minor | Current state after M3 (general tessellator, cone and torus, orientation) |
 | 2026-10-12 | minor | Current state after M1 (math, geom, topo, expr) |
-| 2026-10-12 | major | Design plan v1, derived from `BRAINSTORM.md` and PhotoCraft's architecture plan |
+| 2026-10-12 | major | Design plan v1, derived from the developer's original brief and PhotoCraft's architecture plan |
