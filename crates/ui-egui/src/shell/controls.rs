@@ -677,7 +677,7 @@ impl Shell {
             let mut to = view_cube::turned(&self.state.camera, side);
             // Framed there, as the view buttons framed.
             if let Some(scene) = scene.filter(|scene| !scene.frame_box().is_empty()) {
-                to.fit(&scene.frame_box(), self.aspect());
+                to.fit(&self.drawn_frame(scene), self.aspect());
                 to.auto_fit = true;
             }
             self.turn = Some(Turn {

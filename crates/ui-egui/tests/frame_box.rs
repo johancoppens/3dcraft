@@ -202,3 +202,107 @@ fn the_frame_holds_a_large_circle_and_a_lofted_body_tightly() {
         assert!(high.x >= 30.0 * s - pad, "at {s}");
     }
 }
+
+/// Fit, and the framing of a document as it opens, frame what is drawn:
+/// a body hidden in the view does not count, nor a sketch while the
+/// sketches are not shown (the ship propeller's expanded blade outline,
+/// 670 mm below it, left the propeller small at the top of the view,
+/// 2026-11-10). Shown again, Fit frames them too; with every body hidden
+/// the frame is the scene's, as before.
+#[test]
+fn fit_frames_what_is_drawn() {
+    let mut session = Session::new(Workspace::memory());
+    let run = |session: &mut Session, id: &str, params: serde_json::Value| {
+        session
+            .execute(id, &params)
+            .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
+    };
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(
+        &mut session,
+        "feature.block",
+        json!({"size": [20, 20, 20], "position": [0, 0, 0], "name": "Near"}),
+    );
+    run(
+        &mut session,
+        "feature.block",
+        json!({"size": [20, 20, 20], "position": [0, 0, -700], "name": "Far"}),
+    );
+    run(
+        &mut session,
+        "sketch.create",
+        json!({"plane": "xy", "offset": "-1400 mm", "name": "Outline"}),
+    );
+    run(
+        &mut session,
+        "sketch.rect",
+        json!({"sketch": "Outline", "from": [0, 0], "to": [100, 60]}),
+    );
+    run(
+        &mut session,
+        "feature.visible",
+        json!({"feature": "Far", "visible": false}),
+    );
+    let box_of = |session: &mut Session, names: &[&str]| {
+        let drawn = scene(session);
+        let mut b = Bbox3::EMPTY;
+        for body in drawn
+            .bodies
+            .iter()
+            .filter(|b| names.contains(&b.name.as_str()))
+        {
+            let (low, high) = corners(&body.mesh.bbox());
+            b.add(low);
+            b.add(high);
+        }
+        b
+    };
+    let near = box_of(&mut session, &["Near"]);
+    let at = |shell: &Shell| {
+        let t = shell.state.camera.target;
+        Vec3::new(t[0], t[1], t[2])
+    };
+    let centred = |shell: &Shell, b: &Bbox3, what: &str| {
+        let want = b.center().unwrap();
+        assert!(
+            at(shell).distance(want) < 1e-6,
+            "{what}: the camera looks at {:?}, not at {want:?}",
+            at(shell)
+        );
+    };
+    // As the document opens, with the sketches not shown: the near block.
+    let mut shell = Shell::new();
+    shell.state.show.sketches = false;
+    shell.sync(&mut session);
+    centred(&shell, &near, "opened");
+    assert!(shell.fit(&mut session));
+    centred(&shell, &near, "fit");
+    // The far block shown: both.
+    run(
+        &mut session,
+        "feature.visible",
+        json!({"feature": "Far", "visible": true}),
+    );
+    assert!(shell.fit(&mut session));
+    let both = box_of(&mut session, &["Near", "Far"]);
+    centred(&shell, &both, "fit, both shown");
+    // The sketches shown: the outline too, far below.
+    shell.state.show.sketches = true;
+    assert!(shell.fit(&mut session));
+    assert!(
+        at(&shell).z < both.center().unwrap().z - 100.0,
+        "the outline is framed: {:?}",
+        at(&shell)
+    );
+    // Every body hidden: the scene's own frame, the outline's.
+    run(
+        &mut session,
+        "feature.visible",
+        json!({"feature": ["Near", "Far"], "visible": false}),
+    );
+    shell.state.show.sketches = false;
+    assert!(shell.fit(&mut session));
+    let frame = scene(&mut session).frame_box();
+    centred(&shell, &frame, "every body hidden");
+    assert!((at(&shell).z + 1400.0).abs() < 1e-6, "{:?}", at(&shell));
+}

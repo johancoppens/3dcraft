@@ -2725,8 +2725,8 @@ impl Shell {
         // was sampled: the quick first picture turning into the display
         // scene moves no camera. A moment of a motion is not a new model
         // (an edit that changes its box is): the camera only ever backs
-        // away from it.
-        let frame = scene.frame_box();
+        // away from it. Only what is drawn counts.
+        let frame = self.drawn_frame(&scene);
         if self.state.camera.auto_fit {
             let reshaped = self.player.edited() && frame != self.player.shown_box;
             let to = if self.timeline.motion.is_some() && !reshaped {
@@ -2744,13 +2744,51 @@ impl Shell {
         Some(scene)
     }
 
-    /// Frames everything, and keeps following the model from now on.
-    /// Returns false when there is nothing to frame.
+    /// The box the camera frames `scene` on: what is drawn. The scene's
+    /// own ([`Scene::frame_box`]) holds the bodies and the sketches;
+    /// while the sketches are not shown it is cut down to the box around
+    /// the bodies ([`Scene::bodies_box`]), so a sketch that is not drawn
+    /// (the ship propeller's expanded blade outline, 670 mm below it) does
+    /// not leave the model small in a corner (2026-11-10). Bodies hidden
+    /// in the view are in neither. Where the two agree (to a billionth of
+    /// the size) the scene's own value, on its grid. Without a body, the
+    /// scene's own.
+    pub fn drawn_frame(&self, scene: &Scene) -> Bbox3 {
+        let frame = scene.frame_box();
+        if self.state.show.sketches || scene.sketches.is_empty() {
+            return frame;
+        }
+        let (Some((low, high)), Some((from, to))) = (frame.corners(), scene.bodies_box.corners())
+        else {
+            return frame;
+        };
+        let near = frame.diagonal() * 1e-9;
+        let side = |f: f64, b: f64, inner: f64| if (f - b).abs() <= near { f } else { inner };
+        let low = craft3d_math::Vec3::new(
+            side(low.x, from.x, low.x.max(from.x)),
+            side(low.y, from.y, low.y.max(from.y)),
+            side(low.z, from.z, low.z.max(from.z)),
+        );
+        let high = craft3d_math::Vec3::new(
+            side(high.x, to.x, high.x.min(to.x)),
+            side(high.y, to.y, high.y.min(to.y)),
+            side(high.z, to.z, high.z.min(to.z)),
+        );
+        if low.x <= high.x && low.y <= high.y && low.z <= high.z {
+            Bbox3::from_corners(low, high)
+        } else {
+            frame
+        }
+    }
+
+    /// Frames everything drawn ([`Self::drawn_frame`]), and keeps
+    /// following the model from now on. Returns false when there is
+    /// nothing to frame.
     pub fn fit(&mut self, session: &mut Session) -> bool {
         let Some(scene) = self.sync(session) else {
             return false;
         };
-        let frame = scene.frame_box();
+        let frame = self.drawn_frame(&scene);
         if frame.is_empty() {
             return false;
         }
@@ -4448,7 +4486,7 @@ impl Shell {
                 && let Some(scene) = scene
             {
                 if self.framed.is_empty() {
-                    self.framed = scene.frame_box();
+                    self.framed = self.drawn_frame(scene);
                 }
                 let aspect = self.aspect();
                 self.state.camera.fit(&self.framed, aspect);
@@ -4774,7 +4812,7 @@ impl Shell {
         if camera == turn.to {
             self.turn = None;
             if let Some(scene) = scene.filter(|_| turn.to.auto_fit) {
-                self.framed = scene.frame_box();
+                self.framed = self.drawn_frame(scene);
             }
             return false;
         }
@@ -4802,7 +4840,7 @@ impl Shell {
             && !scene.frame_box().is_empty()
         {
             let aspect = self.aspect();
-            self.framed = scene.frame_box();
+            self.framed = self.drawn_frame(scene);
             self.state.camera.fit(&self.framed, aspect);
             self.state.camera.auto_fit = true;
         }
