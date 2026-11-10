@@ -55,8 +55,8 @@ The browser has no pill: agents drive the desktop app only.
 Without a document, the window shows the **start screen** (its picture is in
 [Your first five minutes](first-steps.md)):
 
-1. At the top, the name and version, and the line *Parametric CAD built for AI. Start a document, open
-   one, or let an agent model while you watch.*
+1. At the top, the name and version, and the line *Parametric CAD built with and for AI. Start a
+   document, open one, or let an agent model while you watch.*
 2. **New part**, **New assembly** and **Open…**.
 3. **Examples**, with three tabs at its right: **Parts**, **Jigs** and **Assemblies**. Only the chosen
    tab's cards show. The tab you chose stays chosen while 3DCraft runs.

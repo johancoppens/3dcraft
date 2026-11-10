@@ -68,10 +68,14 @@ own flat colour, to see which face is which.
 ```sh
 craft3d-cli convert bracket.3dcraft bracket.step
 craft3d-cli convert bracket.3dcraft bracket.stl --quality fine
-craft3d-cli convert panel.3dcraft panel.dxf --sketch Outline
-craft3d-cli convert panel.3dcraft panel.svg --face 'F2:endCap()'
+craft3d-cli convert bracket.3dcraft bracket.dxf --sketch Profile
+craft3d-cli convert bracket.3dcraft bracket-end.svg --face 'F2:endCap()'
 craft3d-cli convert box.3dcraft box.svg --set 'Cut sheet' --width '600 mm' --gap '8 mm'
 ```
+
+Here `bracket.3dcraft` is the [bracket lesson](../examples/bracket.json), built as the flange is above.
+Its sketch `Profile` is the L, and `F2:endCap()` is the end of the extruded L, with the round in its inside
+corner.
 
 A DXF or SVG file with `--sketch`, `--face` or `--set` is a flat outline at true size. Without them it
 is a drawing of the model as seen ([Files, export and drawings](files.md#drawings-of-the-model-as-seen)), as

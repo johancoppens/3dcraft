@@ -236,8 +236,7 @@ On Windows, write every `\` in a path twice, in TOML as in JSON:
 An agent reads and writes files only in the folders the panel names:
 
 - the **Work folder**, at first the folder *3DCraft* in your Documents folder. 3DCraft makes it the first
-  time. **Change…**
-  picks another folder, which 3DCraft remembers; **Open folder** shows it;
+  time. **Change…** picks another folder, which 3DCraft remembers; **Open folder** shows it;
 - while **Also the open document's folder** is ticked, the folder of the document you have open, so the
   agent can export next to it. This counts only for a document you opened or saved yourself;
 - folders you allowed when 3DCraft asked (below). The panel lists them; **Remove** takes one back.
