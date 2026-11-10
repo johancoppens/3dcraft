@@ -283,3 +283,82 @@ fn run_side_by_side(mut binaries: Vec<TestBinary>) -> Result<(), String> {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// A line of a workflow that asks for the workshop's own runners: it
+    /// names a self-hosted runner or the Strix outside a comment (YAML's
+    /// and the scripts' `#`; a comment may name the Strix).
+    fn asks_for_the_workshops_runners(line: &str) -> bool {
+        let code = line.split('#').next().unwrap_or_default().to_lowercase();
+        code.contains("self-hosted") || code.contains("strix")
+    }
+
+    /// The workflows of the code tree run on GitHub's hosted runners only.
+    /// The workshop's own runners (the Strix) take their workflows and
+    /// scripts from a branch of the workshop that is not in this repository
+    /// (docs/decisions.md, 2026-11-10): this tree is also the public
+    /// repository's, where a job for a self-hosted runner is one a pull
+    /// request from a fork could reach. Branches made before that day still
+    /// carry the Strix's files; this catches one coming back with a merge.
+    #[test]
+    fn no_workflow_in_the_code_tree_asks_for_the_workshops_runners() {
+        let root = crate::package::repo_root();
+        let dir = root.join(".github/workflows");
+        let mut files: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        files.sort();
+        assert!(!files.is_empty(), "no workflow in {}", dir.display());
+        let mut found = Vec::new();
+        for path in &files {
+            let text = std::fs::read_to_string(path).unwrap();
+            for (number, line) in text.lines().enumerate() {
+                if asks_for_the_workshops_runners(line) {
+                    found.push(format!(
+                        "{}:{}: {}",
+                        path.display(),
+                        number + 1,
+                        line.trim()
+                    ));
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "the Strix's workflows live on the workshop's own branch, not in the code tree:\n{}",
+            found.join("\n")
+        );
+        for script in ["target-cap.sh", "sccache-env.sh"] {
+            let path = root.join(".github/scripts").join(script);
+            assert!(
+                !path.exists(),
+                "{} is the Strix's: it lives on the workshop's own branch",
+                path.display()
+            );
+        }
+    }
+
+    /// The check above finds a job for the Strix's runners, written as the
+    /// workshop's workflows write it, and lets the comments that name it be.
+    #[test]
+    fn a_job_for_the_strix_is_found_and_a_comment_is_not() {
+        assert!(asks_for_the_workshops_runners(
+            "    runs-on: [self-hosted, strix, 3dcraft]"
+        ));
+        assert!(asks_for_the_workshops_runners("    runs-on: Self-Hosted"));
+        assert!(asks_for_the_workshops_runners(
+            "      os: [strix] # the gate"
+        ));
+        assert!(!asks_for_the_workshops_runners(
+            "    # Only in the workshop, where the Strix runners are attached."
+        ));
+        assert!(!asks_for_the_workshops_runners(
+            "          # engine test files ran 1.8 times faster so on the Strix"
+        ));
+        assert!(!asks_for_the_workshops_runners(
+            "    runs-on: ubuntu-latest"
+        ));
+    }
+}
