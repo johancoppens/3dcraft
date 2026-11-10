@@ -99,7 +99,9 @@ million triangles, all bodies together, is refused: choose a coarser quality.
 
 **Export** writes every body as an exact solid (AP214), with the document's unit, each body under its
 feature's name and with its colours. To export some of the bodies, select them in the window, or name them:
-`"bodies": ["Bracket", "F4"]` (also for STL, 3MF and OBJ).
+`"bodies": ["Bracket", "F4"]` (also for STL, 3MF and OBJ). A body switched off by its condition (`when`) or
+suppressed is left out of the list, so one list serves every option of a Jig; `cut.list` and `cut.export` take
+`bodies` the same way.
 
 **Import** (**File › Import…**) reads the solids and sheets of AP203, AP214 and AP242 files, assemblies
 too (one feature per placed solid, with their colours), and converts the units. The file is kept inside the

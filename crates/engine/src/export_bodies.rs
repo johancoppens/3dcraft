@@ -18,25 +18,48 @@ const MAX_BODIES: usize = 10_000;
 
 /// The features whose bodies to export, from `bodies`: `None` when it is
 /// not given or null (every body). Each must name a feature that has a body of
-/// its own now; an empty list, an unknown name and a feature without a
-/// body are errors that say which, and what there is.
+/// its own now, or one switched off now (its condition is 0, or
+/// suppressed), which is left out so that one list holds for every option;
+/// an empty list, an unknown name and a feature without a body are errors
+/// that say which, and what there is, and so is a list whose every body is
+/// switched off: there is nothing to write.
 pub(crate) fn chosen(
     p: &Params,
     doc: &Document,
     regen: &Regen,
 ) -> Result<Option<Vec<FeatureId>>, CommandError> {
-    chosen_for(ID, p, doc, regen)
+    let (chosen, off) = chosen_skipping(ID, p, doc, regen)?;
+    if chosen.as_ref().is_some_and(Vec::is_empty) && !off.is_empty() {
+        return fail(format!(
+            "{ID}: every body `bodies` names is switched off now ({}); name a body that is on, or leave `bodies` out",
+            off.join("; ")
+        ));
+    }
+    Ok(chosen)
 }
 
-/// [`chosen`] for the command `command`, which its errors name.
+/// [`chosen`] for the command `command`, which its errors name; a list
+/// whose every body is switched off is an empty list (`cut.list` lists
+/// nothing).
 pub(crate) fn chosen_for(
     command: &str,
     p: &Params,
     doc: &Document,
     regen: &Regen,
 ) -> Result<Option<Vec<FeatureId>>, CommandError> {
+    chosen_skipping(command, p, doc, regen).map(|(chosen, _)| chosen)
+}
+
+/// [`chosen_for`], with the features left out because they are switched
+/// off, each said as `` `Name` is inactive (its condition is 0)``.
+fn chosen_skipping(
+    command: &str,
+    p: &Params,
+    doc: &Document,
+    regen: &Regen,
+) -> Result<(Option<Vec<FeatureId>>, Vec<String>), CommandError> {
     let Some(value) = p.get("bodies") else {
-        return Ok(None);
+        return Ok((None, Vec::new()));
     };
     let Value::Array(items) = value else {
         return fail(format!(
@@ -56,23 +79,36 @@ pub(crate) fn chosen_for(
         ));
     }
     let mut out: Vec<FeatureId> = Vec::with_capacity(items.len());
+    let mut off: Vec<String> = Vec::new();
     for (index, item) in items.iter().enumerate() {
-        let id = feature(command, doc, regen, index, item)?;
-        if !out.contains(&id) {
-            out.push(id);
+        match feature(command, doc, regen, index, item)? {
+            Named::Body(id) => {
+                if !out.contains(&id) {
+                    out.push(id);
+                }
+            }
+            Named::Off(why) => off.push(why),
         }
     }
-    Ok(Some(out))
+    Ok((Some(out), off))
 }
 
-/// The feature `item` names, which must have a body of its own now.
+/// What a name in `bodies` is: a feature with a body of its own now, or
+/// one switched off now (why, in words).
+enum Named {
+    Body(FeatureId),
+    Off(String),
+}
+
+/// The feature `item` names, which must have a body of its own now or be
+/// switched off.
 fn feature(
     command: &str,
     doc: &Document,
     regen: &Regen,
     index: usize,
     item: &Value,
-) -> Result<FeatureId, CommandError> {
+) -> Result<Named, CommandError> {
     let found = match item {
         Value::String(text) => doc.feature_by_name(text).map(|f| f.id).or_else(|| {
             text.strip_prefix('F')
@@ -101,9 +137,12 @@ fn feature(
         ));
     };
     if regen.bodies().any(|(body, _)| body == id) {
-        return Ok(id);
+        return Ok(Named::Body(id));
     }
     let name = doc.feature(id).map_or("", |f| f.name.as_str());
+    if let Some(why) = crate::verify_cmds::switched_off(regen, id) {
+        return Ok(Named::Off(format!("`{name}` is {why}")));
+    }
     let outcome = regen.feature(id);
     let why = match (
         outcome.map(|o| &o.status),

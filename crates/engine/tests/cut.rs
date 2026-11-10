@@ -991,6 +991,39 @@ fn a_turned_plate_is_listed_without_noise_with_its_flat_twin() {
     );
 }
 
+/// J-003: a body switched off (its condition is 0) named in `bodies` is
+/// left out, so one list holds for every option; a list of only such
+/// bodies lists nothing; a name of no feature is still refused.
+#[test]
+fn a_switched_off_body_is_left_out_of_the_cut_list() {
+    let dir = workdir("cut", "switched-off");
+    let mut s = session_in(&dir);
+    new_document(&mut s, 1.0);
+    block(&mut s, "Board", [100.0, 50.0, 18.0], [0.0; 3]);
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Optional shelf", "size": [100, 50, 18], "position": [0, 0, 40], "when": "0"}),
+    );
+    let both = json!(["Board", "Optional shelf"]);
+    let list = run(&mut s, "cut.list", json!({"bodies": both}));
+    assert_eq!(list["parts"], 1, "{list}");
+    part(&list, "Board");
+    let csv = run(&mut s, "cut.list", json!({"bodies": both, "format": "csv"}));
+    assert_eq!(csv["parts"], 1, "{csv}");
+    let none = run(&mut s, "cut.list", json!({"bodies": ["Optional shelf"]}));
+    assert_eq!(none["parts"], 0, "{none}");
+    assert_eq!(none["groups"], json!([]), "{none}");
+    let out = run(
+        &mut s,
+        "cut.export",
+        json!({"path": "board.dxf", "bodies": both}),
+    );
+    assert_eq!(out["parts"].as_array().unwrap().len(), 1, "{out}");
+    let e = common::error(&mut s, "cut.list", json!({"bodies": ["Board", "Nobody"]}));
+    assert!(e.contains("there is no feature `Nobody`"), "{e}");
+}
+
 #[test]
 fn a_name_like_a_formula_is_not_a_formula_in_the_csv() {
     let dir = workdir("cut", "formula");

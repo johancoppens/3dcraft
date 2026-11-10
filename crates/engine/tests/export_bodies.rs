@@ -188,6 +188,13 @@ fn only_the_named_bodies_are_exported_to_every_body_format() {
     assert_eq!(names, ["Block", "Pin"]);
     assert!(text.contains("#C8102E"), "the block's colour");
 
+    // A body switched off in the list is left out (J-003): the pin alone.
+    let result = run(
+        &mut s,
+        "file.export",
+        json!({"path": "pin-cube.stl", "bodies": ["Pin", "Cube"]}),
+    );
+    assert_eq!(result["bodies"], 1, "{result}");
     // OBJ: the pin alone, one object of that name.
     let result = run(
         &mut s,
@@ -224,9 +231,14 @@ fn bodies_that_are_not_there_are_refused_saying_which_there_are() {
             unknown.contains("`bodies.1`: there is no feature `Nope`"),
             "{unknown}"
         );
+        // A body switched off is left out of a list so that one list holds
+        // for every option (J-003, 2026-11-10); a list of only such bodies
+        // has nothing to write, and says why (it said "F3 (Cube) has no
+        // body now: it is suppressed" before the rule).
         let suppressed = refused(&mut s, path, json!(["Cube"]));
         assert!(
-            suppressed.contains("F3 (Cube) has no body now: it is suppressed"),
+            suppressed
+                .contains("every body `bodies` names is switched off now (`Cube` is suppressed)"),
             "{suppressed}"
         );
         let taken = refused(&mut s, path, json!(["Tool"]));

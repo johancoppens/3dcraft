@@ -1224,6 +1224,13 @@ fn check(
         let outcome: Result<Outcome, String> = take(&ctx, &measure, &params);
         let outcome = match outcome {
             Ok(o) => o,
+            // Every body its subject names is switched off now: nothing to
+            // check, as when its own condition is 0 (J-026).
+            Err(e) if e.contains(crate::verify_cmds::SWITCHED_OFF) => {
+                checked.state.status = Status::Inactive;
+                checked.state.message = format!("inactive: {e}");
+                return checked;
+            }
             Err(e) => {
                 if !undecided(&mut checked, &ctx, &e) {
                     checked.state.message = format!("cannot be measured: {e}");

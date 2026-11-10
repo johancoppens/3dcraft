@@ -558,6 +558,98 @@ fn a_set_of_bodies_is_measured_by_area_as_by_the_other_measures() {
     assert_eq!(asserted["status"], "passed", "{asserted}");
 }
 
+/// J-026: a body switched off (its condition is 0) is left out of a
+/// subject that names it, so one assertion holds for every option; when
+/// every body a subject names is off there is nothing to check and the
+/// assertion is inactive, saying why, never passed on nothing. A name of
+/// no feature stays an error.
+#[test]
+fn a_switched_off_body_is_left_out_of_a_subject() {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "option", "expr": "0"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Base", "size": [100, 100, 10]}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Option", "size": [100, 100, 10], "position": [0, 0, 20], "when": "option"}),
+    );
+    let added = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "apart", "measure": "overlap", "of": "Base", "to": "Option", "is": false}),
+    );
+    assert_eq!(added["status"], "inactive", "{added}");
+    let message = added["message"].as_str().unwrap();
+    assert!(
+        message.contains("switched off") && message.contains("`Option` is inactive"),
+        "{message}"
+    );
+    // A list keeps the bodies that are on: Base alone, 100 · 100 · 10.
+    let volume = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "volume", "measure": "volume", "of": ["Base", "Option"], "eq": "100000"}),
+    );
+    assert_eq!(volume["status"], "passed", "{volume}");
+    let checked = run(&mut s, "document.check", json!({}));
+    assert_eq!(checked["ok"], true, "{checked}");
+    assert_eq!(checked["assertionSummary"]["inactive"], 1, "{checked}");
+    // Asked directly, the measure says it.
+    let e = refused(
+        &mut s,
+        "measure.clearance",
+        json!({"from": "Base", "to": "Option"}),
+    );
+    assert!(e.contains("switched off"), "{e}");
+    // A name of no feature is still an error.
+    let e = refused(
+        &mut s,
+        "measure.clearance",
+        json!({"from": "Base", "to": "Nobody"}),
+    );
+    assert!(!e.contains("switched off"), "{e}");
+    // The option on: the two plates 10 apart do not overlap, and the
+    // volume is both, 200000; the same assertions hold.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "option", "expr": "1"}),
+    );
+    let listed = run(&mut s, "assert.list", json!({}));
+    let status = |name: &str| {
+        listed["assertions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == name)
+            .unwrap()["status"]
+            .clone()
+    };
+    assert_eq!(status("apart"), "passed", "{listed}");
+    assert_eq!(status("volume"), "failed", "{listed}");
+    run(
+        &mut s,
+        "assert.edit",
+        json!({"name": "volume", "eq": "100000 + 100000 * option"}),
+    );
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "option", "expr": "0"}),
+    );
+    let listed = run(&mut s, "assert.list", json!({}));
+    assert_eq!(listed["ok"], true, "{listed}");
+}
+
 /// J-020: a bound finer than the document's tolerance is met within that
 /// tolerance (the verdict does not change) and says so in a warning, in
 /// the result of assert.add and assert.edit, in assert.list's row and in

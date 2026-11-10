@@ -27,6 +27,21 @@ use std::sync::Arc;
 
 /// Most items a subject may name.
 const MAX_ITEMS: usize = 10_000;
+
+/// The start of the error of a subject whose every named body is switched
+/// off now: an assertion on it is inactive, as one whose own condition is
+/// 0 (J-026), rather than in error or passed on nothing.
+pub(crate) const SWITCHED_OFF: &str = "every body it names is switched off now";
+
+/// Why the feature `id` is switched off now (its condition is 0, or it is
+/// suppressed), or `None`.
+pub(crate) fn switched_off(regen: &Regen, id: FeatureId) -> Option<&'static str> {
+    match regen.feature(id).map(|o| &o.status) {
+        Some(craft3d_regen::Status::Inactive) => Some("inactive (its condition is 0)"),
+        Some(craft3d_regen::Status::Suppressed) => Some("suppressed"),
+        _ => None,
+    }
+}
 /// Most bodies a geometric measure takes part in.
 const MAX_PARTS: usize = 200;
 /// Most pairs of bodies a clearance compares.
@@ -411,6 +426,21 @@ fn feature_of(doc: &Document, text: &str) -> Result<FeatureId, String> {
 
 /// What a subject names, as a query would list it.
 pub(crate) fn subject(ctx: &Ctx<'_>, value: &Value, kind: &[&str]) -> Result<Vec<Found>, String> {
+    // The features named that are switched off now and have no body: left
+    // out, so one list holds for every option (J-003, J-026); when they
+    // are all it names, nothing is there to measure.
+    let off: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+    let skipped = |id: FeatureId| -> bool {
+        if ctx.body(id).is_ok() {
+            return false;
+        }
+        let Some(why) = switched_off(ctx.regen, id) else {
+            return false;
+        };
+        off.borrow_mut()
+            .push(format!("`{}` is {why}", ctx.feature_name(id)));
+        true
+    };
     let found = |id: FeatureId| -> Result<Found, String> {
         ctx.body(id)?;
         Ok(Found {
@@ -420,10 +450,16 @@ pub(crate) fn subject(ctx: &Ctx<'_>, value: &Value, kind: &[&str]) -> Result<Vec
             name: ctx.feature_name(id),
         })
     };
-    let body_item = |text: &str| -> Result<Found, String> { found(feature_of(ctx.doc, text)?) };
+    let body_item = |text: &str| -> Result<Option<Found>, String> {
+        let id = feature_of(ctx.doc, text)?;
+        if skipped(id) {
+            return Ok(None);
+        }
+        found(id).map(Some)
+    };
     // `{body, follow}`: the body of a feature, or (`follow`, the default
     // of this form) the newest body that grew from it.
-    let followed = |map: &Map<String, Value>| -> Result<Found, String> {
+    let followed = |map: &Map<String, Value>| -> Result<Option<Found>, String> {
         if let Some(key) = map.keys().find(|k| *k != "body" && *k != "follow") {
             let key: String = key.chars().take(40).collect();
             return Err(format!("a body to follow is {{body, follow}}, not `{key}`"));
@@ -437,15 +473,27 @@ pub(crate) fn subject(ctx: &Ctx<'_>, value: &Value, kind: &[&str]) -> Result<Vec
             Some(_) => return Err("`follow` is true or false".into()),
         };
         let id = feature_of(ctx.doc, text)?;
-        found(if follow { ctx.grown_from(id)? } else { id })
+        if skipped(id) {
+            return Ok(None);
+        }
+        found(if follow { ctx.grown_from(id)? } else { id }).map(Some)
+    };
+    // Named ones only: a query names what fits it.
+    let named = |items: Vec<Option<Found>>| -> Result<Vec<Found>, String> {
+        let items: Vec<Found> = items.into_iter().flatten().collect();
+        let off = off.borrow();
+        if items.is_empty() && !off.is_empty() {
+            return Err(format!("{SWITCHED_OFF}: {}", off.join("; ")));
+        }
+        Ok(items)
     };
     match value {
-        Value::String(text) => Ok(vec![body_item(text)?]),
+        Value::String(text) => named(vec![body_item(text)?]),
         Value::Array(items) => {
             if items.len() > MAX_ITEMS {
                 return Err(format!("at most {MAX_ITEMS} bodies"));
             }
-            items
+            let items = items
                 .iter()
                 .map(|item| match item {
                     Value::String(text) => body_item(text),
@@ -455,9 +503,10 @@ pub(crate) fn subject(ctx: &Ctx<'_>, value: &Value, kind: &[&str]) -> Result<Vec
                             .to_string(),
                     ),
                 })
-                .collect()
+                .collect::<Result<Vec<_>, _>>()?;
+            named(items)
         }
-        Value::Object(map) if map.contains_key("body") => Ok(vec![followed(map)?]),
+        Value::Object(map) if map.contains_key("body") => named(vec![followed(map)?]),
         Value::Object(map) => {
             let (kinds, filter) = if map.contains_key("where") {
                 if let Some(key) = map.keys().find(|k| *k != "kind" && *k != "where") {

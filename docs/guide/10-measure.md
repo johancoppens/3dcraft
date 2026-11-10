@@ -27,7 +27,10 @@ after every change.
 A subject (`of`, `from`, `to`) is a body by its feature's name, a list of them, or a query as
 `select.query` takes it ([chapter 11](11-selection.md)): `{"hole": true, "radius": "4 mm"}` for the 8 mm holes,
 `{"kind": "face", "where": {"normal": {"along": "z"}}}` for the faces facing up. A named set,
-`{"set": "Blocks"}`, is what the set holds: a set of bodies gives `area` the area of those bodies.
+`{"set": "Blocks"}`, is what the set holds: a set of bodies gives `area` the area of those bodies. A body
+switched off by its condition (`when`) or suppressed is left out of a subject that names it, so one assertion
+holds for every option; when every body a subject names is off, there is nothing to check and the assertion
+is *inactive*, saying so.
 
 `distance` is measured between surfaces: a body (or a face) wholly inside another is as far from it as from its
 nearest face, not 0. To know whether bodies touch or overlap, use `clearance`.
