@@ -299,6 +299,24 @@ impl Shell {
         self.state.export.open = false;
     }
 
+    /// Closes the export dialog when the document it was opened for is
+    /// not open any more (`open`: the ids of those that are), as a cancel
+    /// does but without a word in the status bar (what closed the
+    /// document says that): it would otherwise stay over the next
+    /// documents, offering the closed one's name (seen 2026-11-10).
+    pub(super) fn export_follows_documents(&mut self, open: &[u64]) {
+        let Some(ask) = &self.dialogs.export else {
+            return;
+        };
+        if ask.document.is_some_and(|id| open.contains(&id)) {
+            return;
+        }
+        if let Some(ask) = self.dialogs.export.take() {
+            self.state.export = ask.committed;
+            self.state.export.open = false;
+        }
+    }
+
     /// The export dialog, while it is open.
     pub fn export_dialog(&self) -> Option<&ExportAsk> {
         self.dialogs.export.as_ref()

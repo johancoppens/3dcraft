@@ -402,6 +402,8 @@ impl Shell {
         let active = session.document_status().map(|status| status.index);
         let statuses = session.document_statuses();
         self.tabs = doc_tabs(&statuses, active);
+        let open: Vec<u64> = statuses.iter().map(|status| status.id).collect();
+        self.export_follows_documents(&open);
         self.assembly_docs
             .retain(|id| statuses.iter().any(|status| status.id == *id));
         for (tab, status) in self.tabs.iter_mut().zip(&statuses) {

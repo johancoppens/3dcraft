@@ -182,6 +182,62 @@ fn the_export_dialog_proposes_an_examples_title() {
     assert_eq!(shell.state.export.name, format!("{}.step", profile.title));
 }
 
+/// The export dialog belongs to the document it was opened for: closed
+/// with it (here as an agent closes it over the control channel), it does
+/// not stay over the next documents offering the closed one's name, and
+/// nothing is exported under that name (seen 2026-11-10).
+#[test]
+fn the_export_dialog_closes_with_its_document() {
+    use craft3d_ui_egui::shell::{EXAMPLES, run_example};
+    let ctx = egui::Context::default();
+    let mut session = Session::new(Workspace::memory());
+    let mut shell = Shell::new();
+    let profile = EXAMPLES.iter().find(|e| e.id == "t-slot-profile").unwrap();
+    run_example(&mut session, profile).unwrap();
+    frame(&ctx, &mut shell, &mut session, Vec::new());
+    shell
+        .handle_method(
+            &mut session,
+            "ui.set",
+            Some(&json!({"export": {"open": true, "format": "stl"}})),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(shell.state.export.name, format!("{}.stl", profile.title));
+    frame(&ctx, &mut shell, &mut session, Vec::new());
+    assert!(shell.export_dialog().is_some());
+    // Closed, and another document opened, before the window draws again.
+    session
+        .execute("file.close", &json!({"discard": true}))
+        .unwrap();
+    session.execute("file.new", &json!({})).unwrap();
+    frame(&ctx, &mut shell, &mut session, Vec::new());
+    assert!(shell.export_dialog().is_none());
+    assert!(!shell.state.export.open);
+    assert!(
+        !shell.state.export.name.contains(profile.title),
+        "{:?}",
+        shell.state.export
+    );
+    let got = shell
+        .handle_method(&mut session, "ui.get", Some(&json!({})))
+        .unwrap()
+        .unwrap();
+    assert_eq!(got["export"], Value::Null);
+    // Enter answers nothing: there is no dialog, and nothing to export.
+    frame(&ctx, &mut shell, &mut session, key(egui::Key::Enter));
+    assert_eq!(shell.take_export_answer(), None);
+    assert!(shell.error_dialog().is_none());
+    // Opened again, it is the new document's.
+    shell.open_export(&mut session).unwrap();
+    assert_eq!(shell.state.export.name, "untitled.step");
+    // Only closing its own document closes it: another document shown
+    // meanwhile leaves it to its answer, which refuses (as before).
+    session.execute("file.new", &json!({})).unwrap();
+    frame(&ctx, &mut shell, &mut session, Vec::new());
+    assert!(shell.export_dialog().is_some());
+}
+
 #[test]
 fn one_export_question_at_a_time_and_only_for_the_document_it_was_asked_for() {
     let ctx = egui::Context::default();
