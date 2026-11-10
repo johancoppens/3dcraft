@@ -134,7 +134,8 @@ impl ExportFormat {
 
 /// `name` as a file of `format`: as it is when its extension is one of
 /// the format's (in any case); with another export format's extension,
-/// or the native one, replaced; and with the format's extension appended
+/// or one of 3DCraft's own (a document's, a Jig's, an assembly's),
+/// replaced; and with the format's extension appended
 /// otherwise (`bracket.v2` → `bracket.v2.stl`). So a file is never named
 /// for another format than the bytes it holds. An empty name is
 /// `untitled`.
@@ -150,8 +151,7 @@ pub fn export_file_name(name: &str, format: ExportFormat) -> String {
         Some(extension) if format.extensions().contains(&extension.as_str()) => name.to_string(),
         Some(extension)
             if ExportFormat::from_extension(&extension).is_some()
-                || extension == EXTENSION
-                || extension == JIG_EXTENSION =>
+                || OPEN_EXTENSIONS.contains(&extension.as_str()) =>
         {
             // The extension's bytes are the name's last ones (lower case
             // keeps their length).
@@ -300,12 +300,14 @@ pub enum ExportKind {
     Outline,
 }
 
-/// A file's name without its folder and its 3DCraft extension, as the
-/// status bar names a file being opened (`welding-table`).
+/// A file's name without its folder and its 3DCraft extension (a
+/// document's, a Jig's, an assembly's), as the status bar names a file
+/// being opened (`welding-table`).
 pub fn file_stem(name: &str) -> Option<String> {
     let name = name.rsplit(['/', '\\']).next()?;
     let stem = name
         .strip_suffix(".3dcraftjig")
+        .or_else(|| name.strip_suffix(".3dcraftasm"))
         .or_else(|| name.strip_suffix(".3dcraft"))
         .unwrap_or(name);
     (!stem.is_empty()).then(|| stem.to_string())
@@ -1104,6 +1106,10 @@ mod tests {
             file_stem("C:\\models\\plate.3dcraft").as_deref(),
             Some("plate")
         );
+        assert_eq!(
+            file_stem("/rigs/toggle-clamp.3dcraftasm").as_deref(),
+            Some("toggle-clamp")
+        );
         assert_eq!(file_stem("part.step").as_deref(), Some("part.step"));
         assert_eq!(file_stem("/"), None);
     }
@@ -1574,6 +1580,8 @@ mod tests {
             ("part.step", ExportFormat::ThreeMf, "part.3mf"),
             ("part.3dcraft", ExportFormat::Svg, "part.svg"),
             ("box.3dcraftjig", ExportFormat::Obj, "box.obj"),
+            ("clamp.3dcraftasm", ExportFormat::Step, "clamp.step"),
+            ("Clamp.3DCRAFTASM", ExportFormat::Stl, "Clamp.stl"),
             ("bracket.v2", ExportFormat::Step, "bracket.v2.step"),
             ("part.", ExportFormat::Svg, "part.svg"),
             ("  ", ExportFormat::Obj, "untitled.obj"),
