@@ -483,6 +483,81 @@ fn symmetry_about_a_plane_is_found_and_a_one_sided_hole_breaks_it() {
     assert!(one_side["deviation"].as_f64().unwrap() > 0.5, "{one_side}");
 }
 
+/// J-022: a named set of bodies is a subject of `area` as of `extent`:
+/// the sum of the bodies' areas; and of `volume` and `cavity`. A set of
+/// faces is still the faces' area.
+#[test]
+fn a_set_of_bodies_is_measured_by_area_as_by_the_other_measures() {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Block A", "size": [20, 10, 5]}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Block B", "size": [10, 10, 10], "position": [40, 0, 0]}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Other", "size": [1, 1, 1], "position": [-10, 0, 0]}),
+    );
+    run(
+        &mut s,
+        "set.define",
+        json!({"name": "Blocks", "kind": "body", "where": {"name": "Block*"}}),
+    );
+    run(
+        &mut s,
+        "set.define",
+        json!({"name": "Tops", "kind": "face", "where": {"in": "Block A", "normal": {"along": "z"}}}),
+    );
+    let blocks = json!({"set": "Blocks"});
+    // 2 (20·10 + 10·5 + 20·5) = 700 and 6 · 10² = 600.
+    let area = run(
+        &mut s,
+        "variable.measure",
+        json!({"name": "a", "measure": "area", "of": blocks}),
+    );
+    close(&area["value"], 1300.0, 1e-9, "area of the set");
+    // 20·10·5 = 1000 and 10³ = 1000; no cavity.
+    let volume = run(
+        &mut s,
+        "variable.measure",
+        json!({"name": "v", "measure": "volume", "of": blocks}),
+    );
+    close(&volume["value"], 2000.0, 1e-9, "volume of the set");
+    let cavity = run(
+        &mut s,
+        "variable.measure",
+        json!({"name": "c", "measure": "cavity", "of": blocks}),
+    );
+    close(&cavity["value"], 0.0, 1e-9, "cavity of the set");
+    let extent = run(
+        &mut s,
+        "variable.measure",
+        json!({"name": "x", "measure": "extent", "of": blocks, "axis": "x"}),
+    );
+    close(&extent["value"], 50.0, 1e-9, "extent of the set");
+    // A set of faces is the faces' area: Block A's top, 20·10.
+    let top = run(
+        &mut s,
+        "variable.measure",
+        json!({"name": "t", "measure": "area", "of": {"set": "Tops"}}),
+    );
+    close(&top["value"], 200.0, 1e-9, "area of a set of faces");
+    // As an assertion, as the finding wrote it.
+    let asserted = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "area of the set", "measure": "area", "of": blocks, "eq": "1300"}),
+    );
+    assert_eq!(asserted["status"], "passed", "{asserted}");
+}
+
 /// J-020: a bound finer than the document's tolerance is met within that
 /// tolerance (the verdict does not change) and says so in a warning, in
 /// the result of assert.add and assert.edit, in assert.list's row and in

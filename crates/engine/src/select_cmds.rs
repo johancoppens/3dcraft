@@ -1920,6 +1920,25 @@ pub(crate) fn query(
     Ok(found)
 }
 
+/// The kinds a bare filter `{"set": name}` names when a measure's own
+/// kinds are `default`: those, where the set holds things of any of them
+/// (or does not say what it holds); else the kinds the set holds. A set
+/// of bodies given to the area, which takes faces by default, names its
+/// bodies (J-022), where the faces it was asked for would be none.
+pub(crate) fn lone_set_kinds(doc: &Document, name: &str, default: &[&str]) -> Value {
+    let asked = Value::from(default.to_vec());
+    let held = doc
+        .set_named(name)
+        .and_then(|set| serde_json::from_str::<Value>(&set.query).ok())
+        .and_then(|query| query.get("kind").and_then(|k| kinds(k).ok()));
+    match (held, kinds(&asked)) {
+        (Some(held), Ok(default)) if !held.is_empty() && held.is_disjoint(&default) => {
+            Value::from(held.iter().map(|k| k.name()).collect::<Vec<_>>())
+        }
+        _ => asked,
+    }
+}
+
 /// The items of the named set `name` as it holds now: at most
 /// [`MAX_SELECTION`], more is an error.
 pub(crate) fn set_items(

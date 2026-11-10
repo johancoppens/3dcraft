@@ -465,6 +465,13 @@ pub(crate) fn subject(ctx: &Ctx<'_>, value: &Value, kind: &[&str]) -> Result<Vec
                     return Err(format!("a query has kind and where, not `{key}`"));
                 }
                 (map.get("kind").cloned(), map.get("where").cloned())
+            } else if let (1, Some(Value::String(set))) = (map.len(), map.get("set")) {
+                // A named set alone names what it holds, in the measure's
+                // own kind where it holds that.
+                (
+                    Some(crate::select_cmds::lone_set_kinds(ctx.doc, set, kind)),
+                    Some(value.clone()),
+                )
             } else {
                 (Some(Value::from(kind.to_vec())), Some(value.clone()))
             };
