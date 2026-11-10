@@ -512,7 +512,7 @@ fn the_conditions_of_the_measuring_chapter_are_as_it_says() {
 /// text says: the barge trimmed by tan⁻¹ 0.05 (the wall-sided closed form,
 /// xg = tan θ (GML + BML tan² θ / 2) with xg 64 mm) passes both, its GM
 /// 66.75 mm (B² / (12 T cos θ) less the height of G above B, 53.4 mm);
-/// with KG at 300 mm `upright` fails.
+/// with KG at 300 mm `upright` fails, and `trim` too (3.16°, past 3°).
 #[test]
 fn the_floating_assertions_of_the_engineering_chapter_are_as_it_says() {
     let text = read_text(&docs().join("guide/engineering-checks.md"));
@@ -550,6 +550,12 @@ fn the_floating_assertions_of_the_engineering_chapter_are_as_it_says() {
     );
     let listed = run(&mut s, "assert.list", json!({}));
     assert_eq!(listed["assertions"][0]["status"], "failed", "{listed}");
+    assert_eq!(listed["assertions"][1]["status"], "failed", "{listed}");
+    let trim = listed["assertions"][1]["measured"].as_f64().unwrap();
+    assert!(
+        (trim.abs().to_degrees() - 3.16).abs() < 0.005,
+        "the trim at KG 300 mm, {trim} rad, is not the 3.16° the chapter says: {listed}"
+    );
 }
 
 /// The third starter task of the agent chapter (`agent.md` › *Try this

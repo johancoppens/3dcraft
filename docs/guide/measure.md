@@ -49,18 +49,20 @@ mm anywhere.
 
 ## Assertions
 
-`assert.add` keeps a measure and what it must be:
+`assert.add` keeps a measure and what it must be. The first two of these fit the
+[case lesson](../examples/case.json), the last two the [flange lesson](../examples/flange.json):
 
 ```json
 [
  ["assert.add", {"name": "volume", "measure": "volume", "of": "Case", "eq": "(length * width - (4 - pi) * corner_r^2) * height - ((length - 2 * wall) * (width - 2 * wall) - (4 - pi) * (corner_r - wall)^2) * (height - wall)"}],
  ["assert.add", {"name": "walls", "measure": "thickness", "of": "Case", "min": "wall - 0.1 mm"}],
  ["assert.add", {"name": "holes go through", "measure": "through", "of": {"hole": true}}],
- ["assert.add", {"name": "six bolt holes", "measure": "count", "of": {"set": "bolt holes"}, "eq": 6}]
+ ["assert.add", {"name": "one bolt hole each", "measure": "count", "of": {"set": "bolt holes"}, "eq": "n"}]
 ]
 ```
 
-- Measures: `volume`, `area`, `mass`, `count`, `extent` (size along `axis`), `boxMin` and `boxMax`
+- Measures: `volume`, `cavity` (what the hollows inside bodies hold: the capacity of a tank made hollow by
+  `feature.shell`), `area`, `mass`, `count`, `extent` (size along `axis`), `boxMin` and `boxMax`
   (where the box begins and ends along `axis`, so each side is bounded on its own), `centerOfMass`
   (its coordinate along `axis`; every body needs a material), `distance`, `clearance`, `thickness`,
   `through`, `overlap` (whether bodies overlap), `symmetric`, and `volumeBelow`, `centroidBelow`,
@@ -126,9 +128,11 @@ assertions after a change does one of these:
 ]
 ```
 
-A real *notProven*: with the bound written as `"min": "wall - 0.01 mm"`, the case's thickness answers
-*thickness: not proven: found 2 mm (at least 1.95750083 mm), expected ≥ 1.99 mm*. The wall is 2 mm, but
-the proof only reaches 1.9575 mm near the rounded corners; a bound of `wall - 0.1 mm` passes.
+A real *notProven*: with the bound written as `"min": "wall - 0.00001 mm"`, the case's thickness answers
+*thickness: not proven: found 2 mm (at least 1.9998494 mm), expected ≥ 1.99999 mm; what was measured was
+not pinned down closely enough to tell*. The wall is 2 mm, but the proof does not reach that close to it. A
+bound of `wall - 0.001 mm` passes: the proof is tightened until it reaches the bound, here to at least
+1.99939764 mm.
 
 Three that need a word:
 
@@ -187,7 +191,7 @@ in `document.check` and in `craft3d-cli check-range`.
 ]
 ```
 
-`corner` picks the corners' kind (1 open, 2 butt, 3 overlap, 4 mitre). At 1, *gap* is inactive (*inactive:
+`corner` picks the corners' kind (1 open, 2 butt, 3 overlap, 4 miter). At 1, *gap* is inactive (*inactive:
 its condition `corner != 1` is 0*), the output `cg` is unknown, and *gap or open* passes all the same: the
 branch of `if` that is taken does not need `cg`. Set `corner` to 2 and the corners close with a 0.5 mm gap:
 *gap* is measured and passes, and so does *gap or open*, now on `cg`.

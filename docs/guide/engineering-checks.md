@@ -139,7 +139,8 @@ the outputs, so the centre of gravity can be computed by the design:
 ```
 
 The barge settles 2.86° down towards +x, where its centre of gravity lies (a trim of tan⁻¹ 0.05, the wall-sided closed form) with a GM of
-66.75 mm, so both pass; with `KG` at 300 mm its GM is negative and `upright` fails. A search for the
+66.75 mm, so both pass. With `KG` at 300 mm its GM is negative and `upright` fails, and so does `trim`:
+the barge then trims by 3.16°, past its bound of 3°. A search for the
 equilibrium that does not settle makes such an assertion *notProven*, with the reason, never passed, and
 an output of it unknown; a displacement more than the body holds is an error (it sinks). Each assertion
 solves the equilibrium itself, and again only when what it depends on changes.
