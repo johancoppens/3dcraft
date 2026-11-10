@@ -2,7 +2,7 @@
 Type=Application
 Name=3DCraft
 GenericName=Parametric 3D CAD
-Comment=Parametric 3D CAD modeller built for AI
+Comment=Parametric 3D CAD modeller built with and for AI
 Exec=craft3d %f
 Icon=io.github.johancoppens.craft3d
 Terminal=false

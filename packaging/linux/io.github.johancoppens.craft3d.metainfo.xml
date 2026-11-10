@@ -4,7 +4,7 @@
   <metadata_license>MIT</metadata_license>
   <project_license>MIT</project_license>
   <name>3DCraft</name>
-  <summary>Parametric 3D CAD modeller built for AI</summary>
+  <summary>Parametric 3D CAD modeller built with and for AI</summary>
   <description>
     <p>
       3DCraft is a native, parametric 3D CAD modeller with its own kernel,

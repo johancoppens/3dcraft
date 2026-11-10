@@ -870,7 +870,7 @@ impl Shell {
         ui.add_space(space * 0.4);
         kit.paragraph(
             ui,
-            "Parametric CAD built for AI. Start a document, open one, or let an agent model while you watch.",
+            "Parametric CAD built with and for AI. Start a document, open one, or let an agent model while you watch.",
             true,
         );
         ui.add_space(space * 0.4);

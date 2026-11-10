@@ -382,7 +382,7 @@ impl Shell {
                             .color(color(tokens.text)),
                     );
                     ui.label(
-                        egui::RichText::new("Parametric CAD built for AI")
+                        egui::RichText::new("Parametric CAD built with and for AI")
                             .font(kit.font())
                             .color(color(tokens.text_dim)),
                     );

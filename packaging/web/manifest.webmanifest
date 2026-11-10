@@ -2,7 +2,7 @@
   "id": "./",
   "name": "3DCraft",
   "short_name": "3DCraft",
-  "description": "Parametric 3D CAD modeller built for AI",
+  "description": "Parametric 3D CAD modeller built with and for AI",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
