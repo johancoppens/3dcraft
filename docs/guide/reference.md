@@ -161,7 +161,8 @@ The history keys work while the pointer is over the view or the feature list.
 On a slider (a Jig's parameters, See-through, the section's Offset, the Studio and Analysis options): press
 the rail to put the knob there and drag it (Shift finer, Ctrl in whole steps); once clicked, the arrow keys or
 the wheel step it (Shift: ten steps); click its value (or press Enter over it) to type a value or an expression
-with units, Escape to give up; double-click the knob for its default.
+with units, Escape to give up; double-click the knob for its default. A whole number with a few values is a
+stepper instead: **−** and **+** beside the value ([Using a Jig › The form](jigs.md#the-form)).
 
 ## The window, for agents and programs
 

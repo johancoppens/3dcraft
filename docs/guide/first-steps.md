@@ -97,12 +97,13 @@ supports. It opens on its **Parameters** tab.
 <!-- SHOT: jig-parameters.png | the Gridfinity bin Jig opened from the start screen, on its Parameters tab with its groups open (Size, Compartments, Base and rim, Checks), the form's footer with the Jig's licence, iso view; theme light, window 1400x900 | open the Gridfinity bin from the start screen (or file.open gridfinity-bin.3dcraftjig); ui.set {"appearance": "light"}; ui.set {"view": "iso"}; ui.fit (plan: shots/pictures/05-jig-parameters.json, with the Gridfinity bin instead of the laser-cut box) -->
 ![The Gridfinity bin Jig on its Parameters tab: the form at the left, the bin in the view](images/jig-parameters.png)
 
-1. Drag the knob of the **Width** slider from 2 to 3. The bin grows by one 42 mm unit (Gridfinity bins
-   are sized in units of its grid), and its compartments get wider.
-2. Click the value of **Compartments side by side**, type `3` and press Enter: nine compartments now,
-   three across and three deep.
-3. Untick **Scoop**: the rounded fronts inside the compartments go.
-4. Click **↺** beside a parameter to put it back, or **Reset all** to put them all back.
+1. Drag the knob of the **Height** slider. The bin's walls grow and shrink in steps of 7 mm, the height
+   unit of the Gridfinity system, as you drag.
+2. Beside **Width**, click **+**: the width goes from 2 to 3 grid units of 42 mm, and the compartments get
+   wider.
+3. Beside **Compartments side by side**, click **+**: nine compartments now, three across and three deep.
+4. Untick **Scoop**: the rounded fronts inside the compartments go.
+5. Click **↺** beside a parameter to put it back, or **Reset all** to put them all back.
 
 Leave **Show fit gauges** off: the gauges are extra bodies that prove the bin fits a baseplate, and an
 export would write them too.
