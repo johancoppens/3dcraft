@@ -1,5 +1,5 @@
 //! The Parameters tab beside the feature list: the form of a Jig
-//! (docs/decisions.md, 2026-10-23; `docs/guide`, *Jigs: parameters*).
+//! (docs/decisions.md, 2026-10-23; `docs/guide/jigs.md`, *The form*).
 //!
 //! What it shows is `param.list`, read again whenever the active
 //! document's revision changes; what it does is `param.set`, handed to the

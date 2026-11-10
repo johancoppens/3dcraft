@@ -10,13 +10,13 @@ assembly follows when you save it.
 
 ## Open one first
 
-The start screen has four assemblies: a toggle clamp, a Jansen walker, a scissor jack and a radial engine.
-Click **Toggle clamp**: the clamp that holds a workpiece down on a bench, a handle, a link and a bar
-joined as a four-bar linkage. It opens in a tab of its own.
+The start screen has four assemblies under **Assemblies**: **Horizontal toggle clamp**, **Jansen linkage
+walker**, **Scissor car jack** and **Seven-cylinder radial engine with its valve train**. Click
+**Assemblies** above the cards, then **Horizontal toggle clamp**: the clamp that holds a workpiece down on
+a bench, a handle, a link and a bar joined as a four-bar linkage. It opens in a tab of its own, with its
+player on **Motion**, ready to play.
 
-<!-- CHECK: the four assembly cards' names on the new start screen, and that the toggle clamp opens ready to play its motion (Motion chosen in the player) -->
-
-<!-- SHOT: assembly.png | the toggle clamp assembly in the window: the Assembly tab with its instances and mates, the player in Motion mode part-way, iso view; theme light, window 1400x900 | open the toggle clamp from the start screen (or file.open toggle-clamp.3dcraftasm); ui.set {"appearance": "light"}; ui.set {"view": "iso"}; ui.fit (plan: shots/pictures/09-assembly.json) -->
+<!-- SHOT: assembly.png | the toggle clamp assembly in the window: the Assembly tab with its instances and mates, the player in Motion mode part-way, iso view; theme light, window 1400x900 | open the toggle clamp from the start screen (or file.open toggle-clamp.3dcraftasm); ui.set {"appearance": "light"}; ui.set {"view": "iso"}; ui.fit -->
 ![The toggle clamp in the window: the Assembly tab with its parts and mates, and the player in Motion mode](images/assembly.png)
 
 - The side panel's **Assembly** tab lists the **instances**, the placed parts, and under them the
@@ -82,7 +82,8 @@ bars never overlap, and `motion.check` measures it at 17 moments of the turn:
 `motion.check` answers `"ok": true`: *no clash* passed at every moment. Open `two-bars.3dcraftasm` in the
 window and play it: the arm turns round on the base.
 
-The rest of this chapter goes through each part in detail.
+The rest of this chapter is what an agent does for you; read it when you want to ask for particular
+mates, couplings or checks. It goes through each part in detail.
 
 ## Instances
 

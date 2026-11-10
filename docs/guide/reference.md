@@ -87,7 +87,7 @@ The full description of any command, with every value it takes and what it refus
 | `instance.add`, `instance.edit`, `instance.delete`, `instance.open` | Place a part, a Jig or an assembly; change, remove, open its source |
 | `mate.add`, `mate.edit`, `mate.delete` | Join two instances (fixed, revolute, slider, cylindrical, planar, ball) |
 | `coupling.add`, `coupling.delete` | Gears, racks and screws between two mates; linear ties of any number of motions |
-| `joint.set` | Set a mate's free motion (the variable `<mate>_angle`) |
+| `joint.set` | Set a mate's free motion (the variable `<mate>_angle`, or `<mate>_distance` for a slide) |
 | `assembly.solve`, `assembly.inspect` | How the mates stand; the instances and configurations |
 | `measure.joint`, `measure.pose` | A joint's solved value; where an instance or a point through it is |
 | `assembly.reload`, `assembly.follow`, `assembly.pack`, `assembly.unpack` | Follow changed parts (by hand; what changed, of every open assembly); carry the parts in the file, or write them out |
@@ -117,7 +117,8 @@ What an agent gets over MCP ([Install 3DCraft and connect an AI agent](install.m
 
 ## Keys and mouse
 
-The window lists these under **Help › Keyboard shortcuts** (F1). On a Mac, ⌘ takes the place of Ctrl.
+The window lists these under **Help › Keyboard shortcuts** (F1). On a Mac, ⌘ takes the place of Ctrl,
+except in Ctrl+Tab and Ctrl+Shift+Tab, which stay as they are.
 
 | Keys | Do |
 |---|---|

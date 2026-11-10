@@ -55,22 +55,28 @@ The browser has no pill: agents drive the desktop app only.
 Without a document, the window shows the **start screen** (its picture is in
 [Your first five minutes](first-steps.md)):
 
-- **New part**, **New assembly** and **Open…**;
-- the **examples**: two simple ones in front (a steel bookend and a T-slot profile), then eight more. A
-  click opens one in a new tab;
-- the **Jigs**: the laser-cut box, the Gridfinity bin, the dovetail drawer, the sheet-metal enclosure, the
-  planetary gearbox and the sundial. Each opens on its **Parameters** tab ([Using a Jig](jigs.md));
-- the **assemblies**: the toggle clamp, the Jansen walker, the scissor jack and the radial engine. Each
-  opens ready to play its motion ([Assemblies](assemblies.md));
-- **More examples**, which opens the gallery of every example, Jig and assembly,
-  [3dcraft.dev/examples](https://3dcraft.dev/examples/), in your browser;
-- **Recent**: the files you opened or saved last, each with the icon of its kind and how long ago it
-  changed;
-- **Connect an AI agent**: the same panel as the agent pill's, with the **Allow AI agents** switch, the
-  work folder, and the buttons that copy the configuration for your AI tool. In the browser, it says that
-  an agent cannot drive 3DCraft there yet.
-
-<!-- CHECK: the new start screen's sections, their names and order, the eight other examples it shows, and the wording of More examples -->
+1. At the top, the name and version, and the line *Parametric CAD built for AI. Start a document, open
+   one, or let an agent model while you watch.*
+2. **New part**, **New assembly** and **Open…**.
+3. **Examples**, with three tabs at its right: **Parts**, **Jigs** and **Assemblies**. Only the chosen
+   tab's cards show. The tab you chose stays chosen while 3DCraft runs.
+4. A line that says what the tab holds, with **More examples** at its right. **More examples** opens the
+   gallery of every example, Jig and assembly, [3dcraft.dev/examples](https://3dcraft.dev/examples/), in
+   your browser.
+5. The cards. A click on a card opens it in a new tab. One that takes a while to open says so on its
+   picture, such as *about 3 s*.
+   - **Parts**: ten finished parts, with their whole history to play back. The first two, the steel
+     bookend and the T-slot aluminium profile, are marked **Start here**: they are the simplest. A part
+     with sizes you may change opens on its **Parameters** tab.
+   - **Jigs**: the laser-cut box, the Gridfinity bin, the dovetail drawer, the sheet-metal enclosure, the
+     planetary gearbox and the sundial. Each opens on its **Parameters** tab ([Using a Jig](jigs.md)).
+   - **Assemblies**: the toggle clamp, the Jansen walker, the scissor jack and the radial engine. Each
+     opens with its player on **Motion**: press play and it moves ([Assemblies](assemblies.md)).
+6. **Recent** at the left: the files you opened or saved last, each with the icon of its kind and how long
+   ago it changed. **Connect an AI agent** at the right: the same panel as the agent pill's, with the
+   **Allow AI agents** switch, the work folder, and the buttons that copy the configuration for your AI
+   tool. In the browser, it says instead: *In the browser an agent cannot drive 3DCraft yet. Use the
+   desktop app to connect one.*
 
 The start screen comes back when you close the last tab.
 
@@ -81,8 +87,8 @@ assembly, a Jig). A Jig opened to be used also says **Jig**. An amber dot at a t
 changes; the close × takes its place under the pointer.
 
 **Ctrl+Tab** goes to the next tab and **Ctrl+Shift+Tab** to the previous one. **Ctrl+W** closes one, and
-asks first when it has unsaved changes (**Save**, **Don't Save**, **Cancel**). On a Mac, ⌘ takes the place
-of Ctrl.
+asks first when it has unsaved changes (**Save**, **Don't Save**, **Cancel**). On a Mac, ⌘W closes a tab;
+Ctrl+Tab stays Ctrl+Tab.
 
 The **File** menu:
 
@@ -141,8 +147,6 @@ The **Help** menu:
   links to the guide and the source, and the renderer in use. **Copy system info** copies those lines
   for a bug report.
 
-<!-- CHECK: Help › User guide and the About dialog open the guide of the version in use (GUIDE_URL in crates/ui-egui/src/shell/help.rs), at its new address -->
-
 ## The side panel
 
 The left panel has tabs, chosen by the kind of document:
@@ -200,7 +204,7 @@ is selected, or when the panel is short, to make room.
 **Measure** measures a face's wall thickness, or the distance between the first two things selected;
 **Copy name** copies the name.
 
-<!-- SHOT: selection.png | a hole of the flange lesson selected: the panel's foot with its surface (cylinder R 4), area, axis, Made by, Name, Measure and Copy name; theme light; crop to the side panel's foot and the view | open the flange lesson; ui.select {"names": ["<a bolt hole's face name>"]}; crop (plan: shots/pictures/13-selection.json) -->
+<!-- SHOT: selection.png | a hole of the flange lesson selected: the panel's foot with its surface (cylinder R 4), area, axis, Made by, Name, Measure and Copy name; theme light; crop to the side panel's foot and the view | open the flange lesson; ui.select {"names": ["<a bolt hole's face name>"]}; crop -->
 ![A hole selected: the foot of the side panel names its surface, its area and axis, the feature that made it and its name](images/selection.png)
 
 ### Variables
@@ -219,7 +223,8 @@ One row per body the design ends with: its colour, its name, its mass (or its vo
 and its eye. Click a body for its card: **Material** (choose a preset: it sets the density and the look),
 density, colour, volume, mass, area, box, faces and edges, and whether it is a valid closed solid.
 
-When the body's faces carry colours of their own, the card has **Clear face colours**, and a **Shared** row
+When the body's faces carry colours of their own, the card has **Clear face colour** (or **Clear 3 face
+colours**, with their number), and a **Shared** row
 when some of those colours are shared with another body
 ([Modelling features › Colours and materials](features.md#colours-and-materials)). The totals are at the
 foot. The bodies that booleans used up are folded under *Tool bodies*: open it to see them and where they
@@ -243,7 +248,7 @@ The desktop app only: in the browser, agents cannot connect.
 
 At the foot of the side panel is the **timeline**: drag it to see the design as it was after any step of
 its history. Features after that step are greyed, and the step is named at the top of the view, such as
-`Step 3/6  Extruded profile`. Looking back never changes the document.
+`Step 2/6 · Extruded profile · extrude` (its place, the number of steps, its name and its kind). Looking back never changes the document.
 
 Under the timeline is the **player**, one row like a video player's. The round amber button plays and
 pauses, and where you are is beside it (`3 / 6`).
@@ -301,7 +306,7 @@ As with the history, nothing in the document changes. Only the features that use
 moment, so a heavy model plays slower rather than skipping. An assembly has no history of its own, so it
 shows only **Motion**: its parts are moved, not rebuilt ([Assemblies](assemblies.md#motion)).
 
-<!-- SHOT: motion.png | the toggle clamp assembly playing its motion: the player in Motion mode with Back and forth and Collisions, the caption t = 0.500 over the view; theme light; crop to the view and the player | open the toggle clamp; ui.set {"timeline": {...}} to Motion at t = 0.5 (plan: shots/pictures/09-assembly.json, extended) -->
+<!-- SHOT: motion.png | the toggle clamp assembly playing its motion: the player in Motion mode with Back and forth and Collisions, the caption t = 0.500 over the view; theme light; crop to the view and the player | open the toggle clamp; ui.set {"timeline": {...}} to Motion at t = 0.5 -->
 ![The player in Motion mode: the slider over t, Back and forth and Collisions, and the moment named over the view](images/motion.png)
 
 While a motion plays, the view draws lighter so it keeps up. In the studio look it leaves out the frames a
@@ -384,7 +389,7 @@ The browser on a phone or a tablet, and any window narrower than about 800 point
 - the **studio look**, which shows what a part will look like: its colours, how metal and how rough its
   faces are, lit by a photographed environment.
 
-<!-- SHOT: studio.png | the moka pot example in the studio look, its options popover open (environment, exposure, background, ground, tone, shadows, lens); theme light, window 1400x900 | open the moka pot example; ui.set {"parameters": {"open": false}}; ui.set {"look": {"mode": "studio"}}; ui.set {"panels": {"lookOptions": true}}; ui.fit (plan: shots/pictures/10-studio.json) -->
+<!-- SHOT: studio.png | the moka pot example in the studio look, its options popover open (environment, exposure, background, ground, tone, shadows, lens); theme light, window 1400x900 | open the moka pot example; ui.set {"parameters": {"open": false}}; ui.set {"look": {"mode": "studio"}}; ui.set {"panels": {"lookOptions": true}}; ui.fit -->
 ![The studio look with its options open: the environment, exposure, background, ground, tone, shadows and the lens](images/studio.png)
 
 Three environments come with 3DCraft: `studio` (soft boxes, the default), `outdoor` (sky and sun) and
@@ -437,7 +442,7 @@ what the colours mean. Its **▾** caret (or Escape) closes the popover and keep
 analysis is on, the view is drawn plainly, so the studio look's caret is greyed out until the analysis is
 off.
 
-<!-- SHOT: zebra.png | the ship propeller example under the zebra analysis, the popover open with its legend; theme light, window 1400x900 | open the ship propeller example; ui.set {"parameters": {"open": false}}; ui.set {"analysis": {"mode": "zebra", "stripes": 32}}; open the analysis popover (plan: shots/pictures/11-analysis.json) -->
+<!-- SHOT: zebra.png | the ship propeller example under the zebra analysis, the popover open with its legend; theme light, window 1400x900 | open the ship propeller example; ui.set {"parameters": {"open": false}}; ui.set {"analysis": {"mode": "zebra", "stripes": 32}}; open the analysis popover -->
 ![Zebra stripes on the ship propeller's blades, with the analysis options open](images/zebra.png)
 
 - **Zebra**: black and white stripes reflected in the surfaces, as a car body reflects the lights of a

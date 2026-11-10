@@ -13,7 +13,7 @@ title and description, and a small picture. It runs in the desktop app and in th
 
 ## The Jigs on the start screen
 
-The start screen has six Jigs; a click opens one on its **Parameters** tab.
+Under **Jigs** on the start screen are six Jigs; a click on a card opens it on its **Parameters** tab.
 
 | Jig | What it makes | Export it as |
 |---|---|---|
@@ -22,9 +22,7 @@ The start screen has six Jigs; a click opens one on its **Parameters** tab.
 | **Dovetail drawer** | A dovetailed drawer sized from the opening it must fill, its tails laid out by the old rules for the timber you choose | **Sheet of set: Marking templates**, SVG or DXF to print at 100 %; STEP of the boards |
 | **Sheet-metal enclosure** | A two-part sheet-metal case around a board or a stack of them, its bend order proven for a press brake | **Flat patterns of every part**, DXF or SVG ([Sheet metal](sheet-metal.md)) |
 | **Planetary gearbox** | A printable planetary reducer for a stepper motor, from the reduction and the size you ask for, with gears that mesh | One print plate at a time (*Show*: *Print plate 1* to *6*), **All bodies**, 3MF |
-| **Sundial** | A brass dial for your latitude and longitude, on a garden pedestal or a wall, that reads the clock time of your zone | **Sheet of set: Cut sheet** to cut, **Sheet of set: Engraving** to engrave, DXF or SVG |
-
-<!-- CHECK: the six Jig cards' names on the new start screen, and that each opens on its Parameters tab -->
+| **Sundial for your place** | A brass dial for your latitude and longitude, on a garden pedestal or a wall, that reads the clock time of your zone | **Sheet of set: Cut sheet** to cut, **Sheet of set: Engraving** to engrave, DXF or SVG |
 
 Each Jig's description, at the top of its Parameters tab, says how to export it. More Jigs, and the
 source of every one, are in the gallery, [3dcraft.dev/examples](https://3dcraft.dev/examples/). Anyone
@@ -65,7 +63,7 @@ Each parameter is shown by its kind:
   - A double-click on the knob puts it back to its default.
 - **A whole number with only a few values** (a count from 1 to 6, say) is a stepper: **−** and **+**
   beside the value, with the range under it.
-- **Yes or no** is a checkbox, such as *Scoop* on the Gridfinity bin.
+- **Yes or no** is a switch, such as *Scoop* on the Gridfinity bin.
 - **A choice** is a list to pick from, such as *Lid* on the laser-cut box.
 
 **The form keeps values in range.** Typing 500 into a width that goes up to 400 mm sets 400 mm, and says
@@ -87,8 +85,9 @@ chosen ranges where that cannot happen; if it does, tell them.
 **Outputs.** Below the parameters, many Jigs show what they work out: an inside volume, a mass, the number
 of parts to cut. You read them; you do not set them ([Measuring and assertions › Outputs](measure.md#outputs-measures-in-formulas)).
 
-**Closing a Jig you changed** asks *You changed the parameters of "…". Save the result as a model?*:
-**Save as model…**, **Close** (forget the settings) or **Cancel**.
+**Closing a Jig you changed** asks *Save the parameters of "…" as a model?*, with the line *The Jig
+itself is not changed. The values you set are lost if you close without saving them.* The buttons are
+**Save as model…**, **Close** (forget the settings) and **Cancel**.
 
 ### Looking inside, and changing the design
 
