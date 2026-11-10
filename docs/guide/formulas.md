@@ -123,7 +123,7 @@ from it goes with it. In `document.inspect` a feature that is off says what it p
 the feature whose body that is, or `passesNothing` with the reason; in the feature list, hold the pointer
 over it.
 
-In detail, off, by hand or by its condition, a feature behaves as if it were not in the history:
+In detail, a feature that is off, by hand or by its condition, behaves as if it were not in the history:
 
 - one that **changes** a body (a boolean, fillet, chamfer, face operation, shell, thread, pattern, or a
   transform or mirror without `keep`) passes that body on unchanged; what comes after it is built from

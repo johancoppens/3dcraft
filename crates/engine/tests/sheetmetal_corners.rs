@@ -354,7 +354,7 @@ fn the_guide_closed_corners_run_as_it_says() {
         .join("../../docs/guide/sheet-metal.md");
     let text = std::fs::read_to_string(guide).unwrap();
     let fence = "`".repeat(3);
-    let section = text.split("**Closed corners.**").nth(1).unwrap();
+    let section = text.split("## Closed corners").nth(1).unwrap();
     let block = section
         .split(&format!("{fence}json"))
         .nth(1)

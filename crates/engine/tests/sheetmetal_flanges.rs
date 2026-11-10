@@ -731,7 +731,7 @@ fn the_guide_cover_runs_as_it_says() {
     let text = std::fs::read_to_string(guide).unwrap();
     let fence = "`".repeat(3);
     let section = text
-        .split("**Inset flanges, tabs and outlines.**")
+        .split("## Inset flanges, tabs and outlines")
         .nth(1)
         .unwrap();
     let block = section
