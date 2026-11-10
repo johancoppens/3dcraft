@@ -1099,6 +1099,9 @@ impl WebHost {
         {
             let _ = self.shell.take_example();
             self.example_fonts = None;
+            // Another example was taken: a published one said as opening
+            // before it is said again when it is chosen again.
+            self.example_said = None;
             self.start_example(example, steps);
         } else if let Some(example) = self.shell.peek_example()
             && self.example_said != Some(example.id)
@@ -3389,6 +3392,51 @@ mod tests {
                 assert!(host.has_unsaved(), "{}", example.id);
             }
         }
+    }
+
+    /// A published example said as opening, then another example taken
+    /// before it opened (a script example chosen meanwhile), is said as
+    /// opening again when it is chosen again: its "Opening …" frame is
+    /// never skipped.
+    #[test]
+    fn an_example_chosen_again_after_another_is_said_as_opening_again() {
+        use craft3d_ui_egui::shell::EXAMPLES;
+        static STEPS: craft3d_ui_egui::shell::Example = craft3d_ui_egui::shell::Example::script(
+            "steps",
+            "Steps",
+            "a variable",
+            r#"[["variable.set", {"name": "a", "expr": "1 mm"}]]"#,
+        );
+        let published = EXAMPLES
+            .iter()
+            .min_by(|a, b| a.seconds().total_cmp(&b.seconds()))
+            .unwrap();
+        let mut host = host();
+        host.shell.choose_example(published);
+        host.pump();
+        assert_eq!(host.example_said, Some(published.id));
+        assert!(host.session.document_statuses().is_empty());
+        // Another chosen before the next pump: taken instead.
+        host.shell.choose_example(&STEPS);
+        host.pump();
+        while host.example_progress().is_some() {
+            host.pump();
+        }
+        assert_eq!(host.example_said, None);
+        assert_eq!(host.session.document_statuses().len(), 1);
+        // The first one chosen again: "Opening …" first, as the first time.
+        host.shell.choose_example(published);
+        host.pump();
+        assert_eq!(host.session.document_statuses().len(), 1, "not yet");
+        assert_eq!(
+            host.shell.busy().map(|(text, _)| text),
+            Some(format!("Opening {}\u{2026}", published.title))
+        );
+        host.pump();
+        while host.example_progress().is_some() {
+            host.pump();
+        }
+        assert_eq!(host.session.document_statuses().len(), 2);
     }
 
     /// A script example whose text needs a built-in font that is not here
