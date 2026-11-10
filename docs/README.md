@@ -2,17 +2,17 @@
 
 > **Last updated:** 2026-11-10 (0.1.0) · **Status:** see [`roadmap.md`](roadmap.md) › *Current focus* and *Milestones* for what is done and open, and [`architecture.md`](architecture.md) for how it is built (the map; the details per part in [`design/`](design/README.md))
 
-**Using 3DCraft?** Start with the [user guide](guide/README.md): what 3DCraft is, installing it, a first model in five minutes, working with an AI agent, Jigs, and the reference. The [example models](examples/README.md) are small parts that check their own volume. What changed per version is in [`CHANGELOG.md`](../CHANGELOG.md).
+**Using 3DCraft?** Start with the [user guide](guide/README.md): what 3DCraft is, installing it, a first model in five minutes, working with an AI agent, Jigs, and the reference. The guide's [lessons](examples/README.md) are small parts that check their own volume. What changed per version is in [`CHANGELOG.md`](../CHANGELOG.md).
 
 **Working on 3DCraft?** Start with [`CONTRIBUTING.md`](../CONTRIBUTING.md) (how to report a problem and send a change) and [`AGENTS.md`](../AGENTS.md), then read in this order.
 
 | Doc | What it holds |
 |---|---|
 | [`guide/`](guide/README.md) | The user guide, in six parts: start (install and connect an agent, first steps, working with an agent), using it (the window, Jigs, assemblies, files), modelling (concepts, a first part, formulas, features, sheet metal, surfaces, origami, selection), checking (measuring, engineering checks), building on 3DCraft (making Jigs, the command line, programs) and help (troubleshooting, reference) |
-| [`examples/`](examples/README.md) | Eighteen example models as command scripts, each with a picture and its volume asserted; thirteen of them are cards on the start screen, beside the published Jigs and assemblies in `examples/published/` |
+| [`examples/`](examples/README.md) | The guide's seven lessons as command scripts, each with a picture and its volume asserted; in `examples/published/` the examples, Jigs and assemblies the start screen opens, copied from their own repositories with their licence |
 | [`architecture.md`](architecture.md) | The map: the rules that always hold, crates and layers, data, pipelines, the kernel's methods, known structural debt |
 | [`design/`](design/README.md) | One detail document per part (geometry, topology, booleans, blends, sweeps, face operations, developable surfaces, surfacing, names, document, regeneration, tessellator, rendering, engine, motion, selection, origami, verification, sections and levels, plates, sheet metal, cutting, assemblies, STEP import, text, files): how it works now, then its dated findings |
-| [`development.md`](development.md) | Prerequisites, build and run (on your own machine), the workshop's checks and gate on the Strix, CLI, driving the app, watching along, packaging, the web build, example thumbnails, environment variables |
+| [`development.md`](development.md) | Prerequisites, build and run (on your own machine), the workshop's checks and gate on the Strix, CLI, driving the app, watching along, packaging, the web build, the bundled examples and the example pictures, environment variables |
 | [`testing.md`](testing.md) | The AI test loop, the oracles, test kinds per crate, the task set, the guide's checked examples, performance and web-size budgets, evidence |
 | [`contributing.md`](contributing.md) | Rules and the "add a command" / "add a feature type" / "add a geometry kind" checklists |
 | [`control-protocol.md`](control-protocol.md) | JSON control channel, headless server, MCP tools, every `ui.*` method |
