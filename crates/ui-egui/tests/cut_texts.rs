@@ -184,8 +184,8 @@ fn a_long_label_never_runs_into_its_control_and_is_whole_on_hover() {
     // before the field.
     for (name, label) in [("wall", SLIDER), ("gap", DRAG)] {
         let field = hit(&shell, &format!("{name}.field"));
-        let control = hit(&shell, name);
-        let at = pos2(control.left() + 20.0, field.center().y);
+        let at = pos2(panel.left() + 30.0, field.center().y);
+        assert!(at.x < field.left(), "{name}: {field:?}");
         assert!(
             !window.shows_whole(label, at),
             "{name}: not cut at 260 points"
