@@ -432,28 +432,41 @@ fn a_click_on_new_document_asks_the_host_for_a_new_document() {
         );
     }
     assert_eq!(shell.take_example().map(|e| e.id), Some("steel-bookend"));
-    // More examples asks the host to open the galleries in the browser.
-    let more = hit(&shell, "more-examples");
-    for pressed in [true, false] {
-        window.frame(
-            &mut shell,
-            &mut session,
-            vec![
-                Event::PointerMoved(more),
-                Event::PointerButton {
-                    pos: more,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
-        );
-    }
-    assert_eq!(
-        shell.take_external(),
-        Some(External::Url(EXAMPLES_URL.to_string()))
-    );
+    // More examples asks the host to open the galleries in the browser, at
+    // the part of the section shown (the website's anchors).
     assert_eq!(EXAMPLES_URL, "https://3dcraft.dev/examples/");
+    for (section, url) in [
+        (
+            ExampleSection::Parts,
+            "https://3dcraft.dev/examples/#examples",
+        ),
+        (ExampleSection::Jigs, "https://3dcraft.dev/examples/#jigs"),
+        (
+            ExampleSection::Assemblies,
+            "https://3dcraft.dev/examples/#assemblies",
+        ),
+    ] {
+        assert_eq!(section.more_url(), url);
+        shell.show_section(section);
+        window.frame(&mut shell, &mut session, Vec::new());
+        let more = hit(&shell, "more-examples");
+        for pressed in [true, false] {
+            window.frame(
+                &mut shell,
+                &mut session,
+                vec![
+                    Event::PointerMoved(more),
+                    Event::PointerButton {
+                        pos: more,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert_eq!(shell.take_external(), Some(External::Url(url.to_string())));
+    }
 }
 
 #[test]
@@ -629,7 +642,14 @@ fn ui_example_lists_shows_and_opens_the_examples() {
     let listed = call(&mut shell, &mut session, "ui.example", json!({}));
     assert_eq!(listed["shown"], true);
     assert_eq!(listed["section"], "parts");
-    assert_eq!(listed["moreExamples"], EXAMPLES_URL);
+    assert_eq!(
+        listed["moreExamples"],
+        "https://3dcraft.dev/examples/#examples"
+    );
+    assert_eq!(
+        call(&mut shell, &mut session, "ui.get", json!({}))["startSection"],
+        "parts"
+    );
     let examples = listed["examples"].as_array().unwrap();
     assert_eq!(examples.len(), EXAMPLES.len());
     let ids: Vec<&str> = examples.iter().map(|e| e["id"].as_str().unwrap()).collect();
@@ -662,7 +682,13 @@ fn ui_example_lists_shows_and_opens_the_examples() {
         json!({"section": "jigs"}),
     );
     assert_eq!(shown["section"], "jigs");
+    assert_eq!(shown["moreExamples"], "https://3dcraft.dev/examples/#jigs");
     assert_eq!(shell.start_section(), ExampleSection::Jigs);
+    // ui.get says which section shows.
+    assert_eq!(
+        call(&mut shell, &mut session, "ui.get", json!({}))["startSection"],
+        "jigs"
+    );
     window.frame(&mut shell, &mut session, Vec::new());
     let cards = shell
         .start_hits()

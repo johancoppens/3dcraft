@@ -7,8 +7,9 @@
 //! ([`Shell::take_open_recent`]), and an example is opened by the host with
 //! [`run_example`] ([`Shell::take_example`]), as a document without a file
 //! of its own (`Session::open_bytes`): a Jig on its form, an assembly with
-//! its player. *More examples* opens the galleries on the website
-//! ([`EXAMPLES_URL`]), as Help opens the guide.
+//! its player. *More examples* opens the galleries on the website at the
+//! part of the section shown ([`ExampleSection::more_url`]), as Help opens
+//! the guide.
 //!
 //! The examples are copied from their own repositories by
 //! `cargo xtask bundle-examples` (docs/development.md, Bundled examples):
@@ -26,7 +27,8 @@ use craft3d_engine::Session;
 use serde_json::{Value, json};
 
 /// The galleries of examples, Jigs and assemblies on the website, which
-/// *More examples* opens in the browser.
+/// *More examples* opens in the browser at the part of the section shown
+/// ([`ExampleSection::more_url`]; docs/decisions.md, 2026-11-10).
 pub const EXAMPLES_URL: &str = "https://3dcraft.dev/examples/";
 
 /// A section of the start screen's examples, one kind each.
@@ -79,6 +81,23 @@ impl ExampleSection {
     /// The section a word names.
     pub fn from_word(word: &str) -> Option<ExampleSection> {
         ExampleSection::ALL.into_iter().find(|s| s.word() == word)
+    }
+
+    /// The anchor of its part of the website's gallery page
+    /// ([`EXAMPLES_URL`]): `examples`, `jigs` or `assemblies`, fixed by
+    /// the website (docs/decisions.md, 2026-11-10).
+    pub fn anchor(self) -> &'static str {
+        match self {
+            ExampleSection::Parts => "examples",
+            ExampleSection::Jigs => "jigs",
+            ExampleSection::Assemblies => "assemblies",
+        }
+    }
+
+    /// What *More examples* opens while the section shows: its part of
+    /// the website's gallery page.
+    pub fn more_url(self) -> String {
+        format!("{EXAMPLES_URL}#{}", self.anchor())
     }
 
     /// What its examples are and how they open, in a line under the tabs.
@@ -753,7 +772,7 @@ impl Shell {
             "shown": self.start.shown,
             "section": self.start.section.word(),
             "examples": EXAMPLES.iter().map(Example::json).collect::<Vec<_>>(),
-            "moreExamples": EXAMPLES_URL,
+            "moreExamples": self.start.section.more_url(),
         })
     }
 
@@ -1030,19 +1049,17 @@ impl Shell {
     /// On a phone the link goes under the line.
     fn section_hint(&mut self, ui: &mut egui::Ui, kit: &Kit, width: f32) {
         let hint = self.start.section.hint();
+        let url = self.start.section.more_url();
         let more = |shell: &mut Self, ui: &mut egui::Ui| {
             let link = kit
                 .button(ui, Button::link("More examples").icon(Glyph::External))
-                .on_hover_text(EXAMPLES_URL);
+                .on_hover_text(&url);
             shell
                 .start
                 .hits
                 .push(("more-examples".to_string(), link.rect));
             if link.clicked() {
-                shell.open_external(
-                    ui.ctx(),
-                    super::help::External::Url(EXAMPLES_URL.to_string()),
-                );
+                shell.open_external(ui.ctx(), super::help::External::Url(url.clone()));
             }
         };
         if width < self.tokens.start_stacked_width {
