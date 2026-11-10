@@ -506,7 +506,7 @@ Proposed by the agent that wrote the first docs; the developer can overturn any 
 - **Persistent topological names from the first feature** ([`design/names.md`](design/names.md), [`design/plan.md`](design/plan.md) › *Avoiding the usual CAD holes*).
 - **Tolerance and units are document data,** kernel maths is `f64`, NURBS are in the geometry enums from M1.
 - **UI toolkit: egui/eframe on wgpu,** as in PhotoCraft, for the phase-1 viewer. The engine seam keeps it replaceable.
-- **Not adopted from the storytold apps for now:** the private `craftrules` standards (not available next to this checkout), `craft-libs`, `craft-fonts`, the contributor-credits machinery, release packaging and the parity/scorecard documents.
+- **Not adopted from the storytold apps for now:** the private `craftrules` standards (not available to this project), `craft-libs`, `craft-fonts`, the contributor-credits machinery, release packaging and the parity/scorecard documents.
 
 ### 2026-10-14: Decisions made while building sweep along a path
 
