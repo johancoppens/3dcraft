@@ -156,13 +156,24 @@ jobs:
         env:
           ARGS: ${{ matrix.cargo }}
         run: |
-          # Letters, digits and - _ . : = / , + * space only: no quotes, $,
-          # ;, |, & or backticks reach the shell. ` + ` separates commands;
-          # every one runs, and the step fails when one failed.
-          if ! printf '%s' "$ARGS" | grep -Eq '^[A-Za-z0-9 _.:=/,+*-]{1,1200}$'; then
-            echo "ci: refused arguments: $ARGS" >&2
+          # One line of at most 1200 characters, each a letter, a digit or
+          # one of - _ . : = / , + * and space: no quote, $, ;, |, &,
+          # backtick, bracket, tab or newline reaches the word splitting
+          # below (`*` is not expanded: `set -f`). Checked by the shell
+          # itself, with the characters spelled out (no range, whose
+          # meaning depends on the locale), as in check.yml: grep matches
+          # line by line, and macOS's grep refuses a count above 255.
+          # ` + ` separates commands; every one runs, and the step fails
+          # when one failed.
+          if [ -z "$ARGS" ] || [ "${#ARGS}" -gt 1200 ]; then
+            echo "ci: refused arguments: empty or longer than 1200 characters" >&2
             exit 2
           fi
+          case "$ARGS" in
+            *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\ _.:=/,+*-]*)
+              echo "ci: refused arguments: $ARGS" >&2
+              exit 2 ;;
+          esac
           failed=0
           rest="$ARGS"
           while [ -n "$rest" ]; do
