@@ -2187,3 +2187,64 @@ fn the_measure_commands_take_instance_names_in_an_assembly() {
     );
     assert!(flat["gaussian"].as_f64().unwrap().abs() < 1e-12, "{flat}");
 }
+
+/// Review of J-045 (M3): an assembly's STEP export leaves an invisible
+/// instance out unless `bodies` names it, as the mesh formats do: named
+/// alone it is written, named beside another both are.
+#[test]
+fn an_invisible_instance_named_in_bodies_is_written_to_step() {
+    let dir = workdir("assembly", "invisible-step");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "feature.block",
+        json!({ "name": "Block", "size": [10, 10, 10] }),
+    );
+    run(&mut s, "file.save", json!({ "path": "block.3dcraft" }));
+    run(&mut s, "file.close", json!({}));
+    run(&mut s, "assembly.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "Cube" }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "Ghost", "position": [0, 60, 0], "visible": false }),
+    );
+    let all = run(&mut s, "file.export", json!({ "path": "all.step" }));
+    assert_eq!(all["occurrences"], 1, "{all}");
+    assert_eq!(
+        all["hiddenLeftOut"],
+        json!({ "count": 1, "bodies": ["Ghost"] }),
+        "{all}"
+    );
+    for (path, bodies, count) in [
+        ("ghost.step", json!(["Ghost"]), 1),
+        ("both.step", json!(["Cube", "Ghost"]), 2),
+    ] {
+        let out = run(
+            &mut s,
+            "file.export",
+            json!({ "path": path, "bodies": bodies }),
+        );
+        assert_eq!(out["occurrences"], count, "{path}: {out}");
+        assert!(out.get("hiddenLeftOut").is_none(), "{out}");
+    }
+    // Read back: the ghost alone, 10³, where it is placed (y 60 to 70).
+    run(&mut s, "file.new", json!({}));
+    run(&mut s, "file.import", json!({ "path": "ghost.step" }));
+    let doc = run(&mut s, "document.inspect", json!({}));
+    let bodies = doc["bodies"].as_array().unwrap();
+    assert_eq!(bodies.len(), 1, "{doc}");
+    assert!(
+        close(bodies[0]["volume"].as_f64().unwrap(), 1000.0, 1000.0),
+        "{doc}"
+    );
+    assert!(
+        close(bodies[0]["bbox"][0][1].as_f64().unwrap(), 60.0, 60.0),
+        "{doc}"
+    );
+}

@@ -167,7 +167,8 @@ pass the parent's on: `"params": {"t": "t"}`.
 - `assembly.pack` puts copies of all parts into the `.3dcraftasm` file, so it opens anywhere; `assembly.unpack`
   writes them out as files again.
 - `file.export` to `.step` writes the assembly with its structure: each part once, placed by every instance. STL, 3MF
-  and OBJ hold the placed bodies. Invisible instances are left out of all of them.
+  and OBJ hold the placed bodies. Invisible instances are left out of all of them, and the result's
+  `hiddenLeftOut` names them, unless `bodies` names them: a body named there is written, invisible or not.
 - Checks name instances: `assert.add {"name": "gap", "measure": "clearance", "from": "Bar[1]", "to": "Bar[2]", "min": "1 mm"}`.
   The measures take their subjects as in a part ([chapter 10](10-measure.md)): `clearance` and `distance` take
   `from` and `to`; `volume`, `area`, `mass`, `extent`, `thickness` and the others take `of`; `overlap` takes `of`,

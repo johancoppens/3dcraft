@@ -85,18 +85,24 @@ fn shows(placed: &Placed, st: &InstanceState) -> bool {
     st.bodies.iter().any(|b| !placed.doc.is_hidden(*b))
 }
 
+/// The parts to write: the instances whose bodies `only` names, an
+/// invisible one too (a body named in `bodies` is written, as by the mesh
+/// formats); without `only` the instances that show a body.
 fn leaves(placed: &Placed, only: Option<&[FeatureId]>) -> Vec<Leaf> {
     let mut out = Vec::new();
     // A flexible subassembly's bodies are its instances'.
     for st in placed
         .instances
         .iter()
-        .filter(|i| i.error.is_none() && !i.flexed && shows(placed, i))
+        .filter(|i| i.error.is_none() && !i.flexed)
     {
-        if only.is_some_and(|only| !st.bodies.iter().any(|b| only.contains(b))) {
-            continue;
+        let wanted = match only {
+            Some(only) => st.bodies.iter().any(|b| only.contains(b)),
+            None => shows(placed, st),
+        };
+        if wanted {
+            leaves_of(st, &st.pose, "", 0, &mut out);
         }
-        leaves_of(st, &st.pose, "", 0, &mut out);
     }
     out
 }
