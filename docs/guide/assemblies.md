@@ -23,7 +23,6 @@ joined as a four-bar linkage. It opens in a tab of its own.
   **mates**, the joints between them, with how many degrees of freedom are left.
 - Press **Space** with the pointer over the view: the clamp plays its **motion**, opening and closing. The
   player is in **Motion** mode ([The window › Playing a motion](window.md#playing-a-motion)).
-- Hold **Alt** and drag the handle: the linkage follows by hand.
 - Double-click an instance in the list to fly to it; **Open** opens its part in a tab of its own.
 
 ## A small assembly, step by step
