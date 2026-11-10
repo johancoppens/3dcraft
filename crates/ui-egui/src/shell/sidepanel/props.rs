@@ -683,7 +683,7 @@ impl Shell {
 }
 
 /// `text` cut to `room` with an ellipsis, in the font `style` draws it in.
-fn clip(ui: &egui::Ui, kit: &Kit, text: &str, style: ValueStyle, room: f32) -> String {
+pub(super) fn clip(ui: &egui::Ui, kit: &Kit, text: &str, style: ValueStyle, room: f32) -> String {
     let font = match style {
         ValueStyle::Name => kit.mono_font(),
         _ => kit.font(),

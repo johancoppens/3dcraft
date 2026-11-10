@@ -860,8 +860,8 @@ of a `body.split`) is kept, since clearing one body never changes another; the a
 and gives, under `kept`, the command that clears it from both: the face by its own name at the feature it
 was given on, such as `face.appearance {"body": "F1", "faces": ["F1:face(1)"], "clear": true}`. Single
 faces are cleared the same way. In the window, the body's card in the Bodies tab has **Clear face
-colours** when its faces carry colours of their own, and says **Shared colours** with which body when
-some are shared.
+colours** when its faces carry colours of their own, and a **Shared** row (*1 colour, with Twin*)
+when some are shared.
 
 ## Hiding and looking back
 

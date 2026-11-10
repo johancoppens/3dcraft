@@ -612,6 +612,10 @@ impl Shell {
                     }
                 });
                 let mut row = |label: &str, value: String| {
+                    // Cut to the room right of the label, so a long value
+                    // (many bodies named) never runs out of the card.
+                    let room = ui.available_width() - label_w;
+                    let value = super::props::clip(ui, kit, &value, ValueStyle::Plain, room);
                     let r = kit.prop_row(ui, label, &value, ValueStyle::Plain, label_w);
                     self.side.hits.drawn.push(r.rect);
                 };
@@ -625,14 +629,17 @@ impl Shell {
                 // since clearing this body keeps them (the guide says how
                 // to clear them for both).
                 if body.shared_face_colors > 0 {
-                    row(
-                        "Shared colours",
-                        format!(
-                            "{} with {}",
-                            body.shared_face_colors,
-                            body.shared_with.join(", ")
-                        ),
-                    );
+                    let colours = match body.shared_face_colors {
+                        1 => "1 colour".to_string(),
+                        n => format!("{n} colours"),
+                    };
+                    // One body by its name; several by their number (the
+                    // card has no room for a list of names).
+                    let text = match body.shared_with.as_slice() {
+                        [one] => format!("{colours}, with {one}"),
+                        many => format!("{colours}, {} bodies", many.len()),
+                    };
+                    row("Shared", text);
                 }
                 if let Some(v) = body.volume {
                     row("Volume", volume_text(v, unit));
