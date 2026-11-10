@@ -204,8 +204,7 @@ impl Agents {
         // offered, whatever the configuration says.
         let mut protected = config.protected.clone();
         if let Some(state) = &config.state_dir {
-            protected.state =
-                Some(craft3d_engine::canonical(state).unwrap_or_else(|_| state.clone()));
+            protected.set_state(state);
         }
         Self {
             config,
@@ -484,14 +483,20 @@ impl Agents {
             .min()
     }
 
-    /// The person took a folder back (Remove).
+    /// The person took a folder back (Remove): the panel names it as its
+    /// root, with its links resolved, which a folder remembered under
+    /// another spelling is taken back by too.
     pub fn revoke(&mut self, folder: &Path) {
+        let real = craft3d_engine::canonical(folder).ok();
+        let other = |f: &PathBuf| {
+            f != folder && (real.is_none() || craft3d_engine::canonical(f).ok() != real)
+        };
         let before = self.preferences.folders.len();
-        self.preferences.folders.retain(|f| f != folder);
+        self.preferences.folders.retain(other);
         if self.preferences.folders.len() != before {
             self.remember();
         }
-        self.session_folders.retain(|f| f != folder);
+        self.session_folders.retain(other);
         self.recompute();
     }
 
@@ -670,7 +675,12 @@ impl Agents {
                 (self.preferences.folders.clone(), "allowed"),
                 (self.session_folders.clone(), "session"),
             ] {
+                // As a root with its links resolved, as the chosen folder
+                // is: what was checked is what agents get.
                 for folder in folders {
+                    let Ok(folder) = craft3d_engine::canonical(&folder) else {
+                        continue;
+                    };
                     if !folder.is_dir()
                         || roots.iter().any(|r| Path::new(&r.path) == folder)
                         || self.protected.reason(&folder).is_some()
@@ -1688,10 +1698,8 @@ mod tests {
         let mut config = config(&state.join("craft"));
         config.work_folder = Some(state.join("Documents").join("3DCraft"));
         let (requests, incoming) = mpsc::channel();
-        config.protected = crate::consent::Protected {
-            home: Some(state.join("home")),
-            ..crate::consent::Protected::default()
-        };
+        config.protected =
+            crate::consent::Protected::new(Some(state.join("home")), None, Vec::new());
         let agents = Agents::new(config, requests, Arc::new(|| {}));
         let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
         let mut desk = Desk::new(Host::new(Session::new(Workspace::none())), incoming, picker)
