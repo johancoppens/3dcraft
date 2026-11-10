@@ -82,6 +82,14 @@ impl Pick {
     /// The kinds of file the dialog offers: one, the file's.
     pub fn types(&self) -> Vec<PickerType> {
         match self {
+            // An assembly's dialog offers an assembly's kind (Save
+            // proposes a `.3dcraftasm` name for one): a bare name typed
+            // gets `.3dcraftasm` from the browser, never `.3dcraft`.
+            Pick::Save { suggested, .. }
+                if extension_of(suggested).as_deref() == Some(ASSEMBLY_EXTENSION) =>
+            {
+                vec![assembly_type()]
+            }
             Pick::Save { .. } => vec![document_type()],
             Pick::Export { file } if extension_of(&file.name).as_deref() == Some(JIG_EXTENSION) => {
                 vec![jig_type()]
@@ -126,6 +134,15 @@ fn document_type() -> PickerType {
         description: "3DCraft document",
         mime: "application/x-craft3d",
         extensions: vec![EXTENSION],
+    }
+}
+
+/// An assembly (`.3dcraftasm`).
+fn assembly_type() -> PickerType {
+    PickerType {
+        description: "3DCraft assembly",
+        mime: "application/x-craft3d",
+        extensions: vec![ASSEMBLY_EXTENSION],
     }
 }
 
@@ -3079,6 +3096,22 @@ mod tests {
         let report = host.shell.last_command.clone().unwrap();
         assert_eq!(report.label, "param.set");
         assert!(report.ok, "{}", report.text);
+    }
+
+    /// With the browser's file dialogs, an assembly's Save offers an
+    /// assembly's kind of file, so a name typed bare gets `.3dcraftasm`
+    /// and the assembly is never written into a `.3dcraft` file (which
+    /// file.open refuses for an assembly).
+    #[test]
+    fn with_file_dialogs_an_assembly_is_saved_as_one() {
+        let mut host = host();
+        host.pickers = true;
+        host.run("assembly.new", &json!({})).unwrap();
+        let pick = host.file_action(FileAction::Save).pick.unwrap();
+        assert_eq!(pick.suggested(), "untitled.3dcraftasm");
+        assert_eq!(pick.types().len(), 1);
+        assert_eq!(pick.types()[0].extensions, [ASSEMBLY_EXTENSION]);
+        assert!(pick.accepts("rig.3dcraftasm") && !pick.accepts("rig.3dcraft"));
     }
 
     #[test]
