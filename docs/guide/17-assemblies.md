@@ -83,7 +83,9 @@ publish as a parameter (it then shows as a slider). `assembly.solve` says whethe
 instance can still do. A mate on a face that is gone from the part fails with that face's name and never moves to
 another face.
 
-Gears, racks and screws couple two mates: `coupling.add {"kind": "gear", "mates": ["A", "B"], "value": 2}`. A
+Gears, racks and screws couple two mates: `coupling.add {"kind": "gear", "mates": ["A", "B"], "value": 2}`. A screw
+may name one cylindrical mate twice, a thread whose slide follows its own turn: `{"kind": "screw", "mates": ["Thread",
+"Thread"], "value": "3 mm"}` advances 3 mm a turn. A
 **linear** coupling ties any number of motions, each with a coefficient: the sum of coefficient times motion is the
 value (0 unless given). A planetary stage, the ring held, turns the carrier by Willis' formula:
 

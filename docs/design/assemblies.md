@@ -35,7 +35,8 @@ The other equations:
   - gear: `θa + ratio θb = 0`;
   - rack: `da − r θb = 0`;
   - screw: `da − lead θb / 2π = 0`, so `lead` is per turn of 2π radians (the plan's 360°). `a` and `b` may be the
-    same cylindrical mate.
+    same cylindrical mate (a thread); the document's check takes one mate twice for a screw on a cylindrical mate only
+    and refuses it, saying so, for any other mate or coupling (2026-11-10, A-020: it refused it for every kind).
   - `Linear` is any tie, such as a planetary stage.
 - **Drivers** are `q − value`.
 - **Limits** are `q − bound`. A limit is active only while it holds its variable.

@@ -643,10 +643,28 @@ impl Assembly {
                     )));
                 }
                 if coupling.mates.0 == coupling.mates.1 {
-                    return Err(DocError::Invalid(format!(
-                        "coupling `{}` couples a mate to itself",
-                        coupling.name
-                    )));
+                    // A screw on one cylindrical mate ties that mate's own
+                    // turn and slide (a thread); no other coupling of a
+                    // mate to itself ties anything.
+                    let one = self.mate(&coupling.mates.0).map(|m| m.kind);
+                    match (coupling.kind, one) {
+                        (CouplingKind::Screw, Some(MateKind::Cylindrical)) => {}
+                        (CouplingKind::Screw, Some(kind)) => {
+                            return Err(DocError::Invalid(format!(
+                                "screw coupling `{}` names `{}` twice, which only a cylindrical mate allows (its turn and its slide along one axis); `{}` is {}",
+                                coupling.name,
+                                coupling.mates.0,
+                                coupling.mates.0,
+                                kind.name()
+                            )));
+                        }
+                        _ => {
+                            return Err(DocError::Invalid(format!(
+                                "coupling `{}` couples a mate to itself",
+                                coupling.name
+                            )));
+                        }
+                    }
                 }
             }
             for m in coupling.mate_names() {

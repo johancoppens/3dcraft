@@ -819,3 +819,83 @@ fn a_part_in_another_length_unit_keeps_its_size() {
         "{sub}"
     );
 }
+
+/// A-020: a screw coupling may name one cylindrical mate twice, a thread:
+/// the screw advances by its lead per turn of that same mate, 3 mm at one
+/// turn and 6 mm at two (d = lead · θ / 360°). A gear or a rack on one
+/// mate, and a screw on one revolute mate, are still refused; the
+/// assembly saves and opens again with it.
+#[test]
+fn a_screw_on_one_cylindrical_mate_advances_by_its_lead_per_turn() {
+    let dir = workdir("asm-gaps", "screw-one-mate");
+    let mut s = session_in(&dir);
+    block_part(&mut s, "block.3dcraft", [10.0, 10.0, 10.0]);
+    run(&mut s, "assembly.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "Nut" }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "Screw", "position": [0, 0, 30] }),
+    );
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "name": "Grounded", "a": "world/xy", "b": "Nut/Axis", "flip": true }),
+    );
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "cylindrical", "name": "Thread", "a": "Nut/Axis", "b": "Screw/Axis", "flip": true }),
+    );
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "revolute", "name": "Pin", "a": "world/z", "b": "Nut/Axis" }),
+    );
+    // Refused: couplings of one mate that tie nothing.
+    for (kind, mate, words) in [
+        ("gear", "Thread", "couples a mate to itself"),
+        ("rack", "Thread", "couples a mate to itself"),
+        ("screw", "Pin", "only a cylindrical mate allows"),
+    ] {
+        let e = error(
+            &mut s,
+            "coupling.add",
+            json!({ "kind": kind, "mates": [mate, mate], "value": "3 mm" }),
+        );
+        assert!(e.contains(words), "{kind} on {mate}: {e}");
+    }
+    // The pin was there to be refused; with the nut fixed it is redundant.
+    run(&mut s, "mate.delete", json!({ "name": "Pin" }));
+    let c = run(
+        &mut s,
+        "coupling.add",
+        json!({ "kind": "screw", "name": "Lead", "mates": ["Thread", "Thread"], "value": "3 mm" }),
+    );
+    assert_eq!(c["status"], "ok", "{c}");
+    // Listed once, as a coupling's mates are.
+    assert_eq!(c["mates"], json!(["Thread"]), "{c}");
+    let advance = |s: &mut Session, turn: &str| {
+        run(s, "joint.set", json!({ "mate": "Thread", "value": turn }));
+        let j = run(s, "measure.joint", json!({ "mate": "Thread" }));
+        number(&j["values"]["distance"])
+    };
+    let one = advance(&mut s, "360 deg");
+    assert!(close(one, 3.0, 1e-6), "{one}");
+    let two = advance(&mut s, "720 deg");
+    assert!(close(two, 6.0, 1e-6), "{two}");
+    // Saved and opened again (the native format's round trip).
+    run(&mut s, "file.save", json!({ "path": "thread.3dcraftasm" }));
+    run(&mut s, "file.close", json!({}));
+    run(&mut s, "file.open", json!({ "path": "thread.3dcraftasm" }));
+    let inspected = run(&mut s, "assembly.inspect", json!({}));
+    let lead = &inspected["couplings"][0];
+    assert_eq!(lead["mates"], json!(["Thread"]), "{inspected}");
+    assert_eq!(lead["status"], "ok", "{inspected}");
+    let j = run(&mut s, "measure.joint", json!({ "mate": "Thread" }));
+    assert!(close(number(&j["values"]["distance"]), 6.0, 1e-6), "{j}");
+}
