@@ -385,12 +385,49 @@ fn set_mode(_path: &Path, _executable: bool) -> Result<(), String> {
 pub(crate) fn copy_fonts(dir: &Path) -> Result<(), String> {
     crate::fonts::run()?;
     let from = crate::fonts::dir();
-    for font in craft3d_font::shipped() {
-        for file in [font.file, font.licence] {
-            copy(&from.join(file), &dir.join(file), false)?;
-        }
+    for file in font_files() {
+        copy(&from.join(file), &dir.join(file), false)?;
     }
     Ok(())
+}
+
+/// The files of the shipped fonts (the built-in ones and the interface's),
+/// each with its licence.
+fn font_files() -> impl Iterator<Item = &'static str> {
+    craft3d_font::shipped().flat_map(|font| [font.file, font.licence])
+}
+
+/// Where a file of the Linux tree comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Source {
+    /// A program built in release.
+    Program(&'static str),
+    /// A shipped font's file or licence (`cargo xtask fonts`).
+    Font(&'static str),
+    /// A file of the repository.
+    Repo(String),
+}
+
+/// Every file of the Linux tree below a prefix, from where it comes:
+/// the programs in `bin/`, the fonts they read at run time in
+/// `share/craft3d/fonts` (where `craft3d_engine::fonts` looks from
+/// `bin/`), and the desktop's files ([`desktop_files`]). The tarball
+/// carries it as it is and its `install.sh` installs all of it; the
+/// AppImage carries it below `usr/`.
+fn linux_tree_files() -> Vec<(Source, String)> {
+    let mut files: Vec<(Source, String)> = ["craft3d", "craft3d-cli"]
+        .into_iter()
+        .map(|name| (Source::Program(name), format!("bin/{name}")))
+        .collect();
+    files.extend(
+        font_files().map(|file| (Source::Font(file), format!("share/craft3d/fonts/{file}"))),
+    );
+    files.extend(
+        desktop_files()
+            .into_iter()
+            .map(|(from, to)| (Source::Repo(from), to)),
+    );
+    files
 }
 
 pub(crate) fn write(to: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -495,12 +532,15 @@ impl Packer {
     /// The freedesktop tree below a prefix (`bin/` and `share/`), shared
     /// by the tarball and the AppImage.
     fn linux_tree(&self, prefix: &Path) -> Result<(), String> {
-        for name in ["craft3d", "craft3d-cli"] {
-            copy(&self.binary(name)?, &prefix.join("bin").join(name), true)?;
-        }
-        copy_fonts(&prefix.join("share").join("craft3d").join("fonts"))?;
-        for (from, to) in desktop_files() {
-            copy(&self.repo.join(from), &prefix.join(to), false)?;
+        crate::fonts::run()?;
+        let fonts = crate::fonts::dir();
+        for (from, to) in linux_tree_files() {
+            let (source, executable) = match from {
+                Source::Program(name) => (self.binary(name)?, true),
+                Source::Font(file) => (fonts.join(file), false),
+                Source::Repo(path) => (self.repo.join(path), false),
+            };
+            copy(&source, &prefix.join(to), executable)?;
         }
         Ok(())
     }
@@ -1191,9 +1231,8 @@ mod tests {
             "Extension Id=\"3dcraftasm\" ContentType=\"application/x-craft3d-assembly\""
         ));
         assert!(wxs.contains("$(var.AsmIcon)"));
-        let install = std::fs::read_to_string(root.join("linux/install.sh")).unwrap();
-        assert!(install.contains("mimetypes/$id-jig.*"));
-        assert!(install.contains("mimetypes/$id-asm.*"));
+        // What install.sh installs (the Jig's and the assembly's icons
+        // among it): `install_sh_installs_the_whole_tree_…`.
         // The window's app id is the desktop file's name, so a Wayland
         // compositor finds the icon and the entry.
         let app = std::fs::read_to_string(repo_root().join("apps/craft3d/src/app.rs")).unwrap();
@@ -1311,6 +1350,104 @@ mod tests {
         // The entry's icon at the root too, and as `.DirIcon`.
         assert!(from(&format!("{entry_icon}.png")).is_some());
         assert!(from(".DirIcon").is_some());
+    }
+
+    /// The tarball's `install.sh` installs every file of its tree
+    /// ([`linux_tree_files`]: the programs, the fonts they read at run
+    /// time, the desktop's files) to the same place below the prefix, so
+    /// the installed programs find their fonts as `craft3d_engine::fonts`
+    /// looks from `bin/`; `uninstall.sh` removes every one of them again,
+    /// and the folder of fonts. Run on a tree of stand-ins, into a prefix
+    /// of its own (2026-11-10: the fonts were not installed, and a text in
+    /// a built-in font was refused after `./install.sh`).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn install_sh_installs_the_whole_tree_and_uninstall_sh_removes_it() {
+        use std::collections::BTreeSet;
+        let root = repo_root();
+        let work = std::env::temp_dir().join(format!("craft3d-install-sh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        let (tree, prefix, home) = (work.join("tree"), work.join("prefix"), work.join("home"));
+        let files = linux_tree_files();
+        for (from, to) in &files {
+            match from {
+                Source::Repo(path) => copy(&root.join(path), &tree.join(to), false).unwrap(),
+                Source::Program(_) | Source::Font(_) => write(&tree.join(to), b"stand-in").unwrap(),
+            }
+        }
+        for script in ["install.sh", "uninstall.sh"] {
+            copy(
+                &root.join("packaging/linux").join(script),
+                &tree.join(script),
+                true,
+            )
+            .unwrap();
+        }
+        fn below(dir: &Path, base: &Path, out: &mut BTreeSet<String>) {
+            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    below(&path, base, out);
+                } else {
+                    let rel = path.strip_prefix(base).unwrap();
+                    out.insert(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+        let run = |script: &str| {
+            let out = Command::new("sh")
+                .arg(tree.join(script))
+                .arg(&prefix)
+                .env("HOME", &home)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{script}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        // The caches the desktop's tools write when they are there.
+        let cache = |rel: &str| {
+            (rel.starts_with("share/mime/") && !rel.starts_with("share/mime/packages/"))
+                || rel == "share/applications/mimeinfo.cache"
+                || rel == "share/icons/hicolor/icon-theme.cache"
+        };
+        let expected: BTreeSet<String> = files.iter().map(|(_, to)| to.clone()).collect();
+
+        run("install.sh");
+        let mut installed = BTreeSet::new();
+        below(&prefix, &prefix, &mut installed);
+        installed.retain(|rel| !cache(rel));
+        assert_eq!(installed, expected);
+        // The programs are runnable, and their fonts are where they look.
+        let engine = std::fs::read_to_string(root.join("crates/engine/src/fonts.rs")).unwrap();
+        assert!(engine.contains("exe.join(\"../share/craft3d/fonts\")"));
+        for file in font_files() {
+            assert!(
+                prefix
+                    .join("bin/../share/craft3d/fonts")
+                    .join(file)
+                    .is_file(),
+                "{file}"
+            );
+        }
+        for program in ["craft3d", "craft3d-cli"] {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(prefix.join("bin").join(program))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o755, "{program}");
+        }
+
+        run("uninstall.sh");
+        let mut left = BTreeSet::new();
+        below(&prefix, &prefix, &mut left);
+        left.retain(|rel| !cache(rel));
+        assert!(left.is_empty(), "left behind: {left:?}");
+        assert!(!prefix.join("share/craft3d").exists());
+        let _ = std::fs::remove_dir_all(&work);
     }
 
     /// The packages send people to the website, a problem to the issues,
