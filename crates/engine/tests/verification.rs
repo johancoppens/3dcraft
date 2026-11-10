@@ -628,6 +628,24 @@ fn a_switched_off_body_is_left_out_of_a_subject() {
         json!({"count": 1, "bodies": ["Option"]}),
         "{thick}"
     );
+    // A sketch switched off never has a body: an error that says so, not
+    // a body left out.
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"name": "Drawing", "plane": "xy"}),
+    );
+    run(
+        &mut s,
+        "feature.when",
+        json!({"feature": "Drawing", "expr": "option"}),
+    );
+    let e = refused(
+        &mut s,
+        "measure.clearance",
+        json!({"from": "Base", "to": ["Base", "Drawing"]}),
+    );
+    assert!(e.contains("Drawing") && !e.contains("switched off"), "{e}");
     // The option on: the two plates 10 apart do not overlap, and the
     // volume is both, 200000; the same assertions hold.
     run(

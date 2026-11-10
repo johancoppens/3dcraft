@@ -1028,6 +1028,20 @@ fn a_switched_off_body_is_left_out_of_the_cut_list() {
     assert_eq!(out["switchedOffLeftOut"], left, "{out}");
     let e = common::error(&mut s, "cut.list", json!({"bodies": ["Board", "Nobody"]}));
     assert!(e.contains("there is no feature `Nobody`"), "{e}");
+    // A sketch switched off never has a body: still an error that says so,
+    // not left out.
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"name": "Drawing", "plane": "xy"}),
+    );
+    run(
+        &mut s,
+        "feature.when",
+        json!({"feature": "Drawing", "expr": "0"}),
+    );
+    let e = common::error(&mut s, "cut.list", json!({"bodies": ["Board", "Drawing"]}));
+    assert!(e.contains("Drawing") && e.contains("no body"), "{e}");
 }
 
 /// J-046: without `bodies`, a body hidden by feature.visible is left out

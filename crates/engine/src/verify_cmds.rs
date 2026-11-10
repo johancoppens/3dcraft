@@ -49,8 +49,19 @@ pub(crate) fn measured_document(
 pub(crate) const SWITCHED_OFF: &str = "every body it names is switched off now";
 
 /// Why the feature `id` of `doc` is switched off now (its condition is 0,
-/// or it is suppressed), or `None`.
-pub(crate) fn switched_off(_doc: &Document, regen: &Regen, id: FeatureId) -> Option<&'static str> {
+/// or it is suppressed), or `None`; also `None` for a feature that never
+/// has a body (a sketch, a datum, an offset of profiles), whose name in a
+/// list of bodies stays an error that says it is not a body.
+pub(crate) fn switched_off(doc: &Document, regen: &Regen, id: FeatureId) -> Option<&'static str> {
+    let bodiless = doc.feature(id).is_none_or(|f| {
+        matches!(
+            f.kind,
+            craft3d_doc::FeatureKind::Sketch(_) | craft3d_doc::FeatureKind::OffsetProfile(_)
+        ) || f.kind.is_datum()
+    });
+    if bodiless {
+        return None;
+    }
     match regen.feature(id).map(|o| &o.status) {
         Some(craft3d_regen::Status::Inactive) => Some("inactive (its condition is 0)"),
         Some(craft3d_regen::Status::Suppressed) => Some("suppressed"),
