@@ -36,7 +36,7 @@ Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date nex
 | R1 | First release | 🟡 2026-10-23 | Version 0.1.0 for people outside the project: installers, the web build, the guide, formulas and Jigs; frozen since 2026-11-05, being released. | [R1](#r1-first-release) |
 | V1 | Design verification | 🟡 2026-10-22 | An agent checks a design by queries and assertions kept in the document. | [V1](#v1-design-verification) |
 | M10 | STEP import, corpus, web | 🟡 2026-10-21 | STEP files read into the document and a public STEP corpus; the browser build moved to R1 (2026-10-22). | [M10](#m10-step-import-corpus-web) |
-| M11+ | Interactive UI | ⬜ | Sketching and editing with the mouse, once phase 1 is done. | [M11+](#m11-interactive-ui) |
+| M11+ | Interactive UI | ⬜ | Not a planned milestone: whether 3DCraft gets sketching and editing with the mouse is an open question (2026-11-10). | [M11+](#m11-interactive-ui) |
 | M12+ | Later candidates | ⬜ | Ideas that are not planned yet. | [Ideas](#ideas-m12) |
 
 ## Phase 1: a model you can build, save, see and export, without a UI
@@ -684,7 +684,7 @@ A corpus import floor set and enforced (the web build's acceptance moved to R1).
 ### M11+: Interactive UI
 
 #### Goal
-Sketching and feature editing with the mouse, menus, selection, shortcuts and measurement tools; later assemblies and drawings.
+**An open question, not a planned milestone** (the developer, 2026-11-10; [`decisions.md`](decisions.md) › *Open decisions*). 3DCraft has no toolbar of modelling buttons: you model through commands, and whoever wants a classic interface can build one on top of them. Whether 3DCraft itself ever gets interactive sketching and editing with the mouse is not decided; it may come later, inside 3DCraft or as a separate program on top of the commands. What such an interface would need, as this goal was first written: sketching and feature editing with the mouse, menus, selection, shortcuts and measurement tools; later assemblies and drawings. The selection below is built and serves the window as it is (pointing, with agents).
 
 #### Done
 - The selection shared with agents (slice 1 of the AI-selection plan, decisions B1 and B4): click, Shift+click, double click, box, Esc and the feature list in the window; picking through (same spot again, Alt+click, a right-click list); `select.get`, `select.set`, `ui.select`, the MCP resource `craft3d://selection`; `select.query` with JSON filters ([`design/selection.md`](design/selection.md)) (2026-10-21)
@@ -696,10 +696,10 @@ The camera, the tabs, pointing and the section plane are M4 and M8.5.
 - [ ] Following a vertex into later features; a set made from the current selection
 - [ ] More of the query: relations (neighbours, the same size as, coaxial, symmetric), extremes, countersinks as holes
 - [ ] Preview and confirmation of large AI actions (B6)
-- [ ] The rest defined when phase 1 is done
+- [ ] The rest defined if an interactive modelling interface inside 3DCraft is decided
 
 #### Acceptance
-Defined when phase 1 is done; depends on whether a target app is chosen.
+None while the question is open (first written: defined when phase 1 is done; depends on whether a target app is chosen).
 
 ## Ideas (M12+)
 
