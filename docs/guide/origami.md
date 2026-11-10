@@ -298,8 +298,7 @@ dash-dot** on `mountain`, **valleys blue and dashed** on `valley`, and cuts blac
 score along the lines, or send the cuts to a laser cutter. An SVG's lines are a laser's hairline (0.01 mm)
 by default, too thin to print: `"stroke": 0.3` gives them a width in millimetres.
 
-<!-- SHOT: crease-pattern.png | the waterbomb's crease pattern as exported (outline black, the mountain red and dash-dot, the valleys blue and dashed), beside the waterbomb base folded flat in iso view; theme light; about 1280x640 | run the waterbomb script of origami.md with "stroke": 0.3 on the export and rasterise the SVG; view.render {"view": "iso"} of the flat-folded Base of "Folding flat" -->
-![The waterbomb's crease pattern as exported, mountains red and dash-dot, valleys blue and dashed, beside the base folded flat](images/crease-pattern.png)
+![The waterbomb's crease pattern as exported, mountains red and dash-dot, valleys blue and dashed, beside the same sheet folded at its solved angles](images/crease-pattern.png)
 
 ## Limits
 

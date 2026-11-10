@@ -45,7 +45,6 @@ The feature is in the history but has no body: its status is `failed`, with an `
 made from it fail too, each with `causedBy` naming the first one. `document.check` lists them all. Fix
 the first:
 
-<!-- SHOT: failed-feature.png | the feature list with a failed feature: its red row with the reason, Show where and Edit, the dimmed rows after it, and the line "1 failed · 2 not rebuilt"; theme light; crop to the side panel | open the bracket lesson; variable.set {"name": "inner_r", "expr": "30 mm"}; crop -->
 ![A failed feature in the feature list: its red row with the reason, and the rows made from it dimmed](images/failed-feature.png)
 
 - **A size that does not fit** (a fillet radius, a shell thickness): the message gives the largest that
@@ -190,8 +189,7 @@ autosave: save often. A crash is the most important thing you can report.
 When a file action you started fails (Open, Save, Import, Export), a dialog says what went wrong, with
 **Copy details**:
 
-<!-- SHOT: error-dialog.png | the error dialog "Could not save" with its message, OK and Copy details, in today's look; theme light; crop to the dialog | by hand, or with the window_picture example's --dialog error:TEXT (cargo, crates/ui-egui/examples): the error dialogs have no control method -->
-![An error dialog with OK and Copy details](images/error-dialog.png)
+![The error dialog Could not open the file, with the reason, Copy details and OK](images/error-dialog.png)
 
 When a command fails in the window, the status bar at the bottom shows the command in red with its
 message, and a **Copy details** button.

@@ -130,7 +130,7 @@ The web version keeps nothing on a server: files are read from and written to yo
 ([Files › The web version](files.md#files-in-the-web-version)). It draws with WebGPU where the browser has
 it, and with WebGL2 otherwise.
 
-<!-- SHOT: web-app.png | the web build in a desktop browser at https://3dcraft.dev/app/: its start screen, then the laser-cut box Jig on its Parameters tab; theme light, browser window about 1400x900 | by hand: open the address in Chrome and take the browser's own screenshot (the page has no control channel) -->
+![The web version in a browser: the laser-cut box Jig on its Parameters tab, the box in the view](images/web-app.png)
 
 ## Check that it works
 
@@ -161,7 +161,6 @@ starts it, and through it the agent can run every 3DCraft command.
 
 With the steps below, **the agent models in the window you are watching**. That is the way to use it.
 
-<!-- SHOT: agent-panel.png | the agent panel open over the status bar's pill: Allow AI agents on, the work folder ~/Documents/3DCraft, Connect with Copy command, Copy MCP configuration and Other clients, Connected none yet; the steel bookend open behind it; theme light, window 1400x900 | ui.set {"appearance": "light"}; file.open the bookend; ui.set {"dialogs": {"agents": true}}; run with a neutral HOME and craft3d-cli in a neutral folder so no personal path shows -->
 ![The agent panel: Allow AI agents switched on, the work folder, and the buttons that copy the configuration for your AI tool](images/agent-panel.png)
 
 1. **Allow AI agents.** Click the **agent pill** at the right end of the status bar. It says **Agents
@@ -260,6 +259,8 @@ When your AI tool connects from a project folder (Claude Code opened in `~/proje
 pill turns amber and 3DCraft asks: *"Claude Code wants to connect. It is working in this folder. 3DCraft
 can let it read and write files there, besides the work folder"*, with the folder underneath.
 
+![The question when an agent connects from a folder of its own: Refuse, Only the work folder, Allow this folder, and Remember for this folder](images/agent-question.png)
+
 - **Allow this folder** allows it until you close 3DCraft. With **Remember for this folder** ticked, it
   is allowed for every agent from now on, and the panel lists it.
 - **Only the work folder** keeps that folder out: the agent stays connected with the work folder only.
@@ -273,8 +274,6 @@ one request). The agent waits for your answer for up to two minutes, and is told
 
 Only you can answer these questions; the agent cannot answer them for itself. The buttons wait a moment
 before they take a click, so a click meant for something else never answers.
-
-<!-- SHOT: agent-question.png | the question "Claude Code wants to connect…" over the window, with Refuse, Only the work folder, Allow this folder and Remember for this folder; theme light, window 1400x900 | by hand: the question appears only for a real MCP client connecting from a project folder; no control method opens it -->
 
 ### Why a switch, and is it safe?
 

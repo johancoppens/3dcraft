@@ -10,8 +10,7 @@ You need 3DCraft installed, or the web version open in your browser
 
 Start 3DCraft. Without a document, the window shows its **start screen**:
 
-<!-- SHOT: start-screen.png | the new start screen with no document open: New part, New assembly, Open…; Examples with Parts | Jigs | Assemblies at its right, Parts chosen; the hint line with More examples at its right; the ten Parts cards, the first two (Steel bookend, T-slot aluminium profile) tagged Start here; Recent with three neutral file names; Connect an AI agent with its switch off; theme light, window 1400x900 | start craft3d with --recent-file pointing at a list of three neutral files; ui.set {"appearance": "light"}; ui.example {"section": "parts"}; no document open -->
-![The start screen: New part, New assembly and Open, the examples as cards under the tabs Parts, Jigs and Assemblies, recent files, and the panel that connects an AI agent](images/start-screen.png)
+![The start screen: New part, New assembly and Open, the examples as cards under the tabs Parts, Jigs and Assemblies, recent files, and the panel that connects an AI agent, its switch on](images/start-screen.png)
 
 At the top are **New part**, **New assembly** and **Open…**. Under them, **Examples** has three tabs at its
 right: **Parts**, **Jigs** and **Assemblies**. Only the cards of the chosen tab show; it starts on
@@ -26,7 +25,6 @@ T-slots along its length, sawn to 300 mm, with a threaded hole in each end.
 The profile has two sizes you may change, so it opens on its **Parameters** tab. Click the **Features**
 tab next to it.
 
-<!-- SHOT: window.png | the T-slot aluminium profile on its Features tab, iso view, sketches and datums hidden, status bar with the agent pill; markers 1 to 10 added afterwards (menus, tabs, feature list, eye, checks, player, view buttons, view cube, display bar, agent pill); theme light, window 1400x900 | file.open the T-slot profile; ui.set {"appearance": "light"}; ui.set {"parameters": {"open": false}}; ui.set {"show": {"sketches": false, "datums": false}}; ui.set {"view": "iso"}; ui.fit -->
 ![The window with the T-slot profile; the numbers are explained in The window](images/window.png)
 
 On the left is the **feature list**: the steps that made the profile, in order.
@@ -64,7 +62,6 @@ again.
 
 Under the feature list is the **history player**, like a video player:
 
-<!-- SHOT: player.png | the player at the foot of the side panel, part-way through the T-slot profile's history (3 / 6): the timeline, step back, the round play button, step forward, where you are, speed, loop and orbit; theme light, scale 2 if possible | file.open the T-slot profile; ui.set {"parameters": {"open": false}}; view.scrub {"step": 3}; crop to the player -->
 ![The history player: the timeline, step back, play, step forward, where you are, speed, loop and orbit](images/player.png)
 
 1. Point at the view and press **Home**, or drag the timeline to its left end. The view shows the model
@@ -93,7 +90,6 @@ The start screen comes back.
 Click **Jigs** above the cards, then the **Gridfinity bin** card: a storage bin for the Gridfinity system,
 printed without supports. It opens on its **Parameters** tab.
 
-<!-- SHOT: jig-parameters.png | the Gridfinity bin Jig opened from the start screen, on its Parameters tab with its groups open (Size, Compartments, Base and rim, Checks), the form's footer with the Jig's licence, iso view; theme light, window 1400x900 | open the Gridfinity bin from the start screen (or file.open gridfinity-bin.3dcraftjig); ui.set {"appearance": "light"}; ui.set {"view": "iso"}; ui.fit -->
 ![The Gridfinity bin Jig on its Parameters tab: the form at the left, the bin in the view](images/jig-parameters.png)
 
 1. Drag the knob of the **Height** slider. The bin's walls grow and shrink in steps of 7 mm, the height
@@ -113,7 +109,6 @@ export would write them too.
 2. In the export dialog, keep **All bodies** and choose the format **3MF**. 3MF keeps the size unit and
    the colours; most slicers read it, and STL as well. The **quality**: **Normal** is right for printing.
 
-   <!-- SHOT: export-mesh.png | the export dialog over the Gridfinity bin: What All bodies, Format 3MF, Quality Normal with its hint, File name, Export… and Cancel; theme light; crop to the dialog | open the Gridfinity bin; ui.set {"appearance": "light"}; ui.set {"export": {"open": true, "what": "model", "format": "3mf", "quality": "normal"}}; crop by hand -->
    ![The export dialog for a mesh: what to export, the format, and the quality Coarse, Normal or Fine](images/export-mesh.png)
 
 3. Click **Export…**, choose where in your system's save dialog, and click Save.

@@ -4,8 +4,7 @@
 > command and parameter it names must exist, its example scripts must build and pass their checks, and the
 > results it quotes in several chapters must come out as written.
 
-<!-- SHOT: start-screen.png | the new start screen, as in first-steps.md | the same picture as first-steps.md uses -->
-![3DCraft's start screen: New part, New assembly and Open, the examples as cards under the tabs Parts, Jigs and Assemblies, and the panel that connects an AI agent](images/start-screen.png)
+![3DCraft's start screen: New part, New assembly and Open, the examples as cards under the tabs Parts, Jigs and Assemblies, and the panel that connects an AI agent, its switch on](images/start-screen.png)
 
 **3DCraft is an open-source parametric 3D CAD modeller built with and for AI: every action is a command,
 and every result is checked.**

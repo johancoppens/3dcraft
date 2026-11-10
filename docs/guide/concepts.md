@@ -258,7 +258,6 @@ They pass again once the part is rebuilt.
 
 In the window, the failed feature is a red row with its reason, and the rows made from it are dimmed:
 
-<!-- SHOT: failed-feature.png | the same picture as troubleshooting.md | see troubleshooting.md -->
 ![A failed feature in the feature list: its red row with the reason, and the rows made from it dimmed](images/failed-feature.png)
 
 **Next:** [A first part, command by command](first-part.md).

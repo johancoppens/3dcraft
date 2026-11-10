@@ -63,7 +63,6 @@ select it and export the selection.
 
 ## 3D printing: STL, 3MF and OBJ
 
-<!-- SHOT: export-mesh.png | the same picture as first-steps.md | see first-steps.md -->
 ![The export dialog for a mesh](images/export-mesh.png)
 
 The export dialog asks for the **quality**: how closely the triangles follow the curved faces.
@@ -138,7 +137,6 @@ its own.
 - **Sheet width** wraps the row at a width: your laser's bed, such as `600 mm` (empty for one row).
 - **Gap** sets the space between the parts (5 mm when empty).
 
-<!-- SHOT: cut-sheet.png | the laser-cut box Jig's Cut sheet at its defaults (ten parts: walls, bottom, dividers, lid and its frame), exported as SVG with width 600 mm and gap 5 mm, rasterised on white with a stroke wide enough to see, about 1280 px wide | file.open laser-box.3dcraftjig; file.export {"path": "cut-sheet.svg", "set": "Cut sheet", "width": "600 mm", "gap": "5 mm", "stroke": 0.3}; rasterise with ImageMagick or Inkscape -->
 ![The laser-cut box's parts on one sheet, ready to cut](images/cut-sheet.png)
 
 The same as commands:
@@ -218,7 +216,6 @@ birch plywood,18,Bottom,2,564,200,112800,1528,0,plate,Bottom; Top,
 edges of the bodies and the outlines (silhouettes) of curved faces, with the lines behind a face left out
 or drawn dashed.
 
-<!-- SHOT: export-drawing.png | the export dialog over the bracket lesson: What All bodies, Format SVG, View Iso, Projection Orthographic, Hidden lines Dashed and the hint under them; theme light; crop to the dialog | build the bracket lesson and open it; ui.set {"appearance": "light"}; ui.set {"export": {"open": true, "what": "model", "format": "svg", "drawing": {"view": "iso", "projection": "orthographic", "hidden": "dashed"}}}; crop by hand -->
 ![The export dialog for a drawing: what, view, projection and hidden lines](images/export-drawing.png)
 
 The export dialog asks:

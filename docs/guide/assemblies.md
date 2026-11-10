@@ -16,7 +16,6 @@ walker**, **Scissor car jack** and **Seven-cylinder radial engine with its valve
 a bench, a handle, a link and a bar joined as a four-bar linkage. It opens in a tab of its own, with its
 player on **Motion**, ready to play.
 
-<!-- SHOT: assembly.png | the toggle clamp assembly in the window: the Assembly tab with its instances and mates, the player in Motion mode part-way, iso view; theme light, window 1400x900 | open the toggle clamp from the start screen (or file.open toggle-clamp.3dcraftasm); ui.set {"appearance": "light"}; ui.set {"view": "iso"}; ui.fit -->
 ![The toggle clamp in the window: the Assembly tab with its parts and mates, and the player in Motion mode](images/assembly.png)
 
 - The side panel's **Assembly** tab lists the **instances**, the placed parts, and under them the

@@ -35,7 +35,6 @@ The L is drawn on the `zx` plane. On that plane a sketch point is written `[z, x
 is the height Z, its second the distance X along the flat leg. The plane's normal is +Y, so extruding the
 L by `width` makes the bracket run from Y = 0 to Y = 25:
 
-<!-- SHOT: bracket-sketch.png | the bracket lesson rolled back to its first step (the sketch Profile on the zx plane), sketches shown, seen from the front so that X runs right and Z up, with the sketch's corners and the world axes visible; theme light; crop to the view | build the bracket lesson and open it; ui.set {"show": {"sketches": true}}; view.scrub {"feature": "Profile"}; ui.set {"view": "front"}; ui.fit; or draw it as a small diagram: the L on the zx plane, its [z, x] corners marked -->
 ![The L-bracket's profile on the zx plane: its first coordinate is the height Z, its second the distance X](images/bracket-sketch.png)
 
 ```json

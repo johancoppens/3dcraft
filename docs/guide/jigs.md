@@ -38,11 +38,10 @@ MIT. A Jig's form names its own licence at its foot.
    or double-click the file (once 3DCraft is installed), or drop it on the web version's page.
 2. It opens on its **Parameters** tab, beside **Features**:
 
-   <!-- SHOT: jig-parameters.png | the same picture as first-steps.md: the Gridfinity bin on its Parameters tab | see first-steps.md -->
    ![A Jig on its Parameters tab: the form at the left, the model in the view](images/jig-parameters.png)
 
-   At the top are the Jig's title and description, then the parameters in groups. Click a group's name to
-   fold it.
+   At the top is the Jig's title, with its description behind the **ⓘ** beside it, then the parameters
+   in groups. Click a group's name to fold it.
 3. **Set the parameters.** The model follows.
 4. **Export** the result: **File › Export…** ([Files, export and drawings](files.md)), as the description
    says.

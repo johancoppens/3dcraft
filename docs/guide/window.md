@@ -10,7 +10,6 @@ sends it ([Using a Jig](jigs.md)), or a program does ([Programs on 3DCraft](prog
 What the window does by itself is open, save, import and export files, and let you look, play, click and
 select.
 
-<!-- SHOT: window.png | the same picture as first-steps.md: the T-slot aluminium profile on its Features tab, markers 1 to 10 | see first-steps.md -->
 ![The window with the T-slot profile, marked 1 to 10](images/window.png)
 
 | | Part | What it is for |
@@ -170,8 +169,9 @@ view), its name, and its key value at the right, such as *Extrude 8 mm*, *R18 ×
   one another** fold into one *Datums* row in their place. The order shown is always the history's.
 - **The filter** at the top keeps the rows whose name, kind or value holds what you type.
 - **The line under the filter** says how it went: *23 rebuilt · 7 checks pass*, *1 failed · 3 not
-  rebuilt*, or *Rolled back to Bored · 10 of 25*. Its dot carries a tick or a cross, so it does not rest
-  on colour alone.
+  rebuilt*, *89 rebuilt · 16 pass · 1 not proven*, or *Rolled back to Bored · 10 of 25*. A dot that says
+  done or failed carries a tick or a cross, so it does not rest on colour alone; the others are small and
+  plain: grey for what is not rebuilt, not proven or still being measured, indigo when rolled back.
 - **Hold the pointer on a row**: what it uses (↑) and what uses it (↓) get an indigo tint, and a strip at
   the foot of the list names them and counts the later features that depend on it. The row's grip (⠿) and
   eye show too.
@@ -206,7 +206,6 @@ is selected, or when the panel is short, to make room.
 **Measure** measures a face's wall thickness, or the distance between the first two things selected;
 **Copy name** copies the name.
 
-<!-- SHOT: selection.png | a hole of the flange lesson selected: the panel's foot with its surface (cylinder R 4), area, axis, Made by, Name, Measure and Copy name; theme light; crop to the side panel's foot and the view | open the flange lesson; ui.select {"names": ["<a bolt hole's face name>"]}; crop -->
 ![A hole selected: the foot of the side panel names its surface, its area and axis, the feature that made it and its name](images/selection.png)
 
 ### Variables
@@ -255,7 +254,6 @@ its history. Features after that step are greyed, and the step is named at the t
 Under the timeline is the **player**, one row like a video player's. The round amber button plays and
 pauses, and where you are is beside it (`3 / 6`).
 
-<!-- SHOT: player.png | the same picture as first-steps.md | see first-steps.md -->
 ![The history player](images/player.png)
 
 | Button | Key | Does |
@@ -308,7 +306,6 @@ As with the history, nothing in the document changes. Only the features that use
 moment, so a heavy model plays slower rather than skipping. An assembly has no history of its own, so it
 shows only **Motion**: its parts are moved, not rebuilt ([Assemblies](assemblies.md#motion)).
 
-<!-- SHOT: motion.png | the toggle clamp assembly playing its motion: the player in Motion mode with Back and forth and Collisions, the caption t = 0.500 over the view; theme light; crop to the view and the player | open the toggle clamp; ui.set {"timeline": {...}} to Motion at t = 0.5 -->
 ![The player in Motion mode: the slider over t, Back and forth and Collisions, and the moment named over the view](images/motion.png)
 
 While a motion plays, the view draws lighter so it keeps up. In the studio look it leaves out the frames a
@@ -391,7 +388,6 @@ The browser on a phone or a tablet, and any window narrower than about 800 point
 - the **studio look**, which shows what a part will look like: its colours, how metal and how rough its
   faces are, lit by a photographed environment.
 
-<!-- SHOT: studio.png | the moka pot example in the studio look, its options popover open (environment, exposure, background, ground, tone, shadows, lens); theme light, window 1400x900 | open the moka pot example; ui.set {"parameters": {"open": false}}; ui.set {"look": {"mode": "studio"}}; ui.set {"panels": {"lookOptions": true}}; ui.fit -->
 ![The studio look with its options open: the environment, exposure, background, ground, tone, shadows and the lens](images/studio.png)
 
 Three environments come with 3DCraft: `studio` (soft boxes, the default), `outdoor` (sky and sun) and
@@ -444,7 +440,6 @@ what the colours mean. Its **▾** caret (or Escape) closes the popover and keep
 analysis is on, the view is drawn plainly, so the studio look's caret is greyed out until the analysis is
 off.
 
-<!-- SHOT: zebra.png | the ship propeller example under the zebra analysis, the popover open with its legend; theme light, window 1400x900 | open the ship propeller example; ui.set {"parameters": {"open": false}}; ui.set {"analysis": {"mode": "zebra", "stripes": 32}}; open the analysis popover -->
 ![Zebra stripes on the ship propeller's blades, with the analysis options open](images/zebra.png)
 
 - **Zebra**: black and white stripes reflected in the surfaces, as a car body reflects the lights of a

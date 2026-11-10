@@ -30,7 +30,6 @@ flat:
 ]
 ```
 
-<!-- SHOT: developable.png | the developable panel of this script (a piece of a cone between the two arcs) and its unfolded pattern beside it, a piece of a flat ring; theme light; about 1280x640 | run the first script of surfaces.md; view.render {"view": "iso"}; or rasterise file.export {"path": "pattern.svg", "faces": ["Pattern:face(0)"]} beside it -->
 ![A developable panel between two arcs, and its pattern laid flat](images/developable.png)
 
 The two arcs make a piece of a cone; unfolded, it is a piece of a flat ring.
