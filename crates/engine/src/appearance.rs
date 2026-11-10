@@ -31,8 +31,11 @@
 //!   through a boolean, a pattern, a transform, a blend; the pieces of a
 //!   face cut in two, which share its name) find it on the same way back,
 //!   which looks at each step for an entry of the face's name in that
-//!   step's body before the body's own appearance. So the nearest
-//!   feature on the way wins, a face over its body at the same feature.
+//!   step's body before the body's own appearance. A face's own colour
+//!   anywhere on its way wins over every body colour on it, on whichever
+//!   feature of the chain that is given (the developer's rule of
+//!   2026-11-10, J-040; [`face_given`]); among body colours the nearest
+//!   feature on the way wins.
 //!
 //! - **A feature that is off** (suppressed, or inactive by its condition)
 //!   and passes a body on gives that body its appearance, material and
@@ -480,9 +483,50 @@ fn face_appearance(
     feature: FeatureId,
     name: &PersistentName,
 ) -> Option<Appearance> {
+    walk_face(doc, regen, memo, feature, name, false)
+}
+
+/// The colour given to the face itself (`face.appearance`) anywhere on its
+/// way back, whatever body colours lie on the way: a face's own colour
+/// wins over a body's on whichever feature of the chain that is given
+/// (J-040: a body colour given to a later transform hid a face colour
+/// given after the extrude). `None` when the way meets none.
+fn face_given(
+    doc: &Document,
+    regen: &Regen,
+    memo: &mut Memo,
+    feature: FeatureId,
+    name: &PersistentName,
+) -> Option<Appearance> {
+    walk_face(doc, regen, memo, feature, name, true)
+}
+
+/// The walk of [`face_appearance`]; with `faces_only` the colours given to
+/// the face alone, past every body colour on the way, `None` where the way
+/// ends.
+fn walk_face(
+    doc: &Document,
+    regen: &Regen,
+    memo: &mut Memo,
+    feature: FeatureId,
+    name: &PersistentName,
+    faces_only: bool,
+) -> Option<Appearance> {
     if doc.bodies.is_empty() && doc.faces.is_empty() {
         return None;
     }
+    if faces_only && doc.faces.is_empty() {
+        return None;
+    }
+    // Where the way ends: the body's colour there, or none when only the
+    // face's own colour is looked for.
+    let body_at = |memo: &mut Memo, at: FeatureId| {
+        if faces_only {
+            None
+        } else {
+            body_appearance_with(doc, regen, memo, at).flatten()
+        }
+    };
     // Where the way stands: a feature, and what is left of the way from
     // its body, as the instances to go through and the name at the end.
     let mut at = feature;
@@ -493,7 +537,7 @@ fn face_appearance(
         if let Some(own) = own_face_appearance(doc, regen, memo, at, here, current) {
             return Some(own);
         }
-        if let Some(own) = own_appearance(doc, regen, look(memo), at) {
+        if !faces_only && let Some(own) = own_appearance(doc, regen, look(memo), at) {
             return own;
         }
         if way.is_none() {
@@ -505,21 +549,21 @@ fn face_appearance(
             } else {
                 // Made here (or named in a way that does not say): the
                 // body's colour.
-                return body_appearance_with(doc, regen, memo, at).flatten();
+                return body_at(memo, at);
             }
         }
         let Some((path, of)) = way.take() else {
-            return body_appearance_with(doc, regen, memo, at).flatten();
+            return body_at(memo, at);
         };
         let Some((&first, rest)) = path.split_first() else {
-            return body_appearance_with(doc, regen, memo, at).flatten();
+            return body_at(memo, at);
         };
         if !keeps_material(doc, regen, memo, at, first) {
             // Cut by a tool: the face bounds this body's material.
-            return body_appearance_with(doc, regen, memo, at).flatten();
+            return body_at(memo, at);
         }
         let Some(next) = source_of(doc, regen, memo, at, first) else {
-            return body_appearance_with(doc, regen, memo, at).flatten();
+            return body_at(memo, at);
         };
         at = next;
         if path == [0] && next != of.feature {
@@ -536,7 +580,7 @@ fn face_appearance(
             current = of;
         }
     }
-    body_appearance_with(doc, regen, memo, feature).flatten()
+    body_at(memo, feature)
 }
 
 /// The appearance of every face of the body of `feature`, in the order of
@@ -608,9 +652,17 @@ fn face_appearances_with(
                 } else {
                     None
                 };
+                let copy = name.role == NameRole::Copy && name.feature == feature;
                 if own.is_some() {
                     own
-                } else if walks && name.role == NameRole::Copy && name.feature == feature {
+                } else if let Some(given) = copy
+                    .then(|| face_given(doc, regen, memo, feature, name))
+                    .flatten()
+                {
+                    // Its own colour, given at an earlier feature, wins
+                    // over the body colours on its way.
+                    Some(given)
+                } else if walks && copy {
                     face_appearance(doc, regen, memo, feature, name).or(body)
                 } else {
                     body

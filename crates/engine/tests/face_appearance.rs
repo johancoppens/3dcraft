@@ -115,23 +115,30 @@ fn a_face_colour_follows_the_pieces_of_a_cut_face_and_upstream_edits() {
     );
     assert_eq!(coloured(&mut s, "F3", BLUE), [top, top]);
     assert_eq!(coloured(&mut s, "F3", GREEN), [floor]);
-    // Face over body at one feature; a body colour of the plate does not
-    // reach the coloured faces, which keep theirs.
+    // A face's own colour wins over a body colour, also one given on a
+    // later feature (J-040, 2026-11-10; before it, the red of `Cut` hid
+    // the plate's blue top): the coloured faces keep theirs, the rest of
+    // the body is red.
     run(
         &mut s,
         "body.appearance",
         json!({"body": "Cut", "color": RED}),
     );
     assert_eq!(coloured(&mut s, "F3", GREEN), [floor]);
-    assert_eq!(coloured(&mut s, "F3", BLUE), Vec::<String>::new());
+    assert_eq!(coloured(&mut s, "F3", BLUE), [top, top]);
     let faces = scene_faces(&mut s, "F3");
     assert!(
-        faces
-            .iter()
-            .all(|(name, c)| *c == Some(if name == floor { GREEN } else { RED })),
+        faces.iter().all(|(name, c)| *c
+            == Some(if name == floor {
+                GREEN
+            } else if name == top {
+                BLUE
+            } else {
+                RED
+            })),
         "{faces:?}"
     );
-    // ... and the plate's blue top comes back where the red is cleared.
+    // ... and the plate's blue top stays where the red is cleared.
     run(
         &mut s,
         "body.appearance",
@@ -693,8 +700,14 @@ fn a_face_coloured_by_a_name_that_becomes_an_alias_keeps_its_colour() {
     assert_eq!(coloured(&mut s, "F2", RED), ["F2:copy(2)/F1:face(1)"]);
 }
 
+/// A face's own colour wins over its body's, on whichever feature of the
+/// chain the body's is given (the developer's rule of 2026-11-10, J-040).
+/// Before it, the nearest feature won and a body colour on a later
+/// feature hid an earlier face colour: this test was
+/// `a_body_colour_on_a_later_feature_goes_before_an_earlier_face_colour`
+/// and found red on all six faces.
 #[test]
-fn a_body_colour_on_a_later_feature_goes_before_an_earlier_face_colour() {
+fn an_earlier_face_colour_goes_before_a_body_colour_on_a_later_feature() {
     let mut s = session();
     new_doc(&mut s);
     run(
@@ -713,14 +726,16 @@ fn a_body_colour_on_a_later_feature_goes_before_an_earlier_face_colour() {
         json!({"source": "Box", "translate": [0, 0, 5], "name": "Up"}),
     );
     assert_eq!(coloured(&mut s, "F2", BLUE), ["F2:copy(0)/F1:face(1)"]);
-    // The nearest feature wins: the later body's colour, on every face.
+    // The later body's colour on the other five faces; the face keeps its
+    // own.
     run(
         &mut s,
         "body.appearance",
         json!({"body": "Up", "color": RED}),
     );
-    assert_eq!(coloured(&mut s, "F2", RED).len(), 6);
-    // A face colour on that later body goes before it again.
+    assert_eq!(coloured(&mut s, "F2", BLUE), ["F2:copy(0)/F1:face(1)"]);
+    assert_eq!(coloured(&mut s, "F2", RED).len(), 5);
+    // A face colour on that later body goes before the earlier one.
     run(
         &mut s,
         "face.appearance",
@@ -766,4 +781,89 @@ fn a_step_file_brings_its_face_colours_back_as_face_colours() {
     run(&mut s, "edit.undo", json!({}));
     let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
     assert!(inspect.get("faceAppearances").is_none());
+}
+
+/// J-040: a tube whose inner wall is coloured after its extrude, then cut
+/// by a port and turned, given a white body colour on the turned body: the
+/// inner wall keeps its own colour, in the scene (one resolution for both
+/// renderers and the exports) and in a picture; the other faces are white.
+/// Without the body colour, and with it on the extrude itself, the same.
+#[test]
+fn a_face_colour_wins_over_a_body_colour_given_on_a_later_feature() {
+    const DARK: [u8; 3] = [0x0c, 0x0c, 0x0e];
+    const WHITE: [u8; 3] = [0xff, 0xff, 0xff];
+    let evidence =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/j040");
+    std::fs::create_dir_all(&evidence).unwrap();
+    for (case, body) in [
+        ("repro", Some("Moved")),
+        ("no-body-colour", None),
+        ("same-feature", Some("Tube")),
+    ] {
+        let mut s = session();
+        new_doc(&mut s);
+        let steps = json!([
+            ["sketch.create", {"plane": "xy", "name": "Ring"}],
+            ["sketch.circle", {"sketch": "Ring", "center": ["0 mm", "0 mm"], "radius": "100 mm"}],
+            ["sketch.circle", {"sketch": "Ring", "center": ["0 mm", "0 mm"], "radius": "90 mm"}],
+            ["feature.extrude", {"sketch": "Ring", "distance": "500 mm", "name": "Tube"}],
+            ["face.appearance", {"faces": ["F2:side(e4)"], "color": "#0c0c0e", "metallic": 0, "roughness": 0.8}],
+        ]);
+        for step in steps.as_array().unwrap() {
+            run(&mut s, step[0].as_str().unwrap(), step[1].clone());
+        }
+        if body == Some("Tube") {
+            run(
+                &mut s,
+                "body.appearance",
+                json!({"body": "Tube", "color": "#ffffff"}),
+            );
+        }
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": "20 mm", "height": "40 mm", "position": ["0 mm", "80 mm", "250 mm"], "axis": [0, 1, 0], "name": "Port"}),
+        );
+        run(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "subtract", "target": "Tube", "tool": "Port", "name": "Ported"}),
+        );
+        run(
+            &mut s,
+            "feature.transform",
+            json!({"source": "Ported", "angle": "30 deg", "axis": [1, 0, 0], "name": "Moved"}),
+        );
+        if body == Some("Moved") {
+            run(
+                &mut s,
+                "body.appearance",
+                json!({"body": "Moved", "color": "#ffffff"}),
+            );
+        }
+        // The turned body is F5's; its inner wall came from F2:side(e4)
+        // through the cut and the turn (its pieces share that name).
+        let faces = scene_faces(&mut s, "F5");
+        let inner: Vec<&(String, Option<[u8; 3]>)> = faces
+            .iter()
+            .filter(|(name, _)| name.ends_with("F2:side(e4)"))
+            .collect();
+        assert!(!inner.is_empty(), "{case}: {faces:?}");
+        for (name, colour) in &inner {
+            assert_eq!(*colour, Some(DARK), "{case}: {name}");
+        }
+        if body.is_some() {
+            for (name, colour) in faces.iter().filter(|(n, _)| !n.ends_with("F2:side(e4)")) {
+                assert_eq!(*colour, Some(WHITE), "{case}: {name}");
+            }
+        }
+        let shot = run(
+            &mut s,
+            "view.render",
+            json!({"width": 500, "height": 375, "camera": {"eye": [0, -700, 900], "target": [0, 0, 300], "up": [0, 0, 1], "fovY": 35}, "renderer": "cpu", "look": {"mode": "studio", "accumulate": 1}}),
+        );
+        if let Some(png) = shot["base64"].as_str() {
+            std::fs::write(evidence.join(format!("{case}.png")), decode_base64(png)).unwrap();
+        }
+    }
 }
