@@ -1574,7 +1574,9 @@ mod tests {
 
     /// A tarball unpacked straight into the prefix (`tar -xzf … -C
     /// ~/.local --strip-components=1`): both scripts refuse and touch
-    /// nothing, also run as `sh < uninstall.sh` in the prefix.
+    /// nothing, also run as `sh < uninstall.sh` in the prefix; a copy of
+    /// `uninstall.sh` run from elsewhere, as the refusal says, removes
+    /// exactly 3DCraft's listed files, and run again refuses.
     #[cfg(target_os = "linux")]
     #[test]
     fn the_install_scripts_refuse_a_tarball_unpacked_into_the_prefix() {
@@ -1603,6 +1605,38 @@ mod tests {
             .unwrap();
         assert!(!piped.status.success(), "{}", said(&piped));
         assert_eq!(files_below(&prefix), before);
+
+        // What the refusal says to do: a copy of `uninstall.sh` out of the
+        // prefix removes exactly 3DCraft's listed files, every foreign file
+        // (the scripts unpacked beside them among them) still there.
+        let out_of_it = work.join("elsewhere");
+        mkdir(&out_of_it).unwrap();
+        let copy_of = out_of_it.join("uninstall.sh");
+        copy(&prefix.join("uninstall.sh"), &copy_of, true).unwrap();
+        let out = sh(&copy_of, &[], &home);
+        assert!(out.status.success(), "{}", said(&out));
+        let ours: std::collections::BTreeSet<String> =
+            tarball_files().into_iter().map(|(_, to)| to).collect();
+        assert!(ours.iter().all(|rel| before.contains(rel)));
+        let left: std::collections::BTreeSet<String> = before.difference(&ours).cloned().collect();
+        assert_eq!(files_below(&prefix), left);
+        for rel in NOT_OURS
+            .iter()
+            .copied()
+            .chain(["install.sh", "uninstall.sh"])
+        {
+            assert!(prefix.join(rel).is_file(), "{rel}");
+        }
+        // Run again: the list went with the rest, so it refuses (exit 1)
+        // and removes nothing.
+        let again = sh(&copy_of, &[], &home);
+        assert_eq!(again.status.code(), Some(1), "{}", said(&again));
+        assert!(
+            said(&again).contains("nothing was removed"),
+            "{}",
+            said(&again)
+        );
+        assert_eq!(files_below(&prefix), left);
     }
 
     /// `uninstall.sh` needs no unpacked tarball: it removes what the list
