@@ -3874,7 +3874,7 @@ impl SampleWorker {
                 let mut copy = OpenDocument::new(state, None);
                 copy.cache = setup.cache.clone();
                 copy.path.clone_from(&setup.path);
-                copy.asm = setup.asm.clone();
+                copy.asm = setup.asm.for_copy();
                 session.add_document(copy)?;
                 self.session.insert(session)
             }
@@ -3917,7 +3917,7 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
     // not change; recovery does not see it.
     let mut scratch = Session::new(Workspace::none());
     // An assembly's copy places its parts from the files read for it.
-    let (path, asm) = (open.path.clone(), open.asm.clone());
+    let (path, asm) = (open.path.clone(), open.asm.for_copy());
     let mut copy = OpenDocument::new(base, None);
     copy.cache = cache;
     copy.path = path;

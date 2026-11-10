@@ -473,3 +473,67 @@ fn an_angle_over_the_motion_reads_in_degrees() {
         );
     }
 }
+
+/// A-009: motion.check with an inline measure after a param.set in the
+/// same session of a document just opened. The copy it measures on has a
+/// history of its own; the placement of the document's (at the same
+/// revision number) was taken for the copy's, which lacked the assertion
+/// it had added. The swing set to 20° gives 20 sin(360° t): 20° at
+/// t = 1/4, -20° at t = 3/4.
+#[test]
+fn motion_check_with_a_measure_after_param_set_measures_the_new_value() {
+    let dir = workdir("motion-asm", "after-param-set");
+    let mut s = session(&dir);
+    run(&mut s, "assembly.new", json!({ "units": "mm" }));
+    run(&mut s, "variable.set", json!({ "name": "t", "expr": "0" }));
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "swing", "expr": "10 deg" }),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({ "name": "swing", "min": "0 deg", "max": "30 deg", "step": "1 deg" }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "bar.3dcraft", "name": "Bar" }),
+    );
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "revolute", "name": "Hinge", "a": "world/z", "b": "Bar/End1", "flip": true }),
+    );
+    run(
+        &mut s,
+        "joint.set",
+        json!({ "mate": "Hinge", "value": "swing * sin(360 deg * t)" }),
+    );
+    run(&mut s, "file.save", json!({ "path": "hinge.3dcraftasm" }));
+    run(&mut s, "file.close", json!({}));
+    run(&mut s, "file.open", json!({ "path": "hinge.3dcraftasm" }));
+    run(
+        &mut s,
+        "param.set",
+        json!({ "values": { "swing": "20 deg" } }),
+    );
+    let out = run(
+        &mut s,
+        "motion.check",
+        json!({ "samples": 5, "measure": { "measure": "jointAngle", "mate": "Hinge", "min": "-30 deg" } }),
+    );
+    let check = &out["assertions"][0];
+    assert_eq!(check["status"], "passed", "{out}");
+    assert_eq!(check["max"]["t"], 0.25, "{check}");
+    assert!(
+        (check["max"]["value"].as_f64().unwrap() - 20.0).abs() < 1e-9,
+        "{check}"
+    );
+    assert_eq!(check["min"]["t"], 0.75, "{check}");
+    assert!(
+        (check["min"]["value"].as_f64().unwrap() + 20.0).abs() < 1e-9,
+        "{check}"
+    );
+}

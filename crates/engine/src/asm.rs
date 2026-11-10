@@ -2774,6 +2774,19 @@ impl AsmState {
         self.placed = Some((revision, self.generation, placed));
     }
 
+    /// A copy for a document in a session of its own (a copy of the
+    /// document whose history starts afresh): the configurations and the
+    /// files read are kept, the placement is not. It is held by the
+    /// revision of the history it was made in, which says nothing in
+    /// another: a copy whose own edits reach the same revision number
+    /// would take it for its own (A-009: an assertion `motion.check` adds
+    /// to its copy was not in the placement it measured).
+    pub(crate) fn for_copy(&self) -> Self {
+        let mut copy = self.clone();
+        copy.placed = None;
+        copy
+    }
+
     /// Forgets the placement, so the next one is worked out again.
     /// A subassembly's placement depends on the files read for its own
     /// sources, which its key does not hold, so those are placed again
