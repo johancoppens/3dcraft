@@ -141,7 +141,10 @@ Any assertion is checked over the motion, so interference and clearance over the
 own: `overlap` with `is: false` gives the first `t` of a collision, `clearance` with a `min` the least clearance and
 its `t`, and the same holds for any measure the document can assert (assemblies' measures by instance included,
 once they move). A copy of the document in a session of its own is set to each `t` (one undo step merged over the
-run, so the copy's history does not grow) as the `Sweep` makes it, and its assertions are measured as
+run, so the copy's history does not grow; an assembly's copy keeps its configurations and the files read, not its
+placement, which is held by the revision of the document's own history: `AsmState::for_copy`, 2026-11-10, A-009,
+where the copy reached the same revision number and measured a placement without the assertion it had added) as the
+`Sweep` makes it, and its assertions are measured as
 `document.check` measures them; the answers are kept by what they depend on, so a measure whose subjects `t` does
 not move is measured once. Per assertion: the worst status over the samples; `firstFailure`, `firstError` and
 `firstNotProven`, each the first sample of that status with `after`, the last sample before it that passed (null
