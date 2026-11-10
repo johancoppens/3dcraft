@@ -55,8 +55,10 @@ pub fn deceptive(c: char) -> bool {
 pub const PROMPT_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Folders beneath the home folder that hold secrets, settings, or
-/// programs that run (a file planted there would run).
-const HOME_SECRETS: [&str; 23] = [
+/// programs that run (a file planted there would run). `Applications`:
+/// macOS's per-user programs, and on Linux the AppImages the launcher
+/// keeps there.
+const HOME_SECRETS: [&str; 24] = [
     ".ssh",
     ".gnupg",
     ".config",
@@ -80,10 +82,14 @@ const HOME_SECRETS: [&str; 23] = [
     ".var/app",
     "snap",
     "Library",
+    "Applications",
 ];
 
-/// Folders of the system.
-const SYSTEM: [&str; 18] = [
+/// Folders of the system. On macOS `/etc`, `/var` and `/tmp` are links
+/// into `/private` ([`Protected::reason`] follows them); `/Applications`
+/// is writable by every administrator, and Homebrew's `/opt/homebrew`
+/// (its `bin` on the `PATH`) by the person who installed it.
+const SYSTEM: [&str; 20] = [
     "/etc",
     "/usr",
     "/var",
@@ -99,6 +105,8 @@ const SYSTEM: [&str; 18] = [
     "/System",
     "/Library",
     "/private",
+    "/Applications",
+    "/opt/homebrew",
     r"C:\Windows",
     r"C:\Program Files",
     r"C:\ProgramData",
@@ -151,9 +159,31 @@ impl Protected {
         }
     }
 
-    /// Why `folder` (absolute, its links resolved) is never offered to an
-    /// agent; `None` when it may be.
+    /// Why `folder` (absolute) is never offered to an agent; `None` when
+    /// it may be. It is judged as it is spelled and, where it exists, with
+    /// its links resolved, and refused when either is protected: the
+    /// places are compared with their links resolved, so a folder spelled
+    /// through a link would otherwise slip past the place it leads to (on
+    /// macOS `/etc` is `/private/etc`; 2026-11-10, the weekly CI).
     pub fn reason(&self, folder: &Path) -> Option<String> {
+        self.reason_as_spelled(folder).or_else(|| {
+            let resolved = real(folder);
+            if resolved == folder {
+                None
+            } else {
+                self.reason_as_spelled(&resolved).map(|why| {
+                    format!(
+                        "`{}` leads to `{}`: {why}",
+                        folder.display(),
+                        resolved.display()
+                    )
+                })
+            }
+        })
+    }
+
+    /// [`Protected::reason`] for `folder` as it is spelled.
+    fn reason_as_spelled(&self, folder: &Path) -> Option<String> {
         let shown = folder.display();
         // A network or device path (`\\server\share`, `\\?\C:\`,
         // `\\localhost\C$`): never offered, its identity cannot be told.
@@ -177,6 +207,16 @@ impl Protected {
             }
         };
         let mut sensitive: Vec<(PathBuf, &str)> = Vec::new();
+        // A place as written and with its links resolved, so that a folder
+        // spelled either way meets its own spelling (`/etc` and
+        // `/private/etc` on macOS).
+        let both = |place: PathBuf, what: &'static str, into: &mut Vec<(PathBuf, &str)>| {
+            let resolved = real(&place);
+            if resolved != place {
+                into.push((place, what));
+            }
+            into.push((resolved, what));
+        };
         if let Some(home) = &self.home {
             if folder == home {
                 return Some(format!("`{shown}` is your home folder itself"));
@@ -191,7 +231,11 @@ impl Protected {
                 return Some(why);
             }
             for secret in HOME_SECRETS {
-                sensitive.push((real(&home.join(secret)), "a folder of keys and settings"));
+                both(
+                    home.join(secret),
+                    "a folder of keys and settings",
+                    &mut sensitive,
+                );
             }
         }
         if self.home.is_none()
@@ -201,7 +245,11 @@ impl Protected {
             return Some(why);
         }
         for place in &self.places {
-            sensitive.push((real(place), "a folder of the system or of your settings"));
+            both(
+                place.clone(),
+                "a folder of the system or of your settings",
+                &mut sensitive,
+            );
         }
         // System folders only for what lies outside the home folder: some
         // systems keep homes beneath one of them (`/var/home`).
@@ -213,7 +261,7 @@ impl Protected {
             for system in SYSTEM {
                 let path = PathBuf::from(system);
                 if path.is_absolute() {
-                    sensitive.push((real(&path), "a folder of the system"));
+                    both(path, "a folder of the system", &mut sensitive);
                 }
             }
         }
@@ -441,6 +489,75 @@ mod tests {
         assert!(silverblue.reason(Path::new("/var/home")).is_some());
         // A relative path is nothing to offer.
         assert!(p.reason(Path::new("work")).is_some());
+    }
+
+    /// macOS's places, on any system (the paths need not exist): the home
+    /// folder beneath `/Users` with its `Library`, the programs in
+    /// `/Applications` and Homebrew's, and `/private`, where `/etc`, `/var`
+    /// (with the temporary folders of `/var/folders`) and `/tmp` lead.
+    #[cfg(unix)]
+    #[test]
+    fn the_places_of_macos_are_never_offered() {
+        let mac = Protected {
+            home: Some(PathBuf::from("/Users/ann")),
+            state: Some(PathBuf::from(
+                "/Users/ann/Library/Application Support/3dcraft",
+            )),
+            places: Vec::new(),
+        };
+        for refused in [
+            "/Users",
+            "/Users/ann",
+            "/Users/ann/Library",
+            "/Users/ann/Library/Keychains",
+            "/Users/ann/Library/Application Support/3dcraft",
+            "/Users/ann/Applications",
+            "/Users/ann/.ssh",
+            "/Applications",
+            "/Applications/Tool.app/Contents/MacOS",
+            "/opt/homebrew/bin",
+            "/Library/LaunchDaemons",
+            "/System/Volumes/Data",
+            "/private/etc",
+            "/private/var/folders/xy/abc/T",
+            "/private/tmp/x",
+            "/usr/local/bin",
+        ] {
+            assert!(mac.reason(Path::new(refused)).is_some(), "{refused}");
+        }
+        for offered in [
+            "/Users/ann/Documents/3DCraft",
+            "/Users/ann/projects/brackets",
+            "/Users/Shared/brackets",
+            "/Volumes/Work/brackets",
+        ] {
+            assert_eq!(mac.reason(Path::new(offered)), None, "{offered}");
+        }
+    }
+
+    /// A folder spelled through a link is judged by where the link leads:
+    /// into a folder of keys, or out of the home folder into the system's.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_into_a_protected_place_is_never_offered() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/tmp/craft3d-consent-protected-links");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".ssh")).unwrap();
+        std::fs::create_dir_all(dir.join("work")).unwrap();
+        let home = craft3d_engine::canonical(&dir).unwrap();
+        std::os::unix::fs::symlink(home.join(".ssh"), home.join("work/keys")).unwrap();
+        std::os::unix::fs::symlink("/etc", home.join("work/settings")).unwrap();
+        let p = Protected {
+            home: Some(home.clone()),
+            ..Protected::default()
+        };
+        assert_eq!(p.reason(&home.join("work")), None);
+        let why = p.reason(&home.join("work/keys")).unwrap();
+        assert!(why.contains("keys and settings"), "{why}");
+        let why = p.reason(&home.join("work/settings")).unwrap();
+        assert!(why.contains("of the system"), "{why}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
