@@ -285,7 +285,7 @@ Two short forms save an agent a round trip (2026-10-22, from the R1 acceptance):
 | `command_run` | `id`, `params?` | One command; a refused command is a tool error (`isError: true`) whose message starts with the command's id; the tool result's `_meta.ms` is the milliseconds it took |
 | `command_batch` | `steps: [{id, params?}]` (at most 256), `stop_on_error? = true`, `stop_on_break? = false`, `terse? = false` | As the method `batch` (judged at the end: `isError` when a command failed or `featuresFailed` is not empty; `ms` per step and in all); not atomic |
 | `doc_inspect` | none | `document.inspect` with its defaults; `{"document": null}` when nothing is open |
-| `doc_render_preview` | `view?`, `mode?` (`shaded`, `ids`), `projection?`, `zoom?`, `box?`, `tolerance?`, `max_side?` (16 to 2048, default 1024) | A PNG (4:3, CPU renderer) as an image block, and the coverage, triangle count and bodies as text |
+| `doc_render_preview` | `view?`, `mode?` (`shaded`, `ids`), `projection?`, `zoom?`, `box?`, `tolerance?`, `max_side?` (16 to 2048, default 1024) | A PNG (4:3, drawn as `view.render` draws it: by the GPU in a `craft3d-cli` session that has an adapter, by the CPU renderer otherwise and through a window) as an image block, and the coverage, triangle count and bodies as text |
 | `selection_get` | none | The selection as `select.get` gives it, also what the person clicked in the window when bridged |
 | `control_call` (bridged only) | `method`, `params?` | A `ui.*` method of the window but `ui.quit`; a picture comes back as an image block |
 
