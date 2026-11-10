@@ -28,6 +28,9 @@ A subject (`of`, `from`, `to`) is a body by its feature's name, a list of them, 
 `select.query` takes it ([chapter 11](11-selection.md)): `{"hole": true, "radius": "4 mm"}` for the 8 mm holes,
 `{"kind": "face", "where": {"normal": {"along": "z"}}}` for the faces facing up.
 
+`distance` is measured between surfaces: a body (or a face) wholly inside another is as far from it as from its
+nearest face, not 0. To know whether bodies touch or overlap, use `clearance`.
+
 What is searched for (a thickness, a distance) comes with what is **proven**: `atLeast`, a bound nothing
 is below, beside the value found at a real place. On the flange of [chapter 3](03-agent.md#a-full-session): `"thickness": 6.0,
 "atLeast": 5.75`.
