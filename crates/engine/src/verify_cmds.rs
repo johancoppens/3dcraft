@@ -1511,14 +1511,49 @@ fn clearance_pair<'b>(
                 ctx.feature_name(outer)
             )
         };
-        let a_in_b = inside(&part_b.probe, body_a).ok_or_else(|| undecided(*ida, *idb))?;
-        let b_in_a =
-            a_in_b || inside(&part_a.probe, body_b).ok_or_else(|| undecided(*idb, *ida))?;
-        if a_in_b || b_in_a {
-            status = "overlap";
+        // Both ways before any error: B may lie inside A where A's shells
+        // could not be placed in B.
+        match either_inside(inside(&part_b.probe, body_a), || {
+            inside(&part_a.probe, body_b)
+        }) {
+            Ok(true) => status = "overlap",
+            Ok(false) => {}
+            Err(First) => return Err(undecided(*ida, *idb)),
+            Err(Second) => return Err(undecided(*idb, *ida)),
         }
     }
     Ok((near, status))
+}
+
+/// Which body's shells could not be placed in the other.
+#[derive(Debug, PartialEq, Eq)]
+enum Undecided {
+    /// The first's, in the second.
+    First,
+    /// The second's, in the first.
+    Second,
+}
+use Undecided::{First, Second};
+
+/// Whether one of two bodies holds part of the other, from whether the
+/// first's shells lie inside the second (`a_in_b`) and the second's
+/// inside the first (asked only when needed): inside either way is an
+/// overlap even when the other way could not be told; outside both ways is
+/// none; anything else is undecided, never read as outside.
+fn either_inside(
+    a_in_b: Option<bool>,
+    b_in_a: impl FnOnce() -> Option<bool>,
+) -> Result<bool, Undecided> {
+    let a_in_b = match a_in_b {
+        Some(true) => return Ok(true),
+        other => other,
+    };
+    match (a_in_b, b_in_a()) {
+        (_, Some(true)) => Ok(true),
+        (None, _) => Err(First),
+        (_, None) => Err(Second),
+        (Some(_), Some(false)) => Ok(false),
+    }
 }
 
 /// Whether a shell whose points are listed per shell in `shells` lies
@@ -2326,6 +2361,15 @@ mod tests {
             shells_inside(&[vec![p(-1.0)], vec![p(0.0), p(-2.0)]], place),
             Some(false)
         );
+        // A pair: inside either way is an overlap, also when the other way
+        // cannot be told (B inside A while A's shells cannot be placed in
+        // B); outside both ways is none; else undecided, naming which.
+        assert_eq!(either_inside(None, || Some(true)), Ok(true));
+        assert_eq!(either_inside(Some(true), || None), Ok(true));
+        assert_eq!(either_inside(Some(false), || Some(false)), Ok(false));
+        assert_eq!(either_inside(None, || Some(false)), Err(First));
+        assert_eq!(either_inside(Some(false), || None), Err(Second));
+        assert_eq!(either_inside(None, || None), Err(First));
     }
 
     /// The sweep finds exactly the pairs a test of every pair finds, in
