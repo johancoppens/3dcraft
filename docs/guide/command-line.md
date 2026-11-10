@@ -7,7 +7,8 @@ This is the third way to use 3DCraft at its simplest: the commands written by ha
 script. For a program of your own on top of 3DCraft, see [Programs on 3DCraft](programs.md).
 
 `craft3d-cli` runs in a terminal (on Windows: Command Prompt or PowerShell) and needs no window and no
-graphics card. `craft3d-cli --help` lists its subcommands, and `craft3d-cli <subcommand> --help`
+graphics card. Every installer has it; where it ends up on your computer is in
+[Install › Download](install.md#download). `craft3d-cli --help` lists its subcommands, and `craft3d-cli <subcommand> --help`
 explains one. Every subcommand returns exit code 0 on success, 1 on a failure and 2 for a mistake in the
 command line.
 
@@ -125,7 +126,9 @@ craft3d-cli replay bracket.3dcraft --out build.mp4
 ```
 
 Makes a video (MP4, WebM or GIF, by the name's extension) of the design being built, feature by feature.
-It needs `ffmpeg`; without it, PNG frames.
+It needs `ffmpeg`, on your `PATH` or named by `CRAFT3D_FFMPEG`. Without it, `replay` fails (exit code 1)
+but keeps the frames it drew, as PNG files in the folder `build.mp4.frames`. An `--out` without one of
+those extensions is a folder that gets only the frames.
 
 ## Animations and videos
 

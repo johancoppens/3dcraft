@@ -124,7 +124,11 @@ craft3d-engine = { git = "https://github.com/johancoppens/3dcraft", tag = "v0.1.
 serde_json = "1"
 ```
 
-<!-- CHECK: the release tag is named v0.1.0, and craft3d-engine builds as a git dependency outside the workspace (no font files or xtask step needed to compile it) -->
+<!-- CHECK: craft3d-engine compiles as a git dependency at the tag v0.1.0, in a program outside the workspace -->
+
+Text in a built-in font needs the font files, which are not compiled into the engine: point the
+environment variable `CRAFT3D_FONTS` at a folder that holds them (an installed 3DCraft has one, beside the
+programs).
 
 `Workspace::unrestricted()` lets commands read and write anywhere the program may. To keep them to one
 folder, give `Workspace { read: Access::Root(dir.clone()), write: Access::Root(dir) }` instead (`Access`
@@ -138,10 +142,11 @@ documentation, starting at [`docs/README.md`](../README.md).
 
 ## What a command answers
 
-Every command answers with JSON. These rules hold for all four ways in.
+Every command answers with JSON. These rules hold for all four ways in; where one way differs, the rule
+says so.
 
 - **A command that fails** changes nothing and returns an error that starts with the command and the
-  parameter, such as *feature.boolean: there is no feature named 'Sheet'; features: Block*. Over MCP it
+  parameter, such as *feature.boolean: there is no feature named `Sheet`; features: Block*. Over MCP it
   is a tool result with `isError: true`; over JSON lines, `"ok": false` with `error`. In a batch, the
   steps before it stay applied: a batch is not atomic, and `edit.undo` takes back one step at a time.
 - **A feature that fails** is different: the command succeeded (the feature is in the history), but the
@@ -150,8 +155,10 @@ Every command answers with JSON. These rules hold for all four ways in.
   is below 26 mm"). Features built from it fail too, each with `causedBy`: the one to fix
   ([How 3DCraft thinks › Failed features](concepts.md#failed-features)).
 - **A batch is judged at the end.** `command_batch` (and the method `batch`) lists under `featuresFailed`
-  the features that still fail when the batch ends and that one of its steps broke, and is then an error.
-  A break that a later step repairs is only noted. A failed check is not listed there: read `assert.list`
+  the features that still fail when the batch ends and that one of its steps broke. Over MCP the tool
+  result is then an error (`isError: true`); over JSON lines (`serve`, the window's channel) the reply
+  stays `"ok": true`: read `featuresFailed` in its result. A break that a later step repairs is only
+  noted. A failed check is not listed there: read `assert.list`
   or `document.check`.
 - **`failed`**, in the result of `variable.set` and of every edit that can break other features
   (`variable.delete` with `force`, `feature.edit`, `feature.suppress`, `feature.when`, `feature.move`,
@@ -160,7 +167,7 @@ Every command answers with JSON. These rules hold for all four ways in.
   `causedBy`), left out when there are none. "Make the plate 2 mm thick" that breaks a fillet says so in
   its own result, and so does deleting a line that leaves an extruded profile open.
 - **`assertionSummary`**, in the result of every feature command and of `variable.set`, `param.set` and
-  `document.check`: `{count, passed, broken, unproven, pending, inactive}`. A broken check never stops a
+  `document.check` when the document has checks: `{count, passed, broken, unproven, pending, inactive}`. A broken check never stops a
   feature from being built; it tells you the design no longer meets what was asked. An edit's result waits
   up to two seconds for the checks it touched and counts the rest under `pending`; `"wait": true` waits
   for all of them ([Measuring and assertions › Assertions](measure.md#assertions)).

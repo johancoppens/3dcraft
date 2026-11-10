@@ -14,7 +14,7 @@ you, ask it to read the reason to you.
 | The window does not start | [The window](#the-window) |
 | The agent's changes do not show in the window | [The agent](#the-agent) |
 | The agent cannot open or save a file | [The agent](#the-agent) |
-| A feature has a ⚠ in the feature list | [A feature fails](#a-feature-fails) |
+| A feature's row is red in the feature list | [A feature fails](#a-feature-fails) |
 | A check is red | [A check fails](#a-check-fails) |
 | A Jig's parameter turned red | [Jigs](#jigs) |
 | The web version is slow, blank or will not save | [The web version](#the-web-version) |
@@ -28,13 +28,13 @@ parameter:
 
 | Message (shortened) | What to do |
 |---|---|
-| *there is no feature named 'Sheet'; features: Block* | A name is wrong, or the feature is not made yet. The message lists what there is |
-| *unknown plane 'CutPlane'; use xy, yz or zx, or the name of a datum plane* | The same, for planes |
+| *there is no feature named \`Sheet\`; features: Block* | A name is wrong, or the feature is not made yet. The message lists what there is |
+| *unknown plane \`CutPlane\`; use xy, yz or zx, or the name of a datum plane* | The same, for planes |
 | *give either distance … or about and angle …, not both* | Two ways of placing something were mixed. Use two datums |
 | *variable.delete: \`t\` is still used by the feature \`Plate\` (F1: size.z), …* | Change those first, or give `"force": true` to delete it anyway |
-| *file.save: '/tmp/x.3dcraft' is outside the write root …* | The path is outside the folders an agent or a program may use ([The agent](#the-agent)) |
+| *file.save: \`/tmp/x.3dcraft\` is outside the write root …* | The path is outside the folders an agent or a program may use ([The agent](#the-agent)) |
 | *variable.set: \`wall + 1 mm\` uses \`wall\` itself …* | Give the new value (`3 mm`); the message says what it is now |
-| *the unit \`rad\` must follow a number, a parenthesis or \`pi\` directly …*, *\`inch\` is not a unit: write \`in\`* | Units are `um mm cm m in ft deg rad`, in lower case, right after a number, a `)` or `pi` (`(360 / n) deg`). After a variable, multiply by one (`width * 1 mm`) |
+| *the unit \`rad\` must follow a number, a parenthesis or \`pi\` directly …*, *\`inch\` is not a unit: write \`in\`* | Units are `um mm cm m in ft deg rad` in lower case, and `g kg s N kN Pa kPa MPa GPa J` as written here ([Reference › Units](reference.md#units-functions-and-names)), right after a number, a `)` or `pi` (`(360 / n) deg`). After a variable, multiply by one (`width * 1 mm`) |
 | *an angle constraint takes a line and a line, but 1 entity was given* | Give the entities the message lists, in that order |
 
 `command_list` (or `craft3d-cli commands --filter …`) shows which parameters a command takes.
@@ -45,7 +45,7 @@ The feature is in the history but has no body: its status is `failed`, with an `
 made from it fail too, each with `causedBy` naming the first one. `document.check` lists them all. Fix
 the first:
 
-<!-- SHOT: failed-feature.png | the feature list with a failed feature: its red row with the reason, Show where and Edit, the dimmed rows after it, and the line "1 failed · 3 not rebuilt"; theme light; crop to the side panel | open the bracket lesson; variable.set {"name": "inner_r", "expr": "30 mm"}; crop (plan: shots/pictures/12-failed-feature.json) -->
+<!-- SHOT: failed-feature.png | the feature list with a failed feature: its red row with the reason, Show where and Edit, the dimmed rows after it, and the line "1 failed · 2 not rebuilt"; theme light; crop to the side panel | open the bracket lesson; variable.set {"name": "inner_r", "expr": "30 mm"}; crop -->
 ![A failed feature in the feature list: its red row with the reason, and the rows made from it dimmed](images/failed-feature.png)
 
 - **A size that does not fit** (a fillet radius, a shell thickness): the message gives the largest that
@@ -143,8 +143,9 @@ CPU renderer otherwise. The CPU renderer is the reference the graphics card is c
   2. Check that your AI tool starts `craft3d-cli mcp --bridge`, as **Copy command** or **Copy MCP
      configuration** in that panel gives it, and restart the AI tool after you change its configuration
      ([Install › Connect an AI agent](install.md#connect-an-ai-agent-over-mcp)).
-  3. With several 3DCraft windows open, the agent works in the one you used last. Click into the window
-     you want before you ask.
+  3. With several 3DCraft windows open, the agent works in the one you used last when it connected. To
+     move it to another window, click into that window and restart your AI tool (or close the first
+     window).
   4. Without `--bridge`, the agent works headless, in a document of its own that the window does not
      show.
 - **The agent cannot open or save a file.** The path is outside the folders it may use: the work folder,
@@ -152,9 +153,9 @@ CPU renderer otherwise. The CPU renderer is the reference the graphics card is c
   ([Install › Which files the agent can reach](install.md#which-files-the-agent-can-reach)). The error
   says so. Allow the folder when 3DCraft asks, ask the agent to use the work folder, or save there from the
   File menu yourself.
-- **The agent was refused.** **Refuse** and the ✕ beside an agent in the panel keep that agent out until
-  3DCraft restarts. Close 3DCraft and start it again to let it in. After **Disconnect all**, restarting
-  the AI tool is enough: it connects as a new agent.
+- **The agent was refused.** **Refuse**, the ✕ beside an agent in the panel and **Disconnect all** keep
+  that connection out until 3DCraft restarts. Restarting your AI tool is enough to let it in again: it
+  connects as a new agent.
 
 ## The web version
 
@@ -188,7 +189,7 @@ autosave: save often. A crash is the most important thing you can report.
 When a file action you started fails (Open, Save, Import, Export), a dialog says what went wrong, with
 **Copy details**:
 
-<!-- SHOT: error-dialog.png | the error dialog "Could not save" with its message, OK and Copy details, in today's look; theme light; crop to the dialog | by hand, or with the window_picture example's --dialog error:TEXT (cargo, crates/ui-egui/examples): the error dialogs have no control method (plan: shots/pictures/07-error-dialog.json) -->
+<!-- SHOT: error-dialog.png | the error dialog "Could not save" with its message, OK and Copy details, in today's look; theme light; crop to the dialog | by hand, or with the window_picture example's --dialog error:TEXT (cargo, crates/ui-egui/examples): the error dialogs have no control method -->
 ![An error dialog with OK and Copy details](images/error-dialog.png)
 
 When a command fails in the window, the status bar at the bottom shows the command in red with its
