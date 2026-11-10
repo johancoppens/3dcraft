@@ -131,10 +131,12 @@ const OWN: &str = "3DCraft's own folder, where its control token is";
 /// agents' roots are (a place moved while the window runs).
 #[derive(Clone, Debug)]
 pub struct Protected {
-    /// What they are made from: the home folder, the state folder and the
-    /// environment's places, as given.
-    given: (Option<PathBuf>, Option<PathBuf>, Vec<PathBuf>),
-    home: Option<PathBuf>,
+    /// What they are made from, as given.
+    given: Given,
+    /// The home folder as given and resolved: a folder written either way
+    /// meets its own spelling (on macOS a home beneath `/var` is beneath
+    /// `/private/var`; on an atomic desktop `/home` leads to `/var/home`).
+    home: Vec<PathBuf>,
     /// 3DCraft's state folder (the control token lives there), as given
     /// and resolved.
     state: Vec<PathBuf>,
@@ -152,6 +154,17 @@ pub struct Protected {
     /// written and resolved.
     cloud_storage: Vec<PathBuf>,
     icloud_drive: Vec<PathBuf>,
+}
+
+/// What [`Protected`] is made from: the home folder, the state folder,
+/// the environment's places and the system's folders ([`SYSTEM`]; others
+/// only in tests, which build a system folder that is a link).
+#[derive(Clone, Debug)]
+struct Given {
+    home: Option<PathBuf>,
+    state: Option<PathBuf>,
+    environment: Vec<PathBuf>,
+    system: Vec<PathBuf>,
 }
 
 impl Default for Protected {
@@ -199,17 +212,45 @@ fn has_dot_part(path: &Path) -> bool {
 }
 
 impl Protected {
-    /// The places for a home folder (taken with its links resolved),
-    /// 3DCraft's state folder and the places the environment names (all
-    /// absolute; a relative one is left out).
+    /// The places for a home folder (taken as given and with its links
+    /// resolved), 3DCraft's state folder and the places the environment
+    /// names (all absolute; a relative one is left out).
     pub fn new(home: Option<PathBuf>, state: Option<PathBuf>, environment: Vec<PathBuf>) -> Self {
-        let given = (home.clone(), state.clone(), environment.clone());
-        let home = home.map(|home| resolved(&home).unwrap_or(home));
+        Self::made(Given {
+            home,
+            state,
+            environment,
+            system: SYSTEM.iter().map(PathBuf::from).collect(),
+        })
+    }
+
+    /// [`Protected::new`] with other system folders: a test's, beneath a
+    /// folder of its own, where one of them can be a link.
+    #[cfg(test)]
+    fn with_system(home: Option<PathBuf>, system: Vec<PathBuf>) -> Self {
+        Self::made(Given {
+            home,
+            state: None,
+            environment: Vec::new(),
+            system,
+        })
+    }
+
+    fn made(given: Given) -> Self {
+        let Given {
+            home,
+            state,
+            environment,
+            system: system_folders,
+        } = given.clone();
+        let home = home.map(both_spellings).unwrap_or_default();
         let mut places = Vec::new();
-        if let Some(home) = &home {
+        for home in &home {
             for secret in HOME_SECRETS {
                 for spelling in both_spellings(home.join(secret)) {
-                    places.push((spelling, KEYS));
+                    if !places.contains(&(spelling.clone(), KEYS)) {
+                        places.push((spelling, KEYS));
+                    }
                 }
             }
         }
@@ -219,27 +260,29 @@ impl Protected {
             }
         }
         let mut system = Vec::new();
-        for place in SYSTEM.iter().map(PathBuf::from).filter(|p| p.is_absolute()) {
+        for place in system_folders.into_iter().filter(|p| p.is_absolute()) {
             for spelling in both_spellings(place) {
                 system.push((spelling, OF_THE_SYSTEM));
             }
         }
-        let library = home.as_ref().map(|home| home.join("Library"));
+        let libraries: Vec<PathBuf> = home.iter().map(|home| home.join("Library")).collect();
         // A cloud folder as written, and resolved only where it is the
         // resolved `~/Library` with the same tail: a cloud folder that is
         // itself a link (to `~/Library/Preferences`, to `~/Library`) would
         // otherwise let its target out of the `Library` place.
         let cloud = |tail: &str| -> Vec<PathBuf> {
-            let Some(library) = &library else {
-                return Vec::new();
-            };
-            let written = library.join(tail);
-            let mut spellings = vec![written.clone()];
-            if let (Some(library), Some(real)) = (resolved(library), resolved(&written))
-                && real == library.join(tail)
-                && real != written
-            {
-                spellings.push(real);
+            let mut spellings = Vec::new();
+            for library in &libraries {
+                let written = library.join(tail);
+                if !spellings.contains(&written) {
+                    spellings.push(written.clone());
+                }
+                if let (Some(library), Some(real)) = (resolved(library), resolved(&written))
+                    && real == library.join(tail)
+                    && !spellings.contains(&real)
+                {
+                    spellings.push(real);
+                }
             }
             spellings
         };
@@ -247,7 +290,7 @@ impl Protected {
             given,
             cloud_storage: cloud("CloudStorage"),
             icloud_drive: cloud("Mobile Documents/com~apple~CloudDocs"),
-            library: library.map(both_spellings).unwrap_or_default(),
+            library: libraries.into_iter().flat_map(both_spellings).collect(),
             home,
             state: state.map(both_spellings).unwrap_or_default(),
             places,
@@ -275,15 +318,14 @@ impl Protected {
 
     /// The same places with 3DCraft's state folder `state`.
     pub fn set_state(&mut self, state: &Path) {
-        self.given.1 = Some(state.to_path_buf());
+        self.given.state = Some(state.to_path_buf());
         self.state = both_spellings(state.to_path_buf());
     }
 
     /// The places made again from what they were made from, looked up on
     /// the file system as it is now.
     pub fn refreshed(&self) -> Self {
-        let (home, state, environment) = self.given.clone();
-        Self::new(home, state, environment)
+        Self::made(self.given.clone())
     }
 
     pub fn from_env(env: &dyn Fn(&str) -> Option<String>, state: Option<&Path>) -> Self {
@@ -370,13 +412,11 @@ impl Protected {
                 None
             }
         };
-        if let Some(home) = &self.home {
-            if folder == home {
-                return Some("is your home folder itself".to_string());
-            }
-            if home.starts_with(folder) {
-                return Some("holds your home folder".to_string());
-            }
+        if self.home.iter().any(|home| folder == home) {
+            return Some("is your home folder itself".to_string());
+        }
+        if self.home.iter().any(|home| home.starts_with(folder)) {
+            return Some("holds your home folder".to_string());
         }
         // (After the home folder itself: the state folder is in it.)
         if let Some(why) = self.state.iter().find_map(|state| clash(state, OWN)) {
@@ -395,10 +435,7 @@ impl Protected {
         }
         // System folders only for what lies outside the home folder: some
         // systems keep homes beneath one of them (`/var/home`).
-        let in_home = self
-            .home
-            .as_ref()
-            .is_some_and(|home| folder.starts_with(home));
+        let in_home = self.home.iter().any(|home| folder.starts_with(home));
         if in_home {
             return None;
         }
@@ -747,6 +784,68 @@ mod tests {
         assert!(p.reason(&dropbox.join("keys/new")).is_some());
         assert_eq!(p.reason(&home.join("projects/dropbox")), None);
         assert_eq!(p.reason(&home.join("projects/dropbox/work")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A home folder reached through a link, as on an atomic desktop
+    /// (`/home` a link to `/var/home`; on macOS `/home` leads to
+    /// `/System/Volumes/Data/home`): the home folder itself and the folder
+    /// that holds it are said so in both spellings, its own folders are
+    /// offered in both (2026-11-10, the review).
+    #[cfg(unix)]
+    #[test]
+    fn a_home_folder_reached_through_a_link_is_judged_in_both_spellings() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/tmp/craft3d-consent-home-link");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("var/home/ann/work")).unwrap();
+        let root = craft3d_engine::canonical(&dir).unwrap();
+        std::os::unix::fs::symlink(root.join("var/home"), root.join("home")).unwrap();
+        let written = root.join("home/ann");
+        let real = root.join("var/home/ann");
+        let env = |name: &str| match name {
+            "HOME" => written.to_str().map(str::to_string),
+            _ => None,
+        };
+        let state = written.join(".local/state/3dcraft");
+        let p = Protected::from_env(&env, Some(&state));
+        for home in [&written, &real] {
+            let why = p.reason(home).unwrap();
+            assert!(why.contains("home folder itself"), "{why}");
+            let why = p.reason(home.parent().unwrap()).unwrap();
+            assert!(why.contains("holds your home folder"), "{why}");
+            assert_eq!(p.reason(&home.join("work")), None, "{}", home.display());
+            assert!(p.reason(&home.join(".ssh")).is_some());
+            assert!(p.reason(&home.join(".local/state/3dcraft")).is_some());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A system folder that is a link with the home folder beneath it, as
+    /// `/var` on macOS (a link to `/private/var`) with a home in
+    /// `/var/home`: the home folder's own folders are offered in both
+    /// spellings, the rest of the system folder is not (2026-11-10, the
+    /// review).
+    #[cfg(unix)]
+    #[test]
+    fn a_home_beneath_a_system_folder_that_is_a_link_is_judged_in_both_spellings() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/tmp/craft3d-consent-system-link");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("private/var/home/ann/work")).unwrap();
+        std::fs::create_dir_all(dir.join("private/var/lib")).unwrap();
+        let root = craft3d_engine::canonical(&dir).unwrap();
+        std::os::unix::fs::symlink(root.join("private/var"), root.join("var")).unwrap();
+        let p = Protected::with_system(Some(root.join("var/home/ann")), vec![root.join("var")]);
+        for var in [root.join("var"), root.join("private/var")] {
+            let home = var.join("home/ann");
+            assert_eq!(p.reason(&home.join("work")), None, "{}", home.display());
+            let why = p.reason(&home).unwrap();
+            assert!(why.contains("home folder itself"), "{why}");
+            assert!(p.reason(&var.join("home")).is_some());
+            let why = p.reason(&var.join("lib")).unwrap();
+            assert!(why.contains("of the system"), "{why}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

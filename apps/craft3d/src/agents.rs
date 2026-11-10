@@ -420,13 +420,13 @@ impl Agents {
         match answer {
             PromptAnswer::Folder => {
                 if !self.preferences.folders.contains(&folder) {
-                    self.preferences.folders.push(folder);
+                    self.preferences.folders.push(folder.clone());
                     self.remember();
                 }
             }
             PromptAnswer::Session => {
                 if !self.session_folders.contains(&folder) {
-                    self.session_folders.push(folder);
+                    self.session_folders.push(folder.clone());
                 }
             }
             // Once: the file for that request only, given to it alone by
@@ -447,9 +447,18 @@ impl Agents {
         }
         Some(match answer {
             PromptAnswer::Deny | PromptAnswer::Refuse => Verdict::Refuse(denied(&prompt)),
-            PromptAnswer::Once => Verdict::Once {
-                file: PathBuf::from(&prompt.path),
-                write: prompt.kind == "write",
+            // The places were made again just now (`recompute`): a folder
+            // that became protected since the question is not granted.
+            PromptAnswer::Once => match self.protected.reason(&folder) {
+                Some(why) => Verdict::Refuse(format!(
+                    "{}: 3DCraft never gives an agent `{}`: {why}",
+                    prompt.command.as_deref().unwrap_or("file access"),
+                    prompt.path
+                )),
+                None => Verdict::Once {
+                    file: PathBuf::from(&prompt.path),
+                    write: prompt.kind == "write",
+                },
             },
             _ => Verdict::Run,
         })
@@ -1654,6 +1663,60 @@ mod tests {
                 .any(|r| Path::new(&r.path).starts_with(home.join("dotfiles"))),
             "{:?}",
             agents.status().roots
+        );
+        let _ = std::fs::remove_dir_all(&state);
+    }
+
+    /// Allow once grants the file only when its folder is still not
+    /// protected as the person answers: a folder of keys moved away and
+    /// replaced by a link to the folder asked about, between the question
+    /// and the answer, is refused; the same answer in a plain folder grants
+    /// the file (2026-11-10, the review).
+    #[cfg(unix)]
+    #[test]
+    fn allow_once_is_refused_for_a_folder_that_became_protected_meanwhile() {
+        let state = workdir("once-moved");
+        let craft = state.join("craft");
+        let home = state.join("home");
+        std::fs::create_dir_all(&craft).unwrap();
+        std::fs::create_dir_all(home.join(".config")).unwrap();
+        std::fs::create_dir_all(home.join("dotfiles/config/autostart")).unwrap();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+        let mut config = config(&craft);
+        config.protected = Protected::new(Some(home.clone()), None, Vec::new());
+        let (mut agents, _pump) = agents(config);
+        agents.allow(true);
+        let origin = Origin {
+            key: "k".to_string(),
+            name: "Claude Code".to_string(),
+            cwd: None,
+            grant: None,
+        };
+        let want = |path: PathBuf| Wanted {
+            command: "file.save".to_string(),
+            path: path.to_str().unwrap().to_string(),
+            write: true,
+            folder: false,
+        };
+        let autostart = home.join("dotfiles/config/autostart/x.desktop");
+        let asked = agents.screen(&origin, &[want(autostart)]).unwrap().unwrap();
+        std::fs::rename(home.join(".config"), home.join("old-config")).unwrap();
+        std::os::unix::fs::symlink(home.join("dotfiles/config"), home.join(".config")).unwrap();
+        match agents.answer(asked, PromptAnswer::Once) {
+            Some(Verdict::Refuse(why)) => assert!(why.contains("keys and settings"), "{why}"),
+            other => panic!("granted once: {other:?}"),
+        }
+        let plain = home.join("projects/bracket.3dcraft");
+        let asked = agents
+            .screen(&origin, &[want(plain.clone())])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            agents.answer(asked, PromptAnswer::Once),
+            Some(Verdict::Once {
+                file: plain,
+                write: true
+            })
         );
         let _ = std::fs::remove_dir_all(&state);
     }
