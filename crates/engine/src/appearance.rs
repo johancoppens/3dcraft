@@ -71,7 +71,7 @@ use craft3d_regen::Regen;
 use craft3d_render::studio::layers::{Optics as RenderOptics, TangentField};
 use craft3d_topo::Body;
 use std::cell::OnceCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The document's variables and tables as expressions are evaluated
 /// against them; none when its table does not build (a hand-edited file).
@@ -713,21 +713,18 @@ fn entries_on_way(
 /// feature and every entry on its way back ([`entries_on_way`]), features
 /// that are off included. What `face.appearance {body, clear: true}`
 /// takes away (`appearance_cmds.rs`): with them gone, every face of the
-/// body shows the body's colour.
-pub(crate) fn body_face_entries(
+/// body shows the body's colour. `memo` may be shared by the bodies of
+/// one document: what it remembers is a function of the document.
+fn body_face_entries(
     doc: &Document,
     regen: &Regen,
+    memo: &mut Memo,
     feature: FeatureId,
-) -> std::collections::BTreeSet<FaceEntry> {
-    let mut out = std::collections::BTreeSet::new();
-    if doc.faces.is_empty() {
-        return out;
-    }
+) -> BTreeSet<FaceEntry> {
+    let mut out = BTreeSet::new();
     let Some(names) = regen.feature(feature).and_then(|r| r.names.as_deref()) else {
         return out;
     };
-    let values = Values::new(doc);
-    let mut memo = Memo::with_off(&values);
     for (face, name) in names.faces.iter().enumerate() {
         for own in names.names_of(face) {
             if doc.face_appearance(feature, own).is_some() {
@@ -735,56 +732,74 @@ pub(crate) fn body_face_entries(
             }
         }
         if name.role == NameRole::Copy && name.feature == feature {
-            out.extend(entries_on_way(doc, regen, &mut memo, feature, name));
+            out.extend(entries_on_way(doc, regen, memo, feature, name));
         }
     }
     out
 }
 
-/// [`body_face_entries`] of every body there is now (not those that went
-/// into a later feature, nor those of features that are off): empty when
-/// the document has no face colours.
-pub(crate) fn live_body_face_entries(
-    doc: &Document,
-    regen: &Regen,
-) -> BTreeMap<FeatureId, std::collections::BTreeSet<FaceEntry>> {
-    if doc.faces.is_empty() {
-        return BTreeMap::new();
-    }
-    regen
-        .bodies()
-        .map(|(id, _)| (id, body_face_entries(doc, regen, id)))
-        .collect()
+/// The face colours of every body there is now (not those that went into
+/// a later feature, nor those of features that are off), and for each
+/// colour the bodies that carry it, in the order of their features' ids:
+/// found in one pass over the bodies, so that telling each body's own
+/// colours from those it shares ([`Self::own_and_shared`]) costs the
+/// same per body however many bodies there are. Empty, and found at no
+/// cost, when the document has no face colours.
+#[derive(Default)]
+pub(crate) struct FaceEntryOwners {
+    by_body: BTreeMap<FeatureId, BTreeSet<FaceEntry>>,
+    owners: BTreeMap<FaceEntry, Vec<FeatureId>>,
 }
 
-/// The face colours of the body of `feature` (one of `all`, from
-/// [`live_body_face_entries`]) split in two: those that colour this body
-/// alone, which `face.appearance {body, clear: true}` takes away, and
-/// those that colour a face of another body too (a copy kept by a mirror
-/// or a transform, the other pieces of a split), with those bodies, which
-/// it keeps: clearing one body never changes another.
-pub(crate) fn own_and_shared_entries(
-    all: &BTreeMap<FeatureId, std::collections::BTreeSet<FaceEntry>>,
-    feature: FeatureId,
-) -> (Vec<FaceEntry>, BTreeMap<FaceEntry, Vec<FeatureId>>) {
-    let mut own = Vec::new();
-    let mut shared: BTreeMap<FaceEntry, Vec<FeatureId>> = BTreeMap::new();
-    let Some(carried) = all.get(&feature) else {
-        return (own, shared);
-    };
-    for entry in carried {
-        let others: Vec<FeatureId> = all
-            .iter()
-            .filter(|(other, theirs)| **other != feature && theirs.contains(entry))
-            .map(|(other, _)| *other)
-            .collect();
-        if others.is_empty() {
-            own.push(entry.clone());
-        } else {
-            shared.insert(entry.clone(), others);
+impl FaceEntryOwners {
+    pub(crate) fn of(doc: &Document, regen: &Regen) -> Self {
+        if doc.faces.is_empty() {
+            return Self::default();
         }
+        let values = Values::new(doc);
+        let mut memo = Memo::with_off(&values);
+        let by_body: BTreeMap<FeatureId, BTreeSet<FaceEntry>> = regen
+            .bodies()
+            .map(|(id, _)| (id, body_face_entries(doc, regen, &mut memo, id)))
+            .collect();
+        let mut owners: BTreeMap<FaceEntry, Vec<FeatureId>> = BTreeMap::new();
+        for (body, entries) in &by_body {
+            for entry in entries {
+                owners.entry(entry.clone()).or_default().push(*body);
+            }
+        }
+        FaceEntryOwners { by_body, owners }
     }
-    (own, shared)
+
+    /// The face colours of the body of `feature` split in two: those that
+    /// colour this body alone, which `face.appearance {body, clear: true}`
+    /// takes away, and those that colour a face of another body too (a
+    /// copy kept by a mirror or a transform, the other pieces of a split),
+    /// with those bodies, which it keeps: clearing one body never changes
+    /// another.
+    pub(crate) fn own_and_shared(
+        &self,
+        feature: FeatureId,
+    ) -> (Vec<FaceEntry>, BTreeMap<FaceEntry, Vec<FeatureId>>) {
+        let mut own = Vec::new();
+        let mut shared: BTreeMap<FaceEntry, Vec<FeatureId>> = BTreeMap::new();
+        let Some(carried) = self.by_body.get(&feature) else {
+            return (own, shared);
+        };
+        for entry in carried {
+            let others: Vec<FeatureId> = self
+                .owners
+                .get(entry)
+                .map(|bodies| bodies.iter().copied().filter(|b| *b != feature).collect())
+                .unwrap_or_default();
+            if others.is_empty() {
+                own.push(entry.clone());
+            } else {
+                shared.insert(entry.clone(), others);
+            }
+        }
+        (own, shared)
+    }
 }
 
 /// The appearance of every face of the body of `feature`, in the order of

@@ -3672,7 +3672,7 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
     });
     let values = crate::appearance::Values::new(doc);
     // The face colours every body carries (empty without face colours).
-    let face_entries = crate::appearance::live_body_face_entries(doc, &regen);
+    let face_entries = crate::appearance::FaceEntryOwners::of(doc, &regen);
     for feature in &doc.features {
         let outcome = regen.feature(feature.id);
         let (status, error) = outcome.map_or(("unknown", None), |o| status_json(&o.status));
@@ -3820,8 +3820,7 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
                 // given: those of this body alone (what `face.appearance
                 // {body, clear}` clears), and those another body shares,
                 // with those bodies; only when there are any.
-                let (own, shared) =
-                    crate::appearance::own_and_shared_entries(&face_entries, feature.id);
+                let (own, shared) = face_entries.own_and_shared(feature.id);
                 if !own.is_empty() {
                     map.insert("faceColors".into(), own.len().into());
                 }

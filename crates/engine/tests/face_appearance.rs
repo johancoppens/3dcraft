@@ -1409,3 +1409,92 @@ fn clearing_a_body_takes_every_entry_of_a_merged_face() {
     assert!(inspect.get("faceAppearances").is_none(), "{inspect}");
     assert!(colours_of(&mut s, "F4").iter().all(|c| *c == Some(BLUE)));
 }
+
+/// Many bodies sharing a face colour: one part with a blue top, mirrored
+/// with `keep` 300 times, each mirror then given a green face of its own.
+/// Every one of the 301 bodies carries the blue entry, so it is shared by
+/// all of them; each mirror's green is its own. `document.inspect` and
+/// clearing one mirror say exactly that, whatever the number of bodies.
+#[test]
+fn many_bodies_sharing_a_face_colour_are_told_apart() {
+    const MIRRORS: usize = 300;
+    let mut s = session();
+    new_doc(&mut s);
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Part", "size": [10, 10, 10]}),
+    );
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"faces": ["F1:face(1)"], "color": BLUE}),
+    );
+    let names: Vec<String> = (0..MIRRORS).map(|k| format!("M{k:03}")).collect();
+    for (k, name) in names.iter().enumerate() {
+        run(
+            &mut s,
+            "feature.mirror",
+            json!({"source": "Part", "normal": [1, 0, 0], "point": [20 * (k + 1), 0, 0], "keep": true, "name": name}),
+        );
+    }
+    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    let first_faces: Vec<String> = names
+        .iter()
+        .map(|name| {
+            let body = inspect["bodies"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|b| b["name"] == name.as_str())
+                .unwrap();
+            body["faceNames"][0].as_str().unwrap().to_string()
+        })
+        .collect();
+    for (name, face) in names.iter().zip(&first_faces) {
+        run(
+            &mut s,
+            "face.appearance",
+            json!({"body": name, "faces": [face], "color": GREEN}),
+        );
+    }
+    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    let bodies = inspect["bodies"].as_array().unwrap();
+    assert_eq!(bodies.len(), MIRRORS + 1);
+    for body in bodies {
+        let name = body["name"].as_str().unwrap();
+        // Every other body, by name, in order.
+        let mut others: Vec<&str> = std::iter::once("Part")
+            .chain(names.iter().map(String::as_str))
+            .filter(|n| *n != name)
+            .collect();
+        others.sort_unstable();
+        if name == "Part" {
+            assert!(body.get("faceColors").is_none(), "{body}");
+        } else {
+            assert_eq!(body["faceColors"], 1, "{body}");
+        }
+        assert_eq!(body["sharedFaceColors"], 1, "{name}");
+        assert_eq!(body["sharedWith"], json!(others), "{name}");
+    }
+    // Clearing one mirror: its green goes, the blue is kept for the 300
+    // others, Part first and then the mirrors in history order.
+    let out = run(
+        &mut s,
+        "face.appearance",
+        json!({"body": "M150", "clear": true}),
+    );
+    assert_eq!(out["count"], 1, "{out}");
+    assert_eq!(
+        out["cleared"][0]["face"],
+        first_faces[150].as_str(),
+        "{out}"
+    );
+    let kept = out["kept"].as_array().unwrap();
+    assert_eq!(kept.len(), 1, "{out}");
+    assert_eq!(kept[0]["face"], "F1:face(1)", "{out}");
+    let for_: Vec<&str> = std::iter::once("Part")
+        .chain(names.iter().map(String::as_str).filter(|n| *n != "M150"))
+        .collect();
+    assert_eq!(kept[0]["for"], json!(for_), "{out}");
+}

@@ -414,7 +414,7 @@ fn find_face(
 
 /// `face.appearance {body, clear: true}` without `faces`: takes away
 /// every face colour the faces of `body` carry, wherever on the way back
-/// along its history it was given ([`crate::appearance::body_face_entries`]),
+/// along its history it was given ([`crate::appearance::FaceEntryOwners`]),
 /// as one undo step, so that every face shows the body's colour; colours
 /// given at a feature that is off now go too, listed as the others. An
 /// entry that also colours a face of another body (a copy kept by a mirror
@@ -478,8 +478,8 @@ fn clear_body(session: &mut Session, p: &Params) -> Run {
         };
     }
     // An entry that a face of another body walks back to too is kept.
-    let all = crate::appearance::live_body_face_entries(&doc, &regen);
-    let (to_clear, shared) = crate::appearance::own_and_shared_entries(&all, id);
+    let (to_clear, shared) =
+        crate::appearance::FaceEntryOwners::of(&doc, &regen).own_and_shared(id);
     let body_name = |other: &FeatureId| {
         doc.feature(*other)
             .map_or_else(|| other.to_string(), |f| f.name.clone())
