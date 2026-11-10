@@ -4115,6 +4115,25 @@ pub(crate) fn check_document(
 ) -> Run {
     let measure = measure || deep;
     let open = session.document_mut()?;
+    // An assembly's instances placed although a feature of their part
+    // failed in their configuration (with the bodies from before it, as
+    // the part shows them): problems of the design, by instance and
+    // feature (A-023).
+    let failed_instances: Vec<Value> = match (only, open.placed()) {
+        (None, Some(placed)) => placed
+            .instances
+            .iter()
+            .filter(|i| i.flex_of.is_none())
+            .filter_map(|i| {
+                let why = i.feature_failed.as_ref()?;
+                Some(json!({
+                    "instance": i.name,
+                    "problem": format!("instance `{}`: {why}", i.name),
+                }))
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
     // A deep check holds every boolean to its operands, also those the
     // cache let go of.
     let regen = open.regen_needing(if deep {
@@ -4127,7 +4146,7 @@ pub(crate) fn check_document(
         .ok_or_else(|| {
             CommandError::new("document.check: the document's tolerance is not positive and finite")
         })?;
-    let mut problems = Vec::new();
+    let mut problems = failed_instances;
     let mut loose: Vec<Value> = Vec::new();
     for variable in regen.variables.iter().filter(|_| only.is_none()) {
         if let Err(error) = &variable.value {

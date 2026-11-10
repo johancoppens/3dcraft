@@ -213,3 +213,66 @@ fn a_pinned_instance_whose_source_changed_is_marked_in_the_instances_panel() {
     );
     assert!(row.held.as_deref().unwrap().contains("pinned"), "{row:?}");
 }
+
+/// A-023: an instance whose part has a feature that fails with the
+/// instance's values is marked in the Instances panel, with the feature
+/// and the part's reason in its tooltip, and still shows its body.
+#[test]
+fn an_instance_whose_part_has_a_failed_feature_is_marked_in_the_instances_panel() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("ui-asm-failed-feature");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::new(Workspace {
+        read: Access::Root(dir.clone()),
+        write: Access::Root(dir.clone()),
+    });
+    run(&mut s, "file.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "corner", "expr": "1 mm" }),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({ "name": "corner", "min": "0.5 mm", "max": "30 mm" }),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({ "name": "Blank", "size": ["30 mm", "20 mm", "4 mm"] }),
+    );
+    run(
+        &mut s,
+        "feature.fillet",
+        json!({ "name": "Round", "edges": [["F1:face(0)", "F1:face(2)"]], "radius": "corner" }),
+    );
+    run(&mut s, "file.save", json!({ "path": "plate.3dcraft" }));
+    run(&mut s, "file.close", json!({}));
+    run(&mut s, "assembly.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "plate.3dcraft", "name": "K", "params": { "corner": "12 mm" } }),
+    );
+    let mut shell = Shell::new();
+    let mut window = Window {
+        ctx: egui::Context::default(),
+        time: 0.0,
+    };
+    window.frames(&mut shell, &mut s);
+    // The blank, 30 long, from before the fillet.
+    assert!((width(&shell) - 30.0).abs() < 1e-6, "{}", width(&shell));
+    let row = &shell.tree_rows()[0];
+    assert_eq!(row.state, craft3d_engine::FeatureState::Ok, "{row:?}");
+    assert!(
+        row.status.contains(craft3d_ui_egui::shell::HELD_MARK),
+        "{row:?}"
+    );
+    let failed = row.failed.as_deref().unwrap_or_else(|| panic!("{row:?}"));
+    assert!(
+        failed.contains("`Round` (F2)") && failed.contains("radius"),
+        "{failed}"
+    );
+    assert!(row.held.is_none(), "{row:?}");
+}

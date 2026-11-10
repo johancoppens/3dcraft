@@ -1640,3 +1640,129 @@ fn a_source_beneath_a_relative_root_joins_an_assembly_kept_by_its_absolute_path(
     assert_eq!(ring["source"]["path"], "other.3dcraft", "{ring}");
     assert!(close(volume(&i, "Ring"), 2000.0, 2000.0), "{ring}");
 }
+
+/// A plate 30 × 20 × 4 whose fillet `Plate` has the published radius
+/// `corner` (0.5 to 30 mm, 1 mm by default), saved at `plate.3dcraft`.
+fn filleted_plate(s: &mut Session) {
+    run(s, "file.new", json!({ "units": "mm" }));
+    run(
+        s,
+        "variable.set",
+        json!({ "name": "corner", "expr": "1 mm" }),
+    );
+    run(
+        s,
+        "variable.publish",
+        json!({ "name": "corner", "min": "0.5 mm", "max": "30 mm" }),
+    );
+    run(
+        s,
+        "feature.block",
+        json!({ "name": "Blank", "size": ["30 mm", "20 mm", "4 mm"] }),
+    );
+    run(
+        s,
+        "feature.fillet",
+        json!({ "name": "Plate", "edges": [["F1:face(0)", "F1:face(2)"]], "radius": "corner" }),
+    );
+    run(s, "file.save", json!({ "path": "plate.3dcraft" }));
+    run(s, "file.close", json!({}));
+}
+
+/// A-023: an instance whose configuration has a failed feature is placed
+/// with the bodies from before it, as the part shows them, but carries
+/// the failure by name (the part's own message) and the assembly's check
+/// is not ok, also through a subassembly. A valid value is ok.
+#[test]
+fn an_instance_whose_part_has_a_failed_feature_says_so_and_is_still_placed() {
+    let dir = workdir("assembly", "failed-feature");
+    let mut s = session_in(&dir);
+    filleted_plate(&mut s);
+    // The part's own message for a radius of 12 on a plate 4 thick.
+    run(&mut s, "file.open", json!({ "path": "plate.3dcraft" }));
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "corner", "expr": "12 mm" }),
+    );
+    let alone = run(&mut s, "document.check", json!({}));
+    assert_eq!(alone["ok"], false, "{alone}");
+    let own = alone["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "Plate")
+        .unwrap_or_else(|| panic!("the part's check names its fillet: {alone}"))["problem"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    run(&mut s, "file.close", json!({ "discard": true }));
+    let assemble = |s: &mut Session, corner: &str| {
+        run(s, "assembly.new", json!({ "units": "mm" }));
+        run(
+            s,
+            "instance.add",
+            json!({ "source": "plate.3dcraft", "name": "Plate", "params": { "corner": corner } }),
+        );
+        run(
+            s,
+            "mate.add",
+            json!({ "kind": "fixed", "name": "Ground", "a": "world/xy", "b": "Plate/F1:face(1)", "flip": true }),
+        );
+    };
+    assemble(&mut s, "12 mm");
+    let inspected = inspect(&mut s);
+    let row = instance(&inspected, "Plate");
+    // Placed: not an error, and its body is the blank's, 30 · 20 · 4.
+    assert_eq!(row["status"], "ok", "{row}");
+    assert_eq!(row["error"], Value::Null, "{row}");
+    assert_eq!(row["bodies"].as_array().unwrap().len(), 1, "{row}");
+    assert!(close(volume(&inspected, "Plate"), 2400.0, 2400.0), "{row}");
+    let failed = row["featureFailed"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{row}"));
+    assert!(failed.contains("`Plate` (F2)"), "{failed}");
+    assert!(
+        failed.ends_with(&own),
+        "the part's own message: {failed} / {own}"
+    );
+    let checked = run(&mut s, "document.check", json!({}));
+    assert_eq!(checked["ok"], false, "{checked}");
+    let problem = &checked["problems"][0];
+    assert_eq!(problem["instance"], "Plate", "{checked}");
+    let text = problem["problem"].as_str().unwrap();
+    assert!(
+        text.contains("instance `Plate`") && text.contains("`Plate` (F2)"),
+        "{text}"
+    );
+    run(&mut s, "file.save", json!({ "path": "inner.3dcraftasm" }));
+    run(&mut s, "file.close", json!({}));
+    // Through a subassembly: the top's instance names the inner one.
+    run(&mut s, "assembly.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "inner.3dcraftasm", "name": "Sub" }),
+    );
+    let inspected = inspect(&mut s);
+    let row = instance(&inspected, "Sub");
+    assert_eq!(row["status"], "ok", "{row}");
+    let failed = row["featureFailed"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{row}"));
+    assert!(
+        failed.starts_with("its instance `Plate`: ") && failed.contains("`Plate` (F2)"),
+        "{failed}"
+    );
+    let checked = run(&mut s, "document.check", json!({}));
+    assert_eq!(checked["ok"], false, "{checked}");
+    assert_eq!(checked["problems"][0]["instance"], "Sub", "{checked}");
+    run(&mut s, "file.close", json!({ "discard": true }));
+    // A value the part takes: nothing failed, the check is ok.
+    assemble(&mut s, "1 mm");
+    let inspected = inspect(&mut s);
+    let row = instance(&inspected, "Plate");
+    assert_eq!(row["featureFailed"], Value::Null, "{row}");
+    let checked = run(&mut s, "document.check", json!({}));
+    assert_eq!(checked["ok"], true, "{checked}");
+}

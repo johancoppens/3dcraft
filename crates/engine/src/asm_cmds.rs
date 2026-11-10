@@ -310,6 +310,7 @@ fn instance_json(placed: &Placed, instance: &Instance) -> Value {
         "builtFrom": st.and_then(|s| s.hash.clone()),
         "changed": st.is_some_and(|s| s.changed),
         "held": st.and_then(|s| s.held.clone()),
+        "featureFailed": st.and_then(|s| s.feature_failed.clone()),
         "pinned": instance.pinned,
         "body": instance.body,
         "params": params,

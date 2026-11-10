@@ -1938,6 +1938,7 @@ mod tests {
             depth: 0,
             made_by: None,
             held: None,
+            failed: None,
         }
     }
 

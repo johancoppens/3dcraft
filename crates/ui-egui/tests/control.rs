@@ -299,7 +299,10 @@ fn ui_get_reports_the_state_the_scene_and_the_tree() {
                "passes": null,
                // Added with an assembly's instances following their
                // sources (2026-11-06): null for a feature.
-               "held": null})
+               "held": null,
+               // Added with an instance whose part has a failed feature
+               // (2026-11-10, A-023): null for a feature.
+               "featureFailed": null})
     );
     assert_eq!(features[2]["state"], "failed");
     assert_eq!(

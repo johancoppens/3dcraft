@@ -49,6 +49,9 @@ pub struct OutlineInstance {
     /// shows a version of it: pinned, or the file changed and could not
     /// be read again.
     pub held: Option<String>,
+    /// A feature of its part (or of a part in it) that failed in its
+    /// configuration: it is placed with the bodies from before it.
+    pub feature_failed: Option<String>,
     /// Shown (`instance.edit` with `visible` hides it); only for the
     /// assembly's own instances.
     pub visible: bool,
@@ -382,6 +385,7 @@ fn push_instance(
         subassembly: sub.is_some(),
         error: st.error.clone(),
         held: st.held.clone(),
+        feature_failed: st.feature_failed.clone(),
         visible,
         own,
         grounded: false,

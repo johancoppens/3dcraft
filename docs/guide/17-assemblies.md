@@ -28,7 +28,11 @@ move it from there.
 
 **Sizes per instance.** A part with public parameters (a Jig's, `variable.publish`) can be placed with other values:
 `"params": {"len": "80 mm"}`, or an expression of the assembly's own variables (`"params": {"len": "long"}`). Each
-different set of values is a *configuration*, built once however many instances use it.
+different set of values is a *configuration*, built once however many instances use it. When a feature of the part
+fails with the values given (a fillet too large for the plate), the instance is still placed with the bodies from before
+that feature, as the part itself shows them, but it says so: `assembly.inspect` gives the instance `featureFailed`
+(*its feature `Plate` (F2) failed: radius: too large for edges.0*; through a subassembly, *its instance `Plate`: …*),
+its row in the window is marked ⚠ with the reason in its tooltip, and the assembly's `document.check` is not ok.
 
 **One body of a multi-body part.** `"body": "Gear"` shows only the body the feature `Gear` made, where the part puts
 it. This is how the bodies of an existing Jig become parts of an assembly. If the part changes so that `Gear` makes no

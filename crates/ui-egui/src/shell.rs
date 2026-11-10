@@ -341,10 +341,17 @@ pub struct TreeRow {
     /// source file holds now (pinned, or the file changed and could not
     /// be read again). The row is marked, and its tooltip says why.
     pub held: Option<String>,
+    /// In an assembly's tree: a feature of the instance's part that
+    /// failed in its configuration (it shows the bodies from before it).
+    /// The row is marked as for `held`, and its tooltip says which and
+    /// why.
+    pub failed: Option<String>,
 }
 
 /// The mark after the source of an instance row whose source changed and
-/// is not followed ([`TreeRow::held`]). In egui's default fonts.
+/// is not followed ([`TreeRow::held`]), or whose part has a feature that
+/// failed in its configuration ([`TreeRow::failed`]). In egui's default
+/// fonts.
 pub const HELD_MARK: char = '⚠';
 
 /// The marks of the feature tree, by state: built, failed, suppressed,
@@ -2600,6 +2607,7 @@ impl Shell {
                 instance: None,
                 depth: 0,
                 held: None,
+                failed: None,
             })
             .collect();
         // An assembly lists its instances, nested by subassembly, and its
@@ -2665,9 +2673,10 @@ impl Shell {
                         } else {
                             FeatureState::Ok
                         },
-                        status: match &i.held {
-                            Some(_) => format!("{} {HELD_MARK}", i.source),
-                            None => i.source.clone(),
+                        status: if i.held.is_some() || i.feature_failed.is_some() {
+                            format!("{} {HELD_MARK}", i.source)
+                        } else {
+                            i.source.clone()
                         },
                         error: i.error.clone(),
                         caused_by: None,
@@ -2680,6 +2689,7 @@ impl Shell {
                         depth: i.depth,
                         made_by: None,
                         held: i.held.clone(),
+                        failed: i.feature_failed.clone(),
                     }
                 })
                 .collect();
@@ -3954,10 +3964,14 @@ impl Shell {
                                     | FeatureState::Inactive
                                     | FeatureState::RolledBack
                             );
-                            let hover = match (&row.error, &row.held) {
-                                (Some(error), _) => error.clone(),
-                                (None, Some(held)) => format!("{} · {held}", row.kind),
-                                (None, None) => format!("{} · {}", row.kind, row.status),
+                            let hover = match (&row.error, &row.held, &row.failed) {
+                                (Some(error), ..) => error.clone(),
+                                (None, Some(held), Some(failed)) => {
+                                    format!("{} · {held} · {failed}", row.kind)
+                                }
+                                (None, Some(held), None) => format!("{} · {held}", row.kind),
+                                (None, None, Some(failed)) => format!("{} · {failed}", row.kind),
+                                (None, None, None) => format!("{} · {}", row.kind, row.status),
                             };
                             let icon = match row.kind {
                                 "subassembly" => crate::kit::Glyph::Assembly,

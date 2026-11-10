@@ -271,6 +271,33 @@ pub(crate) fn regen_bytes(regen: &Regen) -> usize {
     bytes.saturating_mul(2).saturating_add(RECORDS)
 }
 
+/// Why a configuration is not all there although it is placed: the first
+/// feature of its part that failed, by name, with the part's own message
+/// (those after it that fail because of it are not named again); for a
+/// subassembly, the first of its own instances whose configuration has
+/// one, by its name there.
+pub(crate) fn failed_in(built: &Built) -> Option<String> {
+    match built {
+        Built::Part { doc, regen } => regen.features.iter().find_map(|f| match &f.status {
+            Status::Failed(why) => {
+                let name = doc
+                    .feature(f.id)
+                    .map_or_else(|| f.id.to_string(), |feature| feature.name.clone());
+                Some(format!("its feature `{name}` ({}) failed: {why}", f.id))
+            }
+            _ => None,
+        }),
+        Built::Assembly(placed) => placed
+            .instances
+            .iter()
+            .filter(|i| i.flex_of.is_none())
+            .find_map(|i| {
+                let why = i.feature_failed.as_ref()?;
+                Some(format!("its instance `{}`: {why}", i.name))
+            }),
+    }
+}
+
 /// A configuration built: a part regenerated with its parameters set, or
 /// a subassembly placed.
 pub(crate) enum Built {
@@ -300,6 +327,12 @@ pub(crate) struct InstanceState {
     /// still shows a version of it: pinned to another, or the file
     /// changed and could not be read again (the last version read stays).
     pub held: Option<String>,
+    /// A feature of its part that failed in its configuration, by name
+    /// and with the part's own message (for a subassembly, of a part in
+    /// it, by the instance's name there): the instance is placed with
+    /// the bodies from before it, as the part shows them, and the
+    /// assembly is not ok ([`failed_in`]).
+    pub feature_failed: Option<String>,
     pub pose: Transform,
     /// The features of [`Placed::doc`] that hold its bodies.
     pub bodies: Vec<FeatureId>,
@@ -916,6 +949,7 @@ fn place_from(
                 *shown |= bodies;
                 *solved |= !bodies;
                 st.built = Some(Arc::clone(built));
+                st.feature_failed = failed_in(built);
                 // A subassembly whose own sources changed has changed too.
                 if let Built::Assembly(sub) = &**built
                     && sub.instances.iter().any(|i| i.changed)
@@ -1012,6 +1046,7 @@ fn gather(
             hash: None,
             changed: false,
             held: None,
+            feature_failed: None,
             pose: placement_pose(&instance.placement),
             bodies: Vec::new(),
             built: None,

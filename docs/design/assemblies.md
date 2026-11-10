@@ -312,7 +312,13 @@ What an open assembly shows is derived and may be thrown away (rule 2). `OpenDoc
   `warnings`) and read again at the next look. `InstanceState::held` says why an instance does not show what its file
   holds now, pinned or not read again (`assembly.inspect` › `held`, the outline's `held`, the Instances panel's ⚠ and
   tooltip); in the browser the outline comes from the worker, which does not know `unfollowed`, so there only a
-  pinned instance is marked. Before, only `assembly.reload` read a source again, and the window never ran it: a part
+  pinned instance is marked. `InstanceState::feature_failed` (2026-11-10, A-023) says which feature of an
+  instance's part failed in its configuration, with the part's own message (`asm::failed_in`: the first failed
+  feature; for a subassembly the first of its instances with one, by its name there, so a failure inside a
+  subassembly surfaces at the top): the instance is placed with the bodies from before it, as the part shows them,
+  and `error` stays for an instance that is not placed. It is `assembly.inspect` › `featureFailed`, the outline's
+  `feature_failed` (carried from the worker in the browser), the Instances panel's ⚠ and tooltip and a problem of the
+  assembly's `document.check` (before, a lamp's turret showed four intermediate bodies and the check was ok). Before, only `assembly.reload` read a source again, and the window never ran it: a part
   saved in its own tab did not show in the assembly's (the developer, 2026-11-06). Measured on the pi case (two
   parts, three instances; test profile): a check that finds nothing 0.07 ms (it parsed each part to see whether it
   is a subassembly, 4 ms, until it took the parsed sources of the placement), the save of `case.3dcraft` 137 ms
