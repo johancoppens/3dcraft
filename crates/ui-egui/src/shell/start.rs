@@ -31,6 +31,11 @@ use serde_json::{Value, json};
 /// ([`ExampleSection::more_url`]; docs/decisions.md, 2026-11-10).
 pub const EXAMPLES_URL: &str = "https://3dcraft.dev/examples/";
 
+/// The label the hosts report an example opened from the start screen
+/// under ([`run_example`]'s outcome): the window's own work, not a
+/// command, so the status bar says only what it did ("Opened Moka pot").
+pub const EXAMPLE_LABEL: &str = "example";
+
 /// A section of the start screen's examples, one kind each.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ExampleSection {
@@ -404,7 +409,7 @@ pub fn run_example(session: &mut Session, example: &Example) -> Result<Value, St
             let opened = session
                 .open_bytes_titled(name, Some(example.title), bytes)
                 .map_err(|e| format!("example {}: {}", example.id, e.message()))?;
-            return Ok(json!({ "example": example.id, "opened": opened }));
+            return Ok(json!({ "example": example.id, "title": example.title, "opened": opened }));
         }
         (None, Source::Script(_)) => return Err(format!("example {}: no script", example.id)),
     };
@@ -417,7 +422,7 @@ pub fn run_example(session: &mut Session, example: &Example) -> Result<Value, St
             return Err(example_step_failed(example, index, command, e.message()));
         }
     }
-    Ok(json!({ "example": example.id, "steps": steps.len() }))
+    Ok(json!({ "example": example.id, "title": example.title, "steps": steps.len() }))
 }
 
 /// How an MCP client starts the bridge to this window: the `craft3d-cli`

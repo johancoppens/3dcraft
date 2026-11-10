@@ -722,3 +722,93 @@ fn after_a_recording_ahead_of_the_clock_the_status_bar_moves_on() {
         "the status bar stood still after the recording"
     );
 }
+
+/// An example opened from the start screen is said by what was done,
+/// "Opened Moka pot", as File › Open says a file: never the window's own
+/// work label with "Done" after it (`example Done`, seen in the guide's
+/// pictures, 2026-11-10). A failure keeps the label, which names what
+/// failed.
+#[test]
+fn an_example_opened_is_said_without_the_work_label() {
+    use craft3d_ui_egui::shell::{EXAMPLE_LABEL, EXAMPLES, run_example};
+    let mut session = Session::new(Workspace::none());
+    let mut shell = Shell::new();
+    let ctx = egui::Context::default();
+    let mut clock = 0_u32;
+    let mut frame = |shell: &mut Shell, session: &mut Session| {
+        clock += 1;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))),
+            time: Some(f64::from(clock) * 0.2),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| shell.ui(ui, session));
+        output.textures_delta.clear();
+    };
+    let profile = EXAMPLES.iter().find(|e| e.id == "t-slot-profile").unwrap();
+    let opened = run_example(&mut session, profile).unwrap();
+    // As the hosts report it.
+    shell.last_command = Some(CommandReport {
+        label: EXAMPLE_LABEL.to_string(),
+        ok: true,
+        text: craft3d_ui_egui::answer::summary(EXAMPLE_LABEL, &opened),
+    });
+    for _ in 0..30 {
+        frame(&mut shell, &mut session);
+    }
+    assert_eq!(shell.status_shown(StatusSlot::Command), None);
+    assert_eq!(
+        shell.status_shown(StatusSlot::Answer),
+        Some(format!("Opened {}", profile.title).as_str())
+    );
+    // A failure says what failed.
+    shell.last_command = Some(CommandReport {
+        label: EXAMPLE_LABEL.to_string(),
+        ok: false,
+        text: "example x: no script".to_string(),
+    });
+    for _ in 0..30 {
+        frame(&mut shell, &mut session);
+    }
+    assert_eq!(shell.status_shown(StatusSlot::Command), Some(EXAMPLE_LABEL));
+}
+
+/// The renderer's numbers are said only while a document is shown: the
+/// start screen has no picture to speak of (it said `GPU 1400×916 · 0
+/// triangles`, 2026-11-10).
+#[test]
+fn the_renderers_numbers_only_with_a_document() {
+    let mut session = Session::new(Workspace::none());
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let ctx = egui::Context::default();
+    let mut clock = 0_u32;
+    let mut frame = |shell: &mut Shell, session: &mut Session| {
+        clock += 1;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))),
+            time: Some(f64::from(clock) * 0.2),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| shell.ui(ui, session));
+        output.textures_delta.clear();
+    };
+    for _ in 0..10 {
+        frame(&mut shell, &mut session);
+    }
+    assert!(shell.start_shown());
+    assert_eq!(shell.status_shown(StatusSlot::Render), None);
+    assert_eq!(shell.status_shown(StatusSlot::Units), Some("no document"));
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(&mut session, "feature.block", json!({"size": [10, 10, 10]}));
+    for _ in 0..10 {
+        frame(&mut shell, &mut session);
+    }
+    let render = shell.status_shown(StatusSlot::Render).unwrap_or_default();
+    assert!(render.contains("triangles"), "{render:?}");
+    run(&mut session, "file.close", json!({"discard": true}));
+    for _ in 0..10 {
+        frame(&mut shell, &mut session);
+    }
+    assert!(shell.start_shown());
+    assert_eq!(shell.status_shown(StatusSlot::Render), None);
+}

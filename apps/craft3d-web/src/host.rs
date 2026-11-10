@@ -1326,7 +1326,8 @@ impl WebHost {
             }
             let Some((command, params)) = run.steps.get(index).cloned() else {
                 self.example_run = None;
-                let built = json!({ "example": example.id, "steps": total });
+                let built =
+                    json!({ "example": example.id, "title": example.title, "steps": total });
                 return self.finish("example", &Ok(built));
             };
             let work = self.session.work_here();

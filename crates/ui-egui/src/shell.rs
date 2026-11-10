@@ -62,8 +62,8 @@ pub use params::{
 pub use popover::{cube_out_of_the_way, popover_place, split_chip};
 pub use recent::{MAX_RECENT, RecentEntry, RecentFiles};
 pub use start::{
-    AgentSetup, EXAMPLES, EXAMPLES_URL, Example, ExampleSection, McpClient, example_step_failed,
-    example_steps, run_example,
+    AgentSetup, EXAMPLE_LABEL, EXAMPLES, EXAMPLES_URL, Example, ExampleSection, McpClient,
+    example_step_failed, example_steps, run_example,
 };
 pub use tabs::{
     CLOSE_MARK, CloseAnswer, ClosingWords, DocAction, TabPart, UNSAVED_MARK, close_shortcut,
@@ -3512,18 +3512,23 @@ impl Shell {
             } else {
                 tokens.chrome_failed
             };
-            let label_width = self
-                .calm
-                .command_width
-                .width(&label, measure(&label).ceil());
             let answer_width = self
                 .calm
                 .answer_width
                 .width(&answer, measure(&answer).ceil());
-            items.push(StatusItem {
-                width: Some(label_width),
-                ..StatusItem::fixed(StatusSlot::Command, label, color(tint))
-            });
+            // The window's own work of opening an example from the start
+            // screen is not a command: when it went well, its answer says
+            // it alone ("Opened Moka pot"), without its label.
+            if !ok || label != EXAMPLE_LABEL {
+                let label_width = self
+                    .calm
+                    .command_width
+                    .width(&label, measure(&label).ceil());
+                items.push(StatusItem {
+                    width: Some(label_width),
+                    ..StatusItem::fixed(StatusSlot::Command, label, color(tint))
+                });
+            }
             // A failure's message in the failure's ink too (board s3).
             let answer_ink = if ok { dim } else { color(tokens.chrome_failed) };
             items.push(StatusItem {
@@ -3537,8 +3542,13 @@ impl Shell {
                 ..StatusItem::elided(StatusSlot::Work, text, color(tokens.chrome_text))
             });
         }
-        self.status_render = Some(self.stats.as_ref().map(RenderStats::key));
-        if let Some(stats) = self.stats {
+        // The renderer's numbers only while a document is shown: the start
+        // screen has no picture to speak of (2026-11-10).
+        let stats = self.stats.filter(|_| status.is_some());
+        self.status_render = status
+            .is_some()
+            .then(|| self.stats.as_ref().map(RenderStats::key));
+        if let Some(stats) = stats {
             // How long the picture took is the wall clock's: not drawn
             // while a frame-exact recording keeps the clock.
             let time = stats
@@ -3679,8 +3689,11 @@ impl Shell {
             };
             let mut copy_shown = false;
             let mut right_started = false;
+            let mut before: Option<StatusSlot> = None;
             for (item, width) in items.iter().zip(&widths) {
                 let Some(width) = *width else { continue };
+                let after_command = before == Some(StatusSlot::Command);
+                before = Some(item.slot);
                 if item.on_the_right() && !copy_shown {
                     copy_button(ui, &mut used);
                     copy_shown = true;
@@ -3698,7 +3711,7 @@ impl Shell {
                         egui::vec2(tokens.status_gap, height),
                         egui::Sense::hover(),
                     );
-                    if item.slot != StatusSlot::Answer {
+                    if !(item.slot == StatusSlot::Answer && after_command) {
                         let x = gap.center().x;
                         ui.painter().line_segment(
                             [
