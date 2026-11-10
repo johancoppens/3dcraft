@@ -125,11 +125,15 @@ const SETTINGS: &str = "a folder of the system or of your settings";
 const OF_THE_SYSTEM: &str = "a folder of the system";
 const OWN: &str = "3DCraft's own folder, where its control token is";
 
-/// The places never offered to an agent, made once (they are looked up
-/// on the file system then, not at every question: [`Protected::reason`]
-/// runs on the window's thread).
+/// The places never offered to an agent, looked up on the file system when
+/// they are made, not at every question ([`Protected::reason`] runs on the
+/// window's thread); made again with [`Protected::refreshed`] whenever the
+/// agents' roots are (a place moved while the window runs).
 #[derive(Clone, Debug)]
 pub struct Protected {
+    /// What they are made from: the home folder, the state folder and the
+    /// environment's places, as given.
+    given: (Option<PathBuf>, Option<PathBuf>, Vec<PathBuf>),
     home: Option<PathBuf>,
     /// 3DCraft's state folder (the control token lives there), as given
     /// and resolved.
@@ -195,9 +199,12 @@ fn has_dot_part(path: &Path) -> bool {
 }
 
 impl Protected {
-    /// The places for a home folder, 3DCraft's state folder and the places
-    /// the environment names (all absolute; a relative one is left out).
+    /// The places for a home folder (taken with its links resolved),
+    /// 3DCraft's state folder and the places the environment names (all
+    /// absolute; a relative one is left out).
     pub fn new(home: Option<PathBuf>, state: Option<PathBuf>, environment: Vec<PathBuf>) -> Self {
+        let given = (home.clone(), state.clone(), environment.clone());
+        let home = home.map(|home| resolved(&home).unwrap_or(home));
         let mut places = Vec::new();
         if let Some(home) = &home {
             for secret in HOME_SECRETS {
@@ -237,6 +244,7 @@ impl Protected {
             spellings
         };
         Self {
+            given,
             cloud_storage: cloud("CloudStorage"),
             icloud_drive: cloud("Mobile Documents/com~apple~CloudDocs"),
             library: library.map(both_spellings).unwrap_or_default(),
@@ -267,7 +275,15 @@ impl Protected {
 
     /// The same places with 3DCraft's state folder `state`.
     pub fn set_state(&mut self, state: &Path) {
+        self.given.1 = Some(state.to_path_buf());
         self.state = both_spellings(state.to_path_buf());
+    }
+
+    /// The places made again from what they were made from, looked up on
+    /// the file system as it is now.
+    pub fn refreshed(&self) -> Self {
+        let (home, state, environment) = self.given.clone();
+        Self::new(home, state, environment)
     }
 
     pub fn from_env(env: &dyn Fn(&str) -> Option<String>, state: Option<&Path>) -> Self {
@@ -294,12 +310,7 @@ impl Protected {
         .iter()
         .filter_map(|name| var(name))
         .collect();
-        let real = |path: PathBuf| resolved(&path).unwrap_or(path);
-        Self::new(
-            home.map(real),
-            state.map(|state| real(state.to_path_buf())),
-            places,
-        )
+        Self::new(home, state.map(Path::to_path_buf), places)
     }
 
     /// Why `folder` (absolute) is never offered to an agent; `None` when
@@ -736,6 +747,34 @@ mod tests {
         assert!(p.reason(&dropbox.join("keys/new")).is_some());
         assert_eq!(p.reason(&home.join("projects/dropbox")), None);
         assert_eq!(p.reason(&home.join("projects/dropbox/work")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder of keys moved away and replaced by a link while the window
+    /// runs: the places made again find it where it went (the review's
+    /// probe, 2026-11-10).
+    #[cfg(unix)]
+    #[test]
+    fn places_made_again_follow_a_folder_of_keys_that_moved() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/tmp/craft3d-consent-moved-config");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".config/autostart")).unwrap();
+        std::fs::create_dir_all(dir.join("dotfiles")).unwrap();
+        let home = craft3d_engine::canonical(&dir).unwrap();
+        let p = Protected::new(Some(home.clone()), None, Vec::new());
+        std::fs::rename(home.join(".config"), home.join("dotfiles/config")).unwrap();
+        std::os::unix::fs::symlink(home.join("dotfiles/config"), home.join(".config")).unwrap();
+        let moved = home.join("dotfiles/config/autostart");
+        let why = p.refreshed().reason(&moved).unwrap();
+        assert!(why.contains("keys and settings"), "{why}");
+        assert!(
+            p.refreshed()
+                .reason(&home.join(".config/autostart"))
+                .is_some()
+        );
+        // And the folder that holds it now.
+        assert!(p.refreshed().reason(&home.join("dotfiles")).is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

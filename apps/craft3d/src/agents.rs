@@ -618,6 +618,10 @@ impl Agents {
     /// The session's roots from what is chosen now; the change, if any,
     /// waits for the desk.
     fn recompute(&mut self) {
+        // The protected places looked up again: one moved while the window
+        // runs is found where it went (not at every frame: only when the
+        // roots are made).
+        self.protected = self.protected.refreshed();
         let mut roots: Vec<AgentRoot> = Vec::new();
         let mut workspace = self.config.base_workspace();
         self.granted = None;
@@ -1612,6 +1616,42 @@ mod tests {
         );
         assert!(
             agents.status().roots.is_empty(),
+            "{:?}",
+            agents.status().roots
+        );
+        let _ = std::fs::remove_dir_all(&state);
+    }
+
+    /// The protected places are made again with the roots: a folder of
+    /// keys moved away and replaced by a link while the window runs is
+    /// refused where it went, and not given (the review's probe,
+    /// 2026-11-10).
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_of_keys_moved_while_the_window_runs_stays_protected() {
+        let state = workdir("moved-keys");
+        let craft = state.join("craft");
+        let home = state.join("home");
+        std::fs::create_dir_all(&craft).unwrap();
+        std::fs::create_dir_all(home.join(".config/autostart")).unwrap();
+        std::fs::create_dir_all(home.join("dotfiles")).unwrap();
+        let mut config = config(&craft);
+        config.protected = Protected::new(Some(home.clone()), None, Vec::new());
+        let (mut agents, _pump) = agents(config);
+        agents.allow(true);
+        std::fs::rename(home.join(".config"), home.join("dotfiles/config")).unwrap();
+        std::os::unix::fs::symlink(home.join("dotfiles/config"), home.join(".config")).unwrap();
+        let moved = home.join("dotfiles/config/autostart");
+        // A change that makes the roots again.
+        agents.set_document_folder(false);
+        assert!(agents.protected.reason(&moved).is_some());
+        assert!(agents.choose_folder(&moved).is_err());
+        assert!(
+            !agents
+                .status()
+                .roots
+                .iter()
+                .any(|r| Path::new(&r.path).starts_with(home.join("dotfiles"))),
             "{:?}",
             agents.status().roots
         );
