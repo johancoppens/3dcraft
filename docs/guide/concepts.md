@@ -8,43 +8,31 @@ understand what the agent is doing, or to model by hand.
 
 ## The history is the source of truth
 
-A document is **variables, sketches, datums and an ordered list of features**, plus assertions and named
-sets. That is what a `.3dcraft` file holds. The solid bodies are *derived*: 3DCraft rebuilds them from the
-history (it *regenerates*) after every change, and rebuilds only the features downstream of what changed.
-There is no way to push a face around behind the history's back: to change the model you change a
-variable, a sketch or a feature's parameters, and the history is replayed.
+A document is a recipe: **variables, sketches, datums and an ordered list of features**, plus checks
+(assertions) and named sets. That is what a `.3dcraft` file holds.
 
-Commands that change the history (`feature.edit`, `feature.suppress`, `feature.move`, `feature.delete`,
-`feature.rename`, `history.rollback`):
+The solid bodies are *derived*. 3DCraft rebuilds them from the history after every change (it
+*regenerates*), and rebuilds only the features downstream of what changed. There is no way to push a face
+around behind the history's back: to change the model, you change a variable, a sketch or a feature's
+parameters, and the history is replayed.
 
-- `feature.edit {"feature": "Holes", "count": "n"}` changes some parameters of a feature, keeping its place
-  and its name; it also repairs a feature that lost what it was made from (give the new sketch, target or
-  edges). A parameter given as a plain number (`"count": 8`) replaces the expression that was there: the
-  feature no longer follows the variable.
-- `feature.suppress` switches a feature off without deleting it, and the features after it go on as if
-  it were not there: a suppressed boolean, fillet, chamfer, shell or pattern hands the body it would
-  change on unchanged; a suppressed block or extrusion makes no body, and a boolean that used it as its
-  tool keeps its target as it was. Only what the feature itself makes (a fillet's rounded face) is gone,
-  and a feature that names it fails saying so. `feature.when` does the same by a condition ([Formulas, tables and conditions](formulas.md#switching-parts-on-and-off)).
-- `feature.move {"feature": "Round", "position": 3}` moves a feature to that index in `document.inspect`'s
-  list of features (sketches and datums count); one moved before what it is made from fails and says so.
-- `feature.rename` renames a feature or a sketch (sketches are features); `variable.rename` a variable,
-  everywhere it is used, assertions included.
+These commands change the history:
+
+- `feature.edit {"feature": "Holes", "count": "n"}` changes some parameters of a feature, keeping its
+  place and its name. It also repairs a feature that lost what it was made from: give the new sketch,
+  target or edges. A parameter given as a plain number (`"count": 8`) replaces the expression that was
+  there, and the feature no longer follows the variable.
+- `feature.suppress` switches a feature off without deleting it, and `feature.when` switches it by a
+  condition. Off, it behaves as if it were not in the history
+  ([Formulas › Switching parts on and off](formulas.md#switching-parts-on-and-off)).
+- `feature.move {"feature": "Round", "position": 3}` moves a feature to that index in the list of
+  features `document.inspect` gives (sketches and datums count). A feature moved before what it is made
+  from fails and says so.
+- `feature.rename` renames a feature or a sketch (sketches are features); `variable.rename` renames a
+  variable everywhere it is used, checks included.
 - `history.rollback {"feature": "Bored"}` rebuilds only up to that feature, and new features go in right
-  after it: a way to insert something early in the history. `{"feature": null}` removes the marker. A
-  feature inserted there that takes a body (a fillet, a chamfer, a move, a boolean) takes it before the
-  features after the marker that name that body (a boolean's `target` or `tool`, the `source` of a
-  transform, mirror, pattern, shell or split): they are pointed at the new feature, so they go on with
-  the body it changed, and the result lists them (`"repointed": [{"feature": "Drilled", "param":
-  "target"}]`). Where that cannot be done (a boolean of the two bodies an inserted union joined, or a
-  feature that used the tool of an inserted subtraction) they fail with *the body of `Bored` already went
-  into `Bevel`*, and the message gives the `feature.edit` that points them on. A fillet, a chamfer or a
-  face operation after the marker names faces, not a body, and follows them into the new body by itself.
-  The document remembers what it re-pointed, also in the file: deleting the inserted feature later points
-  them back (`"restored"` in the result), as if it had never been inserted, and editing it so it no
-  longer takes that body points them back too. A reference you point elsewhere yourself stays yours:
-  deleting or editing the inserted feature leaves it alone. `document.inspect` lists what is
-  remembered under `inserted`.
+  after it: a way to insert something early in the history. `{"feature": null}` removes the marker
+  ([Modelling features › Inserting early in the history](features.md#inserting-early-in-the-history)).
 - `edit.undo` and `edit.redo` undo and redo any change, one command at a time.
 
 ## Variables, expressions and units
@@ -59,26 +47,34 @@ Every length, angle and count may be an **expression** in the document's variabl
 ]
 ```
 
-- Units: `um`, `mm`, `cm`, `m`, `in`, `ft` for lengths, `deg` and `rad` for angles, in lower case; a
-  number without a unit is in the document's length unit (`file.new {"units": "mm"}`) where a length is
-  expected. Units mix freely (`1 in + 3 mm` is 28.4 mm). `document.setUnit {"units": "in", "keep":
-  "sizes"}` changes the document's unit later and keeps the model as large as it was (a plain `10` read as
-  a length becomes `10 mm`); `"keep": "numbers"` keeps every number and changes only the unit, so what has
-  no unit grows or shrinks with it. Keeping the sizes is proven on the result (every body as large as it
-  was, and every assertion and output as it was), also for outputs, assertions, named sets and formula
-  curves, or refused when a plain number could be a length or not. An expression that cannot be worked out
-  (`width + 3 deg`, an unknown name) is kept, but the variable *fails*: its result and `document.check`
-  carry the error, and what uses it fails too until it is fixed. A variable cannot be defined from itself:
-  "make the wall 1 mm thicker" is `{"name": "wall", "expr": "3 mm"}`, not `wall + 1 mm` (refused). Only
-  that direct self-reference is refused: a cycle through other variables (`a` = `b + 1 mm`, then `b` =
-  `a + 1 mm`) is kept, and every variable on it fails with *circular definition* until one is changed.
-- Forces, stresses and moments have units too: `g`, `kg` for a mass, `s` for a time, `N`, `kN` for a
-  force, `Pa`, `kPa`, `MPa`, `GPa` for a pressure or a stress, `J` for an energy, and a force unit followed
-  by a length unit for a moment (`20 N m`, `5 kN mm`). They are derived from mass, length and time
-  (a newton is kg·m/s²), so a load over an area is a stress: `1000 N / (100 * (1 mm)^2)` is 10 MPa, and
-  `1 MPa` is `1 N / (1 mm)^2`. Unlike `mm` or `deg`, these symbols are not reserved: a count may still be
-  called `N` and a spacing `s`; they are units only right after a number, a parenthesis or `pi`
-  (`N * 5 N` is N times five newtons).
+Make `width` 80 mm, and the plate is 80 by 53.3 mm.
+
+**Units.**
+
+- Lengths are `um`, `mm`, `cm`, `m`, `in` and `ft`; angles `deg` and `rad`; all in lower case.
+- A number without a unit is in the document's length unit (`file.new {"units": "mm"}`) where a length
+  is expected.
+- Units mix freely: `1 in + 3 mm` is 28.4 mm.
+- Forces, stresses, masses and moments have units too (`N`, `MPa`, `kg`, `N m`, …): see
+  [Engineering checks › Forces, stresses and moments](engineering-checks.md#forces-stresses-and-moments).
+
+**Changing the document's unit.** `document.setUnit {"units": "in", "keep": "sizes"}` changes the unit and
+keeps the model as large as it was: a plain `10` read as a length becomes `10 mm`. `"keep": "numbers"`
+keeps every number and changes only the unit, so what has no unit grows or shrinks with it. Keeping the
+sizes is proven on the result (every body, check and output as it was), or refused when a plain number
+could be a length or not.
+
+**A variable that cannot be worked out.** An expression that cannot be worked out (`width + 3 deg`, an
+unknown name) is kept, but the variable *fails*: its result and `document.check` carry the error, and what
+uses it fails too until it is fixed.
+
+**A variable defined from itself.** "Make the wall 1 mm thicker" is `{"name": "wall", "expr": "3 mm"}`, not
+`wall + 1 mm`, which is refused. Only that direct self-reference is refused. A cycle through other
+variables (`a` = `b + 1 mm`, then `b` = `a + 1 mm`) is kept, and every variable on it fails with *circular
+definition* until one is changed.
+
+**Writing expressions.**
+
 - **A unit belongs to the number just before it.** `1/16 in` is 1 / (16 in), an inverse length, and
   `pi / 4 rad` is pi / (4 rad): write `1 in / 16` and `pi / 4 * 1 rad`. A unit may also follow a
   parenthesis, a function's call or `pi`, and gives the plain number there its unit: `(a + b) mm`,
@@ -117,48 +113,63 @@ their own: [Formulas, tables and conditions](formulas.md).
 
 ## Sketches and constraints
 
-A sketch is a flat drawing on a plane: `xy`, `yz` or `zx` (each with an optional `offset`), a datum plane
-(`datum.plane`), or a flat face of a body (`"face": "F2:endCap()"`). In the sketch, coordinates are the
-plane's own `[x, y]`: on `xy` they are X and Y, on `yz` Y and Z, on `zx` Z and X; the sketch's normal is
-the third axis (+Z, +X, +Y). On a face the axes follow the face, not the world: on the bottom of a block
-the sketch's x is world Y, its y world X, and its normal points down, out of the body. `sketch.create`
-answers with the `frame` (origin, x and y in world coordinates) and the `normal`; read them before
-placing anything on a face. `"xAxis": [1, 0, 0]` turns the sketch's x axis to a world direction (projected
-onto the face, about its origin; y is then the normal × x), so on the bottom of a block x is world X and y
-world −Y. To cut through a part from below, a sketch on the `xy` plane is often
-simpler.
+A **sketch** is a flat drawing (lines, arcs, circles, splines) that a feature turns into a solid: an
+extrusion pushes it out, a revolution turns it round an axis. A **constraint** is a rule the drawing keeps,
+such as "this line is horizontal" or "these two points are 40 mm apart". The **freedom left** (`dof`, the
+degrees of freedom) counts how much the drawing could still move without breaking a rule: 0 means every
+point is fixed.
 
-Entities are added with `sketch.point`, `sketch.line`, `sketch.polyline`, `sketch.rect`, `sketch.circle`,
-`sketch.arc`, `sketch.path` (lines and arcs end to end), `sketch.spline`, `sketch.curve` (a curve from
-formulas, [Formulas, tables and conditions](formulas.md#curves-from-formulas)) and `sketch.pattern`. Each gets an id, `e1`, `e2`, …, returned by the command. Then
-constraints (`sketch.constrain`) tie them down:
-`coincident`, `pointOn`, `horizontal`, `vertical`, `parallel`, `perpendicular`, `tangent`, `equal`,
-`concentric`, `symmetric`, `midpoint`, `fixed`, `x`, `y`, `distance`, `angle`, `radius`, `diameter`.
-3DCraft's own solver solves the sketch at every regeneration.
+A sketch lies on a plane: `xy`, `yz` or `zx` (each with an optional `offset`), a datum plane
+(`datum.plane`), or a flat face of a body (`"face": "F2:endCap()"`).
 
-**Coordinates written as expressions are held.** In `"points": [["0 mm", "0 mm"], [0, "leg_x"]]` each
+**The sketch's own axes.** In the sketch, coordinates are the plane's own `[x, y]`: on `xy` they are X and
+Y, on `yz` Y and Z, on `zx` Z and X. The sketch's normal is the third axis (+Z, +X, +Y).
+
+On a face the axes follow the face, not the world: on the bottom of a block the sketch's x is world Y, its
+y world X, and its normal points down, out of the body. `sketch.create` answers with the `frame` (origin, x
+and y in world coordinates) and the `normal`: read them before placing anything on a face.
+`"xAxis": [1, 0, 0]` turns the sketch's x axis to a world direction (projected onto the face, about its
+origin; y is then the normal × x), so on the bottom of a block x is world X and y world −Y. To cut through
+a part from below, a sketch on the `xy` plane is often simpler.
+
+**Drawing.** Entities are added with `sketch.point`, `sketch.line`, `sketch.polyline`, `sketch.rect`,
+`sketch.circle`, `sketch.arc`, `sketch.path` (lines and arcs end to end), `sketch.spline`, `sketch.curve`
+(a curve from formulas, [Formulas › Curves from formulas](formulas.md#curves-from-formulas)) and
+`sketch.pattern`. Each gets an id, `e1`, `e2`, …, returned by the command.
+
+**Constraints** (`sketch.constrain`) tie them down: `coincident`, `pointOn`, `horizontal`, `vertical`,
+`parallel`, `perpendicular`, `tangent`, `equal`, `concentric`, `symmetric`, `midpoint`, `fixed`, `x`, `y`,
+`distance`, `angle`, `radius`, `diameter`. 3DCraft's own solver solves the sketch at every regeneration.
+
+**Coordinates written as expressions are held.** In `"points": [["0 mm", "0 mm"], [0, "leg_x"]]`, each
 point that has an expression among its coordinates is held where the expressions put it (by `x` and `y`
-constraints, which follow the variables); a point given only as plain numbers, `[0, 0]`, is a starting
-place the solver may move. The same holds in every drawing command: the corners and centres of
-`sketch.rect`, `sketch.circle` and `sketch.arc`, and the ends, centres and through points of the arcs
-of `sketch.path` (a through point written so becomes a point kept on its arc's circle: moved far
-enough by a variable, it can end up beyond the arc's ends); a radius written as an expression
-(`sketch.circle`, an arc of `sketch.path`) is held by a `radius` constraint. `sketch.inspect` reports
-`dof`, the degrees of freedom left: 0 means fully constrained, which is what you want for a part that
-must follow its variables. A sketch with freedom
-left builds; `document.check` has one warning (`kind: "underConstrained"`) that lists every such sketch
-with its `dof`.
+constraints, which follow the variables). A point given only as plain numbers, `[0, 0]`, is a starting
+place the solver may move.
 
-A constraint that repeats what others already say is `redundant` (listed, harmless while they agree); one
-that contradicts them is `conflicting`: the sketch fails, and so does what is made from it. Its result
-names it (`"conflicting": ["c10"]`) and the ones it contradicts (`"conflicts": [{"constraint": "c10",
-"contradicts": ["c3", "c7"]}]`: taking out any one of those would let it hold; an empty list comes with a
-`reason`, and `truncated: true` says not every constraint was tried); change its value with `sketch.edit {"sketch": "R", "constraint":
-"c10", "value": "40 mm"}` or remove it with `sketch.delete {"sketch": "R", "constraint": "c10"}`. A
-redundant constraint becomes a conflicting one when a variable changes (a length written as `40 mm` next
-to a rectangle drawn to `w`), so prefer one constraint per measure. A value written without variables that
-a constraint can never take (a negative distance, radius or diameter; an angle for a length or a length
-for an angle) is refused by `sketch.constrain` and `sketch.edit`, and the sketch is left as it was.
+The same holds in every drawing command: the corners and centres of `sketch.rect`, `sketch.circle` and
+`sketch.arc`, and the ends, centres and through points of the arcs of `sketch.path`. A through point
+written so becomes a point kept on its arc's circle: moved far enough by a variable, it can end up beyond
+the arc's ends. A radius written as an expression (`sketch.circle`, an arc of `sketch.path`) is held by a
+`radius` constraint.
+
+**The freedom left.** `sketch.inspect` reports `dof`. 0 means fully constrained, which is what you want for
+a part that must follow its variables. A sketch with freedom left builds, and `document.check` has one
+warning (`kind: "underConstrained"`) that lists every such sketch with its `dof`.
+
+**Too many constraints.** A constraint that repeats what others already say is `redundant`: listed, and
+harmless while they agree. One that contradicts them is `conflicting`: the sketch fails, and so does what
+is made from it.
+
+- Its result names it (`"conflicting": ["c10"]`) and the ones it contradicts (`"conflicts":
+  [{"constraint": "c10", "contradicts": ["c3", "c7"]}]`): taking out any one of those would let it hold.
+  An empty list comes with a `reason`, and `truncated: true` says not every constraint was tried.
+- Change its value with `sketch.edit {"sketch": "R", "constraint": "c10", "value": "40 mm"}`, or remove
+  it with `sketch.delete {"sketch": "R", "constraint": "c10"}`.
+- A redundant constraint becomes a conflicting one when a variable changes (a length written as `40 mm`
+  next to a rectangle drawn to `w`), so prefer one constraint per measure.
+- A value written without variables that a constraint can never take (a negative distance, radius or
+  diameter; an angle for a length or a length for an angle) is refused by `sketch.constrain` and
+  `sketch.edit`, and the sketch is left as it was.
 
 ## Features
 
@@ -190,14 +201,17 @@ current body:
 **A feature's name stands for its id.** Wherever a name starts with a feature, write its name or its id:
 `Plate:face(1)` is `F2:face(1)` when the feature called `Plate` is `F2`, and so is every feature inside a
 name (`Joined:copy(1)/Pin:side(e2)`). The name is looked up when the command runs, and the document stores
-the id, so a renamed feature keeps its references. A generated script can name faces of what it made in
-an earlier step without building first to learn the ids. Ids are handed out in the order features are
-made, so a script that writes `F3` means another feature once a step is added before it; one that writes
-names means the same features whatever is added (and a feature inserted at the rollback marker leaves
-every id that was there as it was). A name no feature has (or, in an old file,
-several have) is an error that says so; a feature whose name holds `/`, `,`, `|` or a bracket is written
-by its id. `Plate:startCap` and `Plate:endCap` (with or without `()`) are the start and end cap of an
-extrusion of one profile; with several profiles they are refused, and the error lists the full names.
+the id, so a renamed feature keeps its references.
+
+Write names rather than ids in a script. Ids are handed out in the order features are made, so a script
+that writes `F3` means another feature once a step is added before it. One that writes names means the same
+features whatever is added, and can name faces of what it made in an earlier step without building first to
+learn the ids. (A feature inserted at the rollback marker leaves every id that was there as it was.)
+
+- A name no feature has (or, in an old file, several have) is an error that says so.
+- A feature whose name holds `/`, `,`, `|` or a bracket is written by its id.
+- `Plate:startCap` and `Plate:endCap` (with or without `()`) are the start and end cap of an extrusion of
+  one profile. With several profiles they are refused, and the error lists the full names.
 
 An edge is named by the two faces it lies between: a fillet takes `"edges": [["F2:side(e9)",
 "F2:side(e10)"]]`. A feature that works on a body (a fillet, a chamfer, a shell, a thread) may use the
@@ -216,7 +230,8 @@ so**, naming what it lost; it is never quietly moved onto another face.
 ## Failed features
 
 A feature that cannot be built is kept in the history with the status `failed` and a reason, and
-regeneration carries on with the rest:
+regeneration carries on with the rest. On the L-bracket of
+[A first part, command by command](first-part.md), a round in the inside corner far too large for it:
 
 ```text
 variable.set {"name": "inner_r", "expr": "30 mm"}
@@ -229,5 +244,10 @@ document.check
 
 The reason starts with the parameter at fault (`radius`, `edges.0`, `target`), and `causedBy` points at the
 first failure in a chain: fix that one (here, a smaller `inner_r`, or `edit.undo`) and the rest is rebuilt.
+
+In the window, the failed feature is a red row with its reason, and the rows made from it are dimmed:
+
+<!-- SHOT: failed-feature.png | the same picture as troubleshooting.md | see troubleshooting.md -->
+![A failed feature in the feature list: its red row with the reason, and the rows made from it dimmed](images/failed-feature.png)
 
 **Next:** [A first part, command by command](first-part.md).

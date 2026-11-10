@@ -403,6 +403,29 @@ A hidden feature is saved with the document and undone like a colour; `document.
 `{"feature": null}` shows it as it is again), without changing the document: the timeline in the window
 does the same. To build on from that step, move the real marker there with `history.rollback`.
 
+## Inserting early in the history
+
+`history.rollback {"feature": "Bored"}` rebuilds only up to that feature, and new features go in right after
+it; `{"feature": null}` removes the marker. In the window this is the roll-back bar
+([The window › The roll-back bar](window.md#the-roll-back-bar)).
+
+A feature inserted there that takes a body (a fillet, a chamfer, a move, a boolean) takes it before the
+features after the marker that name that body: a boolean's `target` or `tool`, the `source` of a
+transform, mirror, pattern, shell or split. Those features are pointed at the new feature, so they go on
+with the body it changed, and the result lists them (`"repointed": [{"feature": "Drilled", "param":
+"target"}]`). A fillet, a chamfer or a face operation after the marker names faces, not a body, and
+follows them into the new body by itself.
+
+Where that cannot be done (a boolean of the two bodies an inserted union joined, or a feature that used
+the tool of an inserted subtraction), they fail with *the body of `Bored` already went into `Bevel`*, and
+the message gives the `feature.edit` that points them on.
+
+The document remembers what it pointed elsewhere, also in the file. Deleting the inserted feature later
+points them back (`"restored"` in the result), as if it had never been inserted, and so does editing it so
+that it no longer takes that body. A reference you point elsewhere yourself stays yours: deleting or
+editing the inserted feature leaves it alone. `document.inspect` lists what is remembered under
+`inserted`.
+
 ## Switching a feature on or off
 
 `feature.suppress` switches a feature off by hand, and `feature.when` by a condition, such as a yes-or-no
