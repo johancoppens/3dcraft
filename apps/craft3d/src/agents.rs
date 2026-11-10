@@ -1565,6 +1565,59 @@ mod tests {
         let _ = std::fs::remove_dir_all(&state);
     }
 
+    /// A folder remembered in `agents.json` under a link's spelling is
+    /// given as its root with the link resolved, as it was checked; Remove
+    /// of that root, as the panel shows it, takes the remembered spelling
+    /// back; a remembered link into a folder of keys is never given
+    /// (2026-11-10).
+    #[cfg(unix)]
+    #[test]
+    fn a_remembered_folder_is_given_resolved_and_a_link_into_keys_never() {
+        let state = workdir("remembered-links");
+        let craft = state.join("craft");
+        let home = state.join("home");
+        std::fs::create_dir_all(&craft).unwrap();
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        std::fs::create_dir_all(home.join("projects/bracket")).unwrap();
+        std::os::unix::fs::symlink(home.join("projects"), home.join("work")).unwrap();
+        std::os::unix::fs::symlink(home.join(".ssh"), home.join("keys")).unwrap();
+        let linked = home.join("work/bracket");
+        let real = home.join("projects/bracket");
+        discovery::write_preferences(
+            &craft,
+            &Preferences {
+                allow_agents: true,
+                folders: vec![linked.clone(), home.join("keys")],
+                ..Preferences::default()
+            },
+        )
+        .unwrap();
+        let mut config = config(&craft);
+        config.protected = Protected::new(Some(home.clone()), None, Vec::new());
+        let (mut agents, _pump) = agents(config);
+        agents.start().unwrap();
+        let roots = agents.status().roots;
+        let paths: Vec<(&str, &str)> = roots
+            .iter()
+            .map(|r| (r.from.as_str(), r.path.as_str()))
+            .collect();
+        assert_eq!(paths, [("allowed", real.to_str().unwrap())], "{roots:?}");
+        // Remove names the root as the panel shows it.
+        agents.revoke(&real);
+        assert!(
+            discovery::read_preferences(&craft)
+                .folders
+                .iter()
+                .all(|f| f != &linked)
+        );
+        assert!(
+            agents.status().roots.is_empty(),
+            "{:?}",
+            agents.status().roots
+        );
+        let _ = std::fs::remove_dir_all(&state);
+    }
+
     /// A window `--control` opened, with no roots on its command line,
     /// gets the default folder as the switch gives it, and Change… there
     /// changes it (the developer, 2026-11-05: the work folder read *No
