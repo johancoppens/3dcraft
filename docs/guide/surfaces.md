@@ -1,18 +1,24 @@
 # Surfaces and developables
 
+*Sheets that bend without stretching and the flat patterns to cut them from; smooth surfaces through
+curves you draw, held to their neighbours in tangent or in curvature; and plates made of sheets.*
+
+A **sheet** is a surface with no volume ([Modelling features › Sheets](features.md#sheets)). This chapter
+makes sheets of two kinds: **developable** ones, which a flat sheet of plywood, metal or paper bends onto,
+and **freeform** ones, laid through curves for flowing shapes. Sewn together, sheets make a solid; given a
+thickness, they make plates.
+
+The **Ship propeller** example on the start screen shows freeform surfaces in a real product: its blades
+are lofted through sections computed from a published propeller series
+([Modelling features › From sketches](features.md#from-sketches)).
+
+<!-- CHECK: the ship propeller is among the examples on the new start screen; otherwise point to its page in the gallery, https://3dcraft.dev/examples/ -->
+
 ## Developable surfaces and unfolding
 
-A **developable** surface is one a flat sheet bends onto without stretching: plywood panels of a boat,
-sheet metal, paper, a lampshade. `feature.developable` makes the developable sheet between two curves
-(`a` and `b`): each a sketch whose curves make one open chain (or one closed loop), or `{"edges": [...]}`,
-edges of earlier bodies in order (the chines of a hull, for instance). Straight lines (*rulings*) join the
-two curves where both curves' tangents and the line lie in one plane, which is what makes the sheet
-developable; where the ruling from an end does not reach the other curve's end, a fan (a cone from that
-end) fills the corner. Where a curve has a corner, a fan from the corner turns it, so the sheet stays smooth
-(where both curves have a corner on one ruling, the sheet is creased along it). Two closed curves give a
-tube, cut open along one ruling when it is unfolded.
-The sheet's edges are the curves themselves, so two panels on one curve meet edge to edge. `feature.unfold`
-lays faces flat as one piece, the pattern to cut, with every length, angle and area kept:
+A **developable** surface is one a flat sheet bends onto without stretching: the plywood panels of a boat,
+sheet metal, paper, a lampshade. Two arcs, one above the other, and the piece of cone between them laid
+flat:
 
 ```json
 [
@@ -26,10 +32,26 @@ lays faces flat as one piece, the pattern to cut, with every length, angle and a
 ]
 ```
 
-The two arcs make a piece of a cone; unfolded it is a piece of a flat ring. The unfold's result says how
-far the pattern is from the part (`lengthChange`, `areaChange`, `mapError`), and `unfold.map` takes points
-from the part to the pattern (`"to": "flat"`) or back (`"to": "part"`): a hole drawn on the pattern is found
-on the panel, and the other way round.
+<!-- SHOT: developable.png | the developable panel of this script (a piece of a cone between the two arcs) and its unfolded pattern beside it, a piece of a flat ring; theme light; about 1280x640 | run the first script of surfaces.md; view.render {"view": "iso"}; or rasterise file.export {"path": "pattern.svg", "faces": ["Pattern:face(0)"]} beside it (plan: shots/renders.sh) -->
+![A developable panel between two arcs, and its pattern laid flat](images/developable.png)
+
+The two arcs make a piece of a cone; unfolded, it is a piece of a flat ring.
+
+- `feature.developable` makes the developable sheet between two curves, `a` and `b`. Each is a sketch
+  whose curves make one open chain (or one closed loop), or `{"edges": [...]}`, edges of earlier bodies
+  in order (the chines of a hull, for instance).
+- Straight lines (*rulings*) join the two curves where both curves' tangents and the line lie in one
+  plane: that is what makes the sheet developable. Where the ruling from an end does not reach the other
+  curve's end, a fan (a cone from that end) fills the corner. Where a curve has a corner, a fan from the
+  corner turns it, so the sheet stays smooth; where both curves have a corner on one ruling, the sheet is
+  creased along it.
+- Two closed curves give a tube, cut open along one ruling when it is unfolded.
+- The sheet's edges are the curves themselves, so two panels on one curve meet edge to edge.
+
+`feature.unfold` lays faces flat as one piece, the pattern to cut, with every length, angle and area kept.
+Its result says how far the pattern is from the part (`lengthChange`, `areaChange`, `mapError`).
+`unfold.map` takes points from the part to the pattern (`"to": "flat"`) or back (`"to": "part"`): a hole
+drawn on the pattern is found on the panel, and the other way round.
 
 - The feature's result says under `developable` how many rulings were found (`rulings`), whether `b` was
   run the other way (`reversedB`), how far the faces were found from the true developable (`deviation`,
@@ -46,21 +68,25 @@ on the panel, and the other way round.
 - A face that is not developable (a sphere, a torus, a double-curved loft) is not unfolded: the reason
   gives its curvature and where. Two faces whose shared edge bends differently on its two sides (two hull
   panels at a chine, a fold) do not lie flat as one piece: unfold each on its own.
-- The faces of a developable are named by where they are, not by how many come before them: `face(0)`
-  is the first run of rulings, `face(1)` and `face(2)` the fans at the start and the end. Where the rulings
-  turn back, a fan closes the gap: the `n`-th such fan (from 0) in the first half of the sheet, counted
-  from the start, is `face(10000000000 + n)`, in the second half, counted from the end,
-  `face(20000000000 + n)`; a fan from a corner of `a` is `face(30000000000,c)` (of `b`,
-  `face(40000000000,c)`), `c` the id of the sketch curve after the corner, or the place of the edge after
-  it in the list from 0. A run of rulings after one of these is `face(100000000000 + m)` with `m` that
-  fan's first number (a corner where the faces part counts as its fan's, its `c` following:
-  `face(130000000000,c)`), one after a fan counted from the end is named by the next one,
-  `face(200000000000 + m)`, and the run that reaches the end is `face(300000000000)`. So a fan that
-  appears at one end leaves the names at the other as they were. The count has a limit: one more fold
-  nearer the same end (or a fold that moves across the middle) renumbers the folds counted from that end,
-  and a reference to `face(20000000000)` then names the new fold's fan, without an error. Check the faces
-  a later feature takes after an edit that may add a fold near an end. A fold at the very middle (as
-  symmetric curves give) counts from the start, also when rounding puts it a hair past the middle.
+- **How its faces are named.** The faces of a developable are named by where they are, not by how many
+  come before them, so a fan that appears at one end leaves the names at the other as they were:
+
+  | Face | Name |
+  |---|---|
+  | The first run of rulings | `face(0)` |
+  | The fans at the start and at the end | `face(1)`, `face(2)` |
+  | The `n`-th fan (from 0) where the rulings turn back, in the first half, counted from the start | `face(10000000000 + n)` |
+  | The same in the second half, counted from the end | `face(20000000000 + n)` |
+  | A fan from a corner of `a` (of `b`), `c` the id of the sketch curve after the corner, or the place of the edge after it in the list, from 0 | `face(30000000000,c)` (`face(40000000000,c)`) |
+  | A run of rulings after such a fan, `m` that fan's first number (after a corner where the faces part: `face(130000000000,c)`) | `face(100000000000 + m)` |
+  | A run after a fan counted from the end, named by the next one | `face(200000000000 + m)` |
+  | The run that reaches the end | `face(300000000000)` |
+
+  The count has a limit: one more fold nearer the same end (or a fold that moves across the middle)
+  renumbers the folds counted from that end, and a reference to `face(20000000000)` then names the new
+  fold's fan, without an error. Check the faces a later feature takes after an edit that may add a fold
+  near an end. A fold at the very middle (as symmetric curves give) counts from the start, also when
+  rounding puts it a hair past the middle.
 - A developable is refused, with where, when its rulings would cross (a curve that winds about the
   other), when the curves lie in one plane over a stretch only, when they meet between their ends, when a
   curve turns back on itself, and when one curve is closed and the other is not. Two closed curves that
@@ -157,40 +183,32 @@ it on a narrow band beside the seam (a crease there, within the tolerances). Giv
 that the held sheet needs no band. The degree used is the one asked, but never more than the family's number of
 curves less one (with five curves: 3 by default, 4 when 5 is asked); `feature.edit` with `"acrossDegree": null` goes back to the default, 3.
 
-### A class-A mouse
+### Sewing sheets into a solid
 
-Sheets whose edges meet are joined by `feature.boolean` with `"op": "sew"`: their edges are sewn where
+Sheets whose edges meet are joined by `feature.boolean` with `"op": "sew"`. Their edges are sewn where
 they run along one another, nothing is cut, and the result is a solid once every edge has its partner.
-A union intersects the sheets first, and two sheets in G2 contact along their seam are too nearly one
-surface beside it to intersect. Build each sheet from the edges of the ones before it (`{"edges": [...]}`
-as a network's curve) and the edges meet exactly. The start screen's mouse
-([`mouse.json`](../examples/mouse.json), under Showcase) is built that way:
 
-1. *The flanks.* A flat side whose top edge is the seam, a live spline through points written in the
-   variables (`length`, `width`, `height`, `hump`, `taper`), filled (`feature.fill`) and turned in
-   toward the nose by `taper` (`feature.transform`). The thumb's flank is drawn lower than the pinky's,
-   so the shoulder over it is fuller, and mirrored so that it faces out.
-2. *The top.* One Gordon surface (`feature.surface.network`): the two seams and the crown as u curves,
-   the rear, four sections and the nose as v curves; both seams held in curvature (`"kind":
-   "curvature"`) to the flanks. Each section is two superellipses meeting on the crown, with a smooth
-   skew toward the thumb. The crown and the seams have ten points each and are crossed at the same ones,
-   so no curve is re-parametrised and the surface stays cubic. The rear and the nose leave each flank
-   along it with three control points in line, so they have no curvature across it, as the G2 seam asks,
-   and the hold leaves them as drawn. The fourth section, just behind the nose's corners, keeps the nose
-   fair: without it the Gaussian curvature map showed a thin saddle across the top there.
-3. *The underside.* The flanks' feet and the same rear and nose curves in one sketch, filled, and
-   mirrored in its own plane so that it faces down, out of the solid (sewing takes sheets that face
-   one way).
-4. *Sewn* into a solid (three sews), rounded along its foot (`feature.fillet` with `chain`), a slim slot
-   cut down as a stadium (`feature.extrude` with `cut`), a hair-thin split line from the slot to the
-   nose, and a slim wheel.
+Use `sew`, not `union`, for sheets that meet in curvature. A union intersects the sheets first, and two
+sheets in G2 contact along their seam are too nearly one surface beside it to intersect.
 
-Its assertions hold both seams G2 (`measure.continuity` proves it at the default tolerances), a closed
-solid of a mouse's volume and a wheel that turns free. Published (`variable.publish` with ranges),
-`craft3d-cli check-range` proves the seams G2 at every corner of length 105 to 130 mm, width 56 to 70,
-height 32 to 40, hump 0.36 to 0.44 and taper 2° to 5°. With zebra stripes (`ui.set {"analysis":
-{"mode": "zebra"}}`) the stripes on the top run on into the flat flanks without a kink or a jump in width;
-with the curvature map (`"mode": "curvature"`) the curvature rises from zero at each seam.
+Build each sheet from the edges of the ones before it (`{"edges": [...]}` as a network's curve), and the
+edges meet exactly. A class-A computer mouse is built this way:
+
+1. *The flanks*: a flat side whose top edge is the seam, filled (`feature.fill`), turned in toward the
+   nose (`feature.transform`), and mirrored so that it faces out.
+2. *The top*: one surface through the curve network (`feature.surface.network`): the two seams and the
+   crown as u curves, the rear, the sections and the nose as v curves, both seams held in curvature
+   (`"kind": "curvature"`) to the flanks.
+3. *The underside*: the flanks' feet and the same rear and nose curves in one sketch, filled, and mirrored
+   in its own plane so that it faces down, out of the solid. Sewing takes sheets that face one way.
+4. *Sewn* into a solid (three sews), then rounded along its foot (`feature.fillet` with `chain`), with a
+   slot cut for the wheel.
+
+Its checks hold both seams G2 (`measure.continuity` proves it at the default tolerances) and a closed
+solid of the right volume. With zebra stripes (`ui.set {"analysis": {"mode": "zebra"}}`) the stripes on
+the top run on into the flat flanks without a kink or a jump in width; with the curvature map (`"mode":
+"curvature"`) the curvature rises from zero at each seam
+([The window › Surface analysis](window.md#surface-analysis)).
 
 ## Trimmed faces and N-sided fills
 
