@@ -731,6 +731,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-10 | minor | For the public repository: the stage and the current focus (R1 frozen since 2026-11-05, the release being prepared), item 4 of the boolean checklist, an interactive modelling interface an open question (M11+), a frame for outside readers, private places and local paths out, the Fab and web-AI ideas worded neutrally |
 | 2026-10-23 | minor | R1: the docs brought in step with the code for 0.1.0; the user guide restructured (Start here, first five minutes, Jigs, formulas, reference) with pictures; current focus: R1 finishing, then the field test |
 | 2026-10-23 | minor | R1 scope closed after the projected-view export: finishing and cosmetic fixes only, then the field test (the developer) |
 | 2026-10-23 | minor | R1: formulas (conditions, tables, conditional features, curves from formulas) moved into R1 (the developer) |

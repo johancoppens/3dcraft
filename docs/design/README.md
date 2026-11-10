@@ -2,7 +2,7 @@
 
 The detail documents behind the map in [`../architecture.md`](../architecture.md). Each one says how one part works now (**Method**) and keeps the dated history of what was found and changed in it (**Findings and history**).
 
-The findings were written while the work was done and are kept as written. Where they name *the Strix*, that is the workshop's build server (an AMD Strix Halo with a Radeon 8060S); *the laptop* or *the development machine* is the developer's (an Intel Meteor Lake with 14 threads). A run id (`Check run …`, `Heavy run …`) is a run of the workshop's own GitHub Actions, which are private: it is kept as the record of what was measured. A commit id names a commit of this repository's history. *The dev log* is the workshop's local record of each task, not in the repository; an expectation change logged there is also in the commit that made it.
+The findings were written while the work was done and are kept as written. Where they name *the Strix*, that is the workshop's build server (an AMD Strix Halo with a Radeon 8060S); *the laptop* or *the development machine* is the developer's (an Intel Meteor Lake with 14 threads). A run id (`Check run …`, `Heavy run …`) is a run of the workshop's own GitHub Actions, which are private: it is kept as the record of what was measured. A commit id names a commit of this repository's history, except a few that name scratch commits or commits of working branches that are not in the public history. *The dev log* is the workshop's local record of each task, not in the repository; an expectation change logged there is also in the commit that made it.
 
 | Document | What it holds |
 |---|---|
