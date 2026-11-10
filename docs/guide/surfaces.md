@@ -8,8 +8,8 @@ makes sheets of two kinds: **developable** ones, which a flat sheet of plywood, 
 and **freeform** ones, laid through curves for flowing shapes. Sewn together, sheets make a solid; given a
 thickness, they make plates.
 
-The **Ship propeller** example under **Parts** on the start screen shows freeform surfaces in a real product: its blades
-are lofted through sections computed from a published propeller series
+The **Ship propeller** example under **Parts** on the start screen shows freeform surfaces in a real
+product: its blades are lofted through sections computed from a published propeller series
 ([Modelling features › From sketches](features.md#from-sketches)).
 
 ## Developable surfaces and unfolding

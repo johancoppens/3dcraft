@@ -7,9 +7,9 @@ press brake can bend it.*
 flat, and say which edges are bent up into **flanges**. 3DCraft builds the folded part, and the **flat
 pattern** you cut from the sheet before bending, with every bend's allowance worked out.
 
-The **Sheet-metal enclosure** on the start screen is a real product made this way: a chassis and a cover
-around a circuit board, each from one sheet, their flat patterns ready to cut and their bend order proven
-for a press brake ([Using a Jig](jigs.md#the-jigs-on-the-start-screen)).
+The **Sheet-metal enclosure**, under **Jigs** on the start screen, is a real product made this way: a
+chassis and a cover around a circuit board, each from one sheet, their flat patterns ready to cut and their
+bend order proven for a press brake ([Using a Jig](jigs.md#the-jigs-on-the-start-screen)).
 
 <!-- SHOT: sheet-metal.png | the tray of this chapter's first script beside its flat pattern: the folded tray in iso view, and the exported flat pattern with its bend lines dashed (bendUp) next to it; theme light; about 1280x640 | run the tray script (first JSON block of sheet-metal.md); view.render {"view": "iso"}; file.export {"path": "tray.svg", "sheetMetal": "Tray", "stroke": 0.3}; rasterise the SVG and put the two side by side -->
 ![A sheet-metal tray, folded, beside its flat pattern with the bend lines dashed](images/sheet-metal.png)
