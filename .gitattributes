@@ -9,6 +9,10 @@ docs/examples/thumbs/STAMPS.txt text eol=lf
 # On Windows with core.autocrlf the golden STEP text and the desktop entry
 # came out with CRLF, and their tests failed (CI, 2026-10-30).
 crates/*/tests/golden/** text eol=lf
+# The guide: tests take its examples and the output it prints from the
+# text (a cut list's CSV, docs/guide/12-files.md); with CRLF on Windows the
+# fences were not found (CI, 2026-11-09).
+docs/guide/*.md text eol=lf
 packaging/** text eol=lf
 *.step text eol=lf
 # Binary files last, so no text rule above (packaging/**) claims them:

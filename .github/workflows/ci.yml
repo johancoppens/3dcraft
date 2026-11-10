@@ -1,80 +1,205 @@
 name: CI
 
-# Not on every push: nobody uses the software yet, and the full suite on
-# three platforms costs about 25 runner-minutes (macOS counts tenfold in a
-# private repository). `cargo xtask ci` is run locally before every commit
-# and covers everything the Linux job does; what this adds is macOS and
-# Windows. Run it by hand before anything that must be certain:
+# The tests on GitHub's own runners: `cargo xtask ci` on Linux, the whole
+# test suite on macOS and on Windows. Not on every push: the Strix runs the
+# full gate before `main` moves (`gate.yml`); what this adds is macOS,
+# Windows and a fresh Linux. Every Monday, and by hand before anything that
+# must be certain (the release installers are built on these runners):
 #   gh workflow run CI && gh run watch
+#
+# Hosted minutes cost money (the repository is private: macOS minutes count
+# tenfold, Windows double), and a full run is hours. A narrow run takes one
+# system and one command, the arguments after `cargo` (several joined by
+# ` + `, run in order); one test file on one system takes minutes:
+#   gh workflow run CI --ref <branch> -f os=macos -f cargo="test -p craft3d --lib consent"
+# `os` alone, without `cargo`, is the full run on that system only.
+#
+# Where the time went (2026-11-09; a private repository's runners have two
+# cores on Linux and Windows, three on macOS): building the tests took 20
+# minutes on Linux, 14 on macOS and 55 on Windows; running them about five
+# hours on Linux, under two on macOS and about seven on Windows, where the
+# GPU tests draw on Microsoft's software rasteriser (WARP) and the rest
+# runs about 1.4 times slower than on Linux. In one job Windows was
+# cancelled at the six-hour limit twice, so it runs in three jobs, by
+# crate (`plan` below), and the tests are built optimised (`env`).
 on:
   workflow_dispatch:
+    inputs:
+      os:
+        description: "Systems: all, linux, macos or windows"
+        type: choice
+        options: [all, linux, macos, windows]
+        default: all
+      cargo:
+        description: "A narrow run: the arguments after `cargo` (e.g. `test -p craft3d --lib consent`; several joined by ` + `). Empty: the full run"
+        required: false
+        default: ""
   schedule:
     - cron: "0 5 * * 1" # Mondays 05:00 UTC
 
+permissions:
+  contents: read
+
 concurrency:
-  group: ci-${{ github.ref }}
+  # A narrow run does not cancel another one on the same branch.
+  group: ci-${{ github.ref }}-${{ inputs.os }}-${{ inputs.cargo }}
   cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
-  # Hosted runners have about 14 GB of disk and 16 GB of memory; the
-  # workspace's test binaries outgrew the disk (2026-10-26 "No space left
-  # on device"; 2026-10-30 the linker killed by SIGBUS, which is how a
-  # full disk or /tmp shows in `ld`). No debug information in CI makes
-  # the binaries several times smaller (a failure's backtrace still names
-  # the functions), and fewer jobs keep the linkers' memory down.
+  # Hosted runners have about 14 GB of disk; the workspace's test binaries
+  # outgrew it (2026-10-26 "No space left on device"; 2026-10-30 the linker
+  # killed by SIGBUS, which is how a full disk or /tmp shows in `ld`). No
+  # debug information in CI makes the binaries several times smaller (a
+  # failure's backtrace still names the functions), and fewer jobs keep
+  # the linkers' memory down.
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
   CARGO_BUILD_JOBS: "2"
+  # The workspace's own crates optimised as fully as their dependencies
+  # are (opt-level 3 instead of the dev profile's 1, which is there for
+  # quick builds while working): running the tests is most of a run. Three
+  # of the slowest engine test files ran 1.8 times faster so on the Strix
+  # (578 s against 329 s, 2026-11-10). It changes no result: Rust does not
+  # reorder or fuse floating-point operations at any level, and debug
+  # assertions and overflow checks stay on.
+  CARGO_PROFILE_DEV_OPT_LEVEL: "3"
 
 jobs:
-  # The full gate: fmt, clippy, tests, layering, wasm. The toolchain comes
-  # from rust-toolchain.toml (rustup installs it on first use).
-  gate:
-    name: gate (linux)
+  # Which jobs run: a JSON matrix of names, runners, the arguments after
+  # `cargo` and a time limit, from the inputs (a scheduled run has none:
+  # the full run everywhere). The limits stop a job that hangs well before
+  # GitHub's six hours, with room above what the job takes.
+  plan:
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - id: plan
+        env:
+          OS: ${{ inputs.os || 'all' }}
+          ARGS: ${{ inputs.cargo || '' }}
+        run: |
+          set -euo pipefail
+          case "$OS" in
+            all|linux|macos|windows) ;;
+            *) echo "plan: unknown os: $OS" >&2; exit 2 ;;
+          esac
+          entries=()
+          add() {
+            entries+=("$(jq -cn --arg id "$1" --arg name "$2" --arg os "$3" \
+              --arg cargo "$4" --argjson timeout "$5" \
+              '{id: $id, name: $name, os: $os, cargo: $cargo, timeout: $timeout}')")
+          }
+          want() { [ "$OS" = all ] || [ "$OS" = "$1" ]; }
+          if [ -n "$ARGS" ]; then
+            want linux && add linux "narrow (linux)" ubuntu-latest "$ARGS" 360
+            want macos && add macos "narrow (macos)" macos-latest "$ARGS" 360
+            want windows && add windows "narrow (windows)" windows-latest "$ARGS" 360
+          else
+            # The full gate: fmt, clippy, tests, layering, wasm.
+            want linux && add linux "gate (linux)" ubuntu-latest "xtask ci" 360
+            want macos && add macos "test (macos)" macos-latest \
+              "test --workspace --no-fail-fast" 240
+            # Windows in three jobs that together are the workspace: the
+            # engine, the kernel, and every other crate (keep the
+            # exclusions in step with the first two).
+            if want windows; then
+              add windows-engine "test (windows, engine)" windows-latest \
+                "test -p craft3d-engine --no-fail-fast" 300
+              add windows-kernel "test (windows, kernel)" windows-latest \
+                "test -p craft3d-kernel --no-fail-fast" 300
+              add windows-others "test (windows, others)" windows-latest \
+                "test --workspace --exclude craft3d-engine --exclude craft3d-kernel --no-fail-fast" 300
+            fi
+          fi
+          matrix=$(printf '%s\n' "${entries[@]}" | jq -cs '{include: .}')
+          echo "$matrix" | jq .
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  ci:
+    name: ${{ matrix.name }}
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.timeout }}
+    defaults:
+      run:
+        shell: bash
     steps:
       # Room for the build: the preinstalled SDKs we never use (the disk
       # before and after, in the log).
-      - run: |
+      - name: disk
+        if: runner.os == 'Linux'
+        run: |
           df -h / /tmp
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
           df -h / /tmp
       # A graphics adapter for the GPU tests: the hosted runner has no GPU
       # and no drivers ("No suitable graphics adapter found", 2026-10-30);
       # Mesa's software Vulkan (lavapipe) and OpenGL (llvmpipe) stand in.
-      - run: |
+      - name: graphics
+        if: runner.os == 'Linux'
+        run: |
           sudo apt-get update -q
           sudo apt-get install -y -q mesa-vulkan-drivers libgl1-mesa-dri libegl1 libegl-mesa0
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       # The built-in fonts (never committed), pinned by URL and SHA-256,
-      # into assets/fonts where the text tests find them.
+      # into assets/fonts where the text tests find them. The toolchain
+      # comes from rust-toolchain.toml (rustup installs it on first use).
       - run: cargo xtask fonts
-      - run: cargo xtask ci
+      - name: cargo
+        env:
+          ARGS: ${{ matrix.cargo }}
+        run: |
+          # Letters, digits and - _ . : = / , + * space only: no quotes, $,
+          # ;, |, & or backticks reach the shell. ` + ` separates commands;
+          # every one runs, and the step fails when one failed.
+          if ! printf '%s' "$ARGS" | grep -Eq '^[A-Za-z0-9 _.:=/,+*-]{1,1200}$'; then
+            echo "ci: refused arguments: $ARGS" >&2
+            exit 2
+          fi
+          failed=0
+          rest="$ARGS"
+          while [ -n "$rest" ]; do
+            case "$rest" in
+              *" + "*) one="${rest%% + *}"; rest="${rest#* + }" ;;
+              *) one="$rest"; rest="" ;;
+            esac
+            set -f
+            set -- $one
+            set +f
+            [ "$#" -gt 0 ] || { echo "ci: empty command in: $ARGS" >&2; exit 2; }
+            case "$1" in
+              test|clippy|check|fmt|build|doc) ;;
+              xtask)
+                case "${2:-}" in
+                  ci|layers|wasm) ;;
+                  *) echo "ci: xtask task not allowed: ${2:-}" >&2; exit 2 ;;
+                esac ;;
+              *) echo "ci: cargo subcommand not allowed: $1" >&2; exit 2 ;;
+            esac
+            echo "ci: cargo $*"
+            cargo "$@" || failed=1
+          done
+          exit "$failed"
+      # A GPU test that fails leaves the CPU's and the GPU's pictures and
+      # their difference (`failed-*.png`, with a text of the pixels off).
+      - name: evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-${{ matrix.id }}
+          path: target/evidence/**/failed-*
+          if-no-files-found: ignore
+          retention-days: 14
       # What the build left: the disk and the target directory's size,
       # also when it failed.
       - if: always()
-        run: |
-          df -h / /tmp
-          du -sh target 2>/dev/null || true
-
-  # Tests on the other platforms.
-  test:
-    name: test (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      # The built-in fonts (never committed), pinned by URL and SHA-256,
-      # into assets/fonts where the text tests find them.
-      - run: cargo xtask fonts
-      # Every crate's failures in one run, not only the first crate's.
-      - run: cargo test --workspace --no-fail-fast
-      - if: always()
-        shell: bash
         run: |
           df -h . || true
           du -sh target 2>/dev/null || true

@@ -1711,11 +1711,13 @@ fn view_replay_makes_a_video_of_an_animation_or_names_the_png_sequence() {
     std::fs::create_dir_all(&empty).unwrap();
     let frames = path(&dir, "sweep");
     let video = path(&dir, "sweep.webm");
+    // Built as JSON, not pasted into it: a Windows path's backslashes
+    // must be escaped (CI on Windows, 2026-11-09).
     let replay = |video: &str| {
-        format!(
-            r#"{{"dir": "{frames}", "video": "{video}", "width": 64, "height": 48, "frames": 4, "renderer": "cpu",
-                "animate": [{{"variable": "width", "from": 30, "to": 50, "unit": "mm"}}]}}"#
-        )
+        json!({"dir": frames, "video": video, "width": 64, "height": 48, "frames": 4,
+               "renderer": "cpu",
+               "animate": [{"variable": "width", "from": 30, "to": 50, "unit": "mm"}]})
+        .to_string()
     };
     // Without ffmpeg: refused before a frame is drawn, naming the
     // PNG sequence.
