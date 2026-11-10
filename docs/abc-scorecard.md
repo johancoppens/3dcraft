@@ -1,8 +1,8 @@
 # ABC scorecard: chunk 0000
 
-Made by `cargo xtask abc` in Heavy run 41467905116 on the Strix; the same chunk at the commit this branch starts from (main 91e156d5 with the same report), Heavy run 41397009712: 7699 imported, 36 invalid (the first scorecard, at 9aca23b396 before spindle tori were read, Heavy run 41347412557: 7574 and 34). Model ids are the ABC dataset's (`<id>/<n>`: the model's file `<id>_<hash>_step_<n>`); the models themselves are never committed (their licence: [testing.md](testing.md) › *Real-world models*). A timeout is a model that gave no verdict in time: slow or hanging, not yet told apart. Why an edge is refused (the distances at samples, what the prover reaches): [design/step-import.md](design/step-import.md) › *Edges the ABC corpus refused*.
+Made by `cargo xtask abc` in Heavy run 41467905116 on the Strix; the same chunk at the commit this branch starts from (main 55e74c9b with the same report), Heavy run 41397009712: 7699 imported, 36 invalid (the first scorecard, at ea2f589031 before spindle tori were read, Heavy run 41347412557: 7574 and 34). Model ids are the ABC dataset's (`<id>/<n>`: the model's file `<id>_<hash>_step_<n>`); the models themselves are never committed (their licence: [testing.md](testing.md) › *Real-world models*). A timeout is a model that gave no verdict in time: slow or hanging, not yet told apart. Why an edge is refused (the distances at samples, what the prover reaches): [design/step-import.md](design/step-import.md) › *Edges the ABC corpus refused*.
 
-Commit aaffc9d91a9, 2026-11-02 17:27; 10000 of the chunk's 10000 STEP files run, 6 at once, 60 s and 3G per model (docs/testing.md › Real-world models).
+Commit f306d09c581, 2026-11-02 17:27; 10000 of the chunk's 10000 STEP files run, 6 at once, 60 s and 3G per model (docs/testing.md › Real-world models).
 
 ## Stage 1: import, check, mesh, measure
 

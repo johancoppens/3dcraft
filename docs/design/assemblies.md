@@ -706,9 +706,9 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
   writer does), and FreeCAD reads the three placed solids to 1e-15. The window's scene not following `joint.set` was not
   reproduced in the engine (test `the_shown_scenes_follow_the_joints_after_the_workspace_narrows`: absolute open,
   workspace narrowed to a root, display refined elsewhere, Preview and Display scenes, stepwise and not).
-- 2026-10-29: the stand-in replaced by track B's `craft3d-assembly` (on main since 3c885c35): closed loops, couplings, limits and the diagnosis now come from the solver; the engine maps its frames, drives and the world onto the crate's `Problem`.
+- 2026-10-29: the stand-in replaced by track B's `craft3d-assembly` (on main since c4e56685): closed loops, couplings, limits and the diagnosis now come from the solver; the engine maps its frames, drives and the world onto the crate's `Problem`.
 - 2026-10-30 (asm-motion-p2): the window bug reported with track A (`joint.set` at 60°, 150° and 240° drew one
-  picture, `ui.fit` found nothing to frame) does not reproduce on main 765efa6e: not in real shell frames (CPU, with
+  picture, `ui.fit` found nothing to frame) does not reproduce on main 5a298a39: not in real shell frames (CPU, with
   and without the refiner), not at the window's desk with its engine thread and refiner and its own session (the
   user's authority narrowed to the automation roots, one source by absolute path)
   (`ui-egui/tests/assembly.rs`, `apps/craft3d/src/app.rs` `the_window_follows_joint_set_on_an_assembly`). The likely
