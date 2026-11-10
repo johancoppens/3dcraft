@@ -64,7 +64,8 @@ Without a document, the window shows the **start screen** (its picture is in
    gallery of every example, Jig and assembly, [3dcraft.dev/examples](https://3dcraft.dev/examples/), in
    your browser, at the part for the tab you are on.
 5. The cards. A click on a card opens it in a new tab, named after the example. Nothing is asked when
-   you close it again, unless you changed something: then 3DCraft asks whether to save your version. One that takes a while to open says so on its
+   you close it again, unless you changed something: then 3DCraft asks whether to save your version.
+   One that takes a while to open says so on its
    picture, such as *about 3 s*.
    - **Parts**: ten finished parts, with their whole history to play back. The first two, the steel
      bookend and the T-slot aluminium profile, are marked **Start here**: they are the simplest. A part
