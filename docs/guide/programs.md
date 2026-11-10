@@ -127,8 +127,15 @@ serde_json = "1"
 <!-- CHECK: craft3d-engine compiles as a git dependency at the tag v0.1.0, in a program outside the workspace -->
 
 Text in a built-in font needs the font files, which are not compiled into the engine: point the
-environment variable `CRAFT3D_FONTS` at a folder that holds them (an installed 3DCraft has one, beside the
-programs).
+environment variable `CRAFT3D_FONTS` at a folder that holds them. An installed 3DCraft has one:
+
+- on Windows, `fonts` beside `craft3d-cli.exe`;
+- on a Mac, `3DCraft.app/Contents/Resources/fonts`;
+- from the Linux tarball, `share/craft3d/fonts` in the unpacked folder, and after `install.sh`,
+  `~/.local/share/craft3d/fonts` (or `share/craft3d/fonts` in the folder you gave it);
+- the AppImage keeps its fonts inside the image, where another program cannot reach them.
+
+In a checkout of the source, `cargo xtask fonts` fetches them into `assets/fonts`.
 
 `Workspace::unrestricted()` lets commands read and write anywhere the program may. To keep them to one
 folder, give `Workspace { read: Access::Root(dir.clone()), write: Access::Root(dir) }` instead (`Access`
