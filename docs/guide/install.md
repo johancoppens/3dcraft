@@ -129,10 +129,10 @@ it, and with WebGL2 otherwise.
 ## Check that it works
 
 Start **3DCraft** from your Start menu, Applications folder or app launcher. The window opens on the
-**start screen**. Click the **T-slot profile** card: 3DCraft builds it in a new tab.
+**start screen**. Click the **T-slot aluminium profile** card: 3DCraft opens it in a new tab.
 [Your first five minutes](first-steps.md) shows you around from there.
 
-<!-- CHECK: the card's name on the new start screen is "T-slot profile", and a click builds or opens it in a new tab -->
+<!-- CHECK: the card's name on the new start screen is "T-slot aluminium profile" (its title in the examples repository; the brief calls it "T-slot profile"), and a click opens it in a new tab -->
 
 To check the command line too, open a terminal and type the lines below. Write the full path of
 `craft3d-cli` from the table above when it is not on your `PATH`.
