@@ -931,6 +931,7 @@ fn a_body_s_face_colours_are_cleared_in_one_step() {
         json!({"body": "Moved", "clear": true}),
     );
     assert_eq!(out["count"], 2, "{out}");
+    assert_eq!(out["message"], "Cleared 2 face colours of Moved", "{out}");
     assert!(
         out["cleared"]
             .as_array()
@@ -972,6 +973,25 @@ fn a_body_s_face_colours_are_cleared_in_one_step() {
     );
     assert_eq!(again["count"], 0, "{again}");
     assert_eq!(again["cleared"], json!([]), "{again}");
+    // A hidden body is cleared as a shown one is.
+    run(&mut s, "edit.undo", json!({}));
+    run(
+        &mut s,
+        "feature.visible",
+        json!({"feature": "Moved", "visible": false}),
+    );
+    let hidden = run(
+        &mut s,
+        "face.appearance",
+        json!({"body": "Moved", "clear": true}),
+    );
+    assert_eq!(hidden["count"], 2, "{hidden}");
+    run(
+        &mut s,
+        "feature.visible",
+        json!({"feature": "Moved", "visible": true}),
+    );
+    assert!(colours_of(&mut s, "F4").iter().all(|c| *c == Some(RED)));
 }
 
 /// A colour that also reaches a face of another body (a copy kept by a
@@ -1024,6 +1044,10 @@ fn clearing_a_body_keeps_the_colours_another_body_shares() {
     assert_eq!(out["cleared"][0]["color"], "#14a03c", "{out}");
     assert_eq!(out["kept"][0]["face"], "F1:face(1)", "{out}");
     assert_eq!(out["kept"][0]["for"], json!(["Twin"]), "{out}");
+    assert_eq!(
+        out["message"], "Cleared 1 face colour of Moved; 1 kept for Twin",
+        "{out}"
+    );
     // The copy keeps its blue face; the moved part keeps it too (kept),
     // and its green is gone.
     assert_eq!(colours_of(&mut s, "F2"), twin);

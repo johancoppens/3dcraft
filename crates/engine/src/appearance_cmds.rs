@@ -540,11 +540,11 @@ fn clear_body(session: &mut Session, p: &Params) -> Run {
         1 => format!("Cleared 1 face colour of {name}"),
         n => format!("Cleared {n} face colours of {name}"),
     };
-    if !kept_json.is_empty() {
-        message.push_str(&format!(
-            "; {} kept: they colour another body too",
-            kept_json.len()
-        ));
+    if !kept.is_empty() {
+        let others: std::collections::BTreeSet<&str> =
+            kept.values().flatten().map(String::as_str).collect();
+        let others: Vec<&str> = others.into_iter().collect();
+        message.push_str(&format!("; {} kept for {}", kept.len(), others.join(", ")));
     }
     let left = session.document()?.history.current().faces.len();
     Ok(json!({
