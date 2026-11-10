@@ -331,6 +331,10 @@ pub struct Summary {
     /// Checks, and how many of them fail.
     pub checks: usize,
     pub checks_failing: usize,
+    /// How many are neither passed nor failed: not proven either way, and
+    /// still being measured. Not passes ([`checks_part`]).
+    pub checks_unproven: usize,
+    pub checks_pending: usize,
 }
 
 /// Whether the regeneration skipped `row` because something it is made
@@ -433,6 +437,16 @@ impl Shell {
                 .assertion_rows
                 .iter()
                 .filter(|a| matches!(a.status, A::Failed | A::Error))
+                .count(),
+            checks_unproven: self
+                .assertion_rows
+                .iter()
+                .filter(|a| a.status == A::NotProven)
+                .count(),
+            checks_pending: self
+                .assertion_rows
+                .iter()
+                .filter(|a| a.status == A::Pending)
                 .count(),
         }
     }
@@ -606,18 +620,13 @@ impl Shell {
             return;
         }
         part(painter, Dot::Ok, &format!("{} rebuilt", s.rebuilt), sk.text);
-        if s.checks > 0 {
-            if s.checks_failing > 0 {
-                let text = checks_failing_text(s.checks_failing, s.checks);
-                part(painter, Dot::Failed, &text, sk.failed);
+        if let Some((dot, text)) = checks_part(&s) {
+            let ink = if dot == Dot::Failed {
+                sk.failed
             } else {
-                let text = if s.checks == 1 {
-                    "1 check passes".to_string()
-                } else {
-                    format!("{} checks pass", s.checks)
-                };
-                part(painter, Dot::Ok, &text, sk.text);
-            }
+                sk.text
+            };
+            part(painter, dot, &text, ink);
         }
     }
 
@@ -2038,6 +2047,42 @@ mod tests {
 
 /// The summary of failing checks: `1 check fails` (the only one), `1 of 3
 /// checks fails`, `2 of 3 checks fail`, `2 checks fail` (all of them).
+/// The checks' part of the line at the top of the list, with its dot:
+/// `7 checks pass` when every one passes; what fails when one does
+/// (`1 of 7 checks fails`); else what passes and, in the words of the
+/// checks' own header, what does not yet: `6 pass · 1 not proven`,
+/// `6 pass · measuring` (a check not proven is not a pass). `None`
+/// without checks.
+pub(crate) fn checks_part(s: &Summary) -> Option<(Dot, String)> {
+    if s.checks == 0 {
+        return None;
+    }
+    if s.checks_failing > 0 {
+        return Some((Dot::Failed, checks_failing_text(s.checks_failing, s.checks)));
+    }
+    let open = s.checks_unproven.saturating_add(s.checks_pending);
+    let passed = s.checks.saturating_sub(open);
+    if open == 0 {
+        let text = if passed == 1 {
+            "1 check passes".to_string()
+        } else {
+            format!("{passed} checks pass")
+        };
+        return Some((Dot::Ok, text));
+    }
+    let mut words = Vec::new();
+    if passed > 0 {
+        words.push(format!("{passed} pass"));
+    }
+    if s.checks_unproven > 0 {
+        words.push(format!("{} not proven", s.checks_unproven));
+    }
+    if s.checks_pending > 0 {
+        words.push("measuring".to_string());
+    }
+    Some((Dot::Grey, words.join(" · ")))
+}
+
 pub(crate) fn checks_failing_text(failing: usize, of: usize) -> String {
     match (failing, of) {
         (1, 1) => "1 check fails".to_string(),
@@ -2049,7 +2094,7 @@ pub(crate) fn checks_failing_text(failing: usize, of: usize) -> String {
 
 #[cfg(test)]
 mod checks_text_tests {
-    use super::checks_failing_text;
+    use super::{Dot, Summary, checks_failing_text, checks_part};
 
     #[test]
     fn failing_checks_are_counted_in_plain_english() {
@@ -2057,5 +2102,36 @@ mod checks_text_tests {
         assert_eq!(checks_failing_text(2, 2), "2 checks fail");
         assert_eq!(checks_failing_text(1, 3), "1 of 3 checks fails");
         assert_eq!(checks_failing_text(2, 3), "2 of 3 checks fail");
+    }
+
+    /// The line at the top of the list says what the checks' list shows:
+    /// a check not proven (the moka pot's draft, 2026-11-10) or one still
+    /// measured is not counted as a pass. All passing, it says it in the
+    /// words the guide quotes.
+    #[test]
+    fn a_check_not_proven_is_not_counted_as_a_pass() {
+        let of = |checks, failing, unproven, pending| {
+            checks_part(&Summary {
+                checks,
+                checks_failing: failing,
+                checks_unproven: unproven,
+                checks_pending: pending,
+                ..Summary::default()
+            })
+        };
+        let said = |dot, text: &str| Some((dot, text.to_string()));
+        assert_eq!(of(0, 0, 0, 0), None);
+        assert_eq!(of(17, 0, 0, 0), said(Dot::Ok, "17 checks pass"));
+        assert_eq!(of(1, 0, 0, 0), said(Dot::Ok, "1 check passes"));
+        assert_eq!(of(17, 0, 1, 0), said(Dot::Grey, "16 pass · 1 not proven"));
+        assert_eq!(of(2, 0, 2, 0), said(Dot::Grey, "2 not proven"));
+        assert_eq!(of(5, 0, 0, 2), said(Dot::Grey, "3 pass · measuring"));
+        assert_eq!(
+            of(5, 0, 1, 1),
+            said(Dot::Grey, "3 pass · 1 not proven · measuring")
+        );
+        assert_eq!(of(5, 0, 0, 5), said(Dot::Grey, "measuring"));
+        // A failing one is said first, whatever else is open.
+        assert_eq!(of(17, 1, 1, 0), said(Dot::Failed, "1 of 17 checks fails"));
     }
 }
