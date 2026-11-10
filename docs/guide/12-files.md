@@ -158,7 +158,10 @@ lies in the model, also turned over. A body that is not a plate is listed under 
 and the face: a pocket's floor, a chamfer, a round on an edge.
 
 `cut.export` writes the outlines to DXF or SVG at true size, each part in its own frame on a layer named
-after it: side by side on one sheet (`width` and `gap` as for a sheet of faces; it lays out in rows, it does
+after it, a plate as seen from its top: of its two faces the one whose outward normal points most up, by the
+first of its z, y and x that is not zero (so a plate standing upright with its front facing -y is drawn from its
+far, +y face, the mirror image of `file.export` of the front face; the result's `top` names the face), a
+sheet-metal part from its sketch's side: side by side on one sheet (`width` and `gap` as for a sheet of faces; it lays out in rows, it does
 not nest), or one file per part (`"layout": "each"`). One of each part is drawn and the result says how many
 to cut; `"copies": true` draws every body. `kerf` moves the cut off the part by that distance (half the width
 the beam cuts away): the outline out, the holes in, the outside corners rounded as a round beam goes round
