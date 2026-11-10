@@ -1,17 +1,54 @@
 # 3DCraft
 
-**A parametric 3D CAD modeller built for AI.** Describe a part, and an AI agent builds it in the 3DCraft
-window while you watch, point at faces and check the result. Or open a ready-made **Jig**, set its sizes
-in a form and export it, no AI needed. Or write the commands yourself.
+**3DCraft is an open-source parametric 3D CAD modeller built with and for AI: every action is a command, and every result is checked.**
+
+*An agent builds. A machine checks. You decide.*
 
 ![The 3DCraft window: four documents open, the feature list and history player of a socket head cap screw with a cut thread, the view cube and the display bar](docs/img/viewer.png)
 
-Every action in 3DCraft is a command with a name and a few values, so the same engine is driven from the
-window, the command line, a script, a JSON control channel or an MCP server. It is written in pure Rust,
-with its own B-rep kernel, constraint solver, tessellator and renderers: no OpenCascade, no Parasolid, no
-third-party geometry of any kind. Licence: [MIT](LICENSE).
+## Three ways to use it
+
+1. **Make models with AI.** Describe a part to an AI agent. It builds the part in the window you are watching,
+   step by step; you point at a face, ask for a change, and check the result. Then export it for a 3D printer,
+   a laser cutter, a mill or a workshop.
+2. **Use a Jig.** A Jig is a finished design with a form: the sizes that matter are fields, the rest follows
+   by formulas, and every result is checked. Take the sundial: choose your place, say whether it lies in the
+   garden or hangs on a wall and which way that wall faces, and you get a brass dial to laser cut and engrave
+   that reads the clock time where you live. No AI needed.
+3. **Build your own application on it.** The engine is a Rust library, and every command is also reachable
+   from the command line, a JSON control channel and an MCP server. A gear generator, a furniture
+   configurator, a CAD interface with buttons: each can be a separate program on top of 3DCraft. The licence
+   is MIT.
+
+3DCraft has no toolbar of modelling buttons. You model through commands: an agent sends them, a Jig's form
+sends them, or you write them yourself. The window is there to watch, to point and to check. Whoever wants a
+classic interface with buttons can build one on top: it would send the same commands.
+
+It is written in pure Rust, with its own B-rep kernel, constraint solver, tessellator and renderers: no
+OpenCascade, no Parasolid, no third-party geometry of any kind. Licence: [MIT](LICENSE).
+
+## How it started
+
+3DCraft started as an experiment. The occasion was practical: designing a CNC machine, furniture and the
+bodies and mechanisms of marionettes, with open software and the help of an AI agent. The open tools of today
+did not get there. So the question was turned around: can AI agents write a CAD kernel themselves, if a
+machine checks every result?
+
+3DCraft is the answer so far, and it was built the way it works. AI agents wrote it, under tests a machine can
+check, while the developer watched. An agent models in it the same way: through commands, under checks, in a
+window you are watching. The project is the proof of its own method.
+
+## Where it stands
+
+3DCraft is at version 0.1.0. It does not replace professional CAD today. What it cannot do yet, it refuses,
+and says so. The experiment goes on: the kernel is its heart and its hardest part, every refusal is work still
+owed, and it is being made better step by step.
 
 ## Get started
+
+> **The first release, 0.1.0, is being prepared.** The installers are not published yet, and the guide and
+> its pictures are being brought up to date. Until then, build 3DCraft from source:
+> [`docs/development.md`](docs/development.md).
 
 - **[Install 3DCraft](docs/guide/01-install.md)**: installers for Windows, macOS and Linux (version
   0.1.0), or the web version with nothing to install.
