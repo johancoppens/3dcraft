@@ -3,6 +3,9 @@
 *Everything an agent does, you can do yourself: run commands and scripts, render pictures, convert
 files and check a Jig, with `craft3d-cli`.*
 
+This is the third way to use 3DCraft at its simplest: the commands written by hand, one by one or as a
+script. For a program of your own on top of 3DCraft, see [Programs on 3DCraft](programs.md).
+
 `craft3d-cli` runs in a terminal (on Windows: Command Prompt or PowerShell) and needs no window and no
 graphics card. `craft3d-cli --help` lists its subcommands, and `craft3d-cli <subcommand> --help`
 explains one. Every subcommand returns exit code 0 on success, 1 on a failure and 2 for a mistake in the
@@ -31,11 +34,12 @@ set: everything it drives would fail after it. With `--keep-going` it carries on
 
 ## Scripts
 
-A script is a JSON list of steps, `[["id", {values}], …]`: the format of the
-[example models](../examples/README.md) and of the JSON blocks in this guide.
+A script is a JSON list of steps, `[["id", {values}], …]`: the format of the JSON blocks in this guide,
+and of the [lessons](../examples/README.md). Save the flange lesson,
+[`flange.json`](../examples/flange.json), in a folder, and in a terminal in that folder:
 
 ```sh
-craft3d-cli run --new '{"units":"mm"}' --script docs/examples/flange.json --out flange.3dcraft
+craft3d-cli run --new '{"units":"mm"}' --script flange.json --out flange.3dcraft
 craft3d-cli render flange.3dcraft --out flange.png
 ```
 
@@ -82,7 +86,8 @@ craft3d-cli convert bracket.3dcraft bracket-front.dxf --view front
 ## Looking inside a file: `info`
 
 `craft3d-cli info FILE` prints the whole state of a file as JSON, as `document.inspect` gives it: its
-variables, features and their status, and every body with its volume, area and faces.
+variables, features and their status, every body with its volume, area and faces, and its checks. It waits
+until every check is measured before it prints.
 
 ## Check a Jig over its range
 
@@ -119,8 +124,8 @@ printed as JSON and the lines per point go to standard error.
 craft3d-cli replay bracket.3dcraft --out build.mp4
 ```
 
-Makes a video (MP4, WebM or GIF) of the design being built, feature by feature. It needs `ffmpeg`;
-without it, PNG frames.
+Makes a video (MP4, WebM or GIF, by the name's extension) of the design being built, feature by feature.
+It needs `ffmpeg`; without it, PNG frames.
 
 ## Animations and videos
 
@@ -167,5 +172,11 @@ Pictures and frames are drawn on the graphics card when the machine has one (`"r
 default; the result says `"renderer": "gpu"` or `"cpu"`); `"renderer": "cpu"` (`--renderer cpu`) draws
 them with the CPU renderer, the reference the card is checked against, and slower. A studio frame
 averages 16 frames of samples (`look.accumulate`), as the window does before its picture is settled.
+
+## Scoring a script: `score`
+
+`craft3d-cli score TASK --script FILE` scores a script against a task of 3DCraft's own task set, the
+benchmark its development is measured by. The tasks are in the source repository (`docs/tasks`, or
+`--tasks DIR`), so `score` is for a source checkout.
 
 **Next:** [Programs on 3DCraft](programs.md).
