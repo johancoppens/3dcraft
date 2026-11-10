@@ -852,10 +852,12 @@ impl Shell {
         self.start.layout = Some(layout);
         let width = layout.width;
         let top = inner.top() + tokens.inset * layout.spacing;
-        let area = egui::Rect::from_min_max(
-            egui::pos2(inner.center().x - width * 0.5, top),
-            egui::pos2(inner.center().x + width * 0.5, inner.bottom()),
-        );
+        // The whole width scrolls, the content a column in its middle: a
+        // window too low for it all (the agents' block with its switch
+        // on, at 1400 × 900) shows the scroll bar at its right edge, not
+        // over the content, and not only under the pointer, so it is
+        // seen that there is more (2026-11-10).
+        let area = egui::Rect::from_min_max(egui::pos2(inner.left(), top), inner.max);
         let mut child = ui.new_child(
             egui::UiBuilder::new()
                 .id_salt("craft3d-start")
@@ -863,10 +865,24 @@ impl Shell {
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
         child.style_mut().visuals = tokens.panel_visuals();
+        let scroll = &mut child.spacing_mut().scroll;
+        scroll.dormant_handle_opacity = scroll.active_handle_opacity;
         let height = egui::ScrollArea::vertical()
             .max_height((inner.bottom() - top).max(0.0))
             .auto_shrink([false, true])
-            .show(&mut child, |ui| self.start_card(ui, width))
+            .show(&mut child, |ui| {
+                let room = ui.available_rect_before_wrap();
+                let column = egui::Rect::from_min_size(
+                    egui::pos2(
+                        room.left() + ((room.width() - width) * 0.5).max(0.0),
+                        room.top(),
+                    ),
+                    egui::vec2(width, room.height()),
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(column), |ui| {
+                    self.start_card(ui, width);
+                });
+            })
             .content_size
             .y;
         self.start.height = height;

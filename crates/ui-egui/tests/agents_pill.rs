@@ -20,6 +20,8 @@ struct Window {
     ctx: egui::Context,
     time: f64,
     size: egui::Vec2,
+    /// What the last frame painted.
+    shapes: Vec<egui::epaint::ClippedShape>,
 }
 
 impl Window {
@@ -28,6 +30,7 @@ impl Window {
             ctx: egui::Context::default(),
             time: 0.0,
             size: vec2(width, height),
+            shapes: Vec::new(),
         }
     }
 
@@ -41,6 +44,7 @@ impl Window {
         };
         let mut output = self.ctx.run_ui(input, |ui| shell.ui(ui, session));
         output.textures_delta.clear();
+        self.shapes = output.shapes;
     }
 
     fn click(&mut self, shell: &mut Shell, session: &mut Session, at: Pos2) {
@@ -531,4 +535,93 @@ fn an_agents_files_stay_out_of_the_recent_files() {
     assert_eq!(listed.len(), 1, "{listed:?}");
     assert!(listed[0].ends_with("mine.3dcraft"));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The rectangles the last frame painted with some colour, nested ones
+/// included.
+fn painted_rects(shapes: &[egui::epaint::ClippedShape]) -> Vec<egui::Rect> {
+    fn walk(shape: &egui::Shape, out: &mut Vec<egui::Rect>) {
+        match shape {
+            egui::Shape::Rect(r) if r.fill.a() > 0 => out.push(r.rect),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for clipped in shapes {
+        walk(&clipped.shape, &mut out);
+    }
+    out
+}
+
+/// The start screen is reachable in full at any height. With the agents'
+/// switch on, its "Connect an AI agent" block runs past the foot of a
+/// window 900 high (the Copy buttons were cut under the status bar,
+/// 2026-11-10): the screen scrolls, says so with its scroll bar at the
+/// window's right edge while the pointer is elsewhere, and the wheel
+/// brings the block's end above the status bar.
+#[test]
+fn the_start_screen_scrolls_to_the_end_of_the_agents_block() {
+    for (width, height) in [(1400.0, 900.0), (1024.0, 700.0)] {
+        let mut session = Session::new(Workspace::none());
+        let mut shell = Shell::new();
+        shell.set_agents_status(on(Vec::new()));
+        let mut window = Window::sized(width, height);
+        for _ in 0..3 {
+            window.frame(&mut shell, &mut session, Vec::new());
+        }
+        assert!(shell.start_shown());
+        let viewport = shell.viewport_rect().unwrap();
+        let end = |shell: &Shell| {
+            shell
+                .start_hits()
+                .iter()
+                .filter(|(name, _)| {
+                    ["card", "copy-command", "copy-config", "other-clients"]
+                        .contains(&name.as_str())
+                })
+                .map(|(_, rect)| rect.bottom())
+                .fold(f32::MIN, f32::max)
+        };
+        if end(&shell) > viewport.bottom() + 0.5 {
+            // The scroll bar: thin and tall, at the right edge, away from
+            // the content's column on a wide window.
+            let bar = painted_rects(&window.shapes).into_iter().find(|r| {
+                r.width() <= 12.0
+                    && r.height() >= 30.0
+                    && r.right() <= viewport.right()
+                    && r.left() >= viewport.right() - 60.0
+            });
+            assert!(
+                bar.is_some(),
+                "{width} x {height}: the screen scrolls without a scroll bar in sight"
+            );
+            let at = viewport.center();
+            window.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
+            for _ in 0..20 {
+                if end(&shell) <= viewport.bottom() + 0.5 {
+                    break;
+                }
+                window.frame(
+                    &mut shell,
+                    &mut session,
+                    vec![Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: vec2(0.0, -200.0),
+                        phase: egui::TouchPhase::Move,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                );
+                for _ in 0..30 {
+                    window.frame(&mut shell, &mut session, Vec::new());
+                }
+            }
+        }
+        assert!(
+            end(&shell) <= viewport.bottom() + 0.5,
+            "{width} x {height}: the block ends at {} under the status bar at {}",
+            end(&shell),
+            viewport.bottom()
+        );
+    }
 }
