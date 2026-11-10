@@ -1482,7 +1482,7 @@ mod tests {
         let ctx = egui::Context::default();
         let tokens = crate::theme::Tokens::default();
         let (mut checked, mut cut) = (0, 0);
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let kit = Kit::panel(&tokens);
             let layout = StartLayout::for_room(egui::vec2(START_WIDTH, 700.0));
             let (per_row, thumb) = layout.cards(START_WIDTH, tokens.inset * 1.4);
@@ -1503,6 +1503,8 @@ mod tests {
                 checked += 1;
             }
         });
+        // The font atlas the layout filled is not shown anywhere.
+        output.textures_delta.clear();
         assert_eq!(checked, EXAMPLES.len());
         // Most fit whole.
         assert!(cut * 2 < checked, "{cut} of {checked} cut");
