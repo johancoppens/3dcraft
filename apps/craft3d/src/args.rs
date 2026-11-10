@@ -19,10 +19,10 @@ Usage: craft3d [FILE] [--control PORT] [--control-token-file FILE]
                [--recent-file FILE|none] [--window-size WIDTHxHEIGHT]
        craft3d --version | --help
 
-Opens FILE (a .3dcraft document, or a .3dcraftjig Jig, opened to set its
-parameters) when one is given, and shows the active
-document: bodies shaded with their edges, sketches as lines. The window
-does not model; the document changes through commands, sent over the
+Opens FILE when one is given (a .3dcraft document, a .3dcraftjig Jig,
+opened to set its parameters, or a .3dcraftasm assembly), and shows the
+active document: bodies shaded with their edges, sketches as lines. The
+window does not model; the document changes through commands, sent over the
 control channel. It does open and save files: the File menu, with the
 system's file dialog, wherever you may read and write.
 
@@ -88,7 +88,8 @@ lists every shortcut.";
 /// What to start with.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Options {
-    /// A `.3dcraft` document or a `.3dcraftjig` Jig to open.
+    /// A `.3dcraft` document, a `.3dcraftjig` Jig or a `.3dcraftasm`
+    /// assembly to open.
     pub file: Option<String>,
     /// The port of the control listener; `None` for no listener.
     pub control: Option<u16>,
@@ -597,6 +598,11 @@ mod tests {
         assert_eq!(run(&["--version"]), Ok(Parsed::Version));
         assert_eq!(run(&["-V"]), Ok(Parsed::Version));
         assert!(HELP.contains("--control-token-file") && HELP.contains("3DCraft"));
+        // Every kind of file the window opens is named: a document, a Jig
+        // and an assembly.
+        for extension in craft3d_ui_egui::files::OPEN_EXTENSIONS {
+            assert!(HELP.contains(&format!(" .{extension} ")), "{extension}");
+        }
     }
 
     #[test]
