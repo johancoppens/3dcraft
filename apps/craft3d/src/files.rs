@@ -166,6 +166,10 @@ pub enum Choice {
     Folder(PathBuf),
     /// The dialog was closed without a choice.
     Cancelled(&'static str),
+    /// What the dialog chose is not done, and why (the command's label
+    /// first): a name the program added the extension to that names a
+    /// file nobody was asked about replacing ([`named_by_dialog`]).
+    Refused(&'static str, String),
 }
 
 /// An export the export dialog asked for, with the file the save dialog
@@ -272,7 +276,8 @@ impl Picker {
             dialogs
                 .save(&suggested, assembly)
                 .map_or(Choice::Cancelled("file.save"), |path| {
-                    Choice::Save(with_extension(path, assembly))
+                    named_by_dialog(path, |p| with_extension(p, assembly))
+                        .map_or_else(|why| Choice::Refused("file.save", why), Choice::Save)
                 })
         })
     }
@@ -316,7 +321,8 @@ impl Picker {
             dialogs
                 .export_jig(&suggested)
                 .map_or(Choice::Cancelled("jig.export"), |path| {
-                    Choice::ExportJig(with_jig_extension(path))
+                    named_by_dialog(path, with_jig_extension)
+                        .map_or_else(|why| Choice::Refused("jig.export", why), Choice::ExportJig)
                 })
         })
     }
@@ -372,6 +378,31 @@ pub fn with_extension(path: PathBuf, assembly: bool) -> PathBuf {
     } else {
         path.with_extension(save_extension(assembly))
     }
+}
+
+/// The file to write for the name a save dialog gave, `path`, once
+/// `named` gave it its extension: `path` itself when it had one (the
+/// dialog asked before replacing that file), the name with the extension
+/// added otherwise, unless a file of that name is there: nobody was asked
+/// about replacing it (a dialog that does not add the extension itself
+/// asked about the name as typed), so it is refused with what to do,
+/// never replaced without a question. Export does the same
+/// ([`Host::export_target`]).
+fn named_by_dialog(
+    path: PathBuf,
+    named: impl FnOnce(PathBuf) -> PathBuf,
+) -> Result<PathBuf, String> {
+    let file = named(path.clone());
+    if file != path && file.exists() {
+        let name = file
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        return Err(format!(
+            "`{name}` exists: nothing was written; to replace it, type its full name, `{name}`, in the dialog"
+        ));
+    }
+    Ok(file)
 }
 
 /// `path` with the Jig's extension: as it is when it has it (in any case),
@@ -884,6 +915,11 @@ impl Host {
             }
             // Only the agents' own picker asks for a folder.
             Ok(Choice::Folder(_)) => {}
+            // Nothing written; the document stays open.
+            Ok(Choice::Refused(label, why)) => {
+                self.close_after_save = false;
+                self.report(label, &Err(why));
+            }
             // Cancelled is the person's choice, not a failure: said quietly
             // (the developer's decision of 2026-11-04).
             Ok(Choice::Cancelled(label)) => {
@@ -1502,6 +1538,93 @@ mod tests {
             listing(&mine),
             ["clamp-2.3dcraftasm", "clamp.3dcraftasm", "profile.3dcraft"]
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A name the program gives its extension never replaces a file
+    /// nobody was asked about: a dialog that does not add the extension
+    /// itself asked about `clamp`, not `clamp.3dcraftasm`. Refused with
+    /// what to do and the file untouched, for a part, an assembly, Save
+    /// in the question before closing and Export as Jig; written when no
+    /// such file is there, and over the old one when its full name was
+    /// typed (the dialog asked).
+    #[test]
+    fn a_name_given_its_extension_never_replaces_a_file_unasked() {
+        let dir = workdir("unasked");
+        let mine = subdir(&dir, "mine");
+        let old = b"not to be lost".to_vec();
+        for name in ["gear.3dcraft", "clamp.3dcraftasm", "plate.3dcraftjig"] {
+            std::fs::write(mine.join(name), &old).unwrap();
+        }
+        let person = Person::who_answers(&[
+            Some(&mine.join("gear")),
+            Some(&mine.join("clamp")),
+            Some(&mine.join("clamp-2")),
+            Some(&mine.join("clamp.3dcraftasm")),
+            Some(&mine.join("plate")),
+            Some(&mine.join("clamp")),
+        ]);
+        let mut dialogs = picker(&person);
+        let mut host = Host::new(Session::new(Workspace::none()));
+        let refused = |host: &Host, label: &str, name: &str| {
+            let (said, ok, text) = last(host);
+            assert_eq!((said.as_str(), ok), (label, false), "{text}");
+            assert!(
+                text.contains(&format!("`{name}` exists")) && text.contains("type its full name"),
+                "{text}"
+            );
+        };
+        // A part: `gear` typed, `gear.3dcraft` there.
+        act(&mut host, &mut dialogs, FileAction::New);
+        host.session
+            .execute("feature.block", &json!({"size": [1, 2, 3]}))
+            .unwrap();
+        act(&mut host, &mut dialogs, FileAction::Save);
+        refused(&host, "file.save", "gear.3dcraft");
+        assert!(host.session.document_status().unwrap().path.is_none());
+        // An assembly: refused, then written under a free name, then over
+        // the old file once its full name is typed.
+        act(&mut host, &mut dialogs, FileAction::NewAssembly);
+        act(&mut host, &mut dialogs, FileAction::SaveAs);
+        refused(&host, "file.save", "clamp.3dcraftasm");
+        assert_eq!(std::fs::read(mine.join("clamp.3dcraftasm")).unwrap(), old);
+        act(&mut host, &mut dialogs, FileAction::SaveAs);
+        assert!(last(&host).1, "{:?}", last(&host));
+        act(&mut host, &mut dialogs, FileAction::SaveAs);
+        assert!(last(&host).1, "{:?}", last(&host));
+        assert!(
+            std::fs::read(mine.join("clamp.3dcraftasm"))
+                .unwrap()
+                .starts_with(b"PK")
+        );
+        // Export as Jig: `plate` typed, `plate.3dcraftjig` there.
+        act(&mut host, &mut dialogs, FileAction::ExportJig);
+        refused(&host, "jig.export", "plate.3dcraftjig");
+        // Save in the question before closing a new assembly: refused, and
+        // the assembly stays open.
+        act(&mut host, &mut dialogs, FileAction::NewAssembly);
+        let open = host.session.document_statuses().len();
+        host.doc_action(
+            craft3d_ui_egui::DocAction::SaveAndClose(open - 1),
+            &mut dialogs,
+        );
+        let choice = dialogs.wait().unwrap();
+        host.file_choice(choice);
+        refused(&host, "file.save", "clamp.3dcraftasm");
+        assert_eq!(host.session.document_statuses().len(), open);
+        assert!(!host.close_after_save);
+        assert_eq!(
+            listing(&mine),
+            [
+                "clamp-2.3dcraftasm",
+                "clamp.3dcraftasm",
+                "gear.3dcraft",
+                "plate.3dcraftjig"
+            ]
+        );
+        for name in ["gear.3dcraft", "plate.3dcraftjig"] {
+            assert_eq!(std::fs::read(mine.join(name)).unwrap(), old, "{name}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
