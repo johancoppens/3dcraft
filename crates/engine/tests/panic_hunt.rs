@@ -627,6 +627,14 @@ fn no_command_panics_on_adversarial_parameters() {
         for key in &keys {
             check(&json!({ key.as_str(): value }));
         }
+        // A command that takes `clear` has another form with it (a
+        // body's face colours cleared by `body` and `clear` alone): each
+        // other parameter in turn beside `clear: true`.
+        if keys.iter().any(|k| k == "clear") {
+            for key in keys.iter().filter(|k| *k != "clear") {
+                check(&json!({ key.as_str(): value, "clear": true }));
+            }
+        }
         // Every parameter at once with the same value, so the checks
         // behind the first failing parameter are reached as well: also
         // with one parameter left valid in turn.
