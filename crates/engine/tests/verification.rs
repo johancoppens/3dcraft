@@ -617,6 +617,17 @@ fn a_switched_off_body_is_left_out_of_a_subject() {
         json!({"from": "Base", "to": "Nobody"}),
     );
     assert!(!e.contains("switched off"), "{e}");
+    // A body left out of a list is said (review, S4).
+    let thick = run(
+        &mut s,
+        "measure.thickness",
+        json!({"of": ["Base", "Option"]}),
+    );
+    assert_eq!(
+        thick["switchedOffLeftOut"],
+        json!({"count": 1, "bodies": ["Option"]}),
+        "{thick}"
+    );
     // The option on: the two plates 10 apart do not overlap, and the
     // volume is both, 200000; the same assertions hold.
     run(

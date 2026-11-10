@@ -23,19 +23,48 @@ const MAX_BODIES: usize = 10_000;
 /// an empty list, an unknown name and a feature without a body are errors
 /// that say which, and what there is, and so is a list whose every body is
 /// switched off: there is nothing to write.
-pub(crate) fn chosen(
+fn chosen(
     p: &Params,
     doc: &Document,
     regen: &Regen,
-) -> Result<Option<Vec<FeatureId>>, CommandError> {
+) -> Result<(Option<Vec<FeatureId>>, Vec<String>), CommandError> {
     let (chosen, off) = chosen_skipping(ID, p, doc, regen)?;
     if chosen.as_ref().is_some_and(Vec::is_empty) && !off.is_empty() {
+        let why: Vec<String> = off
+            .iter()
+            .map(|(name, why)| format!("`{name}` is {why}"))
+            .collect();
         return fail(format!(
             "{ID}: every body `bodies` names is switched off now ({}); name a body that is on, or leave `bodies` out",
-            off.join("; ")
+            why.join("; ")
         ));
     }
-    Ok(chosen)
+    Ok((chosen, off.into_iter().map(|(name, _)| name).collect()))
+}
+
+/// What a 3D export writes: the features whose bodies (`None`: every
+/// body), and what it left out, by the features' names: hidden bodies
+/// (`hiddenLeftOut`) and bodies `bodies` names that are switched off
+/// (`switchedOffLeftOut`).
+pub(crate) struct Written {
+    pub only: Option<Vec<FeatureId>>,
+    pub hidden: Vec<String>,
+    pub off: Vec<String>,
+}
+
+impl Written {
+    /// Adds what was left out to a result: `hiddenLeftOut` and
+    /// `switchedOffLeftOut`, each `{count, bodies}` when there are any.
+    pub(crate) fn report(&self, result: &mut Value) {
+        if let Some(map) = result.as_object_mut() {
+            if let Some(hidden) = names_json(&self.hidden) {
+                map.insert("hiddenLeftOut".into(), hidden);
+            }
+            if let Some(off) = names_json(&self.off) {
+                map.insert("switchedOffLeftOut".into(), off);
+            }
+        }
+    }
 }
 
 /// The bodies a 3D export (STEP, STL, 3MF, OBJ) writes and the hidden ones
@@ -43,14 +72,14 @@ pub(crate) fn chosen(
 /// or not ([`chosen`]); without it every body that is not hidden
 /// (`feature.visible`), as the drawings leave hidden bodies out (J-045).
 /// Every body hidden and none named is refused: there is nothing to write.
-pub(crate) fn written(
-    p: &Params,
-    doc: &Document,
-    regen: &Regen,
-) -> Result<(Option<Vec<FeatureId>>, Vec<String>), CommandError> {
-    let named = chosen(p, doc, regen)?;
+pub(crate) fn written(p: &Params, doc: &Document, regen: &Regen) -> Result<Written, CommandError> {
+    let (named, off) = chosen(p, doc, regen)?;
     if named.is_some() {
-        return Ok((named, Vec::new()));
+        return Ok(Written {
+            only: named,
+            hidden: Vec::new(),
+            off,
+        });
     }
     let (mut shown, mut hidden) = (Vec::new(), Vec::new());
     for (id, _) in regen.bodies() {
@@ -64,7 +93,11 @@ pub(crate) fn written(
         }
     }
     if hidden.is_empty() {
-        return Ok((None, hidden));
+        return Ok(Written {
+            only: None,
+            hidden,
+            off,
+        });
     }
     if shown.is_empty() {
         return fail(format!(
@@ -72,35 +105,42 @@ pub(crate) fn written(
             hidden.join(", ")
         ));
     }
-    Ok((Some(shown), hidden))
+    Ok(Written {
+        only: Some(shown),
+        hidden,
+        off,
+    })
 }
 
-/// What a result says of the hidden bodies an export left out, when it
-/// left any out: `{count, bodies}`.
-pub(crate) fn hidden_json(hidden: &[String]) -> Option<Value> {
-    (!hidden.is_empty()).then(|| serde_json::json!({ "count": hidden.len(), "bodies": hidden }))
+/// What a result says of the bodies an export left out, when it left any
+/// out: `{count, bodies}`.
+pub(crate) fn names_json(names: &[String]) -> Option<Value> {
+    (!names.is_empty()).then(|| serde_json::json!({ "count": names.len(), "bodies": names }))
 }
 
-/// [`chosen`] for the command `command`, which its errors name; a list
-/// whose every body is switched off is an empty list (`cut.list` lists
-/// nothing).
+/// [`chosen`] for the command `command`, which its errors name, with the
+/// names of the bodies `bodies` names that were left out as switched off;
+/// a list whose every body is switched off is an empty list (`cut.list`
+/// lists nothing).
 pub(crate) fn chosen_for(
     command: &str,
     p: &Params,
     doc: &Document,
     regen: &Regen,
-) -> Result<Option<Vec<FeatureId>>, CommandError> {
-    chosen_skipping(command, p, doc, regen).map(|(chosen, _)| chosen)
+) -> Result<(Option<Vec<FeatureId>>, Vec<String>), CommandError> {
+    chosen_skipping(command, p, doc, regen)
+        .map(|(chosen, off)| (chosen, off.into_iter().map(|(name, _)| name).collect()))
 }
 
 /// [`chosen_for`], with the features left out because they are switched
-/// off, each said as `` `Name` is inactive (its condition is 0)``.
+/// off: each its name and why (`inactive (its condition is 0)`).
+#[allow(clippy::type_complexity)]
 fn chosen_skipping(
     command: &str,
     p: &Params,
     doc: &Document,
     regen: &Regen,
-) -> Result<(Option<Vec<FeatureId>>, Vec<String>), CommandError> {
+) -> Result<(Option<Vec<FeatureId>>, Vec<(String, String)>), CommandError> {
     let Some(value) = p.get("bodies") else {
         return Ok((None, Vec::new()));
     };
@@ -122,7 +162,7 @@ fn chosen_skipping(
         ));
     }
     let mut out: Vec<FeatureId> = Vec::with_capacity(items.len());
-    let mut off: Vec<String> = Vec::new();
+    let mut off: Vec<(String, String)> = Vec::new();
     for (index, item) in items.iter().enumerate() {
         match feature(command, doc, regen, index, item)? {
             Named::Body(id) => {
@@ -130,7 +170,11 @@ fn chosen_skipping(
                     out.push(id);
                 }
             }
-            Named::Off(why) => off.push(why),
+            Named::Off(name, why) => {
+                if !off.iter().any(|(n, _)| *n == name) {
+                    off.push((name, why));
+                }
+            }
         }
     }
     Ok((Some(out), off))
@@ -140,7 +184,7 @@ fn chosen_skipping(
 /// one switched off now (why, in words).
 enum Named {
     Body(FeatureId),
-    Off(String),
+    Off(String, String),
 }
 
 /// The feature `item` names, which must have a body of its own now or be
@@ -183,8 +227,8 @@ fn feature(
         return Ok(Named::Body(id));
     }
     let name = doc.feature(id).map_or("", |f| f.name.as_str());
-    if let Some(why) = crate::verify_cmds::switched_off(regen, id) {
-        return Ok(Named::Off(format!("`{name}` is {why}")));
+    if let Some(why) = crate::verify_cmds::switched_off(doc, regen, id) {
+        return Ok(Named::Off(name.to_string(), why.to_string()));
     }
     let outcome = regen.feature(id);
     let why = match (

@@ -103,7 +103,8 @@ feature's name and with its colours. To export some of the bodies, select them i
 suppressed is left out of the list, so one list serves every option of a Jig; `cut.list` and `cut.export` take
 `bodies` the same way. Without `bodies`, a body hidden in the view (`feature.visible`, the eye in the feature
 list) is left out of STEP, STL, 3MF and OBJ, as a drawing leaves it out, and of the cut list; the result's
-`hiddenLeftOut` says which. Named in `bodies`, a hidden body is written all the same.
+`hiddenLeftOut` says which. Named in `bodies`, a hidden body is written all the same. A body named in `bodies`
+and switched off is listed under `switchedOffLeftOut`, as the measures do.
 
 **Import** (**File › Import…**) reads the solids and sheets of AP203, AP214 and AP242 files, assemblies
 too (one feature per placed solid, with their colours), and converts the units. The file is kept inside the

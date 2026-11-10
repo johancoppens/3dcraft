@@ -1006,20 +1006,26 @@ fn a_switched_off_body_is_left_out_of_the_cut_list() {
         json!({"name": "Optional shelf", "size": [100, 50, 18], "position": [0, 0, 40], "when": "0"}),
     );
     let both = json!(["Board", "Optional shelf"]);
+    // What was left out is said (review, S4).
+    let left = json!({"count": 1, "bodies": ["Optional shelf"]});
     let list = run(&mut s, "cut.list", json!({"bodies": both}));
     assert_eq!(list["parts"], 1, "{list}");
     part(&list, "Board");
+    assert_eq!(list["switchedOffLeftOut"], left, "{list}");
     let csv = run(&mut s, "cut.list", json!({"bodies": both, "format": "csv"}));
     assert_eq!(csv["parts"], 1, "{csv}");
+    assert_eq!(csv["switchedOffLeftOut"], left, "{csv}");
     let none = run(&mut s, "cut.list", json!({"bodies": ["Optional shelf"]}));
     assert_eq!(none["parts"], 0, "{none}");
     assert_eq!(none["groups"], json!([]), "{none}");
+    assert_eq!(none["switchedOffLeftOut"], left, "{none}");
     let out = run(
         &mut s,
         "cut.export",
         json!({"path": "board.dxf", "bodies": both}),
     );
     assert_eq!(out["parts"].as_array().unwrap().len(), 1, "{out}");
+    assert_eq!(out["switchedOffLeftOut"], left, "{out}");
     let e = common::error(&mut s, "cut.list", json!({"bodies": ["Board", "Nobody"]}));
     assert!(e.contains("there is no feature `Nobody`"), "{e}");
 }

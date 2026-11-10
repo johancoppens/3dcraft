@@ -328,6 +328,9 @@ fn run_command(
     let (found, plane, level) = measured(&ctx, &map, asked, keys).map_err(err)?;
     let mut out = shape(&found, &plane, level.as_ref());
     out.insert("lengthUnit".into(), length_unit(doc).into());
+    if let Some(left) = ctx.left_out_json() {
+        out.insert("switchedOffLeftOut".into(), left);
+    }
     Ok(Value::Object(out))
 }
 
@@ -442,6 +445,9 @@ fn measure_section(session: &mut Session, params: &Value) -> Run {
         None => {}
     }
     out.insert("lengthUnit".into(), length_unit(doc).into());
+    if let Some(left) = ctx.left_out_json() {
+        out.insert("switchedOffLeftOut".into(), left);
+    }
     Ok(Value::Object(out))
 }
 
@@ -754,6 +760,9 @@ fn measure_floating(session: &mut Session, params: &Value) -> Run {
         "the equilibrium reached from the start (the nearest) first; where it is unstable, those the bodies fall to from it; other equilibria are not searched".into(),
     );
     out.insert("lengthUnit".into(), length_unit(doc).into());
+    if let Some(left) = ctx.left_out_json() {
+        out.insert("switchedOffLeftOut".into(), left);
+    }
     Ok(Value::Object(out))
 }
 

@@ -48,9 +48,9 @@ pub(crate) fn measured_document(
 /// 0 (J-026), rather than in error or passed on nothing.
 pub(crate) const SWITCHED_OFF: &str = "every body it names is switched off now";
 
-/// Why the feature `id` is switched off now (its condition is 0, or it is
-/// suppressed), or `None`.
-pub(crate) fn switched_off(regen: &Regen, id: FeatureId) -> Option<&'static str> {
+/// Why the feature `id` of `doc` is switched off now (its condition is 0,
+/// or it is suppressed), or `None`.
+pub(crate) fn switched_off(_doc: &Document, regen: &Regen, id: FeatureId) -> Option<&'static str> {
     match regen.feature(id).map(|o| &o.status) {
         Some(craft3d_regen::Status::Inactive) => Some("inactive (its condition is 0)"),
         Some(craft3d_regen::Status::Suppressed) => Some("suppressed"),
@@ -116,6 +116,10 @@ pub(crate) struct Ctx<'a> {
     /// proof of a thickness or a distance need go no higher (infinite for
     /// a measure command: proven as close to the value found as it can).
     pub stop: f64,
+    /// The bodies named in a subject that were left out because their
+    /// features are switched off now, by name, in the order met: what a
+    /// measure command's result reports (`switchedOffLeftOut`).
+    pub left_out: std::sync::Mutex<Vec<String>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -132,7 +136,18 @@ impl<'a> Ctx<'a> {
             unknown_used: std::sync::Mutex::new(Vec::new()),
             placed: None,
             stop: f64::INFINITY,
+            left_out: std::sync::Mutex::new(Vec::new()),
         })
+    }
+
+    /// What a measure command's result says of the bodies its subjects
+    /// left out as switched off, when any were: `{count, bodies}`.
+    pub(crate) fn left_out_json(&self) -> Option<Value> {
+        let left = self
+            .left_out
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (!left.is_empty()).then(|| json!({ "count": left.len(), "bodies": *left }))
     }
 
     pub(crate) fn feature_name(&self, id: FeatureId) -> String {
@@ -449,11 +464,17 @@ pub(crate) fn subject(ctx: &Ctx<'_>, value: &Value, kind: &[&str]) -> Result<Vec
         if ctx.body(id).is_ok() {
             return false;
         }
-        let Some(why) = switched_off(ctx.regen, id) else {
+        let Some(why) = switched_off(ctx.doc, ctx.regen, id) else {
             return false;
         };
         off.borrow_mut()
             .push(format!("`{}` is {why}", ctx.feature_name(id)));
+        if let Ok(mut left) = ctx.left_out.lock() {
+            let name = ctx.feature_name(id);
+            if !left.contains(&name) {
+                left.push(name);
+            }
+        }
         true
     };
     let found = |id: FeatureId| -> Result<Found, String> {
@@ -2119,6 +2140,9 @@ fn command(
         }
     }
     result.insert("lengthUnit".into(), length_unit(doc).into());
+    if let Some(left) = ctx.left_out_json() {
+        result.insert("switchedOffLeftOut".into(), left);
+    }
     Ok(Value::Object(result))
 }
 
@@ -2236,14 +2260,18 @@ fn measure_ray(session: &mut Session, params: &Value) -> Run {
             })
         })
         .collect();
-    Ok(json!({
+    let mut out = json!({
         "hits": listed,
         "count": count,
         "truncated": count > limit,
         "from": vec3(from),
         "direction": vec3(dir),
         "lengthUnit": length_unit(doc),
-    }))
+    });
+    if let (Some(left), Some(map)) = (ctx.left_out_json(), out.as_object_mut()) {
+        map.insert("switchedOffLeftOut".into(), left);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

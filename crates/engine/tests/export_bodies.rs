@@ -188,13 +188,19 @@ fn only_the_named_bodies_are_exported_to_every_body_format() {
     assert_eq!(names, ["Block", "Pin"]);
     assert!(text.contains("#C8102E"), "the block's colour");
 
-    // A body switched off in the list is left out (J-003): the pin alone.
+    // A body switched off in the list is left out (J-003): the pin alone,
+    // and the result says which was left out (review, S4).
     let result = run(
         &mut s,
         "file.export",
         json!({"path": "pin-cube.stl", "bodies": ["Pin", "Cube"]}),
     );
     assert_eq!(result["bodies"], 1, "{result}");
+    assert_eq!(
+        result["switchedOffLeftOut"],
+        json!({"count": 1, "bodies": ["Cube"]}),
+        "{result}"
+    );
     // OBJ: the pin alone, one object of that name.
     let result = run(
         &mut s,

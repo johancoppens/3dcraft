@@ -46,6 +46,9 @@ fn run(
         "lengthUnit".into(),
         doc.units.length.symbol().to_string().into(),
     );
+    if let Some(left) = ctx.left_out_json() {
+        result.insert("switchedOffLeftOut".into(), left);
+    }
     Ok(Value::Object(result))
 }
 
