@@ -622,6 +622,9 @@ fn ui_example_lists_shows_and_opens_the_examples() {
     assert_eq!(ids, expected);
     assert_eq!(examples[0]["kind"], "part");
     assert_eq!(examples[0]["startHere"], true);
+    // As its repository measured it, in hundredths of a second.
+    let seconds = examples[0]["seconds"].as_f64().unwrap();
+    assert_eq!(seconds, (seconds * 100.0).round() / 100.0, "{seconds}");
     assert!(examples[0]["file"].as_str().unwrap().ends_with(".3dcraft"));
     for e in examples {
         let kind = e["kind"].as_str().unwrap();

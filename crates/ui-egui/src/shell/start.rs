@@ -211,7 +211,9 @@ impl Example {
             "title": self.title,
             "summary": self.summary,
             "file": self.file(),
-            "seconds": self.seconds,
+            // In hundredths, as its repository measured it (an f32 read as
+            // f64 would say 0.059999998 for 0.06).
+            "seconds": (f64::from(self.seconds) * 100.0).round() / 100.0,
             "startHere": self.start,
         })
     }
@@ -765,8 +767,9 @@ impl Shell {
     }
 
     /// Where the start screen's buttons and links were drawn in the last
-    /// frame, in points: `new`, `open`, `example:<id>`. Empty when it
-    /// was not shown.
+    /// frame, in points: `new`, `new-assembly`, `open`, `section:<word>`,
+    /// `more-examples`, `example:<id>`, `card` (the whole content) and the
+    /// agents panel's. Empty when it was not shown.
     pub fn start_hits(&self) -> &[(String, egui::Rect)] {
         &self.start.hits
     }
