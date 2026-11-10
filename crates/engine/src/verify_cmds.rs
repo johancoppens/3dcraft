@@ -1464,55 +1464,103 @@ fn clearance_pair<'b>(
     } else {
         // Apart everywhere: one may still hold the other, or a lump of it.
         let inside = |probe: &craft3d_kernel::boolean::probe::Probe<'_>, other: &Body| {
-            shell_points(other).into_iter().any(|point| {
-                matches!(
-                    probe.place(point),
-                    Ok(craft3d_kernel::boolean::Place::Inside)
-                )
+            shells_inside(&shell_points(other), |point| match probe.place(point) {
+                Ok(craft3d_kernel::boolean::Place::Inside) => Some(true),
+                Ok(craft3d_kernel::boolean::Place::Outside) => Some(false),
+                // On the boundary (it cannot be, the bodies being apart),
+                // not told, or refused: this point does not decide.
+                _ => None,
             })
         };
-        if inside(&part_b.probe, body_a) || inside(&part_a.probe, body_b) {
+        let undecided = |inner: FeatureId, outer: FeatureId| {
+            format!(
+                "cannot tell whether `{}` lies inside `{}`: no point of one of its shells was placed inside or outside it",
+                ctx.feature_name(inner),
+                ctx.feature_name(outer)
+            )
+        };
+        let a_in_b = inside(&part_b.probe, body_a).ok_or_else(|| undecided(*ida, *idb))?;
+        let b_in_a =
+            a_in_b || inside(&part_a.probe, body_b).ok_or_else(|| undecided(*idb, *ida))?;
+        if a_in_b || b_in_a {
             status = "overlap";
         }
     }
     Ok((near, status))
 }
 
-/// One point on each shell of `body`: the start of one of its edges, or,
-/// for a shell without edges (a sphere's, a torus's), a point of its first
-/// face. Where two bodies' boundaries are apart, each shell of one lies
-/// wholly inside the other or wholly outside it, and one of them holds
-/// part of the other exactly when a shell of one lies inside the other:
-/// one point per shell tells it, for every lump of a body of several.
-fn shell_points(body: &Body) -> Vec<Vec3> {
-    let point = |shell: &craft3d_topo::Shell| {
+/// Whether a shell whose points are listed per shell in `shells` lies
+/// inside the other body, by `place` (inside, outside, or `None` when a
+/// point does not decide): each shell by its first point that decides.
+/// `Some(true)` when a shell lies inside, `Some(false)` when every shell
+/// lies outside, `None` when no point of a shell decides and no other
+/// shell lies inside: never read as outside (review of A-042).
+fn shells_inside(shells: &[Vec<Vec3>], place: impl Fn(Vec3) -> Option<bool>) -> Option<bool> {
+    let mut undecided = false;
+    for points in shells {
+        match points.iter().find_map(|p| place(*p)) {
+            Some(true) => return Some(true),
+            Some(false) => {}
+            None => undecided = true,
+        }
+    }
+    (!undecided).then_some(false)
+}
+
+/// Most points tried per shell to tell whether it lies inside a body.
+const MAX_SHELL_PROBES: usize = 8;
+
+/// Points on each shell of `body`, a few each, to try in turn: the
+/// starts of its edges, or, for a shell without edges (a sphere's, a
+/// torus's), points of its first face. Where two bodies' boundaries are
+/// apart, each shell of one lies wholly inside the other or wholly
+/// outside it, and one of them holds part of the other exactly when a
+/// shell of one lies inside the other: a point per shell that decides
+/// tells it, for every lump of a body of several.
+fn shell_points(body: &Body) -> Vec<Vec<Vec3>> {
+    let points = |shell: &craft3d_topo::Shell| {
         let faces = || shell.faces.iter().filter_map(|&f| body.face(f));
-        let on_edge = faces()
+        let mut seen: Vec<craft3d_topo::VertexId> = Vec::new();
+        let mut out: Vec<Vec3> = Vec::new();
+        for coedge in faces()
             .flat_map(|face| face.loops.iter())
             .filter_map(|&l| body.loop_(l))
             .flat_map(|l| l.coedges.iter())
-            .find_map(|c| body.edge(c.edge).and_then(|e| body.vertex(e.start)))
-            .map(|v| v.point);
-        on_edge.or_else(|| {
-            let surface = &faces().next()?.surface;
-            // The middle of the surface's parameters where they are
-            // bounded (a sphere's equator, a torus's outer circle), else
-            // its origin's: a face without loops is the whole surface.
-            let middle = |(a, b): (f64, f64)| match (a.is_finite(), b.is_finite()) {
-                (true, true) => 0.5 * (a + b),
-                (true, false) => a,
-                (false, true) => b,
-                (false, false) => 0.0,
+        {
+            if out.len() >= MAX_SHELL_PROBES {
+                break;
+            }
+            if let Some(edge) = body.edge(coedge.edge)
+                && !seen.contains(&edge.start)
+                && let Some(v) = body.vertex(edge.start)
+            {
+                seen.push(edge.start);
+                out.push(v.point);
+            }
+        }
+        if out.is_empty()
+            && let Some(face) = faces().next()
+        {
+            // Points of the surface spread over its parameters where they
+            // are bounded (a sphere's equator first, a torus's outer
+            // circle), else about its origin's: a face without loops is
+            // the whole surface.
+            let surface = &face.surface;
+            let at = |(a, b): (f64, f64), k: f64| match (a.is_finite(), b.is_finite()) {
+                (true, true) => a + (b - a) * k,
+                (true, false) => a + k,
+                (false, true) => b - k,
+                (false, false) => k,
             };
             let (u, v) = surface.domain();
-            Some(surface.eval(middle(u), middle(v)))
-        })
+            for (ku, kv) in [(0.5, 0.5), (0.25, 0.5), (0.5, 0.25), (0.75, 0.75)] {
+                out.push(surface.eval(at(u, ku), at(v, kv)));
+            }
+        }
+        out.retain(|p| p.is_finite());
+        out
     };
-    body.shells
-        .iter()
-        .filter_map(point)
-        .filter(|p| p.is_finite())
-        .collect()
+    body.shells.iter().map(points).collect()
 }
 
 fn clearance(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
@@ -2203,6 +2251,43 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use crate::Workspace;
+
+    /// Review of A-042 (S2): a shell is placed by the first of its points
+    /// that decides (one that cannot be told, such as one on the other
+    /// body's boundary or one every ray grazes, is passed over); a shell
+    /// none of whose points decides leaves the answer undecided, never
+    /// outside, unless another shell lies inside. `place` is a stand-in
+    /// for the probe: x < 0 outside, x > 0 inside, x = 0 not told.
+    #[test]
+    fn a_shell_is_placed_by_a_point_that_decides_and_never_guessed() {
+        let p = |x: f64| Vec3::new(x, 0.0, 0.0);
+        let place = |q: Vec3| {
+            if q.x > 0.0 {
+                Some(true)
+            } else if q.x < 0.0 {
+                Some(false)
+            } else {
+                None
+            }
+        };
+        // The first point does not decide, the second does.
+        assert_eq!(shells_inside(&[vec![p(0.0), p(1.0)]], place), Some(true));
+        assert_eq!(shells_inside(&[vec![p(0.0), p(-1.0)]], place), Some(false));
+        // No point decides: undecided, not outside.
+        assert_eq!(shells_inside(&[vec![p(0.0), p(0.0)]], place), None);
+        assert_eq!(shells_inside(&[vec![p(-1.0)], vec![p(0.0)]], place), None);
+        assert_eq!(shells_inside(&[vec![]], place), None);
+        // Another shell inside decides it all the same.
+        assert_eq!(
+            shells_inside(&[vec![p(0.0)], vec![p(2.0)]], place),
+            Some(true)
+        );
+        // Every shell outside.
+        assert_eq!(
+            shells_inside(&[vec![p(-1.0)], vec![p(0.0), p(-2.0)]], place),
+            Some(false)
+        );
+    }
 
     /// The sweep finds exactly the pairs a test of every pair finds, in
     /// the same order, for one set and for two, with boxes that touch,
