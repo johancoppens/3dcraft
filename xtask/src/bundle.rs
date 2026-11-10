@@ -22,12 +22,18 @@
 //! It refuses, and writes nothing: a licence other than the one the
 //! decision allows for the repository (the examples MIT, the Jigs and
 //! assemblies CC BY 4.0; so never the Jig shared under CC BY-SA 4.0), in
-//! `meta.json` or in the file's own document information; a file this
-//! build of 3DCraft cannot open (a newer format version than it reads); a
-//! file of another kind than its section (a part, a Jig, an assembly); a
-//! `meta.json` without its id, title or summary; a missing preview.
-//! Files of the folder that the manifest no longer lists are removed.
+//! `meta.json`, in the file's own document information or in that of a
+//! part packed in an assembly (`blobs/*.3dcraft`, also in a packed
+//! subassembly); a file this build of 3DCraft cannot open (a newer format
+//! version than it reads); a file of another kind than its section (a
+//! part, a Jig, an assembly); a `meta.json` without its id, title, summary
+//! or the `stats` the tests compare with; a missing preview; a repository
+//! without the `ATTRIBUTION.md` the licence links to; two entries whose
+//! files would have the same name; a file larger than the caps below,
+//! whose size is asked of git before it is read. Files of the folder that
+//! the manifest no longer lists are removed.
 
+use craft3d_doc::Document;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -51,6 +57,14 @@ pub const MAX_THUMB_BYTES: u64 = 40 * 1024;
 /// Largest bundled file accepted, in bytes: every one is in the web
 /// build's module.
 pub const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
+/// Largest `meta.json` or licence text read from a clone, in bytes.
+const MAX_TEXT_BYTES: u64 = 1024 * 1024;
+/// Largest `preview.png` read from a clone, in bytes (its pixels are
+/// capped when it is decoded, `thumbs::MAX_PICTURE_PIXELS`).
+const MAX_PREVIEW_BYTES: u64 = 16 * 1024 * 1024;
+/// Most assemblies packed in one another that are looked into for the
+/// licences of their parts.
+const MAX_PACKED_DEPTH: usize = 8;
 
 /// The repositories the bundled files come from: name, address, the
 /// licence their bundled files are under (the decision of 2026-11-10), and
@@ -232,12 +246,14 @@ pub fn entries(manifest: &Value) -> Result<Vec<Entry>, String> {
             return Err(format!("{id}: no repository `{repository}`"));
         }
         let folder = text(item, "folder");
+        // No part starts with `-`, which git could take for an option.
         let safe = !folder.is_empty()
             && !folder.starts_with('/')
             && folder.split('/').all(|part| {
                 !part.is_empty()
                     && part != "."
                     && part != ".."
+                    && !part.starts_with('-')
                     && part
                         .chars()
                         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
@@ -342,16 +358,47 @@ fn head(clone: &Path) -> Result<String, String> {
     Ok(commit)
 }
 
-/// The bytes of `path` at `commit`.
-fn blob(clone: &Path, commit: &str, path: &str) -> Result<Vec<u8>, String> {
+/// The size of `path` at `commit`, in bytes, as git says it without
+/// reading the file.
+fn blob_size(clone: &Path, commit: &str, path: &str) -> Result<u64, String> {
+    let out = git(clone, &["cat-file", "-s", &format!("{commit}:{path}")])?;
+    let text = String::from_utf8_lossy(&out);
+    text.trim()
+        .parse::<u64>()
+        .map_err(|_| format!("git gives the size of {path} as `{}`", text.trim()))
+}
+
+/// The bytes of `path` at `commit`, when it holds at most `max` of them:
+/// its size is asked first, so a larger file is never read.
+fn blob(clone: &Path, commit: &str, path: &str, max: u64) -> Result<Vec<u8>, String> {
+    let size = blob_size(clone, commit, path)?;
+    if size > max {
+        return Err(format!(
+            "{path} at {commit} is {size} bytes, more than {max}"
+        ));
+    }
     git(clone, &["cat-file", "blob", &format!("{commit}:{path}")])
+}
+
+/// Whether `path` is a file at `commit`.
+fn exists(clone: &Path, commit: &str, path: &str) -> Result<bool, String> {
+    let out = git(clone, &["ls-tree", "--name-only", commit, "--", path])?;
+    Ok(String::from_utf8_lossy(&out)
+        .lines()
+        .any(|line| line == path))
 }
 
 /// The names of the files directly in `folder` at `commit`.
 fn names(clone: &Path, commit: &str, folder: &str) -> Result<Vec<String>, String> {
     let out = git(
         clone,
-        &["ls-tree", "--name-only", commit, &format!("{folder}/")],
+        &[
+            "ls-tree",
+            "--name-only",
+            commit,
+            "--",
+            &format!("{folder}/"),
+        ],
     )?;
     Ok(String::from_utf8_lossy(&out)
         .lines()
@@ -368,12 +415,46 @@ pub fn mit_copyright(licence: &str) -> Result<String, String> {
     if !words(licence).ends_with(&words(MIT_TERMS)) || !licence.starts_with("MIT License") {
         return Err("its LICENSE is not the MIT licence".to_string());
     }
+    copyright_line(licence).ok_or_else(|| "its LICENSE has no copyright line".to_string())
+}
+
+/// The first copyright line of a licence text.
+fn copyright_line(licence: &str) -> Option<String> {
     licence
         .lines()
         .map(str::trim)
         .find(|line| line.starts_with("Copyright (c) "))
         .map(str::to_string)
-        .ok_or_else(|| "its LICENSE has no copyright line".to_string())
+}
+
+/// The copyright line of a repository's `LICENSE-CC-BY-4.0.md`: the
+/// licensor's notice that CC BY 4.0 (section 3(a)(1)(A)(ii)) asks a copy
+/// to keep. Else why not.
+pub fn cc_by_copyright(licence: &str) -> Result<String, String> {
+    let words = licence.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !words.contains("Creative Commons Attribution 4.0 International") {
+        return Err("its LICENSE-CC-BY-4.0.md does not name CC BY 4.0".to_string());
+    }
+    copyright_line(licence)
+        .ok_or_else(|| "its LICENSE-CC-BY-4.0.md has no copyright line".to_string())
+}
+
+/// The copyright line of a repository at `commit` for a section under
+/// `licence`: from its MIT `LICENSE` for the examples; from its
+/// `LICENSE-CC-BY-4.0.md` for CC BY 4.0 (from its `LICENSE` when it has
+/// no such file).
+fn source_copyright(clone: &Path, commit: &str, licence: &str) -> Result<String, String> {
+    let read = |path: &str| {
+        String::from_utf8(blob(clone, commit, path, MAX_TEXT_BYTES)?)
+            .map_err(|_| format!("its {path} is not UTF-8"))
+    };
+    if licence == "MIT" {
+        return mit_copyright(&read("LICENSE")?);
+    }
+    if exists(clone, commit, "LICENSE-CC-BY-4.0.md")? {
+        return cc_by_copyright(&read("LICENSE-CC-BY-4.0.md")?);
+    }
+    copyright_line(&read("LICENSE")?).ok_or_else(|| "its LICENSE has no copyright line".to_string())
 }
 
 /// Who a copyright line names: `Copyright (c) 2026 A B` is `A B`.
@@ -480,29 +561,43 @@ struct Copied {
     thumb: Vec<u8>,
 }
 
-/// Reads `entry` from the clone at `commit` and checks it.
-fn copy(entry: &Entry, clone: &Path, commit: &str) -> Result<Copied, String> {
-    let id = &entry.id;
-    let (_, _, licence, _) =
-        repository(&entry.repository).ok_or_else(|| format!("{id}: no repository"))?;
-    let folder = &entry.folder;
-    let meta_bytes = blob(clone, commit, &format!("{folder}/meta.json"))?;
-    let meta: Value = serde_json::from_slice(&meta_bytes)
-        .map_err(|e| format!("{id}: {folder}/meta.json is not JSON: {e}"))?;
-    if text(&meta, "id") != *id {
+/// What `meta.json` says of a bundled file, checked.
+#[derive(Debug, PartialEq)]
+pub struct Meta {
+    pub licence: String,
+    pub title: String,
+    pub summary: String,
+    pub stats: Value,
+}
+
+/// The numbers of `stats` the tests compare a bundled file with
+/// (`crates/ui-egui/tests/bundled_examples.rs`), for every section and
+/// per section.
+const STATS_ALL: [&str; 2] = ["assertions", "warnings"];
+const STATS_PART: [&str; 1] = ["features"];
+const STATS_ASSEMBLY: [&str; 3] = ["instances", "mates", "dof"];
+
+/// Checks the `meta.json` of `entry` (as `meta`): its id, its licence
+/// (`licence`, the one bundled from its repository), a title and summary
+/// of one line each, and its `stats`, the numbers its repository recorded
+/// when it built the file: how long it took to open and the counts the
+/// tests compare with.
+pub fn check_meta(entry: &Entry, meta: &Value, licence: &str) -> Result<Meta, String> {
+    let (id, folder) = (&entry.id, &entry.folder);
+    if text(meta, "id") != *id {
         return Err(format!(
             "{id}: {folder}/meta.json has the id `{}`",
-            text(&meta, "id")
+            text(meta, "id")
         ));
     }
-    let meta_licence = text(&meta, "licence");
-    if meta_licence != *licence {
+    let meta_licence = text(meta, "licence");
+    if meta_licence != licence {
         return Err(format!(
             "{id}: {folder}/meta.json says the licence is `{meta_licence}`; from {} only {licence} is bundled",
             entry.repository
         ));
     }
-    let (title, summary) = (text(&meta, "title"), text(&meta, "summary"));
+    let (title, summary) = (text(meta, "title"), text(meta, "summary"));
     for (what, value) in [("title", &title), ("summary", &summary)] {
         if value.trim().is_empty() || value.contains('\n') || value.chars().count() > 120 {
             return Err(format!(
@@ -510,6 +605,129 @@ fn copy(entry: &Entry, clone: &Path, commit: &str) -> Result<Copied, String> {
             ));
         }
     }
+    let stats = meta
+        .get("stats")
+        .filter(|stats| stats.is_object())
+        .ok_or_else(|| {
+            format!("{id}: {folder}/meta.json has no `stats`, which the tests compare with")
+        })?;
+    if !stats
+        .get("load_s")
+        .and_then(Value::as_f64)
+        .is_some_and(|s| s.is_finite() && s >= 0.0)
+    {
+        return Err(format!(
+            "{id}: {folder}/meta.json's stats have no `load_s` (seconds to open)"
+        ));
+    }
+    let per_section: &[&str] = match entry.section {
+        Section::Parts | Section::Jigs => &STATS_PART,
+        Section::Assemblies => &STATS_ASSEMBLY,
+    };
+    for key in STATS_ALL.iter().chain(per_section) {
+        if stats.get(*key).and_then(Value::as_u64).is_none() {
+            return Err(format!(
+                "{id}: {folder}/meta.json's stats have no count `{key}`"
+            ));
+        }
+    }
+    Ok(Meta {
+        licence: meta_licence,
+        title,
+        summary,
+        stats: stats.clone(),
+    })
+}
+
+/// Checks that every part and subassembly packed in `document` (an
+/// assembly's `blobs/*.3dcraft`, and theirs in turn) is under `licence`
+/// in its own document information, naming the first that is not (its
+/// title, the instances that use it, its blob).
+pub fn check_packed_licences(document: &Document, licence: &str) -> Result<(), String> {
+    packed_licences(document, licence, 0)
+}
+
+fn packed_licences(document: &Document, licence: &str, depth: usize) -> Result<(), String> {
+    let Some(assembly) = &document.assembly else {
+        return Ok(());
+    };
+    if depth >= MAX_PACKED_DEPTH {
+        return Err(format!(
+            "its assemblies are packed in one another more than {MAX_PACKED_DEPTH} deep"
+        ));
+    }
+    for blob in &assembly.packed {
+        let hash = blob.sha256();
+        let short = hash.get(..12).unwrap_or(&hash);
+        let users: Vec<&str> = assembly
+            .instances
+            .iter()
+            .filter(|i| matches!(&i.source, craft3d_doc::Source::Packed { hash: h } if *h == hash))
+            .map(|i| i.name.as_str())
+            .collect();
+        let part = craft3d_format::from_bytes(blob.bytes())
+            .map_err(|e| format!("the part packed as blobs/{short}… cannot be read: {e}"))?;
+        if part.info.licence != licence {
+            let title = if part.info.title.is_empty() {
+                "untitled".to_string()
+            } else {
+                format!("\"{}\"", part.info.title)
+            };
+            let used = if users.is_empty() {
+                String::new()
+            } else {
+                format!(", used by {}", users.join(", "))
+            };
+            return Err(format!(
+                "the part {title} packed in it (blobs/{short}…{used}) says the licence is `{}`, not {licence}",
+                part.info.licence
+            ));
+        }
+        packed_licences(&part, licence, depth + 1)?;
+    }
+    Ok(())
+}
+
+/// Two entries whose files would have the same name in the folder (one
+/// would overwrite the other; told apart without case, as a file system
+/// may).
+pub fn check_unique_files(entries: &[Entry]) -> Result<(), String> {
+    for (n, e) in entries.iter().enumerate() {
+        if let Some(other) = entries
+            .iter()
+            .skip(n + 1)
+            .find(|o| o.file.eq_ignore_ascii_case(&e.file))
+        {
+            return Err(format!(
+                "{} ({}) and {} ({}) would both be bundled as `{}`",
+                e.id, e.repository, other.id, other.repository, e.file
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Reads `entry` from the clone at `commit` and checks it.
+fn copy(entry: &Entry, clone: &Path, commit: &str) -> Result<Copied, String> {
+    let id = &entry.id;
+    let (_, _, licence, _) =
+        repository(&entry.repository).ok_or_else(|| format!("{id}: no repository"))?;
+    let folder = &entry.folder;
+    let meta_bytes = blob(
+        clone,
+        commit,
+        &format!("{folder}/meta.json"),
+        MAX_TEXT_BYTES,
+    )
+    .map_err(|e| format!("{id}: {e}"))?;
+    let meta: Value = serde_json::from_slice(&meta_bytes)
+        .map_err(|e| format!("{id}: {folder}/meta.json is not JSON: {e}"))?;
+    let Meta {
+        licence: meta_licence,
+        title,
+        summary,
+        stats,
+    } = check_meta(entry, &meta, licence)?;
     let extension = entry.section.extension();
     let built: Vec<String> = names(clone, commit, folder)?
         .into_iter()
@@ -524,13 +742,9 @@ fn copy(entry: &Entry, clone: &Path, commit: &str) -> Result<Copied, String> {
             built.len()
         ));
     };
-    let bytes = blob(clone, commit, &format!("{folder}/{file}"))?;
+    let bytes = blob(clone, commit, &format!("{folder}/{file}"), MAX_FILE_BYTES)
+        .map_err(|e| format!("{id}: {e}"))?;
     let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-    if size > MAX_FILE_BYTES {
-        return Err(format!(
-            "{id}: {file} is {size} bytes, more than {MAX_FILE_BYTES}"
-        ));
-    }
     let (document, _) = craft3d_format::from_bytes_noted(&bytes)
         .map_err(|e| format!("{id}: this build of 3DCraft cannot open {file}: {e}"))?;
     let kind_ok = match entry.section {
@@ -550,7 +764,14 @@ fn copy(entry: &Entry, clone: &Path, commit: &str) -> Result<Copied, String> {
             document.info.licence
         ));
     }
-    let preview = blob(clone, commit, &format!("{folder}/preview.png"))?;
+    check_packed_licences(&document, licence).map_err(|e| format!("{id}: {file}: {e}"))?;
+    let preview = blob(
+        clone,
+        commit,
+        &format!("{folder}/preview.png"),
+        MAX_PREVIEW_BYTES,
+    )
+    .map_err(|e| format!("{id}: {e}"))?;
     let thumb = thumbnail(&preview).map_err(|e| format!("{id}: {folder}/preview.png: {e}"))?;
     let thumb_size = u64::try_from(thumb.len()).unwrap_or(u64::MAX);
     if thumb_size > MAX_THUMB_BYTES {
@@ -568,7 +789,7 @@ fn copy(entry: &Entry, clone: &Path, commit: &str) -> Result<Copied, String> {
     made.author = document.info.author.clone();
     made.sha256 = hex(&craft3d_doc::sha256(&bytes));
     made.bytes = size;
-    made.stats = meta.get("stats").cloned().unwrap_or(Value::Null);
+    made.stats = stats;
     made.format_version = craft3d
         .and_then(|c| c.get("format_version"))
         .and_then(Value::as_u64);
@@ -604,6 +825,12 @@ pub fn manifest_text(about: &Value, sources: &[(&str, Source)], entries: &[Entry
 fn tree(repo: &str, commit: &str, folder: &str) -> String {
     let url = repository(repo).map(|r| r.1).unwrap_or_default();
     format!("[{folder}]({url}/tree/{commit}/{folder})")
+}
+
+/// The address of a repository's `ATTRIBUTION.md` at `commit`, which
+/// credits the data and designs from elsewhere that its files use.
+fn attribution_link(url: &str, commit: &str) -> String {
+    format!("{url}/blob/{commit}/ATTRIBUTION.md")
 }
 
 /// `LICENSE.md` of the bundled files.
@@ -650,18 +877,37 @@ pub fn licence_text(sources: &[(&str, Source)], entries: &[Entry]) -> String {
         } else {
             let holder = holder(&source.copyright);
             let example = listed.first().map(|e| e.title.as_str()).unwrap_or_default();
+            // Only the Jigs' repository shares one under CC BY-SA 4.0;
+            // only an assembly packs parts.
+            let mut checked = String::new();
+            if listed.iter().any(|e| e.section == Section::Jigs) {
+                checked.push_str("\nNone is a Jig shared under CC BY-SA 4.0.");
+            }
+            if listed.iter().any(|e| e.section == Section::Assemblies) {
+                checked.push_str(
+                    "\nSo does the document information of every part packed in an assembly \
+                     (`blobs/*.3dcraft`, checked the same way).",
+                );
+            }
             out.push_str(&format!(
                 "\nEach file's `meta.json` and its own document information say `CC-BY-4.0` (checked when it \
-                 is copied);\nnone is a Jig shared under CC BY-SA 4.0. Each is licensed under the **Creative \
-                 Commons Attribution 4.0\nInternational** licence (CC BY 4.0): \
-                 <https://creativecommons.org/licenses/by/4.0/>, legal code at\n\
+                 is copied).{checked}\n\nThe licensor's copyright notice, which the licence asks a copy to keep:\n\n\
+                 > {}\n\n\
+                 Each file is licensed under the **Creative Commons Attribution 4.0 International** licence \
+                 (CC BY 4.0):\n<https://creativecommons.org/licenses/by/4.0/>, legal code at\n\
                  <https://creativecommons.org/licenses/by/4.0/legalcode>. You may share and adapt them for any \
                  purpose,\nalso commercially, provided you give appropriate credit, link to the licence and \
                  indicate if changes were\nmade. The repository asks to be credited with the file's title, \
                  as in:\n\n> \"{example}\" by {holder}, from {collection} (CC BY 4.0), {url}\n\n\
-                 No changes were made to these copies.\n"
+                 No changes were made to these copies.\n",
+                source.copyright
             ));
         }
+        out.push_str(&format!(
+            "\nData and designs from elsewhere that these files use are credited in that repository's \
+             `ATTRIBUTION.md` at\nthat commit: <{}>.\n",
+            attribution_link(url, &source.commit)
+        ));
     }
     out
 }
@@ -681,11 +927,12 @@ pub fn attribution_rows(sources: &[(&str, Source)], entries: &[Entry]) -> Vec<St
         let titles: Vec<&str> = listed.iter().map(|e| e.title.as_str()).collect();
         let licence = if licence == "MIT" { "MIT" } else { "CC BY 4.0" };
         rows.push(format!(
-            "| `{FOLDER}/`: {}; their pictures in `thumbs/` (built into the program as start-screen examples) | {} | {}, {collection} | [johancoppens/{name}]({url}) at commit `{}`; each file's folder and licence in `{LICENCE}` | {licence} |",
+            "| `{FOLDER}/`: {}; their pictures in `thumbs/` (built into the program as start-screen examples) | {} | {}, {collection} | [johancoppens/{name}]({url}) at commit `{}`; each file's folder and licence in `{LICENCE}`; data and designs from elsewhere that they use are credited in that repository's [`ATTRIBUTION.md`]({}) at that commit | {licence} |",
             files.join(", "),
             titles.join(", ").replace('|', "\\|"),
             holder(&source.copyright),
-            source.commit
+            source.commit,
+            attribution_link(url, &source.commit)
         ));
     }
     rows
@@ -697,12 +944,16 @@ fn is_bundled_row(line: &str) -> bool {
 }
 
 /// `ATTRIBUTION.md` with the bundled files' rows replaced by `rows`, where
-/// the first of the old ones was (else at the end of the table).
-pub fn with_rows(attribution: &str, rows: &[String]) -> String {
+/// the first of the old ones was (else at the end of the table). An error
+/// when it has no table: the rows would be dropped.
+pub fn with_rows(attribution: &str, rows: &[String]) -> Result<String, String> {
     let mut out: Vec<String> = Vec::new();
     let mut placed = false;
     let lines: Vec<&str> = attribution.lines().collect();
-    let last_row = lines.iter().rposition(|l| l.starts_with('|'));
+    let last_row = lines
+        .iter()
+        .rposition(|l| l.starts_with('|'))
+        .ok_or_else(|| format!("{ATTRIBUTION} has no table for the bundled files' rows"))?;
     for (i, line) in lines.iter().enumerate() {
         if is_bundled_row(line) {
             if !placed {
@@ -712,14 +963,14 @@ pub fn with_rows(attribution: &str, rows: &[String]) -> String {
             continue;
         }
         out.push((*line).to_string());
-        if !placed && Some(i) == last_row {
+        if !placed && i == last_row {
             out.extend(rows.iter().cloned());
             placed = true;
         }
     }
     let mut text = out.join("\n");
     text.push('\n');
-    text
+    Ok(text)
 }
 
 /// The start screen's list: an expression of an array of `bundled!`.
@@ -799,15 +1050,21 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let listed = entries(&manifest)?;
     // Each repository's head and the copyright of its licence.
     let mut sources: Vec<(&'static str, Source)> = Vec::new();
-    for (name, ..) in REPOSITORIES {
+    for (name, _, licence, _) in REPOSITORIES {
         if !listed.iter().any(|e| e.repository == name) {
             continue;
         }
         let clone = from.join(name);
         let commit = head(&clone)?;
-        let licence = String::from_utf8(blob(&clone, &commit, "LICENSE")?)
-            .map_err(|_| format!("{name}: its LICENSE is not UTF-8"))?;
-        let copyright = mit_copyright(&licence).map_err(|e| format!("{name}: {e}"))?;
+        let copyright =
+            source_copyright(&clone, &commit, licence).map_err(|e| format!("{name}: {e}"))?;
+        // The licence links to it for the credits of what is from
+        // elsewhere.
+        if !exists(&clone, &commit, "ATTRIBUTION.md")? {
+            return Err(format!(
+                "{name}: no ATTRIBUTION.md at {commit}, which the licence of its files links to"
+            ));
+        }
         eprintln!("bundle-examples: {name} at {commit}");
         sources.push((name, Source { commit, copyright }));
     }
@@ -840,6 +1097,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
         ));
     }
     let made: Vec<Entry> = copied.iter().map(|c| c.entry.clone()).collect();
+    check_unique_files(&made).map_err(|e| format!("bundle-examples: nothing was written: {e}"))?;
+    let attribution_path = repo.join(ATTRIBUTION);
+    let attribution = std::fs::read_to_string(&attribution_path)
+        .map_err(|e| format!("cannot read {ATTRIBUTION}: {e}"))?;
+    let attribution = with_rows(&attribution, &attribution_rows(&sources, &made))
+        .map_err(|e| format!("bundle-examples: nothing was written: {e}"))?;
     let folder = repo.join(FOLDER);
     // What the manifest no longer lists goes.
     let kept: Vec<String> = made.iter().map(|e| e.file.clone()).collect();
@@ -882,13 +1145,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         &repo.join(LICENCE),
         licence_text(&sources, &made).as_bytes(),
     )?;
-    let attribution_path = repo.join(ATTRIBUTION);
-    let attribution = std::fs::read_to_string(&attribution_path)
-        .map_err(|e| format!("cannot read {ATTRIBUTION}: {e}"))?;
-    write(
-        &attribution_path,
-        with_rows(&attribution, &attribution_rows(&sources, &made)).as_bytes(),
-    )?;
+    write(&attribution_path, attribution.as_bytes())?;
     write(&repo.join(LIST), list_text(&made).as_bytes())?;
     let total: u64 = made.iter().map(|e| e.bytes).sum();
     eprintln!(
@@ -1016,6 +1273,15 @@ mod tests {
                 r#"{"entries": [{"id": "a", "section": "jigs", "repository": "3dcraft-jigs", "folder": "/x"}]}"#,
                 "plain path",
             ),
+            // git could take it for an option.
+            (
+                r#"{"entries": [{"id": "a", "section": "jigs", "repository": "3dcraft-jigs", "folder": "-x"}]}"#,
+                "plain path",
+            ),
+            (
+                r#"{"entries": [{"id": "a", "section": "jigs", "repository": "3dcraft-jigs", "folder": "jigs/--output=x"}]}"#,
+                "plain path",
+            ),
         ] {
             let value: Value = serde_json::from_str(text).unwrap();
             let err = entries(&value).unwrap_err();
@@ -1068,7 +1334,7 @@ mod tests {
     fn the_attribution_rows_are_replaced_in_place() {
         let text = "# A\n\n| Path | B |\n|---|---|\n| `x` | y |\n| `docs/examples/published/old.3dcraftjig` | z |\n| `w` | v |\n\nAfter.\n";
         let rows = vec!["| `docs/examples/published/new.3dcraft` | n |".to_string()];
-        let out = with_rows(text, &rows);
+        let out = with_rows(text, &rows).unwrap();
         assert_eq!(
             out,
             "# A\n\n| Path | B |\n|---|---|\n| `x` | y |\n| `docs/examples/published/new.3dcraft` | n |\n| `w` | v |\n\nAfter.\n"
@@ -1076,9 +1342,239 @@ mod tests {
         // None yet: after the table's last row.
         let first = "# A\n\n| Path | B |\n|---|---|\n| `x` | y |\n\nAfter.\n";
         assert_eq!(
-            with_rows(first, &rows),
+            with_rows(first, &rows).unwrap(),
             "# A\n\n| Path | B |\n|---|---|\n| `x` | y |\n| `docs/examples/published/new.3dcraft` | n |\n\nAfter.\n"
         );
+        // No table: an error, never the rows dropped.
+        let error = with_rows("# A\n\nNo table here.\n", &rows).unwrap_err();
+        assert!(error.contains("no table"), "{error}");
+    }
+
+    /// An entry as the manifest gives it, before the task wrote the rest.
+    fn entry(id: &str, section: Section, repository: &str) -> Entry {
+        Entry {
+            id: id.to_string(),
+            section,
+            start: false,
+            repository: repository.to_string(),
+            folder: format!("x/{id}"),
+            file: format!("{id}.{}", section.extension()),
+            commit: String::new(),
+            licence: String::new(),
+            title: String::new(),
+            summary: String::new(),
+            author: String::new(),
+            sha256: String::new(),
+            bytes: 0,
+            stats: Value::Null,
+            format_version: None,
+            built_with: String::new(),
+        }
+    }
+
+    #[test]
+    fn two_files_of_one_name_are_refused() {
+        let a = entry("bin", Section::Parts, "3dcraft-examples");
+        let mut b = entry("other-bin", Section::Jigs, "3dcraft-jigs");
+        assert!(check_unique_files(&[a.clone(), b.clone()]).is_ok());
+        // Told apart without case, as a file system may.
+        b.file = "BIN.3dcraft".to_string();
+        let error = check_unique_files(&[a, b]).unwrap_err();
+        assert!(
+            error.contains("bin (3dcraft-examples)") && error.contains("other-bin (3dcraft-jigs)"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_meta_json_without_the_stats_the_tests_compare_with_is_refused() {
+        let part = entry("gear", Section::Parts, "3dcraft-examples");
+        let asm = entry("clamp", Section::Assemblies, "3dcraft-assemblies-examples");
+        let meta = |id: &str, licence: &str, stats: Value| json!({"id": id, "licence": licence, "title": "A title", "summary": "What it is", "stats": stats});
+        let part_stats = json!({"load_s": 0.2, "features": 4, "assertions": 2, "warnings": 0});
+        let ok = check_meta(&part, &meta("gear", "MIT", part_stats.clone()), "MIT").unwrap();
+        assert_eq!(ok.stats, part_stats);
+        assert_eq!((ok.title.as_str(), ok.licence.as_str()), ("A title", "MIT"));
+        let asm_stats = json!({"load_s": 1.5, "instances": 9, "mates": 8, "dof": 1, "assertions": 3, "warnings": 0});
+        assert!(check_meta(&asm, &meta("clamp", "CC-BY-4.0", asm_stats), "CC-BY-4.0").is_ok());
+        for (entry, value, licence, says) in [
+            (
+                &part,
+                json!({"id": "gear", "licence": "MIT", "title": "A", "summary": "B"}),
+                "MIT",
+                "no `stats`",
+            ),
+            (&part, meta("gear", "MIT", json!(3)), "MIT", "no `stats`"),
+            (
+                &part,
+                meta(
+                    "gear",
+                    "MIT",
+                    json!({"features": 4, "assertions": 2, "warnings": 0}),
+                ),
+                "MIT",
+                "load_s",
+            ),
+            (
+                &part,
+                meta(
+                    "gear",
+                    "MIT",
+                    json!({"load_s": 0.2, "assertions": 2, "warnings": 0}),
+                ),
+                "MIT",
+                "`features`",
+            ),
+            (
+                &part,
+                meta(
+                    "gear",
+                    "MIT",
+                    json!({"load_s": -1, "features": 4, "assertions": 2, "warnings": 0}),
+                ),
+                "MIT",
+                "load_s",
+            ),
+            (
+                &asm,
+                meta("clamp", "CC-BY-4.0", part_stats.clone()),
+                "CC-BY-4.0",
+                "`instances`",
+            ),
+            (
+                &part,
+                meta("gear", "CC-BY-SA-4.0", part_stats.clone()),
+                "MIT",
+                "licence",
+            ),
+            (
+                &part,
+                meta("cog", "MIT", part_stats.clone()),
+                "MIT",
+                "the id",
+            ),
+        ] {
+            let error = check_meta(entry, &value, licence).unwrap_err();
+            assert!(error.contains(says), "{value}: {error}");
+        }
+    }
+
+    /// A part document with `licence` and `title` in its information, as
+    /// the bytes of its file.
+    fn part_bytes(title: &str, licence: &str) -> Vec<u8> {
+        let mut part = Document::new(craft3d_doc::Units::default());
+        part.info.title = title.to_string();
+        part.info.licence = licence.to_string();
+        craft3d_format::to_bytes(&part).unwrap()
+    }
+
+    /// An assembly that packs `parts` (the bytes of their files).
+    fn assembly(parts: Vec<Vec<u8>>) -> Document {
+        let mut document = Document::new(craft3d_doc::Units::default());
+        let mut assembly = craft3d_doc::Assembly::default();
+        for bytes in parts {
+            assembly.pack(craft3d_doc::Blob::new(bytes));
+        }
+        document.assembly = Some(assembly);
+        document
+    }
+
+    #[test]
+    fn a_part_packed_in_an_assembly_under_another_licence_is_refused_by_name() {
+        let by = "CC-BY-4.0";
+        let fine = assembly(vec![part_bytes("Jaw", by), part_bytes("Lever", by)]);
+        assert!(check_packed_licences(&fine, by).is_ok());
+        // A part is no assembly: nothing packed.
+        assert!(check_packed_licences(&Document::new(craft3d_doc::Units::default()), by).is_ok());
+        let mixed = assembly(vec![part_bytes("Jaw", by), part_bytes("Bolt", "MIT")]);
+        let error = check_packed_licences(&mixed, by).unwrap_err();
+        assert!(
+            error.contains("\"Bolt\"") && error.contains("`MIT`") && error.contains("blobs/"),
+            "{error}"
+        );
+        // Also in a subassembly packed in it.
+        let mut inner = assembly(vec![part_bytes("Pin", "MIT")]);
+        inner.info.licence = by.to_string();
+        let outer = assembly(vec![craft3d_format::to_bytes(&inner).unwrap()]);
+        let error = check_packed_licences(&outer, by).unwrap_err();
+        assert!(error.contains("\"Pin\""), "{error}");
+        // Bytes that are no document are refused, not skipped.
+        let broken = assembly(vec![b"not a document".to_vec()]);
+        assert!(check_packed_licences(&broken, by).is_err());
+    }
+
+    #[test]
+    fn the_cc_by_licence_gives_its_copyright() {
+        let text = "# Licence\n\nCopyright (c) 2026 Someone\n\nThe files are licensed under the Creative Commons\nAttribution 4.0 International licence (CC BY 4.0).\n";
+        assert_eq!(cc_by_copyright(text).unwrap(), "Copyright (c) 2026 Someone");
+        assert!(cc_by_copyright("Copyright (c) 2026 Someone\n\nMIT License").is_err());
+        assert!(
+            cc_by_copyright("Creative Commons Attribution 4.0 International, no notice").is_err()
+        );
+    }
+
+    /// The licence of the bundled files keeps the CC BY licensor's notice,
+    /// says CC BY-SA only of the Jigs and the packed parts only of the
+    /// assemblies, and links every repository's credits of what is from
+    /// elsewhere; so do the rows of ATTRIBUTION.md.
+    #[test]
+    fn the_licence_keeps_the_notices_and_links_the_credits() {
+        let mut part = entry("gear", Section::Parts, "3dcraft-examples");
+        let mut jig = entry("box", Section::Jigs, "3dcraft-jigs");
+        let mut asm = entry("clamp", Section::Assemblies, "3dcraft-assemblies-examples");
+        for e in [&mut part, &mut jig, &mut asm] {
+            e.title = format!("The {}", e.id);
+            e.commit = "c".repeat(40);
+        }
+        let source = |n: char| Source {
+            commit: n.to_string().repeat(40),
+            copyright: format!("Copyright (c) 2026 Holder {n}"),
+        };
+        let sources = [
+            ("3dcraft-examples", source('a')),
+            ("3dcraft-jigs", source('b')),
+            ("3dcraft-assemblies-examples", source('d')),
+        ];
+        let text = licence_text(&sources, &[part.clone(), jig.clone(), asm.clone()]);
+        let section = |from: &str| {
+            let start = text.find(&format!("## From {from}")).unwrap();
+            let rest = &text[start + 3..];
+            rest[..rest.find("\n## ").unwrap_or(rest.len())].to_string()
+        };
+        let (examples, jigs, assemblies) = (
+            section("the 3DCraft examples"),
+            section("the 3DCraft Jigs"),
+            section("the 3DCraft assemblies"),
+        );
+        assert!(jigs.contains("> Copyright (c) 2026 Holder b"), "{jigs}");
+        assert!(
+            assemblies.contains("> Copyright (c) 2026 Holder d"),
+            "{assemblies}"
+        );
+        assert!(
+            examples.contains("Copyright (c) 2026 Holder a"),
+            "{examples}"
+        );
+        assert!(jigs.contains("CC BY-SA"), "{jigs}");
+        assert!(!assemblies.contains("CC BY-SA"), "{assemblies}");
+        assert!(assemblies.contains("blobs/*.3dcraft"), "{assemblies}");
+        assert!(!jigs.contains("blobs/"), "{jigs}");
+        for (body, repo, n) in [
+            (&examples, "3dcraft-examples", 'a'),
+            (&jigs, "3dcraft-jigs", 'b'),
+            (&assemblies, "3dcraft-assemblies-examples", 'd'),
+        ] {
+            let link = format!(
+                "https://github.com/johancoppens/{repo}/blob/{}/ATTRIBUTION.md",
+                n.to_string().repeat(40)
+            );
+            assert!(body.contains(&link), "{body}");
+        }
+        let rows = attribution_rows(&sources, &[part, jig, asm]);
+        assert_eq!(rows.len(), 3);
+        for row in &rows {
+            assert!(row.contains("/ATTRIBUTION.md)"), "{row}");
+        }
     }
 
     #[test]

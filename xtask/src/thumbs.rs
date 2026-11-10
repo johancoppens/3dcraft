@@ -196,11 +196,22 @@ pub fn quantize(pixels: &[u8], colours: usize) -> (Vec<u8>, Vec<u8>) {
     (palette.concat(), indices)
 }
 
-/// Reads an 8-bit RGB or RGBA PNG as RGB.
+/// Most pixels of a picture that is decoded (4096 × 4096): its size is
+/// read from its header first, so a larger one is never allocated.
+pub(crate) const MAX_PICTURE_PIXELS: u64 = 4096 * 4096;
+
+/// Reads an 8-bit RGB or RGBA PNG as RGB, of at most
+/// [`MAX_PICTURE_PIXELS`].
 pub(crate) fn read_rgb(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     let mut decoder = png::Decoder::new(bytes);
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
+    let (width, height) = (reader.info().width, reader.info().height);
+    if u64::from(width) * u64::from(height) > MAX_PICTURE_PIXELS {
+        return Err(format!(
+            "a picture of {width} × {height} pixels, more than {MAX_PICTURE_PIXELS}"
+        ));
+    }
     let mut buffer = vec![0; reader.output_buffer_size()];
     let info = reader.next_frame(&mut buffer).map_err(|e| e.to_string())?;
     buffer.truncate(info.buffer_size());
@@ -408,5 +419,41 @@ mod tests {
         let png = write_indexed(16, 16, &palette, &indices).unwrap();
         let (w, h, rgb) = read_rgb(&png).unwrap();
         assert_eq!((w, h, rgb.len()), (16, 16, 768));
+    }
+
+    /// The CRC-32 of a PNG chunk (ISO 3309, as the PNG specification
+    /// gives it).
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = 0xffff_ffff_u32;
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xedb8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    /// A picture whose header says it is larger than the cap is refused
+    /// before its pixels are allocated: a 100000 × 100000 one would take
+    /// 30 GB.
+    #[test]
+    fn a_picture_larger_than_the_cap_is_refused_before_it_is_decoded() {
+        let png = write_indexed(4, 3, &[0, 0, 0], &[0; 12]).unwrap();
+        // The header chunk: its length, `IHDR`, width and height first.
+        assert_eq!(&png[12..16], b"IHDR");
+        let mut huge = png.clone();
+        huge[16..20].copy_from_slice(&100_000_u32.to_be_bytes());
+        huge[20..24].copy_from_slice(&100_000_u32.to_be_bytes());
+        let crc = crc32(&huge[12..29]);
+        huge[29..33].copy_from_slice(&crc.to_be_bytes());
+        let error = read_rgb(&huge).unwrap_err();
+        assert!(error.contains("100000 × 100000"), "{error}");
+        // The same picture at its own size reads.
+        assert_eq!(read_rgb(&png).unwrap().0, 4);
     }
 }

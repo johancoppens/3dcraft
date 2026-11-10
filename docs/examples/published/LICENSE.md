@@ -51,6 +51,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+Data and designs from elsewhere that these files use are credited in that repository's `ATTRIBUTION.md` at
+that commit: <https://github.com/johancoppens/3dcraft-examples/blob/f7fc64371050eaabac4336bb7e664bfa86b7ed53/ATTRIBUTION.md>.
+
 ## From the 3DCraft Jigs (CC BY 4.0)
 
 [johancoppens/3dcraft-jigs](https://github.com/johancoppens/3dcraft-jigs) at commit `14df680addfb0ad65438caf254df090f8dc54865`:
@@ -64,9 +67,15 @@ SOFTWARE.
 | `planetary-gearbox.3dcraftjig` | Planetary gearbox | 3DCraft Jigs | [jigs/30-planetary-gearbox](https://github.com/johancoppens/3dcraft-jigs/tree/14df680addfb0ad65438caf254df090f8dc54865/jigs/30-planetary-gearbox) |
 | `sundial.3dcraftjig` | Sundial for your place | 3DCraft Jigs | [jigs/26-sundial](https://github.com/johancoppens/3dcraft-jigs/tree/14df680addfb0ad65438caf254df090f8dc54865/jigs/26-sundial) |
 
-Each file's `meta.json` and its own document information say `CC-BY-4.0` (checked when it is copied);
-none is a Jig shared under CC BY-SA 4.0. Each is licensed under the **Creative Commons Attribution 4.0
-International** licence (CC BY 4.0): <https://creativecommons.org/licenses/by/4.0/>, legal code at
+Each file's `meta.json` and its own document information say `CC-BY-4.0` (checked when it is copied).
+None is a Jig shared under CC BY-SA 4.0.
+
+The licensor's copyright notice, which the licence asks a copy to keep:
+
+> Copyright (c) 2026 Johan Coppens
+
+Each file is licensed under the **Creative Commons Attribution 4.0 International** licence (CC BY 4.0):
+<https://creativecommons.org/licenses/by/4.0/>, legal code at
 <https://creativecommons.org/licenses/by/4.0/legalcode>. You may share and adapt them for any purpose,
 also commercially, provided you give appropriate credit, link to the licence and indicate if changes were
 made. The repository asks to be credited with the file's title, as in:
@@ -75,20 +84,29 @@ made. The repository asks to be credited with the file's title, as in:
 
 No changes were made to these copies.
 
+Data and designs from elsewhere that these files use are credited in that repository's `ATTRIBUTION.md` at
+that commit: <https://github.com/johancoppens/3dcraft-jigs/blob/14df680addfb0ad65438caf254df090f8dc54865/ATTRIBUTION.md>.
+
 ## From the 3DCraft assemblies (CC BY 4.0)
 
-[johancoppens/3dcraft-assemblies-examples](https://github.com/johancoppens/3dcraft-assemblies-examples) at commit `4f84252e759ca71b0c56d0a395fd57c714a32c64`:
+[johancoppens/3dcraft-assemblies-examples](https://github.com/johancoppens/3dcraft-assemblies-examples) at commit `62d3cbd593e9d416cdcdc5832699203e79b4b1d5`:
 
 | File | Title | Author (`document.info.author`) | Folder |
 |---|---|---|---|
-| `toggle-clamp.3dcraftasm` | Horizontal toggle clamp | 3DCraft assemblies | [assemblies/01-toggle-clamp](https://github.com/johancoppens/3dcraft-assemblies-examples/tree/4f84252e759ca71b0c56d0a395fd57c714a32c64/assemblies/01-toggle-clamp) |
-| `jansen-walker.3dcraftasm` | Jansen linkage walker | 3DCraft assemblies | [assemblies/02-jansen-walker](https://github.com/johancoppens/3dcraft-assemblies-examples/tree/4f84252e759ca71b0c56d0a395fd57c714a32c64/assemblies/02-jansen-walker) |
-| `scissor-jack.3dcraftasm` | Scissor car jack | 3DCraft assemblies | [assemblies/03-scissor-jack](https://github.com/johancoppens/3dcraft-assemblies-examples/tree/4f84252e759ca71b0c56d0a395fd57c714a32c64/assemblies/03-scissor-jack) |
-| `radial-engine.3dcraftasm` | Seven-cylinder radial engine with its valve train | 3DCraft assemblies | [assemblies/06-radial-engine](https://github.com/johancoppens/3dcraft-assemblies-examples/tree/4f84252e759ca71b0c56d0a395fd57c714a32c64/assemblies/06-radial-engine) |
+| `toggle-clamp.3dcraftasm` | Horizontal toggle clamp | 3DCraft assemblies | [assemblies/01-toggle-clamp](https://github.com/johancoppens/3dcraft-assemblies-examples/tree/62d3cbd593e9d416cdcdc5832699203e79b4b1d5/assemblies/01-toggle-clamp) |
+| `jansen-walker.3dcraftasm` | Jansen linkage walker | 3DCraft assemblies | [assemblies/02-jansen-walker](https://github.com/johancoppens/3dcraft-assemblies-examples/tree/62d3cbd593e9d416cdcdc5832699203e79b4b1d5/assemblies/02-jansen-walker) |
+| `scissor-jack.3dcraftasm` | Scissor car jack | 3DCraft assemblies | [assemblies/03-scissor-jack](https://github.com/johancoppens/3dcraft-assemblies-examples/tree/62d3cbd593e9d416cdcdc5832699203e79b4b1d5/assemblies/03-scissor-jack) |
+| `radial-engine.3dcraftasm` | Seven-cylinder radial engine with its valve train | 3DCraft assemblies | [assemblies/06-radial-engine](https://github.com/johancoppens/3dcraft-assemblies-examples/tree/62d3cbd593e9d416cdcdc5832699203e79b4b1d5/assemblies/06-radial-engine) |
 
-Each file's `meta.json` and its own document information say `CC-BY-4.0` (checked when it is copied);
-none is a Jig shared under CC BY-SA 4.0. Each is licensed under the **Creative Commons Attribution 4.0
-International** licence (CC BY 4.0): <https://creativecommons.org/licenses/by/4.0/>, legal code at
+Each file's `meta.json` and its own document information say `CC-BY-4.0` (checked when it is copied).
+So does the document information of every part packed in an assembly (`blobs/*.3dcraft`, checked the same way).
+
+The licensor's copyright notice, which the licence asks a copy to keep:
+
+> Copyright (c) 2026 Johan Coppens
+
+Each file is licensed under the **Creative Commons Attribution 4.0 International** licence (CC BY 4.0):
+<https://creativecommons.org/licenses/by/4.0/>, legal code at
 <https://creativecommons.org/licenses/by/4.0/legalcode>. You may share and adapt them for any purpose,
 also commercially, provided you give appropriate credit, link to the licence and indicate if changes were
 made. The repository asks to be credited with the file's title, as in:
@@ -96,3 +114,6 @@ made. The repository asks to be credited with the file's title, as in:
 > "Horizontal toggle clamp" by Johan Coppens, from the 3DCraft assemblies (CC BY 4.0), https://github.com/johancoppens/3dcraft-assemblies-examples
 
 No changes were made to these copies.
+
+Data and designs from elsewhere that these files use are credited in that repository's `ATTRIBUTION.md` at
+that commit: <https://github.com/johancoppens/3dcraft-assemblies-examples/blob/62d3cbd593e9d416cdcdc5832699203e79b4b1d5/ATTRIBUTION.md>.

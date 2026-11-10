@@ -20,7 +20,9 @@ craft3d-format.workspace = true
 craft3d-font.workspace = true
 # `cargo xtask web-size`: gzip -9 of the web module, with the pure-Rust
 # backend (miniz_oxide), so the measured size is the same on every machine.
-# `cargo xtask example-thumbs`: the start screen's thumbnails, read and
-# written as indexed PNGs (`thumbs.rs`).
+# `cargo xtask example-thumbs`: the pictures of the example scripts, and
+# `cargo xtask bundle-examples`: the start screen's thumbnails of the
+# bundled examples, read and written as indexed PNGs (`thumbs.rs`,
+# `bundle.rs`).
 png.workspace = true
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
