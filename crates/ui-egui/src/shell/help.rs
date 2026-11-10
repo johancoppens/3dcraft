@@ -21,10 +21,10 @@ use crate::theme::color;
 use std::path::PathBuf;
 
 /// A page of the user guide of this version on the website: the guide is
-/// kept there once per release, at `/guide/<major>.<minor>/`, a chapter
-/// addressed by its file name without number and extension
-/// (docs/decisions.md, 2026-11-10), so a build sends its user to the guide
-/// of its own code. The version is this crate's, the workspace's.
+/// kept there once per release, at `/guide/<major>.<minor>/`, a chapter at
+/// its file name without `.md`, its headings anchored as GitHub anchors
+/// them (docs/decisions.md, 2026-11-10), so a build sends its user to the
+/// guide of its own code. The version is this crate's, the workspace's.
 macro_rules! guide_page {
     ($page:literal) => {
         concat!(
