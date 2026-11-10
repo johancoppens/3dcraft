@@ -217,15 +217,29 @@ impl Protected {
                 system.push((spelling, OF_THE_SYSTEM));
             }
         }
-        let beneath_home = |part: &str| {
-            home.as_ref()
-                .map(|home| both_spellings(home.join(part)))
-                .unwrap_or_default()
+        let library = home.as_ref().map(|home| home.join("Library"));
+        // A cloud folder as written, and resolved only where it is the
+        // resolved `~/Library` with the same tail: a cloud folder that is
+        // itself a link (to `~/Library/Preferences`, to `~/Library`) would
+        // otherwise let its target out of the `Library` place.
+        let cloud = |tail: &str| -> Vec<PathBuf> {
+            let Some(library) = &library else {
+                return Vec::new();
+            };
+            let written = library.join(tail);
+            let mut spellings = vec![written.clone()];
+            if let (Some(library), Some(real)) = (resolved(library), resolved(&written))
+                && real == library.join(tail)
+                && real != written
+            {
+                spellings.push(real);
+            }
+            spellings
         };
         Self {
-            library: beneath_home("Library"),
-            cloud_storage: beneath_home("Library/CloudStorage"),
-            icloud_drive: beneath_home("Library/Mobile Documents/com~apple~CloudDocs"),
+            cloud_storage: cloud("CloudStorage"),
+            icloud_drive: cloud("Mobile Documents/com~apple~CloudDocs"),
+            library: library.map(both_spellings).unwrap_or_default(),
             home,
             state: state.map(both_spellings).unwrap_or_default(),
             places,
@@ -723,6 +737,58 @@ mod tests {
         assert_eq!(p.reason(&home.join("projects/dropbox")), None);
         assert_eq!(p.reason(&home.join("projects/dropbox/work")), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A cloud folder that is itself a link lets nothing out of
+    /// `~/Library`: `CloudStorage` linked to `~/Library/Preferences`, and
+    /// iCloud Drive linked to `~/Library` (2026-11-10, the review).
+    #[cfg(unix)]
+    #[test]
+    fn a_cloud_folder_that_is_a_link_lets_nothing_out_of_library() {
+        let make = |name: &str| {
+            let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("../../target/tmp/craft3d-consent-{name}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            for folder in [
+                "Library/Preferences",
+                "Library/LaunchAgents",
+                "Library/Mobile Documents",
+            ] {
+                std::fs::create_dir_all(dir.join(folder)).unwrap();
+            }
+            craft3d_engine::canonical(&dir).unwrap()
+        };
+        let home = make("cloud-storage-link");
+        std::os::unix::fs::symlink(
+            home.join("Library/Preferences"),
+            home.join("Library/CloudStorage"),
+        )
+        .unwrap();
+        let p = Protected::new(Some(home.clone()), None, Vec::new());
+        for refused in [
+            "Library/Preferences/com.example",
+            "Library/Preferences",
+            "Library/CloudStorage/com.example",
+        ] {
+            assert!(p.reason(&home.join(refused)).is_some(), "{refused}");
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        let home = make("icloud-drive-link");
+        std::os::unix::fs::symlink(
+            home.join("Library"),
+            home.join("Library/Mobile Documents/com~apple~CloudDocs"),
+        )
+        .unwrap();
+        let p = Protected::new(Some(home.clone()), None, Vec::new());
+        for refused in [
+            "Library",
+            "Library/LaunchAgents",
+            "Library/Preferences/new",
+            "Library/Mobile Documents/com~apple~CloudDocs/LaunchAgents",
+        ] {
+            assert!(p.reason(&home.join(refused)).is_some(), "{refused}");
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// A folder spelled through a link is judged by where the link leads:
