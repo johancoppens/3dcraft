@@ -209,6 +209,14 @@ fn plates_have_their_thickness_size_and_area_in_closed_form() {
             k,
             "holed cut length",
         );
+        // Exact as well where nothing is rounded for printing: the length
+        // of the paths cut.export draws of it.
+        let drawn = run(
+            &mut s,
+            "cut.export",
+            json!({"path": format!("holed-{k}.svg"), "bodies": ["Holed"]}),
+        );
+        close(&drawn["length"], cut * k, k, "holed drawn length");
 
         let (group, ell) = part(&list, "Ell");
         close(&group["thickness"], 9.0 * k, k, "L thickness");
@@ -389,7 +397,8 @@ fn a_sheet_metal_part_is_listed_by_its_flat_pattern() {
         let ba = FRAC_PI_2 * (r + 0.4 * t);
         let long = d + ba + l;
         // Printed to the place of the tolerance (J-042): the closed form
-        // rounded there.
+        // rounded there; exact in the DXF below, whose outline is not
+        // rounded for printing (its box against `long` to 1e-9 k).
         close(
             &bracket["length"],
             at_place(long, 1e-6 * k),
