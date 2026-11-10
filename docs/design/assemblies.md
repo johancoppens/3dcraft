@@ -1,7 +1,7 @@
 # Assemblies
 
-Instances of parts placed by mates, couplings and drivers, and moved over a motion. The decisions and the contract
-between the three tracks are in `plan/assemblies.md` (local). This document holds what is built. The solver is the
+Instances of parts placed by mates, couplings and drivers, and moved over a motion. The decision is in
+[`../decisions.md`](../decisions.md) (2026-10-29, *Assemblies in R1*). This document holds what is built. The solver is the
 crate `craft3d-assembly` (`crates/assembly`, L3, depends on `math` only), built 2026-10-29 (track B). Track A (the
 document, its format and the engine's commands) adds its own sections below.
 
@@ -614,8 +614,8 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
   more against the halo (`theme.rs`, `mate_markers_read_over_the_viewport_and_a_body`). The lines are opaque, not
   translucent: each segment is blended on its own on both paths, so a translucent arc would bead at every joint of
   its pieces; the muted tone and the thin line make it quiet instead. Behind a body a marker is drawn at 120 of
-  255. The variants compared (a neutral slate, this indigo, a muted bronze, the slate without a hairline) are in
-  `plan/ui-audit/mates-v2/` (local).
+  255. The variants compared were a neutral slate, this indigo, a muted bronze and the slate without a
+  hairline.
 - **Pointing at mates**: the pointer on a mate's row on the Assembly tab, or within `tokens.mate_hit` points of a
   marker's line where the marker is in sight, sets `sidePanel.mateHover`: the marker is drawn hot and its two parts
   are tinted `tokens.mate_part` while no face is lit otherwise (a flexible subassembly on a side: its instances; a

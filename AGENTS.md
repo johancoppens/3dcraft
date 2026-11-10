@@ -25,7 +25,7 @@ Read this file first, then `docs/`.
 | `docs/guide/` | The user guide, for people who use 3DCraft (with an AI agent, with Jigs, by hand); its commands and examples are checked by `guide_examples` |
 | `docs/roadmap.md` | Milestones, **current focus**, definition of done per milestone |
 | `docs/decisions.md` | Decisions taken, and the open ones only the developer can settle |
-| `log/devlog.md` *(local, gitignored)* | What the previous agent landed and what is still open |
+| `log/devlog.md` *(the workshop's, not in the repository: §7)* | What the previous agent landed and what is still open |
 
 ## 2. Workspace map
 
@@ -95,7 +95,7 @@ People trust 3DCraft with their designs, and a crash loses them. A malformed fil
 Priorities: important infrastructure first, then the shortest path to a model that loads, regenerates, renders and exports, then breadth.
 
 1. Read `docs/roadmap.md` → **Current focus**. Pick from the top unless the developer asked for something else.
-2. Read `log/devlog.md` → the "Still open" bullets of recent entries.
+2. In the workshop, read `log/devlog.md` → the "Still open" bullets of recent entries (from outside: the open issues, and the **Open** lists of `docs/roadmap.md`).
 3. Check `docs/decisions.md` → *Open decisions*. If your work depends on one, ask the developer instead of choosing silently.
 
 When you finish a milestone item, update its status in `docs/roadmap.md` with the date. Keep the roadmap readable: a table cell holds at most one sentence; what was done goes as one line with its date under **Done** in the milestone's section; what is left goes under **Open**; how it was built goes in its detail document under `docs/design/` (the roadmap links to it). **The map (docs/architecture.md) changes only when the structure changes; a finding or fix goes into its detail document under docs/design/.** The same holds for the status paragraph at the top of this file: it names stages, not features.
@@ -123,7 +123,7 @@ While iterating, run less and keep the full commands above as the final gate: `c
 
 Commands must **never panic** on bad input (Rule 13). New commands come with a graceful-failure test (empty/out-of-range/wrong-type params → `Err`, not a crash).
 
-Then append a terse entry to `log/devlog.md` (what landed, numbers, what's still open). Sessions can end abruptly (crashes, context limits), so the dev log plus a green tree is how the next agent picks up. Keep the tree building at every step.
+Then append a terse entry to the dev log, `log/devlog.md` in the workshop (§7): what landed, numbers, what's still open. From outside, the pull request's description holds the same, every expectation changed included. Sessions can end abruptly (crashes, context limits), so the dev log plus a green tree is how the next agent picks up. Keep the tree building at every step.
 
 ## 6. Parallel agents
 
@@ -139,8 +139,8 @@ Then append a terse entry to `log/devlog.md` (what landed, numbers, what's still
 
 - `docs/roadmap.md`: milestones, status and the current focus.
 - `docs/decisions.md`: decisions taken and open.
-- `plan/` (local, gitignored): research, plans, estimates.
-- `log/` (local, gitignored): the dev log.
+- `plan/` (the workshop's local folder, gitignored and not in the repository): research, plans, estimates.
+- `log/` (the workshop's local folder, gitignored and not in the repository): the dev log.
 
 ## 8. Keeping the native format complete
 

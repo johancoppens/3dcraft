@@ -1,6 +1,6 @@
 # Origami: crease patterns, rigid folding, Kawasaki and Maekawa
 
-A crease pattern on a flat sheet, folded rigidly by its fold angles: `feature.fold` (the document's `Fold`), `fold.edit`, `fold.inspect`, `fold.check`, and the crease pattern through `file.export` with `fold`. The kernel's part is `craft3d_kernel::origami` (`crates/kernel/src/origami/`), regeneration's `crates/regen/src/fold.rs`, the commands `crates/engine/src/fold_cmds.rs`. Built 2026-10-26 (R1 block *sheets*, item 4: `plan/r1-sheets.md`).
+A crease pattern on a flat sheet, folded rigidly by its fold angles: `feature.fold` (the document's `Fold`), `fold.edit`, `fold.inspect`, `fold.check`, and the crease pattern through `file.export` with `fold`. The kernel's part is `craft3d_kernel::origami` (`crates/kernel/src/origami/`), regeneration's `crates/regen/src/fold.rs`, the commands `crates/engine/src/fold_cmds.rs`. Built 2026-10-26 (R1 block *sheets*, [`../decisions.md`](../decisions.md) 2026-10-26).
 
 ## Method
 
