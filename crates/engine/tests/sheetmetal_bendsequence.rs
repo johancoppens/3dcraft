@@ -24,6 +24,9 @@
 //!   a saved `bendable` without `length` keeps that meaning), while a Z as narrow (one wall up, one down) cannot be bent in
 //!   either order: the made wall goes into the die.
 //! - Bad parameters are errors.
+//! - Every length (the tools' points, `length`, `clearance`) is a number
+//!   in the document's unit or a length expression, in a document in
+//!   millimetres as in one in inches.
 
 #![allow(
     clippy::unwrap_used,
@@ -493,9 +496,19 @@ fn bad_parameters_are_errors() {
             json!({"feature": "U", "punch": [[0, 0], [1, 0]], "die": die}),
             "at least 3",
         ),
+        // A coordinate is a length expression (as for `bendable`): a name
+        // that is not defined is named.
         (
-            json!({"feature": "U", "punch": [[0, 0], [1, "x"], [0, 1]], "die": die}),
-            "at least 3",
+            json!({"feature": "U", "punch": [[0, 0], [1, "nowhere"], [0, 1]], "die": die}),
+            "nowhere",
+        ),
+        (
+            json!({"feature": "U", "punch": [[0, 0], [1, "5 deg"], [0, 1]], "die": die}),
+            "length",
+        ),
+        (
+            json!({"feature": "U", "punch": [[0, 0], [1, true], [0, 1]], "die": die}),
+            "punch",
         ),
         (
             json!({"feature": "U", "punch": [[0, 0], [1, 1], [1, 0], [0, 1]], "die": die}),
@@ -508,6 +521,18 @@ fn bad_parameters_are_errors() {
         (
             json!({"feature": "U", "punch": punch, "die": die, "length": -1}),
             "length",
+        ),
+        (
+            json!({"feature": "U", "punch": punch, "die": die, "length": "-1 mm"}),
+            "length",
+        ),
+        (
+            json!({"feature": "U", "punch": punch, "die": die, "length": [30, "2 deg"]}),
+            "flange 1",
+        ),
+        (
+            json!({"feature": "U", "punch": punch, "die": die, "clearance": "0 mm"}),
+            "clearance",
         ),
         (
             json!({"feature": "Base", "punch": punch, "die": die}),
@@ -525,6 +550,99 @@ fn bad_parameters_are_errors() {
         let got = error(&mut s, "sheetMetal.bendSequence", params.clone());
         assert!(got.contains(why), "{params}: {got}");
     }
+}
+
+/// Every length of the command is read as every length param is, a
+/// number in the document's unit or a length expression, as `bendable`
+/// reads it (2026-11-10: `"length": "60 mm"` was refused, "must be more
+/// than 0", while `bendable` took it): the U channel with walls 20 high,
+/// built in millimetres in a document in millimetres and in one in
+/// inches, checked with the tools, `length` and `clearance` given in
+/// millimetres, clears the same way in both, every length the same once
+/// in one unit, and `bendable` given the same words agrees.
+#[test]
+fn every_length_is_a_length_expression_in_millimetres_and_in_inches() {
+    let in_mm = |points: &[[f64; 2]]| {
+        json!(
+            points
+                .iter()
+                .map(|p| [mm(p[0]), mm(p[1])])
+                .collect::<Vec<_>>()
+        )
+    };
+    let mut leasts = Vec::new();
+    for (units, per_mm) in [("mm", 1.0), ("in", 1.0 / 25.4)] {
+        let dir = workdir("sheetmetal-bendsequence", &format!("units-{units}"));
+        let mut s = session_in(&dir);
+        // The same tolerance in both, a millionth of a millimetre.
+        run(
+            &mut s,
+            "file.new",
+            json!({"units": units, "tolerance": 1e-6 * per_mm}),
+        );
+        run(
+            &mut s,
+            "sketch.create",
+            json!({"plane": "xy", "name": "Base"}),
+        );
+        let made = run(
+            &mut s,
+            "sketch.rect",
+            json!({"sketch": "Base", "from": [mm(0.0), mm(0.0)], "to": [mm(40.0), mm(30.0)]}),
+        );
+        let line = |i: usize| made["lines"][i].clone();
+        built(
+            &mut s,
+            "feature.sheetMetal",
+            json!({"sketch": "Base", "name": "U", "thickness": mm(1.0), "radius": mm(1.0),
+                   "kFactor": 0.5, "flanges": [
+                       {"edge": line(3), "length": mm(20.0), "angle": "90 deg", "direction": "up"},
+                       {"edge": line(1), "length": mm(20.0), "angle": "90 deg", "direction": "up"}]}),
+        );
+        let tools = json!({"feature": "U", "punch": in_mm(&STRAIGHT), "die": in_mm(&DIE),
+                           "length": "60 mm", "segmented": true, "clearance": "0.001 mm"});
+        let out = run(&mut s, "sheetMetal.bendSequence", tools.clone());
+        assert_eq!(out["feasible"], true, "{units}: {out}");
+        assert_eq!(out["order"], json!([0, 1]), "{units}: {out}");
+        let near = |got: &Value, want: f64| {
+            let got = got.as_f64().unwrap();
+            assert!(
+                (got - want).abs() <= 1e-9 * want.abs(),
+                "{units}: {got} against {want}: {out}"
+            );
+        };
+        near(&out["clearance"], 0.001 * per_mm);
+        let steps = out["steps"].as_array().unwrap();
+        for step in steps {
+            for segment in step["segments"].as_array().unwrap() {
+                near(segment, 60.0 * per_mm);
+            }
+        }
+        leasts.push(steps[1]["least"].as_f64().unwrap() / per_mm);
+        // A length per flange, as words too.
+        let mut per_flange = tools.clone();
+        per_flange["length"] = json!(["60 mm", null]);
+        let out = run(&mut s, "sheetMetal.bendSequence", per_flange);
+        assert_eq!(out["feasible"], true, "{units}: {out}");
+        // The measure, given the same words, says the same.
+        let mut asked = tools;
+        asked["of"] = json!("U");
+        asked["is"] = json!(true);
+        if let Some(map) = asked.as_object_mut() {
+            map.remove("feature");
+        }
+        let check = bendable(&mut s, "same tools", asked);
+        assert_eq!(check["status"], "passed", "{units}: {check}");
+        assert_eq!(
+            check["detail"]["parts"][0]["order"],
+            json!([0, 1]),
+            "{check}"
+        );
+    }
+    assert!(
+        (leasts[0] - leasts[1]).abs() <= 1e-6,
+        "the same in millimetres: {leasts:?}"
+    );
 }
 
 /// The assertion of the press-brake check, `bendable` (as an output too).
