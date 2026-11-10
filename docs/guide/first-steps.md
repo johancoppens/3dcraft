@@ -144,3 +144,5 @@ offers to recover it after a crash ([Troubleshooting](troubleshooting.md#after-a
   [3dcraft.dev/examples](https://3dcraft.dev/examples/), in your browser. The guide's own lessons are
   seven short command scripts ([the lessons](../examples/README.md)) that you run yourself, as
   [A first part, command by command](first-part.md) shows.
+
+**Next:** [Working with an AI agent](agent.md).

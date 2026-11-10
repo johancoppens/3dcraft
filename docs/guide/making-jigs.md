@@ -63,3 +63,5 @@ Any design whose sizes are variables can become a Jig. You design it as an ordin
 **Good Jigs** have few parameters, clear labels with units, ranges that always build, defaults that make a
 sensible part, a description that says how to export, and checks (assertions, [Measuring and assertions](measure.md))
 that guard what matters, such as a minimum wall.
+
+**Next:** [The command line and scripts](command-line.md).

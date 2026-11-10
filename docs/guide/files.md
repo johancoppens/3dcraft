@@ -286,4 +286,4 @@ whether to save it, and then drops its autosave. An agent has the same with `rec
 `recovery.open` and `recovery.discard`, also in `craft3d-cli serve` and `mcp` when they are started with
 `--recovery-dir DIR`.
 
-**Next:** [The command line and scripts](command-line.md).
+**Next:** [How 3DCraft thinks](concepts.md).

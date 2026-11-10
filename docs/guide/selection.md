@@ -6,7 +6,8 @@ them under a name.*
 ## Finding things by what they are
 
 `select.query` finds bodies, faces, edges, vertices, features, sketches or datums by description, so an
-agent never has to guess a face's name:
+agent never has to guess a face's name. On the L-bracket of
+[A first part, command by command](first-part.md):
 
 ```json
 [
@@ -43,7 +44,8 @@ size, is followed into the body a later boolean or pattern made of it, and drops
 
 ## Named sets
 
-A named set is a query kept in the document, computed again whenever it is used:
+A named set is a query kept in the document, computed again whenever it is used. On the flange of
+[Working with an AI agent](agent.md#a-full-session), whose bolt holes are `hole_d` across and `n` in number:
 
 ```json
 [
@@ -73,12 +75,18 @@ variables:
 ]
 ```
 
-After `tB` = 3 mm, B leaves *Cut sheet: 4 mm*; give it 4 mm again and it is back. A value is matched
-within the document's tolerance (and a millionth of it), `{min, max}` takes a range, and an expression of
-the variables (`tA`) is worked out again whenever the set is. A face has a thickness only when every line
-into the material from it is equally long and leaves through such an opposite face: a curved face, a face
-over a step, a pocket or a slanted back has none, and never fits. This is not the measure `thickness` of `measure.thickness` and assertions ([Measuring and assertions](measure.md)), which finds the thinnest place of a whole body; the filter asks whether one flat face is a plate of one thickness. `set.list` says how many items each set holds now; `set.edit`
-and `set.remove` change and remove them. Sets are saved with the document and renamed features keep
-them working.
+After `tB` = 3 mm, B leaves *Cut sheet: 4 mm*; give it 4 mm again and it is back.
 
-**Next:** [Files, export and drawings](files.md).
+- A value is matched within the document's tolerance (and a millionth of it); `{min, max}` takes a range;
+  an expression of the variables (`tA`) is worked out again whenever the set is.
+- A face has a thickness only when every line into the material from it is equally long and leaves
+  through such an opposite face. A curved face, a face over a step, a pocket or a slanted back has none,
+  and never fits.
+- This filter is not the measure `thickness` of `measure.thickness` and the checks
+  ([Measuring and assertions](measure.md)), which finds the thinnest place of a whole body. The filter
+  asks whether one flat face is a plate of one thickness.
+
+`set.list` says how many items each set holds now; `set.edit` and `set.remove` change and remove them.
+Sets are saved with the document, and renamed features keep them working.
+
+**Next:** [Measuring and assertions](measure.md).

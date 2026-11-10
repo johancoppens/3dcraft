@@ -284,10 +284,20 @@ with 1 mm clearance on 3 mm panels, about 37 degrees. Any two panels that meet a
 facets. Panels folded flat pass through each other; methods that fold thick panels flat (offset panels)
 are not built.
 
+**Names.** A panel is named as an extrusion is. Its `startCap` is the face on the sheet, where the hinges
+are, and its `endCap` the face away from it, on whichever side the panels lie; each cap is named after the
+curves of the facet's outline. In the lid above, the left panel's faces are `Lid:startCap(e5,e7,e8,e11)`
+on the sheet and `Lid:endCap(e5,e7,e8,e11)` 3 mm away. Two panels with the same outline curves have their
+caps numbered. A measure between two panels' outer faces names their end caps.
+
 ## Exporting the crease pattern
 
 `file.export` with `fold` writes the flat crease pattern as `.svg` or `.dxf`, in the sketch's own axes, the
-way crease patterns are drawn: the outline in black on the layer `boundary`, **mountains red and
+way crease patterns are drawn:
+
+<!-- SHOT: crease-pattern.png | the waterbomb's crease pattern as exported (outline black, the mountain red and dash-dot, the valleys blue and dashed), beside the waterbomb base folded flat in iso view; theme light; about 1280x640 | run the waterbomb script of origami.md with "stroke": 0.3 on the export and rasterise the SVG; view.render {"view": "iso"} of the flat-folded Base of "Folding flat" (plan: shots/renders.sh, the block at origami's waterbomb) -->
+![The waterbomb's crease pattern as exported, mountains red and dash-dot, valleys blue and dashed, beside the base folded flat](images/crease-pattern.png)
+ the outline in black on the layer `boundary`, **mountains red and
 dash-dot** on `mountain`, **valleys blue and dashed** on `valley`, and cuts black on `cut`. Print it and
 score along the lines, or send the cuts to a laser cutter. An SVG's lines are a laser's hairline (0.01 mm)
 by default, too thin to print: `"stroke": 0.3` gives them a width in millimetres.
@@ -304,3 +314,5 @@ by default, too thin to print: `"stroke": 0.3` gives them a width in millimetres
   with the advice to give more creases an angle.
 
 How it works, and the sources: [docs/design/origami.md](../design/origami.md).
+
+**Next:** [Selection and named sets](selection.md).

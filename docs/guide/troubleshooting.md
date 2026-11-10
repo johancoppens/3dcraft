@@ -219,4 +219,4 @@ do. Things that went well are worth a line as well: they say what must not break
 not reported in an issue. Report it privately through the repository's private vulnerability reporting,
 as its [security policy](https://github.com/johancoppens/3dcraft/security/policy) describes.
 
-**See also:** [the Reference](reference.md), for every command, key and unit.
+**Next:** [Reference](reference.md).

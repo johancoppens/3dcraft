@@ -322,3 +322,5 @@ the options of the same name: `CRAFT3D_CONTROL_PORT`, `CRAFT3D_CONTROL_TOKEN_FIL
 
 The technical details of every format are in [`file-formats.md`](../file-formats.md), and of the control
 channel and MCP in [`control-protocol.md`](../control-protocol.md).
+
+**Back to:** [Start here](README.md).

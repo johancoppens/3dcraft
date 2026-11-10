@@ -186,3 +186,5 @@ more samples, or a narrower `t` around a suspect moment, to look closer. Any mea
 The first check fails at `t` = 0.4375 with the least clearance 5 mm at `t` = 0.5 (the slider swings to within
 5 mm of the wall); the second passes. A collision shorter than the spacing of the samples can be missed: give
 more `samples` where it matters.
+
+**Next:** [Making Jigs](making-jigs.md).

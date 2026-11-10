@@ -293,4 +293,4 @@ branch of `if` that is taken does not need `cg`. Set `corner` to 2 and the corne
   its `cutouts`), not a hole a later feature cuts into its body; an assertion on a hole that only some of a Jig's
   choices make takes those choices' condition.
 
-**Next:** [Selection and named sets](selection.md).
+**Next:** [Engineering checks](engineering-checks.md).

@@ -168,4 +168,4 @@ default; the result says `"renderer": "gpu"` or `"cpu"`); `"renderer": "cpu"` (`
 them with the CPU renderer, the reference the card is checked against, and slower. A studio frame
 averages 16 frames of samples (`look.accumulate`), as the window does before its picture is settled.
 
-**Next:** [Troubleshooting](troubleshooting.md).
+**Next:** [Programs on 3DCraft](programs.md).

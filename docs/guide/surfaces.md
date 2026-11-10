@@ -276,3 +276,5 @@ sheet stock, `feature.unfold` lays one of its skins flat; the outline follows th
 edge: faces that meet at a crease (plate them apart and join them), plates in line with each other (no
 corner to join at), an edge that does not run along the neighbour's outline, a plate so thick that its
 ends run into each other.
+
+**Next:** [Origami](origami.md).
