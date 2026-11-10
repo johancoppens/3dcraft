@@ -13,9 +13,10 @@ other CAD programs and drawings.*
 | DXF, SVG | no | **Export…** | Flat outlines at true size, for laser cutting; or a drawing of the model as seen |
 
 In the window, the **File** menu does all of this with your system's file dialogs. An agent uses the
-commands in brackets; its paths are relative to the read and write roots the window or server was started
-with ([Install 3DCraft and connect an AI agent](install.md#connect-an-ai-agent-over-mcp)). `craft3d-cli` on its own reads and writes
-anywhere you can ([The command line and scripts](command-line.md)).
+commands in brackets. Its paths are relative to its work folder, and it reaches only the folders the agent
+panel names ([Install › Which files the agent can reach](install.md#which-files-the-agent-can-reach)).
+`craft3d-cli run` on its own reads and writes anywhere you can
+([The command line and scripts](command-line.md)).
 
 ## Saving: the `.3dcraft` file
 
@@ -43,22 +44,26 @@ and saving saves your result as a new `.3dcraft`, never over the Jig ([Using a J
 
 | What | Formats | What you get |
 |---|---|---|
-| **The model** | STEP, STL, 3MF, OBJ | Every body that is not hidden (the dialog names the hidden ones it leaves out, and so does the status line after the export) |
+| **All bodies** | STEP, STL, 3MF, OBJ | Every body that is not hidden (the dialog names the hidden ones it leaves out, and so does the status line after the export) |
 | | DXF, SVG | A drawing of the model as seen |
-| **The selection** | STEP, STL, 3MF, OBJ | The selected bodies |
+| **Selection** | STEP, STL, 3MF, OBJ | The selected bodies, hidden or not |
 | | DXF, SVG | The outlines of the selected flat faces, or of one selected sketch, or the flat pattern of one selected sheet-metal part |
 | **Sheet of set: …** | DXF, SVG | Every flat face of a named set on one sheet (below) |
 | **Flat pattern of …** | DXF, SVG | A sheet-metal part, unfolded ([Sheet metal](sheet-metal.md)) |
 | **Crease pattern of …** | DXF, SVG | A fold's creases on its paper ([Origami](origami.md)) |
 | **Flat patterns of every part** | DXF, SVG | Every sheet-metal part unfolded on one sheet |
 
-*The selection* is chosen first when something is selected (and the sheet or pattern you exported last
-from this document when it still has it). When no format can hold what is selected (an edge, say), the
-dialog says why and offers the model instead. Bodies you hid with the eye are left out of a drawing, but
-not out of STEP or mesh exports of every body.
+**Selection** is chosen first when something is selected (and the sheet or pattern you exported last
+from this document, when it still has it). When no format can hold what is selected (an edge, say), the
+dialog says why and offers all bodies instead.
+
+Bodies you hid with the eye are left out of **All bodies**, in every format: the dialog names them under
+**All bodies**, and the status line names them after the export. To write a hidden body, show it, or
+select it and export the selection.
 
 ## 3D printing: STL, 3MF and OBJ
 
+<!-- SHOT: export-mesh.png | the same picture as first-steps.md | see first-steps.md -->
 ![The export dialog for a mesh](images/export-mesh.png)
 
 The export dialog asks for the **quality**: how closely the triangles follow the curved faces.
@@ -125,13 +130,16 @@ them smoothly. A face is drawn as seen from outside the body, never mirrored. Th
 0.01 mm hairline, the width laser software cuts rather than engraves; opened in a web browser they look
 very thin or even invisible, so check the outline in Inkscape or your laser software instead.
 
-**A whole cut sheet at once.** When the design has a **named set** of the panels to cut (as the
-laser-cut box Jig has, *Cut sheet*), the export dialog offers **Sheet of set: …**: every flat face of
-the set laid out side by side on one sheet, each body on a layer of its own. **Sheet width** wraps the
-row at a width (your laser's bed, such as `600 mm`; empty for one row) and **Gap** sets the space between
-the parts (5 mm when empty).
+**A whole cut sheet at once.** When the design has a **named set** of the panels to cut, the export
+dialog offers **Sheet of set: …**. The laser-cut box Jig has one, *Cut sheet*: one flat face of each of
+its parts. The export lays every flat face of the set side by side on one sheet, each body on a layer of
+its own.
 
-![The six panels of the laser-cut box on one sheet, ready to cut](images/cut-sheet.png)
+- **Sheet width** wraps the row at a width: your laser's bed, such as `600 mm` (empty for one row).
+- **Gap** sets the space between the parts (5 mm when empty).
+
+<!-- SHOT: cut-sheet.png | the laser-cut box Jig's Cut sheet at its defaults (ten parts: walls, bottom, dividers, lid and its frame), exported as SVG with width 600 mm and gap 5 mm, rasterised on white with a stroke wide enough to see, about 1280 px wide | file.open laser-box.3dcraftjig; file.export {"path": "cut-sheet.svg", "set": "Cut sheet", "width": "600 mm", "gap": "5 mm", "stroke": 0.3}; rasterise with ImageMagick or Inkscape (plan: shots/renders.sh) -->
+![The laser-cut box's parts on one sheet, ready to cut](images/cut-sheet.png)
 
 The same as commands:
 
@@ -206,10 +214,11 @@ birch plywood,18,Bottom,2,564,200,112800,1528,0,plate,Bottom; Top,
 
 ## Drawings of the model as seen
 
-**The model** exported as `.dxf` or `.svg` is a **drawing of the whole model** from a view: the
+**All bodies** exported as `.dxf` or `.svg` is a **drawing of the whole model** from a view: the
 edges of the bodies and the outlines (silhouettes) of curved faces, with the lines behind a face left out
 or drawn dashed.
 
+<!-- SHOT: export-drawing.png | the export dialog over the bracket lesson: What All bodies, Format SVG, View Iso, Projection Orthographic, Hidden lines Dashed and the hint under them; theme light; crop to the dialog | build the bracket lesson and open it; ui.set {"appearance": "light"}; ui.set {"export": {"open": true, "what": "model", "format": "svg", "drawing": {"view": "iso", "projection": "orthographic", "hidden": "dashed"}}}; crop by hand (plan: shots/pictures/06-export-drawing.json) -->
 ![The export dialog for a drawing: what, view, projection and hidden lines](images/export-drawing.png)
 
 The export dialog asks:
@@ -245,7 +254,8 @@ is.
 
 ## Files in the web version
 
-The web version reads and writes files on your computer; nothing is uploaded.
+The web version, [3dcraft.dev/app](https://3dcraft.dev/app/), reads and writes files on your computer;
+nothing is uploaded.
 
 - **Chrome, Edge and Chromebooks:** Open…, Import…, Save As… and Export… show your system's file
   dialog. Export… opens the same export dialog as on the desktop (what, the format, the options; the
@@ -267,7 +277,9 @@ The web version reads and writes files on your computer; nothing is uploaded.
 ## Autosave and recovery
 
 The desktop window autosaves documents with unsaved changes 30 seconds after a change, into a recovery
-folder (on Linux `~/.local/state/3dcraft/recovery`; **Help › Open data folder** shows it on any system).
+folder: `3dcraft/recovery` in your state directory. That is `~/.local/state/3dcraft/recovery` on Linux,
+`~/Library/Application Support/3dcraft/recovery` on macOS and `%LOCALAPPDATA%\3dcraft\recovery` on
+Windows; **Help › Open data folder** shows it on any system.
 After a crash, the next start shows a bar with what was left: **Recover**, **Discard** (click twice: it
 cannot be undone), **Later**. Closing the window normally asks, for each document with unsaved changes,
 whether to save it, and then drops its autosave. An agent has the same with `recovery.list`,
