@@ -851,11 +851,13 @@ g/cm3"`), so they follow a parameter.
 
 **A face's own colour wins over its body's**, wherever the body's is given: a body colour given to a later
 feature (a transform, a boolean) colours the other faces and leaves the faces coloured earlier as they are.
-To give such a face the body's colour again, clear its own colour where it was given: `document.inspect`
-lists every face colour under `faceAppearances` as `{feature, face, color}`, and
-`face.appearance {"body": "F1", "faces": ["F1:face(1)", "F1:face(2)"], "clear": true}` clears them, the
-feature as `body` and the faces by those names (an imported STEP part may carry a colour on every face:
-list them all). Clearing the faces of the later body does nothing to a colour given further back.
+To give the whole body its colour, clear its faces' own colours in one step:
+`face.appearance {"body": "Moved", "clear": true}` takes away every face colour the body's faces carry,
+wherever along its history it was given (an imported STEP part with a colour on every face too), as one
+undo step, and lists what it cleared; a colour that also colours another body's face (a copy kept by a
+mirror) is kept, and the answer says for which body. In the window, the body's card in the Bodies tab has
+**Clear face colours** when its faces carry colours of their own. Single faces can still be cleared by
+name: `face.appearance {"body": "F1", "faces": ["F1:face(1)"], "clear": true}`.
 
 ## Hiding and looking back
 

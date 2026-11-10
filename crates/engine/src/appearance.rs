@@ -583,6 +583,151 @@ fn walk_face(
     body_at(memo, feature)
 }
 
+/// A stored face colour (`Document::faces`): the feature whose body the
+/// face was given its colour in, and the face's name there.
+pub(crate) type FaceEntry = (FeatureId, PersistentName);
+
+/// The stored entry that gives the face named `name` (along `way`) its
+/// own colour at `at`, as [`own_face_appearance`] finds the colour: an
+/// entry of that name, else one of another name the face answers to
+/// there. Entries of a feature that is off are read too.
+fn own_face_entry(
+    doc: &Document,
+    regen: &Regen,
+    at: FeatureId,
+    way: Option<(&[u64], &PersistentName)>,
+    name: &PersistentName,
+) -> Option<FaceEntry> {
+    let entries = doc.face_properties(at);
+    if entries.is_empty() {
+        return None;
+    }
+    let direct = match way {
+        Some((path, of)) => entries
+            .iter()
+            .find(|e| {
+                e.face.feature == at
+                    && e.face.role == NameRole::Copy
+                    && e.face.by.is_none()
+                    && e.face.sources == path
+                    && e.face.of.as_deref() == Some(of)
+            })
+            .map(|e| e.face.clone()),
+        None => doc.face_appearance(at, name).map(|_| name.clone()),
+    };
+    if let Some(face) = direct {
+        return Some((at, face));
+    }
+    let names = regen.feature(at)?.names.as_deref()?;
+    if names.aliases.is_empty() {
+        return None;
+    }
+    let here = match way {
+        Some((path, of)) => PersistentName {
+            of: Some(std::sync::Arc::new(of.clone())),
+            ..PersistentName::new(at, NameRole::Copy, path.to_vec())
+        },
+        None => name.clone(),
+    };
+    let face = craft3d_regen::faces_named(names, &here).first()?.0;
+    names
+        .names_of(usize::try_from(face).ok()?)
+        .find(|n| doc.face_appearance(at, n).is_some())
+        .map(|n| (at, n.clone()))
+}
+
+/// Every stored entry on the way back of the face named `name` in the
+/// body of `feature`, nearest first: the walk of [`walk_face`] for the
+/// face's own colours, which goes on past each entry it meets (one it
+/// meets after would show once the nearer one is taken away) and past
+/// every body colour, to where the way ends.
+fn entries_on_way(
+    doc: &Document,
+    regen: &Regen,
+    memo: &mut Memo,
+    feature: FeatureId,
+    name: &PersistentName,
+) -> Vec<FaceEntry> {
+    let mut found = Vec::new();
+    let mut at = feature;
+    let mut way: Option<(Vec<u64>, &PersistentName)> = None;
+    let mut current = name;
+    for _ in 0..=doc.features.len().saturating_mul(2) {
+        let here = way.as_ref().map(|(path, of)| (path.as_slice(), *of));
+        if let Some(entry) = own_face_entry(doc, regen, at, here, current)
+            && !found.contains(&entry)
+        {
+            found.push(entry);
+        }
+        if way.is_none() {
+            if current.role == NameRole::Copy
+                && current.feature == at
+                && let Some(of) = current.of.as_deref()
+            {
+                way = Some((current.sources.clone(), of));
+            } else {
+                return found;
+            }
+        }
+        let Some((path, of)) = way.take() else {
+            return found;
+        };
+        let Some((&first, rest)) = path.split_first() else {
+            return found;
+        };
+        if !keeps_material(doc, regen, memo, at, first) {
+            return found;
+        }
+        let Some(next) = source_of(doc, regen, memo, at, first) else {
+            return found;
+        };
+        at = next;
+        if path == [0] && next != of.feature {
+            way = Some((path, of));
+        } else if !rest.is_empty() {
+            way = Some((rest.to_vec(), of));
+        } else if next != of.feature && !(of.role == NameRole::Copy && of.by.is_none()) {
+            way = Some((vec![0], of));
+        } else {
+            current = of;
+        }
+    }
+    found
+}
+
+/// The stored face colours the faces of the body of `feature` carry: for
+/// each face, the entries of every name it answers to at the body's own
+/// feature and every entry on its way back ([`entries_on_way`]), features
+/// that are off included. What `face.appearance {body, clear: true}`
+/// takes away (`appearance_cmds.rs`): with them gone, every face of the
+/// body shows the body's colour.
+pub(crate) fn body_face_entries(
+    doc: &Document,
+    regen: &Regen,
+    feature: FeatureId,
+) -> std::collections::BTreeSet<FaceEntry> {
+    let mut out = std::collections::BTreeSet::new();
+    if doc.faces.is_empty() {
+        return out;
+    }
+    let Some(names) = regen.feature(feature).and_then(|r| r.names.as_deref()) else {
+        return out;
+    };
+    let values = Values::new(doc);
+    let mut memo = Memo::with_off(&values);
+    for (face, name) in names.faces.iter().enumerate() {
+        for own in names.names_of(face) {
+            if doc.face_appearance(feature, own).is_some() {
+                out.insert((feature, own.clone()));
+            }
+        }
+        if name.role == NameRole::Copy && name.feature == feature {
+            out.extend(entries_on_way(doc, regen, &mut memo, feature, name));
+        }
+    }
+    out
+}
+
 /// The appearance of every face of the body of `feature`, in the order of
 /// its faces: the body's for every face when the faces have no names.
 pub fn face_appearances(

@@ -867,3 +867,289 @@ fn a_face_colour_wins_over_a_body_colour_given_on_a_later_feature() {
         }
     }
 }
+
+/// The face colours of a body as the scene draws them, in face order.
+fn colours_of(s: &mut Session, feature: &str) -> Vec<Option<[u8; 3]>> {
+    scene_faces(s, feature)
+        .into_iter()
+        .map(|(_, c)| c)
+        .collect()
+}
+
+/// A body's face colours cleared in one step: `face.appearance {body,
+/// clear: true}` takes away the colours its faces carry wherever along
+/// its history they were given, so a later body colour shows on every
+/// face; the answer lists exactly the stored entries; undo brings them
+/// back and redo takes them again.
+#[test]
+fn a_body_s_face_colours_are_cleared_in_one_step() {
+    let mut s = session();
+    new_doc(&mut s);
+    // F1, its top (face 1) blue and its bottom (face 0) green, then cut
+    // (F3), moved (F4) and given a red body colour.
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [40, 30, 10], "name": "Plate"}),
+    );
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"faces": ["F1:face(1)"], "color": BLUE}),
+    );
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"faces": ["F1:face(0)"], "color": GREEN}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 3, "height": 20, "position": [10, 10, -5], "name": "Drill"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Plate", "tool": "Drill", "name": "Cut"}),
+    );
+    run(
+        &mut s,
+        "feature.transform",
+        json!({"source": "Cut", "translate": [0, 0, 50], "name": "Moved"}),
+    );
+    run(
+        &mut s,
+        "body.appearance",
+        json!({"body": "Moved", "color": RED}),
+    );
+    let before = colours_of(&mut s, "F4");
+    assert_eq!(before.iter().filter(|c| **c == Some(BLUE)).count(), 1);
+    assert_eq!(before.iter().filter(|c| **c == Some(GREEN)).count(), 1);
+    let out = run(
+        &mut s,
+        "face.appearance",
+        json!({"body": "Moved", "clear": true}),
+    );
+    assert_eq!(out["count"], 2, "{out}");
+    assert!(
+        out["cleared"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["feature"] == "F1"),
+        "{out}"
+    );
+    let cleared: Vec<(String, String)> = out["cleared"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["face"].as_str().unwrap().to_string(),
+                e["color"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        cleared,
+        [
+            ("F1:face(0)".to_string(), "#14a03c".to_string()),
+            ("F1:face(1)".to_string(), "#2f6fd6".to_string()),
+        ]
+    );
+    assert_eq!(out["kept"], json!([]), "{out}");
+    assert!(colours_of(&mut s, "F4").iter().all(|c| *c == Some(RED)));
+    // One undo step: the colours are back, and redo takes them again.
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(colours_of(&mut s, "F4"), before);
+    run(&mut s, "edit.redo", json!({}));
+    assert!(colours_of(&mut s, "F4").iter().all(|c| *c == Some(RED)));
+    // Nothing left to clear is no error.
+    let again = run(
+        &mut s,
+        "face.appearance",
+        json!({"body": "Moved", "clear": true}),
+    );
+    assert_eq!(again["count"], 0, "{again}");
+    assert_eq!(again["cleared"], json!([]), "{again}");
+}
+
+/// A colour that also reaches a face of another body (a copy kept by a
+/// mirror) is kept, and the answer says for which body; the colour given
+/// to this body alone is cleared, and the copy keeps its colours.
+#[test]
+fn clearing_a_body_keeps_the_colours_another_body_shares() {
+    let mut s = session();
+    new_doc(&mut s);
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [10, 10, 10], "name": "Part"}),
+    );
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"faces": ["F1:face(1)"], "color": BLUE}),
+    );
+    // A copy kept by a mirror (F2), then the part itself moved (F3) and
+    // a face of the moved part given green there.
+    run(
+        &mut s,
+        "feature.mirror",
+        json!({"source": "Part", "normal": [1, 0, 0], "point": [30, 0, 0], "keep": true, "name": "Twin"}),
+    );
+    run(
+        &mut s,
+        "feature.transform",
+        json!({"source": "Part", "translate": [0, 0, 30], "name": "Moved"}),
+    );
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"body": "Moved", "faces": ["F3:copy(0)/F1:face(2)"], "color": GREEN}),
+    );
+    let twin = colours_of(&mut s, "F2");
+    assert_eq!(
+        twin.iter().filter(|c| **c == Some(BLUE)).count(),
+        1,
+        "{twin:?}"
+    );
+    let out = run(
+        &mut s,
+        "face.appearance",
+        json!({"body": "Moved", "clear": true}),
+    );
+    assert_eq!(out["count"], 1, "{out}");
+    assert_eq!(out["cleared"][0]["face"], "F3:copy(0)/F1:face(2)", "{out}");
+    assert_eq!(out["cleared"][0]["color"], "#14a03c", "{out}");
+    assert_eq!(out["kept"][0]["face"], "F1:face(1)", "{out}");
+    assert_eq!(out["kept"][0]["for"], json!(["Twin"]), "{out}");
+    // The copy keeps its blue face; the moved part keeps it too (kept),
+    // and its green is gone.
+    assert_eq!(colours_of(&mut s, "F2"), twin);
+    let moved = colours_of(&mut s, "F3");
+    assert_eq!(
+        moved.iter().filter(|c| **c == Some(BLUE)).count(),
+        1,
+        "{moved:?}"
+    );
+    assert!(!moved.contains(&Some(GREEN)), "{moved:?}");
+}
+
+/// An imported STEP part with a colour on every face: its face colours
+/// cleared in one call, after which the body colour shows on every face.
+#[test]
+fn an_imported_part_with_a_colour_on_every_face_is_cleared_in_one_call() {
+    let dir = workdir("face-appearance", "step-every-face");
+    let mut s = session_in(&dir);
+    new_doc(&mut s);
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [10, 10, 10], "name": "Cube"}),
+    );
+    let colours = [
+        "#102030", "#203040", "#304050", "#405060", "#506070", "#607080",
+    ];
+    for (k, colour) in colours.iter().enumerate() {
+        run(
+            &mut s,
+            "face.appearance",
+            json!({"faces": [format!("F1:face({k})")], "color": colour}),
+        );
+    }
+    // A body colour of its own, so the file styles the solid apart from
+    // every face (as a CAD part with a colour on every face is written).
+    run(
+        &mut s,
+        "body.appearance",
+        json!({"body": "Cube", "color": "#808080"}),
+    );
+    run(&mut s, "file.export", json!({"path": "cube.step"}));
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "file.import", json!({"path": "cube.step"}));
+    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    assert_eq!(inspect["faceAppearances"].as_array().unwrap().len(), 6);
+    run(
+        &mut s,
+        "body.appearance",
+        json!({"body": "F1", "color": RED}),
+    );
+    assert!(!colours_of(&mut s, "F1").contains(&Some(RED)));
+    let out = run(
+        &mut s,
+        "face.appearance",
+        json!({"body": "F1", "clear": true}),
+    );
+    assert_eq!(out["count"], 6, "{out}");
+    let mut cleared: Vec<String> = out["cleared"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["color"].as_str().unwrap().to_string())
+        .collect();
+    cleared.sort();
+    assert_eq!(cleared, colours);
+    assert!(colours_of(&mut s, "F1").iter().all(|c| *c == Some(RED)));
+}
+
+/// What clearing a body's face colours refuses, by name, changing
+/// nothing: no such feature, a sketch, a body switched off, a body that
+/// went into a later feature, `clear` false and `clear` with a colour.
+#[test]
+fn clearing_a_body_s_face_colours_refuses_what_is_not_a_body() {
+    let mut s = session();
+    new_doc(&mut s);
+    run(&mut s, "variable.set", json!({"name": "on", "expr": "0"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [10, 10, 10], "name": "Part"}),
+    );
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"faces": ["F1:face(1)"], "color": BLUE}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [5, 5, 5], "position": [20, 0, 0], "name": "Option", "when": "on"}),
+    );
+    run(
+        &mut s,
+        "feature.transform",
+        json!({"source": "Part", "translate": [0, 0, 30], "name": "Moved"}),
+    );
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"name": "Drawing", "plane": "xy"}),
+    );
+    let revision = s.document_revision();
+    for (params, words) in [
+        (
+            json!({"body": "Nobody", "clear": true}),
+            "no feature `Nobody`",
+        ),
+        (
+            json!({"body": "Drawing", "clear": true}),
+            "is a sketch, not a body",
+        ),
+        (json!({"body": "Option", "clear": true}), "is inactive"),
+        (json!({"body": "Part", "clear": true}), "went into `Moved`"),
+        (json!({"body": "Moved", "clear": false}), "give `faces`"),
+        (
+            json!({"body": "Moved", "clear": true, "color": BLUE}),
+            "leave out `color`",
+        ),
+        (
+            json!({"body": ["Moved"], "clear": true}),
+            "feature id or name",
+        ),
+    ] {
+        let e = error(&mut s, "face.appearance", params.clone());
+        assert!(e.contains(words), "{params}: {e}");
+    }
+    assert_eq!(s.document_revision(), revision, "nothing changed");
+}

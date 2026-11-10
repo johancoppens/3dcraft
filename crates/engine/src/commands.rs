@@ -3804,6 +3804,13 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
                     measures,
                     inertia,
                 );
+                // How many stored face colours its faces carry, wherever
+                // given (what `face.appearance {body, clear}` clears):
+                // only when there are any.
+                let carried = crate::appearance::body_face_entries(doc, &regen, feature.id).len();
+                if carried > 0 {
+                    map.insert("faceColors".into(), carried.into());
+                }
             }
             // What each face is called by the features that come after:
             // a name made of where the face came from, not of its index.
