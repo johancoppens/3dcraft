@@ -2,17 +2,17 @@
 
 The six files in this folder are copied unchanged from the published files (`dist/`) of the 3DCraft Jigs
 collection, [johancoppens/3dcraft-jigs](https://github.com/johancoppens/3dcraft-jigs), at commit
-`a109b63c3d181142b8d2cc976f2755182cfc3a68`. That repository is their source; they are not edited here
+`bcdee8192a49c21e4e7e8030d14573e46bd95980`. That repository is their source; they are not edited here
 (docs/decisions.md, 2026-10-30).
 
 | File | Title (`document.info.title`) | Author (`document.info.author`) | Source |
 |---|---|---|---|
-| `planetary-gearbox.3dcraftjig` | Planetary gearbox | Johan Coppens | [jigs/planetary-gearbox](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/planetary-gearbox) |
-| `planetary-gearbox.3dcraftasm` | Planetary gearbox (assembly) | 3DCraft Jigs | [jigs/planetary-gearbox](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/planetary-gearbox) |
-| `gear-reducer.3dcraftjig` | Two-stage spur gear reducer | 3DCraft Jigs | [jigs/gear-reducer](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/gear-reducer) |
-| `gear-reducer.3dcraftasm` | Two-stage gear reducer (assembly) | 3DCraft Jigs | [jigs/gear-reducer](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/gear-reducer) |
-| `strandbeest-leg.3dcraftjig` | Jansen linkage leg | 3DCraft Jigs | [jigs/strandbeest-leg](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/strandbeest-leg) |
-| `strandbeest-walker.3dcraftasm` | Jansen linkage walker, four legs (assembly) | 3DCraft Jigs | [jigs/strandbeest-leg](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/strandbeest-leg) |
+| `planetary-gearbox.3dcraftjig` | Planetary gearbox | Johan Coppens | [jigs/30-planetary-gearbox](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/30-planetary-gearbox) |
+| `planetary-gearbox.3dcraftasm` | Planetary gearbox (assembly) | 3DCraft Jigs | [jigs/30-planetary-gearbox](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/30-planetary-gearbox) |
+| `gear-reducer.3dcraftjig` | Two-stage spur gear reducer | 3DCraft Jigs | [jigs/31-gear-reducer](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/31-gear-reducer) |
+| `gear-reducer.3dcraftasm` | Two-stage gear reducer (assembly) | 3DCraft Jigs | [jigs/31-gear-reducer](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/31-gear-reducer) |
+| `strandbeest-leg.3dcraftjig` | Jansen linkage leg | 3DCraft Jigs | [jigs/24-jansen-leg](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/24-jansen-leg) |
+| `strandbeest-walker.3dcraftasm` | Jansen linkage walker, four legs (assembly) | 3DCraft Jigs | [jigs/24-jansen-leg](https://github.com/johancoppens/3dcraft-jigs/tree/main/jigs/24-jansen-leg) |
 
 The Jigs repository has two licences, as its README's *Licences* section says: its scripts and build
 sources are MIT (its `LICENSE` file, © 2026 Johan Coppens), and each Jig carries its own licence in its
