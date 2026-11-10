@@ -797,6 +797,43 @@ fn a_bound_finer_than_the_tolerance_passes_with_a_warning() {
     assert!(added.get("warnings").is_none(), "{added}");
 }
 
+/// An angle's bound finer than the document's angular tolerance warns as
+/// a length's does: at 1e-6 rad (0.0000572957795 deg), a `max` of
+/// 0.00001 deg is met by anything up to 0.00001 + 0.0000572957795 =
+/// 0.0000672957795 deg, and a measured 0.00002 deg passes; a bound
+/// comfortably above it does not warn.
+#[test]
+fn an_angle_bound_finer_than_the_angular_tolerance_warns() {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "document.setTolerance", json!({"angular": 1e-6}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "tilt", "expr": "0.00002 deg"}),
+    );
+    let added = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "tilt", "measure": "value", "expr": "tilt", "max": "0.00001 deg"}),
+    );
+    assert_eq!(added["status"], "passed", "{added}");
+    assert_eq!(
+        added["warnings"],
+        json!([
+            "the bound 0.00001 deg is finer than the document's angular tolerance of 0.000001 rad (0.0000572957795 deg): anything up to 0.0000672957795 deg passes"
+        ]),
+        "{added}"
+    );
+    let edited = run(
+        &mut s,
+        "assert.edit",
+        json!({"name": "tilt", "max": "0.5 deg"}),
+    );
+    assert_eq!(edited["status"], "passed", "{edited}");
+    assert!(edited.get("warnings").is_none(), "{edited}");
+}
+
 fn states(s: &mut Session) -> Vec<(String, AssertionStatus)> {
     s.assertion_states()
         .into_iter()

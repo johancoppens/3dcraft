@@ -1203,7 +1203,7 @@ fn check(
         &assertion.expect,
         (lo, hi),
         dim,
-        doc.tolerance.linear,
+        (doc.tolerance.linear, doc.tolerance.angular),
         &with_unit,
         length,
     );
@@ -1419,29 +1419,30 @@ pub(crate) fn decide(
 /// within rounding only. An angle is met within the angular tolerance
 /// (radians), as a length within the linear one: a joint solved to
 /// -3e-24 rad meets a `min` of 0.
-fn slack(dim: Dim, (linear, angular): (f64, f64), b: f64) -> f64 {
-    let tolerance = match dim {
-        Dim::Of(d) if d == craft3d_expr::Dimension::ANGLE && angular.is_finite() => {
-            angular.max(0.0)
-        }
-        _ => tolerance_slack(dim, linear),
-    };
-    tolerance.max(1e-12 * b.abs())
+fn slack(dim: Dim, tolerance: (f64, f64), b: f64) -> f64 {
+    tolerance_slack(dim, tolerance).max(1e-12 * b.abs())
 }
 
 /// The part of [`slack`] that is the document's tolerance: 0 where a
 /// bound is met within rounding only.
-fn tolerance_slack(dim: Dim, linear: f64) -> f64 {
+fn tolerance_slack(dim: Dim, (linear, angular): (f64, f64)) -> f64 {
     match dim {
+        Dim::Of(d) if is_angle(d) && angular.is_finite() => angular.max(0.0),
         Dim::Length(k) if k > 0 => linear.ppowi(k),
         _ => 0.0,
     }
 }
 
+/// Whether a measure of dimension `d` is an angle.
+fn is_angle(d: craft3d_expr::Dimension) -> bool {
+    d == craft3d_expr::Dimension::ANGLE
+}
+
 /// Warnings for the bounds of an assertion finer than the slack the
 /// document's tolerance gives them (J-020): `min`, `max` or `tol` given
 /// smaller in size than the tolerance (to the power of the measure's
-/// length), which any value within that of it passes. A bound of exactly
+/// length; an angle's, the angular tolerance), which any value within that
+/// of it passes. A bound of exactly
 /// 0 is not warned about: it says "none" (no gap, no overlap, exactly
 /// equal), which is what the document can tell to its tolerance; nor is
 /// `eq` without `tol`, whose own tolerance is the measure's default.
@@ -1450,11 +1451,11 @@ fn finer_than_tolerance(
     expect: &Expect,
     (lo, hi): (Option<f64>, Option<f64>),
     dim: Dim,
-    linear: f64,
+    (linear, angular): (f64, f64),
     with_unit: &dyn Fn(f64) -> String,
     length: &str,
 ) -> Vec<String> {
-    let tolerance = tolerance_slack(dim, linear);
+    let tolerance = tolerance_slack(dim, (linear, angular));
     if tolerance <= 0.0 || !tolerance.is_finite() {
         return Vec::new();
     }
@@ -1466,10 +1467,18 @@ fn finer_than_tolerance(
         Dim::Length(k) if k > 1 => format!(" ({} for this measure)", with_unit(tolerance)),
         _ => String::new(),
     };
-    let doc_tol = format!("the document's tolerance of {} {length}{of}", shown(linear));
-    // Lengths only (the slack above is 0 for anything else).
-    let low = |b: f64| b - slack(dim, (linear, 0.0), b);
-    let high = |b: f64| b + slack(dim, (linear, 0.0), b);
+    let doc_tol = match dim {
+        // Kept in radians, read in the degrees the bound is.
+        Dim::Of(d) if is_angle(d) => format!(
+            "the document's angular tolerance of {} rad ({})",
+            shown(angular),
+            with_unit(angular)
+        ),
+        _ => format!("the document's tolerance of {} {length}{of}", shown(linear)),
+    };
+    // Lengths and angles only (the slack above is 0 for anything else).
+    let low = |b: f64| b - slack(dim, (linear, angular), b);
+    let high = |b: f64| b + slack(dim, (linear, angular), b);
     let mut out = Vec::new();
     match expect {
         Expect::Within { .. } => {
