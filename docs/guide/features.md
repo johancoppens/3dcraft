@@ -41,15 +41,8 @@ cylinder's 0 the wall, 1 the base, 2 the top.
 ## Sweep along two rails
 
 `feature.sweep` with `rail` carries the profile along two curves at once: two of its points follow the
-two rails, so it grows and shrinks as they part and close in. `path` and `rail` are each a sketch of one
-open chain (lines, arcs and splines end to end), and each starts on the outline of the profile (or both
-close into rings, below). The two
-are walked together by the fraction of each one's length, the profile's x axis along the line between
-them and its y axis as near to the normal of the `path`'s sketch as that allows: for rails drawn in one
-plane, the sections stand square to it, so draw the profile on the plane through both rails' starts
-that stands square to theirs. `scale` is `"uniform"` (the default: a circle stays a circle) or
-`"width"` (only along the line between the rails; the height stays as drawn). A tapering spout, a ring
-whose hole tapers with it:
+two rails, so it grows and shrinks as they part and close in. A tapering spout, a ring whose hole tapers
+with it:
 
 ```json
 [
@@ -71,16 +64,24 @@ whose hole tapers with it:
 
 ![The spout: a ring between two rails that close in](images/two-rail-spout.png)
 
-Where both rails are parallel lines of the same length the faces are exact planes and cylinders.
-Elsewhere they are spline surfaces, and the result says under `path` how far they are from the true
-sweep at most (`deviation`): a bound that is proven, never more than half the document's tolerance (a face
-within an eighth of the tolerance of a plane is made that plane, and a profile drawn a little off its
-plane is laid into it, which moves it by at most the tolerance). A tolerance finer than 4096 units in the
-last place of the model's size is refused: below that, rounding is not bounded. A
-face is named after the curve of the profile and the curves of the two rails it runs between
-(`F4:side(e2,e3,e3)`), so a rail can be redrawn without losing what is built on the faces. Refused, with
-the place: a rail that does not start on the profile, rails that meet or cross, rails that start at one
-point, and a sweep that would fold or pass through itself.
+- **The rails.** `path` and `rail` are each a sketch of one open chain (lines, arcs and splines end to
+  end), and each starts on the outline of the profile (or both close into rings, below).
+- **How the profile rides.** The two rails are walked together by the fraction of each one's length. The
+  profile's x axis runs along the line between them, and its y axis as near to the normal of the `path`'s
+  sketch as that allows. For rails drawn in one plane the sections stand square to it, so draw the profile
+  on the plane through both rails' starts that stands square to theirs.
+- **Scale.** `scale` is `"uniform"` (the default: a circle stays a circle) or `"width"` (only along the
+  line between the rails; the height stays as drawn).
+- **Exact or within a bound.** Where both rails are parallel lines of the same length, the faces are exact
+  planes and cylinders. Elsewhere they are spline surfaces, and the result says under `path` how far they
+  are from the true sweep at most (`deviation`): a proven bound, never more than half the document's
+  tolerance. A face within an eighth of the tolerance of a plane is made that plane, and a profile drawn a
+  little off its plane is laid into it, which moves it by at most the tolerance. A tolerance finer than
+  4096 units in the last place of the model's size is refused: below that, rounding is not bounded.
+- **Names.** A face is named after the curve of the profile and the curves of the two rails it runs
+  between (`F4:side(e2,e3,e3)`), so a rail can be redrawn without losing what is built on the faces.
+- **Refused**, with the place: a rail that does not start on the profile, rails that meet or cross, rails
+  that start at one point, and a sweep that would fold or pass through itself.
 
 **Rings.** Both rails may close: a sketch of lines, arcs and splines that close into one loop, or one
 circle. Each ring has to pass through the outline of the profile, and the body is a closed ring
