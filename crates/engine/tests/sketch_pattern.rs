@@ -1255,3 +1255,102 @@ fn a_row_of_400_holes_is_quick() {
         "400 fingers (1603 curves): 3 -> 400 by one command {fingers:?}, 400 -> 401 {again:?}"
     );
 }
+
+/// A-022 and J-008: `sketch.path` takes an image point of a pattern as
+/// its start and as a line's end, as `sketch.line` takes one as its
+/// `from`: the outline that closes a chained run of teeth is
+/// one path, and its area is the closed form's.
+#[test]
+fn a_path_starts_and_ends_on_an_image_point() {
+    // A-022: a run of two lines from (0, 0) by (10, 0) to (20, 5), chained
+    // three times: the last instance ends at e4[last] = (60, 15).
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "sketch.create", json!({"name": "S", "plane": "xy"}));
+    let made = run(
+        &mut s,
+        "sketch.path",
+        json!({"sketch": "S", "start": [0, 0], "segments": [{"line": [10, 0]}, {"line": [20, 5]}]}),
+    );
+    assert_eq!(made["points"], json!(["e1", "e2", "e4"]), "{made}");
+    assert_eq!(made["entities"], json!(["e3", "e5"]), "{made}");
+    run(
+        &mut s,
+        "sketch.pattern",
+        json!({"sketch": "S", "entities": ["e3", "e5"], "chain": ["e1", "e4"], "count": 3}),
+    );
+    // Closed down to y = -10 and back to the first point: under the teeth
+    // 0 + 25 + 50 + 75 + 100 + 125 = 375, below the axis 60 · 10 = 600.
+    let closing = run(
+        &mut s,
+        "sketch.path",
+        json!({"sketch": "S", "start": "e4[last]", "segments": [{"line": [60, -10]}, {"line": [0, -10]}, {"line": "e1"}]}),
+    );
+    assert_eq!(closing["status"], "ok", "{closing}");
+    // A line may end on an image point (e4[1] = (40, 10)); an arc may not,
+    // in a path as in sketch.arc (the sketch's own rule).
+    let spoke = run(
+        &mut s,
+        "sketch.path",
+        json!({"sketch": "S", "start": [40, 30], "construction": true, "segments": [{"line": "e4[1]"}]}),
+    );
+    assert_eq!(spoke["status"], "ok", "{spoke}");
+    let message = error(
+        &mut s,
+        "sketch.path",
+        json!({"sketch": "S", "start": [50, 10], "construction": true,
+               "segments": [{"arc": [40, 20], "center": "e4[1]"}]}),
+    );
+    assert!(
+        message.contains("only a line may end on an image point"),
+        "{message}"
+    );
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "S", "distance": 1, "name": "Teeth"}),
+    );
+    let teeth = body(&mut s, "Teeth");
+    assert!(
+        (teeth["volume"].as_f64().unwrap() - 975.0).abs() < 1e-9,
+        "{teeth}"
+    );
+    // J-008: a run of four lines (a square bump) from (0, 0) to (10, 0),
+    // twice: the outline from e8[last] = (20, 0) closes it, 20 · 5 below
+    // and two bumps of 5 · 5.
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "sketch.create", json!({"name": "S", "plane": "xy"}));
+    run(
+        &mut s,
+        "sketch.path",
+        json!({"sketch": "S", "start": [0, 0], "segments": [{"line": [0, 5]}, {"line": [5, 5]}, {"line": [5, 0]}, {"line": [10, 0]}]}),
+    );
+    run(
+        &mut s,
+        "sketch.pattern",
+        json!({"sketch": "S", "entities": ["e3", "e5", "e7", "e9"], "chain": ["e1", "e8"], "count": 2}),
+    );
+    run(
+        &mut s,
+        "sketch.path",
+        json!({"sketch": "S", "start": "e8[last]", "segments": [{"line": [20, -5]}, {"line": [0, -5]}, {"line": "e1"}]}),
+    );
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "S", "distance": 2, "name": "Bumps"}),
+    );
+    let bumps = body(&mut s, "Bumps");
+    assert!(
+        (bumps["volume"].as_f64().unwrap() - 300.0).abs() < 1e-9,
+        "{bumps}"
+    );
+    // An instance that is not there is refused by name, as elsewhere.
+    let message = error(
+        &mut s,
+        "sketch.path",
+        json!({"sketch": "S", "start": "e8[5]", "segments": [{"line": [30, 30]}]}),
+    );
+    assert!(message.contains("is not there"), "{message}");
+}
