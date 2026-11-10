@@ -2507,7 +2507,7 @@ mod tests {
         let mut along_x = Map::new();
         along_x.insert("axis".into(), "x".into());
         let decide = |out: &Outcome, lo: Option<f64>, hi: Option<f64>| {
-            crate::assert_cmds::decide(out, None, (lo, hi), Dim::Length(1), 1e-6)
+            crate::assert_cmds::decide(out, None, (lo, hi), Dim::Length(1), (1e-6, 1e-9))
         };
         // The segment spans x from -20 to 20; the held box at least that.
         let max = take(&ctx, "boxMax", &along_x).unwrap();

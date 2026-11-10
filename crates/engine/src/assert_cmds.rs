@@ -1241,7 +1241,13 @@ fn check(
         if outcome.unproven.is_some() {
             break (outcome, None);
         }
-        let verdict = decide(&outcome, want, (lo, hi), dim, doc.tolerance.linear);
+        let verdict = decide(
+            &outcome,
+            want,
+            (lo, hi),
+            dim,
+            (doc.tolerance.linear, doc.tolerance.angular),
+        );
         let finer = outcome
             .detail
             .get("meshTolerance")
@@ -1348,15 +1354,15 @@ const MAX_REFINE: u32 = 3;
 /// `hi` against the range the true value lies in, `[lower, upper]`: a
 /// bound holds when the whole of that range is within it, fails when none
 /// of it is, and is not proven otherwise. Within the document's tolerance
-/// `linear` (of a length; its square or cube for an area or a volume, and
-/// rounding for the rest) a bound is met: what the geometry cannot tell
-/// apart does not fail it.
+/// (`linear` of a length, its square or cube for an area or a volume;
+/// `angular` of an angle; rounding for the rest) a bound is met: what the
+/// geometry cannot tell apart does not fail it.
 pub(crate) fn decide(
     outcome: &Outcome,
     want: Option<bool>,
     (lo, hi): (Option<f64>, Option<f64>),
     dim: Dim,
-    linear: f64,
+    tolerance: (f64, f64),
 ) -> Option<bool> {
     if let Some(want) = want {
         // Yes at every sample is not yes: what lies between them is not
@@ -1377,7 +1383,7 @@ pub(crate) fn decide(
         Sampled::OpenAbove => f64::INFINITY,
         _ => outcome.upper.unwrap_or(v),
     };
-    let slack = |b: f64| slack(dim, linear, b);
+    let slack = |b: f64| slack(dim, tolerance, b);
     let at_least = |lo: f64| {
         if lower >= lo - slack(lo) {
             Some(true)
@@ -1410,9 +1416,17 @@ pub(crate) fn decide(
 /// a length to a positive power within the tolerance `linear` to that
 /// power; a negative power (a curvature, one over a length) would make the
 /// slack grow as the tolerance shrinks, so it, like a number, is met
-/// within rounding only.
-fn slack(dim: Dim, linear: f64, b: f64) -> f64 {
-    tolerance_slack(dim, linear).max(1e-12 * b.abs())
+/// within rounding only. An angle is met within the angular tolerance
+/// (radians), as a length within the linear one: a joint solved to
+/// -3e-24 rad meets a `min` of 0.
+fn slack(dim: Dim, (linear, angular): (f64, f64), b: f64) -> f64 {
+    let tolerance = match dim {
+        Dim::Of(d) if d == craft3d_expr::Dimension::ANGLE && angular.is_finite() => {
+            angular.max(0.0)
+        }
+        _ => tolerance_slack(dim, linear),
+    };
+    tolerance.max(1e-12 * b.abs())
 }
 
 /// The part of [`slack`] that is the document's tolerance: 0 where a
@@ -1453,8 +1467,9 @@ fn finer_than_tolerance(
         _ => String::new(),
     };
     let doc_tol = format!("the document's tolerance of {} {length}{of}", shown(linear));
-    let low = |b: f64| b - slack(dim, linear, b);
-    let high = |b: f64| b + slack(dim, linear, b);
+    // Lengths only (the slack above is 0 for anything else).
+    let low = |b: f64| b - slack(dim, (linear, 0.0), b);
+    let high = |b: f64| b + slack(dim, (linear, 0.0), b);
     let mut out = Vec::new();
     match expect {
         Expect::Within { .. } => {
@@ -1651,17 +1666,17 @@ mod tests {
             let dim = Dim::Length(k);
             let over = Outcome::number(dim, 1.0);
             assert_eq!(
-                decide(&over, None, (None, Some(0.5)), dim, linear),
+                decide(&over, None, (None, Some(0.5)), dim, (linear, 1e-9)),
                 Some(false),
                 "power {k}: 1 is not at most 0.5"
             );
             assert_eq!(
-                decide(&over, None, (Some(2.0), None), dim, linear),
+                decide(&over, None, (Some(2.0), None), dim, (linear, 1e-9)),
                 Some(false),
                 "power {k}: 1 is not at least 2"
             );
             assert_eq!(
-                decide(&over, None, (None, Some(1.0)), dim, linear),
+                decide(&over, None, (None, Some(1.0)), dim, (linear, 1e-9)),
                 Some(true),
                 "power {k}: 1 is at most 1"
             );
@@ -1669,7 +1684,37 @@ mod tests {
         // A positive power keeps the tolerance to it.
         let length = Outcome::number(Dim::Length(1), 1.0 + 0.5 * linear);
         assert_eq!(
-            decide(&length, None, (None, Some(1.0)), Dim::Length(1), linear),
+            decide(
+                &length,
+                None,
+                (None, Some(1.0)),
+                Dim::Length(1),
+                (linear, 1e-9)
+            ),
+            Some(true)
+        );
+    }
+
+    /// An angle bound is met within the angular tolerance (radians): a
+    /// value 3e-24 below a `min` of 0 meets it, one 2e-9 below fails it,
+    /// at the default 1e-9.
+    #[test]
+    fn an_angle_bound_is_met_within_the_angular_tolerance() {
+        let angle = Dim::Of(craft3d_expr::Dimension::ANGLE);
+        let tolerance = (1e-6, 1e-9);
+        let near = Outcome::number(angle, -3e-24);
+        assert_eq!(
+            decide(&near, None, (Some(0.0), None), angle, tolerance),
+            Some(true)
+        );
+        let below = Outcome::number(angle, -2e-9);
+        assert_eq!(
+            decide(&below, None, (Some(0.0), None), angle, tolerance),
+            Some(false)
+        );
+        let over = Outcome::number(angle, 1.0 + 5e-10);
+        assert_eq!(
+            decide(&over, None, (None, Some(1.0)), angle, tolerance),
             Some(true)
         );
     }

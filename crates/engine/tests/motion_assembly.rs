@@ -446,15 +446,15 @@ fn an_angle_over_the_motion_reads_in_degrees() {
     let out = run(
         &mut s,
         "motion.check",
-        // The least is -1° rather than 0: at t = 0 the solve gives -3e-24
-        // rad, and an angle is met within rounding only.
-        json!({ "measure": { "measure": "jointAngle", "mate": "Drive", "min": "-1 deg", "max": "90 deg" },
+        // A least of 0 holds although the solve gives -3e-24 rad at t = 0:
+        // an angle is met within the angular tolerance.
+        json!({ "measure": { "measure": "jointAngle", "mate": "Drive", "min": "0 deg", "max": "90 deg" },
                 "t": [0, 0.25], "samples": 5, "details": true }),
     );
     let check = &out["assertions"][0];
     assert_eq!(check["status"], "passed", "{out}");
     assert_eq!(check["unit"], "deg", "{check}");
-    assert_eq!(check["expected"], "-1 deg to 90 deg", "{check}");
+    assert_eq!(check["expected"], "0 deg to 90 deg", "{check}");
     assert_eq!(check["min"]["t"], 0.0, "{check}");
     assert!(
         check["min"]["value"].as_f64().unwrap().abs() < 1e-9,
