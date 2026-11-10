@@ -335,6 +335,11 @@ pub struct RecoveryOverview {
     /// When a document was last autosaved, in seconds since the Unix
     /// epoch.
     pub last_autosave: Option<u64>,
+    /// When the recovery file of each open document that has one was
+    /// written, by the document's id (`DocumentStatus::id`), in seconds
+    /// since the Unix epoch: what the status bar says for the document
+    /// shown.
+    pub autosaved: std::collections::BTreeMap<u64, u64>,
     /// How long that write took, serialising included, in milliseconds.
     pub last_write_ms: Option<f64>,
     /// How many autosave writes this session made.

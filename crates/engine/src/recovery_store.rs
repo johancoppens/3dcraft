@@ -132,6 +132,9 @@ struct Entry {
     pending: Option<Job>,
     /// Write as soon as possible, whatever the interval.
     urgent: bool,
+    /// When its recovery file was last written (seconds since the Unix
+    /// epoch); `None` before the first.
+    written: Option<u64>,
 }
 
 #[derive(Default)]
@@ -471,10 +474,12 @@ impl Shared {
             let now = self.clock.monotonic();
             match outcome {
                 Ok(true) => {
+                    let at = self.clock.epoch_seconds();
                     if let Some(entry) = state.entries.get_mut(&number) {
                         entry.since = now;
+                        entry.written = Some(at);
                     }
-                    state.last_autosave = Some(self.clock.epoch_seconds());
+                    state.last_autosave = Some(at);
                     state.last_write_ms = Some(took);
                     state.writes = state.writes.saturating_add(1);
                     state.problem = None;
@@ -680,6 +685,7 @@ impl Store {
                     since: now,
                     pending: None,
                     urgent: false,
+                    written: None,
                 });
                 if entry.noted != Some(view.revision) {
                     entry.noted = Some(view.revision);
@@ -738,6 +744,11 @@ impl Store {
             directory: Some(shared.dir.display().to_string()),
             interval_seconds: shared.interval.as_secs_f64(),
             last_autosave: state.last_autosave,
+            autosaved: state
+                .entries
+                .iter()
+                .filter_map(|(number, entry)| Some((*number, entry.written?)))
+                .collect(),
             last_write_ms: state.last_write_ms,
             writes: state.writes,
             problem: state.problem.clone(),
@@ -820,6 +831,8 @@ impl Store {
                         since: shared.clock.monotonic(),
                         pending: None,
                         urgent: false,
+                        // Its file, taken over, as it was written.
+                        written: Some(time),
                     },
                 );
             });

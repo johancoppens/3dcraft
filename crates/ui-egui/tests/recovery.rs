@@ -335,9 +335,15 @@ fn a_document_that_cannot_be_opened_is_listed_with_recover_disabled() {
 #[test]
 fn the_status_bar_says_when_a_document_was_autosaved_or_why_not() {
     let mut overview = RecoveryOverview::default();
-    assert_eq!(autosave_text(&overview, Some(1_000)), None);
+    assert_eq!(autosave_text(&overview, Some(7), Some(1_000)), None);
     overview.last_autosave = Some(1_000);
-    let said = |overview: &RecoveryOverview, now| autosave_text(overview, now).unwrap();
+    overview.autosaved.insert(7, 1_000);
+    // Said for the document shown, of its own recovery file: nothing for
+    // another one (an untouched example in front of an edited document),
+    // nor without a document.
+    assert_eq!(autosave_text(&overview, Some(8), Some(1_000)), None);
+    assert_eq!(autosave_text(&overview, None, Some(1_000)), None);
+    let said = |overview: &RecoveryOverview, now| autosave_text(overview, Some(7), now).unwrap();
     assert_eq!(
         said(&overview, Some(1_000)),
         ("autosaved just now".to_string(), false)
@@ -371,6 +377,11 @@ fn the_status_bar_says_when_a_document_was_autosaved_or_why_not() {
         problem && text.starts_with("autosave failed: cannot write"),
         "{text}"
     );
+    // Whichever document is shown: autosave does not work.
+    assert_eq!(
+        autosave_text(&overview, Some(8), Some(2_000)),
+        Some((text, true))
+    );
 
     // In a session: a recovery directory that cannot be made is a problem
     // the shell knows of, `ui.get` shows, and a frame draws.
@@ -383,7 +394,7 @@ fn the_status_bar_says_when_a_document_was_autosaved_or_why_not() {
     let mut shell = Shell::new();
     let mut window = Window::new();
     window.idle(&mut shell, &mut s);
-    let (text, problem) = autosave_text(shell.recovery(), Some(0)).unwrap();
+    let (text, problem) = autosave_text(shell.recovery(), None, Some(0)).unwrap();
     assert!(problem && text.contains("recovery directory"), "{text}");
     let got = ui_get(&mut shell, &mut s);
     assert!(
@@ -396,4 +407,52 @@ fn the_status_bar_says_when_a_document_was_autosaved_or_why_not() {
     run(&mut s, "feature.block", json!({"size": [1, 2, 3]}));
     window.idle(&mut shell, &mut s);
     assert_eq!(shell.tree_rows().len(), 2);
+}
+
+/// The status bar's autosave is the document shown's: an untouched
+/// example in front of an edited, autosaved document says nothing (it
+/// has no recovery file; review of 2026-11-10: it reported the other
+/// tab's write), and that document says its own when it is shown.
+#[test]
+fn the_status_bar_says_the_autosave_of_the_document_shown() {
+    use craft3d_ui_egui::StatusSlot;
+    use craft3d_ui_egui::shell::{EXAMPLES, run_example};
+    let dir = workdir("per-document");
+    let mut s = session(&dir);
+    run(&mut s, "file.new", json!({}));
+    run(&mut s, "feature.block", json!({"size": [1, 2, 3]}));
+    s.autosave_now();
+    let edited = s.document_status().unwrap().id;
+    assert!(s.recovery_overview().autosaved.contains_key(&edited));
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    window.idle(&mut shell, &mut s);
+    // Its own time, as the wall clock and the test's clock make it.
+    let said = |shell: &Shell| shell.status_shown(StatusSlot::Autosave).map(str::to_string);
+    assert!(
+        said(&shell).is_some_and(|text| text.starts_with("autosaved")),
+        "{:?}",
+        said(&shell)
+    );
+    let profile = EXAMPLES.iter().find(|e| e.id == "t-slot-profile").unwrap();
+    run_example(&mut s, profile).unwrap();
+    s.autosave_now();
+    let example = s.document_status().unwrap();
+    assert!(example.title.is_some() && !example.dirty);
+    assert!(!s.recovery_overview().autosaved.contains_key(&example.id));
+    window.idle(&mut shell, &mut s);
+    assert_eq!(said(&shell), None);
+    run(&mut s, "file.activate", json!({"document": 0}));
+    window.idle(&mut shell, &mut s);
+    assert!(
+        said(&shell).is_some_and(|text| text.starts_with("autosaved")),
+        "{:?}",
+        said(&shell)
+    );
+    // Closed: its recovery file goes, and nothing is said for the
+    // example in front again.
+    run(&mut s, "file.close", json!({"discard": true}));
+    window.idle(&mut shell, &mut s);
+    assert!(s.recovery_overview().autosaved.is_empty());
+    assert_eq!(said(&shell), None);
 }

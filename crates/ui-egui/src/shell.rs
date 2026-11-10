@@ -657,13 +657,21 @@ pub enum RecoveryAction {
 pub const RECOVERY_ROWS: usize = 6;
 
 /// What the status bar says about autosave: the text, and whether it is a
-/// problem. `None` when there is nothing to say. `now` is the time in
-/// seconds since the Unix epoch, when the platform has a clock.
-pub fn autosave_text(overview: &RecoveryOverview, now: Option<u64>) -> Option<(String, bool)> {
+/// problem. Why autosave fails, whichever document it failed for; else
+/// when the recovery file of `document` (the one shown, by its
+/// `DocumentStatus::id`) was written, so an untouched example in front
+/// never reports another tab's autosave. `None` when there is nothing to
+/// say. `now` is the time in seconds since the Unix epoch, when the
+/// platform has a clock.
+pub fn autosave_text(
+    overview: &RecoveryOverview,
+    document: Option<u64>,
+    now: Option<u64>,
+) -> Option<(String, bool)> {
     if let Some(problem) = &overview.problem {
         return Some((format!("autosave failed: {problem}"), true));
     }
-    let at = overview.last_autosave?;
+    let at = *overview.autosaved.get(&document?)?;
     let Some(age) = now.map(|now| now.saturating_sub(at)) else {
         return Some(("autosaved".to_string(), false));
     };
@@ -3416,7 +3424,9 @@ impl Shell {
             };
             items.push(StatusItem::elided(StatusSlot::Selection, text, tint));
         }
-        if let Some((text, problem)) = autosave_text(&self.recovery, epoch_now()) {
+        if let Some((text, problem)) =
+            autosave_text(&self.recovery, status.map(|status| status.id), epoch_now())
+        {
             let tint = if problem {
                 color(tokens.chrome_failed)
             } else {
