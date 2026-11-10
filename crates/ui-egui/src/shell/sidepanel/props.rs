@@ -625,17 +625,27 @@ impl Shell {
             );
             let r = kit.prop_row(ui, row.label, &value, style, label_width);
             self.side.hits.drawn.push(r.rect);
+            // A link's row takes the click: its response is the one under
+            // the pointer.
+            let r = if row.style == PropStyle::Link {
+                ui.interact(
+                    r.rect,
+                    egui::Id::new(("craft3d-side-made-by", &row.value)),
+                    Sense::click(),
+                )
+            } else {
+                r
+            };
             // Cut to the panel: the whole on hover.
             if value != row.value {
                 r.clone().on_hover_text(&row.value);
             }
             if row.style == PropStyle::Link {
-                let link = ui.interact(
-                    r.rect,
-                    egui::Id::new(("craft3d-side-made-by", &row.value)),
-                    Sense::click(),
-                );
-                self.side.hits.targets.push(("made by".to_string(), r.rect));
+                let link = r;
+                self.side
+                    .hits
+                    .targets
+                    .push(("made by".to_string(), link.rect));
                 if link.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
