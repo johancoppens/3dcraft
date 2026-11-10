@@ -849,6 +849,49 @@ fn the_agent_chapters_session_answers_as_shown() {
     assert!(ran >= 20, "{ran} commands run");
 }
 
+/// The assemblies chapter's small assembly (`assemblies.md` › *A small
+/// assembly, step by step*) builds as it says: the bar is saved, placed
+/// twice (the second 80 mm long), mated with nothing left free, and its
+/// arm turns a full turn without touching the base's volume at any of the
+/// samples `motion.check` takes.
+#[test]
+fn the_small_assembly_of_the_assemblies_chapter_moves_as_it_says() {
+    let text = read_text(&docs().join("guide/assemblies.md"));
+    let section = text
+        .split("## A small assembly, step by step")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .expect("the chapter builds a small assembly");
+    let dir = common::workdir("guide", "assembly");
+    let mut s = common::session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    let mut results = std::collections::BTreeMap::new();
+    for block in json_blocks(section) {
+        let value: Value = serde_json::from_str(&block).unwrap();
+        for (id, params) in steps(&value).unwrap() {
+            let result = run(&mut s, &id, params.clone());
+            assert_ne!(result["status"], "failed", "{id} {params}: {result}");
+            results.insert(id, result);
+        }
+    }
+    let solved = &results["assembly.solve"];
+    assert_eq!(solved["ok"], true, "{solved}");
+    assert_eq!(solved["dof"], 0, "{solved}");
+    let checked = &results["motion.check"];
+    assert_eq!(checked["ok"], true, "{checked}");
+    assert_eq!(checked["samples"], 17, "{checked}");
+    assert_eq!(checked["assertions"][0]["status"], "passed", "{checked}");
+    let arm = run(&mut s, "assembly.inspect", json!({}))["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["name"] == "Arm")
+        .unwrap()
+        .clone();
+    assert_eq!(arm["params"]["len"], "80 mm", "{arm}");
+    assert!(dir.join("two-bars.3dcraftasm").is_file());
+}
+
 /// The sweep along two rails of the features chapter (`features.md` ›
 /// *Sweep along two rails*) runs as written: the spout is built, meets
 /// its volume (a hollow frustum of a cone in closed form) and passes the
