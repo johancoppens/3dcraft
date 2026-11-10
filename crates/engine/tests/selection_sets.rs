@@ -796,7 +796,7 @@ fn file_close_closes_the_document_it_is_given() {
 
 /// `copyOf` through a pattern of a pattern and a mirror of a pattern: the
 /// way of a name is walked through each, instance 0 included where the
-/// short name leaves it out (121ea40).
+/// short name leaves it out (163256f).
 #[test]
 fn copy_of_walks_patterns_of_patterns_and_mirrored_patterns() {
     let mut s = Session::new(Workspace::none());

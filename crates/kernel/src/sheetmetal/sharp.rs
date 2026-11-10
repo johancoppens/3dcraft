@@ -80,7 +80,7 @@ pub(super) fn check(
 /// At `R = 0` a wall's inner skin is the plane through its tangent line,
 /// and the parent's inner skin runs into the same line, so material that a
 /// radius kept `R` away from either now touches it; the checker does not
-/// see two pieces that only touch (review of d88ec622). What can touch
+/// see two pieces that only touch (review of 1418a043). What can touch
 /// that way is refused, each by a rule that holds for any part:
 ///
 /// - **Two bends that meet** (an end of one tangent line on an end of the
@@ -90,7 +90,7 @@ pub(super) fn check(
 ///   corner is closed (the flats end on planes a gap apart) or relieved
 ///   (then the tangent lines do not meet).
 /// - **Anything else on either inner skin**: [`clear`], a proof for every
-///   piece of the part (review of 8449951d: a rule per case missed a lip
+///   piece of the part (review of 6e3d5aa0: a rule per case missed a lip
 ///   on a neighbouring wall's tip, and decided "square" by an angle where
 ///   contact is a length against the tolerance).
 /// - **A flange on an edge of a flat that starts at a sharp bend's far
@@ -372,7 +372,7 @@ impl Skin {
 ///
 /// The neighbour is proven apart from the whole skin but the square
 /// [`SLIVER_TOLERANCES`] tolerances on a side at the corner it shares
-/// (re-verification of d8ecd192): from the skin less a strip that wide
+/// (re-verification of 7fccae86): from the skin less a strip that wide
 /// along the shared end, and from the skin less a strip that wide along
 /// the axis.
 pub(super) fn clear(

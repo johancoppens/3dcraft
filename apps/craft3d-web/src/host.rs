@@ -2352,7 +2352,7 @@ mod tests {
 
     /// The material library's question is answered by its buttons only:
     /// Escape or a click beside it keeps the file waiting (the review of
-    /// a6670ee3: it was dropped unseen).
+    /// 422e3dbc: it was dropped unseen).
     #[test]
     fn the_material_library_waits_for_a_button() {
         let mut host = self::host();
@@ -2399,7 +2399,7 @@ mod tests {
     }
 
     /// A held "Opened" never replaces what was said after it (the review
-    /// of a6670ee3): a later open that failed, a close of the tab, a
+    /// of 422e3dbc): a later open that failed, a close of the tab, a
     /// parameter set; a document no longer shown is not said opened.
     #[test]
     fn a_held_open_report_gives_way_to_newer_ones() {

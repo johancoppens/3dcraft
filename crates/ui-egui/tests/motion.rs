@@ -229,7 +229,7 @@ fn the_collisions_chip_and_the_view_say_the_same() {
 
 /// Collisions switched by `ui.set` right after a step of the player ask
 /// for the moment the player went to, not the one still shown (the review
-/// of e27d1452: the player jumped a step back).
+/// of 99ff3119: the player jumped a step back).
 #[test]
 fn collisions_switched_after_a_step_keep_the_step() {
     let mut session = crank();

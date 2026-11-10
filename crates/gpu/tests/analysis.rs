@@ -448,7 +448,7 @@ fn stripes_finer_than_a_sample_match_the_cpu() {
 /// a sphere of radius 1 from 0.3 above its pole through a 2° lens, with 4
 /// stripes, so that the footprint is about 10⁻⁴ of a period per sample,
 /// where the tent's second difference cancelled in `f32` (reviewer's
-/// finding on 9cc2c64f: shares of 0.86 to 0.95 for 1, some samples the
+/// finding on a5ffa872: shares of 0.86 to 0.95 for 1, some samples the
 /// other colour). Each stripe edge in turn is put at the middle of the
 /// picture (the offset from the phase there); now the point sample away
 /// from the edge and the one edge's share at it.

@@ -575,7 +575,7 @@ fn sharp_refusals_by_reason() {
 
 /// Where a sharp wall's inner skin (the plane through its tangent line)
 /// would touch other material that a radius kept `R` away from it, the
-/// part is refused with the reason (review of d88ec622): each of these
+/// part is refused with the reason (review of 1418a043): each of these
 /// built a solid that touches itself, which the checker does not see.
 ///
 /// 1. An open corner without a relief: flange 0 (R = 2) leaning in at 120
@@ -658,8 +658,8 @@ fn quad(points: [[f64; 2]; 4], k: f64) -> Profile {
 }
 
 /// Material from anywhere in the part on a sharp wall's inner skin is
-/// refused by one proof, not by a rule per case (re-review of 8449951d;
-/// each case below built a solid touching itself on 8449951d): a wall on
+/// refused by one proof, not by a rule per case (re-review of 6e3d5aa0;
+/// each case below built a solid touching itself on 6e3d5aa0): a wall on
 /// the bottom edge (R = 2, up 90 degrees) with a lip turned in over the
 /// base on its tip, or a hem folded back down inside it, beside a sharp
 /// wall on the right edge, open and without a relief: the lip's or the
@@ -726,10 +726,10 @@ fn material_on_a_sharp_walls_inner_skin_is_refused_by_one_proof() {
 }
 
 /// Proven against the whole of a sharp wall's inner skin, not only away
-/// from its edges (re-review of bae58281): a rounded wall (R = 2) on the
+/// from its edges (re-review of 8b95a617): a rounded wall (R = 2) on the
 /// bottom edge leaning in by just enough that its flat's end reaches two
 /// tolerances past the plane of a sharp square wall's inner skin on the
-/// right edge, near that wall's start, is refused (bae58281 built it,
+/// right edge, near that wall's start, is refused (8b95a617 built it,
 /// the band along the skin's edge left out); square, the neighbour meets
 /// the skin only along the corner below the axis and is built. A formed
 /// louvre's hood near a sharp wall is bounded by its footprint's box and

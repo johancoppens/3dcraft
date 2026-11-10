@@ -1167,7 +1167,7 @@ impl Check<'_> {
         // The highest point is exact on lines and arcs; on a spline it is
         // taken over the control points, which bounds it from above, so
         // the pad would stand higher than the flat and keep further from
-        // the other pieces than it does (review of 4116ed3e): refused.
+        // the other pieces than it does (review of 0fcf5b3d): refused.
         if part.flats.get(x.child).is_some_and(|f| {
             f.outer
                 .iter()
@@ -1648,7 +1648,7 @@ impl Check<'_> {
                 for tri in die {
                     // Each half against each piece of the die is a lowest
                     // point per direction: counted, so `maxWork` bounds
-                    // this proof's time too (review of 4116ed3e: it was
+                    // this proof's time too (review of 0fcf5b3d: it was
                     // counted once per call, whatever the die's pieces).
                     self.count()?;
                     let mut directions = vec![[0.0, 1.0]];

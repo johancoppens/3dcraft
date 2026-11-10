@@ -285,7 +285,7 @@ fn the_hull_floats_upright_at_the_level_for_its_displacement() {
 fn the_hull_is_cut_round_30_mm() {
     // The boolean refused the hull's cut at 30.28 mm as an invalid body
     // (docs/design/sections-and-levels.md, Open, until 2026-10-27); on
-    // main 4d82484c it is measured. Held to the section: the volume below
+    // main 3e3f7109 it is measured. Held to the section: the volume below
     // grows by the section's area, (V(30.3) − V(30.2)) / 0.1 within 1e-4
     // of the mean of the sections there.
     let (mut s, failed) = steps("sea_kayak_9.steps.json");

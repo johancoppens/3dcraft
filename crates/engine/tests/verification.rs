@@ -2079,7 +2079,7 @@ fn a_saved_old_interference_assertion_means_what_it_meant() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// A version-35 file written by the build of main abb1cd51
+/// A version-35 file written by the build of main 681d5e72
 /// (`crates/format/tests/fixtures/migrations/v35-interference.3dcraft`),
 /// with `interference` assertions of `is` true and false and with `of`
 /// and `to` subjects: opened under version 36 each is the `overlap` with

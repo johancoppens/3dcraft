@@ -210,7 +210,7 @@ fn a_picture_waits_for_the_agents_popover_to_fade_in() {
 }
 
 /// Any area that fades in is waited for, one no list knew included (the
-/// review of e27d1452): a dialog added later cannot be forgotten.
+/// review of 99ff3119): a dialog added later cannot be forgotten.
 #[test]
 fn a_picture_waits_for_any_area_fading_in() {
     let mut session = Session::new(Workspace::none());
