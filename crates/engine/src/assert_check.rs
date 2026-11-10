@@ -202,9 +202,14 @@ fn key_of(
     }
     text.push_str(&outputs.key_text(&names));
     let mut held = Vec::new();
-    let Ok(ctx) = Ctx::new(doc, regen) else {
+    let Ok(mut ctx) = Ctx::new(doc, regen) else {
         return Key { text, _held: held };
     };
+    // An assembly's subjects resolve through its placement (instances,
+    // subassemblies and paths into them): without it a name that is no
+    // shown body's resolved to an error that never changes, and the answer
+    // kept with it was never measured again (review of A-010).
+    ctx.placed = placed;
     let params: Map<String, Value> = serde_json::from_str(&assertion.measure).unwrap_or_default();
     for key in ["of", "from", "to"] {
         text.push('|');

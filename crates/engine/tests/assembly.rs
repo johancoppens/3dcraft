@@ -2000,3 +2000,113 @@ fn instances_bodies_and_subassemblies_are_named_by_one_rule() {
     );
     assert!(close(v["clearance"].as_f64().unwrap(), 15.0, 15.0), "{v}");
 }
+
+/// Review of A-010 (M1): an assertion and an output on a name that is no
+/// shown body's (an instance of two bodies, a one-body part's
+/// `Instance/Body`, a subassembly, a path into one) are measured again
+/// when the instance moves, as one on a shown body's name is: the key of
+/// their answer holds the placed bodies the name resolves to.
+#[test]
+fn assertions_and_outputs_on_instance_names_follow_a_moved_instance() {
+    let dir = workdir("assembly", "moved-subjects");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({ "units": "mm" }));
+    for (name, x) in [("First", 0), ("Second", 20)] {
+        run(
+            &mut s,
+            "feature.block",
+            json!({ "name": name, "size": [10, 10, 5], "position": [x, 0, 0] }),
+        );
+    }
+    run(&mut s, "file.save", json!({ "path": "two.3dcraft" }));
+    run(&mut s, "file.close", json!({}));
+    run(&mut s, "file.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "feature.block",
+        json!({ "name": "Block", "size": [20, 20, 20] }),
+    );
+    run(&mut s, "file.save", json!({ "path": "block.3dcraft" }));
+    run(&mut s, "file.close", json!({}));
+    run(&mut s, "assembly.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "Inner" }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "Twin", "position": [100, 0, 0] }),
+    );
+    run(&mut s, "file.save", json!({ "path": "sub.3dcraftasm" }));
+    run(&mut s, "file.close", json!({}));
+    run(&mut s, "assembly.new", json!({ "units": "mm" }));
+    for (source, name) in [
+        ("two.3dcraft", "Other"),
+        ("block.3dcraft", "Cube"),
+        ("sub.3dcraftasm", "Sub"),
+    ] {
+        run(
+            &mut s,
+            "instance.add",
+            json!({ "source": source, "name": name, "position": [0, 0, 20] }),
+        );
+    }
+    let names = ["Other", "Cube/Block", "Sub", "Sub/Inner/Block"];
+    for (k, of) in names.iter().enumerate() {
+        run(
+            &mut s,
+            "assert.add",
+            json!({ "name": format!("low{k}"), "measure": "boxMin", "of": of, "axis": "z", "eq": "20 mm" }),
+        );
+        run(
+            &mut s,
+            "variable.measure",
+            json!({ "name": format!("z{k}"), "measure": "boxMin", "of": of, "axis": "z" }),
+        );
+    }
+    let check = |s: &mut Session, z: f64| {
+        let listed = run(s, "assert.list", json!({}));
+        let outputs = run(s, "output.list", json!({}));
+        for k in 0..names.len() {
+            let a = listed["assertions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["name"] == format!("low{k}"))
+                .unwrap()
+                .clone();
+            let want = if close(z, 20.0, 20.0) {
+                "passed"
+            } else {
+                "failed"
+            };
+            assert_eq!(a["status"], want, "{} at z = {z}: {a}", names[k]);
+            assert!(close(a["measured"].as_f64().unwrap(), z, 50.0), "{a}");
+            let o = outputs["outputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|o| o["name"] == format!("z{k}"))
+                .unwrap()
+                .clone();
+            assert!(
+                close(o["value"].as_f64().unwrap(), z, 50.0),
+                "{} at z = {z}: {o}",
+                names[k]
+            );
+        }
+    };
+    check(&mut s, 20.0);
+    for z in [2.0, 50.0, 20.0] {
+        for name in ["Other", "Cube", "Sub"] {
+            run(
+                &mut s,
+                "instance.edit",
+                json!({ "name": name, "position": [0, 0, z] }),
+            );
+        }
+        check(&mut s, z);
+    }
+}
