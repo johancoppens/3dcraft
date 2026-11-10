@@ -568,3 +568,41 @@ fn a_tab_is_named_after_its_file_without_folders_or_extension() {
     let long = tab_name(Some(&format!("{}.3dcraft", "x".repeat(5000)))).unwrap();
     assert_eq!(long.chars().count(), 120);
 }
+
+/// A document without a file is named by its title when it has one (an
+/// example from the start screen), and only the others count as
+/// `Untitled n`; a file's name goes first.
+#[test]
+fn a_tab_without_a_file_is_named_by_its_title_else_untitled() {
+    use craft3d_engine::DocumentStatus;
+    let status = |index: usize, path: Option<&str>, title: Option<&str>| DocumentStatus {
+        index,
+        id: index as u64 + 1,
+        open: 5,
+        path: path.map(str::to_string),
+        file: None,
+        title: title.map(str::to_string),
+        assembly: false,
+        dirty: false,
+        close_asks: false,
+        length_unit: "mm",
+        angle_unit: "deg",
+        jig_in_use: false,
+        undo: None,
+        redo: None,
+    };
+    let statuses = [
+        status(0, Some("/a/gear.3dcraft"), Some("Gear")),
+        status(1, None, Some("Moka pot")),
+        status(2, None, None),
+        status(3, None, Some(" \n ")),
+        status(4, None, Some("Two\nlines")),
+    ];
+    let tabs = craft3d_ui_egui::doc_tabs(&statuses, Some(1));
+    let names: Vec<&str> = tabs.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["gear", "Moka pot", "Untitled 1", "Untitled 2", "Twolines"]
+    );
+    assert!(tabs[1].active && !tabs[1].marked());
+}

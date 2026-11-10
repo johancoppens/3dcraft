@@ -173,7 +173,13 @@ fn subject(result: &Value) -> Option<String> {
         })?;
     match row.get("path").and_then(Value::as_str) {
         Some(path) => file_stem(path),
-        None => Some("Untitled".to_string()),
+        // An example from the start screen, by its title.
+        None => Some(
+            row.get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("Untitled")
+                .to_string(),
+        ),
     }
 }
 
@@ -224,6 +230,11 @@ mod tests {
         );
         let untitled = json!({"active": 0, "documents": [{"active": true, "path": null}]});
         assert_eq!(summary("file.activate", &untitled), "Activated Untitled");
+        // An example from the start screen, by its title.
+        let example = json!({"active": 0, "documents": [
+            {"active": true, "path": null, "title": "Moka pot"},
+        ]});
+        assert_eq!(summary("file.activate", &example), "Activated Moka pot");
     }
 
     #[test]

@@ -277,9 +277,10 @@ pub(crate) fn tree_width(tokens: &Tokens, wanted: f32, window: f32) -> f32 {
     wanted.clamp(tokens.tree_min_width, most)
 }
 
-/// The window's title for a document: its file's name (`untitled` when it
-/// has none), a `*` when it has changes that are not on disk, and the
-/// product's name. Just the product's name without a document.
+/// The window's title for a document: its file's name (when it has none,
+/// the title of an example from the start screen, else `untitled`), a `*`
+/// when it has changes that are not on disk, and the product's name. Just
+/// the product's name without a document.
 pub fn window_title(status: Option<&DocumentStatus>) -> String {
     let Some(status) = status else {
         return PRODUCT.to_string();
@@ -290,6 +291,7 @@ pub fn window_title(status: Option<&DocumentStatus>) -> String {
         .path
         .as_deref()
         .and_then(|path| path.rsplit(['/', '\\']).find(|part| !part.is_empty()))
+        .or(status.title.as_deref().filter(|t| !t.trim().is_empty()))
         .unwrap_or("untitled");
     // No control characters in a title bar.
     let name: String = name.chars().filter(|c| !c.is_control()).take(120).collect();
@@ -3380,7 +3382,11 @@ impl Shell {
                 ));
                 // In the narrow layout the tab names the document.
                 if !self.narrow {
-                    let name = status.path.as_deref().unwrap_or("untitled");
+                    let name = status
+                        .path
+                        .as_deref()
+                        .or(status.title.as_deref())
+                        .unwrap_or("untitled");
                     let dirty = if status.dirty { " *" } else { "" };
                     items.push(StatusItem::elided(
                         StatusSlot::Path,

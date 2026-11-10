@@ -46,7 +46,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 pub use craft3d_ui_egui::files::{
     EXPORT_FORMATS, EXTENSION, IMPORT_EXTENSIONS, JIG_EXTENSION, OPEN_EXTENSIONS,
-    suggested_export_name, suggested_jig_name, suggested_name,
+    suggested_export_name, suggested_jig_name, suggested_name, suggested_save_name,
 };
 
 /// The system's file dialogs. Each call blocks until the person chose or
@@ -827,8 +827,10 @@ impl Host {
                     }
                     None => {}
                 }
+                // An example from the start screen proposes its title,
+                // an assembly a `.3dcraftasm` name.
                 picker
-                    .ask_save(suggested_name(status.path.as_deref()))
+                    .ask_save(suggested_save_name(&status))
                     .map_err(|e| ("file.save", e))
             }
         };
@@ -934,6 +936,7 @@ impl Host {
             .unwrap_or_else(|_| {
                 Err("internal error (a bug in 3DCraft, please report it)".to_string())
             });
+            self.shell.example_opened(&built);
             self.report("example", &built);
             self.shell.sync(&mut self.session);
             did = true;
@@ -1399,6 +1402,63 @@ mod tests {
         assert_eq!((label.as_str(), ok), ("jig.edit", true), "{text}");
         let status = host.session.document_status().unwrap();
         assert!(!status.jig_in_use && status.path.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An example from the start screen opens without a file and without
+    /// unsaved work (docs/decisions.md, 2026-11-10): no `*` in the title,
+    /// named by its title, no recent file. Save proposes its title, with
+    /// an assembly's extension for an assembly, whose player is on its
+    /// motion once it is open.
+    #[test]
+    fn an_example_opens_clean_and_save_proposes_its_title() {
+        use craft3d_ui_egui::shell::EXAMPLES;
+        let dir = workdir("example");
+        let mine = subdir(&dir, "mine");
+        let mut host = Host::new(Session::new(Workspace::none()));
+        let person = Person::who_answers(&[
+            Some(&mine.join("profile.3dcraft")),
+            Some(&mine.join("clamp.3dcraftasm")),
+        ]);
+        let mut dialogs = picker(&person);
+        let example = |id: &str| EXAMPLES.iter().find(|e| e.id == id).unwrap();
+        let profile = example("t-slot-profile");
+        host.shell.choose_example(profile);
+        host.pump_files(&mut dialogs);
+        let (label, ok, text) = last(&host);
+        assert_eq!((label.as_str(), ok), ("example", true), "{text}");
+        let status = host.session.document_status().unwrap();
+        assert!(!status.dirty && !status.close_asks && status.path.is_none());
+        assert_eq!(status.title.as_deref(), Some(profile.title));
+        assert_eq!(
+            window_title(Some(&status)),
+            format!("{} – 3DCraft", profile.title)
+        );
+        assert!(host.shell.recent_files().is_empty(), "no file of its own");
+        assert!(!host.shell.state.timeline.motion);
+        act(&mut host, &mut dialogs, FileAction::Save);
+        assert_eq!(person.asked(), [format!("save {}.3dcraft", profile.title)]);
+        assert_eq!(listing(&mine), ["profile.3dcraft"]);
+        let saved = host.session.document_status().unwrap();
+        assert!(!saved.dirty && saved.title.is_none() && saved.path.is_some());
+
+        let clamp = example("toggle-clamp");
+        host.shell.choose_example(clamp);
+        host.pump_files(&mut dialogs);
+        assert!(
+            host.shell.state.timeline.motion,
+            "an assembly on its motion"
+        );
+        let status = host.session.document_status().unwrap();
+        assert!(status.assembly && !status.dirty);
+        act(&mut host, &mut dialogs, FileAction::SaveAs);
+        assert_eq!(
+            person.asked().last().unwrap(),
+            &format!("save {}.3dcraftasm", clamp.title)
+        );
+        let (label, ok, text) = last(&host);
+        assert_eq!((label.as_str(), ok), ("file.save", true), "{text}");
+        assert_eq!(listing(&mine), ["clamp.3dcraftasm", "profile.3dcraft"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

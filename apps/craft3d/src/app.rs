@@ -1004,6 +1004,11 @@ impl Desk {
                         Err(PANICKED.to_string())
                     }
                 };
+                // An assembly from the start screen plays its motion,
+                // once it is open.
+                if label == "example" {
+                    host.shell.example_opened(&outcome);
+                }
                 host.report(label, &outcome);
                 (None, None)
             }

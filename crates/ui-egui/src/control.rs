@@ -368,6 +368,7 @@ impl Shell {
                 "index": status.index,
                 "open": status.open,
                 "path": status.path,
+                "title": status.title,
                 "dirty": status.dirty,
                 "units": { "length": status.length_unit, "angle": status.angle_unit },
             })

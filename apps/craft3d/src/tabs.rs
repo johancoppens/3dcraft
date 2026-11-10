@@ -8,7 +8,7 @@
 //! was active (or, when the closed one was the active one, its neighbour
 //! in the row: the next one, or the one before when it was the last).
 
-use crate::files::{self, Picker, suggested_name};
+use crate::files::{self, Picker, suggested_save_name};
 use crate::host::Host;
 use craft3d_engine::Session;
 use craft3d_ui_egui::DocAction;
@@ -205,11 +205,14 @@ impl Host {
 
     /// Opens the save dialog for document `document` (made the active one
     /// meanwhile), which is closed once it is saved there; a Jig in use is
-    /// proposed as a model of its name.
+    /// proposed as a model of its name, an example from the start screen
+    /// by its title.
     pub(crate) fn ask_name_then_close(&mut self, picker: &mut Picker, document: usize) {
         let statuses = self.session.document_statuses();
-        let path = statuses.get(document).and_then(|s| s.path.as_deref());
-        match picker.ask_save(suggested_name(path)) {
+        let suggested = statuses
+            .get(document)
+            .map_or_else(|| files::suggested_name(None), suggested_save_name);
+        match picker.ask_save(suggested) {
             Ok(()) => self.close_after_save = true,
             Err(error) => self.report("file.save", &Err(error)),
         }

@@ -416,9 +416,10 @@ impl Work {
 pub struct DocTab {
     /// The `document` number of `file.list` and `file.activate`.
     pub document: usize,
-    /// What the tab says: the file's name without its extension, or
-    /// `Untitled n` for a document that was never saved (n counts those
-    /// from 1, in the order of the tabs).
+    /// What the tab says: the file's name without its extension; for a
+    /// document without a file, the title of an example from the start
+    /// screen it was opened as, or `Untitled n` (n counts those from 1, in
+    /// the order of the tabs).
     pub name: String,
     /// The path it was opened from or last saved to.
     pub path: Option<String>,

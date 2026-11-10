@@ -131,18 +131,35 @@ pub fn tab_glyph(tab: &DocTab) -> crate::kit::Glyph {
     }
 }
 
+/// The name a tab shows for a document without a file that has a title
+/// (an example from the start screen, `DocumentStatus::title`): on one
+/// line, as long as a file's name may be. `None` without one.
+pub fn tab_title(title: Option<&str>) -> Option<String> {
+    let name: String = title?
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_NAME_CHARS)
+        .collect::<String>()
+        .trim()
+        .to_string();
+    (!name.is_empty()).then_some(name)
+}
+
 /// The tabs for the open documents, in their order: named after their
-/// files, and `Untitled 1`, `Untitled 2`, … for the ones never saved,
-/// counted in the order of the row.
+/// files, else after their titles (an example from the start screen), and
+/// `Untitled 1`, `Untitled 2`, … for the others never saved, counted in
+/// the order of the row.
 pub fn doc_tabs(statuses: &[DocumentStatus], active: Option<usize>) -> Vec<DocTab> {
     let mut untitled = 0usize;
     statuses
         .iter()
         .map(|status| {
-            let name = tab_name(status.path.as_deref()).unwrap_or_else(|| {
-                untitled = untitled.saturating_add(1);
-                format!("Untitled {untitled}")
-            });
+            let name = tab_name(status.path.as_deref())
+                .or_else(|| tab_title(status.title.as_deref()))
+                .unwrap_or_else(|| {
+                    untitled = untitled.saturating_add(1);
+                    format!("Untitled {untitled}")
+                });
             DocTab {
                 document: status.index,
                 name,

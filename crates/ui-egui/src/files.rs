@@ -3,7 +3,7 @@
 //! names they propose, and what `file.export` is given for the window's
 //! selection. Hosts run the commands; nothing here touches a file.
 
-use craft3d_engine::{CommandError, Session};
+use craft3d_engine::{CommandError, DocumentStatus, Session};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -185,6 +185,50 @@ pub fn suggested_name(path: Option<&str>) -> String {
     } else {
         name
     }
+}
+
+/// The name the save dialog proposes for the document `status` says: its
+/// file's ([`suggested_name`]); without one, the title it is shown under
+/// (an example from the start screen) made a file's name, else
+/// `untitled`, with the extension of what it is saved as: `.3dcraftasm`
+/// for an assembly, `.3dcraft` for a part and for a Jig in use, which is
+/// saved as a model.
+pub fn suggested_save_name(status: &DocumentStatus) -> String {
+    if status.path.is_some() {
+        return suggested_name(status.path.as_deref());
+    }
+    let extension = if status.assembly {
+        ASSEMBLY_EXTENSION
+    } else {
+        EXTENSION
+    };
+    let stem = status
+        .title
+        .as_deref()
+        .map(file_name_of)
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or_else(|| "untitled".to_string());
+    format!("{stem}.{extension}")
+}
+
+/// `title` as the stem of a file's name on every system: the characters a
+/// file system forbids or a shell reads (`/ \ : * ? " < > |`, control
+/// characters) made `-`, no dot or space at either end, at most 100
+/// characters.
+fn file_name_of(title: &str) -> String {
+    let name: String = title
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '-'
+            } else {
+                c
+            }
+        })
+        .take(100)
+        .collect();
+    name.trim_matches(|c: char| c == '.' || c.is_whitespace())
+        .to_string()
 }
 
 /// The name Export as Jig proposes: the document's file's, as a
@@ -1539,6 +1583,67 @@ mod tests {
         assert_eq!(
             suggested_export_name(Some("a.3dcraft"), Some("stl")),
             "a.stl"
+        );
+    }
+
+    /// Save proposes the file's name; for an example from the start
+    /// screen (no file, a title) its title, with the extension of what it
+    /// is saved as: an assembly's, else a part's (a Jig in use is saved as
+    /// a model).
+    #[test]
+    fn save_proposes_an_examples_title_with_the_right_extension() {
+        let status =
+            |path: Option<&str>, title: Option<&str>, assembly: bool, jig: bool| DocumentStatus {
+                index: 0,
+                id: 1,
+                open: 1,
+                path: path.map(str::to_string),
+                file: None,
+                title: title.map(str::to_string),
+                assembly,
+                dirty: false,
+                close_asks: false,
+                length_unit: "mm",
+                angle_unit: "deg",
+                jig_in_use: jig,
+                undo: None,
+                redo: None,
+            };
+        let name =
+            |path, title, assembly, jig| suggested_save_name(&status(path, title, assembly, jig));
+        assert_eq!(
+            name(None, Some("T-slot aluminium profile"), false, false),
+            "T-slot aluminium profile.3dcraft"
+        );
+        assert_eq!(
+            name(None, Some("Horizontal toggle clamp"), true, false),
+            "Horizontal toggle clamp.3dcraftasm"
+        );
+        assert_eq!(
+            name(None, Some("Laser-cut box"), false, true),
+            "Laser-cut box.3dcraft"
+        );
+        // No file and no title: untitled, an assembly's as an assembly.
+        assert_eq!(name(None, None, false, false), "untitled.3dcraft");
+        assert_eq!(name(None, None, true, false), "untitled.3dcraftasm");
+        // A file's name goes first; a Jig's file proposes a model.
+        assert_eq!(
+            name(Some("/a/clamp.3dcraftasm"), Some("Clamp"), true, false),
+            "clamp.3dcraftasm"
+        );
+        assert_eq!(
+            name(Some("/a/box.3dcraftjig"), None, false, true),
+            "box.3dcraft"
+        );
+        // A title is made a name every system takes.
+        assert_eq!(
+            name(None, Some("Gear: 20/40 \"fine\"? <v2>|x."), false, false),
+            "Gear- 20-40 -fine-- -v2--x.3dcraft"
+        );
+        assert_eq!(name(None, Some(" ... "), false, false), "untitled.3dcraft");
+        assert_eq!(
+            name(None, Some(&"y".repeat(300)), false, false).len(),
+            100 + ".3dcraft".len()
         );
     }
 

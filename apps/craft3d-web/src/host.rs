@@ -26,7 +26,7 @@
 use craft3d_engine::{Session, Workspace};
 use craft3d_ui_egui::files::{
     ASSEMBLY_EXTENSION, EXPORT_FORMATS, EXTENSION, ExportPlan, JIG_EXTENSION, export_params,
-    extension_of, file_stem, suggested_jig_name, suggested_name,
+    extension_of, file_stem, suggested_jig_name, suggested_save_name,
 };
 use craft3d_ui_egui::kit::{Button, Dialog, Kit};
 use craft3d_ui_egui::shell::ExportRequest;
@@ -406,6 +406,9 @@ pub struct WebHost {
     last_answer: Option<Value>,
     /// An example from the start screen being built, a step at a time.
     example_run: Option<ExampleRun>,
+    /// The published example chosen whose "Opening…" was shown: it is
+    /// opened in the next pump, after a frame drawn with it.
+    example_said: Option<&'static str>,
 }
 
 /// An example from the start screen being built a step at a time
@@ -485,6 +488,7 @@ impl WebHost {
             away: false,
             last_answer: None,
             example_run: None,
+            example_said: None,
             held_report: None,
             said: 0,
         }
@@ -597,6 +601,13 @@ impl WebHost {
     /// for the next frame).
     pub fn prepare(&mut self, stop: impl Fn() -> bool + Clone + 'static) -> bool {
         if self.fetching.is_some() {
+            self.show_work(None);
+            self.away = true;
+            return true;
+        }
+        // A published example said as opening: opened at the next pump,
+        // after this frame shows that it opens.
+        if self.example_said.is_some() && self.shell.peek_example().is_some() {
             self.show_work(None);
             self.away = true;
             return true;
@@ -1077,8 +1088,19 @@ impl WebHost {
             let _ = self.shell.take_example();
             self.example_fonts = None;
             self.start_example(example, steps);
+        } else if let Some(example) = self.shell.peek_example()
+            && self.example_said != Some(example.id)
+        {
+            // A published file: "Opening …" first, drawn in a frame of its
+            // own before the page's one thread reads it and builds its
+            // scene, as the file fetched for an example once was.
+            self.example_said = Some(example.id);
+            self.about = Some(("file.open".to_string(), Some(example.title.to_string())));
+            self.show_work(None);
+            self.away = true;
         } else if let Some(example) = self.shell.take_example() {
             self.example_fonts = None;
+            self.example_said = None;
             let session = &mut self.session;
             let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 craft3d_ui_egui::shell::run_example(session, example)
@@ -1086,6 +1108,8 @@ impl WebHost {
             .unwrap_or_else(|_| {
                 Err("internal error (a bug in 3DCraft, please report it)".to_string())
             });
+            // An assembly plays its motion once it is open.
+            self.shell.example_opened(&built);
             self.finish("example", &built);
         }
         // The Parameters tab's param.set: the frame before this one
@@ -1394,14 +1418,14 @@ impl WebHost {
                     None if self.pickers => {
                         outcome.pick = Some(Pick::Save {
                             document: status.id,
-                            suggested: suggested_name(status.path.as_deref()),
+                            suggested: suggested_save_name(&status),
                             close: false,
                         });
                     }
                     None => {
                         self.dialog = Some(NameDialog {
                             purpose: Purpose::Save { close: None },
-                            name: suggested_name(status.path.as_deref()),
+                            name: suggested_save_name(&status),
                         });
                     }
                 }
@@ -1513,7 +1537,7 @@ impl WebHost {
                         self.shell.sync(&mut self.session);
                         outcome.pick = Some(Pick::Save {
                             document: status.id,
-                            suggested: suggested_name(status.path.as_deref()),
+                            suggested: suggested_save_name(&status),
                             close: true,
                         });
                     }
@@ -1523,7 +1547,7 @@ impl WebHost {
                             purpose: Purpose::Save {
                                 close: Some(document),
                             },
-                            name: suggested_name(status.path.as_deref()),
+                            name: suggested_save_name(&status),
                         });
                     }
                 }
@@ -1532,11 +1556,21 @@ impl WebHost {
         outcome
     }
 
-    /// Saves the active document as `name` (`.3dcraft` added when it has no
-    /// extension), which becomes its name: the file is the download. With
-    /// `close`, the document is closed once it is saved.
+    /// Saves the active document as `name` (`.3dcraft` added when it has
+    /// not that extension; `.3dcraftasm` for an assembly), which becomes
+    /// its name: the file is the download. With `close`, the document is
+    /// closed once it is saved.
     pub fn save_as(&mut self, name: &str, close: Option<usize>) -> Vec<Download> {
-        let Some(name) = memory_name(name).map(|n| with_extension(&n, EXTENSION)) else {
+        let extension = if self
+            .session
+            .document_status()
+            .is_some_and(|status| status.assembly)
+        {
+            ASSEMBLY_EXTENSION
+        } else {
+            EXTENSION
+        };
+        let Some(name) = memory_name(name).map(|n| with_extension(&n, extension)) else {
             self.finish("file.save", &Err(format!("`{name}` is not a file name")));
             return Vec::new();
         };
@@ -3237,6 +3271,18 @@ mod tests {
         for example in ExampleSection::ALL.map(quickest) {
             let mut host = host();
             host.shell.choose_example(example);
+            // First a frame that says it opens, as for a file fetched;
+            // opened at the next pump.
+            host.pump();
+            assert!(host.session.document_statuses().is_empty());
+            assert!(host.away(), "{}", example.id);
+            assert_eq!(
+                host.shell.busy().map(|(text, _)| text),
+                Some(format!("Opening {}\u{2026}", example.title)),
+                "{}",
+                example.id
+            );
+            assert!(host.prepare(|| true), "the page asks for the next frame");
             host.pump();
             while host.example_progress().is_some() {
                 host.pump();
@@ -3249,11 +3295,40 @@ mod tests {
             assert!(host.shell.recent_files().is_empty());
             let status = host.session.document_status().unwrap();
             assert!(status.path.is_none(), "{}", example.id);
-            // Save asks for a name (the page has no file dialogs here).
+            // Only looked at: no unsaved work, so leaving the page does
+            // not warn, and its name is its title (docs/decisions.md,
+            // 2026-11-10).
+            assert!(!status.dirty && !status.close_asks, "{}", example.id);
+            assert!(!host.has_unsaved(), "{}", example.id);
+            assert_eq!(status.title.as_deref(), Some(example.title));
+            assert_eq!(
+                host.shell.state.timeline.motion,
+                example.section == ExampleSection::Assemblies,
+                "{}: an assembly opens on its motion",
+                example.id
+            );
+            // Save asks for a name (the page has no file dialogs here),
+            // proposing its title with the extension of what it is.
             let outcome = host.file_action(FileAction::Save);
             assert!(outcome.downloads.is_empty(), "{}", example.id);
-            assert!(host.dialog.is_some(), "{}: Save asks", example.id);
-            host.dialog = None;
+            let dialog = host.dialog.take().unwrap();
+            let extension = if example.section == ExampleSection::Assemblies {
+                "3dcraftasm"
+            } else {
+                "3dcraft"
+            };
+            assert_eq!(dialog.name, format!("{}.{extension}", example.title));
+            // Saved under that name: a download of what it is.
+            let saved = host.answer(dialog, true).downloads;
+            assert_eq!(saved.len(), 1, "{}", example.id);
+            assert_eq!(saved[0].name, format!("{}.{extension}", example.title));
+            assert!(!host.has_unsaved());
+            // An edit is unsaved work again: leaving the page warns.
+            if example.section == ExampleSection::Parts {
+                host.run("feature.block", &json!({"size": [1, 1, 1]}))
+                    .unwrap();
+                assert!(host.has_unsaved(), "{}", example.id);
+            }
         }
     }
 

@@ -705,8 +705,8 @@ fn ui_example_lists_shows_and_opens_the_examples() {
     );
     assert_eq!(chosen["chosen"]["id"], "radial-engine");
     assert!(
-        shell.state.timeline.motion,
-        "an assembly opens on its motion"
+        !shell.state.timeline.motion,
+        "the player follows once it is open"
     );
     assert_eq!(shell.take_example().map(|e| e.id), Some("radial-engine"));
     // Refused, and nothing chosen.
@@ -729,4 +729,95 @@ fn ui_example_lists_shows_and_opens_the_examples() {
         .unwrap()
         .unwrap_err();
     assert!(unknown.contains("moka-pot"), "it lists the ids: {unknown}");
+}
+
+/// An example from the start screen that was only opened is no unsaved
+/// work (docs/decisions.md, 2026-11-10): its tab carries its title and no
+/// unsaved mark, the window's title names it, closing it or the window
+/// asks nothing, and it is no recent file. The first edit marks it, and
+/// then closing it asks, by its title. An assembly's player is put on its
+/// motion only once it is open.
+#[test]
+fn an_opened_example_is_named_on_its_tab_and_asks_nothing_until_changed() {
+    use craft3d_ui_egui::shell::run_example;
+    use craft3d_ui_egui::{DocAction, window_title};
+    let mut session = Session::new(Workspace::memory());
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    window.frame(&mut shell, &mut session, Vec::new());
+    let profile = EXAMPLES.iter().find(|e| e.id == "t-slot-profile").unwrap();
+    shell.choose_example(profile);
+    let example = shell.take_example().unwrap();
+    let opened = run_example(&mut session, example);
+    shell.example_opened(&opened);
+    assert!(opened.is_ok(), "{opened:?}");
+    assert!(!shell.state.timeline.motion, "a part plays its history");
+    window.frame(&mut shell, &mut session, Vec::new());
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    let tab = &got["tabs"][0];
+    assert_eq!(tab["name"], profile.title, "{tab}");
+    assert_eq!(tab["dirty"], false, "{tab}");
+    assert_eq!(tab["asksToClose"], false, "{tab}");
+    assert_eq!(tab["path"], Value::Null);
+    assert_eq!(got["document"]["title"], profile.title);
+    assert_eq!(got["document"]["dirty"], false);
+    let status = session.document_status().unwrap();
+    assert_eq!(
+        window_title(Some(&status)),
+        format!("{} – 3DCraft", profile.title)
+    );
+    assert!(shell.recent_files().is_empty(), "no file of its own");
+    // Closing its tab, and the window, ask nothing.
+    shell.request_close(0);
+    assert!(shell.closing().is_none());
+    assert_eq!(
+        shell.take_doc_action(),
+        Some(DocAction::Close {
+            document: 0,
+            discard: false
+        })
+    );
+    assert!(shell.request_window_close(), "nothing to ask about");
+
+    // Edited: marked, and the questions come, by its title.
+    let mut session = Session::new(Workspace::memory());
+    let mut shell = Shell::new();
+    let opened = run_example(&mut session, profile);
+    shell.example_opened(&opened);
+    run(&mut session, "feature.block", json!({"size": [1, 1, 1]}));
+    window.frame(&mut shell, &mut session, Vec::new());
+    let tab = &call(&mut shell, &mut session, "ui.get", json!({}))["tabs"][0];
+    assert_eq!(tab["name"], profile.title);
+    assert_eq!(
+        (tab["dirty"].clone(), tab["asksToClose"].clone()),
+        (json!(true), json!(true))
+    );
+    let status = session.document_status().unwrap();
+    assert_eq!(
+        window_title(Some(&status)),
+        format!("{}* – 3DCraft", profile.title)
+    );
+    shell.request_close(0);
+    let closing = shell.closing().unwrap();
+    assert_eq!(closing.name, profile.title);
+    assert!(closing.path.is_none() && !closing.jig);
+    shell.answer_closing(craft3d_ui_egui::CloseAnswer::Cancel);
+    assert!(!shell.request_window_close(), "it asks first");
+
+    // An assembly: on its motion once it is open.
+    let mut session = Session::new(Workspace::memory());
+    let mut shell = Shell::new();
+    let clamp = EXAMPLES.iter().find(|e| e.id == "toggle-clamp").unwrap();
+    shell.choose_example(clamp);
+    assert!(!shell.state.timeline.motion);
+    let example = shell.take_example().unwrap();
+    let opened = run_example(&mut session, example);
+    shell.example_opened(&opened);
+    assert!(
+        shell.state.timeline.motion,
+        "an assembly opens on its motion"
+    );
+    let status = session.document_status().unwrap();
+    assert!(status.assembly && !status.dirty && !status.close_asks);
+    assert_eq!(status.title.as_deref(), Some(clamp.title));
 }

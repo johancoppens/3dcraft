@@ -6,8 +6,10 @@
 //! repository recorded when it built it (the `stats` of its `meta.json`,
 //! copied into the manifest): as many features and assertions, no feature
 //! failed, no assertion failed and none fewer proven; for an assembly as
-//! many instances and mates, solved with the freedom it had. Save asks
-//! where, so the bytes built into the program are never written. How long
+//! many instances and mates, solved with the freedom it had. Only looked
+//! at, it is clean and named by its title (`Session::open_bytes_titled`).
+//! Save asks where, so the bytes built into the program are never
+//! written. How long
 //! each takes to open and show is printed (`--nocapture`).
 
 #![allow(
@@ -165,6 +167,21 @@ fn every_bundled_file_opens_regenerates_and_is_what_its_repository_recorded() {
             not_proven <= stat(entry, "warnings"),
             "{id}: {not_proven} not proven, {} when it was built: {listed}",
             stat(entry, "warnings")
+        );
+        // Opened, regenerated and checked, and still no unsaved work: no
+        // mark, no question on closing it, named by its title, no file
+        // for the recent files (docs/decisions.md, 2026-11-10).
+        let status = session.document_status().unwrap();
+        assert!(
+            !status.dirty && !status.close_asks,
+            "{id}: only looked at: {status:?}"
+        );
+        assert_eq!(status.title.as_deref(), Some(example.title), "{id}");
+        assert!(status.file.is_none(), "{id}");
+        assert_eq!(
+            status.assembly,
+            example.section == ExampleSection::Assemblies,
+            "{id}"
         );
         // Save asks where: the bytes built into the program are not a
         // file it could write.

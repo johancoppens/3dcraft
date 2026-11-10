@@ -390,15 +390,19 @@ pub fn example_step_failed(example: &Example, index: usize, command: &str, error
     format!("example {}: step {index} ({command}): {error}", example.id)
 }
 
-/// Builds `example` in a new document (`file.new` in millimetres, then
-/// its script's commands). A step that fails closes the new document
-/// again and is the error.
+/// Opens `example` in a new document: a published file from its bytes,
+/// clean until it is changed and named by its title
+/// (`Session::open_bytes_titled`); a script built by its commands after
+/// `file.new` in millimetres, where a step that fails closes the new
+/// document again and is the error. The host hands the outcome to
+/// [`Shell::example_opened`].
 pub fn run_example(session: &mut Session, example: &Example) -> Result<Value, String> {
     let steps = match (example_steps(example), example.source) {
         (Some(steps), _) => steps?,
         (None, Source::File { name, bytes }) => {
+            // Clean until it is changed, under its title (`open_bytes.rs`).
             let opened = session
-                .open_bytes(name, bytes)
+                .open_bytes_titled(name, Some(example.title), bytes)
                 .map_err(|e| format!("example {}: {}", example.id, e.message()))?;
             return Ok(json!({ "example": example.id, "opened": opened }));
         }
@@ -699,11 +703,25 @@ impl Shell {
 
     /// Chooses an example as a click on the start screen does.
     pub fn choose_example(&mut self, example: &'static Example) {
-        // An assembly opens ready to play: the player on its motion.
-        if example.section == ExampleSection::Assemblies {
+        self.start.chosen = Some(example);
+    }
+
+    /// What came of opening the example the host took
+    /// ([`Self::take_example`], [`run_example`]), before it syncs: an
+    /// assembly opens ready to play, the player on its motion. Set only
+    /// once it is open, so an open that failed leaves the player of the
+    /// document still shown as it was.
+    pub fn example_opened(&mut self, outcome: &Result<Value, String>) {
+        let assembly = outcome.as_ref().is_ok_and(|result| {
+            result
+                .get("opened")
+                .and_then(|opened| opened.get("assembly"))
+                .and_then(Value::as_bool)
+                == Some(true)
+        });
+        if assembly {
             self.state.timeline.motion = true;
         }
-        self.start.chosen = Some(example);
     }
 
     /// The section of examples the start screen shows.
@@ -1383,6 +1401,45 @@ mod tests {
             assert!(run_example(&mut session, &bad).is_err());
         }
         assert_eq!(session.document_statuses().len(), 1);
+    }
+
+    /// An assembly's player is put on its motion only once it is open: an
+    /// open that fails leaves the player of the document still shown as it
+    /// was (before 2026-11-10 the click set it at once).
+    #[test]
+    fn a_failed_open_leaves_the_player_as_it_was() {
+        let mut session = Session::new(craft3d_engine::Workspace::none());
+        session.execute("file.new", &json!({})).unwrap();
+        session
+            .execute("feature.block", &json!({"size": [1, 2, 3]}))
+            .unwrap();
+        let mut shell = Shell::new();
+        assert!(!shell.state.timeline.motion);
+        static BROKEN: Example = Example {
+            id: "broken-assembly",
+            title: "Broken",
+            summary: "no document",
+            section: ExampleSection::Assemblies,
+            source: Source::File {
+                name: "broken.3dcraftasm",
+                bytes: b"not a zip",
+            },
+            thumb: &[],
+            seconds: 0.0,
+            start: false,
+        };
+        shell.choose_example(&BROKEN);
+        assert!(!shell.state.timeline.motion, "not before it is open");
+        let example = shell.take_example().unwrap();
+        let outcome = run_example(&mut session, example);
+        assert!(outcome.is_err());
+        shell.example_opened(&outcome);
+        assert!(!shell.state.timeline.motion, "the part's player as it was");
+        // The document that was shown is still the one, alone.
+        assert_eq!(session.document_statuses().len(), 1);
+        // An assembly that opens: its player on its motion.
+        shell.example_opened(&Ok(json!({"example": "x", "opened": {"assembly": true}})));
+        assert!(shell.state.timeline.motion);
     }
 
     #[test]

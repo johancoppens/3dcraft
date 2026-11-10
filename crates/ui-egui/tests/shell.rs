@@ -1279,6 +1279,24 @@ fn the_title_names_the_file_and_marks_unsaved_changes() {
     assert_eq!(title(Some("a\nb.3dcraft"), false), "ab.3dcraft – 3DCraft");
     let long = title(Some(&"x".repeat(5000)), true);
     assert_eq!(long.chars().count(), 120 + "* – 3DCraft".chars().count());
+    // An example from the start screen, without a file: by its title; a
+    // file's name goes first.
+    let titled = |path: Option<&str>, dirty: bool| DocumentStatus {
+        title: Some("Moka pot".to_string()),
+        ..status(path, dirty)
+    };
+    assert_eq!(
+        window_title(Some(&titled(None, false))),
+        "Moka pot – 3DCraft"
+    );
+    assert_eq!(
+        window_title(Some(&titled(None, true))),
+        "Moka pot* – 3DCraft"
+    );
+    assert_eq!(
+        window_title(Some(&titled(Some("/a/pot.3dcraft"), false))),
+        "pot.3dcraft – 3DCraft"
+    );
 
     // On a real session it follows the active document. A document that
     // was never saved is not on disk, so the engine counts it as changed
