@@ -1359,11 +1359,11 @@ fn clearance_pair<'b>(
             }
         }
     } else {
-        // Apart everywhere: one may still hold the other.
+        // Apart everywhere: one may still hold the other, or a lump of it.
         let inside = |probe: &craft3d_kernel::boolean::probe::Probe<'_>, other: &Body| {
-            other.vertices.first().is_some_and(|v| {
+            shell_points(other).into_iter().any(|point| {
                 matches!(
-                    probe.place(v.point),
+                    probe.place(point),
                     Ok(craft3d_kernel::boolean::Place::Inside)
                 )
             })
@@ -1373,6 +1373,43 @@ fn clearance_pair<'b>(
         }
     }
     Ok((near, status))
+}
+
+/// One point on each shell of `body`: the start of one of its edges, or,
+/// for a shell without edges (a sphere's, a torus's), a point of its first
+/// face. Where two bodies' boundaries are apart, each shell of one lies
+/// wholly inside the other or wholly outside it, and one of them holds
+/// part of the other exactly when a shell of one lies inside the other:
+/// one point per shell tells it, for every lump of a body of several.
+fn shell_points(body: &Body) -> Vec<Vec3> {
+    let point = |shell: &craft3d_topo::Shell| {
+        let faces = || shell.faces.iter().filter_map(|&f| body.face(f));
+        let on_edge = faces()
+            .flat_map(|face| face.loops.iter())
+            .filter_map(|&l| body.loop_(l))
+            .flat_map(|l| l.coedges.iter())
+            .find_map(|c| body.edge(c.edge).and_then(|e| body.vertex(e.start)))
+            .map(|v| v.point);
+        on_edge.or_else(|| {
+            let surface = &faces().next()?.surface;
+            // The middle of the surface's parameters where they are
+            // bounded (a sphere's equator, a torus's outer circle), else
+            // its origin's: a face without loops is the whole surface.
+            let middle = |(a, b): (f64, f64)| match (a.is_finite(), b.is_finite()) {
+                (true, true) => 0.5 * (a + b),
+                (true, false) => a,
+                (false, true) => b,
+                (false, false) => 0.0,
+            };
+            let (u, v) = surface.domain();
+            Some(surface.eval(middle(u), middle(v)))
+        })
+    };
+    body.shells
+        .iter()
+        .filter_map(point)
+        .filter(|p| p.is_finite())
+        .collect()
 }
 
 fn clearance(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {

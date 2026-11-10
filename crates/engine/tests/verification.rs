@@ -198,6 +198,83 @@ fn clearance_tells_clear_touch_and_overlap() {
     close(&least["clearance"], want, 1e-9, "least");
 }
 
+/// A-042: a body without vertices (a torus, a sphere) wholly inside
+/// another, and one lump of a body of several, overlap; asked either way
+/// round. A torus beside the block is clear at its closed-form distance.
+#[test]
+fn clearance_finds_a_body_without_vertices_or_one_lump_inside_another() {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    // The plate spans x and y from -20 to 20, z from 0 to 10.
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Plate", "size": [40, 40, 10], "position": [-20, -20, 0]}),
+    );
+    // A ring about z at z = 5: radii 12.65 to 16.15, z from 3.25 to 6.75.
+    run(
+        &mut s,
+        "feature.torus",
+        json!({"name": "Ring", "major": 14.4, "minor": 1.75, "position": [0, 0, 5]}),
+    );
+    run(
+        &mut s,
+        "feature.sphere",
+        json!({"name": "Ball", "radius": 3, "position": [0, 0, 5]}),
+    );
+    // Two rings in one body (a revolve of two circles about z): the
+    // first at z = 5 inside the plate, the second at z = 20 above it.
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"name": "Sections", "plane": "yz"}),
+    );
+    for z in ["5 mm", "20 mm"] {
+        run(
+            &mut s,
+            "sketch.circle",
+            json!({"sketch": "Sections", "center": ["14.4 mm", z], "radius": "1.75 mm"}),
+        );
+    }
+    run(
+        &mut s,
+        "feature.revolve",
+        json!({"sketch": "Sections", "axis": "y", "name": "Rings"}),
+    );
+    // Two blocks in one body, the first (whose vertices come first) above
+    // the plate, the second inside it.
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Cube", "size": [2, 2, 2], "position": [0, 0, 20]}),
+    );
+    run(
+        &mut s,
+        "feature.pattern",
+        json!({"name": "Cubes", "source": "Cube", "count": 2, "step": [0, 0, -16]}),
+    );
+    for inner in ["Ring", "Ball", "Rings", "Cubes"] {
+        for (from, to) in [("Plate", inner), (inner, "Plate")] {
+            let out = run(&mut s, "measure.clearance", json!({"from": from, "to": to}));
+            assert!(out["clearance"].is_null(), "{from} to {to}: {out}");
+            assert_eq!(out["pairs"][0]["status"], "overlap", "{from} to {to}");
+        }
+    }
+    // A ring beside a block: its outer radius 16.15 against the block's
+    // face at x = 20, 3.85 apart (the nearest point (16.15, 0, 5) faces
+    // the block's side squarely).
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Side", "size": [10, 40, 10], "position": [20, -20, 0]}),
+    );
+    for (from, to) in [("Side", "Ring"), ("Ring", "Side")] {
+        let out = run(&mut s, "measure.clearance", json!({"from": from, "to": to}));
+        assert_eq!(out["pairs"][0]["status"], "clear", "{from} to {to}");
+        close(&out["clearance"], 20.0 - 16.15, 1e-9, "ring beside a block");
+    }
+}
+
 #[test]
 fn the_thinnest_wall_is_found_exactly() {
     // The plate: 8 thick, the holes far from the edges.

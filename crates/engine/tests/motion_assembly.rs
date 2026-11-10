@@ -360,3 +360,77 @@ fn collisions_replay_and_refusals_of_an_assembly_motion() {
     let e = error(&mut s, "view.motion", json!({ "t": 0.5 }));
     assert!(e.contains("timeline"), "{e}");
 }
+
+/// A-042 in an assembly: a ring part placed wholly inside a plate part
+/// overlaps it, so a clearance with a minimum fails over the motion (the
+/// assembly's measures are the part's, `measure.clearance`'s code).
+#[test]
+fn a_ring_enclosed_in_a_plate_fails_a_clearance_over_the_motion() {
+    let dir = workdir("motion-asm", "enclosed-ring");
+    let mut s = session_in(&dir);
+    let base = json!({ "name": "Base", "through": [[0, 0, 0], [1, 0, 0], [0, 1, 0]] });
+    run(&mut s, "file.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "feature.block",
+        json!({ "name": "Plate", "size": [40, 40, 10], "position": [-20, -20, 0] }),
+    );
+    run(&mut s, "datum.plane", base.clone());
+    run(&mut s, "file.save", json!({ "path": "plate.3dcraft" }));
+    run(&mut s, "file.close", json!({}));
+    // A ring about z at z = 5 in its part, of radii 14.4 and 1.75 mm.
+    run(&mut s, "file.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "feature.torus",
+        json!({ "name": "Ring", "major": 14.4, "minor": 1.75, "position": [0, 0, 5] }),
+    );
+    run(&mut s, "datum.plane", base);
+    run(&mut s, "file.save", json!({ "path": "ring.3dcraft" }));
+    run(&mut s, "file.close", json!({}));
+    run(&mut s, "assembly.new", json!({ "units": "mm" }));
+    run(&mut s, "variable.set", json!({ "name": "t", "expr": "0" }));
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "plate.3dcraft", "name": "Plate" }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "ring.3dcraft", "name": "Ring" }),
+    );
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "name": "Down", "a": "world/xy", "b": "Plate/Base", "flip": true }),
+    );
+    // The ring's base on the plate's: the ring at z from 3.25 to 6.75
+    // and radii 12.65 to 16.15, all inside the plate's 40 × 40 × 10.
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "name": "In", "a": "Plate/Base", "b": "Ring/Base", "flip": true }),
+    );
+    let inspected = run(&mut s, "assembly.inspect", json!({ "measures": true }));
+    let ring = inspected["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["name"] == "Ring")
+        .unwrap()
+        .clone();
+    let lo = ring["measured"]["box"][0][2].as_f64().unwrap();
+    let hi = ring["measured"]["box"][1][2].as_f64().unwrap();
+    assert!(
+        lo > 0.0 && hi < 10.0,
+        "the ring lies within the plate's height: {ring}"
+    );
+    let out = run(
+        &mut s,
+        "motion.check",
+        json!({ "measure": { "measure": "clearance", "from": "Plate", "to": "Ring", "min": "0 mm" }, "samples": 2 }),
+    );
+    assert_eq!(out["ok"], false, "{out}");
+    assert_eq!(out["assertions"][0]["status"], "failed", "{out}");
+}
