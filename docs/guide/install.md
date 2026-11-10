@@ -107,6 +107,11 @@ cd 3dcraft-0.1.0-x86_64-linux
 
 Make sure `~/.local/bin` is on your `PATH` (most distributions do this already).
 
+To remove 3DCraft again, run `./uninstall.sh` from the unpacked folder (with the same prefix if you gave
+one): it removes exactly the files `install.sh` installed and leaves your documents and other programs'
+files alone. Unpack the tarball into a folder of its own, not into `~/.local` itself: both scripts refuse
+to run from inside the folder they install into.
+
 ## In the browser: nothing to install
 
 The web version is 3DCraft as a web page. Open [3dcraft.dev/app](https://3dcraft.dev/app/) in a recent
