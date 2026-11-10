@@ -504,11 +504,12 @@ fn the_floating_assertions_of_the_measuring_chapter_are_as_it_says() {
     assert_eq!(listed["assertions"][0]["status"], "failed", "{listed}");
 }
 
-/// The agent chapter's third starter task (`agent.md` › task 3) says what its script
-/// makes: 11 holes and 6552.05 mm³ at 120 mm, and 14 holes and 8175.33 mm³
-/// once the strip is 150 mm long, its two assertions passing both times.
+/// The third starter task of the agent chapter (`agent.md` › *Try this
+/// first*) says what its script makes: 11 holes and 6552.05 mm³ at 120 mm,
+/// and 14 holes and 8175.33 mm³ once the strip is 150 mm long, its two
+/// assertions passing both times.
 #[test]
-fn the_field_test_strip_is_as_the_page_says() {
+fn the_starter_strip_is_as_the_agent_chapter_says() {
     let text = read_text(&docs().join("guide/agent.md"));
     let block = json_blocks(&text)
         .into_iter()
@@ -560,14 +561,17 @@ fn task_volume(s: &mut Session, task: &str, body: &str) -> f64 {
     measured["volume"].as_f64().unwrap()
 }
 
-/// Starter tasks 2 and 4 of the agent chapter (`agent.md`) give the answers the
-/// task set's reference solutions build: the L-bracket's 6600 mm³ and the
+/// Starter tasks 1, 2 and 4 of the agent chapter (`agent.md` › *Try this
+/// first*) give the answers it prints: the block's 8000 mm³, and what the
+/// task set's reference solutions build, the L-bracket's 6600 mm³ and the
 /// case's 17385.50 mm³; and the case's 1 mm wall breaks an assertion of
-/// "at least 1.5 mm", as task 4 tells the tester to see.
+/// "at least 1.5 mm", as task 4 tells the reader to see.
 #[test]
-fn the_field_test_tasks_two_and_four_are_as_the_page_says() {
+fn the_starter_tasks_give_the_answers_the_agent_chapter_says() {
     let text = read_text(&docs().join("guide/agent.md"));
     for said in [
+        "40 × 20 × 10 mm block",
+        "**8000 mm³**",
         "**6600 mm³**",
         "**17385.50 mm³**",
         "1 mm wall",
@@ -576,6 +580,16 @@ fn the_field_test_tasks_two_and_four_are_as_the_page_says() {
         assert!(text.contains(said), "the page says {said}");
     }
     let mut s = common::session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": ["40 mm", "20 mm", "10 mm"], "name": "Block"}),
+    );
+    let block = run(&mut s, "document.measure", json!({"feature": "Block"}))["volume"]
+        .as_f64()
+        .unwrap();
+    assert!((block - 8000.0).abs() < 1e-9, "{block}");
     let bracket = task_volume(&mut s, "l-bracket", "Bracket");
     assert!((bracket - 6600.0).abs() < 1e-6, "{bracket}");
     let case = task_volume(&mut s, "shelled-case", "Case");
@@ -604,6 +618,235 @@ fn the_field_test_tasks_two_and_four_are_as_the_page_says() {
         json!({"name": "wall", "expr": "1 mm"}),
     );
     assert_eq!(thin(&mut s), "failed");
+}
+
+/// What a result shown in the guide says: each `"key": value` it writes,
+/// the value a number, a string (whose pieces between `...` must all be in
+/// the real one, in order) or something else (only the key is held).
+#[derive(Debug)]
+enum Shown {
+    Number(f64),
+    Text(Vec<String>),
+    Other,
+}
+
+fn shown_pairs(text: &str) -> Vec<(String, Shown)> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut pairs = Vec::new();
+    let mut i = 0;
+    // A string from the quote at `at`: its text and the index after it.
+    let string = |at: usize| -> (String, usize) {
+        let mut s = String::new();
+        let mut j = at + 1;
+        while j < chars.len() && chars[j] != '"' {
+            if chars[j] == '\\' && j + 1 < chars.len() {
+                j += 1;
+            }
+            s.push(chars[j]);
+            j += 1;
+        }
+        (s, j + 1)
+    };
+    while i < chars.len() {
+        if chars[i] != '"' {
+            i += 1;
+            continue;
+        }
+        let (word, after) = string(i);
+        let mut j = after;
+        while j < chars.len() && chars[j] == ' ' {
+            j += 1;
+        }
+        if j >= chars.len() || chars[j] != ':' {
+            i = after;
+            continue;
+        }
+        j += 1;
+        while j < chars.len() && chars[j].is_whitespace() {
+            j += 1;
+        }
+        let value = match chars.get(j) {
+            Some('"') => {
+                let (s, end) = string(j);
+                i = end;
+                let pieces = s
+                    .split("...")
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .map(String::from)
+                    .collect();
+                Shown::Text(pieces)
+            }
+            Some(c) if c.is_ascii_digit() || *c == '-' => {
+                let mut end = j;
+                while end < chars.len()
+                    && (chars[end].is_ascii_digit() || "+-.eE".contains(chars[end]))
+                {
+                    end += 1;
+                }
+                let number: String = chars[j..end].iter().collect();
+                i = end;
+                Shown::Number(number.parse().unwrap_or_else(|e| panic!("{number}: {e}")))
+            }
+            _ => {
+                i = j;
+                Shown::Other
+            }
+        };
+        pairs.push((word, value));
+    }
+    pairs
+}
+
+/// Every `(key, value)` of a JSON value, at any depth.
+fn real_pairs<'a>(value: &'a Value, out: &mut Vec<(&'a str, &'a Value)>) {
+    match value {
+        Value::Object(map) => {
+            for (key, inner) in map {
+                out.push((key.as_str(), inner));
+                real_pairs(inner, out);
+            }
+        }
+        Value::Array(items) => {
+            for inner in items {
+                real_pairs(inner, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Holds a result as the guide shows it: every key it writes is one the
+/// command answers with, every number is the real one (to 1e-9 of it) and
+/// every string is in the real one, under the same key.
+fn as_shown(call: &str, shown: &str, real: &Value) {
+    let mut pairs = Vec::new();
+    real_pairs(real, &mut pairs);
+    for (key, value) in shown_pairs(shown) {
+        let same: Vec<&Value> = pairs
+            .iter()
+            .filter(|(k, _)| *k == key)
+            .map(|(_, v)| *v)
+            .collect();
+        assert!(
+            !same.is_empty(),
+            "{call}: the guide shows `{key}`, the result has none: {real}"
+        );
+        let found = match &value {
+            Shown::Number(n) => same.iter().any(|v| {
+                v.as_f64()
+                    .is_some_and(|r| (r - n).abs() <= 1e-9 * n.abs().max(1.0))
+            }),
+            Shown::Text(pieces) => same.iter().any(|v| {
+                v.as_str().is_some_and(|r| {
+                    let mut rest = r;
+                    pieces.iter().all(|p| match rest.find(p.as_str()) {
+                        Some(at) => {
+                            rest = &rest[at + p.len()..];
+                            true
+                        }
+                        None => false,
+                    })
+                })
+            }),
+            Shown::Other => true,
+        };
+        assert!(
+            found,
+            "{call}: the guide shows `{key}`: {value:?}, the result says {real}"
+        );
+    }
+}
+
+/// The agent chapter's session (`agent.md` › *A full session*) runs as it
+/// is shown: each `command_run` and `command_batch` of its blocks is run
+/// in a new session, and every key, number and string its results show is
+/// in the real result (the batch's own counts aside: its last result is
+/// held). So a renamed key, such as `assertionSummary`, or a proven bound
+/// that moved fails here, not in the reader's hands.
+#[test]
+fn the_agent_chapters_session_answers_as_shown() {
+    let text = read_text(&docs().join("guide/agent.md"));
+    let section = text
+        .split("## A full session")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .expect("the chapter has its session");
+    let dir = common::workdir("guide", "agent-session");
+    let mut s = common::session_in(&dir);
+    let tools = [
+        "command_run",
+        "command_batch",
+        "command_list",
+        "doc_render_preview",
+        "doc_inspect",
+        "selection_get",
+    ];
+    let mut blocks = Vec::new();
+    let mut current: Option<Vec<&str>> = None;
+    for line in section.lines() {
+        match (&mut current, line.trim_start()) {
+            (None, "```text") => current = Some(Vec::new()),
+            (Some(block), "```") => {
+                blocks.push(std::mem::take(block));
+                current = None;
+            }
+            (Some(block), _) => block.push(line),
+            (None, _) => {}
+        }
+    }
+    let mut ran = 0;
+    for block in blocks {
+        // Calls: a tool's name and its argument, up to the line `->`, then
+        // the result shown, up to the next call.
+        let mut calls: Vec<(String, String, String)> = Vec::new();
+        for line in block {
+            let trimmed = line.trim_start();
+            if let Some(tool) = tools.iter().find(|t| trimmed.starts_with(&format!("{t} "))) {
+                calls.push((
+                    tool.to_string(),
+                    trimmed[tool.len()..].to_string(),
+                    String::new(),
+                ));
+            } else if let Some(last) = calls.last_mut() {
+                if trimmed.starts_with("->") || !last.2.is_empty() {
+                    last.2.push_str(trimmed.trim_start_matches("->"));
+                    last.2.push('\n');
+                } else {
+                    last.1.push_str(line);
+                    last.1.push('\n');
+                }
+            }
+        }
+        for (tool, argument, result) in calls {
+            match tool.as_str() {
+                "command_run" => {
+                    let call: Value = serde_json::from_str(&argument)
+                        .unwrap_or_else(|e| panic!("{argument}: {e}"));
+                    let id = call["id"].as_str().unwrap();
+                    let real = run(&mut s, id, call["params"].clone());
+                    as_shown(id, &result, &real);
+                    ran += 1;
+                }
+                "command_batch" => {
+                    let call: Value = serde_json::from_str(&argument)
+                        .unwrap_or_else(|e| panic!("{argument}: {e}"));
+                    let mut last = Value::Null;
+                    for step in call["steps"].as_array().unwrap() {
+                        last = run(&mut s, step["id"].as_str().unwrap(), step["params"].clone());
+                        ran += 1;
+                    }
+                    let shown = result
+                        .split("\"result\":")
+                        .nth(1)
+                        .expect("the batch shows its last result");
+                    as_shown("command_batch", shown, &last);
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(ran >= 20, "{ran} commands run");
 }
 
 /// The sweep along two rails of the features chapter (`features.md` ›

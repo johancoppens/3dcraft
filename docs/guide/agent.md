@@ -2,10 +2,12 @@
 
 *Describe a part, let the agent build it in 3DCraft while you watch, and check what it made.*
 
-An agent connected to 3DCraft ([Install 3DCraft and connect an AI agent](install.md#connect-an-ai-agent-over-mcp)) builds a model the
-way a careful draughtsman would: it names the sizes as variables, adds features one by one, and reads back
-what it built. Your part is to say what you want, to watch, and to check. You do not need to know the
-commands: the agent looks them up itself.
+An agent connected to 3DCraft ([Install › Connect an AI agent](install.md#connect-an-ai-agent-over-mcp))
+works the way a careful draughtsman would. It names the sizes as variables, adds features one by one,
+and reads back what it built.
+
+Your part is to say what you want, to watch, and to check. You do not need to know the commands: the
+agent looks them up itself.
 
 ## What to ask
 
@@ -16,18 +18,29 @@ are measured from:
 > 60 mm pitch circle. Drive it by variables, so that I can change the number of holes. Assert its volume.
 > Save it as flange.3dcraft and export a STEP file.
 
+A few words from that request, for readers new to CAD:
+
+| Word | Means |
+|---|---|
+| **Bore** | The large hole through the middle, for a shaft or a pipe |
+| **Pitch circle** (or bolt circle) | The circle the centres of the bolt holes lie on |
+| **Variable** | A named size, such as `n` for the number of holes, that the model follows when it changes |
+| **Assert** | Keep a check in the design: here, that its volume is what a formula says |
+| **Fillet** (or round), **chamfer** | An edge rounded off, or cut off at an angle |
+| **STEP** | The file format other CAD programs read: exact solids, not triangles |
+
 Things that help:
 
-- **Name the sizes** you want to change later ("the thickness", "the number of holes"), and say where the
-  part sits ("the corner at the origin", "the bottom on the XY plane"). 3DCraft's axes are X, Y and Z,
-  with Z up.
-- **Ask for checks** ([Measuring and assertions](measure.md)): "the volume must be …", "the holes must go through",
-  "the wall at least 2 mm". 3DCraft keeps them as *assertions* in the document and checks them again
-  after every change, so they do not depend on the agent's memory.
-- **Ask for a check and a picture** at the end ("run document.check and show me a preview").
+- **Name the sizes** you want to change later ("the thickness", "the number of holes").
+- **Say where the part sits**: "the corner at the origin", "the bottom on the XY plane". 3DCraft's axes
+  are X, Y and Z, with Z up.
+- **Ask for checks** ([Measuring and assertions](measure.md)): "the volume must be …", "the holes must go
+  through", "the wall at least 2 mm". 3DCraft keeps them in the document and checks them again after
+  every change, so they do not depend on the agent's memory.
+- **Ask for a check and a picture** at the end: "run document.check and show me a preview".
 - **Point instead of describing** when it is easier: click a face in the window and say "this face"
-  ([The window](window.md#pointing-at-things)).
-- **Change by sizes**: "make it 8 holes" is one change of a variable; everything that depends on it
+  ([The window › Pointing at things](window.md#pointing-at-things)).
+- **Change by sizes**: "make it 8 holes" is one change of a variable, and everything that depends on it
   follows.
 
 ### More things to ask
@@ -38,14 +51,15 @@ Things that help:
 | "Make the hole I selected 6.5 mm." | reads your selection, finds the size that drives that hole and changes it |
 | "Why did the fillet fail?" | reads the reason 3DCraft gave (often with the largest size that fits) and proposes a fix |
 | "Show me the history step by step." | plays the history in your window |
-| "Make this a Jig with width, depth and height between 50 and 200 mm." | publishes those variables as parameters and exports a `.3dcraftjig` ([Using a Jig](jigs.md)) |
+| "Make this a Jig with width, depth and height between 50 and 200 mm." | publishes those variables as parameters and exports a `.3dcraftjig` ([Making Jigs](making-jigs.md)) |
 | "Export the outline of the top for the laser cutter." | writes a DXF or SVG of that face at true size ([Files, export and drawings](files.md)) |
 | "Something went wrong; give me the bug report." | returns the report of the last failed command ([Troubleshooting](troubleshooting.md#reporting-a-problem)) |
 
 ## A full session
 
-This is what an agent sent for the request above, and what came back (results shortened; the numbers are
-real). It ran headless, `craft3d-cli mcp --automation-read-root work --automation-write-root work`.
+This is what an agent sent for the request above, and what came back. The results are shortened (`...`),
+but every key and number shown is real; a test runs this session again at every change of 3DCraft. The
+agent ran headless here, `craft3d-cli mcp --automation-read-root work --automation-write-root work`.
 
 **1. Learn the commands.** `command_list` with a filter, for the commands it needs; the parameters come
 with each. (`brief: true` gives every command with its parameters and the first sentence of its summary,
@@ -58,8 +72,8 @@ command_list {"filter": "pattern"}
      "summary": "...", "enabled": false, "disabledReason": "no document is open; run file.new or file.open first"}]}
 ```
 
-**2. A document, then the variables, an assertion and the features in one batch.** The assertion is
-written first: it names `Flange` before that exists, is in error until it does, and passes once built.
+**2. A document, then the variables, an assertion and the features in one batch.** The assertion comes
+first: it names `Flange` before that exists, is in error until it does, and passes once it is built.
 
 ```text
 command_run {"id": "file.new", "params": {"units": "mm"}}
@@ -84,7 +98,7 @@ command_batch {"terse": true, "steps": [
   {"id": "feature.boolean", "params": {"op": "subtract", "target": "Bored", "tool": "BoltHoles", "name": "Flange"}}]}
 -> {"completed": 13, "failed": 0, "errors": [],
     "last": {"step": 12, "result": {"id": "F6", "name": "Flange", "status": "ok",
-             "assertions": {"count": 1, "passed": 1, "broken": [], "unproven": [], "pending": 0}}}}
+             "assertionSummary": {"count": 1, "passed": 1, "broken": [], "unproven": [], "pending": 0}}}}
 ```
 
 **3. Check.** `assert.list` says what was measured against what was expected:
@@ -109,28 +123,29 @@ command_run {"id": "select.query", "params": {"kind": "face", "where": {"hole": 
      {"name": "F6:copy(1)/F4:face(0)", "copyOf": [{"name": "BoltHoles", "instance": 0}], ...}, ...]}
 ```
 
-**5. Change it.** Eight holes instead of six. The result of the edit carries the assertions, still
-passing because the expected volume is written in `n` too:
+**5. Change it.** Eight holes instead of six. The result of the edit carries the assertions' summary:
+still passing, because the expected volume is written in `n` too.
 
 ```text
 command_run {"id": "variable.set", "params": {"name": "n", "expr": "8"}}
--> {"name": "n", "value": 8.0, "assertions": {"count": 1, "passed": 1, "broken": [], ...}}
+-> {"name": "n", "value": 8.0, "assertionSummary": {"count": 1, "passed": 1, "broken": [], ...}}
 
 command_run {"id": "measure.thickness", "params": {"of": "Flange"}}
--> {"thickness": 6.0, "atLeast": 5.752661301804291,
-    "at": {"face": "F6:copy(1)/F4:face(0)", "point": [34.0, 0.0, 10.0]},
-    "to": {"face": "F6:copy(0)/F1:face(0)", "point": [40.0, 0.0, 10.0]}}
+-> {"thickness": 6.0, "atLeast": 5.99999999999968,
+    "at": {"face": "F6:copy(1)/F4:face(0)", "point": [34.0, ...]},
+    "to": {"face": "F6:copy(0)/F1:face(0)", "point": [40.0, ...]}}
 ```
 
-The thinnest wall is 6 mm, between a bolt hole and the rim.
+The thinnest wall is 6 mm, between a bolt hole and the rim. `atLeast` is what is proven: no wall is
+thinner than that anywhere ([Measuring and assertions](measure.md#measures)).
 
 **6. A refusal, and undo.** Asked for a 20 mm round on the rim of a 10 mm disc, the fillet is added but
-fails; `command_run` does not report an error, so the agent reads `status`:
+fails. `command_run` does not report an error, so the agent reads `status`:
 
 ```text
 command_run {"id": "feature.fillet", "params": {"edges": [["F1:face(0)", "F1:face(2)"]], "radius": "20 mm", "name": "Round"}}
 -> {"id": "F7", "name": "Round", "status": "failed",
-    "error": "radius: not built for edges.0 (between F6:copy(0)/F1:face(0) and F6:copy(0)/F1:face(2)): with a radius of 20 mm the fillet face would be a torus that reaches its own axis ..., which is not built yet; so it is for every radius from 20 mm up to 40 mm ..."}
+    "error": "radius: not built for edges.0 (between F6:copy(0)/F1:face(0) and F6:copy(0)/F1:face(2)): with a radius of 20 mm the fillet face would be a torus that reaches its own axis ...which is not built yet; so it is for every radius from 20 mm up to 40 mm..."}
 
 command_run {"id": "edit.undo", "params": {}}
 -> {"undone": "Add fillet"}
@@ -140,35 +155,35 @@ command_run {"id": "edit.undo", "params": {}}
 
 ```text
 command_run {"id": "document.check", "params": {}}
--> {"ok": true, "problems": [], "bodiesChecked": 1, "assertions": {"passed": 1, ...}}
+-> {"ok": true, "problems": [], "bodiesChecked": 1, "assertionSummary": {"passed": 1, ...}}
 doc_render_preview {"view": "iso"}
 -> (a PNG image) and {"coverage": ..., "triangles": ..., "bodies": [...]}
 command_run {"id": "file.save", "params": {"path": "flange.3dcraft"}}
--> {"path": "flange.3dcraft"}
+-> {"path": ".../flange.3dcraft"}
 command_run {"id": "file.export", "params": {"path": "flange.step"}}
 -> {"format": "step", "bodies": 1, "solids": 1, "faces": 12, "unit": "mm", ...}
 ```
 
-The [flange example](../examples/flange.json) is the same part with a chamfer and a named set of bolt
+The [flange lesson](../examples/flange.json) is the same part with a chamfer and a named set of bolt
 holes.
 
 ## Checking the agent's work
 
-Do not take "done" on trust; 3DCraft gives you the means to check, without reading code:
+Do not take "done" on trust. 3DCraft gives you the means to check, without reading code:
 
-1. **The feature list** in the window ([The window](window.md)): every feature built (✔), none failed
-   (⚠), every assertion passed.
-2. **The assertions**: they are the agent's claims about the part, written as numbers you can read
-   ("volume = π((d/2)² − …) t"). `assert.list` shows them; ask for the ones you care about.
-3. **Your own numbers**: ask for `measure.distance`, `measure.thickness`, `measure.through` between the
-   faces you point at, or for `document.inspect`'s volume and bounding box, and compare with what you
-   expect.
-4. **Change a variable** and see that the part follows (and the assertions still pass).
+1. **The feature list** in the window ([The window](window.md#features)): every feature built (✔), none
+   failed (⚠), every check passed.
+2. **The checks** (assertions): they are the agent's claims about the part, written as numbers you can
+   read ("volume = π((d/2)² − …) t"). `assert.list` shows them; ask for the ones you care about.
+3. **Your own numbers**: ask for `measure.distance`, `measure.thickness` or `measure.through` between
+   the faces you point at, or for the volume and bounding box `document.inspect` gives, and compare them
+   with what you expect.
+4. **Change a variable** and see that the part follows, and the checks still pass.
 5. **Look**: the window, or `doc_render_preview` with `projection: "orthographic"` and a `view` such as
    `top` for a picture to scale, or `mode: "ids"` (one colour per face) to see which face is which.
-6. **Reopen the file** (`file.open`): a `.3dcraft` file regenerates bit for bit to the same bodies.
-7. **Play the history** (the player under the feature list, or ask the agent to play it): each step should
-   make sense on its own.
+6. **Reopen the file** (`file.open`): a `.3dcraft` file rebuilds bit for bit to the same bodies.
+7. **Play the history** (the player under the feature list, or ask the agent to play it): each step
+   should make sense on its own.
 
 ## Tips for a good session
 
@@ -184,46 +199,34 @@ Do not take "done" on trust; 3DCraft gives you the means to check, without readi
 ## What the agent gets back
 
 You do not need this to work with an agent, but it helps to read along. Every command answers with JSON.
-The parts worth knowing:
 
-- **A command that fails** changes nothing and returns an error that starts with the command and the
-  parameter, such as *feature.boolean: there is no feature named 'Sheet'; features: Block*. Over MCP it is a tool
-  result with `isError: true`. In a batch, steps before it stay applied (a batch is not atomic; undo with
-  `edit.undo` once per step).
-- **A feature that fails** is different: the command succeeded (the feature is in the history) but the
-  feature could not be built. Its result has `"status": "failed"` and an `error` that names the parameter,
-  the entities and often the largest value that would fit ("the largest radius that fits there is below
-  26 mm"). Features built from it fail too, each with `causedBy`: the one to fix. See [How 3DCraft thinks](concepts.md#failed-features). A
-  `command_batch` judges this at the end: it lists under `featuresFailed` the features that still fail
-  when the batch ends and that one of its steps broke, and is then an error; a break a later step
-  repairs is only noted. A failed assertion is not listed there: read `assert.list` or `document.check`.
-- **`failed`** in the result of `variable.set` and of the edits that can break other features
-  (`variable.delete` with `force`, `feature.edit`, `feature.suppress`, `feature.move`, `feature.delete`, `history.rollback`,
-  and every `sketch.*` command that changes an existing sketch: a dimension, a constraint, an entity drawn
-  or deleted): the features the change made fail, each `{feature, id, error}` (and `causedBy`), left out
-  when there are none. "Make the plate 2 mm thick" that breaks a fillet says so in its own result, and so
-  does deleting a line that leaves the extruded profile open.
-- **`assertions`** in the result of every feature command and `variable.set`: how many passed and which
-  broke. A broken assertion never stops a feature from being built; it tells you the design no longer
-  meets what was asked.
-- **`doc_inspect`** (the command `document.inspect`) is the whole state: variables with values, every
-  feature with its status and parameters, every body with `volume`, `area`, `centroid`, `bbox`, its faces
-  by name (`faceNames`), and the assertions. `document.inspect {"measures": false}` is the quick version
-  for a large model (through `command_run`: the tool `doc_inspect` takes no arguments).
-- **`document.check`** lists every problem in one place: failed variables and features, invalid bodies,
-  broken assertions (`ok` is false), and assertions not proven (warnings). `{"deep": true}` checks more
-  (self-intersections, every boolean against its operands) and takes longer.
+- **A command that fails** changes nothing. Its error starts with the command and the parameter, such as
+  *feature.boolean: there is no feature named 'Sheet'; features: Block*.
+- **A feature that fails** is different: the command did what was asked (the feature is in the history),
+  but the feature could not be built. Its result says `"status": "failed"`, with an `error` that names the
+  parameter, the entities and often the largest value that would fit
+  ([How 3DCraft thinks › Failed features](concepts.md#failed-features)).
+- **`assertionSummary`**, in the result of every feature command and of `variable.set`, `param.set` and
+  `document.check`: how many checks passed and which broke. A broken check never stops a feature from
+  being built; it tells you the design no longer meets what was asked.
+- **`document.inspect`** (the tool `doc_inspect`) is the whole state: variables, features with their
+  status, bodies with volume, area and faces, and the checks.
 
-## 3. Five tasks to start with
+[Programs on 3DCraft › What a command answers](programs.md#what-a-command-answers) has the full rules,
+for people who write their own programs or read an agent's work closely.
 
-Links in this guide and in 3DCraft (**How it works**, Help › User guide) open in your web browser. Each
-task takes 5 to 20 minutes. Give the agent the text in quotes, in your own words if you like, and in
-your own language if you prefer. Then check its work as [Working with an AI agent](agent.md#checking-the-agents-work)
-shows: look at the window, click faces, and ask for the volume.
+## Try this first: five tasks
 
-**Task 1, without an agent: your first five minutes.** Follow [Your first five minutes](first-steps.md): open an
-example from the start screen, turn it around, play its history, change a size in the feature list and
-export an STL for a 3D printer. Then do the same in the web version if you have its address.
+Five tasks to start with, each with the answer 3DCraft should give. Each takes 5 to 20 minutes. Give the
+agent the text in quotes, in your own words if you like, and in your own language if you prefer. Then
+check its work as [above](#checking-the-agents-work): look at the window, click faces, and ask for the
+volume.
+
+A refusal ("not built", "does not fit") is not a failure of the task. It says what 3DCraft cannot do yet,
+and that is worth reporting ([Troubleshooting](troubleshooting.md#reporting-a-problem)).
+
+**Task 1: a block, to see the connection work.** *"Make a 40 × 20 × 10 mm block in 3DCraft, with a corner
+at the origin. Tell me its volume."* The block appears in the window, and the answer is **8000 mm³**.
 
 **Task 2: an L-bracket.** *"In 3DCraft, make an L-shaped angle bracket of 4 mm stock, 25 mm wide: one leg
 lies flat on the XY plane and runs 40 mm along +X, the other stands up along +Z to a height of 30 mm,
@@ -234,11 +237,12 @@ the inside corner with a 4 mm radius, and to make the bracket 30 mm wide: the ro
 **Task 3: a strip with a counted row of holes.** *"Make a flat strip 120 × 20 × 3 mm (corner at the
 origin, along +X, +Y, +Z) with a row of 5 mm holes along its centre line at a 10 mm pitch: as many holes
 as fit with every hole centre at least 7.5 mm from the ends, the row centred on the strip. The number of
-holes must follow the length."* That is **11 holes and 6552.05 mm³**. Now ask for a strip of 150 mm: **14
-holes and 8175.33 mm³**, without the agent rebuilding anything by hand. If you want to see how it can be
-done, this is one way, as a script (`craft3d-cli run --new '{"units":"mm"}' --script strip.json --out
-strip.3dcraft`, [The command line and scripts](command-line.md)); its two assertions check the volume and the number of
-holes at every change:
+holes must follow the length."* That is **11 holes and 6552.05 mm³**. Now ask for a strip of 150 mm:
+**14 holes and 8175.33 mm³**, without the agent rebuilding anything by hand.
+
+This is one way to build it, as a script ([The command line and scripts](command-line.md) runs it with
+`craft3d-cli run --new '{"units":"mm"}' --script strip.json --out strip.3dcraft`). Its two assertions
+check the volume and the number of holes at every change:
 
 ```json
 [
@@ -262,15 +266,15 @@ holes at every change:
 the origin), the top edges and the four upright corners rounded with a 2 mm radius, the bottom edges
 sharp, hollowed to a 2 mm wall and open at the bottom. Drive it by variables. Then add an assertion that
 the thinnest wall is at least 1.5 mm."* The volume is **17385.50 mm³**, and at 2 mm the assertion passes:
-3DCraft proves the wall is at least 1.5 mm everywhere, round corners included. Now ask for a 1 mm wall: the window shows the assertion
-failing, and the agent should tell you so ([Measuring and assertions](measure.md#assertions)).
+3DCraft proves the wall is at least 1.5 mm everywhere, round corners included. Now ask for a 1 mm wall:
+the window shows the check failing, and the agent should tell you so
+([Measuring and assertions](measure.md#assertions)).
 
 **Task 5: make a Jig of it.** *"Publish length and pitch of the strip from task 3 as parameters (length
-from 40 to 300 mm, pitch from 8 to 20 mm) and export it as a Jig."* Open the `.3dcraftjig` in 3DCraft
-(and in the web version, if you have it): the **Parameters** tab shows the two values; drag them and
-watch the holes follow, then export an STL, or a DXF of the top face for a laser cutter ([Using a Jig](jigs.md)).
+from 40 to 300 mm, pitch from 8 to 20 mm) and export it as a Jig."* Open the `.3dcraftjig` in 3DCraft:
+the **Parameters** tab shows the two values. Drag them and watch the holes follow, then export an STL, or
+a DXF of the top face for a laser cutter ([Making Jigs](making-jigs.md)).
 
-After these, **try a part of your own**: something from your workshop, your classroom or your hobby. That
-is the test that tells us most.
+After these, **try a part of your own**: something from your workshop, your classroom or your hobby.
 
-**Next:** [the window](window.md), or straight to [Jigs](jigs.md).
+**Next:** [The window](window.md), or straight to [Using a Jig](jigs.md).

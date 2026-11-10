@@ -1,48 +1,52 @@
 # Install 3DCraft and connect an AI agent
 
-*Get 3DCraft running on your computer (or in your browser) and give your AI agent access to it.*
+*Get 3DCraft running on your computer or in your browser, and let your AI agent work in the window you
+are watching.*
 
 ## What you get
 
 3DCraft comes as two programs, and every installer has both:
 
-- **`craft3d`**, the **window**. It shows your design, lets you look around, click on faces, play the
-  history, set a Jig's parameters, and open, save and export files.
-- **`craft3d-cli`**, the **command line**. It runs commands and scripts, renders pictures, converts files,
-  and is the **MCP server** your AI agent connects through. It needs no graphics card.
+- **`craft3d`**, the **window**. It shows your design. You look around, click on faces, play the history,
+  set a Jig's parameters, and open, save and export files.
+- **`craft3d-cli`**, the **command line**. It runs commands and scripts, renders pictures and converts
+  files. It is also the **MCP server** your AI agent connects through. It needs no graphics card.
 
-There is also a **web version**: 3DCraft in your browser, with nothing to install (see
-[below](#in-the-browser-nothing-to-install)).
+There is also a **web version**: 3DCraft in your browser, with nothing to install
+([below](#in-the-browser-nothing-to-install)).
 
 ## Download
 
-Download the installer for your computer from the release page you were given. The files carry the
-version number, here 0.1.0:
+Download the installer for your computer from [3dcraft.dev](https://3dcraft.dev/). The same files are on
+the [release page](https://github.com/johancoppens/3dcraft/releases) of the source repository. The file
+names carry the version number, here 0.1.0:
 
 | Your computer | Download | Where `craft3d-cli` ends up |
 |---|---|---|
 | Windows (64-bit) | `3DCraft-0.1.0-x86_64.msi`, or `3dcraft-0.1.0-x86_64-windows.zip` | `C:\Program Files\3DCraft\craft3d-cli.exe` (on your `PATH`), or the unzipped folder |
 | macOS (Apple Silicon: M1 or later) | `3DCraft-0.1.0-aarch64.dmg` | `/Applications/3DCraft.app/Contents/MacOS/craft3d-cli` |
 | Linux (64-bit Intel or AMD) | `3DCraft-0.1.0-x86_64.AppImage`, or `3dcraft-0.1.0-x86_64-linux.tar.gz` | the AppImage itself (`… cli`), or `~/.local/bin/craft3d-cli` |
-| Any computer, nothing to install | the web version | none: the web version has no MCP |
+| Any computer, nothing to install | the web version, [3dcraft.dev/app](https://3dcraft.dev/app/) | none: the web version has no MCP |
 
 ### Why your computer warns you
 
-This first release is **not signed**: 3DCraft does not yet have the certificates from Apple and Microsoft
-that tell your computer who made a program. So the first time you open it, Windows or macOS says it
-does not know the program and stops it. That is expected, and you only have to get past it once. The
-steps below are all it takes; nothing is switched off for other programs.
+This first release is **not signed**. 3DCraft does not yet have the certificates from Apple and Microsoft
+that tell your computer who made a program. So the first time you open it, Windows or macOS says it does
+not know the program and stops it.
+
+That is expected, and you only get past it once. The steps below are all it takes. Nothing is switched
+off for other programs.
 
 ## Windows
 
 1. Double-click `3DCraft-0.1.0-x86_64.msi`.
 2. A blue box appears: **"Windows protected your PC"**. Click **More info**, check that the app is
    `3DCraft-0.1.0-x86_64.msi` with publisher *Unknown publisher*, and click **Run anyway**.
-3. The installer may ask for an administrator's permission (it installs for all users into
-   `C:\Program Files\3DCraft`).
+3. The installer may ask for an administrator's permission. It installs for all users into
+   `C:\Program Files\3DCraft`.
 
-3DCraft is now in the Start menu, `.3dcraft` and `.3dcraftjig` files open with it, and `craft3d-cli`
-works in a new terminal window.
+3DCraft is now in the Start menu, `.3dcraft`, `.3dcraftjig` and `.3dcraftasm` files open with it, and
+`craft3d-cli` works in a new terminal window.
 
 > **Prefer not to install?** Unzip `3dcraft-0.1.0-x86_64-windows.zip` anywhere and start `craft3d.exe`
 > from the folder. SmartScreen asks the same question the first time (More info › Run anyway).
@@ -68,19 +72,19 @@ From then on 3DCraft opens normally.
 
 ## Linux
 
-Linux does not warn about unsigned programs, but a downloaded file may not run until you allow it.
-Both packages need a Linux from about 2022 or newer (glibc 2.35, as in Ubuntu 22.04).
+Linux does not warn about unsigned programs, but a downloaded file may not run until you allow it. Both
+packages need a Linux from about 2022 or newer (glibc 2.35, as in Ubuntu 22.04).
 
 **AppImage** (one file, nothing installed):
 
-1. Make it executable: in a file manager, right-click › Properties › Permissions › *Allow executing file
-   as program*; or in a terminal:
+1. Make it executable. In a file manager: right-click › Properties › Permissions › *Allow executing file
+   as program*. Or in a terminal:
 
    ```sh
    chmod +x 3DCraft-0.1.0-x86_64.AppImage
    ```
 
-2. Start it: double-click it, or `./3DCraft-0.1.0-x86_64.AppImage` for the window and
+2. Start it: double-click it, or type `./3DCraft-0.1.0-x86_64.AppImage` for the window and
    `./3DCraft-0.1.0-x86_64.AppImage cli --version` for the command line. A link named `craft3d-cli` that
    points at the AppImage starts the command line too.
 
@@ -92,7 +96,7 @@ The AppImage adds nothing to your system by itself: its menu entry, its icon and
 with AppImageLauncher gives you the menu entry and opens those files with 3DCraft; without it, the tarball
 installs them.
 
-**Tarball** (installs for your user into `~/.local`, with a menu entry and the `.3dcraft` file type):
+**Tarball** (installs for your user into `~/.local`, with a menu entry and the file types):
 
 ```sh
 tar -xzf 3dcraft-0.1.0-x86_64-linux.tar.gz
@@ -104,28 +108,34 @@ Make sure `~/.local/bin` is on your `PATH` (most distributions do this already).
 
 ## In the browser: nothing to install
 
-The web version is 3DCraft as a web page. Open the address you were given in a recent Chrome, Edge,
-Firefox or Safari. It can:
+The web version is 3DCraft as a web page. Open [3dcraft.dev/app](https://3dcraft.dev/app/) in a recent
+Chrome, Edge, Firefox or Safari. It can:
 
 - open, show, save, import and export `.3dcraft`, `.3dcraftjig` and STEP files (drop a file on the page,
   or use the File menu);
 - **use Jigs**: set a Jig's parameters and export the result, so you can make a laser-cut box or a
-  3D-printable pulley without installing anything ([Using a Jig](jigs.md));
-- build the example models from its start screen.
+  Gridfinity bin without installing anything ([Using a Jig](jigs.md));
+- open the examples, Jigs and assemblies of its start screen.
 
-It has no MCP and no command line, so **an AI agent cannot drive it yet**: for working with an agent,
-install one of the programs above. The web version keeps nothing on a server: files are read from and
-written to your computer ([Files, export and drawings](files.md#files-in-the-web-version)). It draws with WebGPU where the
-browser has it and WebGL2 otherwise.
+It has no MCP and no command line, so **an AI agent cannot drive it yet**. To work with an agent, install
+one of the programs above.
+
+The web version keeps nothing on a server: files are read from and written to your computer
+([Files › The web version](files.md#files-in-the-web-version)). It draws with WebGPU where the browser has
+it, and with WebGL2 otherwise.
+
+<!-- SHOT: web-app.png | the web build in a desktop browser at https://3dcraft.dev/app/: its start screen, then the laser-cut box Jig on its Parameters tab; theme light, browser window about 1400x900 | by hand: open the address in Chrome and take the browser's own screenshot (the page has no control channel) -->
 
 ## Check that it works
 
 Start **3DCraft** from your Start menu, Applications folder or app launcher. The window opens on the
-start screen. Click an example card, such as **L-bracket**: it is built in a new tab. That is all it
-takes; [Your first five minutes](first-steps.md) shows you around.
+**start screen**. Click the **T-slot profile** card: 3DCraft builds it in a new tab.
+[Your first five minutes](first-steps.md) shows you around from there.
 
-To check the command line too, open a terminal and type (write the full path of `craft3d-cli` from the
-table above when it is not on your `PATH`):
+<!-- CHECK: the card's name on the new start screen is "T-slot profile", and a click builds or opens it in a new tab -->
+
+To check the command line too, open a terminal and type the lines below. Write the full path of
+`craft3d-cli` from the table above when it is not on your `PATH`.
 
 ```sh
 craft3d-cli --version
@@ -141,30 +151,31 @@ This makes a 40 × 20 × 10 mm block, saves it as `box.3dcraft` and draws it int
 
 ## Connect an AI agent over MCP
 
-An AI agent works with 3DCraft through **MCP** (the Model Context Protocol), which most AI tools support:
-Claude Code, Claude Desktop and other MCP clients. `craft3d-cli mcp` is the MCP server; your AI tool
+An AI agent works with 3DCraft through **MCP**, the Model Context Protocol. Most AI tools speak it:
+Claude Code, Claude Desktop, Cursor, VS Code and others. `craft3d-cli mcp` is the MCP server. Your AI tool
 starts it, and through it the agent can run every 3DCraft command.
 
-There are two ways to connect. The first is the one to use: **the agent models in the window you are
-watching**.
+With the steps below, **the agent models in the window you are watching**. That is the way to use it.
 
-### Bridged to the window (recommended)
+<!-- SHOT: agent-panel.png | the agent panel open over the status bar's pill: Allow AI agents on, the work folder ~/Documents/3DCraft, Connect with Copy command, Copy MCP configuration and Other clients, Connected none yet; the steel bookend open behind it; theme light, window 1400x900 | ui.set {"appearance": "light"}; file.open the bookend; ui.set {"dialogs": {"agents": true}}; run with a neutral HOME and craft3d-cli in a neutral folder so no personal path shows (plan: shots/pictures/08-agent-panel.json) -->
+![The agent panel: Allow AI agents switched on, the work folder, and the buttons that copy the configuration for your AI tool](images/agent-panel.png)
 
-1. **Allow AI agents.** Click the agent pill at the right end of the status bar (it says **Agents
-   off**; on the start screen the same panel is under **Connect an AI agent**, and **Help › Connect an
-   AI agent…** opens it too) and turn on the switch beside **Connect an AI agent**. 3DCraft remembers
-   your choice for the next start. The pill then says **Waiting for an agent**.
+1. **Allow AI agents.** Click the **agent pill** at the right end of the status bar. It says **Agents
+   off**. The panel *Connect an AI agent* opens; turn on its switch, **Allow AI agents**. (The start
+   screen shows the same panel, and **Help › Connect an AI agent…** opens it too.) 3DCraft remembers your
+   choice for the next start. The pill now says **Waiting for an agent**.
 2. **Add 3DCraft to your AI tool, once.** With the switch on, the panel shows what to copy, under
    **Connect**:
-   - for **Claude Code**, click **Copy command** and paste the line into a terminal:
+   - For **Claude Code**, click **Copy command** and paste the line into a terminal:
 
      ```sh
      claude mcp add 3dcraft -- /full/path/to/craft3d-cli mcp --bridge
      ```
 
-   - for **Claude Desktop**, **Cursor** and other tools configured with JSON, click **Copy MCP
-     configuration** and paste it into the tool's configuration (Claude Desktop calls it
-     `claude_desktop_config.json`, Cursor `~/.cursor/mcp.json`):
+   - For **Claude Desktop**, **Cursor** and other tools configured with JSON, click **Copy MCP
+     configuration** and paste it into the tool's configuration file. Claude Desktop calls that file
+     `claude_desktop_config.json` (Settings › Developer › Edit Config), Cursor `~/.cursor/mcp.json`,
+     Gemini CLI `~/.gemini/settings.json`:
 
      ```text
      {
@@ -177,64 +188,107 @@ watching**.
      }
      ```
 
-   - **Other clients** has a ready configuration for each of **Claude Desktop**, **Cursor**, **VS Code**
-     (its `.vscode/mcp.json` takes `"servers"` with `"type": "stdio"`) and **Other (stdio)**, the bare
-     command and its arguments for any client that starts a server over stdio; choosing one copies it.
+   - **Other clients** has a ready configuration for **Claude Desktop**, **Cursor**, **VS Code** (its
+     `.vscode/mcp.json` takes `"servers"` with `"type": "stdio"`) and **Other (stdio)**, the bare
+     command and its arguments for any client that starts a server over stdio. Choosing one copies it.
 
-   The path is filled in for your computer (on Linux with the AppImage, the AppImage itself, followed
-   by `cli`). Nothing secret is in it: there is no password to copy or keep.
-3. **Ask the agent something** ([Working with an AI agent](agent.md)): "Make a 40 × 20 × 10 mm block in 3DCraft".
-   The block appears in the window. The pill turns indigo, **Claude Code connected**, and while the
-   agent works it names each command it runs, with a turning mark (**Claude Code · feature.block**),
-   so you always see when it acts. Click the pill to see who is connected and since when, to
-   **Disconnect all**, or to turn agents off.
+   The path is filled in for your computer: on Linux with the AppImage it is the AppImage itself,
+   followed by `cli`. Nothing secret is in it: there is no password to copy or keep. Restart your AI tool
+   after you change its configuration.
+3. **Ask the agent something** ([Working with an AI agent](agent.md)), such as "Make a 40 × 20 × 10 mm
+   block in 3DCraft". The block appears in the window. The pill turns indigo and says **Claude Code
+   connected**. While the agent works, the pill names each command it runs, with a turning mark
+   (**Claude Code · feature.block**), so you always see when it acts.
 
-> **Which files can the agent touch?** Only the folders the panel names: the **Work folder**,
-> `~/Documents/3DCraft` (made the first time; **Change…** picks another folder, which
-> 3DCraft remembers, **Open folder** shows it), and, while **Also the open document's folder** is on,
-> the folder of the document you have open, so the agent can export next to it. `file.open`,
-> `file.save`, `file.export`, `file.import` and `view.render` refuse any other path, also through a
-> shortcut (a symbolic link) that leads out of those folders. Everything you open or save yourself from
-> the File menu stays yours to choose.
+Click the pill at any time to see who is connected and since when. The **✕** beside an agent disconnects
+it; **Disconnect all** disconnects every one; the switch turns agents off.
 
-**3DCraft asks you first.** When your AI tool connects from a project folder (Claude Code opened in
-`~/projects/bracket`, say), the pill turns amber and 3DCraft asks: *"Claude Code wants to connect. It is
-working in this folder. 3DCraft can let it read and write files there, besides the work folder"*, with the
-folder underneath. **Allow this folder** allows it until you close 3DCraft, or for every agent from now
-on when **Remember for this folder** is ticked (it then appears in the panel, where **Remove** takes it
-back); **Only the work folder** and **Refuse** keep it out, and the agent stays connected with the work
-folder only. The buttons wait a moment before they take a click, so a click meant for something else
-never answers.
-Then "make a new document with a 10 mm cube and save it in our folder" just works. When the agent wants
-a file anywhere else, 3DCraft shows the file, *"Claude Code asks to write a file"*, with **Deny**,
-**Allow this folder** (for every agent from now on) and **Allow once** (that file, for that one request);
-the agent waits for you (up to two minutes) and is told when you say no. Only you can answer these
-questions: the agent cannot answer them for itself. 3DCraft never
-offers your home folder itself, the folders of your keys, settings and programs, or the system's folders.
-On a Mac a folder in iCloud Drive or in your Dropbox, OneDrive, Google Drive or Box folder can be
-given, although the rest of `~/Library` cannot.
-The folder of the document you have open counts only for a document you opened or saved yourself.
+If no window allows agents, the agent is told to turn on **Allow AI agents**, and it can carry on as soon
+as you do. With several 3DCraft windows open, the agent works in the one you used last: click into it
+before you ask.
 
-If no window allows agents, the agent's requests get an answer that says to turn on **Allow AI agents**,
-and it can carry on as soon as you do. With several 3DCraft windows open, the agent works in the one you
-used last (click into it before you ask).
+### Other AI tools
 
-**Why a switch, and is it safe?** With the switch off, 3DCraft does not listen at all. With it on, it
-listens only to programs on your own computer, and only to those that know a secret token which 3DCraft
-keeps in a file that only you can read; your AI tool's `craft3d-cli` reads it there by itself. A web page
-open in your browser cannot drive 3DCraft: it cannot read that file, and 3DCraft ignores web requests.
+Any tool that starts an MCP server over stdio can connect. Where a tool keeps its configuration changes
+between its versions; what matters is the command and its arguments, `craft3d-cli mcp --bridge`.
 
-### Headless (no window)
+**OpenAI Codex CLI** reads `~/.codex/config.toml`:
 
-The agent gets a document of its own and shows you pictures it renders:
+```toml
+[mcp_servers.3dcraft]
+command = "/full/path/to/craft3d-cli"
+args = ["mcp", "--bridge"]
+```
+
+On Windows, write every `\` in a path twice, in TOML as in JSON:
+`command = "C:\\Program Files\\3DCraft\\craft3d-cli.exe"`. If you write the path yourself:
+
+| Your computer | `craft3d-cli` is |
+|---|---|
+| Windows | `C:\Program Files\3DCraft\craft3d-cli.exe` |
+| macOS | `/Applications/3DCraft.app/Contents/MacOS/craft3d-cli` |
+| Linux, AppImage | the AppImage itself, with `"cli"` as the first of the `args` |
+| Linux, tarball | `~/.local/bin/craft3d-cli`, written out in full |
+
+### Which files the agent can reach
+
+An agent reads and writes files only in the folders the panel names:
+
+- the **Work folder**, `~/Documents/3DCraft` at first. 3DCraft makes it the first time. **Change…**
+  picks another folder, which 3DCraft remembers; **Open folder** shows it;
+- while **Also the open document's folder** is ticked, the folder of the document you have open, so the
+  agent can export next to it. This counts only for a document you opened or saved yourself;
+- folders you allowed when 3DCraft asked (below). The panel lists them; **Remove** takes one back.
+
+`file.open`, `file.save`, `file.export`, `file.import` and `view.render` refuse any other path, also
+through a shortcut (a symbolic link) that leads out of those folders. What you open or save yourself from
+the File menu stays yours to choose.
+
+3DCraft never offers your home folder itself, the folders of your keys, settings and programs, or the
+system's folders. On a Mac a folder in iCloud Drive, or in your Dropbox, OneDrive, Google Drive or Box
+folder, can be given, although the rest of `~/Library` cannot.
+
+### 3DCraft asks you first
+
+When your AI tool connects from a project folder (Claude Code opened in `~/projects/bracket`, say), the
+pill turns amber and 3DCraft asks: *"Claude Code wants to connect. It is working in this folder. 3DCraft
+can let it read and write files there, besides the work folder"*, with the folder underneath.
+
+- **Allow this folder** allows it until you close 3DCraft. With **Remember for this folder** ticked, it
+  is allowed for every agent from now on, and the panel lists it.
+- **Only the work folder** keeps that folder out: the agent stays connected with the work folder only.
+- **Refuse** disconnects that agent, and 3DCraft refuses it until you close 3DCraft.
+
+After that, "make a new document with a 10 mm cube and save it in our folder" works.
+
+When the agent wants a file anywhere else, 3DCraft shows the file (*"Claude Code asks to write a file"*)
+with **Deny**, **Allow this folder** (for every agent from now on) and **Allow once** (that file, for that
+one request). The agent waits for your answer for up to two minutes, and is told when you say no.
+
+Only you can answer these questions; the agent cannot answer them for itself. The buttons wait a moment
+before they take a click, so a click meant for something else never answers.
+
+<!-- SHOT: agent-question.png | the question "Claude Code wants to connect…" over the window, with Refuse, Only the work folder, Allow this folder and Remember for this folder; theme light, window 1400x900 | by hand: the question appears only for a real MCP client connecting from a project folder; no control method opens it -->
+
+### Why a switch, and is it safe?
+
+With the switch off, 3DCraft does not listen at all. With it on, it listens only to programs on your own
+computer, and only to those that know a secret token. 3DCraft keeps that token in a file that only you can
+read; the `craft3d-cli` your AI tool starts reads it there by itself. A web page open in your browser
+cannot drive 3DCraft: it cannot read that file, and 3DCraft ignores web requests.
+
+### Headless: no window
+
+An agent can also work without a window. It then gets a document of its own and shows you pictures it
+renders:
 
 ```sh
 craft3d-cli mcp --automation-read-root /path/to/work --automation-write-root /path/to/work
 ```
 
-In the client's configuration, put `"args": ["mcp", "--automation-read-root", "/path/to/work",
-"--automation-write-root", "/path/to/work"]`. Useful on a server, or to let the agent work while you do
-something else; open the file it saved in the window afterwards.
+In the client's configuration, write `"args": ["mcp", "--automation-read-root", "/path/to/work",
+"--automation-write-root", "/path/to/work"]`. This is useful on a server, or to let the agent work while
+you do something else. Open the file it saved in the window afterwards.
 
 ### What the agent gets
 
@@ -248,9 +302,27 @@ The server gives the agent these tools, and tells it how to start when it connec
 | `doc_inspect` | The whole document: variables, features with their status, bodies with volume, area, faces |
 | `doc_render_preview` | A picture of the model (`view`, `projection`, `box`, `zoom`, `mode: "ids"`) |
 | `selection_get` | What is selected, including what you clicked in the window |
-| `control_call` | Bridged only: a method of the window (`ui.get`, `ui.highlight`, `ui.screenshot`, …) |
+| `control_call` | In the window only: a method of the window (`ui.get`, `ui.highlight`, `ui.screenshot`, …) |
 
 The agent needs nothing else: the command summaries and the error messages are written for it to read.
+[Programs on 3DCraft](programs.md) says more about the server, for people who build on it.
+
+## What 3DCraft sends: nothing
+
+3DCraft has no telemetry, no account, no update check and no licence server. It does not connect to the
+internet by itself. Links you click (the guide, **More examples** on the start screen) open in your web
+browser.
+
+- The connection the window opens for your agent is open only to your own computer, and only to a
+  program that has the token file.
+- Autosaves stay in 3DCraft's data folder on your computer (**Help › Open data folder**).
+- A bug report is copied to your clipboard and goes nowhere unless you paste it somewhere.
+- The web version is a page that runs in your browser. It loads its own files from 3dcraft.dev, and your
+  models are read from and saved to your computer, never uploaded.
+
+**Your AI tool is another matter.** Everything the agent sees goes to the AI provider your tool uses,
+under that provider's terms: your prompts, the commands it runs, the numbers and pictures 3DCraft returns.
+Do not give the agent designs you may not share with that provider.
 
 ## Build from source
 
@@ -268,21 +340,7 @@ cd 3dcraft
 cargo build --release -p craft3d -p craft3d-cli
 ```
 
-This puts both programs in `target/release/`.
-
-## 5. What 3DCraft sends: nothing
-
-3DCraft has no telemetry, no account, no update check and no licence server; it does not connect to the
-internet at all. The port the window listens on for your agent (7878 above) is open only to your own
-computer, and only to a program that has the token file. Autosaves stay in 3DCraft's data folder on your
-computer (Help › Open data folder). The bug report is copied to your clipboard and goes nowhere unless
-you paste it somewhere.
-
-The web version is a page that runs in your browser: it loads its own files from the site that serves
-it, and your models are read from and saved to your computer, never uploaded.
-
-**Your AI tool is another matter.** Everything the agent sees (your prompts, the commands it runs, the
-numbers and pictures 3DCraft returns) goes to the AI provider your tool uses, under that provider's
-terms. Do not give the agent designs you may not share with that provider.
+This puts both programs in `target/release/`. To use 3DCraft's engine in a program of your own, see
+[Programs on 3DCraft](programs.md).
 
 **Next:** [Your first five minutes](first-steps.md).
