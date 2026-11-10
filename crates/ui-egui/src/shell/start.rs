@@ -574,10 +574,11 @@ pub(crate) struct StartMemory {
 }
 
 /// How the start screen is laid out for the room the window gives it
-/// (board f1): roomy, with large thumbnails, or, below [`ROOMY_HEIGHT`],
-/// compact (a smaller header icon, smaller thumbnails, less space), so
-/// two rows of five fit without scrolling down to 1024 × 700 and
-/// 1366 × 768. On a phone the cards go two to a row.
+/// (board f1): roomy, or, below [`ROOMY_HEIGHT`], compact (a smaller
+/// header icon, less space), so two rows of five fit without scrolling
+/// down to 1024 × 700 and 1366 × 768. In both the cards fill the row,
+/// their names and summaries on up to two lines (2026-11-10). On a phone
+/// the cards go two to a row.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StartLayout {
     /// The content's width, in points.
@@ -620,7 +621,11 @@ impl StartLayout {
             Self {
                 width,
                 logo: 36.0,
-                thumb: egui::vec2(132.0, 99.0),
+                // Five fill the 1000 points here too (about 186 × 140
+                // each): the cards use the row, their texts on up to two
+                // lines, rather than small pictures with the row's right
+                // part empty (2026-11-10).
+                thumb: egui::vec2(190.0, 142.5),
                 per_row: 5,
                 spacing: 0.6,
             }
@@ -1076,8 +1081,6 @@ impl Shell {
         let gap = tokens.inset * if layout.spacing < 1.0 { 1.4 } else { 2.0 };
         let (per_row, thumb) = layout.cards(width, gap);
         let compact = thumb.x < 150.0;
-        let text_height = if compact { 32.0 } else { 38.0 };
-        let card = egui::vec2(thumb.x, thumb.y + text_height);
         let thumbs: Vec<Option<egui::TextureId>> = self
             .start
             .pictures
@@ -1096,9 +1099,18 @@ impl Shell {
             if row > 0 {
                 ui.add_space(gap * 0.6);
             }
+            // The name and what it shows, each on up to two lines at the
+            // card's width, cut with an ellipsis after that (the card's
+            // tooltip has both in full); the row as high as its tallest.
+            let texts: Vec<CardText> = examples
+                .iter()
+                .map(|e| card_text(ui, kit, &tokens, e, thumb.x))
+                .collect();
+            let text_height = texts.iter().map(CardText::height).fold(0.0, f32::max);
+            let card = egui::vec2(thumb.x, thumb.y + CARD_TEXT_TOP + text_height + 2.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
-                for &example in examples {
+                for (&example, text) in examples.iter().zip(texts) {
                     let index = EXAMPLES.iter().position(|e| e.id == example.id);
                     let (rect, response) = ui.allocate_exact_size(card, egui::Sense::click());
                     let response = response
@@ -1156,21 +1168,10 @@ impl Shell {
                             egui::StrokeKind::Outside,
                         );
                     }
-                    // The name and what it shows, each on one row cut with
-                    // an ellipsis at the card's width.
-                    let mut y = image.max.y + 4.0;
-                    for (text, font, ink) in [
-                        (example.title, kit.font(), tokens.text),
-                        (example.summary, kit.small_font(), tokens.text_dim),
-                    ] {
-                        let mut job = egui::text::LayoutJob::single_section(
-                            text.to_string(),
-                            egui::TextFormat::simple(font, color(ink)),
-                        );
-                        job.wrap = egui::text::TextWrapping::truncate_at_width(
-                            (rect.width() - 2.0).max(1.0),
-                        );
-                        let galley = painter.layout_job(job);
+                    let mut y = image.max.y + CARD_TEXT_TOP;
+                    for (galley, ink) in
+                        [(text.title, tokens.text), (text.summary, tokens.text_dim)]
+                    {
                         let h = galley.size().y;
                         painter.galley(egui::pos2(rect.min.x + 2.0, y), galley, color(ink));
                         y += h;
@@ -1236,6 +1237,59 @@ pub fn seconds_text(seconds: f32) -> Option<String> {
         return None;
     }
     Some(format!("about {:.0} s", seconds.round()))
+}
+
+/// The room between a card's picture and its name, in points.
+const CARD_TEXT_TOP: f32 = 4.0;
+
+/// The most lines a card's name, and what it shows, take.
+const CARD_TEXT_LINES: usize = 2;
+
+/// A card's name and what it shows, laid out at its width.
+struct CardText {
+    title: std::sync::Arc<egui::Galley>,
+    summary: std::sync::Arc<egui::Galley>,
+}
+
+impl CardText {
+    fn height(&self) -> f32 {
+        self.title.size().y + self.summary.size().y
+    }
+
+    /// Whether either was cut (its tooltip has it in full).
+    #[cfg(test)]
+    fn cut(&self) -> bool {
+        self.title.elided || self.summary.elided
+    }
+}
+
+/// `example`'s name (the font of the text) and what it shows (the small
+/// font, dim), each on up to [`CARD_TEXT_LINES`] lines `width` wide, cut
+/// with an ellipsis after that.
+fn card_text(
+    ui: &egui::Ui,
+    kit: &Kit,
+    tokens: &crate::theme::Tokens,
+    example: &Example,
+    width: f32,
+) -> CardText {
+    let lay = |text: &str, font: egui::FontId, ink: crate::theme::Rgb| {
+        let mut job = egui::text::LayoutJob::single_section(
+            text.to_string(),
+            egui::TextFormat::simple(font, color(ink)),
+        );
+        job.wrap = egui::text::TextWrapping {
+            max_width: (width - 4.0).max(1.0),
+            max_rows: CARD_TEXT_LINES,
+            break_anywhere: false,
+            overflow_character: Some('…'),
+        };
+        ui.painter().layout_job(job)
+    };
+    CardText {
+        title: lay(example.title, kit.font(), tokens.text),
+        summary: lay(example.summary, kit.small_font(), tokens.text_dim),
+    }
 }
 
 /// A small tag on a thumbnail (*Start here*, how long it takes): `text`
@@ -1418,6 +1472,40 @@ mod tests {
         );
         assert_eq!(example_steps(&script).unwrap().unwrap().len(), 1);
         assert_eq!(script.file(), None);
+    }
+
+    /// At the width five cards get in the row (1000 points), every name
+    /// and summary takes at most two lines; one that is cut shows in full
+    /// in the card's tooltip.
+    #[test]
+    fn a_card_shows_its_name_and_summary_on_up_to_two_lines() {
+        let ctx = egui::Context::default();
+        let tokens = crate::theme::Tokens::default();
+        let (mut checked, mut cut) = (0, 0);
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let kit = Kit::panel(&tokens);
+            let layout = StartLayout::for_room(egui::vec2(START_WIDTH, 700.0));
+            let (per_row, thumb) = layout.cards(START_WIDTH, tokens.inset * 1.4);
+            assert_eq!(per_row, 5);
+            assert!(thumb.x > 180.0, "the cards fill the row: {thumb:?}");
+            for example in EXAMPLES {
+                let text = card_text(ui, &kit, &tokens, example, thumb.x);
+                assert!(text.title.rows.len() <= CARD_TEXT_LINES, "{}", example.id);
+                assert!(text.summary.rows.len() <= CARD_TEXT_LINES, "{}", example.id);
+                if text.cut() {
+                    cut += 1;
+                    let tip = card_tooltip(example);
+                    assert!(
+                        tip.contains(example.title) && tip.contains(example.summary),
+                        "{tip}"
+                    );
+                }
+                checked += 1;
+            }
+        });
+        assert_eq!(checked, EXAMPLES.len());
+        // Most fit whole.
+        assert!(cut * 2 < checked, "{cut} of {checked} cut");
     }
 
     #[test]

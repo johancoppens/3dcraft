@@ -261,6 +261,21 @@ fn every_section_fits_on_the_start_screen_at_common_window_sizes() {
                     "{section:?} {width} x {height}: card {card:?} outside {viewport:?}"
                 );
             }
+            // A full row fills the column: no empty room at its right.
+            if count >= 5 {
+                let column = shell
+                    .start_hits()
+                    .iter()
+                    .find(|(name, _)| name == "card")
+                    .map(|(_, rect)| *rect)
+                    .unwrap();
+                let right = cards.iter().map(|c| c.right()).fold(f32::MIN, f32::max);
+                assert!(
+                    (column.right() - right).abs() < 2.0,
+                    "{section:?} {width} x {height}: the row ends at {right}, the column at {}",
+                    column.right()
+                );
+            }
         }
     }
 }
