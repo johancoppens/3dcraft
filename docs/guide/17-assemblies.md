@@ -168,9 +168,18 @@ pass the parent's on: `"params": {"t": "t"}`.
   writes them out as files again.
 - `file.export` to `.step` writes the assembly with its structure: each part once, placed by every instance. STL, 3MF
   and OBJ hold the placed bodies. Invisible instances are left out of all of them.
-- Checks name instances: `assert.add {"name": "gap", "measure": "clearance", "from": "Bar[1]", "to": "Bar[2]", "min": "1 mm"}`,
-  `overlap` for interference and `mass` work as in a part ([chapter 10](10-measure.md)). Renaming an instance renames
-  it in its checks; an instance a check names is not deleted until the check is.
+- Checks name instances: `assert.add {"name": "gap", "measure": "clearance", "from": "Bar[1]", "to": "Bar[2]", "min": "1 mm"}`.
+  The measures take their subjects as in a part ([chapter 10](10-measure.md)): `clearance` and `distance` take
+  `from` and `to`; `volume`, `area`, `mass`, `extent`, `thickness` and the others take `of`; `overlap` takes `of`,
+  and `to` beside it: with `of` alone it asks whether any two of those bodies overlap, with `to` whether any of
+  `of` overlaps any of `to` (`{"measure": "overlap", "of": "Lid", "to": "Box", "is": false}`). A subject names
+  bodies the same way everywhere in an assembly: an instance's name means all its bodies (`Handle`, however many
+  bodies its part has; `Sub`, every body of a subassembly, rigid or flexible); `Instance/Body` names one body by
+  the name of the feature that made it in the part, also when the part has one body (`Cube/Block`); a path reaches
+  into a subassembly (`Sub/Inner`, `Sub/Inner/Block`). The pose measures (`position`, `rotation`,
+  `measure.pose`) reach an instance inside a rigid subassembly by its path too, its pose in the assembly.
+  `measure.clearance` and the other `measure.*` commands name them the same way. Renaming an instance renames it
+  in its checks; an instance a check names is not deleted until the check is.
 - What the solve says is measured too: `jointAngle {mate}` and `jointDistance {mate}` are a joint's solved value,
   driven or free, `position {instance, axis}` (or `{point: "Foot/Toe"}`) and `rotation {instance}` an instance's
   pose. As assertions they check the motion (`motion.check`, which gives an angle's least and greatest value and

@@ -472,7 +472,14 @@ bodies, named after their instances.
 The assertions of an assembly are measured on the shown part, so a subject is an instance by its name: `clearance`
 (`from`, `to`), `overlap` (interference, with the common volume in its message) and `mass` (from the source bodies'
 fixed materials) work as on a part. Subjects are stored by name, never by the shown part's feature ids, which follow
-the order of the instances.
+the order of the instances. One rule names them (2026-11-10, A-007, A-010, A-031): a name of a shown body as before;
+else, by `asm::body_paths`, every placed body has a path `Instance/Body` (the body by the name of the source feature
+that made it; for a subassembly's bodies `Sub/` and their paths in it, `Sub/Inner/Body`), and a name is every body
+whose path it is or begins up to a `/`: an instance of several bodies or a subassembly by its name, a one-body
+part's body as `Cube/Block`, `Sub/Inner`. The pose measures take a path into a rigid subassembly
+(`Placed::pose_of`: the inner instance's pose followed by the subassembly's). The `measure.*` commands measure an
+assembly on its shown part with its placement, as its assertions are (before, they looked up names in the assembly's
+own document, which has no features).
 
 **What the solve says** (`asm_measure.rs`, 2026-10-30). The measures read the placement the checks are taken on
 (`Ctx::placed`, handed through the assertion jobs; a moment's placement in `motion.check`):

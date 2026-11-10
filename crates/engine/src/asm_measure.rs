@@ -10,7 +10,7 @@
 //! placed or a solve that failed is an error that says why, never a value
 //! from somewhere else.
 
-use crate::asm::{self, InstanceState, MateState, Placed};
+use crate::asm::{self, MateState, Placed};
 use crate::commands::{Run, length_unit, spec};
 use crate::params::Params;
 use crate::verify_cmds::{Ctx, Dim, Outcome, only};
@@ -96,18 +96,15 @@ fn motion_value(
     Ok((motion, value))
 }
 
-/// The instance `name` as placed, or why it is not.
-fn instance<'p>(placed: &'p Placed, name: &str) -> Result<&'p InstanceState, String> {
-    let st = placed.instance(name).ok_or_else(|| {
-        format!(
+/// The pose of the instance `name` as placed, also of one inside a rigid
+/// subassembly by its path (`Sub/Inner`), or why there is none.
+fn instance(placed: &Placed, name: &str) -> Result<Transform, String> {
+    placed.pose_of(name).unwrap_or_else(|| {
+        Err(format!(
             "the assembly has no instance `{}`",
             name.chars().take(80).collect::<String>()
-        )
-    })?;
-    if let Some(why) = &st.error {
-        return Err(format!("instance `{name}` is not placed: {why}"));
-    }
-    Ok(st)
+        ))
+    })
 }
 
 /// The rotation vector of a pose (radians).
@@ -144,7 +141,7 @@ fn text<'p>(p: &'p Map<String, Value>, key: &str) -> Result<Option<&'p str>, Str
 /// one (`point`).
 fn located(placed: &Arc<Placed>, p: &Map<String, Value>) -> Result<Vec3, String> {
     match (text(p, "instance")?, text(p, "point")?) {
-        (Some(name), None) => Ok(instance(placed, name)?.pose.point(Vec3::ZERO)),
+        (Some(name), None) => Ok(instance(placed, name)?.point(Vec3::ZERO)),
         (None, Some(point)) => {
             if let Some(why) = &placed.solve_error {
                 return Err(format!("the assembly is not solved: {why}"));
@@ -194,7 +191,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
         "rotation" => {
             only(p, &["instance", "axis"])?;
             let name = text(p, "instance")?.ok_or("`instance` is required: an instance's name")?;
-            let r = rotation_of(&instance(placed, name)?.pose);
+            let r = rotation_of(&instance(placed, name)?);
             let value = match text(p, "axis")? {
                 Some(axis) => component(r, axis)?,
                 None => r.length(),
@@ -235,8 +232,8 @@ pub(crate) fn key_text(placed: Option<&Arc<Placed>>, p: &Map<String, Value>) -> 
             let pose = p
                 .get("instance")
                 .and_then(Value::as_str)
-                .and_then(|n| placed.instance(n))
-                .map(|st| format!("{:?}{:?}", st.error, st.pose));
+                .and_then(|n| placed.pose_of(n))
+                .map(|pose| format!("{pose:?}"));
             let point = p
                 .get("point")
                 .and_then(Value::as_str)
@@ -295,8 +292,8 @@ fn measure_pose(session: &mut Session, params: &Value) -> Run {
         return Ok(json!({ "point": point, "position": position, "unit": unit }));
     }
     let name = p.required_str("instance")?;
-    let st = instance(&placed, name).map_err(err)?;
-    let r = rotation_of(&st.pose);
+    let pose = instance(&placed, name).map_err(err)?;
+    let r = rotation_of(&pose);
     let angle = r.length();
     let axis = r.normalized().map(|a| json!([a.x, a.y, a.z]));
     let deg = r * (180.0 / std::f64::consts::PI);
@@ -307,9 +304,9 @@ fn measure_pose(session: &mut Session, params: &Value) -> Run {
         "rotation": [deg.x, deg.y, deg.z],
         "angle": angle.to_degrees(),
         "axis": axis,
-        "x": vector(st.pose.vector(Vec3::X)),
-        "y": vector(st.pose.vector(Vec3::Y)),
-        "z": vector(st.pose.vector(Vec3::Z)),
+        "x": vector(pose.vector(Vec3::X)),
+        "y": vector(pose.vector(Vec3::Y)),
+        "z": vector(pose.vector(Vec3::Z)),
         "unit": unit,
     }))
 }

@@ -1826,3 +1826,177 @@ fn an_instance_value_is_held_to_the_range_but_not_to_the_step() {
     let why = long["error"].as_str().unwrap();
     assert!(why.contains("15 mm"), "the range is said: {why}");
 }
+
+/// The status and measured value of the assertion `name`.
+fn asserted(s: &mut Session, name: &str) -> Value {
+    let list = run(s, "assert.list", json!({}));
+    list["assertions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == name)
+        .unwrap_or_else(|| panic!("no assertion {name} in {list}"))
+        .clone()
+}
+
+/// A-010, A-031, A-007: one rule for naming a subject in an assembly. An
+/// instance's name means all its bodies (a part of two bodies, a rigid
+/// subassembly); `Instance/Body` names a body also when the part has one;
+/// `Sub/Inner` and `Sub/Inner/Body` reach into a subassembly; and the pose
+/// measures reach an instance inside a rigid subassembly by its path,
+/// its pose that subassembly's composed with its own.
+#[test]
+fn instances_bodies_and_subassemblies_are_named_by_one_rule() {
+    let dir = workdir("assembly", "subject-names");
+    let mut s = session_in(&dir);
+    // Two blocks 10 × 10 × 5 at x 0..10 and 20..30.
+    run(&mut s, "file.new", json!({ "units": "mm" }));
+    for (name, x) in [("First body", 0), ("Second body", 20)] {
+        run(
+            &mut s,
+            "feature.block",
+            json!({ "name": name, "size": [10, 10, 5], "position": [x, 0, 0] }),
+        );
+    }
+    run(&mut s, "file.save", json!({ "path": "two.3dcraft" }));
+    run(&mut s, "file.close", json!({}));
+    // A block 20 × 20 × 20.
+    run(&mut s, "file.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "feature.block",
+        json!({ "name": "Block", "size": [20, 20, 20] }),
+    );
+    run(&mut s, "file.save", json!({ "path": "block.3dcraft" }));
+    run(&mut s, "file.close", json!({}));
+    // A subassembly of two blocks: Inner at (5, 0, 0) turned 10° about z,
+    // Twin at (100, 0, 0).
+    run(&mut s, "assembly.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "Inner", "position": [5, 0, 0], "rotation": [0, 0, 10] }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "Twin", "position": [100, 0, 0] }),
+    );
+    run(&mut s, "file.save", json!({ "path": "sub.3dcraftasm" }));
+    run(&mut s, "file.close", json!({}));
+    run(&mut s, "assembly.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "two.3dcraft", "name": "Handle" }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "two.3dcraft", "name": "Other", "position": [0, 0, 20] }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "Cube", "position": [0, -100, 0] }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "sub.3dcraftasm", "name": "Sub", "position": [0, 100, 0], "rotation": [0, 0, 30] }),
+    );
+    let assert = |s: &mut Session, name: &str, measure: Value| {
+        let mut measure = measure;
+        measure["name"] = json!(name);
+        run(s, "assert.add", measure);
+        asserted(s, name)
+    };
+    // A-010: the instance of two bodies by its name, 15 above the other
+    // (z 0..5 and 20..25); one of its bodies by its path, as before.
+    let a = assert(
+        &mut s,
+        "handle",
+        json!({ "measure": "clearance", "from": "Handle", "to": "Other", "min": "1 mm" }),
+    );
+    assert_eq!(a["status"], "passed", "{a}");
+    assert!(close(a["measured"].as_f64().unwrap(), 15.0, 15.0), "{a}");
+    let a = assert(
+        &mut s,
+        "first",
+        json!({ "measure": "volume", "of": "Handle/First body", "eq": "500" }),
+    );
+    assert_eq!(a["status"], "passed", "{a}");
+    let a = assert(
+        &mut s,
+        "both",
+        json!({ "measure": "volume", "of": "Handle", "eq": "1000" }),
+    );
+    assert_eq!(a["status"], "passed", "{a}");
+    // A part of one body by `Instance/Body`, as by its name.
+    for (name, of) in [("cube", "Cube"), ("cube body", "Cube/Block")] {
+        let a = assert(
+            &mut s,
+            name,
+            json!({ "measure": "volume", "of": of, "eq": "8000" }),
+        );
+        assert_eq!(a["status"], "passed", "{of}: {a}");
+    }
+    // A subassembly by its name as `of` (both blocks) and as `from`; its
+    // instances by `Sub/Inner` and `Sub/Inner/Block`.
+    for (name, of, volume) in [
+        ("sub", "Sub", "16000"),
+        ("inner", "Sub/Inner", "8000"),
+        ("inner body", "Sub/Inner/Block", "8000"),
+    ] {
+        let a = assert(
+            &mut s,
+            name,
+            json!({ "measure": "volume", "of": of, "eq": volume }),
+        );
+        assert_eq!(a["status"], "passed", "{of}: {a}");
+    }
+    let a = assert(
+        &mut s,
+        "sub apart",
+        json!({ "measure": "clearance", "from": "Sub", "to": "Cube", "min": "1 mm" }),
+    );
+    assert_eq!(a["status"], "passed", "{a}");
+    // A-031: the pose of an instance in the rigid subassembly: turned
+    // 30° + 10° about z, its origin at (0, 100, 0) + R(30°) (5, 0, 0).
+    let a = assert(
+        &mut s,
+        "turned",
+        json!({ "measure": "rotation", "instance": "Sub/Inner", "axis": "z", "eq": "40 deg", "tol": "1e-6 deg" }),
+    );
+    assert_eq!(a["status"], "passed", "{a}");
+    let (sin, cos) = 30.0_f64.to_radians().psin_cos();
+    let pose = run(&mut s, "measure.pose", json!({ "instance": "Sub/Inner" }));
+    assert!(close(pose["angle"].as_f64().unwrap(), 40.0, 40.0), "{pose}");
+    let at = &pose["position"];
+    assert!(close(at[0].as_f64().unwrap(), 5.0 * cos, 5.0), "{pose}");
+    assert!(
+        close(at[1].as_f64().unwrap(), 100.0 + 5.0 * sin, 100.0),
+        "{pose}"
+    );
+    // The subassembly's own name answers as before.
+    let a = assert(
+        &mut s,
+        "sub turned",
+        json!({ "measure": "rotation", "instance": "Sub", "axis": "z", "eq": "30 deg", "tol": "1e-6 deg" }),
+    );
+    assert_eq!(a["status"], "passed", "{a}");
+    // A name of nothing is still an error.
+    let a = assert(
+        &mut s,
+        "nobody",
+        json!({ "measure": "volume", "of": "Sub/Nobody", "eq": "1" }),
+    );
+    assert_eq!(a["status"], "error", "{a}");
+    // The query commands measure the placed bodies by the same names.
+    let v = run(
+        &mut s,
+        "measure.clearance",
+        json!({ "from": "Handle", "to": "Other" }),
+    );
+    assert!(close(v["clearance"].as_f64().unwrap(), 15.0, 15.0), "{v}");
+}

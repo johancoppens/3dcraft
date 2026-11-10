@@ -450,12 +450,36 @@ pub(crate) fn subject(ctx: &Ctx<'_>, value: &Value, kind: &[&str]) -> Result<Vec
             name: ctx.feature_name(id),
         })
     };
-    let body_item = |text: &str| -> Result<Option<Found>, String> {
-        let id = feature_of(ctx.doc, text)?;
-        if skipped(id) {
-            return Ok(None);
-        }
-        found(id).map(Some)
+    // A body by its feature's name or id; in an assembly also an
+    // instance, a subassembly or a path into one by the paths of the
+    // bodies it begins (`Handle`, `Handle/Grip`, `Sub/Inner`), whatever
+    // the placed bodies are called (A-010, A-031).
+    let body_item = |text: &str| -> Result<Vec<Option<Found>>, String> {
+        let ids = match (ctx.doc.feature_by_name(text), ctx.placed) {
+            (Some(feature), _) => vec![feature.id],
+            (None, Some(placed)) => {
+                let below = format!("{text}/");
+                crate::asm::body_paths(placed)
+                    .into_iter()
+                    .filter(|(_, path)| path == text || path.starts_with(&below))
+                    .map(|(id, _)| id)
+                    .collect()
+            }
+            (None, None) => Vec::new(),
+        };
+        let ids = if ids.is_empty() {
+            vec![feature_of(ctx.doc, text)?]
+        } else {
+            ids
+        };
+        ids.into_iter()
+            .map(|id| {
+                if skipped(id) {
+                    return Ok(None);
+                }
+                found(id).map(Some)
+            })
+            .collect()
     };
     // `{body, follow}`: the body of a feature, or (`follow`, the default
     // of this form) the newest body that grew from it.
@@ -488,23 +512,28 @@ pub(crate) fn subject(ctx: &Ctx<'_>, value: &Value, kind: &[&str]) -> Result<Vec
         Ok(items)
     };
     match value {
-        Value::String(text) => named(vec![body_item(text)?]),
+        Value::String(text) => named(body_item(text)?),
         Value::Array(items) => {
             if items.len() > MAX_ITEMS {
                 return Err(format!("at most {MAX_ITEMS} bodies"));
             }
-            let items = items
-                .iter()
-                .map(|item| match item {
-                    Value::String(text) => body_item(text),
-                    Value::Object(map) if map.contains_key("body") => followed(map),
-                    _ => Err(
-                        "a list names bodies by feature name or id, or as {body, follow}"
-                            .to_string(),
-                    ),
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            named(items)
+            let mut all = Vec::new();
+            for item in items {
+                match item {
+                    Value::String(text) => all.extend(body_item(text)?),
+                    Value::Object(map) if map.contains_key("body") => all.push(followed(map)?),
+                    _ => {
+                        return Err(
+                            "a list names bodies by feature name or id, or as {body, follow}"
+                                .to_string(),
+                        );
+                    }
+                }
+                if all.len() > MAX_ITEMS {
+                    return Err(format!("at most {MAX_ITEMS} bodies"));
+                }
+            }
+            named(all)
         }
         Value::Object(map) if map.contains_key("body") => named(vec![followed(map)?]),
         Value::Object(map) => {
@@ -2009,8 +2038,16 @@ fn command(
     };
     let open = session.document_mut()?;
     let regen = open.regen();
-    let doc = open.history.current();
-    let ctx = Ctx::new(doc, &regen).map_err(|e| CommandError::new(format!("{id}: {e}")))?;
+    // An assembly is measured on its placed bodies, as its assertions are,
+    // named after their instances.
+    let placed = open.placed();
+    let doc = match &placed {
+        Some(placed) => Arc::clone(&placed.doc),
+        None => Arc::clone(open.history.current()),
+    };
+    let doc = &*doc;
+    let mut ctx = Ctx::new(doc, &regen).map_err(|e| CommandError::new(format!("{id}: {e}")))?;
+    ctx.placed = placed.as_ref();
     let out = take(&ctx, name, &map).map_err(|e| CommandError::new(format!("{id}: {e}")))?;
     let mut result = out.detail;
     match out.dim {

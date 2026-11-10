@@ -475,6 +475,90 @@ impl Placed {
     pub(crate) fn instance(&self, name: &str) -> Option<&InstanceState> {
         self.instances.iter().find(|i| i.name == name)
     }
+
+    /// The pose of the instance `name` and why it is not placed, if it is
+    /// not: its own, or for a path into a rigid subassembly (`Sub/Inner`,
+    /// deeper too) the inner instance's pose there followed by the
+    /// subassembly's (A-031; an instance of a flexible subassembly is
+    /// listed by its path already). `None` for a name of no instance.
+    pub(crate) fn pose_of(&self, name: &str) -> Option<Result<Transform, String>> {
+        self.pose_within(name, 0)
+    }
+
+    fn pose_within(&self, name: &str, depth: usize) -> Option<Result<Transform, String>> {
+        if let Some(st) = self.instance(name) {
+            return Some(match &st.error {
+                Some(why) => Err(format!("instance `{name}` is not placed: {why}")),
+                None => Ok(st.pose),
+            });
+        }
+        if depth >= MAX_DEPTH {
+            return None;
+        }
+        // The instance the path starts with, a rigid subassembly.
+        name.match_indices('/').find_map(|(at, _)| {
+            let (head, rest) = (name.get(..at)?, name.get(at.saturating_add(1)..)?);
+            let st = self.instance(head)?;
+            if let Some(why) = &st.error {
+                return Some(Err(format!("instance `{head}` is not placed: {why}")));
+            }
+            let Some(Built::Assembly(sub)) = st.built.as_deref() else {
+                return None;
+            };
+            let inner = sub.pose_within(rest, depth.saturating_add(1))?;
+            Some(inner.map(|pose| pose.then(&st.pose)))
+        })
+    }
+}
+
+/// The path of every placed body of `placed`: `Instance/Body`, the body by
+/// the name of the feature of the source that made it, and for the bodies
+/// of a subassembly `Sub/` and their paths in it (`Sub/Inner/Body`). What a
+/// measure's subject names a body by, also where the placed body is named
+/// after its instance alone (an instance of one body): a path, or its
+/// beginning up to a `/` (an instance, a subassembly, an instance in one),
+/// names the bodies whose paths it begins (A-010, A-031).
+pub(crate) fn body_paths(placed: &Placed) -> Vec<(FeatureId, String)> {
+    body_paths_within(placed, 0)
+}
+
+fn body_paths_within(placed: &Placed, depth: usize) -> Vec<(FeatureId, String)> {
+    let mut out = Vec::new();
+    if depth > MAX_DEPTH {
+        return out;
+    }
+    for st in placed
+        .instances
+        .iter()
+        .filter(|s| !s.flexed && s.error.is_none())
+    {
+        let Some(built) = &st.built else {
+            continue;
+        };
+        // In the order the instance's bodies were placed ([`bodies_of`]).
+        let names: Vec<String> = match built.as_ref() {
+            Built::Part { .. } => bodies_of(st).into_iter().map(|(name, ..)| name).collect(),
+            Built::Assembly(sub) => {
+                let inner = body_paths_within(sub, depth.saturating_add(1));
+                sub.regen
+                    .features
+                    .iter()
+                    .filter(|f| !sub.doc.is_hidden(f.id) && f.own_body().is_some())
+                    .map(|f| match inner.iter().find(|(id, _)| *id == f.id) {
+                        Some((_, path)) => path.clone(),
+                        None => sub
+                            .doc
+                            .feature(f.id)
+                            .map_or_else(|| f.id.to_string(), |feature| feature.name.clone()),
+                    })
+                    .collect()
+            }
+        };
+        for (id, name) in st.bodies.iter().zip(names) {
+            out.push((*id, format!("{}/{name}", st.name)));
+        }
+    }
+    out
 }
 
 /// The folder of a path, with `/` or `\` between its parts: empty for a
