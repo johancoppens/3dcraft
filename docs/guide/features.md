@@ -1,11 +1,14 @@
 # Modelling features
 
-*What each kind of feature does, with the parameters that matter: a reference to come back to.*
+*What each kind of feature does, with the parameters that matter: a chapter to come back to.*
 
-What each kind of feature does, with the parameters that matter. The full list of parameters of any
-command is in `command_list` (or `craft3d-cli commands --filter <id>`), with a summary that also says
-what each refuses. The [examples](../examples/README.md) show every feature below in a part that checks
-its own volume.
+A **feature** makes or changes a body: a block, an extrusion of a sketch, a hole, a rounded edge. This
+chapter goes through them family by family. Two families have chapters of their own:
+[Sheet metal](sheet-metal.md), and [Surfaces and developables](surfaces.md).
+
+The full list of parameters of any command is in `command_list` (or `craft3d-cli commands --filter <id>`),
+with a summary that also says what each refuses. The [lessons](../examples/README.md) use most of the
+features below in parts that check their own volume.
 
 ## Primitives
 
@@ -15,8 +18,10 @@ its own volume.
 expressions, plain numbers or lengths as a position takes them, so a part can stay square to a wall
 whose angle depends on parameters: `"axis": ["cos(a)", "sin(a)", 0]` or `["dx", "dy", 0]`. Only where it
 points counts; one of no length fails the feature, and so does one that mixes lengths with plain
-numbers other than 0 (`[1, "25 mm", 0]`: give all as lengths or all as numbers). Their faces are numbered in a fixed order: a block's 0 bottom, 1 top, 2 front, 3 back, 4 left,
-5 right; a cylinder's 0 the wall, 1 the base, 2 the top.
+numbers other than 0 (`[1, "25 mm", 0]`: give all as lengths or all as numbers).
+
+Their faces are numbered in a fixed order: a block's 0 bottom, 1 top, 2 front, 3 back, 4 left, 5 right; a
+cylinder's 0 the wall, 1 the base, 2 the top.
 
 ## From sketches
 
@@ -26,9 +31,8 @@ numbers other than 0 (`[1, "25 mm", 0]`: give all as lengths or all as numbers).
 - **Revolve** (`feature.revolve`): about the sketch's `x` or `y` axis, one of its lines, or a datum axis;
   `angle` defaults to a full turn. Example: [bushing](../examples/bushing.json).
 - **Sweep** (`feature.sweep`): a profile carried along a `path`, a sketch of lines, arcs and splines end to
-  end, square to the profile's plane at its start, or a helix (`datum.helix`). Examples:
-  [pipe](../examples/pipe.json), [spring](../examples/spring.json). With a second `rail` it is a sweep
-  along two rails (below).
+  end, square to the profile's plane at its start, or a helix (`datum.helix`). Example:
+  [spring](../examples/spring.json). With a second `rail` it is a sweep along two rails (below).
 - **Loft** (`feature.loft`): through two or more profiles on planes one after the other; smooth, or
   `ruled` (straight from each to the next). Example: [hopper](../examples/hopper.json).
 - **Offset profile** (`feature.offsetProfile`): every loop of a sketch grown or shrunk by a distance;
@@ -188,7 +192,7 @@ them and says what is meant (the examples use `thickness + 2 mm` from `-1 mm`).
   about `axis` through `point` (`"360 deg / n"` with `count: "n"`), a screw with both. A pattern of a
   pattern makes a grid. Example: [flange](../examples/flange.json).
 - `sketch.pattern` repeats curves inside a sketch (`count`, `step`, `count2`, `step2`, or `angle` about a
-  `center`): one extrusion then makes all the holes. Example: [panel](../examples/panel.json).
+  `center`): one extrusion then makes all the holes.
 - `feature.mirror` in a plane (`normal` and `point`, or a datum `plane`); `feature.transform` moves or turns
   a body (`translate`, `angle`, `axis`, `pivot`). With `keep` the source keeps its body and you get a copy.
 
@@ -209,7 +213,8 @@ largest that does. `document.edges` lists every edge of a body with its two face
   fails and says so.
 - `feature.offsetFace` moves faces along their normals (a boss taller, a bore wider); `feature.moveFace`
   moves or turns them; `feature.draft` tilts them about a `neutral` plane; `feature.deleteFace` takes faces
-  out as if they had never been made (a hole filled, a fillet back to a sharp edge); `feature.thicken` makes a layer of `thickness` on faces.
+  out as if they had never been made (a hole filled, a fillet back to a sharp edge);
+  `feature.thicken` makes a layer of `thickness` on faces.
 
 ## Threads
 
@@ -225,46 +230,174 @@ Construction geometry that makes no body: `datum.plane` (at a `distance` from a 
 an `angle` `about` an axis, or `through` three points), `datum.axis`, `datum.point`, `datum.helix`. Sketch
 on a datum plane, mirror in it, pattern about a datum axis. A datum plane turned `about` an axis goes
 through that axis: to turn a plane about a line that is not a world axis, make that line a `datum.axis`
-first, as the [wedge](../examples/wedge.json) does. `datum.references` lists what a feature can be placed
-by.
+first. `datum.references` lists what a feature can be placed by.
 
 ## Sheets
 
 `feature.fill` makes a **sheet**: flat faces with no volume, bounded by the loops of a sketch. A sheet is a
 cutting tool: `feature.boolean` of a solid with a sheet that reaches across it keeps the part in front of
-the sheet (`subtract`, the side its normal points to) or behind it (`intersect`). Example:
-[wedge](../examples/wedge.json). An open chain in a loft gives a sheet too, and `feature.thicken` turns
-faces into a solid layer. `feature.fold` folds a sheet along a crease pattern ([Origami](origami.md)).
+the sheet (`subtract`, the side its normal points to) or behind it (`intersect`). An open chain in a
+loft gives a sheet too, and `feature.thicken` turns faces into a solid layer. `feature.fold` folds a sheet
+along a crease pattern ([Origami](origami.md)). Sheets through curves, sheets that unfold flat, and plates
+made of sheets are in [Surfaces and developables](surfaces.md).
 
 ## Several bodies
 
-A document may hold any number of bodies; every feature that does not consume another body adds one.
+A document may hold any number of bodies: every feature that does not take another body adds one.
 `body.split` splits a body that fell into pieces (a cut through the middle) into one body per piece.
-`body.appearance` and `face.appearance` give colours, `body.material` a density (then `document.inspect`
-gives the mass), `document.interference` says whether bodies overlap. A body's colour channels and its
-density may be expressions of the variables (`["if(dark, 60, 200)", 120, 40]`, `"sheets[sheet].density
-g/cm3"`), so they follow a parameter.
+`document.interference` says whether bodies overlap.
 
-**A face's own colour wins over its body's**, wherever the body's is given: a body colour given to a later
-feature (a transform, a boolean) colours the other faces and leaves the faces coloured earlier as they are.
-To give the whole body its colour, clear its faces' own colours in one step:
-`face.appearance {"body": "Moved", "clear": true}` takes away every face colour the body's faces carry,
-wherever along its history it was given (an imported STEP part with a colour on every face too), as one
-undo step, and lists what it cleared (a pattern's instances are one body: the seed's colour goes from
-every instance). A colour that also colours another body's face (a copy kept by a mirror, the other piece
-of a `body.split`) is kept, since clearing one body never changes another; the answer says for which body
-and gives, under `kept`, the command that clears it from both: the face by its own name at the feature it
-was given on, such as `face.appearance {"body": "F1", "faces": ["F1:face(1)"], "clear": true}`. Single
-faces are cleared the same way. In the window, the body's card in the Bodies tab has **Clear face
-colours** when its faces carry colours of their own, and a **Shared** row (*1 colour, with Twin*)
-when some are shared.
+## Colours and materials
+
+`body.appearance` gives a body a colour, and how metal (`metallic`, 0 to 1) and how rough (`roughness`, 0
+to 1) it looks. `face.appearance` gives single faces a colour of their own. `body.material` gives a body a
+density, and then `document.inspect` gives its mass:
+
+```text
+body.appearance {"body": "Part", "color": "#b9bec4", "metallic": 0.9, "roughness": 0.35}
+face.appearance {"faces": ["Part:face(1)"], "color": "#c8102e"}
+body.material {"body": "Part", "name": "aluminium", "density": "2.7 g/cm3"}
+```
+
+A colour's channels and a density may be expressions of the variables (`["if(dark, 60, 200)", 120, 40]`,
+`"sheets[sheet].density g/cm3"`), so they follow a parameter: a Jig's choice of wood recolours the part
+and weighs it again.
+
+**A face's own colour wins over its body's.** A body colour given to a later feature (a transform, a
+boolean) colours the other faces, and leaves the faces coloured earlier as they are.
+
+To give the whole body one colour, clear its faces' own colours in one step:
+`face.appearance {"body": "Moved", "clear": true}`. It takes away every face colour the body's faces
+carry, wherever along the history it was given (an imported STEP part with a colour on every face too),
+as one step to undo, and lists what it cleared. A pattern's instances are one body: the seed's colour goes
+from every instance.
+
+A colour that also colours a face of another body (a copy kept by a mirror, the other piece of a
+`body.split`) is kept, because clearing one body never changes another. The answer says which body
+shares it, and gives under `kept` the command that clears it from both: the face by its own name at the
+feature it was given on, such as `face.appearance {"body": "F1", "faces": ["F1:face(1)"], "clear":
+true}`. Single faces are cleared the same way.
+
+In the window, a body's card in the **Bodies** tab has **Clear face colours** when its faces carry
+colours of their own, and a **Shared** row (*1 colour, with Twin*) when some are shared.
+
+**A feature that is switched off** ([Formulas › Switching parts on and off](formulas.md#switching-parts-on-and-off))
+passes on what it was given, where the body it passes on has none of its own:
+
+- A material, colour or face colour set on a pattern of spacers still weighs and colours the one spacer
+  it passes on when it is off. So set them on the last feature of a part.
+- A colour or material the passed-on body has already (given to it, or to what it is made from, by a
+  feature that is on) wins: a red part moved by a transform that is off and given blue stays red.
+- Colours are filled in face by face. A face that has a colour without the feature that is off keeps it;
+  only the faces that have none take that feature's colours. A plain spacer with one green face, passed on
+  by a pattern given blue, is blue with its green face.
+- A face colour on a face that is gone while the feature is off (the second instance of a pattern, the
+  wall a cut would make) colours nothing and waits. It never stops a picture or an export.
+  `document.inspect` marks a material that comes from a feature that is off with `"off": true`.
+
+### Materials
+
+Beyond its colour, metallic and roughness, a body or a face can have the layers of a real material. The
+studio look draws them ([The window › The studio look](window.md#the-studio-look)); the plain look keeps
+showing the colour.
+
+- **anisotropy** (−1 to 1): the highlight stretched in one direction, as on brushed or turned metal. It
+  follows the face's own direction: around the axis of a turned face (cylinder, cone, sphere, torus), along
+  the first axis of a flat one. `anisotropyAxis` `[x, y, z]` gives a direction of your own instead
+  (`"parametric"` gives the face's own direction back).
+- **clearcoat** (0 to 1), with its own `clearcoatRoughness`: a clear, glossy layer over the colour, as on
+  car paint.
+- **transmission** (0 to 1): light passes through, as through glass or clear plastic, bent by the index of
+  refraction `ior` (1.5 by default). `thinWalled` is for a sheet: light passes straight through.
+  `absorption` is the colour light takes after `absorptionDistance` millimetres inside (10 by default), so
+  thick glass looks greener than thin glass. A `thinWalled` face has no inside for light to cross, so
+  `absorption` has no effect on it.
+- **subsurface** (0 to 1): light wraps past the edge of the shadow, as in wax, skin or wood, tinted by
+  `subsurfaceColor`.
+
+A small library gives ready sets. `material.presets` lists them: steel, aluminium-brushed, abs, glass,
+car-paint, wood, and with a solid texture oak, walnut, beech, marble, granite, carbon and cast-iron.
+`material.preset` gives one to a body, its look and its density together. Any value beside it changes the
+preset:
+
+```text
+material.preset {"body": "Housing", "preset": "car-paint", "color": "#1f4fa0"}
+material.preset {"body": "Window", "preset": "glass"}
+body.appearance {"body": "Blades", "color": "#c8ccd2", "metallic": 1, "roughness": 0.3, "anisotropy": 0.8}
+```
+
+### Solid textures
+
+A material can also have a **pattern**: wood, marble, granite, speckle, noise, brushed or carbon. It is
+worked out at every point of the body, in the model's space, rather than painted on its faces. So a cut, a
+hole or a chamfer shows the wood's rings or the marble's veins running on through the body, as in the real
+material.
+
+The oak, walnut, beech, marble, granite, carbon and cast-iron presets have one, fitted to the body. Wood's
+grain runs along the longest side of the body's box, with rings a twentieth of its width apart, and the
+pith just outside the body below its thinnest side, so a board shows the arches of a flat-sawn plank.
+Change any of it with a `pattern` beside the preset, or give your own with `body.appearance` or
+`face.appearance`:
+
+```text
+material.preset {"body": "BoardBottom", "preset": "walnut"}
+material.preset {"body": "Top", "preset": "oak", "pattern": {"scale": 3, "seed": 7}}
+body.appearance {"body": "Plinth", "roughness": 0.15, "pattern": {"kind": "marble", "colors": ["#f2f0ec", "#60646a"], "distortion": 2}}
+```
+
+A pattern takes:
+
+- `kind`, and two to four `colors` (a ramp; each kind has its own when left out);
+- `scale`: the size of a ring, a vein, a cell or a tow, in the model's units;
+- `axis` and `origin`: the grain's direction and the pith (left out, fitted to the body's box);
+- `seed`, for another piece of the same material;
+- `distortion` (the rings' wobble, the marble's turbulence) and `detail` (octaves of noise, 1 to 6);
+- `grain` and `rays` (wood's fine streaks and medullary rays, 0 to 1), `spot` (a speckle's dot size);
+- `wrap` (carbon: woven around the axis for a tube, or flat across it for a plate whose normal is the
+  axis), `alongAxis` (a brushed or anisotropic highlight along the grain), and `roughness` at the ramp's
+  two ends.
+
+The scale, axis and origin fitted to the body are worked out once, when you give the material, and kept.
+Later edits that change the body's size do not change the grain, and a body that an earlier feature moves
+(a transform, a pattern's copy) slides through its texture instead of carrying it along. Give the material
+again to fit it anew.
+
+The studio look draws the texture. The plain look and the exports show the pattern's mean colour, which
+becomes the body's colour when you give none. A carbon weave is right on a tube around its axis and on a
+plate across it, and looks stretched on faces that are neither (a plate's edges, a tube's end).
+
+### Glass, and what exports keep
+
+What you see through glass is worked out on the picture itself: the view of what lies behind it, moved
+by the refraction as a slab of the glass's thickness would move it. Glass behind glass is not seen
+through, and a transparent body casts no shadow.
+
+Exports keep what their formats can:
+
+- an OBJ export's material library has the clear coat (`Pc`, `Pcr`), the anisotropy (`aniso`), the index
+  of refraction (`Ni`) and the transmission (`d`, `Tf`);
+- a 3MF export gives a transmissive material a display colour with transparency;
+- a STEP export writes the transmission as the surface's transparency.
+
+Subsurface, the anisotropy's direction, the absorption's length and solid textures are kept only in the
+`.3dcraft` file; a texture exports its mean colour.
 
 ## Hiding and looking back
 
-`feature.visible` with `"visible": false` hides a feature's body, sketch or datum in the view (the
-window, `view.render`, `view.pick`); `true` shows it again. It is not `feature.suppress`: the feature is
-still built, measured and exported, and later features are still made from it. It is saved with the
-document and undone like a colour; `document.inspect` marks it `"hidden": true`.
+`feature.visible` with `"visible": false` hides a feature's body, sketch or datum in the view (the window,
+`view.render`, `view.pick`); `true` shows it again. The eye in the feature list does the same.
+
+Hiding is not switching off. A hidden feature is still built and measured, and later features are still
+made from it. What changes is what is shown and written:
+
+- a drawing of the model, and STEP, STL, 3MF and OBJ exports of every body, leave a hidden body out, and
+  so does the cut list. The export's result names them under `hiddenLeftOut`, and the export dialog names
+  them under **All bodies**;
+- named in `bodies`, or selected for the export, a hidden body is written all the same
+  ([Files › Other CAD programs](files.md#other-cad-programs-step)).
+
+A hidden feature is saved with the document and undone like a colour; `document.inspect` marks it
+`"hidden": true`.
 
 `view.scrub` shows the model as it was after one step (`{"step": 3}` or `{"feature": "Plate"}`;
 `{"feature": null}` shows it as it is again), without changing the document: the timeline in the window
@@ -272,10 +405,9 @@ does the same. To build on from that step, move the real marker there with `hist
 
 ## Switching a feature on or off
 
-`feature.suppress {"feature": "Round"}` switches a feature off by hand; `"suppressed": false` switches it
-on again. `feature.when` switches it by a condition, such as a yes-or-no parameter of a Jig. Off, a feature
-behaves as if it were not in the history: one that changes a body passes it on unchanged (an inactive
-transform leaves the body where it was), one that makes a body makes none, and its faces and edges are not
-there for the fillets and face operations after it. [Formulas, tables and conditions](formulas.md#switching-parts-on-and-off) explains both in full.
+`feature.suppress` switches a feature off by hand, and `feature.when` by a condition, such as a yes-or-no
+parameter of a Jig. Off, a feature behaves as if it were not in the history.
+[Formulas › Switching parts on and off](formulas.md#switching-parts-on-and-off) is the one place that
+explains both.
 
-**Next:** [Measuring and checking](measure.md).
+**Next:** [Sheet metal](sheet-metal.md).
