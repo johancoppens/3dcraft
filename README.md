@@ -111,7 +111,7 @@ claude mcp add craft3d -- "$PWD/target/release/craft3d-cli" mcp \
     --bridge 7878 --control-token-file "$PWD/.private/control.token"
 ```
 
-Contributors and agents working on 3DCraft: read [`AGENTS.md`](AGENTS.md) and [`docs/`](docs/README.md).
+Contributors and agents working on 3DCraft: read [`CONTRIBUTING.md`](CONTRIBUTING.md), [`AGENTS.md`](AGENTS.md) and [`docs/`](docs/README.md).
 
 ## One variable, three screws
 
@@ -186,4 +186,4 @@ tessellated and drawn by the same renderer:
 
 ![The Utah teapot, tessellated and rendered by 3DCraft's CPU reference renderer](docs/img/teapot.png)
 
-Agents and contributors: read [`AGENTS.md`](AGENTS.md) first. Licence: [MIT](LICENSE).
+Contributors: [`CONTRIBUTING.md`](CONTRIBUTING.md); agents: [`AGENTS.md`](AGENTS.md); security: [`SECURITY.md`](SECURITY.md). Licence: [MIT](LICENSE).

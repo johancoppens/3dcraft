@@ -1,9 +1,11 @@
 # Contributing
 
-> **Last updated:** 2026-10-23 · **Status:** in force; the checklists below match the code of 0.1.0
+> **Last updated:** 2026-11-10 · **Status:** in force; the checklists below match the code of 0.1.0
+
+This page holds the rules for the code and the checklists. How to report a problem and how to send a change (an issue first, then a pull request), the clean-room rule and the licence of contributions are in [`CONTRIBUTING.md`](../CONTRIBUTING.md) at the root, which is the source for that process; the rules behind everything are in [`AGENTS.md`](../AGENTS.md).
 
 - **Language:** Rust only. No JavaScript or TypeScript. On the web, `wasm-bindgen` generates a small loader; never hand-write JS.
-- **Repository language:** English for everything committed (code, comments, docs, commit messages, error messages), whatever language the conversation with the developer is in.
+- **Repository language:** English for everything committed (code, comments, docs, commit messages, error messages), whatever language you work in.
 - **Licence:** MIT (`LICENSE`).
 - **Own kernel:** no dependency on an existing geometry kernel, mesher or triangulator, and no C/C++ in the modelling path. A new general-purpose dependency in `math`, `geom`, `topo`, `kernel` or `tess` needs a recorded decision.
 - **Clean-room:** do not copy code, shaders, icons or other assets from proprietary software, and do not copy or transliterate code from copyleft kernels (OpenCascade, CGAL, …). Work from public specs, textbooks, papers and observed behaviour; cite the source (title, section) in a comment where an algorithm comes from one. Only use assets with permissive licences, keep their licence next to the asset, and list every asset in `ATTRIBUTION.md`. Never commit font files or corpus files.
@@ -15,7 +17,7 @@
 - **Determinism:** no result may depend on thread count, hash order, time or unseeded randomness.
 - **Style:** `cargo fmt`, and `cargo clippy -- -D warnings`. Match surrounding code. Comments explain *why*, and name the tolerance and the reference for numeric code.
 - **UI:** use `theme::Tokens`. Verify visually (offscreen snapshot or the control channel) and look at the picture.
-- **Commits:** small, focused, with a clear subject line. Commit or push only when the developer asks.
+- **Commits:** small, focused, with a clear subject line. An agent commits or pushes only when the person it works for asks. A change from outside the workshop starts with an issue and comes as a pull request ([`CONTRIBUTING.md`](../CONTRIBUTING.md)).
 
 ## Adding a command
 
@@ -30,7 +32,7 @@
 4. **Lengths and angles are expressions.** A numeric parameter that belongs to the design accepts an expression string (`"width / 2"`, `"25 mm"`); the command stores the source text.
 5. **Tests** in the module: behaviour (checked through `document.inspect` / mass properties, not internals), undo/redo, disabled states, bad params (empty, out of range, wrong type → `Err`), a save → load → regenerate round trip.
 6. **Docs:** a command a user or an agent will use gets its place in the [user guide](guide/README.md) (its chapter, and the command list of [`guide/15-reference.md`](guide/15-reference.md)); `guide_examples` then checks the id and every parameter of the JSON steps the guide writes ([`testing.md`](testing.md) › *The user guide and its examples*). A `ui.*` method or field goes into [`control-protocol.md`](control-protocol.md).
-7. Run the quick check per commit (heavy runs through the `Check` workflow on the Strix) and the full gate before `main` moves ([`AGENTS.md`](../AGENTS.md) §5 and §6), including `panic_hunt` when commands changed; it picks a new command up from its params string.
+7. Run the quick check per commit and the full gate before `main` moves ([`AGENTS.md`](../AGENTS.md) §5), including `panic_hunt` when commands changed; it picks a new command up from its params string. In the workshop heavy runs go through the `Check` workflow on the Strix (§6); from outside, run them on your machine and say in the pull request what you ran ([`CONTRIBUTING.md`](../CONTRIBUTING.md)).
 
 ## Adding a feature type
 

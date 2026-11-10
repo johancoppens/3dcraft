@@ -25,7 +25,7 @@ Rules of the loop:
   1. **The reason is a fact about the mathematics, the specification or the measuring method**, stated in a comment at the assertion, and true whatever the code prints. "The lip of the spout folds inward, so outward there means towards the symmetry plane" is a reason. "The code returns 7.99" is not.
   2. **The new expectation is not weaker than it has to be.** Prefer replacing a wrong claim with a different, checkable one (normals agree across a seam) over deleting it or widening a tolerance.
   3. **Something independent of the code under test still pins the behaviour down:** a closed form, a second computation by another route, an external program, or a picture a human looked at. Where no such oracle exists (wording of an error message, a default value), say so in the test's comment: it is then a regression test, not a proof.
-  4. **It is logged.** The dev log entry lists every expectation that was changed and why, under its own heading, so the developer can review them without reading the diff.
+  4. **It is logged.** The dev log entry lists every expectation that was changed and why, under its own heading, so the developer can review them without reading the diff. (The dev log is the workshop's local record; from outside, the pull request's description lists them: [`CONTRIBUTING.md`](../CONTRIBUTING.md).)
 
   If any of the four is missing, the code is the suspect and the test stays.
 - **Shrink failures.** A failure found on a big model becomes a small synthetic regression test before it is fixed.

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: User guide
+    url: https://3dcraft.dev/guide/
+    about: Installing 3DCraft, connecting an AI agent, modelling, and what to do when something goes wrong.
+  - name: Report a security vulnerability
+    url: https://github.com/johancoppens/3dcraft/security/policy
+    about: Security problems are reported privately, not in an issue.

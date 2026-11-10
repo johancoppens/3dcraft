@@ -4,7 +4,7 @@
 
 **Using 3DCraft?** Start with the [user guide](guide/README.md): what 3DCraft is, installing it, a first model in five minutes, working with an AI agent, Jigs, and the reference. The [example models](examples/README.md) are small parts that check their own volume. What changed per version is in [`CHANGELOG.md`](../CHANGELOG.md).
 
-**Working on 3DCraft?** Start with [`AGENTS.md`](../AGENTS.md), then read in this order.
+**Working on 3DCraft?** Start with [`CONTRIBUTING.md`](../CONTRIBUTING.md) (how to report a problem and send a change) and [`AGENTS.md`](../AGENTS.md), then read in this order.
 
 | Doc | What it holds |
 |---|---|
