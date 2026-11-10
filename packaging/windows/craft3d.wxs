@@ -27,7 +27,7 @@
     <Icon Id="craft3d_jig.ico" SourceFile="$(var.JigIcon)" />
     <Icon Id="craft3d_asm.ico" SourceFile="$(var.AsmIcon)" />
     <Property Id="ARPPRODUCTICON" Value="craft3d.ico" />
-    <Property Id="ARPURLINFOABOUT" Value="https://github.com/johancoppens/3dcraft" />
+    <Property Id="ARPURLINFOABOUT" Value="https://3dcraft.dev/" />
 
     <StandardDirectory Id="ProgramMenuFolder" />
     <StandardDirectory Id="ProgramFiles64Folder">

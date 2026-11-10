@@ -14,7 +14,9 @@
     </p>
   </description>
   <launchable type="desktop-id">io.github.johancoppens.craft3d.desktop</launchable>
-  <url type="homepage">https://github.com/johancoppens/3dcraft</url>
+  <url type="homepage">https://3dcraft.dev/</url>
+  <url type="bugtracker">https://github.com/johancoppens/3dcraft/issues</url>
+  <url type="vcs-browser">https://github.com/johancoppens/3dcraft</url>
   <provides>
     <binary>craft3d</binary>
     <binary>craft3d-cli</binary>

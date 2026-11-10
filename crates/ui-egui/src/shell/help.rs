@@ -20,10 +20,29 @@ use crate::kit::{Button, Dialog, Glyph, Kit};
 use crate::theme::color;
 use std::path::PathBuf;
 
-/// The user guide, on GitHub.
-pub const GUIDE_URL: &str = "https://github.com/johancoppens/3dcraft/tree/main/docs/guide";
-/// How to connect an agent over MCP, in the guide.
-pub const AGENT_SETUP_URL: &str = "https://github.com/johancoppens/3dcraft/blob/main/docs/guide/01-install.md#connect-an-ai-agent-over-mcp";
+/// A page of the user guide of this version on the website: the guide is
+/// kept there once per release, at `/guide/<major>.<minor>/`, a chapter
+/// addressed by its file name without number and extension
+/// (docs/decisions.md, 2026-11-10), so a build sends its user to the guide
+/// of its own code. The version is this crate's, the workspace's.
+macro_rules! guide_page {
+    ($page:literal) => {
+        concat!(
+            "https://3dcraft.dev/guide/",
+            env!("CARGO_PKG_VERSION_MAJOR"),
+            ".",
+            env!("CARGO_PKG_VERSION_MINOR"),
+            "/",
+            $page
+        )
+    };
+}
+
+/// The user guide of this version, on the website.
+pub const GUIDE_URL: &str = guide_page!("");
+/// How to connect an agent over MCP: the install chapter of that guide, at
+/// its heading *Connect an AI agent over MCP*.
+pub const AGENT_SETUP_URL: &str = guide_page!("install#connect-an-ai-agent-over-mcp");
 /// The source code.
 pub const REPO_URL: &str = "https://github.com/johancoppens/3dcraft";
 /// The licence 3DCraft is published under.
@@ -548,6 +567,72 @@ fn keycap(ui: &mut egui::Ui, kit: &Kit, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A heading's anchor as GitHub and the guide's site write it: lower
+    /// case, a space as a hyphen, punctuation dropped.
+    fn anchor_of(heading: &str) -> String {
+        heading
+            .trim()
+            .to_lowercase()
+            .chars()
+            .filter_map(|c| match c {
+                ' ' => Some('-'),
+                c if c.is_alphanumeric() || c == '-' || c == '_' => Some(c),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The guide's links go to the guide of this version on the website
+    /// (the major and minor of the version bug reports name), the agent
+    /// set-up link to a heading the install chapter has; the source stays
+    /// on GitHub.
+    #[test]
+    fn the_guide_links_go_to_this_versions_guide_on_the_website() {
+        let mut parts = VERSION.split('.');
+        let (major, minor) = (parts.next().unwrap(), parts.next().unwrap());
+        let guide = format!("https://3dcraft.dev/guide/{major}.{minor}/");
+        assert_eq!(GUIDE_URL, guide);
+        assert_eq!(
+            AGENT_SETUP_URL,
+            format!("{guide}install#connect-an-ai-agent-over-mcp")
+        );
+        assert_eq!(REPO_URL, "https://github.com/johancoppens/3dcraft");
+        // The page is the chapter whose file is named so, without its
+        // number and extension (`01-install.md`, or `install.md`).
+        let (page, anchor) = AGENT_SETUP_URL
+            .strip_prefix(&guide)
+            .and_then(|rest| rest.split_once('#'))
+            .unwrap();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/guide");
+        let chapter = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .find(|path| {
+                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                let name = match stem.split_once('-') {
+                    Some((number, name)) if number.chars().all(|c| c.is_ascii_digit()) => name,
+                    _ => stem,
+                };
+                path.extension().is_some_and(|e| e == "md") && name == page
+            })
+            .unwrap_or_else(|| panic!("no chapter `{page}` in {}", dir.display()));
+        let text = std::fs::read_to_string(&chapter).unwrap();
+        let anchors: Vec<String> = text
+            .lines()
+            .filter_map(|line| {
+                line.strip_prefix('#')
+                    .map(|rest| rest.trim_start_matches('#'))
+                    .filter(|heading| heading.starts_with(' '))
+            })
+            .map(anchor_of)
+            .collect();
+        assert!(
+            anchors.iter().any(|a| a == anchor),
+            "{}: no heading for #{anchor} among {anchors:?}",
+            chapter.display()
+        );
+    }
 
     #[test]
     fn no_two_rows_name_the_same_keys() {

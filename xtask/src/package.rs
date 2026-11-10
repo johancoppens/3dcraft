@@ -1302,6 +1302,39 @@ mod tests {
         assert!(from(".DirIcon").is_some());
     }
 
+    /// The packages send people to the website, a problem to the issues,
+    /// and only the source and the release notes to the repository
+    /// (docs/decisions.md, 2026-11-10).
+    #[test]
+    fn the_packages_link_the_website() {
+        let root = repo_root().join("packaging");
+        let read = |rel: &str| std::fs::read_to_string(root.join(rel)).unwrap();
+        let metainfo = read(&format!("linux/{APP_ID}.metainfo.xml"));
+        let wxs = read("windows/craft3d.wxs");
+        let desktop = read(&format!("linux/{APP_ID}.desktop"));
+        let repo = "https://github.com/johancoppens/3dcraft";
+        for url in [
+            "<url type=\"homepage\">https://3dcraft.dev/</url>".to_string(),
+            format!("<url type=\"bugtracker\">{repo}/issues</url>"),
+            format!("<url type=\"vcs-browser\">{repo}</url>"),
+        ] {
+            assert!(metainfo.contains(&url), "{url}");
+        }
+        assert!(wxs.contains("<Property Id=\"ARPURLINFOABOUT\" Value=\"https://3dcraft.dev/\" />"));
+        for text in [&metainfo, &wxs, &desktop] {
+            for (at, _) in text.match_indices("https://github.com/johancoppens/") {
+                let link: String = text[at..]
+                    .chars()
+                    .take_while(|c| !matches!(c, '"' | '<' | ' ' | '\n'))
+                    .collect();
+                let allowed = link == repo
+                    || link == format!("{repo}/issues")
+                    || link.starts_with(&format!("{repo}/releases/tag/v"));
+                assert!(allowed, "{link}");
+            }
+        }
+    }
+
     /// gdk-pixbuf recognises an SVG by finding `<svg` near the start of the
     /// file; behind a long comment it reports an unknown format, and GNOME
     /// Shell shows an empty tile wherever it picks the scalable icon.
