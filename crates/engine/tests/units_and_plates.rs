@@ -1,6 +1,6 @@
 //! Mechanical units in outputs and assertions, and the plate thickness of
 //! a face as a filter of named sets: the two gaps a Jig author found with
-//! a welded beam (plan/repro/repro-welded-beam-1.json and -3.json).
+//! a welded beam (its reproducers repro-welded-beam-1 and -3).
 //!
 //! A stress is load / area with the units written in: 1000 N on a section
 //! of 100 mm² is 10 MPa, shown with the output's label and unit; a unit of

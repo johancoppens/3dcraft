@@ -8,7 +8,7 @@
 //! large run goes into the findings (`target/fuzz`), not into this list.
 //!
 //! The design a seed gives changes when the generator draws differently
-//! (log/devlog.md › Expectation change): since 2026-10-19 a circular
+//! (an expectation change, 2026-10-19): since that date a circular
 //! pattern draws one more chance (a screw, `step` along the axis), so
 //! seeds 3, 10, 12, 13 and 16 give other designs than before that date
 //! (12, 13 and 16 get a screw); all pass. A later failure of one of them

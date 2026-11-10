@@ -601,7 +601,7 @@ fn an_extruded_part_is_saved_reopened_rendered_and_exported() {
 
 #[test]
 fn a_thin_slanted_rectangle_extrudes() {
-    // plan/repro/repro-sundial-2.json: a clean 44 x 1.2 mm rectangle at a
+    // The sundial Jig's repro-sundial-2: a clean 44 x 1.2 mm rectangle at a
     // slant was refused as "e7, e8 cross or touch each other".
     let corners = [
         [16.697056638762756_f64, -31.352678659982697_f64],
@@ -639,7 +639,7 @@ fn a_thin_slanted_rectangle_extrudes() {
     assert_close(&solid["volume"], area * 2.0, "volume");
 }
 
-/// plan/repro/repro-orrery-1.json: a gear of involute teeth, one tooth
+/// The orrery Jig's repro-orrery-1: a gear of involute teeth, one tooth
 /// chained into a ring pattern, where the root arc of each tooth meets the
 /// radial line of the next. About a third of the tooth counts were refused
 /// as "e19[k], e3[k+1] cross or touch" (the same rounding at the

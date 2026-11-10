@@ -849,7 +849,7 @@ fn the_thumbnail_shows_the_document_not_where_the_view_is_scrubbed() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// plan/repro/repro-orrery-2.json: a minimum looked up by an integer
+/// The orrery Jig's repro-orrery-2: a minimum looked up by an integer
 /// parameter, as a variable looks it up.
 #[test]
 fn a_minimum_looks_up_a_table_by_another_parameter() {
@@ -883,7 +883,7 @@ fn a_minimum_looks_up_a_table_by_another_parameter() {
     assert_close(&param(&list, "n")["min"]["value"], 20.0, "min of n");
 }
 
-/// plan/repro/repro-tuned-chimes-1.json: a range bound looks a table up
+/// The tuned chimes Jig's repro-tuned-chimes-1: a range bound looks a table up
 /// as a variable does (it said "unknown table `scales`").
 #[test]
 fn a_range_bound_looks_up_a_table() {
@@ -945,7 +945,7 @@ fn a_range_bound_looks_up_a_table() {
 
 /// A value off its step is refused with the nearest values on it,
 /// counted from the minimum (from 0 without one); an end of the range is
-/// always allowed (plan/r1-cleanup.md item 60).
+/// always allowed (a finding of the R1 clean-up).
 #[test]
 fn a_value_off_its_step_is_refused_with_the_nearest_on_it() {
     let mut s = session();

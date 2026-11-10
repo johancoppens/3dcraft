@@ -1048,7 +1048,7 @@ fn circles(list: &[([f64; 2], f64)], k: f64) -> Vec<Cutout> {
         .collect()
 }
 
-/// Holes in flanges (plan/repro/repro-sheet-metal-enclosure-2): closed
+/// Holes in flanges (repro-sheet-metal-enclosure-2): closed
 /// profiles drawn beside the base in the pattern's axes are holes of the
 /// flange flat each lies in, cut in the pattern and the folded part, and
 /// measured from the bends beside that flat. A 40 × 30 base, flange 0 on

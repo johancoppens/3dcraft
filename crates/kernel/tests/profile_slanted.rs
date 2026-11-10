@@ -5,7 +5,7 @@
 //! The rectangles once failed about once in three hundred: where a short
 //! side leaves the tolerance region of a long side, the region's boundary
 //! was sampled, and which side of the tolerance such a sample fell on was
-//! rounding noise (plan/r1-cleanup.md item 58).
+//! rounding noise (a finding of the R1 clean-up).
 
 #![allow(
     clippy::unwrap_used,
@@ -76,7 +76,7 @@ fn rectangle(c: P, l: f64, w: f64, angle: f64, reverse: bool) -> Vec<P> {
 
 #[test]
 fn the_sundial_rectangle_is_a_profile() {
-    // The corners of plan/repro/repro-sundial-2.json, 44 x 1.2 mm.
+    // The corners of the sundial Jig's repro-sundial-2, 44 x 1.2 mm.
     let points = [
         [16.697056638762756, -31.352678659982697],
         [56.860039611356406, -50.52974301317225],

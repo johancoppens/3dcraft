@@ -10,7 +10,7 @@
 //! The gate's test is a smooth loft through three circles of different
 //! sizes on offset, raised centres (a tube that tapers and bends, its side
 //! one rational spline surface), ends flat, at a tolerance of 1e-4 mm.
-//! The bike's saddle itself (plan/bike.md,
+//! The bike's saddle itself (a showcase model,
 //! `target/work/bike/gen.py`: six sections, its rims rounded by
 //! rolling-ball fillets, which "the offset of a freeform face is not
 //! built" refused before) takes minutes and is `#[ignore]`d: run it with

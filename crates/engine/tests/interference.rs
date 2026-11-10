@@ -230,7 +230,7 @@ fn bad_parameters_fail_gracefully() {
     }
 }
 
-/// The laser box of the showcase (plan/laserbox.md): at kerf 0 the panels
+/// The laser box of the showcase: at kerf 0 the panels
 /// only touch; at kerf 0.15 mm they overlap by the volumes an independent
 /// cell grid gave (`overlap_oracle.py`, to 4 digits).
 #[test]

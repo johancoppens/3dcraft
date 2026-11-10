@@ -1,5 +1,5 @@
-//! The side panel (docs/design/rendering.md › *The side panel*; plan of
-//! 2026-11-02, `plan/mockups/sidepanel`): tabs chosen by the document's
+//! The side panel (docs/design/rendering.md › *The side panel*; mock-ups
+//! approved 2026-11-02): tabs chosen by the document's
 //! kind, each drawn with the component kit.
 //!
 //! - a part: Features ([`features`], with the checks under the list,

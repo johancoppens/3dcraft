@@ -1,6 +1,6 @@
 //! Pictures of the component kit (`craft3d_ui_egui::kit`), laid out as the
-//! UI overhaul's boards, to set beside the mock-ups
-//! (plan/mockups/ui-overhaul/png): the components on a panel and on a
+//! UI overhaul's boards, to set beside its mock-ups (approved
+//! 2026-11-02, not in the repository): the components on a panel and on a
 //! plate in the light appearance (c1) and in the dark one (c3), the menus,
 //! popover, tooltips and pill (c2) in both, the icons in both, and the
 //! components at a phone's width (390 points) with touch sizes. Painted by

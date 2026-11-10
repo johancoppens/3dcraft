@@ -7,8 +7,8 @@
 //! assertion undecided; and the sheet-metal measures over nothing
 //! (`cornerGap` with every corner open, `holeToBend` with no hole beside a
 //! bend) are errors that say how a `when` avoids them. From two Jigs'
-//! findings (plan/repro/repro-sheet-metal-enclosure-7.json,
-//! plan/repro/repro-rack-4.json).
+//! findings (the reproducers repro-sheet-metal-enclosure-7 and
+//! repro-rack-4, kept outside the repository).
 
 #![allow(
     clippy::unwrap_used,

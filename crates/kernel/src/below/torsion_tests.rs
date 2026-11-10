@@ -196,7 +196,7 @@ fn rectangles_match_the_series_solution() {
     }
 }
 
-/// The welded beam of plan/repro-welded-beam-2: a box 100 × 150 with
+/// The welded beam of repro-welded-beam-2: a box 100 × 150 with
 /// walls of 3 (along z) and 4 (along y), cut across. Bredt's thin-walled
 /// form 4 A_m² / ∮ ds / t is within its thin-wall error (t / b, a few
 /// percent); the shear centre is at the centroid by symmetry.

@@ -983,8 +983,8 @@ fn nested_patterns_refuse_what_they_cannot_be() {
 
 /// Timings (release, `--ignored --nocapture`): an edge of 7 cells of 3
 /// tabs, built, and regenerated when either count changes by one command
-/// (the target of plan/nested-patterns.md: under 50 ms); the numbers are
-/// in the dev log and docs/design/document.md.
+/// (the target of the plan for nested patterns: under 50 ms); the numbers
+/// are in docs/design/document.md.
 #[test]
 #[ignore = "a timing, for release builds"]
 fn an_edge_of_7_cells_of_3_tabs_is_quick() {

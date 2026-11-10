@@ -1,5 +1,5 @@
 //! What the Garabit valley showcase found (2026-10-21), each from the
-//! steps that made it (`plan/findings-2026-10-21/garabit-valley/`):
+//! steps that made it (`garabit_findings/` beside this file, or below):
 //!
 //! 1. No command made a freeform sheet: a loft of open sections is one
 //!    now, and a terrain sheet cuts a block (subtract keeps the side the

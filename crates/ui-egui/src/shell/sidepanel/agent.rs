@@ -1,4 +1,4 @@
-//! The side panel's Agent tab (board 06 of `plan/mockups/sidepanel`): what
+//! The side panel's Agent tab (board 06 of the side panel's mock-ups): what
 //! agents did to the active document, newest first, from its log
 //! (`agent.log`, `Session::agent_log_json`): when, the command in its
 //! label's words, what it made (the features, by name), a failure's

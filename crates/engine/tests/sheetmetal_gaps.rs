@@ -1,4 +1,4 @@
-//! The platform gaps the sheet-metal Jigs found (plan/repro/
+//! The platform gaps the sheet-metal Jigs found (their reproducers
 //! repro-sheet-metal-enclosure-2..5, repro-rack-2 and -4), each a test that
 //! failed on main before its fix: holes in flanges, from the base's sketch
 //! and from cut-out sketches switched on and off with `when` (in another

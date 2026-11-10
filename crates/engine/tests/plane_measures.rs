@@ -401,7 +401,7 @@ fn what_cannot_float_is_refused() {
     );
 }
 
-/// The welded beam of the repro (plan/repro/repro-welded-beam-2): a box
+/// The welded beam of the repro (repro-welded-beam-2): a box
 /// 100 × 150 with walls of 3 and 4 mm cut across. measure.section gives
 /// its torsion constant near Bredt's thin-walled 4 A_m² / ∮ ds / t (within
 /// the thin-wall error) and its shear centre at the centroid; the

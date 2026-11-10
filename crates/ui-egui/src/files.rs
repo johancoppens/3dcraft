@@ -1294,7 +1294,7 @@ mod tests {
     /// The export dialog offers the flat pattern of every sheet-metal
     /// part and the crease pattern of every fold, whatever is selected,
     /// and a part's or fold's body selected is its pattern
-    /// (plan/repro/repro-sheet-metal-enclosure-1: the dialog never reached
+    /// (repro-sheet-metal-enclosure-1: the dialog never reached
     /// `file.export {sheetMetal}`).
     #[test]
     fn a_flat_pattern_is_offered_for_an_outline() {

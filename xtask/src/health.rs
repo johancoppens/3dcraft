@@ -1,5 +1,8 @@
 //! `cargo xtask health`: the morning health report, a short fixed page of
 //! Markdown on stdout (docs/development.md › Morning health report).
+//! A tool of the workshop: the gate worktree, its logs and the dev log it
+//! reads are local to the maintainers' checkout and not in the repository,
+//! so in a clone those parts of the report say "unknown".
 //!
 //! It only reads: the branches, the logs of the gate worktree, the
 //! evidence the gate's last run left (the boolean corpus score, the
@@ -12,7 +15,8 @@
 //! changes logged since this one.
 //!
 //! Where the gate lives: `$CRAFT3D_GATE_DIR`, else
-//! `<main checkout>/.claude/worktrees/gate` (log/gate.sh).
+//! `<main checkout>/.claude/worktrees/gate` (where the workshop's local
+//! gate script runs it).
 
 use crate::stats;
 use std::collections::BTreeMap;
@@ -97,7 +101,8 @@ fn gate_section(out: &mut String, gate: &Path) {
     };
     let text = std::fs::read_to_string(&log).unwrap_or_default();
     let last = text.lines().last().unwrap_or_default();
-    // log/gate.sh ends the log with `exit <status> commit <hash>`.
+    // The workshop's gate script ends the log with `exit <status> commit
+    // <hash>`.
     let verdict = match last
         .strip_prefix("exit ")
         .and_then(|r| r.split_once(" commit "))

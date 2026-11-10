@@ -723,7 +723,7 @@ fn a_3mf_and_a_step_export_carry_the_colours() {
 }
 
 /// A Jig's choice of wood: the plate's colour and density follow it, by a
-/// table lookup and by a condition (plan/r1-cleanup.md items 51 and 62).
+/// table lookup and by a condition (two findings of the R1 clean-up).
 #[test]
 fn a_colour_and_a_density_follow_a_parameter() {
     let dir = std::env::temp_dir().join(format!("craft3d-colour-exprs-{}", std::process::id()));

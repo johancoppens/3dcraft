@@ -189,7 +189,7 @@ fn the_rim_of_the_hollow_of_a_shelled_loft_is_filleted() {
     filleted(&mut s, "Shell", "F4:copy(1)/", 1.0, 1.0, outline);
 }
 
-/// Sections across the bike's saddle (plan/bike.md): x, half width,
+/// Sections across the bike's saddle (a showcase model): x, half width,
 /// height, lift of the underside (mm).
 const SADDLE: [(f64, f64, f64, f64); 6] = [
     (-125.0, 70.0, 40.0, 12.0),

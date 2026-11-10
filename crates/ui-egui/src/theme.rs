@@ -1915,8 +1915,8 @@ mod tests {
         }
     }
 
-    /// The figures of the overhaul's plan (plan/mockups/ui-overhaul,
-    /// *Contrast*), the design's own check of the dark set. Changed on
+    /// The figures of the overhaul's plan (its mock-ups' *Contrast*
+    /// board), the design's own check of the dark set. Changed on
     /// 2026-11-04 with the developer's decision that dark is the darkest
     /// variant (panels #161514, popovers #201F1D): the ratios of the
     /// panel, its hover and the popover were worked out again by hand
