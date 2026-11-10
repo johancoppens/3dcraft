@@ -6,7 +6,7 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [0.1.0] - unreleased
 
-The first release for people outside the project. 3DCraft is a parametric 3D CAD modeller built for AI: you describe a part, an AI agent builds it through 3DCraft's commands, and you watch it appear in the window, point at faces and check the result. Ready-made designs called Jigs need no AI at all: set their sizes in a form and export. Everything can also be done from the command line or a script, and 3DCraft runs in the browser too.
+The first release for people outside the project. 3DCraft is a parametric 3D CAD modeller built with and for AI: you describe a part, an AI agent builds it through 3DCraft's commands, and you watch it appear in the window, point at faces and check the result. Ready-made designs called Jigs need no AI at all: set their sizes in a form and export. Everything can also be done from the command line or a script, and 3DCraft runs in the browser too.
 
 ### Modelling
 

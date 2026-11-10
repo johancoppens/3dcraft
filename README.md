@@ -56,7 +56,7 @@ owed, and it is being made better step by step.
   Jig, export for a 3D printer.
 - **[The user guide](docs/guide/README.md)**: working with an AI agent, the window, Jigs, formulas,
   modelling, measuring, files and a reference of every command.
-- **[Example models](docs/examples/README.md)** that check their own volume, and the
+- **[The guide's lessons](docs/examples/README.md)**, seven parts that check their own volume, and the
   **[Jigs collection](https://github.com/johancoppens/3dcraft-jigs)**: from a laser-cut box and a GT2
   pulley to a planetary gearbox and a sundial for your place.
 - **What changed:** [`CHANGELOG.md`](CHANGELOG.md).
