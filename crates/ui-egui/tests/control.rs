@@ -180,6 +180,7 @@ fn only_ui_methods_are_handled_and_each_listed_one_exists() {
             "ui.record",
             "ui.advance",
             "ui.param",
+            "ui.example",
             "ui.notice",
             "ui.quit"
         ]

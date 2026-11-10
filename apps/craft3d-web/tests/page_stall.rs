@@ -418,7 +418,7 @@ fn the_page_stalls_on_the_turbofan() {
 fn the_page_stalls_on_the_planetary_gearbox() {
     let bytes = std::fs::read(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/examples/published/planetary-gearbox.3dcraftasm"),
+            .join("../../crates/testkit/data/planetary-gearbox.3dcraftasm"),
     )
     .unwrap();
     let willis = "Carrier turns as Willis' formula says (sun on housing / carrier = 1 + Zr / Zs)";
@@ -500,18 +500,22 @@ fn the_page_stalls_on_the_planetary_gearbox() {
     let _ = answers;
 }
 
-/// The fuel tank of the start screen (its shell, the area and cavity it
-/// measures), built from its card: with the worker each step that needs
-/// the bodies is made there and the page only applies it (2026-11-04);
-/// without, every step is made on the page, its shell in one frame (as
-/// the whole script was before, in a single frame).
+/// The fuel tank, a script example (its shell, the area and cavity it
+/// measures; on the start screen until 2026-11-10), built as a card
+/// builds one: with the worker each step that needs the bodies is made
+/// there and the page only applies it (2026-11-04); without, every step is
+/// made on the page, its shell in one frame (as the whole script was
+/// before, in a single frame).
 #[test]
 #[ignore = "timings: run in release with --ignored --nocapture"]
 fn the_page_stays_free_while_the_fuel_tank_is_built() {
-    let tank = craft3d_ui_egui::shell::EXAMPLES
-        .iter()
-        .find(|example| example.id == "tank")
-        .unwrap();
+    static TANK: craft3d_ui_egui::shell::Example = craft3d_ui_egui::shell::Example::script(
+        "tank",
+        "Fuel tank",
+        "class-A surfaces, G2 seams, litres",
+        include_str!("../../../crates/engine/tests/example_models/tank.json"),
+    );
+    let tank = &TANK;
     let mut documents = Vec::new();
     for worker in [false, true] {
         let mut page = Page::new();

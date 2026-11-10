@@ -1040,11 +1040,6 @@ impl eframe::App for Page {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.fetch_environment(ctx);
         self.fetch_fonts(ctx);
-        // A published example asked for on the start screen: fetched like
-        // a file named in the address, then opened.
-        if let Some(url) = self.host.take_example_fetch() {
-            fetch_into(url, Rc::clone(&self.inbox));
-        }
         // Files dropped on the page are read in the background.
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         for file in dropped {

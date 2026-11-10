@@ -81,6 +81,7 @@ fn digests_of_the_exports_of_the_examples_showcase_and_benchmark_models() {
     let mut scripts: Vec<(String, PathBuf)> = Vec::new();
     for (folder, suffix) in [
         ("docs/examples", ".json"),
+        ("crates/engine/tests/example_models", ".json"),
         ("crates/engine/tests/bench_models", ".steps.json"),
     ] {
         let mut found: Vec<PathBuf> = std::fs::read_dir(root().join(folder))

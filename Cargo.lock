@@ -3755,6 +3755,7 @@ version = "0.1.0"
 dependencies = [
  "craft3d-doc",
  "craft3d-font",
+ "craft3d-format",
  "craft3d-math",
  "flate2",
  "png 0.17.16",

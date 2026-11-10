@@ -1,7 +1,8 @@
 //! The Help menu's windows, the recent files and the start screen: F1
 //! opens the shortcuts, `ui.set` opens About, the window notes the files
 //! documents come from and go to, and the start screen is up exactly
-//! while no document is open. The examples it offers build.
+//! while no document is open. Its examples are listed and opened by
+//! `ui.example` too (each one is opened by `bundled_examples.rs`).
 
 #![allow(
     clippy::unwrap_used,
@@ -11,7 +12,7 @@
 )]
 
 use craft3d_engine::{Access, Session, Workspace};
-use craft3d_ui_egui::shell::{EXAMPLES, ExampleSection, RecentFiles, run_example};
+use craft3d_ui_egui::shell::{EXAMPLES, EXAMPLES_URL, ExampleSection, External, RecentFiles};
 use craft3d_ui_egui::{FileAction, Shell, StatusSlot, TabPart};
 use egui::{Event, Pos2, vec2};
 use serde_json::{Value, json};
@@ -193,6 +194,14 @@ fn the_start_screen_is_up_while_no_document_is_open() {
             "{hit}"
         );
     }
+    // The first two are marked for a newcomer, and More examples is there.
+    assert!(cards >= 2 && EXAMPLES[0].start_here() && EXAMPLES[1].start_here());
+    assert!(
+        shell
+            .start_hits()
+            .iter()
+            .any(|(name, _)| name == "more-examples")
+    );
     run(&mut session, "file.new", json!({}));
     window.frame(&mut shell, &mut session, Vec::new());
     assert!(!shell.start_shown());
@@ -342,12 +351,17 @@ fn a_click_on_a_section_shows_its_cards() {
     }
     window.frame(&mut shell, &mut session, Vec::new());
     assert_eq!(shell.start_section(), ExampleSection::Assemblies);
-    let cards = shell
+    let cards: Vec<&str> = shell
         .start_hits()
         .iter()
-        .filter(|(name, _)| name.starts_with("example:asm-"))
-        .count();
-    assert_eq!(cards, in_section(ExampleSection::Assemblies));
+        .filter_map(|(name, _)| name.strip_prefix("example:"))
+        .collect();
+    let assemblies: Vec<&str> = EXAMPLES
+        .iter()
+        .filter(|e| e.section == ExampleSection::Assemblies)
+        .map(|e| e.id)
+        .collect();
+    assert_eq!(cards, assemblies);
 }
 
 #[test]
@@ -385,8 +399,8 @@ fn a_click_on_new_document_asks_the_host_for_a_new_document() {
         );
     }
     assert_eq!(shell.take_file_action(), Some(FileAction::New));
-    // An example's link asks for that example.
-    let link = hit(&shell, "example:flange");
+    // An example's card asks for that example.
+    let link = hit(&shell, "example:steel-bookend");
     for pressed in [true, false] {
         window.frame(
             &mut shell,
@@ -402,7 +416,29 @@ fn a_click_on_new_document_asks_the_host_for_a_new_document() {
             ],
         );
     }
-    assert_eq!(shell.take_example().map(|e| e.id), Some("flange"));
+    assert_eq!(shell.take_example().map(|e| e.id), Some("steel-bookend"));
+    // More examples asks the host to open the galleries in the browser.
+    let more = hit(&shell, "more-examples");
+    for pressed in [true, false] {
+        window.frame(
+            &mut shell,
+            &mut session,
+            vec![
+                Event::PointerMoved(more),
+                Event::PointerButton {
+                    pos: more,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+    }
+    assert_eq!(
+        shell.take_external(),
+        Some(External::Url(EXAMPLES_URL.to_string()))
+    );
+    assert_eq!(EXAMPLES_URL, "https://3dcraft.dev/examples/");
 }
 
 #[test]
@@ -536,83 +572,13 @@ fn a_document_in_memory_is_not_recent() {
     assert!(shell.recent_files().is_empty());
 }
 
-/// Assertions of the published examples that 3DCraft cannot prove today
-/// though they hold, as (example, assertion): each must be reported
-/// notProven, never failed, with the value found within its bounds, and
-/// leaves this list once it is proven. None now: the planetary gearbox's
-/// "Planet 1 and the ring mesh with the backlash" was here until the
-/// proven distance learned the flat end faces of gears in mesh
-/// (docs/design/verification.md, 2026-10-31).
-const MAY_BE_NOT_PROVEN: &[(&str, &str)] = &[];
-
-#[test]
-fn every_example_builds_in_a_new_document_and_passes_its_assertions() {
-    let mut session = Session::new(Workspace::none());
-    let mut not_proven: Vec<(&str, String)> = Vec::new();
-    for example in &EXAMPLES {
-        let built =
-            run_example(&mut session, example).unwrap_or_else(|e| panic!("{}: {e}", example.id));
-        assert_eq!(built["example"], example.id);
-        let listed = run(&mut session, "assert.list", json!({}));
-        assert_eq!(listed["failed"], 0, "{}: {listed}", example.id);
-        assert_eq!(listed["errors"], 0, "{}: {listed}", example.id);
-        for a in listed["assertions"].as_array().unwrap() {
-            if a["status"] == "passed" || a["status"] == "inactive" {
-                continue;
-            }
-            let name = a["name"].as_str().unwrap();
-            assert!(
-                MAY_BE_NOT_PROVEN.contains(&(example.id, name)),
-                "{}: `{name}` is {}: {listed}",
-                example.id,
-                a["status"]
-            );
-            assert_eq!(a["status"], "notProven", "{}: {name}", example.id);
-            not_proven.push((example.id, name.to_string()));
-            // Not proven, never failed: the value found lies within the
-            // bounds the assertion states (assert.list's `expected`,
-            // "<min> mm to <max> mm").
-            let bounds: Vec<f64> = a["expected"]
-                .as_str()
-                .unwrap()
-                .split(" to ")
-                .map(|b| b.trim_end_matches(" mm").parse().unwrap())
-                .collect();
-            let found = a["measured"].as_f64().unwrap();
-            assert!(
-                bounds.len() == 2 && bounds[0] <= found && found <= bounds[1],
-                "{}: {name}: found {found}, bounds {bounds:?}",
-                example.id
-            );
-        }
-        // A published Jig opens in use, on its parameters.
-        assert_eq!(
-            session.document_status().unwrap().jig_in_use,
-            example.section == ExampleSection::Jigs,
-            "{}",
-            example.id
-        );
-        let status = session.document_status().unwrap();
-        assert!(status.path.is_none(), "an example is a new document");
-    }
-    assert_eq!(session.document_statuses().len(), EXAMPLES.len());
-    // Each exception is still needed: once its assertion is proven, the
-    // entry must go.
-    for (id, name) in MAY_BE_NOT_PROVEN {
-        assert!(
-            not_proven.iter().any(|(i, n)| i == id && n == name),
-            "{id}: `{name}` is proven now: remove it from MAY_BE_NOT_PROVEN"
-        );
-    }
-}
-
 #[test]
 fn a_chosen_example_waits_for_the_host() {
     let mut shell = Shell::new();
     assert!(shell.take_example().is_none());
-    let case = EXAMPLES.iter().find(|e| e.id == "case").unwrap();
-    shell.choose_example(case);
-    assert_eq!(shell.take_example().map(|e| e.id), Some("case"));
+    let jig = EXAMPLES.iter().find(|e| e.id == "laser-box").unwrap();
+    shell.choose_example(jig);
+    assert_eq!(shell.take_example().map(|e| e.id), Some("laser-box"));
     assert!(shell.take_example().is_none());
 }
 
@@ -634,4 +600,89 @@ fn about_copies_the_version_commit_platform_and_renderer() {
     // The same build lines as the bug report.
     let report = craft3d_engine::bug_report(None, false, &[], None);
     assert!(report.contains(lines[1]) && report.contains(lines[2]));
+}
+
+/// `ui.example` lists the start screen's examples, shows a section and
+/// opens one as a click does; what it cannot do it refuses and says why.
+#[test]
+fn ui_example_lists_shows_and_opens_the_examples() {
+    let mut session = Session::new(Workspace::none());
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    window.frame(&mut shell, &mut session, Vec::new());
+    window.frame(&mut shell, &mut session, Vec::new());
+    let listed = call(&mut shell, &mut session, "ui.example", json!({}));
+    assert_eq!(listed["shown"], true);
+    assert_eq!(listed["section"], "parts");
+    assert_eq!(listed["moreExamples"], EXAMPLES_URL);
+    let examples = listed["examples"].as_array().unwrap();
+    assert_eq!(examples.len(), EXAMPLES.len());
+    let ids: Vec<&str> = examples.iter().map(|e| e["id"].as_str().unwrap()).collect();
+    let expected: Vec<&str> = EXAMPLES.iter().map(|e| e.id).collect();
+    assert_eq!(ids, expected);
+    assert_eq!(examples[0]["kind"], "part");
+    assert_eq!(examples[0]["startHere"], true);
+    assert!(examples[0]["file"].as_str().unwrap().ends_with(".3dcraft"));
+    for e in examples {
+        let kind = e["kind"].as_str().unwrap();
+        let section = e["section"].as_str().unwrap();
+        assert_eq!(
+            (kind, section),
+            match kind {
+                "part" => ("part", "parts"),
+                "jig" => ("jig", "jigs"),
+                _ => ("assembly", "assemblies"),
+            },
+            "{e}"
+        );
+    }
+    // A section, as a click on its tab.
+    let shown = call(
+        &mut shell,
+        &mut session,
+        "ui.example",
+        json!({"section": "jigs"}),
+    );
+    assert_eq!(shown["section"], "jigs");
+    assert_eq!(shell.start_section(), ExampleSection::Jigs);
+    window.frame(&mut shell, &mut session, Vec::new());
+    let cards = shell
+        .start_hits()
+        .iter()
+        .filter(|(name, _)| name.starts_with("example:"))
+        .count();
+    assert_eq!(cards, in_section(ExampleSection::Jigs));
+    // An example, as a click on its card: the host opens it.
+    let chosen = call(
+        &mut shell,
+        &mut session,
+        "ui.example",
+        json!({"id": "radial-engine"}),
+    );
+    assert_eq!(chosen["chosen"]["id"], "radial-engine");
+    assert!(
+        shell.state.timeline.motion,
+        "an assembly opens on its motion"
+    );
+    assert_eq!(shell.take_example().map(|e| e.id), Some("radial-engine"));
+    // Refused, and nothing chosen.
+    for params in [
+        json!({"id": "nope"}),
+        json!({"id": 3}),
+        json!({"section": "tools"}),
+        json!({"id": "moka-pot", "section": "parts"}),
+        json!({"what": 1}),
+        json!([1]),
+    ] {
+        let refused = shell
+            .handle_method(&mut session, "ui.example", Some(&params))
+            .unwrap();
+        assert!(refused.is_err(), "{params}");
+        assert!(shell.take_example().is_none(), "{params}");
+    }
+    let unknown = shell
+        .handle_method(&mut session, "ui.example", Some(&json!({"id": "nope"})))
+        .unwrap()
+        .unwrap_err();
+    assert!(unknown.contains("moka-pot"), "it lists the ids: {unknown}");
 }

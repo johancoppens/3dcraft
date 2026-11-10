@@ -601,6 +601,7 @@ fn a_script_builds_a_part_and_measures_the_closed_form_volume() {
             "ui.record",
             "ui.advance",
             "ui.param",
+            "ui.example",
             "ui.notice",
             "ui.quit"
         ]

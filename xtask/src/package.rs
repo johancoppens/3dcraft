@@ -12,8 +12,9 @@
 //!
 //! Each package carries `LICENSE`, `THIRD-PARTY-NOTICES.txt` (the
 //! licences of the crates the programs are built from, made here from
-//! `Cargo.lock`, `crate::notices`) and `EXAMPLES-LICENSE.md`, the CC BY 4.0
-//! of the published Jigs and assemblies built into the programs.
+//! `Cargo.lock`, `crate::notices`) and `EXAMPLES-LICENSE.md`, the licence
+//! of the examples (MIT), Jigs and assemblies (CC BY 4.0) built into the
+//! programs.
 //!
 //! The files they carry (desktop entry, MIME type, Info.plist, WiX source,
 //! icons) live in `packaging/`. The external tools are the platform's own
@@ -334,9 +335,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The licence of the published Jigs and assemblies the desktop programs
-/// carry built in (CC BY 4.0, `docs/examples/published/LICENSE.md`), as
-/// it is named in every package.
+/// The licence of the examples, Jigs and assemblies the programs carry
+/// built in (`docs/examples/published/LICENSE.md`, written by
+/// `cargo xtask bundle-examples`), as it is named in every package and on
+/// the web site.
 pub const EXAMPLES_LICENCE: &str = "EXAMPLES-LICENSE.md";
 
 struct Packer {
@@ -413,7 +415,7 @@ enum Source {
 }
 
 /// Where the published examples' licence is in the repository.
-const EXAMPLES_LICENCE_SOURCE: &str = "docs/examples/published/LICENSE.md";
+const EXAMPLES_LICENCE_SOURCE: &str = crate::bundle::LICENCE;
 
 /// The file of the tarball, installed with the rest, that names every
 /// file `install.sh` installs, itself included, one path below the prefix

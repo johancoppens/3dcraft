@@ -71,6 +71,11 @@ pub const UI_METHODS: &[UiMethod] = &[
         summary: "Sets one public parameter as the Parameters tab does: a number (in the parameter's unit, param.list unit) is first clamped to its range and snapped to its step, a whole-number kind rounded, and the form says so under the field (note, as ui.get parameters gives it); then param.set runs (in the desktop window on its engine thread, the reply coming once it is done; through MCP's control_call it is queued as the form's commit and the reply says queued: true instead of result). Returns sent (the value given to param.set), note, result (param.set's result, or {error}) and parameters (as ui.get). A value that breaks the model marks the field and a banner over the viewport offers Back to last good (parameters.trouble, broke: true); the viewport shows the document as it is. {lastGood: true} is that button: it sets the parameters that differ back to the last values that built (sent lists them), an error while nothing breaks the model. To set a value exactly, or one out of range to see it refused, use the command param.set.",
     },
     UiMethod {
+        name: "ui.example",
+        params: r#"{} | {"section": "parts|jigs|assemblies"} | {"id": string}"#,
+        summary: "The start screen's examples: the parts, Jigs and assemblies built into the program (docs/decisions.md, 2026-11-10). {} lists them: shown (the start screen shows), section (the one shown), examples ([{id, section, kind: part|jig|assembly, title, summary, file, seconds: about how long it takes to open, 0 for at once, startHere: one of the two a newcomer starts with}], in the start screen's order) and moreExamples (the address More examples opens). section shows that section's cards, as a click on its tab does, and lists them. id opens that example in a new document, as a click on its card does: a part with its history, a Jig in use on its form, an assembly with its player on its motion; without a file of its own, so Save asks where. The reply (chosen, the example) comes before it is open: the window opens it next (ui.get document and tabs say when). An id that is not an example is an error that lists them.",
+    },
+    UiMethod {
         name: "ui.notice",
         params: r#"{"text": string}"#,
         summary: "Shows a one-line caption over the viewport; an empty text removes it.",
@@ -232,6 +237,7 @@ impl Shell {
             "ui.notice" => self.ui_notice(params),
             "ui.quit" => self.ui_quit(params),
             "ui.param" => self.ui_param(session, params),
+            "ui.example" => self.ui_example(params),
             "ui.record" | "ui.advance" => Err(format!(
                 "{method}: recording is done by the desktop window (craft3d --control), which paints its own frames"
             )),

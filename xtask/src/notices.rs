@@ -28,8 +28,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
-/// The licence of the published Jigs and assemblies built into the
-/// programs, quoted in the notices' last section.
+/// The licence of the examples, Jigs and assemblies built into the
+/// programs (MIT, and CC BY 4.0), quoted in the notices' last section.
 const EXAMPLES_LICENCE: &str = include_str!("../../docs/examples/published/LICENSE.md");
 
 /// The name of the file in the packages, beside `LICENSE`.
@@ -997,12 +997,13 @@ impl Review {
                 font.file, font.licence, font.url
             ));
         }
-        out.push_str("\nBundled examples (CC BY 4.0)\n----------------------------\n\n");
+        out.push_str("\nBundled examples (MIT; Jigs and assemblies CC BY 4.0)\n-----------------------------------------------------\n\n");
         out.push_str(
-            "The desktop programs carry built in, and the web page fetches from\n\
-             examples/ beside it, the published Jigs and assemblies below. They are\n\
-             not under 3DCraft's MIT licence but under CC BY 4.0, as\n\
-             EXAMPLES-LICENSE.md (beside this file) says:\n\n",
+            "The programs, the web page's too, carry built in the examples, Jigs and\n\
+             assemblies below, from their own repositories. The examples are under\n\
+             the MIT licence of theirs, the Jigs and assemblies not under an MIT\n\
+             licence but under CC BY 4.0, as EXAMPLES-LICENSE.md (beside this file)\n\
+             says:\n\n",
         );
         out.push_str(EXAMPLES_LICENCE.trim_end());
         out.push('\n');
@@ -1257,8 +1258,9 @@ mod tests {
         assert!(text.contains("\nLicence texts\n-------------\n\n[1]\n"));
         // The examples built into the programs are named, with their
         // licence.
-        assert!(text.contains("\nBundled examples (CC BY 4.0)\n"));
-        assert!(text.contains("planetary-gearbox.3dcraftasm"));
+        assert!(text.contains("\nBundled examples (MIT; Jigs and assemblies CC BY 4.0)\n"));
+        assert!(text.contains("steel-bookend.3dcraft"));
+        assert!(text.contains("radial-engine.3dcraftasm"));
         assert!(text.contains("creativecommons.org/licenses/by/4.0"));
         // The font files beside the programs, the interface's Inter too.
         assert!(text.contains("\nBundled fonts (SIL Open Font Licence 1.1)\n"));

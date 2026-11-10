@@ -1,6 +1,6 @@
 //! Sheets that meet tangentially along an edge, joined by
 //! `feature.boolean {"op": "sew"}` (2026-10-31), through the commands: the
-//! crown and a side of the class-A fuel tank (`docs/examples/tank.json`),
+//! crown and a side of the class-A fuel tank (`tests/example_models/tank.json`),
 //! the side held in curvature (G2) to the crown. A union intersects the
 //! two first and refuses (their surfaces touch along the whole edge); the
 //! sewing joins them along the edge, the seam is proven G2 on the sewn
@@ -25,7 +25,7 @@ use std::path::PathBuf;
 /// The tank example's steps up to (not including) the step that names
 /// `stop`.
 fn tank_until(stop: &str) -> Vec<(String, Value)> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/examples/tank.json");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/example_models/tank.json");
     let script: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     let mut out = Vec::new();
     for step in script.as_array().unwrap() {

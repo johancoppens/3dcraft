@@ -394,8 +394,6 @@ pub struct WebHost {
     said: u64,
     /// A file named in the page's address is being fetched.
     fetching: Option<String>,
-    /// The address of a published example to fetch, for the page.
-    example_fetch: Option<String>,
     /// The built-in fonts the chosen example waits for, once said; and
     /// those whose fetch failed (the example then runs and says why).
     example_fonts: Option<Vec<String>>,
@@ -482,7 +480,6 @@ impl WebHost {
             stepwise: false,
             about: None,
             fetching: None,
-            example_fetch: None,
             example_fonts: None,
             fonts_failed: BTreeSet::new(),
             away: false,
@@ -512,12 +509,6 @@ impl WebHost {
         self.about = Some(("file.open".to_string(), stem));
         self.show_work(None);
         self.away = true;
-    }
-
-    /// The address of a published example the page should fetch now
-    /// (`examples/<file>`, beside the page), once.
-    pub fn take_example_fetch(&mut self) -> Option<String> {
-        self.example_fetch.take()
     }
 
     /// Whether a script example must wait for built-in fonts its texts
@@ -1068,16 +1059,13 @@ impl WebHost {
             });
             self.finish(command, &done);
         }
-        // An example from the start screen, built in a new document; a
-        // published Jig or assembly is fetched from beside the page first
-        // (the page reads `take_example_fetch`) and opened as a file is.
-        // One being built goes on (another chosen meanwhile waits).
+        // An example from the start screen: a published part, Jig or
+        // assembly built into the module, opened without a file of its own
+        // (no network: docs/decisions.md, 2026-11-10); a script example is
+        // built a step at a time in a new document. One being built goes
+        // on (another chosen meanwhile waits).
         if self.example_run.is_some() {
             self.build_example();
-        } else if let Some(name) = self.shell.peek_example().and_then(|e| e.to_fetch()) {
-            let _ = self.shell.take_example();
-            self.fetching(name);
-            self.example_fetch = Some(format!("examples/{name}"));
         } else if let Some(example) = self.shell.peek_example()
             && self.waits_for_fonts(example)
         {
@@ -3230,22 +3218,43 @@ mod tests {
         assert!(!host.shell.last_command.as_ref().unwrap().ok);
     }
 
+    /// The examples of the start screen are built into the module and
+    /// open in a new document without a file of their own: nothing is
+    /// fetched (it works offline), nothing is left in memory, nothing is
+    /// recent in the browser, and Save asks for a name. The quickest of
+    /// each section (a part, a Jig, an assembly); every one is opened by
+    /// `craft3d-ui-egui`'s `bundled_examples`.
     #[test]
-    fn an_example_from_the_start_screen_is_built_in_a_new_document() {
-        let mut host = host();
-        let example = &craft3d_ui_egui::shell::EXAMPLES[0];
-        host.shell.choose_example(example);
-        // Built a few steps a frame (`build_example`).
-        host.pump();
-        while host.example_progress().is_some() {
+    fn an_example_from_the_start_screen_opens_in_a_new_document() {
+        use craft3d_ui_egui::shell::{EXAMPLES, ExampleSection};
+        let quickest = |section: ExampleSection| {
+            EXAMPLES
+                .iter()
+                .filter(|e| e.section == section)
+                .min_by(|a, b| a.seconds().total_cmp(&b.seconds()))
+                .unwrap()
+        };
+        for example in ExampleSection::ALL.map(quickest) {
+            let mut host = host();
+            host.shell.choose_example(example);
             host.pump();
+            while host.example_progress().is_some() {
+                host.pump();
+            }
+            assert!(host.fetching_name().is_none(), "{}", example.id);
+            assert_eq!(host.session.document_statuses().len(), 1, "{}", example.id);
+            let report = host.shell.last_command.as_ref().unwrap();
+            assert!(report.ok && report.label == "example", "{}", report.text);
+            assert!(host.session.file_names().is_empty(), "{}", example.id);
+            assert!(host.shell.recent_files().is_empty());
+            let status = host.session.document_status().unwrap();
+            assert!(status.path.is_none(), "{}", example.id);
+            // Save asks for a name (the page has no file dialogs here).
+            let outcome = host.file_action(FileAction::Save);
+            assert!(outcome.downloads.is_empty(), "{}", example.id);
+            assert!(host.dialog.is_some(), "{}: Save asks", example.id);
+            host.dialog = None;
         }
-        assert_eq!(host.session.document_statuses().len(), 1);
-        let report = host.shell.last_command.as_ref().unwrap();
-        assert!(report.ok && report.label == "example", "{}", report.text);
-        // Nothing is left in memory, and nothing is recent in the browser.
-        assert!(host.session.file_names().is_empty());
-        assert!(host.shell.recent_files().is_empty());
     }
 
     /// A script example whose text needs a built-in font that is not here
@@ -3253,11 +3262,14 @@ mod tests {
     /// it does not fail and close its new document on the first click.
     #[test]
     fn an_example_with_text_waits_for_its_font_then_builds() {
+        static NAMEPLATE: craft3d_ui_egui::shell::Example = craft3d_ui_egui::shell::Example::script(
+            "nameplate",
+            "Name plate",
+            "text, fillet, materials",
+            include_str!("../../../crates/engine/tests/example_models/nameplate.json"),
+        );
         let mut host = host();
-        let example = craft3d_ui_egui::shell::EXAMPLES
-            .iter()
-            .find(|e| e.id == "nameplate")
-            .unwrap();
+        let example = &NAMEPLATE;
         assert_eq!(example.fonts(), ["sans"]);
         host.shell.choose_example(example);
         if !craft3d_engine::fonts::ready("sans") {

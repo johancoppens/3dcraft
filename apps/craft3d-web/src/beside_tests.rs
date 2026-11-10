@@ -658,7 +658,7 @@ fn an_export_answered_during_an_edit_follows_it() {
 /// places, solves or regenerates.
 #[test]
 fn an_assembly_is_placed_and_played_in_the_worker() {
-    let bytes = include_bytes!("../../../docs/examples/published/planetary-gearbox.3dcraftasm");
+    let bytes = include_bytes!("../../../crates/testkit/data/planetary-gearbox.3dcraftasm");
     let mut page = Page::new(false);
     page.host
         .session
@@ -814,12 +814,29 @@ fn a_trace_and_a_check_over_the_motion_are_made_in_the_worker() {
     assert_eq!(page.host.session.work_here(), work);
 }
 
-/// An example from the start screen, `id`.
+/// A script example, built a step at a time as the start screen's were
+/// until 2026-11-10: the sheet-metal bracket (kept as a test) or the
+/// guide's L-bracket.
+static CHANNEL: craft3d_ui_egui::shell::Example = craft3d_ui_egui::shell::Example::script(
+    "channel",
+    "Sheet-metal bracket",
+    "sheet metal, bends",
+    include_str!("../../../crates/engine/tests/example_models/channel.json"),
+);
+static BRACKET: craft3d_ui_egui::shell::Example = craft3d_ui_egui::shell::Example::script(
+    "bracket",
+    "L-bracket",
+    "extrude, fillet, holes",
+    include_str!("../../../docs/examples/bracket.json"),
+);
+
+/// The script example `id` (`channel` or `bracket`).
 fn example(id: &str) -> &'static craft3d_ui_egui::shell::Example {
-    craft3d_ui_egui::shell::EXAMPLES
-        .iter()
-        .find(|example| example.id == id)
-        .unwrap()
+    match id {
+        "channel" => &CHANNEL,
+        "bracket" => &BRACKET,
+        other => panic!("no script example {other}"),
+    }
 }
 
 /// Frames until the example being built is done.

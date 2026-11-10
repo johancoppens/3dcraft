@@ -13,6 +13,9 @@ craft3d-math.workspace = true
 serde_json.workspace = true
 # SHA-256 for the web build's file names and SHA256SUMS.txt (`web.rs`).
 craft3d-doc.workspace = true
+# `cargo xtask bundle-examples`: a bundled file must open in this build
+# (`bundle.rs`).
+craft3d-format.workspace = true
 # `cargo xtask fonts`: the pinned built-in fonts (`fonts.rs`).
 craft3d-font.workspace = true
 # `cargo xtask web-size`: gzip -9 of the web module, with the pure-Rust

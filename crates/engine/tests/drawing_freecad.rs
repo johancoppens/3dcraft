@@ -570,7 +570,7 @@ fn freecad_reads_a_flat_pattern() {
 }
 
 /// The mini-PC chassis example's three flat patterns on one sheet
-/// (`docs/examples/chassis.json`: louvres bent out of slots, holes across
+/// (`tests/example_models/chassis.json`: louvres bent out of slots, holes across
 /// the lid's bends, a hem, a jog, closed mitre corners): FreeCAD reads the
 /// DXF and the SVG with our length, our box, and as many closed wires as
 /// the export writes chains.
@@ -587,7 +587,7 @@ fn freecad_reads_the_chassis_flat_patterns_on_one_sheet() {
     run(&mut s, "file.new", json!({"units": "mm"}));
     let script: Value = serde_json::from_str(
         &std::fs::read_to_string(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/examples/chassis.json"),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/example_models/chassis.json"),
         )
         .unwrap(),
     )

@@ -1,8 +1,9 @@
-# The example scripts and the stamps of their thumbnails are hashed
+# The example scripts and the stamps of their pictures are hashed
 # (`cargo xtask example-thumbs`, xtask/src/thumbs.rs): LF in every
 # checkout, also with core.autocrlf on Windows.
 docs/examples/*.json text eol=lf
-docs/examples/thumbs/STAMPS.txt text eol=lf
+crates/engine/tests/example_models/*.json text eol=lf
+xtask/example-pictures.txt text eol=lf
 # Files tests read byte for byte, and files the packages carry as they are
 # (a desktop entry, a shell script and AppRun must keep LF on Linux and
 # macOS even when they were checked out on Windows): LF in every checkout.

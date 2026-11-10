@@ -1,0 +1,19 @@
+# What the pictures of the example scripts (<folder>/<id>.png) were made from: cargo xtask example-thumbs
+bracket d00480a0202725a5
+flange ddc57ecb8a5d4cc0
+case f14a374076e40986
+bushing c8c4d1adcc59f157
+spring e25a9c5dc8e31e95
+hopper 025e3802f127f463
+gear 5c25160b6e2601b8
+pipe 1ee5aa2bf683e518
+panel 22907877a235143b
+wedge b3a3d404a8e5340d
+nameplate 80b46fb9e606f727
+clamp d8e2cb3c4f774519
+channel 7d170897b6451721
+chassis 2ab954feff7066e2
+fin c59d2805386d0f67
+shade b8d834184a7020f7
+tank e330908b88d6b0ae
+mouse 9d330d131dc5e84f

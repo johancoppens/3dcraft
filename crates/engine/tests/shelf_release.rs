@@ -42,9 +42,8 @@ fn kept_as_held(s: &Session, after: &str) {
 
 #[test]
 fn the_trees_of_an_open_document_stay_and_those_of_a_closed_one_go() {
-    let script: Vec<Value> =
-        serde_json::from_str(include_str!("../../../docs/examples/mouse.json"))
-            .expect("the mouse example is a list of commands");
+    let script: Vec<Value> = serde_json::from_str(include_str!("example_models/mouse.json"))
+        .expect("the mouse example is a list of commands");
     let mut s = Session::new(Workspace::none());
     run(&mut s, "file.new", json!({"units": "mm"}));
     for step in &script {

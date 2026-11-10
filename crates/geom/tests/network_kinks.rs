@@ -317,7 +317,8 @@ fn banded(s: &NurbsSurface) -> bool {
 /// A crown interpolated across with degree 5 from curves of degree 5 is
 /// four times differentiable along its lines: a side held in curvature to
 /// it needs no band for kinks and has no crease inside (`acrossDegree` 5,
-/// format 62; the fuel tank, `docs/examples/tank.json`, is made so).
+/// format 62; the fuel tank, `crates/engine/tests/example_models/tank.json`,
+/// is made so).
 /// Made of cubics interpolated across with degree 3, the crown's line
 /// kinks and the side's change is put onto a band. The seam is held at a
 /// tolerance of 1e-6 of the size and an angular tolerance of 1e-6 (the

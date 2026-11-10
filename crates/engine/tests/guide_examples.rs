@@ -25,6 +25,15 @@ fn docs() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs")
 }
 
+/// The folders of example scripts: the guide's lessons, and the models
+/// that were its examples until 2026-11-10 and stay as tests.
+fn example_dirs() -> [PathBuf; 2] {
+    [
+        docs().join("examples"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/example_models"),
+    ]
+}
+
 fn read_text(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path:?}: {e}"))
 }
@@ -59,8 +68,11 @@ fn steps(script: &Value) -> Option<Vec<(String, Value)>> {
 
 #[test]
 fn every_example_builds_and_meets_its_assertions() {
-    let scripts = files(&docs().join("examples"), "json");
-    assert!(scripts.len() >= 6, "examples: {scripts:?}");
+    let scripts: Vec<PathBuf> = example_dirs()
+        .iter()
+        .flat_map(|dir| files(dir, "json"))
+        .collect();
+    assert!(scripts.len() >= 18, "examples: {scripts:?}");
     for path in &scripts {
         let name = stem(path);
         let script: Value = serde_json::from_str(&read_text(path))
@@ -98,9 +110,14 @@ fn every_example_builds_and_meets_its_assertions() {
 
 #[test]
 fn every_example_has_a_picture_and_an_entry() {
-    let dir = docs().join("examples");
+    for dir in example_dirs() {
+        every_script_has_a_picture_and_an_entry(&dir);
+    }
+}
+
+fn every_script_has_a_picture_and_an_entry(dir: &Path) {
     let readme = read_text(&dir.join("README.md"));
-    for path in files(&dir, "json") {
+    for path in files(dir, "json") {
         let name = stem(&path);
         let picture = dir.join(format!("{name}.png"));
         let size = std::fs::metadata(&picture)
@@ -211,7 +228,7 @@ fn the_guide_names_only_commands_and_params_that_exist() {
     let mut steps_checked = 0;
     for page in pages
         .iter()
-        .chain([docs().join("examples/README.md")].iter())
+        .chain(example_dirs().map(|dir| dir.join("README.md")).iter())
     {
         let text = read_text(page);
         let name = page.file_name().unwrap().to_string_lossy().to_string();

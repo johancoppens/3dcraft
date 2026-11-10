@@ -62,8 +62,8 @@ pub use params::{
 pub use popover::{cube_out_of_the_way, popover_place, split_chip};
 pub use recent::{MAX_RECENT, RecentEntry, RecentFiles};
 pub use start::{
-    AgentSetup, EXAMPLES, Example, ExampleSection, McpClient, example_step_failed, example_steps,
-    run_example,
+    AgentSetup, EXAMPLES, EXAMPLES_URL, Example, ExampleSection, McpClient, example_step_failed,
+    example_steps, run_example,
 };
 pub use tabs::{
     CLOSE_MARK, CloseAnswer, DocAction, TabPart, UNSAVED_MARK, close_shortcut, doc_tabs,

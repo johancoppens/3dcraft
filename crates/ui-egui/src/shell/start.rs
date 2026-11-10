@@ -1,18 +1,22 @@
 //! The start screen, in the viewport while no document is open: New,
-//! Open, the example models of the user guide, the recent files, and how
-//! to connect an AI agent to this window over MCP.
+//! Open, the examples, Jigs and assemblies built into the program, the
+//! recent files, and how to connect an AI agent to this window over MCP.
 //!
 //! The shell only asks, as the File menu does: New and Open are file
 //! actions ([`super::FileAction`]), a recent file is opened by the host
-//! ([`Shell::take_open_recent`]), and an example is built by the host
-//! with [`run_example`] ([`Shell::take_example`]), which runs the guide's
-//! command script in a new document like any other commands.
+//! ([`Shell::take_open_recent`]), and an example is opened by the host with
+//! [`run_example`] ([`Shell::take_example`]), as a document without a file
+//! of its own (`Session::open_bytes`): a Jig on its form, an assembly with
+//! its player. *More examples* opens the galleries on the website
+//! ([`EXAMPLES_URL`]), as Help opens the guide.
 //!
-//! While it shows, the feature list is put away, so the welcome sits in
-//! the middle of the window. The logo and the examples' thumbnails are
-//! PNGs built into the program: the thumbnails are made by
-//! `cargo xtask example-thumbs` (docs/development.md, Example
-//! thumbnails), which a test keeps in step with the scripts.
+//! The examples are copied from their own repositories by
+//! `cargo xtask bundle-examples` (docs/development.md, Bundled examples):
+//! the files and their pictures in `docs/examples/published`, built into
+//! every program, the web build's too, so they open offline; the list is
+//! [`EXAMPLES`], written by that task from the manifest there
+//! (`start_bundle.rs`). While the start screen shows, the feature list is
+//! put away, so the welcome sits in the middle of the window.
 
 use super::{FileAction, Shell};
 use crate::kit::status::BannerKind;
@@ -21,39 +25,36 @@ use crate::theme::color;
 use craft3d_engine::Session;
 use serde_json::{Value, json};
 
-/// A section of the start screen's examples.
+/// The galleries of examples, Jigs and assemblies on the website, which
+/// *More examples* opens in the browser.
+pub const EXAMPLES_URL: &str = "https://3dcraft.dev/examples/";
+
+/// A section of the start screen's examples, one kind each.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ExampleSection {
-    /// The guide's example parts, built by their scripts.
+    /// Finished parts with their history (`.3dcraft`).
     #[default]
     Parts,
-    /// Published Jigs, opened on their parameters.
+    /// Published Jigs, opened on their form (`.3dcraftjig`).
     Jigs,
-    /// Packed assemblies, opened ready to play.
+    /// Packed assemblies, opened ready to play (`.3dcraftasm`).
     Assemblies,
-    /// Showcase parts built by their scripts: class-A surfaces with their
-    /// proofs (the fuel tank, the mouse) and sheet metal with its press
-    /// brake (the mini-PC chassis), 2026-10-31.
-    Showcase,
 }
 
 impl ExampleSection {
     /// Every section, in the start screen's order.
-    pub const ALL: [ExampleSection; 4] = [
+    pub const ALL: [ExampleSection; 3] = [
         ExampleSection::Parts,
-        ExampleSection::Showcase,
-        ExampleSection::Assemblies,
         ExampleSection::Jigs,
+        ExampleSection::Assemblies,
     ];
 
-    /// The line icon of its tab (the plan's middle way); none for the
-    /// Showcase, whose cards mix kinds and carry the app icon's badge.
-    pub fn glyph(self) -> Option<crate::kit::Glyph> {
+    /// The line icon of its tab.
+    pub fn glyph(self) -> Glyph {
         match self {
-            ExampleSection::Parts => Some(crate::kit::Glyph::Part),
-            ExampleSection::Assemblies => Some(crate::kit::Glyph::Assembly),
-            ExampleSection::Jigs => Some(crate::kit::Glyph::Jig),
-            ExampleSection::Showcase => None,
+            ExampleSection::Parts => Glyph::Part,
+            ExampleSection::Assemblies => Glyph::Assembly,
+            ExampleSection::Jigs => Glyph::Jig,
         }
     }
 
@@ -62,17 +63,45 @@ impl ExampleSection {
             ExampleSection::Parts => "Parts",
             ExampleSection::Jigs => "Jigs",
             ExampleSection::Assemblies => "Assemblies",
-            ExampleSection::Showcase => "Showcase",
         }
     }
 
-    /// The word for the section in a hit (`section:<word>`).
+    /// The word for the section in a hit (`section:<word>`) and over the
+    /// control channel (`ui.example`).
     pub fn word(self) -> &'static str {
         match self {
             ExampleSection::Parts => "parts",
             ExampleSection::Jigs => "jigs",
             ExampleSection::Assemblies => "assemblies",
-            ExampleSection::Showcase => "showcase",
+        }
+    }
+
+    /// The section a word names.
+    pub fn from_word(word: &str) -> Option<ExampleSection> {
+        ExampleSection::ALL.into_iter().find(|s| s.word() == word)
+    }
+
+    /// What its examples are and how they open, in a line under the tabs.
+    pub fn hint(self) -> &'static str {
+        match self {
+            ExampleSection::Parts => {
+                "Finished parts with their whole history to play back. New here? Start with the first two."
+            }
+            ExampleSection::Jigs => {
+                "A Jig opens on its form: change a value and the model follows, ready to export."
+            }
+            ExampleSection::Assemblies => {
+                "An assembly opens with its player: press play and it moves."
+            }
+        }
+    }
+
+    /// What a card of the section is, for its tooltip and the channel.
+    pub fn kind(self) -> &'static str {
+        match self {
+            ExampleSection::Parts => "part",
+            ExampleSection::Jigs => "jig",
+            ExampleSection::Assemblies => "assembly",
         }
     }
 }
@@ -80,12 +109,13 @@ impl ExampleSection {
 /// How an example is made in a new document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
-    /// A command script of the guide (`docs/examples/<id>.json`), run in a
-    /// new document in millimetres.
+    /// A command script, run in a new document in millimetres (an
+    /// [`Example::script`]; none of the start screen's own is one since
+    /// 2026-11-10, when the guide's lessons left it).
     Script(&'static str),
-    /// A published file built into the program
-    /// (`docs/examples/published`), opened as it is, without a file of its
-    /// own (docs/decisions.md, 2026-10-30).
+    /// A published file built into the program (`docs/examples/published`),
+    /// opened as it is, without a file of its own (docs/decisions.md,
+    /// 2026-11-10).
     File {
         name: &'static str,
         bytes: &'static [u8],
@@ -93,14 +123,46 @@ pub enum Source {
 }
 
 impl Example {
-    /// A published file that is not built into this program (the web
-    /// page's): its file name, for the host to fetch from `examples/` beside
-    /// the page and open there. `None` for a script or a built-in file.
-    pub fn to_fetch(&self) -> Option<&'static str> {
-        match self.source {
-            Source::File { name, bytes: [] } => Some(name),
-            _ => None,
+    /// An example built by a command script `text` (`[[command, params],
+    /// …]`) in a new document, under Parts and without a picture: what a
+    /// host builds a step at a time, as the start screen's examples were
+    /// built until 2026-11-10.
+    pub const fn script(
+        id: &'static str,
+        title: &'static str,
+        summary: &'static str,
+        text: &'static str,
+    ) -> Example {
+        Example {
+            id,
+            title,
+            summary,
+            section: ExampleSection::Parts,
+            source: Source::Script(text),
+            thumb: &[],
+            seconds: 0.0,
+            start: false,
         }
+    }
+
+    /// The file it is published as (`moka-pot.3dcraft`); `None` for a
+    /// script.
+    pub fn file(&self) -> Option<&'static str> {
+        match self.source {
+            Source::File { name, .. } => Some(name),
+            Source::Script(_) => None,
+        }
+    }
+
+    /// About how many seconds it takes to open, as its repository measured
+    /// it (in the browser longer); 0 for one that opens at once.
+    pub fn seconds(&self) -> f32 {
+        self.seconds
+    }
+
+    /// One of the few a newcomer opens first (*Start here*).
+    pub fn start_here(&self) -> bool {
+        self.start
     }
 
     /// The fonts a script example's texts are set in, each once, in order:
@@ -139,45 +201,43 @@ impl Example {
         }
         out
     }
+
+    /// What the control channel says of it (`ui.example`).
+    pub fn json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "section": self.section.word(),
+            "kind": self.section.kind(),
+            "title": self.title,
+            "summary": self.summary,
+            "file": self.file(),
+            "seconds": self.seconds,
+            "startHere": self.start,
+        })
+    }
 }
 
-/// One of the start screen's examples: a part of the user guide
-/// (`docs/examples`), or a published Jig or assembly.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// One of the start screen's examples: a published part, Jig or assembly
+/// built into the program, or (for a host's own use) a command script.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Example {
-    /// The script's name, without `.json`, or the published file's id.
+    /// Its id in the manifest (`moka-pot`), or the script's name.
     pub id: &'static str,
     pub title: &'static str,
     /// What it shows, in a few words.
     pub summary: &'static str,
     pub section: ExampleSection,
     source: Source,
-    /// Its picture, 160 × 120 (`docs/examples/thumbs`).
+    /// Its picture, 240 × 180 (`docs/examples/published/thumbs`).
     thumb: &'static [u8],
+    seconds: f32,
+    start: bool,
 }
 
-macro_rules! example {
-    ($id:literal, $title:literal, $summary:literal) => {
-        example!(ExampleSection::Parts, $id, $title, $summary)
-    };
-    ($section:expr, $id:literal, $title:literal, $summary:literal) => {
-        Example {
-            id: $id,
-            title: $title,
-            summary: $summary,
-            section: $section,
-            source: Source::Script(include_str!(concat!(
-                "../../../../docs/examples/",
-                $id,
-                ".json"
-            ))),
-            thumb: include_bytes!(concat!("../../../../docs/examples/thumbs/", $id, ".png")),
-        }
-    };
-}
-
-macro_rules! published {
-    ($section:expr, $id:literal, $file:literal, $title:literal, $summary:literal) => {
+/// One bundled file: its section, id, file, title, summary, the seconds it
+/// takes to open and whether a newcomer starts with it.
+macro_rules! bundled {
+    ($section:expr, $id:literal, $file:literal, $title:literal, $summary:literal, $seconds:literal, $start:literal) => {
         Example {
             id: $id,
             title: $title,
@@ -185,93 +245,23 @@ macro_rules! published {
             section: $section,
             source: Source::File {
                 name: $file,
-                // Built into the desktop programs; the web page fetches
-                // the file beside it when its card is clicked
-                // (`examples/<file>`), so the module stays small.
-                #[cfg(not(target_arch = "wasm32"))]
                 bytes: include_bytes!(concat!("../../../../docs/examples/published/", $file)),
-                #[cfg(target_arch = "wasm32")]
-                bytes: &[],
             },
-            thumb: include_bytes!(concat!("../../../../docs/examples/thumbs/", $id, ".png")),
+            thumb: include_bytes!(concat!(
+                "../../../../docs/examples/published/thumbs/",
+                $id,
+                ".png"
+            )),
+            seconds: $seconds,
+            start: $start,
         }
     };
 }
 
-/// The start screen's examples, section by section: ten of the guide's
-/// parts, then the published Jigs and assemblies.
-pub const EXAMPLES: [Example; 19] = [
-    example!("bracket", "L-bracket", "extrude, fillet, holes"),
-    example!("nameplate", "Name plate", "text, fillet, materials"),
-    example!("clamp", "Clamp block", "fillet, bore, chamfer"),
-    example!("channel", "Sheet-metal bracket", "sheet metal, bends"),
-    example!("fin", "G2 fin", "surface network, curvature seam"),
-    example!("shade", "Lamp shade", "developable, plate, wall lamp"),
-    example!("flange", "Bolt flange", "pattern, boolean, chamfer"),
-    example!("case", "Shelled case", "fillet, shell"),
-    example!("spring", "Coil spring", "sweep along a helix"),
-    example!("gear", "Involute gear", "curves from formulas, pattern"),
-    example!(
-        ExampleSection::Showcase,
-        "tank",
-        "Fuel tank",
-        "class-A surfaces, G2 seams, litres"
-    ),
-    example!(
-        ExampleSection::Showcase,
-        "mouse",
-        "Class-A mouse",
-        "G2 top on flat flanks, sewn"
-    ),
-    example!(
-        ExampleSection::Showcase,
-        "chassis",
-        "Mini-PC chassis",
-        "sheet metal: louvres, hem, jog"
-    ),
-    published!(
-        ExampleSection::Jigs,
-        "jig-planetary",
-        "planetary-gearbox.3dcraftjig",
-        "Planetary gearbox",
-        "a Jig: module and teeth"
-    ),
-    published!(
-        ExampleSection::Jigs,
-        "jig-reducer",
-        "gear-reducer.3dcraftjig",
-        "Gear reducer",
-        "a Jig: a ratio and its gears"
-    ),
-    published!(
-        ExampleSection::Jigs,
-        "jig-strandbeest",
-        "strandbeest-leg.3dcraftjig",
-        "Jansen linkage leg",
-        "a Jig after the mechanism of Theo Jansen's Strandbeests"
-    ),
-    published!(
-        ExampleSection::Assemblies,
-        "asm-planetary",
-        "planetary-gearbox.3dcraftasm",
-        "Planetary gearbox",
-        "an assembly: gears that turn"
-    ),
-    published!(
-        ExampleSection::Assemblies,
-        "asm-reducer",
-        "gear-reducer.3dcraftasm",
-        "Gear reducer",
-        "an assembly: two stages"
-    ),
-    published!(
-        ExampleSection::Assemblies,
-        "asm-walker",
-        "strandbeest-walker.3dcraftasm",
-        "Jansen linkage walker",
-        "an assembly of four legs, after the mechanism of Theo Jansen's Strandbeests"
-    ),
-];
+/// The start screen's examples, section by section, in the order of
+/// `docs/examples/published/bundle.json` (the decision of 2026-11-10): ten
+/// parts, the first two for a newcomer; six Jigs; four assemblies.
+pub const EXAMPLES: &[Example] = &include!("start_bundle.rs");
 
 /// The logo: the application's icon (`packaging/icons`).
 #[cfg(test)]
@@ -700,6 +690,66 @@ impl Shell {
         self.start.section = section;
     }
 
+    /// `ui.example`: the start screen's examples over the control channel.
+    /// `{}` lists them; `{"section": word}` shows that section, as a click
+    /// on its tab does; `{"id": id}` opens that example in a new document,
+    /// as a click on its card does (the host opens it after the reply).
+    /// Never panics, whatever the params hold.
+    pub(crate) fn ui_example(&mut self, params: Option<&Value>) -> Result<Value, String> {
+        let method = "ui.example";
+        let map = match params {
+            None | Some(Value::Null) => None,
+            Some(Value::Object(map)) => Some(map),
+            Some(_) => return Err(format!("{method}: parameters must be a JSON object")),
+        };
+        if let Some(unknown) = map
+            .into_iter()
+            .flat_map(serde_json::Map::keys)
+            .find(|key| !["id", "section"].contains(&key.as_str()))
+        {
+            let unknown: String = unknown.chars().take(40).collect();
+            return Err(format!(
+                "{method}: unknown parameter `{unknown}`; its parameters are: id, section"
+            ));
+        }
+        let get = |key: &str| map.and_then(|m| m.get(key)).filter(|v| !v.is_null());
+        let ids = || EXAMPLES.iter().map(|e| e.id).collect::<Vec<_>>().join(", ");
+        match (get("id"), get("section")) {
+            (Some(_), Some(_)) => Err(format!("{method}: give `id` or `section`, not both")),
+            (Some(id), None) => {
+                let id = id
+                    .as_str()
+                    .ok_or_else(|| format!("{method}: `id` is a string, one of {}", ids()))?;
+                let example = example(id).ok_or_else(|| {
+                    let id: String = id.chars().take(40).collect();
+                    format!("{method}: no example `{id}`; the examples are {}", ids())
+                })?;
+                self.choose_example(example);
+                Ok(json!({ "chosen": example.json() }))
+            }
+            (None, Some(section)) => {
+                let words = "parts, jigs or assemblies";
+                let section = section
+                    .as_str()
+                    .and_then(ExampleSection::from_word)
+                    .ok_or_else(|| format!("{method}: `section` is {words}"))?;
+                self.start.section = section;
+                Ok(self.examples_json())
+            }
+            (None, None) => Ok(self.examples_json()),
+        }
+    }
+
+    /// The start screen's examples as `ui.example` lists them.
+    fn examples_json(&self) -> Value {
+        json!({
+            "shown": self.start.shown,
+            "section": self.start.section.word(),
+            "examples": EXAMPLES.iter().map(Example::json).collect::<Vec<_>>(),
+            "moreExamples": EXAMPLES_URL,
+        })
+    }
+
     /// How an agent reaches this window, for the start screen.
     pub fn set_agent_setup(&mut self, setup: AgentSetup) {
         self.start.agent = setup;
@@ -843,7 +893,9 @@ impl Shell {
         });
         ui.add_space(space * 1.6);
         self.section_row(ui, &kit, width);
-        ui.add_space(space * 0.6);
+        ui.add_space(space * 0.3);
+        self.section_hint(ui, &kit, width);
+        ui.add_space(space * 0.4);
         self.example_grid(ui, &kit, width);
         ui.add_space(space * 1.2);
         kit.divider(ui);
@@ -925,10 +977,7 @@ impl Shell {
         // narrow phone).
         let mut segments: Vec<Segment<'_>> = sections
             .iter()
-            .map(|section| match section.glyph() {
-                Some(glyph) => Segment::IconText(glyph, section.title()),
-                None => Segment::Text(section.title()),
-            })
+            .map(|section| Segment::IconText(section.glyph(), section.title()))
             .collect();
         if kit.segmented_width(ui, &segments) > width {
             segments = sections
@@ -967,10 +1016,54 @@ impl Shell {
         }
     }
 
-    /// The examples of the section shown as cards: the thumbnail, the
-    /// name and what it shows; in the Showcase (where kinds mix) the app
-    /// icon's badge at the thumbnail's corner. A click builds or opens it
-    /// in a new document.
+    /// Under the sections: what the section shown holds and how its
+    /// examples open, and at the right *More examples*, which opens the
+    /// galleries on the website in the browser (as Help opens the guide).
+    /// On a phone the link goes under the line.
+    fn section_hint(&mut self, ui: &mut egui::Ui, kit: &Kit, width: f32) {
+        let hint = self.start.section.hint();
+        let more = |shell: &mut Self, ui: &mut egui::Ui| {
+            let link = kit
+                .button(ui, Button::link("More examples").icon(Glyph::External))
+                .on_hover_text(EXAMPLES_URL);
+            shell
+                .start
+                .hits
+                .push(("more-examples".to_string(), link.rect));
+            if link.clicked() {
+                shell.open_external(
+                    ui.ctx(),
+                    super::help::External::Url(EXAMPLES_URL.to_string()),
+                );
+            }
+        };
+        if width < self.tokens.start_stacked_width {
+            kit.paragraph(ui, hint, true);
+            more(self, ui);
+            return;
+        }
+        ui.horizontal(|ui| {
+            ui.set_width(width);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                more(self, ui);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let mut job = egui::text::LayoutJob::single_section(
+                        hint.to_string(),
+                        egui::TextFormat::simple(kit.font(), color(self.tokens.text_dim)),
+                    );
+                    job.wrap =
+                        egui::text::TextWrapping::truncate_at_width(ui.available_width().max(1.0));
+                    ui.label(job).on_hover_text(hint);
+                });
+            });
+        });
+    }
+
+    /// The examples of the section shown as cards: the thumbnail with the
+    /// app icon's badge of its kind at its corner (a part, a Jig, an
+    /// assembly), *Start here* on the few a newcomer opens first and, for
+    /// one that takes a while to open, about how long; under it the name
+    /// and what it shows. A click opens it in a new document.
     fn example_grid(&mut self, ui: &mut egui::Ui, kit: &Kit, width: f32) {
         let tokens = self.tokens;
         let layout = self
@@ -994,7 +1087,6 @@ impl Shell {
             })
             .unwrap_or_default();
         let section = self.start.section;
-        let badge = section == ExampleSection::Showcase;
         let shown: Vec<&'static Example> =
             EXAMPLES.iter().filter(|e| e.section == section).collect();
         for (row, examples) in shown.chunks(per_row).enumerate() {
@@ -1007,7 +1099,7 @@ impl Shell {
                     let index = EXAMPLES.iter().position(|e| e.id == example.id);
                     let (rect, response) = ui.allocate_exact_size(card, egui::Sense::click());
                     let response = response
-                        .on_hover_text(format!("{}: {}", example.title, example.summary))
+                        .on_hover_text(card_tooltip(example))
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
                     let painter = ui.painter_at(rect.expand(3.0));
                     let image = egui::Rect::from_min_size(rect.min, thumb);
@@ -1019,14 +1111,37 @@ impl Shell {
                     } else {
                         painter.rect_filled(image, radius, color(tokens.viewport_background));
                     }
-                    if badge {
-                        let side = tokens.card_badge;
-                        let place = egui::Rect::from_min_size(
-                            image.min
-                                + egui::vec2(tokens.nav_spacing * 2.0, tokens.nav_spacing * 2.0),
-                            egui::vec2(side, side),
+                    // Its kind: the app icon's badge.
+                    let inset = tokens.nav_spacing * if compact { 1.5 } else { 2.0 };
+                    let side = if compact {
+                        tokens.card_badge * 0.8
+                    } else {
+                        tokens.card_badge
+                    };
+                    let place = egui::Rect::from_min_size(
+                        image.min + egui::vec2(inset, inset),
+                        egui::vec2(side, side),
+                    );
+                    brand::paint(ui, &tokens, example_icon(example), place, false);
+                    if example.start_here() {
+                        tag(
+                            &painter,
+                            kit,
+                            "Start here",
+                            image.right_top() + egui::vec2(-inset, inset),
+                            egui::Align2::RIGHT_TOP,
+                            (tokens.accent, tokens.knob),
                         );
-                        brand::paint(ui, &tokens, example_icon(example), place, false);
+                    }
+                    if let Some(seconds) = seconds_text(example.seconds()) {
+                        tag(
+                            &painter,
+                            kit,
+                            &seconds,
+                            image.right_bottom() + egui::vec2(-inset, -inset),
+                            egui::Align2::RIGHT_BOTTOM,
+                            (tokens.plate_fill, tokens.plate_text),
+                        );
                     }
                     // The ring of the info accent: a click here opens, it
                     // does not act on the document.
@@ -1089,15 +1204,54 @@ impl Shell {
 
 /// The kind of document an example opens as, for its badge.
 fn example_icon(example: &Example) -> AppIcon {
-    match example.source {
-        Source::File { name, .. } if name.ends_with(".3dcraftasm") => AppIcon::Assembly,
-        Source::File { name, .. } if name.ends_with(".3dcraftjig") => AppIcon::Jig,
-        _ => match example.section {
-            ExampleSection::Assemblies => AppIcon::Assembly,
-            ExampleSection::Jigs => AppIcon::Jig,
-            _ => AppIcon::Part,
-        },
+    match example.section {
+        ExampleSection::Parts => AppIcon::Part,
+        ExampleSection::Jigs => AppIcon::Jig,
+        ExampleSection::Assemblies => AppIcon::Assembly,
     }
+}
+
+/// What a card's tooltip says: its name and what it shows, how it opens,
+/// and how long that takes when it is not at once.
+pub fn card_tooltip(example: &Example) -> String {
+    let opens = match example.section {
+        ExampleSection::Parts => "A part: opens with its history to play back.",
+        ExampleSection::Jigs => "A Jig: opens on its form.",
+        ExampleSection::Assemblies => "An assembly: opens with its player.",
+    };
+    let mut text = format!("{}: {}\n{opens}", example.title, example.summary);
+    if let Some(seconds) = seconds_text(example.seconds()) {
+        text.push_str(&format!("\nOpens in {seconds} (longer in the browser)."));
+    }
+    text
+}
+
+/// How long an example takes to open, in words, when it is a second or
+/// more (rounded): `about 3 s`; `None` for one that opens at once.
+pub fn seconds_text(seconds: f32) -> Option<String> {
+    if !seconds.is_finite() || seconds < 1.0 {
+        return None;
+    }
+    Some(format!("about {:.0} s", seconds.round()))
+}
+
+/// A small tag on a thumbnail (*Start here*, how long it takes): `text`
+/// in the small font on a pill of `fill` with `ink`, placed at `at` by
+/// `align`.
+fn tag(
+    painter: &egui::Painter,
+    kit: &Kit,
+    text: &str,
+    at: egui::Pos2,
+    align: egui::Align2,
+    (fill, ink): (crate::theme::Rgb, crate::theme::Rgb),
+) {
+    let galley = painter.layout_no_wrap(text.to_string(), kit.small_font(), color(ink));
+    let pad = egui::vec2(6.0, 2.0);
+    let size = galley.size() + pad * 2.0;
+    let rect = align.anchor_size(at, size);
+    painter.rect_filled(rect, egui::CornerRadius::same(255), color(fill));
+    painter.galley(rect.min + pad, galley, color(ink));
 }
 
 /// The headings' family where the fonts in force have one (Semi Bold).
@@ -1114,16 +1268,12 @@ mod tests {
 
     #[test]
     fn a_step_that_fails_closes_the_new_document_again() {
-        let broken = Example {
-            id: "broken",
-            title: "Broken",
-            summary: "a step that fails",
-            section: ExampleSection::Parts,
-            thumb: &[],
-            source: Source::Script(
-                r#"[["feature.block", {"size": [1, 2, 3]}], ["feature.fillet", {"edges": "nope"}]]"#,
-            ),
-        };
+        let broken = Example::script(
+            "broken",
+            "Broken",
+            "a step that fails",
+            r#"[["feature.block", {"size": [1, 2, 3]}], ["feature.fillet", {"edges": "nope"}]]"#,
+        );
         let mut session = Session::new(craft3d_engine::Workspace::none());
         session.execute("file.new", &json!({})).unwrap();
         let error = run_example(&mut session, &broken).unwrap_err();
@@ -1200,9 +1350,9 @@ mod tests {
     fn the_logo_and_every_thumbnail_decode() {
         let logo = decode_png(LOGO).unwrap();
         assert_eq!(logo.size, [128, 128]);
-        for example in &EXAMPLES {
+        for example in EXAMPLES {
             let thumb = decode_png(example.thumb).unwrap();
-            assert_eq!(thumb.size, [160, 120], "{}", example.id);
+            assert_eq!(thumb.size, [240, 180], "{}", example.id);
         }
         assert!(decode_png(b"").is_none());
         assert!(decode_png(b"not a png").is_none());
@@ -1211,45 +1361,84 @@ mod tests {
         assert!(decode_png(&cut).is_none());
     }
 
+    /// Every example is a published file of its section's kind that
+    /// opens without a file of its own: a part as a part, a Jig in use, an
+    /// assembly as an assembly; and a script example reads as steps.
     #[test]
-    fn every_example_reads_as_a_script_or_opens() {
-        for example in &EXAMPLES {
-            match example.source {
-                Source::Script(text) => {
-                    let script: Value = serde_json::from_str(text).unwrap();
-                    let steps = craft3d_engine::task_score::parse_script(&script).unwrap();
-                    assert!(!steps.is_empty(), "{}", example.id);
-                    // Scripts are parts: plain ones under Parts, the
-                    // class-A and sheet-metal showcases under Showcase.
-                    assert!(
-                        matches!(
-                            example.section,
-                            ExampleSection::Parts | ExampleSection::Showcase
-                        ),
-                        "{}",
-                        example.id
-                    );
-                }
-                Source::File { name, .. } => {
-                    let mut session = Session::new(craft3d_engine::Workspace::none());
-                    let opened = run_example(&mut session, example)
-                        .unwrap_or_else(|e| panic!("{}: {e}", example.id));
-                    let jig = name.ends_with(".3dcraftjig");
-                    assert_eq!(opened["opened"]["jigInUse"] == true, jig, "{opened}");
-                    assert_eq!(opened["opened"]["assembly"] == true, !jig, "{opened}");
-                    assert_eq!(
-                        example.section,
-                        if jig {
-                            ExampleSection::Jigs
-                        } else {
-                            ExampleSection::Assemblies
-                        }
-                    );
-                }
-            }
+    fn every_example_opens_as_its_kind() {
+        let mut session = Session::new(craft3d_engine::Workspace::none());
+        for example in EXAMPLES {
+            let name = example.file().unwrap();
+            assert!(
+                name.ends_with(match example.section {
+                    ExampleSection::Parts => ".3dcraft",
+                    ExampleSection::Jigs => ".3dcraftjig",
+                    ExampleSection::Assemblies => ".3dcraftasm",
+                }),
+                "{}: {name}",
+                example.id
+            );
+            assert!(example_steps(example).is_none());
+            let opened = run_example(&mut session, example)
+                .unwrap_or_else(|e| panic!("{}: {e}", example.id));
+            let opened = &opened["opened"];
+            assert_eq!(
+                opened["jigInUse"] == true,
+                example.section == ExampleSection::Jigs,
+                "{opened}"
+            );
+            assert_eq!(
+                opened["assembly"] == true,
+                example.section == ExampleSection::Assemblies,
+                "{opened}"
+            );
+            assert!(session.document_status().unwrap().path.is_none());
             assert_eq!(super::example(example.id), Some(example));
+            session
+                .execute("file.close", &json!({"discard": true}))
+                .unwrap();
         }
         assert_eq!(super::example("nope"), None);
+        // The first two are the ones a newcomer starts with, and only they.
+        let start: Vec<&str> = EXAMPLES
+            .iter()
+            .filter(|e| e.start_here())
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(start, ["steel-bookend", "t-slot-profile"]);
+        // A script example reads as steps.
+        let script = Example::script(
+            "s",
+            "S",
+            "a block",
+            r#"[["feature.block", {"size": [1, 2, 3]}]]"#,
+        );
+        assert_eq!(example_steps(&script).unwrap().unwrap().len(), 1);
+        assert_eq!(script.file(), None);
+    }
+
+    #[test]
+    fn a_card_says_how_long_a_slow_example_takes() {
+        assert_eq!(seconds_text(0.0), None);
+        assert_eq!(seconds_text(0.97), None);
+        assert_eq!(seconds_text(1.06).as_deref(), Some("about 1 s"));
+        assert_eq!(seconds_text(2.52).as_deref(), Some("about 3 s"));
+        assert_eq!(seconds_text(f32::NAN), None);
+        assert_eq!(seconds_text(f32::INFINITY), None);
+        let slow = EXAMPLES.iter().find(|e| e.seconds() >= 1.0).unwrap();
+        assert!(card_tooltip(slow).contains("Opens in about"), "{}", slow.id);
+        let quick = EXAMPLES.iter().find(|e| e.seconds() < 1.0).unwrap();
+        assert!(!card_tooltip(quick).contains("Opens in"), "{}", quick.id);
+        for example in EXAMPLES {
+            let tip = card_tooltip(example);
+            assert!(tip.starts_with(example.title), "{tip}");
+            let says = match example.section {
+                ExampleSection::Parts => "history",
+                ExampleSection::Jigs => "form",
+                ExampleSection::Assemblies => "player",
+            };
+            assert!(tip.contains(says), "{tip}");
+        }
     }
 
     /// A window started with `--control PORT --control-token-file FILE`

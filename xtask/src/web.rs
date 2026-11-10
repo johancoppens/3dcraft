@@ -13,7 +13,10 @@
 //!   HOSTING.md, _headers, .htaccess  server settings
 //!   environments/*.hdr, LICENSE.md   the studio look's environments (CC0),
 //!                                    fetched when chosen
+//!   fonts/                           the built-in fonts, fetched when used
 //!   LICENSE, THIRD-PARTY-NOTICES.txt
+//!   EXAMPLES-LICENSE.md              the licence of the examples, Jigs and
+//!                                    assemblies built into the module
 //! ```
 //!
 //! `<hash>` is 16 lower-case hex digits (the first of the SHA-256 of the
@@ -320,20 +323,12 @@ pub fn package(
     // The built-in fonts, fetched by the page when a text first uses one
     // (not in the module: the web budget, docs/design/text.md).
     crate::package::copy_fonts(&site.join("fonts"))?;
-    // The start screen's published Jigs and assemblies, fetched by the
-    // page when a card is clicked (not built into the module), with
-    // their licence (docs/decisions.md, 2026-10-30).
-    let published = repo.join("docs/examples/published");
-    for (_, file) in crate::thumbs::PUBLISHED {
-        crate::package::copy(
-            &published.join(file),
-            &site.join("examples").join(file),
-            false,
-        )?;
-    }
+    // The licence of the start screen's examples, Jigs and assemblies,
+    // which the module carries built in (docs/decisions.md, 2026-11-10),
+    // as every package names it.
     crate::package::copy(
-        &published.join("LICENSE.md"),
-        &site.join("examples").join("LICENSE.md"),
+        &repo.join(crate::bundle::LICENCE),
+        &site.join(crate::package::EXAMPLES_LICENCE),
         false,
     )?;
     let environments = repo.join("assets").join("environments");
