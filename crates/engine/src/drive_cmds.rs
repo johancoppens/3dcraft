@@ -134,6 +134,22 @@ const DISTANCE_STEP: f64 = 1.0 / 72.0;
 const MAX_STEPS: usize = 720;
 
 impl OpenDocument {
+    /// The features whose bodies the view draws in the colour of a
+    /// collision when it shows `shown` (the state [`OpenDocument::shown`]
+    /// gave): those of a joint held by hand, or of the motion's moment,
+    /// when `shown` is that state with its collisions marked; else none.
+    pub(crate) fn shown_red(&self, shown: &Arc<Document>) -> Vec<craft3d_doc::FeatureId> {
+        if let Some(Driven {
+            collisions: Some((_, Some(Ok(pairs)), marked)),
+            ..
+        }) = &self.drive.state
+            && Arc::ptr_eq(marked, shown)
+        {
+            return crate::motion::colliding(pairs);
+        }
+        self.motion_red(shown)
+    }
+
     /// The assembly placed with its joint held by hand, while it is held
     /// for the document as it is.
     pub(crate) fn driven_placed(&mut self) -> Option<Arc<Placed>> {
@@ -170,7 +186,7 @@ impl OpenDocument {
             let found = want.then(|| self.collisions_here(&placed.doc, &placed.regen));
             let shown = match &found {
                 Some(Ok(pairs)) if pairs.iter().any(|c| c.volume.is_some()) => {
-                    Arc::new(crate::motion::marked(&placed.doc, &placed.regen, pairs))
+                    Arc::new(crate::motion::marked(&placed.doc))
                 }
                 _ => Arc::clone(&placed.doc),
             };

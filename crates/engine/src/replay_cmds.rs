@@ -363,13 +363,20 @@ mod native {
     }
 
     /// The bodies of `doc` as `regen` built them, each with its faces'
-    /// colours, without those the view hides.
-    fn bodies_of(doc: &craft3d_doc::Document, regen: &craft3d_regen::Regen) -> Bodies {
+    /// colours, without those the view hides; those of `red` all in the
+    /// colour of a collision ([`crate::motion::marked`]).
+    fn bodies_of(
+        doc: &craft3d_doc::Document,
+        regen: &craft3d_regen::Regen,
+        red: &[craft3d_doc::FeatureId],
+    ) -> Bodies {
+        let red_look = crate::motion::collision_look();
         regen
             .bodies()
             .filter(|(id, _)| !doc.is_hidden(*id))
             .map(|(id, b)| {
-                let colors = crate::appearance::face_looks(doc, regen, id, b);
+                let forced = red.contains(&id).then_some(&red_look);
+                let colors = crate::appearance::face_looks(doc, regen, id, b, forced);
                 (id, Arc::clone(b), Arc::new(colors))
             })
             .collect()
@@ -586,7 +593,7 @@ mod native {
                 // Both are within 16..=4096.
                 crate::scene::pixel_footprint(&camera, self.height as u32, model)
             });
-            let settled = crate::scene::picture_scene_of(doc, regen, 0, rung, meshes);
+            let settled = crate::scene::picture_scene_of((doc, regen, &[]), 0, rung, meshes);
             if let Some(problem) = settled.problems.first() {
                 return fail(format!("{ID}: {problem}"));
             }
@@ -1007,16 +1014,13 @@ mod native {
                 let (doc, regen) = sweep
                     .at(t)
                     .map_err(|e| CommandError::new(format!("{ID}: at t = {t}: {e}")))?;
-                let (doc, collided) = if red {
+                let (marked, collided) = if red {
                     let found = crate::motion::collisions(&doc, &regen, &mut memo)
                         .map_err(|e| CommandError::new(format!("{ID}: at t = {t}: {e}")))?;
                     let overlapping = found.iter().filter(|c| c.volume.is_some()).count();
-                    (
-                        Arc::new(crate::motion::marked(&doc, &regen, &found)),
-                        overlapping,
-                    )
+                    (crate::motion::colliding(&found), overlapping)
                 } else {
-                    (doc, 0)
+                    (Vec::new(), 0)
                 };
                 let n = if k == last_index { 1 + o.hold } else { 1 };
                 let text = format!("t = {}", crate::assert_cmds::shown(t));
@@ -1027,7 +1031,7 @@ mod native {
                     srt_time(frame.saturating_add(n), o.fps)
                 ));
                 frames_json.push(json!({"t": t, "frame": frame, "collisions": collided}));
-                states.push((bodies_of(&doc, &regen), frame, n, fresh_key()));
+                states.push((bodies_of(&doc, &regen, &marked), frame, n, fresh_key()));
                 frame = frame.saturating_add(n);
             }
             // The meshes of this chunk's bodies: those of the chunk before
@@ -1356,7 +1360,7 @@ mod native {
                 if !broken.is_empty() && failed.len() < 50 {
                     failed.push(json!({"frame": frame, "failed": broken}));
                 }
-                states.push((bodies_of(&doc, &regen), frame, n, fresh_key()));
+                states.push((bodies_of(&doc, &regen, &[]), frame, n, fresh_key()));
                 frame = frame.saturating_add(n);
             }
             meshes.keep_only(states.iter().map(|(bodies, ..)| bodies));
@@ -1456,7 +1460,7 @@ mod native {
             None => Vec::new(),
             Some(before) => {
                 let regen = at(&mut doc, before)?;
-                bodies_of(&doc, &regen)
+                bodies_of(&doc, &regen, &[])
             }
         };
         let mut steps: Vec<Step> = Vec::new();
@@ -1475,7 +1479,7 @@ mod native {
                 Some(Status::Failed(_)) => "failed",
                 None => "unknown",
             };
-            let bodies = bodies_of(&doc, &regen);
+            let bodies = bodies_of(&doc, &regen, &[]);
             let shown = every || !same(&bodies, &last);
             last.clone_from(&bodies);
             steps.push(Step {

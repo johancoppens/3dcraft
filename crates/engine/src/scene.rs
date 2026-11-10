@@ -12,7 +12,7 @@ use crate::meshes::{
     BodyFacts, EdgePolylines, Limit, MeshStore, mesh_bytes, points_bytes, text_bytes,
 };
 use crate::{CommandError, Session, Workspace};
-use craft3d_doc::{AngleUnit, Document, Entity, FeatureKind, Geometry, Sketch};
+use craft3d_doc::{AngleUnit, Document, Entity, FeatureId, FeatureKind, Geometry, Sketch};
 use craft3d_math::BUG;
 use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Vec3};
@@ -1545,13 +1545,13 @@ impl Sampling {
 /// so before (for an earlier state of the document, or for another
 /// scene) is not meshed again, and the scene is the same either way.
 fn build(
-    doc: &Document,
-    regen: &Regen,
+    (doc, regen, red): (&Document, &Regen, &[FeatureId]),
     revision: u64,
     sampling: Sampling,
     cancel: Option<&AtomicBool>,
     meshes: &MeshStore,
 ) -> (Scene, Option<Stop>) {
+    let red_look = crate::motion::collision_look();
     #[cfg(test)]
     tests::building();
     let Sampling {
@@ -1781,13 +1781,14 @@ fn build(
                 .map(|f| f.saturating_add(first_face_id)),
         );
         let facts = meshes.facts(body, outcome.and_then(|o| o.names.as_ref()));
+        // A body a collision marks is drawn all in its colour, after the
+        // colours are resolved ([`crate::motion::marked`]).
         crate::appearance::color_faces(
             Arc::make_mut(&mut scene.face_colors),
             &values,
             regen,
-            feature.id,
-            first_face_id,
-            body.faces.len(),
+            (feature.id, first_face_id, body.faces.len()),
+            red.contains(&feature.id).then_some(&red_look),
         );
         Arc::make_mut(&mut scene.bodies).push(SceneBody {
             feature: feature.id.to_string(),
@@ -1956,8 +1957,7 @@ fn coarser_by(stop: &Stop, max_triangles: usize) -> Option<f64> {
 /// problem that says so, which a picture refuses. [`Scene::coarsened`]
 /// when the tolerance or a body's had to be coarser than `fine`.
 pub(crate) fn picture_scene_of(
-    doc: &Document,
-    regen: &Regen,
+    (doc, regen, red): (&Document, &Regen, &[FeatureId]),
     revision: u64,
     fine: f64,
     meshes: &MeshStore,
@@ -1970,7 +1970,7 @@ pub(crate) fn picture_scene_of(
             budget: Some(DISPLAY_MAX_TRIANGLES),
             per_body: None,
         };
-        let (mut scene, stop) = build(doc, regen, revision, sampling, None, meshes);
+        let (mut scene, stop) = build((doc, regen, red), revision, sampling, None, meshes);
         let Some(stop) = stop else {
             return Scene {
                 coarsened: scene.coarsened || tolerance > fine,
@@ -2015,8 +2015,7 @@ struct DisplayRule {
 /// the scene is the first picture itself: the same tolerance gives the
 /// same mesh. `None` when `cancel` was set meanwhile.
 fn build_for_display(
-    doc: &Document,
-    regen: &Regen,
+    (doc, regen, red): (&Document, &Regen, &[FeatureId]),
     preview: &Scene,
     rule: DisplayRule,
     cancel: &AtomicBool,
@@ -2038,7 +2037,7 @@ fn build_for_display(
             budget: Some(max_triangles),
             per_body: None,
         };
-        let (scene, stop) = build(doc, regen, revision, sampling, Some(cancel), meshes);
+        let (scene, stop) = build((doc, regen, red), revision, sampling, Some(cancel), meshes);
         let Some(stop) = stop else {
             return Some(Scene {
                 coarsened: tolerance > fine,
@@ -2074,7 +2073,7 @@ fn build_for_display(
             budget: None,
             per_body: Some(DISPLAY_MAX_TRIANGLES),
         };
-        match build(doc, regen, revision, sampling, Some(cancel), meshes) {
+        match build((doc, regen, red), revision, sampling, Some(cancel), meshes) {
             (_, Some(Stop::Cancelled)) => return None,
             (scene, _) => scene,
         }
@@ -2107,6 +2106,8 @@ fn internal_error(payload: &(dyn std::any::Any + Send)) -> CommandError {
 pub struct Refinement {
     doc: Arc<Document>,
     regen: Arc<Regen>,
+    /// The bodies a collision marks in the state ([`OpenDocument::shown_red`]).
+    red: Vec<FeatureId>,
     key: SceneKey,
     relative: f64,
     max_triangles: usize,
@@ -2156,8 +2157,7 @@ impl Refinement {
                 None => model_size(&self.regen, &self.doc),
             };
             build_for_display(
-                &self.doc,
-                &self.regen,
+                (&self.doc, &self.regen, &self.red),
                 &self.preview,
                 DisplayRule {
                     fine: on_rung(size * self.relative),
@@ -2300,6 +2300,7 @@ impl Session {
         };
         let doc = open.shown();
         let regen = open.shown_regen();
+        let red = open.shown_red(&doc);
         let cancel = Arc::new(AtomicBool::new(false));
         let for_sink = Arc::clone(&cancel);
         let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2318,7 +2319,13 @@ impl Session {
                         budget: None,
                         per_body: Some(DISPLAY_MAX_TRIANGLES),
                     };
-                    build(&doc, &regen, revision, sampling, Some(&cancel), &meshes)
+                    build(
+                        (&doc, &regen, &red),
+                        revision,
+                        sampling,
+                        Some(&cancel),
+                        &meshes,
+                    )
                 },
             )
         }));
@@ -2363,7 +2370,7 @@ impl Session {
             } => (relative, max_triangles, max_angle),
             SceneQuality::Preview => {
                 let sizes = self.scrubbed_sizes();
-                return self.build_and_keep(key, |doc, regen| {
+                return self.build_and_keep(key, |doc, regen, red| {
                     let size = sizes.map_or_else(|| preview_size(regen, doc), |s| s.preview);
                     let sampling = Sampling {
                         tolerance: on_rung(size * PREVIEW_RELATIVE_TOLERANCE),
@@ -2373,24 +2380,23 @@ impl Session {
                     };
                     Scene {
                         preview: true,
-                        ..build(doc, regen, revision, sampling, None, &meshes).0
+                        ..build((doc, regen, red), revision, sampling, None, &meshes).0
                     }
                 });
             }
             SceneQuality::Picture(tolerance) => {
-                return self.build_and_keep(key, |doc, regen| {
-                    picture_scene_of(doc, regen, revision, tolerance, &meshes)
+                return self.build_and_keep(key, |doc, regen, red| {
+                    picture_scene_of((doc, regen, red), revision, tolerance, &meshes)
                 });
             }
             SceneQuality::Automatic | SceneQuality::Tolerance(_) => {
-                return self.build_and_keep(key, |doc, regen| {
+                return self.build_and_keep(key, |doc, regen, red| {
                     let tolerance = match quality {
                         SceneQuality::Tolerance(t) => t,
                         _ => model_size(regen, doc) * AUTOMATIC_RELATIVE_TOLERANCE,
                     };
                     build(
-                        doc,
-                        regen,
+                        (doc, regen, red),
                         revision,
                         Sampling::plain(tolerance),
                         None,
@@ -2420,12 +2426,13 @@ impl Session {
     fn build_and_keep(
         &mut self,
         key: SceneKey,
-        make: impl FnOnce(&Document, &Regen) -> Scene,
+        make: impl FnOnce(&Document, &Regen, &[FeatureId]) -> Scene,
     ) -> Result<Option<Arc<Scene>>, CommandError> {
         let Some(open) = self.documents.get_mut(self.active) else {
             return Ok(None);
         };
         let doc = open.shown();
+        let red = open.shown_red(&doc);
         // Regeneration and tessellation run here, outside any command: a
         // panic in them must not take the viewer down (AGENTS.md,
         // last-resort guard). The document is not touched either way.
@@ -2438,7 +2445,7 @@ impl Session {
                 step: 0,
                 steps: 0,
             });
-            make(&doc, &regen)
+            make(&doc, &regen, &red)
         }));
         let scene = built
             .map(Arc::new)
@@ -2458,9 +2465,11 @@ impl Session {
         let meshes = self.scene.meshes.clone();
         let size = self.scrubbed_sizes().map(|s| s.display);
         let open = self.documents.get_mut(self.active)?;
+        let doc = open.shown();
         Some(Refinement {
             size,
-            doc: open.shown(),
+            red: open.shown_red(&doc),
+            doc,
             regen: open.shown_regen(),
             key,
             relative,

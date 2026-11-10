@@ -1719,47 +1719,34 @@ pub(crate) fn collisions_of(
     out
 }
 
-/// `doc` with the bodies of the overlapping pairs of `collisions` drawn
-/// in [`COLLISION_COLOR`] (the copy only): their own colour, and every
-/// face of them by its name in `regen` (the regeneration of `doc`, which
-/// colours do not change), since a face's own colour given upstream wins
-/// over any body colour (J-040) and must give way to the collision too.
-pub(crate) fn marked(doc: &Document, regen: &Regen, collisions: &[Collision]) -> Document {
-    let mut out = doc.clone();
-    let red: Vec<FeatureId> = collisions
+/// The state shown with the overlapping pairs of a moment marked: a copy
+/// of `doc`, a document state of its own, so that its scenes are kept
+/// apart from those of the state without the marks. Its colours are the
+/// document's: the scene draws the colliding bodies ([`colliding`]) in
+/// [`COLLISION_COLOR`] after the colours are resolved, body by body, so
+/// that exactly they are red, whatever colours their faces carry, and a
+/// body made from one of them (a copy kept by a mirror) keeps its own
+/// (review of J-040: red face entries in the document reached the copy).
+pub(crate) fn marked(doc: &Document) -> Document {
+    doc.clone()
+}
+
+/// The features whose bodies a moment's `collisions` mark: both of every
+/// pair that overlaps.
+pub(crate) fn colliding(collisions: &[Collision]) -> Vec<FeatureId> {
+    let mut red: Vec<FeatureId> = collisions
         .iter()
         .filter(|c| c.volume.is_some())
         .flat_map(|c| [c.a, c.b])
         .collect();
-    let colour = Appearance::color(COLLISION_COLOR);
-    for id in &red {
-        // A feature that has a body was given out by the document, so
-        // the entry is valid; one that is refused leaves the colour.
-        let _ = out.set_appearance(*id, Some(colour));
-    }
-    out.faces.retain(|entry| !red.contains(&entry.feature));
-    let faces: Vec<craft3d_doc::FaceProperties> = red
-        .iter()
-        .filter_map(|id| Some((*id, regen.feature(*id)?.names.as_deref()?)))
-        .flat_map(|(id, names)| {
-            names
-                .faces
-                .iter()
-                .map(move |name| craft3d_doc::FaceProperties {
-                    feature: id,
-                    face: name.clone().canonical(),
-                    appearance: colour,
-                })
-        })
-        .collect();
-    if out.faces.len().saturating_add(faces.len()) <= craft3d_doc::MAX_FACE_APPEARANCES {
-        out.faces.extend(faces);
-        out.faces
-            .sort_by(|a, b| (a.feature, &a.face).cmp(&(b.feature, &b.face)));
-        out.faces
-            .dedup_by(|a, b| a.feature == b.feature && a.face == b.face);
-    }
-    out
+    red.sort();
+    red.dedup();
+    red
+}
+
+/// The look of a body marked by a collision.
+pub(crate) fn collision_look() -> Appearance {
+    Appearance::color(COLLISION_COLOR)
 }
 
 /// One state of the motion the view shows.
@@ -1969,6 +1956,20 @@ fn rebuilt(base: &Regen, now: &Regen) -> Vec<FeatureId> {
 }
 
 impl OpenDocument {
+    /// The features whose bodies the motion's moment marks red, when
+    /// `shown` is that moment's state with its collisions marked; empty
+    /// otherwise.
+    pub(crate) fn motion_red(&self, shown: &Arc<Document>) -> Vec<FeatureId> {
+        match &self.motion.state {
+            Some(State {
+                doc,
+                collisions: Some(Ok(found)),
+                ..
+            }) if Arc::ptr_eq(doc, shown) => colliding(found),
+            _ => Vec::new(),
+        }
+    }
+
     /// The state of the motion the view shows, made when it is not there
     /// for the state shown below it (an edit, a scrub); `None` when the
     /// view shows no motion. Lets go of the motion when the document has
@@ -2248,7 +2249,7 @@ impl OpenDocument {
             None => asked.then(|| collisions(&plain, &regen, &mut self.motion.memo)),
         };
         let doc = match &collisions {
-            Some(Ok(found)) if !found.is_empty() => Arc::new(marked(&plain, &regen, found)),
+            Some(Ok(found)) if !found.is_empty() => Arc::new(marked(&plain)),
             _ => plain,
         };
         Ok(State {

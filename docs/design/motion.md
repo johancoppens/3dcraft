@@ -79,9 +79,12 @@ and each moment only moves it. A bake with `collisions` asks the pairs of a grou
 (`collisions_of`: each pair of bodies once however many frames have it, on the shared pool), each frame's answer the
 one it gets alone.
 
-The red is put into the state itself: the copy shown gets `COLLISION_COLOR` as the appearance of each colliding
-body's feature, and that feature's face colours are dropped (the nearest entry on a face's way back wins, so the
-body's colour then holds for all its faces; `appearance.rs`). Because it is in the scene's face colours, every
+The red is put on after the colours are resolved, body by body (2026-11-10, review of J-040): the state shown is a
+copy of the document (a state of its own, so its scenes are kept apart), and the scene and the replay's frames draw
+every face of each colliding body (`motion::colliding`, read through `OpenDocument::shown_red` for the state shown)
+in `COLLISION_COLOR`, whatever colours its faces carry. Before, the copy got the colour as entries in the document
+(the body's appearance, then also its faces'), which other bodies walk back to: a copy of a colliding body kept by a
+mirror turned red with it, even with a colour of its own. Because it is in the scene's face colours, every
 renderer draws it: the CPU renderer (the oracle) and the GPU one through the same face colours, in the window, in
 `view.render` and in `view.replay`. No renderer has a collision path of its own.
 

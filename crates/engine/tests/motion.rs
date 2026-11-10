@@ -897,6 +897,59 @@ fn collisions_are_red_over_faces_painted_upstream() {
     );
 }
 
+/// Review of J-040 (M2): the colour of a collision is put on exactly the
+/// colliding bodies, after the colours are resolved. A copy of the
+/// slider kept by a mirror (`Twin`), which collides with nothing, keeps
+/// its own green, and without a colour of its own has none (it took the
+/// red of the slider it was made from, before); the wall and the slider
+/// are red all over.
+#[test]
+fn only_the_colliding_bodies_are_red_and_a_kept_copy_keeps_its_colour() {
+    const GREEN: [u8; 3] = [0x14, 0xa0, 0x3c];
+    let dir = workdir("motion", "kept-copy");
+    for coloured in [true, false] {
+        let mut s = session_in(&dir);
+        swinging(&mut s, "20 mm");
+        run(
+            &mut s,
+            "feature.mirror",
+            json!({"source": "Slider", "normal": [0, 1, 0], "point": [0, 40, 0], "keep": true, "name": "Twin"}),
+        );
+        if coloured {
+            run(
+                &mut s,
+                "body.appearance",
+                json!({"body": "Twin", "color": "#14a03c"}),
+            );
+        }
+        let hit = run(&mut s, "view.motion", json!({"t": 0.5, "collisions": true}));
+        assert_eq!(hit["collisions"].as_array().unwrap().len(), 1, "{hit}");
+        let scene = s.scene(None).unwrap().unwrap();
+        for body in scene.bodies.iter() {
+            let faces = body.mesh.face_ids.iter().copied().max().unwrap_or(0) + 1;
+            let colours: Vec<Option<[u8; 3]>> = (0..faces)
+                .map(|k| scene.face_colors.get(body.first_face_id + k))
+                .collect();
+            let want = match body.name.as_str() {
+                "Twin" if coloured => Some(GREEN),
+                "Twin" => None,
+                _ => Some(COLLISION_COLOR),
+            };
+            assert!(
+                colours.iter().all(|c| *c == want),
+                "{} (coloured {coloured}): {colours:?}",
+                body.name
+            );
+        }
+        // A picture to look at, from above.
+        run(
+            &mut s,
+            "view.render",
+            json!({"path": format!("kept-copy-{coloured}.png"), "width": 300, "height": 300, "view": "top", "projection": "orthographic"}),
+        );
+    }
+}
+
 #[test]
 fn a_trace_of_two_samples_is_not_closed_and_a_tiny_bent_one_is_not_flat() {
     let mut s = session();

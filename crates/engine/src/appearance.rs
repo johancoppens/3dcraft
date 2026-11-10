@@ -773,9 +773,14 @@ pub(crate) fn face_looks(
     regen: &Regen,
     feature: FeatureId,
     body: &Body,
+    forced: Option<&Appearance>,
 ) -> Vec<Option<FaceLook>> {
     let per_mm = units_per_mm(doc);
-    face_appearances(doc, regen, feature, body.faces.len())
+    let looks = match forced {
+        Some(forced) => vec![Some(*forced); body.faces.len()],
+        None => face_appearances(doc, regen, feature, body.faces.len()),
+    };
+    looks
         .into_iter()
         .enumerate()
         .map(|(face, a)| {
@@ -791,23 +796,26 @@ pub(crate) fn face_looks(
 }
 
 /// Gives the faces of the body of `feature`, whose ids in a scene's or a
-/// picture's mesh start at `first_face_id`, their colours in `colors`.
+/// picture's mesh start at `first_face_id`, their colours in `colors`;
+/// every face `forced` when it is given (a body the view draws in the
+/// colour of a collision, after the colours were resolved: never through
+/// the document's entries, which other bodies walk back to).
 pub(crate) fn color_faces(
     colors: &mut craft3d_render::FaceColors,
     values: &Values,
     regen: &Regen,
-    feature: FeatureId,
-    first_face_id: u32,
-    faces: usize,
+    (feature, first_face_id, faces): (FeatureId, u32, usize),
+    forced: Option<&Appearance>,
 ) {
     let body = regen
         .feature(feature)
         .and_then(|result| result.body.as_deref());
     let per_mm = units_per_mm(values.doc());
-    for (face, appearance) in face_appearances_in(values, regen, feature, faces)
-        .into_iter()
-        .enumerate()
-    {
+    let looks = match forced {
+        Some(forced) => vec![Some(*forced); faces],
+        None => face_appearances_in(values, regen, feature, faces),
+    };
+    for (face, appearance) in looks.into_iter().enumerate() {
         if let (Some(appearance), Ok(index)) = (appearance, u32::try_from(face))
             && let Some(id) = first_face_id.checked_add(index)
         {
