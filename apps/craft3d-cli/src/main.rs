@@ -69,7 +69,7 @@ Usage: craft3d-cli <subcommand> [options]
 
 Subcommands:
   commands   List the command registry: id, params, summary
-  run        Open or create a document, run commands, optionally save it
+  run        Open or create a document, run --script and --cmd, save with --out
   info       Print a document's state as JSON
   render     Render a document to a PNG (on the GPU when there is one)
   convert    Convert a .3dcraft file to STEP, STL, 3MF, OBJ, DXF, SVG or .3dcraft
@@ -92,27 +92,32 @@ Options:
   --filter TEXT   Only commands whose id or label contains TEXT (any case)";
 
 const HELP_RUN: &str = "\
-Usage: craft3d-cli run [FILE] [--new JSON] [--script FILE]
+Usage: craft3d-cli run [FILE] [--new JSON] [--script SCRIPT]
                        [--cmd ID [--params JSON]]... [--out FILE]
                        [--keep-going]
 
-Opens FILE (a .3dcraft file), or creates a document when no FILE is given,
-then runs commands in order and prints one line of JSON per result. Stops at
-the first command that fails, with exit code 1 and nothing saved, unless
---keep-going is given. A variable.set whose expression cannot be worked out
-(a name not defined, a length added to a plain number) counts as failing,
-although the engine keeps the variable as given.
+Opens the document FILE first (a .3dcraft, .3dcraftjig or .3dcraftasm
+file, as file.open opens it), or creates a new document when no FILE is
+given. FILE is never a script: a script goes after --script. Then runs the
+steps of the script, then each --cmd, in order, and prints one line of
+JSON per result. Stops at the first command that fails, with exit code 1
+and nothing saved, unless --keep-going is given. A variable.set whose
+expression cannot be worked out (a name not defined, a length added to a
+plain number) counts as failing, although the engine keeps the variable
+as given.
 
 Options:
   --new JSON      Params of file.new for the new document, e.g.
                   '{\"units\": \"mm\"}'. Default {}. Not with FILE
-  --script FILE   A JSON array of steps, run before any --cmd. A step is
-                  [\"id\", {params}] or {\"command\": \"id\", \"params\": {...},
-                  \"agent\": name}; with an agent, the features the step
-                  makes or changes are noted as that agent's (madeBy)
+  --script SCRIPT A JSON file of an array of steps, run before any --cmd.
+                  A step is [\"id\", {params}] or {\"command\": \"id\",
+                  \"params\": {...}, \"agent\": name}; with an agent, the
+                  features the step makes or changes are noted as that
+                  agent's (madeBy)
   --cmd ID        A command to run; may be repeated
   --params JSON   The params of the --cmd before it, as a JSON object
-  --out FILE      Save the document as a .3dcraft file afterwards
+  --out FILE      Save the document afterwards, as file.save does: a
+                  .3dcraft file, a .3dcraftasm for an assembly
   --keep-going    Go on after a command that fails: its line is
                   {\"failed\": id, \"step\": n, \"error\": text}, the next
                   command runs, --out still saves what was built (a failed

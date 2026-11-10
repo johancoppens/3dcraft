@@ -279,6 +279,41 @@ fn the_overview_names_every_video_format_replay_makes() {
     }
 }
 
+/// `run --help` says what FILE is: the document opened first, of each
+/// kind `file.open` opens, never a script, which goes after `--script`;
+/// the overview's line for `run` names `--script` too, so the two never
+/// disagree (2026-11-10: "Opens FILE (a .3dcraft file)" was read as the
+/// script). And so it is: an assembly opens as FILE, a script does not.
+#[test]
+fn run_help_says_file_is_the_document_and_a_script_goes_after_script() {
+    let top = cli(&["--help"]).ok().stdout;
+    let line = top
+        .lines()
+        .find(|line| line.trim_start().starts_with("run "))
+        .unwrap_or_else(|| panic!("run is listed in:\n{top}"));
+    assert!(line.contains("--script"), "{line}");
+    let run = cli(&["run", "--help"]).ok().stdout;
+    let said = run.split("Options:").next().unwrap();
+    for named in [".3dcraft,", ".3dcraftjig", ".3dcraftasm", "file.open"] {
+        assert!(said.contains(named), "`{named}` in:\n{said}");
+    }
+    assert!(
+        said.contains("never a script") && said.contains("--script"),
+        "{said}"
+    );
+
+    let dir = workdir("run-file");
+    let rig = path(&dir, "rig.3dcraftasm");
+    cli(&["run", "--cmd", "assembly.new", "--out", &rig]).ok();
+    let listed = cli(&["run", &rig, "--cmd", "file.list"]).ok().json_lines();
+    let opened = listed[0]["documents"][0]["path"].as_str().unwrap();
+    assert!(opened.ends_with("rig.3dcraftasm"), "{}", listed[0]);
+    let steps = path(&dir, "steps.json");
+    std::fs::write(&steps, r#"[["file.list"]]"#).unwrap();
+    cli(&["run", &steps]).failed(1);
+    cli(&["run", "--script", &steps]).ok();
+}
+
 #[test]
 fn an_unknown_subcommand_is_a_usage_error() {
     let ran = cli(&["frobnicate", "x"]).failed(2);
