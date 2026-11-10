@@ -1,6 +1,6 @@
 # The web build's module (`craft3d-web-<hash>_bg.wasm` after wasm-opt), in bytes:
 # raw, and compressed with gzip -9 (flate2). Held by `cargo xtask web-size`
 # (docs/testing.md, Web module size); updating it is an expectation change.
-raw = 19413811
-gzip = 7705104
-commit = 9d45b6e8cde1
+raw = 27343644
+gzip = 9579392
+commit = 7b2a4e07e3b0
