@@ -2232,6 +2232,17 @@ fn an_invisible_instance_named_in_bodies_is_written_to_step() {
         assert_eq!(out["occurrences"], count, "{path}: {out}");
         assert!(out.get("hiddenLeftOut").is_none(), "{out}");
     }
+    // Every instance invisible: refused, naming how an assembly shows one.
+    run(
+        &mut s,
+        "instance.edit",
+        json!({ "name": "Cube", "visible": false }),
+    );
+    let e = error(&mut s, "file.export", json!({ "path": "none.step" }));
+    assert!(
+        e.contains("every body is hidden") && e.contains("instance.edit"),
+        "{e}"
+    );
     // Read back: the ghost alone, 10³, where it is placed (y 60 to 70).
     run(&mut s, "file.new", json!({}));
     run(&mut s, "file.import", json!({ "path": "ghost.step" }));

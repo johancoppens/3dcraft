@@ -1597,7 +1597,12 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
         let resolved = session.workspace.resolve_write(path)?;
         let open = session.document_mut()?;
         let regen = open.regen();
-        let written = crate::export_bodies::written(&p, &open.bodies_doc(), &regen)?;
+        let written = crate::export_bodies::written(
+            &p,
+            &open.bodies_doc(),
+            &regen,
+            open.history.current().is_assembly(),
+        )?;
         let only = written.only.as_deref();
         let mut out = if open.history.current().is_assembly() {
             crate::asm_export::step(session, path, &resolved, only)?
@@ -1627,7 +1632,12 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
     let resolved = session.workspace.resolve_write(path)?;
     let open = session.document_mut()?;
     let regen = open.regen();
-    let written_bodies = crate::export_bodies::written(&p, &open.bodies_doc(), &regen)?;
+    let written_bodies = crate::export_bodies::written(
+        &p,
+        &open.bodies_doc(),
+        &regen,
+        open.history.current().is_assembly(),
+    )?;
     let only = written_bodies.only.clone();
     let print_cap = matches!(
         format,

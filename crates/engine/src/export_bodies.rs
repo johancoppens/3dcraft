@@ -72,7 +72,14 @@ impl Written {
 /// or not ([`chosen`]); without it every body that is not hidden
 /// (`feature.visible`), as the drawings leave hidden bodies out (J-045).
 /// Every body hidden and none named is refused: there is nothing to write.
-pub(crate) fn written(p: &Params, doc: &Document, regen: &Regen) -> Result<Written, CommandError> {
+/// `assembly` when `doc` is the shown part of an assembly, whose bodies
+/// are shown and hidden by their instances (`instance.edit`).
+pub(crate) fn written(
+    p: &Params,
+    doc: &Document,
+    regen: &Regen,
+    assembly: bool,
+) -> Result<Written, CommandError> {
     let (named, off) = chosen(p, doc, regen)?;
     if named.is_some() {
         return Ok(Written {
@@ -100,8 +107,13 @@ pub(crate) fn written(p: &Params, doc: &Document, regen: &Regen) -> Result<Writt
         });
     }
     if shown.is_empty() {
+        let show = if assembly {
+            "show an instance with instance.edit {\"visible\": true}"
+        } else {
+            "show one with feature.visible"
+        };
         return fail(format!(
-            "{ID}: every body is hidden ({}); show one with feature.visible, or name the bodies to write with `bodies`",
+            "{ID}: every body is hidden ({}); {show}, or name the bodies to write with `bodies`",
             hidden.join(", ")
         ));
     }
