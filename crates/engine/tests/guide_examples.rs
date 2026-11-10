@@ -385,10 +385,10 @@ fn the_animations_of_the_command_line_chapter_render_as_they_say() {
     );
 }
 
-/// The weight of the measuring chapter (`measure.md` › *Outputs*) runs
-/// as written and says what the text says: 30 000 mm³ of aluminium at
-/// 2.7 g/cm³ weighs 81 g and passes "at most 100 g"; at steel's 7.85 g/cm³
-/// it weighs 235.5 g and fails.
+/// The weight of the measuring chapter (`measure.md` › *Outputs: measures
+/// in formulas*) runs as written and says what the text says: 30 000 mm³
+/// of aluminium at 2.7 g/cm³ weighs 81 g and passes "at most 100 g"; at
+/// steel's 7.85 g/cm³ it weighs 235.5 g and fails.
 #[test]
 fn the_weight_of_the_measuring_chapter_is_as_it_says() {
     let text = read_text(&docs().join("guide/measure.md"));
