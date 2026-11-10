@@ -7,8 +7,8 @@ name: CI
 # must be certain (the release installers are built on these runners):
 #   gh workflow run CI -R johancoppens/3dcraft && gh run watch -R johancoppens/3dcraft
 #
-# It runs only in the public repository (`plan`), where GitHub's standard
-# hosted runners are free; but a full run is hours. A narrow run takes one
+# It runs only in the public repository (`plan`), on GitHub's standard
+# hosted runners; a full run takes hours. A narrow run takes one
 # system and one command, the arguments after `cargo` (several joined by
 # ` + `, run in order); one test file on one system takes minutes:
 #   gh workflow run CI -R johancoppens/3dcraft --ref <branch> -f os=macos -f cargo="test -p craft3d --lib consent"
@@ -77,12 +77,11 @@ jobs:
   # minutes and macOS two hours on 2026-11-09, before the tests were
   # optimised; Windows about eight hours in one job.
   #
-  # Only in the public repository, johancoppens/3dcraft, where hosted
-  # runners cost nothing. The same file is in the workshop,
-  # johancoppens/3dcraft-dev, which is private: there hosted minutes are
-  # billed (macOS tenfold), so its weekly schedule and a dispatch skip this
-  # job, and `ci`, which needs it, is skipped with it. A job-level `if`
-  # cannot read `env`, so the name is written here.
+  # Only in the public repository, johancoppens/3dcraft, to which the
+  # hosted jobs belong. The same file is in the workshop,
+  # johancoppens/3dcraft-dev, where they are skipped: its weekly schedule
+  # and a dispatch skip this job, and `ci`, which needs it, is skipped with
+  # it. A job-level `if` cannot read `env`, so the name is written here.
   plan:
     if: github.repository == 'johancoppens/3dcraft'
     runs-on: ubuntu-latest

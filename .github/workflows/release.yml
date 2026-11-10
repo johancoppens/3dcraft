@@ -17,8 +17,8 @@ name: Release
 # public repository (`git push public v<version>`), which also makes a
 # draft GitHub release with the packages for the developer to publish,
 # its notes taken from CHANGELOG.md's section for that version. It runs
-# only in the public repository (`package`, `web`), where GitHub's
-# standard hosted runners are free.
+# only in the public repository (`package`, `web`), on GitHub's
+# standard hosted runners.
 on:
   workflow_dispatch:
     inputs:
@@ -37,13 +37,12 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Only in the public repository, johancoppens/3dcraft, where hosted
-  # runners cost nothing. The same file is in the workshop,
-  # johancoppens/3dcraft-dev, which is private and billed for hosted
-  # minutes (macOS tenfold): there a tag or a dispatch skips this job and
-  # `web`, and `release`, which needs both, is skipped with them. A
-  # job-level `if` cannot read `env`, so the name is written in the `if`
-  # of each of the two jobs that need none.
+  # Only in the public repository, johancoppens/3dcraft, to which the
+  # hosted jobs belong. The same file is in the workshop,
+  # johancoppens/3dcraft-dev, where they are skipped: there a tag or a
+  # dispatch skips this job and `web`, and `release`, which needs both, is
+  # skipped with them. A job-level `if` cannot read `env`, so the name is
+  # written in the `if` of each of the two jobs that need none.
   package:
     name: package (${{ matrix.name }})
     if: >-
