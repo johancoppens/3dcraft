@@ -914,10 +914,20 @@ fn the_small_assembly_of_the_assemblies_chapter_moves_as_it_says() {
     let mut s = common::session_in(&dir);
     run(&mut s, "file.new", json!({"units": "mm"}));
     let mut results = std::collections::BTreeMap::new();
+    // The part is held to "incremental = full regeneration" as every part
+    // here is; an assembly has no history of features to regenerate, so
+    // from `assembly.new` on the commands run plainly, as the assembly
+    // tests run them.
+    let mut assembly = false;
     for block in json_blocks(section) {
         let value: Value = serde_json::from_str(&block).unwrap();
         for (id, params) in steps(&value).unwrap() {
-            let result = run(&mut s, &id, params.clone());
+            assembly |= id == "assembly.new";
+            let result = if assembly {
+                common::plain::run(&mut s, &id, params.clone())
+            } else {
+                run(&mut s, &id, params.clone())
+            };
             assert_ne!(result["status"], "failed", "{id} {params}: {result}");
             results.insert(id, result);
         }
@@ -929,7 +939,7 @@ fn the_small_assembly_of_the_assemblies_chapter_moves_as_it_says() {
     assert_eq!(checked["ok"], true, "{checked}");
     assert_eq!(checked["samples"], 17, "{checked}");
     assert_eq!(checked["assertions"][0]["status"], "passed", "{checked}");
-    let arm = run(&mut s, "assembly.inspect", json!({}))["instances"]
+    let arm = common::plain::run(&mut s, "assembly.inspect", json!({}))["instances"]
         .as_array()
         .unwrap()
         .iter()
