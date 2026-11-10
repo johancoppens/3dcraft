@@ -519,7 +519,7 @@ fn an_assembly_is_placed_and_played_beside_the_page() {
 fn the_published_planetary_gearbox_plays_beside_the_page() {
     let bytes = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/examples/published/planetary-gearbox.3dcraftasm"
+        "/../../crates/testkit/data/planetary-gearbox.3dcraftasm"
     ))
     .unwrap();
     let open = |s: &mut Session| {

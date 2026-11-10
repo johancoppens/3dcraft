@@ -238,7 +238,7 @@ fn the_planetary_gearbox_answers_as_the_kernel_alone() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/examples/published/planetary-gearbox.3dcraftasm"
+        "/../../crates/testkit/data/planetary-gearbox.3dcraftasm"
     );
     let bytes = std::fs::read(path).unwrap();
     let mut s = Session::new(Workspace::unrestricted());

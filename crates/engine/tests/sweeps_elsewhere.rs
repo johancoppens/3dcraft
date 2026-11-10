@@ -606,7 +606,7 @@ fn an_instance_of_a_new_source_in_a_folder_is_added_beside_the_page() {
 fn the_planetary_gearbox_is_solved_beside_the_page() {
     let bytes = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/examples/published/planetary-gearbox.3dcraftasm"
+        "/../../crates/testkit/data/planetary-gearbox.3dcraftasm"
     ))
     .unwrap();
     let open = |s: &mut Session| {

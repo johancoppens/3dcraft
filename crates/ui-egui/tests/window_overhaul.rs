@@ -417,7 +417,7 @@ fn three_steps() -> Session {
 /// The planetary gearbox assembly: its motion plays.
 fn gearbox() -> Session {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/examples/published/planetary-gearbox.3dcraftasm");
+        .join("../../crates/testkit/data/planetary-gearbox.3dcraftasm");
     let mut session = Session::new(Workspace::unrestricted());
     session
         .execute("file.open", &json!({"path": path.to_str().unwrap()}))
@@ -627,7 +627,7 @@ fn an_assemblys_mates_and_checks_stay_inside() {
 fn a_jig_on_a_phone_and_a_tablet() {
     let open = || {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/examples/published/planetary-gearbox.3dcraftjig");
+            .join("../../crates/testkit/data/planetary-gearbox.3dcraftjig");
         let mut session = Session::new(Workspace::unrestricted());
         session
             .execute("file.open", &json!({"path": path.to_str().unwrap()}))

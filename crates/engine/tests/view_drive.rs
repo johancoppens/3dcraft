@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 
 fn example(name: &str) -> Session {
     let path = format!(
-        "{}/../../docs/examples/published/{name}",
+        "{}/../../crates/testkit/data/{name}",
         env!("CARGO_MANIFEST_DIR")
     );
     let bytes = std::fs::read(path).unwrap();
@@ -37,7 +37,7 @@ fn timed<T>(f: impl FnOnce() -> T) -> (T, f64) {
 fn planetary() -> Session {
     let bytes = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/examples/published/planetary-gearbox.3dcraftasm"
+        "/../../crates/testkit/data/planetary-gearbox.3dcraftasm"
     ))
     .unwrap();
     let mut s = Session::new(Workspace::memory());
@@ -294,7 +294,7 @@ fn view_drive_refuses_what_it_cannot_hold() {
 fn a_joint_held_by_hand_on_the_page_is_held_beside_it_bit_for_bit() {
     let bytes = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/examples/published/planetary-gearbox.3dcraftasm"
+        "/../../crates/testkit/data/planetary-gearbox.3dcraftasm"
     ))
     .unwrap();
     let mut page = Session::new(Workspace::memory());
@@ -467,7 +467,7 @@ fn an_undo_and_a_redo_let_go_of_the_joint_held_by_hand() {
 
 fn page() -> Session {
     let path = format!(
-        "{}/../../docs/examples/published/planetary-gearbox.3dcraftasm",
+        "{}/../../crates/testkit/data/planetary-gearbox.3dcraftasm",
         env!("CARGO_MANIFEST_DIR")
     );
     let bytes = std::fs::read(path).unwrap();
