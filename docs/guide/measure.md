@@ -4,8 +4,11 @@
 checks that run at every change.*
 
 An agent should check a design by asking it questions, not by looking at a picture. 3DCraft answers on
-the exact geometry, and can keep the questions in the document as **assertions** that are checked again
-after every change.
+the exact geometry. It can also keep the questions in the document as **assertions**, which the window
+calls **checks**: they are measured again after every change.
+
+Questions of engineering (a section's stiffness, a fill level, where a hull floats, a stress, a clash in
+a motion) have a chapter of their own: [Engineering checks](engineering-checks.md).
 
 ## Measures
 
@@ -22,44 +25,27 @@ after every change.
 | `measure.continuity {"edge", "face"}` | How two faces meet along an edge: G0, G1 or G2, with the largest gaps in position, tangent-plane angle, curvature and twist, proven ([continuity](#continuity-across-a-seam)) |
 | `measure.curvature {"of", "at"}` | The curvature of the surface at the point nearest to `at`: Gaussian, mean and the principal curvatures, exact |
 | `measure.draft {"faces", "direction", "minDraft"}` | The least draft angle of faces against a pull direction, and the share of their area below `minDraft` ([surface quality](#surface-quality)) |
-| `measure.below`, `measure.section`, `measure.levelFor`, `measure.floating` | The volume below a plane, a section's area and second moments, the level for a volume, the level and tilt a body floats at ([below](engineering-checks.md#below-a-plane-sections-and-levels)) |
+| `measure.below`, `measure.section`, `measure.levelFor`, `measure.floating` | The volume below a plane, a section's area and second moments, the level for a volume, the level and tilt a body floats at ([Engineering checks](engineering-checks.md#below-a-plane-sections-and-levels)) |
 
 A subject (`of`, `from`, `to`) is a body by its feature's name, a list of them, or a query as
-`select.query` takes it ([Selection and named sets](selection.md)): `{"hole": true, "radius": "4 mm"}` for the 8 mm holes,
-`{"kind": "face", "where": {"normal": {"along": "z"}}}` for the faces facing up. A named set,
-`{"set": "Blocks"}`, is what the set holds: a set of bodies gives `area` the area of those bodies. A body
-switched off by its condition (`when`) or suppressed is left out of a subject that names it, so one assertion
-holds for every option, and a `measure.*` command's answer lists them under `switchedOffLeftOut`; when every
-body a subject names is off, there is nothing to check and the assertion is *inactive*, saying so.
+`select.query` takes it ([Selection and named sets](selection.md)): `{"hole": true, "radius": "4 mm"}` for
+the 8 mm holes, `{"kind": "face", "where": {"normal": {"along": "z"}}}` for the faces facing up. A named
+set, `{"set": "Blocks"}`, is what the set holds: a set of bodies gives `area` the area of those bodies.
+
+A body switched off by its condition (`when`) or suppressed is left out of a subject that names it, so one
+assertion holds for every option of a Jig. A `measure.*` command's answer lists such bodies under
+`switchedOffLeftOut`. When every body a subject names is off, there is nothing to check, and the assertion
+is *inactive*, saying so. In an assembly, a subject names instances
+([Assemblies › Packing, export and checks](assemblies.md#packing-export-and-checks)).
 
 `distance` is measured between surfaces: a body (or a face) wholly inside another is as far from it as from its
 nearest face, not 0. To know whether bodies touch or overlap, use `clearance`.
 
 What is searched for (a thickness, a distance) comes with what is **proven**: `atLeast`, a bound nothing
-is below, beside the value found at a real place. On the flange of [Working with an AI agent](agent.md#a-full-session): `"thickness": 6.0,
-"atLeast": 5.75`.
-
-## Surface quality
-
-The analyses of the window ([The window](window.md#surface-analysis)) have measures behind them.
-`measure.curvature` with `at` gives the curvature of the face nearest to a point, from the exact
-surface: on a torus of radii 10 and 3 the outer equator has a Gaussian curvature of 1/39 and the
-inner one −1/21.
-
-`measure.draft` gives the least draft of faces against a pull direction, in degrees: the angle
-between the face and the pull, positive where the face leaves the mould along it. A plane's is exact.
-On a cylinder, a sphere or a torus the least is found at the vertices of a fine mesh (where the
-normals are the exact surface's) and proven to within what the normal can turn between them; on a
-cone or a freeform face it is sampled, and says so (`proven: false`). `shareBelow` is the share of
-the faces' area below `minDraft`.
-
-As assertions, `draft` takes the same parameters (the least draft is `minDraft`, because `min` is
-the assertion's bound) and `curvature` takes `at`:
-
-```text
-assert.add {"name": "releases", "measure": "draft", "faces": {"kind": "face", "where": {"name": "F2:*"}}, "direction": "z", "minDraft": 1, "min": "1 deg"}
-assert.add {"name": "dome", "measure": "curvature", "at": [0, 0, 40], "max": 0.001}
-```
+is below, beside the value found at a real place. On the flange of
+[Working with an AI agent](agent.md#a-full-session), `measure.thickness` answers `"thickness": 6.0,
+"atLeast": 5.99999999999968`: the thinnest wall found is 6 mm, and no wall is thinner than 5.99999999999968
+mm anywhere.
 
 ## Assertions
 
@@ -79,8 +65,8 @@ assert.add {"name": "dome", "measure": "curvature", "at": [0, 0, 40], "max": 0.0
   (its coordinate along `axis`; every body needs a material), `distance`, `clearance`, `thickness`,
   `through`, `overlap` (whether bodies overlap), `symmetric`, and `volumeBelow`, `centroidBelow`,
   `sectionArea`, `sectionCentroid`, `sectionInertia`, `sectionTorsion`, `sectionShearCentre`, `sectionExtent`, `levelFor`, `floatingOffset`, `floatingHeel`,
-  `floatingTrim`, `floatingGM`, `floatingGML`, `floatingStable` ([above](engineering-checks.md#below-a-plane-sections-and-levels)), the
-  sheet-metal measures and `bendable` (the press-brake check, [Sheet metal](sheet-metal.md)),
+  `floatingTrim`, `floatingGM`, `floatingGML`, `floatingStable` ([Engineering checks](engineering-checks.md#below-a-plane-sections-and-levels)), the
+  sheet-metal measures and `bendable` (the press-brake check, [Sheet metal](sheet-metal.md#checking-on-a-press-brake)),
   `value`, a formula of the variables and outputs (`expr`, [below](#outputs-measures-in-formulas)), and
   `continuity` (`edge`, `face`: the order a seam reaches as a number, −1 none, 0 G0, 1 G1, 2 G2; `"min": 2`
   asserts G2, [below](#continuity-across-a-seam)).
@@ -114,16 +100,24 @@ is missing); **inactive** (its condition `when` is 0: [below](#assertions-that-a
 **pending** (still being measured, on a large model). They are measured off to the side and
 only when what they depend on changed, so they never slow modelling down or stop a feature.
 
-Where they show: in the result of every feature command, `variable.set` and `param.set` (`assertions:
-{count, passed, broken, unproven, pending, inactive}`), in `assert.list` (each with its message), in `document.check` (a broken one makes
-`ok` false), in `document.inspect`, and in the window's tree. `assert.edit` and `assert.delete` change
-and remove them.
+Where they show:
+
+- in the result of every feature command, `variable.set`, `param.set` and `document.check`, as
+  `assertionSummary`: `{count, passed, broken, unproven, pending, inactive}`;
+- in `assert.list`, each with what was measured, what was expected and its message;
+- in `document.check`, where a broken one makes `ok` false, and in `document.inspect`;
+- in the window, under the feature list, as **Checks**.
+
+`assert.edit` and `assert.delete` change and remove them.
 
 **Pending after an edit.** An edit's result waits up to two seconds for the assertions it touched; the
 rest count under `pending`, and `whenPending` then says how to have them. A script that checks its
-assertions after a change either gives the edit `"wait": true` (`param.set`, `variable.set`), which waits
-until every assertion is measured (a minute at most: what takes longer stays `pending`, with
-`whenPending`), or runs `assert.list` next, which waits by default:
+assertions after a change does one of these:
+
+- it gives the edit `"wait": true` (`param.set`, `variable.set`), which waits until every assertion is
+  measured, a minute at most (what takes longer stays `pending`, with `whenPending`);
+- it runs `assert.list` next, which waits by default;
+- it reads `document.inspect {"wait": true}`, which waits for them too.
 
 ```json
 [
@@ -147,7 +141,9 @@ Three that need a word:
 - **Each side of the box.** `extent` bounds the size, the sum of both sides. To let nothing stick out
   more than 6.5 mm beyond rails of width `w` centred on the origin, on +x and on -x separately:
   `{"measure": "boxMax", "axis": "x", "max": "w / 2 + 6.5 mm"}` and `{"measure": "boxMin", "axis":
-  "x", "min": "-w / 2 - 6.5 mm"}`. Coordinates are in the model's frame. The box of a body with spline faces is found on a fine mesh: the
+  "x", "min": "-w / 2 - 6.5 mm"}`. Coordinates are in the model's frame.
+
+  The box of a body with spline faces is found on a fine mesh: the
   value is a side the body reaches, and it stays within twice the mesh's tolerance beyond it (within
   what the tessellator measures of its own accuracy; the box of the spline's whole control net is the
   outer limit that always holds). A bound that falls in between is looked at again on finer meshes,
@@ -158,101 +154,12 @@ Three that need a word:
 - **Overlap** is true when bodies overlap, so `{"measure": "overlap", "of": ["Bolt", "Plate"], "is":
   false}` asserts they do not (`to` compares `of` with other bodies instead of with each other; leave
   both out for all bodies). Its message says it in words: *no overlap*, or *Bolt overlaps Plate by
-  12 mm^3, expected no overlap*. `is: true` asserts a press fit. Before 2026-10-25 this measure was
-  `interference`, true when *none* overlap; files that have it are brought up to date when they open
-  (it becomes `overlap` with the opposite `is`, meaning the same), and a command that still sends it
-  is taken the same way.
+  12 mm^3, expected no overlap*. `is: true` asserts a press fit.
 
 One trap: in an expression a power binds to the number with its unit, so `50 cm^3` would mean
 (50 cm)³; it is refused wherever a bound is read. Write `50 * (1 cm)^3`, or a plain number in the
 document's unit (mm³ in a mm document). Only `0` and `1` may be written so (`"tol": "0 mm^3"`): for them
 the two readings are the same.
-
-## Continuity across a seam
-
-`measure.continuity {"edge": "F7:startEdge(0,2)", "face": "F1:side(0)"}` says how a sheet meets a face
-along an edge (without `face`, the edge's two faces). `order` is the highest of **G0** (in position), **G1**
-(one tangent plane) and **G2** (the same curvature too: normal curvature across and along the edge, and
-twist) whose gaps are *proven* within their thresholds all along the edge, not only where it was looked at:
-`position`, `angle` (radians), and per length unit `curvature` (the difference of the normal curvatures
-across the edge), `twist` (of how fast the normal turns about the edge along it) and `along` (of the normal
-curvatures along the edge), all measured along the second face's normal, each give `bound` (nothing along the edge is
-beyond it), `found` (the largest seen, with `param` and `at`), `threshold` and `within`.
-
-The thresholds are the document's: the tolerance, the angular tolerance, and for curvature, twist and along
-the smaller of angular / L and 2 × tolerance / L², L the edge's length (what turns the normals apart by the
-angular tolerance, or opens a gap of the tolerance, over that length). Nearly G2 is not G2: a seam whose
-curvature differs by more than that is G1, and so is one whose cross tangent turns about the edge within the
-angular tolerance but enough to twist it beyond the curvature threshold.
-One whose bounds cannot be brought within the thresholds is not reached either (`exhausted` says when the
-work allowed ran out first). One of the faces must be a spline face the edge runs along a parameter line of (a network sheet's
-edge is); the other a plane, cylinder, cone or sphere, or a spline face in the same parametrisation along the
-seam. Two analytic faces and a torus are refused, with the reason.
-
-The faces are compared at corresponding points, and the correspondence is local. A point of the first
-face's edge corresponds to the nearest point of the second face's own edge, looked for only near it (in
-the stretch of the edge being bounded and as far again into its neighbours) and only within the edge (never
-past its ends). How far apart the two edges lie is the position gap; the second order counts how far along
-the seam the corresponding point may have moved, never a point of the second face off its edge. Against a
-plane, cylinder, cone or sphere the corresponding point is the face's foot point.
-
-```json
-[
- ["assert.add", {"name": "fin is G2", "measure": "continuity", "edge": "F7:startEdge(0,2)", "face": "F1:side(0)", "min": 2}]
-]
-```
-
-## Outputs: measures in formulas
-
-Some answers are formulas of measures: a boat's stability, the metacentric height GM = KB + BM − KG,
-comes from where it floats, the centre of what is under water and the waterplane's moment. An **output**
-is a variable 3DCraft works out *after* the model is built, from a measure or from a formula of other
-outputs; you read it and check it, you never set it.
-
-```json
-[
- ["variable.set", {"name": "KG", "expr": "180 mm"}],
- ["variable.set", {"name": "V", "expr": "0.3 * (1 m)^3"}],
- ["feature.block", {"size": ["2000 mm", "600 mm", "400 mm"], "position": ["-1000 mm", "-300 mm", "0 mm"], "name": "Hull"}],
- ["variable.measure", {"name": "T", "measure": "levelFor", "of": "Hull", "volume": "V"}],
- ["variable.measure", {"name": "KB", "measure": "centroidBelow", "of": "Hull", "offset": "T", "axis": "z"}],
- ["variable.measure", {"name": "I", "measure": "sectionInertia", "of": "Hull", "offset": "T", "about": "x", "xAxis": "x"}],
- ["variable.output", {"name": "BM", "expr": "I / V"}],
- ["variable.output", {"name": "GM", "expr": "KB + BM - KG"}],
- ["assert.add", {"name": "stable", "measure": "value", "expr": "GM", "min": "0 mm"}],
- ["output.list", {}]
-]
-```
-
-The hull floats at `T` = 250 mm (the level below which it holds 0.3 m³), `KB` = 125 mm, `I` = 2000 × 600³/12
-mm⁴, so `BM` = 120 mm and `GM` = 65 mm: the assertion *stable* passes. Set `KG` to 300 mm and GM is −55 mm,
-and *stable* fails; only the assertion is measured again, since the waterline does not depend on `KG`.
-
-- `variable.measure` takes a measure and its parameters as `assert.add` does ([the measures](#assertions));
-  the output is the number with its unit (a length, an area, a volume, mm⁴; a mass in kg, as `2 kg` is, and a count as
-  plain numbers, yes-or-no as 1 or 0). Its formulas (`offset`, `volume`) may use other outputs: `KB` is
-  measured at the waterline `T`.
-- `variable.output` is a formula of variables and outputs. `variable.measure` or `variable.output` on an
-  existing output changes it; `variable.rename` and `variable.delete` take outputs as they take variables.
-- **A label and a unit to show it in.** `label` is what the Parameters tab and `output.list` show
-  instead of the name, `unit` the unit (see below); both are only how it is shown, and both are kept when
-  an output is changed without them (`null` takes one away).
-- **Only outputs and assertions may use an output.** A variable, a feature, a sketch, a condition, a named
-  set or a material that uses one is refused, and the message names it (*the variable `beam` uses `GM`, an
-  output*): the model is built first, then measured, so a measure can never depend on itself. Give such a
-  size a variable of its own.
-- An output that would depend on itself is refused with the loop named: *`B` would depend on itself
-  (B → A → B)*. A name in a branch of `if` that is not taken counts too: `A = if(on == 1, B, 0 mm)` with
-  `B = if(on == 1, 2 mm, A)` is refused as a loop, although at `on` = 1 neither needs the other. `variable.set`, `param.set` and `variable.publish` refuse an output: it is read-only.
-- **Unknown, never a guess.** When a measure fails (a volume the hull cannot hold), or what it proves is
-  wider than the document's tolerance (a wall found at 2 mm but proven only above 1.96 mm), the output is
-  *unknown* with the reason, and so is every output that needs it; an assertion that needs one is
-  *notProven*, with that reason. *Needs* is what the formula uses as it is worked out: in
-  `if(corner == 1, gap, cg)` with `corner` at 1, `cg` is not needed, and its being unknown changes nothing.
-- `output.list` gives each output with `status` (*known*, *unknown*, or *pending* while it is measured),
-  its `value` in the document's units, `unit` and `message`; so do `document.inspect` (under `outputs`)
-  and a Jig's Parameters tab, below the parameters. Outputs are saved with the document and are the same
-  every time it is built.
 
 ## Assertions that apply only sometimes
 
@@ -292,5 +199,112 @@ branch of `if` that is taken does not need `cg`. Set `corner` to 2 and the corne
   error says what the part has. A part's holes are those it was built with (its sketch's inner loops and
   its `cutouts`), not a hole a later feature cuts into its body; an assertion on a hole that only some of a Jig's
   choices make takes those choices' condition.
+
+## Outputs: measures in formulas
+
+An **output** is a variable 3DCraft works out *after* the model is built, from a measure, or from a
+formula of other outputs. You read it and check it; you never set it. The weight of an aluminium plate:
+
+```json
+[
+ ["variable.set", {"name": "density", "expr": "2.7 g / (1 cm)^3"}],
+ ["feature.block", {"name": "Plate", "size": ["100 mm", "60 mm", "5 mm"]}],
+ ["variable.measure", {"name": "vol", "measure": "volume", "of": "Plate"}],
+ ["variable.output", {"name": "weight", "expr": "vol * density", "label": "Weight", "unit": "g"}],
+ ["assert.add", {"name": "light enough", "measure": "value", "expr": "weight", "max": "100 g"}],
+ ["output.list", {}]
+]
+```
+
+`output.list` says *Weight 81 g* (30 000 mm³ at 2.7 g/cm³), and *light enough* passes. Make the plate steel,
+`density` 7.85 g/cm³, and the weight is 235.5 g: *light enough* fails. Only the output and the check are
+worked out again: the volume did not change.
+
+[Engineering checks](engineering-checks.md) has outputs of another kind: a hull's stability worked out
+from where it floats, and a bar's bending stress.
+
+- `variable.measure` takes a measure and its parameters as `assert.add` does ([the measures](#assertions)).
+  The output is the number with its unit: a length, an area, a volume, mm⁴; a mass in kg, as `2 kg` is; a
+  count as a plain number; yes or no as 1 or 0. Its formulas (an `offset`, a `volume`) may use other
+  outputs, so a hull's centre of buoyancy can be measured at the waterline another output found.
+- `variable.output` is a formula of variables and outputs. `variable.measure` or `variable.output` on an
+  existing output changes it; `variable.rename` and `variable.delete` take outputs as they take variables.
+- **A label and a unit to show it in.** `label` is what the Parameters tab and `output.list` show
+  instead of the name, `unit` the unit ([Engineering checks › Forces, stresses and
+  moments](engineering-checks.md#forces-stresses-and-moments) says which units may be given). Both are only
+  how it is shown, and both are kept when an output is changed without them (`null` takes one away).
+- **Only outputs and assertions may use an output.** A variable, a feature, a sketch, a condition, a named
+  set or a material that uses one is refused, and the message names it (*the variable `beam` uses `GM`, an
+  output*): the model is built first, then measured, so a measure can never depend on itself. Give such a
+  size a variable of its own.
+- An output that would depend on itself is refused with the loop named: *`B` would depend on itself
+  (B → A → B)*. A name in a branch of `if` that is not taken counts too: `A = if(on == 1, B, 0 mm)` with
+  `B = if(on == 1, 2 mm, A)` is refused as a loop, although at `on` = 1 neither needs the other.
+- `variable.set`, `param.set` and `variable.publish` refuse an output: it is read-only.
+- **Unknown, never a guess.** When a measure fails (a volume the hull cannot hold), or what it proves is
+  wider than the document's tolerance (a wall found at 2 mm but proven only above 1.96 mm), the output is
+  *unknown* with the reason, and so is every output that needs it; an assertion that needs one is
+  *notProven*, with that reason. *Needs* is what the formula uses as it is worked out: in
+  `if(corner == 1, gap, cg)` with `corner` at 1, `cg` is not needed, and its being unknown changes nothing.
+- `output.list` gives each output with `status` (*known*, *unknown*, or *pending* while it is measured),
+  its `value` in the document's units, `unit` and `message`; so do `document.inspect` (under `outputs`)
+  and a Jig's Parameters tab, below the parameters. Outputs are saved with the document and are the same
+  every time it is built.
+
+## Surface quality
+
+The analyses of the window ([The window](window.md#surface-analysis)) have measures behind them.
+`measure.curvature` with `at` gives the curvature of the face nearest to a point, from the exact
+surface: on a torus of radii 10 and 3 the outer equator has a Gaussian curvature of 1/39 and the
+inner one −1/21.
+
+`measure.draft` gives the least draft of faces against a pull direction, in degrees: the angle
+between the face and the pull, positive where the face leaves the mould along it. A plane's is exact.
+On a cylinder, a sphere or a torus the least is found at the vertices of a fine mesh (where the
+normals are the exact surface's) and proven to within what the normal can turn between them; on a
+cone or a freeform face it is sampled, and says so (`proven: false`). `shareBelow` is the share of
+the faces' area below `minDraft`.
+
+As assertions, `draft` takes the same parameters (the least draft is `minDraft`, because `min` is
+the assertion's bound) and `curvature` takes `at`:
+
+```text
+assert.add {"name": "releases", "measure": "draft", "faces": {"kind": "face", "where": {"name": "F2:*"}}, "direction": "z", "minDraft": 1, "min": "1 deg"}
+assert.add {"name": "dome", "measure": "curvature", "at": [0, 0, 40], "max": 0.001}
+```
+
+## Continuity across a seam
+
+`measure.continuity {"edge": "F6:startEdge(e0,e2)", "face": "F1:face(0)"}` says how a sheet meets a face
+along an edge (here the fin of [Surfaces › Curvature-continuous seams](surfaces.md#curvature-continuous-seams-g2)) (without `face`, the edge's two faces). `order` is the highest of **G0** (in position), **G1**
+(one tangent plane) and **G2** (the same curvature too: normal curvature across and along the edge, and
+twist) whose gaps are *proven* within their thresholds all along the edge, not only where it was looked at:
+`position`, `angle` (radians), and per length unit `curvature` (the difference of the normal curvatures
+across the edge), `twist` (of how fast the normal turns about the edge along it) and `along` (of the normal
+curvatures along the edge), all measured along the second face's normal, each give `bound` (nothing along the edge is
+beyond it), `found` (the largest seen, with `param` and `at`), `threshold` and `within`.
+
+The thresholds are the document's: the tolerance, the angular tolerance, and for curvature, twist and along
+the smaller of angular / L and 2 × tolerance / L², L the edge's length (what turns the normals apart by the
+angular tolerance, or opens a gap of the tolerance, over that length). Nearly G2 is not G2: a seam whose
+curvature differs by more than that is G1, and so is one whose cross tangent turns about the edge within the
+angular tolerance but enough to twist it beyond the curvature threshold.
+One whose bounds cannot be brought within the thresholds is not reached either (`exhausted` says when the
+work allowed ran out first). One of the faces must be a spline face the edge runs along a parameter line of (a network sheet's
+edge is); the other a plane, cylinder, cone or sphere, or a spline face in the same parametrisation along the
+seam. Two analytic faces and a torus are refused, with the reason.
+
+The faces are compared at corresponding points, and the correspondence is local. A point of the first
+face's edge corresponds to the nearest point of the second face's own edge, looked for only near it (in
+the stretch of the edge being bounded and as far again into its neighbours) and only within the edge (never
+past its ends). How far apart the two edges lie is the position gap; the second order counts how far along
+the seam the corresponding point may have moved, never a point of the second face off its edge. Against a
+plane, cylinder, cone or sphere the corresponding point is the face's foot point.
+
+```json
+[
+ ["assert.add", {"name": "fin is G2", "measure": "continuity", "edge": "F6:startEdge(e0,e2)", "face": "F1:face(0)", "min": 2}]
+]
+```
 
 **Next:** [Engineering checks](engineering-checks.md).

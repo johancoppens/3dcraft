@@ -1,5 +1,12 @@
 # Engineering checks
 
+*Questions of engineering, asked of the exact geometry and kept as checks: a section's area and
+stiffness, a tank's fill level, where a hull floats and whether it stays upright, a stress, and what
+happens over a motion.*
+
+These build on the measures, checks and outputs of [Measuring and assertions](measure.md): read that
+first.
+
 ## Below a plane, sections and levels
 
 Three questions about a plane through closed bodies, answered on the exact geometry (the part below
@@ -12,9 +19,9 @@ away from.
 | Command | Answers |
 |---|---|
 | `measure.below {"of", "plane", "offset"}` | The `volume` below, its `centroid`, the `surface` below, and the `section` |
-| `measure.section {"of", "plane", "offset"}` | The section: `area`, `centroid`, `ix` and `iy` (second moments about its centroid along `xAxis` and `yAxis`), `ixy`, the principal `major` and `minor` with `majorAxis`; its torsion: `torsion` (J), `shearCentre`, `shearOffset`, `warping` ([below](#below-a-plane-sections-and-levels)) |
+| `measure.section {"of", "plane", "offset"}` | The section: `area`, `centroid`, `ix` and `iy` (second moments about its centroid along `xAxis` and `yAxis`), `ixy`, the principal `major` and `minor` with `majorAxis`; its torsion: `torsion` (J), `shearCentre`, `shearOffset`, `warping` ([below](#a-sections-torsion-and-shear-centre)) |
 | `measure.levelFor {"of", "plane", "volume"}` | The `offset` at which the volume below is `volume`, and what `measure.below` gives there |
-| `measure.floating {"of", "plane", "volume", "centerOfGravity"}` | The level and tilt a body floats at: the equilibria, each stable, unstable or neutral ([floating free](#below-a-plane-sections-and-levels)) |
+| `measure.floating {"of", "plane", "volume", "centerOfGravity"}` | The level and tilt a body floats at: the equilibria, each stable, unstable or neutral ([Floating](#floating)) |
 
 ```json
 [
@@ -36,10 +43,12 @@ the third, the cross-section square to x: `area` 1.3e6, with `xAxis` y and `yAxi
   inside* (close it first), *did not converge* after 64 steps.
 - Bodies that overlap are counted once each.
 - Floating objects: a body of mass m in a liquid of density ρ settles where `levelFor` of m/ρ puts the
-  plane; a Jig computes what it needs from the centroid and the section's moments (the worked example
-  is in [`design/sections-and-levels.md`](../design/sections-and-levels.md)).
+  plane. A Jig computes what it needs from the centroid and the section's moments; the developer
+  documentation has a worked example ([`design/sections-and-levels.md`](../design/sections-and-levels.md)).
 
-**A section's torsion and shear centre.** `measure.section` also twists the section: `torsion` is its St
+### A section's torsion and shear centre
+
+`measure.section` also twists the section: `torsion` is its St
 Venant torsion constant J (the length unit to the fourth power), `shearCentre` the point a sideways load
 must pass through for the beam not to twist (a point in space; `shearOffset` is it from the centroid
 along `xAxis` and `yAxis`), and `warping` the warping constant Cw (the unit to the sixth power). They
@@ -65,7 +74,26 @@ formula (which is an approximation; the solve is not), and `shearCentre` at the 
 symmetry says. Cut a slot in one wall and the section through it is open: J drops by three orders of
 magnitude and the shear centre moves away from the slot.
 
-**Floating free.** `measure.floating` finds the plane a floating body settles at when its centre of
+### Sections and levels as checks
+
+As assertions: `volumeBelow`, `centroidBelow` (with `axis`), `sectionArea`, `sectionCentroid` (with
+`axis`), `sectionInertia` (with `about`: `x`, `y`, `xy`, `major` or `minor`), `sectionTorsion` (J),
+`sectionShearCentre` (with `axis`: a coordinate of the shear centre; a solve that stops at its cap is
+`notProven`), `sectionExtent` (with
+`axis`: `x`, `y`, `z` or `[x, y, z]`; how far the section reaches along it, the length of a hull's
+waterline at its level) and `levelFor` (with `volume`), each with the same `of`, `plane`, `offset`
+(not for `levelFor`) and `xAxis` (not for `sectionExtent`):
+
+```json
+[
+ ["assert.add", {"name": "stiff enough", "measure": "sectionInertia", "of": "Tank", "plane": "yz", "about": "minor", "min": "1e11"}],
+ ["assert.add", {"name": "fill level", "measure": "levelFor", "of": "Tank", "volume": "1.56 * (1 m)^3", "max": "350 mm"}]
+]
+```
+
+## Floating
+
+`measure.floating` finds the plane a floating body settles at when its centre of
 gravity is known too: the level *and* the tilt at which the volume below is `volume` (or `mass` /
 `density`, kg and kg/m³) and the centroid below lies straight under the centre of gravity. `plane` is the
 upright waterplane (default xy, up +z); `heel` and `trim` tilt the start.
@@ -88,22 +116,9 @@ upright plane (or `heel`, `trim`), finds the nearest equilibrium by Newton's met
 unstable, the ones the body falls to from it; other equilibria are not searched. `neutral` says that the
 first one turns freely in some direction (a sphere with its centre of gravity at its centre).
 
-As assertions: `volumeBelow`, `centroidBelow` (with `axis`), `sectionArea`, `sectionCentroid` (with
-`axis`), `sectionInertia` (with `about`: `x`, `y`, `xy`, `major` or `minor`), `sectionTorsion` (J),
-`sectionShearCentre` (with `axis`: a coordinate of the shear centre; a solve that stops at its cap is
-`notProven`), `sectionExtent` (with
-`axis`: `x`, `y`, `z` or `[x, y, z]`; how far the section reaches along it, the length of a hull's
-waterline at its level) and `levelFor` (with `volume`), each with the same `of`, `plane`, `offset`
-(not for `levelFor`) and `xAxis` (not for `sectionExtent`):
+### Floating, as assertions and outputs
 
-```json
-[
- ["assert.add", {"name": "stiff enough", "measure": "sectionInertia", "of": "Tank", "plane": "yz", "about": "minor", "min": "1e11"}],
- ["assert.add", {"name": "fill level", "measure": "levelFor", "of": "Tank", "volume": "1.56 * (1 m)^3", "max": "350 mm"}]
-]
-```
-
-**Floating, as assertions and outputs.** What `measure.floating` finds can be asserted too, so a design that
+What `measure.floating` finds can be asserted too, so a design that
 floats upright keeps doing so as it changes: `floatingOffset` (the waterplane's offset along its normal),
 `floatingHeel` and `floatingTrim` (its angles from the upright plane; write the bounds with a unit, `"3 deg"`),
 `floatingGM` and `floatingGML` (the metacentric heights for a heel, a turn about the plane's x axis, and for a
@@ -129,7 +144,44 @@ equilibrium that does not settle makes such an assertion *notProven*, with the r
 an output of it unknown; a displacement more than the body holds is an error (it sinks). Each assertion
 solves the equilibrium itself, and again only when what it depends on changes.
 
-### Forces, stresses and moments
+### Stability as outputs: a hull's GM
+
+Some answers are formulas of measures. A boat's stability, the metacentric height GM = KB + BM − KG,
+comes from where it floats (the draught T), the height of the centre of what is under water (KB), and the
+waterplane's moment (I, so BM = I / V). As outputs ([Measuring and assertions › Outputs](measure.md#outputs-measures-in-formulas)),
+a box hull's GM is worked out after every change, and checked:
+
+```json
+[
+ ["variable.set", {"name": "KG", "expr": "180 mm"}],
+ ["variable.set", {"name": "V", "expr": "0.3 * (1 m)^3"}],
+ ["feature.block", {"size": ["2000 mm", "600 mm", "400 mm"], "position": ["-1000 mm", "-300 mm", "0 mm"], "name": "Hull"}],
+ ["variable.measure", {"name": "T", "measure": "levelFor", "of": "Hull", "volume": "V"}],
+ ["variable.measure", {"name": "KB", "measure": "centroidBelow", "of": "Hull", "offset": "T", "axis": "z"}],
+ ["variable.measure", {"name": "I", "measure": "sectionInertia", "of": "Hull", "offset": "T", "about": "x", "xAxis": "x"}],
+ ["variable.output", {"name": "BM", "expr": "I / V"}],
+ ["variable.output", {"name": "GM", "expr": "KB + BM - KG"}],
+ ["assert.add", {"name": "stable", "measure": "value", "expr": "GM", "min": "0 mm"}],
+ ["output.list", {}]
+]
+```
+
+The hull floats at `T` = 250 mm (the level below which it holds 0.3 m³), `KB` = 125 mm, `I` = 2000 × 600³/12
+mm⁴, so `BM` = 120 mm and `GM` = 65 mm: the assertion *stable* passes. Set `KG` to 300 mm and GM is −55 mm,
+and *stable* fails; only the assertion is measured again, since the waterline does not depend on `KG`.
+
+## Forces, stresses and moments
+
+Forces, stresses and moments have units of their own:
+
+- `g` and `kg` for a mass, `s` for a time;
+- `N` and `kN` for a force; `Pa`, `kPa`, `MPa` and `GPa` for a pressure or a stress; `J` for an energy;
+- a force unit followed by a length unit for a moment: `20 N m`, `5 kN mm`.
+
+They are derived from mass, length and time (a newton is kg·m/s²), so a load over an area is a stress:
+`1000 N / (100 * (1 mm)^2)` is 10 MPa, and `1 MPa` is `1 N / (1 mm)^2`. Unlike `mm` or `deg`, these
+symbols are not reserved: a count may still be called `N` and a spacing `s`. They are units only right
+after a number, a parenthesis or `pi` (`N * 5 N` is N times five newtons).
 
 A formula with units in it has the dimension they give: a load in newtons over an area is a stress. So
 a stress needs no unit in its name:

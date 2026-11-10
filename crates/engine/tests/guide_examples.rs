@@ -361,12 +361,60 @@ fn the_animations_of_the_command_line_chapter_render_as_they_say() {
     );
 }
 
-/// The outputs of the measuring chapter (`measure.md` › *Outputs*) run
-/// as written and say what the text says: the box hull's GM is 65 mm, the
-/// assertion on it passes, and with KG at 300 mm GM is -55 mm and it fails.
+/// The weight of the measuring chapter (`measure.md` › *Outputs*) runs
+/// as written and says what the text says: 30 000 mm³ of aluminium at
+/// 2.7 g/cm³ weighs 81 g and passes "at most 100 g"; at steel's 7.85 g/cm³
+/// it weighs 235.5 g and fails.
 #[test]
-fn the_outputs_of_the_measuring_chapter_are_as_it_says() {
+fn the_weight_of_the_measuring_chapter_is_as_it_says() {
     let text = read_text(&docs().join("guide/measure.md"));
+    for said in ["*Weight 81 g*", "235.5 g", "7.85 g/cm³"] {
+        assert!(text.contains(said), "the page says {said}");
+    }
+    let block = json_blocks(&text)
+        .into_iter()
+        .find(|b| b.contains("variable.output") && b.contains("density"))
+        .expect("the chapter has a block of outputs");
+    let steps = steps(&serde_json::from_str(&block).unwrap()).unwrap();
+    let mut s = Session::new(craft3d_engine::Workspace::unrestricted());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    let mut last = Value::Null;
+    for (id, params) in steps {
+        last = run(&mut s, &id, params);
+    }
+    let weight = |listed: &Value| {
+        let o = listed["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["name"] == "weight")
+            .unwrap()
+            .clone();
+        assert_eq!(o["status"], "known", "{o}");
+        assert_eq!(o["unit"], "g", "{o}");
+        o["value"].as_f64().unwrap()
+    };
+    assert!((weight(&last) - 81.0).abs() < 1e-9, "{last}");
+    let listed = run(&mut s, "assert.list", json!({}));
+    assert_eq!(listed["ok"], true, "{listed}");
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "density", "expr": "7.85 g / (1 cm)^3"}),
+    );
+    let listed = run(&mut s, "output.list", json!({}));
+    assert!((weight(&listed) - 235.5).abs() < 1e-9, "{listed}");
+    let checked = run(&mut s, "assert.list", json!({}));
+    assert_eq!(checked["failed"], 1, "{checked}");
+}
+
+/// The hull of the engineering chapter (`engineering-checks.md` ›
+/// *Stability as outputs*) runs as written and says what the text says:
+/// the box hull's GM is 65 mm, the assertion on it passes, and with KG at
+/// 300 mm GM is -55 mm and it fails.
+#[test]
+fn the_outputs_of_the_engineering_chapter_are_as_it_says() {
+    let text = read_text(&docs().join("guide/engineering-checks.md"));
     let block = json_blocks(&text)
         .into_iter()
         .find(|b| b.contains("variable.measure") && b.contains("levelFor"))
@@ -459,14 +507,14 @@ fn the_conditions_of_the_measuring_chapter_are_as_it_says() {
     assert_eq!(listed["ok"], true, "{listed}");
 }
 
-/// The floating assertions of the measuring chapter (`engineering-checks.md`
+/// The floating assertions of the engineering chapter (`engineering-checks.md`
 /// › *Floating, as assertions and outputs*) run as written and say what the
 /// text says: the barge trimmed by tan⁻¹ 0.05 (the wall-sided closed form,
 /// xg = tan θ (GML + BML tan² θ / 2) with xg 64 mm) passes both, its GM
 /// 66.75 mm (B² / (12 T cos θ) less the height of G above B, 53.4 mm);
 /// with KG at 300 mm `upright` fails.
 #[test]
-fn the_floating_assertions_of_the_measuring_chapter_are_as_it_says() {
+fn the_floating_assertions_of_the_engineering_chapter_are_as_it_says() {
     let text = read_text(&docs().join("guide/engineering-checks.md"));
     let block = json_blocks(&text)
         .into_iter()
