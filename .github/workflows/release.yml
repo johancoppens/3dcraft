@@ -34,9 +34,18 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Only in the public repository, johancoppens/3dcraft, where hosted
+  # runners cost nothing. The same file is in the workshop,
+  # johancoppens/3dcraft-dev, which is private and billed for hosted
+  # minutes (macOS tenfold): there a tag or a dispatch skips this job and
+  # `web`, and `release`, which needs both, is skipped with them. A
+  # job-level `if` cannot read `env`, so the name is written in the `if`
+  # of each of the two jobs that need none.
   package:
     name: package (${{ matrix.name }})
-    if: github.event_name != 'workflow_dispatch' || inputs.only != 'web'
+    if: >-
+      github.repository == 'johancoppens/3dcraft'
+      && (github.event_name != 'workflow_dispatch' || inputs.only != 'web')
     strategy:
       fail-fast: false
       matrix:
@@ -146,6 +155,8 @@ jobs:
   # their sha256 (docs/development.md, Web build).
   web:
     name: package (web)
+    # Only in the public repository, as `package` above.
+    if: github.repository == 'johancoppens/3dcraft'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:

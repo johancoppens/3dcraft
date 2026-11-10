@@ -74,7 +74,15 @@ jobs:
   # GitHub's six hours, with room above what the job took: Linux 318
   # minutes and macOS two hours on 2026-11-09, before the tests were
   # optimised; Windows about eight hours in one job.
+  #
+  # Only in the public repository, johancoppens/3dcraft, where hosted
+  # runners cost nothing. The same file is in the workshop,
+  # johancoppens/3dcraft-dev, which is private: there hosted minutes are
+  # billed (macOS tenfold), so its weekly schedule and a dispatch skip this
+  # job, and `ci`, which needs it, is skipped with it. A job-level `if`
+  # cannot read `env`, so the name is written here.
   plan:
+    if: github.repository == 'johancoppens/3dcraft'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
