@@ -13,6 +13,10 @@ crates/*/tests/golden/** text eol=lf
 # text (a cut list's CSV, docs/guide/12-files.md); with CRLF on Windows the
 # fences were not found (CI, 2026-11-09).
 docs/guide/*.md text eol=lf
+# The zip reader's test data: deflate streams and the text they inflate
+# to, compared byte for byte (`include_bytes!`, crates/zipstore/src/
+# tests.rs); git took two of them for text, which CRLF would change.
+crates/zipstore/testdata/** -text
 packaging/** text eol=lf
 *.step text eol=lf
 # Binary files last, so no text rule above (packaging/**) claims them:
