@@ -78,8 +78,8 @@ says otherwise), names the rows.
 
 ## Switching parts on and off
 
-Make a part **optional**: a lid, flanges, a hub, a second row of holes. Tick a box on a Jig's form and the
-part appears; untick it and it is gone, with everything after it still built.
+Make a part **optional**: a lid, flanges, a hub, a second row of holes. Turn on a switch on a Jig's form
+and the part appears; turn it off and it is gone, with everything after it still built.
 
 `feature.suppress {"feature": "Round"}` switches a feature off by hand; `"suppressed": false` switches it
 on again. `feature.when` switches it by a **condition**, an expression kept with the feature and

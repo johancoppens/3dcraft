@@ -293,14 +293,13 @@ caps numbered. A measure between two panels' outer faces names their end caps.
 ## Exporting the crease pattern
 
 `file.export` with `fold` writes the flat crease pattern as `.svg` or `.dxf`, in the sketch's own axes, the
-way crease patterns are drawn:
-
-<!-- SHOT: crease-pattern.png | the waterbomb's crease pattern as exported (outline black, the mountain red and dash-dot, the valleys blue and dashed), beside the waterbomb base folded flat in iso view; theme light; about 1280x640 | run the waterbomb script of origami.md with "stroke": 0.3 on the export and rasterise the SVG; view.render {"view": "iso"} of the flat-folded Base of "Folding flat" (plan: shots/renders.sh, the block at origami's waterbomb) -->
-![The waterbomb's crease pattern as exported, mountains red and dash-dot, valleys blue and dashed, beside the base folded flat](images/crease-pattern.png)
- the outline in black on the layer `boundary`, **mountains red and
+way crease patterns are drawn: the outline in black on the layer `boundary`, **mountains red and
 dash-dot** on `mountain`, **valleys blue and dashed** on `valley`, and cuts black on `cut`. Print it and
 score along the lines, or send the cuts to a laser cutter. An SVG's lines are a laser's hairline (0.01 mm)
 by default, too thin to print: `"stroke": 0.3` gives them a width in millimetres.
+
+<!-- SHOT: crease-pattern.png | the waterbomb's crease pattern as exported (outline black, the mountain red and dash-dot, the valleys blue and dashed), beside the waterbomb base folded flat in iso view; theme light; about 1280x640 | run the waterbomb script of origami.md with "stroke": 0.3 on the export and rasterise the SVG; view.render {"view": "iso"} of the flat-folded Base of "Folding flat" -->
+![The waterbomb's crease pattern as exported, mountains red and dash-dot, valleys blue and dashed, beside the base folded flat](images/crease-pattern.png)
 
 ## Limits
 

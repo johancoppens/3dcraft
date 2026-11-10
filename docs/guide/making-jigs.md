@@ -27,7 +27,7 @@ Each published variable becomes a parameter, with a label, a description, a grou
 - **Kinds.** `kind` is `number` (a value with its unit, the default), `integer`, `boolean` (0 or 1) or
   `choice` (1 for the first label; `choicesFrom` takes the labels from a table,
   [Formulas › Tables](formulas.md#tables)). The form shows a number as a slider, an integer with at most
-  twelve values as a stepper (− and +), a boolean as a checkbox and a choice as a list.
+  twelve values as a stepper (− and +), a boolean as a switch and a choice as a list.
 - **A value, not a formula.** A published variable must hold a value (`40 mm`), not a formula. Other
   variables may be formulas of it: `radius = 0.5 mm + (corners - 1) * 4.5 mm`.
 - **Ranges that follow.** Ranges and steps may be formulas of other parameters (`"max": "width - 2 * wall"`)
@@ -42,8 +42,8 @@ Each published variable becomes a parameter, with a label, a description, a grou
 
 ## 2. Switch options on and off
 
-Conditions switch features: `feature.when {"feature": "Lid", "expr": "lid"}` builds the lid only when the
-*Thick lid* box is ticked ([Formulas › Switching parts on and off](formulas.md#switching-parts-on-and-off)).
+Conditions switch features: `feature.when {"feature": "Lid", "expr": "lid"}` builds the lid only when
+*Thick lid* is switched on ([Formulas › Switching parts on and off](formulas.md#switching-parts-on-and-off)).
 
 A colour and a density may follow a choice too: `body.appearance {"body": "Bar", "color":
 ["woods[wood].red", "woods[wood].green", "woods[wood].blue"]}` and `body.material {"body": "Bar", "name":

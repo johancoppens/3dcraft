@@ -8,8 +8,9 @@ understand what the agent is doing, or to model by hand.
 
 ## The history is the source of truth
 
-A document is a recipe: **variables, sketches, datums and an ordered list of features**, plus checks
-(assertions) and named sets. That is what a `.3dcraft` file holds.
+A document is a recipe: **variables, sketches, datums (construction planes, axes and points) and an
+ordered list of features**, plus checks (assertions) and named sets (a search for faces, edges or
+bodies kept under a name, such as *bolt holes*). That is what a `.3dcraft` file holds.
 
 The solid bodies are *derived*. 3DCraft rebuilds them from the history after every change (it
 *regenerates*), and rebuilds only the features downstream of what changed. There is no way to push a face
@@ -243,11 +244,17 @@ document.check
 -> {"ok": false, "problems": [
      {"feature": "F3", "name": "Rounded", "problem": "radius: too large for edges.0 (between F2:side(e9) and F2:side(e10)): with a radius of 30 mm the line along which the fillet touches the face F2:side(e10) leaves that face; the largest radius that fits there is below 26 mm"},
      {"feature": "F6", "name": "Drilled", "causedBy": "F3", "problem": "target: `Rounded` failed; fix it first"},
-     {"feature": "F9", "name": "Part", "causedBy": "F3", "problem": "target: `Drilled` failed; fix it first"}]}
+     {"feature": "F9", "name": "Part", "causedBy": "F3", "problem": "target: `Drilled` failed; fix it first"},
+     {"assertion": "volume", "problem": "cannot be measured: `Part` has no body", ...},
+     {"assertion": "two holes", "problem": "count: measured 0, expected 2 ± 0", ...},
+     {"assertion": "holes go through", "problem": "cannot be measured: `of` names nothing in the document as it is now", ...}], ...}
 ```
 
 The reason starts with the parameter at fault (`radius`, `edges.0`, `target`), and `causedBy` points at the
 first failure in a chain: fix that one (here, a smaller `inner_r`, or `edit.undo`) and the rest is rebuilt.
+
+The bracket's three checks are listed too: without a finished part, there is nothing to measure them on.
+They pass again once the part is rebuilt.
 
 In the window, the failed feature is a red row with its reason, and the rows made from it are dimmed:
 

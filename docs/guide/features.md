@@ -199,6 +199,9 @@ them and says what is meant (the examples use `thickness + 2 mm` from `-1 mm`).
 
 ## Fillets and chamfers
 
+A **fillet** rounds an edge off with a curved face of a given radius. A **chamfer** bevels an edge: it cuts
+it off with a flat face at an angle.
+
 `feature.fillet` (`radius`) and `feature.chamfer` (`distance`; or `distance` and `second`; or `distance`
 and `angle`) take `edges` as pairs of faces: `[["F1:face(2)", "F1:face(4)"], …]`. `chain: true` adds the
 edges that continue an edge smoothly. Straight edges between flat faces and circular edges round an axis

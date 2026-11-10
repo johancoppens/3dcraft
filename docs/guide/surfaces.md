@@ -8,11 +8,9 @@ makes sheets of two kinds: **developable** ones, which a flat sheet of plywood, 
 and **freeform** ones, laid through curves for flowing shapes. Sewn together, sheets make a solid; given a
 thickness, they make plates.
 
-The **Ship propeller** example on the start screen shows freeform surfaces in a real product: its blades
+The **Ship propeller** example under **Parts** on the start screen shows freeform surfaces in a real product: its blades
 are lofted through sections computed from a published propeller series
 ([Modelling features › From sketches](features.md#from-sketches)).
-
-<!-- CHECK: the ship propeller is among the examples on the new start screen; otherwise point to its page in the gallery, https://3dcraft.dev/examples/ -->
 
 ## Developable surfaces and unfolding
 
@@ -32,7 +30,7 @@ flat:
 ]
 ```
 
-<!-- SHOT: developable.png | the developable panel of this script (a piece of a cone between the two arcs) and its unfolded pattern beside it, a piece of a flat ring; theme light; about 1280x640 | run the first script of surfaces.md; view.render {"view": "iso"}; or rasterise file.export {"path": "pattern.svg", "faces": ["Pattern:face(0)"]} beside it (plan: shots/renders.sh) -->
+<!-- SHOT: developable.png | the developable panel of this script (a piece of a cone between the two arcs) and its unfolded pattern beside it, a piece of a flat ring; theme light; about 1280x640 | run the first script of surfaces.md; view.render {"view": "iso"}; or rasterise file.export {"path": "pattern.svg", "faces": ["Pattern:face(0)"]} beside it -->
 ![A developable panel between two arcs, and its pattern laid flat](images/developable.png)
 
 The two arcs make a piece of a cone; unfolded, it is a piece of a flat ring.
@@ -192,7 +190,7 @@ Use `sew`, not `union`, for sheets that meet in curvature. A union intersects th
 sheets in G2 contact along their seam are too nearly one surface beside it to intersect.
 
 Build each sheet from the edges of the ones before it (`{"edges": [...]}` as a network's curve), and the
-edges meet exactly. A class-A computer mouse is built this way:
+edges meet exactly. A class-A computer mouse can be built this way:
 
 1. *The flanks*: a flat side whose top edge is the seam, filled (`feature.fill`), turned in toward the
    nose (`feature.transform`), and mirrored so that it faces out.
@@ -270,8 +268,9 @@ joint and they meet face to face, with no gap and no overlap. A floor and a wall
 
 `document.edges` lists the edges of a sheet to give a joint (here the floor's edge along x = 0 and the
 wall's along z = 0); `document.interference` says the two plates touch on the mitre face and do not
-overlap. The plate's faces are named `F9:copy(0)/…` (the front skin, the side the normal points to),
-`F9:copy(1)/…` (the back) and `F9:rim(…)/…` (the end along an edge of the sheet). To cut a plate from
+overlap. The floor plate's faces are named `F5:copy(0)/…` (the front skin, the side the normal points
+to), `F5:copy(1)/…` (the back) and `F5:rim(…)/…` (the end along an edge of the sheet), with `F5` the
+plate's feature. To cut a plate from
 sheet stock, `feature.unfold` lays one of its skins flat; the outline follows the joints. Refused, with the
 edge: faces that meet at a crease (plate them apart and join them), plates in line with each other (no
 corner to join at), an edge that does not run along the neighbour's outline, a plate so thick that its

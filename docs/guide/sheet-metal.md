@@ -11,7 +11,7 @@ The **Sheet-metal enclosure** on the start screen is a real product made this wa
 around a circuit board, each from one sheet, their flat patterns ready to cut and their bend order proven
 for a press brake ([Using a Jig](jigs.md#the-jigs-on-the-start-screen)).
 
-<!-- SHOT: sheet-metal.png | the tray of this chapter's first script beside its flat pattern: the folded tray in iso view, and the exported flat pattern with its bend lines dashed (bendUp) next to it; theme light; about 1280x640 | run the tray script (first JSON block of sheet-metal.md); view.render {"view": "iso"}; file.export {"path": "tray.svg", "sheetMetal": "Tray", "stroke": 0.3}; rasterise the SVG and put the two side by side (plan: shots/renders.sh) -->
+<!-- SHOT: sheet-metal.png | the tray of this chapter's first script beside its flat pattern: the folded tray in iso view, and the exported flat pattern with its bend lines dashed (bendUp) next to it; theme light; about 1280x640 | run the tray script (first JSON block of sheet-metal.md); view.render {"view": "iso"}; file.export {"path": "tray.svg", "sheetMetal": "Tray", "stroke": 0.3}; rasterise the SVG and put the two side by side -->
 ![A sheet-metal tray, folded, beside its flat pattern with the bend lines dashed](images/sheet-metal.png)
 
 ## A first part: a tray
@@ -449,8 +449,9 @@ formulas, so a Jig keeps its tools in a table and picks one with a choice. On th
 ]
 ```
 
-Each check of it searches the orders again, only when the part, the tools or the bounds change: on a tray
-of four flanges some 2600 distances when an order is found and 7400 when none is, a second or two.
+Each check of it searches the orders again, only when the part, the tools or the bounds change. On the
+closed box above, with the straight punch, it measures 690 distances and finds the order 0, 2, 3, 1. A
+search that finds no order has to try more orders, up to its `maxWork`.
 
 **More options**, for the command and the measure:
 
