@@ -902,10 +902,12 @@ fn with_a_render_thread_a_preview_is_shown_first_and_the_sharp_image_when_it_is_
     // wait then had nothing to upload): what every frame put on screen is
     // kept.
     let mut uploads = Vec::new();
-    for _ in 0..2 {
-        let _ = window.frame(&mut shell, &mut session, Vec::new());
-        uploads.append(&mut window.uploads);
-    }
+    let _ = window.frame(&mut shell, &mut session, Vec::new());
+    uploads.append(&mut window.uploads);
+    // The preview, and the sharp image too if the first frame took it in.
+    let made_by_the_first_frame = shell.render_count();
+    let _ = window.frame(&mut shell, &mut session, Vec::new());
+    uploads.append(&mut window.uploads);
     let [w, h] = shell.viewport_size();
     let camera = shell.state.camera;
 
@@ -931,6 +933,31 @@ fn with_a_render_thread_a_preview_is_shown_first_and_the_sharp_image_when_it_is_
         last_upload(&uploads, w, h).unwrap(),
         expected.rgb.as_slice()
     );
+    // The preview went on screen first, in every run: the image of half the
+    // size before the first one of the full size, and exactly the preview
+    // of this camera. The one exception is not a race of the test: a frame
+    // hands the backend only the last whole image of a texture, and the
+    // first frame has two passes when the interface's fonts arrive
+    // (`fonts.rs`), so a sharp image its second pass takes in replaces the
+    // preview's upload; that frame then made both images.
+    let at = |[uw, uh]: [u32; 2]| {
+        uploads
+            .iter()
+            .position(|(w, h, _)| (*w, *h) == (uw as usize, uh as usize))
+    };
+    let sharp_at = at([w, h]).unwrap();
+    match at([w / 2, h / 2]) {
+        Some(preview_at) => {
+            assert!(preview_at < sharp_at, "the sharp image came first");
+            let preview = direct(&mut session, &shell, &camera, true);
+            assert_eq!((preview.width, preview.height), (w / 2, h / 2));
+            assert_eq!(uploads[preview_at].2, preview.rgb);
+        }
+        None => assert!(
+            made_by_the_first_frame >= 2,
+            "no preview went on screen ({made_by_the_first_frame} image made by the first frame)"
+        ),
+    }
     // Nothing more is rendered while nothing changes, and there is nothing
     // to wait for.
     let rendered = shell.render_count();
