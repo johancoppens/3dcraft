@@ -88,9 +88,9 @@ If it complains about FUSE, install your distribution's `fuse` (or `libfuse2`) p
 `APPIMAGE_EXTRACT_AND_RUN=1`.
 
 The AppImage adds nothing to your system by itself: its menu entry, its icon and the file types `.3dcraft`,
-`.3dcraftjig` and `.3dcraftasm` are inside it where a desktop integration tool such as AppImageLauncher
-looks, so integrating the AppImage with one gives you the menu entry and opens those files with 3DCraft;
-without such a tool, the tarball installs them.
+`.3dcraftjig` and `.3dcraftasm` are inside it where AppImageLauncher looks, so integrating the AppImage
+with AppImageLauncher gives you the menu entry and opens those files with 3DCraft; without it, the tarball
+installs them.
 
 **Tarball** (installs for your user into `~/.local`, with a menu entry and the `.3dcraft` file type):
 

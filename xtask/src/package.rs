@@ -1263,9 +1263,20 @@ mod tests {
             Some(package.clone())
         );
         let xml = std::fs::read_to_string(root.join(&package)).unwrap();
+        // The AppStream metainfo says it provides each.
+        let metainfo = format!("packaging/linux/{APP_ID}.metainfo.xml");
+        assert_eq!(
+            from(&format!("usr/share/metainfo/{APP_ID}.metainfo.xml")),
+            Some(metainfo.clone())
+        );
+        let metainfo = std::fs::read_to_string(root.join(&metainfo)).unwrap();
         let entry_icon = key("Icon=");
         let mut icons = vec![entry_icon.clone()];
         for (kind, glob) in kinds {
+            assert!(
+                metainfo.contains(&format!("<mediatype>{kind}</mediatype>")),
+                "{kind}"
+            );
             let start = xml.find(&format!("<mime-type type=\"{kind}\">")).unwrap();
             let rest = &xml[start..];
             let block = &rest[..rest.find("</mime-type>").unwrap()];

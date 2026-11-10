@@ -21,6 +21,8 @@
     <binary>craft3d</binary>
     <binary>craft3d-cli</binary>
     <mediatype>application/x-craft3d</mediatype>
+    <mediatype>application/x-craft3d-jig</mediatype>
+    <mediatype>application/x-craft3d-assembly</mediatype>
   </provides>
   <releases>
     <release version="0.1.0" date="2026-10-28">
