@@ -4085,7 +4085,8 @@ impl Shell {
                                     .hidden(row.hidden)
                                     .zoom(row.zoomable && row_hovered),
                             );
-                            let label = hits_of.response.clone().on_hover_text(&hover);
+                            let tip = hits_of.tip(&row.name, &row.status, &hover);
+                            let label = hits_of.response.clone().on_hover_text(tip);
                             // Open: its source in a tab of its own, a quiet
                             // icon before the eye, under the pointer.
                             if let Some(instance) = &row.instance {
@@ -4252,18 +4253,21 @@ impl Shell {
                                 }
                                 None => row.status.name().to_string(),
                             };
-                            let shown = kit
-                                .list_row_hits(
-                                    ui,
-                                    crate::kit::ListRow::new(&row.name)
-                                        .icon(glyph)
-                                        .icon_ink(ink)
-                                        .value(&status)
-                                        .failed(matches!(row.status, A::Failed | A::Error))
-                                        .dimmed(matches!(row.status, A::Pending | A::Inactive)),
-                                )
-                                .response
-                                .on_hover_text(format!("{} · {}", row.measure, row.message));
+                            let hits = kit.list_row_hits(
+                                ui,
+                                crate::kit::ListRow::new(&row.name)
+                                    .icon(glyph)
+                                    .icon_ink(ink)
+                                    .value(&status)
+                                    .failed(matches!(row.status, A::Failed | A::Error))
+                                    .dimmed(matches!(row.status, A::Pending | A::Inactive)),
+                            );
+                            let tip = hits.tip(
+                                &row.name,
+                                &status,
+                                &format!("{} · {}", row.measure, row.message),
+                            );
+                            let shown = hits.response.on_hover_text(tip);
                             statuses.push(shown.rect);
                             if matches!(row.status, A::Failed | A::Error | A::NotProven) {
                                 ui.indent(("craft3d-assertion", &row.name), |ui| {

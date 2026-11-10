@@ -115,6 +115,9 @@ pub struct SideHits {
     /// Everything drawn that must lie inside the panel: the rows' texts'
     /// places included.
     pub drawn: Vec<egui::Rect>,
+    /// The rows cut with "…" to the panel, by id (feature id, variable or
+    /// body), with what their hover says: the whole text first.
+    pub cut: Vec<(String, String)>,
 }
 
 /// What the panel remembers between frames (its view state is in

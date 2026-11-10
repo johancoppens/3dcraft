@@ -589,18 +589,22 @@ impl Shell {
                 fly = target.clicked();
                 let room = ui.available_width().max(0.0);
                 let mut job = egui::text::LayoutJob::simple_singleline(
-                    subtitle,
+                    subtitle.clone(),
                     kit.font(),
                     kit.c(sk.text_dim),
                 );
                 job.wrap = egui::text::TextWrapping::truncate_at_width(room);
                 let g = ui.painter().layout_job(job);
-                let (rect, _) = ui.allocate_exact_size(vec2(room, g.size().y), Sense::hover());
+                let cut = g.elided;
+                let (rect, line) = ui.allocate_exact_size(vec2(room, g.size().y), Sense::hover());
                 ui.painter().galley(
                     pos2(rect.left(), rect.center().y - g.size().y * 0.5),
                     g,
                     kit.c(sk.text_dim),
                 );
+                if cut {
+                    line.on_hover_text(subtitle);
+                }
             });
         });
         let label_width = (ui.available_width() * 0.32).clamp(56.0, 110.0);
@@ -621,6 +625,10 @@ impl Shell {
             );
             let r = kit.prop_row(ui, row.label, &value, style, label_width);
             self.side.hits.drawn.push(r.rect);
+            // Cut to the panel: the whole on hover.
+            if value != row.value {
+                r.clone().on_hover_text(&row.value);
+            }
             if row.style == PropStyle::Link {
                 let link = ui.interact(
                     r.rect,

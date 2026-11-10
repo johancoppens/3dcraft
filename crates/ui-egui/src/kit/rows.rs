@@ -97,6 +97,29 @@ pub struct RowHits {
     pub zoom: Option<Rect>,
     /// Where the value is (or would be, when hidden): its field's place.
     pub value: Rect,
+    /// The name or the value was cut with "…" to fit: the row's hover
+    /// says them whole ([`Self::tip`]).
+    pub cut: bool,
+}
+
+impl RowHits {
+    /// What the row's hover says: `tip`, after the row's `name` and
+    /// `value` whole when the row had to cut either; empty for none.
+    pub fn tip(&self, name: &str, value: &str, tip: &str) -> String {
+        if !self.cut {
+            return tip.to_string();
+        }
+        let whole = if value.is_empty() {
+            name.to_string()
+        } else {
+            format!("{name} · {value}")
+        };
+        if tip.is_empty() {
+            whole
+        } else {
+            format!("{whole}\n{tip}")
+        }
+    }
 }
 
 impl<'a> ListRow<'a> {
@@ -397,6 +420,7 @@ impl Kit {
             grip: None,
             zoom: None,
             value: Rect::from_min_size(rect.right_top(), vec2(0.0, rect.height())),
+            cut: false,
         };
         if !ui.is_rect_visible(rect) {
             return hits;
@@ -544,6 +568,7 @@ impl Kit {
             painter.layout_job(job)
         };
         let value_width = value.size().x;
+        hits.cut = value.elided && !row.value_hidden;
         let field_pad = t.field_text_pad * 0.6;
         let value_rect = Rect::from_min_max(
             pos2(right - value_width, rect.top()),
@@ -585,6 +610,7 @@ impl Kit {
         );
         job.wrap = egui::text::TextWrapping::truncate_at_width(room);
         let name = painter.layout_job(job);
+        hits.cut |= name.elided;
         let name_right = x + name.size().x;
         painter.galley(
             pos2(x, rect.center().y - name.size().y * 0.5),

@@ -389,18 +389,17 @@ impl Shell {
                 .clone()
                 .unwrap_or_else(|| format!("{} · {}", mate.kind, mate.status));
             let chosen = self.state.side_panel.mate.as_deref() == Some(mate.name.as_str());
-            let shown = kit
-                .list_row_hits(
-                    ui,
-                    crate::kit::ListRow::new(&mate.name)
-                        .icon(glyph)
-                        .icon_ink(ink)
-                        .value(&status)
-                        .selected(chosen)
-                        .failed(mate.status != "ok" && mate.status != "unsolved"),
-                )
-                .response
-                .on_hover_text(hover);
+            let hits = kit.list_row_hits(
+                ui,
+                crate::kit::ListRow::new(&mate.name)
+                    .icon(glyph)
+                    .icon_ink(ink)
+                    .value(&status)
+                    .selected(chosen)
+                    .failed(mate.status != "ok" && mate.status != "unsolved"),
+            );
+            let tip = hits.tip(&mate.name, &status, &hover);
+            let shown = hits.response.on_hover_text(tip);
             statuses.push(shown.rect);
             self.mate_view.rows.push((mate.name.clone(), shown.rect));
             if shown.hovered() {

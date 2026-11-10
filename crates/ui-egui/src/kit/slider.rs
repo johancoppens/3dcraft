@@ -999,6 +999,7 @@ impl Kit {
         let editing =
             enabled && slider.typable && typing.as_ref().is_some_and(|t| t.field == field);
         // Painting.
+        let mut label_cut = false;
         if ui.is_rect_visible(outer) {
             let ink = if enabled { s.text } else { s.faint };
             let painter = ui.painter().clone();
@@ -1018,6 +1019,7 @@ impl Kit {
                 );
                 job.wrap = egui::text::TextWrapping::truncate_at_width(room);
                 let galley = painter.layout_job(job);
+                label_cut = galley.elided;
                 painter.galley(
                     pos2(place.left(), place.center().y - galley.size().y * 0.5),
                     galley,
@@ -1098,6 +1100,10 @@ impl Kit {
             let place =
                 Rect::from_center_size(place.center(), vec2(place.width(), t.control_height));
             self.typing_box(ui, id, place, slider, typing, began);
+        }
+        // A label cut to its room is said whole on hover.
+        if label_cut {
+            response = response.on_hover_text(slider.label);
         }
         SliderShown {
             response,

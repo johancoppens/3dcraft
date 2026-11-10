@@ -436,11 +436,20 @@ impl Shell {
                                 (value_right - value_w - t.nav_icon_gap - x).max(0.0),
                             );
                             let name = painter.layout_job(job);
+                            let cut = name.elided;
                             painter.galley(
                                 pos2(x, rect.center().y - name.size().y * 0.5),
                                 name,
                                 kit.c(sk.text),
                             );
+                            // Cut to the panel: the whole on hover.
+                            if cut {
+                                self.side
+                                    .hits
+                                    .cut
+                                    .push((body.feature.clone(), body.name.clone()));
+                                response.clone().on_hover_text(&body.name);
+                            }
                             if response.clicked() {
                                 let pointer = response.interact_pointer_pos();
                                 if show_eye

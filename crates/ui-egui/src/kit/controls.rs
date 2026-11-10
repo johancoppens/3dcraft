@@ -760,6 +760,7 @@ impl Kit {
         if response.clicked() {
             open = !open;
         }
+        let mut cut = false;
         if ui.is_rect_visible(outer) {
             let painter = ui.painter();
             let fill = if response.hovered() {
@@ -789,6 +790,7 @@ impl Kit {
             );
             job.wrap = egui::text::TextWrapping::truncate_at_width(room);
             let galley = painter.layout_job(job);
+            cut = galley.elided;
             painter.galley(
                 pos2(
                     rect.left() + t.field_text_pad,
@@ -840,6 +842,10 @@ impl Kit {
         }
         ui.data_mut(|d| d.insert_temp(id, open));
         let label = options.get(*chosen).copied().unwrap_or("").to_string();
+        // The option chosen, cut to the field: whole on hover.
+        if cut && !open {
+            response = response.on_hover_text(&label);
+        }
         response
             .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &label));
         response

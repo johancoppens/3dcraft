@@ -843,16 +843,19 @@ impl Shell {
                             // its reason.
                             let back = failed.then(|| ui.painter().add(egui::Shape::Noop));
                             let hits = kit.list_row_hits(ui, item);
-                            // A row not rebuilt says why on hover.
-                            if let Some(r) = row
-                                && not_rebuilt(r)
-                                && let Some((_, root)) = &r.caused_by
-                            {
-                                kit.hover_tip(
-                                    ui,
-                                    &hits.response,
-                                    &format!("Not rebuilt: {root} failed"),
-                                );
+                            // A row not rebuilt says why on hover; a row
+                            // cut to the panel says its name and value
+                            // whole.
+                            let why = row
+                                .filter(|r| not_rebuilt(r))
+                                .and_then(|r| r.caused_by.as_ref())
+                                .map(|(_, root)| format!("Not rebuilt: {root} failed"));
+                            let tip = hits.tip(&line.name, &value, why.as_deref().unwrap_or(""));
+                            if !tip.is_empty() {
+                                kit.hover_tip(ui, &hits.response, &tip);
+                            }
+                            if hits.cut {
+                                self.side.hits.cut.push((id.clone(), tip));
                             }
                             let rect = hits.response.rect;
                             if position_line == Some(n) {

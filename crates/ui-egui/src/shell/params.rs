@@ -1772,11 +1772,13 @@ impl Shell {
                                     o.status.clone()
                                 };
                                 let label = if o.label.is_empty() { &o.name } else { &o.label };
-                                let row = output_row(ui, &kit, label, &shown, ink);
+                                let (row, cut) = output_row(ui, &kit, label, &shown, ink);
+                                // A label cut to the panel goes first, whole.
+                                let whole = if cut { format!("{label}\n") } else { String::new() };
                                 if o.label.is_empty() {
-                                    row.on_hover_text(&o.message);
+                                    row.on_hover_text(format!("{whole}{}", o.message));
                                 } else {
-                                    row.on_hover_text(format!("{}: {}", o.name, o.message));
+                                    row.on_hover_text(format!("{whole}{}: {}", o.name, o.message));
                                 }
                             }
                         }
@@ -2022,6 +2024,9 @@ impl Shell {
                         kit.toggle(ui, &mut on, "")
                     });
                     self.params.hits.push((p.name.clone(), response.rect));
+                    self.params
+                        .hits
+                        .push((format!("{}.label", p.name), label.rect));
                     let response = if p.description.is_empty() {
                         response
                     } else {
@@ -2046,10 +2051,13 @@ impl Shell {
                         self.reset_arrow(ui, &kit, p);
                         response
                     });
+                    self.params.hits.push((p.name.clone(), response.rect));
+                    self.params
+                        .hits
+                        .push((format!("{}.label", p.name), label.rect));
                     if !p.description.is_empty() {
                         label.on_hover_text(&p.description);
                     }
-                    self.params.hits.push((p.name.clone(), response.rect));
                     if chosen != current && chosen < options.len() {
                         self.params.commit(p, (chosen + 1) as f64, false);
                     }
@@ -2144,10 +2152,14 @@ impl Shell {
                 self.reset_arrow(ui, &kit, p);
                 response
             });
+            let label_rect = label.rect;
             if !p.description.is_empty() {
                 label.on_hover_text(&p.description);
             }
             self.params.hits.push((p.name.clone(), response.rect));
+            self.params
+                .hits
+                .push((format!("{}.label", p.name), label_rect));
             hint_line(ui, &kit, &number_field::range_hint(lo, hi, &unit));
             if response.changed()
                 && let Some(settled) = settle(p, v)
@@ -2349,7 +2361,10 @@ impl Shell {
 
 /// A row of the form: `label` at the left in the text's ink, what `add`
 /// lays out at the right (right to left: the first thing `add` adds is
-/// rightmost). The label's response and `add`'s.
+/// rightmost). The label gets the room the control leaves: a longer one
+/// is cut with "…" and shown whole on hover, so it never runs into the
+/// control (the Gridfinity bin's "Compartments side by side", 2026-11-10).
+/// The label's response and `add`'s.
 fn labelled<R>(
     ui: &mut egui::Ui,
     kit: &crate::kit::Kit,
@@ -2358,15 +2373,23 @@ fn labelled<R>(
 ) -> (egui::Response, R) {
     ui.horizontal(|ui| {
         ui.set_min_height(kit.hit(kit.t.control_height));
-        let label = ui.label(
-            egui::RichText::new(label)
-                .font(kit.font())
-                .color(color(kit.skin.text)),
-        );
-        let inner = ui
-            .with_layout(egui::Layout::right_to_left(egui::Align::Center), add)
-            .inner;
-        (label, inner)
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let inner = add(ui);
+            let label = ui
+                .with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(label)
+                                .font(kit.font())
+                                .color(color(kit.skin.text)),
+                        )
+                        .truncate(),
+                    )
+                })
+                .inner;
+            (label, inner)
+        })
+        .inner
     })
     .inner
 }
@@ -2381,14 +2404,15 @@ fn hint_line(ui: &mut egui::Ui, kit: &crate::kit::Kit, text: &str) {
 }
 
 /// An output: its label dim at the left, its value at the right in
-/// `ink` (the info ink when it is known).
+/// `ink` (the info ink when it is known). Its response, and whether the
+/// label was cut with "…" to fit.
 fn output_row(
     ui: &mut egui::Ui,
     kit: &crate::kit::Kit,
     label: &str,
     value: &str,
     ink: crate::theme::Rgb,
-) -> egui::Response {
+) -> (egui::Response, bool) {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(width.max(0.0), kit.t.label_row_height),
@@ -2404,6 +2428,7 @@ fn output_row(
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - value_w - 8.0).max(0.0));
     let label = painter.layout_job(job);
+    let cut = label.elided;
     painter.galley(
         egui::pos2(rect.left(), rect.center().y - label.size().y * 0.5),
         label,
@@ -2417,7 +2442,7 @@ fn output_row(
         value,
         color(ink),
     );
-    response
+    (response, cut)
 }
 
 /// The range a drag spans for a parameter without both ends: from its

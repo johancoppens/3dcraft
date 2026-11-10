@@ -173,6 +173,7 @@ impl Shell {
                                 );
                                 job.wrap = egui::text::TextWrapping::truncate_at_width((value_x - t.nav_icon_gap - 2.0).max(0.0));
                                 let name = painter.layout_job(job);
+                                let mut cut = name.elided;
                                 painter.galley(pos2(rect.left() + 2.0, y - name.size().y * 0.5), name, kit.c(sk.text));
                                 // The result at the right.
                                 let (result, ink) = match (&v.value, &v.error) {
@@ -226,6 +227,7 @@ impl Shell {
                                     );
                                     job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - rect.left() - value_x - 2.0).max(0.0));
                                     let g = painter.layout_job(job);
+                                    cut |= g.elided;
                                     let fy = rect.top() + t.row_height * 1.5;
                                     painter.galley(pos2(rect.left() + value_x, fy - g.size().y * 0.5), g, kit.c(sk.info_ink));
                                 } else {
@@ -236,11 +238,18 @@ impl Shell {
                                     );
                                     job.wrap = egui::text::TextWrapping::truncate_at_width(value_rect.width().max(0.0));
                                     let g = painter.layout_job(job);
+                                    cut |= g.elided;
                                     painter.galley(pos2(value_rect.left(), y - g.size().y * 0.5), g, kit.c(sk.text));
                                 }
                                 // A Jig in use changes only its parameters.
                                 if response.clicked() && !this_editing && !jig {
                                     start = Some((v.name.clone(), v.expr.clone()));
+                                }
+                                // Cut to the panel: the whole on hover.
+                                if cut {
+                                    let whole = format!("{} = {}", v.name, v.expr);
+                                    self.side.hits.cut.push((v.name.clone(), whole.clone()));
+                                    response.on_hover_text(whole);
                                 }
                                 // Why it does not evaluate, or what the
                                 // command refused, at the field.

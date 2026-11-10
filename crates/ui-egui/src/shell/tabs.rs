@@ -586,7 +586,6 @@ impl Shell {
                                 Some(path) => path.clone(),
                                 None => "Not saved yet".to_string(),
                             };
-                            let response = response.on_hover_text(hint);
                             if scroll_to == Some(at) {
                                 response.scroll_to_me_animation(
                                     None,
@@ -657,6 +656,12 @@ impl Shell {
                             );
                             job.wrap = egui::text::TextWrapping::truncate_at_width(room);
                             let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+                            // A name cut to the tab goes first, whole.
+                            let response = if galley.elided {
+                                response.on_hover_text(format!("{}\n{hint}", tab.name))
+                            } else {
+                                response.on_hover_text(hint)
+                            };
                             let size = galley.size();
                             painter.galley(
                                 egui::pos2(left, rect.center().y - size.y * 0.5),
