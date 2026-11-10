@@ -341,7 +341,7 @@ Taken while building revolved and closed splines ([`design/sweeps.md`](design/sw
 
 ### 2026-10-13: Decided by the developer
 
-- **The boolean kernel is the first priority:** it is the heart of the kernel and its hardest part. A case the kernel refuses is work owed, not an end state; the checklist is in [`roadmap.md`](roadmap.md).
+- **The boolean kernel is the first priority:** it is what makes 3DCraft a professional tool. A case the kernel refuses is work owed, not an end state; the checklist is in [`roadmap.md`](roadmap.md).
 - **The kernel's tests may use the tessellator** (a dev-dependency inside one layer, listed as `SAME_LAYER_DEV` in `xtask/src/layers.rs`): every body an operation makes is also meshed as an independent check. The kernel's own code still does not depend on `tess`.
 - **Where FreeCAD and the kernel disagree in the boolean corpus:** eleven cases stay in `REFERENCE_OFF` (the reference is off, with a closed form, a direct integration or an identity as evidence); `near/cylinder-torus/009` is `UNDECIDED`, because nothing independent measures our result there. Building that measurement is not worth the time now.
 - **The gate in two steps:** a quick check per commit (fmt, clippy and tests of the touched crates), the full `cargo xtask ci` only before `main` moves. The full run is the only automatic safety net and stays; it is too slow to pay per commit. Making it faster (the heavy random tests in release, test files side by side) is open.

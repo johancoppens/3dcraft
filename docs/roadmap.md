@@ -47,7 +47,7 @@ Phase 1 is M0–M8. Its acceptance scenario, run entirely by an agent over MCP w
 
 ## The boolean checklist
 
-The developer's first priority (2026-10-13): the heart of the kernel and its hardest part. Each item is measured by the share of seeded random pairs that is refused (by reason), with zero wrong or invalid results. Two independent oracles belong to it: a pinned corpus of cases with FreeCAD's answers ([`testing.md`](testing.md) › *The boolean corpus*, with its history), and a mesh-level self-intersection detector. How the kernel does it: [`design/booleans.md`](design/booleans.md) › *Booleans as built*.
+The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item is measured by the share of seeded random pairs that is refused (by reason), with zero wrong or invalid results. Two independent oracles belong to it: a pinned corpus of cases with FreeCAD's answers ([`testing.md`](testing.md) › *The boolean corpus*, with its history), and a mesh-level self-intersection detector. How the kernel does it: [`design/booleans.md`](design/booleans.md) › *Booleans as built*.
 
 1. 🟡 **Every surface kind, NURBS included, in any position.** Analytic, polynomial and rational freeform faces, faces with a pole and faces on closed spline surfaces are operands.
 2. 🟡 **Every contact case:** coincident, tangent along a line or at a point, along an edge, at a vertex. Tangent contact with freeform faces and contact along a curve are built; the cases below are owed.
