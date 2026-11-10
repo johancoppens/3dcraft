@@ -10,7 +10,7 @@
 use super::features::{Dot, status_dot};
 use super::props::{mass_text, volume_text};
 use super::{Filter, Shell, grouped, matches};
-use crate::kit::{Kit, ValueStyle};
+use crate::kit::{Button, Kit, ValueStyle};
 use crate::shell::side_inset;
 use egui::{Rect, Sense, pos2, vec2};
 use serde_json::{Value, json};
@@ -62,6 +62,9 @@ pub struct BodyLine {
     pub name: String,
     /// Its own colour (`#d4d6da`), if it has one.
     pub color: Option<String>,
+    /// How many colours of their own its faces carry (`faceColors` of
+    /// `document.inspect`): what *Clear face colours* takes away.
+    pub face_colors: usize,
     /// In the document's length unit cubed; kilograms.
     pub volume: Option<f64>,
     pub mass: Option<f64>,
@@ -127,6 +130,8 @@ pub fn body_lines(inspect: &Value) -> (Vec<BodyLine>, Vec<BodyLine>) {
                             .and_then(|a| a.get("color"))
                             .and_then(Value::as_str)
                             .map(str::to_string),
+                        face_colors: b.get("faceColors").and_then(Value::as_u64).unwrap_or(0)
+                            as usize,
                         volume: f64_of(b, "volume"),
                         mass: f64_of(b, "mass"),
                         area: f64_of(b, "area"),
@@ -166,6 +171,7 @@ pub fn body_lines(inspect: &Value) -> (Vec<BodyLine>, Vec<BodyLine>) {
                             .unwrap_or("")
                             .to_string(),
                         color: None,
+                        face_colors: 0,
                         volume: None,
                         mass: None,
                         area: None,
@@ -523,6 +529,7 @@ impl Shell {
         let t = kit.t;
         let sk = kit.skin;
         let mut asked = None;
+        let mut clear_faces = false;
         ui.add_space(t.nav_spacing * 2.0);
         let label_w = (ui.available_width() * 0.32).clamp(56.0, 110.0);
         let pad = t.nav_icon_size * 1.5;
@@ -653,9 +660,32 @@ impl Shell {
                     g,
                     kit.c(sk.text),
                 );
+                // Faces with colours of their own (which win over the
+                // body's): one step takes them away.
+                if body.face_colors > 0 && !in_use {
+                    let label = match body.face_colors {
+                        1 => "Clear face colour".to_string(),
+                        n => format!("Clear {n} face colours"),
+                    };
+                    let button = kit.button(ui, Button::secondary(&label));
+                    self.side
+                        .hits
+                        .targets
+                        .push(("clear face colours".to_string(), button.rect));
+                    if button.clicked() {
+                        clear_faces = true;
+                    }
+                }
             });
         });
         ui.add_space(t.nav_spacing * 2.0);
+        if clear_faces {
+            self.side_queue(
+                "face.appearance",
+                json!({"body": body.feature, "clear": true}),
+                None,
+            );
+        }
         asked
     }
 }

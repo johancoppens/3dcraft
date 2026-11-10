@@ -1232,3 +1232,64 @@ fn an_eq_limit_carries_its_unit_on_the_tolerance() {
     assert_eq!(vol.measured, "8000 mm³");
     assert_eq!(vol.under(), vec!["must be 7000 mm³ ± 1 mm³".to_string()]);
 }
+
+/// A body whose faces carry colours of their own has *Clear face colours*
+/// in its card in the Bodies tab; a click runs `face.appearance {body,
+/// clear}`, the status line says how many were cleared, and the button
+/// is gone once there are none.
+#[test]
+fn the_body_card_clears_its_face_colours() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(
+        &mut session,
+        "feature.block",
+        json!({"size": [10, 10, 10], "name": "Part"}),
+    );
+    for (face, colour) in [("F1:face(0)", "#14a03c"), ("F1:face(1)", "#2f6fd6")] {
+        run(
+            &mut session,
+            "face.appearance",
+            json!({"faces": [face], "color": colour}),
+        );
+    }
+    run(
+        &mut session,
+        "feature.transform",
+        json!({"source": "Part", "translate": [0, 0, 20], "name": "Moved"}),
+    );
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    set(
+        &mut shell,
+        &mut session,
+        json!({"panels": {"sideTab": "bodies"}, "sidePanel": {"body": "F2"}}),
+    );
+    window.frames(&mut shell, &mut session, 3);
+    let (bodies, _, _) = shell.side_bodies();
+    assert_eq!(bodies[0].face_colors, 2, "{bodies:?}");
+    let button = shell
+        .side_hits()
+        .targets
+        .iter()
+        .find(|(n, _)| n == "clear face colours")
+        .map(|(_, r)| r.center())
+        .expect("the card offers to clear the face colours");
+    window.click(&mut shell, &mut session, button);
+    window.frames(&mut shell, &mut session, 3);
+    let said = shell
+        .last_command
+        .as_ref()
+        .expect("the status line says it");
+    assert_eq!(said.text, "Cleared 2 face colours of Moved", "{said:?}");
+    let inspect = run(&mut session, "document.inspect", json!({"measures": false}));
+    assert!(inspect.get("faceAppearances").is_none(), "{inspect}");
+    assert!(
+        !shell
+            .side_hits()
+            .targets
+            .iter()
+            .any(|(n, _)| n == "clear face colours"),
+        "no button once there is nothing to clear"
+    );
+}

@@ -278,6 +278,15 @@ impl Shell {
                     if request.command.starts_with("measure.") {
                         self.side.measured = Some(props::measured_line(request.command, &result));
                     }
+                    // Clearing a body's face colours says on the status
+                    // line how many it cleared (and what it kept).
+                    if request.command == "face.appearance" {
+                        self.last_command = Some(crate::shell::CommandReport {
+                            label: request.command.to_string(),
+                            ok: true,
+                            text: crate::answer::summary(request.command, &result),
+                        });
+                    }
                 }
                 Err(e) => {
                     let why = e.message().to_string();
