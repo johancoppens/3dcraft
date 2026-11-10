@@ -936,18 +936,38 @@ fn a_refused_connection_that_spoke_first_still_reads_why() {
 /// 2026-11-04): sixteen that never close, each read for up to a quarter of
 /// a second, do not hold up a client that comes once a slot is free (in
 /// the accept loop they took four seconds before it was taken).
+///
+/// The slot is freed only once the listener has told every refused
+/// connection: one still waiting in the listener's backlog would otherwise
+/// take it, and the client meant to come next would be the one refused
+/// (seen once in the gate, 2026-11-08). The clock runs from the first
+/// refused connection, so the listener's four seconds behind refusals
+/// would still show.
 #[test]
 fn refusals_do_not_hold_up_the_next_connection() {
     let rig = Rig::with(Workspace::none(), |config| config.max_connections = 1);
     let held = rig.client();
     eventually("one connection is counted", || rig.connections() == 1);
+    let started = Instant::now();
     let mut refused: Vec<Client> = (0..16).map(|_| rig.connect()).collect();
     for client in &mut refused {
         client.send(b"{\"id\":0,\"method\":\"ping\"}\n");
     }
+    // The listener takes connections in the order they came, and tells each
+    // refused one before it takes the next; one closed at once, unread,
+    // may lose its line to the reset (`None`), which the listener sends
+    // only after it has handled the connection too.
+    for client in &mut refused {
+        if let Some(reply) = client.read() {
+            let error = reply["error"].as_str().unwrap_or_default();
+            assert!(
+                error.contains("too many connections (1 at most)"),
+                "{reply}"
+            );
+        }
+    }
     drop(held);
     eventually("the slot is free", || rig.connections() == 0);
-    let started = Instant::now();
     let mut next = rig.client();
     next.ok("ui.get", json!({}));
     let took = started.elapsed();
