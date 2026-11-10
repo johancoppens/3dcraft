@@ -2,7 +2,7 @@
 
 The six files in this folder are copied unchanged from the published files (`dist/`) of the 3DCraft Jigs
 collection, [johancoppens/3dcraft-jigs](https://github.com/johancoppens/3dcraft-jigs), at commit
-`bcdee8192a49c21e4e7e8030d14573e46bd95980`. That repository is their source; they are not edited here
+`186a110fff8f5490943b6c373b589ca6f100fa65`. That repository is their source; they are not edited here
 (docs/decisions.md, 2026-10-30).
 
 | File | Title (`document.info.title`) | Author (`document.info.author`) | Source |
