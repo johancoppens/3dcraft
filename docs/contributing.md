@@ -32,7 +32,7 @@ This page holds the rules for the code and the checklists. How to report a probl
 4. **Lengths and angles are expressions.** A numeric parameter that belongs to the design accepts an expression string (`"width / 2"`, `"25 mm"`); the command stores the source text.
 5. **Tests** in the module: behaviour (checked through `document.inspect` / mass properties, not internals), undo/redo, disabled states, bad params (empty, out of range, wrong type → `Err`), a save → load → regenerate round trip.
 6. **Docs:** a command a user or an agent will use gets its place in the [user guide](guide/README.md) (its chapter, and the command list of [`guide/15-reference.md`](guide/15-reference.md)); `guide_examples` then checks the id and every parameter of the JSON steps the guide writes ([`testing.md`](testing.md) › *The user guide and its examples*). A `ui.*` method or field goes into [`control-protocol.md`](control-protocol.md).
-7. Run the quick check per commit and the full gate before `main` moves ([`AGENTS.md`](../AGENTS.md) §5), including `panic_hunt` when commands changed; it picks a new command up from its params string. In the workshop heavy runs go through the `Check` workflow on the Strix (§6); from outside, run them on your machine and say in the pull request what you ran ([`CONTRIBUTING.md`](../CONTRIBUTING.md)).
+7. Run the quick check per commit and the full gate before `main` moves ([`AGENTS.md`](../AGENTS.md) §5), including `panic_hunt` when commands changed; it picks a new command up from its params string. In the workshop heavy runs go to the Strix, the workshop's build server (§6); from outside, run them on your machine and say in the pull request what you ran ([`CONTRIBUTING.md`](../CONTRIBUTING.md)).
 
 ## Adding a feature type
 
