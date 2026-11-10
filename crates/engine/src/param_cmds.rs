@@ -1092,6 +1092,20 @@ pub(crate) fn prepare_set(
     prepare_set_clamping(command, doc, given, reset, false).map(|(prepared, _)| prepared)
 }
 
+/// [`prepare_set`] for the values an assembly gives an instance of the
+/// document (`instance.add`'s `params`, a value or a formula of the
+/// assembly's variables): held to the parameters' ranges and kinds, not to
+/// their steps. A step is what a form's field and `param.set` offer; a
+/// value an assembly computes (`sqrt(2) * 7 mm`, the closed-form place of
+/// a pivot) is no slider (A-011).
+pub(crate) fn prepare_instance_set(
+    command: &str,
+    doc: &Document,
+    given: &Map<String, Value>,
+) -> Result<Prepared, CommandError> {
+    prepare(command, doc, given, (false, false), false).map(|(prepared, _)| prepared)
+}
+
 /// The parameters `param.set` with `clamp` moved into their new range,
 /// each with the value it got (`bore`, `3.1 mm`).
 pub(crate) type Clamped = Vec<(String, String)>;
@@ -1106,6 +1120,18 @@ pub(crate) fn prepare_set_clamping(
     given: &Map<String, Value>,
     reset: bool,
     clamp: bool,
+) -> Result<(Prepared, Clamped), CommandError> {
+    prepare(command, doc, given, (reset, clamp), true)
+}
+
+/// [`prepare_set_clamping`], a value given held to its parameter's step
+/// when `stepped`.
+fn prepare(
+    command: &str,
+    doc: &Document,
+    given: &Map<String, Value>,
+    (reset, clamp): (bool, bool),
+    stepped: bool,
 ) -> Result<(Prepared, Clamped), CommandError> {
     let values_before = evaluation(doc);
     let before = evaluate_all(doc, values_before.as_ref());
@@ -1203,7 +1229,8 @@ pub(crate) fn prepare_set_clamping(
             continue;
         }
         // The step, of a value given here only.
-        if given.contains_key(e.name)
+        if stepped
+            && given.contains_key(e.name)
             && let Ok(q) = &e.value
             && let Some(off) = step_problem(&next, e, "its value", *q)
         {

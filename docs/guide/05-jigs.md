@@ -125,7 +125,9 @@ Any design whose sizes are variables can become a Jig. You design it as an ordin
    number or an integer with a step takes only values on it, counted from its minimum when that is a
    value (`"min": "26.3 mm"`) and from 0 otherwise (no minimum, or one that is a formula), and the ends
    of its range: `param.set` refuses 13 for a step of 2 and names 12 and 14, and the form rounds to the
-   step. `variable.unpublish` makes a parameter an ordinary variable again.
+   step. The step is for the form and `param.set` only: a value an assembly gives an instance of the part
+   (`instance.add` with `params`, a value or a formula such as `sqrt(2) * 7 mm`) is held to the range, not
+   to the step. `variable.unpublish` makes a parameter an ordinary variable again.
 2. **Switch options on and off** with conditions: `feature.when {"feature": "Lid", "expr": "lid"}` builds
    the lid only when the *Thick lid* box is ticked ([chapter 8](08-formulas.md#switching-parts-on-and-off)).
    A colour and a density may follow a choice too: `body.appearance {"body": "Bar", "color":

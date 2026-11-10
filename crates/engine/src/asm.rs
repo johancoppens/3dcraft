@@ -735,7 +735,7 @@ fn configured(
             .iter()
             .map(|(k, v)| (k.clone(), Value::String(v.clone())))
             .collect();
-        let (sources, _) = crate::param_cmds::prepare_set("instance", source, &given, false)
+        let (sources, _) = crate::param_cmds::prepare_instance_set("instance", source, &given)
             .map_err(|e| e.message().trim_start_matches("instance: ").to_string())?;
         for (name, text) in &sources {
             doc.set_variable(name, text).map_err(|e| e.to_string())?;

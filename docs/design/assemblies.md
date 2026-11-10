@@ -335,7 +335,8 @@ What an open assembly shows is derived and may be thrown away (rule 2). `OpenDoc
   read for its own sources, which the key does not hold, so every change of the files read drops the subassemblies'
   entries (parts stay: their key is their bytes), and a subassembly whose own sources changed is `changed` too. A configuration is the source with its public parameters set
   as `param.set` sets them (the same checks: a parameter that is not public, or a value outside its range, fails the
-  instance by name), regenerated once. Instances of one configuration share it whichever body they pick. The
+  instance by name; but not the step, which is the form's and `param.set`'s: a value the assembly computes is no
+  slider, 2026-11-10, A-011), regenerated once. Instances of one configuration share it whichever body they pick. The
   configurations not built yet are regenerated side by side (`interference_cmds::in_order` on the shared thread pool)
   and merged in the order of their keys; a subassembly's are built one after the other, each building its own parts
   side by side. `assembly.inspect` reports the number of distinct configurations and how many regenerations they cost

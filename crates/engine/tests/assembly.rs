@@ -1766,3 +1766,63 @@ fn an_instance_whose_part_has_a_failed_feature_says_so_and_is_still_placed() {
     let checked = run(&mut s, "document.check", json!({}));
     assert_eq!(checked["ok"], true, "{checked}");
 }
+
+/// A-011: a value an assembly gives an instance is held to the part's
+/// range, not to its step: 7√2 mm on a step of 0.1 mm places the bar at
+/// that length; 20 mm, past its maximum of 15, is still refused; and
+/// param.set in the part itself is still held to the step.
+#[test]
+fn an_instance_value_is_held_to_the_range_but_not_to_the_step() {
+    let dir = workdir("assembly", "off-step");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "length", "expr": "10 mm" }),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({ "name": "length", "min": "5 mm", "max": "15 mm", "step": "0.1 mm" }),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({ "name": "Bar", "size": ["length", "5 mm", "5 mm"] }),
+    );
+    let e = error(
+        &mut s,
+        "param.set",
+        json!({ "values": { "length": "10.05 mm" } }),
+    );
+    assert!(e.contains("not on its step"), "{e}");
+    run(&mut s, "file.save", json!({ "path": "stepped.3dcraft" }));
+    run(&mut s, "file.close", json!({}));
+    run(&mut s, "assembly.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "computed", "expr": "sqrt(2) * 7 mm" }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "stepped.3dcraft", "name": "Bar", "params": { "length": "computed" } }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "stepped.3dcraft", "name": "Long", "params": { "length": "20 mm" } }),
+    );
+    let inspected = inspect(&mut s);
+    let bar = instance(&inspected, "Bar");
+    assert_eq!(bar["status"], "ok", "{bar}");
+    let (lo, hi) = boxed(&inspected, "Bar");
+    let want = 7.0 * 2.0_f64.sqrt();
+    assert!(close(hi[0] - lo[0], want, want), "{lo:?} {hi:?}");
+    let long = instance(&inspected, "Long");
+    assert_eq!(long["status"], "failed", "{long}");
+    let why = long["error"].as_str().unwrap();
+    assert!(why.contains("15 mm"), "the range is said: {why}");
+}
