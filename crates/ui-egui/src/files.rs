@@ -211,24 +211,48 @@ pub fn suggested_save_name(status: &DocumentStatus) -> String {
     format!("{stem}.{extension}")
 }
 
+/// Most bytes of a stem made from a title: with an extension well under
+/// the 255 bytes most file systems allow for a name.
+const MAX_STEM_BYTES: usize = 200;
+
 /// `title` as the stem of a file's name on every system: the characters a
 /// file system forbids or a shell reads (`/ \ : * ? " < > |`, control
-/// characters) made `-`, no dot or space at either end, at most 100
-/// characters.
+/// characters) made `-`, at most [`MAX_STEM_BYTES`] bytes (cut between
+/// characters), no dot or space at either end, and a name Windows keeps
+/// for a device ([`not_a_device`]) made another.
 fn file_name_of(title: &str) -> String {
-    let name: String = title
-        .chars()
-        .map(|c| {
-            if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
-                '-'
-            } else {
-                c
-            }
-        })
-        .take(100)
-        .collect();
-    name.trim_matches(|c: char| c == '.' || c.is_whitespace())
-        .to_string()
+    let mut name = String::new();
+    for c in title.chars() {
+        let c = if c.is_control()
+            || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+        {
+            '-'
+        } else {
+            c
+        };
+        if name.len().saturating_add(c.len_utf8()) > MAX_STEM_BYTES {
+            break;
+        }
+        name.push(c);
+    }
+    not_a_device(name.trim_matches(|c: char| c == '.' || c.is_whitespace()))
+}
+
+/// `name` with a `-` after its part before the first dot when Windows
+/// keeps that part for a device (CON, PRN, AUX, NUL, COM1 to COM9, LPT1
+/// to LPT9, in any case, also before an extension: `nul.tar.3dcraft`
+/// cannot be made there); as it is otherwise.
+fn not_a_device(name: &str) -> String {
+    let base = name.split('.').next().unwrap_or(name).trim_end();
+    let upper = base.to_ascii_uppercase();
+    let device = matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (upper.len() == 4
+            && (upper.starts_with("COM") || upper.starts_with("LPT"))
+            && upper.ends_with(|c: char| ('1'..='9').contains(&c)));
+    match name.get(base.len()..) {
+        Some(rest) if device => format!("{base}-{rest}"),
+        _ => name.to_string(),
+    }
 }
 
 /// The name Export as Jig proposes: the document's file's, as a
@@ -1642,9 +1666,49 @@ mod tests {
         );
         assert_eq!(name(None, Some(" ... "), false, false), "untitled.3dcraft");
         assert_eq!(
-            name(None, Some(&"y".repeat(300)), false, false).len(),
-            100 + ".3dcraft".len()
+            name(None, Some("Bell\u{7}ring"), false, false),
+            "Bell-ring.3dcraft"
         );
+        // At most 200 bytes before the extension, cut between characters
+        // (four-byte ones too), so name and extension stay below the 255
+        // bytes a file system allows.
+        let (long, four, three) = (
+            "y".repeat(300),
+            "\u{1d53e}".repeat(100),
+            "\u{20ac}".repeat(100),
+        );
+        assert_eq!(
+            name(None, Some(&long), false, false).len(),
+            200 + ".3dcraft".len()
+        );
+        assert_eq!(
+            name(None, Some(&four), true, false),
+            format!("{}.3dcraftasm", "\u{1d53e}".repeat(50))
+        );
+        assert_eq!(
+            name(None, Some(&three), false, false),
+            format!("{}.3dcraft", "\u{20ac}".repeat(66))
+        );
+        // A name Windows keeps for a device, in any case and before any
+        // extension, is made another; one that only starts like it is not.
+        for (title, stem) in [
+            ("CON", "CON-"),
+            ("nul", "nul-"),
+            ("Aux.tar", "Aux-.tar"),
+            ("prn .x", "prn- .x"),
+            ("com1", "com1-"),
+            ("LPT9.v2", "LPT9-.v2"),
+            ("COM0", "COM0"),
+            ("LPT10", "LPT10"),
+            ("CONSOLE", "CONSOLE"),
+            ("Icon", "Icon"),
+        ] {
+            assert_eq!(
+                name(None, Some(title), false, false),
+                format!("{stem}.3dcraft"),
+                "{title}"
+            );
+        }
     }
 
     #[test]
