@@ -596,6 +596,18 @@ fn the_start_screen_scrolls_to_the_end_of_the_agents_block() {
                 bar.is_some(),
                 "{width} x {height}: the screen scrolls without a scroll bar in sight"
             );
+            // Beside the content, not over it.
+            let column = shell
+                .start_hits()
+                .iter()
+                .find(|(name, _)| name == "card")
+                .map(|(_, rect)| *rect)
+                .unwrap();
+            let bar = bar.unwrap();
+            assert!(
+                bar.left() >= column.right(),
+                "{width} x {height}: the bar {bar:?} over the content {column:?}"
+            );
             let at = viewport.center();
             window.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
             for _ in 0..20 {
