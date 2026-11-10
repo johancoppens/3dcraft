@@ -72,19 +72,19 @@ From then on 3DCraft opens normally.
 
 ## Linux
 
-Linux does not warn about unsigned programs, but a downloaded file may not run until you allow it. Both
-packages need a Linux from about 2022 or newer (glibc 2.35, as in Ubuntu 22.04).
+Linux does not warn about unsigned programs, but a downloaded file may not run until you allow it.
+Both packages need a Linux from about 2022 or newer (glibc 2.35, as in Ubuntu 22.04).
 
 **AppImage** (one file, nothing installed):
 
-1. Make it executable. In a file manager: right-click › Properties › Permissions › *Allow executing file
-   as program*. Or in a terminal:
+1. Make it executable: in a file manager, right-click › Properties › Permissions › *Allow executing file
+   as program*; or in a terminal:
 
    ```sh
    chmod +x 3DCraft-0.1.0-x86_64.AppImage
    ```
 
-2. Start it: double-click it, or type `./3DCraft-0.1.0-x86_64.AppImage` for the window and
+2. Start it: double-click it, or `./3DCraft-0.1.0-x86_64.AppImage` for the window and
    `./3DCraft-0.1.0-x86_64.AppImage cli --version` for the command line. A link named `craft3d-cli` that
    points at the AppImage starts the command line too.
 
@@ -96,7 +96,8 @@ The AppImage adds nothing to your system by itself: its menu entry, its icon and
 with AppImageLauncher gives you the menu entry and opens those files with 3DCraft; without it, the tarball
 installs them.
 
-**Tarball** (installs for your user into `~/.local`, with a menu entry and the file types):
+**Tarball** (installs for your user into `~/.local`, with a menu entry and the file types `.3dcraft`,
+`.3dcraftjig` and `.3dcraftasm`):
 
 ```sh
 tar -xzf 3dcraft-0.1.0-x86_64-linux.tar.gz
