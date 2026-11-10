@@ -225,6 +225,11 @@ fn a_name_cut_in_the_side_panel_is_whole_on_hover() {
         "feature.block",
         json!({"name": FEATURE, "size": [VARIABLE, "20 mm", "10 mm"]}),
     );
+    run(
+        &mut session,
+        "feature.block",
+        json!({"name": "Lid", "size": [5, 5, 5], "position": [0, 0, 20]}),
+    );
     let mut shell = Shell::with_renderer(RendererChoice::Cpu);
     let mut window = Window::new();
     window.idle(&mut shell, &mut session, 4);
@@ -276,7 +281,7 @@ fn a_name_cut_in_the_side_panel_is_whole_on_hover() {
         .iter()
         .filter(|(part, _)| matches!(part, TabPart::Tab(_)))
         .map(|(_, rect)| *rect)
-        .last()
+        .next_back()
         .unwrap();
     assert!(
         !window.shows_whole(TITLE, tab.center()),
@@ -286,5 +291,34 @@ fn a_name_cut_in_the_side_panel_is_whole_on_hover() {
     assert!(
         window.shows_whole(TITLE, tab.center()),
         "the title whole on hover"
+    );
+    // The line over the list, cut to the panel.
+    run(
+        &mut session,
+        "history.rollback",
+        json!({"feature": FEATURE}),
+    );
+    shell
+        .handle_method(
+            &mut session,
+            "ui.set",
+            Some(&json!({"panels": {"sideTab": "features"}})),
+        )
+        .unwrap()
+        .unwrap();
+    window.idle(&mut shell, &mut session, 4);
+    let line = shell
+        .side_hits()
+        .targets
+        .iter()
+        .find(|(name, _)| name == "summary")
+        .map(|(_, rect)| *rect)
+        .unwrap();
+    let said = format!("Rolled back to {FEATURE}");
+    assert!(!window.shows_whole(&said, line.center()), "the line is cut");
+    window.hover(&mut shell, &mut session, line.center());
+    assert!(
+        window.shows_whole(&said, line.center()),
+        "the line whole on hover"
     );
 }

@@ -575,19 +575,29 @@ impl Shell {
     fn summary_line(&mut self, ui: &mut egui::Ui, kit: &Kit) {
         let s = self.side_summary();
         let t = kit.t;
-        let (rect, _) = ui.allocate_exact_size(
+        let (rect, line) = ui.allocate_exact_size(
             vec2(ui.available_width(), t.label_row_height + 4.0),
             Sense::hover(),
         );
         self.side.hits.drawn.push(rect);
+        self.side.hits.targets.push(("summary".to_string(), rect));
         let painter = ui.painter();
         let mut x = rect.left() + 2.0;
         let y = rect.center().y;
+        // A part that does not fit the panel is cut with "…", and the
+        // whole line said on hover.
+        let mut said: Vec<String> = Vec::new();
+        let mut cut = false;
         let mut part = |painter: &egui::Painter, dot: Dot, text: &str, ink: crate::theme::Rgb| {
             let r = t.nav_icon_size * 0.42;
             status_dot(painter, kit, pos2(x + r, y), r, dot);
             x += 2.0 * r + t.nav_icon_gap;
-            let g = kit.galley(ui, text, kit.font(), ink);
+            let mut job =
+                egui::text::LayoutJob::simple_singleline(text.to_string(), kit.font(), color(ink));
+            job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - x).max(1.0));
+            let g = painter.layout_job(job);
+            cut |= g.elided;
+            said.push(text.to_string());
             let w = g.size().x;
             painter.galley(pos2(x, y - g.size().y * 0.5), g, color(ink));
             x += w + t.field_inset * 1.2;
@@ -600,9 +610,7 @@ impl Shell {
                 &format!("Rolled back to {name} · {at} of {of}"),
                 sk.text,
             );
-            return;
-        }
-        if s.failed > 0 {
+        } else if s.failed > 0 {
             part(
                 painter,
                 Dot::Failed,
@@ -617,16 +625,19 @@ impl Shell {
                     sk.text,
                 );
             }
-            return;
+        } else {
+            part(painter, Dot::Ok, &format!("{} rebuilt", s.rebuilt), sk.text);
+            if let Some((dot, text)) = checks_part(&s) {
+                let ink = if dot == Dot::Failed {
+                    sk.failed
+                } else {
+                    sk.text
+                };
+                part(painter, dot, &text, ink);
+            }
         }
-        part(painter, Dot::Ok, &format!("{} rebuilt", s.rebuilt), sk.text);
-        if let Some((dot, text)) = checks_part(&s) {
-            let ink = if dot == Dot::Failed {
-                sk.failed
-            } else {
-                sk.text
-            };
-            part(painter, dot, &text, ink);
+        if cut {
+            line.on_hover_text(said.join(" · "));
         }
     }
 
