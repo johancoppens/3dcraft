@@ -182,7 +182,31 @@ fn the_guide_names_only_commands_and_params_that_exist() {
     namespaces.sort_unstable();
     namespaces.dedup();
     let pages = files(&docs().join("guide"), "md");
-    assert!(pages.len() >= 8, "guide pages: {pages:?}");
+    // The index and its 22 chapters (2026-11-10), each read below: a chapter
+    // lost, or one the index leaves out or names but that is not there,
+    // fails here.
+    assert!(pages.len() >= 23, "guide pages: {pages:?}");
+    let mut chapters: Vec<String> = pages
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+        .filter(|name| name != "README.md")
+        .collect();
+    chapters.sort();
+    let index = read_text(&docs().join("guide/README.md"));
+    let mut listed: Vec<String> = index
+        .split("](")
+        .skip(1)
+        .filter_map(|rest| rest.split(')').next())
+        .filter_map(|link| link.split('#').next())
+        .filter(|link| link.ends_with(".md") && !link.contains('/'))
+        .map(String::from)
+        .collect();
+    listed.sort();
+    listed.dedup();
+    assert_eq!(
+        listed, chapters,
+        "the chapters the index (docs/guide/README.md) links to, and the chapters there are"
+    );
     let mut wrong = Vec::new();
     let mut steps_checked = 0;
     for page in pages
@@ -507,6 +531,63 @@ fn the_conditions_of_the_measuring_chapter_are_as_it_says() {
     assert_eq!(listed["ok"], true, "{listed}");
 }
 
+/// The *notProven* of the measuring chapter (`measure.md` › *Assertions*)
+/// is one: the case lesson's wall assertion, given the bound the chapter
+/// writes, answers the chapter's message word for word, and the bound it
+/// says passes passes, with the proven bound it quotes.
+#[test]
+fn the_not_proven_wall_of_the_measuring_chapter_is_as_it_says() {
+    let text = read_text(&docs().join("guide/measure.md")).replace('\n', " ");
+    let said = text
+        .split("A real *notProven*: with the bound written as `\"min\": \"")
+        .nth(1)
+        .expect("the chapter has its notProven example");
+    let bound = said.split('"').next().unwrap();
+    let message = said
+        .split("the case's thickness answers *")
+        .nth(1)
+        .and_then(|rest| rest.split("*.").next())
+        .expect("the chapter quotes the message");
+    let passes = said
+        .split("A bound of `")
+        .nth(1)
+        .and_then(|rest| rest.split('`').next())
+        .expect("the chapter names a bound that passes");
+    let proven = said
+        .split("here to at least ")
+        .nth(1)
+        .and_then(|rest| rest.split(" mm.").next())
+        .expect("the chapter says how far the proof reaches then");
+    let script: Value =
+        serde_json::from_str(&read_text(&docs().join("examples/case.json"))).unwrap();
+    let mut s = common::session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    for (id, params) in steps(&script).unwrap() {
+        run(&mut s, &id, params);
+    }
+    let walls = |s: &mut Session, min: &str| {
+        run(s, "assert.edit", json!({"name": "walls", "min": min}));
+        let listed = run(s, "assert.list", json!({}));
+        listed["assertions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == "walls")
+            .unwrap_or_else(|| panic!("the case has its walls assertion: {listed}"))
+            .clone()
+    };
+    let unproven = walls(&mut s, bound);
+    assert_eq!(unproven["status"], "notProven", "{bound}: {unproven}");
+    assert_eq!(unproven["message"], message, "{bound}: {unproven}");
+    let passed = walls(&mut s, passes);
+    assert_eq!(passed["status"], "passed", "{passes}: {passed}");
+    let reached = format!("(at least {proven} mm)");
+    assert!(
+        passed["message"].as_str().unwrap().contains(&reached),
+        "{passes}: the chapter says {reached}: {passed}"
+    );
+}
+
 /// The floating assertions of the engineering chapter (`engineering-checks.md`
 /// › *Floating, as assertions and outputs*) run as written and say what the
 /// text says: the barge trimmed by tan⁻¹ 0.05 (the wall-sided closed form,
@@ -588,6 +669,8 @@ fn the_starter_strip_is_as_the_agent_chapter_says() {
             .unwrap()
     };
     for (length, holes, volume) in [("120 mm", 11.0, 6552.05), ("150 mm", 14.0, 8175.33)] {
+        let said = format!("**{holes} holes and {volume:.2} mm³**");
+        assert!(text.contains(&said), "the page says {said}");
         run(
             &mut s,
             "variable.set",
@@ -676,11 +759,16 @@ fn the_starter_tasks_give_the_answers_the_agent_chapter_says() {
 
 /// What a result shown in the guide says: each `"key": value` it writes,
 /// the value a number, a string (whose pieces between `...` must all be in
-/// the real one, in order) or something else (only the key is held).
+/// the real one, in order), `true`, `false`, `null`, an empty list `[]`, or
+/// something else (an object, a list with items, `...`: only the key is
+/// held).
 #[derive(Debug)]
 enum Shown {
     Number(f64),
     Text(Vec<String>),
+    Bool(bool),
+    Null,
+    Empty,
     Other,
 }
 
@@ -731,6 +819,24 @@ fn shown_pairs(text: &str) -> Vec<(String, Shown)> {
                     .collect();
                 Shown::Text(pieces)
             }
+            Some('[') if chars[j + 1..].iter().find(|c| !c.is_whitespace()) == Some(&']') => {
+                i = j + 1;
+                Shown::Empty
+            }
+            Some('t' | 'f' | 'n') => {
+                let mut end = j;
+                while end < chars.len() && chars[end].is_ascii_alphabetic() {
+                    end += 1;
+                }
+                let literal: String = chars[j..end].iter().collect();
+                i = end;
+                match literal.as_str() {
+                    "true" => Shown::Bool(true),
+                    "false" => Shown::Bool(false),
+                    "null" => Shown::Null,
+                    _ => panic!("the guide shows \"{word}\": {literal}, which is not JSON"),
+                }
+            }
             Some(c) if c.is_ascii_digit() || *c == '-' => {
                 let mut end = j;
                 while end < chars.len()
@@ -771,8 +877,9 @@ fn real_pairs<'a>(value: &'a Value, out: &mut Vec<(&'a str, &'a Value)>) {
 }
 
 /// Holds a result as the guide shows it: every key it writes is one the
-/// command answers with, every number is the real one (to 1e-9 of it) and
-/// every string is in the real one, under the same key.
+/// command answers with, every number is the real one (to 1e-9 of it),
+/// every string is in the real one, and every `true`, `false`, `null` and
+/// `[]` is the real value, under the same key.
 fn as_shown(call: &str, shown: &str, real: &Value) {
     let mut pairs = Vec::new();
     real_pairs(real, &mut pairs);
@@ -803,6 +910,9 @@ fn as_shown(call: &str, shown: &str, real: &Value) {
                     })
                 })
             }),
+            Shown::Bool(b) => same.iter().any(|v| v.as_bool() == Some(*b)),
+            Shown::Null => same.iter().any(|v| v.is_null()),
+            Shown::Empty => same.iter().any(|v| v.as_array().is_some_and(Vec::is_empty)),
             Shown::Other => true,
         };
         assert!(
@@ -814,10 +924,16 @@ fn as_shown(call: &str, shown: &str, real: &Value) {
 
 /// The agent chapter's session (`agent.md` › *A full session*) runs as it
 /// is shown: each `command_run` and `command_batch` of its blocks is run
-/// in a new session, and every key, number and string its results show is
-/// in the real result (the batch's own counts aside: its last result is
-/// held). So a renamed key, such as `assertionSummary`, or a proven bound
-/// that moved fails here, not in the reader's hands.
+/// in a new session, and every key, number, string, `true`, `false`,
+/// `null` and `[]` its results show is in the real result. So a renamed
+/// key, such as `assertionSummary`, or a proven bound that moved fails
+/// here, not in the reader's hands. The batch's own counts are held
+/// against its steps, each of which must succeed (`completed` all of them,
+/// `failed` 0, `errors` none, `last` the last step's index and result);
+/// the `command_list` entry against the registry as it stands before
+/// `file.new` (its params, and why it is disabled); the preview's keys
+/// against `view.render`'s, at the tool's default size (the MCP tools
+/// themselves are `craft3d-automation`'s, above this crate).
 #[test]
 fn the_agent_chapters_session_answers_as_shown() {
     let text = read_text(&docs().join("guide/agent.md"));
@@ -874,6 +990,67 @@ fn the_agent_chapters_session_answers_as_shown() {
         }
         for (tool, argument, result) in calls {
             match tool.as_str() {
+                "command_list" => {
+                    let call: Value = serde_json::from_str(&argument)
+                        .unwrap_or_else(|e| panic!("{argument}: {e}"));
+                    let filter = call["filter"].as_str().unwrap().to_lowercase();
+                    // The entries `command_list` gives (craft3d-automation's
+                    // registry.rs): those whose id or label holds the
+                    // filter, whether they can run now and why not.
+                    let commands: Vec<Value> = Session::commands()
+                        .iter()
+                        .filter(|spec| {
+                            spec.id.to_lowercase().contains(&filter)
+                                || spec.label.to_lowercase().contains(&filter)
+                        })
+                        .map(|spec| {
+                            let disabled = s.disabled_reason(spec);
+                            json!({
+                                "id": spec.id,
+                                "label": spec.label,
+                                "params": spec.params,
+                                "summary": spec.summary,
+                                "needsDocument": spec.needs_document,
+                                "enabled": disabled.is_none(),
+                                "disabledReason": disabled,
+                            })
+                        })
+                        .collect();
+                    as_shown("command_list", &result, &json!({"commands": commands}));
+                    // The params shown are the command's, whole up to the
+                    // `...` where the guide shortens them.
+                    let shown_params = result
+                        .split("\"params\": \"")
+                        .nth(1)
+                        .and_then(|rest| rest.split(", ...").next())
+                        .expect("the entry shows its params")
+                        .replace("\\\"", "\"");
+                    let pattern = Session::commands()
+                        .iter()
+                        .find(|spec| spec.id == "feature.pattern")
+                        .unwrap()
+                        .params;
+                    assert!(
+                        pattern.starts_with(&shown_params),
+                        "the guide shows the params of feature.pattern as {shown_params}; they are {pattern}"
+                    );
+                    ran += 1;
+                }
+                "doc_render_preview" => {
+                    let call: Value = serde_json::from_str(&argument)
+                        .unwrap_or_else(|e| panic!("{argument}: {e}"));
+                    let mut params = call.clone();
+                    // The tool's default size, 1024 on the longer side, 4:3.
+                    params["width"] = json!(1024);
+                    params["height"] = json!(768);
+                    let real = run(&mut s, "view.render", params);
+                    let shown = result
+                        .split("and ")
+                        .nth(1)
+                        .expect("the preview shows what comes with the picture");
+                    as_shown("doc_render_preview", shown, &real);
+                    ran += 1;
+                }
                 "command_run" => {
                     let call: Value = serde_json::from_str(&argument)
                         .unwrap_or_else(|e| panic!("{argument}: {e}"));
@@ -885,22 +1062,36 @@ fn the_agent_chapters_session_answers_as_shown() {
                 "command_batch" => {
                     let call: Value = serde_json::from_str(&argument)
                         .unwrap_or_else(|e| panic!("{argument}: {e}"));
+                    let steps = call["steps"].as_array().unwrap();
                     let mut last = Value::Null;
-                    for step in call["steps"].as_array().unwrap() {
+                    for step in steps {
+                        // Checked: a step that fails fails the test, so the
+                        // batch completed every step and failed none.
                         last = run(&mut s, step["id"].as_str().unwrap(), step["params"].clone());
                         ran += 1;
                     }
+                    assert_eq!(call["terse"], true, "the session's batch is terse");
+                    // What a terse batch answers when every step succeeded
+                    // (craft3d-automation's registry.rs): the counts, no
+                    // errors, and the last step by its index.
+                    let report = json!({
+                        "completed": steps.len(),
+                        "failed": 0,
+                        "errors": [],
+                        "last": {"step": steps.len() - 1, "result": last},
+                    });
+                    as_shown("command_batch", &result, &report);
                     let shown = result
                         .split("\"result\":")
                         .nth(1)
                         .expect("the batch shows its last result");
                     as_shown("command_batch", shown, &last);
                 }
-                _ => {}
+                other => panic!("the session calls {other}, which this test does not run"),
             }
         }
     }
-    assert!(ran >= 20, "{ran} commands run");
+    assert!(ran >= 25, "{ran} commands run");
 }
 
 /// The assemblies chapter's small assembly (`assemblies.md` › *A small
