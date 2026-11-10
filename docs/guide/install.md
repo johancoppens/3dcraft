@@ -163,7 +163,8 @@ With the steps below, **the agent models in the window you are watching**. That 
 1. **Allow AI agents.** Click the **agent pill** at the right end of the status bar. It says **Agents
    off**. The panel *Connect an AI agent* opens; turn on its switch, **Allow AI agents**. (The start
    screen shows the same panel, and **Help › Connect an AI agent…** opens it too.) 3DCraft remembers your
-   choice for the next start. The pill now says **Waiting for an agent**.
+   choice for the next start. The pill now says **Waiting for an agent**. (**How it works**, in the panel,
+   opens this section of the guide.)
 2. **Add 3DCraft to your AI tool, once.** With the switch on, the panel shows what to copy, under
    **Connect**:
    - For **Claude Code**, click **Copy command** and paste the line into a terminal:

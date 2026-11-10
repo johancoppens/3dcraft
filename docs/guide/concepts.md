@@ -218,6 +218,10 @@ An edge is named by the two faces it lies between: a fillet takes `"edges": [["F
 names of an earlier body of its chain; they are followed to the newest one (`["F1:face(0)", "F1:face(2)"]`
 on the flange after two booleans).
 
+A sketch or a datum plane placed on a face takes the face as it was in the body the name gives. When a
+later feature has moved that face into another plane (a draft, a moved face), the result says so under
+`warnings`, with the name of the face as it is now: use that name to place it on the face as it is.
+
 You rarely type these: `document.inspect` lists every body's `faceNames`, a click in the window gives the
 name of the face, and `select.query` finds faces by what they are (`{"hole": true, "radius": "4 mm"}`,
 [Selection and named sets](selection.md)).

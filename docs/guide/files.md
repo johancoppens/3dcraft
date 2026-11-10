@@ -20,7 +20,7 @@ panel names ([Install › Which files the agent can reach](install.md#which-file
 
 ## Saving: the `.3dcraft` file
 
-A `.3dcraft` file holds the recipe, not just the shape: opening it rebuilds the bodies, bit for bit the
+A `.3dcraft` file holds the recipe, not only the shape: opening it rebuilds the bodies, bit for bit the
 same as when it was saved. Saving is safe: a full disk or a crash leaves the previous file as it was.
 
 **The promise:** every `.3dcraft` file written by a released version of 3DCraft opens in every later
