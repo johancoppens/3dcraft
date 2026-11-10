@@ -1,9 +1,10 @@
 name: CI
 
 # The tests on GitHub's own runners: `cargo xtask ci` on Linux, the whole
-# test suite on macOS and on Windows. Not on every push: the Strix runs the
-# full gate before `main` moves (`gate.yml`); what this adds is macOS,
-# Windows and a fresh Linux. Every Monday, and by hand before anything that
+# test suite on macOS and on Windows. Not on every push: the workshop's
+# build server, the Strix, runs the full gate before `main` moves (its
+# workflows are not in this tree); what this adds is macOS, Windows and a
+# fresh Linux. Every Monday, and by hand before anything that
 # must be certain (the release installers are built on these runners):
 #   gh workflow run CI -R johancoppens/3dcraft && gh run watch -R johancoppens/3dcraft
 #
@@ -65,7 +66,7 @@ env:
   # engine test files ran 1.8 times faster so on the Strix (578 s against
   # 329 s, 2026-11-10). It changes no result: Rust does not reorder or fuse
   # floating-point operations at any level, and debug assertions and
-  # overflow checks stay on. The Strix's Gate builds at the workspace's
+  # overflow checks stay on. The Strix's gate builds at the workspace's
   # own levels.
   CARGO_PROFILE_DEV_OPT_LEVEL: "3"
 
