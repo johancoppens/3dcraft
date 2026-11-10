@@ -214,4 +214,63 @@ The parts worth knowing:
   broken assertions (`ok` is false), and assertions not proven (warnings). `{"deep": true}` checks more
   (self-intersections, every boolean against its operands) and takes longer.
 
+## 3. Five tasks to start with
+
+Links in this guide and in 3DCraft (**How it works**, Help › User guide) open in your web browser. Each
+task takes 5 to 20 minutes. Give the agent the text in quotes, in your own words if you like, and in
+your own language if you prefer. Then check its work as [Working with an AI agent](agent.md#checking-the-agents-work)
+shows: look at the window, click faces, and ask for the volume.
+
+**Task 1, without an agent: your first five minutes.** Follow [Your first five minutes](first-steps.md): open an
+example from the start screen, turn it around, play its history, change a size in the feature list and
+export an STL for a 3D printer. Then do the same in the web version if you have its address.
+
+**Task 2: an L-bracket.** *"In 3DCraft, make an L-shaped angle bracket of 4 mm stock, 25 mm wide: one leg
+lies flat on the XY plane and runs 40 mm along +X, the other stands up along +Z to a height of 30 mm,
+both legs measured to the outside of the corner, which is at the origin. Drive it by the variables leg_x,
+leg_z, thickness and width. Tell me its volume."* The right answer is **6600 mm³**. Then ask it to round
+the inside corner with a 4 mm radius, and to make the bracket 30 mm wide: the rounding should follow.
+
+**Task 3: a strip with a counted row of holes.** *"Make a flat strip 120 × 20 × 3 mm (corner at the
+origin, along +X, +Y, +Z) with a row of 5 mm holes along its centre line at a 10 mm pitch: as many holes
+as fit with every hole centre at least 7.5 mm from the ends, the row centred on the strip. The number of
+holes must follow the length."* That is **11 holes and 6552.05 mm³**. Now ask for a strip of 150 mm: **14
+holes and 8175.33 mm³**, without the agent rebuilding anything by hand. If you want to see how it can be
+done, this is one way, as a script (`craft3d-cli run --new '{"units":"mm"}' --script strip.json --out
+strip.3dcraft`, [The command line and scripts](command-line.md)); its two assertions check the volume and the number of
+holes at every change:
+
+```json
+[
+ ["variable.set", {"name": "length", "expr": "120 mm"}],
+ ["variable.set", {"name": "width", "expr": "20 mm"}],
+ ["variable.set", {"name": "thickness", "expr": "3 mm"}],
+ ["variable.set", {"name": "hole_d", "expr": "5 mm"}],
+ ["variable.set", {"name": "pitch", "expr": "10 mm"}],
+ ["variable.set", {"name": "margin", "expr": "7.5 mm"}],
+ ["variable.set", {"name": "n", "expr": "floor((length - 2 * margin) / pitch) + 1"}],
+ ["feature.block", {"size": ["length", "width", "thickness"], "name": "Strip"}],
+ ["feature.cylinder", {"radius": "hole_d / 2", "height": "thickness", "position": ["(length - (n - 1) * pitch) / 2", "width / 2", 0], "name": "HoleTool"}],
+ ["feature.pattern", {"source": "HoleTool", "count": "n", "step": ["pitch", 0, 0], "name": "HoleTools"}],
+ ["feature.boolean", {"op": "subtract", "target": "Strip", "tool": "HoleTools", "name": "Perforated"}],
+ ["assert.add", {"name": "volume", "measure": "volume", "of": "Perforated", "eq": "(length * width - n * pi / 4 * hole_d^2) * thickness"}],
+ ["assert.add", {"name": "holes", "measure": "count", "of": {"kind": "face", "where": {"hole": true}}, "eq": "n"}]
+]
+```
+
+**Task 4: a case, and a rule that guards it.** *"Make a moulded case: outside 70 × 50 × 25 mm (corner at
+the origin), the top edges and the four upright corners rounded with a 2 mm radius, the bottom edges
+sharp, hollowed to a 2 mm wall and open at the bottom. Drive it by variables. Then add an assertion that
+the thinnest wall is at least 1.5 mm."* The volume is **17385.50 mm³**, and at 2 mm the assertion passes:
+3DCraft proves the wall is at least 1.5 mm everywhere, round corners included. Now ask for a 1 mm wall: the window shows the assertion
+failing, and the agent should tell you so ([Measuring and assertions](measure.md#assertions)).
+
+**Task 5: make a Jig of it.** *"Publish length and pitch of the strip from task 3 as parameters (length
+from 40 to 300 mm, pitch from 8 to 20 mm) and export it as a Jig."* Open the `.3dcraftjig` in 3DCraft
+(and in the web version, if you have it): the **Parameters** tab shows the two values; drag them and
+watch the holes follow, then export an STL, or a DXF of the top face for a laser cutter ([Using a Jig](jigs.md)).
+
+After these, **try a part of your own**: something from your workshop, your classroom or your hobby. That
+is the test that tells us most.
+
 **Next:** [the window](window.md), or straight to [Jigs](jigs.md).

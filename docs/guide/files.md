@@ -48,7 +48,7 @@ and saving saves your result as a new `.3dcraft`, never over the Jig ([Using a J
 | **The selection** | STEP, STL, 3MF, OBJ | The selected bodies |
 | | DXF, SVG | The outlines of the selected flat faces, or of one selected sketch, or the flat pattern of one selected sheet-metal part |
 | **Sheet of set: …** | DXF, SVG | Every flat face of a named set on one sheet (below) |
-| **Flat pattern of …** | DXF, SVG | A sheet-metal part, unfolded ([Modelling features](features.md#sheet-metal)) |
+| **Flat pattern of …** | DXF, SVG | A sheet-metal part, unfolded ([Sheet metal](sheet-metal.md)) |
 | **Crease pattern of …** | DXF, SVG | A fold's creases on its paper ([Origami](origami.md)) |
 | **Flat patterns of every part** | DXF, SVG | Every sheet-metal part unfolded on one sheet |
 

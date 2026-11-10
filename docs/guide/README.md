@@ -28,45 +28,65 @@ You do not need to know anything about programming or CAD to start.
 You can mix them: an agent can make a Jig for you, and you can open what an agent built and change its
 numbers yourself.
 
-## Where to go next
+## The chapters
 
-**New to 3DCraft?** Follow these three, in order:
+The guide has six parts. Read the first part in order; after that, go to what you need.
+
+**Start**
 
 1. [Install 3DCraft and connect an AI agent](install.md): the installers for Windows, macOS and Linux,
-   the web version that needs no installing, and how to give your AI agent access.
-2. [Your first five minutes](first-steps.md): open an example, look around, play its history, change a
-   size and export it for a 3D printer.
-3. [Working with an AI agent](agent.md): what to ask, what a session looks like, and how to check the
-   agent's work.
+   the web version that needs no installing, and how to let an AI agent work in the window.
+2. [Your first five minutes](first-steps.md): open an example, look around, play its history, set a Jig
+   and export the result.
+3. [Working with an AI agent](agent.md): what to ask, what a session looks like, how to check the agent's
+   work, and five tasks to try first.
 
-**Using 3DCraft**
+**Using it**
 
-| Chapter | What you learn |
-|---|---|
-| [The window](window.md) | The start screen, tabs, the feature list, flying to a feature, the history player, the studio look, materials, surface analysis, pointing at faces, menus and keys |
-| [Jigs](jigs.md) | Using a ready-made Jig (the Parameters tab), the Jigs collection, and making a Jig of your own |
-| [How 3DCraft thinks](concepts.md) | The history, variables and units, sketches and constraints, features, names that stay put, failed features |
-| [A first part, command by command](first-part.md) | An L-bracket with a rounded corner and two holes, built step by step |
-| [Formulas, tables and conditions](formulas.md) | Choices made by formulas, tables of sizes, parts switched on and off, curves drawn from formulas (an involute gear) |
-| [Modelling features](features.md) | Extrude, revolve, sweep and loft; text; booleans; fillets and chamfers; shell; patterns; threads; datums; sheets; developables and unfolding; surfaces from curve networks; plates; sheet metal |
-| [Measuring and checking](measure.md) | Volume, distances and wall thickness, sections and floating levels, continuity across a seam, design rules (assertions) checked at every change, outputs |
-| [Selection and named sets](selection.md) | Finding faces by what they are, the selection you share with the agent, sets kept in the document |
-| [Files, export and drawings](files.md) | Saving, STEP, meshes for 3D printing, outlines for laser cutting, drawings of the model, the web version |
-| [The command line and scripts](command-line.md) | `craft3d-cli`: run commands and scripts, render pictures, convert files, check a Jig |
-| [Troubleshooting](troubleshooting.md) | What a refusal means, failed features, undo, crash recovery, reporting a problem |
-| [Origami](origami.md) | Crease patterns (mountain, valley, cut), folding by angles and variables with the other creases solved, Kawasaki and Maekawa (and what they do not prove), crease patterns to SVG and DXF |
-| [Assemblies](assemblies.md) | Instances of your parts and Jigs, sizes per instance, one body of a Jig, mates, subassemblies, packing, STEP with structure |
+4. [The window](window.md): the start screen, menus, tabs, the feature list, the history player, the
+   studio look, surface analysis, and pointing at things.
+5. [Using a Jig](jigs.md): the Parameters tab, its limits, and the Jigs on the start screen.
+6. [Assemblies](assemblies.md): parts placed together, joined by mates, played as a motion.
+7. [Files, export and drawings](files.md): saving, STEP, meshes for 3D printing, outlines for laser
+   cutting, cut lists, drawings, the web version, autosave.
 
-**Reference**
+**Modelling**
 
-- [Reference](reference.md): every command by family, the MCP tools, keys and mouse, units and
-  functions, the command-line programs.
-- [Example models](../examples/README.md): seventeen parts (a bracket, a flange, a gear, a G2 fin, a fuel tank, a mouse, …), each a
-  script with a picture that checks its own volume. The window's start screen builds ten of them with one
-  click, and opens three published Jigs and three assemblies.
-- [The Jigs collection](https://github.com/johancoppens/3dcraft-jigs): Jigs to download and use.
-- [The field test](field-test.md): for testers of 0.1.0, how to install, connect an agent, five tasks to
-  start with, and how to report what you find.
+8. [How 3DCraft thinks](concepts.md): the history, variables and units, sketches and constraints,
+   features, names that stay put, failed features.
+9. [A first part, command by command](first-part.md): an L-bracket with a rounded corner and two holes.
+10. [Formulas, tables and conditions](formulas.md): choices made by formulas, tables of sizes, parts
+    switched on and off, curves drawn from formulas.
+11. [Modelling features](features.md): extrude, revolve, sweep, loft, text, booleans, patterns, fillets,
+    shells, threads, datums, sheets, colours and materials.
+12. [Sheet metal](sheet-metal.md): a part bent from one sheet, its flat pattern, and whether a press brake
+    can bend it.
+13. [Surfaces and developables](surfaces.md): sheets that bend without stretching, surfaces through
+    curves, smooth seams, plates.
+14. [Origami](origami.md): crease patterns folded by angles you give, flat folds, Kawasaki and Maekawa.
+15. [Selection and named sets](selection.md): finding faces by what they are, the selection you share
+    with the agent, sets kept in the document.
+
+**Checking**
+
+16. [Measuring and assertions](measure.md): volumes, distances, walls, checks kept in the document, outputs.
+17. [Engineering checks](engineering-checks.md): sections, fill levels, floating, forces and stresses,
+    checks over a motion.
+
+**Building on 3DCraft**
+
+18. [Making Jigs](making-jigs.md): publish a design's sizes as a form, prove it over its range, share it.
+19. [The command line and scripts](command-line.md): `craft3d-cli` runs commands and scripts, renders
+    pictures, converts files and checks a Jig.
+20. [Programs on 3DCraft](programs.md): your own program on the engine, through `serve`, the window's
+    control channel, MCP or the Rust library.
+
+**Help**
+
+21. [Troubleshooting](troubleshooting.md): what a refusal means, failed features, undo, crash recovery,
+    reporting a problem.
+22. [Reference](reference.md): every command by family, keys and mouse, units and functions, the
+    programs and their options.
 
 ## Words used in this guide
 

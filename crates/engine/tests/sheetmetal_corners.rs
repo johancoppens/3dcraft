@@ -351,7 +351,7 @@ fn bad_corner_treatments_are_errors_or_fail_the_part() {
 #[test]
 fn the_guide_closed_corners_run_as_it_says() {
     let guide = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/guide/features.md");
+        .join("../../docs/guide/sheet-metal.md");
     let text = std::fs::read_to_string(guide).unwrap();
     let fence = "`".repeat(3);
     let section = text.split("**Closed corners.**").nth(1).unwrap();

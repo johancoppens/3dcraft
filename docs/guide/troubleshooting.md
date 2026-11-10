@@ -179,4 +179,21 @@ Report problems, with what you were trying to do and the copied details, on
 [GitHub](https://github.com/johancoppens/3dcraft/issues), or to whoever gave you 3DCraft. Every refusal
 you report helps: in 3DCraft, a refusal is work still to do.
 
+## 4. Tell us what you found
+
+Write down, for each thing that went wrong or felt wrong: what you were trying to do, what you asked the
+agent (copy the prompt), and what happened.
+
+When a command failed, add the **bug report**: click **Copy details** in the status bar (or in the error
+dialog of a file action) and paste it; or ask the agent *"give me the bug report"* (it runs
+`session.report`). The report holds the 3DCraft version and the exact build it came from, your system,
+your graphics card and how 3DCraft draws with it, and the command that failed with its values and the
+whole message. **Read it before you share it**: it contains file paths and the values you or your agent
+gave. Add the `.3dcraft` file if you can share it. [Troubleshooting](troubleshooting.md#reporting-a-problem)
+has the details.
+
+Send it by mail to the developer, or through the shared form you were given with the invitation. Things that went well are worth a line too: they tell us what not to break.
+
+If 3DCraft ever closes by itself, start it again: it offers to recover your work ([Troubleshooting](troubleshooting.md#after-a-crash)). A crash is the most important thing you can report.
+
 **See also:** [the reference](reference.md), for every command, key and unit.

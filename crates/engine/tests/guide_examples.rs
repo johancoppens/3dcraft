@@ -459,15 +459,15 @@ fn the_conditions_of_the_measuring_chapter_are_as_it_says() {
     assert_eq!(listed["ok"], true, "{listed}");
 }
 
-/// The floating assertions of the measuring chapter (`measure.md` ›
-/// *Floating, as assertions and outputs*) run as written and say what the
+/// The floating assertions of the measuring chapter (`engineering-checks.md`
+/// › *Floating, as assertions and outputs*) run as written and say what the
 /// text says: the barge trimmed by tan⁻¹ 0.05 (the wall-sided closed form,
 /// xg = tan θ (GML + BML tan² θ / 2) with xg 64 mm) passes both, its GM
 /// 66.75 mm (B² / (12 T cos θ) less the height of G above B, 53.4 mm);
 /// with KG at 300 mm `upright` fails.
 #[test]
 fn the_floating_assertions_of_the_measuring_chapter_are_as_it_says() {
-    let text = read_text(&docs().join("guide/measure.md"));
+    let text = read_text(&docs().join("guide/engineering-checks.md"));
     let block = json_blocks(&text)
         .into_iter()
         .find(|b| b.contains("floatingGM"))
@@ -504,12 +504,12 @@ fn the_floating_assertions_of_the_measuring_chapter_are_as_it_says() {
     assert_eq!(listed["assertions"][0]["status"], "failed", "{listed}");
 }
 
-/// The field test's page (`field-test.md` › task 3) says what its script
+/// The agent chapter's third starter task (`agent.md` › task 3) says what its script
 /// makes: 11 holes and 6552.05 mm³ at 120 mm, and 14 holes and 8175.33 mm³
 /// once the strip is 150 mm long, its two assertions passing both times.
 #[test]
 fn the_field_test_strip_is_as_the_page_says() {
-    let text = read_text(&docs().join("guide/field-test.md"));
+    let text = read_text(&docs().join("guide/agent.md"));
     let block = json_blocks(&text)
         .into_iter()
         .find(|b| b.contains("feature.pattern"))
@@ -560,13 +560,13 @@ fn task_volume(s: &mut Session, task: &str, body: &str) -> f64 {
     measured["volume"].as_f64().unwrap()
 }
 
-/// Tasks 2 and 4 of the field test (`field-test.md`) give the answers the
+/// Starter tasks 2 and 4 of the agent chapter (`agent.md`) give the answers the
 /// task set's reference solutions build: the L-bracket's 6600 mm³ and the
 /// case's 17385.50 mm³; and the case's 1 mm wall breaks an assertion of
 /// "at least 1.5 mm", as task 4 tells the tester to see.
 #[test]
 fn the_field_test_tasks_two_and_four_are_as_the_page_says() {
-    let text = read_text(&docs().join("guide/field-test.md"));
+    let text = read_text(&docs().join("guide/agent.md"));
     for said in [
         "**6600 mm³**",
         "**17385.50 mm³**",

@@ -376,7 +376,7 @@ fn twenty_bends_regenerate_well_under_a_second() {
 #[test]
 fn the_guide_section_bends_as_it_says() {
     let guide = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/guide/features.md");
+        .join("../../docs/guide/sheet-metal.md");
     let text = std::fs::read_to_string(guide).unwrap();
     let fence = "`".repeat(3);
     let section = text.split("## Sheet metal").nth(1).unwrap();

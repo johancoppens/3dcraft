@@ -270,4 +270,19 @@ cargo build --release -p craft3d -p craft3d-cli
 
 This puts both programs in `target/release/`.
 
+## 5. What 3DCraft sends: nothing
+
+3DCraft has no telemetry, no account, no update check and no licence server; it does not connect to the
+internet at all. The port the window listens on for your agent (7878 above) is open only to your own
+computer, and only to a program that has the token file. Autosaves stay in 3DCraft's data folder on your
+computer (Help › Open data folder). The bug report is copied to your clipboard and goes nowhere unless
+you paste it somewhere.
+
+The web version is a page that runs in your browser: it loads its own files from the site that serves
+it, and your models are read from and saved to your computer, never uploaded.
+
+**Your AI tool is another matter.** Everything the agent sees (your prompts, the commands it runs, the
+numbers and pictures 3DCraft returns) goes to the AI provider your tool uses, under that provider's
+terms. Do not give the agent designs you may not share with that provider.
+
 **Next:** [Your first five minutes](first-steps.md).

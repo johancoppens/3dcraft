@@ -291,7 +291,7 @@ the background so the motion keeps playing: the answer says `"pending": true`, `
 "wait": true}` gives the points once they are there (it waits at most 2 s in the window: ask again), or why they
 could not be made, and `ui.get` lists every trace
 under `traces` with `pending` or `error`; `"background": false` works it out in the command), checks assertions over the
-motion with `motion.check` ([Measure and check](measure.md#over-a-motion)), and makes a video of it with
+motion with `motion.check` ([Measure and check](engineering-checks.md#over-a-motion)), and makes a video of it with
 `view.replay {"dir": "frames", "motion": {"frames": 120}}`.
 
 ## Looking around

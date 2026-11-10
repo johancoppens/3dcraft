@@ -32,7 +32,7 @@ The full description of any command, with every value it takes and what it refus
 | `document.setUnit` | Change the length unit, keeping the numbers or the sizes ([How 3DCraft thinks](concepts.md#variables-expressions-and-units)) |
 | `document.setTolerance` | Change the linear and angular tolerances (what counts as one place and one direction, and what seams are proven to) |
 | `table.set`, `table.delete`, `table.rename`, `table.list` | Tables of values to look up ([Formulas, tables and conditions](formulas.md#tables)) |
-| `variable.publish`, `variable.unpublish` | Make a variable a Jig's parameter, or an ordinary variable again ([Using a Jig](jigs.md#making-a-jig)) |
+| `variable.publish`, `variable.unpublish` | Make a variable a Jig's parameter, or an ordinary variable again ([Making Jigs](making-jigs.md)) |
 | `param.list`, `param.set` | List and set a Jig's parameters |
 | `document.info` | A title, description, author and licence |
 | `jig.export`, `jig.edit` | Publish a `.3dcraftjig`; make an editable model of a Jig |
@@ -59,11 +59,11 @@ The full description of any command, with every value it takes and what it refus
 | `feature.extrude`, `feature.revolve`, `feature.sweep`, `feature.loft` | Solids from sketches |
 | `feature.fill`, `feature.thicken` | Sheets, and a layer on faces |
 | `feature.fold`, `fold.edit`, `fold.inspect`, `fold.check` | Origami: a crease pattern folded rigidly, its solved angles, Kawasaki and Maekawa ([Origami](origami.md)) |
-| `feature.developable`, `feature.unfold`, `unfold.map`, `measure.developability` | Developable sheets between two curves, flat patterns ([Modelling features](features.md#developable-surfaces-and-unfolding)) |
-| `feature.surface.network`, `feature.surface.coons` | Sheets through curve networks, edges held tangent to faces ([Modelling features](features.md#surfaces-from-curve-networks)) |
-| `feature.surface.trim`, `feature.surface.nsided` | A face of a surface bounded by curves on it; a smooth patch inside a loop of 3 to 6 curves ([Modelling features](features.md#trimmed-faces-and-n-sided-fills)) |
+| `feature.developable`, `feature.unfold`, `unfold.map`, `measure.developability` | Developable sheets between two curves, flat patterns ([Surfaces and developables](surfaces.md#developable-surfaces-and-unfolding)) |
+| `feature.surface.network`, `feature.surface.coons` | Sheets through curve networks, edges held tangent to faces ([Surfaces and developables](surfaces.md#surfaces-from-curve-networks)) |
+| `feature.surface.trim`, `feature.surface.nsided` | A face of a surface bounded by curves on it; a smooth patch inside a loop of 3 to 6 curves ([Surfaces and developables](surfaces.md#trimmed-faces-and-n-sided-fills)) |
 | `feature.plate` | A plate of a sheet, with joints to its neighbours |
-| `feature.sheetMetal`, `sheetMetal.edit`, `sheetMetal.bends`, `sheetMetal.bendSequence` | Sheet metal: a base with flanges bent by radius and K-factor, reliefs, the bend table, the press-brake check ([Modelling features](features.md#sheet-metal)) |
+| `feature.sheetMetal`, `sheetMetal.edit`, `sheetMetal.bends`, `sheetMetal.bendSequence` | Sheet metal: a base with flanges bent by radius and K-factor, reliefs, the bend table, the press-brake check ([Sheet metal](sheet-metal.md)) |
 | `feature.offsetProfile` | A sketch's profiles grown or shrunk |
 | `feature.boolean` | Union, subtract, intersect |
 | `feature.pattern`, `feature.mirror`, `feature.transform` | Copies, mirror, move and turn |
