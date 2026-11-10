@@ -73,7 +73,7 @@ Subcommands:
   info       Print a document's state as JSON
   render     Render a document to a PNG (on the GPU when there is one)
   convert    Convert a .3dcraft file to STEP, STL, 3MF, OBJ, DXF, SVG or .3dcraft
-  replay     Make a video (MP4, GIF) or frames of how a document is built
+  replay     Make a video (MP4, WebM, GIF) or frames of a document being built
   score      Run a script for a task of the task set and print its scorecard
   check-range  Check a Jig over its parameter range; exit 1 if a point fails
   serve      JSON-lines server on stdin/stdout, for scripts

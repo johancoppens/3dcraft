@@ -684,6 +684,46 @@ fn doc_render_preview_returns_a_png_image_block_and_the_rest_as_text() {
     );
 }
 
+/// `doc_render_preview` is `view.render` with its defaults at the tool's
+/// size: the same picture and the same answer, on the renderer
+/// `view.render` chooses (here, a session without a renderer of its own,
+/// the CPU's). Its description says so, rather than naming one renderer.
+#[test]
+fn doc_render_preview_draws_what_view_render_draws_by_default() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({}));
+    run(&mut s, "feature.block", json!({"size": [40, 20, 10]}));
+    let preview = tool(&mut s, "doc_render_preview", json!({"max_side": 64}));
+    assert_eq!(preview["isError"], false, "{preview}");
+    let image = preview["content"][0]["data"].clone();
+    let rest: Value =
+        serde_json::from_str(preview["content"][1]["text"].as_str().unwrap()).unwrap();
+    let mut rendered = run(&mut s, "view.render", json!({"width": 64, "height": 48}));
+    let rendered_map = rendered.as_object_mut().unwrap();
+    assert_eq!(
+        rendered_map.remove("base64"),
+        Some(image),
+        "the same picture"
+    );
+    rendered_map.remove("mime");
+    assert_eq!(rest, rendered, "the same answer");
+    assert_eq!(rest["renderer"], "cpu", "{rest}");
+
+    let tools = result(&mut s, "tools/list", json!({}))["tools"].clone();
+    let description = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "doc_render_preview")
+        .unwrap()["description"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for word in ["view.render", "GPU", "CPU renderer"] {
+        assert!(description.contains(word), "{word} in: {description}");
+    }
+}
+
 #[test]
 fn doc_render_preview_failures_are_tool_errors() {
     let mut s = session();

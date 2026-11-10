@@ -250,6 +250,35 @@ fn help_lists_the_subcommands_and_each_describes_itself() {
     }
 }
 
+/// The overview names every video format `replay --help` says it makes,
+/// so the two never disagree (WebM was once missing from the overview).
+#[test]
+fn the_overview_names_every_video_format_replay_makes() {
+    let top = cli(&["--help"]).ok().stdout;
+    let line = top
+        .lines()
+        .find(|line| line.trim_start().starts_with("replay "))
+        .unwrap_or_else(|| panic!("replay is listed in:\n{top}"))
+        .to_lowercase();
+    let replay = cli(&["replay", "--help"]).ok().stdout;
+    let picks = replay
+        .split("The extension of OUT picks what is made:")
+        .nth(1)
+        .and_then(|rest| rest.split("is a video").next())
+        .unwrap_or_else(|| panic!("replay --help says which extensions make a video:\n{replay}"));
+    let formats: Vec<&str> = picks
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '.')
+        .filter_map(|word| word.strip_prefix('.'))
+        .collect();
+    assert_eq!(formats, ["mp4", "webm", "gif"], "{picks}");
+    for format in formats {
+        assert!(
+            line.contains(format),
+            "`{format}` in the overview's line: {line}"
+        );
+    }
+}
+
 #[test]
 fn an_unknown_subcommand_is_a_usage_error() {
     let ran = cli(&["frobnicate", "x"]).failed(2);

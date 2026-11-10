@@ -512,7 +512,7 @@ fn tools() -> Value {
         },
         {
             "name": "doc_render_preview",
-            "description": "Renders the active document's bodies to a PNG image (4:3, CPU renderer) and returns it with the coverage, triangle count and body list. For a detail: projection orthographic with a box or a zoom.",
+            "description": "Renders the active document's bodies to a PNG image (4:3) as view.render does with its defaults, on the renderer it chooses (the GPU when the session has one, as craft3d-cli mcp does, else the CPU renderer, as in a window), and returns it with the coverage, triangle count, body list and which renderer drew. For a detail: projection orthographic with a box or a zoom.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

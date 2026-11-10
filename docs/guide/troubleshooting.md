@@ -111,9 +111,10 @@ and is not undone. In a Jig, **↺**, **Reset all** and **Back to last good** ar
 If a face is hard to identify, render with `mode: "ids"`: one flat colour per face, with a legend. For a
 close-up, ask for `projection: "orthographic"` and a `box`.
 
-`view.render` and `doc_render_preview` draw on the graphics card when the computer has one, and with the
-CPU renderer otherwise. The CPU renderer is the reference the graphics card is checked against:
-`"renderer": "cpu"` asks for it.
+In `craft3d-cli` (`render`, `run`, `serve` and a headless `mcp`), `view.render` and `doc_render_preview`
+draw on the graphics card when the computer has one, and with the CPU renderer otherwise. Asked through
+the window, they draw with the CPU renderer. The CPU renderer is the reference the graphics card is checked
+against: `"renderer": "cpu"` asks for it.
 
 ## Jigs
 
