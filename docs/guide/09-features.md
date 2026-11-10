@@ -844,11 +844,18 @@ patterns of every part" on one sheet; with a part's body selected the export is 
 
 A document may hold any number of bodies; every feature that does not consume another body adds one.
 `body.split` splits a body that fell into pieces (a cut through the middle) into one body per piece.
-`body.appearance` and `face.appearance` give colours (a face's own colour stays when a later feature's body is
-given another), `body.material` a density (then `document.inspect`
+`body.appearance` and `face.appearance` give colours, `body.material` a density (then `document.inspect`
 gives the mass), `document.interference` says whether bodies overlap. A body's colour channels and its
 density may be expressions of the variables (`["if(dark, 60, 200)", 120, 40]`, `"sheets[sheet].density
 g/cm3"`), so they follow a parameter.
+
+**A face's own colour wins over its body's**, wherever the body's is given: a body colour given to a later
+feature (a transform, a boolean) colours the other faces and leaves the faces coloured earlier as they are.
+To give such a face the body's colour again, clear its own colour where it was given: `document.inspect`
+lists every face colour under `faceAppearances` as `{feature, face, color}`, and
+`face.appearance {"body": "F1", "faces": ["F1:face(1)", "F1:face(2)"], "clear": true}` clears them, the
+feature as `body` and the faces by those names (an imported STEP part may carry a colour on every face:
+list them all). Clearing the faces of the later body does nothing to a colour given further back.
 
 ## Hiding and looking back
 
