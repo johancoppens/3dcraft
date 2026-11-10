@@ -10,12 +10,15 @@ name: Release
 # checks before it unpacks it).
 # Started by hand (the packages are kept as run artifacts; nothing is
 # published):
-#   gh workflow run Release && gh run watch
+#   gh workflow run Release -R johancoppens/3dcraft && gh run watch -R johancoppens/3dcraft
 # or only the web zip, on one Linux runner:
-#   gh workflow run Release -f only=web && gh run watch
-# or by pushing a tag `v<version>` matching the workspace version, which
-# also makes a draft GitHub release with the packages for the developer to
-# publish, its notes taken from CHANGELOG.md's section for that version. macOS minutes count tenfold in a private repository.
+#   gh workflow run Release -R johancoppens/3dcraft -f only=web && gh run watch -R johancoppens/3dcraft
+# or by pushing a tag `v<version>` matching the workspace version to the
+# public repository (`git push public v<version>`), which also makes a
+# draft GitHub release with the packages for the developer to publish,
+# its notes taken from CHANGELOG.md's section for that version. It runs
+# only in the public repository (`package`, `web`), where GitHub's
+# standard hosted runners are free.
 on:
   workflow_dispatch:
     inputs:

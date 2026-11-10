@@ -5,13 +5,15 @@ name: CI
 # full gate before `main` moves (`gate.yml`); what this adds is macOS,
 # Windows and a fresh Linux. Every Monday, and by hand before anything that
 # must be certain (the release installers are built on these runners):
-#   gh workflow run CI && gh run watch
+#   gh workflow run CI -R johancoppens/3dcraft && gh run watch -R johancoppens/3dcraft
 #
-# Hosted minutes cost money (the repository is private: macOS minutes count
-# tenfold, Windows double), and a full run is hours. A narrow run takes one
+# It runs only in the public repository (`plan`), where GitHub's standard
+# hosted runners are free; but a full run is hours. A narrow run takes one
 # system and one command, the arguments after `cargo` (several joined by
 # ` + `, run in order); one test file on one system takes minutes:
-#   gh workflow run CI --ref <branch> -f os=macos -f cargo="test -p craft3d --lib consent"
+#   gh workflow run CI -R johancoppens/3dcraft --ref <branch> -f os=macos -f cargo="test -p craft3d --lib consent"
+# The branch must be in the public repository, which makes it public:
+# delete it there afterwards (`git push public :refs/heads/<branch>`).
 # `os` alone, without `cargo`, is the full run on that system only.
 #
 # Where the time went (2026-11-09; a private repository's runners have two
