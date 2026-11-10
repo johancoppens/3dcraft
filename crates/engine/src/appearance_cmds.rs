@@ -32,7 +32,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("body.material", "Body Material", r#"{"body": id or name, "name": string, "density": number (kg/m³), "7.85 g/cm3" or an expression ("sheets[material].density g/cm3"), "clear": boolean = false}"#,
         "Gives the body of a feature a material: a name and a density, a number in kg/m³ or a string with a unit (kg/m3, g/cm3, g/mm3, lb/in3, lb/ft3), or an expression of the variables that gives a plain number, in kg/m³ or in the unit after it (\"sheets[material].density g/cm3\", \"if(pla, 1240, 700)\"): the density then follows them (a Jig's choice of material changes the mass); refused when it does not evaluate now to a positive number, and a density that stops evaluating gives no mass, which document.check and document.inspect (densityError) say. document.inspect and document.measure then give the body's mass (kg) and its inertia tensor about the centroid (kg times the document's length unit squared), computed exactly from the B-rep; body.material itself measures nothing and says which bodies have the material. Bodies made from it keep it, as with body.appearance (a boolean's result has its target's). Given to a feature that is switched off (suppressed, or inactive by its condition), it weighs the body that feature passes on when that body has no material of its own. clear takes it away.", doc: true, body_material_cmd),
     spec!("face.appearance", "Face Colour", r##"{"faces": [persistent name], "body": id or name = the body that has the face, "selection": boolean = false, "color": "#rrggbb" or [r, g, b], "metallic": number, "roughness": number, "anisotropy": number, "anisotropyAxis": [x, y, z] or "parametric", "clearcoat": number, "clearcoatRoughness": number, "transmission": number, "ior": number, "thinWalled": boolean, "absorption": "#rrggbb" or [r, g, b], "absorptionDistance": number (mm), "subsurface": number, "subsurfaceColor": "#rrggbb" or [r, g, b], "pattern": {kind: "wood|marble|granite|speckle|noise|brushed|carbon", colors: [2 to 4 colours] = the kind's, scale: number = fitted to the body, axis: [x, y, z] = fitted, origin: [x, y, z] = fitted, seed: integer = 0, distortion: 0 to 8, detail: octaves 1 to 6 = 4, grain: 0 to 1, rays: 0 to 1, spot: 0 to 1 = 0.5, wrap: boolean = true, alongAxis: boolean, roughness: [at the first colour, at the last] = the appearance's} or null, "clear": boolean = false}"##,
-        "Gives faces a colour of their own (sRGB: \"#2f6fd6\" or [47, 111, 214]), and optionally metallic and roughness (0 to 1) and the layers of body.appearance (anisotropy, clear coat, transmission, subsurface, pattern; a pattern's defaults are fitted to the box of the first face's body, and without a color the faces take its mean colour). The faces are given by their persistent names (as document.inspect, select.get or ui.pick give them; body says whose body when the name alone does not), or selection: true takes the faces of the current selection (select.get): select a face, then colour it. The colour is kept in the document by the body's feature and the face's name there, so it survives every regeneration and every upstream edit that keeps the face; the faces later features make of it (the copies of a pattern, a transform or a boolean, the pieces of a face cut in two) take it too, by the rule of body.appearance (the wall a tool cut has the target's colour). It goes before the body's colour, at the same feature and at any later one: a colour set with body.appearance on a later feature's body colours that body's other faces and leaves this one its own; with body and clear: true and no faces (below), the body's face colours are taken away so that its colour shows on every face. A face that several faces were merged into (aliases) has the colour of its own name, else of its aliases in their order. A face an edit takes away keeps its entry, colours nothing and is listed under lostFaces here and in document.inspect (undo brings the face and its colour back); it never moves to another face. clear takes the colour away (also a lost face's, by its name and body). With body and clear: true and no faces it takes away every face colour the body's faces carry, wherever along the body's history it was given (as document.inspect lists them under faceAppearances), as one undo step, so that the body's colour shows on every face: the answer lists them under cleared ({feature, face, color}) with their count; a colour that also colours a face of another body (a copy kept by a mirror, a pattern's other instances) is kept and listed under kept with that body (for); a body without face colours clears nothing (count 0); a sketch, a datum, a body switched off now or one that went into a later feature is refused. The viewport, view.render, view.replay and the 3MF and STEP exports show it. One undo step.", doc: true, names: ["faces"], face_appearance_cmd),
+        "Gives faces a colour of their own (sRGB: \"#2f6fd6\" or [47, 111, 214]), and optionally metallic and roughness (0 to 1) and the layers of body.appearance (anisotropy, clear coat, transmission, subsurface, pattern; a pattern's defaults are fitted to the box of the first face's body, and without a color the faces take its mean colour). The faces are given by their persistent names (as document.inspect, select.get or ui.pick give them; body says whose body when the name alone does not), or selection: true takes the faces of the current selection (select.get): select a face, then colour it. The colour is kept in the document by the body's feature and the face's name there, so it survives every regeneration and every upstream edit that keeps the face; the faces later features make of it (the copies of a pattern, a transform or a boolean, the pieces of a face cut in two) take it too, by the rule of body.appearance (the wall a tool cut has the target's colour). It goes before the body's colour, at the same feature and at any later one: a colour set with body.appearance on a later feature's body colours that body's other faces and leaves this one its own; with body and clear: true and no faces (below), the body's face colours are taken away so that its colour shows on every face. A face that several faces were merged into (aliases) has the colour of its own name, else of its aliases in their order. A face an edit takes away keeps its entry, colours nothing and is listed under lostFaces here and in document.inspect (undo brings the face and its colour back); it never moves to another face. clear takes the colour away (also a lost face's, by its name and body). With body and clear: true and no faces it takes away every face colour the body's faces carry, wherever along the body's history it was given (also at a feature that is off now; as document.inspect lists them under faceAppearances), as one undo step, so that the body's colour shows on every face: the answer lists them under cleared ({feature, face, color}) with their count (a pattern's instances are one body: the seed's colour goes from every instance); a colour that also colours a face of another body (a copy kept by a mirror or a transform, the other pieces of a body.split) is kept, and listed under kept with those bodies (for) and the command that clears it from all of them (clear: its own name at the feature it was given on); a body without face colours clears nothing (count 0); a sketch, a datum, a body switched off now or one that went into a later feature is refused. The viewport, view.render, view.replay and the 3MF and STEP exports show it. One undo step.", doc: true, names: ["faces"], face_appearance_cmd),
 ];
 
 /// The feature of `key`, which must be one that can make a body.
@@ -415,11 +415,15 @@ fn find_face(
 /// `face.appearance {body, clear: true}` without `faces`: takes away
 /// every face colour the faces of `body` carry, wherever on the way back
 /// along its history it was given ([`crate::appearance::body_face_entries`]),
-/// as one undo step, so that every face shows the body's colour. An entry
-/// that also colours a face of another body (a copy kept by a mirror, a
-/// pattern's other instances) is kept, and the answer says for which body:
-/// clearing one body never changes another. A body without face colours
-/// is no error.
+/// as one undo step, so that every face shows the body's colour; colours
+/// given at a feature that is off now go too, listed as the others. An
+/// entry that also colours a face of another body (a copy kept by a mirror
+/// or a transform, the other pieces of a `body.split`) is kept, and the
+/// answer says for which body and gives the command that clears it from
+/// all of them (its own name where it was given): clearing one body never
+/// changes another. A pattern's instances are one body: the seed's colour
+/// is cleared from every instance. A body without face colours is no
+/// error.
 fn clear_body(session: &mut Session, p: &Params) -> Run {
     const ID: &str = "face.appearance";
     let text = match p.get("body") {
@@ -473,26 +477,16 @@ fn clear_body(session: &mut Session, p: &Params) -> Run {
             None => fail(format!("{ID}: `{name}` has no body now")),
         };
     }
-    let carried = crate::appearance::body_face_entries(&doc, &regen, id);
     // An entry that a face of another body walks back to too is kept.
-    let mut kept: BTreeMap<crate::appearance::FaceEntry, Vec<String>> = BTreeMap::new();
-    if !carried.is_empty() {
-        for (other, _) in regen.bodies().filter(|(other, _)| *other != id) {
-            let theirs = crate::appearance::body_face_entries(&doc, &regen, other);
-            let other_name = doc
-                .feature(other)
-                .map_or_else(|| other.to_string(), |f| f.name.clone());
-            for entry in carried.intersection(&theirs) {
-                kept.entry(entry.clone())
-                    .or_default()
-                    .push(other_name.clone());
-            }
-        }
-    }
-    let to_clear: Vec<crate::appearance::FaceEntry> = carried
+    let all = crate::appearance::live_body_face_entries(&doc, &regen);
+    let (to_clear, shared) = crate::appearance::own_and_shared_entries(&all, id);
+    let body_name = |other: &FeatureId| {
+        doc.feature(*other)
+            .map_or_else(|| other.to_string(), |f| f.name.clone())
+    };
+    let kept: BTreeMap<crate::appearance::FaceEntry, Vec<String>> = shared
         .iter()
-        .filter(|entry| !kept.contains_key(*entry))
-        .cloned()
+        .map(|(entry, others)| (entry.clone(), others.iter().map(body_name).collect()))
         .collect();
     let colour = |(feature, face): &crate::appearance::FaceEntry| {
         doc.face_appearance(*feature, face)
@@ -506,17 +500,28 @@ fn clear_body(session: &mut Session, p: &Params) -> Run {
         })
     };
     let cleared: Vec<Value> = to_clear.iter().map(entry_json).collect();
+    // A shared colour is cleared by its own name where it was given,
+    // which takes it from every body that shares it: said as the command.
     let kept_json: Vec<Value> = kept
         .iter()
         .map(|(entry, bodies)| {
             let mut value = entry_json(entry);
+            let clear = json!({
+                "body": entry.0.to_string(),
+                "faces": [entry.1.to_string()],
+                "clear": true,
+            });
+            let others = bodies.join(", ");
             if let Some(map) = value.as_object_mut() {
                 map.insert("for".into(), json!(bodies));
                 map.insert(
                     "why".into(),
-                    "it colours a face of that body too; clear that body's, or give this face its own colour"
-                        .into(),
+                    format!(
+                        "it colours a face of {others} too, so clearing {name} keeps it; face.appearance {clear} clears it where it was given, from {name} and {others} alike"
+                    )
+                    .into(),
                 );
+                map.insert("clear".into(), clear);
             }
             value
         })
@@ -544,7 +549,15 @@ fn clear_body(session: &mut Session, p: &Params) -> Run {
         let others: std::collections::BTreeSet<&str> =
             kept.values().flatten().map(String::as_str).collect();
         let others: Vec<&str> = others.into_iter().collect();
-        message.push_str(&format!("; {} kept for {}", kept.len(), others.join(", ")));
+        let others = others.join(", ");
+        message.push_str(&match kept.len() {
+            1 => format!(
+                "; 1 kept, shared with {others}: clearing it by its name where it was given (the command under kept) takes it from {others} too"
+            ),
+            n => format!(
+                "; {n} kept, shared with {others}: clearing them by their names where they were given (the commands under kept) takes them from {others} too"
+            ),
+        });
     }
     let left = session.document()?.history.current().faces.len();
     Ok(json!({

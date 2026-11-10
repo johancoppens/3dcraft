@@ -62,9 +62,15 @@ pub struct BodyLine {
     pub name: String,
     /// Its own colour (`#d4d6da`), if it has one.
     pub color: Option<String>,
-    /// How many colours of their own its faces carry (`faceColors` of
-    /// `document.inspect`): what *Clear face colours* takes away.
+    /// How many colours of their own its faces carry that colour this
+    /// body alone (`faceColors` of `document.inspect`): what *Clear face
+    /// colours* takes away.
     pub face_colors: usize,
+    /// How many colour a face of another body too (`sharedFaceColors`),
+    /// and those bodies (`sharedWith`): the card says so, without a
+    /// button, since clearing this body keeps them.
+    pub shared_face_colors: usize,
+    pub shared_with: Vec<String>,
     /// In the document's length unit cubed; kilograms.
     pub volume: Option<f64>,
     pub mass: Option<f64>,
@@ -132,6 +138,20 @@ pub fn body_lines(inspect: &Value) -> (Vec<BodyLine>, Vec<BodyLine>) {
                             .map(str::to_string),
                         face_colors: b.get("faceColors").and_then(Value::as_u64).unwrap_or(0)
                             as usize,
+                        shared_face_colors: b
+                            .get("sharedFaceColors")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0) as usize,
+                        shared_with: b
+                            .get("sharedWith")
+                            .and_then(Value::as_array)
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(Value::as_str)
+                                    .map(str::to_string)
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
                         volume: f64_of(b, "volume"),
                         mass: f64_of(b, "mass"),
                         area: f64_of(b, "area"),
@@ -172,6 +192,8 @@ pub fn body_lines(inspect: &Value) -> (Vec<BodyLine>, Vec<BodyLine>) {
                             .to_string(),
                         color: None,
                         face_colors: 0,
+                        shared_face_colors: 0,
+                        shared_with: Vec::new(),
                         volume: None,
                         mass: None,
                         area: None,
@@ -598,6 +620,19 @@ impl Shell {
                 }
                 if let Some(c) = &body.color {
                     row("Colour", c.clone());
+                }
+                // Face colours another body shares: said, not offered,
+                // since clearing this body keeps them (the guide says how
+                // to clear them for both).
+                if body.shared_face_colors > 0 {
+                    row(
+                        "Shared colours",
+                        format!(
+                            "{} with {}",
+                            body.shared_face_colors,
+                            body.shared_with.join(", ")
+                        ),
+                    );
                 }
                 if let Some(v) = body.volume {
                     row("Volume", volume_text(v, unit));

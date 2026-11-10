@@ -854,10 +854,14 @@ feature (a transform, a boolean) colours the other faces and leaves the faces co
 To give the whole body its colour, clear its faces' own colours in one step:
 `face.appearance {"body": "Moved", "clear": true}` takes away every face colour the body's faces carry,
 wherever along its history it was given (an imported STEP part with a colour on every face too), as one
-undo step, and lists what it cleared; a colour that also colours another body's face (a copy kept by a
-mirror) is kept, and the answer says for which body. In the window, the body's card in the Bodies tab has
-**Clear face colours** when its faces carry colours of their own. Single faces can still be cleared by
-name: `face.appearance {"body": "F1", "faces": ["F1:face(1)"], "clear": true}`.
+undo step, and lists what it cleared (a pattern's instances are one body: the seed's colour goes from
+every instance). A colour that also colours another body's face (a copy kept by a mirror, the other piece
+of a `body.split`) is kept, since clearing one body never changes another; the answer says for which body
+and gives, under `kept`, the command that clears it from both: the face by its own name at the feature it
+was given on, such as `face.appearance {"body": "F1", "faces": ["F1:face(1)"], "clear": true}`. Single
+faces are cleared the same way. In the window, the body's card in the Bodies tab has **Clear face
+colours** when its faces carry colours of their own, and says **Shared colours** with which body when
+some are shared.
 
 ## Hiding and looking back
 

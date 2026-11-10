@@ -1293,3 +1293,52 @@ fn the_body_card_clears_its_face_colours() {
         "no button once there is nothing to clear"
     );
 }
+
+/// A body whose only face colour is shared with another body (a copy
+/// kept by a mirror): clearing the body would keep it, so the card offers
+/// no button that does nothing; it says the colour is shared, and with
+/// which body.
+#[test]
+fn the_body_card_says_a_shared_face_colour_and_offers_no_button() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(
+        &mut session,
+        "feature.block",
+        json!({"size": [10, 10, 10], "name": "Part"}),
+    );
+    run(
+        &mut session,
+        "face.appearance",
+        json!({"faces": ["F1:face(1)"], "color": "#2f6fd6"}),
+    );
+    run(
+        &mut session,
+        "feature.mirror",
+        json!({"source": "Part", "normal": [0, 1, 0], "point": [0, 40, 0], "keep": true, "name": "Twin"}),
+    );
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    for body in ["F1", "F2"] {
+        set(
+            &mut shell,
+            &mut session,
+            json!({"panels": {"sideTab": "bodies"}, "sidePanel": {"body": body}}),
+        );
+        window.frames(&mut shell, &mut session, 3);
+        let (bodies, _, _) = shell.side_bodies();
+        let line = bodies.iter().find(|b| b.feature == body).unwrap();
+        let other = if body == "F1" { "Twin" } else { "Part" };
+        assert_eq!(line.face_colors, 0, "{line:?}");
+        assert_eq!(line.shared_face_colors, 1, "{line:?}");
+        assert_eq!(line.shared_with, [other], "{line:?}");
+        assert!(
+            !shell
+                .side_hits()
+                .targets
+                .iter()
+                .any(|(n, _)| n == "clear face colours"),
+            "{body}: no button that clears nothing"
+        );
+    }
+}

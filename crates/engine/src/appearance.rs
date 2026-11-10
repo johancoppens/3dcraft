@@ -741,6 +741,52 @@ pub(crate) fn body_face_entries(
     out
 }
 
+/// [`body_face_entries`] of every body there is now (not those that went
+/// into a later feature, nor those of features that are off): empty when
+/// the document has no face colours.
+pub(crate) fn live_body_face_entries(
+    doc: &Document,
+    regen: &Regen,
+) -> BTreeMap<FeatureId, std::collections::BTreeSet<FaceEntry>> {
+    if doc.faces.is_empty() {
+        return BTreeMap::new();
+    }
+    regen
+        .bodies()
+        .map(|(id, _)| (id, body_face_entries(doc, regen, id)))
+        .collect()
+}
+
+/// The face colours of the body of `feature` (one of `all`, from
+/// [`live_body_face_entries`]) split in two: those that colour this body
+/// alone, which `face.appearance {body, clear: true}` takes away, and
+/// those that colour a face of another body too (a copy kept by a mirror
+/// or a transform, the other pieces of a split), with those bodies, which
+/// it keeps: clearing one body never changes another.
+pub(crate) fn own_and_shared_entries(
+    all: &BTreeMap<FeatureId, std::collections::BTreeSet<FaceEntry>>,
+    feature: FeatureId,
+) -> (Vec<FaceEntry>, BTreeMap<FaceEntry, Vec<FeatureId>>) {
+    let mut own = Vec::new();
+    let mut shared: BTreeMap<FaceEntry, Vec<FeatureId>> = BTreeMap::new();
+    let Some(carried) = all.get(&feature) else {
+        return (own, shared);
+    };
+    for entry in carried {
+        let others: Vec<FeatureId> = all
+            .iter()
+            .filter(|(other, theirs)| **other != feature && theirs.contains(entry))
+            .map(|(other, _)| *other)
+            .collect();
+        if others.is_empty() {
+            own.push(entry.clone());
+        } else {
+            shared.insert(entry.clone(), others);
+        }
+    }
+    (own, shared)
+}
+
 /// The appearance of every face of the body of `feature`, in the order of
 /// its faces: the body's for every face when the faces have no names.
 pub fn face_appearances(

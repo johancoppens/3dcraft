@@ -868,6 +868,19 @@ fn a_face_colour_wins_over_a_body_colour_given_on_a_later_feature() {
     }
 }
 
+/// The id of the feature called `name`.
+fn feature_id(s: &mut Session, name: &str) -> String {
+    let inspect = run(s, "document.inspect", json!({"measures": false}));
+    inspect["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == name)
+        .and_then(|f| f["id"].as_str())
+        .unwrap_or_else(|| panic!("no feature {name}: {inspect}"))
+        .to_string()
+}
+
 /// The face colours of a body as the scene draws them, in face order.
 fn colours_of(s: &mut Session, feature: &str) -> Vec<Option<[u8; 3]>> {
     scene_faces(s, feature)
@@ -1029,6 +1042,17 @@ fn clearing_a_body_keeps_the_colours_another_body_shares() {
         json!({"body": "Moved", "faces": ["F3:copy(0)/F1:face(2)"], "color": GREEN}),
     );
     let twin = colours_of(&mut s, "F2");
+    // Inspect tells the two apart: Moved has one colour of its own (the
+    // green) and one it shares with Twin; Twin shares that one.
+    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    let bodies = inspect["bodies"].as_array().unwrap();
+    let body = |name: &str| bodies.iter().find(|b| b["name"] == name).unwrap().clone();
+    assert_eq!(body("Moved")["faceColors"], 1, "{inspect}");
+    assert_eq!(body("Moved")["sharedFaceColors"], 1, "{inspect}");
+    assert_eq!(body("Moved")["sharedWith"], json!(["Twin"]), "{inspect}");
+    assert!(body("Twin").get("faceColors").is_none(), "{inspect}");
+    assert_eq!(body("Twin")["sharedFaceColors"], 1, "{inspect}");
+    assert_eq!(body("Twin")["sharedWith"], json!(["Moved"]), "{inspect}");
     assert_eq!(
         twin.iter().filter(|c| **c == Some(BLUE)).count(),
         1,
@@ -1045,7 +1069,8 @@ fn clearing_a_body_keeps_the_colours_another_body_shares() {
     assert_eq!(out["kept"][0]["face"], "F1:face(1)", "{out}");
     assert_eq!(out["kept"][0]["for"], json!(["Twin"]), "{out}");
     assert_eq!(
-        out["message"], "Cleared 1 face colour of Moved; 1 kept for Twin",
+        out["message"],
+        "Cleared 1 face colour of Moved; 1 kept, shared with Twin: clearing it by its name where it was given (the command under kept) takes it from Twin too",
         "{out}"
     );
     // The copy keeps its blue face; the moved part keeps it too (kept),
@@ -1058,6 +1083,145 @@ fn clearing_a_body_keeps_the_colours_another_body_shares() {
         "{moved:?}"
     );
     assert!(!moved.contains(&Some(GREEN)), "{moved:?}");
+    // Clearing Twin keeps it too: no way out there. The kept entry names
+    // the command that does clear it, at the feature it was given on;
+    // that command takes the blue from both bodies.
+    let twin_out = run(
+        &mut s,
+        "face.appearance",
+        json!({"body": "Twin", "clear": true}),
+    );
+    assert_eq!(twin_out["count"], 0, "{twin_out}");
+    assert_eq!(twin_out["kept"][0]["for"], json!(["Moved"]), "{twin_out}");
+    let clear = out["kept"][0]["clear"].clone();
+    assert_eq!(
+        clear,
+        json!({"body": "F1", "faces": ["F1:face(1)"], "clear": true}),
+        "{out}"
+    );
+    let why = out["kept"][0]["why"].as_str().unwrap();
+    assert!(why.contains(&format!("face.appearance {clear}")), "{why}");
+    assert!(why.contains("from Moved and Twin"), "{why}");
+    run(&mut s, "face.appearance", clear);
+    assert!(!colours_of(&mut s, "F2").contains(&Some(BLUE)));
+    assert!(!colours_of(&mut s, "F3").contains(&Some(BLUE)));
+    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    assert!(inspect.get("faceAppearances").is_none(), "{inspect}");
+}
+
+/// A plate with two blue faces cut through and split in two (`body.split`):
+/// both pieces carry both colours, so clearing either keeps both, for the
+/// other piece; the commands under `kept` clear them from both pieces.
+#[test]
+fn a_split_body_s_shared_colours_are_cleared_by_the_kept_commands() {
+    let mut s = session();
+    new_doc(&mut s);
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Plate", "size": [40, 20, 10]}),
+    );
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"faces": ["F1:face(1)", "F1:face(2)"], "color": BLUE}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Slot", "size": [4, 40, 20], "position": [18, -10, -5]}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Plate", "tool": "Slot", "name": "Cut"}),
+    );
+    run(
+        &mut s,
+        "body.split",
+        json!({"source": "Cut", "names": ["Left", "Right"]}),
+    );
+    let blue = |s: &mut Session, body: &str| {
+        colours_of(s, body)
+            .iter()
+            .filter(|c| **c == Some(BLUE))
+            .count()
+    };
+    let (left, right) = (feature_id(&mut s, "Left"), feature_id(&mut s, "Right"));
+    assert!(blue(&mut s, &left) > 0 && blue(&mut s, &right) > 0);
+    let out = run(
+        &mut s,
+        "face.appearance",
+        json!({"body": "Left", "clear": true}),
+    );
+    assert_eq!(out["count"], 0, "{out}");
+    let kept = out["kept"].as_array().unwrap();
+    assert_eq!(kept.len(), 2, "{out}");
+    assert!(kept.iter().all(|k| k["for"] == json!(["Right"])), "{out}");
+    assert_eq!(
+        out["message"],
+        "No face colours of Left to clear; 2 kept, shared with Right: clearing them by their names where they were given (the commands under kept) takes them from Right too",
+        "{out}"
+    );
+    for k in kept {
+        let clear = k["clear"].clone();
+        assert_eq!(clear["body"], "F1", "{k}");
+        assert!(
+            k["why"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("face.appearance {clear}")),
+            "{k}"
+        );
+        run(&mut s, "face.appearance", clear);
+    }
+    assert_eq!(blue(&mut s, &left), 0);
+    assert_eq!(blue(&mut s, &right), 0);
+    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    assert!(inspect.get("faceAppearances").is_none(), "{inspect}");
+}
+
+/// A pattern's instances are one body: the seed's face colour, shown on
+/// every instance's top, is cleared from all of them (nothing is kept),
+/// and the pattern's body colour shows on every face.
+#[test]
+fn clearing_a_pattern_takes_the_seed_s_colour_from_every_instance() {
+    let mut s = session();
+    new_doc(&mut s);
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Cube", "size": [10, 10, 10]}),
+    );
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"faces": ["F1:face(1)"], "color": BLUE}),
+    );
+    run(
+        &mut s,
+        "feature.pattern",
+        json!({"name": "Cubes", "source": "Cube", "count": 3, "step": [20, 0, 0]}),
+    );
+    run(
+        &mut s,
+        "body.appearance",
+        json!({"body": "Cubes", "color": RED}),
+    );
+    let before = colours_of(&mut s, "F2");
+    assert_eq!(
+        before.iter().filter(|c| **c == Some(BLUE)).count(),
+        3,
+        "{before:?}"
+    );
+    let out = run(
+        &mut s,
+        "face.appearance",
+        json!({"body": "Cubes", "clear": true}),
+    );
+    assert_eq!(out["count"], 1, "{out}");
+    assert_eq!(out["kept"], json!([]), "{out}");
+    assert!(colours_of(&mut s, "F2").iter().all(|c| *c == Some(RED)));
 }
 
 /// An imported STEP part with a colour on every face: its face colours
