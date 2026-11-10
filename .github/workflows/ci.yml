@@ -41,8 +41,9 @@ permissions:
   contents: read
 
 concurrency:
-  # A narrow run does not cancel another one on the same branch.
-  group: ci-${{ github.ref }}-${{ inputs.os }}-${{ inputs.cargo }}
+  # A narrow run does not cancel another one on the same branch; the full
+  # run, scheduled or started by hand, is one group, as before.
+  group: ci-${{ github.ref }}-${{ inputs.os || 'all' }}-${{ inputs.cargo || 'full' }}
   cancel-in-progress: true
 
 env:
@@ -56,20 +57,23 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
   CARGO_BUILD_JOBS: "2"
-  # The workspace's own crates optimised as fully as their dependencies
-  # are (opt-level 3 instead of the dev profile's 1, which is there for
-  # quick builds while working): running the tests is most of a run. Three
-  # of the slowest engine test files ran 1.8 times faster so on the Strix
-  # (578 s against 329 s, 2026-11-10). It changes no result: Rust does not
-  # reorder or fuse floating-point operations at any level, and debug
-  # assertions and overflow checks stay on.
+  # The workspace's own crates at opt-level 3, not the dev profile's 1
+  # (which is there for quick builds while working; the dependencies stay
+  # at its 2): running the tests is most of a run. Three of the slowest
+  # engine test files ran 1.8 times faster so on the Strix (578 s against
+  # 329 s, 2026-11-10). It changes no result: Rust does not reorder or fuse
+  # floating-point operations at any level, and debug assertions and
+  # overflow checks stay on. The Strix's Gate builds at the workspace's
+  # own levels.
   CARGO_PROFILE_DEV_OPT_LEVEL: "3"
 
 jobs:
   # Which jobs run: a JSON matrix of names, runners, the arguments after
   # `cargo` and a time limit, from the inputs (a scheduled run has none:
-  # the full run everywhere). The limits stop a job that hangs well before
-  # GitHub's six hours, with room above what the job takes.
+  # the full run everywhere). The limits stop a job that hangs before
+  # GitHub's six hours, with room above what the job took: Linux 318
+  # minutes and macOS two hours on 2026-11-09, before the tests were
+  # optimised; Windows about eight hours in one job.
   plan:
     runs-on: ubuntu-latest
     outputs:
@@ -93,12 +97,12 @@ jobs:
           }
           want() { [ "$OS" = all ] || [ "$OS" = "$1" ]; }
           if [ -n "$ARGS" ]; then
-            want linux && add linux "narrow (linux)" ubuntu-latest "$ARGS" 360
-            want macos && add macos "narrow (macos)" macos-latest "$ARGS" 360
-            want windows && add windows "narrow (windows)" windows-latest "$ARGS" 360
+            want linux && add linux "narrow (linux)" ubuntu-latest "$ARGS" 330
+            want macos && add macos "narrow (macos)" macos-latest "$ARGS" 330
+            want windows && add windows "narrow (windows)" windows-latest "$ARGS" 330
           else
             # The full gate: fmt, clippy, tests, layering, wasm.
-            want linux && add linux "gate (linux)" ubuntu-latest "xtask ci" 360
+            want linux && add linux "gate (linux)" ubuntu-latest "xtask ci" 330
             want macos && add macos "test (macos)" macos-latest \
               "test --workspace --no-fail-fast" 240
             # Windows in three jobs that together are the workspace: the
@@ -198,14 +202,19 @@ jobs:
             cargo "$@" || failed=1
           done
           exit "$failed"
-      # A GPU test that fails leaves the CPU's and the GPU's pictures and
-      # their difference (`failed-*.png`, with a text of the pixels off).
+      # What the GPU tests leave in target/evidence/gpu: the summaries per
+      # device (`parity-*`, `onscreen-*`, `analysis-*`, `layers-*`, how
+      # close each device came, also when it passed), and for a test that
+      # failed the CPU's and the GPU's pictures and their difference
+      # (`failed-*`, with a text of the pixels off). Also after a job that
+      # failed or ran out of time. (`layers.rs` and `analysis.rs` also
+      # print pictures into the log, as base64 `EV` lines.)
       - name: evidence
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: evidence-${{ matrix.id }}
-          path: target/evidence/**/failed-*
+          path: target/evidence/gpu/
           if-no-files-found: ignore
           retention-days: 14
       # What the build left: the disk and the target directory's size,
