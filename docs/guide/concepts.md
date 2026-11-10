@@ -1,4 +1,4 @@
-# 6. How 3DCraft thinks
+# How 3DCraft thinks
 
 *The few ideas behind nearly everything 3DCraft does, and nearly every message it gives: the history,
 variables and units, sketches, features, names that stay put, and failed features.*
@@ -25,7 +25,7 @@ Commands that change the history (`feature.edit`, `feature.suppress`, `feature.m
   it were not there: a suppressed boolean, fillet, chamfer, shell or pattern hands the body it would
   change on unchanged; a suppressed block or extrusion makes no body, and a boolean that used it as its
   tool keeps its target as it was. Only what the feature itself makes (a fillet's rounded face) is gone,
-  and a feature that names it fails saying so. `feature.when` does the same by a condition ([chapter 8](08-formulas.md#switching-parts-on-and-off)).
+  and a feature that names it fails saying so. `feature.when` does the same by a condition ([Formulas, tables and conditions](formulas.md#switching-parts-on-and-off)).
 - `feature.move {"feature": "Round", "position": 3}` moves a feature to that index in `document.inspect`'s
   list of features (sketches and datums count); one moved before what it is made from fails and says so.
 - `feature.rename` renames a feature or a sketch (sketches are features); `variable.rename` a variable,
@@ -109,11 +109,11 @@ Every length, angle and count may be an **expression** in the document's variabl
   `asinh`, `acosh`, `atanh` (plain numbers in and out), `hypot(dx, dy)` or `hypot(dx, dy, dz)` (the
   length of a vector, in its components' unit), `sign(x)` (-1, 0 or 1, of a value of any unit;
   `round(x, step)` rounds to a step, as `floor` and `ceil` do), the conditions of
-  [chapter 8](08-formulas.md), the constant `pi`, and `^` for powers (a whole-number exponent; `pow(x, y)` takes any exponent of
+  [Formulas, tables and conditions](formulas.md), the constant `pi`, and `^` for powers (a whole-number exponent; `pow(x, y)` takes any exponent of
   a plain number).
 
 Conditions (`if`, `choose`, comparisons), tables of values and curves drawn from formulas have a chapter of
-their own: [chapter 8](08-formulas.md).
+their own: [Formulas, tables and conditions](formulas.md).
 
 ## Sketches and constraints
 
@@ -130,7 +130,7 @@ simpler.
 
 Entities are added with `sketch.point`, `sketch.line`, `sketch.polyline`, `sketch.rect`, `sketch.circle`,
 `sketch.arc`, `sketch.path` (lines and arcs end to end), `sketch.spline`, `sketch.curve` (a curve from
-formulas, [chapter 8](08-formulas.md#curves-from-formulas)) and `sketch.pattern`. Each gets an id, `e1`, `e2`, …, returned by the command. Then
+formulas, [Formulas, tables and conditions](formulas.md#curves-from-formulas)) and `sketch.pattern`. Each gets an id, `e1`, `e2`, …, returned by the command. Then
 constraints (`sketch.constrain`) tie them down:
 `coincident`, `pointOn`, `horizontal`, `vertical`, `parallel`, `perpendicular`, `tangent`, `equal`,
 `concentric`, `symmetric`, `midpoint`, `fixed`, `x`, `y`, `distance`, `angle`, `radius`, `diameter`.
@@ -167,7 +167,7 @@ A feature makes or changes a body: primitives (`feature.block`, `feature.cylinde
 `feature.sweep`, `feature.loft`, `feature.fill`), combinations (`feature.boolean`, `feature.pattern`,
 `feature.mirror`, `feature.transform`), and operations on faces and edges (`feature.fillet`,
 `feature.chamfer`, `feature.shell`, `feature.offsetFace`, `feature.moveFace`, `feature.draft`,
-`feature.deleteFace`, `feature.thicken`, `feature.thread`). [Chapter 9](09-features.md) goes through them.
+`feature.deleteFace`, `feature.thicken`, `feature.thread`). [Modelling features](features.md) goes through them.
 
 Each feature has an id (`F1`, `F2`, … in order) and a name (given with `name`, or made up). Most take the
 body of another feature and *consume* it: after `feature.boolean {"target": "Disc", "tool": "Bore", "name":
@@ -206,7 +206,7 @@ on the flange after two booleans).
 
 You rarely type these: `document.inspect` lists every body's `faceNames`, a click in the window gives the
 name of the face, and `select.query` finds faces by what they are (`{"hole": true, "radius": "4 mm"}`,
-[chapter 11](11-selection.md)).
+[Selection and named sets](selection.md)).
 
 **What happens when you edit upstream.** Because names come from how a face was made, an edit upstream
 (a longer leg, more holes, a different radius) keeps every name that still means something, and the
@@ -230,4 +230,4 @@ document.check
 The reason starts with the parameter at fault (`radius`, `edges.0`, `target`), and `causedBy` points at the
 first failure in a chain: fix that one (here, a smaller `inner_r`, or `edit.undo`) and the rest is rebuilt.
 
-**Next:** [A first part, command by command](07-first-part.md).
+**Next:** [A first part, command by command](first-part.md).

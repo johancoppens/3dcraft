@@ -1,11 +1,11 @@
-# 8. Formulas, tables and conditions
+# Formulas, tables and conditions
 
 *Let a design decide for itself: choose sizes by conditions, look values up in tables, switch parts on
 and off, and draw curves from formulas.*
 
-Every size in 3DCraft can be a formula of the document's variables ([chapter 6](06-concepts.md#variables-expressions-and-units)).
+Every size in 3DCraft can be a formula of the document's variables ([How 3DCraft thinks](concepts.md#variables-expressions-and-units)).
 This chapter is about the formulas that make a design *smart*: they are what turns a part into a Jig with
-options ([chapter 5](05-jigs.md)), and what makes an involute gear exact. An agent writes them for you
+options ([Using a Jig](jigs.md)), and what makes an involute gear exact. An agent writes them for you
 when you ask ("four ribs when it is longer than 200 mm", "a lid as an option"); here is what they look
 like.
 
@@ -211,4 +211,4 @@ as they are and fits the spline through them again at every regeneration, so poi
 once and then shaped by its control points. A live spline takes `pointOn` and `tangent` as a formula curve
 does, and what hangs on it follows its points.
 
-**Next:** [Modelling features](09-features.md).
+**Next:** [Modelling features](features.md).

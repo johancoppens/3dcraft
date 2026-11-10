@@ -1,4 +1,4 @@
-# 5. Jigs
+# Jigs
 
 *Use a ready-made design by setting its sizes in a form, and make designs of your own that others can
 set. No AI needed to use one.*
@@ -42,7 +42,7 @@ Each Jig's description, on its Parameters tab, says how to export it. The collec
      without its unit (`60 mm`, `60`, even `width / 2`) and press Enter; Escape gives up.
    - **Yes or no:** a checkbox (*Hub*, *Flanges* on the pulley).
    - **A choice:** a list to pick from.
-4. **Export** the result: **File › Export…** ([chapter 12](12-files.md)). For a laser-cut Jig, pick
+4. **Export** the result: **File › Export…** ([Files, export and drawings](files.md)). For a laser-cut Jig, pick
    **Sheet of set: …** in the export dialog and the format DXF or SVG: every panel on one sheet, at true
    size.
 5. **Save** if you want to keep your settings: it saves the result as an ordinary `.3dcraft` model under
@@ -69,7 +69,7 @@ have chosen ranges where that cannot happen; if it does, tell them.
 
 ### Looking inside, and changing the design
 
-The **Features** tab shows how the Jig is built, and the history player ([chapter 4](04-window.md#the-history-player)) plays it step by step.
+The **Features** tab shows how the Jig is built, and the history player ([The window](window.md#the-history-player)) plays it step by step.
 In a Jig, only the parameters can change: the features are there to look at, and an agent that tries to
 edit them is told so.
 
@@ -81,7 +81,7 @@ by hand or with an agent.
 
 Jigs work the same in the web version, with one difference: the model follows a parameter **when you let
 go** of the field, not while you drag, because the browser cannot rebuild while it draws. Export and
-save as described in [chapter 12](12-files.md#files-in-the-web-version).
+save as described in [Files, export and drawings](files.md#files-in-the-web-version).
 
 ### With an agent or a script
 
@@ -97,7 +97,7 @@ An agent sets a Jig's parameters with `param.list` (the form, as a list) and `pa
 ```
 
 From a terminal, the same with `craft3d-cli run box.3dcraftjig --cmd param.set --params '…' --cmd
-file.export --params '…'` ([chapter 13](13-command-line.md)).
+file.export --params '…'` ([The command line and scripts](command-line.md)).
 
 ## Making a Jig
 
@@ -118,7 +118,7 @@ Any design whose sizes are variables can become a Jig. You design it as an ordin
    ```
 
    `kind` is `number` (a value with its unit, the default), `integer`, `boolean` (0 or 1) or `choice` (1
-   for the first label; `choicesFrom` takes the labels from a table, [chapter 8](08-formulas.md#tables)).
+   for the first label; `choicesFrom` takes the labels from a table, [Formulas, tables and conditions](formulas.md#tables)).
    A published variable must hold a value (`40 mm`), not a formula; other variables may be formulas of it
    (`radius = 0.5 mm + (corners - 1) * 4.5 mm`). Ranges and steps may be formulas of other parameters
    (`"max": "width - 2 * wall"`) and look values up in tables (`"max": "scales[scale].maxNotes"`). A
@@ -129,7 +129,7 @@ Any design whose sizes are variables can become a Jig. You design it as an ordin
    (`instance.add` with `params`, a value or a formula such as `sqrt(2) * 7 mm`) is held to the range, not
    to the step. `variable.unpublish` makes a parameter an ordinary variable again.
 2. **Switch options on and off** with conditions: `feature.when {"feature": "Lid", "expr": "lid"}` builds
-   the lid only when the *Thick lid* box is ticked ([chapter 8](08-formulas.md#switching-parts-on-and-off)).
+   the lid only when the *Thick lid* box is ticked ([Formulas, tables and conditions](formulas.md#switching-parts-on-and-off)).
    A colour and a density may follow a choice too: `body.appearance {"body": "Bar", "color":
    ["woods[wood].red", "woods[wood].green", "woods[wood].blue"]}` and `body.material {"body": "Bar",
    "name": "Wood", "density": "woods[wood].density g/cm3"}` recolour and reweigh the bar when the
@@ -148,7 +148,7 @@ Any design whose sizes are variables can become a Jig. You design it as an ordin
 5. **Prove it over the whole range** with `craft3d-cli check-range mybox.3dcraft` (or the command
    `document.sample`): it builds the design at the defaults, at the corners of the ranges, at every choice
    and at random points, checks each, and lists every combination that fails with the values to
-   reproduce it ([chapter 13](13-command-line.md#check-a-jig-over-its-range)). Fix the model or narrow the
+   reproduce it ([The command line and scripts](command-line.md#check-a-jig-over-its-range)). Fix the model or narrow the
    range until it passes. An assertion that could be neither proven nor disproven at a point is counted
    apart (*with unproven assertions*); `--strict` treats it as a failure. With many parameters, give
    `--max-corners 8` for a quick run.
@@ -160,7 +160,7 @@ Any design whose sizes are variables can become a Jig. You design it as an ordin
 > publishes the parameters, runs the range check, fixes what fails and exports the Jig.
 
 **Good Jigs** have few parameters, clear labels with units, ranges that always build, defaults that make a
-sensible part, a description that says how to export, and checks (assertions, [chapter 10](10-measure.md))
+sensible part, a description that says how to export, and checks (assertions, [Measuring and assertions](measure.md))
 that guard what matters, such as a minimum wall.
 
-**Next:** [How 3DCraft thinks](06-concepts.md).
+**Next:** [How 3DCraft thinks](concepts.md).

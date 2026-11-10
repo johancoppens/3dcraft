@@ -32,34 +32,34 @@ numbers yourself.
 
 **New to 3DCraft?** Follow these three, in order:
 
-1. [Install 3DCraft and connect an AI agent](01-install.md): the installers for Windows, macOS and Linux,
+1. [Install 3DCraft and connect an AI agent](install.md): the installers for Windows, macOS and Linux,
    the web version that needs no installing, and how to give your AI agent access.
-2. [Your first five minutes](02-first-steps.md): open an example, look around, play its history, change a
+2. [Your first five minutes](first-steps.md): open an example, look around, play its history, change a
    size and export it for a 3D printer.
-3. [Working with an AI agent](03-agent.md): what to ask, what a session looks like, and how to check the
+3. [Working with an AI agent](agent.md): what to ask, what a session looks like, and how to check the
    agent's work.
 
 **Using 3DCraft**
 
 | Chapter | What you learn |
 |---|---|
-| [4. The window](04-window.md) | The start screen, tabs, the feature list, flying to a feature, the history player, the studio look, materials, surface analysis, pointing at faces, menus and keys |
-| [5. Jigs](05-jigs.md) | Using a ready-made Jig (the Parameters tab), the Jigs collection, and making a Jig of your own |
-| [6. How 3DCraft thinks](06-concepts.md) | The history, variables and units, sketches and constraints, features, names that stay put, failed features |
-| [7. A first part, command by command](07-first-part.md) | An L-bracket with a rounded corner and two holes, built step by step |
-| [8. Formulas, tables and conditions](08-formulas.md) | Choices made by formulas, tables of sizes, parts switched on and off, curves drawn from formulas (an involute gear) |
-| [9. Modelling features](09-features.md) | Extrude, revolve, sweep and loft; text; booleans; fillets and chamfers; shell; patterns; threads; datums; sheets; developables and unfolding; surfaces from curve networks; plates; sheet metal |
-| [10. Measuring and checking](10-measure.md) | Volume, distances and wall thickness, sections and floating levels, continuity across a seam, design rules (assertions) checked at every change, outputs |
-| [11. Selection and named sets](11-selection.md) | Finding faces by what they are, the selection you share with the agent, sets kept in the document |
-| [12. Files, export and drawings](12-files.md) | Saving, STEP, meshes for 3D printing, outlines for laser cutting, drawings of the model, the web version |
-| [13. The command line and scripts](13-command-line.md) | `craft3d-cli`: run commands and scripts, render pictures, convert files, check a Jig |
-| [14. Troubleshooting](14-troubleshooting.md) | What a refusal means, failed features, undo, crash recovery, reporting a problem |
-| [16. Origami](16-origami.md) | Crease patterns (mountain, valley, cut), folding by angles and variables with the other creases solved, Kawasaki and Maekawa (and what they do not prove), crease patterns to SVG and DXF |
-| [17. Assemblies](17-assemblies.md) | Instances of your parts and Jigs, sizes per instance, one body of a Jig, mates, subassemblies, packing, STEP with structure |
+| [The window](window.md) | The start screen, tabs, the feature list, flying to a feature, the history player, the studio look, materials, surface analysis, pointing at faces, menus and keys |
+| [Jigs](jigs.md) | Using a ready-made Jig (the Parameters tab), the Jigs collection, and making a Jig of your own |
+| [How 3DCraft thinks](concepts.md) | The history, variables and units, sketches and constraints, features, names that stay put, failed features |
+| [A first part, command by command](first-part.md) | An L-bracket with a rounded corner and two holes, built step by step |
+| [Formulas, tables and conditions](formulas.md) | Choices made by formulas, tables of sizes, parts switched on and off, curves drawn from formulas (an involute gear) |
+| [Modelling features](features.md) | Extrude, revolve, sweep and loft; text; booleans; fillets and chamfers; shell; patterns; threads; datums; sheets; developables and unfolding; surfaces from curve networks; plates; sheet metal |
+| [Measuring and checking](measure.md) | Volume, distances and wall thickness, sections and floating levels, continuity across a seam, design rules (assertions) checked at every change, outputs |
+| [Selection and named sets](selection.md) | Finding faces by what they are, the selection you share with the agent, sets kept in the document |
+| [Files, export and drawings](files.md) | Saving, STEP, meshes for 3D printing, outlines for laser cutting, drawings of the model, the web version |
+| [The command line and scripts](command-line.md) | `craft3d-cli`: run commands and scripts, render pictures, convert files, check a Jig |
+| [Troubleshooting](troubleshooting.md) | What a refusal means, failed features, undo, crash recovery, reporting a problem |
+| [Origami](origami.md) | Crease patterns (mountain, valley, cut), folding by angles and variables with the other creases solved, Kawasaki and Maekawa (and what they do not prove), crease patterns to SVG and DXF |
+| [Assemblies](assemblies.md) | Instances of your parts and Jigs, sizes per instance, one body of a Jig, mates, subassemblies, packing, STEP with structure |
 
 **Reference**
 
-- [15. Reference](15-reference.md): every command by family, the MCP tools, keys and mouse, units and
+- [Reference](reference.md): every command by family, the MCP tools, keys and mouse, units and
   functions, the command-line programs.
 - [Example models](../examples/README.md): seventeen parts (a bracket, a flange, a gear, a G2 fin, a fuel tank, a mouse, …), each a
   script with a picture that checks its own volume. The window's start screen builds ten of them with one

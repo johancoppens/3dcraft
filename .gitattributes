@@ -10,7 +10,7 @@ docs/examples/thumbs/STAMPS.txt text eol=lf
 # came out with CRLF, and their tests failed (CI, 2026-10-30).
 crates/*/tests/golden/** text eol=lf
 # The guide: tests take its examples and the output it prints from the
-# text (a cut list's CSV, docs/guide/12-files.md); with CRLF on Windows the
+# text (a cut list's CSV, docs/guide/files.md); with CRLF on Windows the
 # fences were not found (CI, 2026-11-09).
 docs/guide/*.md text eol=lf
 # The zip reader's test data: deflate streams and the text they inflate

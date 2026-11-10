@@ -1,9 +1,9 @@
-# 2. Your first five minutes
+# Your first five minutes
 
 *Open an example, look around, watch how it was built, try a Jig and export a part for a 3D printer.
 No AI agent needed yet.*
 
-You need 3DCraft installed, or the web version open in your browser ([chapter 1](01-install.md)).
+You need 3DCraft installed, or the web version open in your browser ([Install 3DCraft and connect an AI agent](install.md)).
 
 ## 1. Open an example
 
@@ -14,7 +14,7 @@ Start 3DCraft. Without a document, the window shows its **start screen**:
 Click the **L-bracket** card. 3DCraft builds the bracket in a new tab, from the same command script an
 agent would send, and shows it:
 
-![The window with the L-bracket; the numbers are explained in chapter 4](images/window.png)
+![The window with the L-bracket; the numbers are explained in The window](images/window.png)
 
 On the left is the **feature list**: the steps that made the bracket, in order (a sketch of the L, the
 extrusion, the rounded corner, the holes), and under it the **assertions**, the checks the bracket must
@@ -67,7 +67,7 @@ Open the file in your slicer (Cura, PrusaSlicer, Bambu Studio, …). The bracket
 long, as designed.
 
 > **Other formats:** `.step` for another CAD program, `.dxf` or `.svg` for a laser cutter or a drawing
-> ([chapter 12](12-files.md)).
+> ([Files, export and drawings](files.md)).
 
 ## 5. Try a Jig
 
@@ -87,18 +87,18 @@ The Jig opens on its **Parameters** tab:
 4. Export the result (**File › Export…**). For the box, pick **Sheet of set: Cut sheet** and the
    format SVG or DXF: all six panels on one sheet, at true size, ready for the laser cutter.
 
-[Chapter 5](05-jigs.md) tells you everything about Jigs.
+[Using a Jig](jigs.md) tells you everything about Jigs.
 
 ## 6. Save
 
 **File › Save** (Ctrl+S) saves the document as a `.3dcraft` file. A Jig is never overwritten: saving it
 saves your result as a new `.3dcraft` model. If you forget to save, 3DCraft keeps an autosave and offers
-to recover it after a crash ([chapter 14](14-troubleshooting.md)).
+to recover it after a crash ([Troubleshooting](troubleshooting.md)).
 
 ## What next?
 
-- **Design something new with an AI agent:** connect one ([chapter 1](01-install.md#connect-an-ai-agent-over-mcp))
-  and read [chapter 3](03-agent.md).
-- **Get to know the window:** [chapter 4](04-window.md).
+- **Design something new with an AI agent:** connect one ([Install 3DCraft and connect an AI agent](install.md#connect-an-ai-agent-over-mcp))
+  and read [Working with an AI agent](agent.md).
+- **Get to know the window:** [The window](window.md).
 - **The other examples:** each card on the start screen is one; the [example models](../examples/README.md)
   page shows them all with what they teach.

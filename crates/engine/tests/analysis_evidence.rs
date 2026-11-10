@@ -160,7 +160,7 @@ fn analysis_evidence() {
     }
 }
 
-/// The guide's fin held to its post (docs/guide/09-features.md,
+/// The guide's fin held to its post (docs/guide/features.md,
 /// "Curvature-continuous seams"), held in `kind`.
 fn fin(s: &mut Session, kind: &str) {
     for (cmd, params) in [

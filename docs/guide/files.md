@@ -1,4 +1,4 @@
-# 12. Files, export and drawings
+# Files, export and drawings
 
 *Save your design, bring in parts from other CAD programs, and export for 3D printing, laser cutting,
 other CAD programs and drawings.*
@@ -6,7 +6,7 @@ other CAD programs and drawings.*
 | Format | Open or import | Save or export | Holds |
 |---|---|---|---|
 | `.3dcraft` | **Open…** (`file.open`) | **Save** (`file.save`) | Your design: its history, variables, sketches, features, checks, sets, colours |
-| `.3dcraftjig` | **Open…** (`file.open`) | **Export as Jig…** (`jig.export`) | A design to be set by its parameters, with its info and a picture ([chapter 5](05-jigs.md)) |
+| `.3dcraftjig` | **Open…** (`file.open`) | **Export as Jig…** (`jig.export`) | A design to be set by its parameters, with its info and a picture ([Using a Jig](jigs.md)) |
 | STEP (`.step`, `.stp`) | **Import…** (`file.import`) | **Export…** (`file.export`) | Exact solids, units, names, colours; no history. For other CAD programs |
 | FreeCAD (`.FCStd`), BRep (`.brep`) | **Import…** (`file.import`) | no | The finished objects as exact solids, with their names, places and colours; no history |
 | STL, 3MF, OBJ | no | **Export…** | Triangle meshes, for 3D printing and rendering |
@@ -14,8 +14,8 @@ other CAD programs and drawings.*
 
 In the window, the **File** menu does all of this with your system's file dialogs. An agent uses the
 commands in brackets; its paths are relative to the read and write roots the window or server was started
-with ([chapter 1](01-install.md#connect-an-ai-agent-over-mcp)). `craft3d-cli` on its own reads and writes
-anywhere you can ([chapter 13](13-command-line.md)).
+with ([Install 3DCraft and connect an AI agent](install.md#connect-an-ai-agent-over-mcp)). `craft3d-cli` on its own reads and writes
+anywhere you can ([The command line and scripts](command-line.md)).
 
 ## Saving: the `.3dcraft` file
 
@@ -27,7 +27,7 @@ version and rebuilds to the same bodies. A file from a *newer* version is refuse
 message that names both versions, never guessed at.
 
 A Jig (`.3dcraftjig`) is the same kind of file, published to be used: opening it shows its Parameters tab,
-and saving saves your result as a new `.3dcraft`, never over the Jig ([chapter 5](05-jigs.md)).
+and saving saves your result as a new `.3dcraft`, never over the Jig ([Using a Jig](jigs.md)).
 
 ## Exporting from the window
 
@@ -48,8 +48,8 @@ and saving saves your result as a new `.3dcraft`, never over the Jig ([chapter 5
 | **The selection** | STEP, STL, 3MF, OBJ | The selected bodies |
 | | DXF, SVG | The outlines of the selected flat faces, or of one selected sketch, or the flat pattern of one selected sheet-metal part |
 | **Sheet of set: …** | DXF, SVG | Every flat face of a named set on one sheet (below) |
-| **Flat pattern of …** | DXF, SVG | A sheet-metal part, unfolded ([chapter 9](09-features.md#sheet-metal)) |
-| **Crease pattern of …** | DXF, SVG | A fold's creases on its paper ([chapter 16](16-origami.md)) |
+| **Flat pattern of …** | DXF, SVG | A sheet-metal part, unfolded ([Modelling features](features.md#sheet-metal)) |
+| **Crease pattern of …** | DXF, SVG | A fold's creases on its paper ([Origami](origami.md)) |
 | **Flat patterns of every part** | DXF, SVG | Every sheet-metal part unfolded on one sheet |
 
 *The selection* is chosen first when something is selected (and the sheet or pattern you exported last
@@ -236,7 +236,7 @@ As commands:
 ```
 
 From the command line: `craft3d-cli convert bracket.3dcraft bracket-front.dxf --view front`
-([chapter 13](13-command-line.md#converting-files-convert)).
+([The command line and scripts](command-line.md#converting-files-convert)).
 
 The layers are `visible`, `silhouette` and `hidden`. Edges are written as the curves they are: lines,
 circles and arcs (where they face the view), ellipses and elliptic arcs, splines; a circle seen edge on
@@ -274,4 +274,4 @@ whether to save it, and then drops its autosave. An agent has the same with `rec
 `recovery.open` and `recovery.discard`, also in `craft3d-cli serve` and `mcp` when they are started with
 `--recovery-dir DIR`.
 
-**Next:** [The command line and scripts](13-command-line.md).
+**Next:** [The command line and scripts](command-line.md).

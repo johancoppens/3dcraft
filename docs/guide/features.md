@@ -1,4 +1,4 @@
-# 9. Modelling features
+# Modelling features
 
 *What each kind of feature does, with the parameters that matter: a reference to come back to.*
 
@@ -234,7 +234,7 @@ by.
 cutting tool: `feature.boolean` of a solid with a sheet that reaches across it keeps the part in front of
 the sheet (`subtract`, the side its normal points to) or behind it (`intersect`). Example:
 [wedge](../examples/wedge.json). An open chain in a loft gives a sheet too, and `feature.thicken` turns
-faces into a solid layer. `feature.fold` folds a sheet along a crease pattern ([chapter 16](16-origami.md)).
+faces into a solid layer. `feature.fold` folds a sheet along a crease pattern ([Origami](origami.md)).
 
 ## Developable surfaces and unfolding
 
@@ -880,6 +880,6 @@ does the same. To build on from that step, move the real marker there with `hist
 on again. `feature.when` switches it by a condition, such as a yes-or-no parameter of a Jig. Off, a feature
 behaves as if it were not in the history: one that changes a body passes it on unchanged (an inactive
 transform leaves the body where it was), one that makes a body makes none, and its faces and edges are not
-there for the fillets and face operations after it. [Chapter 8](08-formulas.md#switching-parts-on-and-off) explains both in full.
+there for the fillets and face operations after it. [Formulas, tables and conditions](formulas.md#switching-parts-on-and-off) explains both in full.
 
-**Next:** [Measuring and checking](10-measure.md).
+**Next:** [Measuring and checking](measure.md).

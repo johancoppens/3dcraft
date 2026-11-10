@@ -10,7 +10,7 @@ are looking for.
 
 ## 1. Install
 
-Pick one (details and pictures in [chapter 1](01-install.md)):
+Pick one (details and pictures in [Install 3DCraft and connect an AI agent](install.md)):
 
 | You have | Use | Can an agent drive it? |
 |---|---|---|
@@ -20,8 +20,8 @@ Pick one (details and pictures in [chapter 1](01-install.md)):
 | A Chromebook, or no rights to install | the web address you were given | not yet |
 
 The developer sends you the installer or the web address himself; nothing is downloaded from a public page. The installers are not
-signed yet, so Windows and macOS warn the first time: [chapter 1 › Why your computer warns
-you](01-install.md#why-your-computer-warns-you) shows the two clicks to get past it.
+signed yet, so Windows and macOS warn the first time: [Install › Why your computer warns
+you](install.md#why-your-computer-warns-you) shows the two clicks to get past it.
 
 Check that it works: start 3DCraft and click the **L-bracket** card on the start screen. It is built in a
 new tab.
@@ -116,10 +116,10 @@ file differ between step 1 and step 2.
 
 Links in this guide and in 3DCraft (**How it works**, Help › User guide) open in your web browser. Each
 task takes 5 to 20 minutes. Give the agent the text in quotes, in your own words if you like, and in
-your own language if you prefer. Then check its work as [chapter 3](03-agent.md#checking-the-agents-work)
+your own language if you prefer. Then check its work as [Working with an AI agent](agent.md#checking-the-agents-work)
 shows: look at the window, click faces, and ask for the volume.
 
-**Task 1, without an agent: your first five minutes.** Follow [chapter 2](02-first-steps.md): open an
+**Task 1, without an agent: your first five minutes.** Follow [Your first five minutes](first-steps.md): open an
 example from the start screen, turn it around, play its history, change a size in the feature list and
 export an STL for a 3D printer. Then do the same in the web version if you have its address.
 
@@ -135,7 +135,7 @@ as fit with every hole centre at least 7.5 mm from the ends, the row centred on 
 holes must follow the length."* That is **11 holes and 6552.05 mm³**. Now ask for a strip of 150 mm: **14
 holes and 8175.33 mm³**, without the agent rebuilding anything by hand. If you want to see how it can be
 done, this is one way, as a script (`craft3d-cli run --new '{"units":"mm"}' --script strip.json --out
-strip.3dcraft`, [chapter 13](13-command-line.md)); its two assertions check the volume and the number of
+strip.3dcraft`, [The command line and scripts](command-line.md)); its two assertions check the volume and the number of
 holes at every change:
 
 ```json
@@ -161,13 +161,12 @@ the origin), the top edges and the four upright corners rounded with a 2 mm radi
 sharp, hollowed to a 2 mm wall and open at the bottom. Drive it by variables. Then add an assertion that
 the thinnest wall is at least 1.5 mm."* The volume is **17385.50 mm³**, and at 2 mm the assertion passes:
 3DCraft proves the wall is at least 1.5 mm everywhere, round corners included. Now ask for a 1 mm wall: the window shows the assertion
-failing, and the agent should tell you so ([chapter 10](10-measure.md#assertions)).
+failing, and the agent should tell you so ([Measuring and assertions](measure.md#assertions)).
 
 **Task 5: make a Jig of it.** *"Publish length and pitch of the strip from task 3 as parameters (length
 from 40 to 300 mm, pitch from 8 to 20 mm) and export it as a Jig."* Open the `.3dcraftjig` in 3DCraft
 (and in the web version, if you have it): the **Parameters** tab shows the two values; drag them and
-watch the holes follow, then export an STL, or a DXF of the top face for a laser cutter ([chapter
-5](05-jigs.md)).
+watch the holes follow, then export an STL, or a DXF of the top face for a laser cutter ([Using a Jig](jigs.md)).
 
 After these, **try a part of your own**: something from your workshop, your classroom or your hobby. That
 is the test that tells us most.
@@ -182,13 +181,12 @@ dialog of a file action) and paste it; or ask the agent *"give me the bug report
 `session.report`). The report holds the 3DCraft version and the exact build it came from, your system,
 your graphics card and how 3DCraft draws with it, and the command that failed with its values and the
 whole message. **Read it before you share it**: it contains file paths and the values you or your agent
-gave. Add the `.3dcraft` file if you can share it. [Chapter 14](14-troubleshooting.md#reporting-a-problem)
+gave. Add the `.3dcraft` file if you can share it. [Troubleshooting](troubleshooting.md#reporting-a-problem)
 has the details.
 
 Send it by mail to the developer, or through the shared form you were given with the invitation. Things that went well are worth a line too: they tell us what not to break.
 
-If 3DCraft ever closes by itself, start it again: it offers to recover your work ([chapter
-14](14-troubleshooting.md#after-a-crash)). A crash is the most important thing you can report.
+If 3DCraft ever closes by itself, start it again: it offers to recover your work ([Troubleshooting](troubleshooting.md#after-a-crash)). A crash is the most important thing you can report.
 
 ## 5. What 3DCraft sends: nothing
 

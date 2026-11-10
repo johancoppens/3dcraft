@@ -252,7 +252,7 @@ jobs:
             echo "CHANGELOG.md has no notes under ## [$version]" >&2
             exit 1
           fi
-          printf '\nThe installers are not signed yet; [the install guide](https://github.com/%s/blob/%s/docs/guide/01-install.md) says what your system shows and how to open them anyway.\n' \
+          printf '\nThe installers are not signed yet; [the install guide](https://github.com/%s/blob/%s/docs/guide/install.md) says what your system shows and how to open them anyway.\n' \
             "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" >> notes.md
           cat notes.md
       - name: checksums

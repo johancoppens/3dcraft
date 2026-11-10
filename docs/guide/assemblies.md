@@ -1,4 +1,4 @@
-# 17. Assemblies
+# Assemblies
 
 *Put parts together: place instances of your documents (and Jigs) in an assembly, give each its own sizes, join them
 with mates, and export the whole as one STEP file with its structure.*
@@ -124,7 +124,7 @@ To join two parts, select a face of each (Ctrl-click the second), right-click an
 
 ## Motion
 
-An assembly plays over the timeline `t` as a part does ([chapter 4](04-window.md)): give it a variable `t` and drive
+An assembly plays over the timeline `t` as a part does ([The window](window.md)): give it a variable `t` and drive
 a joint by a formula of it.
 
 ```json
@@ -140,7 +140,7 @@ and the same `t` always shows the same state. Where the mechanism cannot go furt
 says so with the `t` it stopped at, and `motion.check` lists every dead point it meets. A trace names its point
 through an instance, as a mate does: `view.trace {"point": "Coupler/End2"}`. In the window the trace of an
 assembly is worked out in the background, as a bake is, so a play does not stop for it; read it with
-`view.trace {"name": …, "wait": true}` ([The window](04-window.md#playing-a-motion)).
+`view.trace {"name": …, "wait": true}` ([The window](window.md#playing-a-motion)).
 
 An instance whose parameters are formulas of `t` (a belt whose loop follows the carriage) is a new configuration at
 every moment, built when the moment is first shown. `motion.bake` builds them all ahead, side by side, so the motion
@@ -170,7 +170,7 @@ pass the parent's on: `"params": {"t": "t"}`.
   and OBJ hold the placed bodies. Invisible instances are left out of all of them, and the result's
   `hiddenLeftOut` names them, unless `bodies` names them: a body named there is written, invisible or not.
 - Checks name instances: `assert.add {"name": "gap", "measure": "clearance", "from": "Bar[1]", "to": "Bar[2]", "min": "1 mm"}`.
-  The measures take their subjects as in a part ([chapter 10](10-measure.md)): `clearance` and `distance` take
+  The measures take their subjects as in a part ([Measuring and assertions](measure.md)): `clearance` and `distance` take
   `from` and `to`; `volume`, `area`, `mass`, `extent`, `thickness` and the others take `of`; `overlap` takes `of`,
   and `to` beside it: with `of` alone it asks whether any two of those bodies overlap, with `to` whether any of
   `of` overlaps any of `to` (`{"measure": "overlap", "of": "Lid", "to": "Box", "is": false}`). A subject names

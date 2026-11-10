@@ -175,7 +175,7 @@ impl ReliefShape {
 
 /// A choice among the names of `T`: one of them as written, or an
 /// expression whose value picks one (1 for the first, as a published
-/// choice parameter counts: `docs/guide/05-jigs.md`), so a Jig's choice or
+/// choice parameter counts: `docs/guide/jigs.md`), so a Jig's choice or
 /// a table lookup can drive it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

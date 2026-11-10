@@ -1,4 +1,4 @@
-# 14. Troubleshooting
+# Troubleshooting
 
 *What to do when 3DCraft says no, when something does not show, after a crash, and how to report a
 problem.*
@@ -54,7 +54,7 @@ fail with `causedBy` naming the first one. `document.check` lists them all. Fix 
   that are not there.
 - **A part that should disappear stays**: its condition is on a feature that changes the body (a
   transform, a fillet), which passes the body on unchanged when it is off. Put the condition on the
-  feature that makes the part ([chapter 8](08-formulas.md#switching-parts-on-and-off)).
+  feature that makes the part ([Formulas, tables and conditions](formulas.md#switching-parts-on-and-off)).
 - ***The body of `Bossed` already went into `Bevel`***: another feature took that body first (one inserted at the
   rollback marker re-points the features after it where it can, so this is left for a boolean of the two
   bodies an inserted union joined, the tool of an inserted subtraction, or a body named twice). Build on the newer feature: the message gives the `feature.edit`
@@ -76,7 +76,7 @@ in its result under `failed`, each with its `error`.
 The model was built, but does not meet what was asked. `assert.list` shows what was measured and what was
 expected. Either the design changed in a way you did not want (undo it), or the assertion needs to be
 written differently (`assert.edit`). *notProven* is not a failure: the value found is fine but the proof
-did not reach the bound ([chapter 10](10-measure.md)).
+did not reach the bound ([Measuring and assertions](measure.md)).
 
 ## Undo
 
@@ -123,7 +123,7 @@ the CPU renderer, which is the reference for what the window shows.
   the graphics driver. Everything else works without it: `craft3d-cli` can still model, render and export.
 - **The agent's changes do not show**: the window must have been started with `--control PORT
   --control-token-file FILE`, and the agent's MCP server with `--bridge PORT --control-token-file FILE`,
-  the same port and the same file ([chapter 1](01-install.md#connect-an-ai-agent-over-mcp)). A window
+  the same port and the same file ([Install 3DCraft and connect an AI agent](install.md#connect-an-ai-agent-over-mcp)). A window
   started from the menu does not listen.
 - **The agent cannot open or save a file**: the path is outside the folders the window was given
   (`--automation-read-root`, `--automation-write-root`); the error says so. Save from the File menu
@@ -143,7 +143,7 @@ the CPU renderer, which is the reference for what the window shows.
 - **The page stays blank or the model does not show**: the page needs WebGPU or WebGL2. Try a recent
   Chrome, Edge or Firefox; add `?webgl` to the address to use WebGL2 instead of WebGPU.
 - **Save makes a download** instead of asking where: that is how Firefox and Safari work
-  ([chapter 12](12-files.md#files-in-the-web-version)).
+  ([Files, export and drawings](files.md#files-in-the-web-version)).
 - **Copy details does not copy**: browsers let a page use the clipboard only over https (or from your own
   computer); select the text in the details window and copy it yourself.
 
@@ -179,4 +179,4 @@ Report problems, with what you were trying to do and the copied details, on
 [GitHub](https://github.com/johancoppens/3dcraft/issues), or to whoever gave you 3DCraft. Every refusal
 you report helps: in 3DCraft, a refusal is work still to do.
 
-**See also:** [the reference](15-reference.md), for every command, key and unit.
+**See also:** [the reference](reference.md), for every command, key and unit.

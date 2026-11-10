@@ -1,4 +1,4 @@
-# 15. Reference
+# Reference
 
 *Every command by family, the keys and mouse, units and functions, and the programs' options, in one
 place to look things up.*
@@ -18,8 +18,8 @@ The full description of any command, with every value it takes and what it refus
 | `file.open`, `file.save`, `file.close` | Open a `.3dcraft`, `.3dcraftjig` or `.3dcraftasm`, save, close |
 | `file.list`, `file.activate` | List the open documents, switch to one |
 | `file.import` | Read a STEP file into the document |
-| `file.export` | Write STEP, STL, 3MF, OBJ, DXF or SVG ([chapter 12](12-files.md)) |
-| `cut.list`, `cut.export` | The cut list of the plates and sheet-metal parts (JSON or CSV), their outlines to DXF or SVG with a kerf ([chapter 12](12-files.md#cut-lists-the-plates-of-a-design)) |
+| `file.export` | Write STEP, STL, 3MF, OBJ, DXF or SVG ([Files, export and drawings](files.md)) |
+| `cut.list`, `cut.export` | The cut list of the plates and sheet-metal parts (JSON or CSV), their outlines to DXF or SVG with a kerf ([Files, export and drawings](files.md#cut-lists-the-plates-of-a-design)) |
 | `edit.undo`, `edit.redo` | Undo and redo, one change at a time |
 | `recovery.list`, `recovery.open`, `recovery.discard` | What was autosaved before a crash |
 | `session.report` | A bug report of the last failed command |
@@ -28,11 +28,11 @@ The full description of any command, with every value it takes and what it refus
 
 | Command | Does |
 |---|---|
-| `variable.set`, `variable.delete`, `variable.rename` | Define, change, delete and rename variables ([chapter 6](06-concepts.md#variables-expressions-and-units)) |
-| `document.setUnit` | Change the length unit, keeping the numbers or the sizes ([chapter 6](06-concepts.md#variables-expressions-and-units)) |
+| `variable.set`, `variable.delete`, `variable.rename` | Define, change, delete and rename variables ([How 3DCraft thinks](concepts.md#variables-expressions-and-units)) |
+| `document.setUnit` | Change the length unit, keeping the numbers or the sizes ([How 3DCraft thinks](concepts.md#variables-expressions-and-units)) |
 | `document.setTolerance` | Change the linear and angular tolerances (what counts as one place and one direction, and what seams are proven to) |
-| `table.set`, `table.delete`, `table.rename`, `table.list` | Tables of values to look up ([chapter 8](08-formulas.md#tables)) |
-| `variable.publish`, `variable.unpublish` | Make a variable a Jig's parameter, or an ordinary variable again ([chapter 5](05-jigs.md#making-a-jig)) |
+| `table.set`, `table.delete`, `table.rename`, `table.list` | Tables of values to look up ([Formulas, tables and conditions](formulas.md#tables)) |
+| `variable.publish`, `variable.unpublish` | Make a variable a Jig's parameter, or an ordinary variable again ([Using a Jig](jigs.md#making-a-jig)) |
 | `param.list`, `param.set` | List and set a Jig's parameters |
 | `document.info` | A title, description, author and licence |
 | `jig.export`, `jig.edit` | Publish a `.3dcraftjig`; make an editable model of a Jig |
@@ -44,9 +44,9 @@ The full description of any command, with every value it takes and what it refus
 |---|---|
 | `sketch.create` | A sketch on a plane, a datum plane or a flat face |
 | `sketch.point`, `sketch.line`, `sketch.polyline`, `sketch.rect`, `sketch.circle`, `sketch.arc`, `sketch.path`, `sketch.spline` | Draw |
-| `sketch.curve` | A curve from formulas ([chapter 8](08-formulas.md#curves-from-formulas)) |
+| `sketch.curve` | A curve from formulas ([Formulas, tables and conditions](formulas.md#curves-from-formulas)) |
 | `sketch.pattern` | Repeat entities in a row, a grid or a circle |
-| `sketch.text`, `sketch.textOnCurve`, `sketch.textEdit` | Text as profiles, straight or along a curve ([chapter 9](09-features.md#text)) |
+| `sketch.text`, `sketch.textOnCurve`, `sketch.textEdit` | Text as profiles, straight or along a curve ([Modelling features](features.md#text)) |
 | `font.add`, `font.list` | The fonts a document keeps, and the built-in ones |
 | `sketch.constrain`, `sketch.edit`, `sketch.delete` | Add, change and remove constraints and entities |
 | `sketch.inspect` | Every entity, constraint and the freedom left |
@@ -58,12 +58,12 @@ The full description of any command, with every value it takes and what it refus
 | `feature.block`, `feature.cylinder`, `feature.sphere`, `feature.cone`, `feature.torus` | Primitives |
 | `feature.extrude`, `feature.revolve`, `feature.sweep`, `feature.loft` | Solids from sketches |
 | `feature.fill`, `feature.thicken` | Sheets, and a layer on faces |
-| `feature.fold`, `fold.edit`, `fold.inspect`, `fold.check` | Origami: a crease pattern folded rigidly, its solved angles, Kawasaki and Maekawa ([chapter 16](16-origami.md)) |
-| `feature.developable`, `feature.unfold`, `unfold.map`, `measure.developability` | Developable sheets between two curves, flat patterns ([chapter 9](09-features.md#developable-surfaces-and-unfolding)) |
-| `feature.surface.network`, `feature.surface.coons` | Sheets through curve networks, edges held tangent to faces ([chapter 9](09-features.md#surfaces-from-curve-networks)) |
-| `feature.surface.trim`, `feature.surface.nsided` | A face of a surface bounded by curves on it; a smooth patch inside a loop of 3 to 6 curves ([chapter 9](09-features.md#trimmed-faces-and-n-sided-fills)) |
+| `feature.fold`, `fold.edit`, `fold.inspect`, `fold.check` | Origami: a crease pattern folded rigidly, its solved angles, Kawasaki and Maekawa ([Origami](origami.md)) |
+| `feature.developable`, `feature.unfold`, `unfold.map`, `measure.developability` | Developable sheets between two curves, flat patterns ([Modelling features](features.md#developable-surfaces-and-unfolding)) |
+| `feature.surface.network`, `feature.surface.coons` | Sheets through curve networks, edges held tangent to faces ([Modelling features](features.md#surfaces-from-curve-networks)) |
+| `feature.surface.trim`, `feature.surface.nsided` | A face of a surface bounded by curves on it; a smooth patch inside a loop of 3 to 6 curves ([Modelling features](features.md#trimmed-faces-and-n-sided-fills)) |
 | `feature.plate` | A plate of a sheet, with joints to its neighbours |
-| `feature.sheetMetal`, `sheetMetal.edit`, `sheetMetal.bends`, `sheetMetal.bendSequence` | Sheet metal: a base with flanges bent by radius and K-factor, reliefs, the bend table, the press-brake check ([chapter 9](09-features.md#sheet-metal)) |
+| `feature.sheetMetal`, `sheetMetal.edit`, `sheetMetal.bends`, `sheetMetal.bendSequence` | Sheet metal: a base with flanges bent by radius and K-factor, reliefs, the bend table, the press-brake check ([Modelling features](features.md#sheet-metal)) |
 | `feature.offsetProfile` | A sketch's profiles grown or shrunk |
 | `feature.boolean` | Union, subtract, intersect |
 | `feature.pattern`, `feature.mirror`, `feature.transform` | Copies, mirror, move and turn |
@@ -83,7 +83,7 @@ The full description of any command, with every value it takes and what it refus
 
 | Command | Does |
 |---|---|
-| `assembly.new` | A new, empty assembly ([chapter 17](17-assemblies.md)) |
+| `assembly.new` | A new, empty assembly ([Assemblies](assemblies.md)) |
 | `instance.add`, `instance.edit`, `instance.delete`, `instance.open` | Place a part, a Jig or an assembly; change, remove, open its source |
 | `mate.add`, `mate.edit`, `mate.delete` | Join two instances (fixed, revolute, slider, cylindrical, planar, ball) |
 | `coupling.add`, `coupling.delete` | Gears, racks and screws between two mates; linear ties of any number of motions |
@@ -99,10 +99,10 @@ The full description of any command, with every value it takes and what it refus
 | `document.inspect` | The whole state (`doc_inspect` over MCP) |
 | `document.check` | Every problem in one list |
 | `document.measure`, `document.edges`, `document.interference` | Volumes and areas, edges, clashes |
-| `measure.distance`, `measure.clearance`, `measure.thickness`, `measure.through`, `measure.ray`, `measure.symmetry`, `measure.below`, `measure.section`, `measure.levelFor`, `measure.floating`, `measure.continuity`, `measure.curvature`, `measure.draft` | Questions to the geometry ([chapter 10](10-measure.md)) |
-| `assert.add`, `assert.edit`, `assert.delete`, `assert.list` | Checks kept in the document; their measures include the floating equilibrium (`floatingGM`, `floatingTrim`, …) and the press-brake check (`bendable`) ([chapter 10](10-measure.md#assertions)) |
-| `variable.measure`, `variable.output`, `output.list` | Outputs: read-only variables computed after regeneration from measures and formulas, for assertions ([chapter 10](10-measure.md#outputs-measures-in-formulas)) |
-| `select.get`, `select.set`, `select.query` | The selection, and finding things by description ([chapter 11](11-selection.md)) |
+| `measure.distance`, `measure.clearance`, `measure.thickness`, `measure.through`, `measure.ray`, `measure.symmetry`, `measure.below`, `measure.section`, `measure.levelFor`, `measure.floating`, `measure.continuity`, `measure.curvature`, `measure.draft` | Questions to the geometry ([Measuring and assertions](measure.md)) |
+| `assert.add`, `assert.edit`, `assert.delete`, `assert.list` | Checks kept in the document; their measures include the floating equilibrium (`floatingGM`, `floatingTrim`, …) and the press-brake check (`bendable`) ([Measuring and assertions](measure.md#assertions)) |
+| `variable.measure`, `variable.output`, `output.list` | Outputs: read-only variables computed after regeneration from measures and formulas, for assertions ([Measuring and assertions](measure.md#outputs-measures-in-formulas)) |
+| `select.get`, `select.set`, `select.query` | The selection, and finding things by description ([Selection and named sets](selection.md)) |
 | `agent.log` | What agents did to the document, newest first, with the intent they gave, and which agent made each feature |
 | `set.define`, `set.edit`, `set.remove`, `set.list` | Named sets |
 | `view.render`, `view.pick` | A picture, and what is at a point of it |
@@ -111,7 +111,7 @@ The full description of any command, with every value it takes and what it refus
 
 ## MCP tools
 
-What an agent gets over MCP ([chapter 1](01-install.md#what-the-agent-gets)): `command_list`, `command_run`,
+What an agent gets over MCP ([Install 3DCraft and connect an AI agent](install.md#what-the-agent-gets)): `command_list`, `command_run`,
 `command_batch`, `doc_inspect`, `doc_render_preview`, `selection_get`, and, bridged to the window,
 `control_call`.
 
@@ -174,7 +174,7 @@ with units, Escape to give up; double-click the knob for its default.
 | Reserved | `pi`, the length and angle units and the functions above cannot name a variable (`m` is the metre: call a module `module` or `mn`) |
 | Tables | `belt[2].pitch`, `belt["GT2"].pitch` |
 | Axes | X, Y and Z, with Z up; planes `xy`, `yz`, `zx` |
-| Faces | `F1:face(1)`, `F2:side(e9)`, `F2:startCap()`, `F2:endCap()`, `F3:fillet(0)`; a feature's name for its id: `Plate:face(1)`, `Plate:endCap` ([chapter 6](06-concepts.md#persistent-names)) |
+| Faces | `F1:face(1)`, `F2:side(e9)`, `F2:startCap()`, `F2:endCap()`, `F3:fillet(0)`; a feature's name for its id: `Plate:face(1)`, `Plate:endCap` ([How 3DCraft thinks](concepts.md#persistent-names)) |
 
 ## The programs
 
@@ -191,7 +191,7 @@ craft3d [FILE] [--control PORT --control-token-file FILE]
 (with the token file); the roots are the folders an agent may read and write; `--renderer cpu` draws the
 model without the graphics card; `--recovery-dir none` switches autosave off.
 
-**`craft3d-cli`**, the command line ([chapter 13](13-command-line.md)):
+**`craft3d-cli`**, the command line ([The command line and scripts](command-line.md)):
 
 | Subcommand | Does |
 |---|---|

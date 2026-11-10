@@ -1,4 +1,4 @@
-# 1. Install 3DCraft and connect an AI agent
+# Install 3DCraft and connect an AI agent
 
 *Get 3DCraft running on your computer (or in your browser) and give your AI agent access to it.*
 
@@ -110,19 +110,19 @@ Firefox or Safari. It can:
 - open, show, save, import and export `.3dcraft`, `.3dcraftjig` and STEP files (drop a file on the page,
   or use the File menu);
 - **use Jigs**: set a Jig's parameters and export the result, so you can make a laser-cut box or a
-  3D-printable pulley without installing anything ([chapter 5](05-jigs.md));
+  3D-printable pulley without installing anything ([Using a Jig](jigs.md));
 - build the example models from its start screen.
 
 It has no MCP and no command line, so **an AI agent cannot drive it yet**: for working with an agent,
 install one of the programs above. The web version keeps nothing on a server: files are read from and
-written to your computer ([chapter 12](12-files.md#files-in-the-web-version)). It draws with WebGPU where the
+written to your computer ([Files, export and drawings](files.md#files-in-the-web-version)). It draws with WebGPU where the
 browser has it and WebGL2 otherwise.
 
 ## Check that it works
 
 Start **3DCraft** from your Start menu, Applications folder or app launcher. The window opens on the
 start screen. Click an example card, such as **L-bracket**: it is built in a new tab. That is all it
-takes; [chapter 2](02-first-steps.md) shows you around.
+takes; [Your first five minutes](first-steps.md) shows you around.
 
 To check the command line too, open a terminal and type (write the full path of `craft3d-cli` from the
 table above when it is not on your `PATH`):
@@ -183,7 +183,7 @@ watching**.
 
    The path is filled in for your computer (on Linux with the AppImage, the AppImage itself, followed
    by `cli`). Nothing secret is in it: there is no password to copy or keep.
-3. **Ask the agent something** ([chapter 3](03-agent.md)): "Make a 40 × 20 × 10 mm block in 3DCraft".
+3. **Ask the agent something** ([Working with an AI agent](agent.md)): "Make a 40 × 20 × 10 mm block in 3DCraft".
    The block appears in the window. The pill turns indigo, **Claude Code connected**, and while the
    agent works it names each command it runs, with a turning mark (**Claude Code · feature.block**),
    so you always see when it acts. Click the pill to see who is connected and since when, to
@@ -270,4 +270,4 @@ cargo build --release -p craft3d -p craft3d-cli
 
 This puts both programs in `target/release/`.
 
-**Next:** [Your first five minutes](02-first-steps.md).
+**Next:** [Your first five minutes](first-steps.md).

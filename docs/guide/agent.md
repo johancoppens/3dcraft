@@ -1,8 +1,8 @@
-# 3. Working with an AI agent
+# Working with an AI agent
 
 *Describe a part, let the agent build it in 3DCraft while you watch, and check what it made.*
 
-An agent connected to 3DCraft ([chapter 1](01-install.md#connect-an-ai-agent-over-mcp)) builds a model the
+An agent connected to 3DCraft ([Install 3DCraft and connect an AI agent](install.md#connect-an-ai-agent-over-mcp)) builds a model the
 way a careful draughtsman would: it names the sizes as variables, adds features one by one, and reads back
 what it built. Your part is to say what you want, to watch, and to check. You do not need to know the
 commands: the agent looks them up itself.
@@ -21,12 +21,12 @@ Things that help:
 - **Name the sizes** you want to change later ("the thickness", "the number of holes"), and say where the
   part sits ("the corner at the origin", "the bottom on the XY plane"). 3DCraft's axes are X, Y and Z,
   with Z up.
-- **Ask for checks** ([chapter 10](10-measure.md)): "the volume must be …", "the holes must go through",
+- **Ask for checks** ([Measuring and assertions](measure.md)): "the volume must be …", "the holes must go through",
   "the wall at least 2 mm". 3DCraft keeps them as *assertions* in the document and checks them again
   after every change, so they do not depend on the agent's memory.
 - **Ask for a check and a picture** at the end ("run document.check and show me a preview").
 - **Point instead of describing** when it is easier: click a face in the window and say "this face"
-  ([chapter 4](04-window.md#pointing-at-things)).
+  ([The window](window.md#pointing-at-things)).
 - **Change by sizes**: "make it 8 holes" is one change of a variable; everything that depends on it
   follows.
 
@@ -38,9 +38,9 @@ Things that help:
 | "Make the hole I selected 6.5 mm." | reads your selection, finds the size that drives that hole and changes it |
 | "Why did the fillet fail?" | reads the reason 3DCraft gave (often with the largest size that fits) and proposes a fix |
 | "Show me the history step by step." | plays the history in your window |
-| "Make this a Jig with width, depth and height between 50 and 200 mm." | publishes those variables as parameters and exports a `.3dcraftjig` ([chapter 5](05-jigs.md)) |
-| "Export the outline of the top for the laser cutter." | writes a DXF or SVG of that face at true size ([chapter 12](12-files.md)) |
-| "Something went wrong; give me the bug report." | returns the report of the last failed command ([chapter 14](14-troubleshooting.md#reporting-a-problem)) |
+| "Make this a Jig with width, depth and height between 50 and 200 mm." | publishes those variables as parameters and exports a `.3dcraftjig` ([Using a Jig](jigs.md)) |
+| "Export the outline of the top for the laser cutter." | writes a DXF or SVG of that face at true size ([Files, export and drawings](files.md)) |
+| "Something went wrong; give me the bug report." | returns the report of the last failed command ([Troubleshooting](troubleshooting.md#reporting-a-problem)) |
 
 ## A full session
 
@@ -156,7 +156,7 @@ holes.
 
 Do not take "done" on trust; 3DCraft gives you the means to check, without reading code:
 
-1. **The feature list** in the window ([chapter 4](04-window.md)): every feature built (✔), none failed
+1. **The feature list** in the window ([The window](window.md)): every feature built (✔), none failed
    (⚠), every assertion passed.
 2. **The assertions**: they are the agent's claims about the part, written as numbers you can read
    ("volume = π((d/2)² − …) t"). `assert.list` shows them; ask for the ones you care about.
@@ -193,7 +193,7 @@ The parts worth knowing:
 - **A feature that fails** is different: the command succeeded (the feature is in the history) but the
   feature could not be built. Its result has `"status": "failed"` and an `error` that names the parameter,
   the entities and often the largest value that would fit ("the largest radius that fits there is below
-  26 mm"). Features built from it fail too, each with `causedBy`: the one to fix. See [chapter 6](06-concepts.md#failed-features). A
+  26 mm"). Features built from it fail too, each with `causedBy`: the one to fix. See [How 3DCraft thinks](concepts.md#failed-features). A
   `command_batch` judges this at the end: it lists under `featuresFailed` the features that still fail
   when the batch ends and that one of its steps broke, and is then an error; a break a later step
   repairs is only noted. A failed assertion is not listed there: read `assert.list` or `document.check`.
@@ -214,4 +214,4 @@ The parts worth knowing:
   broken assertions (`ok` is false), and assertions not proven (warnings). `{"deep": true}` checks more
   (self-intersections, every boolean against its operands) and takes longer.
 
-**Next:** [the window](04-window.md), or straight to [Jigs](05-jigs.md).
+**Next:** [the window](window.md), or straight to [Jigs](jigs.md).

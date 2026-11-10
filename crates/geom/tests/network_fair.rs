@@ -74,7 +74,7 @@ fn bezier(points: [Vec3; 4]) -> NurbsCurve {
     .unwrap()
 }
 
-/// The guide's fin (docs/guide/09-features.md, "Curvature-continuous
+/// The guide's fin (docs/guide/features.md, "Curvature-continuous
 /// seams"): a sheet from a post of radius 20 out to a line at x = 35.
 fn fin() -> Case {
     let us = vec![

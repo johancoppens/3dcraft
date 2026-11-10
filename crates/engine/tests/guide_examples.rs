@@ -222,7 +222,7 @@ fn the_guide_names_only_commands_and_params_that_exist() {
     );
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     // The reference says how many commands there are: the registry's.
-    let reference = read_text(&docs().join("guide/15-reference.md"));
+    let reference = read_text(&docs().join("guide/reference.md"));
     let said = reference
         .split("has ")
         .nth(1)
@@ -231,7 +231,7 @@ fn the_guide_names_only_commands_and_params_that_exist() {
     assert_eq!(
         said,
         Some(commands.len()),
-        "15-reference.md must say \"has {} commands\"",
+        "reference.md must say \"has {} commands\"",
         commands.len()
     );
 }
@@ -243,7 +243,7 @@ fn the_guide_names_only_commands_and_params_that_exist() {
 /// no flat fold.
 #[test]
 fn the_origami_chapter_folds_as_it_says() {
-    let text = read_text(&docs().join("guide/16-origami.md"));
+    let text = read_text(&docs().join("guide/origami.md"));
     let dir = common::workdir("guide", "origami");
     let mut s = common::session_in(&dir);
     let mut ran = 0;
@@ -301,12 +301,12 @@ fn the_origami_chapter_folds_as_it_says() {
     assert!(dir.join("waterbomb.svg").exists());
 }
 
-/// The animations of the command-line chapter (`13-command-line.md` ›
+/// The animations of the command-line chapter (`command-line.md` ›
 /// *Animations and videos*) run as written: the lid's lift and the width
 /// sweep write their frames and captions and leave the document as it was.
 #[test]
 fn the_animations_of_the_command_line_chapter_render_as_they_say() {
-    let text = read_text(&docs().join("guide/13-command-line.md"));
+    let text = read_text(&docs().join("guide/command-line.md"));
     let section = text
         .split("## Animations and videos")
         .nth(1)
@@ -361,12 +361,12 @@ fn the_animations_of_the_command_line_chapter_render_as_they_say() {
     );
 }
 
-/// The outputs of the measuring chapter (`10-measure.md` › *Outputs*) run
+/// The outputs of the measuring chapter (`measure.md` › *Outputs*) run
 /// as written and say what the text says: the box hull's GM is 65 mm, the
 /// assertion on it passes, and with KG at 300 mm GM is -55 mm and it fails.
 #[test]
 fn the_outputs_of_the_measuring_chapter_are_as_it_says() {
-    let text = read_text(&docs().join("guide/10-measure.md"));
+    let text = read_text(&docs().join("guide/measure.md"));
     let block = json_blocks(&text)
         .into_iter()
         .find(|b| b.contains("variable.measure") && b.contains("levelFor"))
@@ -412,14 +412,14 @@ fn the_outputs_of_the_measuring_chapter_are_as_it_says() {
     assert_eq!(stable["failed"], 1, "{stable}");
 }
 
-/// The conditions of the measuring chapter (`10-measure.md` ›
+/// The conditions of the measuring chapter (`measure.md` ›
 /// *Assertions that apply only sometimes*) run as written and say what the
 /// text says: with every corner open the gap assertion is inactive, `cg`
 /// unknown and the `if` that does not take it passed; with the corners
 /// closed (corner 2) both are measured and pass.
 #[test]
 fn the_conditions_of_the_measuring_chapter_are_as_it_says() {
-    let text = read_text(&docs().join("guide/10-measure.md"));
+    let text = read_text(&docs().join("guide/measure.md"));
     let block = json_blocks(&text)
         .into_iter()
         .find(|b| b.contains("\"when\"") && b.contains("cornerGap"))
@@ -459,7 +459,7 @@ fn the_conditions_of_the_measuring_chapter_are_as_it_says() {
     assert_eq!(listed["ok"], true, "{listed}");
 }
 
-/// The floating assertions of the measuring chapter (`10-measure.md` ›
+/// The floating assertions of the measuring chapter (`measure.md` ›
 /// *Floating, as assertions and outputs*) run as written and say what the
 /// text says: the barge trimmed by tan⁻¹ 0.05 (the wall-sided closed form,
 /// xg = tan θ (GML + BML tan² θ / 2) with xg 64 mm) passes both, its GM
@@ -467,7 +467,7 @@ fn the_conditions_of_the_measuring_chapter_are_as_it_says() {
 /// with KG at 300 mm `upright` fails.
 #[test]
 fn the_floating_assertions_of_the_measuring_chapter_are_as_it_says() {
-    let text = read_text(&docs().join("guide/10-measure.md"));
+    let text = read_text(&docs().join("guide/measure.md"));
     let block = json_blocks(&text)
         .into_iter()
         .find(|b| b.contains("floatingGM"))
@@ -606,13 +606,13 @@ fn the_field_test_tasks_two_and_four_are_as_the_page_says() {
     assert_eq!(thin(&mut s), "failed");
 }
 
-/// The sweep along two rails of the features chapter (`09-features.md` ›
+/// The sweep along two rails of the features chapter (`features.md` ›
 /// *Sweep along two rails*) runs as written: the spout is built, meets
 /// its volume (a hollow frustum of a cone in closed form) and passes the
 /// deep check.
 #[test]
 fn the_spout_of_the_features_chapter_meets_its_volume() {
-    let text = read_text(&docs().join("guide/09-features.md"));
+    let text = read_text(&docs().join("guide/features.md"));
     let block = json_blocks(&text)
         .into_iter()
         .find(|b| b.contains("\"rail\": \"Right\""))
@@ -630,14 +630,14 @@ fn the_spout_of_the_features_chapter_meets_its_volume() {
     assert_eq!(check["ok"], true, "{check}");
 }
 
-/// The rings and the up direction of the features chapter (`09-features.md`
+/// The rings and the up direction of the features chapter (`features.md`
 /// › *Sweep along two rails*) run as written: the torus round two rings
 /// meets its volume (Pappus), the wall with a leaning up direction its
 /// (section times run times the cosine of the lean), and both pass the
 /// deep check.
 #[test]
 fn the_rings_of_the_features_chapter_are_built() {
-    let text = read_text(&docs().join("guide/09-features.md"));
+    let text = read_text(&docs().join("guide/features.md"));
     for marker in ["\"rail\": \"Outer\"", "\"up\": \"Lean\""] {
         let block = json_blocks(&text)
             .into_iter()

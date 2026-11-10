@@ -1,4 +1,4 @@
-# 13. The command line and scripts
+# The command line and scripts
 
 *Everything an agent does, you can do yourself: run commands and scripts, render pictures, convert
 files and check a Jig, with `craft3d-cli`.*
@@ -69,7 +69,7 @@ craft3d-cli convert box.3dcraft box.svg --set 'Cut sheet' --width '600 mm' --gap
 ```
 
 A DXF or SVG file with `--sketch`, `--face` or `--set` is a flat outline at true size. Without them it
-is a drawing of the model as seen ([chapter 12](12-files.md#drawings-of-the-model-as-seen)), as
+is a drawing of the model as seen ([Files, export and drawings](files.md#drawings-of-the-model-as-seen)), as
 `file.export` makes it: `--view` picks the side (`iso`, the default, `front`, `back`, `left`, `right`,
 `top` or `bottom`), `--projection` is `orthographic` (to scale, the default) or `perspective`, and
 `--hidden dashed` draws what lies behind a face dashed instead of leaving it out:
@@ -129,7 +129,7 @@ camera flying round the model. `view.replay` with `animate` gives variables *tra
 them to their value at that moment and rebuilds only what they touch. A track goes `from` a value `to`
 another, or through `keys` (`[{"t": 0, "value": 30}, {"t": 0.5, "value": 50}, ...]`, `t` from 0 at the
 first frame to 1 at the last), with an `easing` (`linear`, `in`, `out`, `inOut`) and the variable's
-`unit`. A track of the timeline `t` plays the document's motion ([chapter 17](17-assemblies.md) for
+`unit`. A track of the timeline `t` plays the document's motion ([Assemblies](assemblies.md) for
 assemblies). `camera` moves the camera: `orbit` degrees about the vertical, `dolly` towards the model
 (0.5 ends at half the distance), or `keys` of `eye`, `target`, `up` and `fov` it passes through
 smoothly. `frames` or `duration` (seconds at `fps`) set the length, `hold` lingers on the last frame,
@@ -170,7 +170,7 @@ averages 16 frames of samples (`look.accumulate`), as the window does before its
 
 ## For programs: `serve` and `mcp`
 
-- `craft3d-cli mcp` is the MCP server for AI agents ([chapter 1](01-install.md#connect-an-ai-agent-over-mcp)).
+- `craft3d-cli mcp` is the MCP server for AI agents ([Install 3DCraft and connect an AI agent](install.md#connect-an-ai-agent-over-mcp)).
 - `craft3d-cli serve` speaks a simple JSON-lines protocol on standard input and output, for your own
   programs: `{"id": 1, "method": "engine.execute", "params": {"command": "feature.block", "params": {...}}}`.
   The window speaks the same protocol on a TCP port (`craft3d --control`), with a token;
@@ -178,4 +178,4 @@ averages 16 frames of samples (`look.accumulate`), as the window does before its
 - `craft3d-cli score TASK --script FILE` scores a script against a task of 3DCraft's task set
   ([`docs/tasks/`](../tasks/)), the benchmark 3DCraft is measured by.
 
-**Next:** [Troubleshooting](14-troubleshooting.md).
+**Next:** [Troubleshooting](troubleshooting.md).

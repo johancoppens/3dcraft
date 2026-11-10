@@ -1,4 +1,4 @@
-# 16. Origami: crease patterns and folding
+# Origami: crease patterns and folding
 
 *Draw a crease pattern on a flat sheet, mark each crease mountain, valley or cut, and fold it: by angles you
 give, by a variable you slide, with the other creases solved. Check the pattern's vertices, and export the
@@ -42,7 +42,7 @@ A card folded in two, by the variable `fold`:
 The angle is a fold angle: 0 is flat, 180 degrees is folded flat, and the kind says which way. `fixed` is
 a point inside the facet that stays where it is (without it, the largest facet stays). Change `fold` with
 `variable.set`, or make it a parameter and drag its slider, and the card opens and closes. The result is a
-**sheet** (no volume, see [chapter 9](09-features.md#sheets)): `document.measure` gives its area, still
+**sheet** (no volume, see [Modelling features](features.md#sheets)): `document.measure` gives its area, still
 100 × 100 mm², whatever the angle.
 
 ## Solved creases: a vertex with four creases

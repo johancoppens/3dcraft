@@ -1,4 +1,4 @@
-//! The curvature map of the guide's G2 fin (docs/guide/09-features.md,
+//! The curvature map of the guide's G2 fin (docs/guide/features.md,
 //! "Curvature-continuous seams") against the exact surface between the
 //! vertices: the map interpolates a value per vertex, so the mesh must be
 //! fine enough where the curvature changes for what it shows.

@@ -1,11 +1,11 @@
-# 4. The window
+# The window
 
 *Everything you see in the 3DCraft window, and how to look around, play the history and point at things.*
 
 The window (`craft3d`) is where you watch the agent work, look at a design and show the agent what you
 mean. It does not model on its own: every change to a design comes in as a command, from an agent through
-the MCP bridge ([chapter 1](01-install.md#connect-an-ai-agent-over-mcp)), from a Jig's parameter form
-([chapter 5](05-jigs.md)) or from a program on the control channel. What the window does by itself is
+the MCP bridge ([Install 3DCraft and connect an AI agent](install.md#connect-an-ai-agent-over-mcp)), from a Jig's parameter form
+([Using a Jig](jigs.md)) or from a program on the control channel. What the window does by itself is
 open, save, import and export files, and let you look, play, click and select.
 
 ![The window with the L-bracket, marked 1 to 9](images/window.png)
@@ -36,12 +36,12 @@ At the right end of the status bar is the **agent pill**: its colour says how ag
 grey, *Agents off*; outlined indigo, *Waiting for an agent*; indigo, *Claude Code connected*; with a
 turning mark, what the agent does at this moment (*Claude Code · feature.fillet*); amber, when an agent
 asks you something (*Claude Code asks for a folder*). Click it for the agent panel
-([chapter 1](01-install.md#connect-an-ai-agent-over-mcp)). The browser has no pill: agents drive the
+([Install 3DCraft and connect an AI agent](install.md#connect-an-ai-agent-over-mcp)). The browser has no pill: agents drive the
 desktop app only.
 
 ## The start screen
 
-Without a document, the window shows the **start screen** (picture in [chapter 2](02-first-steps.md)):
+Without a document, the window shows the **start screen** (picture in [Your first five minutes](first-steps.md)):
 
 - **New part**, **New assembly** and **Open…**;
 - **Examples**, in four sections you pick above the cards: **Parts**, ten of the [example
@@ -49,15 +49,14 @@ Without a document, the window shows the **start screen** (picture in [chapter 2
   would send; **Showcase**, parts that show what the surfacing can do (a class-A fuel tank and a class-A
   mouse whose seams are proven G2), built the same way, each card with the 3DCraft icon of its kind;
   **Assemblies**, three assemblies (the same gearbox and reducer, and a Jansen linkage walker of four
-  legs) that open ready to play their motion ([chapter 17](17-assemblies.md#motion)); and **Jigs**,
+  legs) that open ready to play their motion ([Assemblies](assemblies.md#motion)); and **Jigs**,
   three published Jigs (a planetary gearbox, a gear reducer, a Jansen linkage leg, after the mechanism
-  of Theo Jansen's Strandbeests) that open on their **Parameters** tab ([chapter 5](05-jigs.md)). These
+  of Theo Jansen's Strandbeests) that open on their **Parameters** tab ([Using a Jig](jigs.md)). These
   six come from the [3DCraft Jigs collection](https://github.com/johancoppens/3dcraft-jigs), under CC BY
   4.0;
 - **Recent**: the files you opened or saved last, each with the icon of its kind and how long ago it
   changed;
-- **Connect an AI agent**: the same panel as the agent pill's ([chapter
-  1](01-install.md#connect-an-ai-agent-over-mcp)): the **Allow AI agents** switch, the work folder, the
+- **Connect an AI agent**: the same panel as the agent pill's ([Install 3DCraft and connect an AI agent](install.md#connect-an-ai-agent-over-mcp)): the **Allow AI agents** switch, the work folder, the
   `claude mcp add` line with **Copy command**, **Copy MCP configuration**, and **Other clients** with a
   ready configuration for Claude Desktop, Cursor, VS Code or any client that starts a server over stdio.
   In the browser, the start screen says that an agent cannot drive 3DCraft there yet.
@@ -77,14 +76,14 @@ The **File** menu:
 | Item | Keys | Does |
 |---|---|---|
 | **New Part** | Ctrl+N | A new, empty part in a new tab |
-| **New Assembly** | Ctrl+Shift+N | A new, empty assembly in a new tab ([chapter 17](17-assemblies.md)) |
+| **New Assembly** | Ctrl+Shift+N | A new, empty assembly in a new tab ([Assemblies](assemblies.md)) |
 | **Open…** | Ctrl+O | Opens a `.3dcraft` document or a `.3dcraftjig` Jig (a STEP file is imported with Import…) |
-| **Open for editing** | | For a Jig in use: a new untitled model of it, to change as you like ([chapter 5](05-jigs.md)) |
+| **Open for editing** | | For a Jig in use: a new untitled model of it, to change as you like ([Using a Jig](jigs.md)) |
 | **Save** | Ctrl+S | Saves to the document's file (asks for a name the first time) |
 | **Save As…** | Ctrl+Shift+S | Saves under a new name |
 | **Import…** | Ctrl+I | Reads a STEP file or a FreeCAD document into the document |
-| **Export…** | Ctrl+E | Writes STEP, STL, 3MF, OBJ, DXF or SVG ([chapter 12](12-files.md)) |
-| **Export as Jig…** | | Publishes a document with parameters as a `.3dcraftjig` ([chapter 5](05-jigs.md)) |
+| **Export…** | Ctrl+E | Writes STEP, STL, 3MF, OBJ, DXF or SVG ([Files, export and drawings](files.md)) |
+| **Export as Jig…** | | Publishes a document with parameters as a `.3dcraftjig` ([Using a Jig](jigs.md)) |
 | **Open recent** | | The last ten files opened or saved, by you or by an agent, newest first, each with the icon of its kind; **Clear recent** empties the list |
 | **Close** | Ctrl+W | Closes the active tab |
 
@@ -121,7 +120,7 @@ whichever you choose. An agent can switch it too: `ui.set {"appearance": "dark"}
 The **Help** menu:
 
 - **User guide** opens this guide in your browser.
-- **Keyboard shortcuts** (also **F1**) lists every key and mouse action ([chapter 15](15-reference.md#keys-and-mouse)).
+- **Keyboard shortcuts** (also **F1**) lists every key and mouse action ([Reference](reference.md#keys-and-mouse)).
 - **Open data folder** shows 3DCraft's folder: the autosaves, what can be recovered after a crash, and the
   recent files (not in the browser).
 - **Connect an AI agent…** opens the agent panel over the pill (not in the browser).
@@ -270,7 +269,7 @@ under the row **Back and forth** turns round at the end and **Collisions** draws
 `t = 0.500 · collision: Wall and Crank`. As with the history, nothing in the document changes; only the
 features that use `t` are rebuilt for each moment, so a heavy model plays slower rather than skipping. An
 assembly has no history of its own, so it shows only **Motion**: its parts are moved, not rebuilt
-([Assemblies](17-assemblies.md#motion)).
+([Assemblies](assemblies.md#motion)).
 
 While a motion plays, the view draws lighter so it keeps up: in the studio look it leaves out the frames a still
 picture averages, the depth of field, the ambient occlusion and the reflections (the shadows stay), and as soon as
@@ -292,7 +291,7 @@ the background so the motion keeps playing: the answer says `"pending": true`, `
 "wait": true}` gives the points once they are there (it waits at most 2 s in the window: ask again), or why they
 could not be made, and `ui.get` lists every trace
 under `traces` with `pending` or `error`; `"background": false` works it out in the command), checks assertions over the
-motion with `motion.check` ([Measure and check](10-measure.md#over-a-motion)), and makes a video of it with
+motion with `motion.check` ([Measure and check](measure.md#over-a-motion)), and makes a video of it with
 `view.replay {"dir": "frames", "motion": {"frames": 120}}`.
 
 ## Looking around
@@ -543,7 +542,7 @@ ui.set {"analysis": {"mode": "draft", "pull": [0, 0, 1], "minDraft": 2}}
 ui.set {"analysis": null}
 ```
 
-The numbers behind the colours are measures too ([chapter 10](10-measure.md#surface-quality)).
+The numbers behind the colours are measures too ([Measuring and assertions](measure.md#surface-quality)).
 
 ## Pointing at things
 
@@ -575,13 +574,13 @@ fly the camera to a feature, play the history, and take a picture of the window 
 ## When something goes wrong
 
 When a command fails, the status bar shows it in red with its message, and a **Copy details** button that
-copies a short report for a bug report ([chapter 14](14-troubleshooting.md#reporting-a-problem)). When a
+copies a short report for a bug report ([Troubleshooting](troubleshooting.md#reporting-a-problem)). When a
 file action you started yourself fails (Open, Save, Import, Export), a dialog says what went wrong:
 
 ![An error dialog with OK and Copy details](images/error-dialog.png)
 
 When 3DCraft was not closed properly (a crash, a power cut), the next start shows a bar under the menu
-that offers to **Recover** what was autosaved ([chapter 14](14-troubleshooting.md#after-a-crash)).
+that offers to **Recover** what was autosaved ([Troubleshooting](troubleshooting.md#after-a-crash)).
 
 ## Without the window
 
@@ -589,4 +588,4 @@ An agent working headless looks at its work with `doc_render_preview` (the comma
 same picture `craft3d-cli render` makes. `view.pick` answers "what is at this pixel of that picture", as a
 click does in the window.
 
-**Next:** [Jigs](05-jigs.md).
+**Next:** [Jigs](jigs.md).

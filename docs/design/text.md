@@ -1,6 +1,6 @@
 # Text and fonts
 
-Text in sketches: closed profiles of a font's glyphs that extrude, cut and emboss as any profile does, a text along a curve, a single-stroke font for engraving and plotters, and the fonts a document keeps. Roadmap: [`../roadmap.md`](../roadmap.md) › *R1* (text and fonts, decided 2026-10-30). Code: `crates/font` (`craft3d-font`, L0, standalone: font files, outlines, layout, the fill rule, the stroke font), `crates/doc/src/text.rs` (the text entity and the document's fonts), `crates/regen/src/text.rs` (layout in regeneration), `crates/engine/src/text_cmds.rs` and `fonts.rs` (commands, the built-in fonts at run time), `apps/craft3d-web/src/fonts.rs` (the page's lazy fetch). Guide: [`../guide/09-features.md`](../guide/09-features.md) › *Text*.
+Text in sketches: closed profiles of a font's glyphs that extrude, cut and emboss as any profile does, a text along a curve, a single-stroke font for engraving and plotters, and the fonts a document keeps. Roadmap: [`../roadmap.md`](../roadmap.md) › *R1* (text and fonts, decided 2026-10-30). Code: `crates/font` (`craft3d-font`, L0, standalone: font files, outlines, layout, the fill rule, the stroke font), `crates/doc/src/text.rs` (the text entity and the document's fonts), `crates/regen/src/text.rs` (layout in regeneration), `crates/engine/src/text_cmds.rs` and `fonts.rs` (commands, the built-in fonts at run time), `apps/craft3d-web/src/fonts.rs` (the page's lazy fetch). Guide: [`../guide/features.md`](../guide/features.md) › *Text*.
 
 ## Interface
 

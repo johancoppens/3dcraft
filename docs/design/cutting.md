@@ -1,6 +1,6 @@
 # Cutting: plate parts, the cut list and their outlines
 
-The platform side of cutting parts from sheet stock: which bodies of a design are plates, what each is (thickness, outline, holes, the rectangle it is cut from, its area), which are the same part, and their outlines to DXF and SVG with a kerf. Roadmap: [`../roadmap.md`](../roadmap.md) › *R1*. Code: `crates/io/src/cut/` (recognition and the 2D work on parts), `crates/engine/src/cut_cmds.rs` (`cut.list`, `cut.export`). Guide: [`../guide/12-files.md`](../guide/12-files.md) › *Cut lists*. Tests: `crates/io/src/cut/tests.rs`, `crates/engine/tests/cut.rs`.
+The platform side of cutting parts from sheet stock: which bodies of a design are plates, what each is (thickness, outline, holes, the rectangle it is cut from, its area), which are the same part, and their outlines to DXF and SVG with a kerf. Roadmap: [`../roadmap.md`](../roadmap.md) › *R1*. Code: `crates/io/src/cut/` (recognition and the 2D work on parts), `crates/engine/src/cut_cmds.rs` (`cut.list`, `cut.export`). Guide: [`../guide/files.md`](../guide/files.md) › *Cut lists*. Tests: `crates/io/src/cut/tests.rs`, `crates/engine/tests/cut.rs`.
 
 **Not here: optimisation.** Nesting parts on a sheet to waste the least, a panel saw's order of cuts, a laser's lead-ins and order of contours are work for separate programs on top of these commands (platform, not applications: rule 14 of [`AGENTS.md`](../../AGENTS.md)). `cut.export` lays parts out in rows only, to have something to cut and to look at.
 

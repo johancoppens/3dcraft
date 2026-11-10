@@ -1,4 +1,4 @@
-# 7. A first part, command by command
+# A first part, command by command
 
 *Build an L-bracket with a rounded corner and two holes, one command at a time, and see what each one
 does. This is what an agent sends for you, written out.*
@@ -9,7 +9,7 @@ along Z) measured to the outside of the corner at the origin, a 3 mm round in th
 the example [`bracket.json`](../examples/bracket.json).
 
 Ask an agent for it in those words and it sends commands like the ones below. Here they are one by one,
-with what each does; to run them yourself, see [chapter 13](13-command-line.md) (`craft3d-cli run --script`), or paste them into
+with what each does; to run them yourself, see [The command line and scripts](command-line.md) (`craft3d-cli run --script`), or paste them into
 `command_batch` (each `[id, params]` becomes `{"id": …, "params": …}`).
 
 ![The bracket](../examples/bracket.png)
@@ -94,7 +94,7 @@ build on. A sketch can also be placed on a face of the body (`"face": "F2:endCap
 ```
 
 `body.appearance` gives the part a brushed-aluminium look: a colour, metallic and roughness, which the
-viewport, the pictures and a 3MF export show ([chapter 9](09-features.md#several-bodies)).
+viewport, the pictures and a 3MF export show ([Modelling features](features.md#several-bodies)).
 
 The volume, worked out by hand: the L is a 40 × 4 bar and a 4 × 26 upright, times the width; the round
 adds the corner square less a quarter circle, (1 − π/4) r², along the width; each hole takes π (d/2)² t.
@@ -111,8 +111,8 @@ answers `"ok": true`, three assertions passed.
 
 The flat leg is now 60 mm; the round is still in the corner, the hole moved to the middle of the longer
 leg (its centre is written in `leg_x`), and the result of the command says the three assertions still
-pass (volume 8491.206 mm³). With `inner_r` set to 30 mm the round no longer fits: [chapter 6, *Failed
-features*](06-concepts.md#failed-features), shows what 3DCraft answers.
+pass (volume 8491.206 mm³). With `inner_r` set to 30 mm the round no longer fits: [How 3DCraft thinks › *Failed
+features*](concepts.md#failed-features), shows what 3DCraft answers.
 
 ## 7. Save and export
 
@@ -124,7 +124,7 @@ features*](06-concepts.md#failed-features), shows what 3DCraft answers.
 ]
 ```
 
-Open `bracket.3dcraft` in the window and play its history ([chapter 4](04-window.md#the-history-player)) to see the
+Open `bracket.3dcraft` in the window and play its history ([The window](window.md#the-history-player)) to see the
 steps above one by one.
 
-**Next:** [Formulas, tables and conditions](08-formulas.md).
+**Next:** [Formulas, tables and conditions](formulas.md).

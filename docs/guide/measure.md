@@ -1,4 +1,4 @@
-# 10. Measuring and checking
+# Measuring and checking
 
 *Ask the design questions (how heavy, how thick, does it fit) and keep the answers that matter as
 checks that run at every change.*
@@ -25,7 +25,7 @@ after every change.
 | `measure.below`, `measure.section`, `measure.levelFor`, `measure.floating` | The volume below a plane, a section's area and second moments, the level for a volume, the level and tilt a body floats at ([below](#below-a-plane-sections-and-levels)) |
 
 A subject (`of`, `from`, `to`) is a body by its feature's name, a list of them, or a query as
-`select.query` takes it ([chapter 11](11-selection.md)): `{"hole": true, "radius": "4 mm"}` for the 8 mm holes,
+`select.query` takes it ([Selection and named sets](selection.md)): `{"hole": true, "radius": "4 mm"}` for the 8 mm holes,
 `{"kind": "face", "where": {"normal": {"along": "z"}}}` for the faces facing up. A named set,
 `{"set": "Blocks"}`, is what the set holds: a set of bodies gives `area` the area of those bodies. A body
 switched off by its condition (`when`) or suppressed is left out of a subject that names it, so one assertion
@@ -36,12 +36,12 @@ body a subject names is off, there is nothing to check and the assertion is *ina
 nearest face, not 0. To know whether bodies touch or overlap, use `clearance`.
 
 What is searched for (a thickness, a distance) comes with what is **proven**: `atLeast`, a bound nothing
-is below, beside the value found at a real place. On the flange of [chapter 3](03-agent.md#a-full-session): `"thickness": 6.0,
+is below, beside the value found at a real place. On the flange of [Working with an AI agent](agent.md#a-full-session): `"thickness": 6.0,
 "atLeast": 5.75`.
 
 ## Surface quality
 
-The analyses of the window ([chapter 4](04-window.md#surface-analysis)) have measures behind them.
+The analyses of the window ([The window](window.md#surface-analysis)) have measures behind them.
 `measure.curvature` with `at` gives the curvature of the face nearest to a point, from the exact
 surface: on a torus of radii 10 and 3 the outer equator has a Gaussian curvature of 1/39 and the
 inner one −1/21.
@@ -209,7 +209,7 @@ solves the equilibrium itself, and again only when what it depends on changes.
   `through`, `overlap` (whether bodies overlap), `symmetric`, and `volumeBelow`, `centroidBelow`,
   `sectionArea`, `sectionCentroid`, `sectionInertia`, `sectionTorsion`, `sectionShearCentre`, `sectionExtent`, `levelFor`, `floatingOffset`, `floatingHeel`,
   `floatingTrim`, `floatingGM`, `floatingGML`, `floatingStable` ([above](#below-a-plane-sections-and-levels)), the
-  sheet-metal measures and `bendable` (the press-brake check, [chapter 9](09-features.md#sheet-metal)),
+  sheet-metal measures and `bendable` (the press-brake check, [Modelling features](features.md#sheet-metal)),
   `value`, a formula of the variables and outputs (`expr`, [below](#outputs-measures-in-formulas)), and
   `continuity` (`edge`, `face`: the order a seam reaches as a number, −1 none, 0 G0, 1 G1, 2 G2; `"min": 2`
   asserts G2, [below](#continuity-across-a-seam)).
@@ -411,12 +411,12 @@ MPa"`); a plain number bounding a stress is in MPa, a force in N, a mass in kg a
 (as a floating measure's `density`). A measured `mass` is a mass: `mass + 1` is a unit mismatch, write
 `mass + 1 kg`. Mind that a unit belongs to the number just before it: `1000 N / 100 mm^2` divides by
 (100 mm)², 10 000 mm², and is 0.1 MPa; write `1000 N / (100 * (1 mm)^2)`. A unit's symbol alone, an
-undefined `N`, is a variable: write `1 N`. The set filter `thickness` ([chapter 11](11-selection.md#named-sets))
+undefined `N`, is a variable: write `1 N`. The set filter `thickness` ([Selection and named sets](selection.md#named-sets))
 is a flat face's plate thickness, not this measure's thinnest place.
 
 ## Over a motion
 
-A design that moves (its timeline `t`, see [The window](04-window.md#playing-a-motion)) is checked over the
+A design that moves (its timeline `t`, see [The window](window.md#playing-a-motion)) is checked over the
 whole motion with `motion.check`: every assertion is measured at evenly spaced moments of `t` (samples), on a
 copy, and the result says per assertion whether it held at the samples, the first sample it failed at
 (`firstFailure.t`, with `after`, the last sample before it that passed: the failure begins between the two),
@@ -480,4 +480,4 @@ branch of `if` that is taken does not need `cg`. Set `corner` to 2 and the corne
   its `cutouts`), not a hole a later feature cuts into its body; an assertion on a hole that only some of a Jig's
   choices make takes those choices' condition.
 
-**Next:** [Selection and named sets](11-selection.md).
+**Next:** [Selection and named sets](selection.md).

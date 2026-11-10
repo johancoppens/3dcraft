@@ -911,13 +911,13 @@ fn bad_parameters_and_impossible_kerfs_are_refused() {
     }
 }
 
-/// The shelf of the guide (docs/guide/12-files.md › *A cut list: a small
+/// The shelf of the guide (docs/guide/files.md › *A cut list: a small
 /// shelf*): its steps run as written, and its cut list is the one the
 /// guide prints. The laid-out sheet is left in `target/evidence/cut/`.
 #[test]
 fn the_shelf_of_the_guide_gives_the_cut_list_it_prints() {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let guide = std::fs::read_to_string(root.join("docs/guide/12-files.md")).unwrap();
+    let guide = std::fs::read_to_string(root.join("docs/guide/files.md")).unwrap();
     let at = guide.find("### A cut list: a small shelf").unwrap();
     let rest = &guide[at..];
     let script = &rest[rest.find("```json\n").unwrap() + 8..];

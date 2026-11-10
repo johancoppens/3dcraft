@@ -1,4 +1,4 @@
-# 11. Selection and named sets
+# Selection and named sets
 
 *Find faces, edges and bodies by what they are, share a selection with the agent, and keep groups of
 them under a name.*
@@ -77,8 +77,8 @@ After `tB` = 3 mm, B leaves *Cut sheet: 4 mm*; give it 4 mm again and it is back
 within the document's tolerance (and a millionth of it), `{min, max}` takes a range, and an expression of
 the variables (`tA`) is worked out again whenever the set is. A face has a thickness only when every line
 into the material from it is equally long and leaves through such an opposite face: a curved face, a face
-over a step, a pocket or a slanted back has none, and never fits. This is not the measure `thickness` of `measure.thickness` and assertions ([chapter 10](10-measure.md)), which finds the thinnest place of a whole body; the filter asks whether one flat face is a plate of one thickness. `set.list` says how many items each set holds now; `set.edit`
+over a step, a pocket or a slanted back has none, and never fits. This is not the measure `thickness` of `measure.thickness` and assertions ([Measuring and assertions](measure.md)), which finds the thinnest place of a whole body; the filter asks whether one flat face is a plate of one thickness. `set.list` says how many items each set holds now; `set.edit`
 and `set.remove` change and remove them. Sets are saved with the document and renamed features keep
 them working.
 
-**Next:** [Files, export and drawings](12-files.md).
+**Next:** [Files, export and drawings](files.md).

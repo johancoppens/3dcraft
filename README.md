@@ -50,9 +50,9 @@ owed, and it is being made better step by step.
 > its pictures are being brought up to date. Until then, build 3DCraft from source:
 > [`docs/development.md`](docs/development.md).
 
-- **[Install 3DCraft](docs/guide/01-install.md)**: installers for Windows, macOS and Linux (version
+- **[Install 3DCraft](docs/guide/install.md)**: installers for Windows, macOS and Linux (version
   0.1.0), or the web version with nothing to install.
-- **[Your first five minutes](docs/guide/02-first-steps.md)**: open an example, play its history, try a
+- **[Your first five minutes](docs/guide/first-steps.md)**: open an example, play its history, try a
   Jig, export for a 3D printer.
 - **[The user guide](docs/guide/README.md)**: working with an AI agent, the window, Jigs, formulas,
   modelling, measuring, files and a reference of every command.

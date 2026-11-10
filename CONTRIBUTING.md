@@ -18,7 +18,7 @@ Open an issue in this repository: [new issue](https://github.com/johancoppens/3d
 - **the model or the script**, if you can share it (GitHub takes a `.zip`: put the `.3dcraft` file in one).
 
 A refusal ("not supported", "not built") is worth reporting too: in 3DCraft a refusal is work still owed.
-How to find the details is in the user guide, [Troubleshooting](docs/guide/14-troubleshooting.md) ›
+How to find the details is in the user guide, [Troubleshooting](docs/guide/troubleshooting.md) ›
 *Reporting a problem*.
 
 **Security problems are not reported in an issue.** See [`SECURITY.md`](SECURITY.md).
