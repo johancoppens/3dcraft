@@ -5,12 +5,12 @@ does. This is what an agent sends for you, written out.*
 
 An L-shaped angle bracket of 4 mm stock, 25 mm wide, legs of 40 mm (flat, along X) and 30 mm (upright,
 along Z) measured to the outside of the corner at the origin, a 3 mm round in the inside corner and a
-5 mm hole in each leg. It is task `l-bracket` of the task set, with the holes and the round added, and
-the example [`bracket.json`](../examples/bracket.json).
+5 mm hole in each leg. The whole script is the lesson [`bracket.json`](../examples/bracket.json).
 
 Ask an agent for it in those words and it sends commands like the ones below. Here they are one by one,
-with what each does; to run them yourself, see [The command line and scripts](command-line.md) (`craft3d-cli run --script`), or paste them into
-`command_batch` (each `[id, params]` becomes `{"id": …, "params": …}`).
+with what each does. To run them yourself, put them in a script for `craft3d-cli run --script`
+([The command line and scripts](command-line.md#scripts)), or give them to `command_batch` (each
+`[id, params]` becomes `{"id": …, "params": …}`).
 
 ![The bracket](../examples/bracket.png)
 
@@ -31,8 +31,12 @@ Everything below is written in these names, so the bracket follows when one chan
 
 ## 2. The profile, and an extrusion
 
-The L is drawn on the `zx` plane, whose sketch coordinates are `[z, x]` and whose normal is +Y, so that
-extruding it by `width` makes the bracket run from Y = 0 to Y = 25:
+The L is drawn on the `zx` plane. On that plane a sketch point is written `[z, x]`: its first coordinate
+is the height Z, its second the distance X along the flat leg. The plane's normal is +Y, so extruding the
+L by `width` makes the bracket run from Y = 0 to Y = 25:
+
+<!-- SHOT: bracket-sketch.png | the bracket lesson rolled back to its first step (the sketch Profile on the zx plane), sketches shown, seen from the front so that X runs right and Z up, with the sketch's corners and the world axes visible; theme light; crop to the view | build the bracket lesson and open it; ui.set {"show": {"sketches": true}}; view.scrub {"feature": "Profile"}; ui.set {"view": "front"}; ui.fit; or draw it as a small diagram: the L on the zx plane, its [z, x] corners marked -->
+![The L-bracket's profile on the zx plane: its first coordinate is the height Z, its second the distance X](images/bracket-sketch.png)
 
 ```json
 [
@@ -94,7 +98,7 @@ build on. A sketch can also be placed on a face of the body (`"face": "F2:endCap
 ```
 
 `body.appearance` gives the part a brushed-aluminium look: a colour, metallic and roughness, which the
-viewport, the pictures and a 3MF export show ([Modelling features](features.md#several-bodies)).
+viewport, the pictures and a 3MF export show ([Modelling features › Colours and materials](features.md#colours-and-materials)).
 
 The volume, worked out by hand: the L is a 40 × 4 bar and a 4 × 26 upright, times the width; the round
 adds the corner square less a quarter circle, (1 − π/4) r², along the width; each hole takes π (d/2)² t.

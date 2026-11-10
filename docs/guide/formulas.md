@@ -115,35 +115,6 @@ work as in any expression; a condition with a unit (`3 mm`), or one that does no
 feature with the reason. A suppressed feature stays off whatever its condition. `variable.rename` and
 `table.rename` rewrite conditions too, and `variable.delete` names a feature whose condition uses it.
 
-Off, by hand or by its condition, a feature behaves as if it were not in the history:
-
-- one that **changes** a body (a boolean, fillet, chamfer, face operation, shell, thread, pattern, or a
-  transform or mirror without `keep`) passes that body on unchanged; what comes after it is built from
-  the body as it was before it. `document.inspect` says `passesOn` with the feature whose body it is;
-- one that **makes** a body (a block, an extrusion, a sweep, a thicken, a copy with `keep`) makes none.
-  A boolean that used it as its tool passes its target on; a union that used it as its target passes its
-  tool on; a subtraction or intersection that used it as its target makes no body, and its tool goes
-  with it (no cutter is left over; with `keepTool` the tool stays); a pattern, transform, mirror or shell of it makes none either (`passesNothing` says why);
-- its faces and edges are **not there** for a fillet, a chamfer or a face operation: the others it names
-  are changed, and one left with none passes its body on unchanged. An optional boss united with a plate
-  and chamfered gives the plain plate when the boss is off, whether the chamfer has the condition too or
-  not. A thicken left with no faces makes no body, and a shell opened only on such faces passes its
-  body on unchanged (it is never sealed shut). `document.inspect` lists what a feature left out under
-  `leftOut`, with the reason, and so does its tooltip in the feature list;
-- what it was given follows the body it passes on, where that body has none of its own: a material
-  (`body.material`), colour (`body.appearance`) or face colour (`face.appearance`) set on a pattern of
-  spacers still weighs and colours the one spacer it passes on when it is off, so set them on the last
-  feature of a part. A colour or material the passed-on body has already (given to it or to what it is
-  made from, by a feature that is on) wins: a red part moved by a transform that is off and given blue
-  stays red. Colours are filled in face by face: a face that has a colour without the feature that is
-  off (its body's, or one of its own) keeps it, and only the faces that have none take that feature's
-  face colour or body colour, so a plain spacer with one green face, passed on by a pattern given blue,
-  is blue with its green face. `document.inspect` marks a material that comes from a feature that is off
-  with `"off": true`. A face colour on a face that is gone while the feature is off (the second instance of a
-  pattern, the wall a cut would make) colours nothing and waits; it never stops a picture or an export;
-- a sketch on a face only the switched-off feature makes, an extrusion up to (`upTo`) such a face, or a
-  datum on such a face, edge or vertex, fails, naming the feature that is off. Give it the same condition, so they come and go together.
-
 **To make a part disappear, put the condition on the feature that makes it.** A feature that *changes* a
 body passes it on unchanged when it is off: a transform with `"expr": "0"` leaves the body where it was
 (it is not moved, and it does not disappear), and a fillet that is off leaves the edge sharp. The block,
@@ -151,6 +122,28 @@ the extrusion or the union that brings the part in is the feature to switch: wit
 from it goes with it. In `document.inspect` a feature that is off says what it passes on: `passesOn` with
 the feature whose body that is, or `passesNothing` with the reason; in the feature list, hold the pointer
 over it.
+
+In detail, off, by hand or by its condition, a feature behaves as if it were not in the history:
+
+- one that **changes** a body (a boolean, fillet, chamfer, face operation, shell, thread, pattern, or a
+  transform or mirror without `keep`) passes that body on unchanged; what comes after it is built from
+  the body as it was before it. `document.inspect` says `passesOn` with the feature whose body it is;
+- one that **makes** a body (a block, an extrusion, a sweep, a thicken, a copy with `keep`) makes none.
+  A boolean that used it as its tool passes its target on; a union that used it as its target passes its
+  tool on; a subtraction or intersection that used it as its target makes no body, and its tool goes
+  with it (no cutter is left over; with `keepTool` the tool stays); a pattern, transform, mirror or
+  shell of it makes none either (`passesNothing` says why);
+- its faces and edges are **not there** for a fillet, a chamfer or a face operation: the others it names
+  are changed, and one left with none passes its body on unchanged. An optional boss united with a plate
+  and chamfered gives the plain plate when the boss is off, whether the chamfer has the condition too or
+  not. A thicken left with no faces makes no body, and a shell opened only on such faces passes its
+  body on unchanged (it is never sealed shut). `document.inspect` lists what a feature left out under
+  `leftOut`, with the reason, and so does its tooltip in the feature list;
+- what it was given (a material, a colour, a face colour) follows the body it passes on, where that body
+  has none of its own ([Modelling features › Colours and materials](features.md#colours-and-materials));
+- a sketch on a face only the switched-off feature makes, an extrusion up to (`upTo`) such a face, or a
+  datum on such a face, edge or vertex, fails, naming the feature that is off. Give it the same
+  condition, so they come and go together.
 
 A sketch or a datum that is off is not there for what refers to it: an extrusion of a sketch that is off
 fails, so give the extrusion the same condition. In `document.inspect`, `ui.get` and the feature list an
