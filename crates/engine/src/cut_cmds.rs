@@ -8,7 +8,7 @@
 //! Both only read the document.
 //!
 //! Optimisation (nesting parts on a sheet, a panel saw's order of cuts)
-//! is not here: it is a fabrication module's work, on top of these.
+//! is not here: it is work for a separate program on top of these.
 
 use crate::commands::{Run, fail, spec};
 use crate::params::Params;

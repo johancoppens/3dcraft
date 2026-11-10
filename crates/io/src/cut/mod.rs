@@ -7,7 +7,7 @@
 //!
 //! The 2D work is on the paths of `craft3d-drawing`, so every curve stays
 //! what it is (a line a line, an arc an arc). Nesting (placing parts to
-//! waste the least sheet) is not here: it is a fabrication module's work,
+//! waste the least sheet) is not here: it is work for a separate program
 //! on top of the platform.
 
 mod kerf;
