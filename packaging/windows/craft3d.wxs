@@ -4,8 +4,9 @@
      variables: Version (numeric, x.y.z), BinDir (with craft3d.exe and
      craft3d-cli.exe), Icon (craft3d.ico), JigIcon (craft3d-jig.ico), AsmIcon
      (craft3d-asm.ico) and Licence (LICENSE); THIRD-PARTY-NOTICES.txt, the
-     licences of the crates in the programs, and EXAMPLES-LICENSE.md, the CC BY
-     4.0 of the published examples built into them, are taken from BinDir.
+     licences of the crates in the programs, and EXAMPLES-LICENSE.md, the
+     licence of the examples (MIT), Jigs and assemblies (CC BY 4.0) built into
+     them, are taken from BinDir.
 
      It installs both programs into Program Files\3DCraft for all users,
      adds that folder to the system PATH (so `craft3d-cli` works in a new
