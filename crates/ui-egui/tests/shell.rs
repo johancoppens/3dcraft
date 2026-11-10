@@ -1241,6 +1241,8 @@ fn the_title_names_the_file_and_marks_unsaved_changes() {
         open: 1,
         path: path.map(str::to_string),
         file: None,
+        title: None,
+        assembly: false,
         dirty,
         close_asks: dirty,
         jig_in_use: false,

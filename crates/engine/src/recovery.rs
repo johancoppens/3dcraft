@@ -32,9 +32,9 @@
 //! ([`Session::end_recovery`]). Removal happens on the command's thread,
 //! behind the lock that serialises it with a write in progress: when
 //! `file.save` returns, the recovery file is gone. Dropping a session
-//! without ending it leaves the files, as a crash does. (An undo back to
-//! the saved state does not count as saved: the history's revision
-//! counts undo as a change, and so does `file.list`'s `dirty`.)
+//! without ending it leaves the files, as a crash does. (An undo or redo
+//! back to the very state saved counts as saved, as `file.list`'s `dirty`
+//! does: `OpenDocument::dirty`.)
 //!
 //! **Dead or alive.** A launch is alive exactly while it holds the lock
 //! on its `<key>.lock`. The operating system releases the lock when the
@@ -364,7 +364,9 @@ impl Clone for RecoveryHandle {
 }
 
 /// Whether a document is worth a recovery file: it has changes that are
-/// not on disk, and it is not an empty document that was never saved.
+/// not on disk, and it is not an empty document that was never saved. An
+/// example the program carries has none until it is edited
+/// (`open_bytes.rs`).
 #[cfg(not(target_arch = "wasm32"))]
 fn worth(open: &OpenDocument) -> bool {
     let document = open.history.current();
@@ -442,6 +444,7 @@ impl Session {
                 worth: worth(open),
                 document: open.history.current(),
                 path: open.path.as_deref(),
+                title: open.title.as_deref(),
                 original: open.disk,
                 recovered: open.recovered.is_some(),
             })

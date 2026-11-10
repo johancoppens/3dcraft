@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("file.list", "List Open Documents", "{}",
-        "Lists the open documents in order: number, path (null when never saved), whether it has unsaved changes, how many features and variables it has, its length unit, which one is active, recovered: true for one that recovery.open took from a recovery file and that was not saved since, and jigInUse: true for a published Jig (.3dcraftjig) opened to be used.", doc: false, file_list),
+        "Lists the open documents in order: number, path (null when never saved), whether it has unsaved changes, how many features and variables it has, its length unit, which one is active, recovered: true for one that recovery.open took from a recovery file and that was not saved since, jigInUse: true for a published Jig (.3dcraftjig) opened to be used, and title: the name a document without a file is shown under (an example the window's start screen opened, also once recovered), absent otherwise.", doc: false, file_list),
     spec!("file.activate", "Activate Document", r#"{"document": integer, "path": string}"#,
         "Makes another open document the active one, by its number from file.list or by the path it was opened from or saved to. Give one of the two.", doc: true, file_activate),
 ];
@@ -46,6 +46,11 @@ fn listing(session: &Session) -> Value {
                 && let Some(map) = row.as_object_mut()
             {
                 map.insert("jigInUse".into(), true.into());
+            }
+            // An example the program carries, by its title while it has
+            // no file (`open_bytes.rs`).
+            if let (Some(title), Some(map)) = (&open.title, row.as_object_mut()) {
+                map.insert("title".into(), title.clone().into());
             }
             row
         })

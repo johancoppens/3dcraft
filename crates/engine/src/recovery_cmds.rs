@@ -11,7 +11,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("recovery.list", "List Recoverable Documents", "{}",
         "Looks in the recovery directory and lists the autosaved documents of launches that ended without a clean quit: id, name, original path, time of the autosave (seconds since the Unix epoch), size in bytes, revision, feature count, whether it can be opened and what is wrong with it. Also says whether autosave works: its directory, interval, last write and problem.", doc: false, recovery_list),
     spec!("recovery.open", "Recover Document", r#"{"id": string}"#,
-        "Opens a recoverable document (an id from recovery.list) as an unsaved document that remembers its original path, and makes it the active one. Its recovery file stays until the document is saved or closed. A Jig in use (a .3dcraftjig whose parameters were changed) comes back as a model with those values and no path (asModel: true): its Jig file is never written, so it is saved under a new .3dcraft name.", doc: false, recovery_open),
+        "Opens a recoverable document (an id from recovery.list) as an unsaved document that remembers its original path (or the title of an example from the window's start screen, which it is shown under: title), and makes it the active one. Its recovery file stays until the document is saved or closed. A Jig in use (a .3dcraftjig whose parameters were changed) comes back as a model with those values and no path (asModel: true): its Jig file is never written, so it is saved under a new .3dcraft name.", doc: false, recovery_open),
     spec!("recovery.discard", "Discard Recoverable Documents", r#"{"id": string, "all": boolean = false}"#,
         "Removes the recovery file of one recoverable document (an id from recovery.list), or of all of them with all: true. Give one of the two. Documents of a 3DCraft that is still running are never touched.", doc: false, recovery_discard),
 ];
@@ -103,6 +103,13 @@ mod native {
         open.recovered = Some(Recovered {
             original: adopted.original,
         });
+        // An example the program carries, edited before the crash, comes
+        // back under its title (none in a record written before
+        // 2026-11-10).
+        open.title = adopted
+            .title
+            .as_deref()
+            .and_then(crate::open_bytes::clean_title);
         let index = session.add_document(open)?;
         // A recovered assembly reads its sources as one opened does.
         let assembly = session.document()?.history.current().is_assembly();
@@ -117,6 +124,7 @@ mod native {
             "id": id,
             "name": adopted.name,
             "path": adopted.path,
+            "title": adopted.title,
             "features": features,
             "recovered": true,
             "warning": adopted.warning,

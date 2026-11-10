@@ -611,6 +611,13 @@ pub struct DocumentStatus {
     /// one, and a recovered one until it is saved. What the window's list
     /// of recent files keeps.
     pub file: Option<String>,
+    /// The name it is shown under while it has no file: the title of an
+    /// example the program carries (`Session::open_bytes_titled`), also
+    /// once it is recovered after a crash; `None` otherwise. A window
+    /// names it by `path`, else by this, else as untitled.
+    pub title: Option<String>,
+    /// It is an assembly: saved as a `.3dcraftasm` file.
+    pub assembly: bool,
     /// True when it has changes that are not on disk.
     pub dirty: bool,
     /// True when `file.close` refuses to close it without `discard`:
@@ -2722,6 +2729,8 @@ impl Session {
             open: self.documents.len(),
             path: open.path.clone(),
             file: open.file.clone(),
+            title: open.title.clone(),
+            assembly: doc.is_assembly(),
             dirty: open.dirty(),
             close_asks: open.close_asks(),
             jig_in_use: open.jig_in_use,

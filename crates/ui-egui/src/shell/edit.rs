@@ -212,6 +212,8 @@ mod tests {
             open: 1,
             path: None,
             file: None,
+            title: None,
+            assembly: false,
             dirty: false,
             close_asks: false,
             jig_in_use: false,

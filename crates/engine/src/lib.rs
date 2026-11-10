@@ -294,6 +294,12 @@ pub(crate) struct OpenDocument {
     /// parameter changes are not unsaved changes (`jig_cmds.rs`). Derived
     /// from how it was opened, not stored in the file.
     pub(crate) jig_in_use: bool,
+    /// The name it is shown under while it has no file of its own: the
+    /// title of an example the program carries (`open_bytes.rs`), kept by
+    /// its recovery file. Display only, like the path: session state, not
+    /// in the document and never saved into a file; a file's name goes
+    /// before it, and saving it to a file drops it.
+    pub(crate) title: Option<String>,
     /// The assertions and outputs of a state measured elsewhere, whole
     /// (`regen_elsewhere.rs`): the job handed out and the last answer.
     pub(crate) state_checks: regen_elsewhere::StateChecks,
@@ -424,6 +430,7 @@ impl OpenDocument {
             scrub: scrub::Scrub::default(),
             thumbnail: None,
             jig_in_use: false,
+            title: None,
             state_checks: regen_elsewhere::StateChecks::default(),
             motion: motion::Motion::default(),
             drive: drive_cmds::Drive::default(),
@@ -467,8 +474,10 @@ impl OpenDocument {
         Some(self.asm.placed(&doc, self.path.as_deref(), revision))
     }
 
-    /// Changes not on disk. A Jig in use has none: its file is never
-    /// written, and setting its parameters is using it, as a form is.
+    /// Changes not on disk; for an example the program carries
+    /// (`open_bytes.rs`), changes since it was opened, as if its bytes were
+    /// the file. A Jig in use has none: its file is never written, and
+    /// setting its parameters is using it, as a form is.
     pub(crate) fn dirty(&self) -> bool {
         !self.jig_in_use && !self.at_saved()
     }

@@ -963,3 +963,91 @@ fn an_unsaved_assembly_asks_is_autosaved_and_comes_back_with_its_sources() {
     let x = a["measured"]["box"][0][0].as_f64().unwrap();
     assert!((x - 10.0).abs() < 1e-6, "{inspected}");
 }
+
+/// An example the program carries (the window's start screen,
+/// `Session::open_bytes_titled`) is not worth a recovery file while it is
+/// only looked at; edited, it is autosaved under its title and comes back
+/// under it after a crash. A record written before titles were
+/// (2026-11-10) has no `title` and still opens, untitled.
+#[test]
+fn an_example_is_autosaved_only_once_edited_and_comes_back_under_its_title() {
+    let dir = workdir("example");
+    let (mut first, clock) = session(&dir);
+    run(&mut first, "file.new", json!({}));
+    run(&mut first, "feature.block", json!({"size": [30, 10, 8]}));
+    run(&mut first, "file.save", json!({"path": "profile.3dcraft"}));
+    run(&mut first, "file.close", json!({}));
+    let bytes = std::fs::read(dir.join("work").join("profile.3dcraft")).unwrap();
+    first
+        .open_bytes_titled("t-slot-profile.3dcraft", Some("T-slot profile"), &bytes)
+        .unwrap();
+    clock.advance(INTERVAL * 2);
+    first.autosave_poll();
+    assert!(
+        kinds(&dir).iter().all(|k| k != "3dcraft"),
+        "only looked at: {:?}",
+        kinds(&dir)
+    );
+    assert_eq!(first.recovery_overview().pending, 0);
+    run(&mut first, "feature.block", json!({"size": [1, 2, 3]}));
+    clock.advance(INTERVAL);
+    first.autosave_poll();
+    assert_eq!(kinds(&dir), ["3dcraft", "json", "lock"]);
+    let record = listing(&dir)
+        .into_iter()
+        .find(|n| n.ends_with(".json"))
+        .unwrap();
+    let record_path = dir.join("recovery").join(record);
+    let written: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+    assert_eq!(written["recovery_version"], 1);
+    assert_eq!(written["title"], "T-slot profile");
+    assert_eq!(written["name"], "T-slot profile");
+    assert_eq!(written["path"], Value::Null);
+    drop(first);
+
+    let (mut second, clock) = session(&dir);
+    let listed = run(&mut second, "recovery.list", json!({}));
+    let entry = &documents(&listed)[0];
+    assert_eq!(entry["name"], "T-slot profile", "{listed}");
+    let id = entry["id"].as_str().unwrap().to_string();
+    let opened = run(&mut second, "recovery.open", json!({ "id": id }));
+    assert_eq!(opened["title"], "T-slot profile", "{opened}");
+    let status = second.document_status().unwrap();
+    assert_eq!(status.title.as_deref(), Some("T-slot profile"));
+    assert!(status.path.is_none() && status.dirty && status.close_asks);
+    let open = run(&mut second, "file.list", json!({}));
+    assert_eq!(open["documents"][0]["title"], "T-slot profile");
+    assert_eq!(open["documents"][0]["features"], 2);
+    // Edited again and crashed again, its record rewritten as a build
+    // before titles wrote it: no `title`, named untitled.
+    run(&mut second, "feature.block", json!({"size": [2, 2, 2]}));
+    clock.advance(INTERVAL);
+    second.autosave_poll();
+    drop(second);
+    let record = listing(&dir)
+        .into_iter()
+        .find(|n| n.ends_with(".json"))
+        .unwrap();
+    let record_path = dir.join("recovery").join(record);
+    let mut old: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+    assert_eq!(old["title"], "T-slot profile");
+    let map = old.as_object_mut().unwrap();
+    map.remove("title");
+    map.insert("name".into(), "untitled".into());
+    std::fs::write(&record_path, serde_json::to_vec(&old).unwrap()).unwrap();
+
+    let (mut third, _) = session(&dir);
+    let listed = run(&mut third, "recovery.list", json!({}));
+    let entry = &documents(&listed)[0];
+    assert_eq!(entry["name"], "untitled", "{listed}");
+    assert_eq!(entry["openable"], true);
+    let id = entry["id"].as_str().unwrap().to_string();
+    let opened = run(&mut third, "recovery.open", json!({ "id": id }));
+    assert_eq!(opened["title"], Value::Null, "{opened}");
+    let status = third.document_status().unwrap();
+    assert!(status.title.is_none() && status.dirty);
+    assert_eq!(
+        run(&mut third, "file.list", json!({}))["documents"][0]["features"],
+        3
+    );
+}

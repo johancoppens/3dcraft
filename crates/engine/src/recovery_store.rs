@@ -104,6 +104,9 @@ pub(crate) struct DocView<'a> {
     pub worth: bool,
     pub document: &'a Arc<Document>,
     pub path: Option<&'a str>,
+    /// The name it is shown under while it has no file
+    /// (`OpenDocument::title`).
+    pub title: Option<&'a str>,
     /// The document's own file when it was opened or last saved.
     pub original: Option<FileStamp>,
     pub recovered: bool,
@@ -114,6 +117,7 @@ struct Job {
     revision: u64,
     document: Arc<Document>,
     path: Option<String>,
+    title: Option<String>,
     original: Option<FileStamp>,
     recovered: bool,
 }
@@ -149,6 +153,8 @@ struct State {
 struct Record {
     name: Option<String>,
     path: Option<String>,
+    /// Since 2026-11-10, optional: a record written before has none.
+    title: Option<String>,
     original: Option<FileStamp>,
     revision: Option<u64>,
     time: Option<u64>,
@@ -160,6 +166,8 @@ pub(crate) struct Adopted {
     pub document: Document,
     pub name: String,
     pub path: Option<String>,
+    /// The name it was shown under without a file (`OpenDocument::title`).
+    pub title: Option<String>,
     pub original: Option<FileStamp>,
     /// Why the recovery file could not be made this launch's own; the
     /// document is open all the same.
@@ -194,9 +202,12 @@ pub(crate) struct Store {
     worker: Option<JoinHandle<()>>,
 }
 
-fn display_name(path: Option<&str>) -> String {
+/// The name a record gives its document: its file's, else the title it
+/// was shown under, else `untitled`.
+fn display_name(path: Option<&str>, title: Option<&str>) -> String {
     let name = path
         .and_then(|path| path.rsplit(['/', '\\']).find(|part| !part.is_empty()))
+        .or(title)
         .unwrap_or("untitled");
     name.chars()
         .filter(|c| !c.is_control())
@@ -262,6 +273,7 @@ fn read_record(path: &Path) -> Result<Record, String> {
     Ok(Record {
         name: text("name", MAX_NAME_CHARS),
         path: text("path", MAX_PATH_CHARS),
+        title: text("title", MAX_NAME_CHARS),
         original: stamp_from(value.get("original")),
         revision: value.get("revision").and_then(Value::as_u64),
         time: value.get("time").and_then(Value::as_u64),
@@ -367,8 +379,9 @@ impl Shared {
             "launch": self.key,
             "pid": std::process::id(),
             "document": number,
-            "name": display_name(job.path.as_deref()),
+            "name": display_name(job.path.as_deref(), job.title.as_deref()),
             "path": job.path,
+            "title": job.title,
             "original": stamp_json(job.original),
             "revision": job.revision,
             "features": features,
@@ -389,8 +402,12 @@ impl Shared {
     /// a recovery file by the time the disk is ours.
     fn write_job(&self, number: u64, job: &Job) -> Result<bool, String> {
         // The slow part that needs no disk first, outside every lock.
-        let bytes = craft3d_format::to_bytes(&job.document)
-            .map_err(|e| format!("cannot autosave {}: {e}", display_name(job.path.as_deref())))?;
+        let bytes = craft3d_format::to_bytes(&job.document).map_err(|e| {
+            format!(
+                "cannot autosave {}: {e}",
+                display_name(job.path.as_deref(), job.title.as_deref())
+            )
+        })?;
         let mut lock = guard(&self.disk);
         if !guard(&self.state).entries.contains_key(&number) {
             return Ok(false);
@@ -585,7 +602,7 @@ impl Shared {
             id: format!("{key}-{number}"),
             name: record
                 .name
-                .unwrap_or_else(|| display_name(record.path.as_deref())),
+                .unwrap_or_else(|| display_name(record.path.as_deref(), record.title.as_deref())),
             path: record.path,
             time: record.time,
             size: fs::metadata(&path).ok().map(|m| m.len()),
@@ -670,6 +687,7 @@ impl Store {
                         revision: view.revision,
                         document: Arc::clone(view.document),
                         path: view.path.map(str::to_string),
+                        title: view.title.map(str::to_string),
                         original: view.original,
                         recovered: view.recovered,
                     });
@@ -779,6 +797,7 @@ impl Store {
             revision: 0,
             document: Arc::new(document.clone()),
             path: record.path.clone(),
+            title: record.title.clone(),
             original: record.original,
             recovered: true,
         };
@@ -808,8 +827,9 @@ impl Store {
             document,
             name: record
                 .name
-                .unwrap_or_else(|| display_name(record.path.as_deref())),
+                .unwrap_or_else(|| display_name(record.path.as_deref(), record.title.as_deref())),
             path: record.path,
+            title: record.title,
             original: record.original,
             warning: adopted.err().map(|why| {
                 format!("its recovery file could not be taken over ({why}) and stays where it is")
@@ -981,6 +1001,7 @@ mod tests {
                 worth: true,
                 document: &document,
                 path: None,
+                title: None,
                 original: None,
                 recovered: false,
             }],
@@ -1014,5 +1035,43 @@ mod tests {
         assert_eq!(stamp_from(Some(&stamp_json(stamp))), stamp);
         assert_eq!(stamp_from(Some(&stamp_json(None))), None);
         assert_eq!(stamp_from(Some(&json!({"size": "big"}))), None);
+    }
+
+    /// A record names its document by its file, else by the title it was
+    /// shown under, else `untitled`; a record written before titles were
+    /// (2026-11-10) has none, and still reads.
+    #[test]
+    fn a_record_names_its_document_and_reads_without_a_title() {
+        assert_eq!(
+            display_name(Some("/a/gear.3dcraft"), Some("Gear")),
+            "gear.3dcraft"
+        );
+        assert_eq!(display_name(None, Some("Moka pot")), "Moka pot");
+        assert_eq!(display_name(None, None), "untitled");
+        let dir = std::env::temp_dir().join(format!("craft3d-record-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("old.json");
+        std::fs::write(
+            &old,
+            br#"{"recovery_version": 1, "name": "untitled", "path": null, "revision": 3, "time": 1800000000, "pid": 1}"#,
+        )
+        .unwrap();
+        let record = read_record(&old).unwrap();
+        assert_eq!(
+            (record.name.as_deref(), record.title),
+            (Some("untitled"), None)
+        );
+        assert_eq!(record.revision, Some(3));
+        let new = dir.join("new.json");
+        std::fs::write(
+            &new,
+            br#"{"recovery_version": 1, "name": "Moka pot", "path": null, "title": "Moka pot\u0007"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_record(&new).unwrap().title.as_deref(),
+            Some("Moka pot")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

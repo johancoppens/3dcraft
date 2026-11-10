@@ -1252,6 +1252,9 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     open.recovered = None;
     // Saved as a model: it is edited like any other from now on.
     open.jig_in_use = false;
+    // Named by its file from now on (an example's title was the name of a
+    // document without one).
+    open.title = None;
     let mut result = json!({ "path": kept });
     // The open assemblies that have this file as a source follow it
     // (`asm_follow.rs`): what an instance shows is what was saved.
