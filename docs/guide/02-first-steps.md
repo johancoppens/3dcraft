@@ -56,6 +56,8 @@ Playing back never changes the document; it only shows it as it was.
 1. Open the **File** menu and choose **Export…** (or press Ctrl+E; ⌘E on a Mac).
 2. In the export dialog, keep **The model** and choose the format **STL** or **3MF** (3MF keeps the
    size unit and colours; most slicers read both). The **quality**: **Normal** is right for printing.
+   The model is what you see: a body you hid (the eye in the feature list) is left out, and the dialog
+   says which under **The model**, as the status line does after the export.
 
    ![The export dialog for a mesh: Coarse, Normal or Fine](images/export-mesh.png)
 

@@ -51,7 +51,7 @@ mod timeline;
 mod views;
 
 pub use controls::ControlsLayout;
-pub use dialogs::{ErrorDialog, ExportAsk, ExportRequest, error_title, export_verb};
+pub use dialogs::{ErrorDialog, ExportAsk, ExportRequest, error_title, export_verb, hidden_hint};
 pub use edit::{EditAction, EditRequest, MAX_EDIT_QUEUE, run_edit};
 pub use help::{External, Shortcut, ShortcutGroup, ShortcutInput, help_shortcut, shortcuts};
 pub use layout::{ControlWidths, controls_layout, triad_side};
@@ -1961,6 +1961,22 @@ impl Shell {
     /// The scene as of the last [`Self::sync`].
     pub fn shown_scene_arc(&self) -> Option<Arc<Scene>> {
         self.shown_scene.clone()
+    }
+
+    /// The bodies the scene shown leaves out because they are hidden in
+    /// the view (`feature.visible`), by their features' names: built
+    /// features with a body of their own, not a sketch or a datum.
+    pub fn hidden_bodies(&self) -> Vec<String> {
+        let Some(scene) = &self.shown_scene else {
+            return Vec::new();
+        };
+        scene
+            .features
+            .iter()
+            .filter(|f| f.hidden && f.draws && !f.is_sketch)
+            .filter(|f| !f.kind.starts_with("datum") && f.kind != "offsetProfile")
+            .map(|f| f.name.clone())
+            .collect()
     }
 
     /// True once something asked the application to close.

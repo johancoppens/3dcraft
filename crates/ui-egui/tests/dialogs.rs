@@ -878,3 +878,56 @@ fn the_export_dialog_is_driven_by_ui_set_and_read_by_ui_get() {
     assert_eq!(request.name, "untitled.3mf");
     assert_eq!(request.plan.quality, ExportQuality::Coarse);
 }
+
+/// Review of J-045 (S3): the export dialog says, under the model, which
+/// hidden bodies an export of it leaves out, `ui.get` lists them, and the
+/// status line after the export says how many were left out.
+#[test]
+fn the_export_of_the_model_says_which_hidden_bodies_it_leaves_out() {
+    let ctx = egui::Context::default();
+    let mut session = Session::new(Workspace::memory());
+    let mut shell = Shell::new();
+    session
+        .execute("file.new", &json!({"units": "mm"}))
+        .unwrap();
+    session
+        .execute(
+            "feature.block",
+            &json!({"name": "Part", "size": [20, 20, 10]}),
+        )
+        .unwrap();
+    session
+        .execute(
+            "feature.block",
+            &json!({"name": "Gauge", "size": [5, 5, 5], "position": [0, 0, 20]}),
+        )
+        .unwrap();
+    session
+        .execute(
+            "feature.visible",
+            &json!({"feature": "Gauge", "visible": false}),
+        )
+        .unwrap();
+    frame(&ctx, &mut shell, &mut session, Vec::new());
+    shell.open_export(&mut session).unwrap();
+    frame(&ctx, &mut shell, &mut session, Vec::new());
+    assert_eq!(shell.state.export.what, ExportWhat::Model);
+    assert_eq!(shell.export_report()["hidden"], json!(["Gauge"]));
+    assert_eq!(
+        craft3d_ui_egui::shell::hidden_hint(&["Gauge".to_string()]).unwrap(),
+        "1 hidden body (Gauge) is left out, as the view leaves them out; show them, or select the bodies to export, to write them"
+    );
+    assert!(craft3d_ui_egui::shell::hidden_hint(&[]).is_none());
+    shell.set_export_format(ExportFormat::Stl).unwrap();
+    shell.answer_export(true);
+    let request = shell.take_export_answer().unwrap();
+    let params = export_params(&mut session, &request.name, &request.plan).unwrap();
+    let mut call = json!({"path": request.name});
+    for (key, value) in params {
+        call[key] = value;
+    }
+    let result = session.execute("file.export", &call).unwrap();
+    assert_eq!(result["hiddenLeftOut"]["count"], 1, "{result}");
+    let said = craft3d_ui_egui::answer::summary("file.export", &result);
+    assert!(said.ends_with(" · 1 hidden body left out"), "{said}");
+}

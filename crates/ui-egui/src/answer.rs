@@ -130,6 +130,22 @@ fn trouble(result: &Value) -> String {
     if result.get("ok") == Some(&Value::Bool(false)) && status.is_none() && !counted {
         out.push_str(" · not ok");
     }
+    // What an export or a list left out: hidden bodies and bodies named
+    // that are switched off (`hiddenLeftOut`, `switchedOffLeftOut`).
+    for (key, said) in [
+        ("hiddenLeftOut", "hidden"),
+        ("switchedOffLeftOut", "switched off"),
+    ] {
+        let n = result
+            .get(key)
+            .and_then(|left| left.get("count"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if n > 0 {
+            let bodies = if n == 1 { "body" } else { "bodies" };
+            out.push_str(&format!(" · {n} {said} {bodies} left out"));
+        }
+    }
     out
 }
 
@@ -183,6 +199,18 @@ fn shorten(text: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// What an export or a list left out is said (review of J-045, S3).
+    #[test]
+    fn what_was_left_out_is_said() {
+        let result = json!({"path": "a/part.stl", "bodies": 1,
+            "hiddenLeftOut": {"count": 2, "bodies": ["Gauge", "Jig"]},
+            "switchedOffLeftOut": {"count": 1, "bodies": ["Lid"]}});
+        assert_eq!(
+            summary("file.export", &result),
+            "Exported part · 2 hidden bodies left out · 1 switched off body left out"
+        );
+    }
 
     #[test]
     fn a_listing_of_documents_says_the_active_one() {

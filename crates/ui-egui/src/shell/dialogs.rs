@@ -61,6 +61,10 @@ pub struct ErrorDialog {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExportAsk {
     pub choices: ExportChoices,
+    /// The bodies hidden in the view (`feature.visible`) when it was
+    /// opened, by their features' names: what an export of the model
+    /// leaves out (`hiddenLeftOut`), said under the choice.
+    pub hidden: Vec<String>,
     /// The document shown when it was opened (`DocumentStatus::id`).
     pub document: Option<u64>,
     /// `UiState::export` as it was before the dialog opened: what it is
@@ -255,8 +259,10 @@ impl Shell {
             suggested_export_name(status.path.as_deref(), Some(export.format.extension()))
         };
         export.open = true;
+        let hidden = self.hidden_bodies();
         self.dialogs.export = Some(ExportAsk {
             choices,
+            hidden,
             document,
             committed,
         });
@@ -576,6 +582,7 @@ impl Shell {
         json!({
             "whats": whats,
             "problem": ask.choices.selection.as_ref().and_then(|s| s.problem.clone()),
+            "hidden": ask.hidden,
             "namesFile": self.dialogs.names_file,
             "file": export_file_name(&self.state.export.name, self.state.export.format),
         })
@@ -722,6 +729,12 @@ impl Shell {
             {
                 hint(ui, kit, label_width, problem);
             }
+            // The model leaves the hidden bodies out, as the view does.
+            if export.what == ExportWhat::Model
+                && let Some(left) = hidden_hint(&ask.hidden)
+            {
+                hint(ui, kit, label_width, &left);
+            }
             // Format: those that hold what is chosen.
             let formats = ask.choices.formats(&export.what);
             row(ui, kit, "Format", label_width, |ui| {
@@ -811,6 +824,22 @@ impl Shell {
     pub fn export_what_hits(&self) -> &[(ExportWhat, egui::Rect)] {
         &self.dialogs.what_hits
     }
+}
+
+/// What the dialog says under the model of the hidden bodies it leaves
+/// out, when there are any.
+pub fn hidden_hint(hidden: &[String]) -> Option<String> {
+    let names = match hidden {
+        [] => return None,
+        [one] => format!("1 hidden body ({one}) is"),
+        many if many.len() <= 3 => {
+            format!("{} hidden bodies ({}) are", many.len(), many.join(", "))
+        }
+        many => format!("{} hidden bodies are", many.len()),
+    };
+    Some(format!(
+        "{names} left out, as the view leaves them out; show them, or select the bodies to export, to write them"
+    ))
 }
 
 /// What a choice of *What* says in the dialog: the model's "All bodies",

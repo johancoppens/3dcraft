@@ -43,7 +43,7 @@ and saving saves your result as a new `.3dcraft`, never over the Jig ([chapter 5
 
 | What | Formats | What you get |
 |---|---|---|
-| **The model** | STEP, STL, 3MF, OBJ | Every body |
+| **The model** | STEP, STL, 3MF, OBJ | Every body that is not hidden (the dialog names the hidden ones it leaves out, and so does the status line after the export) |
 | | DXF, SVG | A drawing of the model as seen |
 | **The selection** | STEP, STL, 3MF, OBJ | The selected bodies |
 | | DXF, SVG | The outlines of the selected flat faces, or of one selected sketch, or the flat pattern of one selected sheet-metal part |
