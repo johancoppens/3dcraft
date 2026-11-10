@@ -66,8 +66,8 @@ pub use start::{
     example_steps, run_example,
 };
 pub use tabs::{
-    CLOSE_MARK, CloseAnswer, DocAction, TabPart, UNSAVED_MARK, close_shortcut, doc_tabs,
-    next_shortcut, previous_shortcut, tab_glyph, tab_name,
+    CLOSE_MARK, CloseAnswer, ClosingWords, DocAction, TabPart, UNSAVED_MARK, close_shortcut,
+    closing_words, doc_tabs, next_shortcut, previous_shortcut, tab_glyph, tab_name,
 };
 pub(crate) use views::FlyTo;
 pub use views::{FLY_SECONDS, MIN_FLY_CONTEXT, ZOOM_TOOLTIP, zoomable};

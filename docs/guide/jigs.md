@@ -85,9 +85,9 @@ chosen ranges where that cannot happen; if it does, tell them.
 **Outputs.** Below the parameters, many Jigs show what they work out: an inside volume, a mass, the number
 of parts to cut. You read them; you do not set them ([Measuring and assertions › Outputs](measure.md#outputs-measures-in-formulas)).
 
-**Closing a Jig you changed** asks *Save the parameters of "…" as a model?*, with the line *The Jig
-itself is not changed. The values you set are lost if you close without saving them.* The buttons are
-**Save as model…**, **Close** (forget the settings) and **Cancel**.
+**Closing a Jig you changed** asks *Save the parameters as a model?*, with the lines *You changed the
+parameters of "…".* and *The Jig itself is not changed. The values you set are lost if you close without
+saving them.* The buttons are **Save as model…**, **Close** (forget the settings) and **Cancel**.
 
 ### Looking inside, and changing the design
 

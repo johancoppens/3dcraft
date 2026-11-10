@@ -59,6 +59,45 @@ impl CloseAnswer {
     }
 }
 
+/// The words of the question before closing ([`closing_words`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClosingWords {
+    /// The dialog's title: short, without the document's name, which a
+    /// title would cut at the dialog's edge.
+    pub title: String,
+    /// The body's first line, which names the document (it wraps).
+    pub about: String,
+    /// What is lost without saving.
+    pub lost: String,
+}
+
+/// The words of the question before closing `closing`: a document with
+/// unsaved changes, or a Jig in use whose parameters changed (its file
+/// stays as it is; the values set are kept only as a model). The name is
+/// in the body, whole, however long.
+pub fn closing_words(closing: &Closing) -> ClosingWords {
+    let (doing, done) = if closing.quitting {
+        ("quitting", "quit")
+    } else {
+        ("closing", "close")
+    };
+    if closing.jig {
+        ClosingWords {
+            title: "Save the parameters as a model?".to_string(),
+            about: format!("You changed the parameters of \"{}\".", closing.name),
+            lost: format!(
+                "The Jig itself is not changed. The values you set are lost if you {done} without saving them."
+            ),
+        }
+    } else {
+        ClosingWords {
+            title: format!("Save the changes before {doing}?"),
+            about: format!("\"{}\" has unsaved changes.", closing.name),
+            lost: format!("The changes are lost if you {done} without saving."),
+        }
+    }
+}
+
 /// What a click in the row of tabs was on: the tab itself, or its close
 /// button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -775,31 +814,13 @@ impl Shell {
         let mut hits = Vec::new();
         let mut answer = None;
         let kit = crate::kit::Kit::panel(&tokens);
-        let (doing, done) = if closing.quitting {
-            ("quitting", "quit")
-        } else {
-            ("closing", "close")
-        };
-        let (title, body) = if closing.jig {
-            // A Jig in use: its file stays as it is; the values set are
-            // kept only as a model.
-            (
-                format!("Save the parameters of \"{}\" as a model?", closing.name),
-                format!(
-                    "The Jig itself is not changed. The values you set are lost if you {done} without saving them."
-                ),
-            )
-        } else {
-            (
-                format!("Save the changes to \"{}\" before {doing}?", closing.name),
-                format!("The changes are lost if you {done} without saving."),
-            )
-        };
-        let dialog = crate::kit::Dialog::new(egui::Id::new("craft3d-closing"), &title)
+        let words = closing_words(&closing);
+        let dialog = crate::kit::Dialog::new(egui::Id::new("craft3d-closing"), &words.title)
             .width(tokens.dialog_wide_width)
             .closable(false);
         let shown = kit.dialog(ui.ctx(), dialog, |kit, ui| {
-            kit.paragraph(ui, &body, true);
+            kit.paragraph(ui, &words.about, false);
+            kit.paragraph(ui, &words.lost, true);
             if closing.quitting && more > 0 {
                 let more = if more == 1 {
                     "1 more document has unsaved changes.".to_string()

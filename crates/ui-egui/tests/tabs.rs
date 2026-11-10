@@ -381,6 +381,47 @@ fn closing_asks_first_only_when_there_is_something_to_lose() {
     assert!(shell.tab_hits().is_empty(), "no row without documents");
 }
 
+/// The question names the document in its body, whole, which wraps, and
+/// never in its title, which the dialog cuts at its edge (2026-11-10: the
+/// title "Save the changes to "T-slot aluminium profile" before …" was
+/// cut); the same for a Jig in use.
+#[test]
+fn the_question_names_the_document_in_its_body_however_long() {
+    use craft3d_ui_egui::shell::closing_words;
+    use craft3d_ui_egui::state::Closing;
+    let name = "T-slot aluminium profile, 40 x 40 mm, with a name as long as a person types it";
+    let closing = |quitting: bool, jig: bool| Closing {
+        document: 0,
+        name: name.to_string(),
+        path: None,
+        quitting,
+        jig,
+    };
+    let words = closing_words(&closing(false, false));
+    assert_eq!(words.title, "Save the changes before closing?");
+    assert_eq!(words.about, format!("\"{name}\" has unsaved changes."));
+    assert_eq!(
+        words.lost,
+        "The changes are lost if you close without saving."
+    );
+    let words = closing_words(&closing(true, false));
+    assert_eq!(words.title, "Save the changes before quitting?");
+    assert_eq!(
+        words.lost,
+        "The changes are lost if you quit without saving."
+    );
+    let words = closing_words(&closing(false, true));
+    assert_eq!(words.title, "Save the parameters as a model?");
+    assert_eq!(
+        words.about,
+        format!("You changed the parameters of \"{name}\".")
+    );
+    assert_eq!(
+        words.lost,
+        "The Jig itself is not changed. The values you set are lost if you close without saving them."
+    );
+}
+
 /// An agent that closes or saves the document while the question is asked
 /// takes the question away: it was about a document that is gone.
 #[test]
