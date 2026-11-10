@@ -189,7 +189,7 @@ the model):
 
 ```text
 material,thickness (mm),name,count,length (mm),width (mm),area (mm^2),cut length (mm),holes,kind,bodies,reason
-hardboard,6,Back with hole,1,600,300,178743.3629385641,1925.6637061435918,1,plate,Back with hole,
+hardboard,6,Back with hole,1,600,300,178743.3629385641,1925.663706,1,plate,Back with hole,
 birch plywood,18,Left side,2,300,200,60000,1000,0,plate,Left side; Right side,
 birch plywood,18,Bottom,2,564,200,112800,1528,0,plate,Bottom; Top,
 ```

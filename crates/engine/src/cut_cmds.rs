@@ -29,7 +29,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "cut.list",
         "Cut List",
         r#"{"bodies": [id or name of the feature that made the body] = every body, "format": "json|csv" = "json", "geometry": boolean = false}"#,
-        "The cut list of the document (changes nothing): every body that is cut from sheet stock, grouped by thickness and material. A body is a plate when it is a prism of constant thickness: two parallel flat faces facing away from each other (its top and bottom, one face each), every other face square to them (side walls, holes through: a plane square to them, a cylinder along their normal, a freeform wall square to them), every vertex in the top's plane or the bottom's; of the directions in which a body is such a prism the thinnest is its thickness (a box is a plate of its smallest side). The body of a sheet-metal part (feature.sheetMetal, also after a boolean drilled it) is a part by its flat pattern, as file.export with sheetMetal draws it (holes cut later carried back). Each part has name (of the feature that made the body), kind (plate or sheetMetal), thickness, material (body.material's name, or null), length and width (of the rectangle of least area around its outline, length the longer side), area (of the material: outline less holes), cutLength (outline, holes and cut marks), holes, count (how many bodies are this part: identical outline, holes and marks up to a rigid motion of the sheet, turned over included, where a bend up is then a bend down), bodies and features (their names and ids), frame (where the part's own 2D frame lies in the model: origin, xAxis along the length, yAxis, normal; its outline lies in [0, length] x [0, width] there), top (the face it is seen from; null for sheet metal, seen from its sketch's side) and notes. With geometry, each part also has geometry {outline, holes, marks} in its own frame: a path is {start, segments: [{line: [x, y]} | {arc: [x, y], center, radius, ccw} | {ellipse: [x, y], center, major, ratio, ccw} | {spline: {degree, knots, control, weights}}], closed}, {circle: [x, y], radius} or {ellipse: [x, y], major, ratio}; a mark is {kind: cut|bendUp|bendDown|form, path}. groups lists per thickness and material the parts, their count and total area; notPlates lists every other body with the reason, named by face (a pocket's floor, a chamfer, a round, a face at a slant). With format csv the result is {format, csv, parts, distinct, notPlates}: csv has the header row material,thickness (u),name,count,length (u),width (u),area (u^2),cut length (u),holes,kind,bodies,reason in the document's unit u, a row per distinct part, then a row per body that is not a plate (kind not a plate, the reason in the last column). Not for an assembly: list the parts of its part documents.",
+        "The cut list of the document (changes nothing): every body that is cut from sheet stock, grouped by thickness and material. A body is a plate when it is a prism of constant thickness: two parallel flat faces facing away from each other (its top and bottom, one face each), every other face square to them (side walls, holes through: a plane square to them, a cylinder along their normal, a freeform wall square to them), every vertex in the top's plane or the bottom's; of the directions in which a body is such a prism the thinnest is its thickness (a box is a plate of its smallest side). The body of a sheet-metal part (feature.sheetMetal, also after a boolean drilled it) is a part by its flat pattern, as file.export with sheetMetal draws it (holes cut later carried back). Each part has name (of the feature that made the body), kind (plate or sheetMetal), thickness, material (body.material's name, or null), length and width (of the rectangle of least area around its outline, length the longer side), area (of the material: outline less holes), cutLength (outline, holes and cut marks), holes, count (how many bodies are this part: identical outline, holes and marks up to a rigid motion of the sheet, turned over included, where a bend up is then a bend down), bodies and features (their names and ids), frame (where the part's own 2D frame lies in the model: origin, xAxis along the length, yAxis, normal; its outline lies in [0, length] x [0, width] there), top (the face it is seen from; null for sheet metal, seen from its sketch's side) and notes. With geometry, each part also has geometry {outline, holes, marks} in its own frame: a path is {start, segments: [{line: [x, y]} | {arc: [x, y], center, radius, ccw} | {ellipse: [x, y], center, major, ratio, ccw} | {spline: {degree, knots, control, weights}}], closed}, {circle: [x, y], radius} or {ellipse: [x, y], major, ratio}; a mark is {kind: cut|bendUp|bendDown|form, path}. groups lists per thickness and material the parts, their count and total area; lengths are given to the decimal place of the document's tolerance and areas to that of its square, what the tolerance tells apart; notPlates lists every other body with the reason, named by face (a pocket's floor, a chamfer, a round, a face at a slant). With format csv the result is {format, csv, parts, distinct, notPlates}: csv has the header row material,thickness (u),name,count,length (u),width (u),area (u^2),cut length (u),holes,kind,bodies,reason in the document's unit u, a row per distinct part, then a row per body that is not a plate (kind not a plate, the reason in the last column). Not for an assembly: list the parts of its part documents.",
         doc: true,
         cut_list
     ),
@@ -105,6 +105,52 @@ struct Found {
     uncompared: Vec<String>,
     unit: LengthUnit,
     tolerance: Tolerance,
+}
+
+impl Found {
+    /// A length as the list prints it: to the decimal place of the
+    /// document's tolerance, which tells nothing finer apart (a plate
+    /// turned 40° is 3 thick, not 3.000000000000014).
+    fn length(&self, v: f64) -> f64 {
+        to_place(v, self.tolerance.linear)
+    }
+
+    /// An area as the list prints it: to the place of the tolerance
+    /// squared, never coarser than what an area is told apart to.
+    fn area(&self, v: f64) -> f64 {
+        to_place(v, self.tolerance.linear * self.tolerance.linear)
+    }
+}
+
+/// `v` rounded to the decimal place of `step` (the largest power of ten
+/// not above it), so never coarser than `step`; `v` itself where that
+/// cannot be done (a step that is not a positive number, a value whose
+/// digits do not reach that place).
+fn to_place(v: f64, step: f64) -> f64 {
+    if !(step > 0.0 && step.is_finite() && v.is_finite()) {
+        return v;
+    }
+    let place = step.plog10().floor();
+    if !(-30.0..=30.0).contains(&place) {
+        return v;
+    }
+    // `place` is a whole number within ±30.
+    let place = place as i32;
+    // Powers of ten up to 10^22 are exact, and dividing by one rounds the
+    // quotient correctly: 3000000 / 10^6 is 3.
+    let scale = 10.0_f64.ppowi(place.abs());
+    let scaled = if place < 0 { v * scale } else { v / scale };
+    if scaled.abs() >= 4.5e15 {
+        return v;
+    }
+    let rounded = scaled.round();
+    let back = if place < 0 {
+        rounded / scale
+    } else {
+        rounded * scale
+    };
+    // -0 prints as 0.
+    if back == 0.0 { 0.0 } else { back }
 }
 
 /// The frame in the model of the 2D frame `rect` puts in `frame`'s plane.
@@ -425,12 +471,12 @@ fn part_json(found: &Found, d: &Distinct, geometry: bool) -> Option<Value> {
         "count": members.len(),
         "bodies": members.iter().map(|m| m.name.clone()).collect::<Vec<_>>(),
         "features": members.iter().map(|m| m.feature.to_string()).collect::<Vec<_>>(),
-        "thickness": part.thickness,
+        "thickness": found.length(part.thickness),
         "material": part.material,
-        "length": part.rect.length,
-        "width": part.rect.width,
-        "area": part.shape.area(),
-        "cutLength": part.shape.cut_length(),
+        "length": found.length(part.rect.length),
+        "width": found.length(part.rect.width),
+        "area": found.area(part.shape.area()),
+        "cutLength": found.length(part.shape.cut_length()),
         "holes": part.shape.holes.len(),
         "frame": {"origin": vec3(origin), "xAxis": vec3(x), "yAxis": vec3(y), "normal": vec3(normal)},
         "top": part.top,
@@ -507,13 +553,13 @@ fn csv(found: &Found) -> String {
             let bodies: Vec<&str> = members.iter().map(|m| m.name.as_str()).collect();
             let row = [
                 csv_field(g.material.as_deref().unwrap_or("")),
-                g.thickness.to_string(),
+                found.length(g.thickness).to_string(),
                 csv_field(&part.name),
                 members.len().to_string(),
-                part.rect.length.to_string(),
-                part.rect.width.to_string(),
-                part.shape.area().to_string(),
-                part.shape.cut_length().to_string(),
+                found.length(part.rect.length).to_string(),
+                found.length(part.rect.width).to_string(),
+                found.area(part.shape.area()).to_string(),
+                found.length(part.shape.cut_length()).to_string(),
                 part.shape.holes.len().to_string(),
                 part.kind.name().to_string(),
                 csv_field(&bodies.join("; ")),
@@ -588,10 +634,10 @@ fn cut_list(session: &mut Session, params: &Value) -> Run {
                 .map(|p| p.shape.area())
                 .sum();
             json!({
-                "thickness": g.thickness,
+                "thickness": found.length(g.thickness),
                 "material": g.material,
                 "count": count,
-                "area": area,
+                "area": found.area(area),
                 "parts": parts,
             })
         })
@@ -896,7 +942,7 @@ fn cut_export(session: &mut Session, params: &Value) -> Run {
                 "file": file,
                 "at": point(*at),
                 "bbox": [b[0] + at[0], b[1] + at[1], b[2] + at[0], b[3] + at[1]],
-                "thickness": part.thickness,
+                "thickness": found.length(part.thickness),
                 "material": part.material,
                 "notes": notes,
             }))

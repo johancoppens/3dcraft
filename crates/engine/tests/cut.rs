@@ -40,6 +40,19 @@ fn close(v: &Value, expected: f64, k: f64, what: &str) {
     );
 }
 
+/// `v` rounded to the decimal place of the document's tolerance `tol`
+/// (the largest power of ten not above it): cut.list prints its lengths
+/// so, to what the tolerance tells apart and no coarser (J-042).
+fn at_place(v: f64, tol: f64) -> f64 {
+    let place = tol.plog10().floor() as i32;
+    let scale = 10.0_f64.ppowi(place.abs());
+    if place < 0 {
+        (v * scale).round() / scale
+    } else {
+        (v / scale).round() * scale
+    }
+}
+
 /// The part named `name` of a cut list, with its group.
 fn part<'a>(list: &'a Value, name: &str) -> (&'a Value, &'a Value) {
     for g in list["groups"].as_array().unwrap() {
@@ -187,8 +200,15 @@ fn plates_have_their_thickness_size_and_area_in_closed_form() {
         close(&holed["width"], 50.0 * k, k, "holed width");
         let area = 5000.0 - 25.0 * PI - (30.0 * 8.0 + 16.0 * PI);
         close(&holed["area"], area * k * k, k, "holed area");
+        // Printed to the place of the tolerance (J-042): the closed form
+        // rounded there.
         let cut = 300.0 + 10.0 * PI + 60.0 + 8.0 * PI;
-        close(&holed["cutLength"], cut * k, k, "holed cut length");
+        close(
+            &holed["cutLength"],
+            at_place(cut * k, 1e-6 * k),
+            k,
+            "holed cut length",
+        );
 
         let (group, ell) = part(&list, "Ell");
         close(&group["thickness"], 9.0 * k, k, "L thickness");
@@ -368,7 +388,14 @@ fn a_sheet_metal_part_is_listed_by_its_flat_pattern() {
         close(&group["thickness"], t, k, "sheet thickness");
         let ba = FRAC_PI_2 * (r + 0.4 * t);
         let long = d + ba + l;
-        close(&bracket["length"], long, k, "pattern length");
+        // Printed to the place of the tolerance (J-042): the closed form
+        // rounded there.
+        close(
+            &bracket["length"],
+            at_place(long, 1e-6 * k),
+            k,
+            "pattern length",
+        );
         close(&bracket["width"], w, k, "pattern width");
         close(&bracket["area"], w * long, k, "pattern area");
         assert_eq!(bracket["top"], Value::Null);
@@ -910,6 +937,58 @@ fn the_shelf_of_the_guide_gives_the_cut_list_it_prints() {
     let evidence = root.join("target/evidence/cut");
     std::fs::create_dir_all(&evidence).unwrap();
     std::fs::write(evidence.join("shelf.svg"), &svg).unwrap();
+}
+
+/// J-042: a 3 mm plate turned 40° about y is 3 thick, 100 long and 60
+/// wide in the list, without rounding noise, and lands in one group, as
+/// one part, with the same plate lying flat (the turned one first, so the
+/// group's thickness is its).
+#[test]
+fn a_turned_plate_is_listed_without_noise_with_its_flat_twin() {
+    let dir = workdir("cut", "turned");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": ["100 mm", "60 mm", "3 mm"], "name": "Plate"}),
+    );
+    run(
+        &mut s,
+        "feature.transform",
+        json!({"source": "Plate", "angle": "40 deg", "axis": [0, 1, 0], "pivot": ["0 mm", "0 mm", "300 mm"], "name": "Turned plate"}),
+    );
+    let list = run(&mut s, "cut.list", json!({}));
+    let (group, turned) = part(&list, "Turned plate");
+    for (value, want) in [
+        (&group["thickness"], 3.0),
+        (&turned["thickness"], 3.0),
+        (&turned["length"], 100.0),
+        (&turned["width"], 60.0),
+        (&turned["cutLength"], 320.0),
+    ] {
+        assert_eq!(number(value), want, "{turned}");
+    }
+    block(&mut s, "Flat plate", [100.0, 60.0, 3.0], [0.0, 200.0, 0.0]);
+    let list = run(&mut s, "cut.list", json!({}));
+    assert_eq!(list["groups"].as_array().unwrap().len(), 1, "{list}");
+    let (group, first) = part(&list, "Turned plate");
+    assert_eq!(number(&group["thickness"]), 3.0, "{group}");
+    assert_eq!(group["count"], 2, "{group}");
+    assert_eq!(first["count"], 2, "{first}");
+    assert_eq!(first["bodies"], json!(["Turned plate", "Flat plate"]));
+    let csv = run(&mut s, "cut.list", json!({"format": "csv"}));
+    let row = csv["csv"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .nth(1)
+        .unwrap()
+        .to_string();
+    assert!(
+        row.starts_with(",3,Turned plate,2,100,60,"),
+        "the sizes as a shop reads them: {row}"
+    );
 }
 
 #[test]
