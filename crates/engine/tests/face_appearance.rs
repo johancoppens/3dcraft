@@ -1177,3 +1177,71 @@ fn clearing_a_body_s_face_colours_refuses_what_is_not_a_body() {
     }
     assert_eq!(s.document_revision(), revision, "nothing changed");
 }
+
+/// Two faces of a union coloured apart (one red, one green) that an
+/// upstream edit then merges into one face: both entries stay, at the
+/// union, by the two names the merged face answers to. Clearing the body
+/// of a later transform takes both, so the body's colour shows, not the
+/// second one.
+#[test]
+fn clearing_a_body_takes_every_entry_of_a_merged_face() {
+    let mut s = session();
+    new_doc(&mut s);
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "A", "size": [10, 10, 10]}),
+    );
+    // B's top 1 above A's: two top faces in the union.
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "B", "size": [10, 10, 10], "position": [10, 0, 1]}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "union", "target": "A", "tool": "B", "name": "Both"}),
+    );
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"body": "Both", "faces": ["F3:copy(0)/F1:face(1)"], "color": RED}),
+    );
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"body": "Both", "faces": ["F3:copy(1)/F2:face(1)"], "color": GREEN}),
+    );
+    run(
+        &mut s,
+        "feature.transform",
+        json!({"source": "Both", "translate": [0, 0, 30], "name": "Moved"}),
+    );
+    run(
+        &mut s,
+        "body.appearance",
+        json!({"body": "Moved", "color": BLUE}),
+    );
+    // B lowered: the tops are one plane and merge into one face.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "B", "position": [10, 0, 0]}),
+    );
+    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    assert_eq!(
+        inspect["faceAppearances"].as_array().unwrap().len(),
+        2,
+        "{inspect}"
+    );
+    let out = run(
+        &mut s,
+        "face.appearance",
+        json!({"body": "Moved", "clear": true}),
+    );
+    assert_eq!(out["count"], 2, "{out}");
+    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    assert!(inspect.get("faceAppearances").is_none(), "{inspect}");
+    assert!(colours_of(&mut s, "F4").iter().all(|c| *c == Some(BLUE)));
+}

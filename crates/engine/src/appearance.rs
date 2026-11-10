@@ -587,20 +587,23 @@ fn walk_face(
 /// face was given its colour in, and the face's name there.
 pub(crate) type FaceEntry = (FeatureId, PersistentName);
 
-/// The stored entry that gives the face named `name` (along `way`) its
-/// own colour at `at`, as [`own_face_appearance`] finds the colour: an
-/// entry of that name, else one of another name the face answers to
-/// there. Entries of a feature that is off are read too.
-fn own_face_entry(
+/// The stored entries that give the face named `name` (along `way`) its
+/// own colour at `at`, where [`own_face_appearance`] finds the colour: an
+/// entry of that name, and those of the other names the face answers to
+/// there (two faces coloured apart that an upstream edit merged carry
+/// one each; the first shows, the other would once it is gone). Entries
+/// of a feature that is off are read too.
+fn own_face_entries(
     doc: &Document,
     regen: &Regen,
     at: FeatureId,
     way: Option<(&[u64], &PersistentName)>,
     name: &PersistentName,
-) -> Option<FaceEntry> {
+) -> Vec<FaceEntry> {
+    let mut found = Vec::new();
     let entries = doc.face_properties(at);
     if entries.is_empty() {
-        return None;
+        return found;
     }
     let direct = match way {
         Some((path, of)) => entries
@@ -616,11 +619,13 @@ fn own_face_entry(
         None => doc.face_appearance(at, name).map(|_| name.clone()),
     };
     if let Some(face) = direct {
-        return Some((at, face));
+        found.push((at, face));
     }
-    let names = regen.feature(at)?.names.as_deref()?;
+    let Some(names) = regen.feature(at).and_then(|r| r.names.as_deref()) else {
+        return found;
+    };
     if names.aliases.is_empty() {
-        return None;
+        return found;
     }
     let here = match way {
         Some((path, of)) => PersistentName {
@@ -629,11 +634,19 @@ fn own_face_entry(
         },
         None => name.clone(),
     };
-    let face = craft3d_regen::faces_named(names, &here).first()?.0;
-    names
-        .names_of(usize::try_from(face).ok()?)
-        .find(|n| doc.face_appearance(at, n).is_some())
-        .map(|n| (at, n.clone()))
+    let Some(face) = craft3d_regen::faces_named(names, &here)
+        .first()
+        .and_then(|f| usize::try_from(f.0).ok())
+    else {
+        return found;
+    };
+    for n in names.names_of(face) {
+        let entry = (at, n.clone());
+        if doc.face_appearance(at, n).is_some() && !found.contains(&entry) {
+            found.push(entry);
+        }
+    }
+    found
 }
 
 /// Every stored entry on the way back of the face named `name` in the
@@ -654,10 +667,10 @@ fn entries_on_way(
     let mut current = name;
     for _ in 0..=doc.features.len().saturating_mul(2) {
         let here = way.as_ref().map(|(path, of)| (path.as_slice(), *of));
-        if let Some(entry) = own_face_entry(doc, regen, at, here, current)
-            && !found.contains(&entry)
-        {
-            found.push(entry);
+        for entry in own_face_entries(doc, regen, at, here, current) {
+            if !found.contains(&entry) {
+                found.push(entry);
+            }
         }
         if way.is_none() {
             if current.role == NameRole::Copy
