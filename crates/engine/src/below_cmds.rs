@@ -320,9 +320,11 @@ fn run_command(
     };
     let open = session.document_mut()?;
     let regen = open.regen();
-    let doc = open.history.current();
+    let (doc, placed) = crate::verify_cmds::measured_document(open);
+    let doc = &*doc;
     let err = |e: String| CommandError::new(format!("{id}: {e}"));
-    let ctx = Ctx::new(doc, &regen).map_err(err)?;
+    let mut ctx = Ctx::new(doc, &regen).map_err(err)?;
+    ctx.placed = placed.as_ref();
     let (found, plane, level) = measured(&ctx, &map, asked, keys).map_err(err)?;
     let mut out = shape(&found, &plane, level.as_ref());
     out.insert("lengthUnit".into(), length_unit(doc).into());
@@ -403,9 +405,11 @@ fn measure_section(session: &mut Session, params: &Value) -> Run {
     }
     let open = session.document_mut()?;
     let regen = open.regen();
-    let doc = open.history.current();
+    let (doc, placed) = crate::verify_cmds::measured_document(open);
+    let doc = &*doc;
     let err = |e: String| CommandError::new(format!("{ID}: {e}"));
-    let ctx = Ctx::new(doc, &regen).map_err(err)?;
+    let mut ctx = Ctx::new(doc, &regen).map_err(err)?;
+    ctx.placed = placed.as_ref();
     let asked = if twist {
         Asked::Twist(options)
     } else {
@@ -686,9 +690,11 @@ fn measure_floating(session: &mut Session, params: &Value) -> Run {
     };
     let open = session.document_mut()?;
     let regen = open.regen();
-    let doc = open.history.current();
+    let (doc, placed) = crate::verify_cmds::measured_document(open);
+    let doc = &*doc;
     let err = |e: String| CommandError::new(format!("{ID}: {e}"));
-    let ctx = Ctx::new(doc, &regen).map_err(err)?;
+    let mut ctx = Ctx::new(doc, &regen).map_err(err)?;
+    ctx.placed = placed.as_ref();
     let Floated {
         found,
         upright,

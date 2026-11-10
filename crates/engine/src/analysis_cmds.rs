@@ -29,8 +29,10 @@ fn run(
     };
     let open = session.document_mut()?;
     let regen = open.regen();
-    let doc = open.history.current();
-    let ctx = Ctx::new(doc, &regen).map_err(|e| CommandError::new(format!("{id}: {e}")))?;
+    let (doc, placed) = crate::verify_cmds::measured_document(open);
+    let doc = &*doc;
+    let mut ctx = Ctx::new(doc, &regen).map_err(|e| CommandError::new(format!("{id}: {e}")))?;
+    ctx.placed = placed.as_ref();
     let out = crate::verify_cmds::take(&ctx, measure, &map)
         .map_err(|e| CommandError::new(format!("{id}: {e}")))?;
     let mut result = out.detail;

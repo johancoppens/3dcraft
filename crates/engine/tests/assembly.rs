@@ -2110,3 +2110,80 @@ fn assertions_and_outputs_on_instance_names_follow_a_moved_instance() {
         check(&mut s, z);
     }
 }
+
+/// Review of A-010 (S1): the measure commands that are not assertions
+/// (`measure.below`, `measure.section`, `measure.ray`, `measure.curvature`)
+/// take an assembly's instance names by the same rule and label the
+/// bodies by them: a cube 10 × 10 × 10 at the origin, another 30 along y.
+#[test]
+fn the_measure_commands_take_instance_names_in_an_assembly() {
+    let dir = workdir("assembly", "measure-commands");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "feature.block",
+        json!({ "name": "Block", "size": [10, 10, 10] }),
+    );
+    run(&mut s, "file.save", json!({ "path": "block.3dcraft" }));
+    run(&mut s, "file.close", json!({}));
+    run(&mut s, "assembly.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "Cube" }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "Far", "position": [0, 30, 0] }),
+    );
+    // Half the cube lies below z = 5: 500.
+    let below = run(
+        &mut s,
+        "measure.below",
+        json!({ "of": "Cube", "plane": "xy", "offset": 5 }),
+    );
+    assert!(
+        close(below["volume"].as_f64().unwrap(), 500.0, 500.0),
+        "{below}"
+    );
+    let section = run(
+        &mut s,
+        "measure.section",
+        json!({ "of": "Cube/Block", "plane": "xy", "offset": 5 }),
+    );
+    assert!(
+        close(section["area"].as_f64().unwrap(), 100.0, 100.0),
+        "{section}"
+    );
+    // Along y from y = -10 through both cubes: in at 10 and out at 20,
+    // in at 40 and out at 50; each hit labelled by its instance.
+    let ray = run(
+        &mut s,
+        "measure.ray",
+        json!({ "from": [5, -10, 5], "direction": "y" }),
+    );
+    let hits: Vec<(f64, String)> = ray["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| {
+            (
+                h["distance"].as_f64().unwrap(),
+                h["body"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    let want = [(10.0, "Cube"), (20.0, "Cube"), (40.0, "Far"), (50.0, "Far")];
+    assert_eq!(hits.len(), want.len(), "{ray}");
+    for ((d, body), (wd, wbody)) in hits.iter().zip(want) {
+        assert!(close(*d, wd, wd) && body == wbody, "{ray}");
+    }
+    let flat = run(
+        &mut s,
+        "measure.curvature",
+        json!({ "of": "Cube", "at": [5, 5, 10] }),
+    );
+    assert!(flat["gaussian"].as_f64().unwrap().abs() < 1e-12, "{flat}");
+}

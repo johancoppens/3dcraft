@@ -28,6 +28,21 @@ use std::sync::Arc;
 /// Most items a subject may name.
 const MAX_ITEMS: usize = 10_000;
 
+/// What a `measure.*` command measures: the active document, or for an
+/// assembly its placed bodies (the shown part, each body named after its
+/// instance) with its placement, as the assembly's assertions are
+/// measured, so a subject names instances there by one rule (A-010).
+pub(crate) fn measured_document(
+    open: &mut crate::OpenDocument,
+) -> (Arc<Document>, Option<Arc<crate::asm::Placed>>) {
+    let placed = open.placed();
+    let doc = match &placed {
+        Some(placed) => Arc::clone(&placed.doc),
+        None => Arc::clone(open.history.current()),
+    };
+    (doc, placed)
+}
+
 /// The start of the error of a subject whose every named body is switched
 /// off now: an assertion on it is inactive, as one whose own condition is
 /// 0 (J-026), rather than in error or passed on nothing.
@@ -455,8 +470,11 @@ pub(crate) fn subject(ctx: &Ctx<'_>, value: &Value, kind: &[&str]) -> Result<Vec
     // bodies it begins (`Handle`, `Handle/Grip`, `Sub/Inner`), whatever
     // the placed bodies are called (A-010, A-031).
     let body_item = |text: &str| -> Result<Vec<Option<Found>>, String> {
-        let ids = match (ctx.doc.feature_by_name(text), ctx.placed) {
-            (Some(feature), _) => vec![feature.id],
+        // A shown body's name, then a feature's id (`F3`), as before
+        // instances were named by path; so an instance named like an id
+        // is reached by that name only where no feature has the id.
+        let ids = match (feature_of(ctx.doc, text).ok(), ctx.placed) {
+            (Some(id), _) => vec![id],
             (None, Some(placed)) => {
                 let below = format!("{text}/");
                 crate::asm::body_paths(placed)
@@ -2038,13 +2056,7 @@ fn command(
     };
     let open = session.document_mut()?;
     let regen = open.regen();
-    // An assembly is measured on its placed bodies, as its assertions are,
-    // named after their instances.
-    let placed = open.placed();
-    let doc = match &placed {
-        Some(placed) => Arc::clone(&placed.doc),
-        None => Arc::clone(open.history.current()),
-    };
+    let (doc, placed) = measured_document(open);
     let doc = &*doc;
     let mut ctx = Ctx::new(doc, &regen).map_err(|e| CommandError::new(format!("{id}: {e}")))?;
     ctx.placed = placed.as_ref();
@@ -2133,9 +2145,11 @@ fn measure_ray(session: &mut Session, params: &Value) -> Run {
     let limit = usize::try_from(limit).unwrap_or(MAX_HITS);
     let open = session.document_mut()?;
     let regen = open.regen();
-    let doc = open.history.current();
+    let (doc, placed) = crate::verify_cmds::measured_document(open);
+    let doc = &*doc;
     let err = |e: String| CommandError::new(format!("{ID}: {e}"));
-    let ctx = Ctx::new(doc, &regen).map_err(err)?;
+    let mut ctx = Ctx::new(doc, &regen).map_err(err)?;
+    ctx.placed = placed.as_ref();
     let from = ctx.point(p.get("from"), "from").map_err(err)?;
     let dir = direction(p.get("direction"), "direction").map_err(err)?;
     let found = match p.get("of") {

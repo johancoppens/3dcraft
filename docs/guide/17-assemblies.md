@@ -178,8 +178,14 @@ pass the parent's on: `"params": {"t": "t"}`.
   the name of the feature that made it in the part, also when the part has one body (`Cube/Block`); a path reaches
   into a subassembly (`Sub/Inner`, `Sub/Inner/Block`). The pose measures (`position`, `rotation`,
   `measure.pose`) reach an instance inside a rigid subassembly by its path too, its pose in the assembly.
-  `measure.clearance` and the other `measure.*` commands name them the same way. Renaming an instance renames it
-  in its checks; an instance a check names is not deleted until the check is.
+  Every `measure.*` command that takes a subject names them the same way on an assembly (`measure.distance`,
+  `measure.clearance`, `measure.thickness`, `measure.through`, `measure.symmetry`, `measure.ray`, `measure.below`,
+  `measure.section`, `measure.levelFor`, `measure.floating`, `measure.curvature`, `measure.developability`,
+  `measure.draft`, `measure.continuity`), and labels each body in its answer by its instance's name, where it showed
+  an id before. A name is looked up as a shown body's name first (an instance of one body), then as an id (`F3`),
+  then as an instance or a path: an instance named like an id is reached by that name only where no shown body has
+  that id, so name instances otherwise. `{"body": …, "follow": true}` names a shown body only, not a path.
+  Renaming an instance renames it in its checks; an instance a check names is not deleted until the check is.
 - What the solve says is measured too: `jointAngle {mate}` and `jointDistance {mate}` are a joint's solved value,
   driven or free, `position {instance, axis}` (or `{point: "Foot/Toe"}`) and `rotation {instance}` an instance's
   pose. As assertions they check the motion (`motion.check`, which gives an angle's least and greatest value and

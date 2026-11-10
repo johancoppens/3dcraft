@@ -190,8 +190,10 @@ fn measure_continuity(session: &mut Session, params: &Value) -> Run {
     };
     let open = session.document_mut()?;
     let regen = open.regen();
-    let doc = open.history.current();
-    let ctx = Ctx::new(doc, &regen).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
+    let (doc, placed) = crate::verify_cmds::measured_document(open);
+    let doc = &*doc;
+    let mut ctx = Ctx::new(doc, &regen).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
+    ctx.placed = placed.as_ref();
     let c = measure(&ctx, &map).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
     let mut result = match continuity_json(&c) {
         Value::Object(m) => m,
