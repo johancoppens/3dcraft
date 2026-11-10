@@ -7,6 +7,8 @@
 # empty. Documents, autosaves and every other file are left alone.
 # Besides POSIX sh it needs readlink -f (GNU coreutils or BusyBox).
 set -eu
+# A CDPATH from the environment would make the cd below print and go elsewhere.
+unset CDPATH
 id=io.github.johancoppens.craft3d
 usage="usage: ./uninstall.sh [PREFIX]   (PREFIX defaults to ~/.local)"
 
@@ -28,7 +30,7 @@ here="$(dirname "$(readlink -f "$0")")"
 prefix="${1:-$HOME/.local}"
 
 refuse() {
-  echo "uninstall.sh: $1; nothing was removed." >&2
+  printf '%s\n' "uninstall.sh: $1; nothing was removed." >&2
   exit 1
 }
 real() {
@@ -69,7 +71,7 @@ count=0
 while IFS= read -r rel; do
   [ -n "$rel" ] || continue
   if ! ours "$rel"; then
-    echo "uninstall.sh: skipped $rel: not a name of 3DCraft's" >&2
+    printf '%s\n' "uninstall.sh: skipped $rel: not a name of 3DCraft's" >&2
     continue
   fi
   if [ -f "$prefix/$rel" ] || [ -L "$prefix/$rel" ]; then
@@ -98,4 +100,4 @@ fi
 if [ -d "$prefix/share/icons/hicolor" ] && command -v gtk-update-icon-cache >/dev/null 2>&1; then
   gtk-update-icon-cache -q -t "$prefix/share/icons/hicolor" >/dev/null 2>&1 || true
 fi
-echo "3DCraft removed from $prefix ($count files)"
+printf '%s\n' "3DCraft removed from $prefix ($count files)"

@@ -10,6 +10,8 @@
 # Besides POSIX sh it needs readlink -f and install -D (GNU coreutils or
 # BusyBox).
 set -eu
+# A CDPATH from the environment would make the cd below print and go elsewhere.
+unset CDPATH
 id=io.github.johancoppens.craft3d
 usage="usage: ./install.sh [PREFIX]   (PREFIX defaults to ~/.local)"
 
@@ -32,7 +34,7 @@ prefix="${1:-$HOME/.local}"
 list="$here/share/craft3d/files"
 
 refuse() {
-  echo "install.sh: $1; nothing was installed." >&2
+  printf '%s\n' "install.sh: $1; nothing was installed." >&2
   exit 1
 }
 real() {
@@ -74,7 +76,7 @@ count=0
 while IFS= read -r rel; do
   [ -n "$rel" ] || continue
   if ! ours "$rel"; then
-    echo "install.sh: skipped $rel: not a name of 3DCraft's" >&2
+    printf '%s\n' "install.sh: skipped $rel: not a name of 3DCraft's" >&2
     continue
   fi
   case "$rel" in
@@ -111,4 +113,4 @@ if [ -d "$prefix/share/applications" ] && command -v update-desktop-database >/d
   update-desktop-database "$prefix/share/applications" >/dev/null 2>&1 || true
 fi
 
-echo "3DCraft installed into $prefix ($count files; make sure $prefix/bin is on PATH)"
+printf '%s\n' "3DCraft installed into $prefix ($count files; make sure $prefix/bin is on PATH)"
