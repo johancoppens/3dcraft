@@ -59,6 +59,16 @@ fn part() -> Session {
     s
 }
 
+/// The last image of `width` x `height` among `uploads` (width, height and
+/// RGB bytes, in the order they went on screen).
+fn last_upload(uploads: &[(usize, usize, Vec<u8>)], width: u32, height: u32) -> Option<&[u8]> {
+    uploads
+        .iter()
+        .rev()
+        .find(|(w, h, _)| (*w, *h) == (width as usize, height as usize))
+        .map(|(_, _, rgb)| rgb.as_slice())
+}
+
 /// A window of a fixed size, fed one frame at a time.
 struct Window {
     ctx: egui::Context,
@@ -81,11 +91,7 @@ impl Window {
 
     /// The image of `width` x `height` the last frame put on screen.
     fn uploaded(&self, width: u32, height: u32) -> Option<&[u8]> {
-        self.uploads
-            .iter()
-            .rev()
-            .find(|(w, h, _)| (*w, *h) == (width as usize, height as usize))
-            .map(|(_, _, rgb)| rgb.as_slice())
+        last_upload(&self.uploads, width, height)
     }
 
     fn frame(&mut self, shell: &mut Shell, session: &mut Session, events: Vec<Event>) -> usize {
@@ -890,8 +896,16 @@ fn with_a_render_thread_a_preview_is_shown_first_and_the_sharp_image_when_it_is_
     assert!(!Shell::new().renders_in_background());
     let mut window = Window::new(1000.0, 700.0);
     // Two frames: the first lays the panels out, so the viewport has its
-    // size from the second on.
-    window.idle(&mut shell, &mut session, 2);
+    // size from the second on. The sharp image is made on the other thread
+    // meanwhile, and one of these frames may take it in already (the
+    // second did once in the gate, 2026-11-08, and the frame after the
+    // wait then had nothing to upload): what every frame put on screen is
+    // kept.
+    let mut uploads = Vec::new();
+    for _ in 0..2 {
+        let _ = window.frame(&mut shell, &mut session, Vec::new());
+        uploads.append(&mut window.uploads);
+    }
     let [w, h] = shell.viewport_size();
     let camera = shell.state.camera;
 
@@ -904,15 +918,19 @@ fn with_a_render_thread_a_preview_is_shown_first_and_the_sharp_image_when_it_is_
             (w / 2, h / 2, 1)
         );
     }
-    // The sharp image arrives; the next frame shows it, and it is exactly
-    // the image of this camera.
+    // The sharp image arrives; the next frame shows it, if no frame did
+    // already, and it is exactly the image of this camera.
     assert!(shell.wait_for_sharp(LONG));
     let _ = window.frame(&mut shell, &mut session, Vec::new());
+    uploads.append(&mut window.uploads);
     let sharp = shell.render_stats().unwrap();
     assert!(sharp.sharp);
     assert_eq!((sharp.width, sharp.height, sharp.ssaa), (w, h, 2));
     let expected = direct(&mut session, &shell, &camera, false);
-    assert_eq!(window.uploaded(w, h).unwrap(), expected.rgb.as_slice());
+    assert_eq!(
+        last_upload(&uploads, w, h).unwrap(),
+        expected.rgb.as_slice()
+    );
     // Nothing more is rendered while nothing changes, and there is nothing
     // to wait for.
     let rendered = shell.render_count();
@@ -1014,15 +1032,24 @@ fn dragging_with_a_render_thread_shows_previews_only_and_ends_sharp() {
     assert!(!held.sharp);
     assert_eq!((held.width, held.height, held.ssaa), (w / 2, h / 2, 1));
     // Let go: the frames after it ask for the sharp image of where the
-    // camera stopped.
+    // camera stopped. The release frame asks already (the camera no longer
+    // moves in it), so the frame after it may take the image in before the
+    // wait: what both put on screen is kept, as in
+    // `with_a_render_thread_a_preview_is_shown_first_…`.
+    let mut uploads = std::mem::take(&mut window.uploads);
     window.idle(&mut shell, &mut session, 1);
+    uploads.append(&mut window.uploads);
     assert!(shell.wait_for_sharp(LONG));
     window.idle(&mut shell, &mut session, 1);
+    uploads.append(&mut window.uploads);
     let rest = shell.render_stats().unwrap();
     assert!(rest.sharp);
     let camera = shell.state.camera;
     let expected = direct(&mut session, &shell, &camera, false);
-    assert_eq!(window.uploaded(w, h).unwrap(), expected.rgb.as_slice());
+    assert_eq!(
+        last_upload(&uploads, w, h).unwrap(),
+        expected.rgb.as_slice()
+    );
 }
 
 fn key(key: egui::Key, modifiers: egui::Modifiers) -> Vec<Event> {
