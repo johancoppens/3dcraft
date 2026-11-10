@@ -2069,7 +2069,7 @@ fn assertions_and_outputs_on_instance_names_follow_a_moved_instance() {
     let check = |s: &mut Session, z: f64| {
         let listed = run(s, "assert.list", json!({}));
         let outputs = run(s, "output.list", json!({}));
-        for k in 0..names.len() {
+        for (k, name) in names.iter().enumerate() {
             let a = listed["assertions"]
                 .as_array()
                 .unwrap()
@@ -2082,7 +2082,7 @@ fn assertions_and_outputs_on_instance_names_follow_a_moved_instance() {
             } else {
                 "failed"
             };
-            assert_eq!(a["status"], want, "{} at z = {z}: {a}", names[k]);
+            assert_eq!(a["status"], want, "{name} at z = {z}: {a}");
             assert!(close(a["measured"].as_f64().unwrap(), z, 50.0), "{a}");
             let o = outputs["outputs"]
                 .as_array()
@@ -2093,8 +2093,7 @@ fn assertions_and_outputs_on_instance_names_follow_a_moved_instance() {
                 .clone();
             assert!(
                 close(o["value"].as_f64().unwrap(), z, 50.0),
-                "{} at z = {z}: {o}",
-                names[k]
+                "{name} at z = {z}: {o}"
             );
         }
     };
