@@ -232,7 +232,7 @@ Oracles 1 and 4 for all primitives at three scales; exported meshes closed and o
 - [ ] Golden images blessed by the developer
 - [ ] An automated test with a real MCP client
 - [ ] `view.render`: orthographic views and a look-at box (it has only perspective views without zoom; from the field test)
-- [ ] The readback path is slower than the CPU for light models on this laptop's Intel driver ([`decisions.md`](decisions.md), waiting for the developer)
+- [ ] The readback path is slower than the CPU for light models on an Intel Meteor Lake iGPU's driver ([`decisions.md`](decisions.md), waiting for the developer)
 
 #### Acceptance
 CPU goldens blessed by the developer; GPU against CPU parity within tolerance on lavapipe; the developer watches an agent build a primitive scene live; the app starts without a GPU.
