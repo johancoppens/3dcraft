@@ -2,6 +2,8 @@
 
 > **Last updated:** 2026-11-10 · **Stage:** R1 (0.1.0) frozen since 2026-11-05 while the release is prepared; M7 (booleans), M8.5 and M9 in progress, M4 nearly done, M10 and V1 started; M0–M3, M5, M6 and M8 done · **Change:** minor (the stage, the current focus and item 4 of the boolean checklist brought up to date)
 
+This is the plan 3DCraft was built by, kept as it was used while it was built: the agents picked their work from *Current focus*, and each milestone's **Done** lines are dated history (what landed on that day, with the workshop's run and commit ids as evidence), its **Open** lists what is still owed. "The developer" is the project's maintainer.
+
 Forward-looking plan: the **Current focus** agents pick from, one line per milestone, and per milestone what it is for, what is done, what is open and what "done" means. There is no parity percentage: 3DCraft is AI-first with a minimal UI and has no target app ([`decisions.md`](decisions.md)). Progress is measured by milestones whose acceptance tests pass. How something was built (algorithms, thresholds, measurements, file paths of internals) is in the detail documents under [`design/`](design/README.md) (the structure in [`architecture.md`](architecture.md)), and how it is tested in [`testing.md`](testing.md).
 
 Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date next to a status when it changes. No effort estimates yet: they are added once M0–M2 give a calibration from this repository's own history.

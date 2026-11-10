@@ -2,6 +2,8 @@
 
 > **Last updated:** 2026-11-10
 
+This is the record of the decisions taken while 3DCraft was built, written at the time and kept as it was. "The developer" is the project's maintainer; "an agent" and "the coordinator" are the AI agents that built it (the coordinator plans the others' work and merges it). A decision made by an agent "for the developer to overturn" (some of them overnight, while nobody could be asked) stood unless it was overturned, and a later entry says so where it was; dates are when a decision was taken, ids of runs and commits are the workshop's evidence of the day. From outside the project, an open decision is raised in an issue.
+
 Decisions that shape the project, newest first, each with its reason. An agent that needs something listed under *Open decisions* asks the developer; it does not pick silently. When one is settled, move it up with the date.
 
 ## Taken

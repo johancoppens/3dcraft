@@ -1,12 +1,14 @@
 # Development guide
 
-> **Last updated:** 2026-10-23 (0.1.0) · **Status:** everything in this document exists and runs, unless it is marked *(planned)*. Heavy builds and tests run on the Strix ([Checks and the gate on the Strix](#checks-and-the-gate-on-the-strix)); the developer's laptop edits code.
+> **Last updated:** 2026-11-10 (0.1.0) · **Status:** everything in this document exists and runs, unless it is marked *(planned)*. In the workshop, heavy builds and tests run on the Strix ([Checks and the gate on the Strix](#checks-and-the-gate-on-the-strix)); the developer's laptop edits code.
+
+**Building and testing on your own machine.** Everything you need runs on one machine with the [prerequisites](#prerequisites): `cargo build --release -p craft3d -p craft3d-cli` for the programs ([Build and run](#build-and-run)), `cargo test -p <crate>` and one test file at a time while you work ([Faster test loops](#faster-test-loops)), and `cargo xtask ci` for the whole gate, which is heavy (it builds and runs every test of the workspace). This guide was written in the workshop, the private repository `johancoppens/3dcraft-dev` where 3DCraft is developed with its own build server, the Strix: the parts about the Strix and its `Check`, `Gate` and `Heavy` workflows, the release steps, the morning health report and the dev log describe how the maintainers work, and you do not need them to build, test or contribute ([`CONTRIBUTING.md`](../CONTRIBUTING.md)).
 
 ## What works today
 
 ```sh
 cargo test --workspace                          # over five thousand tests (2026-11-10), one binary after the other
-cargo xtask ci                                  # fmt --check + clippy -D warnings + tests (binaries side by side) + doctests + layers + wasm: the full gate (run it on the Strix, below)
+cargo xtask ci                                  # fmt --check + clippy -D warnings + tests (binaries side by side) + doctests + layers + wasm: the full gate (the workshop runs it on the Strix, below)
 cargo xtask layers                              # dependency layering, that every crate opts in to the never-crash lints, and no std clock where the browser gets
 cargo xtask stats                               # lines and tests per crate
 CRAFT3D_FREECAD=/path/to/FreeCAD.AppImage cargo xtask freecad   # FreeCAD reads our exports back
