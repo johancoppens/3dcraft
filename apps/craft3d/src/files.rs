@@ -45,7 +45,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 pub use craft3d_ui_egui::files::{
-    EXPORT_FORMATS, EXTENSION, IMPORT_EXTENSIONS, JIG_EXTENSION, OPEN_EXTENSIONS,
+    EXPORT_FORMATS, EXTENSION, IMPORT_EXTENSIONS, JIG_EXTENSION, OPEN_EXTENSIONS, save_extension,
     suggested_export_name, suggested_jig_name, suggested_name, suggested_save_name,
 };
 
@@ -54,8 +54,10 @@ pub use craft3d_ui_egui::files::{
 pub trait Dialogs: Send + Sync {
     /// Asks for a file to open.
     fn open(&self) -> Option<PathBuf>;
-    /// Asks where to save, proposing `suggested` as the file's name.
-    fn save(&self, suggested: &str) -> Option<PathBuf>;
+    /// Asks where to save, proposing `suggested` as the file's name, with
+    /// the filter of what is saved: an assembly's (`.3dcraftasm`) when
+    /// `assembly`, else a document's (`.3dcraft`).
+    fn save(&self, suggested: &str, assembly: bool) -> Option<PathBuf>;
     /// Asks for a file to import ([`IMPORT_EXTENSIONS`]).
     fn import(&self) -> Option<PathBuf>;
     /// Asks where to export a file of `format` (that format's filter
@@ -102,10 +104,15 @@ impl Dialogs for SystemDialogs {
             .pick_file()
     }
 
-    fn save(&self, suggested: &str) -> Option<PathBuf> {
+    fn save(&self, suggested: &str, assembly: bool) -> Option<PathBuf> {
+        let filter = if assembly {
+            "3DCraft assembly"
+        } else {
+            "3DCraft document"
+        };
         rfd::FileDialog::new()
             .set_title("Save As")
-            .add_filter("3DCraft document", &[EXTENSION])
+            .add_filter(filter, &[save_extension(assembly)])
             .set_file_name(suggested)
             .save_file()
     }
@@ -257,13 +264,15 @@ impl Picker {
         })
     }
 
-    /// Opens the dialog for where to save.
-    pub fn ask_save(&mut self, suggested: String) -> Result<(), String> {
+    /// Opens the dialog for where to save an assembly (`assembly`) or a
+    /// document; a name without an extension gets the one of what it
+    /// saves ([`with_extension`]).
+    pub fn ask_save(&mut self, suggested: String, assembly: bool) -> Result<(), String> {
         self.ask("save", move |dialogs| {
             dialogs
-                .save(&suggested)
+                .save(&suggested, assembly)
                 .map_or(Choice::Cancelled("file.save"), |path| {
-                    Choice::Save(with_extension(path))
+                    Choice::Save(with_extension(path, assembly))
                 })
         })
     }
@@ -354,13 +363,14 @@ impl Picker {
     }
 }
 
-/// A file saved without an extension gets the native one: not every
-/// dialog adds it.
-pub fn with_extension(path: PathBuf) -> PathBuf {
+/// A file saved without an extension gets the one of what it saves
+/// ([`save_extension`]: `.3dcraftasm` for an assembly, else `.3dcraft`):
+/// not every dialog adds it.
+pub fn with_extension(path: PathBuf, assembly: bool) -> PathBuf {
     if path.extension().is_some() {
         path
     } else {
-        path.with_extension(EXTENSION)
+        path.with_extension(save_extension(assembly))
     }
 }
 
@@ -828,9 +838,9 @@ impl Host {
                     None => {}
                 }
                 // An example from the start screen proposes its title,
-                // an assembly a `.3dcraftasm` name.
+                // an assembly a `.3dcraftasm` name, in a dialog for one.
                 picker
-                    .ask_save(suggested_save_name(&status))
+                    .ask_save(suggested_save_name(&status), status.assembly)
                     .map_err(|e| ("file.save", e))
             }
         };
@@ -1072,8 +1082,10 @@ mod tests {
             self.answer("open".to_string())
         }
 
-        fn save(&self, suggested: &str) -> Option<PathBuf> {
-            self.answer(format!("save {suggested}"))
+        /// `save part.3dcraft`, and ` [assembly]` when it saves one.
+        fn save(&self, suggested: &str, assembly: bool) -> Option<PathBuf> {
+            let kind = if assembly { " [assembly]" } else { "" };
+            self.answer(format!("save {suggested}{kind}"))
         }
 
         fn import(&self) -> Option<PathBuf> {
@@ -1419,6 +1431,7 @@ mod tests {
         let person = Person::who_answers(&[
             Some(&mine.join("profile.3dcraft")),
             Some(&mine.join("clamp.3dcraftasm")),
+            Some(&mine.join("clamp-2")),
         ]);
         let mut dialogs = picker(&person);
         let example = |id: &str| EXAMPLES.iter().find(|e| e.id == id).unwrap();
@@ -1454,11 +1467,48 @@ mod tests {
         act(&mut host, &mut dialogs, FileAction::SaveAs);
         assert_eq!(
             person.asked().last().unwrap(),
-            &format!("save {}.3dcraftasm", clamp.title)
+            &format!("save {}.3dcraftasm [assembly]", clamp.title)
         );
         let (label, ok, text) = last(&host);
         assert_eq!((label.as_str(), ok), ("file.save", true), "{text}");
         assert_eq!(listing(&mine), ["clamp.3dcraftasm", "profile.3dcraft"]);
+        // A name typed without an extension is an assembly's: the dialog
+        // was one for an assembly, and the name gets `.3dcraftasm`, which
+        // `file.save` takes (2026-11-10: it got `.3dcraft`, refused).
+        act(&mut host, &mut dialogs, FileAction::SaveAs);
+        assert_eq!(
+            person.asked().last().unwrap(),
+            "save clamp.3dcraftasm [assembly]"
+        );
+        let (label, ok, text) = last(&host);
+        assert_eq!((label.as_str(), ok), ("file.save", true), "{text}");
+        assert_eq!(
+            listing(&mine),
+            ["clamp-2.3dcraftasm", "clamp.3dcraftasm", "profile.3dcraft"]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Save in the question before closing an assembly without a file:
+    /// the dialog is an assembly's, a name typed without an extension gets
+    /// `.3dcraftasm`, and the assembly is saved and closed.
+    #[test]
+    fn closing_an_unnamed_assembly_saves_it_as_one() {
+        let dir = workdir("close-assembly");
+        let mine = subdir(&dir, "mine");
+        let mut host = Host::new(Session::new(Workspace::none()));
+        let person = Person::who_answers(&[Some(&mine.join("rig"))]);
+        let mut dialogs = picker(&person);
+        act(&mut host, &mut dialogs, FileAction::NewAssembly);
+        assert!(host.session.document_status().unwrap().assembly);
+        host.doc_action(craft3d_ui_egui::DocAction::SaveAndClose(0), &mut dialogs);
+        let choice = dialogs.wait().unwrap();
+        host.file_choice(choice);
+        assert_eq!(person.asked(), ["save untitled.3dcraftasm [assembly]"]);
+        let (label, ok, text) = last(&host);
+        assert_eq!((label.as_str(), ok), ("file.close", true), "{text}");
+        assert_eq!(listing(&mine), ["rig.3dcraftasm"]);
+        assert!(host.session.document_statuses().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1705,7 +1755,7 @@ mod tests {
             fn open(&self) -> Option<PathBuf> {
                 self.close.lock().unwrap().recv().unwrap()
             }
-            fn save(&self, _: &str) -> Option<PathBuf> {
+            fn save(&self, _: &str, _: bool) -> Option<PathBuf> {
                 panic!("the save dialog fell over")
             }
             fn import(&self) -> Option<PathBuf> {
@@ -1717,7 +1767,7 @@ mod tests {
                 _: ExportFormat,
                 _: Option<&Path>,
             ) -> Option<PathBuf> {
-                self.save(suggested)
+                self.save(suggested, false)
             }
         }
         let (close, closing) = mpsc::channel();
@@ -1738,7 +1788,7 @@ mod tests {
         assert!(picker.poll().is_none());
         let error = picker.ask_open().unwrap_err();
         assert!(error.contains("already open"), "{error}");
-        assert!(picker.ask_save("x".to_string()).is_err());
+        assert!(picker.ask_save("x".to_string(), false).is_err());
         let mut host = Host::new(Session::new(Workspace::none()));
         host.file_action(FileAction::Open, &mut picker);
         assert!(!last(&host).1);
@@ -1754,7 +1804,7 @@ mod tests {
         );
         assert!(!picker.busy());
         // A dialog that falls over is an error, and the next one works.
-        picker.ask_save("x".to_string()).unwrap();
+        picker.ask_save("x".to_string(), false).unwrap();
         let error = picker.wait().unwrap().unwrap_err();
         assert!(error.contains("unexpectedly"), "{error}");
         host.file_choice(Err(error));
@@ -1770,6 +1820,46 @@ mod tests {
             std::thread::yield_now();
         }
         assert_eq!(woken.load(Ordering::SeqCst), 2);
+    }
+
+    /// The save dialog knows what it saves: an assembly's dialog (its
+    /// filter) and a name typed without an extension made an assembly's,
+    /// a document's otherwise; an extension typed stays (2026-11-10: every
+    /// name got `.3dcraft`, which `file.save` refuses for an assembly).
+    #[test]
+    fn the_save_dialog_names_an_assembly_as_one() {
+        let person = Person::who_answers(&[
+            Some(Path::new("/x/clamp")),
+            Some(Path::new("/x/part")),
+            Some(Path::new("/x/clamp.3dcraftasm")),
+        ]);
+        let mut picker = picker(&person);
+        let mut chosen = Vec::new();
+        for (suggested, assembly) in [
+            ("clamp.3dcraftasm", true),
+            ("part.3dcraft", false),
+            ("clamp.3dcraftasm", true),
+        ] {
+            picker.ask_save(suggested.to_string(), assembly).unwrap();
+            chosen.push(picker.wait());
+        }
+        let save = |p: &str| Some(Ok(Choice::Save(PathBuf::from(p))));
+        assert_eq!(
+            chosen,
+            [
+                save("/x/clamp.3dcraftasm"),
+                save("/x/part.3dcraft"),
+                save("/x/clamp.3dcraftasm")
+            ]
+        );
+        assert_eq!(
+            person.asked(),
+            [
+                "save clamp.3dcraftasm [assembly]",
+                "save part.3dcraft",
+                "save clamp.3dcraftasm [assembly]"
+            ]
+        );
     }
 
     #[test]
@@ -1828,12 +1918,19 @@ mod tests {
         );
         assert_eq!(suggested_name(Some("rel/gear.3dcraft")), "gear.3dcraft");
         assert_eq!(suggested_name(Some("gear")), "gear");
-        let ext = |p: &str| with_extension(PathBuf::from(p));
+        let ext = |p: &str| with_extension(PathBuf::from(p), false);
         assert_eq!(ext("/a/gear"), PathBuf::from("/a/gear.3dcraft"));
         assert_eq!(ext("/a/gear.3dcraft"), PathBuf::from("/a/gear.3dcraft"));
         // Another extension is the person's business.
         assert_eq!(ext("/a/gear.bak"), PathBuf::from("/a/gear.bak"));
         assert_eq!(ext("/a.b/gear"), PathBuf::from("/a.b/gear.3dcraft"));
+        // An assembly's name gets an assembly's extension.
+        let asm = |p: &str| with_extension(PathBuf::from(p), true);
+        assert_eq!(asm("/a/clamp"), PathBuf::from("/a/clamp.3dcraftasm"));
+        assert_eq!(
+            asm("/a/clamp.3dcraftasm"),
+            PathBuf::from("/a/clamp.3dcraftasm")
+        );
         // The export dialog: the document's name, the last format.
         assert_eq!(suggested_export_name(None, None), "untitled.step");
         assert_eq!(

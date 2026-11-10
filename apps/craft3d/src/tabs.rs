@@ -209,10 +209,11 @@ impl Host {
     /// by its title.
     pub(crate) fn ask_name_then_close(&mut self, picker: &mut Picker, document: usize) {
         let statuses = self.session.document_statuses();
-        let suggested = statuses
-            .get(document)
-            .map_or_else(|| files::suggested_name(None), suggested_save_name);
-        match picker.ask_save(suggested) {
+        let status = statuses.get(document);
+        let suggested = status.map_or_else(|| files::suggested_name(None), suggested_save_name);
+        // An assembly in a dialog for one, named as one.
+        let assembly = status.is_some_and(|status| status.assembly);
+        match picker.ask_save(suggested, assembly) {
             Ok(()) => self.close_after_save = true,
             Err(error) => self.report("file.save", &Err(error)),
         }
@@ -274,7 +275,7 @@ mod tests {
         fn open(&self) -> Option<PathBuf> {
             None
         }
-        fn save(&self, _: &str) -> Option<PathBuf> {
+        fn save(&self, _: &str, _: bool) -> Option<PathBuf> {
             self.0.lock().unwrap().pop().flatten()
         }
         fn import(&self) -> Option<PathBuf> {

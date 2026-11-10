@@ -187,6 +187,17 @@ pub fn suggested_name(path: Option<&str>) -> String {
     }
 }
 
+/// The extension a document is saved with: `.3dcraftasm` for an
+/// assembly, `.3dcraft` for a part and for a Jig in use, which is saved
+/// as a model.
+pub fn save_extension(assembly: bool) -> &'static str {
+    if assembly {
+        ASSEMBLY_EXTENSION
+    } else {
+        EXTENSION
+    }
+}
+
 /// The name the save dialog proposes for the document `status` says: its
 /// file's ([`suggested_name`]); without one, the title it is shown under
 /// (an example from the start screen) made a file's name, else
