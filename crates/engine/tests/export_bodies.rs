@@ -330,3 +330,67 @@ fn null_bodies_is_no_bodies_in_every_format() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// J-045: without `bodies`, a body hidden by feature.visible is left out
+/// of STEP and the mesh formats, as the drawings leave it out, and the
+/// result says which; named in `bodies` it is written; every body hidden
+/// is refused rather than written as an empty file.
+#[test]
+fn hidden_bodies_are_left_out_unless_named() {
+    let dir = common::workdir("export-bodies", "hidden");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Part", "size": [20, 20, 10], "position": [-10, -10, 0]}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Gauge", "size": [5, 5, 5], "position": [-2.5, -2.5, 20]}),
+    );
+    run(
+        &mut s,
+        "feature.visible",
+        json!({"feature": "Gauge", "visible": false}),
+    );
+    let left = json!({"count": 1, "bodies": ["Gauge"]});
+    // The part alone: 20 · 20 · 10.
+    let out = run(&mut s, "file.export", json!({"path": "part.stl"}));
+    assert_eq!(out["bodies"], 1, "{out}");
+    assert_eq!(out["hiddenLeftOut"], left, "{out}");
+    let (_, volume) = stl_volume(&std::fs::read(dir.join("part.stl")).unwrap());
+    close(volume, 4000.0, 1e-6);
+    for path in ["part.3mf", "part.obj"] {
+        let out = run(&mut s, "file.export", json!({"path": path}));
+        assert_eq!(out["bodies"], 1, "{path}: {out}");
+        assert_eq!(out["hiddenLeftOut"], left, "{path}: {out}");
+    }
+    let out = run(&mut s, "file.export", json!({"path": "part.step"}));
+    assert_eq!(out["hiddenLeftOut"], left, "{out}");
+    let (bodies, volume) = step_volume(&dir.join("part.step"));
+    assert_eq!(bodies, 1);
+    close(volume, 4000.0, 1e-9);
+    // Named, the hidden gauge is written: 5³.
+    let out = run(
+        &mut s,
+        "file.export",
+        json!({"path": "gauge.stl", "bodies": ["Gauge"]}),
+    );
+    assert!(out.get("hiddenLeftOut").is_none(), "{out}");
+    let (_, volume) = stl_volume(&std::fs::read(dir.join("gauge.stl")).unwrap());
+    close(volume, 125.0, 1e-6);
+    // Everything hidden: refused, nothing written.
+    run(
+        &mut s,
+        "feature.visible",
+        json!({"feature": "Part", "visible": false}),
+    );
+    for path in ["none.stl", "none.step"] {
+        let e = error(&mut s, "file.export", json!({"path": path}));
+        assert!(e.contains("every body is hidden (Part, Gauge)"), "{e}");
+        assert!(!dir.join(path).exists(), "{path}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -1024,6 +1024,47 @@ fn a_switched_off_body_is_left_out_of_the_cut_list() {
     assert!(e.contains("there is no feature `Nobody`"), "{e}");
 }
 
+/// J-046: without `bodies`, a body hidden by feature.visible is left out
+/// of the cut list and its export, which say which; named, it is listed;
+/// every body hidden lists nothing and the export is refused.
+#[test]
+fn a_hidden_body_is_left_out_of_the_cut_list_unless_named() {
+    let dir = workdir("cut", "hidden");
+    let mut s = session_in(&dir);
+    new_document(&mut s, 1.0);
+    block(&mut s, "Board", [100.0, 60.0, 18.0], [0.0; 3]);
+    block(&mut s, "Helper", [80.0, 40.0, 18.0], [0.0, 0.0, 40.0]);
+    run(
+        &mut s,
+        "feature.visible",
+        json!({"feature": "Helper", "visible": false}),
+    );
+    let left = json!({"count": 1, "bodies": ["Helper"]});
+    let list = run(&mut s, "cut.list", json!({}));
+    assert_eq!(list["parts"], 1, "{list}");
+    part(&list, "Board");
+    assert_eq!(list["hiddenLeftOut"], left, "{list}");
+    let csv = run(&mut s, "cut.list", json!({"format": "csv"}));
+    assert_eq!(csv["hiddenLeftOut"], left, "{csv}");
+    assert!(!csv["csv"].as_str().unwrap().contains("Helper"), "{csv}");
+    let out = run(&mut s, "cut.export", json!({"path": "board.svg"}));
+    assert_eq!(out["parts"].as_array().unwrap().len(), 1, "{out}");
+    assert_eq!(out["hiddenLeftOut"], left, "{out}");
+    let named = run(&mut s, "cut.list", json!({"bodies": ["Helper"]}));
+    assert_eq!(named["parts"], 1, "{named}");
+    assert!(named.get("hiddenLeftOut").is_none(), "{named}");
+    run(
+        &mut s,
+        "feature.visible",
+        json!({"feature": "Board", "visible": false}),
+    );
+    let none = run(&mut s, "cut.list", json!({}));
+    assert_eq!(none["parts"], 0, "{none}");
+    assert_eq!(none["hiddenLeftOut"]["count"], 2, "{none}");
+    let e = common::error(&mut s, "cut.export", json!({"path": "none.svg"}));
+    assert!(e.contains("every body is hidden (Board, Helper)"), "{e}");
+}
+
 #[test]
 fn a_name_like_a_formula_is_not_a_formula_in_the_csv() {
     let dir = workdir("cut", "formula");

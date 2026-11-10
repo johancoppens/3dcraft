@@ -101,7 +101,9 @@ million triangles, all bodies together, is refused: choose a coarser quality.
 feature's name and with its colours. To export some of the bodies, select them in the window, or name them:
 `"bodies": ["Bracket", "F4"]` (also for STL, 3MF and OBJ). A body switched off by its condition (`when`) or
 suppressed is left out of the list, so one list serves every option of a Jig; `cut.list` and `cut.export` take
-`bodies` the same way.
+`bodies` the same way. Without `bodies`, a body hidden in the view (`feature.visible`, the eye in the feature
+list) is left out of STEP, STL, 3MF and OBJ, as a drawing leaves it out, and of the cut list; the result's
+`hiddenLeftOut` says which. Named in `bodies`, a hidden body is written all the same.
 
 **Import** (**File › Import…**) reads the solids and sheets of AP203, AP214 and AP242 files, assemblies
 too (one feature per placed solid, with their colours), and converts the units. The file is kept inside the

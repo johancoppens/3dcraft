@@ -38,6 +38,49 @@ pub(crate) fn chosen(
     Ok(chosen)
 }
 
+/// The bodies a 3D export (STEP, STL, 3MF, OBJ) writes and the hidden ones
+/// it leaves out, by their features' names: those `bodies` names, hidden
+/// or not ([`chosen`]); without it every body that is not hidden
+/// (`feature.visible`), as the drawings leave hidden bodies out (J-045).
+/// Every body hidden and none named is refused: there is nothing to write.
+pub(crate) fn written(
+    p: &Params,
+    doc: &Document,
+    regen: &Regen,
+) -> Result<(Option<Vec<FeatureId>>, Vec<String>), CommandError> {
+    let named = chosen(p, doc, regen)?;
+    if named.is_some() {
+        return Ok((named, Vec::new()));
+    }
+    let (mut shown, mut hidden) = (Vec::new(), Vec::new());
+    for (id, _) in regen.bodies() {
+        if doc.is_hidden(id) {
+            hidden.push(
+                doc.feature(id)
+                    .map_or_else(|| id.to_string(), |f| f.name.clone()),
+            );
+        } else {
+            shown.push(id);
+        }
+    }
+    if hidden.is_empty() {
+        return Ok((None, hidden));
+    }
+    if shown.is_empty() {
+        return fail(format!(
+            "{ID}: every body is hidden ({}); show one with feature.visible, or name the bodies to write with `bodies`",
+            hidden.join(", ")
+        ));
+    }
+    Ok((Some(shown), hidden))
+}
+
+/// What a result says of the hidden bodies an export left out, when it
+/// left any out: `{count, bodies}`.
+pub(crate) fn hidden_json(hidden: &[String]) -> Option<Value> {
+    (!hidden.is_empty()).then(|| serde_json::json!({ "count": hidden.len(), "bodies": hidden }))
+}
+
 /// [`chosen`] for the command `command`, which its errors name; a list
 /// whose every body is switched off is an empty list (`cut.list` lists
 /// nothing).

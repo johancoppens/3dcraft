@@ -29,7 +29,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "cut.list",
         "Cut List",
         r#"{"bodies": [id or name of the feature that made the body] = every body, "format": "json|csv" = "json", "geometry": boolean = false}"#,
-        "The cut list of the document (changes nothing): every body that is cut from sheet stock, grouped by thickness and material. A body is a plate when it is a prism of constant thickness: two parallel flat faces facing away from each other (its top and bottom, one face each), every other face square to them (side walls, holes through: a plane square to them, a cylinder along their normal, a freeform wall square to them), every vertex in the top's plane or the bottom's; of the directions in which a body is such a prism the thinnest is its thickness (a box is a plate of its smallest side). The body of a sheet-metal part (feature.sheetMetal, also after a boolean drilled it) is a part by its flat pattern, as file.export with sheetMetal draws it (holes cut later carried back). Each part has name (of the feature that made the body), kind (plate or sheetMetal), thickness, material (body.material's name, or null), length and width (of the rectangle of least area around its outline, length the longer side), area (of the material: outline less holes), cutLength (outline, holes and cut marks), holes, count (how many bodies are this part: identical outline, holes and marks up to a rigid motion of the sheet, turned over included, where a bend up is then a bend down), bodies and features (their names and ids), frame (where the part's own 2D frame lies in the model: origin, xAxis along the length, yAxis, normal; its outline lies in [0, length] x [0, width] there), top (the face it is seen from; null for sheet metal, seen from its sketch's side) and notes. With geometry, each part also has geometry {outline, holes, marks} in its own frame: a path is {start, segments: [{line: [x, y]} | {arc: [x, y], center, radius, ccw} | {ellipse: [x, y], center, major, ratio, ccw} | {spline: {degree, knots, control, weights}}], closed}, {circle: [x, y], radius} or {ellipse: [x, y], major, ratio}; a mark is {kind: cut|bendUp|bendDown|form, path}. groups lists per thickness and material the parts, their count and total area; lengths are given to the decimal place of the document's tolerance and areas to that of its square, what the tolerance tells apart; notPlates lists every other body with the reason, named by face (a pocket's floor, a chamfer, a round, a face at a slant). With format csv the result is {format, csv, parts, distinct, notPlates}: csv has the header row material,thickness (u),name,count,length (u),width (u),area (u^2),cut length (u),holes,kind,bodies,reason in the document's unit u, a row per distinct part, then a row per body that is not a plate (kind not a plate, the reason in the last column). Not for an assembly: list the parts of its part documents.",
+        "The cut list of the document (changes nothing): every body that is cut from sheet stock, grouped by thickness and material; without bodies a body hidden in the view (feature.visible) is left out, and hiddenLeftOut ({count, bodies}) says which. A body is a plate when it is a prism of constant thickness: two parallel flat faces facing away from each other (its top and bottom, one face each), every other face square to them (side walls, holes through: a plane square to them, a cylinder along their normal, a freeform wall square to them), every vertex in the top's plane or the bottom's; of the directions in which a body is such a prism the thinnest is its thickness (a box is a plate of its smallest side). The body of a sheet-metal part (feature.sheetMetal, also after a boolean drilled it) is a part by its flat pattern, as file.export with sheetMetal draws it (holes cut later carried back). Each part has name (of the feature that made the body), kind (plate or sheetMetal), thickness, material (body.material's name, or null), length and width (of the rectangle of least area around its outline, length the longer side), area (of the material: outline less holes), cutLength (outline, holes and cut marks), holes, count (how many bodies are this part: identical outline, holes and marks up to a rigid motion of the sheet, turned over included, where a bend up is then a bend down), bodies and features (their names and ids), frame (where the part's own 2D frame lies in the model: origin, xAxis along the length, yAxis, normal; its outline lies in [0, length] x [0, width] there), top (the face it is seen from; null for sheet metal, seen from its sketch's side) and notes. With geometry, each part also has geometry {outline, holes, marks} in its own frame: a path is {start, segments: [{line: [x, y]} | {arc: [x, y], center, radius, ccw} | {ellipse: [x, y], center, major, ratio, ccw} | {spline: {degree, knots, control, weights}}], closed}, {circle: [x, y], radius} or {ellipse: [x, y], major, ratio}; a mark is {kind: cut|bendUp|bendDown|form, path}. groups lists per thickness and material the parts, their count and total area; lengths are given to the decimal place of the document's tolerance and areas to that of its square, what the tolerance tells apart; notPlates lists every other body with the reason, named by face (a pocket's floor, a chamfer, a round, a face at a slant). With format csv the result is {format, csv, parts, distinct, notPlates}: csv has the header row material,thickness (u),name,count,length (u),width (u),area (u^2),cut length (u),holes,kind,bodies,reason in the document's unit u, a row per distinct part, then a row per body that is not a plate (kind not a plate, the reason in the last column). Not for an assembly: list the parts of its part documents.",
         doc: true,
         cut_list
     ),
@@ -37,7 +37,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "cut.export",
         "Export Cut Parts",
         r#"{"path": string, "format": "dxf|svg" = from the extension, "bodies": [id or name of the feature that made the body] = every body, "layout": "sheet|each" = "sheet", "copies": boolean = false, "kerf": expr = 0, "gap": expr = 5 mm, "width": expr = no limit, "stroke": number = 0.01 (SVG line width in mm)}"#,
-        "Writes the outlines of the parts cut.list finds to DXF or SVG under the write root (changes nothing in the document), at true size in the document's unit, each part in its own frame (its length along x), every curve as it is (lines, arcs, circles, ellipses and splines; nothing becomes a polyline). Each part is on a layer named after it (its body's feature; DXF layer, SVG path id layer-...): its outline, its holes and its cut marks; a sheet-metal part's bend lines go on bendUp (blue, dashed) and bendDown (red, dash-dot), a louvre's footprint on form. One part of each kind is drawn, or with copies every body; the result says how many of each to cut. layout sheet puts them on one file side by side, left to right in the order of cut.list, gap apart, in rows of at most width (a new row above the last); a row layout, not nesting. layout each writes one file per part, its name the path's with the layer's after a dash (parts.dxf: parts-Side.dxf). kerf (a length: the distance from the part's edge to the beam's centre, half the width the beam cuts away) offsets every outline out and every hole in by it, its corners rounded with arcs of radius kerf (the path of a round beam); lines stay lines and arcs arcs. Refused, naming the part: a kerf with which the beam cannot cut a line of the part (a slot or notch narrower than it: the largest kerf that fits is given; an inner round of a smaller radius than the kerf is not refused but comes out at the kerf's radius, as a sharp inner corner does, and the part's notes say so), one that closes a hole or splits a loop, and a kerf on a part with an ellipse or a spline (not built). Bodies that are not parts are not drawn and are listed under notPlates with the reason. The result has path (or files, for each), format, unit, layout, kerf, parts (name, layer, count, file, at: where the part's frame origin lies on the sheet, bbox, thickness, material, notes), rows, notPlates, length, bytes.",
+        "Writes the outlines of the parts cut.list finds to DXF or SVG under the write root (changes nothing in the document; hidden bodies left out as there, every body hidden refused), at true size in the document's unit, each part in its own frame (its length along x), every curve as it is (lines, arcs, circles, ellipses and splines; nothing becomes a polyline). Each part is on a layer named after it (its body's feature; DXF layer, SVG path id layer-...): its outline, its holes and its cut marks; a sheet-metal part's bend lines go on bendUp (blue, dashed) and bendDown (red, dash-dot), a louvre's footprint on form. One part of each kind is drawn, or with copies every body; the result says how many of each to cut. layout sheet puts them on one file side by side, left to right in the order of cut.list, gap apart, in rows of at most width (a new row above the last); a row layout, not nesting. layout each writes one file per part, its name the path's with the layer's after a dash (parts.dxf: parts-Side.dxf). kerf (a length: the distance from the part's edge to the beam's centre, half the width the beam cuts away) offsets every outline out and every hole in by it, its corners rounded with arcs of radius kerf (the path of a round beam); lines stay lines and arcs arcs. Refused, naming the part: a kerf with which the beam cannot cut a line of the part (a slot or notch narrower than it: the largest kerf that fits is given; an inner round of a smaller radius than the kerf is not refused but comes out at the kerf's radius, as a sharp inner corner does, and the part's notes say so), one that closes a hole or splits a loop, and a kerf on a part with an ellipse or a spline (not built). Bodies that are not parts are not drawn and are listed under notPlates with the reason. The result has path (or files, for each), format, unit, layout, kerf, parts (name, layer, count, file, at: where the part's frame origin lies on the sheet, bbox, thickness, material, notes), rows, notPlates, length, bytes.",
         doc: true,
         cut_export
     ),
@@ -105,9 +105,19 @@ struct Found {
     uncompared: Vec<String>,
     unit: LengthUnit,
     tolerance: Tolerance,
+    /// The bodies hidden (`feature.visible`) left out because `bodies` was
+    /// not given, by their features' names (J-046).
+    hidden: Vec<String>,
 }
 
 impl Found {
+    /// What the result says of the hidden bodies left out, when there are
+    /// any: `{count, bodies}`.
+    fn hidden_json(&self) -> Option<Value> {
+        (!self.hidden.is_empty())
+            .then(|| json!({ "count": self.hidden.len(), "bodies": self.hidden }))
+    }
+
     /// A length as the list prints it: to the decimal place of the
     /// document's tolerance, which tells nothing finer apart (a plate
     /// turned 40° is 3 thick, not 3.000000000000014).
@@ -230,9 +240,22 @@ fn found(session: &mut Session, p: &Params, command: &str) -> Result<Found, Comm
     let regen = open.regen();
     let doc = Arc::clone(open.history.current());
     let only = crate::export_bodies::chosen_for(command, p, &doc, &regen)?;
+    // Without `bodies`, a body hidden (`feature.visible`) is left out, as
+    // the drawings leave it out; one named is listed all the same.
+    let mut hidden = Vec::new();
     let bodies: Vec<_> = regen
         .bodies()
-        .filter(|(id, _)| only.as_ref().is_none_or(|o| o.contains(id)))
+        .filter(|(id, _)| match &only {
+            Some(only) => only.contains(id),
+            None if doc.is_hidden(*id) => {
+                hidden.push(
+                    doc.feature(*id)
+                        .map_or_else(|| id.to_string(), |f| f.name.clone()),
+                );
+                false
+            }
+            None => true,
+        })
         .map(|(id, body)| (id, Arc::clone(body)))
         .collect();
     // Which body each sheet-metal part ended in (a boolean that drilled it
@@ -332,6 +355,7 @@ fn found(session: &mut Session, p: &Params, command: &str) -> Result<Found, Comm
         uncompared,
         unit: doc.units.length,
         tolerance,
+        hidden,
     })
 }
 
@@ -608,13 +632,17 @@ fn cut_list(session: &mut Session, params: &Value) -> Run {
     let distinct: usize = found.groups.iter().map(|g| g.distinct.len()).sum();
     let not_plates: Vec<Value> = found.refused.iter().map(refused_json).collect();
     if csv_wanted {
-        return Ok(json!({
+        let mut out = json!({
             "format": "csv",
             "csv": csv(&found),
             "parts": found.parts.len(),
             "distinct": distinct,
             "notPlates": not_plates.len(),
-        }));
+        });
+        if let (Some(hidden), Some(map)) = (found.hidden_json(), out.as_object_mut()) {
+            map.insert("hiddenLeftOut".into(), hidden);
+        }
+        return Ok(out);
     }
     let groups: Vec<Value> = found
         .groups
@@ -642,14 +670,18 @@ fn cut_list(session: &mut Session, params: &Value) -> Run {
             })
         })
         .collect();
-    Ok(json!({
+    let mut out = json!({
         "unit": found.unit.symbol(),
         "parts": found.parts.len(),
         "distinct": distinct,
         "groups": groups,
         "notPlates": not_plates,
         "uncompared": found.uncompared,
-    }))
+    });
+    if let (Some(hidden), Some(map)) = (found.hidden_json(), out.as_object_mut()) {
+        map.insert("hiddenLeftOut".into(), hidden);
+    }
+    Ok(out)
 }
 
 fn cut_export(session: &mut Session, params: &Value) -> Run {
@@ -733,6 +765,12 @@ fn cut_export(session: &mut Session, params: &Value) -> Run {
         ));
     }
     let found = found(session, &p, ID)?;
+    if found.parts.is_empty() && found.refused.is_empty() && !found.hidden.is_empty() {
+        return fail(format!(
+            "{ID}: every body is hidden ({}); show one with feature.visible, or name the bodies to draw with `bodies`",
+            found.hidden.join(", ")
+        ));
+    }
     if found.parts.is_empty() {
         let why: Vec<String> = found
             .refused
@@ -970,5 +1008,8 @@ fn cut_export(session: &mut Session, params: &Value) -> Run {
     );
     result.insert("length".into(), length_total.into());
     result.insert("bytes".into(), bytes_total.into());
+    if let Some(hidden) = found.hidden_json() {
+        result.insert("hiddenLeftOut".into(), hidden);
+    }
     Ok(Value::Object(result))
 }
