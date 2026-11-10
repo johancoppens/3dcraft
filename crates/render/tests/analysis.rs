@@ -310,7 +310,7 @@ fn highlight_lines_toward_a_vertical_face_fade_to_their_mean() {
 /// A plane in orthographic zebra has one normal and one view direction, so
 /// one phase and no footprint (only the rounding of identical vertex
 /// normals): every face of a block is one of the two stripe colours
-/// exactly, never a grey (reviewer's finding on a5ffa872: a footprint of
+/// exactly, never a grey (reviewer's finding on 02dbe2c8: a footprint of
 /// rounding, about 10⁻¹⁷, made the tent's second difference draw the
 /// mean; on this mesh the footprint comes out exactly zero, so this holds
 /// the outcome, and `analysis::tests::dark_share_holds_at_small_footprints`

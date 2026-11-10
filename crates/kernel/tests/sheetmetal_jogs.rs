@@ -615,7 +615,7 @@ fn jogs_are_refused_with_the_reason() {
         assert!(reason.contains("another jog's"), "{reason}");
         // A line crossing a rounded corner's arc two tolerances from its
         // start leaves an arc piece shorter than the sliver floor:
-        // refused, as a line's piece is (review of 0fcf5b3d: arcs were
+        // refused, as a line's piece is (review of 47275cf1: arcs were
         // let through).
         let rounded = |k: f64| {
             let s = |p: [f64; 2]| [p[0] * k, p[1] * k];

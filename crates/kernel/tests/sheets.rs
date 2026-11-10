@@ -1227,7 +1227,7 @@ fn a_sheet_partly_on_a_face_of_the_solid_divides_it_where_its_rim_crosses() {
 /// and 300 tolerances inside that of the block 4 × 3; and spline arches
 /// whose top comes within 10 and 20 tolerances of the far edge, or rises
 /// as far beyond it (crossing it twice at a shallow angle). Trimmed to
-/// closed forms, and cut: all of the block behind the sheet. (On 3608283
+/// closed forms, and cut: all of the block behind the sheet. (On e3d0fbe
 /// the rectangles and the arches beyond the edge were refused as edges
 /// too near each other to tell apart.)
 #[test]

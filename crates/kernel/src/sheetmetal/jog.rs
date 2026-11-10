@@ -379,7 +379,7 @@ pub(super) fn split(
     }
     let floor = SLIVER_TOLERANCES * tol;
     // Every piece's length: a line's chord, an arc's `r · sweep` (review
-    // of 0fcf5b3d: arcs were let through, so a line crossing an arc next
+    // of 47275cf1: arcs were let through, so a line crossing an arc next
     // to its end left a sliver of an arc). A whole circle or a spline is
     // never cut (refused above), and kept whole is no sliver.
     let length = |seg: &Segment| match &seg.shape {

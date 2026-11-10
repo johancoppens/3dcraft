@@ -506,7 +506,7 @@ fn trims_refused_by_reason() {
         // sheet's middle: the plane cuts the covered bend's top skin (its
         // outside) and not its bottom one, so the flat is not cut back on
         // the bottom skin and no trim is made; left square, the bend would
-        // run through the cover (review of 0fcf5b3d: built, a body
+        // run through the cover (review of 47275cf1: built, a body
         // through itself, no refusal).
         let mut down = with(0.3 * r);
         for f in &mut down.flanges {

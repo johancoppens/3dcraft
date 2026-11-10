@@ -3,4 +3,4 @@
 # (docs/testing.md, Web module size); updating it is an expectation change.
 raw = 19413811
 gzip = 7705104
-commit = c8d585b3dec7
+commit = 9d45b6e8cde1

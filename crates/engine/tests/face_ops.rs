@@ -1142,7 +1142,7 @@ fn a_box_rounded_all_round_shells_open_at_its_top_with_a_lip() {
 }
 
 /// A block whose top-front edge is rounded, shelled open at the top, the
-/// round and the front (the review of 2026-10-22: built at af1d99a,
+/// round and the front (the review of 2026-10-22: built at 3843969,
 /// refused by the first form of the lip): open faces tangent to each other
 /// go outward together, as before. Closed form, checked deep, three scales.
 #[test]

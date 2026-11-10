@@ -13,7 +13,7 @@
 ## 1. How it was run
 
 - The server: `craft3d-cli mcp --recovery-dir none`, with `--automation-read-root` and
-  `--automation-write-root` set to a scratch directory for the file steps; built from `e2a0b7b`.
+  `--automation-write-root` set to a scratch directory for the file steps; built from `c8abbbd`.
 - The driver: [`scripts/drive.py`](scripts/drive.py), a small MCP client that sends `initialize`, then
   one `tools/call` per step (`command_run`, and `command_list`, `command_batch`, `doc_inspect`,
   `doc_render_preview` where a script asks for them), and prints every result in full. The sessions are

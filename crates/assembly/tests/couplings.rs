@@ -186,7 +186,7 @@ fn a_coupling_without_its_variable_is_refused() {
 
 #[test]
 fn a_large_gear_ratio_advances_in_one_step_without_a_false_dead_point() {
-    // Review of 768df03d: with the predictor capped at half a radian, a
+    // Review of 9752ce08: with the predictor capped at half a radian, a
     // gear train of ratio 1000 driven 2 rad in one advance ran out of
     // sub-steps and claimed a dead point.
     for s in SCALES {

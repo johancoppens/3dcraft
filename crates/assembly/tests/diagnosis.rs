@@ -293,7 +293,7 @@ fn solving_is_deterministic() {
 
 #[test]
 fn a_contradiction_beside_a_planar_four_bar_is_still_over_constrained() {
-    // Review of 768df03d: a planar four-bar elsewhere in the assembly has
+    // Review of 9752ce08: a planar four-bar elsewhere in the assembly has
     // rank 21 of 22 at every planar state, so comparing the global rank
     // with a perturbation that leaves the plane called this Infeasible.
     for s in SCALES {
@@ -321,7 +321,7 @@ fn a_contradiction_beside_a_planar_four_bar_is_still_over_constrained() {
 
 #[test]
 fn a_limited_hinge_starts_on_the_turn_nearest_its_limits() {
-    // Review of 768df03d: a lid hinge limited to 0..4.71 rad placed at
+    // Review of 9752ce08: a lid hinge limited to 0..4.71 rad placed at
     // 200° was measured as −160° and snapped to its bound 0.
     for s in SCALES {
         let mut p = one_body(MateKind::Revolute, s);

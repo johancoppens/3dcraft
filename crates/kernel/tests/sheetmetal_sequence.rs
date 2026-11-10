@@ -584,7 +584,7 @@ fn a_die_cut_into_triangles_adds_up_to_its_area() {
         // A polygon whose third side dips across its first (as a round
         // shoulder's tangent apex can cross a V's flank) has an area and
         // ears to clip, but is no region: refused, never cut (review of
-        // 0fcf5b3d).
+        // 47275cf1).
         let crossed: Vec<[f64; 2]> = [
             [0.0, 0.0],
             [10.0, 0.0],

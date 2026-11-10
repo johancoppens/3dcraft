@@ -180,7 +180,7 @@ fn spec(
     }
 }
 
-/// What main built before closed corners existed (1370e8ca and 0a1548d4,
+/// What main built before closed corners existed (5e143676 and fa60e3f2,
 /// Check runs 40609618286 and 40608178864, this file's parts printed
 /// there): open parts are built bit for bit as they were. Re-pinned when
 /// the transcendental functions moved from the platform's maths library

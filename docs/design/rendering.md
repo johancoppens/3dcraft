@@ -1067,7 +1067,7 @@ surfaces are those of the plain picture exactly (the same rasterisation rules,
    counted, as the shadow map holds one (a ray through two walls of a see-through body would keep
    `(1 − α)²`: owed, roadmap › Open); with opaque bodies `pass` is 0 and the light is bit for bit
    as before, pinned by `studio_bytes.rs` (the checksums of an opaque, whole picture in layer 1's look
-   and the polished one, a transmissive face among them, as main 198ca0fa drew them). `a_see_through_ball_lets_its_share_of_the_key_through` holds the ground's visibility to
+   and the polished one, a transmissive face among them, as main 4491b8e8 drew them). `a_see_through_ball_lets_its_share_of_the_key_through` holds the ground's visibility to
    that formula (to 10⁻⁹).
 6. *Glass in a see-through picture.* A face that lets light through (layer 3) shows the surface behind
    it as a thin sheet would (`light + transmit · behind` before the blend): layer 3's picture behind

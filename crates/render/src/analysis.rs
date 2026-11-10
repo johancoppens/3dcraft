@@ -844,7 +844,7 @@ mod tests {
         dark / total
     }
 
-    /// Small footprints (the reviewer's finding on a5ffa872): the second
+    /// Small footprints (the reviewer's finding on 02dbe2c8): the second
     /// difference cancelled, in `f32` at 10⁻⁴ and in `f64` at 10⁻⁸ (a plane
     /// in orthographic zebra, whose footprint is 10⁻¹⁷ of rounding, came
     /// out the mean). Now the point sample away from an edge, exact, and

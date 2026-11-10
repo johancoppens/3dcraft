@@ -810,7 +810,7 @@ pub fn piece_lowest_within(
 /// of the two sides counts as touching, so a polygon that crosses or
 /// touches itself, or nearly does, is never taken as simple (a tool's
 /// enclosing polygon whose arc's tangent apex crosses another side: review
-/// of 0fcf5b3d, where the ear clipping could then cut the wrong region).
+/// of 47275cf1, where the ear clipping could then cut the wrong region).
 /// Quadratic in the corners (at most [`MAX_SIMPLE_POINTS`]; more is not
 /// simple).
 pub fn simple(points: &[[f64; 2]]) -> bool {

@@ -1,7 +1,7 @@
 //! An opaque, whole studio picture keeps its bytes: the checksums of
 //! pictures in layer 1's look and the polished one, a transmissive face
 //! among them, as main drew them before see-through and cut-open studio
-//! pictures were added (198ca0fa, Check run 41132978097, 2026-10-30).
+//! pictures were added (4491b8e8, Check run 41132978097, 2026-10-30).
 //! Those pictures go through the same code; this pins that they still
 //! give the same bytes (docs/design/rendering.md, *See-through and
 //! cut-open pictures in the studio look*).
@@ -112,7 +112,7 @@ fn checksum(frame: &craft3d_render::Frame) -> u64 {
     h
 }
 
-/// The checksums main's renderer gave (198ca0fa, Check run 41132978097).
+/// The checksums main's renderer gave (4491b8e8, Check run 41132978097).
 const EXPECTED: [(&str, u64); 2] = [
     ("layer 1", 0x4e80_4a82_d40b_87d7),
     ("polished", 0xc86e_844c_fd78_8411),

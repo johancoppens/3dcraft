@@ -254,7 +254,7 @@ fn sharp_refusals_fail_the_feature() {
 
 /// A later cut through a sharp bend and a pocket in its outer skin are not
 /// carried onto the flat pattern, and the export says so (review of
-/// 1418a043: they were left out without a word).
+/// 145a3511: they were left out without a word).
 #[test]
 fn a_later_cut_across_a_sharp_bend_is_listed_not_carried() {
     for k in SCALES {

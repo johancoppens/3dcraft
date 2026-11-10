@@ -935,7 +935,7 @@ fn a_long_title_never_covers_the_status() {
     );
 }
 
-/// Nothing is said broken that nobody broke (the review of 99ff3119):
+/// Nothing is said broken that nobody broke (the review of e6c34e45):
 /// (a) a Jig that fails as it is opened is its own baseline; (b) another
 /// document shown and this one again says nothing; (c) an edit of a
 /// feature that is no parameter moves no parameter: no banner, and so no
@@ -1013,7 +1013,7 @@ fn settle(window: &mut Window, shell: &mut Shell, session: &mut Session) {
 }
 
 /// A mend after an undo, a redo or an agent's edit is seen once the
-/// checks are measured (the review of ac60b4e3: the banner stayed, the
+/// checks are measured (the review of aa24180c: the banner stayed, the
 /// checks being measured in the frame the revision changed).
 #[test]
 fn a_mend_is_seen_once_the_checks_are_measured() {

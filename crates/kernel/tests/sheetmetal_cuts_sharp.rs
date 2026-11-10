@@ -384,7 +384,7 @@ fn holes_over_a_sharp_bend_other_than_straight_across_are_refused() {
             assert!(why.contains("straight across"), "{why}");
         }
         // Two slots straight across, the stretch of the bend between them
-        // 2 tolerances wide: a sliver, refused (review of 6dc5a316: built).
+        // 2 tolerances wide: a sliver, refused (review of c85bf890: built).
         let gap = 2e-6;
         let slots = vec![
             polygon(20, &[[15.0, 3.0], [15.0, y1], [21.0, y1], [21.0, 3.0]], k),

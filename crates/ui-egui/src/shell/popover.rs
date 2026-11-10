@@ -116,7 +116,7 @@ impl Shell {
     /// in at egui's time `now` (egui fades an area in over its animation
     /// time once it becomes visible): a picture of the window waits for
     /// it. Every area shown is looked at, so a new dialog cannot be left
-    /// out of a list (the review of 422e3dbc).
+    /// out of a list (the review of ff698f34).
     pub fn popover_fading(&self, ctx: &egui::Context, now: f64) -> bool {
         let fade = f64::from(ctx.global_style().animation_time);
         let shown = ctx.memory(|m| m.areas().visible_layer_ids());

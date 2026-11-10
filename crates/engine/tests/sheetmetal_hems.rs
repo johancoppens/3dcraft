@@ -250,7 +250,7 @@ fn bad_hems_are_errors() {
 /// A hem whose flat's far side is a spline: the pad would stand on the
 /// spline's control points, above the flat (an upper bound of its highest
 /// point, the wrong way for a clearance): refused by reason (review of
-/// 0fcf5b3d; before, the flatten stroke was checked with the pad too
+/// 47275cf1; before, the flatten stroke was checked with the pad too
 /// high).
 #[test]
 fn a_hem_with_a_spline_outline_is_not_pressed_flat() {

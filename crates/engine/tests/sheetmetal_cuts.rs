@@ -237,7 +237,7 @@ fn a_later_cut_is_carried_back_onto_the_flat_pattern() {
     }
 }
 
-/// Review of f9dedb6d: (1) a part whose bend a slot leaves in two faces
+/// Review of 18851368: (1) a part whose bend a slot leaves in two faces
 /// (they share the bend's surface) drilled straight through the bend: the
 /// drill was silently left out of the export; it is a cut that is not
 /// square to the sheet (its outline on the two skins differs) and refuses
