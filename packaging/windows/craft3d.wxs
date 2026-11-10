@@ -67,14 +67,18 @@
           <File Id="THIRD_PARTY_NOTICES.txt" Source="$(var.BinDir)\THIRD-PARTY-NOTICES.txt" Name="THIRD-PARTY-NOTICES.txt" />
           <File Id="EXAMPLES_LICENSE.md" Source="$(var.BinDir)\EXAMPLES-LICENSE.md" Name="EXAMPLES-LICENSE.md" />
         </Component>
-        <!-- The built-in fonts beside the program, with their licences
-             (fetched by `cargo xtask fonts`, never committed). -->
+        <!-- The built-in fonts and the interface's beside the program, with
+             their licences (fetched by `cargo xtask fonts`, never
+             committed); an xtask test holds this list to the shipped
+             fonts. -->
         <Directory Id="FontsFolder" Name="fonts">
           <Component Id="Fonts">
             <File Id="NotoSans_Regular.otf" Source="$(var.BinDir)\fonts\NotoSans-Regular.otf" KeyPath="yes" />
             <File Id="NotoSans_OFL.txt" Source="$(var.BinDir)\fonts\NotoSans-OFL.txt" />
             <File Id="JetBrainsMono_Regular.ttf" Source="$(var.BinDir)\fonts\JetBrainsMono-Regular.ttf" />
             <File Id="JetBrainsMono_OFL.txt" Source="$(var.BinDir)\fonts\JetBrainsMono-OFL.txt" />
+            <File Id="InterVariable.ttf" Source="$(var.BinDir)\fonts\InterVariable.ttf" />
+            <File Id="Inter_OFL.txt" Source="$(var.BinDir)\fonts\Inter-OFL.txt" />
           </Component>
         </Directory>
       </Directory>

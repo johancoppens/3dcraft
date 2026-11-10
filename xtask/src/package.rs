@@ -1450,6 +1450,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&work);
     }
 
+    /// The Windows installer installs every shipped font and its licence
+    /// beside the program, where `craft3d_engine::fonts` looks: the zip
+    /// and the `.msi` take the same folder (`BinDir`), but the `.msi`
+    /// lists its files (2026-11-10: it left out the interface's font).
+    #[test]
+    fn the_msi_installs_every_shipped_font() {
+        let wxs =
+            std::fs::read_to_string(repo_root().join("packaging/windows/craft3d.wxs")).unwrap();
+        for file in font_files() {
+            let source = format!("Source=\"$(var.BinDir)\\fonts\\{file}\"");
+            assert!(wxs.contains(&source), "{file}");
+        }
+    }
+
     /// The packages send people to the website, a problem to the issues,
     /// and only the source and the release notes to the repository
     /// (docs/decisions.md, 2026-11-10).
