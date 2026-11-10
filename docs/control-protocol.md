@@ -235,7 +235,7 @@ printf '%s\n' \
 | `ui.quit` | `{save?: "discard" \| "ask" \| "save"}` (*Closing the window*) |
 | `mcp.message` | `{line}`: one MCP message, answered by the window's MCP server (what `craft3d-cli mcp --bridge` sends) |
 
-*(planned)* `ui.focus` (raise the window), display modes, themes, and pointer and key replay (`ui.pointer`, `ui.key`) with the first interactive tools, after phase 1. The error dialogs and the questions of the File menu are the person's: they have no method, and a request never answers them. The export dialog is opened, set and closed with `ui.set {"export": …}` (above), but its *Export…*, which goes on to the system's save dialog, is the person's too.
+*(planned)* `ui.focus` (raise the window), display modes, and pointer and key replay (`ui.pointer`, `ui.key`) with the first interactive tools, after phase 1. The error dialogs and the questions of the File menu are the person's: they have no method, and a request never answers them. The export dialog is opened, set and closed with `ui.set {"export": …}` (above), but its *Export…*, which goes on to the system's save dialog, is the person's too.
 
 ### Pictures without a window: `view.render` and `view.replay` (commands)
 

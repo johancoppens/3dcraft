@@ -1,6 +1,6 @@
 # 3DCraft architecture
 
-> **The map.** What the parts are, how they fit, and the rules that always hold. It changes only when the structure changes; a finding, a fix or a number goes into the detail document of its part under [`design/`](design/README.md) (§10). **Last updated:** 2026-10-23 (0.1.0: the web app, `buildinfo`, the document's tables, parameters and sets, the command families; the map itself dates from 2026-10-15: it replaces the single file that mixed the plan with the history of every finding; the original plan of 2026-10-12 is kept as written in [`design/plan.md`](design/plan.md)).
+> **The map.** What the parts are, how they fit, and the rules that always hold. It changes only when the structure changes; a finding, a fix or a number goes into the detail document of its part under [`design/`](design/README.md) (§10). **Last updated:** 2026-11-10 (the crates `stepread` and `fcstdread` in the table, the command families, the format version, the files, the detail documents added for R1); 2026-10-23 (0.1.0: the web app, `buildinfo`, the document's tables, parameters and sets, the command families; the map itself dates from 2026-10-15: it replaces the single file that mixed the plan with the history of every finding; the original plan of 2026-10-12 is kept as written in [`design/plan.md`](design/plan.md)).
 
 ## 0. In one paragraph
 
@@ -64,6 +64,8 @@ These are the invariants. Every part is built so that they hold by construction,
 | `assembly` | L3 | the assembly solver: instance poses from mates, couplings and drivers, on plain frames | knows the document or the kernel |
 | `kernel` | L3 | every modelling operation on bodies (§5): primitives, profiles, sweeps, booleans, blends, face operations; an origin for every entity it makes | meshes, reads the document, or registers a command |
 | `tess` | L3 | meshes of bodies and edges, the triangle budgets, the mesh self-intersection and self-touch checks | knows the kernel's operations |
+| `stepread` | L3 | STEP solids, sheets and assemblies read into bodies: typed reading, sewing on topology only, every edge proven on its faces ([`design/step-import.md`](design/step-import.md)) | moves the author's geometry |
+| `fcstdread` | L3 | FreeCAD documents (`.FCStd`) and text BRep files read into bodies, with `stepread`'s sewing, proofs and checks | reads FreeCAD's features (only the final shapes) |
 | `regen` | L4 | history → bodies: expressions, references and names, the cache, statuses and reasons, the self-intersection check per feature | changes the document (the engine writes solved sketches back) |
 | `render` | L4 | the CPU reference renderer (the display oracle), picking, highlight, see-through, section | is used by `kernel` or `tess` |
 | `gpu` | L4 | the wgpu renderer of the same pictures, offscreen and on the window's device | is the reference |
@@ -77,7 +79,7 @@ These are the invariants. Every part is built so that they hold by construction,
 | `apps/craft3d-cli` | L8 | the headless CLI: `run`, `info`, `render`, `convert`, `replay`, `score`, `check-range`, `commands`, `serve`, `mcp` | holds modelling logic |
 | `apps/craft3d-fuzz` | L8 | random multi-step designs held to the oracles, one seed or reproducer per process ([`testing.md`](testing.md) › Oracle 11) | holds modelling logic; is a dependency of anything |
 | `apps/craft3d-web` | L8 | the page: eframe's web runner, the session's files in memory, the file chooser and downloads, preferences in `localStorage` | holds modelling logic; starts a thread |
-| `xtask` | — | `layers`, `wasm`, `ci`, `stats`, `health`, `freecad`, `boolean-corpus`, `fuzz`, `actions`, `package` (installers and the web zip), `web-size`, `example-thumbs` | is shipped |
+| `xtask` | — | `layers`, `wasm`, `ci`, `stats`, `health`, `freecad`, `fonts`, `boolean-corpus`, `fuzz`, `abc`, `actions`, `notices`, `package` (installers and the web zip), `web-size`, `example-thumbs` | is shipped |
 
 ## 3. The data
 
@@ -120,14 +122,14 @@ Edges first: each edge becomes points once, and both faces that share it use the
 
 ## 7. The engine and its clients
 
-- **Session** (`engine`): open documents, the command registry (172 commands on 2026-11-04, in 33 families: `file`, `recovery`, `edit`, `session`, `variable`, `output`, `table`, `param`, `jig`, `document`, `sketch`, `font`, `datum`, `feature`, `fold`, `unfold`, `sheetMetal`, `cut`, `body`, `face`, `material`, `history`, `measure`, `assert`, `select`, `set`, `view`, `motion`, `assembly`, `instance`, `mate`, `joint`, `coupling`; the exact count is the user guide's reference, held to the registry by a test), undo, autosave and crash recovery, scenes per document revision (kept within a memory budget), read and write roots for files.
+- **Session** (`engine`): open documents, the command registry (174 commands on 2026-11-10, in 34 families: `file`, `recovery`, `edit`, `session`, `agent`, `variable`, `output`, `table`, `param`, `jig`, `document`, `sketch`, `font`, `datum`, `feature`, `fold`, `unfold`, `sheetMetal`, `cut`, `body`, `face`, `material`, `history`, `measure`, `assert`, `select`, `set`, `view`, `motion`, `assembly`, `instance`, `mate`, `joint`, `coupling`; the exact count is the user guide's reference, held to the registry by a test), undo, autosave and crash recovery, scenes per document revision (kept within a memory budget), read and write roots for files.
 - **Commands**: an id, a parameter string, a summary and a `run` function, in the `SPECS` of `commands.rs` or of an `<area>_cmds.rs` module; the UI, CLI, control channel and MCP all dispatch the same ones. A failed command changes nothing; a panic inside one is caught and reported. `panic_hunt` runs every command with hostile parameters.
 - **The window** (`apps/craft3d`, `ui-egui`): a thin shell. Commands, regeneration and meshing run on the engine thread; the viewport draws on the GPU (`gpu::Onscreen`), with the CPU renderer as the fallback and as the oracle for screenshots. The control channel (loopback TCP, a token) lets an agent drive the window the developer watches, also over MCP (`craft3d-cli mcp --bridge`). Details: [`design/engine.md`](design/engine.md), [`design/rendering.md`](design/rendering.md), [`control-protocol.md`](control-protocol.md).
 - **The page** (`apps/craft3d-web`, `ui-egui`): the same shell in the browser, on one thread: commands run between frames, the document shown is regenerated and meshed by a second instance of the module in a Web Worker and its assertions and outputs measured by a third (messages only; the scene crosses as bytes), the viewport draws on the page's own device (WebGPU, else WebGL2) with the CPU renderer standing by, and the session keeps its files in memory (`Access::Memory`), so open, save, import and export are the same commands; no control channel. Details: [`development.md`](development.md) › Web build.
 
 ## 8. Files
 
-`.3dcraft` (a stored ZIP with a manifest: the history, versioned with migrations, format 36 at 0.1.0, never silently dropping a field; beside it the imported files' bytes and a thumbnail), and the same format as a published Jig, `.3dcraftjig`; STEP AP214 export with colours, and import of its solids (`stepread`, L3, so that regeneration builds an import feature from the bytes the document holds); STL, 3MF (with colours) and OBJ (with a `.mtl`) meshes; DXF and SVG of flat outlines and of projected views. Formats live in standalone crates; the mapping to our model lives in `io`. Details: [`design/files.md`](design/files.md), [`file-formats.md`](file-formats.md).
+`.3dcraft` (a stored ZIP with a manifest: the history, versioned with migrations, `FORMAT_VERSION` in `format` (69 on 2026-11-10), never silently dropping a field; beside it the imported files' bytes and a thumbnail), and the same format as a published Jig, `.3dcraftjig`, and as an assembly, `.3dcraftasm` (with its packed source documents); STEP AP214 export with colours, and import of its solids (`stepread`, L3, so that regeneration builds an import feature from the bytes the document holds); FreeCAD documents (`.FCStd`) and text BRep files imported the same way (`brep`, L0, and `fcstdread`, L3); STL, 3MF (with colours) and OBJ (with a `.mtl`) meshes; DXF and SVG of flat outlines and of projected views. Formats live in standalone crates; the mapping to our model lives in `io`. Details: [`design/files.md`](design/files.md), [`file-formats.md`](file-formats.md).
 
 ## 9. Known structural debt
 
@@ -164,6 +166,10 @@ Kept here on purpose, short, so the developer sees where the structure is weakes
 | [`design/assemblies.md`](design/assemblies.md) | the assembly solver: mates, couplings, damped Newton, diagnosis, continuation over a motion |
 | [`design/step-import.md`](design/step-import.md) | STEP files read into bodies: typed reading, sewing, the import feature |
 | [`design/files.md`](design/files.md) | the formats as built (their specification: [`file-formats.md`](file-formats.md)) |
+| [`design/developable.md`](design/developable.md), [`design/surfacing.md`](design/surfacing.md) | developable surfaces and unfolding; freeform surfaces through curve networks and their continuity |
+| [`design/plates.md`](design/plates.md), [`design/sheetmetal.md`](design/sheetmetal.md), [`design/origami.md`](design/origami.md), [`design/cutting.md`](design/cutting.md) | plates and their joints, sheet metal and its flat pattern, crease patterns folded, parts cut from sheet stock |
+| [`design/sections-and-levels.md`](design/sections-and-levels.md) | what lies on one side of a plane, a section's moments, the level for a volume |
+| [`design/motion.md`](design/motion.md), [`design/text.md`](design/text.md) | motion over the timeline `t`; text in sketches and fonts |
 | [`design/plan.md`](design/plan.md) | the design plan of 2026-10-12 as written, and the revision history of the old single file |
 | [`file-formats.md`](file-formats.md), [`control-protocol.md`](control-protocol.md), [`testing.md`](testing.md) | as before |
 

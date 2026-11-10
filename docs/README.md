@@ -9,14 +9,14 @@
 | Doc | What it holds |
 |---|---|
 | [`guide/`](guide/README.md) | The user guide: start here, install and connect an agent, first steps, working with an agent, the window, Jigs, concepts, a first part, formulas, features, measuring, selection, files, the command line, troubleshooting, reference |
-| [`examples/`](examples/README.md) | Ten example models as command scripts, each with a picture and its volume asserted; nine of them are the start screen's cards |
+| [`examples/`](examples/README.md) | Eighteen example models as command scripts, each with a picture and its volume asserted; thirteen of them are cards on the start screen, beside the published Jigs and assemblies in `examples/published/` |
 | [`architecture.md`](architecture.md) | The map: the rules that always hold, crates and layers, data, pipelines, the kernel's methods, known structural debt |
-| [`design/`](design/README.md) | One detail document per part (geometry, topology, booleans, blends, sweeps, face operations, names, document, regeneration, tessellator, rendering, engine, selection, verification, STEP import, files): how it works now, then its dated findings |
+| [`design/`](design/README.md) | One detail document per part (geometry, topology, booleans, blends, sweeps, face operations, developable surfaces, surfacing, names, document, regeneration, tessellator, rendering, engine, motion, selection, origami, verification, sections and levels, plates, sheet metal, cutting, assemblies, STEP import, text, files): how it works now, then its dated findings |
 | [`development.md`](development.md) | Prerequisites, build and run, checks and the gate on the Strix, CLI, driving the app, watching along, packaging, the web build, example thumbnails, environment variables |
 | [`testing.md`](testing.md) | The AI test loop, the oracles, test kinds per crate, the task set, the guide's checked examples, performance and web-size budgets, evidence |
 | [`contributing.md`](contributing.md) | Rules and the "add a command" / "add a feature type" / "add a geometry kind" checklists |
 | [`control-protocol.md`](control-protocol.md) | JSON control channel, headless server, MCP tools, every `ui.*` method |
-| [`file-formats.md`](file-formats.md) | `.3dcraft` and `.3dcraftjig`, STEP, STL, 3MF, OBJ, DXF and SVG: scope, specs, the format promise, tests |
+| [`file-formats.md`](file-formats.md) | `.3dcraft`, `.3dcraftjig` and `.3dcraftasm`, STEP, FreeCAD documents, STL, 3MF, OBJ, DXF and SVG: scope, specs, the format promise, tests |
 | [`roadmap.md`](roadmap.md) | Current focus, one line per milestone, a section per milestone (Goal, Done, Open, Acceptance), the boolean checklist, ideas, projects on 3DCraft |
 | [`decisions.md`](decisions.md) | Decisions taken and open |
 | [`tasks/`](tasks/) | The task set: 22 ordinary parts with descriptions in English and Dutch, closed-form expectations and reference solutions, scored by `craft3d-cli score` ([`testing.md`](testing.md) › *The task set*) |

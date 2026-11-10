@@ -1,6 +1,6 @@
 # File formats
 
-> **Last updated:** 2026-10-25 · **Status:** `.3dcraft` (format version 38) and the published Jig `.3dcraftjig` (the same format under its own extension), mesh export (STL, 3MF, OBJ, with a quality and an angle criterion), STEP export and import (assemblies, colours, swept splines), FreeCAD document (`.FCStd`) import, and DXF/SVG export of flat outlines, of the flat faces of a named set and of projected views work and are tested.
+> **Last updated:** 2026-11-10 · **Status:** `.3dcraft` (format version 69 on 2026-11-10: `FORMAT_VERSION` in `crates/format/src/lib.rs`), the published Jig `.3dcraftjig` and the assembly `.3dcraftasm` (the same format under their own extensions), mesh export (STL, 3MF, OBJ, with a quality and an angle criterion), STEP export and import (assemblies, colours, swept splines), FreeCAD document (`.FCStd`) import, and DXF/SVG export of flat outlines, of the flat faces of a named set and of projected views work and are tested.
 
 | Format | Read | Write | Carries | Crates | Milestone |
 |---|---|---|---|---|---|

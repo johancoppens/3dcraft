@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Last updated:** 2026-10-23 · **Stage:** R1 (0.1.0) finishing with its scope closed, then the field test; M7 (booleans), M8.5 and M9 in progress, M4 nearly done, M10 and V1 started; M0–M3, M5, M6 and M8 done · **Change:** minor (the docs and the user guide brought in step with the code for the release)
+> **Last updated:** 2026-11-10 · **Stage:** R1 (0.1.0) frozen since 2026-11-05 while the release is prepared; M7 (booleans), M8.5 and M9 in progress, M4 nearly done, M10 and V1 started; M0–M3, M5, M6 and M8 done · **Change:** minor (the stage, the current focus and item 4 of the boolean checklist brought up to date)
 
 Forward-looking plan: the **Current focus** agents pick from, one line per milestone, and per milestone what it is for, what is done, what is open and what "done" means. There is no parity percentage: 3DCraft is AI-first with a minimal UI and has no target app ([`decisions.md`](decisions.md)). Progress is measured by milestones whose acceptance tests pass. How something was built (algorithms, thresholds, measurements, file paths of internals) is in the detail documents under [`design/`](design/README.md) (the structure in [`architecture.md`](architecture.md)), and how it is tested in [`testing.md`](testing.md).
 
@@ -10,7 +10,7 @@ Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date nex
 
 ## Current focus
 
-1. **R1, the first release (0.1.0), finishing** (the developer, 2026-10-23): the scope is closed; what is left is what the R1 Jigs still need, robustness and cosmetic faults ([R1](#r1-first-release) › *Open*), then the release and a **field test by people outside the project** (with an AI agent over MCP first, by hand and with Jigs second, also in the web build), before new breadth (the developer, 2026-10-22).
+1. **R1, the first release (0.1.0), frozen since 2026-11-05.** Its scope, closed on 2026-10-23, was reopened twice (2026-10-26: sheets, plates, sheet metal and origami; 2026-10-29: assemblies, freeform surfacing and rendering, [`decisions.md`](decisions.md)). Since the freeze only small fixes go in, while the release is prepared: the installers, the user guide brought up to date with pictures of the final build, and the examples, Jigs and assemblies in the app (2026-11-10). Then the release, and people outside the project trying it and reporting what they meet, before new breadth (the developer, 2026-10-22). What is left in R1 is under [R1](#r1-first-release) › *Open*.
 2. **The boolean kernel (M7), the developer's first priority for the kernel** (2026-10-13): a refusal is work owed. Next: the rest of the [boolean checklist](#the-boolean-checklist) in its order (the speed of a cusp's axis on a block edge, the meshes of rational faces with weights a thousand apart).
 3. **M9, the rest:** replace face, and what the blends and the face operations leave open, beside M7 since none of it touches the boolean kernel ([M9](#m9-local-operations-and-sweeps)).
 
@@ -31,7 +31,7 @@ Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date nex
 | M8 | STEP export | ✅ 2026-10-13 | STEP files that an independent reader opens with our volume. | [M8](#m8-step-export) |
 | M8.5 | A history that survives edits, datums, pointing | 🟡 2026-10-14 | Failed features that can be repaired, reference geometry, extrude ends and pointing in the viewport. | [M8.5](#m85-a-history-that-survives-edits-datums-pointing) |
 | M9 | Local operations and sweeps | 🟡 2026-10-14 | Blends, face operations, sweeps and threads, the features of everyday mechanical parts. | [M9](#m9-local-operations-and-sweeps) |
-| R1 | First release | 🟡 2026-10-23 | Version 0.1.0 for people outside the project: installers, the web build, the guide, formulas and Jigs; scope closed, finishing. | [R1](#r1-first-release) |
+| R1 | First release | 🟡 2026-10-23 | Version 0.1.0 for people outside the project: installers, the web build, the guide, formulas and Jigs; frozen since 2026-11-05, being released. | [R1](#r1-first-release) |
 | V1 | Design verification | 🟡 2026-10-22 | An agent checks a design by queries and assertions kept in the document. | [V1](#v1-design-verification) |
 | M10 | STEP import, corpus, web | 🟡 2026-10-21 | STEP files read into the document and a public STEP corpus; the browser build moved to R1 (2026-10-22). | [M10](#m10-step-import-corpus-web) |
 | M11+ | Interactive UI | ⬜ | Sketching and editing with the mouse, once phase 1 is done. | [M11+](#m11-interactive-ui) |
@@ -50,7 +50,7 @@ The developer's first priority (2026-10-13): the heart of the kernel and its har
 1. 🟡 **Every surface kind, NURBS included, in any position.** Analytic, polynomial and rational freeform faces, faces with a pole and faces on closed spline surfaces are operands.
 2. 🟡 **Every contact case:** coincident, tangent along a line or at a point, along an edge, at a vertex. Tangent contact with freeform faces and contact along a curve are built; the cases below are owed.
 3. ✅ 2026-10-13 **Results without scars:** faces and edges a boolean split needlessly are merged.
-4. ⬜ **Tolerant modelling:** approximated intersection curves, bodies with gaps as STEP import will bring them.
+4. 🟡 2026-10-21 **Tolerant modelling:** approximated intersection curves, bodies with gaps as STEP import brings them. A tolerance per vertex and edge in three slices (2026-10-21 and 2026-10-22, [`design/topology.md`](design/topology.md) › *Tolerant entities*); owed: fits that miss half the tolerance kept as loose edges.
 5. 🟡 **Several lumps, cavities, sheet bodies.** Lumps and cavities are built (2026-10-17) and split into one body per lump by `body.split` (2026-10-20); sheets are made by `feature.fill`, trimmed by a solid and cut a solid (2026-10-18, [`design/booleans.md`](design/booleans.md) › *Sheets*), and cut or sewn with one another (2026-10-22); a split of a solid by a sheet into both pieces in one step is owed.
 6. ✅ 2026-10-14 **Entities through booleans:** edges by the faces they lie between (2026-10-13), vertices by the faces they meet in (`document.edges`).
 7. 🟡 **Speed on bodies with thousands of faces** (a spatial index). Since 2026-10-15 a face's outline (and the index of a freeform surface) is made only when the boolean needs it: a bead on a shade of 2000 faces 2.2 GB instead of 7.2 GB.

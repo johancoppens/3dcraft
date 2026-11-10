@@ -5,7 +5,7 @@
 ## What works today
 
 ```sh
-cargo test --workspace                          # about 3500 tests (2026-10-23), one binary after the other
+cargo test --workspace                          # over five thousand tests (2026-11-10), one binary after the other
 cargo xtask ci                                  # fmt --check + clippy -D warnings + tests (binaries side by side) + doctests + layers + wasm: the full gate (run it on the Strix, below)
 cargo xtask layers                              # dependency layering, that every crate opts in to the never-crash lints, and no std clock where the browser gets
 cargo xtask stats                               # lines and tests per crate
@@ -85,7 +85,7 @@ The boolean corpus ([`testing.md`](testing.md) oracle 8) is the other use of Fre
 ## Prerequisites
 
 - Rust stable, pinned in `rust-toolchain.toml` (rustup installs it on first use). Add the web target with `rustup target add wasm32-unknown-unknown`.
-- Linux, macOS or Windows. The developer's machine is Fedora Linux; that is the Tier-1 platform. The installers are built and started on GitHub's Linux, macOS and Windows runners ([Packaging](#packaging)).
+- Linux, macOS or Windows. 3DCraft is developed on Fedora Linux; that is the Tier-1 platform. The installers are built and started on GitHub's Linux, macOS and Windows runners ([Packaging](#packaging)).
 - Linux windowing, GL and GTK development packages (for the desktop app):
   - Fedora/RHEL: `sudo dnf install libxkbcommon-devel wayland-devel libX11-devel libXrandr-devel libXi-devel mesa-libGL-devel gtk3-devel`
   - Debian/Ubuntu: `sudo apt install libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev`
@@ -336,7 +336,7 @@ A typical agent loop:
 
 ## Native format (.3dcraft)
 
-See [`file-formats.md`](file-formats.md). In short: a ZIP of STORE entries holding `manifest.json` (the document: variables, tables, sketches, constraints, features in order, assertions, sets, public parameters and info; format 36 at 0.1.0), content-addressed `blobs/<sha256>.step` for the bytes of imported STEP files, and `thumb.png` (written for a Jig, ignored on load). A published Jig, `.3dcraftjig`, is the same format. Saves are atomic (write a temp file, fsync, rename). Autosave writes snapshots to a recovery directory on a background thread.
+See [`file-formats.md`](file-formats.md). In short: a ZIP of STORE entries holding `manifest.json` (the document: variables, tables, sketches, constraints, features in order, assertions, sets, public parameters and info; the format version is `FORMAT_VERSION` in `crates/format/src/lib.rs`, 69 on 2026-11-10), content-addressed `blobs/<sha256>.step` for the bytes of imported STEP files, and `thumb.png` (written for a Jig, ignored on load). A published Jig, `.3dcraftjig`, is the same format. Saves are atomic (write a temp file, fsync, rename). Autosave writes snapshots to a recovery directory on a background thread.
 
 ## Graphics startup and device loss
 
@@ -423,7 +423,7 @@ The steps the coordinator runs to tag and publish a release (0.1.0 first). Nothi
 **Checks that only a person or a machine with a display can run**, once on the commit to tag:
 
 - **The killed window.** `cargo test -p craft3d --test killed_window -- --nocapture` on a machine with `mutter` and a graphics adapter (the developer's laptop): the app killed with SIGKILL recovers its document. Where there is no compositor the test passes by skipping, saying so in its output: read that it ran, not only that it passed.
-- **The format promise for this release.** The `FORMAT_VERSION` of the commit to tag (`crates/format/src/lib.rs`; 56 on main on 2026-10-30, 57 if solid textures land) is the first format version a released build writes, so its fixture `crates/format/tests/fixtures/versions/v<N>.3dcraft` must have been written by the build of that version and frozen with its hash (`crates/format/tests/versions.rs` and `crates/engine/tests/format_versions.rs` fail without it). Before 0.1.0 no meaning-preserving migrations were owed for unreleased versions; from the tag on, every later format version keeps this file opening as it did.
+- **The format promise for this release.** The `FORMAT_VERSION` of the commit to tag (`crates/format/src/lib.rs`; 69 on 2026-11-10) is the first format version a released build writes, so its fixture `crates/format/tests/fixtures/versions/v<N>.3dcraft` must have been written by the build of that version and frozen with its hash (`crates/format/tests/versions.rs` and `crates/engine/tests/format_versions.rs` fail without it). Before 0.1.0 no meaning-preserving migrations were owed for unreleased versions; from the tag on, every later format version keeps this file opening as it did.
 - **The web site.** The `package (web)` job's zip unpacked and served as `packaging/web/HOSTING.md` says (HTTPS for WebGPU, the MIME type `application/wasm`, the hashed files cached for ever and `index.html` not), opened in Chrome and in Firefox: an example, a Jig by `?open=`, a save and an export.
 
 1. **Main is complete and green.** Every branch meant for the release is merged into `main`, and the `Gate` workflow passed on the exact commit to tag (`gh run list --workflow Gate`, read its exit status).

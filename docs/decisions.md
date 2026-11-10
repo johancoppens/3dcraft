@@ -1,20 +1,27 @@
 # Decisions
 
-> **Last updated:** 2026-10-30
+> **Last updated:** 2026-11-10
 
 Decisions that shape the project, newest first, each with its reason. An agent that needs something listed under *Open decisions* asks the developer; it does not pick silently. When one is settled, move it up with the date.
 
 ## Taken
 
+### 2026-11-10: The repository public, a workshop beside it, and the website (decided by the developer)
+
+- **Two repositories with the same commits.** The public `johancoppens/3dcraft`, and the private workshop `johancoppens/3dcraft-dev`, to which the build server's self-hosted runners (the Strix) are attached: a pull request from a fork may bring a workflow of its own, so no self-hosted runner is attached to a public repository. `main` is pushed to both after its gate ([`development.md`](development.md) › *Checks and the gate on the Strix*). Problems are reported in the public repository's issues and security problems privately; a change starts with an issue ([`CONTRIBUTING.md`](../CONTRIBUTING.md)).
+- **The website** is `https://3dcraft.dev/`: the user guide at `/guide/`, one version per release beneath it (`/guide/0.1/`); the galleries of examples, Jigs and assemblies at `/examples/`; the web build at `/app/`. The application id stays `io.github.johancoppens.craft3d` (2026-10-22): an id on this domain would start an element with a digit, which D-Bus and Flatpak ids do not allow.
+- **The installers of 0.1.0 are not signed** (2026-10-22); the install guide says what each system shows and how to open them anyway.
+- **The start screen** (amends 2026-10-30): the guide's lessons, the earlier showpieces and the earlier published Jigs and assemblies come off it. In their place a set from the three example repositories (`johancoppens/3dcraft-examples`, `3dcraft-jigs` and `3dcraft-assemblies-examples`), built in so that it works offline and in the web build, a few simple ones in front, and *More examples*, which opens the galleries. The guide keeps its lessons.
+
 ### 2026-10-31: The `libm` crate for transcendental functions (decided by the developer, 2026-10-31; narrows D-open-5)
 
-Not decided. Branch `r1-portable-math` is built on it and waits for this.
+Decided as proposed below, and built (`craft3d_math::Portable`, on the branch `r1-portable-math`, 2026-10-31).
 
 - **Proposal.** Sines, cosines, arc tangents, exponentials, logarithms, powers, cube roots and hypotenuses in every crate go through `craft3d_math::Portable`, which calls the `libm` crate (MIT, a pure-Rust port of musl's maths library), instead of the standard library's methods, which call the platform's C library. That is an exception to D-open-5's default ("write it"), for these functions only. Linear algebra, interval and exact arithmetic stay under D-open-5 as they are.
 - **The measured reason.** glibc and `libm` differ in the last bit for 0.01 to 5 % of arguments, depending on the function: 2 of 20,008 for `ln_1p`, 339 for `sin`, 1,084 for `log10`. The worst difference is 1 ulp, 3 for `tanh`. glibc, Apple's library and the UCRT differ from each other in the same way. On GitHub's hosted runners (2026-10-30/31) the same commit gave different results on macOS, Windows and Linux, against rule 5. On macOS: the rotor's mass evaluations +14 %, 9 faces instead of 8 on a kayak plate, a STEP cone apex, the kernel's cone-through-apex outline, the sheet-metal bits. On Windows: sheet metal 1 ulp off. On macOS and hosted Linux: the developable fan refused, with a turn of 2.28e-4 over the ruling. Built against `libm`, the fan failed on the Strix with exactly that value. A sign at a known zero of the condition decided the fan; it now comes from the derivative, and that fix is in the same branch.
 - **Why this crate.** Licence MIT. Pure Rust: plain arithmetic, so the same bits on every target, wasm included. Its only platform-specific paths are correctly rounded IEEE operations (`sqrt`, `fma`, `floor`, `ceil`, `trunc`, `rint`, `fabs`), whose results the standard fixes. It is already in `Cargo.lock` through `naga` and `num-traits`, so no new code is shipped. Writing our own would mean re-deriving musl's argument reduction and polynomial kernels: weeks of work for no difference a user would see.
 - **Enforced** by clippy's `disallowed-methods` for the `f64`/`f32` transcendental methods (`clippy.toml`). A pinned hash of the portable results over a sweep is the contract (`craft3d-math`, `portable.rs`).
-- **The other option**, if the developer refuses: our own implementations in `craft3d-math` behind the same trait (no call sites change), with the same hash test.
+- **The other option**, not taken: our own implementations in `craft3d-math` behind the same trait (no call sites change), with the same hash test.
 
 ### 2026-10-30: A flexible subassembly's own drives are its parent's to set (decided by the coordinator, under the developer's pre-release rule)
 
@@ -35,7 +42,7 @@ Every crate the programs are built from must be under a licence of the allow-lis
 
 The decision of 2026-10-23 (*Jigs, parametric generators that run without AI*) says: "Jigs are never part of 3DCraft: 3DCraft gets the general mechanism (public parameters, the form, a Jig package to export and open, a check over the parameter range), the Jigs themselves live with their makers or in a community collection", and "**3DCraft stays light** (…): no catalogues of parts, standards or materials, no bundled content beyond the guide's examples".
 
-Amended: a handful of published Jigs and assemblies may ship as **examples on the start screen**, beside the guide's example parts: the planetary gearbox and the gear reducer (each as a Jig and as an assembly), the Jansen linkage leg (a Jig) and the Jansen linkage walker (an assembly), after the mechanism of Theo Jansen's Strandbeests: six files. They are copied in as data (the published `.3dcraftjig` and packed `.3dcraftasm` files, unchanged), with their licence and a row in `ATTRIBUTION.md`; the start screen opens a Jig on its parameter form and an assembly ready to play. Still not allowed: a catalogue (more than a handful, or picked to cover a product range), editing or developing Jigs in this repository (they stay in their own repository, which is their source; a copy here is refreshed from its published files), and anything a Jig needs that is not general platform behaviour.
+Amended: a handful of published Jigs and assemblies may ship as **examples on the start screen**, beside the guide's example parts: the planetary gearbox and the gear reducer (each as a Jig and as an assembly), the Jansen linkage leg (a Jig) and the Jansen linkage walker (an assembly), after the mechanism of Theo Jansen's Strandbeests: six files. They are copied in as data (the published `.3dcraftjig` and packed `.3dcraftasm` files, unchanged), with their licence and a row in `ATTRIBUTION.md`; the start screen opens a Jig on its parameter form and an assembly ready to play. Still not allowed: a catalogue (more than a handful, or picked to cover a product range), editing or developing Jigs in this repository (they stay in their own repository, which is their source; a copy here is refreshed from its published files), and anything a Jig needs that is not general platform behaviour. *Amended again on 2026-11-10 (above): which examples, Jigs and assemblies the start screen shows.*
 
 ### 2026-10-30: The web module's hard limit is 12 MiB gzip (decided by the developer)
 
@@ -467,7 +474,7 @@ Made by the agent; the developer can overturn any of them.
 ### 2026-10-12: Developer's answers to the first open questions
 
 - **Licence: MIT** (`LICENSE`). (was D-open-2)
-- **Repository:** git, remote https://github.com/johancoppens/3dcraft, managed with the `gh` CLI. Created private; the developer decides when it becomes public. (was D-open-3)
+- **Repository:** git, remote https://github.com/johancoppens/3dcraft, managed with the `gh` CLI. Created private; the developer decides when it becomes public. (was D-open-3; public since 2026-11-10, with a private workshop beside it: see that date above)
 - **No target app: AI-first with a minimal UI.** Commands are named for clarity to agents; there will be no parity documents against another CAD package. (was D-open-1)
 - **External tools as test oracles are allowed.** FreeCAD is available on the developer's machine as an AppImage and may be run as a separate program to validate exports (never linked, vendored or copied from). Tests find it through `CRAFT3D_FREECAD`, are opt-in, and skip with a message when it is unset. (was D-open-7)
 - **Fast track to a first picture.** The developer asked for a teapot render as soon as possible, so a vertical slice (Bézier patches → tessellator → CPU renderer) was built ahead of the milestone order. It lives in the planned crates and follows the planned layering; it did not add throw-away code.
