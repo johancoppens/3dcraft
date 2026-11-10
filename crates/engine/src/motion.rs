@@ -1720,21 +1720,45 @@ pub(crate) fn collisions_of(
 }
 
 /// `doc` with the bodies of the overlapping pairs of `collisions` drawn
-/// in [`COLLISION_COLOR`]: their own colour and their faces' colours at
-/// the feature that has them give way to it (the copy only).
-pub(crate) fn marked(doc: &Document, collisions: &[Collision]) -> Document {
+/// in [`COLLISION_COLOR`] (the copy only): their own colour, and every
+/// face of them by its name in `regen` (the regeneration of `doc`, which
+/// colours do not change), since a face's own colour given upstream wins
+/// over any body colour (J-040) and must give way to the collision too.
+pub(crate) fn marked(doc: &Document, regen: &Regen, collisions: &[Collision]) -> Document {
     let mut out = doc.clone();
     let red: Vec<FeatureId> = collisions
         .iter()
         .filter(|c| c.volume.is_some())
         .flat_map(|c| [c.a, c.b])
         .collect();
+    let colour = Appearance::color(COLLISION_COLOR);
     for id in &red {
         // A feature that has a body was given out by the document, so
         // the entry is valid; one that is refused leaves the colour.
-        let _ = out.set_appearance(*id, Some(Appearance::color(COLLISION_COLOR)));
+        let _ = out.set_appearance(*id, Some(colour));
     }
     out.faces.retain(|entry| !red.contains(&entry.feature));
+    let faces: Vec<craft3d_doc::FaceProperties> = red
+        .iter()
+        .filter_map(|id| Some((*id, regen.feature(*id)?.names.as_deref()?)))
+        .flat_map(|(id, names)| {
+            names
+                .faces
+                .iter()
+                .map(move |name| craft3d_doc::FaceProperties {
+                    feature: id,
+                    face: name.clone().canonical(),
+                    appearance: colour,
+                })
+        })
+        .collect();
+    if out.faces.len().saturating_add(faces.len()) <= craft3d_doc::MAX_FACE_APPEARANCES {
+        out.faces.extend(faces);
+        out.faces
+            .sort_by(|a, b| (a.feature, &a.face).cmp(&(b.feature, &b.face)));
+        out.faces
+            .dedup_by(|a, b| a.feature == b.feature && a.face == b.face);
+    }
     out
 }
 
@@ -2224,7 +2248,7 @@ impl OpenDocument {
             None => asked.then(|| collisions(&plain, &regen, &mut self.motion.memo)),
         };
         let doc = match &collisions {
-            Some(Ok(found)) if !found.is_empty() => Arc::new(marked(&plain, found)),
+            Some(Ok(found)) if !found.is_empty() => Arc::new(marked(&plain, &regen, found)),
             _ => plain,
         };
         Ok(State {

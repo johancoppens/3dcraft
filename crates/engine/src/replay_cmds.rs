@@ -1011,7 +1011,10 @@ mod native {
                     let found = crate::motion::collisions(&doc, &regen, &mut memo)
                         .map_err(|e| CommandError::new(format!("{ID}: at t = {t}: {e}")))?;
                     let overlapping = found.iter().filter(|c| c.volume.is_some()).count();
-                    (Arc::new(crate::motion::marked(&doc, &found)), overlapping)
+                    (
+                        Arc::new(crate::motion::marked(&doc, &regen, &found)),
+                        overlapping,
+                    )
                 } else {
                     (doc, 0)
                 };

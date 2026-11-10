@@ -170,7 +170,7 @@ impl OpenDocument {
             let found = want.then(|| self.collisions_here(&placed.doc, &placed.regen));
             let shown = match &found {
                 Some(Ok(pairs)) if pairs.iter().any(|c| c.volume.is_some()) => {
-                    Arc::new(crate::motion::marked(&placed.doc, pairs))
+                    Arc::new(crate::motion::marked(&placed.doc, &placed.regen, pairs))
                 }
                 _ => Arc::clone(&placed.doc),
             };
