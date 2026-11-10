@@ -596,8 +596,10 @@ fn body_kinds(regen: &craft3d_regen::Regen) -> Vec<(FeatureId, BodyKind)> {
 /// at the defaults and the corners: on a part with many curved faces
 /// measuring costs several times the regeneration (the welding table Jig,
 /// 2026-10-23: 90 % of a check-range run with every point measured).
+#[allow(clippy::too_many_arguments)]
 fn check_point(
     base: &Document,
+    (path, asm): (&Option<String>, &crate::asm::AsmState),
     values: &Map<String, Value>,
     deep: bool,
     measure: bool,
@@ -632,7 +634,14 @@ fn check_point(
     if let Some(bytes) = body_budget {
         scratch.set_body_budget(bytes);
     }
-    scratch.add_document(OpenDocument::new(doc, None))?;
+    // An assembly's parts are placed from the files the open document
+    // read for it, beside its own path (A-001: check-range opened an
+    // assembly whose parts are not packed, and every point said they had
+    // not been read).
+    let mut open = OpenDocument::new(doc, None);
+    open.path.clone_from(path);
+    open.asm = asm.for_copy();
+    scratch.add_document(open)?;
     let clock = Clock::start();
     let regen = scratch.document_mut()?.regen_needing(if deep {
         craft3d_regen::Need::All
@@ -829,6 +838,10 @@ fn document_sample(session: &mut Session, params: &Value) -> Run {
 
     let base: Document = (**session.document()?.history.current()).clone();
     let body_budget = session.body_budget;
+    let (path, asm) = {
+        let open = session.document()?;
+        (open.path.clone(), open.asm.for_copy())
+    };
     let list = ranges(&base);
     if list.is_empty() {
         return fail(format!(
@@ -907,6 +920,7 @@ fn document_sample(session: &mut Session, params: &Value) -> Run {
                 let mut kinds = Vec::new();
                 let checked = check_point(
                     &base,
+                    (&path, &asm),
                     &values,
                     deep,
                     // Measured at the defaults and the corners, where

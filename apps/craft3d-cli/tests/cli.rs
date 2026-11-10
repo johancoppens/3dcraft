@@ -1892,6 +1892,71 @@ fn check_range_counts_unproven_points_apart_and_fails_them_when_strict() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A-001: `check-range` places an assembly whose parts are not packed
+/// from their files beside it, as `run` does: a bar on a hinge driven to
+/// the published `swing` (0 to 30°), asserted below 31°, passes at its
+/// three points, also asked from another folder.
+#[test]
+fn check_range_reads_the_parts_of_an_assembly_that_is_not_packed() {
+    let dir = workdir("check-range-unpacked");
+    let bar = json!([
+        ["feature.block", {"size": ["80 mm", "8 mm", "4 mm"], "name": "Bar"}],
+        ["datum.axis", {"name": "Pivot", "through": [["0 mm", "0 mm", "0 mm"], ["0 mm", "0 mm", "1 mm"]]}],
+    ]);
+    std::fs::write(dir.join("bar.json"), bar.to_string()).unwrap();
+    let hinge = json!([
+        ["assembly.new", {"units": "mm"}],
+        ["variable.set", {"name": "swing", "expr": "10 deg"}],
+        ["variable.publish", {"name": "swing", "min": "0 deg", "max": "30 deg", "step": "1 deg"}],
+        ["instance.add", {"source": "bar.3dcraft", "name": "Bar"}],
+        ["mate.add", {"kind": "revolute", "name": "Hinge", "a": "world/z", "b": "Bar/Pivot", "flip": true}],
+        ["joint.set", {"mate": "Hinge", "value": "swing"}],
+        ["assert.add", {"name": "Hinge in range", "measure": "jointAngle", "mate": "Hinge", "max": "31 deg"}],
+    ]);
+    std::fs::write(dir.join("hinge.json"), hinge.to_string()).unwrap();
+    let new = r#"{"units": "mm"}"#;
+    cli_in(
+        &dir,
+        &[
+            "run",
+            "--new",
+            new,
+            "--script",
+            "bar.json",
+            "--out",
+            "bar.3dcraft",
+        ],
+        None,
+    )
+    .ok();
+    cli_in(
+        &dir,
+        &[
+            "run",
+            "--new",
+            new,
+            "--script",
+            "hinge.json",
+            "--out",
+            "hinge.3dcraftasm",
+        ],
+        None,
+    )
+    .ok();
+    let summary = "3 points (1 default, all 2 corners, 0 choices, 0 random): 3 passed, 0 with unproven assertions, 0 failed";
+    let ran = cli_in(
+        &dir,
+        &["check-range", "hinge.3dcraftasm", "--samples", "0"],
+        None,
+    )
+    .ok();
+    assert!(ran.stdout.contains(summary), "{}", ran.stdout);
+    let file = path(&dir, "hinge.3dcraftasm");
+    let ran = cli(&["check-range", &file, "--samples", "0"]).ok();
+    assert!(ran.stdout.contains(summary), "{}", ran.stdout);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// `check-range` counts an inactive assertion (its `when` is 0 there) as
 /// neither passed nor failed nor unproven: the ring of
 /// [`check_range_counts_unproven_points_apart_and_fails_them_when_strict`]
