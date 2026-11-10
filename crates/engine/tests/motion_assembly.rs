@@ -434,3 +434,42 @@ fn a_ring_enclosed_in_a_plate_fails_a_clearance_over_the_motion() {
     assert_eq!(out["ok"], false, "{out}");
     assert_eq!(out["assertions"][0]["status"], "failed", "{out}");
 }
+
+/// A-039: motion.check gives an angle's least and greatest value, and
+/// each sample, in degrees beside its bounds in degrees: the crank driven
+/// by 360° t turns from 0° to 90° over t from 0 to 1/4, 22.5° a sample.
+#[test]
+fn an_angle_over_the_motion_reads_in_degrees() {
+    let dir = workdir("motion-asm", "angle-degrees");
+    let mut s = session(&dir);
+    four_bar(&mut s, [20.0, 50.0, 40.0, 60.0]);
+    let out = run(
+        &mut s,
+        "motion.check",
+        // The least is -1° rather than 0: at t = 0 the solve gives -3e-24
+        // rad, and an angle is met within rounding only.
+        json!({ "measure": { "measure": "jointAngle", "mate": "Drive", "min": "-1 deg", "max": "90 deg" },
+                "t": [0, 0.25], "samples": 5, "details": true }),
+    );
+    let check = &out["assertions"][0];
+    assert_eq!(check["status"], "passed", "{out}");
+    assert_eq!(check["unit"], "deg", "{check}");
+    assert_eq!(check["expected"], "-1 deg to 90 deg", "{check}");
+    assert_eq!(check["min"]["t"], 0.0, "{check}");
+    assert!(
+        check["min"]["value"].as_f64().unwrap().abs() < 1e-9,
+        "{check}"
+    );
+    assert_eq!(check["max"]["t"], 0.25, "{check}");
+    assert!(
+        (check["max"]["value"].as_f64().unwrap() - 90.0).abs() < 1e-9,
+        "{check}"
+    );
+    for (k, sample) in check["samples"].as_array().unwrap().iter().enumerate() {
+        let want = 22.5 * k as f64;
+        assert!(
+            (sample["measured"].as_f64().unwrap() - want).abs() < 1e-9,
+            "{sample}"
+        );
+    }
+}

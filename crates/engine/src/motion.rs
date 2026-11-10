@@ -69,7 +69,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "motion.check",
         "Check Over Motion",
         r#"{"assertions": [name, ...] = every assertion (or only measure's), "measure": {the parameters of assert.add without name}, "t": [number, number] = [0, 1], "samples": integer = 33, "details": boolean = false}"#,
-        "Checks assertions at samples of the motion: at samples values of t evenly from t[0] to t[1] (both included) the document is set to that t (as view.motion makes it) and the assertions are measured as document.check measures them, on a copy: the document does not change. What it proves is what held at the samples: a failure between two samples (a collision shorter than their spacing) can be missed, so the result says sampled: true. measure is an assertion written as for assert.add (without its name) and checked only here; assertions names the document's own (default: all of them, or none when measure is given). Any measure works: overlap with is false gives the first sample that collides, clearance with a min the least clearance at the samples and its t. Per assertion: status (failed when any sample fails; else error, notProven, passed, or inactive when it is never on), failed (how many samples), firstFailure ({t, after, measured, message}: the first sample that fails, and after the last sample before it that passed, null when none did, so the failure begins in (after, t]; null when no sample fails), firstError and firstNotProven the same for samples that could not be measured or not proven, min and max ({t, value} of a numeric measure at the samples), unit and expected; with details every sample ({t, status, measured}). ok is true when every assertion passed at every sample. The document needs a timeline (view.motion). At most 1000 samples. For an assembly each sample is measured at the moment as view.motion solves it, and deadPoints lists every dead point met ({t, why}). Where the bodies are beside the host (the browser's worker), the samples are made there: the result says deferred: true, and the answer follows.",
+        "Checks assertions at samples of the motion: at samples values of t evenly from t[0] to t[1] (both included) the document is set to that t (as view.motion makes it) and the assertions are measured as document.check measures them, on a copy: the document does not change. What it proves is what held at the samples: a failure between two samples (a collision shorter than their spacing) can be missed, so the result says sampled: true. measure is an assertion written as for assert.add (without its name) and checked only here; assertions names the document's own (default: all of them, or none when measure is given). Any measure works: overlap with is false gives the first sample that collides, clearance with a min the least clearance at the samples and its t. Per assertion: status (failed when any sample fails; else error, notProven, passed, or inactive when it is never on), failed (how many samples), firstFailure ({t, after, measured, message}: the first sample that fails, and after the last sample before it that passed, null when none did, so the failure begins in (after, t]; null when no sample fails), firstError and firstNotProven the same for samples that could not be measured or not proven, min and max ({t, value} of a numeric measure at the samples), unit and expected; with details every sample ({t, status, measured}); an angle's values are in degrees, unit deg, as its bounds are written. ok is true when every assertion passed at every sample. The document needs a timeline (view.motion). At most 1000 samples. For an assembly each sample is measured at the moment as view.motion solves it, and deadPoints lists every dead point met ({t, why}). Where the bodies are beside the host (the browser's worker), the samples are made there: the result says deferred: true, and the answer follows.",
         doc: true,
         motion_check
     ),
@@ -4193,6 +4193,18 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
     let results: Vec<Value> = over
         .iter()
         .map(|entry| {
+            // An angle reads in degrees, as its bound and its messages do
+            // (the measure gives radians).
+            let degrees = entry.unit.as_deref() == Some("rad");
+            let read = |value: &Value| match (degrees, value.as_f64()) {
+                (true, Some(v)) => Value::from(v.to_degrees()),
+                _ => value.clone(),
+            };
+            let unit = if degrees {
+                Some("deg".to_string())
+            } else {
+                entry.unit.clone()
+            };
             let any = |s: S| entry.samples.iter().any(|x| x.1 == s);
             let status = if any(S::Failed) {
                 S::Failed
@@ -4220,20 +4232,21 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
                     .find(|x| x.1 == S::Passed)
                     .map_or(Value::Null, |x| x.0.into());
                 entry.samples.get(at).map_or(Value::Null, |(t, _, value, message)| {
-                    json!({"t": t, "after": after, "measured": value, "message": message})
+                    json!({"t": t, "after": after, "measured": read(value), "message": message})
                 })
             };
             let numbers = entry
                 .samples
                 .iter()
                 .filter_map(|(t, _, value, _)| Some((*t, value.as_f64()?)));
-            let min = numbers
-                .clone()
-                .min_by(|a, b| a.1.total_cmp(&b.1))
-                .map_or(Value::Null, |(t, v)| json!({"t": t, "value": v}));
-            let max = numbers
-                .max_by(|a, b| a.1.total_cmp(&b.1))
-                .map_or(Value::Null, |(t, v)| json!({"t": t, "value": v}));
+            let min = numbers.clone().min_by(|a, b| a.1.total_cmp(&b.1)).map_or(
+                Value::Null,
+                |(t, v)| json!({"t": t, "value": read(&v.into())}),
+            );
+            let max = numbers.max_by(|a, b| a.1.total_cmp(&b.1)).map_or(
+                Value::Null,
+                |(t, v)| json!({"t": t, "value": read(&v.into())}),
+            );
             let mut out = Map::new();
             out.insert("name".into(), entry.name.clone().into());
             out.insert("measure".into(), entry.measure.clone().into());
@@ -4252,7 +4265,7 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
             out.insert("firstNotProven".into(), first(S::NotProven));
             out.insert("min".into(), min);
             out.insert("max".into(), max);
-            out.insert("unit".into(), entry.unit.clone().into());
+            out.insert("unit".into(), unit.into());
             out.insert("expected".into(), entry.expected.clone().into());
             if details {
                 out.insert(
@@ -4260,7 +4273,9 @@ fn motion_check(session: &mut Session, params: &Value) -> Run {
                     entry
                         .samples
                         .iter()
-                        .map(|(t, s, v, _)| json!({"t": t, "status": s.name(), "measured": v}))
+                        .map(
+                            |(t, s, v, _)| json!({"t": t, "status": s.name(), "measured": read(v)}),
+                        )
                         .collect(),
                 );
             }

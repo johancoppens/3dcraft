@@ -171,7 +171,8 @@ pass the parent's on: `"params": {"t": "t"}`.
   it in its checks; an instance a check names is not deleted until the check is.
 - What the solve says is measured too: `jointAngle {mate}` and `jointDistance {mate}` are a joint's solved value,
   driven or free, `position {instance, axis}` (or `{point: "Foot/Toe"}`) and `rotation {instance}` an instance's
-  pose. As assertions they check the motion (`motion.check`); with `variable.measure` they become outputs that
+  pose. As assertions they check the motion (`motion.check`, which gives an angle's least and greatest value and
+  each sample in degrees, `"unit": "deg"`, as the bounds are written); with `variable.measure` they become outputs that
   formulas use: `{"name": "crank", "measure": "jointAngle", "mate": "Drive"}`, then `2 * crank` in an output or a
   check. `measure.joint {mate}` and `measure.pose {instance}` answer them at once (angles in degrees).
 - `assembly.inspect` lists the instances, their configurations, the mates and how they stand.

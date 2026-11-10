@@ -146,7 +146,8 @@ run, so the copy's history does not grow) as the `Sweep` makes it, and its asser
 not move is measured once. Per assertion: the worst status over the samples; `firstFailure`, `firstError` and
 `firstNotProven`, each the first sample of that status with `after`, the last sample before it that passed (null
 when none did), so the change begins in `(after, t]`; and the least and greatest value at the samples with their
-`t`. `measure` is an assertion written inline and checked only there. It proves what held **at the samples**, no
+`t` (an angle's in degrees, `unit` `deg`, as its bounds and messages read; 2026-11-10, A-039: they were radians
+beside an expectation in degrees). `measure` is an assertion written inline and checked only there. It proves what held **at the samples**, no
 more: a collision shorter than the spacing of the samples can be missed, so the result says `sampled: true` and
 the samples it took; the summary and the guide say "at the samples", never "everywhere".
 
