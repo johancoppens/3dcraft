@@ -270,10 +270,10 @@ can let it read and write files there, besides the work folder"*, with the folde
 - **Only the work folder** keeps that folder out: the agent stays connected with the work folder only.
 - **Refuse** disconnects that agent, and 3DCraft refuses it until you close 3DCraft.
 
+After that, "make a new document with a 10 mm cube and save it in our folder" works.
+
 If you do not answer, the agent works with the work folder only. The question stays on screen for up to
 ten minutes, also when the agent that asked has gone away meanwhile, and then goes by itself.
-
-After that, "make a new document with a 10 mm cube and save it in our folder" works.
 
 When the agent wants a file anywhere else, 3DCraft shows the file (*"Claude Code asks to write a file"*)
 with **Deny**, **Allow this folder** (for every agent from now on) and **Allow once** (that file, for that
