@@ -455,6 +455,39 @@ impl RenderStats {
     }
 }
 
+/// The scene's frame ([`Scene::frame_box`]: the bodies and the sketches)
+/// cut down to the box around the bodies drawn ([`Scene::bodies_box`]):
+/// what is framed without the sketches. Where the two agree (to a
+/// billionth of the size) the frame's own value, on its grid; without a
+/// sketch or without a body, the frame as it is.
+fn bodies_frame(scene: &Scene) -> Bbox3 {
+    let frame = scene.frame_box();
+    if scene.sketches.is_empty() {
+        return frame;
+    }
+    let (Some((low, high)), Some((from, to))) = (frame.corners(), scene.bodies_box.corners())
+    else {
+        return frame;
+    };
+    let near = frame.diagonal() * 1e-9;
+    let side = |f: f64, b: f64, inner: f64| if (f - b).abs() <= near { f } else { inner };
+    let low = craft3d_math::Vec3::new(
+        side(low.x, from.x, low.x.max(from.x)),
+        side(low.y, from.y, low.y.max(from.y)),
+        side(low.z, from.z, low.z.max(from.z)),
+    );
+    let high = craft3d_math::Vec3::new(
+        side(high.x, to.x, high.x.min(to.x)),
+        side(high.y, to.y, high.y.min(to.y)),
+        side(high.z, to.z, high.z.min(to.z)),
+    );
+    if low.x <= high.x && low.y <= high.y && low.z <= high.z {
+        Bbox3::from_corners(low, high)
+    } else {
+        frame
+    }
+}
+
 /// F pressed without Ctrl, Alt, Shift or Cmd, by the key's own event:
 /// Ctrl+F and the like are other shortcuts, not Fit.
 fn plain_f(input: &egui::InputState) -> bool {
@@ -905,6 +938,9 @@ pub struct Shell {
     section_lost: Option<String>,
     /// The box the camera was last fitted to automatically.
     framed: Bbox3,
+    /// What the camera follows while it fits by itself: the opening
+    /// frame until Fit, then everything drawn.
+    following: views::Following,
     themed: bool,
     /// Whether the panels have the dark appearance now: the state's
     /// `appearance` resolved against the system's preference each frame.
@@ -989,9 +1025,9 @@ pub struct Shell {
     /// The tab that was last brought into view, by its place in the row.
     tab_scrolled: Option<usize>,
     /// The view of every open document but the one shown, by the
-    /// document's id, with the box its camera was last fitted to
-    /// (`views.rs`).
-    views: BTreeMap<u64, (TabView, Bbox3)>,
+    /// document's id, with the box its camera was last fitted to and
+    /// what it follows (`views.rs`).
+    views: BTreeMap<u64, (TabView, Bbox3, views::Following)>,
     /// The document whose view `state` holds.
     viewing: Option<u64>,
     /// A flight asked for, made in the viewport's next frame.
@@ -1438,6 +1474,7 @@ impl Shell {
             section_cache: None,
             section_lost: None,
             framed: Bbox3::EMPTY,
+            following: views::Following::Opening,
             themed: false,
             dark: false,
             system_theme: None,
@@ -2725,8 +2762,9 @@ impl Shell {
         // was sampled: the quick first picture turning into the display
         // scene moves no camera. A moment of a motion is not a new model
         // (an edit that changes its box is): the camera only ever backs
-        // away from it. Only what is drawn counts.
-        let frame = self.drawn_frame(&scene);
+        // away from it. Only what is drawn counts: the bodies alone as the
+        // document opened, everything drawn once Fit asked for it.
+        let frame = self.followed_frame(&scene);
         if self.state.camera.auto_fit {
             let reshaped = self.player.edited() && frame != self.player.shown_box;
             let to = if self.timeline.motion.is_some() && !reshaped {
@@ -2752,38 +2790,42 @@ impl Shell {
     /// not leave the model small in a corner (2026-11-10). Bodies hidden
     /// in the view are in neither. Where the two agree (to a billionth of
     /// the size) the scene's own value, on its grid. Without a body, the
-    /// scene's own.
+    /// scene's own. What Fit frames.
     pub fn drawn_frame(&self, scene: &Scene) -> Bbox3 {
-        let frame = scene.frame_box();
-        if self.state.show.sketches || scene.sketches.is_empty() {
-            return frame;
-        }
-        let (Some((low, high)), Some((from, to))) = (frame.corners(), scene.bodies_box.corners())
-        else {
-            return frame;
-        };
-        let near = frame.diagonal() * 1e-9;
-        let side = |f: f64, b: f64, inner: f64| if (f - b).abs() <= near { f } else { inner };
-        let low = craft3d_math::Vec3::new(
-            side(low.x, from.x, low.x.max(from.x)),
-            side(low.y, from.y, low.y.max(from.y)),
-            side(low.z, from.z, low.z.max(from.z)),
-        );
-        let high = craft3d_math::Vec3::new(
-            side(high.x, to.x, high.x.min(to.x)),
-            side(high.y, to.y, high.y.min(to.y)),
-            side(high.z, to.z, high.z.min(to.z)),
-        );
-        if low.x <= high.x && low.y <= high.y && low.z <= high.z {
-            Bbox3::from_corners(low, high)
+        if self.state.show.sketches {
+            scene.frame_box()
         } else {
-            frame
+            bodies_frame(scene)
+        }
+    }
+
+    /// The box a document opens framed on (2026-11-11): the bodies drawn
+    /// alone ([`Self::drawn_frame`] as if the sketches were not shown)
+    /// while a body is drawn, so that a sketch or a helix far from the
+    /// part (the sundial's rows of points, a tuned chime's layout) does
+    /// not leave it a speck; with no body drawn (none yet, every one
+    /// hidden), everything drawn. The camera keeps following this box as
+    /// the model changes, until Fit frames everything drawn.
+    pub fn opening_frame(&self, scene: &Scene) -> Bbox3 {
+        if scene.bodies_box.is_empty() {
+            self.drawn_frame(scene)
+        } else {
+            bodies_frame(scene)
+        }
+    }
+
+    /// The box the camera follows while it fits the model by itself:
+    /// the opening frame until Fit, everything drawn after it.
+    fn followed_frame(&self, scene: &Scene) -> Bbox3 {
+        match self.following {
+            views::Following::Opening => self.opening_frame(scene),
+            views::Following::Drawn => self.drawn_frame(scene),
         }
     }
 
     /// Frames everything drawn ([`Self::drawn_frame`]), and keeps
-    /// following the model from now on. Returns false when there is
-    /// nothing to frame.
+    /// following it from now on. Returns false when there is nothing to
+    /// frame.
     pub fn fit(&mut self, session: &mut Session) -> bool {
         let Some(scene) = self.sync(session) else {
             return false;
@@ -2796,6 +2838,7 @@ impl Shell {
         self.state.camera.fit(&frame, aspect);
         self.state.camera.auto_fit = true;
         self.framed = frame;
+        self.following = views::Following::Drawn;
         true
     }
 
@@ -4504,7 +4547,7 @@ impl Shell {
                 && let Some(scene) = scene
             {
                 if self.framed.is_empty() {
-                    self.framed = self.drawn_frame(scene);
+                    self.framed = self.followed_frame(scene);
                 }
                 let aspect = self.aspect();
                 self.state.camera.fit(&self.framed, aspect);
@@ -4830,7 +4873,7 @@ impl Shell {
         if camera == turn.to {
             self.turn = None;
             if let Some(scene) = scene.filter(|_| turn.to.auto_fit) {
-                self.framed = self.drawn_frame(scene);
+                self.framed = self.followed_frame(scene);
             }
             return false;
         }
@@ -4861,6 +4904,7 @@ impl Shell {
             self.framed = self.drawn_frame(scene);
             self.state.camera.fit(&self.framed, aspect);
             self.state.camera.auto_fit = true;
+            self.following = views::Following::Drawn;
         }
     }
 

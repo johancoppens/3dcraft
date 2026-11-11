@@ -679,6 +679,7 @@ impl Shell {
             if let Some(scene) = scene.filter(|scene| !scene.frame_box().is_empty()) {
                 to.fit(&self.drawn_frame(scene), self.aspect());
                 to.auto_fit = true;
+                self.following = super::views::Following::Drawn;
             }
             self.turn = Some(Turn {
                 from: self.state.camera,

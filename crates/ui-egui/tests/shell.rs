@@ -252,10 +252,12 @@ fn a_few_frames_show_the_tree_and_render_the_viewport_once() {
     window.idle(&mut shell, &mut session, 3);
     assert_eq!(shell.render_count(), rendered + 1);
 
-    // The camera framed the model by itself: every corner of the scene's
-    // box is inside the viewport.
+    // The camera framed the model by itself: every corner of the box
+    // around the bodies is inside the viewport (the opening frame, which
+    // the camera follows until Fit, holds the bodies drawn and not the
+    // sketch above them, 2026-11-11).
     let scene = session.scene_with(shell.scene_quality()).unwrap().unwrap();
-    let (lo, hi) = scene.bbox.corners().unwrap();
+    let (lo, hi) = scene.bodies_box.corners().unwrap();
     let projector =
         Projector::new(&shell.state.camera.to_render(), f64::from(w), f64::from(h)).unwrap();
     for x in [lo.x, hi.x] {
@@ -592,10 +594,12 @@ fn resizing_the_window_draws_coarse_frames_and_then_a_sharp_one() {
     assert_eq!(shell.render_count(), rendered);
     // The model was framed again for the new shape of the viewport: it is
     // tall and narrow now, so the width decides and the camera is further.
+    // Framed as it opened, on the bodies drawn: the sketch 2 mm above the
+    // post is not in the opening frame (2026-11-11).
     assert!(shell.state.camera.distance > framed.distance * 1.2);
     let mut by_hand = framed;
     let scene = session.scene_with(shell.scene_quality()).unwrap().unwrap();
-    by_hand.fit(&scene.bbox, f64::from(w2) / f64::from(h2));
+    by_hand.fit(&scene.bodies_box, f64::from(w2) / f64::from(h2));
     assert_eq!(shell.state.camera, by_hand);
 }
 

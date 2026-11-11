@@ -6,8 +6,11 @@
 //!   active one's is in `Shell::state`, the others are kept aside by the
 //!   document's id (`DocumentStatus::id`), and switching tabs (a click,
 //!   `file.activate`, closing one) swaps them before anything else reads
-//!   the state. A document opened or created starts framed, iso,
-//!   perspective.
+//!   the state. A document opened or created starts framed on its
+//!   bodies (everything drawn when it has no body drawn;
+//!   `Shell::opening_frame`), iso, perspective, and the camera follows
+//!   that frame as the model changes until Fit frames everything drawn
+//!   ([`Following`]).
 //! - A double click on a row of the feature list, or F with something
 //!   selected, flies the camera in [`FLY_SECONDS`] (eased) to frame what
 //!   the feature made or what is selected (2026-10-23, the developer's
@@ -32,6 +35,19 @@ use std::collections::BTreeSet;
 
 /// How long a flight to a feature or to the selection takes, in seconds.
 pub const FLY_SECONDS: f64 = 0.3;
+
+/// The box the camera follows while it fits the model by itself
+/// (`camera.auto_fit`), kept with each tab's view (2026-11-11).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Following {
+    /// As the document opened ([`Shell::opening_frame`]): the bodies
+    /// drawn, or everything drawn when no body is.
+    #[default]
+    Opening,
+    /// As Fit framed it ([`Shell::drawn_frame`]): everything drawn, the
+    /// sketches with the bodies while they are shown.
+    Drawn,
+}
 
 /// What a flight frames.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,25 +81,32 @@ impl Shell {
             if turn.to.auto_fit
                 && let Some(scene) = &self.shown_scene
             {
-                self.framed = self.drawn_frame(scene);
+                self.framed = self.followed_frame(scene);
             }
         }
         if let Some(before) = self.viewing.filter(|id| open.contains(id)) {
-            self.views
-                .insert(before, (TabView::of(&self.state), self.framed));
+            self.views.insert(
+                before,
+                (TabView::of(&self.state), self.framed, self.following),
+            );
         }
         self.views.retain(|id, _| open.contains(id));
         match now.and_then(|id| self.views.remove(&id)) {
-            Some((view, framed)) => {
+            Some((view, framed, following)) => {
                 view.put(&mut self.state);
                 self.framed = framed;
+                self.following = following;
             }
             // From no document at all, what was set meanwhile (`ui.set`
             // before `file.open`) is the new document's.
-            None if self.viewing.is_none() => self.framed = Bbox3::EMPTY,
+            None if self.viewing.is_none() => {
+                self.framed = Bbox3::EMPTY;
+                self.following = Following::Opening;
+            }
             None => {
                 TabView::default().put(&mut self.state);
                 self.framed = Bbox3::EMPTY;
+                self.following = Following::Opening;
             }
         }
         self.viewing = now;

@@ -1601,3 +1601,25 @@ shown until they are switched off). Tests: `state::tests::a_fresh_window_hides_t
 `prefs::tests::a_stored_datums_switch_wins_and_a_missing_one_is_hidden` (`apps/craft3d-web`),
 `tests/frame_box.rs` › `the_opening_frame_and_fit_leave_out_the_datums`; the tests about drawing datums switch
 them on themselves.
+
+*Found next*, on the same Jigs retaken with datums hidden: the planes were gone, but the sundial still opened with
+its dial a speck and the Dobsonian telescope small, the tuned chimes and the astrolabe likewise: their sketches
+hold points far from the bodies (the sundial's rows of hour points, one a long way off), and the opening frame
+counted the sketches shown. *Decided* (the developer): while a document has a body drawn it opens framed on the
+bodies drawn alone; only without one (no body yet, every one hidden by its eye) on everything drawn, as before;
+Fit is not changed. `Shell::opening_frame` is `Shell::drawn_frame` as if the sketches were hidden (the scene's
+frame cut down to `Scene::bodies_box`: the bodies the scene draws, not hidden by the eye, each by its B-rep box,
+a sheet by its faces; a feature switched off or suppressed, a step after the roll-back marker and a body used up
+by a later feature have none, and a body without vertices adds nothing) whenever `bodies_box` is not empty. The
+camera follows the box it was framed on while `camera.autoFit` is on, so what it follows is kept with each tab's
+view (`views::Following`): `Opening` for a document opened or created (every way it comes: File › Open, the
+start screen, `?open=`, the command line, `file.open` by an agent, all through `Shell::follow_active_tab`), and
+the following frame of the first sync, of a resize and of a turn's end is the opening frame; Fit, Iso, F with
+nothing selected, `ui.fit` without `feature` and a click on the view cube frame everything drawn as before and
+switch it to `Drawn`, which it follows from then on. A flight is unchanged. An assembly has no sketches in its
+scene, so its opening frame is its placed bodies, as before. Tests: `tests/frame_box.rs` ›
+`a_document_with_a_body_opens_on_its_bodies_and_fit_frames_everything_drawn` (a 10 mm block and a sketch point
+2 m away open as the block alone, the camera follows a second block and not the point, Fit frames the point too
+and follows everything drawn, a new document opens on its bodies again) and
+`without_a_body_drawn_a_document_opens_on_what_is_drawn` (a sketch alone; the block hidden by its eye, then
+shown).
