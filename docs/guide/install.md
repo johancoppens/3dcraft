@@ -148,7 +148,10 @@ craft3d-cli run --new '{"units":"mm"}' \
 craft3d-cli render box.3dcraft --out box.png
 ```
 
-This makes a 40 × 20 × 10 mm block, saves it as `box.3dcraft` and draws it into `box.png`.
+This makes a 40 × 20 × 10 mm block, saves it as `box.3dcraft` and draws it into `box.png`. The `run` and
+`render` lines print their answers as lines of JSON, such as `{"id":"F1","name":"Block1","status":"ok"}`:
+that is not an error. A number such as `-5.684341886080801e-13` in them is −0.00000000000057, zero but for
+the computer's rounding.
 
 > **The window needs a graphics adapter**: a graphics card, or a software one such as Mesa's lavapipe on
 > Linux. Without one it says so when it starts. Everything in `craft3d-cli` runs on any computer.
@@ -165,9 +168,10 @@ With the steps below, **the agent models in the window you are watching**. That 
 
 1. **Allow AI agents.** Click the **agent pill** at the right end of the status bar. It says **Agents
    off**. The panel *Connect an AI agent* opens; turn on its switch, **Allow AI agents**. (The start
-   screen shows the same panel, and **Help › Connect an AI agent…** opens it too.) 3DCraft remembers your
-   choice for the next start. The pill now says **Waiting for an agent**. (**How it works**, in the panel,
-   opens this section of the guide.)
+   screen shows the same panel at its foot, where a small window has to scroll down to it, and
+   **Help › Connect an AI agent…** opens it too.) 3DCraft remembers your choice for the next start. The
+   pill now says **Waiting for an agent**. (**How it works**, in the panel, opens this section of the
+   guide.)
 2. **Add 3DCraft to your AI tool, once.** With the switch on, the panel shows what to copy, under
    **Connect**:
    - For **Claude Code**, click **Copy command** and paste the line into a terminal:
@@ -265,6 +269,9 @@ can let it read and write files there, besides the work folder"*, with the folde
   is allowed for every agent from now on, and the panel lists it.
 - **Only the work folder** keeps that folder out: the agent stays connected with the work folder only.
 - **Refuse** disconnects that agent, and 3DCraft refuses it until you close 3DCraft.
+
+If you do not answer, the agent works with the work folder only. The question stays on screen for up to
+ten minutes, also when the agent that asked has gone away meanwhile, and then goes by itself.
 
 After that, "make a new document with a 10 mm cube and save it in our folder" works.
 
