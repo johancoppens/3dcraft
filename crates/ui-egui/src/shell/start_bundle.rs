@@ -7,7 +7,7 @@
         "steel-bookend.3dcraft",
         "Steel bookend",
         "sheet metal, one bend, flat pattern",
-        0.06,
+        0.07,
         true
     ),
     bundled!(
@@ -25,7 +25,7 @@
         "moka-pot.3dcraft",
         "Moka pot",
         "sand-cored castings, capacities from physics",
-        2.02,
+        2.0,
         false
     ),
     bundled!(
@@ -34,7 +34,7 @@
         "ship-propeller.3dcraft",
         "Ship propeller",
         "series tables, lofted blades, pattern",
-        2.91,
+        2.9,
         false
     ),
     bundled!(
@@ -43,7 +43,7 @@
         "snap-fit-enclosure.3dcraft",
         "Snap-fit enclosure",
         "shell, draft, U-latches, straight-pull tools",
-        0.97,
+        0.99,
         false
     ),
     bundled!(
@@ -52,7 +52,7 @@
         "hydraulic-cylinder.3dcraft",
         "Hydraulic cylinder",
         "several bodies, cutaway, moving rod",
-        0.48,
+        0.47,
         false
     ),
     bundled!(
@@ -61,7 +61,7 @@
         "spiral-staircase.3dcraft",
         "Spiral staircase",
         "helix sweep, screw pattern, stair rule",
-        1.57,
+        1.58,
         false
     ),
     bundled!(
@@ -70,7 +70,7 @@
         "solitaire-ring.3dcraft",
         "Solitaire ring",
         "57 facets, prong basket, ring sizes",
-        1.21,
+        1.24,
         false
     ),
     bundled!(
@@ -79,7 +79,7 @@
         "flat-pack-bookcase.3dcraft",
         "Flat-pack bookcase",
         "CNC plywood, tusk tenons, cut list",
-        0.44,
+        0.35,
         false
     ),
     bundled!(
@@ -88,7 +88,7 @@
         "mailer-box.3dcraft",
         "Mailer box",
         "die-cut blank, staged fold, crease DXF",
-        0.04,
+        0.05,
         false
     ),
     bundled!(
@@ -97,7 +97,7 @@
         "laser-box.3dcraftjig",
         "Laser-cut box",
         "finger joints, compartments, kerf in the cut sheet",
-        0.2,
+        0.1,
         false
     ),
     bundled!(
@@ -106,7 +106,7 @@
         "gridfinity-bin.3dcraftjig",
         "Gridfinity bin",
         "your compartments, printed to seat and stack",
-        0.44,
+        0.41,
         false
     ),
     bundled!(
@@ -124,7 +124,7 @@
         "sheet-metal-enclosure.3dcraftjig",
         "Sheet-metal enclosure",
         "from the board's size to a chassis and cover, flat patterns and bend order",
-        0.44,
+        0.45,
         false
     ),
     bundled!(
@@ -133,7 +133,7 @@
         "planetary-gearbox.3dcraftjig",
         "Planetary gearbox",
         "ratio and size in, gears that mesh",
-        0.64,
+        0.54,
         false
     ),
     bundled!(
@@ -142,7 +142,7 @@
         "sundial.3dcraftjig",
         "Sundial for your place",
         "your place, your wall: brass on slate",
-        0.97,
+        1.29,
         false
     ),
     bundled!(
@@ -151,7 +151,7 @@
         "toggle-clamp.3dcraftasm",
         "Horizontal toggle clamp",
         "four-bar toggle, over-centre stop, closed loop",
-        0.19,
+        0.14,
         false
     ),
     bundled!(
@@ -160,7 +160,7 @@
         "jansen-walker.3dcraftasm",
         "Jansen linkage walker",
         "twelve legs, one keyed crankshaft, many closed loops",
-        1.06,
+        1.02,
         false
     ),
     bundled!(
@@ -169,7 +169,7 @@
         "scissor-jack.3dcraftasm",
         "Scissor car jack",
         "screw, gear teeth, closed loop",
-        0.33,
+        0.31,
         false
     ),
     bundled!(
@@ -178,7 +178,7 @@
         "radial-engine.3dcraftasm",
         "Seven-cylinder radial engine with its valve train",
         "cam ring at 1/6, seven closed loops, valve gear",
-        2.52,
+        2.85,
         false
     ),
 ]
