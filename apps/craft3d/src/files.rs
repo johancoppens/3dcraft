@@ -1514,6 +1514,11 @@ mod tests {
             host.shell.state.timeline.motion,
             "an assembly on its motion"
         );
+        assert_eq!(
+            host.shell.state.panels.side_tab,
+            craft3d_ui_egui::SideTab::Assembly,
+            "on the tab that carries its player"
+        );
         let status = host.session.document_status().unwrap();
         assert!(status.assembly && !status.dirty);
         act(&mut host, &mut dialogs, FileAction::SaveAs);

@@ -821,3 +821,103 @@ fn an_opened_example_is_named_on_its_tab_and_asks_nothing_until_changed() {
     assert!(status.assembly && !status.dirty && !status.close_asks);
     assert_eq!(status.title.as_deref(), Some(clamp.title));
 }
+
+/// Only an assembly from the start screen opens on the Assembly tab with
+/// its player on its motion (`bundled_examples.rs` opens all four): a
+/// part and a Jig open on their parameters, as before; an open that
+/// failed changes neither the tab nor the player; and an assembly opened
+/// from its file opens as it always did, on its parameters, also right
+/// after one from the start screen.
+#[test]
+fn only_an_assembly_from_the_start_screen_opens_on_its_player() {
+    use craft3d_ui_egui::shell::run_example;
+    let dir = workdir("assembly-tab");
+    let bytes = include_bytes!("../../../docs/examples/published/toggle-clamp.3dcraftasm");
+    for name in ["clamp.3dcraftasm", "clamp-again.3dcraftasm"] {
+        std::fs::write(dir.join(name), bytes).unwrap();
+    }
+    let mut session = rooted(&dir);
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    window.frame(&mut shell, &mut session, Vec::new());
+    // The tab shown and whether the player is on the motion, after two
+    // frames.
+    let shown = |shell: &mut Shell, session: &mut Session, window: &mut Window| {
+        window.frame(shell, session, Vec::new());
+        window.frame(shell, session, Vec::new());
+        let got = call(shell, session, "ui.get", json!({}));
+        (
+            got["state"]["panels"]["sideTab"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+            got["state"]["timeline"]["motion"].as_bool().unwrap(),
+        )
+    };
+    let open = |shell: &mut Shell, session: &mut Session, id: &str| {
+        let example = EXAMPLES.iter().find(|e| e.id == id).unwrap();
+        shell.choose_example(example);
+        let taken = shell.take_example().unwrap();
+        let opened = run_example(session, taken);
+        assert!(opened.is_ok(), "{id}: {opened:?}");
+        shell.example_opened(&opened);
+    };
+    // A part and a Jig, each with public parameters: on them, as before.
+    for id in ["steel-bookend", "laser-box"] {
+        open(&mut shell, &mut session, id);
+        assert_eq!(
+            shown(&mut shell, &mut session, &mut window),
+            ("parameters".to_string(), false),
+            "{id}"
+        );
+    }
+    // An open that failed: the tab and the player as they were.
+    shell.example_opened(&Err("example toggle-clamp: no room".to_string()));
+    assert_eq!(
+        shown(&mut shell, &mut session, &mut window),
+        ("parameters".to_string(), false)
+    );
+    // The clamp from its file: on its parameters, as before.
+    run(
+        &mut session,
+        "file.open",
+        json!({"path": "clamp.3dcraftasm"}),
+    );
+    assert!(session.document_status().unwrap().assembly);
+    assert_eq!(
+        shown(&mut shell, &mut session, &mut window),
+        ("parameters".to_string(), false)
+    );
+    // From the start screen: on its player.
+    open(&mut shell, &mut session, "toggle-clamp");
+    assert_eq!(
+        shown(&mut shell, &mut session, &mut window),
+        ("assembly".to_string(), true)
+    );
+    // From its file right after: on its parameters, as before (the motion
+    // chosen is kept, as the player keeps it between documents).
+    run(
+        &mut session,
+        "file.open",
+        json!({"path": "clamp-again.3dcraftasm"}),
+    );
+    assert_eq!(
+        shown(&mut shell, &mut session, &mut window),
+        ("parameters".to_string(), true)
+    );
+    // The clamp from the start screen keeps its tab when shown again.
+    let example = session
+        .document_statuses()
+        .into_iter()
+        .find(|s| s.assembly && s.path.is_none())
+        .unwrap();
+    run(
+        &mut session,
+        "file.activate",
+        json!({"document": example.index}),
+    );
+    assert_eq!(
+        shown(&mut shell, &mut session, &mut window).0,
+        "assembly".to_string()
+    );
+}

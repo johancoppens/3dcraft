@@ -3397,6 +3397,12 @@ mod tests {
                 "{}: an assembly opens on its motion",
                 example.id
             );
+            assert_eq!(
+                host.shell.state.panels.side_tab == craft3d_ui_egui::SideTab::Assembly,
+                example.section == ExampleSection::Assemblies,
+                "{}: an assembly opens on the tab that carries its player",
+                example.id
+            );
             // Export as Jig proposes its title too.
             let _ = host.file_action(FileAction::ExportJig);
             assert_eq!(

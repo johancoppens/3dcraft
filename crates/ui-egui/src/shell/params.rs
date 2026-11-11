@@ -658,6 +658,10 @@ pub struct ParamForm {
     read_for: Option<(u64, u64)>,
     /// The tab each document was last shown on (true: Parameters).
     tab_of: BTreeMap<u64, bool>,
+    /// An assembly from the start screen was just opened: the next sync
+    /// remembers it as shown on its Assembly tab, not on its parameters
+    /// (`Shell::example_opened`). Taken by that sync, whatever it finds.
+    pub(super) opens_on_player: bool,
     /// The document the form shows.
     doc: Option<u64>,
     live: Option<Live>,
@@ -1046,6 +1050,7 @@ impl Shell {
     pub(super) fn sync_params(&mut self, session: &mut Session) {
         let doc = session.document_status().map(|s| s.id);
         let form = &mut self.params;
+        let on_player = std::mem::take(&mut form.opens_on_player);
         if doc != form.doc {
             if let Some(old) = form.doc {
                 form.tab_of.insert(old, self.state.parameters.open);
@@ -1090,8 +1095,9 @@ impl Shell {
                 .map(|v| ParamList::parse(&v))
                 .unwrap_or_default();
             if form.list.is_none() && !form.tab_of.contains_key(&doc) {
-                // A Jig opens on its parameters.
-                form.tab_of.insert(doc, list.jig);
+                // A Jig opens on its parameters; an assembly from the
+                // start screen on its player.
+                form.tab_of.insert(doc, list.jig && !on_player);
             }
             if form.read_for.is_none_or(|(d, _)| d != doc) {
                 self.state.parameters.open = form.tab_of.get(&doc).copied().unwrap_or(list.jig);

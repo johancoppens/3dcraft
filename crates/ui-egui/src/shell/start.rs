@@ -713,9 +713,11 @@ impl Shell {
 
     /// What came of opening the example the host took
     /// ([`Self::take_example`], [`run_example`]), before it syncs: an
-    /// assembly opens ready to play, the player on its motion. Set only
-    /// once it is open, so an open that failed leaves the player of the
-    /// document still shown as it was.
+    /// assembly opens ready to play, the player on its motion, on the
+    /// Assembly tab that carries the player rather than on the Parameters
+    /// tab its public parameters would open it on (`sync_params`, which
+    /// takes the request with the next sync). Set only once it is open,
+    /// so an open that failed leaves the document still shown as it was.
     pub fn example_opened(&mut self, outcome: &Result<Value, String>) {
         let assembly = outcome.as_ref().is_ok_and(|result| {
             result
@@ -726,6 +728,8 @@ impl Shell {
         });
         if assembly {
             self.state.timeline.motion = true;
+            self.state.panels.side_tab = crate::state::SideTab::Assembly;
+            self.params.opens_on_player = true;
         }
     }
 
@@ -1464,11 +1468,21 @@ mod tests {
         assert!(outcome.is_err());
         shell.example_opened(&outcome);
         assert!(!shell.state.timeline.motion, "the part's player as it was");
+        assert_eq!(shell.state.panels.side_tab, crate::state::SideTab::Features);
+        assert!(!shell.params.opens_on_player);
         // The document that was shown is still the one, alone.
         assert_eq!(session.document_statuses().len(), 1);
-        // An assembly that opens: its player on its motion.
+        // A part that opens: as it was.
+        shell.example_opened(&Ok(json!({"example": "x", "opened": {"features": 1}})));
+        assert!(!shell.state.timeline.motion);
+        assert_eq!(shell.state.panels.side_tab, crate::state::SideTab::Features);
+        assert!(!shell.params.opens_on_player);
+        // An assembly that opens: its player on its motion, on the tab
+        // that carries it.
         shell.example_opened(&Ok(json!({"example": "x", "opened": {"assembly": true}})));
         assert!(shell.state.timeline.motion);
+        assert_eq!(shell.state.panels.side_tab, crate::state::SideTab::Assembly);
+        assert!(shell.params.opens_on_player);
     }
 
     #[test]

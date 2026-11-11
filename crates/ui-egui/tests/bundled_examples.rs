@@ -10,7 +10,8 @@
 //! at, it is clean and named by its title (`Session::open_bytes_titled`).
 //! Save asks where, so the bytes built into the program are never
 //! written. How long
-//! each takes to open and show is printed (`--nocapture`).
+//! each takes to open and show is printed (`--nocapture`). An assembly
+//! opened from the start screen shows its player, on its motion.
 
 #![allow(
     clippy::unwrap_used,
@@ -20,7 +21,9 @@
 )]
 
 use craft3d_engine::{Session, Workspace};
+use craft3d_ui_egui::Shell;
 use craft3d_ui_egui::shell::{EXAMPLES, ExampleSection, run_example};
+use egui::{Pos2, vec2};
 use serde_json::{Value, json};
 use std::time::Instant;
 
@@ -192,5 +195,71 @@ fn every_bundled_file_opens_regenerates_and_is_what_its_repository_recorded() {
     }
     for (id, shown, all) in &timings {
         println!("bundled {id}: shown after {shown:.2} s, assertions after {all:.2} s");
+    }
+}
+
+/// A frame of the window at `time`, 1280 × 800; the texts it drew.
+fn frame(ctx: &egui::Context, shell: &mut Shell, session: &mut Session, time: f64) -> Vec<String> {
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))),
+        time: Some(time),
+        ..Default::default()
+    };
+    let mut output = ctx.run_ui(input, |ui| shell.ui(ui, session));
+    output.textures_delta.clear();
+    output
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The start screen promises that an assembly "opens with its player:
+/// press play and it moves". Each of the four, opened as a click on its
+/// card opens it (chosen, taken by the host, built, then
+/// `Shell::example_opened`), opens on the Assembly tab, where the player
+/// is, on its motion, although each has public parameters, on which a
+/// document opens otherwise (before 2026-11-11 it did here too, the player
+/// one click away).
+#[test]
+fn every_bundled_assembly_opens_on_its_player_from_the_start_screen() {
+    let assemblies: Vec<_> = EXAMPLES
+        .iter()
+        .filter(|e| e.section == ExampleSection::Assemblies)
+        .collect();
+    assert_eq!(assemblies.len(), 4);
+    for example in assemblies {
+        let id = example.id;
+        let mut session = Session::new(Workspace::memory());
+        let mut shell = Shell::new();
+        let ctx = egui::Context::default();
+        let mut time = 0.0;
+        frame(&ctx, &mut shell, &mut session, time);
+        shell.show_section(ExampleSection::Assemblies);
+        shell.choose_example(example);
+        let taken = shell.take_example().unwrap();
+        let opened = run_example(&mut session, taken);
+        assert!(opened.is_ok(), "{id}: {opened:?}");
+        shell.example_opened(&opened);
+        for _ in 0..3 {
+            time += 1.0 / 60.0;
+            frame(&ctx, &mut shell, &mut session, time);
+        }
+        let got = shell
+            .handle_method(&mut session, "ui.get", Some(&json!({})))
+            .unwrap()
+            .unwrap();
+        assert_eq!(got["state"]["panels"]["sideTab"], "assembly", "{id}");
+        assert_eq!(got["state"]["timeline"]["motion"], true, "{id}");
+        assert_eq!(got["timeline"]["playsMotion"], true, "{id}");
+        assert_eq!(got["parameters"]["jig"], true, "{id}: public parameters");
+        assert_eq!(got["parameters"]["tab"], "features", "{id}");
+        assert!(
+            shell.player_hits().iter().any(|(name, _)| *name == "play"),
+            "{id}: the player is drawn"
+        );
     }
 }
