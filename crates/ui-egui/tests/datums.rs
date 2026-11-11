@@ -369,8 +369,9 @@ fn viewport_backend() -> craft3d_ui_egui::backend::Backend {
     craft3d_ui_egui::backend::Backend::Cpu
 }
 
-/// `ui.set {"show": {"datums": false}}` hides them, and `ui.get` says so;
-/// a screenshot changes with it.
+/// The datums are hidden by default (2026-11-11); `ui.set {"show":
+/// {"datums": true}}` shows them and `{"datums": false}` hides them again,
+/// and `ui.get` says so; a screenshot changes with it.
 #[test]
 fn ui_set_hides_and_shows_the_datums() {
     let mut session = with_datums();
@@ -378,7 +379,7 @@ fn ui_set_hides_and_shows_the_datums() {
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     assert_eq!(
         got["state"]["show"],
-        json!({"datums": true, "sketches": true, "edges": true, "mates": true})
+        json!({"datums": false, "sketches": true, "edges": true, "mates": true})
     );
     let shot = |shell: &mut Shell, session: &mut Session| {
         call(
@@ -390,7 +391,20 @@ fn ui_set_hides_and_shows_the_datums() {
             .as_f64()
             .unwrap()
     };
+    let at_first = shot(&mut shell, &mut session);
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"show": {"datums": true}}),
+    );
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(
+        got["state"]["show"],
+        json!({"datums": true, "sketches": true, "edges": true, "mates": true})
+    );
     let shown = shot(&mut shell, &mut session);
+    assert!(shown > at_first, "{shown} against {at_first}");
     call(
         &mut shell,
         &mut session,
@@ -404,6 +418,7 @@ fn ui_set_hides_and_shows_the_datums() {
     );
     let hidden = shot(&mut shell, &mut session);
     assert!(shown > hidden, "{shown} against {hidden}");
+    assert_eq!(hidden, at_first, "hidden again is as at first");
     let error = shell
         .handle_method(
             &mut session,

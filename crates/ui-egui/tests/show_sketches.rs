@@ -12,7 +12,7 @@
 )]
 
 use craft3d_engine::{Scene, SceneQuality, Session, Workspace};
-use craft3d_ui_egui::state::CameraState;
+use craft3d_ui_egui::state::{CameraState, Show};
 use craft3d_ui_egui::viewport::{self, LineKind, Marks};
 use craft3d_ui_egui::{Shell, Tokens};
 use egui::{Event, PointerButton, Pos2, vec2};
@@ -76,7 +76,7 @@ fn ui_set_hides_and_shows_the_sketches_and_shown_is_the_picture_of_before() {
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     assert_eq!(
         got["state"]["show"],
-        json!({"datums": true, "sketches": true, "edges": true, "mates": true})
+        json!({"datums": false, "sketches": true, "edges": true, "mates": true})
     );
     let before = screenshot(&mut shell, &mut session);
     call(
@@ -88,7 +88,7 @@ fn ui_set_hides_and_shows_the_sketches_and_shown_is_the_picture_of_before() {
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     assert_eq!(
         got["state"]["show"],
-        json!({"datums": true, "sketches": false, "edges": true, "mates": true})
+        json!({"datums": false, "sketches": false, "edges": true, "mates": true})
     );
     let hidden = screenshot(&mut shell, &mut session);
     let coverage = |shot: &Value| shot["overlayCoverage"].as_f64().unwrap();
@@ -192,6 +192,7 @@ fn the_sketches_toggle_in_the_window_flips_the_state() {
         output.textures_delta.clear();
     };
     frame(&mut shell, &mut session, Vec::new());
+    let before = shell.state.show;
     let names: Vec<&str> = shell.show_hits().iter().map(|(name, _)| *name).collect();
     assert_eq!(names, ["sketches", "datums", "edges"]);
     let at = shell.show_hits()[0].1.center();
@@ -210,7 +211,14 @@ fn the_sketches_toggle_in_the_window_flips_the_state() {
         frame(&mut shell, &mut session, events);
     }
     assert!(!shell.state.show.sketches);
-    assert!(shell.state.show.datums, "only the sketches");
+    assert_eq!(
+        shell.state.show,
+        Show {
+            sketches: false,
+            ..before
+        },
+        "only the sketches"
+    );
     // The toggle is over the viewport: the click picked nothing.
     assert!(shell.state.picked.is_none());
 }

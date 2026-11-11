@@ -600,7 +600,10 @@ pub struct AgentRoot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 pub struct Show {
-    /// Datum planes, axes and points (shown by default).
+    /// Datum planes, axes and points (hidden by default since 2026-11-11:
+    /// a plane is drawn as large as the model, over it, so documents with
+    /// planes opened on their planes; a flight to a datum shows them,
+    /// `shell/views.rs`).
     pub datums: bool,
     /// The sketches: their lines and points (shown by default).
     pub sketches: bool,
@@ -616,7 +619,7 @@ pub struct Show {
 impl Default for Show {
     fn default() -> Self {
         Self {
-            datums: true,
+            datums: false,
             sketches: true,
             edges: true,
             mates: true,
@@ -986,9 +989,9 @@ pub struct UiState {
     /// `ui.pick` with `select` makes one.
     pub picked: Option<Picked>,
     /// What the viewport draws besides the bodies' faces:
-    /// `ui.set {"show": {"datums": false}}` hides the datums,
-    /// `{"show": {"sketches": false}}` the sketches, `{"show": {"edges":
-    /// false}}` the bodies' edges.
+    /// `ui.set {"show": {"datums": true}}` shows the datums (hidden by
+    /// default), `{"show": {"sketches": false}}` hides the sketches,
+    /// `{"show": {"edges": false}}` the bodies' edges.
     pub show: Show,
     /// The Help menu's windows that are open.
     pub dialogs: Dialogs,
@@ -1960,7 +1963,7 @@ mod tests {
                 &json!({"camera": {"yaw": 10, "distance": 5, "projection": "orthographic"},
                                  "section": {"on": true}, "transparency": 0.4,
                                  "selectedFeature": "F2", "notice": "keep",
-                                 "panels": {"tree": false}, "show": {"datums": false},
+                                 "panels": {"tree": false}, "show": {"datums": true},
                                  "quality": {"chordal": 1e-4},
                                  "highlight": {"face": "F1:face(0)"}}),
             )
@@ -2034,6 +2037,40 @@ mod tests {
         let before = state.clone();
         state.apply_patch(&json!({})).unwrap();
         assert_eq!(state, before);
+    }
+
+    /// A fresh window hides the datums and shows the sketches, the edges
+    /// and the mate markers (decided 2026-11-11: several published Jigs
+    /// opened on their datum planes, drawn as large as the model, over
+    /// it). What is read keeps a `datums` it is given, either way, and a
+    /// `show` without one takes the default.
+    #[test]
+    fn a_fresh_window_hides_the_datums_and_shows_the_sketches() {
+        let fresh = UiState::default().show;
+        assert!(!fresh.datums);
+        assert!(fresh.sketches && fresh.edges && fresh.mates);
+        assert_eq!(serde_json::from_str::<UiState>("{}").unwrap().show, fresh);
+        let read = |text: &str| serde_json::from_str::<Show>(text).unwrap();
+        assert!(read(r#"{"datums": true, "sketches": true, "edges": true, "mates": true}"#).datums);
+        assert!(!read(r#"{"datums": false}"#).datums);
+        let without = read(r#"{"sketches": false, "edges": true, "mates": true}"#);
+        assert!(!without.datums && !without.sketches);
+        // `ui.set` switches them on and off again, and leaves the rest.
+        let mut state = UiState::default();
+        state
+            .apply_patch(&json!({"show": {"datums": true}}))
+            .unwrap();
+        assert_eq!(
+            state.show,
+            Show {
+                datums: true,
+                ..fresh
+            }
+        );
+        state
+            .apply_patch(&json!({"show": {"datums": false}}))
+            .unwrap();
+        assert_eq!(state.show, fresh);
     }
 
     #[test]

@@ -135,4 +135,37 @@ mod tests {
         let mixed = Prefs::from_json("{\"panels\": 3, \"exportExtension\": \"OBJ\"}", defaults());
         assert_eq!(mixed.export_extension.as_deref(), Some("obj"));
     }
+
+    /// Datums are hidden by default (2026-11-11); a stored switch wins
+    /// either way, and stored preferences without it (none at all, no
+    /// `show`, or a `show` without `datums`) take the default.
+    #[test]
+    fn a_stored_datums_switch_wins_and_a_missing_one_is_hidden() {
+        assert!(!defaults().show.datums);
+        assert!(defaults().show.sketches);
+        let shown = |text: &str| {
+            let mut state = UiState::default();
+            Prefs::from_json(text, defaults()).apply(&mut state);
+            state.show
+        };
+        // Written by an earlier build, which stored the whole of `show`.
+        let stored = shown(
+            "{\"show\": {\"datums\": true, \"sketches\": true, \"edges\": true, \"mates\": true}}",
+        );
+        assert!(stored.datums && stored.sketches);
+        assert!(!shown("{\"show\": {\"datums\": false, \"sketches\": true}}").datums);
+        for missing in [
+            "{}",
+            "{\"panels\": {\"tree\": false}}",
+            "{\"show\": {\"sketches\": false}}",
+        ] {
+            assert!(!shown(missing).datums, "{missing}");
+        }
+        assert!(!shown("{\"show\": {\"sketches\": false}}").sketches);
+        // Switched on, it is written and read back on.
+        let mut state = UiState::default();
+        state.show.datums = true;
+        let text = Prefs::of(&state, None).to_json();
+        assert!(shown(&text).datums);
+    }
 }

@@ -306,3 +306,95 @@ fn fit_frames_what_is_drawn() {
     centred(&shell, &frame, "every body hidden");
     assert!((at(&shell).z + 1400.0).abs() < 1e-6, "{:?}", at(&shell));
 }
+
+/// Datums are hidden in a fresh window (decided 2026-11-11: published
+/// Jigs opened on their datum planes, drawn as large as the model, over
+/// it), and the frame never counts them: a document with a small block, a
+/// datum plane far above it and a datum point far beside it opens framed
+/// on the block, the camera the one of the block alone; with Datums
+/// switched on, Fit frames the block alone still. Flying to the plane
+/// (`ui.fit` with its name, what a double click on its row does) shows
+/// the datums and frames the plane.
+#[test]
+fn the_opening_frame_and_fit_leave_out_the_datums() {
+    let run = |session: &mut Session, id: &str, params: serde_json::Value| {
+        session
+            .execute(id, &params)
+            .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
+    };
+    let block = || {
+        let mut session = Session::new(Workspace::memory());
+        run(&mut session, "file.new", json!({"units": "mm"}));
+        run(
+            &mut session,
+            "feature.block",
+            json!({"size": [10, 10, 10], "position": [0, 0, 0], "name": "Block"}),
+        );
+        session
+    };
+    let mut bare = block();
+    let mut session = block();
+    run(
+        &mut session,
+        "datum.plane",
+        json!({"from": "xy", "distance": 400, "name": "Lid"}),
+    );
+    run(
+        &mut session,
+        "datum.point",
+        json!({"at": [600, 0, 0], "name": "Mark"}),
+    );
+    let drawn = scene(&mut session);
+    assert_eq!(drawn.datums.len(), 2, "the plane and the point are placed");
+    // A fresh window: the datums hidden, the sketches shown.
+    let mut shell = Shell::new();
+    assert!(!shell.state.show.datums);
+    assert!(shell.state.show.sketches);
+    let mut alone = Shell::new();
+    alone.sync(&mut bare);
+    // As the document opens: framed on the block, as the block alone is.
+    shell.sync(&mut session);
+    let opened = shell.state.camera;
+    assert!(opened.auto_fit);
+    assert_eq!(opened, alone.state.camera, "opened");
+    assert_eq!(opened.target, [5.0, 5.0, 5.0]);
+    // Datums switched on, the camera put elsewhere, then Fit: the block.
+    let call =
+        |shell: &mut Shell, session: &mut Session, method: &str, params: serde_json::Value| {
+            shell
+                .handle_method(session, method, Some(&params))
+                .unwrap_or_else(|| panic!("{method} is not a ui method"))
+                .unwrap_or_else(|e| panic!("{method} {params}: {e}"))
+        };
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"show": {"datums": true}, "camera": {"target": [300, 0, 200], "distance": 5000}}),
+    );
+    assert!(shell.state.show.datums);
+    assert!(shell.fit(&mut session));
+    assert_eq!(shell.state.camera, opened, "fit with the datums shown");
+    assert!(shell.state.show.datums, "fit leaves them shown");
+    // Hidden again, a flight to the plane shows them and frames it.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"show": {"datums": false}}),
+    );
+    call(
+        &mut shell,
+        &mut session,
+        "ui.fit",
+        json!({"feature": "Lid"}),
+    );
+    assert!(shell.state.show.datums, "the flight shows the datums");
+    assert!(
+        shell.state.camera.target[2] > 300.0,
+        "the plane is framed: {:?}",
+        shell.state.camera.target
+    );
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(got["state"]["show"]["datums"], json!(true));
+}

@@ -186,6 +186,14 @@ fn the_section_is_view_state_that_ui_set_sets_and_the_screenshot_shows() {
     let mut session = part();
     let mut shell = Shell::with_renderer(RendererChoice::Cpu);
     let cap = shell.tokens.section_cap;
+    // The datum plane is drawn (hidden by default since 2026-11-11): its
+    // fill tells the background from the body in the picture from above.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"show": {"datums": true}}),
+    );
     call(&mut shell, &mut session, "ui.fit", json!({"view": "iso"}));
     let (width, height) = (480_u32, 360_u32);
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
@@ -250,8 +258,9 @@ fn the_section_is_view_state_that_ui_set_sets_and_the_screenshot_shows() {
     // What the block covers in the whole picture, the cap covers less the
     // disc: the same ratio as the areas, within the lines' pixels.
     // The light background, under the fill of the XY datum plane, is near
-    // the body's colour too (Mission, 2026-10-21), but the datum's purple
-    // makes it bluer than red, where the warm grey body is not.
+    // the body's colour too (Mission, 2026-10-21), but the datum's colour
+    // makes it bluer than red, where the warm grey body is not: the plane
+    // covers every pixel of the background in this picture.
     let body = shell.tokens.body;
     assert!(body[0] > body[2]);
     let covered = whole_top

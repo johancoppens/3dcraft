@@ -1093,6 +1093,12 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
     shell.tokens.mate_width = 3.0;
     shell.tokens.mate_hot_width = 3.0;
     let tokens = shell.tokens;
+    // The datums' picture shows them, as the Datums toggle does: they are
+    // hidden by default (2026-11-11).
+    let datums = base.starts_with("viewport-datums");
+    if datums {
+        shell.state.show.datums = true;
+    }
     shell.attach_gpu(&state).unwrap();
     assert!(shell.draws_directly());
     let report = shell.renderer_report();
@@ -1168,6 +1174,13 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
         viewport::datum_marks(Some(&scene), shell.state.show.datums).with(shell.mate_marks());
     if base.starts_with("viewport-mates") {
         assert!(!marks.mates.is_empty(), "the assembly's markers are drawn");
+    }
+    if datums {
+        assert_eq!(
+            marks.datums.len(),
+            4,
+            "the planes, the axis and the point are drawn"
+        );
     }
     let overlay = viewport::overlay_see_through(
         Some(&scene),
