@@ -684,6 +684,13 @@ mod tests {
             "{}: no heading for #{anchor} among {anchors:?}",
             chapter.display()
         );
+        // The website's update page, which Check for updates opens, links
+        // to this heading of the same chapter (2026-11-11).
+        assert!(
+            anchors.iter().any(|a| a == "installing-a-newer-version"),
+            "{}: no heading for #installing-a-newer-version among {anchors:?}",
+            chapter.display()
+        );
     }
 
     /// Check for updates opens the website's update page with this build's

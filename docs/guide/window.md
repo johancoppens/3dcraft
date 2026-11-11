@@ -14,7 +14,7 @@ select.
 
 | | Part | What it is for |
 |---|---|---|
-| 1 | **File**, **Edit**, **View** and **Help** menus | Files, recent files, Jigs; Undo and Redo; panels and light or dark; the guide, the keys, About |
+| 1 | **File**, **Edit**, **View** and **Help** menus | Files, recent files, Jigs; Undo and Redo; panels and light or dark; the guide, the keys, updates, About |
 | 2 | **Tabs** | One per open document |
 | 3 | **Feature list** | The history of the design, in order, with each step's status |
 | 4 | **Eye** | Hides a feature's body, sketch or datum in the view |
@@ -54,8 +54,11 @@ The browser has no pill: agents drive the desktop app only.
 Without a document, the window shows the **start screen** (its picture is in
 [Your first five minutes](first-steps.md)):
 
-1. At the top, the name and version, and the line *Parametric CAD built with and for AI. Start a
-   document, open one, or let an agent model while you watch.*
+1. At the top, the name and version, with **Check for updates** beside the version, and the line
+   *Parametric CAD built with and for AI. Start a document, open one, or let an agent model while you
+   watch.* **Check for updates** opens a page of the website in your browser that says whether there is a
+   newer version ([Install › Installing a newer version](install.md#installing-a-newer-version)). The
+   web version has no such link: it is always the latest.
 2. **New part**, **New assembly** and **Open…**.
 3. **Examples**, with three tabs at its right: **Parts**, **Jigs** and **Assemblies**. Only the chosen
    tab's cards show. The tab you chose stays chosen while 3DCraft runs.
@@ -145,9 +148,13 @@ The **Help** menu:
 - **Open data folder** shows 3DCraft's folder: the autosaves, what can be recovered after a crash, and the
   recent files (not in the browser).
 - **Connect an AI agent…** opens the agent panel over the pill (not in the browser).
+- **Check for updates…** opens a page of the website in your browser, with your version in its address.
+  The page says whether there is a newer version and offers it
+  ([Install › Installing a newer version](install.md#installing-a-newer-version)). 3DCraft itself does
+  not connect. Not in the browser, which always runs the latest version.
 - **About 3DCraft** gives the version and the commit it was built from, the platform, the licence (MIT),
-  links to the guide and the source, and the renderer in use. **Copy system info** copies those lines
-  for a bug report.
+  links to the guide, the source and the update page (not in the browser), and the renderer in use.
+  **Copy system info** copies those lines for a bug report.
 
 ## The side panel
 

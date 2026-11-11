@@ -28,6 +28,9 @@ names carry the version number, here 0.1.0:
 | Linux (64-bit Intel or AMD) | `3DCraft-0.1.0-x86_64.AppImage`, or `3dcraft-0.1.0-x86_64-linux.tar.gz` | the AppImage itself, started with `cli`, or `~/.local/bin/craft3d-cli` |
 | Any computer, nothing to install | the web version, [3dcraft.dev/app](https://3dcraft.dev/app/) | none: the web version has no MCP |
 
+The release page also has a `.zsync` file beside the AppImage. You do not need it: it is for update tools
+([Installing a newer version](#installing-a-newer-version)).
+
 ### Why your computer warns you
 
 This first release is **not signed**. 3DCraft does not yet have the certificates from Apple and Microsoft
@@ -111,6 +114,38 @@ To remove 3DCraft again, run `./uninstall.sh` from the unpacked folder (with the
 one): it removes exactly the files `install.sh` installed and leaves your documents and other programs'
 files alone. Unpack the tarball into a folder of its own, not into `~/.local` itself: both scripts refuse
 to run from inside the folder they install into.
+
+## Installing a newer version
+
+**Help › Check for updates…**, or **Check for updates** beside the version on the start screen, opens a
+page of [3dcraft.dev](https://3dcraft.dev/) in your browser. It says whether there is a newer version and
+offers the downloads. Download the same kind of file as the first time, quit 3DCraft, and install it like
+this:
+
+- **Windows installer (`.msi`)**: run the new one, as in [Windows](#windows). It removes the older version
+  by itself and installs the new one in its place. An older `.msi` does not install over a newer version:
+  it says *A newer version of 3DCraft is already installed.*
+- **Windows zip**: unzip the new zip. It makes a folder of its own, named with the new version, beside
+  the old one. Start `craft3d.exe` from the new folder, and delete the old folder when you no longer need
+  it.
+- **macOS (`.dmg`)**: open the new `.dmg` and drag **3DCraft** onto the **Applications** folder again.
+  Choose **Replace** when macOS asks whether to replace the older one.
+- **AppImage**: download the new AppImage, make it executable as the first time, and delete the old file.
+  Or let a tool such as AppImageLauncher or AppImageUpdate do it for you: the AppImage carries the
+  address of its newer versions. 0.1.0 is the first version that carries it, so this works from the
+  version after 0.1.0 on.
+- **Linux tarball**: unpack the new tarball into a folder of its own and run its `./install.sh`, as the
+  first time. It installs the new version over the old files. A file that only the older version had
+  stays where it was, and the new `./uninstall.sh` does not know it. To leave none behind, run the new
+  folder's `./uninstall.sh` first (with the same prefix if you gave one): it removes the older version, by
+  the list of files that version installed (`~/.local/share/craft3d/files`). Then run `./install.sh`.
+
+Windows and macOS may warn about the new version the first time you open it, as they did the first time
+([Why your computer warns you](#why-your-computer-warns-you)).
+
+Your documents, the work folder and the autosave folder (**Help › Open data folder**) are not touched.
+A file you save with the newer version may not open in an older one: an older version refuses it and
+says so ([Files › Saving](files.md#saving-the-3dcraft-file)).
 
 ## In the browser: nothing to install
 
@@ -321,9 +356,15 @@ The agent needs nothing else: the command summaries and the error messages are w
 
 ## What 3DCraft sends: nothing
 
-3DCraft has no telemetry, no account, no update check and no licence server. It does not connect to the
-internet by itself. Links you click (the guide, **More examples** on the start screen) open in your web
-browser.
+3DCraft has no telemetry, no account, no update check of its own and no licence server. It does not
+connect to the internet by itself. Links you click (the guide, **More examples** on the start screen) open
+in your web browser.
+
+3DCraft does not look for updates by itself. **Help › Check for updates…**, and the link beside the version
+on the start screen, open the website in your browser with your version in the address (such as
+`https://3dcraft.dev/update/?from=0.1.0`); nothing else is sent. The page says whether there is a newer
+version ([Installing a newer version](#installing-a-newer-version)). The web version is always the latest,
+and an AppImage can be updated by a tool such as AppImageLauncher.
 
 - The connection the window opens for your agent is open only to your own computer, and only to a
   program that has the token file.

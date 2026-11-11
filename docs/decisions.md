@@ -1,12 +1,19 @@
 # Decisions
 
-> **Last updated:** 2026-11-10
+> **Last updated:** 2026-11-11
 
 This is the record of the decisions taken while 3DCraft was built, written at the time and kept as it was. "The developer" is the project's maintainer; "an agent" and "the coordinator" are the AI agents that built it (the coordinator plans the others' work and merges it). A decision made by an agent "for the developer to overturn" (some of them overnight, while nobody could be asked) stood unless it was overturned, and a later entry says so where it was; dates are when a decision was taken, ids of runs and commits are the workshop's evidence of the day. From outside the project, an open decision is raised in an issue.
 
 Decisions that shape the project, newest first, each with its reason. An agent that needs something listed under *Open decisions* asks the developer; it does not pick silently. When one is settled, move it up with the date.
 
 ## Taken
+
+### 2026-11-11: Updates in 0.1.0: the website says, the program does not look (decided by the developer)
+
+- **No self-updating program in 0.1.0.** The program makes no network connection of its own, and that stays: no HTTP client is among its dependencies, and the user guide promises it (*What 3DCraft sends: nothing*). A program that fetches new code and runs it must prove where that code comes from, and the packages of 0.1.0 are not signed with a developer certificate (2026-11-10), so it could not.
+- **Check for updates opens the website.** Help › Check for updates… and a link beside the version on the start screen hand one address to the system's browser, as Help › User guide does: `https://3dcraft.dev/update/?from=<the program's full version>` (`https://3dcraft.dev/update/?from=0.1.0` for 0.1.0; the page reads the first three numbers). That page says whether a newer version exists and offers its downloads. Nothing else is sent; the program itself does not connect. The web build is always the latest version and shows neither.
+- **The AppImage carries update information** (`gh-releases-zsync`, the latest release of the public repository, its `.zsync` file published beside the AppImage), so a desktop tool such as AppImageLauncher or AppImageUpdate can update it without any code in 3DCraft ([`development.md`](development.md) › *Packaging*).
+- **A real self-update, with signed packages, is work for after the release** (*Open decisions*, D-open-19).
 
 ### 2026-11-10: The repository public, a workshop beside it, and the website (decided by the developer)
 
@@ -644,4 +651,5 @@ Made by the agent, overnight; the developer can overturn any of them.
 | D-open-11 | **Coordinate convention** | Z up (CAD/3D-printing convention); Y up | M2 | Z up, right-handed |
 | D-open-15 | **A tangency line on which another wall ends** (2026-10-20, `booleans.md`): a groove whose ceiling is tangent to the top face along a line and whose start wall ends on that line, inside the top face, so that three sheets meet along it (the top face through, the ceiling and the wall ending); the same at a point in the pinned `cones_that_share_a_ruling` (the inner cone's base rim on the shared ruling). Accepted today by the letter of 2026-10-18 (a wall that thins to nothing). | Keep accepting (one shell, measurable, meshes closed); refuse as the shell meeting itself (a vertex or an edge of the shell strictly inside a face it is not part of, with two or more faces at it: the rule prototyped and not committed, which would also refuse the cones at their rim) | M7 | Keep accepting |
 | D-open-18 | **An interactive modelling interface** (2026-11-10): sketching and editing with the mouse. 3DCraft has no toolbar of modelling buttons; you model through commands, and whoever wants a classic interface can build one on top. Whether 3DCraft itself ever gets one is not decided: "maybe later, we will see which way it goes" (the developer) | Inside 3DCraft; a separate program on top of the commands; neither | No milestone ([`roadmap.md`](roadmap.md) › *M11+*) | None: the window stays for viewing, pointing, the feature list, the history player, a Jig's form and export |
+| D-open-19 | **A self-update** (2026-11-11): 0.1.0 opens the website's update page in the browser and the AppImage carries update information for desktop tools (*2026-11-11: Updates in 0.1.0* under Taken); the program itself never connects. A program that updates itself needs signed packages first (a developer certificate for macOS and Windows, a signature on the Linux packages), and then a choice of when it looks | It looks by itself (at start, or daily), with a switch; only when asked (Check for updates fetches and installs); never (the website and the system's tools stay the way) | After R1 | Never: the program connects nowhere; Check for updates opens the website |
 
