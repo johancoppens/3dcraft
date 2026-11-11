@@ -3,6 +3,7 @@ name: Release
 # The installers of 3DCraft (docs/development.md, Packaging), built on
 # GitHub-hosted runners by `cargo xtask package`:
 #   Linux    3dcraft-<version>-x86_64-linux.tar.gz, 3DCraft-<version>-x86_64.AppImage
+#            and its .zsync (what a desktop tool updates the AppImage from)
 #   macOS    3DCraft-<version>-aarch64.dmg (3DCraft.app, ad-hoc signed, not notarised)
 #   Windows  3dcraft-<version>-x86_64-windows.zip, 3DCraft-<version>-x86_64.msi
 #   Web      3dcraft-web-<version>.zip (a static site, packaging/web/HOSTING.md)
@@ -148,6 +149,7 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.AppImage
+            dist/*.AppImage.zsync
             dist/*.dmg
             dist/*.zip
             dist/*.msi

@@ -4,7 +4,9 @@
 //!
 //! - Linux: a tarball (with `install.sh`) and an AppImage, which installs
 //!   nothing but carries the menu entry, the file types and their icons
-//!   for a desktop integration tool ([`desktop_files`]);
+//!   for a desktop integration tool ([`desktop_files`]) and the update
+//!   information a desktop tool updates it by ([`update_information`]),
+//!   with its `.zsync` file beside it;
 //! - macOS: `3DCraft.app` in a `.dmg`;
 //! - Windows: a zip and an `.msi`;
 //! - everywhere: `--formats web`, the browser build as a static site in
@@ -84,6 +86,138 @@ fn desktop_files() -> Vec<(String, String)> {
         ));
     }
     files
+}
+
+/// The account and repository on GitHub whose releases carry the
+/// packages: the public repository, the workspace's `repository` (a test
+/// holds them to it). The AppImage's update information names them.
+const RELEASES_OWNER: &str = "johancoppens";
+const RELEASES_REPOSITORY: &str = "3dcraft";
+
+/// The AppImage's file name for `version` and `arch`.
+fn appimage_name(version: &str, arch: &str) -> String {
+    format!("3DCraft-{version}-{arch}.AppImage")
+}
+
+/// The update information the AppImage carries (docs/decisions.md,
+/// 2026-11-11), written by `appimagetool -u`, in the form the AppImage
+/// specification gives for releases on GitHub (*Update information*,
+/// `gh-releases-zsync`): the transport, the account, the repository, the
+/// release (`latest`: the newest published release, pre-releases left
+/// out) and the name of the `.zsync` file published beside the AppImage,
+/// `*` standing for the version. With it a desktop tool (AppImageUpdate,
+/// or AppImageLauncher, which uses it) finds the AppImage of the newest
+/// release for the same architecture and fetches only what changed; 3DCraft
+/// itself does nothing with it.
+fn update_information(arch: &str) -> String {
+    format!(
+        "gh-releases-zsync|{RELEASES_OWNER}|{RELEASES_REPOSITORY}|latest|{}.zsync",
+        appimage_name("*", arch)
+    )
+}
+
+/// The appimagetool run that packs `app_dir` into `file`: without FUSE,
+/// with the given runtime, and with the update information of `arch`
+/// (`-u`), with which appimagetool also writes the `.zsync` file by
+/// running `zsyncmake`; zsyncmake writes it into the working directory,
+/// hence `out`, beside the AppImage. The pinned appimagetool AppImage
+/// carries its own zsyncmake (in its `usr/bin`, which its `AppRun` puts
+/// first on `PATH`); another appimagetool needs `zsyncmake` on `PATH`.
+/// Paths are absolute: the run's working directory is `out`.
+fn appimagetool_command(
+    tool: &Path,
+    arch: &str,
+    runtime: Option<&Path>,
+    app_dir: &Path,
+    file: &Path,
+    out: &Path,
+) -> Command {
+    let mut command = Command::new(tool);
+    command
+        .current_dir(out)
+        .env("ARCH", arch)
+        // Runs without FUSE (containers, CI runners).
+        .env("APPIMAGE_EXTRACT_AND_RUN", "1")
+        .arg("--no-appstream")
+        .arg("-u")
+        .arg(update_information(arch));
+    if let Some(r) = runtime {
+        command.arg("--runtime-file").arg(r);
+    }
+    command.arg(app_dir).arg(file);
+    command
+}
+
+/// `path` made absolute against the current directory when it names a
+/// file by a relative path; a bare program name (found on `PATH`) stays
+/// as it is.
+fn absolute_unless_bare(path: &Path) -> Result<PathBuf, String> {
+    if path.is_absolute() || path.components().count() < 2 {
+        return Ok(path.to_path_buf());
+    }
+    std::path::absolute(path).map_err(|e| format!("cannot find {}: {e}", path.display()))
+}
+
+/// The bytes of the section `name` of a 64-bit little-endian ELF file
+/// (the runtime at the start of an AppImage for x86_64 or aarch64), read
+/// from its section headers; `None` when it has no such section or is not
+/// such a file. Every offset is checked against the file.
+fn elf_section<'a>(elf: &'a [u8], name: &str) -> Option<&'a [u8]> {
+    // A little-endian unsigned field of `len` bytes at `at`.
+    let field = |at: usize, len: usize| -> Option<usize> {
+        let bytes = elf.get(at..at.checked_add(len)?)?;
+        let value = bytes
+            .iter()
+            .rev()
+            .fold(0u64, |value, byte| (value << 8) | u64::from(*byte));
+        usize::try_from(value).ok()
+    };
+    // The magic, ELFCLASS64 and ELFDATA2LSB.
+    if elf.get(..6)? != b"\x7fELF\x02\x01" {
+        return None;
+    }
+    let headers = field(0x28, 8)?;
+    let size = field(0x3a, 2)?;
+    let count = field(0x3c, 2)?;
+    let names = field(0x3e, 2)?;
+    if size < 0x40 {
+        return None;
+    }
+    // A section's name (an offset into the names' section), offset and
+    // size.
+    let header = |index: usize| -> Option<(usize, usize, usize)> {
+        let at = headers.checked_add(index.checked_mul(size)?)?;
+        Some((
+            field(at, 4)?,
+            field(at.checked_add(0x18)?, 8)?,
+            field(at.checked_add(0x20)?, 8)?,
+        ))
+    };
+    let bytes = move |offset: usize, len: usize| elf.get(offset..offset.checked_add(len)?);
+    let (_, at, len) = header(names)?;
+    let table = bytes(at, len)?;
+    (0..count).find_map(|index| {
+        let (label, at, len) = header(index)?;
+        let rest = table.get(label..)?;
+        let end = rest.iter().position(|b| *b == 0)?;
+        if rest.get(..end)? == name.as_bytes() {
+            bytes(at, len)
+        } else {
+            None
+        }
+    })
+}
+
+/// The update information an AppImage carries: its `.upd_info` section up
+/// to the first zero byte, or `None` when it has none.
+fn carried_update_information(appimage: &[u8]) -> Option<String> {
+    let section = elf_section(appimage, ".upd_info")?;
+    let end = section
+        .iter()
+        .position(|b| *b == 0)
+        .unwrap_or(section.len());
+    let text = std::str::from_utf8(section.get(..end)?).ok()?;
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 /// What the AppImage carries at its root for appimagetool and desktop
@@ -296,10 +430,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
     for f in &formats {
         let file = match f.as_str() {
             "tar" => p.tarball()?,
-            "appimage" => p.appimage(
-                options.appimagetool.as_deref(),
-                options.appimage_runtime.as_deref(),
-            )?,
+            "appimage" => {
+                made.extend(p.appimage(
+                    options.appimagetool.as_deref(),
+                    options.appimage_runtime.as_deref(),
+                )?);
+                continue;
+            }
             "app" => p.app_bundle()?,
             "dmg" => p.dmg()?,
             "zip" => p.zip()?,
@@ -627,11 +764,19 @@ impl Packer {
         Ok(file)
     }
 
-    fn appimage(&self, given: Option<&Path>, runtime: Option<&Path>) -> Result<PathBuf, String> {
+    /// The AppImage, and beside it its `.zsync` file, which a desktop
+    /// tool reads to update it ([`update_information`]); both checked once
+    /// made.
+    fn appimage(
+        &self,
+        given: Option<&Path>,
+        runtime: Option<&Path>,
+    ) -> Result<Vec<PathBuf>, String> {
         let tool_path = given
             .map(Path::to_path_buf)
             .or_else(|| std::env::var_os("APPIMAGETOOL").map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("appimagetool"));
+        let tool_path = absolute_unless_bare(&tool_path)?;
         // The runtime the AppImage starts with. Without one, appimagetool
         // downloads the newest continuous build of the type2 runtime.
         let runtime = runtime
@@ -640,6 +785,11 @@ impl Packer {
         if let Some(r) = runtime.as_ref().filter(|r| !r.is_file()) {
             return Err(format!("there is no AppImage runtime {}", r.display()));
         }
+        let runtime = runtime
+            .map(|r| {
+                std::path::absolute(&r).map_err(|e| format!("cannot find {}: {e}", r.display()))
+            })
+            .transpose()?;
         let app_dir = self.stage.join("AppDir");
         // The same tree as the tarball's below `usr/`, menu entry, MIME
         // types and icons included (`desktop_files`).
@@ -664,26 +814,47 @@ impl Packer {
             false,
         )?;
         mkdir(&self.out)?;
-        let file = self
-            .out
-            .join(format!("3DCraft-{}-{}.AppImage", self.version, self.arch));
-        let mut command = Command::new(&tool_path);
-        command
-            .env("ARCH", &self.arch)
-            // Runs without FUSE (containers, CI runners).
-            .env("APPIMAGE_EXTRACT_AND_RUN", "1")
-            .arg("--no-appstream");
-        if let Some(r) = &runtime {
-            command.arg("--runtime-file").arg(r);
+        let name = appimage_name(&self.version, &self.arch);
+        let file = self.out.join(&name);
+        // An old `.zsync` would pass for this AppImage's.
+        let zsync = self.out.join(format!("{name}.zsync"));
+        if zsync.exists() {
+            std::fs::remove_file(&zsync)
+                .map_err(|e| format!("cannot remove {}: {e}", zsync.display()))?;
         }
         tool(
-            command.arg(&app_dir).arg(&file),
+            &mut appimagetool_command(
+                &tool_path,
+                &self.arch,
+                runtime.as_deref(),
+                &app_dir,
+                &file,
+                &self.out,
+            ),
             &format!(
                 "appimagetool ({}; pass --appimagetool PATH or APPIMAGETOOL, or --formats tar)",
                 tool_path.display()
             ),
         )?;
-        Ok(file)
+        // What a desktop tool reads to update it: the update information
+        // in the AppImage, and the `.zsync` beside it.
+        let wanted = update_information(&self.arch);
+        let carried = carried_update_information(&read(&file)?);
+        if carried.as_deref() != Some(wanted.as_str()) {
+            return Err(format!(
+                "{} carries the update information {carried:?}, not {wanted:?}",
+                file.display()
+            ));
+        }
+        if !zsync.is_file() {
+            return Err(format!(
+                "appimagetool wrote no {}: it makes it with zsyncmake, which the appimagetool \
+                 AppImage carries; another appimagetool needs zsyncmake (the zsync package) on PATH",
+                zsync.display()
+            ));
+        }
+        eprintln!("package: the AppImage carries the update information {wanted}");
+        Ok(vec![file, zsync])
     }
 
     fn app_path(&self) -> PathBuf {
@@ -1400,6 +1571,155 @@ mod tests {
         // The entry's icon at the root too, and as `.DirIcon`.
         assert!(from(&format!("{entry_icon}.png")).is_some());
         assert!(from(".DirIcon").is_some());
+    }
+
+    /// The AppImage carries update information in the form the AppImage
+    /// specification gives for releases on GitHub (docs/decisions.md,
+    /// 2026-11-11): the public repository (the workspace's `repository`),
+    /// its latest release, and the `.zsync` of the AppImage for the same
+    /// architecture, whatever its version. The appimagetool run asks for
+    /// it, and runs in the output folder, where zsyncmake writes the
+    /// `.zsync` beside the AppImage.
+    #[test]
+    fn the_appimage_asks_for_its_update_information() {
+        assert_eq!(
+            update_information("x86_64"),
+            "gh-releases-zsync|johancoppens|3dcraft|latest|3DCraft-*-x86_64.AppImage.zsync"
+        );
+        assert_eq!(
+            update_information("aarch64"),
+            "gh-releases-zsync|johancoppens|3dcraft|latest|3DCraft-*-aarch64.AppImage.zsync"
+        );
+        let manifest = std::fs::read_to_string(repo_root().join("Cargo.toml")).unwrap();
+        assert!(manifest.contains(&format!(
+            "\nrepository = \"https://github.com/{RELEASES_OWNER}/{RELEASES_REPOSITORY}\"\n"
+        )));
+        // `*` stands for this version: the pattern names the `.zsync`
+        // the AppImage step leaves beside its AppImage, and no other
+        // architecture's.
+        let version = env!("CARGO_PKG_VERSION");
+        for arch in ["x86_64", "aarch64"] {
+            let info = update_information(arch);
+            let fields: Vec<&str> = info.split('|').collect();
+            assert_eq!(fields.len(), 5, "{info}");
+            let (before, after) = fields[4].split_once('*').unwrap();
+            assert!(!after.contains('*'), "{info}");
+            let zsync = format!("{}.zsync", appimage_name(version, arch));
+            assert!(
+                zsync.starts_with(before)
+                    && zsync.ends_with(after)
+                    && zsync.len() > before.len() + after.len(),
+                "{zsync} {info}"
+            );
+            let other = if arch == "x86_64" {
+                "aarch64"
+            } else {
+                "x86_64"
+            };
+            assert!(!format!("{}.zsync", appimage_name(version, other)).ends_with(after));
+        }
+        assert_eq!(
+            appimage_name(version, "x86_64"),
+            format!("3DCraft-{version}-x86_64.AppImage")
+        );
+        // The appimagetool run asks for it, in the output folder.
+        let out = Path::new("/work/package");
+        let file = out.join(appimage_name(version, "x86_64"));
+        let app_dir = out.join("stage/AppDir");
+        let command = appimagetool_command(
+            Path::new("/tools/appimagetool"),
+            "x86_64",
+            Some(Path::new("/tools/runtime-x86_64")),
+            &app_dir,
+            &file,
+            out,
+        );
+        let args: Vec<String> = command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let u = args.iter().position(|a| a == "-u").unwrap();
+        assert_eq!(args.get(u + 1), Some(&update_information("x86_64")));
+        assert!(args.contains(&"--no-appstream".to_string()));
+        let r = args.iter().position(|a| a == "--runtime-file").unwrap();
+        assert_eq!(args[r + 1], "/tools/runtime-x86_64");
+        assert_eq!(
+            &args[args.len() - 2..],
+            [
+                app_dir.to_string_lossy().into_owned(),
+                file.to_string_lossy().into_owned()
+            ]
+        );
+        assert_eq!(command.get_current_dir(), Some(out));
+        let env: Vec<(String, Option<String>)> = command
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert!(env.contains(&("ARCH".to_string(), Some("x86_64".to_string()))));
+        // A tool named by a relative path is found from where the xtask
+        // runs, not from the output folder; one found on PATH stays bare.
+        assert_eq!(
+            absolute_unless_bare(Path::new("appimagetool")).unwrap(),
+            PathBuf::from("appimagetool")
+        );
+        let relative = absolute_unless_bare(Path::new("tools/appimagetool")).unwrap();
+        assert!(relative.is_absolute() && relative.ends_with("tools/appimagetool"));
+    }
+
+    /// The update information is read back from the AppImage's ELF
+    /// section `.upd_info` by its section headers; a file without it, cut
+    /// short or not a 64-bit little-endian ELF file has none.
+    #[test]
+    fn the_update_information_is_read_from_the_runtimes_section() {
+        fn elf(info: &[u8]) -> Vec<u8> {
+            let names = b"\0.shstrtab\0.upd_info\0";
+            let mut section = info.to_vec();
+            section.resize(1024, 0);
+            let names_at = 0x40;
+            let info_at = names_at + names.len();
+            let headers_at = info_at + section.len();
+            let mut file = vec![0u8; 0x40];
+            file[..6].copy_from_slice(b"\x7fELF\x02\x01");
+            file[0x28..0x30].copy_from_slice(&(headers_at as u64).to_le_bytes());
+            file[0x3a..0x3c].copy_from_slice(&0x40u16.to_le_bytes());
+            file[0x3c..0x3e].copy_from_slice(&3u16.to_le_bytes());
+            file[0x3e..0x40].copy_from_slice(&1u16.to_le_bytes());
+            file.extend_from_slice(names);
+            file.extend_from_slice(&section);
+            let header = |name: u32, at: usize, len: usize| {
+                let mut h = vec![0u8; 0x40];
+                h[..4].copy_from_slice(&name.to_le_bytes());
+                h[0x18..0x20].copy_from_slice(&(at as u64).to_le_bytes());
+                h[0x20..0x28].copy_from_slice(&(len as u64).to_le_bytes());
+                h
+            };
+            file.extend(header(0, 0, 0));
+            file.extend(header(1, names_at, names.len()));
+            file.extend(header(11, info_at, section.len()));
+            // What follows the runtime in an AppImage: its file system.
+            file.extend_from_slice(b"hsqs");
+            file
+        }
+        let info = update_information("x86_64");
+        let image = elf(info.as_bytes());
+        assert_eq!(carried_update_information(&image), Some(info.clone()));
+        assert_eq!(
+            elf_section(&image, ".upd_info").map(<[u8]>::len),
+            Some(1024)
+        );
+        assert_eq!(elf_section(&image, ".sha256_sig"), None);
+        assert_eq!(carried_update_information(&elf(b"")), None);
+        for cut in [0, 6, 0x40, image.len() - 0x41] {
+            assert_eq!(carried_update_information(&image[..cut]), None, "{cut}");
+        }
+        let mut other = image.clone();
+        other[4] = 1;
+        assert_eq!(carried_update_information(&other), None, "32-bit");
     }
 
     /// A work folder of the install scripts' tests, removed on drop (also
