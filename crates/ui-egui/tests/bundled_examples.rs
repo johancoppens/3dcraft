@@ -223,7 +223,8 @@ fn frame(ctx: &egui::Context, shell: &mut Shell, session: &mut Session, time: f6
 /// `Shell::example_opened`), opens on the Assembly tab, where the player
 /// is, on its motion, although each has public parameters, on which a
 /// document opens otherwise (before 2026-11-11 it did here too, the player
-/// one click away).
+/// one click away). The tab heads its checks "Checks", as a part's
+/// Features tab does.
 #[test]
 fn every_bundled_assembly_opens_on_its_player_from_the_start_screen() {
     let assemblies: Vec<_> = EXAMPLES
@@ -244,9 +245,14 @@ fn every_bundled_assembly_opens_on_its_player_from_the_start_screen() {
         let opened = run_example(&mut session, taken);
         assert!(opened.is_ok(), "{id}: {opened:?}");
         shell.example_opened(&opened);
+        // The instances and mates folded, so the checks' header is in
+        // sight (a header out of sight is not drawn).
+        shell.state.side_panel.set_open("instances-folded", true);
+        shell.state.side_panel.set_open("mates-folded", true);
+        let mut drawn = Vec::new();
         for _ in 0..3 {
             time += 1.0 / 60.0;
-            frame(&ctx, &mut shell, &mut session, time);
+            drawn = frame(&ctx, &mut shell, &mut session, time);
         }
         let got = shell
             .handle_method(&mut session, "ui.get", Some(&json!({})))
@@ -261,5 +267,7 @@ fn every_bundled_assembly_opens_on_its_player_from_the_start_screen() {
             shell.player_hits().iter().any(|(name, _)| *name == "play"),
             "{id}: the player is drawn"
         );
+        assert!(drawn.iter().any(|t| t == "Checks"), "{id}: {drawn:?}");
+        assert!(!drawn.iter().any(|t| t == "Assertions"), "{id}: {drawn:?}");
     }
 }

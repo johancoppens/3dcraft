@@ -4213,11 +4213,12 @@ impl Shell {
                             tokens.ok
                         };
                         let mut open = !self.state.side_panel.is_open("assertions-folded");
+                        // Checks, as the Features tab calls the same list.
                         if kit
                             .fold_header(
                                 ui,
                                 &mut open,
-                                "Assertions",
+                                "Checks",
                                 Some(self.assertion_rows.len()),
                                 (!note.is_empty()).then_some((note.as_str(), note_ink)),
                             )
@@ -5431,8 +5432,8 @@ fn named_edge(feature: &str, name: Option<&str>, faces: &[String]) -> Option<Edg
     })
 }
 
-/// What the feature panel says under "Assertions" while the document has
-/// none: what they are for, and how to get one.
+/// What the side panel says under "Checks" while the document has none:
+/// what they are for, and how to get one.
 pub const NO_ASSERTIONS_HINT: &str = "No checks yet. Ask an AI agent, e.g. \u{201c}check that the wall is at least 2 mm\u{201d}, or use assert.add.";
 
 /// An assembly's status at the top of its tab (boards w2, t1): solved
@@ -5487,11 +5488,11 @@ fn assembly_status(
     }
 }
 
-/// The "Assertions" heading of the feature panel, always there; with the
-/// hint while there are none.
+/// The "Checks" heading of the Assembly tab without instances, always
+/// there; with the hint while there are none.
 fn assertions_heading(ui: &mut egui::Ui, tokens: &Tokens, empty: bool) {
     ui.add_space(tokens.inset * 0.5);
-    crate::kit::Kit::panel(tokens).section_header(ui, "Assertions");
+    crate::kit::Kit::panel(tokens).section_header(ui, "Checks");
     if empty {
         ui.add(
             egui::Label::new(
