@@ -57,8 +57,13 @@ jobs:
           # were linked against or newer.
           - name: linux
             os: ubuntu-22.04
+          # The oldest macOS image on Apple Silicon (GitHub retired the
+          # macOS 14 images on 2026-11-02). The app's minimum macOS is not
+          # the runner's:
+          # Rust's default deployment target for aarch64-apple-darwin
+          # (11.0) is what Info.plist's LSMinimumSystemVersion promises.
           - name: macos
-            os: macos-14
+            os: macos-15
           - name: windows
             os: windows-2022
     runs-on: ${{ matrix.os }}
@@ -67,7 +72,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: tag matches the version
         if: startsWith(github.ref, 'refs/tags/v')
@@ -85,15 +90,36 @@ jobs:
       # appimagetool needs `file` and `desktop-file-validate`, and without a
       # runtime file it downloads the newest continuous type2 runtime; both
       # downloads are pinned to a release and checked against its sha256.
+      # The image carries `file`; what is missing is installed with apt,
+      # which retries each download itself, and the update and install are
+      # tried again after a pause when the install fails (the runner could
+      # not resolve its mirror on 2026-11-11). The downloads retry too.
       - name: appimagetool
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends file desktop-file-utils
+          missing=()
+          command -v file > /dev/null || missing+=(file)
+          command -v desktop-file-validate > /dev/null || missing+=(desktop-file-utils)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            for attempt in 1 2 3; do
+              if sudo apt-get -o Acquire::Retries=5 update -q \
+                && sudo apt-get -o Acquire::Retries=5 install -y -q --no-install-recommends "${missing[@]}"; then
+                break
+              fi
+              if [ "$attempt" = 3 ]; then
+                echo "::error::apt-get could not install ${missing[*]} in 3 attempts: the runner's package mirror (see above)"
+                exit 1
+              fi
+              echo "apt-get failed (attempt $attempt of 3); trying again in 30 s"
+              sleep 30
+            done
+          fi
+          command -v file
+          command -v desktop-file-validate
           mkdir -p target/tools
-          curl -fsSL -o target/tools/appimagetool \
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o target/tools/appimagetool \
             https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
-          curl -fsSL -o target/tools/runtime-x86_64 \
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o target/tools/runtime-x86_64 \
             https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
           sha256sum -c - <<'SUMS'
           ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  target/tools/appimagetool
@@ -103,10 +129,21 @@ jobs:
           echo "APPIMAGETOOL=$PWD/target/tools/appimagetool" >> "$GITHUB_ENV"
           echo "APPIMAGE_RUNTIME=$PWD/target/tools/runtime-x86_64" >> "$GITHUB_ENV"
 
+      # From NuGet, pinned; tried again after a pause when it fails.
       - name: WiX Toolset
         if: runner.os == 'Windows'
         run: |
-          dotnet tool install --global wix --version 5.0.2
+          for attempt in 1 2 3; do
+            if dotnet tool install --global wix --version 5.0.2; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::dotnet could not install the WiX Toolset 5.0.2 in 3 attempts (see above)"
+              exit 1
+            fi
+            echo "dotnet tool install failed (attempt $attempt of 3); trying again in 30 s"
+            sleep 30
+          done
           echo "$USERPROFILE/.dotnet/tools" >> "$GITHUB_PATH"
 
       - name: package
@@ -164,7 +201,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: tag matches the version
         if: startsWith(github.ref, 'refs/tags/v')
@@ -179,9 +216,9 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           mkdir -p target/tools
-          curl -fsSL -o target/tools/wasm-bindgen.tar.gz \
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o target/tools/wasm-bindgen.tar.gz \
             https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl.tar.gz
-          curl -fsSL -o target/tools/binaryen.tar.gz \
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o target/tools/binaryen.tar.gz \
             https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz
           sha256sum -c - <<'SUMS'
           82d12bb940e2d4e72e0d5605387fc1b8ca179044e012b620f0ce4e7440e8320e  target/tools/wasm-bindgen.tar.gz
@@ -232,7 +269,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           path: src
       - uses: actions/download-artifact@v4

@@ -106,14 +106,16 @@ jobs:
               '{id: $id, name: $name, os: $os, cargo: $cargo, timeout: $timeout}')")
           }
           want() { [ "$OS" = all ] || [ "$OS" = "$1" ]; }
+          # macOS on the image the release is built on (release.yml), the
+          # oldest on Apple Silicon; Linux and Windows on the newest.
           if [ -n "$ARGS" ]; then
             want linux && add linux "narrow (linux)" ubuntu-latest "$ARGS" 330
-            want macos && add macos "narrow (macos)" macos-latest "$ARGS" 330
+            want macos && add macos "narrow (macos)" macos-15 "$ARGS" 330
             want windows && add windows "narrow (windows)" windows-latest "$ARGS" 330
           else
             # The full gate: fmt, clippy, tests, layering, wasm.
             want linux && add linux "gate (linux)" ubuntu-latest "xtask ci" 330
-            want macos && add macos "test (macos)" macos-latest \
+            want macos && add macos "test (macos)" macos-15 \
               "test --workspace --no-fail-fast" 240
             # Windows in three jobs that together are the workspace: the
             # engine, the kernel, and every other crate (keep the
@@ -154,12 +156,25 @@ jobs:
       # A graphics adapter for the GPU tests: the hosted runner has no GPU
       # and no drivers ("No suitable graphics adapter found", 2026-10-30);
       # Mesa's software Vulkan (lavapipe) and OpenGL (llvmpipe) stand in.
+      # apt retries each download itself, and the update and install are
+      # tried again after a pause when the install fails (a runner could
+      # not resolve its mirror on 2026-11-11).
       - name: graphics
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q mesa-vulkan-drivers libgl1-mesa-dri libegl1 libegl-mesa0
-      - uses: actions/checkout@v4
+          for attempt in 1 2 3; do
+            if sudo apt-get -o Acquire::Retries=5 update -q \
+              && sudo apt-get -o Acquire::Retries=5 install -y -q mesa-vulkan-drivers libgl1-mesa-dri libegl1 libegl-mesa0; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::apt-get could not install the graphics drivers in 3 attempts: the runner's package mirror (see above)"
+              exit 1
+            fi
+            echo "apt-get failed (attempt $attempt of 3); trying again in 30 s"
+            sleep 30
+          done
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
       # The built-in fonts (never committed), pinned by URL and SHA-256,
