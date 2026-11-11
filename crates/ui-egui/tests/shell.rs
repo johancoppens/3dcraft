@@ -594,12 +594,23 @@ fn resizing_the_window_draws_coarse_frames_and_then_a_sharp_one() {
     assert_eq!(shell.render_count(), rendered);
     // The model was framed again for the new shape of the viewport: it is
     // tall and narrow now, so the width decides and the camera is further.
-    // Framed as it opened, on the bodies drawn: the sketch 2 mm above the
-    // post is not in the opening frame (2026-11-11).
+    // Framed as it opened, on the bodies drawn, as the part without its
+    // sketch is: the sketch 2 mm above the post is not in the opening
+    // frame (2026-11-11).
     assert!(shell.state.camera.distance > framed.distance * 1.2);
     let mut by_hand = framed;
-    let scene = session.scene_with(shell.scene_quality()).unwrap().unwrap();
-    by_hand.fit(&scene.bodies_box, f64::from(w2) / f64::from(h2));
+    let mut bodies_alone = part();
+    run(
+        &mut bodies_alone,
+        "feature.delete",
+        json!({"feature": "Outline"}),
+    );
+    let scene = bodies_alone
+        .scene_with(shell.scene_quality())
+        .unwrap()
+        .unwrap();
+    assert!(scene.sketches.is_empty());
+    by_hand.fit(&scene.frame_box(), f64::from(w2) / f64::from(h2));
     assert_eq!(shell.state.camera, by_hand);
 }
 

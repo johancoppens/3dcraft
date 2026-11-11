@@ -458,8 +458,11 @@ impl RenderStats {
 /// The scene's frame ([`Scene::frame_box`]: the bodies and the sketches)
 /// cut down to the box around the bodies drawn ([`Scene::bodies_box`]):
 /// what is framed without the sketches. Where the two agree (to a
-/// billionth of the size) the frame's own value, on its grid; without a
-/// sketch or without a body, the frame as it is.
+/// billionth of the size) the frame's own value, on its grid; where they
+/// do not, the bodies' value put on the grid of the box cut down, as the
+/// scene puts its frame on its own ([`on_grid`]), so that a document with
+/// a sketch far away opens as its bodies alone do. Without a sketch or
+/// without a body, the frame as it is.
 fn bodies_frame(scene: &Scene) -> Bbox3 {
     let frame = scene.frame_box();
     if scene.sketches.is_empty() {
@@ -482,10 +485,35 @@ fn bodies_frame(scene: &Scene) -> Bbox3 {
         side(high.z, to.z, high.z.min(to.z)),
     );
     if low.x <= high.x && low.y <= high.y && low.z <= high.z {
-        Bbox3::from_corners(low, high)
+        on_grid(Bbox3::from_corners(low, high))
     } else {
         frame
     }
+}
+
+/// `frame` with its corners on a grid of the power of two at or below a
+/// billionth of its diagonal, the grid the scene's own frame is on
+/// (`craft3d_engine`'s `frame_of`): cosmetic, it moves a corner by less
+/// than a billionth of the size (the B-rep box of a block reaches 10 as
+/// 10.00000000000014), so the camera's numbers are round. A value
+/// already on a coarser such grid stays where it is; scaling by a power
+/// of two and rounding are exact.
+fn on_grid(frame: Bbox3) -> Bbox3 {
+    let Some((low, high)) = frame.corners() else {
+        return frame;
+    };
+    let fine = frame.diagonal() * 1e-9;
+    if !(fine.is_finite() && fine > f64::MIN_POSITIVE) {
+        return frame;
+    }
+    // The largest power of two not above it: its sign and exponent bits.
+    let step = f64::from_bits(fine.to_bits() & 0xFFF0_0000_0000_0000);
+    let snap = |v: f64| {
+        let on = (v / step).round() * step;
+        if on.is_finite() { on } else { v }
+    };
+    let snap3 = |p: craft3d_math::Vec3| craft3d_math::Vec3::new(snap(p.x), snap(p.y), snap(p.z));
+    Bbox3::from_corners(snap3(low), snap3(high))
 }
 
 /// F pressed without Ctrl, Alt, Shift or Cmd, by the key's own event:
