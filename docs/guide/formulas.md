@@ -104,8 +104,8 @@ is nothing to switch.
 `file.import`, whose features get a condition with `feature.when`) take it as `when`, so the feature is switched from
 its very first regeneration: a fillet of a lid that is off is never built, and never fails on the way.
 It is one step, one undo, as if `feature.when` had come with it; an extrusion with `cut` or `join` gives
-the condition to both features it adds. This one runs as it is: set `lid` to 0 afterwards, and both
-features are off.
+the condition to both features it adds. This one runs as it is, in a new document: set `lid` to 0
+afterwards, and both features are off.
 
 ```json
 [
