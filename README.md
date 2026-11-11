@@ -4,7 +4,7 @@
 
 *An agent builds. A machine checks. You decide.*
 
-![The 3DCraft window with the moka pot example: its 89 features and 17 checks in the side panel, the history player under them, the studio look's options open over the view, the view cube and the display bar](docs/guide/images/studio.png)
+![The 3DCraft window with the spiral staircase example: its 93 features and 16 checks, all passing, in the side panel, the history player under them, the view cube and the display bar](docs/img/window.png)
 
 ## Three ways to use it
 
