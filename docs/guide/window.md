@@ -194,8 +194,10 @@ view), its name, and its key value at the right, such as *Extrude 8 mm*, *R18 ×
 
 **Checks** sit under the list: *Checks 7 · all pass*, then each check measured against its limit, such as
 *7 mm ≥ 5 mm*. A failing check is red, with its reason under it, and the line at the top says *1 of 7
-checks fails*. Click a check to fly to what it measures. The checks fold to their heading while something
-is selected, or when the panel is short, to make room.
+checks fails*. A check that is *not proven*, neither passed nor failed, has a grey dot, with what it must
+be and why under it ([Measuring and assertions › Assertions](measure.md#assertions)); the Moka pot in the
+studio picture below has one. Click a check to fly to what it measures. The checks fold to their heading
+while something is selected, or when the panel is short, to make room.
 
 **What is selected** shows at the foot of the panel:
 
@@ -300,14 +302,22 @@ With a timeline, **History** and **Motion** appear above the player. In **Motion
 - the slider runs over `t`, and the player plays it from 0 to 1 in 4 s at 1×;
 - the step buttons move `t` by 0.05, and **Loop** starts again at 0;
 - **Back and forth**, under the row, turns round at the end;
-- **Collisions** draws the parts that overlap in red. The view names the moment, such as
-  `t = 0.500 · collision: Wall and Crank`.
+- **Collisions** draws the parts that overlap in red, and says under the player how many pairs overlap
+  at that moment, such as *2 colliding*.
+
+The moment shows beside the play button (*t 0.500*) and in the status bar (*t = 0.500*). Nothing is
+written over the view while the player is in sight. When it is not (the side panel on its **Parameters**
+tab, or put away), the view names the moment itself, such as `t = 0.500 · collision: Wall and Crank`.
 
 As with the history, nothing in the document changes. Only the features that use `t` are rebuilt for each
 moment, so a heavy model plays slower rather than skipping. An assembly has no history of its own, so it
 shows only **Motion**: its parts are moved, not rebuilt ([Assemblies](assemblies.md#motion)).
 
-![The player in Motion mode: the slider over t, Back and forth and Collisions, and the moment named over the view](images/motion.png)
+![The toggle clamp in Motion mode at t 0.500: the slider over t, Back and forth and Collisions switched on, and 2 colliding under the player](images/motion.png)
+
+In this picture, **Collisions** reports two pairs for the toggle clamp: its spindle's rod and each of the
+two nuts on it, drawn in red. This example reports them at every moment of its motion. The handle's grip
+is red by its own colour.
 
 While a motion plays, the view draws lighter so it keeps up. In the studio look it leaves out the frames a
 still picture averages, the depth of field, the ambient occlusion and the reflections; the shadows stay.
@@ -339,15 +349,20 @@ programs](reference.md#the-window-for-agents-and-programs)).
 
 The **display bar** at the bottom of the view:
 
-- **Sketches** and **Datums** show or hide sketches and construction planes, axes and points.
+- **Sketches** and **Datums** show or hide sketches and construction planes, axes and points. In an
+  assembly the first button is **Mates** instead: it shows or hides the markers of its mates. The
+  pictures in this guide were taken with **Sketches** and **Datums** switched off, unless they show a
+  sketch; in your window they are on until you switch them off.
 - **Edges** shows or hides the dark lines along the bodies' edges. An edge you point at or select is still
   drawn.
 - **See-through** makes the bodies transparent (drag its slider), to look at pockets and cavities.
 - **Section** cuts the view open with a plane across X, Y or Z, through the middle of the model at first.
   **Offset** moves it and **Flip side** keeps the other half.
 
-In a narrow window, Sketches, Datums and Edges show their icons only, and the See-through and Offset
-sliders lose their labels: hover for the names.
+The pictures in this guide show a window 1400 points wide. In a narrower one, such as the 1280 × 800 that
+3DCraft first opens with, Sketches, Datums and Edges show their icons without words, and the start screen
+scrolls to show its last panels. Narrower still, the See-through and Offset sliders lose their labels
+too. Hover for the names.
 
 None of this changes the document. Each tab remembers its own camera, section and see-through. A heavy
 model first shows a quick picture, then the sharp one (the status bar says `refining`).
