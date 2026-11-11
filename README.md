@@ -46,9 +46,9 @@ owed, and it is being made better step by step.
 
 ## Get started
 
-> **The first release, 0.1.0, is being prepared.** The installers are not published yet, and the guide and
-> its pictures are being brought up to date. Until then, build 3DCraft from source:
-> [`docs/development.md`](docs/development.md).
+> **0.1.0 is the first release.** Its installers are on the
+> [releases page](https://github.com/johancoppens/3dcraft/releases), and the website,
+> [3dcraft.dev](https://3dcraft.dev/), has the guide, the examples and the web version.
 
 - **[Install 3DCraft](docs/guide/install.md)**: installers for Windows, macOS and Linux (version
   0.1.0), or the web version with nothing to install.
