@@ -956,8 +956,8 @@ impl Shell {
     /// The Help menu's item: opens the popover.
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn agents_menu_item(&mut self, ui: &mut egui::Ui, kit: &Kit) {
-        let item = kit
-            .menu_item(ui, crate::kit::MenuItem::new("Connect an AI agent…"))
+        let item = self
+            .item(kit, ui, crate::kit::MenuItem::new("Connect an AI agent…"))
             .on_hover_text(
                 "The agents panel over the status bar: the switch, the folder, who is connected",
             );

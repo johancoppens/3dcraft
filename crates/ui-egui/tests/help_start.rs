@@ -12,6 +12,7 @@
 )]
 
 use craft3d_engine::{Access, Session, Workspace};
+use craft3d_ui_egui::shell::help::{CHECK_UPDATES, UPDATE_URL};
 use craft3d_ui_egui::shell::{EXAMPLES, EXAMPLES_URL, ExampleSection, External, RecentFiles};
 use craft3d_ui_egui::{FileAction, Shell, StatusSlot, TabPart};
 use egui::{Event, Pos2, vec2};
@@ -79,6 +80,25 @@ impl Window {
         };
         let mut output = self.ctx.run_ui(input, |ui| shell.ui(ui, session));
         output.textures_delta.clear();
+    }
+
+    /// The pointer moved to `at`, pressed and let go there, and a frame
+    /// after.
+    fn click(&mut self, shell: &mut Shell, session: &mut Session, at: Pos2) {
+        self.frame(shell, session, vec![Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            self.frame(
+                shell,
+                session,
+                vec![Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        self.frame(shell, session, Vec::new());
     }
 
     fn key(&mut self, shell: &mut Shell, session: &mut Session, key: egui::Key) {
@@ -467,6 +487,104 @@ fn a_click_on_new_document_asks_the_host_for_a_new_document() {
         }
         assert_eq!(shell.take_external(), Some(External::Url(url.to_string())));
     }
+}
+
+/// Check for updates (docs/decisions.md, 2026-11-11): beside the version
+/// in the start screen's header, a line high on the desktop (so the header
+/// is no taller and the cards keep their room), and in the Help menu just
+/// before About. Each asks the host to open the website's update page for
+/// this version in the browser; the window itself connects nowhere. (The
+/// web build shows neither: `help::update_url(true)` is `None`, tested in
+/// `help.rs`.)
+#[test]
+fn check_for_updates_asks_the_host_to_open_the_update_page() {
+    let url = format!(
+        "https://3dcraft.dev/update/?from={}",
+        craft3d_engine::VERSION
+    );
+    assert_eq!(UPDATE_URL, url);
+    for (width, height) in [
+        (1400.0, 900.0),
+        (1024.0, 700.0),
+        (480.0, 860.0),
+        (390.0, 844.0),
+    ] {
+        let mut session = Session::new(Workspace::none());
+        let mut shell = Shell::new();
+        let mut window = Window::sized(width, height);
+        for _ in 0..3 {
+            window.frame(&mut shell, &mut session, Vec::new());
+        }
+        let hit = |shell: &Shell, name: &str| {
+            shell
+                .start_hits()
+                .iter()
+                .find(|(hit, _)| hit == name)
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| panic!("{width}: no {name} on the start screen"))
+        };
+        let link = hit(&shell, "check-updates");
+        let card = hit(&shell, "card");
+        let new = hit(&shell, "new");
+        // In the header: right of the logo and the version, under the
+        // name, above New part, inside the column.
+        assert!(
+            link.left() > card.left() + 100.0 && link.right() <= card.right() + 0.5,
+            "{width}: {link:?} in {card:?}"
+        );
+        assert!(
+            link.center().y > card.top() + 20.0 && link.bottom() <= new.top(),
+            "{width}: {link:?} above {new:?}"
+        );
+        if width >= 1024.0 {
+            assert!(link.height() < 20.0, "{width}: a line high: {link:?}");
+        }
+        window.click(&mut shell, &mut session, link.center());
+        assert_eq!(
+            shell.take_external(),
+            Some(External::Url(url.clone())),
+            "{width}"
+        );
+    }
+    // Help › Check for updates…, before About.
+    let mut session = Session::new(Workspace::none());
+    let mut shell = Shell::new();
+    let mut window = Window::sized(1024.0, 700.0);
+    for _ in 0..3 {
+        window.frame(&mut shell, &mut session, Vec::new());
+    }
+    let help = shell
+        .menu_titles()
+        .iter()
+        .find(|(title, _)| title == "Help")
+        .map(|(_, rect)| *rect)
+        .unwrap();
+    window.click(&mut shell, &mut session, help.center());
+    let labels: Vec<String> = shell
+        .menu_items()
+        .iter()
+        .map(|(label, _)| label.clone())
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "User guide",
+            "Keyboard shortcuts",
+            "Connect an AI agent…",
+            CHECK_UPDATES,
+            "About 3DCraft"
+        ]
+    );
+    assert_eq!(CHECK_UPDATES, "Check for updates…");
+    let item = shell
+        .menu_items()
+        .iter()
+        .find(|(label, _)| label == CHECK_UPDATES)
+        .map(|(_, rect)| *rect)
+        .unwrap();
+    window.click(&mut shell, &mut session, item.center());
+    assert_eq!(shell.take_external(), Some(External::Url(url)));
+    assert!(!shell.state.dialogs.about);
 }
 
 #[test]

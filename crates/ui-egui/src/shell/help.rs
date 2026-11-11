@@ -1,5 +1,7 @@
 //! The Help menu: About 3DCraft, the user guide, the keyboard shortcuts
-//! (also F1) and, on the desktop, the folder 3DCraft keeps its data in.
+//! (also F1) and, on the desktop, the folder 3DCraft keeps its data in and
+//! Check for updates…, which opens the website's page for this version
+//! ([`UPDATE_URL`]) in the browser: 3DCraft itself connects nowhere.
 //!
 //! The shortcuts window is made from one table, [`shortcuts`]. Its keys
 //! are the values the key handling itself uses (the File menu's
@@ -43,6 +45,31 @@ pub const GUIDE_URL: &str = guide_page!("");
 /// How to connect an agent over MCP: the install chapter of that guide, at
 /// its heading *Connect an AI agent over MCP*.
 pub const AGENT_SETUP_URL: &str = guide_page!("install#connect-an-ai-agent-over-mcp");
+/// The website's page that says whether there is a newer version than
+/// this one and offers its downloads, with this build's full version in
+/// the address (docs/decisions.md, 2026-11-11): Help › Check for updates…
+/// and the link beside the version on the start screen open it in the
+/// browser, as Help › User guide opens the guide. The program itself makes
+/// no connection. The version goes into the query as it is: a test holds
+/// it to characters a query carries unchanged.
+pub const UPDATE_URL: &str = concat!(
+    "https://3dcraft.dev/update/?from=",
+    env!("CARGO_PKG_VERSION")
+);
+/// The Help menu's item that opens [`UPDATE_URL`] (the ellipsis: it
+/// leaves the program).
+pub const CHECK_UPDATES: &str = "Check for updates…";
+/// The start screen's link beside the version, which opens it too.
+pub const UPDATE_LINK: &str = "Check for updates";
+/// What both say under the pointer.
+pub const UPDATE_HINT: &str = "Opens 3dcraft.dev in your browser, which says whether there is a newer version; 3DCraft itself does not connect";
+
+/// Where Check for updates goes, or `None` where it is not offered: the
+/// web build (`web`), which is always the latest version.
+pub fn update_url(web: bool) -> Option<&'static str> {
+    (!web).then_some(UPDATE_URL)
+}
+
 /// The source code.
 pub const REPO_URL: &str = "https://github.com/johancoppens/3dcraft";
 /// The licence 3DCraft is published under.
@@ -290,18 +317,21 @@ impl Shell {
         }
     }
 
-    /// The Help menu, after View.
+    /// The Help menu, after View: User guide, Keyboard shortcuts, on the
+    /// desktop Connect an AI agent… and Open data folder; then, on the
+    /// desktop, Check for updates…, and About 3DCraft. Its items say where
+    /// they were drawn ([`Shell::menu_items`]).
     pub(super) fn help_menu(&mut self, ui: &mut egui::Ui) -> egui::Rect {
         use crate::kit::MenuItem;
         let tokens = self.tokens;
         super::menus::kit_menu(ui, &tokens, "Help", tokens.menu_widths[3], |kit, ui| {
-            if kit.menu_item(ui, MenuItem::new("User guide")).clicked() {
+            if self.item(kit, ui, MenuItem::new("User guide")).clicked() {
                 self.open_external(ui.ctx(), External::Url(GUIDE_URL.to_string()));
                 ui.close();
             }
             let f1 = ui.ctx().format_shortcut(&help_shortcut());
-            if kit
-                .menu_item(ui, MenuItem::new("Keyboard shortcuts").shortcut(&f1))
+            if self
+                .item(kit, ui, MenuItem::new("Keyboard shortcuts").shortcut(&f1))
                 .clicked()
             {
                 self.state.dialogs.shortcuts = true;
@@ -311,8 +341,8 @@ impl Shell {
             self.agents_menu_item(ui, kit);
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(folder) = self.help.data_folder.clone() {
-                let item = kit
-                    .menu_item(ui, MenuItem::new("Open data folder"))
+                let item = self
+                    .item(kit, ui, MenuItem::new("Open data folder"))
                     .on_hover_text(format!(
                         "Autosaves, crash recovery and the recent files: {}",
                         folder.display()
@@ -323,7 +353,18 @@ impl Shell {
                 }
             }
             kit.menu_separator(ui);
-            if kit.menu_item(ui, MenuItem::new("About 3DCraft")).clicked() {
+            // Beside About, where the version is: the website says whether
+            // there is a newer one (not in the browser, always the latest).
+            if let Some(url) = update_url(cfg!(target_arch = "wasm32")) {
+                let item = self
+                    .item(kit, ui, MenuItem::new(CHECK_UPDATES))
+                    .on_hover_text(UPDATE_HINT);
+                if item.clicked() {
+                    self.open_external(ui.ctx(), External::Url(url.to_string()));
+                    ui.close();
+                }
+            }
+            if self.item(kit, ui, MenuItem::new("About 3DCraft")).clicked() {
                 self.state.dialogs.about = true;
                 ui.close();
             }
@@ -431,6 +472,17 @@ impl Shell {
                     go = Some(REPO_URL);
                 }
             });
+            if let Some(url) = update_url(cfg!(target_arch = "wasm32")) {
+                kit.dialog_row(ui, "Updates", label, |ui| {
+                    if kit
+                        .button(ui, Button::link(UPDATE_LINK))
+                        .on_hover_text(url)
+                        .clicked()
+                    {
+                        go = Some(url);
+                    }
+                });
+            }
             kit.dialog_footer(ui, |ui| {
                 copy = kit
                     .button(ui, Button::quiet("Copy system info").icon(Glyph::Copy))
@@ -632,6 +684,32 @@ mod tests {
             "{}: no heading for #{anchor} among {anchors:?}",
             chapter.display()
         );
+    }
+
+    /// Check for updates opens the website's update page with this build's
+    /// whole version (the engine's, which bug reports name) in the
+    /// address. The version goes into the query as it is, so it must hold
+    /// only characters a query carries unchanged: a version with build
+    /// metadata (`+`, which would need percent-encoding) fails here rather
+    /// than opening a wrong address. The web build, always the latest
+    /// version, offers none.
+    #[test]
+    fn check_for_updates_opens_the_update_page_of_this_version() {
+        assert_eq!(VERSION, craft3d_engine::VERSION);
+        assert_eq!(
+            UPDATE_URL,
+            format!("https://3dcraft.dev/update/?from={VERSION}")
+        );
+        assert!(
+            !VERSION.is_empty()
+                && VERSION
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-'),
+            "`{VERSION}` holds a character a query does not carry as it is"
+        );
+        assert_eq!(update_url(false), Some(UPDATE_URL));
+        assert_eq!(update_url(true), None);
+        assert_eq!(CHECK_UPDATES, format!("{UPDATE_LINK}…"));
     }
 
     #[test]

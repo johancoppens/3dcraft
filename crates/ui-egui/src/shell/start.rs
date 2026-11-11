@@ -9,7 +9,9 @@
 //! of its own (`Session::open_bytes`): a Jig on its form, an assembly with
 //! its player. *More examples* opens the galleries on the website at the
 //! part of the section shown ([`ExampleSection::more_url`]), as Help opens
-//! the guide.
+//! the guide; *Check for updates*, beside the version, the website's page
+//! for this version (`help::UPDATE_URL`), as Help › Check for updates…
+//! does.
 //!
 //! The examples are copied from their own repositories by
 //! `cargo xtask bundle-examples` (docs/development.md, Bundled examples):
@@ -818,9 +820,10 @@ impl Shell {
     }
 
     /// Where the start screen's buttons and links were drawn in the last
-    /// frame, in points: `new`, `new-assembly`, `open`, `section:<word>`,
-    /// `more-examples`, `example:<id>`, `card` (the whole content) and the
-    /// agents panel's. Empty when it was not shown.
+    /// frame, in points: `check-updates` (not in the browser), `new`,
+    /// `new-assembly`, `open`, `section:<word>`, `more-examples`,
+    /// `example:<id>`, `card` (the whole content) and the agents panel's.
+    /// Empty when it was not shown.
     pub fn start_hits(&self) -> &[(String, egui::Rect)] {
         &self.start.hits
     }
@@ -935,11 +938,20 @@ impl Shell {
                         ))
                         .color(color(tokens.text)),
                 );
-                ui.label(
-                    egui::RichText::new(format!("Version {}", super::help::VERSION))
-                        .font(kit.font())
-                        .color(color(tokens.text_dim)),
-                );
+                // The version, and beside it Check for updates. The row is
+                // as high as its line: egui's horizontal row would be as
+                // high as a control.
+                let line = ui.fonts_mut(|f| f.row_height(&kit.font()));
+                ui.spacing_mut().interact_size.y = line;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = tokens.nav_gap * 1.5;
+                    ui.label(
+                        egui::RichText::new(format!("Version {}", super::help::VERSION))
+                            .font(kit.font())
+                            .color(color(tokens.text_dim)),
+                    );
+                    self.update_link(ui, &kit, line);
+                });
             });
         });
         ui.add_space(space * 0.4);
@@ -1038,6 +1050,33 @@ impl Shell {
             egui::pos2(ui.min_rect().left() + width, ui.min_rect().bottom()),
         );
         self.start.hits.push(("card".to_string(), rect));
+    }
+
+    /// Beside the version: *Check for updates*, which opens the website's
+    /// page for this version in the browser, as Help › Check for updates…
+    /// does (3DCraft itself does not connect). A link is text: on the
+    /// desktop it is as high as the `line` it stands on, so the header keeps
+    /// its height and the cards their room in a low window; with touch
+    /// sizes a finger's height. Not in the browser, which always runs the
+    /// latest version.
+    fn update_link(&mut self, ui: &mut egui::Ui, kit: &Kit, line: f32) {
+        let Some(url) = super::help::update_url(cfg!(target_arch = "wasm32")) else {
+            return;
+        };
+        let mut text = *kit;
+        text.t.control_height = line;
+        let link = text
+            .button(
+                ui,
+                Button::link(super::help::UPDATE_LINK).icon(Glyph::External),
+            )
+            .on_hover_text(super::help::UPDATE_HINT);
+        self.start
+            .hits
+            .push(("check-updates".to_string(), link.rect));
+        if link.clicked() {
+            self.open_external(ui.ctx(), super::help::External::Url(url.to_string()));
+        }
     }
 
     /// "Examples" and, at the right (under it on a phone), the sections

@@ -90,7 +90,12 @@ impl Shell {
     }
 
     /// A kit menu item that says where it was drawn.
-    fn item(&mut self, kit: &Kit, ui: &mut egui::Ui, item: MenuItem<'_>) -> egui::Response {
+    pub(super) fn item(
+        &mut self,
+        kit: &Kit,
+        ui: &mut egui::Ui,
+        item: MenuItem<'_>,
+    ) -> egui::Response {
         let label = item.label.to_string();
         let response = kit.menu_item(ui, item);
         self.menu_hits.items.push((label, response.rect));
