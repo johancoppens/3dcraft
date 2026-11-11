@@ -420,7 +420,10 @@ fn f_flies_to_the_selection_and_the_list_follows_it() {
         framed(&shell, start, &scene.feature_box("F2"))
     );
 
-    // Nothing selected: F frames everything, at once, as before.
+    // Nothing selected: F frames everything drawn, at once, as before:
+    // the sketch high above the plate too, which the opening frame of
+    // this document (made before the window first shows it) leaves out
+    // (2026-11-11).
     call(
         &mut shell,
         &mut session,
@@ -431,7 +434,12 @@ fn f_flies_to_the_selection_and_the_list_follows_it() {
     assert_eq!(shell.made_selection(), None);
     window.key(&mut shell, &mut session, middle, egui::Key::F);
     assert!(shell.state.camera.auto_fit);
-    assert_eq!(shell.state.camera.target, start.target);
+    let everything = scene.frame_box().center().unwrap();
+    assert_eq!(
+        shell.state.camera.target,
+        [everything.x, everything.y, everything.z]
+    );
+    assert_eq!(start.target, [50.0, 30.0, 5.0], "opened on the plate");
 }
 
 #[test]

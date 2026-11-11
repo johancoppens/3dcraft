@@ -1110,6 +1110,10 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
 
     let mut window = Window::new(1000.0, 700.0);
     window.frame(&mut shell, &mut session, Vec::new());
+    // Framed on everything drawn, the sketch with the bodies, as these
+    // pictures were measured before 2026-11-11 (a document the window
+    // first shows with a history is framed on its bodies since).
+    call(&mut shell, &mut session, "ui.fit", json!({}));
     if see_through {
         call(
             &mut shell,
