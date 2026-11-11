@@ -35,7 +35,7 @@ The L is drawn on the `zx` plane. On that plane a sketch point is written `[z, x
 is the height Z, its second the distance X along the flat leg. The plane's normal is +Y, so extruding the
 L by `width` makes the bracket run from Y = 0 to Y = 25:
 
-![The L-bracket's profile on the zx plane: its first coordinate is the height Z, its second the distance X](images/bracket-sketch.png)
+![The L-bracket's profile seen from the front, at the first step of its history: the upright leg along Z, the flat leg along X, as the axes at the bottom left show](images/bracket-sketch.png)
 
 ```json
 [
@@ -114,7 +114,7 @@ answers `"ok": true`, three assertions passed.
 
 The flat leg is now 60 mm; the round is still in the corner, the hole moved to the middle of the longer
 leg (its centre is written in `leg_x`), and the result of the command says the three assertions still
-pass (volume 8491.206 mm³). With `inner_r` set to 30 mm the round no longer fits: [How 3DCraft thinks › *Failed
+pass. `assert.list` gives the new volume, 8491.206 mm³. With `inner_r` set to 30 mm the round no longer fits: [How 3DCraft thinks › *Failed
 features*](concepts.md#failed-features), shows what 3DCraft answers.
 
 ## 7. Save and export

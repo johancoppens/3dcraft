@@ -191,6 +191,10 @@ When a file action you started fails (Open, Save, Import, Export), a dialog says
 
 ![The error dialog Could not open the file, with the reason, Copy details and OK](images/error-dialog.png)
 
+Such a message is written to be exact, so it can read as technical. You need not follow all of it: its
+first words say what failed (here, `bracket.3dcraft` is not a file 3DCraft can read, or it was cut short).
+When you cannot see why, click **Copy details** and report it, as below.
+
 When a command fails in the window, the status bar at the bottom shows the command in red with its
 message, and a **Copy details** button.
 
