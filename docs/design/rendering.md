@@ -1581,3 +1581,23 @@ Part B, as far as it went on 2026-11-02:
   layout's own (icons only where the names do not fit), not a fixed 1000-point switch.
 - **Pictures**: the window pictures (`window_picture`) draw the plain look: the studio look's environment needs
   the window's settled GPU frames, so w1's model is plain while its popover is the studio's.
+
+### Datums hidden at the start (2026-11-11)
+
+*Found* on the published Jigs, opened in the browser from the website's gallery with the window's defaults
+(`Show::default`: datums and sketches shown, one setting for the window, not per document): a datum plane is a
+square as large as the model (`DATUM_PLANE_EXTENT` of the diagonal of the box around the meshes and sketches),
+drawn translucent over the bodies, so the sundial opened on its two planes with the dial not to be seen, the
+Dobsonian telescope, the cam disc and the wooden stair on their planes, and the Jansen leg, the tensegrity table
+and the planetary gearbox were marred by one. The frame was not the cause: the opening frame and Fit
+(`Shell::drawn_frame` over `Scene::frame_box`) count the bodies shown and, while they are shown, the sketches,
+never a datum. *Decided* (the developer): datums are hidden by default, sketches stay shown (an agent drawing a
+sketch before there is a body must be seen). `Show::default` has `datums: false`; the Datums toggle, `ui.set
+{"show": {"datums": true}}` and a flight to a datum (`Shell::reveal`: a double click on its row, its ⌖, F with it
+selected, `ui.fit` with it) show them, as before. The desktop keeps no view state between runs; the web page's
+stored preferences win either way, and preferences stored without `datums` take the default (the page has
+written the whole of `show` since its first frame, so a browser that opened an earlier build keeps datums
+shown until they are switched off). Tests: `state::tests::a_fresh_window_hides_the_datums_and_shows_the_sketches`,
+`prefs::tests::a_stored_datums_switch_wins_and_a_missing_one_is_hidden` (`apps/craft3d-web`),
+`tests/frame_box.rs` › `the_opening_frame_and_fit_leave_out_the_datums`; the tests about drawing datums switch
+them on themselves.

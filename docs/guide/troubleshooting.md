@@ -134,6 +134,9 @@ against: `"renderer": "cpu"` asks for it.
   export.
 - **The model looks rough at first.** A heavy model first shows a quick picture, then the sharp one; the
   status bar says `refining` meanwhile.
+- **A datum plane, axis or point does not show.** Datums are hidden until you switch **Datums** on in the
+  display bar at the foot of the view; a double click on a datum's row in the feature list switches it on
+  and flies there.
 
 ## The agent
 

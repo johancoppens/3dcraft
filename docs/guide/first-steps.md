@@ -30,8 +30,8 @@ tab next to it.
 In this picture the pointer rests on the last row, which shows that row's grip, its ⌖ and its eye
 ([The window › Features](window.md#features) explains them). Like most pictures in this guide, it was
 taken with **Sketches** and **Datums** switched off, the first two buttons at the foot of the view. In
-your window they are on until you switch them off, so you also see the lines of the sketches and the datum
-planes and axes.
+your window **Sketches** is on until you switch it off, so you also see the lines of the sketches;
+**Datums** starts off: switch it on to see the datum planes and axes.
 
 On the left is the **feature list**: the steps that made the profile, in order.
 

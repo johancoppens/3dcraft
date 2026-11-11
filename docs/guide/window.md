@@ -361,9 +361,10 @@ programs](reference.md#the-window-for-agents-and-programs)).
 The **display bar** at the bottom of the view:
 
 - **Sketches** and **Datums** show or hide sketches and construction planes, axes and points. In an
-  assembly the first button is **Mates** instead: it shows or hides the markers of its mates. Most
-  pictures in this guide were taken with **Sketches** and **Datums** switched off; in your window they
-  are on until you switch them off.
+  assembly the first button is **Mates** instead: it shows or hides the markers of its mates. In your
+  window **Sketches** starts on and **Datums** starts off, so switch **Datums** on to see the datum planes,
+  axes and points; flying to a datum from its row switches it on too. Most pictures in this guide were
+  taken with both switched off.
 - **Edges** shows or hides the dark lines along the bodies' edges. An edge you point at or select is still
   drawn.
 - **See-through** makes the bodies transparent (drag its slider), to look at pockets and cavities.

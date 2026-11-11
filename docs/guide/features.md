@@ -234,7 +234,8 @@ Construction geometry that makes no body: `datum.plane` (at a `distance` from a 
 an `angle` `about` an axis, or `through` three points), `datum.axis`, `datum.point`, `datum.helix`. Sketch
 on a datum plane, mirror in it, pattern about a datum axis. A datum plane turned `about` an axis goes
 through that axis: to turn a plane about a line that is not a world axis, make that line a `datum.axis`
-first. `datum.references` lists what a feature can be placed by.
+first. `datum.references` lists what a feature can be placed by. The window hides datums until you switch
+**Datums** on in the display bar ([The window › Looking around](window.md#looking-around)).
 
 ## Sheets
 
