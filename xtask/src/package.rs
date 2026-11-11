@@ -2033,6 +2033,86 @@ mod tests {
         }
     }
 
+    /// Every component of the `.msi` installs one file, its key path, and
+    /// is in the feature: WiX generates a component's GUID only for one
+    /// file, or for a versioned key file beside unversioned ones, and the
+    /// fonts carry a version (WIX0367 and WIX0368 failed the first `.msi`
+    /// built on a hosted runner, 2026-11-11; the Linux runner never builds
+    /// one). No folder takes the id of a Windows Installer system folder,
+    /// which it would resolve to: a folder `FontsFolder` put the fonts
+    /// into the system's Fonts folder (the ids are WiX 5's standard
+    /// directories).
+    #[test]
+    fn every_msi_component_installs_one_file_into_a_folder_of_its_own() {
+        let wxs =
+            std::fs::read_to_string(repo_root().join("packaging/windows/craft3d.wxs")).unwrap();
+        let mut components = 0;
+        for block in wxs.split("<Component ").skip(1) {
+            let body = block.split("</Component>").next().unwrap();
+            let id = body
+                .strip_prefix("Id=\"")
+                .and_then(|rest| rest.split('"').next())
+                .unwrap();
+            let files = body.matches("<File ").count();
+            assert_eq!(files, 1, "the component {id} installs {files} files");
+            assert!(body.contains("KeyPath=\"yes\""), "{id} names no key path");
+            assert!(
+                wxs.contains(&format!("<ComponentRef Id=\"{id}\" />")),
+                "{id} is in no feature"
+            );
+            components += 1;
+        }
+        assert!(components >= 11, "found only {components} components");
+        assert_eq!(
+            wxs.matches("<File ").count(),
+            components,
+            "a file outside a component"
+        );
+        let system = [
+            "TARGETDIR",
+            "AdminToolsFolder",
+            "AppDataFolder",
+            "CommonAppDataFolder",
+            "CommonFilesFolder",
+            "CommonFiles64Folder",
+            "CommonFiles6432Folder",
+            "DesktopFolder",
+            "FavoritesFolder",
+            "FontsFolder",
+            "LocalAppDataFolder",
+            "MyPicturesFolder",
+            "NetHoodFolder",
+            "PersonalFolder",
+            "PrintHoodFolder",
+            "ProgramFilesFolder",
+            "ProgramFiles64Folder",
+            "ProgramFiles6432Folder",
+            "ProgramMenuFolder",
+            "RecentFolder",
+            "SendToFolder",
+            "StartMenuFolder",
+            "StartupFolder",
+            "SystemFolder",
+            "System16Folder",
+            "System64Folder",
+            "System6432Folder",
+            "TempFolder",
+            "TemplateFolder",
+            "WindowsFolder",
+        ];
+        let mut folders = 0;
+        for (at, _) in wxs.match_indices("<Directory Id=\"") {
+            let rest = wxs.get(at + "<Directory Id=\"".len()..).unwrap();
+            let id = rest.split('"').next().unwrap();
+            assert!(
+                !system.contains(&id),
+                "the folder {id} is Windows Installer's system folder of that name"
+            );
+            folders += 1;
+        }
+        assert!(folders >= 2, "found only {folders} folders");
+    }
+
     /// The packages send people to the website, a problem to the issues,
     /// and only the source and the release notes to the repository
     /// (docs/decisions.md, 2026-11-10).

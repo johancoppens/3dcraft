@@ -63,23 +63,43 @@
           <File Id="craft3d_cli.exe" Source="$(var.BinDir)\craft3d-cli.exe" KeyPath="yes" />
           <Environment Id="PathEntry" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="yes" Permanent="no" />
         </Component>
+        <!-- One file per component from here on, each file its component's
+             key path: WiX generates a component's GUID only for one file,
+             or for a versioned key file beside unversioned ones (WIX0367,
+             WIX0368; the fonts carry a version). -->
         <Component Id="Licence">
           <File Id="LICENSE.txt" Source="$(var.Licence)" Name="LICENSE.txt" KeyPath="yes" />
-          <File Id="THIRD_PARTY_NOTICES.txt" Source="$(var.BinDir)\THIRD-PARTY-NOTICES.txt" Name="THIRD-PARTY-NOTICES.txt" />
-          <File Id="EXAMPLES_LICENSE.md" Source="$(var.BinDir)\EXAMPLES-LICENSE.md" Name="EXAMPLES-LICENSE.md" />
+        </Component>
+        <Component Id="ThirdPartyNotices">
+          <File Id="THIRD_PARTY_NOTICES.txt" Source="$(var.BinDir)\THIRD-PARTY-NOTICES.txt" Name="THIRD-PARTY-NOTICES.txt" KeyPath="yes" />
+        </Component>
+        <Component Id="ExamplesLicence">
+          <File Id="EXAMPLES_LICENSE.md" Source="$(var.BinDir)\EXAMPLES-LICENSE.md" Name="EXAMPLES-LICENSE.md" KeyPath="yes" />
         </Component>
         <!-- The built-in fonts and the interface's beside the program, with
              their licences (fetched by `cargo xtask fonts`, never
              committed); an xtask test holds this list to the shipped
-             fonts. -->
-        <Directory Id="FontsFolder" Name="fonts">
-          <Component Id="Fonts">
+             fonts. The folder's id is not `FontsFolder`: that is Windows
+             Installer's property for the system's Fonts folder, which a
+             directory of that id resolves to. -->
+        <Directory Id="InstallFonts" Name="fonts">
+          <Component Id="FontNotoSans">
             <File Id="NotoSans_Regular.otf" Source="$(var.BinDir)\fonts\NotoSans-Regular.otf" KeyPath="yes" />
-            <File Id="NotoSans_OFL.txt" Source="$(var.BinDir)\fonts\NotoSans-OFL.txt" />
-            <File Id="JetBrainsMono_Regular.ttf" Source="$(var.BinDir)\fonts\JetBrainsMono-Regular.ttf" />
-            <File Id="JetBrainsMono_OFL.txt" Source="$(var.BinDir)\fonts\JetBrainsMono-OFL.txt" />
-            <File Id="InterVariable.ttf" Source="$(var.BinDir)\fonts\InterVariable.ttf" />
-            <File Id="Inter_OFL.txt" Source="$(var.BinDir)\fonts\Inter-OFL.txt" />
+          </Component>
+          <Component Id="FontNotoSansLicence">
+            <File Id="NotoSans_OFL.txt" Source="$(var.BinDir)\fonts\NotoSans-OFL.txt" KeyPath="yes" />
+          </Component>
+          <Component Id="FontJetBrainsMono">
+            <File Id="JetBrainsMono_Regular.ttf" Source="$(var.BinDir)\fonts\JetBrainsMono-Regular.ttf" KeyPath="yes" />
+          </Component>
+          <Component Id="FontJetBrainsMonoLicence">
+            <File Id="JetBrainsMono_OFL.txt" Source="$(var.BinDir)\fonts\JetBrainsMono-OFL.txt" KeyPath="yes" />
+          </Component>
+          <Component Id="FontInter">
+            <File Id="InterVariable.ttf" Source="$(var.BinDir)\fonts\InterVariable.ttf" KeyPath="yes" />
+          </Component>
+          <Component Id="FontInterLicence">
+            <File Id="Inter_OFL.txt" Source="$(var.BinDir)\fonts\Inter-OFL.txt" KeyPath="yes" />
           </Component>
         </Directory>
       </Directory>
@@ -89,7 +109,14 @@
       <ComponentRef Id="App" />
       <ComponentRef Id="Cli" />
       <ComponentRef Id="Licence" />
-      <ComponentRef Id="Fonts" />
+      <ComponentRef Id="ThirdPartyNotices" />
+      <ComponentRef Id="ExamplesLicence" />
+      <ComponentRef Id="FontNotoSans" />
+      <ComponentRef Id="FontNotoSansLicence" />
+      <ComponentRef Id="FontJetBrainsMono" />
+      <ComponentRef Id="FontJetBrainsMonoLicence" />
+      <ComponentRef Id="FontInter" />
+      <ComponentRef Id="FontInterLicence" />
     </Feature>
   </Package>
 </Wix>
