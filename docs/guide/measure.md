@@ -121,6 +121,9 @@ assertions after a change does one of these:
 - it runs `assert.list` next, which waits by default;
 - it reads `document.inspect {"wait": true}`, which waits for them too.
 
+For example, the last two steps of a script for a gear whose number of teeth is a public parameter,
+`teeth` (on its own, in a document without that parameter, it fails):
+
 ```json
 [
   ["param.set", {"values": {"teeth": 31}, "wait": true}],

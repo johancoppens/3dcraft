@@ -12,7 +12,9 @@ You design it as an ordinary `.3dcraft` document, with an agent or by hand, then
 
 ## 1. Publish the variables others may set
 
-Each published variable becomes a parameter, with a label, a description, a group, a range and a step:
+Each published variable becomes a parameter, with a label, a description, a group, a range and a step.
+Say your box has the variables `width` (a length), `lid` (0 or 1) and `corners` (1 or 2); these steps
+publish them:
 
 ```json
 [

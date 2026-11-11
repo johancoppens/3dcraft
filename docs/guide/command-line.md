@@ -102,9 +102,8 @@ craft3d-cli check-range laser-box.3dcraft --samples 100 --seed 7
 ```
 
 `check-range` proves a Jig (a document with parameters, here the laser-cut box saved above) over its
-parameter range: it builds the design
-at the defaults, at the corners of the ranges, at every choice and at random points chosen by the seed,
-and checks each as `document.check` does. Where a point narrows the range of a parameter it leaves at its
+parameter range: it builds the design at the defaults, at the corners of the ranges, at every choice and
+at random points chosen by the seed, and checks each as `document.check` does. Where a point narrows the range of a parameter it leaves at its
 default (a choice that allows fewer holes), that parameter is moved into its new range, as the parameter
 form moves it, and that point's line says so (`clamped holes 8 -> 4`); a choice the form does not offer
 at the defaults is not tried; a switch whose maximum is another switch stays off while that one is off.

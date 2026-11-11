@@ -94,6 +94,8 @@ million triangles, all bodies together, is refused: choose a coarser quality.
 
 ## Other CAD programs: STEP
 
+Export, then import a STEP file you have (`supplier-part.step` stands for its name):
+
 ```json
 [
  ["file.export", {"path": "part.step"}],
@@ -139,11 +141,13 @@ its own.
 
 ![The laser-cut box's parts on one sheet, ready to cut](images/cut-sheet.png)
 
-The same as commands:
+The same as commands. The first three lines are for the [bracket lesson](../examples/bracket.json), its
+sketch `Profile` and the ends of its extruded L, `F2`; the last is for the laser-cut box, whose set is
+*Cut sheet*:
 
 ```json
 [
- ["file.export", {"path": "panel.dxf", "sketch": "Outline"}],
+ ["file.export", {"path": "panel.dxf", "sketch": "Profile"}],
  ["file.export", {"path": "panel.svg", "face": "F2:endCap()"}],
  ["file.export", {"path": "parts.dxf", "faces": ["F2:endCap()", "F2:startCap()"], "gap": 5}],
  ["file.export", {"path": "box.svg", "set": "Cut sheet", "width": "600 mm", "gap": "8 mm"}]

@@ -86,6 +86,10 @@ on again. `feature.when` switches it by a **condition**, an expression kept with
 evaluated at every regeneration: the feature is built when it is a number other than zero, and is
 **inactive** when it is zero.
 
+These lines show the form only: they belong to a design that already has features named *Lid*,
+*LidFillet*, *GT2 tooth* and *Flange*, and the variables they use. In a new document they fail, as there
+is nothing to switch.
+
 ```json
 [
   ["feature.when", {"feature": "Lid", "expr": "lid"}],
@@ -100,10 +104,12 @@ evaluated at every regeneration: the feature is built when it is a number other 
 `file.import`, whose features get a condition with `feature.when`) take it as `when`, so the feature is switched from
 its very first regeneration: a fillet of a lid that is off is never built, and never fails on the way.
 It is one step, one undo, as if `feature.when` had come with it; an extrusion with `cut` or `join` gives
-the condition to both features it adds.
+the condition to both features it adds. This one runs as it is: set `lid` to 0 afterwards, and both
+features are off.
 
 ```json
 [
+  ["variable.set", {"name": "lid", "expr": "1"}],
   ["feature.cylinder", {"radius": "8 mm", "height": "2 mm", "position": [0, 0, 30], "name": "Lid", "when": "lid"}],
   ["feature.fillet", {"edges": [["Lid:face(0)", "Lid:face(2)"]], "radius": "0.5 mm", "name": "LidFillet", "when": "lid"}]
 ]
