@@ -3,19 +3,19 @@
 Seven parts to learn from, one technique each: an L-bracket, a bolt flange, a shelled case, a flanged
 bushing, a coil spring, a hopper and an involute gear. Each is a command script (a JSON list of
 `[command, params]` steps) that builds a `.3dcraft` document, driven by variables and ending with checks, at
-least its volume worked out by hand, so it proves itself: `crates/engine/tests/guide_examples.rs` runs them
-all at every change. The pictures are drawn by `craft3d-cli render` (`cargo xtask example-thumbs`). See the
-[user guide](../guide/README.md).
+least its volume worked out by hand, so it proves itself: 3DCraft's tests run them all at every change.
+The pictures are drawn by `craft3d-cli render`. See the [user guide](../guide/README.md).
 
 **In the window:** the lessons are not on the start screen. It opens finished examples, Jigs and
 assemblies instead, built into the program from their own repositories ([`published/`](published/), with
 their licences in [`published/LICENSE.md`](published/LICENSE.md)). Build a lesson from a terminal, as
 below, and open the file it writes; or let an agent run its steps in the window.
 
-**From a terminal:** build one, draw it, change it:
+**From a terminal:** save a lesson's script from the table below (`bracket.json`, say) in a folder, and in
+a terminal in that folder build it, draw it and change it:
 
 ```sh
-craft3d-cli run --new '{"units":"mm"}' --script docs/examples/bracket.json --out bracket.3dcraft
+craft3d-cli run --new '{"units":"mm"}' --script bracket.json --out bracket.3dcraft
 craft3d-cli render bracket.3dcraft --out bracket.png
 craft3d-cli run bracket.3dcraft --cmd variable.set --params '{"name":"leg_x","expr":"60 mm"}' \
     --cmd assert.list --out longer.3dcraft
@@ -32,4 +32,7 @@ or opens a saved file.
 | ![Flanged bushing](bushing.png) | **[Flanged bushing](bushing.json)**: a stepped section turned a full turn about the sketch's x axis (`feature.revolve`), with a bore; an M12 thread on the shank by `feature.thread` (cosmetic: the size is taken from the shank's diameter, the body is unchanged). Asserts the volume by Pappus's rule and that the bore goes through. |
 | ![Coil spring](spring.png) | **[Coil spring](spring.json)**: a helix of six turns (`datum.helix`) and a circle on the `zx` plane through its start, carried along it by its screw motion (`feature.sweep` with the helix as the path). Asserts the volume: the wire's area times the circumference of the coil, per turn. |
 | ![Hopper](hopper.png) | **[Hopper](hopper.json)**: two squares, one on `xy` and one on an offset plane (`sketch.rect`, `sketch.create` with `offset`), joined by a ruled `feature.loft`. Asserts the volume of the frustum, h/3 (A₁ + A₂ + √(A₁A₂)). |
-| ![Involute gear](gear.png) | **[Involute gear](gear.json)**: one tooth whose flanks are curves from formulas (`sketch.curve`: the involute `x = rb (cos(g + t) + t sin(g + t))`, its mirror for the other flank), closed by the tip arc and an arc inside the root circle; extruded, repeated `z` times round the axis (`feature.pattern`) and joined to the root disc. The flanks are fitted again whenever `module`, `z` or `alpha` change. Asserts the volume in closed form (the area an involute sweeps from the centre is `rb² t³ / 6`) and that it is one body. See [chapter 8](../guide/formulas.md#curves-from-formulas). |
+| ![Involute gear](gear.png) | **[Involute gear](gear.json)**: one tooth whose flanks are curves from formulas (`sketch.curve`: the involute `x = rb (cos(g + t) + t sin(g + t))`, its mirror for the other flank), closed by the tip arc and an arc inside the root circle; extruded, repeated `z` times round the axis (`feature.pattern`) and joined to the root disc. The flanks are fitted again whenever `module`, `z` or `alpha` change. Asserts the volume in closed form (the area an involute sweeps from the centre is `rb² t³ / 6`) and that it is one body. See [Formulas, tables and conditions › Curves from formulas](../guide/formulas.md#curves-from-formulas). |
+
+For developers: the test that runs the lessons is `crates/engine/tests/guide_examples.rs`, and
+`cargo xtask example-thumbs` draws their pictures.
