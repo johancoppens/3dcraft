@@ -157,14 +157,14 @@ jobs:
       # and no drivers ("No suitable graphics adapter found", 2026-10-30);
       # Mesa's software Vulkan (lavapipe) and OpenGL (llvmpipe) stand in.
       # apt retries each download itself, and the update and install are
-      # tried again after a pause when the install fails (a runner could
-      # not resolve its mirror on 2026-11-11).
+      # tried again after a pause when the install fails, each attempt for
+      # at most ten minutes (a runner's mirror did not resolve for half an
+      # hour on 2026-11-11).
       - name: graphics
         if: runner.os == 'Linux'
         run: |
           for attempt in 1 2 3; do
-            if sudo apt-get -o Acquire::Retries=5 update -q \
-              && sudo apt-get -o Acquire::Retries=5 install -y -q mesa-vulkan-drivers libgl1-mesa-dri libegl1 libegl-mesa0; then
+            if sudo timeout -k 10 600 sh -c 'apt-get -o Acquire::Retries=5 update -q && apt-get -o Acquire::Retries=5 install -y -q mesa-vulkan-drivers libgl1-mesa-dri libegl1 libegl-mesa0'; then
               break
             fi
             if [ "$attempt" = 3 ]; then

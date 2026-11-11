@@ -89,33 +89,23 @@ jobs:
 
       # appimagetool needs `file` and `desktop-file-validate`, and without a
       # runtime file it downloads the newest continuous type2 runtime; both
-      # downloads are pinned to a release and checked against its sha256.
-      # The image carries `file`; what is missing is installed with apt,
-      # which retries each download itself, and the update and install are
-      # tried again after a pause when the install fails (the runner could
-      # not resolve its mirror on 2026-11-11). The downloads retry too.
+      # downloads are pinned to a release and checked against its sha256,
+      # and retry. Nothing is installed with apt (the runner's mirror did
+      # not resolve for half an hour on 2026-11-11): `file` is on the
+      # image, and appimagetool 1.9.1's AppImage brings
+      # `desktop-file-validate`, `mksquashfs` and `zsyncmake` in its
+      # usr/bin, which its AppRun puts first on PATH. Only a missing `file`
+      # is tried with apt, once, for at most five minutes.
       - name: appimagetool
         if: runner.os == 'Linux'
         run: |
-          missing=()
-          command -v file > /dev/null || missing+=(file)
-          command -v desktop-file-validate > /dev/null || missing+=(desktop-file-utils)
-          if [ "${#missing[@]}" -gt 0 ]; then
-            for attempt in 1 2 3; do
-              if sudo apt-get -o Acquire::Retries=5 update -q \
-                && sudo apt-get -o Acquire::Retries=5 install -y -q --no-install-recommends "${missing[@]}"; then
-                break
-              fi
-              if [ "$attempt" = 3 ]; then
-                echo "::error::apt-get could not install ${missing[*]} in 3 attempts: the runner's package mirror (see above)"
-                exit 1
-              fi
-              echo "apt-get failed (attempt $attempt of 3); trying again in 30 s"
-              sleep 30
-            done
+          if ! command -v file > /dev/null; then
+            if ! sudo timeout -k 10 300 sh -c 'apt-get -o Acquire::Retries=2 update -q && apt-get -o Acquire::Retries=2 install -y -q --no-install-recommends file'; then
+              echo "::error::file is not on the image and apt-get could not install it in 5 minutes: the runner's package mirror (see above)"
+              exit 1
+            fi
           fi
           command -v file
-          command -v desktop-file-validate
           mkdir -p target/tools
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o target/tools/appimagetool \
             https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
@@ -126,6 +116,18 @@ jobs:
           2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d  target/tools/runtime-x86_64
           SUMS
           chmod +x target/tools/appimagetool
+          # The tools it brings, unpacked by its runtime (no FUSE needed;
+          # the package step runs it with APPIMAGE_EXTRACT_AND_RUN=1): an
+          # appimagetool without them fails here, not in the package step.
+          tool="$PWD/target/tools/appimagetool"
+          (
+            cd "$(mktemp -d)"
+            "$tool" --appimage-extract > /dev/null
+            for name in appimagetool desktop-file-validate mksquashfs zsyncmake; do
+              test -x "squashfs-root/usr/bin/$name"
+            done
+          )
+          echo "appimagetool brings desktop-file-validate, mksquashfs and zsyncmake"
           echo "APPIMAGETOOL=$PWD/target/tools/appimagetool" >> "$GITHUB_ENV"
           echo "APPIMAGE_RUNTIME=$PWD/target/tools/runtime-x86_64" >> "$GITHUB_ENV"
 
