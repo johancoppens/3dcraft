@@ -377,10 +377,11 @@ without words, and the start screen scrolls to show its last panels. Narrower st
 Analysis and Section show their icons only too, and the See-through and Offset sliders lose their
 labels. Hover for the names.
 
-A document opens framed on its bodies (on its sketches when it has no body yet), and the view keeps
-them framed as the model changes, until you pan or zoom. **Fit**, and **F** with nothing selected, frame
-everything that is shown, sketches included, and the view keeps that framed from then on; so do **Iso**
-and the view cube.
+A new document keeps everything that is shown in view as it is built, sketches included. A document you
+open is framed on its bodies (on its sketches when it has no body), and the view keeps them framed as the
+model changes. **Fit**, and **F** with nothing selected, frame everything that is shown, sketches
+included, and the view keeps that framed from then on; so do **Iso** and the view cube. Once you pan or
+zoom, the view stays where you put it.
 
 None of this changes the document. Each tab remembers its own camera, section and see-through. A heavy
 model first shows a quick picture, then the sharp one (the status bar says `refining`).

@@ -2827,13 +2827,15 @@ impl Shell {
         }
     }
 
-    /// The box a document opens framed on (2026-11-11): the bodies drawn
-    /// alone ([`Self::drawn_frame`] as if the sketches were not shown)
-    /// while a body is drawn, so that a sketch or a helix far from the
-    /// part (the sundial's rows of points, a tuned chime's layout) does
-    /// not leave it a speck; with no body drawn (none yet, every one
-    /// hidden), everything drawn. The camera keeps following this box as
-    /// the model changes, until Fit frames everything drawn.
+    /// The box a document that comes with a history (a file, an example)
+    /// opens framed on (2026-11-11): the bodies drawn alone
+    /// ([`Self::drawn_frame`] as if the sketches were not shown) while a
+    /// body is drawn, so that a sketch or a helix far from the part (the
+    /// sundial's rows of points, a tuned chime's layout) does not leave it
+    /// a speck; with no body drawn (none yet, every one hidden),
+    /// everything drawn. The camera keeps following this box as the model
+    /// changes, until Fit frames everything drawn; a new document follows
+    /// everything drawn from the start (`views::Following`).
     pub fn opening_frame(&self, scene: &Scene) -> Bbox3 {
         if scene.bodies_box.is_empty() {
             self.drawn_frame(scene)

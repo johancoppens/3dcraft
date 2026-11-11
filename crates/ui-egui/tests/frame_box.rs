@@ -9,10 +9,11 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use craft3d_engine::{Scene, SceneQuality, Session, Workspace};
+use craft3d_engine::{Access, Scene, SceneQuality, Session, Workspace};
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_ui_egui::shell::Shell;
 use serde_json::json;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 fn drawing(session: &mut Session) -> Vec<u8> {
@@ -399,34 +400,42 @@ fn the_opening_frame_and_fit_leave_out_the_datums() {
     assert_eq!(got["state"]["show"]["datums"], json!(true));
 }
 
-/// A 10 mm block, alone or with a sketch point 2 m away (a sketch of the
-/// sundial's kind: points far from the part).
-fn block_and_point(with_point: bool) -> Session {
-    let mut session = Session::new(Workspace::memory());
-    let run = |session: &mut Session, id: &str, params: serde_json::Value| {
-        session
-            .execute(id, &params)
-            .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-    };
-    run(&mut session, "file.new", json!({"units": "mm"}));
-    run(
-        &mut session,
+/// A folder of its own for the files of `name`, emptied.
+fn folder(name: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("frame-box-{name}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// A session that reads and writes files in `dir`, on disk.
+fn session_in(dir: &Path) -> Session {
+    Session::new(Workspace {
+        read: Access::Root(dir.to_path_buf()),
+        write: Access::Root(dir.to_path_buf()),
+    })
+}
+
+fn exec(session: &mut Session, id: &str, params: serde_json::Value) {
+    session
+        .execute(id, &params)
+        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
+}
+
+/// The commands that add a 10 mm block, and a sketch with one point 2 m
+/// away (a sketch of the sundial's kind: points far from the part).
+fn block() -> (&'static str, serde_json::Value) {
+    (
         "feature.block",
         json!({"size": [10, 10, 10], "position": [0, 0, 0], "name": "Block"}),
-    );
-    if with_point {
-        run(
-            &mut session,
-            "sketch.create",
-            json!({"plane": "xy", "name": "Far"}),
-        );
-        run(
-            &mut session,
-            "sketch.point",
-            json!({"sketch": "Far", "at": [2000, 0]}),
-        );
-    }
-    session
+    )
+}
+
+fn far_point() -> [(&'static str, serde_json::Value); 2] {
+    [
+        ("sketch.create", json!({"plane": "xy", "name": "Far"})),
+        ("sketch.point", json!({"sketch": "Far", "at": [2000, 0]})),
+    ]
 }
 
 /// The camera `shell` would have fitted to `bbox` from where it looks now.
@@ -437,22 +446,88 @@ fn fitted(shell: &Shell, bbox: &Bbox3) -> craft3d_ui_egui::state::CameraState {
     camera
 }
 
-/// A document with a body opens framed on the bodies drawn (2026-11-11:
-/// the sundial opened with its dial a speck beside rows of sketch points
-/// far away): the camera is the one of the block alone, and it keeps
-/// following the bodies as the model changes. Fit frames everything
-/// drawn, the far point too, as before, and follows that from then on.
+/// Writes into `dir`, as a person or an agent saves them: `block.3dcraft`
+/// (the block), `block-and-point.3dcraft` (the block and the far point)
+/// and `hidden.3dcraft` (the same with the block hidden by its eye).
+fn write_files(dir: &Path) {
+    let mut maker = session_in(dir);
+    exec(&mut maker, "file.new", json!({"units": "mm"}));
+    let (id, params) = block();
+    exec(&mut maker, id, params);
+    exec(&mut maker, "file.save", json!({"path": "block.3dcraft"}));
+    for (id, params) in far_point() {
+        exec(&mut maker, id, params);
+    }
+    exec(
+        &mut maker,
+        "file.save",
+        json!({"path": "block-and-point.3dcraft"}),
+    );
+    exec(
+        &mut maker,
+        "feature.visible",
+        json!({"feature": "Block", "visible": false}),
+    );
+    exec(&mut maker, "file.save", json!({"path": "hidden.3dcraft"}));
+}
+
+/// A window showing `file` of `dir`, opened as File › Open opens it, and
+/// its session.
+fn opened(dir: &Path, file: &str) -> (Shell, Session) {
+    let mut session = session_in(dir);
+    exec(&mut session, "file.open", json!({ "path": file }));
+    let mut shell = Shell::new();
+    shell.sync(&mut session);
+    (shell, session)
+}
+
+/// A new document, as File › New makes it in the window, follows
+/// everything drawn as it is built, exactly as every document did before
+/// 2026-11-11: the window shows it empty, then a 10 mm block, then a
+/// sketch point 2 m away, and frames block and point without Fit being
+/// asked; Fit gives that same camera.
 #[test]
-fn a_document_with_a_body_opens_on_its_bodies_and_fit_frames_everything_drawn() {
-    let mut alone = Shell::new();
-    alone.sync(&mut block_and_point(false));
-    let mut session = block_and_point(true);
+fn a_new_document_follows_everything_drawn_as_it_is_built() {
+    let mut session = session_in(&folder("new"));
+    let mut shell = Shell::new();
+    exec(&mut session, "file.new", json!({"units": "mm"}));
+    shell.sync(&mut session);
+    let (id, params) = block();
+    exec(&mut session, id, params);
+    shell.sync(&mut session);
+    assert_eq!(shell.state.camera.target, [5.0, 5.0, 5.0], "the block");
+    for (id, params) in far_point() {
+        exec(&mut session, id, params);
+        shell.sync(&mut session);
+    }
+    let followed = shell.state.camera;
+    let everything = scene(&mut session).frame_box();
+    let (_, high) = corners(&everything);
+    assert!(high.x >= 2000.0, "the scene's frame holds the point");
+    assert_eq!(followed, fitted(&shell, &everything), "everything drawn");
+    assert!(followed.target[0] > 900.0, "the point is in view");
+    assert!(followed.auto_fit);
+    assert!(shell.fit(&mut session));
+    assert_eq!(shell.state.camera, followed, "what Fit gives");
+}
+
+/// A document opened from a file with a body is framed on the bodies
+/// drawn (2026-11-11: the sundial opened with its dial a speck beside
+/// rows of sketch points far away): the block and the point, saved and
+/// opened again, open with the camera of the block alone opened, and the
+/// camera keeps following the bodies as the model changes. Fit frames
+/// everything drawn, the far point too, as before, and follows that from
+/// then on. A new document in the same window follows everything drawn.
+#[test]
+fn a_document_opened_with_a_body_is_framed_on_its_bodies_until_fit() {
+    let dir = folder("opened");
+    write_files(&dir);
+    let (alone, _) = opened(&dir, "block.3dcraft");
+    let (mut shell, mut session) = opened(&dir, "block-and-point.3dcraft");
     let drawn = scene(&mut session);
     assert_eq!(drawn.sketches.len(), 1, "the point is drawn");
     let (_, high) = corners(&drawn.frame_box());
     assert!(high.x >= 2000.0, "the scene's frame holds the point");
-    let mut shell = Shell::new();
-    shell.sync(&mut session);
     assert_eq!(
         shell.state.camera, alone.state.camera,
         "opened on the block"
@@ -460,12 +535,11 @@ fn a_document_with_a_body_opens_on_its_bodies_and_fit_frames_everything_drawn() 
     assert_eq!(shell.state.camera.target, [5.0, 5.0, 5.0]);
     // A second block beside it: the camera follows the bodies, not the
     // point.
-    session
-        .execute(
-            "feature.block",
-            &json!({"size": [10, 10, 10], "position": [20, 0, 0], "name": "Beside"}),
-        )
-        .unwrap();
+    exec(
+        &mut session,
+        "feature.block",
+        json!({"size": [10, 10, 10], "position": [20, 0, 0], "name": "Beside"}),
+    );
     shell.sync(&mut session);
     assert_eq!(shell.state.camera.target, [15.0, 5.0, 5.0], "the bodies");
     // Fit: everything drawn, the point too, as Fit framed it before.
@@ -475,40 +549,39 @@ fn a_document_with_a_body_opens_on_its_bodies_and_fit_frames_everything_drawn() 
     assert!(shell.state.camera.target[0] > 900.0, "the point is framed");
     assert!(shell.state.camera.auto_fit);
     // From then on the camera follows everything drawn.
-    session
-        .execute(
-            "feature.block",
-            &json!({"size": [10, 10, 10], "position": [0, 0, 300], "name": "Above"}),
-        )
-        .unwrap();
+    exec(
+        &mut session,
+        "feature.block",
+        json!({"size": [10, 10, 10], "position": [0, 0, 300], "name": "Above"}),
+    );
     shell.sync(&mut session);
     let everything = scene(&mut session).frame_box();
     assert_eq!(shell.state.camera, fitted(&shell, &everything), "after fit");
-    // Another document opens on its own bodies again.
-    session
-        .execute("file.new", &json!({"units": "mm"}))
-        .unwrap();
-    for (id, params) in [
-        (
-            "feature.block",
-            json!({"size": [10, 10, 10], "position": [0, 0, 0]}),
-        ),
-        ("sketch.create", json!({"plane": "xy", "name": "Far"})),
-        ("sketch.point", json!({"sketch": "Far", "at": [2000, 0]})),
-    ] {
-        session.execute(id, &params).unwrap();
+    // File › New in the same window: the new document follows everything
+    // drawn as it is built.
+    exec(&mut session, "file.new", json!({"units": "mm"}));
+    shell.sync(&mut session);
+    let (id, params) = block();
+    exec(&mut session, id, params);
+    for (id, params) in far_point() {
+        exec(&mut session, id, params);
     }
     shell.sync(&mut session);
-    assert_eq!(shell.state.camera.target, [5.0, 5.0, 5.0], "a new document");
+    let everything = scene(&mut session).frame_box();
+    assert_eq!(shell.state.camera, fitted(&shell, &everything), "a new one");
+    assert!(shell.state.camera.target[0] > 900.0, "the point is in view");
 }
 
-/// Without a body drawn the document opens framed on everything drawn, as
+/// Without a body drawn a document opens framed on everything drawn, as
 /// before: a sketch alone opens on the sketch. A body hidden by its eye is
-/// not drawn: with the block hidden the camera frames the far point, and
-/// with the block shown again the block alone.
+/// not drawn: the block and the point, saved with the block hidden and
+/// opened, frame the far point, and with the block shown again the block
+/// alone, as the block alone opens.
 #[test]
 fn without_a_body_drawn_a_document_opens_on_what_is_drawn() {
-    let mut session = Session::new(Workspace::memory());
+    let dir = folder("bodiless");
+    write_files(&dir);
+    let mut maker = session_in(&dir);
     for (id, params) in [
         ("file.new", json!({"units": "mm"})),
         ("sketch.create", json!({"plane": "xy", "name": "Outline"})),
@@ -516,11 +589,11 @@ fn without_a_body_drawn_a_document_opens_on_what_is_drawn() {
             "sketch.rect",
             json!({"sketch": "Outline", "from": [0, 0], "to": [100, 60]}),
         ),
+        ("file.save", json!({"path": "outline.3dcraft"})),
     ] {
-        session.execute(id, &params).unwrap();
+        exec(&mut maker, id, params);
     }
-    let mut shell = Shell::new();
-    shell.sync(&mut session);
+    let (shell, mut session) = opened(&dir, "outline.3dcraft");
     let sketch = scene(&mut session).frame_box();
     let (low, high) = corners(&sketch);
     assert!(
@@ -533,28 +606,18 @@ fn without_a_body_drawn_a_document_opens_on_what_is_drawn() {
         "a sketch alone"
     );
 
-    let mut alone = Shell::new();
-    alone.sync(&mut block_and_point(false));
-    let mut session = block_and_point(true);
-    session
-        .execute(
-            "feature.visible",
-            &json!({"feature": "Block", "visible": false}),
-        )
-        .unwrap();
-    let mut shell = Shell::new();
-    shell.sync(&mut session);
+    let (alone, _) = opened(&dir, "block.3dcraft");
+    let (mut shell, mut session) = opened(&dir, "hidden.3dcraft");
     assert_eq!(
         shell.state.camera.target,
         [2000.0, 0.0, 0.0],
         "the block hidden: the point"
     );
-    session
-        .execute(
-            "feature.visible",
-            &json!({"feature": "Block", "visible": true}),
-        )
-        .unwrap();
+    exec(
+        &mut session,
+        "feature.visible",
+        json!({"feature": "Block", "visible": true}),
+    );
     shell.sync(&mut session);
     assert_eq!(
         shell.state.camera, alone.state.camera,

@@ -190,7 +190,8 @@ Do not take "done" on trust. 3DCraft gives you the means to check, without readi
 - **Start simple, then add.** "A plate 100 × 60 × 5 mm" first, then "four holes 10 mm from the corners",
   then "round the corners". Each step is easy to check.
 - **Keep the window in sight.** You see every step appear, and you can stop the agent when it goes the
-  wrong way.
+  wrong way. A document you opened stays framed on its bodies: press **F** (or **Fit**) to see everything
+  the agent drew.
 - **Ask it to save** now and then, under a name you choose. The agent can also undo (`edit.undo`), one
   step at a time, if something goes wrong.
 - **When 3DCraft refuses something,** the message says why, and often what would work. Ask the agent to

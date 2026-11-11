@@ -6,11 +6,11 @@
 //!   active one's is in `Shell::state`, the others are kept aside by the
 //!   document's id (`DocumentStatus::id`), and switching tabs (a click,
 //!   `file.activate`, closing one) swaps them before anything else reads
-//!   the state. A document opened or created starts framed on its
-//!   bodies (everything drawn when it has no body drawn;
-//!   `Shell::opening_frame`), iso, perspective, and the camera follows
-//!   that frame as the model changes until Fit frames everything drawn
-//!   ([`Following`]).
+//!   the state. A document opened or created starts framed, iso,
+//!   perspective: a new one on everything drawn, one opened with a
+//!   history on its bodies (everything drawn when it has no body drawn;
+//!   `Shell::opening_frame`), and the camera follows that frame as the
+//!   model changes until Fit frames everything drawn ([`Following`]).
 //! - A double click on a row of the feature list, or F with something
 //!   selected, flies the camera in [`FLY_SECONDS`] (eased) to frame what
 //!   the feature made or what is selected (2026-10-23, the developer's
@@ -40,13 +40,37 @@ pub const FLY_SECONDS: f64 = 0.3;
 /// (`camera.auto_fit`), kept with each tab's view (2026-11-11).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Following {
-    /// As the document opened ([`Shell::opening_frame`]): the bodies
-    /// drawn, or everything drawn when no body is.
+    /// As a document with a history opened ([`Shell::opening_frame`]):
+    /// the bodies drawn, or everything drawn when no body is.
     #[default]
     Opening,
     /// As Fit framed it ([`Shell::drawn_frame`]): everything drawn, the
-    /// sketches with the bodies while they are shown.
+    /// sketches with the bodies while they are shown. What a new
+    /// document follows from the start.
     Drawn,
+}
+
+/// What the active document follows when the window shows it for the
+/// first time, decided once from its own history (known at once, also
+/// in the browser, where the bodies come later from the worker): a
+/// document without a feature in its history (`file.new`, File › New
+/// part, a new tab) follows everything drawn, as every document did
+/// before 2026-11-11, so the sketches an agent draws while it builds come
+/// into view by themselves; a document that comes with a history (a file
+/// opened, an example of the start screen, `?open=`, a recovered
+/// document, a Jig) is framed on its bodies. An assembly keeps the
+/// opening frame, which for it is everything drawn (its scene has no
+/// sketches).
+fn first_following(session: &Session) -> Following {
+    let assembly = session.document_status().is_some_and(|s| s.assembly);
+    let empty = session
+        .history_marker()
+        .is_some_and(|(features, _)| features == 0);
+    if empty && !assembly {
+        Following::Drawn
+    } else {
+        Following::Opening
+    }
 }
 
 /// What a flight frames.
@@ -101,12 +125,12 @@ impl Shell {
             // before `file.open`) is the new document's.
             None if self.viewing.is_none() => {
                 self.framed = Bbox3::EMPTY;
-                self.following = Following::Opening;
+                self.following = first_following(session);
             }
             None => {
                 TabView::default().put(&mut self.state);
                 self.framed = Bbox3::EMPTY;
-                self.following = Following::Opening;
+                self.following = first_following(session);
             }
         }
         self.viewing = now;

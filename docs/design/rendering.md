@@ -1610,16 +1610,29 @@ bodies drawn alone; only without one (no body yet, every one hidden by its eye) 
 Fit is not changed. `Shell::opening_frame` is `Shell::drawn_frame` as if the sketches were hidden (the scene's
 frame cut down to `Scene::bodies_box`: the bodies the scene draws, not hidden by the eye, each by its B-rep box,
 a sheet by its faces; a feature switched off or suppressed, a step after the roll-back marker and a body used up
-by a later feature have none, and a body without vertices adds nothing) whenever `bodies_box` is not empty. The
-camera follows the box it was framed on while `camera.autoFit` is on, so what it follows is kept with each tab's
-view (`views::Following`): `Opening` for a document opened or created (every way it comes: File › Open, the
-start screen, `?open=`, the command line, `file.open` by an agent, all through `Shell::follow_active_tab`), and
-the following frame of the first sync, of a resize and of a turn's end is the opening frame; Fit, Iso, F with
-nothing selected, `ui.fit` without `feature` and a click on the view cube frame everything drawn as before and
-switch it to `Drawn`, which it follows from then on. A flight is unchanged. An assembly has no sketches in its
-scene, so its opening frame is its placed bodies, as before. Tests: `tests/frame_box.rs` ›
-`a_document_with_a_body_opens_on_its_bodies_and_fit_frames_everything_drawn` (a 10 mm block and a sketch point
-2 m away open as the block alone, the camera follows a second block and not the point, Fit frames the point too
-and follows everything drawn, a new document opens on its bodies again) and
-`without_a_body_drawn_a_document_opens_on_what_is_drawn` (a sketch alone; the block hidden by its eye, then
-shown).
+by a later feature have none, and a body without vertices adds nothing) whenever `bodies_box` is not empty, its
+corners put on the grid the scene puts its own frame on (a power of two near a billionth of its size), so that a
+document with a far sketch opens with exactly the camera of its bodies alone (a corner taken from the B-rep box
+is 10.00000000000014 for a 10 mm block, the scene's frame rounds it to 10). The camera follows the box it was
+framed on while `camera.autoFit` is on, so what it follows is kept with each tab's view (`views::Following`),
+decided once when the window first shows a document (`Shell::follow_active_tab`, every way a document comes:
+File › Open, the start screen, `?open=`, the command line, a recovered document, `file.open` or `file.new` by an
+agent) and the following frame of every sync, of a resize and of a turn's end is the box of that mode; Fit, Iso,
+F with nothing selected, `ui.fit` without `feature` and a click on the view cube frame everything drawn as before
+and switch it to `Drawn`, which it follows from then on. A flight is unchanged. *Narrowed* the same day (the
+review: a person watching an agent build would no longer see a sketch drawn away from the bodies come into view
+by itself): a document without a feature in its history when the window first shows it (`file.new`, File › New
+part, a new tab) follows everything drawn from the start (`Drawn`), as every document did before; only one that
+comes with a history (a file, an example, `?open=`, a recovered document, a Jig) starts on its bodies
+(`Opening`). It is decided from the document's own history (`Session::history_marker`), known at once, also in
+the browser, where the bodies come later from the worker. An assembly keeps `Opening`: its scene has no sketches,
+so that is everything drawn, as before. A document opened from a file to which an agent then adds a far sketch
+stays on its bodies until Fit (accepted for 0.1.0; the guide's agent chapter says to press F), and so does a new
+document that the window first sees with features already in it (an agent's batch that starts with `file.new`:
+the window syncs after each request, a batch is one). Tests: `tests/frame_box.rs` ›
+`a_new_document_follows_everything_drawn_as_it_is_built` (made as File › New makes it: block and far point
+framed without Fit, the camera Fit gives), `a_document_opened_with_a_body_is_framed_on_its_bodies_until_fit`
+(the block and the point saved and opened open with the camera of the block alone opened, the camera follows a
+second block and not the point, Fit frames the point too and follows everything drawn, File › New in the same
+window follows everything drawn) and `without_a_body_drawn_a_document_opens_on_what_is_drawn` (a sketch alone,
+and the block hidden by its eye, opened from files; the block shown again).
