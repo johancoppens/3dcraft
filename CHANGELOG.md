@@ -15,7 +15,7 @@ The first release for people outside the project. 3DCraft is a parametric 3D CAD
 - **Fillets and chamfers** on edges, chosen by name, by description or by pointing at them.
 - **Names that stay put.** Faces and edges are named by how they were made, so a fillet does not jump to another edge when an earlier feature changes, and a face that is gone is reported instead of silently replaced.
 - **Units.** Millimetres, inches and the other length units per document, angles in degrees or radians; the length unit can be changed later while keeping the sizes. Mass, time, force, pressure and stress, moment and energy in expressions (`1000 N / (100 * (1 mm)^2)` is 10 MPa), so a design rule can say `"max": "235 MPa"`; an output can carry a label and the unit it is shown in. Named sets can pick flat faces by their plate thickness (`thickness`). Litres (`L`, `mL`) for volumes. A document's tolerance can be set (`document.setTolerance`).
-- **Colours and materials** per body and per face, with metallic and roughness, following the face through later edits and kept in 3MF, OBJ and STEP exports. A face's own colour wins over its body's; *Clear face colours* on a body's card (`face.appearance` with `clear`) takes them all away in one step.
+- **Colours and materials** per body and per face, with metallic and roughness, following the face through later edits and kept in 3MF, OBJ and STEP exports. A face's own colour wins over its body's; the button on a body's card that clears its face colours (`face.appearance` with `clear`) takes them all away in one step.
 
 ### Sketches
 
@@ -75,7 +75,7 @@ The first release for people outside the project. 3DCraft is a parametric 3D CAD
 - **Import** STEP: solids, sheets and assemblies, with colours; FreeCAD documents (`.FCStd`) and BRep files: the visible final objects' solids, with their names, placements and colours.
 - **Export** STEP (the exact geometry), STL, 3MF and OBJ (meshes at Coarse, Normal or Fine quality, with colours), and DXF and SVG: the flat outline of a sketch or of faces at true size, a whole cut sheet of a named set laid out to your laser's width, flat and crease patterns, or a drawing of the model as seen (orthographic to scale or perspective, hidden lines left out or dashed), its edges written as the lines, arcs, circles, ellipses and splines they are.
 - An export dialog that first asks what goes into the file and offers only the formats that hold it. Bodies hidden in the window are left out of a 3D export of the model and of the cut list, and the dialog says which.
-- Saving never replaces a file you were not asked about, and an assembly is saved as `.3dcraftasm`, on the desktop and in the browser.
+- Saving from the window never replaces a file you were not asked about, and an assembly is saved as `.3dcraftasm`, on the desktop and in the browser.
 
 ### The window and installing
 
