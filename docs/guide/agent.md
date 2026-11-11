@@ -272,8 +272,8 @@ the window shows the check failing, and the agent should tell you so
 
 **Task 5: make a Jig of it.** *"Publish length and pitch of the strip from task 3 as parameters (length
 from 40 to 300 mm, pitch from 8 to 20 mm) and export it as a Jig."* Open the `.3dcraftjig` in 3DCraft:
-the **Parameters** tab shows the two values under the variables' own names, `length` and `pitch`, as the
-request gives them no labels (ask for labels such as *Length* and *Pitch* if you want them). Drag them and
+the **Parameters** tab shows the two values, under the variables' own names `length` and `pitch` unless
+the agent gave them labels (ask for labels such as *Length* and *Pitch* if you want them). Drag them and
 watch the holes follow, then export an STL, or a DXF of the top face for a laser cutter
 ([Making Jigs](making-jigs.md)). A block's face 1 is its top
 ([Modelling features › Primitives](features.md#primitives)), so in the script of task 3 the top face is

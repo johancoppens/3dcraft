@@ -114,8 +114,8 @@ answers `"ok": true`, three assertions passed.
 
 The flat leg is now 60 mm; the round is still in the corner, the hole moved to the middle of the longer
 leg (its centre is written in `leg_x`), and the result of the command says the three assertions still
-pass. `assert.list` gives the new volume, 8491.206 mm³. With `inner_r` set to 30 mm the round no longer fits: [How 3DCraft thinks › *Failed
-features*](concepts.md#failed-features), shows what 3DCraft answers.
+pass. `assert.list` gives the new volume, 8491.206 mm³. With `inner_r` set to 30 mm the round no longer
+fits: [How 3DCraft thinks › *Failed features*](concepts.md#failed-features), shows what 3DCraft answers.
 
 ## 7. Save and export
 

@@ -4,7 +4,7 @@ Seven parts to learn from, one technique each: an L-bracket, a bolt flange, a sh
 bushing, a coil spring, a hopper and an involute gear. Each is a command script (a JSON list of
 `[command, params]` steps) that builds a `.3dcraft` document, driven by variables and ending with checks, at
 least its volume worked out by hand, so it proves itself: 3DCraft's tests run them all at every change.
-The pictures are drawn by `craft3d-cli render`. See the [user guide](../guide/README.md).
+The pictures are drawn by `craft3d-cli`. See the [user guide](../guide/README.md).
 
 **In the window:** the lessons are not on the start screen. It opens finished examples, Jigs and
 assemblies instead, built into the program from their own repositories ([`published/`](published/), with

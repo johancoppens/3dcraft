@@ -104,8 +104,8 @@ printed without supports. It opens on its **Parameters** tab.
 2. Beside **Width**, click **+**: the width goes from 2 to 3 grid units of 42 mm, and the compartments get
    wider.
 3. Beside **Compartments side by side**, click **+**: nine compartments now, three across and three deep.
-   In a narrow panel this name is cut short, *Compartments side by…*: hold the pointer on it to read it
-   whole.
+   At the panel's first width this name is cut short, *Compartments side by…*: hold the pointer on it to
+   read it whole, or drag the panel's right edge to widen it.
 4. Turn off the **Scoop** switch: the rounded fronts inside the compartments go.
 5. Click **↺** beside a parameter to put it back, or **Reset all** to put them all back.
 

@@ -76,7 +76,8 @@ craft3d-cli convert laser-box.3dcraft box.svg --set 'Cut sheet' --width '600 mm'
 Here `bracket.3dcraft` is the [bracket lesson](../examples/bracket.json), built as the flange is above.
 Its sketch `Profile` is the L, and `F2:endCap()` is the end of the extruded L, with the round in its inside
 corner. `laser-box.3dcraft` is the laser-cut box Jig, saved from the window: open it from the start
-screen and choose **File › Save** under that name. Its set *Cut sheet* holds one flat face of each panel.
+screen, choose **File › Save** and save it as `laser-box.3dcraft` (the dialog proposes
+*Laser-cut box.3dcraft*). Its set *Cut sheet* holds one flat face of each panel.
 
 A DXF or SVG file with `--sketch`, `--face` or `--set` is a flat outline at true size. Without them it
 is a drawing of the model as seen ([Files, export and drawings](files.md#drawings-of-the-model-as-seen)), as
@@ -103,10 +104,11 @@ craft3d-cli check-range laser-box.3dcraft --samples 100 --seed 7
 
 `check-range` proves a Jig (a document with parameters, here the laser-cut box saved above) over its
 parameter range: it builds the design at the defaults, at the corners of the ranges, at every choice and
-at random points chosen by the seed, and checks each as `document.check` does. Where a point narrows the range of a parameter it leaves at its
-default (a choice that allows fewer holes), that parameter is moved into its new range, as the parameter
-form moves it, and that point's line says so (`clamped holes 8 -> 4`); a choice the form does not offer
-at the defaults is not tried; a switch whose maximum is another switch stays off while that one is off.
+at random points chosen by the seed, and checks each as `document.check` does. Where a point narrows the
+range of a parameter it leaves at its default (a choice that allows fewer holes), that parameter is moved
+into its new range, as the parameter form moves it, and that point's line says so
+(`clamped holes 8 -> 4`); a choice the form does not offer at the defaults is not tried; a switch whose
+maximum is another switch stays off while that one is off.
 
 It prints a line per point as soon as that point is checked (so a run you stop still shows what it
 found), then the totals: how many points passed, how many have an assertion that is **not proven**
