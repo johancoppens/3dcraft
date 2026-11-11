@@ -72,7 +72,8 @@ Without a document, the window shows the **start screen** (its picture is in
    - **Jigs**: the laser-cut box, the Gridfinity bin, the dovetail drawer, the sheet-metal enclosure, the
      planetary gearbox and the sundial. Each opens on its **Parameters** tab ([Using a Jig](jigs.md)).
    - **Assemblies**: the toggle clamp, the Jansen walker, the scissor jack and the radial engine. Each
-     opens with its player on **Motion**: press play and it moves ([Assemblies](assemblies.md)).
+     opens on its **Assembly** tab with its player on **Motion**: press play and it moves
+     ([Assemblies](assemblies.md)). Its sizes, where it has any, are on the **Parameters** tab beside it.
 6. **Recent** at the left: the files you opened or saved last, each with the icon of its kind and how long
    ago it changed. **Connect an AI agent** at the right: the same panel as the agent pill's, with the
    **Allow AI agents** switch, the work folder, and the buttons that copy the configuration for your AI
@@ -153,7 +154,7 @@ The **Help** menu:
 The left panel has tabs, chosen by the kind of document:
 
 - a part has **Features**, **Variables** and **Bodies**, and **Agent** (below);
-- an assembly has **Assembly** (its instances and mates) and **Variables**;
+- an assembly has **Assembly** (its instances, mates and checks) and **Variables**;
 - a document with public parameters, such as a Jig, has **Parameters** first.
 
 When the tabs do not fit, the rest are behind **⋯**. Drag the panel's right edge to make it wider or

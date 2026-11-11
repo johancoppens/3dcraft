@@ -134,7 +134,7 @@ The guide has six parts. Read the first part in order; after that, go to what yo
 | **Sketch** | A flat drawing on a plane (lines, arcs, circles) that a feature turns into a solid, for example by pushing it out. |
 | **Body** | A solid shape the features make. A document can hold several. |
 | **Variable** | A named number with a unit (`width = 60 mm`) that features use, so the model follows when it changes. |
-| **Check**, **assertion** | A rule the design must meet, such as its volume or a least wall thickness, kept in the document and measured again after every change. The window says *checks*; the commands say `assert`. |
+| **Check**, **assertion** | A rule the design must meet, such as its volume or a least wall thickness, kept in the document and measured again after every change. The two words mean the same: the commands say `assert`, and the window mostly says *checks*. |
 | **Parameter** | A variable a Jig shows in its form, with a label and a range. |
 | **Jig** | A design made to be set by others through its parameters, shared as a `.3dcraftjig` file. |
 | **Assembly** | A document that places parts together, saved as a `.3dcraftasm` file. Each placed part is an **instance**. |

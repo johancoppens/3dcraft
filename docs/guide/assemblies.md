@@ -18,16 +18,23 @@ player on **Motion**, ready to play.
 
 ![The toggle clamp in the window: the Assembly tab with its parts and mates, and the player in Motion mode](images/assembly.png)
 
-- The side panel's **Assembly** tab lists the **instances**, the placed parts, and under them the
-  **mates**, the joints between them, with how many degrees of freedom are left.
+- The side panel shows the **Assembly** tab. It lists the **instances**, the placed parts, and under them
+  the **mates**, the joints between them, with how many degrees of freedom are left. The player is at its
+  foot.
 - Press **Space** with the pointer over the view: the clamp plays its **motion**, opening and closing. The
   player is in **Motion** mode ([The window › Playing a motion](window.md#playing-a-motion)).
 - Double-click an instance in the list to fly to it; **Open** opens its part in a tab of its own.
+- The **Parameters** tab, beside **Assembly**, holds the clamp's sizes: the workpiece's height, how far
+  the handle opens and the spindle's reach. Click **Assembly** to come back to the player.
 
 ## A small assembly, step by step
 
-Two bars, one turning on the other. These are the commands an agent sends; you can run them yourself as
-a script ([The command line and scripts](command-line.md#scripts)).
+Two bars, one turning on the other. These are the commands an agent sends. The four blocks are **one
+script** in four parts: step 2 places the bar step 1 saved, and only step 4 saves the assembly. To run
+them yourself, put the steps of all four blocks into one list, in this order (leave out the `]` that ends
+a block and the `[` that starts the next, and put a comma between them), save it as `two-bars.json` and
+run it: `craft3d-cli run --new '{"units":"mm"}' --script two-bars.json`
+([The command line and scripts](command-line.md#scripts)).
 
 **1. A part to place.** A bar whose length is a public parameter, saved as `bar.3dcraft`:
 
@@ -187,9 +194,9 @@ not ok.
 ## In the window
 
 The side panel's **Assembly** tab is the assembly's tree: the instances (a subassembly's own nested under
-it), then the mates with their kind and value, and how many degrees of freedom are left. Click a row to
-select the instance, double-click to fly to it; the eye hides it, and **Open** opens its part in a tab of
-its own.
+it), then the mates with their kind and value, and how many degrees of freedom are left. Under them are
+the assembly's checks, with the player at the foot. Click a row to select the instance, double-click to
+fly to it; the eye hides it, and **Open** opens its part in a tab of its own.
 
 Every joint you can set by hand is a slider on the **Parameters** tab: the joints the assembly stays
 solved with. In a linkage that moves one way (a four-bar), the joints that move it have a slider until you
