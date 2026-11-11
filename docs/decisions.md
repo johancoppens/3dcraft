@@ -8,6 +8,16 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-11-11: What a document shows when it opens (decided by the developer; the narrowing for new documents by the coordinator)
+
+Found on the day of the release: with Sketches and Datums both shown at the start, several published Jigs opened on their datum planes, and a document whose sketches reach far from its bodies (the sundial's rows of hour points) opened with the model a speck in a frame fitted to everything drawn.
+
+- **Datums are hidden at the start; Sketches stay shown.** The Datums switch of the display bar shows them, and flying to a datum from its row switches it on. Sketches stay on because a person watching an agent must see a sketch before there is a body.
+- **A document that is opened is framed on its bodies** (on everything drawn when it has no body), and the view keeps them framed until Fit, F, Iso or the view cube, which frame everything that is shown, as they always did.
+- **A new document keeps everything that is drawn in view as it is built**, as before: a document that is empty when the window first sees it follows everything drawn. This narrowing is the coordinator's, taken on the cautious side while the developer was away, so that watching an agent build stays as it was; the developer may widen or undo it.
+
+Accepted for 0.1.0: an agent's single batch that starts with `file.new` is first seen with a history and so starts on its bodies (the agent can call `ui.fit`; the guide says to press F). How it is built and what the pictures showed: [`design/rendering.md`](design/rendering.md) › *Datums hidden at the start*.
+
 ### 2026-11-11: Updates in 0.1.0: the website says, the program does not look (decided by the developer)
 
 - **No self-updating program in 0.1.0.** The program makes no network connection of its own, and that stays: no HTTP client is among its dependencies, and the user guide promises it (*What 3DCraft sends: nothing*). A program that fetches new code and runs it must prove where that code comes from, and the packages of 0.1.0 are not signed with a developer certificate (2026-11-10), so it could not.
