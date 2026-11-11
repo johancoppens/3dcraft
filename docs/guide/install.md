@@ -132,8 +132,8 @@ this:
   Choose **Replace** when macOS asks whether to replace the older one.
 - **AppImage**: download the new AppImage, make it executable as the first time, and delete the old file.
   Or let a tool such as AppImageLauncher or AppImageUpdate do it for you: the AppImage carries the
-  address of its newer versions. 0.1.0 is the first version that carries it, so this works from the
-  version after 0.1.0 on.
+  address of its newer versions. 0.1.0 is the first version that carries it: such a tool can update it
+  as soon as a newer version is out.
 - **Linux tarball**: unpack the new tarball into a folder of its own and run its `./install.sh`, as the
   first time. It installs the new version over the old files. A file that only the older version had
   stays where it was, and the new `./uninstall.sh` does not know it. To leave none behind, run the new
