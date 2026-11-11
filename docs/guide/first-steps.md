@@ -27,6 +27,12 @@ tab next to it.
 
 ![The window with the T-slot profile; the numbers are explained in The window](images/window.png)
 
+In this picture the pointer rests on the last row, which shows that row's grip, its ⌖ and its eye
+([The window › Features](window.md#features) explains them). Like most pictures in this guide, it was
+taken with **Sketches** and **Datums** switched off, the first two buttons at the foot of the view. In
+your window they are on until you switch them off, so you also see the lines of the sketches and the datum
+planes and axes.
+
 On the left is the **feature list**: the steps that made the profile, in order.
 
 | Step | What it made |
@@ -68,7 +74,8 @@ Under the feature list is the **history player**, like a video player:
    after the first step: only the sketch of the cross section.
 2. Press **Space**, or click the round play button. The profile is built again, step by step, with the
    name of each step at the top of the view. The player counts the steps: `1 / 6`, `2 / 6`, …
-3. Click **Orbit** (the last button) and play again: the camera turns slowly while it plays.
+3. Click **Orbit**, the last button of the row, and play again: the camera turns slowly while it plays.
+   The player's buttons are icons: hold the pointer on one to see its name.
 4. Press **End** to see the finished part again.
 
 Playing back never changes the document; it only shows it as it was.
@@ -97,6 +104,8 @@ printed without supports. It opens on its **Parameters** tab.
 2. Beside **Width**, click **+**: the width goes from 2 to 3 grid units of 42 mm, and the compartments get
    wider.
 3. Beside **Compartments side by side**, click **+**: nine compartments now, three across and three deep.
+   In a narrow panel this name is cut short, *Compartments side by…*: hold the pointer on it to read it
+   whole.
 4. Turn off the **Scoop** switch: the rounded fronts inside the compartments go.
 5. Click **↺** beside a parameter to put it back, or **Reset all** to put them all back.
 
