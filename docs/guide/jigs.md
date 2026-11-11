@@ -108,7 +108,8 @@ as described in [Files › The web version](files.md#files-in-the-web-version).
 ### With an agent or a script
 
 An agent sets a Jig's parameters with `param.list` (the form, as a list) and `param.set`. Unlike the form,
-`param.set` **refuses** a value outside its range, and names the range, so the agent can correct itself:
+`param.set` **refuses** a value outside its range, and names the range, so the agent can correct itself.
+On the laser-cut box:
 
 ```json
 [
@@ -118,7 +119,8 @@ An agent sets a Jig's parameters with `param.list` (the form, as a list) and `pa
 ]
 ```
 
-From a terminal, the same with `craft3d-cli run box.3dcraftjig --cmd param.set --params '…' --cmd
-file.export --params '…'` ([The command line and scripts](command-line.md)).
+From a terminal, save the laser-cut box first: open it from the start screen and choose **File › Save**
+under the name `laser-box.3dcraft`. Then the same is `craft3d-cli run laser-box.3dcraft --cmd param.set
+--params '…' --cmd file.export --params '…'` ([The command line and scripts](command-line.md)).
 
 **Next:** [Assemblies](assemblies.md).

@@ -70,12 +70,13 @@ craft3d-cli convert bracket.3dcraft bracket.step
 craft3d-cli convert bracket.3dcraft bracket.stl --quality fine
 craft3d-cli convert bracket.3dcraft bracket.dxf --sketch Profile
 craft3d-cli convert bracket.3dcraft bracket-end.svg --face 'F2:endCap()'
-craft3d-cli convert box.3dcraft box.svg --set 'Cut sheet' --width '600 mm' --gap '8 mm'
+craft3d-cli convert laser-box.3dcraft box.svg --set 'Cut sheet' --width '600 mm' --gap '8 mm'
 ```
 
 Here `bracket.3dcraft` is the [bracket lesson](../examples/bracket.json), built as the flange is above.
 Its sketch `Profile` is the L, and `F2:endCap()` is the end of the extruded L, with the round in its inside
-corner.
+corner. `laser-box.3dcraft` is the laser-cut box Jig, saved from the window: open it from the start
+screen and choose **File › Save** under that name. Its set *Cut sheet* holds one flat face of each panel.
 
 A DXF or SVG file with `--sketch`, `--face` or `--set` is a flat outline at true size. Without them it
 is a drawing of the model as seen ([Files, export and drawings](files.md#drawings-of-the-model-as-seen)), as
@@ -97,10 +98,11 @@ until every check is measured before it prints.
 ## Check a Jig over its range
 
 ```sh
-craft3d-cli check-range box.3dcraft --samples 100 --seed 7
+craft3d-cli check-range laser-box.3dcraft --samples 100 --seed 7
 ```
 
-`check-range` proves a Jig (a document with parameters) over its parameter range: it builds the design
+`check-range` proves a Jig (a document with parameters, here the laser-cut box saved above) over its
+parameter range: it builds the design
 at the defaults, at the corners of the ranges, at every choice and at random points chosen by the seed,
 and checks each as `document.check` does. Where a point narrows the range of a parameter it leaves at its
 default (a choice that allows fewer holes), that parameter is moved into its new range, as the parameter
@@ -167,9 +169,11 @@ A box whose lid lifts off as the camera turns, then the box swept from 30 to 60 
 Each replay writes `frame-00000.png` and on into its `dir`, with `captions.srt` (each frame's values),
 and leaves the document as it was. `"video": "explode.mp4"` (or `.webm`, `.gif`) makes the video
 straight away when `ffmpeg` is installed; otherwise the command says so before it draws anything, and
-the PNG sequence is the way. From the command line, at full HD in the studio look:
+the PNG sequence is the way. From the command line, at full HD in the studio look, with the script above
+saved as `lid-box.json` (the first line runs it and saves the box as `box.3dcraft`):
 
 ```sh
+craft3d-cli run --script lid-box.json --out box.3dcraft
 craft3d-cli replay box.3dcraft --out explode.mp4 --size 1920x1080 \
     --params '{"animate": [{"variable": "t", "from": 0, "to": 1, "easing": "inOut"}],
                "duration": 4, "look": {}, "camera": {"orbit": 40, "dolly": 0.8}}'
