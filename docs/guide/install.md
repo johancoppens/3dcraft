@@ -390,6 +390,7 @@ sudo apt install libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-
 
 git clone https://github.com/johancoppens/3dcraft
 cd 3dcraft
+cargo xtask fonts    # once: fetches the built-in fonts, which are not in the repository
 cargo build --release -p craft3d -p craft3d-cli
 ```
 

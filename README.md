@@ -82,7 +82,8 @@ owed, and it is being made better step by step.
   lost and can be repaired, never silently moved.
 - **Checked, not hoped.** Volumes, mass, distances, wall thickness and clearances from the exact geometry,
   and design rules kept in the document, checked at every change. The boolean kernel is held to a reference
-  kernel on about twelve thousand cases with none wrong; what it cannot do yet it refuses by name.
+  kernel on about twelve thousand booleans (four thousand pairs of solids, each united, cut and intersected)
+  with none wrong; what it cannot do yet it refuses by name.
 - **Sheet metal.** A base with flanges bent by radius and K-factor, reliefs, closed corners, hems and
   louvres; the flat pattern with its bend lines; and a press-brake check that finds an order of bends in
   which punch and die clear the part.
