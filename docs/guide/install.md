@@ -54,6 +54,9 @@ off for other programs.
 > **Prefer not to install?** Unzip `3dcraft-0.1.1-x86_64-windows.zip` anywhere and start `craft3d.exe`
 > from the folder. SmartScreen asks the same question the first time (More info › Run anyway).
 
+When 3DCraft starts, a black console window opens beside its window. Leave it open: closing it closes
+3DCraft.
+
 ## macOS
 
 1. Open `3DCraft-0.1.1-aarch64.dmg` and drag **3DCraft** onto the **Applications** folder beside it.

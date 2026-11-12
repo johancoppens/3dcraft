@@ -1,12 +1,20 @@
 # Decisions
 
-> **Last updated:** 2026-11-11
+> **Last updated:** 2026-11-12
 
 This is the record of the decisions taken while 3DCraft was built, written at the time and kept as it was. "The developer" is the project's maintainer; "an agent" and "the coordinator" are the AI agents that built it (the coordinator plans the others' work and merges it). A decision made by an agent "for the developer to overturn" (some of them overnight, while nobody could be asked) stood unless it was overturned, and a later entry says so where it was; dates are when a decision was taken, ids of runs and commits are the workshop's evidence of the day. From outside the project, an open decision is raised in an issue.
 
 Decisions that shape the project, newest first, each with its reason. An agent that needs something listed under *Open decisions* asks the developer; it does not pick silently. When one is settled, move it up with the date.
 
 ## Taken
+
+### 2026-11-12: On Windows the window stays a console program for 0.1.1 (decided by the developer)
+
+`craft3d.exe` is built for the console subsystem (the package log of the Release rehearsal 43202097206 says so), so a console window opens beside 3DCraft's window, as a Windows user of 0.1.0 saw. Closing that console window closes 3DCraft: known by reading, not observed on a machine (Windows ends a console program when its console window is closed unless the program handles that, and nothing in 3DCraft's code does). The release notes of 0.1.1 and the install guide say to leave it open.
+
+- **Kept for 0.1.1**, which is cut with the fix of the Visual C++ runtime alone: the black window is no problem for now (the developer).
+- **What the alternatives cost** (an agent's findings, 2026-11-12): a GUI-subsystem program prints nothing in cmd or PowerShell unless its output is piped, so `--version`, `--help`, start-up errors and the control channel's port line would go unseen, and the app has no way to show an error before its window exists. Attaching to the parent console instead needs `unsafe`, which the workspace forbids.
+- **Left for later** (*Open decisions*, D-open-20): the GUI subsystem with start-up errors in a native message box, or a small launcher.
 
 ### 2026-11-11: What a document shows when it opens (decided by the developer; the narrowing for new documents by the coordinator)
 
@@ -662,4 +670,5 @@ Made by the agent, overnight; the developer can overturn any of them.
 | D-open-15 | **A tangency line on which another wall ends** (2026-10-20, `booleans.md`): a groove whose ceiling is tangent to the top face along a line and whose start wall ends on that line, inside the top face, so that three sheets meet along it (the top face through, the ceiling and the wall ending); the same at a point in the pinned `cones_that_share_a_ruling` (the inner cone's base rim on the shared ruling). Accepted today by the letter of 2026-10-18 (a wall that thins to nothing). | Keep accepting (one shell, measurable, meshes closed); refuse as the shell meeting itself (a vertex or an edge of the shell strictly inside a face it is not part of, with two or more faces at it: the rule prototyped and not committed, which would also refuse the cones at their rim) | M7 | Keep accepting |
 | D-open-18 | **An interactive modelling interface** (2026-11-10): sketching and editing with the mouse. 3DCraft has no toolbar of modelling buttons; you model through commands, and whoever wants a classic interface can build one on top. Whether 3DCraft itself ever gets one is not decided: "maybe later, we will see which way it goes" (the developer) | Inside 3DCraft; a separate program on top of the commands; neither | No milestone ([`roadmap.md`](roadmap.md) › *M11+*) | None: the window stays for viewing, pointing, the feature list, the history player, a Jig's form and export |
 | D-open-19 | **A self-update** (2026-11-11): 0.1.0 opens the website's update page in the browser and the AppImage carries update information for desktop tools (*2026-11-11: Updates in 0.1.0* under Taken); the program itself never connects. A program that updates itself needs signed packages first (a developer certificate for macOS and Windows, a signature on the Linux packages), and then a choice of when it looks | It looks by itself (at start, or daily), with a switch; only when asked (Check for updates fetches and installs); never (the website and the system's tools stay the way) | After R1 | Never: the program connects nowhere; Check for updates opens the website |
+| D-open-20 | **The console window beside the app on Windows** (2026-11-12): `craft3d.exe` is a console-subsystem program, so a console window opens beside 3DCraft's window and closing it closes 3DCraft (*2026-11-12: On Windows the window stays a console program for 0.1.1* under Taken). A GUI-subsystem program prints nothing in a terminal unless piped and cannot show an error before its window exists; attaching to the parent console needs `unsafe` | The GUI subsystem with start-up errors in a native message box; a small launcher that starts the window; keep the console program | After 0.1.1 | Keep the console program; the guide and the release notes say to leave the console window open |
 

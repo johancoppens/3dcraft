@@ -10,12 +10,12 @@ A fix for the Windows packages. On Linux, macOS and the web, 0.1.1 is 0.1.0 with
 
 ### Fixed
 
-- **The Windows programs no longer need Microsoft's Visual C++ runtime.** In 0.1.0 both of them, the window and `craft3d-cli`, needed it, and many computers do not have it: on such a PC 3DCraft stopped at once with *"The code execution cannot proceed because VCRUNTIME140.dll was not found"*. They now carry that runtime inside them. If you have 0.1.0 on Windows, install 0.1.1 over it: the new `.msi` removes 0.1.0 by itself and installs 0.1.1 in its place, and the new zip unpacks into a folder of its own, named with the new version, from which you start `craft3d.exe` (the guide's *Installing a newer version*).
+- **The Windows programs no longer need Microsoft's Visual C++ runtime.** In 0.1.0 both of them, the window and `craft3d-cli`, needed it, and many computers do not have it: on such a PC 3DCraft stopped at once with *"The code execution cannot proceed because VCRUNTIME140.dll was not found"*. They now carry that runtime inside them. If you have 0.1.0 on Windows, install 0.1.1 over it: the new `.msi` removes 0.1.0 by itself and installs 0.1.1 in its place, and the new zip unpacks into a folder of its own, named with the new version, from which you start `craft3d.exe` (the guide's [*Installing a newer version*](https://github.com/johancoppens/3dcraft/blob/v0.1.1/docs/guide/install.md#installing-a-newer-version)).
 
 ### Known limitations
 
-- Windows: a console window opens beside 3DCraft's window.
-- The known limitations of 0.1.0 still hold.
+- Windows: a console window opens beside 3DCraft's window. Leave it open: closing it closes 3DCraft.
+- The [known limitations of 0.1.0](https://github.com/johancoppens/3dcraft/releases/tag/v0.1.0) still hold.
 
 ## [0.1.0] - 2026-11-11
 

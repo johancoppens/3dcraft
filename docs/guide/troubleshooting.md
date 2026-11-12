@@ -183,6 +183,9 @@ against: `"renderer": "cpu"` asks for it.
 
 ## After a crash
 
+On Windows, 3DCraft also closes when you close the black console window that opens beside it: leave that
+window open.
+
 Start 3DCraft again. A bar under the menu says *3DCraft did not close properly* and offers what was
 autosaved:
 
