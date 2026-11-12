@@ -25,6 +25,12 @@
     <mediatype>application/x-craft3d-assembly</mediatype>
   </provides>
   <releases>
+    <release version="0.1.1" date="2026-11-12">
+      <url type="details">https://github.com/johancoppens/3dcraft/releases/tag/v0.1.1</url>
+      <description>
+        <p>A fix for the Windows packages, which no longer need Microsoft's Visual C++ runtime; nothing changes on Linux.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-11-11">
       <url type="details">https://github.com/johancoppens/3dcraft/releases/tag/v0.1.0</url>
       <description>

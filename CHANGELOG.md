@@ -4,9 +4,18 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-12
+
+A fix for the Windows packages. On Linux, macOS and the web, 0.1.1 is 0.1.0 with a new version number.
+
 ### Fixed
 
-- **3DCraft starts on Windows.** In 0.1.0 both Windows programs, the window and `craft3d-cli`, needed Microsoft's Visual C++ runtime, which many computers do not have: 3DCraft stopped at once with *"The code execution cannot proceed because VCRUNTIME140.dll was not found"*. They now carry that runtime inside them and need nothing that Windows does not bring; there is nothing else to install.
+- **The Windows programs no longer need Microsoft's Visual C++ runtime.** In 0.1.0 both of them, the window and `craft3d-cli`, needed it, and many computers do not have it: on such a PC 3DCraft stopped at once with *"The code execution cannot proceed because VCRUNTIME140.dll was not found"*. They now carry that runtime inside them. If you have 0.1.0 on Windows, install 0.1.1 over it: the new `.msi` removes 0.1.0 by itself and installs 0.1.1 in its place, and the new zip unpacks into a folder of its own, named with the new version, from which you start `craft3d.exe` (the guide's *Installing a newer version*).
+
+### Known limitations
+
+- Windows: a console window opens beside 3DCraft's window.
+- The known limitations of 0.1.0 still hold.
 
 ## [0.1.0] - 2026-11-11
 
@@ -122,5 +131,6 @@ The first release for people outside the project. 3DCraft is a parametric 3D CAD
 - An AI agent cannot drive the web version yet.
 - Some modelling cases are refused rather than built (the message says which): among them some booleans and freeform fillets, curved sheet-metal bends along a spline and some sharp ones, curved origami creases, and text wrapped onto a surface other than a cylinder or a cone. Text is laid out glyph by glyph with kerning; shaping for complex scripts (such as Arabic or the Indic scripts) is for a later version. Every refusal reported helps.
 
-[Unreleased]: https://github.com/johancoppens/3dcraft/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/johancoppens/3dcraft/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/johancoppens/3dcraft/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/johancoppens/3dcraft/releases/tag/v0.1.0
