@@ -20,6 +20,12 @@ docs/guide/*.md text eol=lf
 crates/zipstore/testdata/** -text
 packaging/** text eol=lf
 *.step text eol=lf
+# The cargo configuration and the workspace's manifest, whose lines xtask
+# tests read (the static C runtime for Windows, the repository the AppImage
+# updates from): LF in every checkout. The tests read them line by line as
+# well, so a checkout made before this rule passes too (2026-11-12).
+/.cargo/config.toml text eol=lf
+/Cargo.toml text eol=lf
 # Binary files last, so no text rule above (packaging/**) claims them:
 # a later line wins in .gitattributes.
 *.png binary

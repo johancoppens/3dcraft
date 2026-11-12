@@ -673,36 +673,42 @@ pub(crate) fn failure(what: &str, status: &str, stdout: &str, stderr: &str) -> S
     }
 }
 
-/// The runtimes a fresh Windows does not have, by the start of the
-/// lower-case names of their DLLs: a program that imports one does not
-/// start on a computer where nobody installed that runtime (2026-11-12:
-/// 0.1.0's programs imported `VCRUNTIME140.dll`, and the hosted runner
-/// that smoke-tested them has the Visual C++ runtime installed). The
-/// Visual C++ runtime and its C++ library, OpenMP and concurrency
-/// runtimes; the Universal C runtime, `ucrtbase.dll` and the API sets
-/// `api-ms-win-crt-*` that lead to it, part of Windows 10 and later but
-/// linked into the program with the rest of the C runtime by `+crt-static`,
-/// so a program that still imports it was not linked so; and MinGW's
-/// runtime libraries. Not the API sets `api-ms-win-core-*`, which are
-/// Windows itself (the standard library imports `WaitOnAddress` from one),
-/// nor `msvcrt.dll`, Windows' own C runtime. Older Visual C++ runtimes,
-/// `msvcr<digits>.dll`, are matched in [`missing_runtime`].
-const MISSING_RUNTIMES: [(&str, &str); 10] = [
+/// The Universal C runtime, as [`REFUSED_RUNTIMES`] names it: part of
+/// Windows 10 and later, but linked into the program with the rest of the
+/// C runtime by `+crt-static`.
+const UCRT: &str = "the Universal C runtime";
+
+/// The runtimes a Windows program may not import, by the start of the
+/// lower-case names of their DLLs (2026-11-12: 0.1.0's programs imported
+/// `VCRUNTIME140.dll` and the Universal C runtime's API sets, and the
+/// hosted runner that smoke-tested them has the Visual C++ runtime
+/// installed). Those a fresh Windows does not have, so a program that
+/// imports one does not start where nobody installed it: the Visual C++
+/// runtime and its C++ library, OpenMP and concurrency runtimes, and
+/// MinGW's runtime libraries. And the Universal C runtime ([`UCRT`]),
+/// `ucrtbase.dll` and the API sets `api-ms-win-crt-*` that lead to it,
+/// which Windows 10 and later do have but `+crt-static` links into the
+/// program: a program that imports it shows that the static link did not
+/// take effect. Not the API sets `api-ms-win-core-*`, which are Windows
+/// itself (the standard library imports `WaitOnAddress` from one), nor
+/// `msvcrt.dll`, Windows' own C runtime. Older Visual C++ runtimes,
+/// `msvcr<digits>.dll`, are matched in [`refused_runtime`].
+const REFUSED_RUNTIMES: [(&str, &str); 10] = [
     ("vcruntime", "the Visual C++ runtime"),
     ("msvcp", "the Visual C++ standard library"),
     ("vcomp", "the Visual C++ OpenMP runtime"),
     ("concrt", "the Visual C++ concurrency runtime"),
     ("vccorlib", "the Visual C++ runtime for WinRT"),
-    ("ucrtbase", "the Universal C runtime"),
-    ("api-ms-win-crt-", "the Universal C runtime"),
+    ("ucrtbase", UCRT),
+    ("api-ms-win-crt-", UCRT),
     ("libgcc_s", "MinGW's GCC runtime"),
     ("libstdc++", "MinGW's C++ library"),
     ("libwinpthread", "MinGW's threads library"),
 ];
 
-/// Which runtime a fresh Windows does not have the DLL `dll` belongs to
-/// ([`MISSING_RUNTIMES`]), or `None` for a DLL of Windows itself.
-fn missing_runtime(dll: &str) -> Option<&'static str> {
+/// The runtime of [`REFUSED_RUNTIMES`] the DLL `dll` belongs to, or `None`
+/// for a DLL of Windows itself.
+fn refused_runtime(dll: &str) -> Option<&'static str> {
     let name = dll.to_ascii_lowercase();
     let older = name
         .strip_prefix("msvcr")
@@ -711,7 +717,7 @@ fn missing_runtime(dll: &str) -> Option<&'static str> {
     if older {
         return Some("an older Visual C++ runtime");
     }
-    MISSING_RUNTIMES
+    REFUSED_RUNTIMES
         .iter()
         .find(|(prefix, _)| name.starts_with(prefix))
         .map(|(_, what)| *what)
@@ -739,26 +745,51 @@ fn windows_program_line(name: &str, image: &crate::pe::Image) -> String {
 
 /// Reads the Windows program `file`, packed as `name`, writes into the log
 /// what it needs ([`windows_program_line`]), and refuses it when that
-/// includes a runtime a fresh Windows does not have ([`missing_runtime`]).
+/// includes a runtime of [`REFUSED_RUNTIMES`], saying for each whether a
+/// fresh Windows lacks it or it shows that the static link did not take
+/// effect.
 fn check_windows_program(name: &str, file: &[u8]) -> Result<(), String> {
     let image = crate::pe::read(file).map_err(|e| format!("{name}: {e}"))?;
     eprintln!("package: {}", windows_program_line(name, &image));
-    let missing: Vec<String> = image
+    let refused: Vec<(&String, &'static str)> = image
         .imports
         .iter()
         .chain(&image.delayed)
-        .filter_map(|dll| missing_runtime(dll).map(|what| format!("{dll} ({what})")))
+        .filter_map(|dll| refused_runtime(dll).map(|what| (dll, what)))
         .collect();
-    if missing.is_empty() {
+    if refused.is_empty() {
         return Ok(());
     }
+    let absent: Vec<String> = refused
+        .iter()
+        .filter(|(_, what)| *what != UCRT)
+        .map(|(dll, what)| format!("{dll} ({what})"))
+        .collect();
+    let universal: Vec<&str> = refused
+        .iter()
+        .filter(|(_, what)| *what == UCRT)
+        .map(|(dll, _)| dll.as_str())
+        .collect();
+    let mut why = Vec::new();
+    if !absent.is_empty() {
+        why.push(format!(
+            "{}, which a fresh Windows does not have, so it would not start there",
+            absent.join(", ")
+        ));
+    }
+    if !universal.is_empty() {
+        why.push(format!(
+            "{} ({UCRT}: part of Windows 10 and later, but `+crt-static` links it into the \
+             program, so importing it shows that the static link did not take effect)",
+            universal.join(", ")
+        ));
+    }
     Err(format!(
-        "{name} needs {}, which a fresh Windows does not have: it would not start there. \
-         Link the C runtime into the programs with `-C target-feature=+crt-static`, which \
-         .cargo/config.toml sets for every Windows MSVC target (RUSTFLAGS or \
-         CARGO_ENCODED_RUSTFLAGS in the environment replace that setting: unset them, or add \
-         the flag to them), and package again",
-        missing.join(", ")
+        "{name} imports {}. Link the C runtime into the programs with \
+         `-C target-feature=+crt-static`, which .cargo/config.toml sets for every Windows MSVC \
+         target (RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS in the environment replace that setting: \
+         unset them, or add the flag to them), and package again",
+        why.join("; and ")
     ))
 }
 
@@ -1049,9 +1080,13 @@ impl Packer {
         for name in ["craft3d", "craft3d-cli"] {
             let exe = self.binary(name)?;
             let file_name = exe.file_name().ok_or("a binary without a name")?;
-            // Whatever built it: nothing a fresh Windows does not have.
-            check_windows_program(&file_name.to_string_lossy(), &read(&exe)?)?;
-            copy(&exe, &dir.join(file_name), true)?;
+            // Whatever built it: no runtime a fresh Windows does not have.
+            // The bytes checked are the bytes packed.
+            let bytes = read(&exe)?;
+            check_windows_program(&file_name.to_string_lossy(), &bytes)?;
+            let to = dir.join(file_name);
+            write(&to, &bytes)?;
+            set_mode(&to, true)?;
         }
         copy(&self.repo.join("LICENSE"), &dir.join("LICENSE.txt"), false)?;
         copy(&self.examples_licence(), &dir.join(EXAMPLES_LICENCE), false)?;
@@ -1681,10 +1716,15 @@ mod tests {
             update_information("aarch64"),
             "gh-releases-zsync|johancoppens|3dcraft|latest|3DCraft-*-aarch64.AppImage.zsync"
         );
+        // A whole line of the manifest, read line by line: a checkout with
+        // CRLF line ends reads the same (`.gitattributes` keeps it LF too).
         let manifest = std::fs::read_to_string(repo_root().join("Cargo.toml")).unwrap();
-        assert!(manifest.contains(&format!(
-            "\nrepository = \"https://github.com/{RELEASES_OWNER}/{RELEASES_REPOSITORY}\"\n"
-        )));
+        let repository =
+            format!("repository = \"https://github.com/{RELEASES_OWNER}/{RELEASES_REPOSITORY}\"");
+        assert!(
+            manifest.lines().any(|line| line == repository),
+            "the root Cargo.toml has no line {repository}"
+        );
         // `*` stands for this version: the pattern names the `.zsync`
         // the AppImage step leaves beside its AppImage, and no other
         // architecture's.
@@ -2208,8 +2248,11 @@ mod tests {
     /// (2026-11-12: 0.1.0's `craft3d.exe` and `craft3d-cli.exe` imported
     /// `VCRUNTIME140.dll` and the Universal C runtime's API sets, and did
     /// not start on a Windows without the Visual C++ Redistributable),
-    /// also when it only delay-loads it; one that imports only Windows'
-    /// own DLLs is. A file that is not a Windows program is refused too.
+    /// also when it only delay-loads it; nor one that imports the Universal
+    /// C runtime, which Windows 10 has but a program linked with
+    /// `+crt-static` does not import, and the refusal tells the two
+    /// reasons apart. One that imports only Windows' own DLLs is packed. A
+    /// file that is not a Windows program is refused too.
     #[test]
     fn a_windows_program_that_needs_the_visual_cpp_runtime_is_refused() {
         use crate::pe::{CONSOLE, GUI, synthetic::image};
@@ -2228,10 +2271,11 @@ mod tests {
         );
         let error = check_windows_program("craft3d.exe", &released).unwrap_err();
         for words in [
-            "craft3d.exe needs VCRUNTIME140.dll (the Visual C++ runtime), \
-             api-ms-win-crt-runtime-l1-1-0.dll (the Universal C runtime), \
-             api-ms-win-crt-heap-l1-1-0.dll (the Universal C runtime), \
-             which a fresh Windows does not have",
+            "craft3d.exe imports VCRUNTIME140.dll (the Visual C++ runtime), which a fresh \
+             Windows does not have, so it would not start there; and \
+             api-ms-win-crt-runtime-l1-1-0.dll, api-ms-win-crt-heap-l1-1-0.dll (the Universal \
+             C runtime: part of Windows 10 and later, but `+crt-static` links it into the \
+             program, so importing it shows that the static link did not take effect)",
             "-C target-feature=+crt-static",
             ".cargo/config.toml",
             "RUSTFLAGS",
@@ -2242,12 +2286,30 @@ mod tests {
             !error.contains("KERNEL32") && !error.contains("ntdll"),
             "{error}"
         );
+        // The Universal C runtime alone is no runtime Windows lacks.
+        let universal = image(true, CONSOLE, &["KERNEL32.dll", "ucrtbase.dll"], &[]);
+        let error = check_windows_program("craft3d-cli.exe", &universal).unwrap_err();
+        assert!(
+            error.starts_with(
+                "craft3d-cli.exe imports ucrtbase.dll (the Universal C runtime: part of \
+                 Windows 10 and later"
+            ),
+            "{error}"
+        );
+        assert!(!error.contains("fresh Windows"), "{error}");
         // The Visual C++ runtime alone, and delay-loaded.
         let alone = image(true, GUI, &["KERNEL32.dll", "VCRUNTIME140.dll"], &[]);
-        assert!(check_windows_program("craft3d.exe", &alone).is_err());
+        let error = check_windows_program("craft3d.exe", &alone).unwrap_err();
+        assert!(
+            error.starts_with(
+                "craft3d.exe imports VCRUNTIME140.dll (the Visual C++ runtime), which a fresh \
+                 Windows does not have, so it would not start there. Link"
+            ),
+            "{error}"
+        );
         let delayed = image(true, CONSOLE, &["KERNEL32.dll"], &["MSVCP140.dll"]);
         let error = check_windows_program("craft3d-cli.exe", &delayed).unwrap_err();
-        assert!(error.contains("MSVCP140.dll (the Visual C++ standard library)"));
+        assert!(error.contains("MSVCP140.dll (the Visual C++ standard library), which a fresh"));
         // Windows' own DLLs only.
         let system = image(true, CONSOLE, &["KERNEL32.dll"], &[]);
         assert_eq!(check_windows_program("craft3d-cli.exe", &system), Ok(()));
@@ -2282,9 +2344,10 @@ mod tests {
         assert!(check_windows_program("craft3d.exe", &released[..300]).is_err());
     }
 
-    /// Which DLLs belong to a runtime a fresh Windows does not have, in
-    /// any case: the redistributable Visual C++ runtimes (release and
-    /// debug), the Universal C runtime and MinGW's; not Windows' own.
+    /// Which DLLs belong to a refused runtime, in any case: those a fresh
+    /// Windows does not have (the redistributable Visual C++ runtimes,
+    /// release and debug, and MinGW's) and the Universal C runtime, which
+    /// `+crt-static` links in; not Windows' own.
     #[test]
     fn the_runtimes_windows_does_not_bring_are_told_from_its_own_dlls() {
         for dll in [
@@ -2296,17 +2359,22 @@ mod tests {
             "VCOMP140.DLL",
             "concrt140.dll",
             "vccorlib140.dll",
-            "ucrtbase.dll",
-            "ucrtbased.dll",
-            "api-ms-win-crt-runtime-l1-1-0.dll",
-            "API-MS-WIN-CRT-STDIO-L1-1-0.DLL",
             "msvcr120.dll",
             "MSVCR100.dll",
             "libgcc_s_seh-1.dll",
             "libstdc++-6.dll",
             "libwinpthread-1.dll",
         ] {
-            assert!(missing_runtime(dll).is_some(), "{dll}");
+            let what = refused_runtime(dll);
+            assert!(what.is_some() && what != Some(UCRT), "{dll}: {what:?}");
+        }
+        for dll in [
+            "ucrtbase.dll",
+            "ucrtbased.dll",
+            "api-ms-win-crt-runtime-l1-1-0.dll",
+            "API-MS-WIN-CRT-STDIO-L1-1-0.DLL",
+        ] {
+            assert_eq!(refused_runtime(dll), Some(UCRT), "{dll}");
         }
         for dll in [
             "KERNEL32.dll",
@@ -2325,7 +2393,7 @@ mod tests {
             "dxgi.dll",
             "opengl32.dll",
         ] {
-            assert_eq!(missing_runtime(dll), None, "{dll}");
+            assert_eq!(refused_runtime(dll), None, "{dll}");
         }
     }
 
@@ -2334,23 +2402,38 @@ mod tests {
     /// target, and no workflow sets RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS,
     /// which would replace that setting (2026-11-12, 0.1.0's needed
     /// `VCRUNTIME140.dll`). What the built programs import is checked
-    /// where they are packed (`check_windows_program`).
+    /// where they are packed (`check_windows_program`). Line by line, so
+    /// a checkout with CRLF line ends reads the same (`.gitattributes`
+    /// keeps the file LF too).
     #[test]
     fn the_windows_programs_link_the_c_runtime_statically() {
         let root = repo_root();
         let config = std::fs::read_to_string(root.join(".cargo/config.toml")).unwrap();
+        let lines: Vec<&str> = config.lines().collect();
+        let stanza = [
+            "[target.'cfg(all(target_os = \"windows\", target_env = \"msvc\"))']",
+            "rustflags = [\"-C\", \"target-feature=+crt-static\"]",
+        ];
         assert!(
-            config.contains(
-                "\n[target.'cfg(all(target_os = \"windows\", target_env = \"msvc\"))']\n\
-                 rustflags = [\"-C\", \"target-feature=+crt-static\"]\n"
-            ),
+            lines.windows(2).any(|pair| pair == stanza.as_slice()),
             "{config}"
         );
         let mut workflows = 0;
         for entry in std::fs::read_dir(root.join(".github/workflows")).unwrap() {
             let path = entry.unwrap().path();
             let text = std::fs::read_to_string(&path).unwrap();
-            assert!(!text.contains("RUSTFLAGS"), "{}", path.display());
+            // A YAML comment may name it; a step or `env` may not.
+            for (number, line) in text.lines().enumerate() {
+                assert!(
+                    line.trim_start().starts_with('#') || !line.contains("RUSTFLAGS"),
+                    "{}:{}: {line}\nRUSTFLAGS or CARGO_ENCODED_RUSTFLAGS in a job's \
+                     environment replaces the rustflags of .cargo/config.toml, and with them \
+                     `+crt-static` for the Windows programs (the packages' import check, \
+                     `check_windows_program`, would then refuse them)",
+                    path.display(),
+                    number + 1
+                );
+            }
             workflows += 1;
         }
         assert!(workflows >= 2, "found only {workflows} workflows");
