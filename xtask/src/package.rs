@@ -673,6 +673,95 @@ pub(crate) fn failure(what: &str, status: &str, stdout: &str, stderr: &str) -> S
     }
 }
 
+/// The runtimes a fresh Windows does not have, by the start of the
+/// lower-case names of their DLLs: a program that imports one does not
+/// start on a computer where nobody installed that runtime (2026-11-12:
+/// 0.1.0's programs imported `VCRUNTIME140.dll`, and the hosted runner
+/// that smoke-tested them has the Visual C++ runtime installed). The
+/// Visual C++ runtime and its C++ library, OpenMP and concurrency
+/// runtimes; the Universal C runtime, `ucrtbase.dll` and the API sets
+/// `api-ms-win-crt-*` that lead to it, part of Windows 10 and later but
+/// linked into the program with the rest of the C runtime by `+crt-static`,
+/// so a program that still imports it was not linked so; and MinGW's
+/// runtime libraries. Not the API sets `api-ms-win-core-*`, which are
+/// Windows itself (the standard library imports `WaitOnAddress` from one),
+/// nor `msvcrt.dll`, Windows' own C runtime. Older Visual C++ runtimes,
+/// `msvcr<digits>.dll`, are matched in [`missing_runtime`].
+const MISSING_RUNTIMES: [(&str, &str); 10] = [
+    ("vcruntime", "the Visual C++ runtime"),
+    ("msvcp", "the Visual C++ standard library"),
+    ("vcomp", "the Visual C++ OpenMP runtime"),
+    ("concrt", "the Visual C++ concurrency runtime"),
+    ("vccorlib", "the Visual C++ runtime for WinRT"),
+    ("ucrtbase", "the Universal C runtime"),
+    ("api-ms-win-crt-", "the Universal C runtime"),
+    ("libgcc_s", "MinGW's GCC runtime"),
+    ("libstdc++", "MinGW's C++ library"),
+    ("libwinpthread", "MinGW's threads library"),
+];
+
+/// Which runtime a fresh Windows does not have the DLL `dll` belongs to
+/// ([`MISSING_RUNTIMES`]), or `None` for a DLL of Windows itself.
+fn missing_runtime(dll: &str) -> Option<&'static str> {
+    let name = dll.to_ascii_lowercase();
+    let older = name
+        .strip_prefix("msvcr")
+        .and_then(|rest| rest.chars().next())
+        .is_some_and(|c| c.is_ascii_digit());
+    if older {
+        return Some("an older Visual C++ runtime");
+    }
+    MISSING_RUNTIMES
+        .iter()
+        .find(|(prefix, _)| name.starts_with(prefix))
+        .map(|(_, what)| *what)
+}
+
+/// What the log says of a Windows program: its machine, its subsystem and
+/// every DLL it imports and delay-loads, so a Release run shows what the
+/// programs it packed need.
+fn windows_program_line(name: &str, image: &crate::pe::Image) -> String {
+    let list = |dlls: &[String]| {
+        if dlls.is_empty() {
+            "nothing".to_string()
+        } else {
+            dlls.join(", ")
+        }
+    };
+    format!(
+        "{name}: {}, {}; imports {}; delay-loads {}",
+        crate::pe::machine_name(image.machine),
+        crate::pe::subsystem_name(image.subsystem),
+        list(&image.imports),
+        list(&image.delayed)
+    )
+}
+
+/// Reads the Windows program `file`, packed as `name`, writes into the log
+/// what it needs ([`windows_program_line`]), and refuses it when that
+/// includes a runtime a fresh Windows does not have ([`missing_runtime`]).
+fn check_windows_program(name: &str, file: &[u8]) -> Result<(), String> {
+    let image = crate::pe::read(file).map_err(|e| format!("{name}: {e}"))?;
+    eprintln!("package: {}", windows_program_line(name, &image));
+    let missing: Vec<String> = image
+        .imports
+        .iter()
+        .chain(&image.delayed)
+        .filter_map(|dll| missing_runtime(dll).map(|what| format!("{dll} ({what})")))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{name} needs {}, which a fresh Windows does not have: it would not start there. \
+         Link the C runtime into the programs with `-C target-feature=+crt-static`, which \
+         .cargo/config.toml sets for every Windows MSVC target (RUSTFLAGS or \
+         CARGO_ENCODED_RUSTFLAGS in the environment replace that setting: unset them, or add \
+         the flag to them), and package again",
+        missing.join(", ")
+    ))
+}
+
 impl Packer {
     fn packaging(&self, rel: &str) -> PathBuf {
         self.repo.join("packaging").join(rel)
@@ -960,6 +1049,8 @@ impl Packer {
         for name in ["craft3d", "craft3d-cli"] {
             let exe = self.binary(name)?;
             let file_name = exe.file_name().ok_or("a binary without a name")?;
+            // Whatever built it: nothing a fresh Windows does not have.
+            check_windows_program(&file_name.to_string_lossy(), &read(&exe)?)?;
             copy(&exe, &dir.join(file_name), true)?;
         }
         copy(&self.repo.join("LICENSE"), &dir.join("LICENSE.txt"), false)?;
@@ -2111,6 +2202,158 @@ mod tests {
             folders += 1;
         }
         assert!(folders >= 2, "found only {folders} folders");
+    }
+
+    /// A Windows program that imports the Visual C++ runtime is not packed
+    /// (2026-11-12: 0.1.0's `craft3d.exe` and `craft3d-cli.exe` imported
+    /// `VCRUNTIME140.dll` and the Universal C runtime's API sets, and did
+    /// not start on a Windows without the Visual C++ Redistributable),
+    /// also when it only delay-loads it; one that imports only Windows'
+    /// own DLLs is. A file that is not a Windows program is refused too.
+    #[test]
+    fn a_windows_program_that_needs_the_visual_cpp_runtime_is_refused() {
+        use crate::pe::{CONSOLE, GUI, synthetic::image};
+        // The imports of 0.1.0's programs, in part.
+        let released = image(
+            true,
+            CONSOLE,
+            &[
+                "KERNEL32.dll",
+                "ntdll.dll",
+                "VCRUNTIME140.dll",
+                "api-ms-win-crt-runtime-l1-1-0.dll",
+                "api-ms-win-crt-heap-l1-1-0.dll",
+            ],
+            &[],
+        );
+        let error = check_windows_program("craft3d.exe", &released).unwrap_err();
+        for words in [
+            "craft3d.exe needs VCRUNTIME140.dll (the Visual C++ runtime), \
+             api-ms-win-crt-runtime-l1-1-0.dll (the Universal C runtime), \
+             api-ms-win-crt-heap-l1-1-0.dll (the Universal C runtime), \
+             which a fresh Windows does not have",
+            "-C target-feature=+crt-static",
+            ".cargo/config.toml",
+            "RUSTFLAGS",
+        ] {
+            assert!(error.contains(words), "{words}: {error}");
+        }
+        assert!(
+            !error.contains("KERNEL32") && !error.contains("ntdll"),
+            "{error}"
+        );
+        // The Visual C++ runtime alone, and delay-loaded.
+        let alone = image(true, GUI, &["KERNEL32.dll", "VCRUNTIME140.dll"], &[]);
+        assert!(check_windows_program("craft3d.exe", &alone).is_err());
+        let delayed = image(true, CONSOLE, &["KERNEL32.dll"], &["MSVCP140.dll"]);
+        let error = check_windows_program("craft3d-cli.exe", &delayed).unwrap_err();
+        assert!(error.contains("MSVCP140.dll (the Visual C++ standard library)"));
+        // Windows' own DLLs only.
+        let system = image(true, CONSOLE, &["KERNEL32.dll"], &[]);
+        assert_eq!(check_windows_program("craft3d-cli.exe", &system), Ok(()));
+        let windows = [
+            "KERNEL32.dll",
+            "ntdll.dll",
+            "api-ms-win-core-synch-l1-2-0.dll",
+            "bcryptprimitives.dll",
+            "USER32.dll",
+            "WS2_32.dll",
+        ];
+        let gui = image(true, GUI, &windows, &["d3d12.dll"]);
+        assert_eq!(check_windows_program("craft3d.exe", &gui), Ok(()));
+        let line = windows_program_line("craft3d.exe", &crate::pe::read(&gui).unwrap());
+        assert_eq!(
+            line,
+            "craft3d.exe: x86-64, Windows GUI subsystem; imports KERNEL32.dll, ntdll.dll, \
+             api-ms-win-core-synch-l1-2-0.dll, bcryptprimitives.dll, USER32.dll, WS2_32.dll; \
+             delay-loads d3d12.dll"
+        );
+        let line = windows_program_line("craft3d-cli.exe", &crate::pe::read(&system).unwrap());
+        assert_eq!(
+            line,
+            "craft3d-cli.exe: x86-64, console subsystem; imports KERNEL32.dll; delay-loads nothing"
+        );
+        // Not a Windows program.
+        let error = check_windows_program("craft3d.exe", b"\x7fELF\x02\x01").unwrap_err();
+        assert!(
+            error.starts_with("craft3d.exe: not a Windows program"),
+            "{error}"
+        );
+        assert!(check_windows_program("craft3d.exe", &released[..300]).is_err());
+    }
+
+    /// Which DLLs belong to a runtime a fresh Windows does not have, in
+    /// any case: the redistributable Visual C++ runtimes (release and
+    /// debug), the Universal C runtime and MinGW's; not Windows' own.
+    #[test]
+    fn the_runtimes_windows_does_not_bring_are_told_from_its_own_dlls() {
+        for dll in [
+            "VCRUNTIME140.dll",
+            "vcruntime140_1.dll",
+            "VCRUNTIME140D.dll",
+            "MSVCP140.dll",
+            "msvcp140_atomic_wait.dll",
+            "VCOMP140.DLL",
+            "concrt140.dll",
+            "vccorlib140.dll",
+            "ucrtbase.dll",
+            "ucrtbased.dll",
+            "api-ms-win-crt-runtime-l1-1-0.dll",
+            "API-MS-WIN-CRT-STDIO-L1-1-0.DLL",
+            "msvcr120.dll",
+            "MSVCR100.dll",
+            "libgcc_s_seh-1.dll",
+            "libstdc++-6.dll",
+            "libwinpthread-1.dll",
+        ] {
+            assert!(missing_runtime(dll).is_some(), "{dll}");
+        }
+        for dll in [
+            "KERNEL32.dll",
+            "kernel32.dll",
+            "ntdll.dll",
+            "msvcrt.dll",
+            "api-ms-win-core-synch-l1-2-0.dll",
+            "bcryptprimitives.dll",
+            "ADVAPI32.dll",
+            "USER32.dll",
+            "GDI32.dll",
+            "ole32.dll",
+            "SHELL32.dll",
+            "WS2_32.dll",
+            "d3d12.dll",
+            "dxgi.dll",
+            "opengl32.dll",
+        ] {
+            assert_eq!(missing_runtime(dll), None, "{dll}");
+        }
+    }
+
+    /// The Windows programs carry the C runtime inside them:
+    /// `.cargo/config.toml` links it statically for every Windows MSVC
+    /// target, and no workflow sets RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS,
+    /// which would replace that setting (2026-11-12, 0.1.0's needed
+    /// `VCRUNTIME140.dll`). What the built programs import is checked
+    /// where they are packed (`check_windows_program`).
+    #[test]
+    fn the_windows_programs_link_the_c_runtime_statically() {
+        let root = repo_root();
+        let config = std::fs::read_to_string(root.join(".cargo/config.toml")).unwrap();
+        assert!(
+            config.contains(
+                "\n[target.'cfg(all(target_os = \"windows\", target_env = \"msvc\"))']\n\
+                 rustflags = [\"-C\", \"target-feature=+crt-static\"]\n"
+            ),
+            "{config}"
+        );
+        let mut workflows = 0;
+        for entry in std::fs::read_dir(root.join(".github/workflows")).unwrap() {
+            let path = entry.unwrap().path();
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(!text.contains("RUSTFLAGS"), "{}", path.display());
+            workflows += 1;
+        }
+        assert!(workflows >= 2, "found only {workflows} workflows");
     }
 
     /// The packages send people to the website, a problem to the issues,

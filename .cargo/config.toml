@@ -1,2 +1,12 @@
 [alias]
 xtask = "run --quiet -p xtask --"
+
+# Windows (MSVC): the C runtime, the Visual C++ runtime and the Universal C
+# runtime, linked into every program, so the programs need no DLL that a
+# fresh Windows does not have (2026-11-12: 0.1.0's imported VCRUNTIME140.dll
+# and did not start on a Windows without the Visual C++ Redistributable).
+# RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS in the environment replace this
+# setting; `cargo xtask package` refuses a Windows program that imports such
+# a runtime, however it was built (xtask/src/package.rs).
+[target.'cfg(all(target_os = "windows", target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

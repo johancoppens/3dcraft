@@ -11,6 +11,7 @@ mod health;
 mod layers;
 mod notices;
 mod package;
+mod pe;
 mod stats;
 mod thumbs;
 mod web;
