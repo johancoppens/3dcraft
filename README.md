@@ -40,18 +40,18 @@ window you are watching. The project is the proof of its own method.
 
 ## Where it stands
 
-3DCraft is at version 0.1.0. It does not replace professional CAD today. What it cannot do yet, it refuses,
+3DCraft is at version 0.1.1. It does not replace professional CAD today. What it cannot do yet, it refuses,
 and says so. The experiment goes on: the kernel is its heart and its hardest part, every refusal is work still
 owed, and it is being made better step by step.
 
 ## Get started
 
-> **0.1.0 is the first release.** Its installers are on the
-> [releases page](https://github.com/johancoppens/3dcraft/releases), and the website,
+> **0.1.1 is the current release:** the first release, 0.1.0, with a fix for Windows. Its installers are on
+> the [releases page](https://github.com/johancoppens/3dcraft/releases), and the website,
 > [3dcraft.dev](https://3dcraft.dev/), has the guide, the examples and the web version.
 
 - **[Install 3DCraft](docs/guide/install.md)**: installers for Windows, macOS and Linux (version
-  0.1.0), or the [web version](https://3dcraft.dev/app/) with nothing to install.
+  0.1.1), or the [web version](https://3dcraft.dev/app/) with nothing to install.
 - **[Your first five minutes](docs/guide/first-steps.md)**: open an example, play its history, try a
   Jig, export for a 3D printer.
 - **[The user guide](docs/guide/README.md)**, 22 chapters in six parts: installing and connecting an AI

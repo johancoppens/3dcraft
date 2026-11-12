@@ -132,6 +132,12 @@ against: `"renderer": "cpu"` asks for it.
   software one: on Linux Mesa's lavapipe (`mesa-vulkan-drivers`) or llvmpipe for OpenGL; on Windows,
   update the graphics driver. Everything else works without it: `craft3d-cli` can still model, render and
   export.
+- **0.1.0 does not start on Windows**, and says *"The code execution cannot proceed because
+  VCRUNTIME140.dll was not found"*. The Windows programs of 3DCraft 0.1.0 needed Microsoft's Visual C++
+  runtime, which many computers do not have; from 0.1.1 on they carry it inside them. Install 0.1.1 over
+  0.1.0 ([Installing a newer version](install.md#installing-a-newer-version)), or install Microsoft's
+  Visual C++ Redistributable for x64
+  ([vc_redist.x64.exe](https://aka.ms/vs/17/release/vc_redist.x64.exe), from Microsoft).
 - **The model looks rough at first.** A heavy model first shows a quick picture, then the sharp one; the
   status bar says `refining` meanwhile.
 - **A datum plane, axis or point does not show.** Datums are hidden until you switch **Datums** on in the

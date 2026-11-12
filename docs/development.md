@@ -396,7 +396,7 @@ What a user meets today:
 
 - **Not signed.** macOS: the app is ad-hoc signed and not notarised, so a downloaded copy is blocked the first time: right-click › Open (macOS 14 and earlier), System Settings › Privacy & Security › Open Anyway, or `xattr -dr com.apple.quarantine /Applications/3DCraft.app`. Windows: SmartScreen warns about an unknown publisher (More info › Run anyway). What a tester sees and does is in the user guide, [`guide/install.md`](guide/install.md). Signing needs an Apple Developer ID and a Windows code-signing certificate.
 - **macOS:** Apple Silicon only (an Intel or universal build is `--target x86_64-apple-darwin` plus `lipo`, not set up). Double-clicking a `.3dcraft` file starts 3DCraft but does not open the file yet: macOS hands it over as an Apple Event, which winit does not pass on; File › Open does. `craft3d-cli` is at `/Applications/3DCraft.app/Contents/MacOS/craft3d-cli` (link it onto `PATH`).
-- **Windows:** the `.exe` files carry no embedded icon (Explorer shows the generic one; the Start menu entry, the file type and the window have the icon).
+- **Windows:** the `.exe` files carry no embedded icon (Explorer shows the generic one; the Start menu entry, the file type and the window have the icon). `craft3d.exe` is built for the console subsystem (the package log says so), so a console window opens beside 3DCraft's window (kept for now, the developer's decision of 2026-11-12).
 - **Linux:** the binaries need the glibc they were built against or newer (Ubuntu 22.04's, 2.35, for the released ones); otherwise they link only glibc and load the window system's libraries at run time.
 
 ### Releasing a version

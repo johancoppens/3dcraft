@@ -19,13 +19,13 @@ There is also a **web version**: 3DCraft in your browser, with nothing to instal
 
 Download the installer for your computer from [3dcraft.dev](https://3dcraft.dev/). The same files are on
 the [release page](https://github.com/johancoppens/3dcraft/releases) of the source repository. The file
-names carry the version number, here 0.1.0:
+names carry the version number, here 0.1.1:
 
 | Your computer | Download | Where `craft3d-cli` ends up |
 |---|---|---|
-| Windows (64-bit) | `3DCraft-0.1.0-x86_64.msi`, or `3dcraft-0.1.0-x86_64-windows.zip` | `C:\Program Files\3DCraft\craft3d-cli.exe` (on your `PATH`), or the unzipped folder |
-| macOS (Apple Silicon: M1 or later) | `3DCraft-0.1.0-aarch64.dmg` | `/Applications/3DCraft.app/Contents/MacOS/craft3d-cli` |
-| Linux (64-bit Intel or AMD) | `3DCraft-0.1.0-x86_64.AppImage`, or `3dcraft-0.1.0-x86_64-linux.tar.gz` | the AppImage itself, started with `cli`, or `~/.local/bin/craft3d-cli` |
+| Windows (64-bit) | `3DCraft-0.1.1-x86_64.msi`, or `3dcraft-0.1.1-x86_64-windows.zip` | `C:\Program Files\3DCraft\craft3d-cli.exe` (on your `PATH`), or the unzipped folder |
+| macOS (Apple Silicon: M1 or later) | `3DCraft-0.1.1-aarch64.dmg` | `/Applications/3DCraft.app/Contents/MacOS/craft3d-cli` |
+| Linux (64-bit Intel or AMD) | `3DCraft-0.1.1-x86_64.AppImage`, or `3dcraft-0.1.1-x86_64-linux.tar.gz` | the AppImage itself, started with `cli`, or `~/.local/bin/craft3d-cli` |
 | Any computer, nothing to install | the web version, [3dcraft.dev/app](https://3dcraft.dev/app/) | none: the web version has no MCP |
 
 The release page also has a `.zsync` file beside the AppImage. You do not need it: it is for update tools
@@ -33,7 +33,7 @@ The release page also has a `.zsync` file beside the AppImage. You do not need i
 
 ### Why your computer warns you
 
-This first release is **not signed**. 3DCraft does not yet have the certificates from Apple and Microsoft
+This release is **not signed**. 3DCraft does not yet have the certificates from Apple and Microsoft
 that tell your computer who made a program. So the first time you open it, Windows or macOS says it does
 not know the program and stops it.
 
@@ -42,21 +42,21 @@ off for other programs.
 
 ## Windows
 
-1. Double-click `3DCraft-0.1.0-x86_64.msi`.
+1. Double-click `3DCraft-0.1.1-x86_64.msi`.
 2. A blue box appears: **"Windows protected your PC"**. Click **More info**, check that the app is
-   `3DCraft-0.1.0-x86_64.msi` with publisher *Unknown publisher*, and click **Run anyway**.
+   `3DCraft-0.1.1-x86_64.msi` with publisher *Unknown publisher*, and click **Run anyway**.
 3. The installer may ask for an administrator's permission. It installs for all users into
    `C:\Program Files\3DCraft`.
 
 3DCraft is now in the Start menu, `.3dcraft`, `.3dcraftjig` and `.3dcraftasm` files open with it, and
 `craft3d-cli` works in a new terminal window.
 
-> **Prefer not to install?** Unzip `3dcraft-0.1.0-x86_64-windows.zip` anywhere and start `craft3d.exe`
+> **Prefer not to install?** Unzip `3dcraft-0.1.1-x86_64-windows.zip` anywhere and start `craft3d.exe`
 > from the folder. SmartScreen asks the same question the first time (More info › Run anyway).
 
 ## macOS
 
-1. Open `3DCraft-0.1.0-aarch64.dmg` and drag **3DCraft** onto the **Applications** folder beside it.
+1. Open `3DCraft-0.1.1-aarch64.dmg` and drag **3DCraft** onto the **Applications** folder beside it.
 2. Open 3DCraft from Applications. macOS refuses the first time, with a message such as *"3DCraft"
    cannot be opened because Apple cannot check it for malicious software*, or *"3DCraft" Not Opened*.
    Click **Done** (or **OK**). Do not move it to the Bin.
@@ -84,11 +84,11 @@ Both packages need a Linux from about 2022 or newer (glibc 2.35, as in Ubuntu 22
    as program*; or in a terminal:
 
    ```sh
-   chmod +x 3DCraft-0.1.0-x86_64.AppImage
+   chmod +x 3DCraft-0.1.1-x86_64.AppImage
    ```
 
-2. Start it: double-click it, or `./3DCraft-0.1.0-x86_64.AppImage` for the window and
-   `./3DCraft-0.1.0-x86_64.AppImage cli --version` for the command line. A link named `craft3d-cli` that
+2. Start it: double-click it, or `./3DCraft-0.1.1-x86_64.AppImage` for the window and
+   `./3DCraft-0.1.1-x86_64.AppImage cli --version` for the command line. A link named `craft3d-cli` that
    points at the AppImage starts the command line too.
 
 If it complains about FUSE, install your distribution's `fuse` (or `libfuse2`) package, or run it with
@@ -103,8 +103,8 @@ installs them.
 `.3dcraftjig` and `.3dcraftasm`):
 
 ```sh
-tar -xzf 3dcraft-0.1.0-x86_64-linux.tar.gz
-cd 3dcraft-0.1.0-x86_64-linux
+tar -xzf 3dcraft-0.1.1-x86_64-linux.tar.gz
+cd 3dcraft-0.1.1-x86_64-linux
 ./install.sh            # or ./install.sh /some/prefix; uninstall.sh removes it again
 ```
 
@@ -362,7 +362,7 @@ in your web browser.
 
 3DCraft does not look for updates by itself. **Help › Check for updates…**, and the link beside the version
 on the start screen, open the website in your browser with your version in the address (such as
-`https://3dcraft.dev/update/?from=0.1.0`); nothing else is sent. The page says whether there is a newer
+`https://3dcraft.dev/update/?from=0.1.1`); nothing else is sent. The page says whether there is a newer
 version ([Installing a newer version](#installing-a-newer-version)). The web version is always the latest,
 and an AppImage can be updated by a tool such as AppImageLauncher.
 
