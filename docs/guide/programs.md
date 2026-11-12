@@ -124,7 +124,7 @@ craft3d-engine = { git = "https://github.com/johancoppens/3dcraft", tag = "v0.1.
 serde_json = "1"
 ```
 
-<!-- CHECK: craft3d-engine compiles as a git dependency at the tag v0.1.1, in a program outside the workspace (not yet tried at any tag, v0.1.0 included; the tag v0.1.1 exists once 0.1.1 is published) -->
+<!-- CHECK: craft3d-engine compiles as a git dependency at the tag v0.1.1, in a program outside the workspace (not yet tried at any tag, v0.1.0 and v0.1.1 included) -->
 
 Text in a built-in font needs the font files, which are not compiled into the engine: point the
 environment variable `CRAFT3D_FONTS` at a folder that holds them. An installed 3DCraft has one:
