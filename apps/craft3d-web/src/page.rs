@@ -13,14 +13,14 @@
 use crate::checks::{Checks, Reply};
 use crate::flags::{self, Flags};
 use crate::host::{
-    Ask, Download, Pick, PickerType, WebHost, open_types, received_kind,
+    Ask, Download, Pick, PickerType, WebHost, open_types, page_title, received_kind,
     refusal_is_about_activation,
 };
 use crate::pickers::{self, Picked};
 use crate::prefs::{self, Prefs};
 use crate::scenes::Scenes;
 use crate::worker::{self, Replies, WebWorker};
-use craft3d_ui_egui::{RendererChoice, Shell, window_title};
+use craft3d_ui_egui::{RendererChoice, Shell};
 use egui_wgpu::wgpu;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
@@ -465,7 +465,11 @@ struct Page {
     /// their fetches, for the next frame to say.
     fonts: crate::fonts::FontFetches,
     font_news: FontNews,
+    /// The title the page has now.
     title: String,
+    /// The title `index.html` gave the page, kept while no document is
+    /// open ([`page_title`]).
+    page_title: String,
     stored: String,
     /// The assertions and outputs, measured in the checking worker
     /// (`checks.rs`); `None` on a page that names no worker, which
@@ -593,6 +597,7 @@ impl Page {
             fonts: crate::fonts::FontFetches::default(),
             font_news: Rc::new(RefCell::new(Vec::new())),
             title: String::new(),
+            page_title: document().map(|d| d.title()).unwrap_or_default(),
             stored,
             checks,
             replies,
@@ -1196,7 +1201,10 @@ impl eframe::App for Page {
                 ctx.request_repaint_after(std::time::Duration::from_secs(30));
             }
         }
-        let title = window_title(self.host.session.document_status().as_ref());
+        let title = page_title(
+            self.host.session.document_status().as_ref(),
+            &self.page_title,
+        );
         if title != self.title {
             if let Some(document) = document() {
                 document.set_title(&title);

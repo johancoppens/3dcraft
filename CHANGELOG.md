@@ -4,6 +4,10 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Fixed
+
+- **The web version's page says what it is**: its title, *3DCraft in your browser: parametric 3D CAD*, stays while no document is open, and it has a description for search engines.
+
 ## [0.1.1] - 2026-11-12
 
 A fix for the Windows packages. On Linux, macOS and the web, 0.1.1 is 0.1.0 with a new version number.
