@@ -4,6 +4,11 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Fixed
+
+- **A clearance could be reported as proven for parts that overlap.** Where the faces of two bodies passed through each other, but no corner of either lay inside the other, `clearance` could say the bodies were clear and prove a gap between them, and an assertion of a minimum clearance passed, although the bodies shared volume. Such a pair is now an overlap. The distance between faces (`distance`), the proof of a wall thickness and the press-brake check (`bendable`) shared the fault and are fixed with it.
+- **A sketch with an arc or circle through three points held at values builds again after an edit that made it fail**, also when a file saved in that state is opened. An arc drawn through a point (its ends and the point written with expressions) could fail with *"constraint … conflicts"* after several sizes changed at once or after the arc was made very flat, and then kept failing at those values, after saving and opening too, while a new document at the same values built. When the solve from the last result fails, 3DCraft now tries once more with the centre of every such arc or circle placed where its three points put it, and takes that result only if nothing conflicts, every arc still runs through its points between its ends, and nothing else in the sketch turns to another side. A sketch that solved before solves exactly as before. Not recovered: an arc whose point has crossed the line through its ends (it fails as before: draw it again through the point), and a sketch that fails for other reasons.
+
 ## [0.1.2] - 2026-11-13
 
 Fixes for the first things a new user meets: on Windows no console window opens beside 3DCraft any more, the web version's page says what it is, and the MCP server says more about itself to the tools that connect to it. Files of 0.1.0 and 0.1.1 open unchanged.
@@ -13,7 +18,6 @@ Fixes for the first things a new user meets: on Windows no console window opens 
 - **Windows: no console window beside 3DCraft any more.** The Start menu entry and a double-clicked `.3dcraft`, `.3dcraftjig` or `.3dcraftasm` file start 3DCraft through a small launcher, `3DCraft.exe`, which opens no console window, so there is none to close 3DCraft by. If the window cannot start, a message box says why. In the zip, double-click `3DCraft.exe`. `craft3d.exe` and `craft3d-cli.exe` are unchanged for terminals and AI agents.
 - **Linux: a 3DCraft window that is killed or crashes no longer leaves a `gsettings monitor` process behind.** The window follows the desktop's light or dark setting through that program, which now ends with the window however the window ends.
 - **The web version's page says what it is**: its title, *3DCraft in your browser: parametric 3D CAD*, stays while no document is open, and it has a description for search engines.
-- **A sketch with an arc or circle through three points held at values builds again after an edit that made it fail**, also when a file saved in that state is opened. An arc drawn through a point (its ends and the point written with expressions) could fail with *"constraint … conflicts"* after several sizes changed at once or after the arc was made very flat, and then kept failing at those values, after saving and opening too, while a new document at the same values built. When the solve from the last result fails, 3DCraft now tries once more with the centre of every such arc or circle placed where its three points put it, and takes that result only if nothing conflicts, every arc still runs through its points between its ends, and nothing else in the sketch turns to another side. A sketch that solved before solves exactly as before. Not recovered: an arc whose point has crossed the line through its ends (it fails as before: draw it again through the point), and a sketch that fails for other reasons.
 
 ### Changed
 
