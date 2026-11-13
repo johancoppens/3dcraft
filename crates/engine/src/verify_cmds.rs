@@ -1473,56 +1473,83 @@ fn clearance_pair<'b>(
     let (idb, body_b, _) = bb.get(j).ok_or(NONE)?;
     let part_a = part_in(ctx, ba, pa, i)?;
     let part_b = part_in(ctx, bb, pb, j)?;
+    let apart = 2.0 * tol;
+    // Proven at least past `apart` where it can be (an assertion's `min`
+    // of 0 asks for no more than 0), so that bodies well apart are told
+    // without the kernel.
     let near = verify::distance_to(
         std::slice::from_ref(part_a),
         std::slice::from_ref(part_b),
-        ctx.stop,
+        ctx.stop.max(2.0 * apart),
     )?;
-    let mut status = "clear";
-    if near.distance <= 2.0 * tol {
-        // Only whether they touch or overlap: not the area they share.
-        match craft3d_kernel::boolean::contact(body_a, body_b, &ctx.tolerance) {
-            Ok(Contact::Clear) => {}
-            Ok(Contact::Touch) => status = "touch",
-            Ok(Contact::Overlap) => status = "overlap",
-            Err(e) => {
-                return Err(format!(
-                    "whether `{}` and `{}` overlap cannot be told: {e}",
-                    ctx.feature_name(*ida),
-                    ctx.feature_name(*idb)
-                ));
-            }
-        }
-    } else {
-        // Apart everywhere: one may still hold the other, or a lump of it.
-        let inside = |probe: &craft3d_kernel::boolean::probe::Probe<'_>, other: &Body| {
-            shells_inside(&shell_points(other), |point| match probe.place(point) {
-                Ok(craft3d_kernel::boolean::Place::Inside) => Some(true),
-                Ok(craft3d_kernel::boolean::Place::Outside) => Some(false),
-                // On the boundary (it cannot be, the bodies being apart),
-                // not told, or refused: this point does not decide.
-                _ => None,
-            })
-        };
-        let undecided = |inner: FeatureId, outer: FeatureId| {
-            format!(
-                "cannot tell whether `{}` lies inside `{}`: no point of one of its shells was placed inside or outside it",
-                ctx.feature_name(inner),
-                ctx.feature_name(outer)
-            )
-        };
-        // Both ways before any error: B may lie inside A where A's shells
-        // could not be placed in B.
-        match either_inside(inside(&part_b.probe, body_a), || {
-            inside(&part_a.probe, body_b)
-        }) {
-            Ok(true) => status = "overlap",
-            Ok(false) => {}
-            Err(First) => return Err(undecided(*ida, *idb)),
-            Err(Second) => return Err(undecided(*idb, *ida)),
-        }
-    }
+    let status = clearance_status(
+        ctx,
+        &near,
+        (*ida, body_a, part_a),
+        (*idb, body_b, part_b),
+        apart,
+    )?;
     Ok((near, status))
+}
+
+/// Whether two bodies, whose nearest places found and the bound proven
+/// below their distance are `near`, are clear, touch or overlap. Within
+/// `apart` (twice the tolerance) the kernel tells which. Beyond it, and
+/// only where the bound proves it, the boundaries are apart, so each shell
+/// of one lies wholly inside the other body or wholly outside it, and a
+/// point of each tells which. The nearest places found never decide that
+/// on their own: a search that missed where two faces cross finds them
+/// apart (J-018, 2026-11-13: a body sharing 13.5 mm³ with another was
+/// answered clear, its least distance found 0.0707 mm).
+fn clearance_status(
+    ctx: &Ctx<'_>,
+    near: &verify::Nearest,
+    (ida, body_a, part_a): (FeatureId, &Body, &Part<'_>),
+    (idb, body_b, part_b): (FeatureId, &Body, &Part<'_>),
+    apart: f64,
+) -> Result<&'static str, String> {
+    // Not proven beyond `apart` (a NaN neither): the kernel decides.
+    if near.lower.is_nan() || near.lower <= apart {
+        // Only whether they touch or overlap: not the area they share.
+        return match craft3d_kernel::boolean::contact(body_a, body_b, &ctx.tolerance) {
+            Ok(Contact::Clear) => Ok("clear"),
+            Ok(Contact::Touch) => Ok("touch"),
+            Ok(Contact::Overlap) => Ok("overlap"),
+            Err(e) => Err(format!(
+                "whether `{}` and `{}` overlap cannot be told: {e}",
+                ctx.feature_name(ida),
+                ctx.feature_name(idb)
+            )),
+        };
+    }
+    // Proven apart everywhere: one may still hold the other, or a lump of
+    // it.
+    let inside = |probe: &craft3d_kernel::boolean::probe::Probe<'_>, other: &Body| {
+        shells_inside(&shell_points(other), |point| match probe.place(point) {
+            Ok(craft3d_kernel::boolean::Place::Inside) => Some(true),
+            Ok(craft3d_kernel::boolean::Place::Outside) => Some(false),
+            // On the boundary (it cannot be, the bodies being apart), not
+            // told, or refused: this point does not decide.
+            _ => None,
+        })
+    };
+    let undecided = |inner: FeatureId, outer: FeatureId| {
+        format!(
+            "cannot tell whether `{}` lies inside `{}`: no point of one of its shells was placed inside or outside it",
+            ctx.feature_name(inner),
+            ctx.feature_name(outer)
+        )
+    };
+    // Both ways before any error: B may lie inside A where A's shells
+    // could not be placed in B.
+    match either_inside(inside(&part_b.probe, body_a), || {
+        inside(&part_a.probe, body_b)
+    }) {
+        Ok(true) => Ok("overlap"),
+        Ok(false) => Ok("clear"),
+        Err(First) => Err(undecided(ida, idb)),
+        Err(Second) => Err(undecided(idb, ida)),
+    }
 }
 
 /// Which body's shells could not be placed in the other.
@@ -2575,5 +2602,92 @@ mod tests {
             Some(true)
         );
         assert_eq!(decide(&extent, Some(39.0), None), None);
+    }
+
+    /// J-018: what a pair is (clear, touch, overlap) is decided by the
+    /// bound proven below its distance, never by the nearest places found.
+    /// A search that missed where the faces cross is stood in for by
+    /// nearest places 0.05 apart with nothing proven: the clamp of the
+    /// reduced case (its jaw 0.1 into the bar's top: they share
+    /// 2 × 2 × 0.1) is an overlap, as the kernel says, where the shells'
+    /// points alone (every corner of each outside the other) said clear.
+    /// A pair 1 apart with nothing proven is clear, and blocks face to
+    /// face touch, both by the kernel; proven 0.05 apart, the bar and a
+    /// block 0.05 beside it are clear by their points.
+    #[test]
+    fn a_pair_is_apart_only_where_that_is_proven() {
+        let mut s = Session::new(Workspace::none());
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            (
+                "feature.block",
+                json!({"name": "Bar", "size": ["10 mm", "2 mm", "2 mm"]}),
+            ),
+            (
+                "sketch.create",
+                json!({"name": "C", "plane": "yz", "offset": "4 mm"}),
+            ),
+            (
+                "sketch.polyline",
+                json!({"sketch": "C", "closed": true, "points": [
+                    ["-3 mm", "3 mm"], ["-3 mm", "-1 mm"], ["1 mm", "-1 mm"], ["1 mm", "-0.05 mm"],
+                    ["-2 mm", "-0.05 mm"], ["-2 mm", "1.9 mm"], ["5 mm", "1.9 mm"], ["5 mm", "3 mm"]]}),
+            ),
+            (
+                "feature.extrude",
+                json!({"sketch": "C", "distance": "2 mm", "name": "Clamp"}),
+            ),
+            (
+                "feature.block",
+                json!({"name": "Far", "size": ["1 mm", "1 mm", "1 mm"], "position": ["11 mm", "0 mm", "0 mm"]}),
+            ),
+            (
+                "feature.block",
+                json!({"name": "Face", "size": ["1 mm", "1 mm", "1 mm"], "position": ["0 mm", "-1 mm", "0 mm"]}),
+            ),
+            (
+                "feature.block",
+                json!({"name": "Beside", "size": ["1 mm", "1 mm", "1 mm"], "position": ["0 mm", "-1.05 mm", "0 mm"]}),
+            ),
+        ] {
+            s.execute(id, &params)
+                .unwrap_or_else(|e| panic!("{id}: {e}"));
+        }
+        let doc = Arc::clone(s.document().unwrap().history.current());
+        let regen = s.document_mut().unwrap().regen();
+        let ctx = Ctx::new(&doc, &regen).unwrap();
+        let body = |name: &str| {
+            let id = doc.feature_by_name(name).unwrap().id;
+            (
+                id,
+                Arc::clone(regen.bodies().find(|(f, _)| *f == id).unwrap().1),
+            )
+        };
+        let status = |a: &str, b: &str, found: f64, lower: f64| {
+            let ((ida, body_a), (idb, body_b)) = (body(a), body(b));
+            let part_a = Part::new(&body_a, None, &ctx.tolerance).unwrap();
+            let part_b = Part::new(&body_b, None, &ctx.tolerance).unwrap();
+            let near = verify::Nearest {
+                distance: found,
+                lower,
+                a: Vec3::ZERO,
+                b: Vec3::ZERO,
+                face_a: (0, 0),
+                face_b: (0, 0),
+            };
+            clearance_status(
+                &ctx,
+                &near,
+                (ida, &body_a, &part_a),
+                (idb, &body_b, &part_b),
+                2e-6,
+            )
+            .unwrap()
+        };
+        assert_eq!(status("Bar", "Clamp", 0.05, 0.0), "overlap");
+        assert_eq!(status("Clamp", "Bar", 0.05, f64::NAN), "overlap");
+        assert_eq!(status("Bar", "Far", 1.0, 0.0), "clear");
+        assert_eq!(status("Bar", "Face", 1e-7, 0.0), "touch");
+        assert_eq!(status("Bar", "Beside", 0.05, 0.05), "clear");
     }
 }

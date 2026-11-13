@@ -1131,9 +1131,29 @@ fn segments_nearest(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> (Vec3, Vec3) {
     (p1 + d1 * s, p2 + d2 * t)
 }
 
-/// The least distance between two triangles that do not cross, with the
-/// nearest points.
+/// How near, relative to the size of two triangles, a side of one may pass
+/// by the other and still be taken as passing through it
+/// ([`side_through`]): far above the rounding of the few products it is
+/// worked out with (a few parts in 1e16), far below any distance a
+/// document's tolerance tells apart.
+const CROSSING_SLACK: f64 = 1e-12;
+
+/// The least distance between two triangles, with the nearest points: 0,
+/// at a point of both, where one passes through the other; else the least
+/// of the distances from each corner to the other triangle and between
+/// their sides (Ericson, *Real-Time Collision Detection*, 5.1.5 and 5.1.9).
+/// That least alone is the distance only of triangles that do not cross:
+/// two that pass through each other, a side of one through the inside of
+/// the other, have their corners and sides apart all the same, and taking
+/// it for them proved crossing faces apart (J-018, 2026-11-13: faces that
+/// cross were measured 0.12 apart, and a clearance of bodies sharing
+/// 13.5 mm³ was proven positive). Triangles that meet otherwise (a corner
+/// on the other, sides that meet, an overlap in one plane) are 0 apart by
+/// the corners' and sides' distances.
 fn triangles_nearest(t: &[Vec3; 3], u: &[Vec3; 3]) -> (f64, Vec3, Vec3) {
+    if let Some(x) = side_through(t, u).or_else(|| side_through(u, t)) {
+        return (0.0, x, x);
+    }
     let mut best = (f64::INFINITY, t[0], u[0]);
     let mut take = |p: Vec3, q: Vec3| {
         let d = p.distance(q);
@@ -1156,6 +1176,57 @@ fn triangles_nearest(t: &[Vec3; 3], u: &[Vec3; 3]) -> (f64, Vec3, Vec3) {
         }
     }
     best
+}
+
+/// A point where a side of `t` passes through the triangle `u`: its ends on
+/// either side of `u`'s plane and the crossing inside `u`. Taken the safe
+/// way to rounding, within [`CROSSING_SLACK`] of the size of the two
+/// (the largest distance of a corner from `u`'s first): an end that near
+/// the plane counts as on either side, and a crossing that near `u` as
+/// inside it, so a side that does pass through is not missed, and one
+/// taken as passing through comes at least that near. A side lying in the
+/// plane (both ends that near) is left to the distances of corners and
+/// sides, which find where it meets `u`; so is a `u` without a plane (its
+/// corners on a line, so that its sides are all of it).
+fn side_through(t: &[Vec3; 3], u: &[Vec3; 3]) -> Option<Vec3> {
+    let [a, b, c] = *u;
+    let normal = (b - a).cross(c - a);
+    let area = normal.length();
+    let size = t
+        .iter()
+        .chain(u.iter())
+        .map(|p| p.distance(a))
+        .fold(0.0_f64, f64::max);
+    let slack = CROSSING_SLACK * size;
+    if area.is_nan() || area <= 0.0 || !slack.is_finite() {
+        return None;
+    }
+    // Heights over `u`'s plane, as lengths.
+    let height = |p: Vec3| normal.dot(p - a) / area;
+    let [p0, p1, p2] = *t;
+    let [h0, h1, h2] = [height(p0), height(p1), height(p2)];
+    let above = |h: f64| h > slack;
+    let below = |h: f64| h < -slack;
+    if [h0, h1, h2].into_iter().all(above) || [h0, h1, h2].into_iter().all(below) {
+        return None;
+    }
+    for (p, q, hp, hq) in [(p0, p1, h0, h1), (p1, p2, h1, h2), (p2, p0, h2, h0)] {
+        let in_plane = hp.abs() <= slack && hq.abs() <= slack;
+        if in_plane || (above(hp) && above(hq)) || (below(hp) && below(hq)) {
+            continue;
+        }
+        let s = hp / (hp - hq);
+        let s = if s.is_finite() {
+            s.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let x = p + (q - p) * s;
+        if x.distance(closest_on_triangle(x, u)) <= slack {
+            return Some(x);
+        }
+    }
+    None
 }
 
 // ----------------------------------------------------------- thickness
@@ -2660,6 +2731,59 @@ mod tests {
             "{cast_one} {cast_two}"
         );
         assert_eq!(work_one, work_two);
+    }
+
+    /// J-018: a big triangle in the plane z = 0 and an upright one in the
+    /// plane y = 0 whose top corners are 1 above it and whose bottom corner
+    /// is 1 below, so that its two slanted sides pass through the big one
+    /// at (±0.5, 0, 0) while every corner and side of each is at least 1
+    /// from the other (corners and sides alone said 1): 0 apart, at a point
+    /// of both, either way round, at scales 1e-3 to 1e6 and near the origin
+    /// or far from it. Lifted by 1 + h it is h apart (its bottom corner over
+    /// the big one's inside: the closed form), h a millionth of the scale,
+    /// not 0; lifted by 1 it touches (0). A crossing triangle without a
+    /// plane (corners on a line) is found from the other side; a NaN gives
+    /// no panic.
+    #[test]
+    fn triangles_that_pass_through_each_other_are_0_apart() {
+        for k in [1e-3, 1.0, 1e6] {
+            for o in [Vec3::ZERO, Vec3::new(3e3 * k, -2e3 * k, 5e2 * k)] {
+                let at = |x: f64, y: f64, z: f64| o + Vec3::new(x * k, y * k, z * k);
+                let t = [at(-4.0, -4.0, 0.0), at(4.0, -4.0, 0.0), at(0.0, 4.0, 0.0)];
+                let lifted = |dz: f64| {
+                    [
+                        at(-1.0, 0.0, 1.0 + dz),
+                        at(1.0, 0.0, 1.0 + dz),
+                        at(0.0, 0.0, dz - 1.0),
+                    ]
+                };
+                let u = lifted(0.0);
+                for (d, p, q) in [triangles_nearest(&t, &u), triangles_nearest(&u, &t)] {
+                    assert_eq!(d, 0.0, "{k} {o:?}");
+                    assert_eq!(p, q);
+                    // On both planes, at one of the two crossings.
+                    let rel = (p - o) * (1.0 / k);
+                    assert!(rel.z.abs() < 1e-9 && rel.y.abs() < 1e-9, "{rel:?}");
+                    assert!((rel.x.abs() - 0.5).abs() < 1e-9, "{rel:?}");
+                }
+                let h = 1e-6;
+                for (d, ..) in [
+                    triangles_nearest(&t, &lifted(1.0 + h)),
+                    triangles_nearest(&lifted(1.0 + h), &t),
+                ] {
+                    // To the rounding of coordinates up to 3000 k.
+                    assert!((d - h * k).abs() < 1e-11 * k, "{k} {o:?}: {d}");
+                }
+                assert!(triangles_nearest(&t, &lifted(1.0)).0 < 1e-12 * k);
+                let line = [at(-1.0, 0.0, 1.0), at(1.0, 0.0, -1.0), at(0.0, 0.0, 0.0)];
+                assert_eq!(triangles_nearest(&t, &line).0, 0.0);
+                assert_eq!(triangles_nearest(&line, &t).0, 0.0);
+            }
+        }
+        let nan = [Vec3::new(f64::NAN, 0.0, 0.0), Vec3::X, Vec3::Y];
+        let t = [Vec3::ZERO, Vec3::X, Vec3::Y * 2.0];
+        let _ = (side_through(&nan, &t), side_through(&t, &nan));
+        let _ = (triangles_nearest(&nan, &t), triangles_nearest(&t, &nan));
     }
 
     #[test]
