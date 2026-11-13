@@ -44,9 +44,10 @@ pub const WINDOW: &str = "craft3d";
 pub const LOG_SWITCH: &str = "CRAFT3D_LAUNCHER_LOG";
 
 /// A window that ends with an error within this time after its start is
-/// one that could not start, and the launcher says why. One that ends
-/// later had started (it was killed, or crashed) and leaves its recovery
-/// files; the next start offers them.
+/// reported: that it could not start, or, when it had started, that it
+/// ended unexpectedly; with its exit code either way. One that ends later
+/// was killed or crashed after work, and leaves its recovery files, which
+/// the next start offers.
 pub const START_UP: Duration = Duration::from_secs(60);
 
 /// The most of the window's error output read back: its last message is
@@ -59,6 +60,24 @@ const MOST_CHARS: usize = 4000;
 
 /// How the window's messages begin (`apps/craft3d/src/main.rs`).
 const MESSAGE_START: &str = "craft3d:";
+
+/// What the window says once its window exists (`apps/craft3d/src/app.rs`,
+/// `viewport renderer: …`): a window that said it had started.
+const STARTED: &str = "craft3d: viewport renderer:";
+
+/// The window's news, said on every good start (the renderer, the control
+/// channel, documents to recover; `apps/craft3d/src/app.rs`): never the
+/// reason it ended.
+const NEWS: [&str; 3] = [
+    "craft3d: viewport renderer:",
+    "craft3d: control channel on ",
+    "unsaved document(s) of an earlier session can be recovered",
+];
+
+/// Whether `line` is one of the window's [`NEWS`].
+fn is_news(line: &str) -> bool {
+    line.starts_with(MESSAGE_START) && NEWS.iter().any(|news| line.contains(news))
+}
 
 /// The window's program beside the launcher at `launcher`; `None` for a
 /// path without a folder.
@@ -100,21 +119,37 @@ fn without_console(command: &mut Command) {
 #[cfg(not(windows))]
 fn without_console(_: &mut Command) {}
 
-/// The file the window's errors are written to, in the system's
-/// temporary folder and named after the launcher's process (and a count,
-/// for a process that starts several), with its path; `None` where it
-/// cannot be made (the window then starts without one, and a failure is
-/// said without its message).
+/// The file the window's errors are written to, with its path: a new file
+/// in the system's temporary folder, named after the launcher's process, a
+/// count (for a process that starts several) and the time, and made only
+/// if nothing of that name is there (`create_new`: never a file or a link
+/// someone put there before). `None` where none can be made (the window
+/// then starts without one, and a failure is said without its message). A
+/// launcher that is killed leaves its file behind (the window writes its
+/// errors there until it ends), for the system's clean-up of the folder.
 fn error_file() -> Option<(PathBuf, File)> {
     use std::sync::atomic::{AtomicU32, Ordering};
-    static STARTED: AtomicU32 = AtomicU32::new(0);
-    let count = STARTED.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "3dcraft-launcher-{}-{count}.txt",
-        std::process::id()
-    ));
-    let file = File::create(&path).ok()?;
-    Some((path, file))
+    static STARTS: AtomicU32 = AtomicU32::new(0);
+    for _ in 0..8 {
+        let count = STARTS.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos());
+        let path = std::env::temp_dir().join(format!(
+            "3dcraft-launcher-{}-{count}-{nanos}.txt",
+            std::process::id()
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Some((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
+        }
+    }
+    None
 }
 
 /// The end of a file, at most [`TAIL`] bytes, as text (invalid UTF-8
@@ -141,10 +176,10 @@ fn tail_of(path: &Path) -> String {
 /// line that starts as the window's messages do (`craft3d: …`, which may
 /// go on over several lines, such as the help when no graphics adapter can
 /// show the window) to the end; without such a line its last few lines
-/// (a crash's). The last line is always in it. Control characters are
-/// left out, and at most [`MOST_LINES`] lines and [`MOST_CHARS`]
-/// characters are kept, from the start of the message. Empty when the
-/// window said nothing.
+/// (a crash's). Control characters are left out, and at most
+/// [`MOST_LINES`] lines and [`MOST_CHARS`] characters are kept, from the
+/// end, where the error is: the end of the last line is always in it.
+/// Empty when the window said nothing.
 pub fn last_message(errors: &str) -> String {
     let lines: Vec<String> = errors
         .lines()
@@ -179,21 +214,15 @@ pub fn last_message(errors: &str) -> String {
             }
             start
         });
-    let mut message = String::new();
-    for line in lines
-        .get(start..)
+    let message_lines = lines.get(start..).unwrap_or_default();
+    let message = message_lines
+        .get(message_lines.len().saturating_sub(MOST_LINES)..)
         .unwrap_or_default()
-        .iter()
-        .take(MOST_LINES)
-    {
-        if !message.is_empty() {
-            message.push('\n');
-        }
-        message.push_str(line);
-    }
-    if message.chars().count() > MOST_CHARS {
-        message = message.chars().take(MOST_CHARS).collect();
-        message.push('…');
+        .join("\n");
+    let count = message.chars().count();
+    if count > MOST_CHARS {
+        let end: String = message.chars().skip(count - MOST_CHARS).collect();
+        return format!("…{end}");
     }
     message
 }
@@ -210,37 +239,66 @@ pub fn exit_code_text(code: Option<i32>) -> String {
 
 /// What the launcher says when the window it started ended with `status`
 /// after `ran`, having written `errors`: `None` when there is nothing to
-/// say (it ended well, or it had started and ran for longer than
-/// [`START_UP`]).
+/// say (it ended well, or ran for longer than [`START_UP`]). Always with
+/// the exit code. A window that had said it started ([`STARTED`]) *ended
+/// unexpectedly* (a driver's crash, End task); one that had not *could not
+/// start*. The reason given is its last message ([`last_message`]) without
+/// the news of a good start ([`NEWS`]), which never is one.
 pub fn start_up_failure(status: ExitStatus, ran: Duration, errors: &str) -> Option<String> {
     if status.success() || ran >= START_UP {
         return None;
     }
+    let code = exit_code_text(status.code());
+    let started = errors.lines().any(|line| line.starts_with(STARTED));
     let message = last_message(errors);
-    Some(if message.is_empty() {
-        format!(
-            "3DCraft could not start: the window ended with exit code {} and said nothing.",
-            exit_code_text(status.code())
-        )
-    } else {
-        format!("3DCraft could not start.\n\n{message}")
+    let reason = message
+        .lines()
+        .skip_while(|line| is_news(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let reason = reason.trim_matches('\n');
+    Some(match (started, reason.is_empty()) {
+        (true, true) => format!("3DCraft ended unexpectedly (exit code {code})."),
+        (true, false) => format!("3DCraft ended unexpectedly (exit code {code}).\n\n{reason}"),
+        (false, true) => {
+            format!("3DCraft could not start (exit code {code}), and the window gave no reason.")
+        }
+        (false, false) => format!("3DCraft could not start (exit code {code}).\n\n{reason}"),
     })
 }
 
-/// Starts the window beside `launcher` with `args` and waits for it.
-/// `Ok` with the window's exit status when there is nothing to say; `Err`
-/// with what to say when the window is missing, cannot be started, or
-/// could not start ([`start_up_failure`]). A window that never ends is
-/// waited for as long as it runs.
-pub fn launch(launcher: &Path, args: Vec<OsString>) -> Result<ExitStatus, String> {
-    let window = window_beside(launcher).ok_or_else(|| {
-        format!(
+/// How the window the launcher started ended.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Ended {
+    /// The window's exit code, passed on as the launcher's; `None` when it
+    /// did not run, or ended by a signal.
+    pub code: Option<i32>,
+    /// What to say: why the window is missing, could not be started or
+    /// could not start, or that it ended unexpectedly
+    /// ([`start_up_failure`]).
+    pub say: Option<String>,
+}
+
+impl Ended {
+    fn said(say: String) -> Self {
+        Self {
+            code: None,
+            say: Some(say),
+        }
+    }
+}
+
+/// Starts the window beside `launcher` with `args` and waits for it, as
+/// long as it runs, and says how it ended ([`Ended`]).
+pub fn launch(launcher: &Path, args: Vec<OsString>) -> Ended {
+    let Some(window) = window_beside(launcher) else {
+        return Ended::said(format!(
             "3DCraft could not start: the launcher's own folder is not known ({}).",
             launcher.display()
-        )
-    })?;
+        ));
+    };
     if !window.is_file() {
-        return Err(format!(
+        return Ended::said(format!(
             "3DCraft could not start: {} was not found beside {}. Install 3DCraft again, or \
              unpack the whole zip.",
             window.display(),
@@ -255,20 +313,20 @@ pub fn launch(launcher: &Path, args: Vec<OsString>) -> Result<ExitStatus, String
     let started = Instant::now();
     let spawned = window_command(&window, args, errors_file).spawn();
     let result = match spawned {
-        Err(error) => Err(format!(
+        Err(error) => Ended::said(format!(
             "3DCraft could not start {}: {error}",
             window.display()
         )),
         Ok(mut child) => match child.wait() {
-            Err(error) => Err(format!(
+            Err(error) => Ended::said(format!(
                 "3DCraft could not wait for {}: {error}",
                 window.display()
             )),
             Ok(status) => {
                 let said = errors_path.as_deref().map(tail_of).unwrap_or_default();
-                match start_up_failure(status, started.elapsed(), &said) {
-                    Some(message) => Err(message),
-                    None => Ok(status),
+                Ended {
+                    code: status.code(),
+                    say: start_up_failure(status, started.elapsed(), &said),
                 }
             }
         },

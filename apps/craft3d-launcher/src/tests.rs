@@ -1,5 +1,9 @@
 use super::*;
 
+/// Held by the tests that make error files, so the one that counts them
+/// sees only its own.
+static ERROR_FILES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// An exit status with `code`, as the platform makes one.
 fn status(code: i32) -> ExitStatus {
     #[cfg(unix)]
@@ -104,12 +108,20 @@ fn the_last_message_is_the_windows_last_one() {
         .map(|i| format!("craft3d: {i}\n  more\n"))
         .collect();
     assert_eq!(last_message(&long), "craft3d: 99\n  more");
-    let tall = format!("craft3d: start\n{}", "line\n".repeat(100));
-    assert_eq!(last_message(&tall).lines().count(), 40);
-    let wide = format!("craft3d: {}\n", "x".repeat(10_000));
+    // The caps keep the end, where the error is: the last 40 lines, the
+    // last 4000 characters.
+    let tall = format!("craft3d: start\n{}the end\n", "line\n".repeat(100));
+    let message = last_message(&tall);
+    assert_eq!(message.lines().count(), 40);
+    assert!(message.ends_with("line\nthe end"), "{message}");
+    assert!(!message.contains("start"), "{message}");
+    let wide = format!("craft3d: {}y\n", "x".repeat(10_000));
     let message = last_message(&wide);
     assert_eq!(message.chars().count(), 4001);
-    assert!(message.ends_with('…'));
+    assert!(
+        message.starts_with('…') && message.ends_with("xy"),
+        "{message}"
+    );
 }
 
 #[test]
@@ -121,26 +133,101 @@ fn exit_codes_read_as_windows_people_read_them() {
     assert_eq!(exit_code_text(None), "none (ended by a signal)");
 }
 
-/// Something is said only for a window that ended with an error before it
-/// had started; then its last message, or its exit code when it said
-/// nothing.
+/// Something is said only for a window that ended with an error within
+/// [`START_UP`], always with its exit code: that it could not start, with
+/// its last message as the reason; or, once it had said it started (the
+/// renderer's line), that it ended unexpectedly, never quoting the news of
+/// its start as the reason.
 #[test]
-fn only_a_window_that_could_not_start_is_reported() {
+fn what_is_said_when_the_window_ends_with_an_error() {
     let quick = Duration::from_secs(2);
     let said = "craft3d: the window could not be opened: no display\n";
     assert_eq!(start_up_failure(status(0), quick, said), None);
     assert_eq!(
         start_up_failure(status(1), quick, said).as_deref(),
-        Some("3DCraft could not start.\n\ncraft3d: the window could not be opened: no display")
+        Some(
+            "3DCraft could not start (exit code 1).\n\n\
+             craft3d: the window could not be opened: no display"
+        )
     );
-    // After the start-up it had started: killed, or a crash after work,
-    // whose recovery files the next start offers.
+    // After the start-up: killed, or a crash after work, whose recovery
+    // files the next start offers.
     assert_eq!(start_up_failure(status(1), START_UP, said), None);
-    let silent = start_up_failure(status(2), quick, "").unwrap();
     assert_eq!(
-        silent,
-        "3DCraft could not start: the window ended with exit code 2 and said nothing."
+        start_up_failure(status(2), quick, "").as_deref(),
+        Some("3DCraft could not start (exit code 2), and the window gave no reason.")
     );
+    // The control channel's line is news, not a reason.
+    assert_eq!(
+        start_up_failure(
+            status(3),
+            quick,
+            "craft3d: control channel on 127.0.0.1:5 (token in t)\n"
+        )
+        .as_deref(),
+        Some("3DCraft could not start (exit code 3), and the window gave no reason.")
+    );
+    // Started (the renderer's line), then ended without a word: a driver's
+    // crash, End task.
+    let started = "craft3d: control channel on 127.0.0.1:5 (token in t)\n\
+                   craft3d: viewport renderer: wgpu on WARP (dx12)\n";
+    assert_eq!(
+        start_up_failure(status(1), quick, started).as_deref(),
+        Some("3DCraft ended unexpectedly (exit code 1).")
+    );
+    // Started, then a crash that said why: its lines are the reason.
+    let crashed = format!(
+        "{started}thread 'main' panicked at src/x.rs:1:1:\nboom\nnote: run with `RUST_BACKTRACE=1`\n"
+    );
+    assert_eq!(
+        start_up_failure(status(101), quick, &crashed).as_deref(),
+        Some(
+            "3DCraft ended unexpectedly (exit code 101).\n\n\
+             thread 'main' panicked at src/x.rs:1:1:\nboom\nnote: run with `RUST_BACKTRACE=1`"
+        )
+    );
+    // Started, then a message of the window's own.
+    let failed = format!("{started}craft3d: the device was lost\n");
+    assert_eq!(
+        start_up_failure(status(1), quick, &failed).as_deref(),
+        Some("3DCraft ended unexpectedly (exit code 1).\n\ncraft3d: the device was lost")
+    );
+}
+
+/// The window's words the launcher reads (its messages, its start, its
+/// news) are still the window's (`apps/craft3d`).
+#[test]
+fn the_window_still_says_what_the_launcher_reads() {
+    let window = Path::new(env!("CARGO_MANIFEST_DIR")).join("../craft3d/src");
+    let main = std::fs::read_to_string(window.join("main.rs")).unwrap();
+    assert!(main.contains("&format!(\"craft3d: {error}\")"));
+    let app = std::fs::read_to_string(window.join("app.rs")).unwrap();
+    for said in [
+        "\"viewport renderer: {}\"",
+        "\"control channel on {address} (token in {})\"",
+        "unsaved document(s) of an earlier session can be recovered",
+    ] {
+        assert!(app.contains(said), "{said}");
+    }
+    assert!(STARTED.starts_with(MESSAGE_START) && NEWS.contains(&STARTED));
+}
+
+/// Each start has an error file of its own, made new.
+#[test]
+fn each_start_has_an_error_file_of_its_own() {
+    let _held = ERROR_FILES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (first, _) = error_file().unwrap();
+    let (second, _) = error_file().unwrap();
+    assert_ne!(first, second);
+    let name = first.file_name().unwrap().to_str().unwrap().to_string();
+    assert!(
+        name.starts_with(&format!("3dcraft-launcher-{}-", std::process::id())),
+        "{name}"
+    );
+    std::fs::remove_file(first).unwrap();
+    std::fs::remove_file(second).unwrap();
 }
 
 /// A folder of the test's own in the temporary folder, empty.
@@ -182,7 +269,9 @@ fn the_switch_writes_a_line_instead_of_a_box() {
 fn a_missing_window_is_said() {
     let folder = folder("missing");
     let launcher = folder.join("3DCraft");
-    let error = launch(&launcher, Vec::new()).unwrap_err();
+    let ended = launch(&launcher, Vec::new());
+    assert_eq!(ended.code, None);
+    let error = ended.say.unwrap();
     assert!(error.starts_with("3DCraft could not start: "), "{error}");
     assert!(error.contains("craft3d"), "{error}");
     assert!(error.contains("was not found beside"), "{error}");
@@ -204,12 +293,16 @@ fn stand_in(name: &str, script: &str) -> (PathBuf, PathBuf) {
 /// The launcher with stand-in windows, one after the other (so the error
 /// files of this process can be counted): the window beside it gets the
 /// arguments as they came, and one that ends well leaves nothing to say;
-/// one that could not start is said with its last message; one that writes
+/// one that could not start is said with its last message and its code, one
+/// that had started and then ended with its code; one that writes
 /// far more than a pipe holds is never held up (its errors go to a file,
 /// not to a pipe the launcher must drain). No error file is left behind.
 #[cfg(unix)]
 #[test]
 fn the_launcher_starts_the_window_beside_it() {
+    let _held = ERROR_FILES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let before = files_of_ours();
 
     let (launcher, folder) = stand_in(
@@ -220,8 +313,13 @@ fn the_launcher_starts_the_window_beside_it() {
         .into_iter()
         .map(OsString::from)
         .collect();
-    let status = launch(&launcher, args.clone()).unwrap();
-    assert!(status.success());
+    assert_eq!(
+        launch(&launcher, args.clone()),
+        Ended {
+            code: Some(0),
+            say: None
+        }
+    );
     let written = std::fs::read(folder.join("args")).unwrap();
     let got: Vec<&[u8]> = written.split(|b| *b == 0).collect();
     let want: Vec<&[u8]> = args
@@ -239,12 +337,32 @@ fn the_launcher_starts_the_window_beside_it() {
          echo '  Windows: it comes with the system (WARP)' >&2\n\
          exit 1",
     );
-    let error = launch(&launcher, Vec::new()).unwrap_err();
     assert_eq!(
-        error,
-        "3DCraft could not start.\n\n\
-         craft3d: the window could not be opened: no graphics adapter\n  \
-         Windows: it comes with the system (WARP)"
+        launch(&launcher, Vec::new()),
+        Ended {
+            code: Some(1),
+            say: Some(
+                "3DCraft could not start (exit code 1).\n\n\
+                 craft3d: the window could not be opened: no graphics adapter\n  \
+                 Windows: it comes with the system (WARP)"
+                    .to_string()
+            )
+        }
+    );
+    std::fs::remove_dir_all(&folder).unwrap();
+
+    // A window that had started and then ended without a word: its code,
+    // passed on.
+    let (launcher, folder) = stand_in(
+        "ends",
+        "echo 'craft3d: viewport renderer: wgpu (vulkan)' >&2\nexit 3",
+    );
+    assert_eq!(
+        launch(&launcher, Vec::new()),
+        Ended {
+            code: Some(3),
+            say: Some("3DCraft ended unexpectedly (exit code 3).".to_string())
+        }
     );
     std::fs::remove_dir_all(&folder).unwrap();
 
@@ -254,8 +372,7 @@ fn the_launcher_starts_the_window_beside_it() {
         &format!("i=0\nwhile [ $i -lt 2000 ]; do\n  {line}\n  i=$((i+1))\ndone\nexit 0"),
     );
     let started = Instant::now();
-    let status = launch(&launcher, Vec::new()).unwrap();
-    assert!(status.success());
+    assert_eq!(launch(&launcher, Vec::new()).code, Some(0));
     assert!(started.elapsed() < Duration::from_secs(60));
     std::fs::remove_dir_all(&folder).unwrap();
 

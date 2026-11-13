@@ -19,12 +19,14 @@ fn main() -> ExitCode {
         }
     };
     let args = std::env::args_os().skip(1).collect();
-    match craft3d_launcher::launch(&launcher, args) {
-        Ok(status) if status.success() => ExitCode::SUCCESS,
-        Ok(_) => ExitCode::FAILURE,
-        Err(message) => {
-            craft3d_launcher::report(&message, log.as_deref());
-            ExitCode::FAILURE
-        }
+    let ended = craft3d_launcher::launch(&launcher, args);
+    if let Some(say) = &ended.say {
+        craft3d_launcher::report(say, log.as_deref());
+    }
+    match ended.code {
+        // The window's own exit code, whole (on Windows an NTSTATUS does not
+        // fit the u8 of `ExitCode`).
+        Some(code) => std::process::exit(code),
+        None => ExitCode::FAILURE,
     }
 }
