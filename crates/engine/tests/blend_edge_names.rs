@@ -2,15 +2,18 @@
 //! of faces it lies between, which means every edge between them
 //! (docs/design/names.md › *An edge by its own name*). Two faces can meet
 //! in several edges: a pipe sunk into a plate leaves its top along two
-//! lines, two merged discs meet in two corners, a loft's end circle is
-//! four arcs. The name picks one; the pair still takes all.
+//! lines, two merged discs meet in two corners. The name picks one; the
+//! pair still takes all. A name that tells its edge apart only by its
+//! place (a number at its end: the arcs of a loft's end circle, the lines
+//! of a cylinder halved lengthwise) is refused, since an edit could move
+//! the number to another edge.
 //!
 //! The oracles are closed forms worked out by hand (the plate and the
 //! pipe in the plane across the pipe: the ball's centre, its feet, a
 //! polygon less a sector and a circular segment; the two discs: the
-//! triangle of the three centres less three sectors) and, on the loft,
-//! the fillet by the pair: the same edges by their names build the same
-//! body. Each at the scales 1e-3, 1 and 1e6.
+//! triangle of the three centres less three sectors), and, where a name
+//! is followed, the body built by the name it is followed to. At the
+//! scales 1e-3, 1 and 1e6 where the geometry allows.
 
 #![allow(
     clippy::unwrap_used,
@@ -1272,5 +1275,109 @@ fn an_edge_numbered_by_place_that_has_another_name_is_refused_with_that_name() {
             "{state}"
         );
         run(&mut s, "feature.delete", json!({"feature": "Tip"}));
+    }
+}
+
+// ---------------------------------------------------------------------
+// Through a blend that uses a face up
+
+/// The edge of the body of `feature` between the faces whose names end in
+/// `a` and in `b`: its own name.
+fn edge_between(session: &mut Session, feature: &str, a: &str, b: &str) -> String {
+    let listed = run(session, "document.edges", json!({"feature": feature}));
+    let found: Vec<String> = listed["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| {
+            let faces: Vec<&str> = e["faces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f.as_str().unwrap())
+                .collect();
+            faces.len() == 2
+                && ((faces[0].ends_with(a) && faces[1].ends_with(b))
+                    || (faces[0].ends_with(b) && faces[1].ends_with(a)))
+        })
+        .map(|e| e["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(found.len(), 1, "{a} / {b}: {listed}");
+    found[0].clone()
+}
+
+#[test]
+fn edge_names_through_a_blend_that_uses_a_face_up_are_followed_or_refused() {
+    // A bar 80 x 20 x 20 whose end x = 80 is rounded 10 on one upright
+    // (`First`), then 10 on the other (`Second`): the second round uses up
+    // what is left of the end, and its two edges along y = 10 (the first
+    // round's border and the second's) become one edge between the two
+    // rounds, which the kernel reports as made. Named as `First`'s body
+    // has them: the first round's border on the end, and the end's top
+    // edge (taken whole), are gone after `Second`, and say so; the top's
+    // edge at x = 0, which the rounds do not touch, is followed to the
+    // edge `Second` kept of it and rounded 2 by that name. The two rounds
+    // leave the section 80 x 20 less two spandrels (1 - pi/4) 100, along
+    // 20; the third takes (1 - pi/4) 4 along 20.
+    let spandrel = 1.0 - PI / 4.0;
+    let two_rounds = (1600.0 - 2.0 * spandrel * 100.0) * 20.0;
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        built(
+            &mut s,
+            "feature.block",
+            json!({"size": at(k, [80.0, 20.0, 20.0]), "position": [0, 0, 0], "name": "Bar"}),
+        );
+        built(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": [["F1:face(2)", "F1:face(5)"]], "radius": 10.0 * k, "name": "First"}),
+        );
+        let border = edge_between(&mut s, "First", "F1:face(5)", "F2:fillet(0)");
+        let end_top = edge_between(&mut s, "First", "F1:face(5)", "F1:face(1)");
+        let far_top = edge_between(&mut s, "First", "F1:face(4)", "F1:face(1)");
+        assert!(far_top.contains(":between["), "{far_top}");
+        built(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": [["F2:copy(0)/F1:face(3)", "F2:copy(0)/F1:face(5)"]],
+                   "radius": 10.0 * k, "name": "Second"}),
+        );
+        let second = assert_solid(&mut s, "Second", two_rounds, None, k);
+        assert!(
+            !common::names_of(&second)
+                .iter()
+                .any(|n| n.ends_with("F1:face(5)")),
+            "the end is used up: {second}"
+        );
+        for (name, what) in [
+            (&border, "the first round's border"),
+            (&end_top, "the end's top edge"),
+        ] {
+            let reason = failed(
+                &mut s,
+                "feature.fillet",
+                json!({"edges": [name], "radius": 1.0 * k, "name": "Gone"}),
+            );
+            assert!(
+                reason.contains("edges.0")
+                    && reason.contains("is gone")
+                    && reason.contains("`Second`"),
+                "{what}: {reason}"
+            );
+            run(&mut s, "feature.delete", json!({"feature": "Gone"}));
+        }
+        built(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": [far_top], "radius": 2.0 * k, "name": "Third"}),
+        );
+        assert_solid(&mut s, "Third", two_rounds - spandrel * 4.0 * 20.0, None, k);
+        let followed = feature(&mut s, "Third")["followed"]["edges"][0].clone();
+        assert!(
+            followed.as_str().unwrap().starts_with("F3:between["),
+            "{followed}"
+        );
     }
 }
