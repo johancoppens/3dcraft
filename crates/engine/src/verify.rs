@@ -690,7 +690,14 @@ pub(crate) fn distance_to(a: &[Part<'_>], b: &[Part<'_>], stop: f64) -> Answer<N
             .iter()
             .map(|t| Bbox3::from_points(t.iter().copied()))
             .collect();
-        let mut pair_best: Option<(f64, Vec3, Vec3)> = None;
+        // Both faces' triangles are the faces themselves (flat, bounded by
+        // lines): where they cross, so do the faces.
+        let exact = err(a, ka) == 0.0 && err(b, kb) == 0.0;
+        // The least distance of the pairs of triangles.
+        let mut pair_least: Option<f64> = None;
+        // Where the search for the nearest places starts: the nearest
+        // points of the pair of triangles that ranks least.
+        let mut start: Option<(f64, Vec3, Vec3)> = None;
         for t in &ta {
             let ta_box = Bbox3::from_points(t.iter().copied());
             for (u, ub) in tb.iter().zip(&tb_boxes) {
@@ -704,13 +711,32 @@ pub(crate) fn distance_to(a: &[Part<'_>], b: &[Part<'_>], stop: f64) -> Answer<N
                     ));
                 }
                 let (d, p, q) = triangles_nearest(t, u);
-                if pair_best.is_none_or(|(b, _, _)| d < b) {
-                    pair_best = Some((d, p, q));
+                // Where triangles of exact faces cross, the faces cross:
+                // the search starts from that point of both. Curved faces
+                // closer than the mesh can tell have triangles crossing all
+                // along, which says nothing of where the faces come
+                // nearest: the search starts, as before crossing pairs
+                // were 0, from the nearest corners and sides of the pair
+                // whose corners and sides come nearest, which settles
+                // nearly parallel faces far closer (a shaft 0.006 inside a
+                // bore of 50 to 4e-14 of the gap, from a crossing 2e-5).
+                // The value found is a distance between real places from
+                // any start; only how near it gets depends on the start.
+                let ranked = if d == 0.0 && !exact {
+                    corners_and_sides(t, u)
+                } else {
+                    (d, p, q)
+                };
+                if start.is_none_or(|(r, _, _)| ranked.0 < r) {
+                    start = Some(ranked);
+                }
+                if pair_least.is_none_or(|l| d < l) {
+                    pair_least = Some(d);
                 }
                 best = best.min(d);
             }
         }
-        if let Some((d, p, q)) = pair_best {
+        if let (Some(d), Some((_, p, q))) = (pair_least, start) {
             found.push((d, (ka, kb), p, q));
         }
         // A face pair without triangles: from points of their edges.
@@ -718,7 +744,7 @@ pub(crate) fn distance_to(a: &[Part<'_>], b: &[Part<'_>], stop: f64) -> Answer<N
             meshed.push(((ka, kb), box_distance));
             found.push((f64::INFINITY, (ka, kb), Vec3::ZERO, Vec3::ZERO));
         } else {
-            compared.push(((ka, kb), pair_best.map(|(d, ..)| d)));
+            compared.push(((ka, kb), pair_least));
         }
     }
     for (key, least) in compared {
@@ -1154,6 +1180,13 @@ fn triangles_nearest(t: &[Vec3; 3], u: &[Vec3; 3]) -> (f64, Vec3, Vec3) {
     if let Some(x) = side_through(t, u).or_else(|| side_through(u, t)) {
         return (0.0, x, x);
     }
+    corners_and_sides(t, u)
+}
+
+/// The least of the distances from each corner of two triangles to the
+/// other triangle and between their sides, with the nearest points: their
+/// distance where they do not cross ([`triangles_nearest`]).
+fn corners_and_sides(t: &[Vec3; 3], u: &[Vec3; 3]) -> (f64, Vec3, Vec3) {
     let mut best = (f64::INFINITY, t[0], u[0]);
     let mut take = |p: Vec3, q: Vec3| {
         let d = p.distance(q);
