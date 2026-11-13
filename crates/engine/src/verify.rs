@@ -265,26 +265,13 @@ impl<'a> Part<'a> {
             .enumerate()
             .map(|(i, f)| {
                 let straight = face_edges(body, i).all(|e| matches!(e.curve, Curve3::Line(_)));
-                // The mesh holds a curved face's triangles to the angle
-                // (corner normals at most MESH_ANGLE apart) unless a side
-                // is shorter than the chord: so a round of radius r is
-                // off by no more than r (1 − cos(MESH_ANGLE / 2)), or the
-                // sagitta of a chord-long side.
-                let round = |r: f64| {
-                    let sagitta = if chord >= 2.0 * r {
-                        r
-                    } else {
-                        r - (r * r - chord * chord / 4.0).max(0.0).sqrt()
-                    };
-                    chord.min((r * (1.0 - (0.5 * MESH_ANGLE).pcos())).max(sagitta))
-                };
                 match &f.surface {
                     Surface::Plane(_) if straight => 0.0,
-                    Surface::Cylinder(c) => round(c.radius()),
-                    Surface::Sphere(c) => round(c.radius()),
+                    Surface::Cylinder(c) => round_error(c.radius(), chord, false),
+                    Surface::Sphere(c) => round_error(c.radius(), chord, true),
                     Surface::Torus(t) => {
                         let (major, minor) = t.radii();
-                        round(major + minor)
+                        round_error(major + minor, chord, true)
                     }
                     _ => chord,
                 }
@@ -312,6 +299,52 @@ impl<'a> Part<'a> {
     pub fn body(&self) -> &'a Body {
         self.probe.body()
     }
+}
+
+/// How far a round face of radius `r` (a cylinder, or with `sphere` a
+/// sphere) can lie from its triangles, the mesh holding every triangle's
+/// corner normals within [`MESH_ANGLE`] (θ) of each other unless a side is
+/// shorter than `chord`, and no farther than `chord` (the tessellator's
+/// promise, at samples). On a cylinder the corners lie on an arc of at
+/// most θ about the axis, and the triangle within the chord of that arc:
+/// r (1 − cos(θ/2)). On a sphere the point of a triangle farthest from the
+/// surface is the one nearest the centre: the triangle's circumcentre (the
+/// centre's foot on its plane, the corners being on the sphere) where that
+/// lies in it, else the middle of its longest side. Corners at most θ
+/// apart seen from the centre make sides of at most 2 r sin(θ/2), and the
+/// circumradius of a triangle so bounded is at most that over √3 (the
+/// equilateral one): r (1 − cos φ) with sin φ = 2 sin(θ/2) / √3, φ = 6.93°
+/// for θ = 12°, a third more than θ/2 (review of 2026-11-13; before, θ/2
+/// as for a cylinder). A triangle a side of which is no longer than the
+/// chord is bounded the same way by sides of the chord. A torus is taken
+/// as a sphere of its outer radius, as before: only the chord bounds it
+/// where its normals turn slowly (round its top and bottom circles).
+fn round_error(r: f64, chord: f64, sphere: bool) -> f64 {
+    // The circumradius bound of a triangle of sides at most `side`
+    // (a cylinder's arc: its chord's half).
+    let reach = |side: f64| {
+        if sphere {
+            side / 3.0_f64.sqrt()
+        } else {
+            0.5 * side
+        }
+    };
+    // How far a circle of radius r is from a chord at `c` from its centre's
+    // foot.
+    let below = |c: f64| {
+        if c >= r {
+            r
+        } else {
+            r - (r * r - c * c).max(0.0).sqrt()
+        }
+    };
+    let by_angle = if sphere {
+        below(reach(2.0 * r * (0.5 * MESH_ANGLE).psin()))
+    } else {
+        r * (1.0 - (0.5 * MESH_ANGLE).pcos())
+    };
+    let by_side = below(reach(chord));
+    chord.min(by_angle.max(by_side))
 }
 
 /// The mesh of `body` at a chordal tolerance relative to its size, made
@@ -1157,13 +1190,30 @@ fn segments_nearest(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> (Vec3, Vec3) {
     (p1 + d1 * s, p2 + d2 * t)
 }
 
-/// How near, relative to the size of two triangles, a side of one may pass
-/// by the other and still be taken as passing through it
-/// ([`side_through`]): far above the rounding of the few products it is
-/// worked out with (a few parts in 1e16), and below a document's tolerance
-/// wherever that is a part in 1e12 of the triangles' size or more (taken
-/// as passing through, a pair is only proven less far apart than it is).
-const CROSSING_SLACK: f64 = 1e-12;
+/// How far rounding can move [`orient`], relative to its permanent (the
+/// same sum with every product taken by its size). Shewchuk's static bound
+/// for this determinant of differences of doubles is (7 + 56 ε) ε with
+/// ε = 2⁻⁵³ (*Adaptive precision floating-point arithmetic and fast robust
+/// geometric predicates*, 1997: `o3derrboundA`, which covers the rounding
+/// of the differences, the products, the sums and of the permanent
+/// itself); 32 f64::EPSILON is 64 ε, nine times that.
+const ORIENT_ERROR: f64 = 32.0 * f64::EPSILON;
+
+/// Six times the signed volume of the tetrahedron `p q r s`,
+/// ((q − p) × (r − p)) · (s − p): positive where `s` lies on the side of the
+/// plane `p q r` its normal points to. With how far rounding can have moved
+/// it ([`ORIENT_ERROR`] of its permanent): its sign is the true one where
+/// its size is more than that. It takes differences of the coordinates as
+/// they are, so its rounding is relative to the distances between the four
+/// points, however far they lie from the origin.
+fn orient(p: Vec3, q: Vec3, r: Vec3, s: Vec3) -> (f64, f64) {
+    let (d1, d2, d3) = (q - p, r - p, s - p);
+    let volume = d1.cross(d2).dot(d3);
+    let permanent = d3.x.abs() * ((d1.y * d2.z).abs() + (d1.z * d2.y).abs())
+        + d3.y.abs() * ((d1.z * d2.x).abs() + (d1.x * d2.z).abs())
+        + d3.z.abs() * ((d1.x * d2.y).abs() + (d1.y * d2.x).abs());
+    (volume, ORIENT_ERROR * permanent)
+}
 
 /// The least distance between two triangles, with the nearest points: 0,
 /// at a point of both, where one passes through the other; else the least
@@ -1186,8 +1236,18 @@ fn triangles_nearest(t: &[Vec3; 3], u: &[Vec3; 3]) -> (f64, Vec3, Vec3) {
 
 /// The least of the distances from each corner of two triangles to the
 /// other triangle and between their sides, with the nearest points: their
-/// distance where they do not cross ([`triangles_nearest`]).
+/// distance where they do not cross ([`triangles_nearest`]). Worked out
+/// relative to the first corner of `u`, so that it is rounded at the
+/// triangles' size, not at their distance from the origin (a pair a
+/// millimetre across a kilometre out is measured as well as at home).
 fn corners_and_sides(t: &[Vec3; 3], u: &[Vec3; 3]) -> (f64, Vec3, Vec3) {
+    let o = u[0];
+    let (d, p, q) = corners_and_sides_at(&t.map(|p| p - o), &u.map(|p| p - o));
+    (d, p + o, q + o)
+}
+
+/// [`corners_and_sides`] in the coordinates given.
+fn corners_and_sides_at(t: &[Vec3; 3], u: &[Vec3; 3]) -> (f64, Vec3, Vec3) {
     let mut best = (f64::INFINITY, t[0], u[0]);
     let mut take = |p: Vec3, q: Vec3| {
         let d = p.distance(q);
@@ -1212,53 +1272,56 @@ fn corners_and_sides(t: &[Vec3; 3], u: &[Vec3; 3]) -> (f64, Vec3, Vec3) {
     best
 }
 
-/// A point where a side of `t` passes through the triangle `u`: its ends on
-/// either side of `u`'s plane and the crossing inside `u`. Taken the safe
-/// way to rounding, within [`CROSSING_SLACK`] of the size of the two
-/// (the largest distance of a corner from `u`'s first): an end that near
-/// the plane counts as on either side, and a crossing that near `u` as
-/// inside it, so a side that does pass through is not missed, and one
-/// taken as passing through comes at least that near. A side lying in the
-/// plane (both ends that near) is left to the distances of corners and
-/// sides, which find where it meets `u`; so is a `u` without a plane (its
-/// corners on a line, so that its sides are all of it).
+/// A point where a side of `t` meets the triangle `u` by passing through
+/// it: its ends not both on one side of `u`'s plane, and its line through
+/// `u` (the volumes it spans with `u`'s three sides all of one sign:
+/// Segura and Feito's test). Decided by the signs of [`orient`], and a
+/// side is passed over only on a sign that is certain, so rounding can
+/// make a pair 0 apart that only comes within the rounding of those
+/// volumes, never pass over one that meets. That is proven for any
+/// coordinates: the volumes are of differences of the corners as given,
+/// rounded at the triangles' size (J-018's review: computing where the side
+/// meets the plane and that point's distance to `u` rounded them at the
+/// coordinates' size instead, and missed crossings 1e4 sizes from the
+/// origin). A side both of whose ends lie within rounding of the plane,
+/// within 128 √3 ε |p − a| / sin α of it (ε = 2⁻⁵³, `a` the first corner of
+/// `u`, α its angle there: twice [`orient`]'s error over the permanent,
+/// which is at most √3 |b − a| |c − a| |p − a|), may lie in it, where these
+/// signs tell nothing: it is left to the corners and sides, which come that
+/// near the 0 they should be (and their own rounding, at the triangles'
+/// size). So is a `u` without a plane (its corners on a line: its sides
+/// are all of it). The point returned, where the side meets the plane, is
+/// only where the search starts.
 fn side_through(t: &[Vec3; 3], u: &[Vec3; 3]) -> Option<Vec3> {
     let [a, b, c] = *u;
-    let normal = (b - a).cross(c - a);
-    let area = normal.length();
-    let size = t
-        .iter()
-        .chain(u.iter())
-        .map(|p| p.distance(a))
-        .fold(0.0_f64, f64::max);
-    let slack = CROSSING_SLACK * size;
-    if area.is_nan() || area <= 0.0 || !slack.is_finite() {
-        return None;
-    }
-    // Heights over `u`'s plane, as lengths.
-    let height = |p: Vec3| normal.dot(p - a) / area;
+    let above = |(v, e): (f64, f64)| v > e;
+    let below = |(v, e): (f64, f64)| v < -e;
+    let on = |h: (f64, f64)| !above(h) && !below(h);
     let [p0, p1, p2] = *t;
-    let [h0, h1, h2] = [height(p0), height(p1), height(p2)];
-    let above = |h: f64| h > slack;
-    let below = |h: f64| h < -slack;
-    if [h0, h1, h2].into_iter().all(above) || [h0, h1, h2].into_iter().all(below) {
+    let h = [
+        orient(a, b, c, p0),
+        orient(a, b, c, p1),
+        orient(a, b, c, p2),
+    ];
+    if h.into_iter().all(above) || h.into_iter().all(below) {
         return None;
     }
+    let [h0, h1, h2] = h;
     for (p, q, hp, hq) in [(p0, p1, h0, h1), (p1, p2, h1, h2), (p2, p0, h2, h0)] {
-        let in_plane = hp.abs() <= slack && hq.abs() <= slack;
-        if in_plane || (above(hp) && above(hq)) || (below(hp) && below(hq)) {
+        if (above(hp) && above(hq)) || (below(hp) && below(hq)) || (on(hp) && on(hq)) {
             continue;
         }
-        let s = hp / (hp - hq);
+        let across = [orient(p, q, a, b), orient(p, q, b, c), orient(p, q, c, a)];
+        if across.into_iter().any(above) && across.into_iter().any(below) {
+            continue;
+        }
+        let s = hp.0 / (hp.0 - hq.0);
         let s = if s.is_finite() {
             s.clamp(0.0, 1.0)
         } else {
             0.0
         };
-        let x = p + (q - p) * s;
-        if x.distance(closest_on_triangle(x, u)) <= slack {
-            return Some(x);
-        }
+        return Some(p + (q - p) * s);
     }
     None
 }
@@ -2818,6 +2881,241 @@ mod tests {
         let t = [Vec3::ZERO, Vec3::X, Vec3::Y * 2.0];
         let _ = (side_through(&nan, &t), side_through(&t, &nan));
         let _ = (triangles_nearest(&nan, &t), triangles_nearest(&t, &nan));
+    }
+
+    /// The review's pair (2026-11-13), about 1e6 from the origin and 10
+    /// across: in exact arithmetic two sides of `u` pass through `t`, so
+    /// they are 0 apart, while their corners and sides come 0.99999999995
+    /// apart.
+    #[test]
+    fn a_crossing_far_from_the_origin_is_0_apart() {
+        let t = [
+            Vec3::new(-416107.25459796394, 831669.229536776, -367666.02719767066),
+            Vec3::new(-416102.04477232957, 831675.2736724502, -367665.45611027733),
+            Vec3::new(-416101.85447886726, 831670.5315884767, -367673.0374312695),
+        ];
+        let u = [
+            Vec3::new(-416104.57697252836, 831671.254923877, -367669.864922142),
+            Vec3::new(-416103.2745161198, 831672.7659577954, -367669.72215029364),
+            Vec3::new(-416102.57841968996, 831670.7727522536, -367668.98554902565),
+        ];
+        assert!(corners_and_sides(&t, &u).0 > 0.9);
+        assert_eq!(triangles_nearest(&t, &u).0, 0.0);
+        assert_eq!(triangles_nearest(&u, &t).0, 0.0);
+    }
+
+    /// The crossing pair of `triangles_that_pass_through_each_other_are_0_apart`
+    /// (a triangle about 8 across, sides through it at (±0.5, 0, 0)) turned
+    /// by 500 seeded rotations and moved 5e3, 1.5e4 and 1.5e5 of its size
+    /// from the origin, at scales 1e-3, 1 and 1e6: always 0 apart either way
+    /// round (the review's model missed 4 % at 1.5e4 and 28 % at 1.5e5 when
+    /// the crossing was decided on coordinates); lifted clear by 1e-3 of the
+    /// scale, never 0, and 1e-3 apart to the rounding of the coordinates.
+    #[test]
+    fn turned_and_far_from_the_origin_a_crossing_is_never_missed() {
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+        };
+        for k in [1e-3, 1.0, 1e6] {
+            for ratio in [5e3, 1.5e4, 1.5e5] {
+                for _ in 0..500 {
+                    // A rotation from a unit quaternion, and a direction.
+                    let (w, x, y, z) = (next(), next(), next(), next());
+                    let n = (w * w + x * x + y * y + z * z).sqrt();
+                    let (w, x, y, z) = (w / n, x / n, y / n, z / n);
+                    let turn = |v: Vec3| {
+                        Vec3::new(
+                            (1.0 - 2.0 * (y * y + z * z)) * v.x
+                                + 2.0 * (x * y - w * z) * v.y
+                                + 2.0 * (x * z + w * y) * v.z,
+                            2.0 * (x * y + w * z) * v.x
+                                + (1.0 - 2.0 * (x * x + z * z)) * v.y
+                                + 2.0 * (y * z - w * x) * v.z,
+                            2.0 * (x * z - w * y) * v.x
+                                + 2.0 * (y * z + w * x) * v.y
+                                + (1.0 - 2.0 * (x * x + y * y)) * v.z,
+                        )
+                    };
+                    let dir = Vec3::new(next(), next(), next());
+                    let o = dir * (ratio * 8.0 * k / dir.length());
+                    let at = |x: f64, y: f64, z: f64| o + turn(Vec3::new(x, y, z) * k);
+                    let t = [at(-4.0, -4.0, 0.0), at(4.0, -4.0, 0.0), at(0.0, 4.0, 0.0)];
+                    let lifted = |dz: f64| {
+                        [
+                            at(-1.0, 0.0, 1.0 + dz),
+                            at(1.0, 0.0, 1.0 + dz),
+                            at(0.0, 0.0, dz - 1.0),
+                        ]
+                    };
+                    let u = lifted(0.0);
+                    assert_eq!(triangles_nearest(&t, &u).0, 0.0, "{k} {ratio} {o:?}");
+                    assert_eq!(triangles_nearest(&u, &t).0, 0.0, "{k} {ratio} {o:?}");
+                    let clear = lifted(1.0 + 1e-3);
+                    for (d, ..) in [triangles_nearest(&t, &clear), triangles_nearest(&clear, &t)] {
+                        // The corners themselves are rounded at the
+                        // coordinates: a part in 1e15 of them.
+                        let off = 1e-15 * o.length() + 1e-12 * k;
+                        assert!((d - 1e-3 * k).abs() <= off, "{k} {ratio}: {d}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Review of 2026-11-13 (S2): an equilateral triangle on a sphere of
+    /// radius 5 whose corners are 12° apart seen from the centre (corner
+    /// normals at the mesh's angle; checked from the corners) is farther
+    /// from the sphere at its centroid (the centre's foot on its plane:
+    /// 5 − |centroid|, worked from the corners) than r (1 − cos 6°), the
+    /// bound a side's middle gives and the one used before; the bound now
+    /// covers it. A cylinder's is still r (1 − cos 6°), and the chord caps
+    /// both.
+    #[test]
+    fn a_rounds_mesh_error_covers_a_triangle_at_the_meshs_angle() {
+        let r = 5.0;
+        let theta = MESH_ANGLE;
+        // Corners at a polar angle a about z, a third of a turn apart:
+        // sides √3 r sin a, made the chord of θ.
+        let sin_a = 2.0 * (0.5 * theta).psin() / 3.0_f64.sqrt();
+        let (sa, ca) = (sin_a, (1.0 - sin_a * sin_a).sqrt());
+        let corner = |k: f64| {
+            let b = k * 2.0 * std::f64::consts::PI / 3.0;
+            Vec3::new(r * sa * b.pcos(), r * sa * b.psin(), r * ca)
+        };
+        let [p, q, w] = [corner(0.0), corner(1.0), corner(2.0)];
+        for (x, y) in [(p, q), (q, w), (w, p)] {
+            let apart = (x.dot(y) / (r * r)).pacos();
+            assert!((apart - theta).abs() < 1e-12, "{apart}");
+        }
+        let centroid = (p + q + w) * (1.0 / 3.0);
+        let off = r - centroid.length();
+        let before = r * (1.0 - (0.5 * theta).pcos());
+        assert!(off > 1.3 * before, "{off} {before}");
+        // A chord of 0.1: its sides' own bound (a side of 0.1 bows
+        // 3e-4) is below the angle's.
+        let now = round_error(r, 0.1, true);
+        assert!(
+            now >= off - 1e-15 * r && now <= off + 1e-12 * r,
+            "{now} {off}"
+        );
+        assert_eq!(round_error(r, 0.1, false), before);
+        assert_eq!(round_error(r, 1e-3, true), 1e-3);
+    }
+
+    /// Rule 12 (review of 2026-11-13): what testing whether triangles pass
+    /// through each other costs, on a model of many faces: a plate of 841
+    /// holes and its copy 3 above it (the pairs of triangles of faces
+    /// whose boxes are within 3.5 of each other, each compared by the kernel
+    /// before, corners and sides alone, and as it is now), and the
+    /// distance and the thickness measured whole as they are now.
+    /// Ignored: it only prints. `cargo test --release -p craft3d-engine
+    /// --lib triangle_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn triangle_cost_on_a_sieve() {
+        use crate::{Session, Workspace};
+        use serde_json::json;
+        use std::time::Instant;
+        let mut s = Session::new(Workspace::none());
+        let mut go = |id: &str, p: serde_json::Value| {
+            s.execute(id, &p).unwrap_or_else(|e| panic!("{id}: {e}"));
+        };
+        go("file.new", json!({"units": "mm"}));
+        go(
+            "feature.block",
+            json!({"name": "Plate", "size": [300, 300, 10]}),
+        );
+        go(
+            "sketch.create",
+            json!({"name": "Holes", "plane": "xy", "offset": 10}),
+        );
+        for i in 0..29 {
+            for j in 0..29 {
+                go(
+                    "sketch.circle",
+                    json!({"sketch": "Holes", "center": [10 + 10 * i, 10 + 10 * j], "radius": 3}),
+                );
+            }
+        }
+        go(
+            "feature.extrude",
+            json!({"sketch": "Holes", "distance": -10, "cut": "Plate", "name": "Sieve"}),
+        );
+        go(
+            "feature.transform",
+            json!({"source": "Sieve", "keep": true, "translate": [0, 0, 13], "name": "Above"}),
+        );
+        let doc = std::sync::Arc::clone(s.document().unwrap().history.current());
+        let regen = s.document_mut().unwrap().regen();
+        let tolerance = craft3d_math::Tolerance::default();
+        let body = |name: &str| {
+            let id = doc.feature_by_name(name).unwrap().id;
+            std::sync::Arc::clone(regen.bodies().find(|(f, _)| *f == id).unwrap().1)
+        };
+        let (a, b) = (body("Sieve"), body("Above"));
+        let (pa, pb) = (
+            Part::new(&a, None, &tolerance).unwrap(),
+            Part::new(&b, None, &tolerance).unwrap(),
+        );
+        let mut pairs: Vec<([Vec3; 3], [Vec3; 3])> = Vec::new();
+        for (fa, ta) in &pa.every {
+            for (fb, tb) in &pb.every {
+                if boxes_distance(&pa.every_boxes[fa], &pb.every_boxes[fb]) > 3.5 {
+                    continue;
+                }
+                for t in ta {
+                    let bt = Bbox3::from_points(t.iter().copied());
+                    for u in tb {
+                        if boxes_distance(&bt, &Bbox3::from_points(u.iter().copied())) <= 3.5 {
+                            pairs.push((*t, *u));
+                        }
+                    }
+                }
+            }
+        }
+        let time = |kernel: &dyn Fn(&[Vec3; 3], &[Vec3; 3]) -> f64| {
+            (0..3)
+                .map(|_| {
+                    let started = Instant::now();
+                    let sum: f64 = pairs.iter().map(|(t, u)| kernel(t, u)).sum();
+                    (started.elapsed().as_secs_f64(), sum)
+                })
+                .fold((f64::INFINITY, 0.0), |(b, _), (t, s)| (b.min(t), s))
+        };
+        let (before, _) = time(&|t, u| corners_and_sides_at(t, u).0);
+        let (now, _) = time(&|t, u| triangles_nearest(t, u).0);
+        eprintln!(
+            "{} pairs of triangles: before {:.1} ns a pair ({:.3} s), now {:.1} ns ({:.3} s): {:+.0} %",
+            pairs.len(),
+            1e9 * before / pairs.len() as f64,
+            before,
+            1e9 * now / pairs.len() as f64,
+            now,
+            100.0 * (now / before - 1.0)
+        );
+        let started = Instant::now();
+        let near = distance(&[pa], &[pb]).unwrap();
+        eprintln!(
+            "distance of the two sieves: {} (at least {}) in {:.3} s",
+            near.distance,
+            near.lower,
+            started.elapsed().as_secs_f64()
+        );
+        let part = Part::new(&a, None, &tolerance).unwrap();
+        let started = Instant::now();
+        let thin = thickness_to(&part, tolerance.linear, f64::INFINITY)
+            .unwrap()
+            .unwrap();
+        eprintln!(
+            "thickness of a sieve: {} (at least {}) in {:.3} s",
+            thin.thickness,
+            thin.lower,
+            started.elapsed().as_secs_f64()
+        );
     }
 
     #[test]

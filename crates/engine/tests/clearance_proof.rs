@@ -317,25 +317,32 @@ fn closed_forms_just_clear_touching_and_overlapping_at_three_scales() {
 /// across, or a ball of radius 1 on the top edge sunk `depth` along the
 /// diagonal; with or without a cube `gap` beside the bar's side (a lump
 /// of the tool's own, which the search for the nearest places finds
-/// first). A negative depth lifts the tool clear.
-fn crossing(kind: &str, depth: f64, angle: f64, gap: Option<f64>) -> Vec<(&'static str, Value)> {
-    let turned = |name: &str| json!({"source": name, "angle": format!("{angle} deg"), "axis": [0, 0, 1], "pivot": [mm(5.0), mm(1.0), mm(0.0)], "name": "T"});
+/// first). A negative depth lifts the tool clear. Every length times `k`.
+fn crossing(
+    kind: &str,
+    depth: f64,
+    angle: f64,
+    gap: Option<f64>,
+    k: f64,
+) -> Vec<(&'static str, Value)> {
+    let l = |x: f64| mm(x * k);
+    let turned = |name: &str| json!({"source": name, "angle": format!("{angle} deg"), "axis": [0, 0, 1], "pivot": [l(5.0), l(1.0), l(0.0)], "name": "T"});
     let mut steps = vec![(
         "feature.block",
-        json!({"name": "A", "size": [mm(10.0), mm(2.0), mm(2.0)]}),
+        json!({"name": "A", "size": [l(10.0), l(2.0), l(2.0)]}),
     )];
     match kind {
         "bar" => {
             steps.push((
                 "feature.block",
-                json!({"name": "T0", "size": [mm(2.0), mm(8.0), mm(1.0)], "position": [mm(4.0), mm(-3.0), mm(2.0 - depth)]}),
+                json!({"name": "T0", "size": [l(2.0), l(8.0), l(1.0)], "position": [l(4.0), l(-3.0), l(2.0 - depth)]}),
             ));
             steps.push(("feature.transform", turned("T0")));
         }
         "rod" => {
             steps.push((
                 "feature.cylinder",
-                json!({"name": "T0", "radius": mm(0.75), "height": mm(8.0), "position": [mm(5.0), mm(-3.0), mm(2.75 - depth)], "axis": [0, 1, 0]}),
+                json!({"name": "T0", "radius": l(0.75), "height": l(8.0), "position": [l(5.0), l(-3.0), l(2.75 - depth)], "axis": [0, 1, 0]}),
             ));
             steps.push(("feature.transform", turned("T0")));
         }
@@ -343,7 +350,7 @@ fn crossing(kind: &str, depth: f64, angle: f64, gap: Option<f64>) -> Vec<(&'stat
             let c = (1.0 - depth) / 2.0_f64.sqrt();
             steps.push((
                 "feature.sphere",
-                json!({"name": "T", "radius": mm(1.0), "position": [mm(3.0 + angle / 30.0), mm(2.0 + c), mm(2.0 + c)]}),
+                json!({"name": "T", "radius": l(1.0), "position": [l(3.0 + angle / 30.0), l(2.0 + c), l(2.0 + c)]}),
             ));
         }
     }
@@ -352,7 +359,7 @@ fn crossing(kind: &str, depth: f64, angle: f64, gap: Option<f64>) -> Vec<(&'stat
         Some(gap) => {
             steps.push((
                 "feature.block",
-                json!({"name": "Near", "size": [mm(0.5), mm(0.5), mm(1.0)], "position": [mm(8.5), mm(-0.5 - gap), mm(0.5)]}),
+                json!({"name": "Near", "size": [l(0.5), l(0.5), l(1.0)], "position": [l(8.5), l(-0.5 - gap), l(0.5)]}),
             ));
             steps.push((
                 "feature.boolean",
@@ -368,51 +375,169 @@ fn crossing(kind: &str, depth: f64, angle: f64, gap: Option<f64>) -> Vec<(&'stat
 /// proves a positive clearance, the kernel finds none. Over tools crossing
 /// a bar 0.05 to 0.3 deep, flat (13 of these were answered clear and
 /// proven 0.01 or 0.03 apart), round and a ball on an edge, turned and
-/// with a near lump; and the same lifted 0.05 clear.
+/// with a near lump; and the same lifted 0.05 clear; at scales 1e-3, 1
+/// and 1e6.
 #[test]
 fn whenever_overlap_finds_a_common_volume_clearance_proves_nothing() {
     let mut overlaps = 0;
-    for kind in ["bar", "rod", "ball"] {
-        for depth in [0.05, 0.1, 0.3, -0.05] {
-            let angles: &[f64] = if kind == "ball" {
-                &[0.0, 60.0]
-            } else {
-                &[0.0, 17.0, 45.0]
-            };
-            for &angle in angles {
-                for gap in [None, Some(0.01), Some(0.03)] {
-                    let what = format!("{kind} {depth} deep, turned {angle}, near {gap:?}");
-                    let mut s = document(1.0);
-                    build(&mut s, &crossing(kind, depth, angle, gap));
-                    let shared = common(&mut s, "A", "B");
-                    let (status, value, at_least) = clearance(&mut s, "A", "B");
-                    let out = run(
-                        &mut s,
-                        "assert.add",
-                        json!({"name": "apart", "measure": "clearance", "from": "A", "to": "B", "min": "0 mm"}),
-                    );
-                    if shared > 0.0 {
-                        overlaps += 1;
-                        assert_eq!(status, "overlap", "{what}: {shared}");
-                        assert_eq!((value, at_least), (None, None), "{what}");
-                        assert_ne!(out["status"], "passed", "{what}");
-                    }
-                    if at_least.is_some_and(|l| l > 2e-6) || status == "clear" {
-                        assert_eq!(shared, 0.0, "{what}: {status} {at_least:?}");
-                    }
-                    if depth < 0.0 {
-                        // Lifted 0.05 clear: the bar or rod's least point,
-                        // or the ball's along the diagonal; the near lump
-                        // is nearer when there is one.
-                        assert_eq!(status, "clear", "{what}");
-                        let want = gap.unwrap_or(0.05).min(0.05);
-                        let value = value.unwrap();
-                        assert!((value - want).abs() <= 1e-6, "{what}: {value}");
-                        assert!(at_least.unwrap() <= value, "{what}");
+    for k in [1e-3, 1.0, 1e6] {
+        let tol = 1e-6 * k;
+        for kind in ["bar", "rod", "ball"] {
+            for depth in [0.05, 0.1, 0.3, -0.05] {
+                let angles: &[f64] = if kind == "ball" {
+                    &[0.0, 60.0]
+                } else {
+                    &[0.0, 17.0, 45.0]
+                };
+                for &angle in angles {
+                    for gap in [None, Some(0.01), Some(0.03)] {
+                        let what =
+                            format!("{kind} {depth} deep, turned {angle}, near {gap:?}, at {k}");
+                        let mut s = document(k);
+                        build(&mut s, &crossing(kind, depth, angle, gap, k));
+                        let shared = common(&mut s, "A", "B");
+                        let (status, value, at_least) = clearance(&mut s, "A", "B");
+                        let out = run(
+                            &mut s,
+                            "assert.add",
+                            json!({"name": "apart", "measure": "clearance", "from": "A", "to": "B", "min": "0 mm"}),
+                        );
+                        if shared > 0.0 {
+                            overlaps += 1;
+                            assert_eq!(status, "overlap", "{what}: {shared}");
+                            assert_eq!((value, at_least), (None, None), "{what}");
+                            assert_ne!(out["status"], "passed", "{what}");
+                        }
+                        if at_least.is_some_and(|l| l > 2.0 * tol) || status == "clear" {
+                            assert_eq!(shared, 0.0, "{what}: {status} {at_least:?}");
+                        }
+                        if depth < 0.0 {
+                            // Lifted 0.05 clear: the bar or rod's least
+                            // point, or the ball's along the diagonal; the
+                            // near lump is nearer when there is one.
+                            assert_eq!(status, "clear", "{what}");
+                            let want = gap.unwrap_or(0.05).min(0.05) * k;
+                            let value = value.unwrap();
+                            assert!((value - want).abs() <= tol, "{what}: {value}");
+                            assert!(at_least.unwrap() <= value, "{what}");
+                        }
                     }
                 }
             }
         }
     }
-    assert_eq!(overlaps, 72);
+    assert_eq!(overlaps, 3 * 72);
+}
+
+/// A freeform tool: a profile in the yz plane at x = 4 whose underside is
+/// the parabola z = 2 − depth + 0.1 (y − 1)² for y from −3 to 5 (a spline
+/// from `sketch.curve`), closed by lines at z = 4.5 and extruded 2 along x,
+/// over the bar 10 × 2 × 2; every length times `k`. Sunk `depth` = 0.05 it
+/// crosses the bar's top where |y − 1| < w = √(depth / 0.1): they share
+/// 2 ∫ (depth − 0.1 s²) ds over |s| < w = (8/3) depth w (by hand). Lifted
+/// (depth −g) its lowest line, at y = 1 over the middle of the bar's top,
+/// is the nearest: g apart.
+fn spline_tool(depth: f64, k: f64) -> Vec<(&'static str, Value)> {
+    let l = |x: f64| mm(x * k);
+    vec![
+        (
+            "feature.block",
+            json!({"name": "A", "size": [l(10.0), l(2.0), l(2.0)]}),
+        ),
+        (
+            "sketch.create",
+            json!({"name": "P", "plane": "yz", "offset": l(4.0)}),
+        ),
+        (
+            "sketch.curve",
+            json!({"sketch": "P", "x": format!("{} * (8 * t - 3)", l(1.0)), "y": format!("{} + {} * (8 * t - 4)^2", l(2.0 - depth), l(0.1)), "t": [0, 1]}),
+        ),
+        (
+            "sketch.path",
+            json!({"sketch": "P", "start": "e2", "segments": [{"line": [l(5.0), l(4.5)]}, {"line": [l(-3.0), l(4.5)]}, {"line": "e1"}]}),
+        ),
+        (
+            "feature.extrude",
+            json!({"sketch": "P", "distance": l(2.0), "name": "B"}),
+        ),
+    ]
+}
+
+/// The spline tool crossing the bar is an overlap whose common volume the
+/// kernel finds at the closed form (to the fit of the curve), and no
+/// clearance is proven; lifted 0.05 and 10 tolerances clear, it is clear
+/// at its gap with no more proven than that and more than the band of
+/// touching. At scales 1e-3, 1 and 1e6.
+#[test]
+fn a_spline_tool_crossing_the_bar_and_lifted_clear() {
+    for k in [1e-3, 1.0, 1e6] {
+        let tol = 1e-6 * k;
+        let depth = 0.05;
+        let mut s = document(k);
+        build(&mut s, &spline_tool(depth, k));
+        let what = format!("spline tool {depth} deep at {k}");
+        let want = 8.0 / 3.0 * depth * (depth / 0.1_f64).sqrt() * k * k * k;
+        let shared = common(&mut s, "A", "B");
+        assert!(
+            (shared - want).abs() <= 1e-4 * want,
+            "{what}: {shared} for {want}"
+        );
+        let (status, value, at_least) = clearance(&mut s, "A", "B");
+        assert_eq!(status, "overlap", "{what}");
+        assert_eq!((value, at_least), (None, None), "{what}");
+        for g in [0.05 * k, 10.0 * tol] {
+            let mut s = document(k);
+            build(&mut s, &spline_tool(-g / k, k));
+            let what = format!("spline tool {g} clear at {k}");
+            assert_eq!(common(&mut s, "A", "B"), 0.0, "{what}");
+            let (status, value, at_least) = clearance(&mut s, "A", "B");
+            assert_eq!(status, "clear", "{what}");
+            let (value, at_least) = (value.unwrap(), at_least.unwrap());
+            assert!((value - g).abs() <= tol, "{what}: {value}");
+            assert!(
+                at_least <= value && at_least > 2.0 * tol,
+                "{what}: {at_least}"
+            );
+        }
+    }
+}
+
+/// The clamp of J-018's reduced case turned 37° about a slanted axis and
+/// moved about 1e6 of the scale from the origin, some 1e5 times the size
+/// of its triangles: still an overlap, and the faces that cross are proven
+/// no more than the tolerance apart (when crossings were decided on
+/// coordinates, their rounding there missed them), at scales 1e-3, 1 and
+/// 1e6.
+#[test]
+fn the_clamp_turned_far_from_the_origin_overlaps_and_no_clearance_is_proven() {
+    for k in [1e-3, 1.0, 1e6] {
+        let tol = 1e-6 * k;
+        let mut s = document(k);
+        build(&mut s, &clamp(k));
+        for (source, name) in [("Bar", "Far bar"), ("Clamp", "Far clamp")] {
+            run(
+                &mut s,
+                "feature.transform",
+                json!({"source": source, "angle": "37 deg", "axis": [0.36, 0.48, 0.8], "pivot": [mm(0.0), mm(0.0), mm(0.0)], "translate": [mm(6e5 * k), mm(-4e5 * k), mm(6.6e5 * k)], "name": name}),
+            );
+        }
+        let what = format!("far clamp at {k}");
+        for (a, b) in [("Far bar", "Far clamp"), ("Far clamp", "Far bar")] {
+            let (status, value, at_least) = clearance(&mut s, a, b);
+            assert_eq!(status, "overlap", "{what}: {a} {b}");
+            assert_eq!((value, at_least), (None, None), "{what}");
+        }
+        let d = run(
+            &mut s,
+            "measure.distance",
+            json!({"from": "Far bar", "to": "Far clamp"}),
+        );
+        let at_least = d["atLeast"].as_f64().unwrap();
+        assert!(at_least <= tol, "{what}: {d}");
+        let volume = common(&mut s, "Far bar", "Far clamp");
+        assert!(
+            (volume - 0.4 * k * k * k).abs() <= 1e-6 * k * k * k,
+            "{what}: {volume}"
+        );
+    }
 }

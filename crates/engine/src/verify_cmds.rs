@@ -1515,11 +1515,18 @@ fn clearance_status(
             Ok(Contact::Clear) => Ok("clear"),
             Ok(Contact::Touch) => Ok("touch"),
             Ok(Contact::Overlap) => Ok("overlap"),
-            Err(e) => Err(format!(
-                "whether `{}` and `{}` overlap cannot be told: {e}",
-                ctx.feature_name(ida),
-                ctx.feature_name(idb)
-            )),
+            Err(e) => {
+                let unit = length_unit(ctx.doc);
+                let shown = crate::assert_cmds::shown;
+                Err(format!(
+                    "whether `{}` and `{}` overlap cannot be told: their nearest places found are {} {unit} apart, but only {} {unit} is proven, within twice the tolerance, where the kernel tells clear from touch and overlap, and it could not: {e}. Bodies meant to be apart are told without the kernel once their gap is proven above {} {unit} (a larger gap, or a finer tolerance with document.setTolerance); measure.distance gives the distance between their surfaces",
+                    ctx.feature_name(ida),
+                    ctx.feature_name(idb),
+                    shown(near.distance),
+                    shown(near.lower.max(0.0)),
+                    shown(apart),
+                ))
+            }
         };
     }
     // Proven apart everywhere: one may still hold the other, or a lump of
