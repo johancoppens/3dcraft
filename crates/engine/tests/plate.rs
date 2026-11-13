@@ -301,7 +301,7 @@ fn a_joint_named_by_its_faces_is_followed_through_a_later_boolean() {
     // The floor sheet trimmed twice, a hole each time away from the joint:
     // the joint's edge is given as the first trim names it, by its faces.
     // A later boolean names its edges anew and keeps no name by faces, so
-    // until 2026-11-13 the joint failed ("is gone", 0.1.0 and 0.1.1); it
+    // until 2026-11-13 the joint failed ("is gone", seen in 0.1.0); it
     // is followed now to the edge the boolean reports it kept, and the
     // plates are the mitre's less the two holes. Every edge of a sheet
     // after a boolean lies on its one face, so the name is numbered by
