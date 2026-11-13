@@ -1160,8 +1160,9 @@ fn segments_nearest(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> (Vec3, Vec3) {
 /// How near, relative to the size of two triangles, a side of one may pass
 /// by the other and still be taken as passing through it
 /// ([`side_through`]): far above the rounding of the few products it is
-/// worked out with (a few parts in 1e16), far below any distance a
-/// document's tolerance tells apart.
+/// worked out with (a few parts in 1e16), and below a document's tolerance
+/// wherever that is a part in 1e12 of the triangles' size or more (taken
+/// as passing through, a pair is only proven less far apart than it is).
 const CROSSING_SLACK: f64 = 1e-12;
 
 /// The least distance between two triangles, with the nearest points: 0,

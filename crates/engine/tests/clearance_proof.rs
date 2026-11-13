@@ -258,10 +258,11 @@ fn ball_in_cavity(k: f64, g: f64) -> (Vec<(&'static str, Value)>, f64) {
 type Pair = fn(f64, f64) -> (Vec<(&'static str, Value)>, f64);
 
 /// Each pair just clear (10 tolerances apart), touching, just overlapping
-/// (10 tolerances deep) and overlapping by a fiftieth to a hundredth of
-/// its size: clear at its closed-form gap with no more proven than that
-/// and more than the band of touching, touching at 0, overlapping with no
-/// clearance and, deep enough to measure, the closed-form common volume.
+/// (10 tolerances deep) and overlapping 0.1 deep (scaled; a thirtieth to
+/// a fiftieth of the radii): clear at its closed-form gap with no more
+/// proven than that and more than the band of touching, touching at 0,
+/// overlapping with no clearance and, deep enough to measure, the
+/// closed-form common volume.
 #[test]
 fn closed_forms_just_clear_touching_and_overlapping_at_three_scales() {
     let pairs: [(&str, Pair); 4] = [
