@@ -14,7 +14,7 @@ Read this file first, then `docs/`.
 
 This file was written for the AI agents and the developer who built 3DCraft, in the *workshop*: the private repository `johancoppens/3dcraft-dev`, which has this one's commits and the work on the next version, and a build server of its own, the Strix. It is kept as it was used, as part of the record of how 3DCraft was made. "The developer" is the project's maintainer; "the coordinator" is the AI agent that plans the other agents' work and merges it; a rule with a date quotes when it was decided.
 
-- **What holds for everyone:** the golden rules (§3), the layering (§2), the checklist of §5 run on your own machine (`cargo xtask fonts` once, then `cargo xtask ci` runs all of it; while iterating, the tests of the crates you touched), keeping the native format complete (§8), and English for everything that lands in the repository. Anything visual is checked by looking at a picture (rule 10).
+- **What holds for everyone:** the golden rules (§3), the layering (§2), the checklist of §5 run on your own machine (`cargo xtask fonts` once, then `cargo xtask ci` runs all of it; while iterating, the tests you touched), keeping the native format complete (§8), and English for everything that lands in the repository. Anything visual is checked by looking at a picture (rule 10).
 - **What holds in the workshop only:** answering the developer in Dutch (*Language*, above); the Strix, the workshop's build server, whose workflows are not in this repository (§5, §6), and "locally at most one small test" (§6); the dev log and `plan/` (§7: local folders, not in the repository); the parallel agents' branches and target directories (§6); letting the developer watch along (rule 10).
 - **How to contribute:** [`CONTRIBUTING.md`](CONTRIBUTING.md). A problem goes to the issues; a change starts with an issue, and its pull request says what you ran and every expectation you changed. Where this file says to log something in the dev log, from outside it goes into the pull request's description; where it says to ask the developer, open an issue.
 - **An AI agent working for someone outside the workshop** answers that person in their own language, runs the checks on their machine, and leaves the workshop-only parts above aside.
@@ -116,7 +116,7 @@ When you finish a milestone item, update its status in `docs/roadmap.md` with th
 
 ```sh
 cargo fmt --all
-cargo test -p <crates you touched>
+cargo test -p <crate> --test <file>   # each test file you touched or added; a small crate you touched whole
 cargo clippy -p <crates> --all-targets -- -D warnings
 cargo xtask layers
 cargo xtask wasm            # if you touched L0–L7
@@ -128,10 +128,10 @@ cargo test -p craft3d-engine --test panic_hunt                # if you added/cha
 
 **Two steps, so the gate is not paid for every commit** (the developer, 2026-10-13):
 
-- **Per commit, the quick check:** `cargo fmt --all --check`, `cargo clippy -p <crates you touched> --all-targets -- -D warnings`, `cargo test -p <crates you touched>`, and the tests of the crates that depend on them when you changed behaviour or a public API. A commit that changes only docs, comments or the data of one test needs just the tests it can affect. Such commits go on a work branch, not on `main`.
+- **Per commit, the quick check:** `cargo fmt --all --check`, `cargo clippy -p <crates you touched> --all-targets -- -D warnings`, and the tests you touched: each test file you changed or added (`cargo test -p <crate> --test <file>`; several of one crate side by side with `cargo xtask test -p <crate> --test <file> --test <file>`) and the tests of a small crate you touched, whole. Never `--workspace` and never a large crate whole (the engine, the kernel, `ui-egui`: their binaries run for half an hour and more): the gate runs everything. A commit that changes only docs, comments or the data of one test needs just the tests it can affect, and none when no test reads what it changed. Such commits go on a work branch, not on `main`.
 - **Before `main` moves, the full gate:** `cargo xtask ci` on the exact commit, once per finished piece of work (a merged branch, a finished round), not once per commit. `main` only fast-forwards to a commit the full gate passed. In the workshop it runs on the Strix, the workshop's build server (`cargo xtask ci`, then `cargo xtask freecad`, then the web module's size, `cargo xtask web-size`), so work can go on meanwhile; read its exit status, not its last lines. From outside, `cargo xtask ci` on your own machine is the gate. If `cargo` is not on `PATH` in your shell, it is in `~/.cargo/bin`.
 
-While iterating, run less and keep the full commands above as the final gate: `cargo test -p <crate> --lib --tests` skips examples and doctests, and `cargo test -p <crate> --test <file>` runs one integration-test file.
+While iterating, run less: `cargo test -p <crate> --test <file> <name>` runs one test, and `cargo test -p <crate> --lib` a crate's unit tests.
 
 Commands must **never panic** on bad input (Rule 13). New commands come with a graceful-failure test (empty/out-of-range/wrong-type params → `Err`, not a crash).
 
@@ -140,7 +140,7 @@ Then append a terse entry to the dev log, `log/devlog.md` in the workshop (§7):
 ## 6. Parallel agents
 
 - **Heavy builds and tests run on the Strix, not on the developer's laptop** (the developer, 2026-10-23). How a check of your commit, the gate or a heavy run is started there is in the coordinator's brief and in `WORKSHOP.md` on the workshop's `workshop` branch (not in this repository; docs/development.md › Two repositories). Push only to `origin`, the workshop `johancoppens/3dcraft-dev`, and only to your own branch, never to `main` or anyone else's. Locally, keep to editing, `cargo fmt`, a quick `cargo check` and at most **one small targeted test at a time** (one test file or test name, debug, `systemd-run --user --scope -q -p MemoryMax=8G -p MemorySwapMax=0 timeout 900 cargo test -p <crate> --test <file>`, your own target dir; the developer, 2026-11-02). The full gate stays the coordinator's (on a runner of its own).
-- **Runs on the Strix are few and narrow** (the developer, 2026-11-13). At hand-in, a check runs the test files you touched (`--test <file>`, several of one crate side by side with `cargo xtask test -p <crate> --test <file> --test <file>`), never `--workspace` and never a whole large crate such as the engine, the kernel or `ui-egui`: the gate runs everything. One run per hand-in: fmt, clippy and those test files joined in one check, not a run for each. No run for a change to text no test reads (prose, comments). Reviewed branches are merged together and gated once, not a gate per branch.
+- **Runs on the Strix are few and narrow** (the developer, 2026-11-13). At hand-in, a check runs §5's quick check, the tests you touched and no more: never `--workspace`, never a large crate whole. One run per hand-in: fmt, clippy and those tests joined in one check, not a run for each. No run for a change to text no test reads (prose, comments). Reviewed branches are merged together and gated once, not a gate per branch.
 - Use your own target dir (`CARGO_TARGET_DIR=target/agent-<name>`) to avoid the Cargo build lock, and edit only the files you own. Shared files (`engine/src/lib.rs` with the list of `SPECS` in `Session::commands`, `engine/src/commands.rs`, `ui-egui/src/state.rs`) get small, surgical edits; re-read before editing.
 - Put new commands in a **new module** (`engine/src/<area>_cmds.rs` with its own `SPECS`) rather than growing a shared file.
 - If someone else's in-progress edit breaks the build, wait and retry; don't fix their files.

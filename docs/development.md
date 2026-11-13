@@ -9,7 +9,7 @@
 ```sh
 cargo test --workspace                          # over five thousand tests (2026-11-10), one binary after the other
 cargo xtask ci                                  # fmt --check + clippy -D warnings + tests (binaries side by side) + doctests + layers + wasm: the full gate (the workshop runs it on the Strix, below)
-cargo xtask test -p craft3d-engine              # one crate's test binaries side by side (cargo test -p runs them one after the other); --test <file> for some of them
+cargo xtask test -p craft3d-engine --test guide_examples --test panic_hunt   # some test files' binaries side by side, slowest first (without --test, a crate's every binary)
 cargo xtask layers                              # dependency layering, that every crate opts in to the never-crash lints, and no std clock where the browser gets
 cargo xtask stats                               # lines and tests per crate
 CRAFT3D_FREECAD=/path/to/FreeCAD.AppImage cargo xtask freecad   # FreeCAD reads our exports back
