@@ -361,6 +361,42 @@ mod tests {
             false
         }
 
+        /// Ends, when dropped, what a test started that still runs: the
+        /// stand-in window, and each process recorded by its id and start
+        /// time (a later process given the same id is spared). So a test
+        /// whose assertion fails leaves nothing behind.
+        #[derive(Default)]
+        struct Leftovers {
+            window: Option<Child>,
+            processes: Vec<(u32, u64)>,
+        }
+
+        impl Drop for Leftovers {
+            fn drop(&mut self) {
+                if let Some(mut window) = self.window.take() {
+                    let _ = window.kill();
+                    let _ = window.wait();
+                }
+                for &(pid, start) in &self.processes {
+                    if runs(pid, start) {
+                        let _ = Command::new("sh")
+                            .args(["-c", "kill -s KILL \"$1\"", "sh", &pid.to_string()])
+                            .status();
+                    }
+                }
+            }
+        }
+
+        /// Whether `sh` and `sleep` are there to run the tests with.
+        fn has_sh_and_sleep() -> bool {
+            let there = Command::new("sh").args(["-c", "exit 0"]).status().is_ok()
+                && Command::new("sleep").arg("0").status().is_ok();
+            if !there {
+                println!("SKIPPED: no sh or sleep");
+            }
+            there
+        }
+
         /// Not a test of its own: the stand-in window that
         /// [`a_killed_window_takes_its_watcher_along`] starts and kills.
         /// It starts the watcher as the window does, says the shell's id,
@@ -385,19 +421,23 @@ mod tests {
         /// (`None`: the program was not seen running, so nothing was
         /// shown).
         fn killed_window_watching(command: &str) -> Option<bool> {
+            let mut left = Leftovers::default();
             let exe = std::env::current_exe().unwrap();
-            let mut window = Command::new(exe)
-                .args([
-                    "desktop_theme::tests::ends_with_its_window::helper",
-                    "--exact",
-                    "--nocapture",
-                    "--test-threads=1",
-                ])
-                .env(HELPER, command)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-                .unwrap();
+            let window = left.window.insert(
+                Command::new(exe)
+                    .args([
+                        "desktop_theme::tests::ends_with_its_window::helper",
+                        "--exact",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ])
+                    .env(HELPER, command)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            );
+            let window_id = window.id();
             let stdout = window.stdout.take().unwrap();
             let shell = std::io::BufReader::new(stdout)
                 .lines()
@@ -406,15 +446,16 @@ mod tests {
                     let (_, id) = line.split_once(SAYS)?;
                     id.split_whitespace().next()?.parse::<u32>().ok()
                 });
-            let Some(shell) = shell else {
-                let _ = window.kill();
-                let _ = window.wait();
-                panic!("the stand-in window never said its watcher's id");
-            };
+            let shell = shell.expect("the stand-in window never said its watcher's id");
             let shell_stat = stat(shell).unwrap();
-            assert_eq!(shell_stat.ppid, window.id());
+            left.processes.push((shell, shell_stat.start));
+            assert_eq!(shell_stat.ppid, window_id);
             let watched = child_of(shell);
+            if let Some((pid, s)) = watched {
+                left.processes.push((pid, s.start));
+            }
             // Killed as a crash or `kill -9` would: no Drop runs.
+            let mut window = left.window.take().unwrap();
             window.kill().unwrap();
             window.wait().unwrap();
             let (watched, watched_stat) = watched?;
@@ -428,10 +469,7 @@ mod tests {
         /// with the real `gsettings monitor` where GNOME's schema is.
         #[test]
         fn a_killed_window_takes_its_watcher_along() {
-            if Command::new("sh").args(["-c", "exit 0"]).status().is_err()
-                || Command::new("sleep").arg("0").status().is_err()
-            {
-                println!("SKIPPED: no sh or sleep");
+            if !has_sh_and_sleep() {
                 return;
             }
             assert_eq!(
@@ -459,14 +497,16 @@ mod tests {
         /// the shell go.
         #[test]
         fn a_dropped_watcher_ends_its_program() {
+            if !has_sh_and_sleep() {
+                return;
+            }
+            let mut left = Leftovers::default();
             let (watcher, _stdout) = Watcher::spawn("sleep", &["600"]).unwrap();
             let shell = watcher.id();
             let shell_stat = stat(shell).unwrap();
-            let Some((watched, watched_stat)) = child_of(shell) else {
-                drop(watcher);
-                println!("SKIPPED: no sleep");
-                return;
-            };
+            left.processes.push((shell, shell_stat.start));
+            let (watched, watched_stat) = child_of(shell).expect("the watched sleep never ran");
+            left.processes.push((watched, watched_stat.start));
             drop(watcher);
             assert!(goes(watched, watched_stat.start));
             assert!(goes(shell, shell_stat.start));
@@ -477,6 +517,11 @@ mod tests {
         /// waits on its pipe (it let go of its copy of the output).
         #[test]
         fn the_reader_sees_the_watcher_out() {
+            if !has_sh_and_sleep() {
+                return;
+            }
+            // A failing assertion drops the watcher while unwinding, which
+            // ends it.
             let (watcher, stdout) =
                 Watcher::spawn("printf", &["color-scheme: 'prefer-dark'\\n"]).unwrap();
             let (send, receive) = std::sync::mpsc::channel();
