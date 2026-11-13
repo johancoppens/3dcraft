@@ -3663,11 +3663,12 @@ mod tests {
             for x in rows[r].iter_mut() {
                 *x = x.div(lead);
             }
-            for i in 0..rows.len() {
-                if i != r && rows[i][c].sign() != 0 {
-                    let f = rows[i][c];
-                    for j in 0..7 {
-                        rows[i][j] = rows[i][j].sub(f.mul(rows[r][j]));
+            let pivot_row = rows[r];
+            for (i, row) in rows.iter_mut().enumerate() {
+                if i != r && row[c].sign() != 0 {
+                    let f = row[c];
+                    for (x, p) in row.iter_mut().zip(pivot_row) {
+                        *x = x.sub(f.mul(p));
                     }
                 }
             }
