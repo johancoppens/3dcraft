@@ -22,8 +22,9 @@
 //! without any failure; so can a face the name lists that is itself
 //! numbered by place (a blend's `fillet(0,1)`), and a plate's rim, whose
 //! name hashes an edge name that may be. docs/design/names.md › *Which
-//! numbers in a name are identity* has every number a name holds, and
-//! `PersistentName::place_part` finds the ones by place.
+//! parts of a name are proven to be identity* lists the kinds proven not
+//! to move, and `craft3d_doc::identity::unproven` finds a part of any
+//! other kind.
 //!
 //! An entity an operand already had also keeps the name the primitive or
 //! the sweep that first made it gave it, as a copy and as an alias

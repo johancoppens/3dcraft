@@ -35,6 +35,7 @@
 use crate::datum::listed;
 use crate::sketch::same_plane;
 use crate::{FeatureResult, Names};
+use craft3d_doc::identity::{self, Unproven};
 use craft3d_doc::{Document, EdgeRef, Feature, FeatureId, FeatureKind, NameRole, PersistentName};
 use std::collections::BTreeSet;
 
@@ -636,10 +637,12 @@ fn faces(
 /// The same for the edges blends (`noun`) refer to: the pairs of faces
 /// each face as a face, an edge by its own name as an edge and the face
 /// given with it as a face. An edge's name, or the face given with it,
-/// with a part numbered by place (`PersistentName::place_part`, at any
-/// depth) is refused as it is given, whatever body it is of: it would take
-/// whichever entity lies at that place after an edit
-/// ([`crate::numbered_edge`]). A pair is followed as it always was.
+/// with anything not proven to identify its entity
+/// (`craft3d_doc::identity::unproven`: a part of a kind not on the list,
+/// at any depth, or a split by place its bodies grew from) is refused as
+/// it is given, whatever body it is of: an edit could move it to another
+/// entity ([`crate::numbered_edge`]); so is an edge whose way to the newest
+/// body goes through such a split. A pair is followed as it always was.
 fn refs(
     doc: &Document,
     earlier: &[FeatureResult],
@@ -658,17 +661,38 @@ fn refs(
                 out
             }
             EdgeRef::Edge { edge: name, first } => {
-                if name.depends_on_place() {
+                if identity::unproven(doc, name).is_some() {
                     let at = earlier
                         .iter()
                         .find(|r| r.id == name.feature)
                         .and_then(|r| Some((r.body.as_deref()?, r.names.as_deref()?)));
-                    return Err(format!("{role}: {}", crate::numbered_edge(name, noun, at)));
+                    return Err(format!(
+                        "{role}: {}",
+                        crate::numbered_edge(doc, name, noun, at)
+                    ));
                 }
-                if let Some(given) = first.as_ref().filter(|f| f.depends_on_place()) {
-                    return Err(format!("{role}: {}", crate::numbered_face(given, noun)));
+                if let Some(given) = first
+                    .as_ref()
+                    .filter(|f| identity::unproven(doc, f).is_some())
+                {
+                    return Err(format!(
+                        "{role}: {}",
+                        crate::numbered_face(doc, given, noun)
+                    ));
                 }
-                let mut out = vec![edge(doc, earlier, name, &role)?];
+                let kept = edge(doc, earlier, name, &role)?;
+                // The way to the newest body: a split by place on it would
+                // choose the lump, and so the edge, by where it lies.
+                if let Some(split) = kept
+                    .as_ref()
+                    .and_then(|newest| identity::split_by_place(doc, newest))
+                {
+                    return Err(format!(
+                        "{role}: {}; a {noun} does not take it: the pair of its faces takes every edge between them",
+                        Unproven::Split(split).reason(doc, name)
+                    ));
+                }
+                let mut out = vec![kept];
                 if let Some(given) = first {
                     out.push(face(doc, earlier, given, &role)?);
                 }

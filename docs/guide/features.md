@@ -226,11 +226,14 @@ under `name`, and a click on the edge in the window gives it too. Here the line 
 A chamfer whose two sides differ (`second` or `angle`) also has to know which face its `distance` runs
 along: write the edge and that face, `[edge name, face name]`. Names and pairs can be mixed in one list.
 
-Some names say where something lies rather than how it was made: a number at the end, such as `…](1)`,
-or a round's face numbered by its place, such as `fillet(0,1)`, among the faces the name lists. An edit
-could move such a number to another edge without anything failing, so a fillet or a chamfer refuses that
-name, and says what names the edge instead (another name of it), or that nothing does yet. Then the pair
-takes all of the edges between those faces.
+A fillet or a chamfer takes a name only when every part of it says how its edge was made in a way no
+edit can give to another edge: a box's or a cylinder's faces and edges, an extrusion's edges by its sketch,
+copies, and names by faces with no number at the end. Other names say where something lies, or its place in
+a list that can change: a number at the end, such as `…](1)`, a round's or a chamfer's face among the faces
+the name lists, such as `fillet(0,1)` or `chamfer(0)`, a letter of a text. An edit could move such a name
+to another edge without anything failing, so a fillet or a chamfer refuses it, and says what names the edge
+instead (another name of it), or that nothing does yet. Then the pair takes all of the edges between those
+faces.
 
 ## Shell and face operations
 

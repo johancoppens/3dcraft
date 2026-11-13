@@ -3,17 +3,20 @@
 //! (docs/design/names.md › *An edge by its own name*). Two faces can meet
 //! in several edges: a pipe sunk into a plate leaves its top along two
 //! lines, two merged discs meet in two corners. The name picks one; the
-//! pair still takes all. A name that tells its edge apart only by its
-//! place (a number at its end: the arcs of a loft's end circle, the lines
-//! of a cylinder halved lengthwise) is refused, since an edit could move
-//! the number to another edge.
+//! pair still takes all. A name is taken only when every part of it is of
+//! a kind proven to stay with its entity (`craft3d_doc::identity`); one
+//! with anything else (a number at its end that tells its edge apart by
+//! place: the arcs of a loft's end circle, the lines of a cylinder halved
+//! lengthwise; a blend's face it lists; a split by place its body grew
+//! from) is refused, since an edit could move it to another edge.
 //!
 //! The oracles are closed forms worked out by hand (the plate and the
 //! pipe in the plane across the pipe: the ball's centre, its feet, a
 //! polygon less a sector and a circular segment; the two discs: the
 //! triangle of the three centres less three sectors), and, where a name
-//! is followed, the body built by the name it is followed to. At the
-//! scales 1e-3, 1 and 1e6 where the geometry allows.
+//! is followed, the body built by the name it is followed to, or by the
+//! pair less the closed form of the other edge's round. At the scales
+//! 1e-3, 1 and 1e6 where the geometry allows.
 
 #![allow(
     clippy::unwrap_used,
@@ -337,7 +340,7 @@ fn one_edge_chamfered_by_its_name_measures_the_first_size_on_the_face_given() {
 
 #[test]
 fn an_edge_name_is_followed_through_the_features_that_take_its_body() {
-    let (_, rounded) = plate_and_pipe(16.0, 2.0);
+    let (v0, rounded) = plate_and_pipe(16.0, 2.0);
     for k in SCALES {
         // A chamfer of the plate's bottom front edge (1 x 1 along 60: 30
         // less) between the union and the round, which names the edge as
@@ -396,9 +399,13 @@ fn an_edge_name_is_followed_through_the_features_that_take_its_body() {
         // behind the pipe, which ends where the rounded edge does: the
         // faces near that edge change, so its name in the chamfer's body is
         // another (no rule rebuilding the name from those faces would find
-        // it), and the round follows the edge the kernel kept. The oracle:
-        // the same round built after the chamfer by the name the chamfer's
-        // body gives the edge.
+        // it), and the round follows the edge the kernel kept. That name
+        // lists the chamfer's face, a blend's face, which is not proven to
+        // stay with its entity, so it is refused. The oracle: in the
+        // chamfer's body, the pair of the top and the wall rounds both
+        // edges; the other edge's round, which the chamfer does not reach,
+        // adds what it adds without it (`rounded - v0`, by symmetry), and
+        // what is left is this edge's round, one face fewer.
         let mut direct = session();
         plate_with_pipe(&mut direct, k, 16.0);
         let [_, high] = pipe_edges(&mut direct, "Joined");
@@ -423,12 +430,21 @@ fn an_edge_name_is_followed_through_the_features_that_take_its_body() {
             there.contains("|F4:copy(0)/F1:face(5),F4:chamfer(0)]"),
             "{high} became {there}"
         );
-        built(
+        let message = error(
             &mut direct,
             "feature.fillet",
             json!({"edges": [there], "radius": 2.0 * k, "name": "Round"}),
         );
-        let expected = body(&mut direct, "Round");
+        assert!(
+            message.contains("holds F4:chamfer(0), a blend's face"),
+            "{message}"
+        );
+        built(
+            &mut direct,
+            "feature.fillet",
+            json!({"edges": [[TOP, WALL]], "radius": 2.0 * k, "name": "Round"}),
+        );
+        let both = body(&mut direct, "Round");
         let mut s = session();
         plate_with_pipe(&mut s, k, 16.0);
         built(
@@ -441,13 +457,15 @@ fn an_edge_name_is_followed_through_the_features_that_take_its_body() {
         run(&mut s, "history.rollback", json!({"feature": null}));
         assert_eq!(feature(&mut s, "Round")["status"], "ok");
         let round = body(&mut s, "Round");
-        // The same body (the features' ids differ: the chamfer came in
-        // later here).
-        assert_eq!(round["volume"], expected["volume"]);
-        assert_eq!(round["area"], expected["area"]);
+        assert_rel(
+            round["volume"].as_f64().unwrap(),
+            both["volume"].as_f64().unwrap() - (rounded - v0) * k * k * k,
+            1e-9,
+            "the round followed through the chamfer",
+        );
         assert_eq!(
-            round["faceNames"].as_array().unwrap().len(),
-            expected["faceNames"].as_array().unwrap().len()
+            round["faceNames"].as_array().unwrap().len() + 1,
+            both["faceNames"].as_array().unwrap().len()
         );
         assert!(centroid_y(&mut s, "Round") > 20.0 * k * (1.0 + 1e-9));
         common::checked::deep(&mut s);
@@ -1247,8 +1265,8 @@ fn a_name_that_lists_a_face_numbered_by_place_is_refused_since_an_edit_could_mov
         );
         assert!(
             message.contains("edges.0")
-                && message.contains("holds F9:copy(0)/F6:fillet(0,0)")
-                && message.contains("numbered by where it lies in space"),
+                && message.contains("holds F9:copy(0)/F6:fillet(0,0), a blend's face")
+                && message.contains("not proven to stay with its entity"),
             "{message}"
         );
     }
@@ -1262,7 +1280,7 @@ fn a_name_that_lists_a_face_numbered_by_place_is_refused_since_an_edit_could_mov
     );
     assert!(
         message.contains("edges.0")
-            && message.contains("numbered by where it lies in space")
+            && message.contains("holds F6:fillet(0,0), a blend's face")
             && message.contains("as the face its first size is measured along"),
         "{message}"
     );
@@ -1326,12 +1344,8 @@ fn names_numbered_by_how_they_were_made_follow_their_entity_through_the_edit_tha
     assert!(zero.ends_with("(0)") && line["start"][1].as_f64().unwrap() < 0.0);
     let alias = line["aliases"][0].as_str().unwrap().to_string();
     assert!(alias.ends_with(":lateralEdge(e6,e4)"), "{alias}");
-    assert!(
-        !alias
-            .parse::<craft3d_doc::PersistentName>()
-            .unwrap()
-            .depends_on_place()
-    );
+    // Taken: every part of it is of a kind proven to be identity (the
+    // fillet refuses it otherwise).
     built(
         &mut s,
         "feature.fillet",
@@ -1388,12 +1402,8 @@ fn names_numbered_by_how_they_were_made_follow_their_entity_through_the_edit_tha
         json!({"op": "union", "target": "Plate", "tool": "Pins", "name": "Joined"}),
     );
     let foot = edge_between(&mut s, "Joined", "F1:face(1)", "copy(1,1)/F2:face(0)");
-    assert!(
-        !foot
-            .parse::<craft3d_doc::PersistentName>()
-            .unwrap()
-            .depends_on_place()
-    );
+    // Taken: a name by faces without a number, whose faces are copies of
+    // a primitive's (the fillet refuses it otherwise).
     built(
         &mut s,
         "feature.fillet",
@@ -1612,10 +1622,12 @@ fn edge_names_through_a_blend_that_uses_a_face_up_are_followed_or_refused() {
     // what is left of the end, and its two edges along y = 10 (the first
     // round's border and the second's) become one edge between the two
     // rounds, which the kernel reports as made. Named as `First`'s body
-    // has them: the first round's border on the end, and the end's top
-    // edge (taken whole), are gone after `Second`, and say so; the top's
-    // edge at x = 0, which the rounds do not touch, is followed to the
-    // edge `Second` kept of it and rounded 2 by that name. The two rounds
+    // has them: the first round's border on the end lists that round's
+    // face, which is not proven to stay with its entity, and is refused;
+    // the end's top edge (taken whole) is gone after `Second`, and says
+    // so; the top's edge at x = 0, which the rounds do not touch, is
+    // followed to the edge `Second` kept of it and rounded 2 by that
+    // name. The two rounds
     // leave the section 80 x 20 less two spandrels (1 - pi/4) 100, along
     // 20; the third takes (1 - pi/4) 4 along 20.
     let spandrel = 1.0 - PI / 4.0;
@@ -1650,23 +1662,27 @@ fn edge_names_through_a_blend_that_uses_a_face_up_are_followed_or_refused() {
                 .any(|n| n.ends_with("F1:face(5)")),
             "the end is used up: {second}"
         );
-        for (name, what) in [
-            (&border, "the first round's border"),
-            (&end_top, "the end's top edge"),
-        ] {
-            let reason = failed(
-                &mut s,
-                "feature.fillet",
-                json!({"edges": [name], "radius": 1.0 * k, "name": "Gone"}),
-            );
-            assert!(
-                reason.contains("edges.0")
-                    && reason.contains("is gone")
-                    && reason.contains("`Second`"),
-                "{what}: {reason}"
-            );
-            run(&mut s, "feature.delete", json!({"feature": "Gone"}));
-        }
+        // The first round's border lists that round's face, a blend's
+        // face: refused as it is given, before it could be followed.
+        let message = error(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": [border], "radius": 1.0 * k, "name": "Gone"}),
+        );
+        assert!(
+            message.contains("edges.0") && message.contains("holds F2:fillet(0), a blend's face"),
+            "the first round's border: {message}"
+        );
+        let reason = failed(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": [end_top], "radius": 1.0 * k, "name": "Gone"}),
+        );
+        assert!(
+            reason.contains("edges.0") && reason.contains("is gone") && reason.contains("`Second`"),
+            "the end's top edge: {reason}"
+        );
+        run(&mut s, "feature.delete", json!({"feature": "Gone"}));
         built(
             &mut s,
             "feature.fillet",
@@ -1720,4 +1736,261 @@ fn a_pair_that_lists_a_blend_face_numbered_by_place_follows_that_face() {
         json!({"name": "turn", "expr": "180 deg"}),
     );
     assert!(side(&mut s) > 0.0, "the pair stayed with the place");
+}
+
+// ---------------------------------------------------------------------
+// Only names proven to stay with their entity
+
+/// The middle of the edge of `feature`'s body that is called `name` (its
+/// own name or an alias).
+fn middle_of(session: &mut Session, feature: &str, name: &str) -> [f64; 3] {
+    let listed = run(session, "document.edges", json!({"feature": feature}));
+    let edge = listed["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| {
+            e["name"] == name
+                || e["aliases"]
+                    .as_array()
+                    .is_some_and(|aliases| aliases.iter().any(|a| a == name))
+        })
+        .unwrap_or_else(|| panic!("no {name}: {listed}"))
+        .clone();
+    [0, 1, 2].map(|i| 0.5 * (edge["start"][i].as_f64().unwrap() + edge["end"][i].as_f64().unwrap()))
+}
+
+#[test]
+fn a_name_that_lists_a_blend_face_is_refused_since_leaving_out_a_reference_renumbers_it() {
+    // A base 100 x 40 x 10 with a slot 10 wide and 5 deep across its top
+    // at x 40..50 while `slot` is 1, and a chamfer 1 of two edges of the
+    // top by pairs: the slot's wall at x = 40 (reference 0) and the end at
+    // x = 0 (reference 1). A blend's face is numbered by its reference's
+    // place among those that are there: `chamfer(0)` is the slot's, x
+    // 39..40, and the line between the top and it lies at x = 39. With
+    // `slot` 0 the cutter is off, reference 0 names a face that is not
+    // there and is left out, and `chamfer(0)` is the end's, x 0..1: the
+    // same name is the line at x = 1, without any failure. A round by
+    // that name would move with it; it is refused, by the command and in
+    // a file, naming the blend's face.
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    run(&mut s, "variable.set", json!({"name": "slot", "expr": "1"}));
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [100, 40, 10], "position": [0, 0, 0], "name": "Base"}),
+    );
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [10, 42, 6], "position": [40, -1, 5], "name": "Cutter", "when": "slot"}),
+    );
+    built(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Base", "tool": "Cutter", "name": "Slotted"}),
+    );
+    built(
+        &mut s,
+        "feature.chamfer",
+        json!({"edges": [["F3:copy(1)/F2:face(4)", "F1:face(1)"], ["F1:face(1)", "F1:face(4)"]],
+               "distance": 1, "name": "Bevel"}),
+    );
+    let name = "F4:between[F4:copy(0)/F1:face(1),F4:chamfer(0)]";
+    let at = middle_of(&mut s, "Bevel", name);
+    assert!(
+        (at[0] - 39.0).abs() < 1e-9 && (at[2] - 10.0).abs() < 1e-9,
+        "{at:?}"
+    );
+    run(&mut s, "variable.set", json!({"name": "slot", "expr": "0"}));
+    assert_eq!(feature(&mut s, "Bevel")["status"], "ok");
+    let at = middle_of(&mut s, "Bevel", name);
+    assert!(
+        (at[0] - 1.0).abs() < 1e-9 && (at[2] - 10.0).abs() < 1e-9,
+        "the name moved to the end's line: {at:?}"
+    );
+    run(&mut s, "variable.set", json!({"name": "slot", "expr": "1"}));
+    let message = error(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [name], "radius": 0.3, "name": "Round"}),
+    );
+    assert!(
+        message.contains("edges.0")
+            && message.contains("holds F4:chamfer(0), a blend's face")
+            && message.contains("not proven to stay with its entity"),
+        "{message}"
+    );
+    // The pair of the line's faces is taken as it always was (and moves
+    // with the number as it always did: docs/decisions.md, D-open-22).
+    built(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [["F4:copy(0)/F1:face(1)", "F4:chamfer(0)"]], "radius": 0.3,
+               "name": "Round"}),
+    );
+    // A file another program wrote with the round by that name: the
+    // feature fails with the same reason at every regeneration.
+    let dir = common::workdir("edge-names", "blend-face");
+    let path = dir.join("slot.3dcraft");
+    let mut s = Session::new(Workspace {
+        read: Access::Root(dir.clone()),
+        write: Access::Root(dir.clone()),
+    });
+    new_document(&mut s, 1.0);
+    run(&mut s, "variable.set", json!({"name": "slot", "expr": "1"}));
+    for (id, params) in [
+        (
+            "feature.block",
+            json!({"size": [100, 40, 10], "position": [0, 0, 0], "name": "Base"}),
+        ),
+        (
+            "feature.block",
+            json!({"size": [10, 42, 6], "position": [40, -1, 5], "name": "Cutter", "when": "slot"}),
+        ),
+        (
+            "feature.boolean",
+            json!({"op": "subtract", "target": "Base", "tool": "Cutter", "name": "Slotted"}),
+        ),
+        (
+            "feature.chamfer",
+            json!({"edges": [["F3:copy(1)/F2:face(4)", "F1:face(1)"], ["F1:face(1)", "F1:face(4)"]],
+                   "distance": 1, "name": "Bevel"}),
+        ),
+    ] {
+        built(&mut s, id, params);
+    }
+    run(
+        &mut s,
+        "file.save",
+        json!({"path": path.to_str().unwrap(), "overwrite": true}),
+    );
+    let mut doc = craft3d_format::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+    doc.add_feature(
+        Some("Round"),
+        craft3d_doc::FeatureKind::Fillet(craft3d_doc::Fillet {
+            edges: vec![craft3d_doc::EdgeRef::Edge {
+                edge: name.parse().unwrap(),
+                first: None,
+            }],
+            radius: craft3d_doc::Expr::new("0.3 mm"),
+            chain: false,
+        }),
+    )
+    .unwrap();
+    std::fs::write(&path, craft3d_format::to_bytes(&doc).unwrap()).unwrap();
+    run(&mut s, "file.open", json!({"path": path.to_str().unwrap()}));
+    for slot in ["1", "0"] {
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "slot", "expr": slot}),
+        );
+        let reason = failure(&mut s, "Round");
+        assert!(
+            reason.starts_with("edges.0: ")
+                && reason.contains("holds F4:chamfer(0), a blend's face"),
+            "slot {slot}: {reason}"
+        );
+    }
+}
+
+#[test]
+fn an_edge_of_a_lump_a_split_chose_by_where_it_lies_is_refused() {
+    use craft3d_doc::FeatureKind;
+    // A base 100 x 40 x 10 cut through across x 40..50: two lumps, each
+    // with an end of its own. Split, and then (as another program may
+    // write it) each split told by the top, which both lumps hold pieces
+    // of, and its number by where the lumps lie: an edit that moves the
+    // lumps past each other gives each split the other lump, and an edge
+    // named in it the other edge. So an edge given in that body, written
+    // in its name or followed into it, is refused.
+    let dir = common::workdir("edge-names", "split-by-place");
+    let path = dir.join("lumps.3dcraft");
+    let mut s = Session::new(Workspace {
+        read: Access::Root(dir.clone()),
+        write: Access::Root(dir.clone()),
+    });
+    new_document(&mut s, 1.0);
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [100, 40, 10], "position": [0, 0, 0], "name": "Base"}),
+    );
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [10, 42, 12], "position": [40, -1, -1], "name": "Cutter"}),
+    );
+    built(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Base", "tool": "Cutter", "name": "Cut"}),
+    );
+    // The top edge of the end x = 0, as the cut names it.
+    let listed = run(&mut s, "document.edges", json!({"feature": "Cut"}));
+    let cut_name: Vec<String> = listed["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| {
+            e["faces"] == json!(["F3:copy(0)/F1:face(1)", "F3:copy(0)/F1:face(4)"])
+                || e["faces"] == json!(["F3:copy(0)/F1:face(4)", "F3:copy(0)/F1:face(1)"])
+        })
+        .map(|e| e["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(cut_name.len(), 1, "{listed}");
+    run(&mut s, "body.split", json!({"source": "Cut"}));
+    run(
+        &mut s,
+        "file.save",
+        json!({"path": path.to_str().unwrap(), "overwrite": true}),
+    );
+    let mut doc = craft3d_format::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+    let mut number = 0;
+    for feature in &mut doc.features {
+        if let FeatureKind::Split(split) = &mut feature.kind {
+            split.face = "F3:copy(0)/F1:face(1)".parse().unwrap();
+            split.number = Some(number);
+            number += 1;
+        }
+    }
+    assert_eq!(number, 2);
+    std::fs::write(&path, craft3d_format::to_bytes(&doc).unwrap()).unwrap();
+    run(&mut s, "file.open", json!({"path": path.to_str().unwrap()}));
+    // Number 0 is the lump nearer x = 0: the first split, F4.
+    let listed = run(&mut s, "document.edges", json!({"feature": "F4"}));
+    let end_top: Vec<String> = listed["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| {
+            e["faces"] == json!(["F4:copy(0)/F1:face(1)", "F4:copy(0)/F1:face(4)"])
+                || e["faces"] == json!(["F4:copy(0)/F1:face(4)", "F4:copy(0)/F1:face(1)"])
+        })
+        .map(|e| e["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(end_top.len(), 1, "{listed}");
+    let message = error(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [end_top[0]], "radius": 1, "name": "Round"}),
+    );
+    assert!(
+        message.contains("edges.0") && message.contains("grown from the split"),
+        "{message}"
+    );
+    // The same edge as the cut named it, which names no split: taken by
+    // the command, and refused when regeneration follows it into the
+    // split's body.
+    let reason = failed(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [cut_name[0]], "radius": 1, "name": "Round"}),
+    );
+    assert!(
+        reason.starts_with("edges.0: ") && reason.contains("grown from the split"),
+        "{reason}"
+    );
 }

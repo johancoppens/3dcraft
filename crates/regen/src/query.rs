@@ -10,7 +10,8 @@
 //! is made of the same two faces: `crate::entity`.)
 
 use crate::Names;
-use craft3d_doc::PersistentName;
+use craft3d_doc::identity;
+use craft3d_doc::{Document, PersistentName};
 use craft3d_topo::{Body, EdgeId, FaceId};
 
 /// The faces of `body` called `name`, by their own name or an alias (the
@@ -59,39 +60,22 @@ pub fn ambiguous_cap(names: &Names, name: &PersistentName) -> Option<String> {
     ))
 }
 
-/// Why a name with a part numbered by place
-/// ([`PersistentName::place_part`]) does not name an entity a feature
-/// keeps: the number says where something lies in space, and an edit that
-/// keeps the tied entities and changes their order moves it to another
-/// one without any failure. `name` is that name and `part` the part.
-fn place_reason(name: &PersistentName, part: &PersistentName) -> String {
-    let inner = part.place_link().unwrap_or(part);
-    if part == name && inner == name && name.role.is_by_faces() {
-        format!(
-            "{name} tells its entity from the others on the same faces only by where it lies in space (the number at its end), which an edit can move to another one without any failure"
-        )
-    } else if inner.role == craft3d_doc::NameRole::Rim {
-        format!(
-            "{name} holds the plate's rim {part}, named by a hash of the name of the sheet's edge, which may be numbered by where it lies in space and cannot be read back, so an edit may move it to another rim without any failure"
-        )
-    } else {
-        format!(
-            "{name} holds {part}, which is numbered by where it lies in space, and an edit can move that number to another entity without any failure, so the name can come to mean another one"
-        )
-    }
-}
-
 /// Why a chamfer or a fillet (`noun`) does not take `name`, an edge's
-/// name with a part numbered by place ([`PersistentName::place_part`]),
-/// and what names that edge instead: another name of it that is wholly by
-/// how it was made (an alias it kept from a body before); when there is
-/// none, it says so, and that the pair of its faces takes every edge
-/// between them. `at` is the body the name is of and its names, when they
-/// are there.
-pub fn numbered_edge(name: &PersistentName, noun: &str, at: Option<(&Body, &Names)>) -> String {
-    let why = match name.place_part() {
-        Some(part) => place_reason(name, part),
-        None => format!("{name} is numbered by place"),
+/// name with something not proven to identify its entity
+/// (`craft3d_doc::identity::unproven`), and what names that edge
+/// instead: another name of it that is wholly proven (an alias it kept
+/// from a body before); when there is none, it says so, and that the pair
+/// of its faces takes every edge between them. `at` is the body the name
+/// is of and its names, when they are there.
+pub fn numbered_edge(
+    doc: &Document,
+    name: &PersistentName,
+    noun: &str,
+    at: Option<(&Body, &Names)>,
+) -> String {
+    let why = match identity::unproven(doc, name) {
+        Some(found) => found.reason(doc, name),
+        None => format!("{name} is not proven"),
     };
     let why = format!("{why}; a {noun} does not take it");
     let Some((body, names)) = at else {
@@ -107,7 +91,7 @@ pub fn numbered_edge(name: &PersistentName, noun: &str, at: Option<(&Body, &Name
     let other: Vec<String> = names
         .edge_names_of(index)
         .into_iter()
-        .filter(|alias| alias != name && !alias.depends_on_place())
+        .filter(|alias| alias != name && identity::unproven(doc, alias).is_none())
         .map(|alias| format!("\"{alias}\""))
         .collect();
     if !other.is_empty() {
@@ -136,16 +120,16 @@ pub fn numbered_edge(name: &PersistentName, noun: &str, at: Option<(&Body, &Name
 }
 
 /// Why a chamfer or a fillet (`noun`) does not take `face` with an edge
-/// as the face its first size is measured along: a part of the name is
-/// numbered by place ([`PersistentName::place_part`]), so an edit could
-/// turn the sizes round without any failure.
-pub fn numbered_face(face: &PersistentName, noun: &str) -> String {
-    let why = match face.place_part() {
-        Some(part) => place_reason(face, part),
-        None => format!("{face} is numbered by place"),
+/// as the face its first size is measured along: a part of its name is
+/// not proven to identify its entity, so an edit could turn the sizes
+/// round without any failure.
+pub fn numbered_face(doc: &Document, face: &PersistentName, noun: &str) -> String {
+    let why = match identity::unproven(doc, face) {
+        Some(found) => found.reason(doc, face),
+        None => format!("{face} is not proven"),
     };
     format!(
-        "{why}; a {noun} does not take it as the face its first size is measured along: give that face by a name made by how it was made, or a size the same on both sides"
+        "{why}; a {noun} does not take it as the face its first size is measured along: give that face by a name proven to stay with it, or a size the same on both sides"
     )
 }
 

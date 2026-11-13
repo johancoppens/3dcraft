@@ -18,6 +18,7 @@ pub mod blob;
 pub mod datum;
 pub mod edge_ref;
 pub mod fold;
+pub mod identity;
 pub mod name;
 pub mod output;
 pub mod public;
