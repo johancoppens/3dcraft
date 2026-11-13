@@ -605,6 +605,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft3d-launcher"
+version = "0.1.1"
+dependencies = [
+ "rfd",
+]
+
+[[package]]
 name = "craft3d-math"
 version = "0.1.1"
 dependencies = [

@@ -1,0 +1,25 @@
+[package]
+name = "craft3d-launcher"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+# The program the Windows packages carry as `3DCraft.exe` (`cargo xtask
+# package`): the Start menu entry and the three file types start it, and
+# it starts `craft3d.exe` without a console window (src/lib.rs). The bin
+# has no tests of its own (they are the library's), so no test harness is
+# built for the GUI subsystem.
+[[bin]]
+name = "craft3d-launcher"
+path = "src/main.rs"
+test = false
+
+# The message box when the window could not start: the system's own on
+# Windows (rfd is in the window already, so no crate is added to the
+# packages). Elsewhere the launcher says it on standard error.
+[target.'cfg(windows)'.dependencies]
+rfd.workspace = true
