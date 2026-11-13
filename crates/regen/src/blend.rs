@@ -1,13 +1,18 @@
 //! Blends in regeneration: what chamfers and fillets share. Both replace
 //! edges of the body of an earlier feature by faces, refer to an edge by
-//! the two faces it lies between, and name what they make in one way.
+//! the two faces it lies between or by its own name, and name what they
+//! make in one way.
 //!
-//! **What a blend holds of an edge** is the names of the two faces it
-//! lies between. The names are found again at every regeneration; such a
-//! pair means every edge between the two faces, so the pieces a later cut
-//! divides an edge into stay blended, and a pair whose faces no longer
-//! meet fails the feature with the pair. With `chain` an edge stands for
-//! the edges that continue it smoothly as well.
+//! **What a blend holds of an edge** ([`EdgeRef`]) is the names of the two
+//! faces it lies between, or the edge's own name. The names are found
+//! again at every regeneration. A pair means every edge between the two
+//! faces, so the pieces a later cut divides an edge into stay blended,
+//! and a pair whose faces no longer meet fails the feature with the pair.
+//! An edge's own name means the one edge that has it (or the alias), and
+//! one the body no longer has fails the feature with the name; the face
+//! given with it says which side a chamfer's first size is measured on.
+//! With `chain` an edge stands for the edges that continue it smoothly as
+//! well.
 //!
 //! **Names.** A face of the body that is still there is named as a copy,
 //! instance 0, of the face it was (`F9:copy(0)/F2:side(e7)`), as in every
@@ -25,7 +30,7 @@ use crate::datum::listed;
 use crate::query::{edges_between, faces_named, faces_of_edges};
 use crate::selfcheck;
 use crate::{Contributors, Kept, Names, entity};
-use craft3d_doc::{FeatureId, NameRole, PersistentName};
+use craft3d_doc::{EdgeRef, FeatureId, NameRole, PersistentName};
 use craft3d_kernel::chamfer::tangent_chain;
 use craft3d_math::BUG;
 use craft3d_math::Vec3;
@@ -42,13 +47,191 @@ pub(crate) struct Picked {
     pub reference: usize,
 }
 
+/// What a blend asks of the face an edge reference gives first.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum First {
+    /// Nothing: both sides of the edge are blended alike (a fillet, a
+    /// chamfer of one distance).
+    Either,
+    /// It is the side the first size is measured on (a chamfer of two
+    /// distances, or of a distance and an angle): an edge given by its own
+    /// name has to say which side that is.
+    Measured,
+}
+
+/// The faces `name` names in `body`, refused with the reason when they
+/// are none, several caps a short name cannot choose between, or not of
+/// the body the blend takes.
+fn checked_face(
+    name: &PersistentName,
+    role: &str,
+    noun: &str,
+    source: FeatureId,
+    names: &Names,
+    made_by: &str,
+) -> Result<Vec<FaceId>, String> {
+    if name.feature != source {
+        return Err(format!(
+            "{role}: {name} is a face of {}, and the first edge is of `{made_by}`; one {noun} takes edges of one body",
+            name.feature
+        ));
+    }
+    if let Some(why) = crate::query::ambiguous_cap(names, name) {
+        return Err(format!("{role}: {why}"));
+    }
+    Ok(faces_named(names, name))
+}
+
+/// The one edge of `body` the reference by its own name `edge` means,
+/// with the face of it that answers to `first` (or, when none is given
+/// and `measured` does not ask for one, the first of its faces).
+#[allow(clippy::too_many_arguments)]
+fn named_edge(
+    edge: &PersistentName,
+    first: Option<&PersistentName>,
+    measured: First,
+    role: &str,
+    noun: &str,
+    source: FeatureId,
+    names: &Names,
+    users: &[Vec<FaceId>],
+    made_by: &str,
+) -> Result<(EdgeId, FaceId), String> {
+    if !edge.is_edge() {
+        return Err(format!(
+            "{role}: {edge} is not an edge; an edge is referred to by its own name (document.edges lists it under name) or by the two faces it lies between"
+        ));
+    }
+    if edge.feature != source {
+        return Err(format!(
+            "{role}: {edge} is an edge of {}, and the first edge is of `{made_by}`; one {noun} takes edges of one body",
+            edge.feature
+        ));
+    }
+    let Some(index) = names.edge_named(edge) else {
+        return Err(format!(
+            "{role}: `{made_by}` has no edge {edge} (any more); document.edges lists its edges"
+        ));
+    };
+    let (Ok(id), Some(sides)) = (u32::try_from(index), users.get(index)) else {
+        return Err(format!(
+            "{BUG}: {role}: the edge {edge} of `{made_by}` is not in its body"
+        ));
+    };
+    let face_list = || {
+        sides
+            .iter()
+            .filter_map(|face| names.faces.get(face.0 as usize))
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let first_face = match first {
+        Some(face) => {
+            if !face.is_face() {
+                return Err(format!(
+                    "{role}: {face} is not a face; after an edge's name comes the face of it the first distance is measured along"
+                ));
+            }
+            let named = checked_face(face, role, noun, source, names, made_by)?;
+            let Some(side) = sides.iter().copied().find(|side| named.contains(side)) else {
+                return Err(format!(
+                    "{role}: {face} is not a face of the edge {edge}; its faces are: {}",
+                    face_list()
+                ));
+            };
+            side
+        }
+        None if measured == First::Measured => {
+            return Err(format!(
+                "{role}: a {noun} whose two sides differ measures its first size along one face of the edge: give the edge with that face, [\"{edge}\", face] (its faces: {})",
+                face_list()
+            ));
+        }
+        None => {
+            let Some(side) = sides.first().copied() else {
+                return Err(format!(
+                    "{role}: the edge {edge} of `{made_by}` lies on no face"
+                ));
+            };
+            side
+        }
+    };
+    Ok((EdgeId(id), first_face))
+}
+
+/// The edges the pair of faces `[a, b]` means in `body` (every edge
+/// between them), each with its face that answers to `a`.
+#[allow(clippy::too_many_arguments)]
+fn edges_of_pair(
+    a: &PersistentName,
+    b: &PersistentName,
+    role: &str,
+    noun: &str,
+    source: FeatureId,
+    body: &Body,
+    names: &Names,
+    users: &[Vec<FaceId>],
+    made_by: &str,
+) -> Result<Vec<(EdgeId, FaceId)>, String> {
+    for face in [a, b] {
+        if !face.is_face() {
+            return Err(format!(
+                "{role}: {face} is not a face; an edge is referred to by the two faces it lies between, or by its own name alone (or followed by the face its first distance is measured along)"
+            ));
+        }
+    }
+    let first = checked_face(a, role, noun, source, names, made_by)?;
+    let second = checked_face(b, role, noun, source, names, made_by)?;
+    // A reference of two names says every one of them that is gone.
+    let gone: Vec<String> = [(a, &first), (b, &second)]
+        .into_iter()
+        .filter(|(_, found)| found.is_empty())
+        .map(|(face, _)| format!("a face {face}"))
+        .collect();
+    if !gone.is_empty() {
+        return Err(format!(
+            "{role}: `{made_by}` no longer has {}; its faces are: {}",
+            gone.join(", nor "),
+            listed(&names.faces)
+        ));
+    }
+    if first == second {
+        return Err(format!(
+            "{role}: {a} and {b} are one face; an edge to {noun} lies between two"
+        ));
+    }
+    let found = edges_between(body, names, a, b);
+    if found.is_empty() {
+        return Err(format!(
+            "{role}: the faces {a} and {b} of `{made_by}` do not meet in an edge (any more)"
+        ));
+    }
+    Ok(found
+        .into_iter()
+        .filter_map(|edge| {
+            // The face of the edge that answers to the first name.
+            let first_face = users
+                .get(edge.0 as usize)
+                .into_iter()
+                .flatten()
+                .copied()
+                .find(|face| first.contains(face))?;
+            Some((edge, first_face))
+        })
+        .collect())
+}
+
 /// The edges the references `edges` of a blend mean in `body`; with
 /// `chain` each with the edges that continue it smoothly. `noun` is the
-/// kind of blend, in the words of what is refused.
+/// kind of blend, in the words of what is refused; `measured` says
+/// whether the face a reference gives first is the side of a size.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn pick(
-    edges: &[[PersistentName; 2]],
+    edges: &[EdgeRef],
     chain: bool,
     noun: &str,
+    measured: First,
     source: FeatureId,
     body: &Body,
     names: &Names,
@@ -56,62 +239,25 @@ pub(crate) fn pick(
 ) -> Result<Vec<Picked>, String> {
     let users = faces_of_edges(body);
     let mut picked: Vec<Picked> = Vec::new();
-    for (reference, [a, b]) in edges.iter().enumerate() {
+    for (reference, edge_ref) in edges.iter().enumerate() {
         let role = format!("edges.{reference}");
-        for face in [a, b] {
-            if !face.is_face() {
-                return Err(format!(
-                    "{role}: {face} is not a face; an edge is referred to by the two faces it lies between"
-                ));
+        let found = match edge_ref {
+            EdgeRef::Faces([a, b]) => {
+                edges_of_pair(a, b, &role, noun, source, body, names, &users, made_by)?
             }
-            if face.feature != source {
-                return Err(format!(
-                    "{role}: {face} is a face of {}, and the first edge is of `{made_by}`; one {noun} takes edges of one body",
-                    face.feature
-                ));
-            }
-        }
-        for face in [a, b] {
-            if let Some(why) = crate::query::ambiguous_cap(names, face) {
-                return Err(format!("{role}: {why}"));
-            }
-        }
-        let (first, second) = (faces_named(names, a), faces_named(names, b));
-        // A reference of two names says every one of them that is gone.
-        let gone: Vec<String> = [(a, &first), (b, &second)]
-            .into_iter()
-            .filter(|(_, found)| found.is_empty())
-            .map(|(face, _)| format!("a face {face}"))
-            .collect();
-        if !gone.is_empty() {
-            return Err(format!(
-                "{role}: `{made_by}` no longer has {}; its faces are: {}",
-                gone.join(", nor "),
-                listed(&names.faces)
-            ));
-        }
-        if first == second {
-            return Err(format!(
-                "{role}: {a} and {b} are one face; an edge to {noun} lies between two"
-            ));
-        }
-        let found = edges_between(body, names, a, b);
-        if found.is_empty() {
-            return Err(format!(
-                "{role}: the faces {a} and {b} of `{made_by}` do not meet in an edge (any more)"
-            ));
-        }
-        for edge in found {
-            // The face of the edge that answers to the first name.
-            let Some(first_face) = users
-                .get(edge.0 as usize)
-                .into_iter()
-                .flatten()
-                .copied()
-                .find(|face| first.contains(face))
-            else {
-                continue;
-            };
+            EdgeRef::Edge { edge, first } => vec![named_edge(
+                edge,
+                first.as_ref(),
+                measured,
+                &role,
+                noun,
+                source,
+                names,
+                &users,
+                made_by,
+            )?],
+        };
+        for (edge, first_face) in found {
             let members = if chain {
                 tangent_chain(body, edge, first_face)
                     .map_err(|e| format!("{role}: {e}"))?
@@ -130,7 +276,8 @@ pub(crate) fn pick(
                     }
                     Some(earlier) => {
                         return Err(format!(
-                            "{role}: the edge between {a} and {b} is the edge of edges.{} too",
+                            "{role}: {} is the edge of edges.{} too",
+                            edge_ref.describe(),
                             earlier.reference
                         ));
                     }
@@ -144,6 +291,16 @@ pub(crate) fn pick(
         }
     }
     Ok(picked)
+}
+
+/// The reference at `index` of `edges` as reasons name it:
+/// `edges.0 (between a and b)`, `edges.1 (the edge e)`.
+pub(crate) fn role_of(edges: &[EdgeRef], index: usize) -> String {
+    match edges.get(index) {
+        Some(EdgeRef::Faces([a, b])) => format!("edges.{index} (between {a} and {b})"),
+        Some(EdgeRef::Edge { edge, .. }) => format!("edges.{index} (the edge {edge})"),
+        None => format!("edges.{index}"),
+    }
 }
 
 /// Per picked edge, the numbers of its blend face's name: its

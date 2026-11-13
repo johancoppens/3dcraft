@@ -955,22 +955,24 @@ pub enum FeatureKind {
     },
     /// Edges of the body of an earlier feature replaced by faces. Each
     /// edge is the two faces it lies between, the first distance being
-    /// measured along the first; the body is that of the feature the first
-    /// name starts with. With `chain` each edge stands for the edges that
-    /// continue it smoothly as well.
+    /// measured along the first, or the edge by its own name ([`EdgeRef`]);
+    /// the body is that of the feature the first name starts with. With
+    /// `chain` each edge stands for the edges that continue it smoothly
+    /// as well.
     Chamfer {
-        edges: Vec<[Name; 2]>,
+        edges: Vec<EdgeRef>,
         size: ChamferSize,
         #[serde(default)]
         chain: bool,
     },
     /// Edges of the body of an earlier feature replaced by faces tangent
     /// to both their neighbours, with one radius. Each edge is the two
-    /// faces it lies between; the body is that of the feature the first
-    /// name starts with. With `chain` each edge stands for the edges that
-    /// continue it smoothly as well.
+    /// faces it lies between, or the edge by its own name ([`EdgeRef`]);
+    /// the body is that of the feature the first name starts with. With
+    /// `chain` each edge stands for the edges that continue it smoothly
+    /// as well.
     Fillet {
-        edges: Vec<[Name; 2]>,
+        edges: Vec<EdgeRef>,
         radius: String,
         #[serde(default)]
         chain: bool,
@@ -1890,6 +1892,53 @@ pub struct Name {
     /// any: the faces it is named by. Absent for every other role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub faces: Option<Box<NameFaces>>,
+}
+
+/// One edge a chamfer or a fillet refers to: the two faces it lies
+/// between, which means every edge between them (`[face, face]`, every
+/// format version), or one edge by its own name (`{"edge": name}`, with
+/// `"first": face` when a face is given with it; format version 70).
+/// Read strictly: a list of exactly two names, or an object of those two
+/// fields, nothing else.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum EdgeRef {
+    Faces([Name; 2]),
+    Edge(NamedEdge),
+}
+
+/// One edge by its own name, and the face of it a chamfer's first
+/// distance is measured along when one is given.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NamedEdge {
+    pub edge: Name,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first: Option<Name>,
+}
+
+impl<'de> Deserialize<'de> for EdgeRef {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = EdgeRef;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("two face names, or {\"edge\": name, \"first\": face name}")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, seq: A) -> Result<EdgeRef, A::Error> {
+                <[Name; 2]>::deserialize(serde::de::value::SeqAccessDeserializer::new(seq))
+                    .map(EdgeRef::Faces)
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<EdgeRef, A::Error> {
+                NamedEdge::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                    .map(EdgeRef::Edge)
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
 /// The faces an edge or a vertex is named by.

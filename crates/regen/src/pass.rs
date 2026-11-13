@@ -38,7 +38,9 @@
 
 use crate::derive::source_body;
 use crate::{FeatureResult, Names, Status};
-use craft3d_doc::{BooleanOp, Document, Expr, Feature, FeatureId, FeatureKind, PersistentName};
+use craft3d_doc::{
+    BooleanOp, Document, EdgeRef, Expr, Feature, FeatureId, FeatureKind, PersistentName,
+};
 use craft3d_expr::Evaluation;
 use craft3d_math::Transform;
 use craft3d_topo::Body;
@@ -396,12 +398,12 @@ pub(crate) fn nothing_left(
         return None;
     }
     let stated = doc.feature(feature.id).unwrap_or(feature);
-    let pairs = |built: &[[PersistentName; 2]], given: &[[PersistentName; 2]]| {
+    let pairs = |built: &[EdgeRef], given: &[EdgeRef]| {
         (built.is_empty() && !given.is_empty())
             .then(|| {
                 given
                     .iter()
-                    .flatten()
+                    .flat_map(EdgeRef::names)
                     .find_map(|name| absent_name(doc, earlier, name))
             })
             .flatten()
@@ -469,8 +471,8 @@ pub(crate) fn stand_in(
         return Ok(None);
     };
     let first = match &stated.kind {
-        FeatureKind::Chamfer(c) => c.edges.first().map(|[a, _]| a),
-        FeatureKind::Fillet(f) => f.edges.first().map(|[a, _]| a),
+        FeatureKind::Chamfer(c) => c.edges.first().map(EdgeRef::lead),
+        FeatureKind::Fillet(f) => f.edges.first().map(EdgeRef::lead),
         FeatureKind::OffsetFace(o) => o.faces.first(),
         FeatureKind::MoveFace(m) => m.faces.first(),
         FeatureKind::DeleteFace(d) => d.faces.first(),
@@ -613,15 +615,16 @@ pub fn left_out(doc: &Document, results: &[FeatureResult], id: FeatureId) -> Vec
     out
 }
 
-/// [`left_out`] for the pairs of faces edges are named by.
+/// [`left_out`] for the edges of a blend: a pair of faces as `a / b`, an
+/// edge by its own name as its name (`edge / face` with a face).
 fn pairs_left_out(
-    edges: &[[PersistentName; 2]],
+    edges: &[EdgeRef],
     gone: &dyn Fn(&PersistentName) -> Option<String>,
     out: &mut Vec<(String, String)>,
 ) {
-    for [a, b] in edges {
-        if let Some(why) = gone(a).or_else(|| gone(b)) {
-            out.push((format!("{a} / {b}"), why));
+    for reference in edges {
+        if let Some(why) = reference.names().into_iter().find_map(gone) {
+            out.push((reference.written(), why));
         }
     }
 }

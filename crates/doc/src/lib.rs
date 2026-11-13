@@ -16,6 +16,7 @@ pub mod assembly;
 pub mod assertion;
 pub mod blob;
 pub mod datum;
+pub mod edge_ref;
 pub mod fold;
 pub mod name;
 pub mod output;
@@ -42,6 +43,7 @@ pub use datum::{
     AxisBy, AxisRef, DatumAxis, DatumHelix, DatumPlane, DatumPoint, HelixExtent, HelixStart,
     PlaneBy, PlaneRef, PointRef, WorldAxis,
 };
+pub use edge_ref::EdgeRef;
 pub use fold::{Crease, CreaseKind, Fold, FoldPanels, MAX_FOLD_CREASES, PanelSide};
 pub use name::{
     CurveIndex, CurvePath, CurveRef, FaceLists, GlyphContour, MAX_CURVE_ENTITY, MAX_CURVE_INDEX,
@@ -1054,14 +1056,16 @@ impl ChamferSize {
 /// faces next to each edge are cut back and a new face joins the cut
 /// lines. The body goes into this feature.
 ///
-/// An edge is referred to by the names of the two faces it lies between,
-/// in the order that says which face the first distance is measured
-/// along. Such a reference means every edge between those two faces (the
-/// pieces a later cut divides an edge into stay chamfered). All faces are
-/// faces of one body: the feature the first name starts with.
+/// An edge is referred to ([`EdgeRef`]) by the names of the two faces it
+/// lies between, in the order that says which face the first distance is
+/// measured along: such a reference means every edge between those two
+/// faces (the pieces a later cut divides an edge into stay chamfered). Or
+/// by the edge's own name, which means that one edge, with the face its
+/// first distance is measured along when the two sides differ. All are
+/// of one body: the feature the first name starts with.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Chamfer {
-    pub edges: Vec<[PersistentName; 2]>,
+    pub edges: Vec<EdgeRef>,
     pub size: ChamferSize,
     /// With each edge, the edges that continue it smoothly (the whole rim
     /// of a slot from one of its edges).
@@ -1071,9 +1075,10 @@ pub struct Chamfer {
 
 impl Chamfer {
     /// The feature whose body is chamfered: the one that made the first
-    /// face referred to. `None` for a chamfer without edges.
+    /// face or the edge referred to first. `None` for a chamfer without
+    /// edges.
     pub fn source(&self) -> Option<FeatureId> {
-        self.edges.first().map(|[first, _]| first.feature)
+        self.edges.first().map(|edge| edge.lead().feature)
     }
 }
 
@@ -1086,11 +1091,12 @@ pub const MAX_FILLET_EDGES: usize = 1024;
 /// goes into this feature.
 ///
 /// An edge is referred to as a chamfer refers to it (see [`Chamfer`]):
-/// by the names of the two faces it lies between. Their order says
-/// nothing here, since a fillet treats both faces alike.
+/// by the names of the two faces it lies between, or by its own name.
+/// The order of the faces says nothing here, since a fillet treats both
+/// faces alike.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fillet {
-    pub edges: Vec<[PersistentName; 2]>,
+    pub edges: Vec<EdgeRef>,
     pub radius: Expr,
     /// With each edge, the edges that continue it smoothly (the whole rim
     /// of a slot from one of its edges).
@@ -1100,9 +1106,10 @@ pub struct Fillet {
 
 impl Fillet {
     /// The feature whose body is filleted: the one that made the first
-    /// face referred to. `None` for a fillet without edges.
+    /// face or the edge referred to first. `None` for a fillet without
+    /// edges.
     pub fn source(&self) -> Option<FeatureId> {
-        self.edges.first().map(|[first, _]| first.feature)
+        self.edges.first().map(|edge| edge.lead().feature)
     }
 }
 
@@ -2548,7 +2555,7 @@ impl Document {
                             feature.name
                         )));
                     }
-                    chamfer.edges.iter().flatten().collect()
+                    chamfer.edges.iter().flat_map(EdgeRef::names).collect()
                 }
                 FeatureKind::Fillet(fillet) => {
                     if fillet.edges.len() > MAX_FILLET_EDGES {
@@ -2557,7 +2564,7 @@ impl Document {
                             feature.name
                         )));
                     }
-                    fillet.edges.iter().flatten().collect()
+                    fillet.edges.iter().flat_map(EdgeRef::names).collect()
                 }
                 FeatureKind::OffsetFace(OffsetFace { faces, .. })
                 | FeatureKind::MoveFace(MoveFace { faces, .. })

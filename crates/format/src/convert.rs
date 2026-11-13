@@ -1759,19 +1759,13 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 radius,
                 chain,
             }) => manifest::FeatureKind::Fillet {
-                edges: edges
-                    .iter()
-                    .map(|[first, second]| [name_to_manifest(first), name_to_manifest(second)])
-                    .collect(),
+                edges: edges.iter().map(edge_ref_to_manifest).collect(),
                 radius: expr_to_manifest(radius),
                 chain: *chain,
             },
             doc::FeatureKind::Chamfer(doc::Chamfer { edges, size, chain }) => {
                 manifest::FeatureKind::Chamfer {
-                    edges: edges
-                        .iter()
-                        .map(|[first, second]| [name_to_manifest(first), name_to_manifest(second)])
-                        .collect(),
+                    edges: edges.iter().map(edge_ref_to_manifest).collect(),
                     size: match size {
                         doc::ChamferSize::Equal { distance } => manifest::ChamferSize::Equal {
                             distance: expr_to_manifest(distance),
@@ -2395,6 +2389,30 @@ fn name_to_manifest_with(name: &doc::PersistentName, lists: bool) -> manifest::N
         of: None,
         faces: None,
     })
+}
+
+/// One edge of a chamfer or a fillet as the file writes it: the pair of
+/// faces as two names, an edge by its own name as `{"edge", "first"}`.
+fn edge_ref_to_manifest(edge: &doc::EdgeRef) -> manifest::EdgeRef {
+    match edge {
+        doc::EdgeRef::Faces([first, second]) => {
+            manifest::EdgeRef::Faces([name_to_manifest(first), name_to_manifest(second)])
+        }
+        doc::EdgeRef::Edge { edge, first } => manifest::EdgeRef::Edge(manifest::NamedEdge {
+            edge: name_to_manifest(edge),
+            first: first.as_ref().map(name_to_manifest),
+        }),
+    }
+}
+
+fn edge_ref_to_doc(edge: manifest::EdgeRef) -> doc::EdgeRef {
+    match edge {
+        manifest::EdgeRef::Faces(pair) => doc::EdgeRef::Faces(pair.map(name_to_doc)),
+        manifest::EdgeRef::Edge(manifest::NamedEdge { edge, first }) => doc::EdgeRef::Edge {
+            edge: name_to_doc(edge),
+            first: first.map(name_to_doc),
+        },
+    }
 }
 
 pub(crate) fn name_to_doc(name: manifest::Name) -> doc::PersistentName {
@@ -3822,19 +3840,13 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 radius,
                 chain,
             } => doc::FeatureKind::Fillet(doc::Fillet {
-                edges: edges
-                    .into_iter()
-                    .map(|pair| pair.map(name_to_doc))
-                    .collect(),
+                edges: edges.into_iter().map(edge_ref_to_doc).collect(),
                 radius: doc::Expr(radius),
                 chain,
             }),
             manifest::FeatureKind::Chamfer { edges, size, chain } => {
                 doc::FeatureKind::Chamfer(doc::Chamfer {
-                    edges: edges
-                        .into_iter()
-                        .map(|pair| pair.map(name_to_doc))
-                        .collect(),
+                    edges: edges.into_iter().map(edge_ref_to_doc).collect(),
                     size: match size {
                         manifest::ChamferSize::Equal { distance } => doc::ChamferSize::Equal {
                             distance: doc::Expr(distance),

@@ -77,7 +77,7 @@ pub use datum::{Datum, EdgeReference, References, references};
 pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
 pub use fold::{FlatFold, FoldAnalysis, FoldPattern, fold_analysis, fold_pattern};
-pub use follow::{follow_face, follow_face_pieces, newest_body, short_face_name};
+pub use follow::{follow_edge, follow_face, follow_face_pieces, newest_body, short_face_name};
 
 /// The feature `feature` as regeneration builds it after `earlier` (the
 /// results before it): its faces, edges and a shell's body followed to
@@ -749,8 +749,32 @@ impl Names {
         });
         made.edge_aliases = entity::Aliases::from_map(&edges, body.edges.len())?;
         made.vertex_aliases = entity::Aliases::from_map(&vertices, body.vertices.len())?;
+        // Where each edge came from, as the kernel says it: how a name of
+        // an edge of the source is followed here, whatever it is named by.
+        if kept_edges.iter().any(Option::is_some) {
+            made.edge_from = (0..body.edges.len())
+                .map(|edge| {
+                    let (instance, there) = kept_edges.get(edge).copied().flatten()?;
+                    Some((instance, u32::try_from(there).ok()?))
+                })
+                .collect();
+        }
         self.entities = Entities::ByFaces(Box::new(made));
         Ok(())
+    }
+
+    /// The edges of this body the kernel kept of edge `edge` of the body
+    /// an instance came from, for the instances `from` accepts (a
+    /// boolean's target or tool, which ever that body was): one when the
+    /// edge went on whole or shortened, several when it was cut in pieces
+    /// or went into several instances, none when it is gone, and none for
+    /// a body that does not name its edges by its faces (a body of copies
+    /// answers to the copies of the names instead).
+    pub(crate) fn edges_kept_from(&self, edge: usize, from: impl Fn(u64) -> bool) -> Vec<usize> {
+        match &self.entities {
+            Entities::ByFaces(by) => by.edges_kept_from(edge, from),
+            _ => Vec::new(),
+        }
     }
 
     /// The names of faces that are copies of the faces of an earlier body:

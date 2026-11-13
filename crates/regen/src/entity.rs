@@ -116,6 +116,11 @@ pub(crate) struct ByFaces {
     vertices: Vec<Item>,
     pub(crate) edge_aliases: Aliases,
     pub(crate) vertex_aliases: Aliases,
+    /// Per edge, the instance and the edge of that instance's source it
+    /// is, or is a piece of, when the kernel says so: what a name of the
+    /// source's edge is followed by into this body (`crate::follow`).
+    /// Empty when no edge came from another body.
+    pub(crate) edge_from: Vec<Option<(u64, u32)>>,
 }
 
 /// One edge or vertex as it is named: where its ranks are.
@@ -269,6 +274,21 @@ impl ByFaces {
                 item.start.saturating_add(u32::from(item.on)),
                 item.near,
             )
+    }
+
+    /// The edges the kernel kept of edge `edge` of the source of an
+    /// instance `from` accepts, in the body's order: one when the edge
+    /// went on whole or shortened, several when it was cut in pieces or
+    /// copied into several instances, none when it is gone.
+    pub(crate) fn edges_kept_from(&self, edge: usize, from: impl Fn(u64) -> bool) -> Vec<usize> {
+        self.edge_from
+            .iter()
+            .enumerate()
+            .filter_map(|(index, kept)| {
+                let (instance, there) = (*kept)?;
+                (there as usize == edge && from(instance)).then_some(index)
+            })
+            .collect()
     }
 
     /// The edge called `name`, by its own name.
@@ -592,6 +612,7 @@ pub(crate) fn by_faces(
         vertices,
         edge_aliases: Aliases::default(),
         vertex_aliases: Aliases::default(),
+        edge_from: Vec::new(),
     })
 }
 

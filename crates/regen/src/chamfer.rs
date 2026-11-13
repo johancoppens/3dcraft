@@ -30,10 +30,7 @@ fn explain(
 ) -> String {
     let reference = |edge: EdgeId| picked.iter().find(|p| p.edge == edge);
     let role = |edge: EdgeId| match reference(edge) {
-        Some(pick) => match chamfer.edges.get(pick.reference) {
-            Some([a, b]) => format!("edges.{} (between {a} and {b})", pick.reference),
-            None => format!("edges.{}", pick.reference),
-        },
+        Some(pick) => blend::role_of(&chamfer.edges, pick.reference),
         None => "edges".to_string(),
     };
     let face_name = |face: FaceId| {
@@ -103,8 +100,9 @@ pub(crate) fn build(
     // The feature the faces are of has to be there, earlier, and built:
     // said with the names that are lost with it, as every reference by
     // name says it. Then its body has to be its own still.
-    if let Some([first, second]) = chamfer.edges.first() {
-        named_body_of(doc, earlier, first, Some(second), "edges.0")?;
+    if let Some(edge) = chamfer.edges.first() {
+        let names = edge.names();
+        named_body_of(doc, earlier, edge.lead(), names.get(1).copied(), "edges.0")?;
     }
     let source = source_body(doc, earlier, source_id, "edges")?;
     let made_by = doc
@@ -150,10 +148,18 @@ pub(crate) fn build(
             return Err(format!("{name}: has to be more than zero, got {value}"));
         }
     }
+    // A size the same on both sides does not ask which side is first.
+    let measured = match &chamfer.size {
+        ChamferSize::Equal { .. } => blend::First::Either,
+        ChamferSize::TwoDistances { .. } | ChamferSize::DistanceAngle { .. } => {
+            blend::First::Measured
+        }
+    };
     let picked = blend::pick(
         &chamfer.edges,
         chamfer.chain,
         ROLES.noun,
+        measured,
         source_id,
         body,
         names,

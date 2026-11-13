@@ -11,8 +11,9 @@
 )]
 
 use craft3d_doc::{
-    AngleUnit, Block, ConstraintKind, Cylinder, DistanceDirection, Document, EntityId, Expr,
-    Extrude, FeatureId, FeatureKind, LengthUnit, Sketch, SketchPlane, Sphere, Units, WorldPlane,
+    AngleUnit, Block, ConstraintKind, Cylinder, DistanceDirection, Document, EdgeRef, EntityId,
+    Expr, Extrude, FeatureId, FeatureKind, LengthUnit, Sketch, SketchPlane, Sphere, Units,
+    WorldPlane,
 };
 use craft3d_format::{
     FORMAT_VERSION, FormatError, MANIFEST_NAME, MAX_FILE_BYTES, MAX_MANIFEST_BYTES, from_bytes,
@@ -168,7 +169,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 69,
+  "format_version": 70,
   "document": {
     "units": {
       "length": "mm",
@@ -1992,7 +1993,7 @@ fn image_places_are_written_like_this_and_round_trip() {
 /// true), round trips, and one that does not close is refused, not read.
 #[test]
 fn a_periodic_spline_is_written_like_this_and_round_trips() {
-    assert_eq!(FORMAT_VERSION, 69);
+    assert_eq!(FORMAT_VERSION, 70);
     let mut doc = small();
     let mut sketch = Sketch::new(SketchPlane::default());
     let p: Vec<EntityId> = [(0.0, 0.0), (4.0, 1.0), (5.0, 5.0), (1.0, 4.0)]
@@ -2012,7 +2013,7 @@ fn a_periodic_spline_is_written_like_this_and_round_trips() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 69);
+    assert_eq!(value["format_version"], 70);
     assert_eq!(
         value["document"]["features"][1]["kind"]["entities"][4]["geometry"],
         serde_json::json!({"type": "spline", "degree": 3, "control": [1, 2, 3, 4, 1], "periodic": true})
@@ -2705,7 +2706,10 @@ fn a_chamfer_is_written_like_this_and_round_trips() {
         doc.add_feature(
             Some("Bevel"),
             FeatureKind::Chamfer(Chamfer {
-                edges: vec![[face(1), face(2)], [face(5), face(1)]],
+                edges: vec![
+                    EdgeRef::Faces([face(1), face(2)]),
+                    EdgeRef::Faces([face(5), face(1)]),
+                ],
                 size,
                 chain: false,
             }),
@@ -2896,7 +2900,10 @@ fn a_fillet_is_written_like_this_and_round_trips() {
     doc.add_feature(
         Some("Round"),
         FeatureKind::Fillet(Fillet {
-            edges: vec![[face(1), face(2)], [face(5), face(1)]],
+            edges: vec![
+                EdgeRef::Faces([face(1), face(2)]),
+                EdgeRef::Faces([face(5), face(1)]),
+            ],
             radius: Expr::new("width / 20"),
             chain: false,
         }),
@@ -2951,6 +2958,108 @@ fn a_fillet_is_written_like_this_and_round_trips() {
     assert!(from_manifest_json(bare.as_bytes()).is_err());
 }
 
+/// Version 70: a fillet or a chamfer takes one edge by its own name,
+/// `{"edge": name}`, with `"first": face` when a face is given with it,
+/// beside the pair of faces, which is written as it always was. Every
+/// form round trips, and a version-69 file of pairs reads as it did.
+#[test]
+fn edges_by_their_own_names_are_written_like_this_and_round_trip() {
+    use craft3d_doc::{Chamfer, ChamferSize, Fillet, NameRole, PersistentName};
+    assert_eq!(FORMAT_VERSION, 70);
+    let face = |n: u64| PersistentName::new(FeatureId(1), NameRole::Face, vec![n]);
+    let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
+    // An edge of the fillet's body named by its faces, numbered, and a
+    // block's own edge.
+    let between: PersistentName =
+        "F2:between[F2:copy(0)/F1:face(1),F2:fillet(0)|F2:copy(0)/F1:face(4)](1)"
+            .parse()
+            .unwrap();
+    let copy_json = |n: u64| {
+        serde_json::json!({"feature": 2, "role": "copy", "sources": [0],
+            "of": {"feature": 1, "role": "face", "sources": [n]}})
+    };
+    let between_json = serde_json::json!({"feature": 2, "role": "between", "sources": [1],
+        "faces": {"on": [copy_json(1), {"feature": 2, "role": "fillet", "sources": [0]}],
+                  "near": [copy_json(4)]}});
+    let own: PersistentName = "F1:edge(4)".parse().unwrap();
+    let own_json = serde_json::json!({"feature": 1, "role": "edge", "sources": [4]});
+    let mut doc = small();
+    doc.add_feature(
+        Some("Round"),
+        FeatureKind::Fillet(Fillet {
+            edges: vec![
+                EdgeRef::Faces([face(1), face(2)]),
+                EdgeRef::Edge {
+                    edge: own.clone(),
+                    first: None,
+                },
+            ],
+            radius: Expr::new("1 mm"),
+            chain: false,
+        }),
+    )
+    .unwrap();
+    doc.add_feature(
+        Some("Bevel"),
+        FeatureKind::Chamfer(Chamfer {
+            edges: vec![
+                EdgeRef::Edge {
+                    edge: between.clone(),
+                    first: Some(face(5)),
+                },
+                EdgeRef::Edge {
+                    edge: between.clone(),
+                    first: None,
+                },
+            ],
+            size: ChamferSize::TwoDistances {
+                distance: Expr::new("2 mm"),
+                second: Expr::new("1 mm"),
+            },
+            chain: true,
+        }),
+    )
+    .unwrap();
+    assert_eq!(doc.validate(), Ok(()));
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 70);
+    let features = value["document"]["features"].as_array().unwrap();
+    let n = features.len();
+    assert_eq!(
+        features[n - 2]["kind"]["edges"],
+        serde_json::json!([[face_json(1), face_json(2)], {"edge": own_json}])
+    );
+    assert_eq!(
+        features[n - 1]["kind"]["edges"],
+        serde_json::json!([{"edge": between_json, "first": face_json(5)}, {"edge": between_json}])
+    );
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // An edge by name with a field it does not know, or a list of one, is
+    // refused, not read.
+    let unknown = json.replacen("\"edge\": {", "\"side\": 1, \"edge\": {", 1);
+    assert_ne!(unknown, json);
+    assert!(from_manifest_json(unknown.as_bytes()).is_err());
+    let mut one = value.clone();
+    one["document"]["features"][n - 2]["kind"]["edges"][0] = serde_json::json!([face_json(1)]);
+    assert!(from_manifest_json(one.to_string().as_bytes()).is_err());
+    // Version 69 knew pairs only; one reads as the same pair today.
+    let mut older = value.clone();
+    older["format_version"] = serde_json::json!(69);
+    older["document"]["features"][n - 2]["kind"]["edges"] =
+        serde_json::json!([[face_json(1), face_json(2)]]);
+    older["document"]["features"]
+        .as_array_mut()
+        .unwrap()
+        .truncate(n - 1);
+    let read = from_manifest_json(older.to_string().as_bytes()).unwrap();
+    let FeatureKind::Fillet(fillet) = &read.features[n - 2].kind else {
+        panic!("not a fillet");
+    };
+    assert_eq!(fillet.edges, vec![EdgeRef::Faces([face(1), face(2)])]);
+}
+
 /// Version 10: sweeps, as they are written.
 #[test]
 fn a_sweep_is_written_like_this_and_round_trips() {
@@ -2993,7 +3102,7 @@ fn a_sweep_is_written_like_this_and_round_trips() {
 #[test]
 fn a_sweep_along_two_rails_is_written_like_this_and_round_trips() {
     use craft3d_doc::{FeatureId, Sweep, SweepScale};
-    assert_eq!(FORMAT_VERSION, 69);
+    assert_eq!(FORMAT_VERSION, 70);
     for (scale, written) in [
         (
             SweepScale::Uniform,
@@ -3018,7 +3127,7 @@ fn a_sweep_along_two_rails_is_written_like_this_and_round_trips() {
         .unwrap();
         let json = to_manifest_json(&doc).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 69);
+        assert_eq!(value["format_version"], 70);
         let features = value["document"]["features"].as_array().unwrap();
         assert_eq!(features[features.len() - 1]["kind"], written);
         assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
@@ -3048,7 +3157,7 @@ fn a_sweep_along_two_rails_is_written_like_this_and_round_trips() {
 #[test]
 fn a_sweep_with_an_up_direction_is_written_like_this_and_round_trips() {
     use craft3d_doc::{AxisRef, FeatureId, PersistentName, Sweep, SweepScale, WorldAxis};
-    assert_eq!(FORMAT_VERSION, 69);
+    assert_eq!(FORMAT_VERSION, 70);
     let edge: [PersistentName; 2] = [
         "F2:side(e1)".parse().unwrap(),
         "F2:startCap".parse().unwrap(),
@@ -3088,7 +3197,7 @@ fn a_sweep_with_an_up_direction_is_written_like_this_and_round_trips() {
         .unwrap();
         let json = to_manifest_json(&doc).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 69);
+        assert_eq!(value["format_version"], 70);
         let features = value["document"]["features"].as_array().unwrap();
         assert_eq!(
             features[features.len() - 1]["kind"]["up"],
@@ -3135,7 +3244,7 @@ fn an_offset_profile_is_written_like_this_and_round_trips() {
     doc.add_feature(
         Some("Round"),
         FeatureKind::Fillet(Fillet {
-            edges: vec![[side.clone(), corner.clone()]],
+            edges: vec![EdgeRef::Faces([side.clone(), corner.clone()])],
             radius: Expr::new("1 mm"),
             chain: false,
         }),
@@ -3160,8 +3269,11 @@ fn an_offset_profile_is_written_like_this_and_round_trips() {
     let FeatureKind::Fillet(fillet) = &read.features[n - 1].kind else {
         panic!("not a fillet");
     };
-    assert_eq!(fillet.edges[0][0].to_string(), side.to_string());
-    assert_eq!(fillet.edges[0][1].to_string(), corner.to_string());
+    let EdgeRef::Faces(pair) = &fillet.edges[0] else {
+        panic!("not a pair of faces");
+    };
+    assert_eq!(pair[0].to_string(), side.to_string());
+    assert_eq!(pair[1].to_string(), corner.to_string());
     // An unknown corner rule is refused.
     let bad = json.replace(r#""corners": "sharp""#, r#""corners": "square""#);
     assert_ne!(bad, json);
@@ -4629,7 +4741,7 @@ fn a_fill_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 69);
+    assert_eq!(FORMAT_VERSION, 70);
     let features = value["document"]["features"].as_array().unwrap();
     assert_eq!(
         features[1]["kind"],
@@ -4779,7 +4891,7 @@ fn a_screw_pattern_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 69);
+    assert_eq!(FORMAT_VERSION, 70);
     let features = value["document"]["features"].as_array().unwrap();
     assert_eq!(
         features[1]["kind"],
@@ -4837,7 +4949,7 @@ fn a_split_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 69);
+    assert_eq!(FORMAT_VERSION, 70);
     let features = value["document"]["features"].as_array().unwrap();
     let face_json = serde_json::json!({"feature": 3, "role": "copy", "sources": [0],
         "of": {"feature": 1, "role": "face", "sources": [4]}});
@@ -4892,7 +5004,7 @@ fn an_import_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 69);
+    assert_eq!(FORMAT_VERSION, 70);
     assert_eq!(
         value["document"]["features"][2]["kind"],
         serde_json::json!({"type": "import", "file_name": "part.step", "solid": 1, "sha256": sha})
@@ -5107,7 +5219,7 @@ fn hidden_features_are_written_like_this_and_round_trip() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 69);
+    assert_eq!(FORMAT_VERSION, 70);
     assert_eq!(value["document"]["hidden"], serde_json::json!([1]));
     let read = from_manifest_json(json.as_bytes()).unwrap();
     assert_eq!(read, doc);
@@ -5172,7 +5284,7 @@ fn tables_are_written_like_this_and_round_trip() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 69);
+    assert_eq!(FORMAT_VERSION, 70);
     assert_eq!(
         value["document"]["tables"],
         serde_json::json!([{"name": "belt", "key": "profile",
@@ -5209,7 +5321,7 @@ fn a_condition_is_written_like_this_and_round_trips() {
     doc.feature_mut(id).unwrap().when = Some(Expr::new("lid && 2 > 1"));
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(FORMAT_VERSION, 69);
+    assert_eq!(FORMAT_VERSION, 70);
     assert_eq!(value["document"]["features"][0]["when"], "lid && 2 > 1");
     assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
     assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
@@ -5249,7 +5361,7 @@ fn formula_curves_and_live_splines_are_written_like_this_and_round_trip() {
     .unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(FORMAT_VERSION, 69);
+    assert_eq!(FORMAT_VERSION, 70);
     let entities = &value["document"]["features"][1]["kind"]["entities"];
     assert_eq!(
         entities[3]["geometry"],
@@ -5298,7 +5410,7 @@ fn a_developable_and_an_unfold_are_written_like_this_and_round_trip() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 69);
+    assert_eq!(FORMAT_VERSION, 70);
     let features = value["document"]["features"].as_array().unwrap();
     let n = features.len();
     assert_eq!(features[n - 2]["kind"]["type"], "developable");
@@ -5541,7 +5653,7 @@ fn an_older_file_naming_a_sheet_metal_rim_or_edge_warns_by_name() {
     doc.add_feature(
         Some("Round"),
         FeatureKind::Fillet(Fillet {
-            edges: vec![[name(&rim), name(&skin)]],
+            edges: vec![EdgeRef::Faces([name(&rim), name(&skin)])],
             radius: Expr::new("1 mm"),
             chain: false,
         }),

@@ -35,7 +35,7 @@
 use crate::datum::listed;
 use crate::sketch::same_plane;
 use crate::{FeatureResult, Names};
-use craft3d_doc::{Document, Feature, FeatureId, FeatureKind, NameRole, PersistentName};
+use craft3d_doc::{Document, EdgeRef, Feature, FeatureId, FeatureKind, NameRole, PersistentName};
 use std::collections::BTreeSet;
 
 fn called(doc: &Document, id: FeatureId) -> String {
@@ -408,6 +408,19 @@ pub fn follow_face(
     face(doc, results, name, role)
 }
 
+/// [`edge`] for a reader of the finished regeneration: the full name, in
+/// the newest body of its chain at the end of `results`, of the edge
+/// `name` of an earlier body, by the rule features follow edges by.
+/// `None` when that body is its own still.
+pub fn follow_edge(
+    doc: &Document,
+    results: &[FeatureResult],
+    name: &PersistentName,
+    role: &str,
+) -> Result<Option<PersistentName>, String> {
+    edge(doc, results, name, role)
+}
+
 /// The copies the taker `taker` made of the edge `name`: the instances
 /// `k` for which an edge of `names` answers to `taker:copy(k)/name`.
 fn edge_copies(names: &Names, taker: FeatureId, name: &PersistentName) -> BTreeSet<u64> {
@@ -427,10 +440,56 @@ fn edge_copies(names: &Names, taker: FeatureId, name: &PersistentName) -> BTreeS
     out
 }
 
+/// The edges the takers in `group` kept of the edge `name` (of the body
+/// of `name.feature`), as the kernel reports them, each with its own name
+/// there: for a body that names its edges by its faces (a boolean, a
+/// blend, a joined pattern, a shell), whatever `name` itself is named by.
+/// Only edges that came from that body count (a boolean's target or tool,
+/// whichever it was).
+fn kept_edges(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    name: &PersistentName,
+    group: &[FeatureId],
+) -> Vec<(FeatureId, PersistentName)> {
+    let Some(index) = earlier
+        .iter()
+        .find(|r| r.id == name.feature)
+        .and_then(|r| r.names.as_ref())
+        .and_then(|names| names.edge_named(name))
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for &member in group {
+        let Some(names) = earlier
+            .iter()
+            .find(|r| r.id == member)
+            .and_then(|r| r.names.as_ref())
+        else {
+            continue;
+        };
+        let from_here =
+            |instance: u64| source_of(doc, earlier, member, instance) == Some(name.feature);
+        for kept in names.edges_kept_from(index, from_here) {
+            if let Some(own) = names.edge_name(kept) {
+                out.push((member, own));
+            }
+        }
+    }
+    out
+}
+
 /// The name, in the newest body of its chain, of the edge `name` of an
 /// earlier body, followed as [`face`] follows a face: through every
-/// feature that took the body, by the copy that feature made of it.
-/// `None` when that body is its own still.
+/// feature that took the body, each step to the edge that taker made of
+/// it. That is the edge that answers to the copy of the name
+/// (`T:copy(k)/name`: a body of copies, or an edge a primitive or a sweep
+/// named that the taker kept whole), or else the one edge the kernel says
+/// the taker kept of it (a body that names its edges by its faces, where
+/// an edge named by its faces before has a name of the new faces). Gone
+/// (no such edge) and several (cut in pieces, or in several instances)
+/// fail with the reason. `None` when that body is its own still.
 pub(crate) fn edge(
     doc: &Document,
     earlier: &[FeatureResult],
@@ -488,11 +547,24 @@ pub(crate) fn edge(
             );
         }
         match found.as_slice() {
-            [] => {
-                return Err(format!(
-                    "{role}: the edge {name} is gone: the body of `{from}` went into `{by}`, a {kind}, which left no edge of it"
-                ));
-            }
+            [] => match kept_edges(doc, earlier, &current, &group).as_slice() {
+                [] => {
+                    return Err(format!(
+                        "{role}: the edge {name} is gone: the body of `{from}` went into `{by}`, a {kind}, which left no edge of it"
+                    ));
+                }
+                [(member, own)] => {
+                    from = called(doc, *member);
+                    current = own.clone();
+                }
+                several => {
+                    let all: Vec<String> = several.iter().map(|(_, own)| own.to_string()).collect();
+                    return Err(format!(
+                        "{role}: the edge {name} is more than one edge after `{by}`, a {kind} the body of `{from}` went into: {}; give one of these names",
+                        all.join(", ")
+                    ));
+                }
+            },
             [(member, k)] => {
                 from = called(doc, *member);
                 current = PersistentName::copy(*member, *k, current);
@@ -561,16 +633,31 @@ fn faces(
     Ok(changed)
 }
 
-/// The same for the pairs of faces that blends refer to edges by.
-fn pairs(
-    doc: &Document,
-    earlier: &[FeatureResult],
-    list: &mut [[PersistentName; 2]],
-) -> Result<bool, String> {
+/// The same for the edges blends refer to: the pairs of faces each face
+/// as a face, an edge by its own name as an edge and the face given with
+/// it as a face.
+fn refs(doc: &Document, earlier: &[FeatureResult], list: &mut [EdgeRef]) -> Result<bool, String> {
     let mut changed = false;
-    for (index, pair) in list.iter_mut().enumerate() {
-        for name in pair.iter_mut() {
-            if let Some(followed) = face(doc, earlier, name, &format!("edges.{index}"))? {
+    for (index, reference) in list.iter_mut().enumerate() {
+        let role = format!("edges.{index}");
+        let followed = match reference {
+            EdgeRef::Faces(pair) => {
+                let mut out = Vec::new();
+                for name in pair.iter() {
+                    out.push(face(doc, earlier, name, &role)?);
+                }
+                out
+            }
+            EdgeRef::Edge { edge: name, first } => {
+                let mut out = vec![edge(doc, earlier, name, &role)?];
+                if let Some(given) = first {
+                    out.push(face(doc, earlier, given, &role)?);
+                }
+                out
+            }
+        };
+        for (name, followed) in reference.names_mut().into_iter().zip(followed) {
+            if let Some(followed) = followed {
                 *name = followed;
                 changed = true;
             }
@@ -579,11 +666,45 @@ fn pairs(
     Ok(changed)
 }
 
+/// The features whose names of edges following the edges `feature` names
+/// reads and that let them go with their bodies (`Names::has_entities`):
+/// the bodies those edges are of and every body they went into before
+/// it. The regeneration derives them again before it follows, so what is
+/// followed does not depend on what its cache let go of. Empty for
+/// almost every feature.
+pub(crate) fn edge_bodies(earlier: &[FeatureResult], feature: &Feature) -> Vec<FeatureId> {
+    let edges: Vec<&PersistentName> = match &feature.kind {
+        FeatureKind::Chamfer(c) => c.edges.iter().map(EdgeRef::lead).collect(),
+        FeatureKind::Fillet(f) => f.edges.iter().map(EdgeRef::lead).collect(),
+        FeatureKind::Plate(p) => p.joints.iter().map(|j| &j.edge).collect(),
+        _ => return Vec::new(),
+    };
+    let mut out: Vec<FeatureId> = Vec::new();
+    for name in edges.into_iter().filter(|name| name.is_edge()) {
+        let takers = chain(earlier, name.feature);
+        if takers.is_empty() {
+            continue;
+        }
+        for id in std::iter::once(name.feature).chain(takers) {
+            let dropped = earlier
+                .iter()
+                .find(|r| r.id == id)
+                .and_then(|r| r.names.as_ref())
+                .is_some_and(|names| !names.has_entities());
+            if dropped && !out.contains(&id) {
+                out.push(id);
+            }
+        }
+    }
+    out
+}
+
 /// Leaves out of the faces and edges a feature changes those that are
 /// absent (`crate::pass::absent_name`: of a body that is absent, or made
 /// only by a feature that is off): they are nothing to it, as if the
 /// feature that is off were not in the history. An edge is left out when
-/// either of its faces is. `true` when one was left out. A single face
+/// either of its faces is, or its own name (or the face given with it).
+/// `true` when one was left out. A single face
 /// (a thread's, a draft's neutral one) is left as it is, and
 /// `crate::pass::nothing_left` says the feature has nothing to do.
 fn prune(doc: &Document, earlier: &[FeatureResult], kind: &mut FeatureKind) -> bool {
@@ -598,14 +719,14 @@ fn prune(doc: &Document, earlier: &[FeatureResult], kind: &mut FeatureKind) -> b
         list.retain(|name| there(name));
         list.len() != before
     };
-    let pairs = |list: &mut Vec<[PersistentName; 2]>| {
+    let refs = |list: &mut Vec<EdgeRef>| {
         let before = list.len();
-        list.retain(|[a, b]| there(a) && there(b));
+        list.retain(|reference| reference.names().into_iter().all(there));
         list.len() != before
     };
     match kind {
-        FeatureKind::Chamfer(chamfer) => pairs(&mut chamfer.edges),
-        FeatureKind::Fillet(fillet) => pairs(&mut fillet.edges),
+        FeatureKind::Chamfer(chamfer) => refs(&mut chamfer.edges),
+        FeatureKind::Fillet(fillet) => refs(&mut fillet.edges),
         FeatureKind::OffsetFace(offset) => faces(&mut offset.faces),
         FeatureKind::MoveFace(moving) => faces(&mut moving.faces),
         FeatureKind::Thicken(layer) => faces(&mut layer.faces),
@@ -646,8 +767,8 @@ pub(crate) fn feature(
     let mut kind = feature.kind.clone();
     let pruned = prune(doc, earlier, &mut kind);
     let changed = match &mut kind {
-        FeatureKind::Chamfer(chamfer) => pairs(doc, earlier, &mut chamfer.edges)?,
-        FeatureKind::Fillet(fillet) => pairs(doc, earlier, &mut fillet.edges)?,
+        FeatureKind::Chamfer(chamfer) => refs(doc, earlier, &mut chamfer.edges)?,
+        FeatureKind::Fillet(fillet) => refs(doc, earlier, &mut fillet.edges)?,
         FeatureKind::OffsetFace(offset) => faces(doc, earlier, &mut offset.faces, "faces")?,
         FeatureKind::MoveFace(moving) => faces(doc, earlier, &mut moving.faces, "faces")?,
         FeatureKind::Thicken(layer) => faces(doc, earlier, &mut layer.faces, "faces")?,

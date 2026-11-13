@@ -31,10 +31,7 @@ fn explain(
 ) -> String {
     let reference = |edge: EdgeId| picked.iter().find(|p| p.edge == edge);
     let role = |edge: EdgeId| match reference(edge) {
-        Some(pick) => match fillet.edges.get(pick.reference) {
-            Some([a, b]) => format!("edges.{} (between {a} and {b})", pick.reference),
-            None => format!("edges.{}", pick.reference),
-        },
+        Some(pick) => blend::role_of(&fillet.edges, pick.reference),
         None => "edges".to_string(),
     };
     let face_name = |face: FaceId| {
@@ -106,8 +103,9 @@ pub(crate) fn build(
     // The feature the faces are of has to be there, earlier, and built:
     // said with the names that are lost with it, as every reference by
     // name says it. Then its body has to be its own still.
-    if let Some([first, second]) = fillet.edges.first() {
-        named_body_of(doc, earlier, first, Some(second), "edges.0")?;
+    if let Some(edge) = fillet.edges.first() {
+        let names = edge.names();
+        named_body_of(doc, earlier, edge.lead(), names.get(1).copied(), "edges.0")?;
     }
     let source = source_body(doc, earlier, source_id, "edges")?;
     let made_by = doc
@@ -128,6 +126,7 @@ pub(crate) fn build(
         &fillet.edges,
         fillet.chain,
         ROLES.noun,
+        blend::First::Either,
         source_id,
         body,
         names,

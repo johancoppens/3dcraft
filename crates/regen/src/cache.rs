@@ -807,6 +807,14 @@ pub(crate) fn features(
         }) {
             entry.context.followed.clone()
         } else {
+            // Following an edge reads the names of the edges of the bodies
+            // on its way, which go with a body let go of: those are
+            // derived again first, so what is followed does not depend on
+            // what the cache let go of.
+            let along = crate::follow::edge_bodies(&results, stated);
+            if !along.is_empty() {
+                rederive_all(doc, &mut results, &at, cache, &mut build, &along);
+            }
             crate::follow::feature(doc, &results, stated)
         };
         let followed = match followed {

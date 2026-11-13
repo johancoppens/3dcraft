@@ -3,47 +3,88 @@
 //! neighbours).
 //!
 //! An edge is given as the two faces it lies between, by their persistent
-//! names from `document.inspect` or `document.edges`. Whether the faces
-//! exist, meet in an edge and leave room for the distance is found out by
-//! regeneration, like every other parameter: the feature is stored and
-//! reports `failed` with the reason.
+//! names from `document.inspect` or `document.edges` (every edge between
+//! them), or by its own name from `document.edges` or `view.pick` (that
+//! one edge), followed by the face its first distance is measured along
+//! when that matters. Whether the faces and edges exist, meet and leave
+//! room for the distance is found out by regeneration, like every other
+//! parameter: the feature is stored and reports `failed` with the reason.
 
 use crate::commands::{Run, add_feature, fail, spec};
-use crate::datum_cmds::between_value;
+use crate::datum_cmds::{between_value, face_value, name_value};
 use crate::params::Params;
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{
-    Chamfer, ChamferSize, Expr, FeatureKind, Fillet, MAX_CHAMFER_EDGES, MAX_FILLET_EDGES,
+    Chamfer, ChamferSize, EdgeRef, Expr, FeatureKind, Fillet, MAX_CHAMFER_EDGES, MAX_FILLET_EDGES,
     PersistentName,
 };
 use serde_json::Value;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("feature.chamfer", "Chamfer", r#"{"edges": [[face name, face name], ...], "distance": expr, "second": expr, "angle": expr, "chain": boolean = false, "name": string = automatic, "when": expr = always on}"#,
-        "Adds a feature that replaces edges of a body by flat or conical faces (feature.fillet makes rounded ones): the two faces next to an edge are cut back by a distance each, measured along the face from the edge, and a new face joins the two cut lines. An outside edge loses material, an inside edge gains it. Each edge is the two faces it lies between, by their names (document.edges lists every edge of a body with them under faces); all are edges of one body, which goes into this feature, and such a pair means every edge between those two faces (a name of an earlier body of the same chain, such as \"F1:face(0)\" after that body went into later features, is followed to the newest body before this feature). Three forms: distance alone (the same along both faces); distance and second (distance along the first face of each pair, second along the other); distance and angle (distance along the first face, and the new face leaves that face at angle). chain takes with each edge the edges that continue it smoothly (the whole rim of a slot from one of its edges). Works on straight edges between flat faces, or between a flat face and a cylinder along the edge (the cut edge of a halved tube), and on circular edges between a flat face, a cylinder or a cone about the circle's axis (the end of a rod, the mouth of a hole); any other edge (next to a cone, between lofted or spline faces) gets a ruled spline face within the document's tolerance when each of its ends is a corner of three faces (or it is closed, as the mouth of a slanted hole) and no other chamfered edge ends there, and fails with the reason otherwise. Where three chamfered edges meet the corner is a flat triangle through the points where the cut lines cross; two meet in a mitre. A distance too large for a face fails with the edge, the face and the largest distance that fits. Faces keep their names with a prefix, \"F9:copy(0)/...\"; the new face of the edge at place k of edges is \"F9:chamfer(k)\" (\"F9:chamfer(k,0)\", \"F9:chamfer(k,1)\" when the pair gave several edges), a corner \"F9:chamferCorner(i,j,k)\". Change it with feature.edit: edges, distance, second, angle, chain.", doc: true, names: ["edges"], feature_chamfer),
-    spec!("feature.fillet", "Fillet", r#"{"edges": [[face name, face name], ...], "radius": expr, "chain": boolean = false, "name": string = automatic, "when": expr = always on}"#,
-        "Adds a feature that rounds edges of a body with one radius: each edge is replaced by the face a ball of that radius touches as it rolls along the edge against both faces, which runs into both without a crease. An outside edge loses material, an inside edge gains it. Each edge is the two faces it lies between, by their names (document.edges lists every edge of a body with them under faces), in either order; all are edges of one body, which goes into this feature, and such a pair means every edge between those two faces (a name of an earlier body of the same chain, such as \"F1:face(0)\" after that body went into later features, is followed to the newest body before this feature). chain takes with each edge the edges that continue it smoothly (the whole rim of a slot from one of its edges). Works on straight edges between flat faces at any angle, or next to a cylinder along the edge (the cut edge of a halved tube, the tip of a two-arc blade; the new face is a piece of a cylinder), and on circular edges between a flat face, a cylinder or a cone about the circle's axis (the end of a rod, the mouth of a hole, the foot of a boss: a piece of a torus); any other edge (next to a cone, between lofted or spline faces) gets a spline face within the document's tolerance, tangent to both faces, when each of its ends is a corner of three faces (or it is closed, as the mouth of a slanted hole) and no other filleted edge ends there, and fails with the reason otherwise. Where three straight filleted edges meet the corner is a piece of a ball of the same radius; two that meet at a corner whose third edge stays sharp run out into each other. Not built, and refused with the reason: three fillets at a corner with a circular edge or a fourth edge, an outside and an inside fillet that meet, a radius of half a rod's or more on its rim. A radius too large for a face fails with the edge, the face and the largest radius that fits. Faces keep their names with a prefix, \"F9:copy(0)/...\"; the new face of the edge at place k of edges is \"F9:fillet(k)\" (\"F9:fillet(k,0)\", \"F9:fillet(k,1)\" when the pair gave several edges or a chain), the ball in a corner \"F9:filletCorner(i,j,k)\". Change it with feature.edit: edges, radius, chain.", doc: true, names: ["edges"], feature_fillet),
+    spec!("feature.chamfer", "Chamfer", r#"{"edges": [[face name, face name] or edge name or [edge name, face name], ...], "distance": expr, "second": expr, "angle": expr, "chain": boolean = false, "name": string = automatic, "when": expr = always on}"#,
+        "Adds a feature that replaces edges of a body by flat or conical faces (feature.fillet makes rounded ones): the two faces next to an edge are cut back by a distance each, measured along the face from the edge, and a new face joins the two cut lines. An outside edge loses material, an inside edge gains it. Each edge is the two faces it lies between, by their names (document.edges lists every edge of a body with them under faces), and such a pair means every edge between those two faces; or one edge by its own name (document.edges lists it under name, view.pick gives it), which picks one of several edges between the same two faces, written [edge name, face name] to say which of its faces the first distance is measured along (needed with second or angle). All are edges of one body, which goes into this feature; a name of an earlier body of the same chain, such as \"F1:face(0)\" after that body went into later features, is followed to the newest body before this feature, an edge's name to the edge each later feature kept of it. Three forms: distance alone (the same along both faces); distance and second (distance along the first face of each pair, second along the other); distance and angle (distance along the first face, and the new face leaves that face at angle). chain takes with each edge the edges that continue it smoothly (the whole rim of a slot from one of its edges). Works on straight edges between flat faces, or between a flat face and a cylinder along the edge (the cut edge of a halved tube), and on circular edges between a flat face, a cylinder or a cone about the circle's axis (the end of a rod, the mouth of a hole); any other edge (next to a cone, between lofted or spline faces) gets a ruled spline face within the document's tolerance when each of its ends is a corner of three faces (or it is closed, as the mouth of a slanted hole) and no other chamfered edge ends there, and fails with the reason otherwise. Where three chamfered edges meet the corner is a flat triangle through the points where the cut lines cross; two meet in a mitre. A distance too large for a face fails with the edge, the face and the largest distance that fits. Faces keep their names with a prefix, \"F9:copy(0)/...\"; the new face of the edge at place k of edges is \"F9:chamfer(k)\" (\"F9:chamfer(k,0)\", \"F9:chamfer(k,1)\" when the pair gave several edges), a corner \"F9:chamferCorner(i,j,k)\". Change it with feature.edit: edges, distance, second, angle, chain.", doc: true, names: ["edges"], feature_chamfer),
+    spec!("feature.fillet", "Fillet", r#"{"edges": [[face name, face name] or edge name or [edge name, face name], ...], "radius": expr, "chain": boolean = false, "name": string = automatic, "when": expr = always on}"#,
+        "Adds a feature that rounds edges of a body with one radius: each edge is replaced by the face a ball of that radius touches as it rolls along the edge against both faces, which runs into both without a crease. An outside edge loses material, an inside edge gains it. Each edge is the two faces it lies between, by their names (document.edges lists every edge of a body with them under faces), in either order, and such a pair means every edge between those two faces; or one edge by its own name (document.edges lists it under name, view.pick gives it), which picks one of several edges between the same two faces ([edge name, face name], as feature.chamfer takes it, is the same edge: the face must be one of its two and says nothing more here). All are edges of one body, which goes into this feature; a name of an earlier body of the same chain, such as \"F1:face(0)\" after that body went into later features, is followed to the newest body before this feature, an edge's name to the edge each later feature kept of it. chain takes with each edge the edges that continue it smoothly (the whole rim of a slot from one of its edges). Works on straight edges between flat faces at any angle, or next to a cylinder along the edge (the cut edge of a halved tube, the tip of a two-arc blade; the new face is a piece of a cylinder), and on circular edges between a flat face, a cylinder or a cone about the circle's axis (the end of a rod, the mouth of a hole, the foot of a boss: a piece of a torus); any other edge (next to a cone, between lofted or spline faces) gets a spline face within the document's tolerance, tangent to both faces, when each of its ends is a corner of three faces (or it is closed, as the mouth of a slanted hole) and no other filleted edge ends there, and fails with the reason otherwise. Where three straight filleted edges meet the corner is a piece of a ball of the same radius; two that meet at a corner whose third edge stays sharp run out into each other. Not built, and refused with the reason: three fillets at a corner with a circular edge or a fourth edge, an outside and an inside fillet that meet, a radius of half a rod's or more on its rim. A radius too large for a face fails with the edge, the face and the largest radius that fits. Faces keep their names with a prefix, \"F9:copy(0)/...\"; the new face of the edge at place k of edges is \"F9:fillet(k)\" (\"F9:fillet(k,0)\", \"F9:fillet(k,1)\" when the pair gave several edges or a chain), the ball in a corner \"F9:filletCorner(i,j,k)\". Change it with feature.edit: edges, radius, chain.", doc: true, names: ["edges"], feature_fillet),
 ];
 
-/// The edges of a chamfer: pairs of face names.
-pub(crate) fn edges_value(
-    command: &str,
-    value: &Value,
-) -> Result<Vec<[PersistentName; 2]>, CommandError> {
+/// The edges of a chamfer: pairs of face names, or edges by their names.
+pub(crate) fn edges_value(command: &str, value: &Value) -> Result<Vec<EdgeRef>, CommandError> {
     edges_of(command, value, "chamfer", MAX_CHAMFER_EDGES)
 }
 
+/// The forms an edge of a blend is given in, for what is refused.
+const EDGE_FORMS: &str = "each edge is two face names [face, face] (every edge between them; document.edges lists them under faces), or one edge's own name \"edge\" (document.edges lists it under name, view.pick gives it), or [edge, face]: that edge, its first distance measured along that face";
+
+/// One edge of a blend: `[face, face]`, `"edge"` or `["edge", "face"]`
+/// (the first name of a list says which).
+fn edge_value(command: &str, value: &Value) -> Result<EdgeRef, CommandError> {
+    match value {
+        Value::String(_) => {
+            let edge = name_value(command, "edges", value, "an edge's name")?;
+            if !edge.is_edge() {
+                return fail(format!(
+                    "{command}: `edges`: {edge} is not an edge; {EDGE_FORMS}"
+                ));
+            }
+            Ok(EdgeRef::Edge { edge, first: None })
+        }
+        Value::Array(items) => {
+            let [lead, _] = items.as_slice() else {
+                return fail(format!(
+                    "{command}: `edges` holds a list of {} names; {EDGE_FORMS}",
+                    items.len()
+                ));
+            };
+            let lead = name_value(command, "edges", lead, "a face or an edge name")?;
+            if !lead.is_edge() {
+                return Ok(EdgeRef::Faces(between_value(command, "edges", value)?));
+            }
+            let face = items.get(1).map_or_else(
+                || fail(format!("{command}: `edges`: {EDGE_FORMS}")),
+                |face| face_value(command, "edges", face),
+            )?;
+            Ok(EdgeRef::Edge {
+                edge: lead,
+                first: Some(face),
+            })
+        }
+        _ => fail(format!(
+            "{command}: `edges` must be a list of edges; {EDGE_FORMS}"
+        )),
+    }
+}
+
 /// The edges of a blend (`noun`: a chamfer or a fillet): pairs of face
-/// names, `most` at most.
+/// names or edges by their own names, `most` at most.
 fn edges_of(
     command: &str,
     value: &Value,
     noun: &str,
     most: usize,
-) -> Result<Vec<[PersistentName; 2]>, CommandError> {
+) -> Result<Vec<EdgeRef>, CommandError> {
     let Some(items) = value.as_array() else {
         return fail(format!(
-            "{command}: `edges` must be a list of edges, each two face names [face, face] (document.edges lists them under faces)"
+            "{command}: `edges` must be a list of edges; {EDGE_FORMS}"
         ));
     };
     if items.is_empty() {
@@ -57,28 +98,29 @@ fn edges_of(
             items.len()
         ));
     }
-    let mut edges: Vec<[PersistentName; 2]> = Vec::with_capacity(items.len());
+    let mut edges: Vec<EdgeRef> = Vec::with_capacity(items.len());
     for item in items {
-        let pair = between_value(command, "edges", item)?;
-        let [a, b] = &pair;
-        if a == b {
+        let edge = edge_value(command, item)?;
+        if let EdgeRef::Faces([a, b]) = &edge
+            && a == b
+        {
             return fail(format!(
                 "{command}: `edges`: {a} is given twice; an edge lies between two different faces"
             ));
         }
-        let again = edges
-            .iter()
-            .any(|[c, d]| (c == a && d == b) || (c == b && d == a));
-        if again {
+        if edges.iter().any(|earlier| earlier.same_as(&edge)) {
             return fail(format!(
-                "{command}: `edges`: the edge between {a} and {b} is given twice"
+                "{command}: `edges`: {} is given twice",
+                edge.describe()
             ));
         }
-        // Faces named after different features can be faces of one body:
-        // a boolean's operands, or a body before and after a blend, whose
-        // names regeneration follows to the newest body (regen `follow`).
-        // Whether they are is found out there, like every other reference.
-        edges.push(pair);
+        // Faces and edges named after different features can be of one
+        // body: a boolean's operands, or a body before and after a blend,
+        // whose names regeneration follows to the newest body (regen
+        // `follow`). Whether they are is found out there, like every
+        // other reference; so is whether an edge given by its name is
+        // also one of the edges a pair gives.
+        edges.push(edge);
     }
     Ok(edges)
 }
@@ -94,8 +136,16 @@ pub(crate) fn of_one_body(
     kind: &FeatureKind,
 ) -> Result<(), CommandError> {
     let (key, noun, names): (&str, &str, Vec<&PersistentName>) = match kind {
-        FeatureKind::Chamfer(c) => ("edges", "chamfer", c.edges.iter().flatten().collect()),
-        FeatureKind::Fillet(f) => ("edges", "fillet", f.edges.iter().flatten().collect()),
+        FeatureKind::Chamfer(c) => (
+            "edges",
+            "chamfer",
+            c.edges.iter().flat_map(EdgeRef::names).collect(),
+        ),
+        FeatureKind::Fillet(f) => (
+            "edges",
+            "fillet",
+            f.edges.iter().flat_map(EdgeRef::names).collect(),
+        ),
         FeatureKind::OffsetFace(o) => ("faces", "offset", o.faces.iter().collect()),
         FeatureKind::DeleteFace(d) => ("faces", "deletion", d.faces.iter().collect()),
         FeatureKind::MoveFace(m) => ("faces", "move", m.faces.iter().collect()),
@@ -114,18 +164,20 @@ pub(crate) fn of_one_body(
     let open = session.document_mut()?;
     let regen = open.regen();
     let doc = open.history.current();
-    // The body a face is of now: where the name follows to (after a
-    // split, the one split that has the face); where it cannot be
+    // The body a face or an edge is of now: where the name follows to
+    // (after a split, the one split that has the face); where it cannot be
     // followed, the last feature the body went into, and regeneration
     // says what is wrong.
     let newest = |name: &PersistentName| {
-        craft3d_regen::follow_face(doc, &regen.features, name, key)
-            .ok()
-            .flatten()
-            .map_or_else(
-                || craft3d_regen::newest_body(&regen.features, name.feature),
-                |full| full.feature,
-            )
+        let followed = if name.is_edge() {
+            craft3d_regen::follow_edge(doc, &regen.features, name, key)
+        } else {
+            craft3d_regen::follow_face(doc, &regen.features, name, key)
+        };
+        followed.ok().flatten().map_or_else(
+            || craft3d_regen::newest_body(&regen.features, name.feature),
+            |full| full.feature,
+        )
     };
     let body = newest(first);
     let Some(other) = names.iter().find(|name| newest(name) != body) else {
@@ -137,9 +189,17 @@ pub(crate) fn of_one_body(
             |f| format!("`{}`", f.name),
         )
     };
+    let what = |name: &PersistentName| if name.is_edge() { "an edge" } else { "a face" };
+    let all = if key == "edges" {
+        "faces and edges"
+    } else {
+        "faces"
+    };
     fail(format!(
-        "{command}: `{key}`: {first} is a face of {} and {other} of {}, which are not one body; the faces of one {noun} are of one body",
+        "{command}: `{key}`: {first} is {} of {} and {other} {} of {}, which are not one body; the {all} of one {noun} are of one body",
+        what(first),
         called(first.feature),
+        what(other),
         called(other.feature)
     ))
 }

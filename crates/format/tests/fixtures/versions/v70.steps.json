@@ -1,0 +1,7 @@
+[
+ ["feature.block", {"size": [60, 40, 10], "position": [0, 0, 0], "name": "Plate"}],
+ ["feature.cylinder", {"radius": 10, "height": 60, "position": [0, 20, 16], "axis": [1, 0, 0], "name": "Pipe"}],
+ ["feature.boolean", {"op": "union", "target": "Plate", "tool": "Pipe", "name": "Joined"}],
+ ["feature.fillet", {"edges": ["F3:between[F3:copy(0)/F1:face(1),F3:copy(1)/F2:face(0)|F3:copy(0)/F1:face(3),F3:copy(0)/F1:face(4),F3:copy(0)/F1:face(5)]"], "radius": "2 mm", "name": "Round"}],
+ ["feature.chamfer", {"edges": [["F3:between[F3:copy(0)/F1:face(1),F3:copy(1)/F2:face(0)|F3:copy(0)/F1:face(2),F3:copy(0)/F1:face(4),F3:copy(0)/F1:face(5)]", "F3:copy(0)/F1:face(1)"]], "distance": "2 mm", "second": "1 mm", "name": "Bevel"}]
+]
