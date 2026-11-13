@@ -44,9 +44,10 @@ A pull request holds the change with its tests, and its description says:
   [`docs/testing.md`](docs/testing.md) › *Changing an expectation*. Where the docs say an expectation change
   is "logged in the dev log", from outside it goes here.
 
-The developer runs the full gate (`cargo xtask ci`, then `cargo xtask freecad` and the web module's size,
-`cargo xtask web-size`) on the workshop's build server, the Strix, before a change is merged: `main` only moves
-to a commit the gate passed.
+Make the pull request against `main`, which is always the latest release; the developer carries it to where
+it belongs (a fix for the released version to its maintenance branch, other work to the next version) and runs
+the full gate (`cargo xtask ci`, then `cargo xtask freecad` and the web module's size, `cargo xtask web-size`)
+on the workshop's build server, the Strix, before it is merged there.
 Everything in the repository is written in English: code, comments, commit messages, docs and messages.
 
 ## Clean-room

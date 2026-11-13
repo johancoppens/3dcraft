@@ -8,15 +8,20 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
-### 2026-11-13: After R1: the freeze ends, `main` is the coming 0.2, fixes for 0.1 from a maintenance branch (decided by the developer)
+### 2026-11-13: After R1: the freeze ends, `main` is the coming 0.2, fixes for 0.1 from a maintenance branch, the public `main` is the latest release (decided by the developer; amends 2026-11-10)
 
-0.1.0 and 0.1.1 are published (2026-11-12). The freeze of 2026-11-05, which kept `main` to the small fixes the release needed, ends.
+0.1.0 and 0.1.1 are published (2026-11-12).
 
+- **The freeze of 2026-11-05 ends.** It existed to get R1 out, and R1 is out.
 - **`main` is the coming 0.2**, starting with the hardening of the kernel.
-- **Fixes for 0.1 are released as 0.1.x from the maintenance branch `release/0.1`**, made from `main` as it stood after 0.1.1 (`052e3bf2`). A 0.1.x is tagged on that branch, on a commit the gate passed there.
-- **What may go into a 0.1.x:** only what is wrong, crashes or spoils the first impression; no change to the file format and no new command parameters. Everything else waits for 0.2.
+- **Fixes for 0.1 are released as 0.1.x from the maintenance branch `release/0.1`**, made from `main` as it stood after 0.1.1 (`052e3bf2`), and tagged there on a commit the gate passed: so the people who use 0.1 get its fixes without the kernel work of 0.2.
+- **What may go into a 0.1.x:** only what is wrong, crashes or spoils the first impression; no change to the file format and no new command parameters. Everything else waits for 0.2. A patch release is then safe to install over the one before: the files and scripts that worked keep working.
+- **The public repository's `main` is always the latest release**; work on the next version does not move it (this amends 2026-11-10, where `main` was pushed to both repositories after every gate). A fix for 0.1.x lands on `release/0.1` first, on a branch of its own with a reviewer and the gate, and `release/0.1` is then merged forward into the workshop's `main`, the coming 0.2; never `main` first and a cherry-pick. At a 0.1.x the tag is made on `release/0.1` and the public `main` fast-forwards to the tagged commit; at 0.2 it fast-forwards to the commit 0.2 is tagged on, which holds every 0.1.x fix through those merges. The reasons: whoever looks at the public repository sees exactly what can be downloaded; no fix can be missing from 0.2; no history is ever rewritten.
+- **The consequence:** macOS and Windows are checked only by the public repository's hosted CI and Release workflows, so the work on the next version meets them at a rehearsal (a branch pushed to the public repository to be tested, at the developer's word), not at every merge.
 - **A version number and publishing stay the developer's word**, each time, as for 0.1.0 and 0.1.1.
-- **A fix to the user guide reaches the website through the next 0.1.x:** the website builds the guide of a release from its tag (the guide of 0.1 from `v0.1.1`), not from `main`, which moves on.
+- **The website shows the user guide of the latest release**, so a fix to the guide reaches it with the next 0.1.x.
+
+How a release is cut from either branch: [`development.md`](development.md) › *Releasing a version*.
 
 ### 2026-11-12: On Windows the window stays a console program for 0.1.1 (decided by the developer)
 
