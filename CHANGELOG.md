@@ -6,6 +6,7 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ### Fixed
 
+- **Windows: no console window beside 3DCraft any more.** The Start menu entry and a double-clicked `.3dcraft`, `.3dcraftjig` or `.3dcraftasm` file start 3DCraft through a small launcher, `3DCraft.exe`, which opens no console window, so there is none to close 3DCraft by. If the window cannot start, a message box says why. In the zip, double-click `3DCraft.exe`. `craft3d.exe` and `craft3d-cli.exe` are unchanged for terminals and AI agents.
 - **Linux: a 3DCraft window that is killed or crashes no longer leaves a `gsettings monitor` process behind.** The window follows the desktop's light or dark setting through that program, which now ends with the window however the window ends.
 - **The web version's page says what it is**: its title, *3DCraft in your browser: parametric 3D CAD*, stays while no document is open, and it has a description for search engines.
 
