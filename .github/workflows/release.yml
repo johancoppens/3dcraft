@@ -184,6 +184,19 @@ jobs:
           "$dir/craft3d.exe" --version
           "$dir/craft3d-cli.exe" --version
           "$dir/craft3d-cli.exe" commands > /dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 3dcraft-${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            dist/*.tar.gz
+            dist/*.AppImage
+            dist/*.AppImage.zsync
+            dist/*.dmg
+            dist/*.zip
+            dist/*.msi
+
       # The .msi installed as a person installs it, silently: first the
       # latest published release's, when it is older, then this one over
       # it. The upgrade must leave one 3DCraft in Apps (the UpgradeCode
@@ -192,6 +205,11 @@ jobs:
       # on the system PATH. The runner has the Visual C++ runtime, so a
       # start here proves nothing about a PC without it: the import lists
       # `cargo xtask package` writes and checks above are that proof.
+      # After the upload, so the packages are kept whatever it finds; it
+      # still fails the job, and with it the draft release: an .msi that
+      # leaves two entries must stop a release. A failure that is not the
+      # package's (msiexec 1618, another installation busy; GitHub's API)
+      # is answered by re-running the job.
       - name: install (windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -199,6 +217,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
+          # A native command's exit code is read by the script (the
+          # retries below), never turned into an error that ends it.
+          $PSNativeCommandUseErrorActionPreference = $false
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"$' | Select-Object -First 1).Matches[0].Groups[1].Value
           $core = $version -replace '[-+].*$', ''
           $msi = (Resolve-Path "dist/3DCraft-$version-x86_64.msi").Path
@@ -208,8 +229,13 @@ jobs:
             $run = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/i', "`"$path`"", '/qn', '/norestart', '/l*v', "`"$log`"")
             # 3010: installed, a restart asked for (not done: /norestart).
             if ($run.ExitCode -ne 0 -and $run.ExitCode -ne 3010) {
-              Get-Content $log -Tail 40 | Write-Host
-              throw "msiexec /i $path ended with $($run.ExitCode)"
+              if (Test-Path -LiteralPath $log) {
+                Get-Content -LiteralPath $log -Tail 40 -ErrorAction SilentlyContinue | Write-Host
+              } else {
+                Write-Host "msiexec wrote no log at $log"
+              }
+              $why = if ($run.ExitCode -eq 1618) { ' (1618: another installation is in progress; re-run the job)' } else { '' }
+              throw "msiexec /i $path ended with $($run.ExitCode)$why"
             }
             Write-Host "installed $path (msiexec $($run.ExitCode))"
           }
@@ -266,18 +292,6 @@ jobs:
             throw "the system PATH does not name $folder"
           }
           Write-Host "the system PATH names $folder"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: 3dcraft-${{ matrix.name }}
-          if-no-files-found: error
-          path: |
-            dist/*.tar.gz
-            dist/*.AppImage
-            dist/*.AppImage.zsync
-            dist/*.dmg
-            dist/*.zip
-            dist/*.msi
 
   # The browser build: wasm-bindgen's CLI of the version in Cargo.lock and
   # binaryen's wasm-opt, both release downloads pinned and checked against
