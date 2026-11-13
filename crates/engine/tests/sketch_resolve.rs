@@ -355,3 +355,221 @@ fn a_real_conflict_is_still_a_conflict() {
         assert!(conflicting.contains(&id), "{bulge}: {inspected}");
     }
 }
+
+/// The corners of a rail's section, arcs of radius 1 drawn by their centres
+/// with expressions of the half width, re-solved a hundred times as the
+/// half width goes from 50 to 113.15 and back: each time the sketch is the
+/// one it was at that width, bit for bit, and at 50 the three corners are
+/// cylinders of radius at least 1 (exactly 1: 50 - 49). Before, every
+/// re-solve started from the last and left the held points a few units in
+/// the last place off, the radii drifted under 1, and the count went 3, 3,
+/// 2, 2, 1.
+#[test]
+fn a_hundred_re_solves_leave_held_corners_where_they_are_held() {
+    let mut s = common::session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    steps(
+        &mut s,
+        &json!([
+            ["variable.set", {"name": "hw", "expr": "50 mm"}],
+            ["variable.set", {"name": "hh", "expr": "50 mm"}],
+            ["variable.set", {"name": "rw", "expr": "8.5 mm"}],
+            ["variable.set", {"name": "wall", "expr": "1.5 mm"}],
+            ["variable.set", {"name": "rr", "expr": "1 mm"}],
+            ["sketch.create", {"name": "Rail section", "plane": "xy"}],
+            ["sketch.path", {"sketch": "Rail section", "start": ["hw - wall", "hh - rw"], "segments": [
+                {"line": ["hw - rr", "hh - rw"]},
+                {"arc": ["hw", "hh - rw + rr"], "center": ["hw - rr", "hh - rw + rr"]},
+                {"line": ["hw", "hh - rr"]},
+                {"arc": ["hw - rr", "hh"], "center": ["hw - rr", "hh - rr"]},
+                {"line": ["hw - rw + rr", "hh"]},
+                {"arc": ["hw - rw", "hh - rr"], "center": ["hw - rw + rr", "hh - rr"]},
+                {"line": ["hw - rw", "hh - wall"]},
+                {"line": ["hw - wall", "hh - wall"]},
+                {"line": "start"}
+            ]}],
+            ["feature.extrude", {"sketch": "Rail section", "distance": "100 mm", "name": "Rail"}]
+        ]),
+    );
+    let count = |s: &mut Session| {
+        let found = run(
+            s,
+            "select.query",
+            json!({"kind": "face", "where": {"in": "Rail", "surface": "cylinder", "radius": {"min": "1 mm"}}}),
+        );
+        found["count"].as_u64().unwrap_or_else(|| panic!("{found}"))
+    };
+    let set = |s: &mut Session, hw: &str| {
+        run(s, "variable.set", json!({"name": "hw", "expr": hw}));
+    };
+    let at_50 = points(&mut s, "Rail section");
+    assert_eq!(count(&mut s), 3);
+    set(&mut s, "113.15 mm");
+    let at_113 = points(&mut s, "Rail section");
+    let wide = count(&mut s);
+    for round in 0..100 {
+        set(&mut s, "50 mm");
+        assert_eq!(points(&mut s, "Rail section"), at_50, "round {round}");
+        assert_eq!(count(&mut s), 3, "round {round}");
+        set(&mut s, "113.15 mm");
+        assert_eq!(points(&mut s, "Rail section"), at_113, "round {round}");
+        assert_eq!(count(&mut s), wide, "round {round}");
+    }
+}
+
+/// A point held on a quarter arc about a held centre, from (10, 0) round to
+/// (0, 10), by `pointOn` and its y: at y = 5 it lies on the arc (at
+/// (8.66, 5)) and nothing is said; at y = -3 it lies on the arc's circle
+/// beyond its start (at (9.54, -3)), which the constraints allow (a point
+/// on an arc is on its circle) and 0.1 solved too, and document.check
+/// warns, naming the point, the arc and the constraint.
+#[test]
+fn a_point_on_the_circle_beyond_its_arc_is_warned_of() {
+    let mut s = common::session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "py", "expr": "5 mm"}),
+    );
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"name": "Quarter", "plane": "xy"}),
+    );
+    let path = run(
+        &mut s,
+        "sketch.path",
+        json!({"sketch": "Quarter", "start": ["10 mm", "0 mm"], "segments": [
+            {"arc": ["0 mm", "10 mm"], "center": ["0 mm", "0 mm"]}
+        ]}),
+    );
+    let arc = path["entities"][0].as_str().unwrap().to_string();
+    let held = run(
+        &mut s,
+        "sketch.point",
+        json!({"sketch": "Quarter", "at": [8.66, 5.0]}),
+    )["entity"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Quarter", "type": "pointOn", "entities": [held, arc]}),
+    );
+    run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Quarter", "type": "y", "entities": [held], "value": "py"}),
+    );
+    let warned = |s: &mut Session| -> Vec<Value> {
+        let check = run(s, "document.check", json!({}));
+        check["warnings"]
+            .as_array()
+            .map(|w| {
+                w.iter()
+                    .filter(|w| w["kind"] == "pointOffArc")
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    assert!(warned(&mut s).is_empty());
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "py", "expr": "-3 mm"}),
+    );
+    let (status, p) = points(&mut s, "Quarter");
+    assert_eq!(status, "ok");
+    let [x, y] = point(&p, &held);
+    assert!(
+        (x - 91.0f64.sqrt()).abs() <= 1e-9 && (y + 3.0).abs() <= 1e-9,
+        "({x}, {y})"
+    );
+    let off = warned(&mut s);
+    assert_eq!(off.len(), 1, "{off:?}");
+    assert_eq!(off[0]["point"], held.as_str());
+    assert_eq!(off[0]["arc"], arc.as_str());
+}
+
+/// An arc about a held centre from (10, 0) round to its end, held at
+/// (ex, ey), with a point held on it at y = -3 (at (9.54, -3)): a quarter
+/// arc to (0, 10) leaves the point beyond its start and is warned of; with
+/// the end moved onto the start the ends meet, no part of the circle is
+/// outside the arc (the kernel refuses to build it: a full turn is a
+/// circle), and nothing is said.
+#[test]
+fn an_arc_whose_ends_meet_is_not_warned_of() {
+    let mut s = common::session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    for (name, expr) in [("ex", "0 mm"), ("ey", "10 mm")] {
+        run(&mut s, "variable.set", json!({"name": name, "expr": expr}));
+    }
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"name": "Turn", "plane": "xy"}),
+    );
+    let made = run(
+        &mut s,
+        "sketch.arc",
+        json!({"sketch": "Turn", "center": [0.0, 0.0], "start": [10.0, 0.0], "end": [0.0, 10.0]}),
+    );
+    let id = |key: &str| made[key].as_str().unwrap().to_string();
+    let (arc, center, start, end) = (id("entity"), id("center"), id("start"), id("end"));
+    let hold = |s: &mut Session, point: &str, x: &str, y: &str| {
+        for (kind, value) in [("x", x), ("y", y)] {
+            run(
+                s,
+                "sketch.constrain",
+                json!({"sketch": "Turn", "type": kind, "entities": [point], "value": value}),
+            );
+        }
+    };
+    hold(&mut s, &center, "0 mm", "0 mm");
+    hold(&mut s, &start, "10 mm", "0 mm");
+    hold(&mut s, &end, "ex", "ey");
+    let held = run(
+        &mut s,
+        "sketch.point",
+        json!({"sketch": "Turn", "at": [9.54, -3.0]}),
+    )["entity"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Turn", "type": "pointOn", "entities": [held, arc]}),
+    );
+    run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Turn", "type": "y", "entities": [held], "value": "-3 mm"}),
+    );
+    let warned = |s: &mut Session| -> usize {
+        let check = run(s, "document.check", json!({}));
+        check["warnings"]
+            .as_array()
+            .map(|w| w.iter().filter(|w| w["kind"] == "pointOffArc").count())
+            .unwrap_or_default()
+    };
+    assert_eq!(warned(&mut s), 1);
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "ex", "expr": "10 mm"}),
+    );
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "ey", "expr": "0 mm"}),
+    );
+    let (status, p) = points(&mut s, "Turn");
+    assert_eq!(status, "ok");
+    assert_eq!(point(&p, &end), [10.0, 0.0]);
+    assert_eq!(point(&p, &start), [10.0, 0.0]);
+    assert_eq!(warned(&mut s), 0);
+}

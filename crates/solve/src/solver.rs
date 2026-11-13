@@ -15,7 +15,7 @@
 //! ones before; a constraint that cannot be added even from there is
 //! blamed and left out.
 
-use crate::equations::{Equation, Fail, Prepared, start_failure};
+use crate::equations::{Axis, Equation, Fail, Prepared, Pt, start_failure};
 use crate::error::{Site, SolveError};
 use crate::factor::{Factor, Jacobian, Work};
 use crate::model::{
@@ -81,6 +81,9 @@ pub(crate) struct System<'a> {
     /// `F(x) - (1 - x[t]) r0`, so that the starting guess, where the rows
     /// are `r0`, is a solution at `t = 0`.
     pub(crate) homotopy: Option<Homotopy>,
+    /// The rows that hold one unknown at a value (an `x` or `y`, a `Fixed`
+    /// at a place), as (row, unknown, value).
+    held: Vec<(usize, usize, f64)>,
 }
 
 /// The continuation parameter's unknown, and the rows at its start.
@@ -95,8 +98,27 @@ impl<'a> System<'a> {
         let mut tolerance = Vec::new();
         let mut weight = Vec::new();
         let mut negligible = Vec::new();
+        let mut held = Vec::new();
         for eq in &prep.equations {
-            row_start.push(tolerance.len());
+            let first = tolerance.len();
+            row_start.push(first);
+            let holds: [Option<(usize, f64)>; 2] = match *eq {
+                Equation::Coordinate(Axis::X, Pt::Own(i), value) => [Some((i, value)), None],
+                Equation::Coordinate(Axis::Y, Pt::Own(i), value) => {
+                    [Some((i.saturating_add(1), value)), None]
+                }
+                Equation::Fixed(Pt::Own(i), [x, y]) => {
+                    [Some((i, x)), Some((i.saturating_add(1), y))]
+                }
+                _ => [None, None],
+            };
+            for (row, hold) in (first..).zip(holds) {
+                if let Some((col, value)) = hold
+                    && value.is_finite()
+                {
+                    held.push((row, col, value));
+                }
+            }
             let rows = eq.rows();
             let (tol, unit) = if eq.angular() {
                 (options.tolerance.angular, 1.0)
@@ -128,7 +150,22 @@ impl<'a> System<'a> {
             weight,
             negligible,
             homotopy: None,
+            held,
         }
+    }
+
+    /// The rows that hold one unknown at a value (an `x` or `y`, a `Fixed`
+    /// at a place) and are independent now, as (unknown, value); none
+    /// while the sketch is carried along (its rows are then not those).
+    fn landings(&self, independent: &[bool]) -> Vec<(usize, f64)> {
+        if self.homotopy.is_some() {
+            return Vec::new();
+        }
+        self.held
+            .iter()
+            .filter(|(row, ..)| independent.get(*row).copied().unwrap_or(false))
+            .map(|&(_, col, value)| (col, value))
+            .collect()
     }
 
     fn rows_of(&self, equation: usize) -> std::ops::Range<usize> {
@@ -275,14 +312,34 @@ impl<'a> System<'a> {
                         .sum()
                 };
                 let rhs: Vec<f64> = r.iter().map(|v| -v).collect();
-                let dx = factor.min_norm(&rhs);
+                let mut dx = factor.min_norm(&rhs);
+                // A coordinate held at a value by an independent row moves
+                // by exactly what that row lacks, as the step does in exact
+                // arithmetic, and a whole step puts it on the value itself:
+                // the rounding of the factorisation never leaves it a few
+                // units in the last place off (where it would stay, since
+                // within the polishing floor nothing moves it again).
+                let landings = self.landings(&independent);
+                for &(col, value) in &landings {
+                    if let (Some(d), Some(at)) = (dx.get_mut(col), x.get(col)) {
+                        *d = value - at;
+                    }
+                }
                 let longest = dx.iter().fold(0.0f64, |m, v| m.max(v.abs()));
                 if longest > 0.0 && longest.is_finite() {
                     let before = merit(&r);
                     let mut t = 1.0;
                     blocked = false;
                     for _ in 0..MAX_HALVINGS {
-                        let trial: Vec<f64> = x.iter().zip(&dx).map(|(x, d)| x + t * d).collect();
+                        let mut trial: Vec<f64> =
+                            x.iter().zip(&dx).map(|(x, d)| x + t * d).collect();
+                        if t == 1.0 {
+                            for &(col, value) in &landings {
+                                if let Some(at) = trial.get_mut(col) {
+                                    *at = value;
+                                }
+                            }
+                        }
                         match self.evaluate(&trial, active, None) {
                             // Also false for a NaN or infinite merit.
                             Ok(rt) if merit(&rt) <= (1.0 - 2.0 * ARMIJO * t) * before => {
@@ -673,6 +730,12 @@ fn conflicts(solution: &Solution) -> usize {
 /// constraint is blamed. A fresh build draws the point at its values and
 /// does not meet this; this start is that of a fresh build.
 fn held_in_place(sketch: &Sketch) -> Option<Sketch> {
+    placed_within(sketch, f64::INFINITY)
+}
+
+/// [`held_in_place`] for the held coordinates that are at most `within`
+/// from their values; the others stay where they are.
+fn placed_within(sketch: &Sketch, within: f64) -> Option<Sketch> {
     use crate::model::Constraint as C;
     let mut entities = sketch.entities.clone();
     let mut moved = false;
@@ -695,6 +758,7 @@ fn held_in_place(sketch: &Sketch) -> Option<Sketch> {
         for (slot, value) in [x, y].into_iter().zip(values) {
             if let Some(value) = value
                 && *slot != value
+                && (within == f64::INFINITY || (*slot - value).abs() <= within)
             {
                 *slot = value;
                 moved = true;
@@ -1015,11 +1079,21 @@ fn settle(
 }
 
 /// One pass, with the budget `meter` gives it, its work counted there.
+///
+/// A coordinate held at a value that starts within the tolerance of it
+/// starts on it: a move the tolerance cannot tell from none, which picks
+/// no branch, and what is held is then its value to the last bit,
+/// whatever solve ended there before (Newton's method stops once a row is
+/// below its polishing floor, so a held coordinate solved from a nearby
+/// start would keep what that start left in its last bits, and solves
+/// from different starts would differ there).
 fn solve_once(
     sketch: &Sketch,
     options: &SolveOptions,
     meter: &mut Meter,
 ) -> Result<Solution, SolveError> {
+    let touched = placed_within(sketch, options.tolerance.linear);
+    let sketch = touched.as_ref().unwrap_or(sketch);
     let mut budget = Budget {
         steps_left: options.max_iterations.saturating_mul(RUNS_PER_SOLVE),
         steps_taken: 0,

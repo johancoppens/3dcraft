@@ -62,6 +62,17 @@
 //! its result is a better guess: a constraint blamed too early, or
 //! undefined where the sketch was drawn, gets its turn in the next pass.
 //!
+//! A coordinate that an `x`, `y` or `Fixed` constraint holds at a value
+//! and that starts within the tolerance of it starts on it in every pass,
+//! and a Newton step moves a coordinate whose holding row is independent
+//! by exactly what that row lacks, so that a whole step puts it on the
+//! value. When the solve converges, a coordinate held by an independent
+//! row (the first constraint that holds it, unless other constraints
+//! already fix it) is therefore its value to the last bit, whatever the
+//! solve started from; one whose holder is redundant is within the
+//! tolerance of its value, as every constraint is, and a solve that does
+//! not converge promises neither.
+//!
 //! A solve that ends with a conflict, or does not converge, is tried once
 //! more from the starting guess with every coordinate that an `x`, `y` or
 //! `Fixed` constraint holds at a value already at that value (the start of

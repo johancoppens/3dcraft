@@ -108,9 +108,74 @@ pub(crate) fn collapsed_lines(
     out
 }
 
+/// The points that a `pointOn` holds on an arc and that the solve put on
+/// the arc's circle but not on the arc between its ends (farther than
+/// `tolerance` from it): `[{"point", "arc", "constraint", "warning"}]`.
+/// A point on an arc is on its whole circle (as a point on a line is on
+/// the whole line), so this is a solution; but an arc drawn through such
+/// a point no longer passes through it, which is what happens when the
+/// variables move the point across the line through the arc's ends: the
+/// arc keeps the way round it was drawn with and goes the long way round
+/// its centre. An arc whose ends meet (within `tolerance`) has no part of
+/// its circle outside it, and is passed over. A function of the solved
+/// sketch alone.
+pub(crate) fn points_off_their_arcs(
+    sketch: &Sketch,
+    solved: &SketchResult,
+    tolerance: f64,
+) -> Vec<Value> {
+    let mut out = Vec::new();
+    for c in &sketch.constraints {
+        let ConstraintKind::PointOn { point, curve } = c.kind else {
+            continue;
+        };
+        let Ok(Geometry::Arc { center, start, end }) = sketch.entity(curve).map(|e| &e.geometry)
+        else {
+            continue;
+        };
+        let (Some(o), Some(s), Some(e), Some(p)) = (
+            solved.point(*center),
+            solved.point(*start),
+            solved.point(*end),
+            solved.point(point),
+        ) else {
+            continue;
+        };
+        // Ends that meet: no part of the circle lies between them that the
+        // rest does not (the kernel refuses such an arc: a full turn is a
+        // circle), so nothing is said.
+        if (e.0 - s.0).phypot(e.1 - s.1) <= tolerance {
+            continue;
+        }
+        // Counter-clockwise from the start: how far the end and the point
+        // are round the centre, in [0, 2 pi).
+        let turn = |q: (f64, f64)| {
+            let a = (q.1 - o.1).patan2(q.0 - o.0) - (s.1 - o.1).patan2(s.0 - o.0);
+            a.rem_euclid(std::f64::consts::TAU)
+        };
+        let near = |q: (f64, f64)| (p.0 - q.0).phypot(p.1 - q.1) <= tolerance;
+        let (sweep, at) = (turn(e), turn(p));
+        if !(sweep.is_finite() && at.is_finite()) || at <= sweep || near(s) || near(e) {
+            continue;
+        }
+        out.push(json!({
+            "point": point.to_string(),
+            "arc": curve.to_string(),
+            "constraint": c.id.to_string(),
+            "warning": format!(
+                "{point} is on the circle of arc {curve} ({}) but not on the arc between its ends: the arc goes the other way round its centre, so it does not pass through {point}; an arc drawn through a point turns the long way round once the point crosses the line through its ends; draw it again through the point, or give it a centre",
+                c.id
+            ),
+        }));
+    }
+    out
+}
+
 /// For `document.check`: per sketch that solved, its lines collapsed
 /// under two directions as problems (a contradiction), one under a single
-/// direction as a warning (`kind: "collapsedLine"`), and one warning for
+/// direction as a warning (`kind: "collapsedLine"`), a point held on an
+/// arc that lies on its circle beyond its ends as a warning (`kind:
+/// "pointOffArc"`, [`points_off_their_arcs`]), and one warning for
 /// all the sketches with degrees of freedom left (`kind:
 /// "underConstrained"`, with `sketches: [{feature, name, dof}]`): an
 /// under-constrained sketch keeps the coordinates it was drawn at, which
@@ -157,6 +222,17 @@ pub(crate) fn check_sketches(
                     "warning": collapsed.get("problem"),
                 }));
             }
+        }
+        for off in points_off_their_arcs(sketch, solved, doc.tolerance.linear) {
+            warnings.push(json!({
+                "kind": "pointOffArc",
+                "feature": outcome.id.to_string(),
+                "name": feature.name,
+                "point": off.get("point"),
+                "arc": off.get("arc"),
+                "constraint": off.get("constraint"),
+                "warning": off.get("warning"),
+            }));
         }
         if let Some(dof) = solved.dof.filter(|d| *d > 0) {
             free.push(json!({

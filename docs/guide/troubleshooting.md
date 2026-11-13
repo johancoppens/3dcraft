@@ -104,6 +104,10 @@ and is not undone. In a Jig, **↺**, **Reset all** and **Back to last good** ar
   both `horizontal` and `vertical`) solves, but the result lists the line under `collapsed`, and
   `document.check` reports it as a problem. A line with no length under one direction only is a warning
   there (`kind: "collapsedLine"`).
+- **An arc no longer passes through its point.** An arc drawn through a point keeps the way round it was
+  drawn with. When a change of the variables moves the point across the line through the arc's ends, the
+  arc goes the long way round its centre, its circle still through the point. `document.check` warns
+  (`kind: "pointOffArc"`). Draw the arc again through the point, or give it a centre.
 
 ## Pictures
 
