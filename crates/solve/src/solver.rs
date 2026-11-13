@@ -18,7 +18,9 @@
 use crate::equations::{Equation, Fail, Prepared, start_failure};
 use crate::error::{Site, SolveError};
 use crate::factor::{Factor, Jacobian, Work};
-use crate::model::{ConstraintReport, ConstraintStatus, Entity, Sketch, Solution, SolveOptions};
+use crate::model::{
+    ConstraintReport, ConstraintStatus, Entity, EntityId, Sketch, Solution, SolveOptions,
+};
 use crate::{MAX_BLAMED, RUNS_PER_SOLVE};
 use craft3d_math::Portable;
 
@@ -489,13 +491,67 @@ fn same_verdict(a: &Solution, b: &Solution) -> bool {
 /// pass may decide otherwise (a line that had no direction now has one).
 /// What is returned is a fixed point of the pass, so that the caller, who
 /// stores the result and solves again later, gets the same answer.
+///
+/// When that ends in a conflict or does not converge, one last attempt
+/// starts from the circles that the held points determine
+/// ([`rounds_through_held_points`]); its result is taken only when it has
+/// no conflict, and otherwise the result is the one before. A sketch that
+/// solves without a conflict at the first attempts never reaches it.
 pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution, SolveError> {
     validate(options)?;
+    let mut spent = 0u64;
+    let before = solve_from_the_stored_solution(sketch, options, &mut spent);
+    let stuck = match &before {
+        Ok(solution) => conflicts(solution) > 0 && !only_unplaced_holders(sketch, solution),
+        Err(SolveError::DidNotConverge { .. }) => true,
+        Err(_) => false,
+    };
+    if !stuck {
+        return before;
+    }
+    let held = held_in_place(sketch);
+    let Some(start) =
+        rounds_through_held_points(held.as_ref().unwrap_or(sketch), options.tolerance.linear)
+    else {
+        return before;
+    };
+    // The last attempt spends what the ones before it left of the work.
+    let left = options.work_limit.saturating_sub(spent);
+    if left == 0 {
+        return before;
+    }
+    let mut meter = Meter {
+        cap: Some(left),
+        spent: 0,
+    };
+    let iterations = match &before {
+        Ok(solution) => solution.iterations,
+        Err(SolveError::DidNotConverge { iterations }) => *iterations,
+        Err(_) => 0,
+    };
+    match settle(&start, options, &mut meter) {
+        Ok(mut solved) if conflicts(&solved) == 0 => {
+            solved.iterations = solved.iterations.saturating_add(iterations);
+            Ok(solved)
+        }
+        _ => before,
+    }
+}
+
+/// The solve as it was before the last attempt existed: from the stored
+/// solution, and once more with the held coordinates at their values when
+/// that ends in a conflict. `spent` gets the work of both.
+fn solve_from_the_stored_solution(
+    sketch: &Sketch,
+    options: &SolveOptions,
+    spent: &mut u64,
+) -> Result<Solution, SolveError> {
     let mut meter = Meter {
         cap: None,
         spent: 0,
     };
     let first = settle(sketch, options, &mut meter);
+    *spent = meter.spent;
     let first_iterations = match &first {
         Ok(solution) => solution.iterations,
         Err(SolveError::DidNotConverge { iterations }) => *iterations,
@@ -525,6 +581,7 @@ pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution,
         second.iterations = second.iterations.saturating_add(first_iterations);
         second
     });
+    *spent = spent.saturating_add(meter.spent);
     match (first, second) {
         // Only a solution without conflicts replaces one with: solving it
         // again finds nothing to retry, so it stays what it is.
@@ -641,6 +698,132 @@ fn held_in_place(sketch: &Sketch) -> Option<Sketch> {
         splines: sketch.splines.clone(),
         image_starts: sketch.image_starts.clone(),
     })
+}
+
+/// The sketch with every circle and arc whose centre no constraint holds,
+/// and which passes through three points whose coordinates constraints
+/// hold at values, centred on the circle through those three (a circle's
+/// radius too, to the first of them), or none when that places nothing.
+///
+/// Such a centre is fixed by the values alone, as one point: the circle
+/// through three points that are not in line. It is the one kind of
+/// geometry in a sketch that the values determine while its equations are
+/// not linear in it (two points equally far from a centre): a point held
+/// by values, or by lines through held points (`coincident`, `midpoint`,
+/// `symmetric`, a point on a held line), is found by Newton's method from
+/// any start in one step, and a point at a distance or an angle from held
+/// ones, or tangent to them, has more than one place the values allow, of
+/// which the start picks one. A centre iterated from a stale place, far
+/// off or on the line of its chord, may not be found at all; from here it
+/// is where it belongs.
+///
+/// The points through which a round passes: an arc's start and end, then
+/// the points `pointOn` puts on it, in the order of the constraints; the
+/// first three that lie apart (farther than the tolerance from each
+/// other) and are held in both coordinates (`x` and `y`, or `Fixed`).
+fn rounds_through_held_points(sketch: &Sketch, tolerance: f64) -> Option<Sketch> {
+    use crate::model::Constraint as C;
+    let count = sketch.entities.len();
+    let mut held = vec![[false; 2]; count];
+    for constraint in &sketch.constraints {
+        let (point, axes) = match *constraint {
+            C::CoordinateX { point, value } => (point, [value.is_finite(), false]),
+            C::CoordinateY { point, value } => (point, [false, value.is_finite()]),
+            C::Fixed {
+                point,
+                at: Some([x, y]),
+            } => (point, [x.is_finite(), y.is_finite()]),
+            C::Fixed { point, at: None } => (point, [true; 2]),
+            _ => continue,
+        };
+        if let Some(h) = held.get_mut(point.index()) {
+            h[0] |= axes[0];
+            h[1] |= axes[1];
+        }
+    }
+    let is_held = |id: EntityId| held.get(id.index()) == Some(&[true; 2]);
+    let mut through: Vec<Vec<EntityId>> = vec![Vec::new(); count];
+    for (index, entity) in sketch.entities.iter().enumerate() {
+        if let Entity::Arc { start, end, .. } = *entity
+            && let Some(list) = through.get_mut(index)
+        {
+            list.extend([start, end]);
+        }
+    }
+    for constraint in &sketch.constraints {
+        if let C::PointOnCircle { point, circle } = *constraint
+            && let Some(list) = through.get_mut(circle.index())
+        {
+            list.push(point);
+        }
+    }
+    let mut entities = sketch.entities.clone();
+    let mut moved = false;
+    for (index, entity) in sketch.entities.iter().enumerate() {
+        let (center, circle) = match *entity {
+            Entity::Arc { center, .. } => (center, false),
+            Entity::Circle { center, .. } => (center, true),
+            _ => continue,
+        };
+        if is_held(center) || !matches!(entities.get(center.index()), Some(Entity::Point { .. })) {
+            continue;
+        }
+        let mut points: Vec<[f64; 2]> = Vec::new();
+        for id in through.get(index).map(Vec::as_slice).unwrap_or(&[]) {
+            if points.len() == 3 || !is_held(*id) {
+                continue;
+            }
+            let Some(&Entity::Point { x, y }) = entities.get(id.index()) else {
+                continue;
+            };
+            let apart = points
+                .iter()
+                .all(|[px, py]| (x - px).abs().max((y - py).abs()) > tolerance);
+            if apart {
+                points.push([x, y]);
+            }
+        }
+        let (Some(&a), Some(&b), Some(&c)) = (points.first(), points.get(1), points.get(2)) else {
+            continue;
+        };
+        let Some(at) = circumcentre(a, b, c) else {
+            continue;
+        };
+        if let Some(slot) = entities.get_mut(center.index()) {
+            *slot = Entity::Point { x: at[0], y: at[1] };
+            moved = true;
+        }
+        if circle && let Some(Entity::Circle { radius, .. }) = entities.get_mut(index) {
+            let r = (a[0] - at[0]).phypot(a[1] - at[1]);
+            if r.is_finite() && r > 0.0 {
+                *radius = r;
+            }
+        }
+    }
+    moved.then(|| Sketch {
+        entities,
+        constraints: sketch.constraints.clone(),
+        splines: sketch.splines.clone(),
+        image_starts: sketch.image_starts.clone(),
+    })
+}
+
+/// The centre of the circle through `a`, `b` and `c` (the meeting point of
+/// two perpendicular bisectors, by Cramer's rule, from `a`), or none for
+/// points in line or a centre that is not finite.
+fn circumcentre(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> Option<[f64; 2]> {
+    let (bx, by) = (b[0] - a[0], b[1] - a[1]);
+    let (cx, cy) = (c[0] - a[0], c[1] - a[1]);
+    let d = 2.0 * (bx * cy - by * cx);
+    if d == 0.0 || !d.is_finite() {
+        return None;
+    }
+    let (b2, c2) = (bx * bx + by * by, cx * cx + cy * cy);
+    let at = [
+        a[0] + (cy * b2 - by * c2) / d,
+        a[1] + (bx * c2 - cx * b2) / d,
+    ];
+    at.iter().all(|v| v.is_finite()).then_some(at)
 }
 
 /// Per constraint: whether [`held_in_place`] places a coordinate at its
@@ -1198,5 +1381,77 @@ mod tests {
         )
         .unwrap();
         assert!(!only_unplaced_holders(&jumped(), &first));
+    }
+
+    /// The last attempt places a round's centre only where the held points
+    /// fix it: through three held points apart (an arc's ends and a point
+    /// on it; a circle's radius too), not through two (an arc with a radius
+    /// has a centre on either side), not a centre that is held itself, and
+    /// nothing for points in line.
+    #[test]
+    fn only_a_centre_the_held_points_fix_is_placed() {
+        use crate::model::Constraint as C;
+        let hold = |s: &mut Sketch, point: EntityId, [x, y]: [f64; 2]| {
+            s.add_constraint(C::CoordinateX { point, value: x });
+            s.add_constraint(C::CoordinateY { point, value: y });
+        };
+        let centre_of = |s: &Sketch, id: EntityId| match s.entities.get(id.index()) {
+            Some(Entity::Point { x, y }) => [*x, *y],
+            _ => panic!("no point"),
+        };
+        // An arc from (4, 0) round to (-4, 0) through (0, 2): centre
+        // (0, -3), radius 5. Drawn with its centre far off.
+        let arc = |third: Option<[f64; 2]>, centre_held: bool| {
+            let mut s = Sketch::new();
+            let a = s.add_point(4.0, 0.0);
+            let b = s.add_point(-4.0, 0.0);
+            let c = s.add_point(1e6, 3.0);
+            let arc = s.add_arc(c, a, b);
+            hold(&mut s, a, [4.0, 0.0]);
+            hold(&mut s, b, [-4.0, 0.0]);
+            if let Some(at) = third {
+                let p = s.add_point(at[0], at[1]);
+                s.add_constraint(C::PointOnCircle {
+                    point: p,
+                    circle: arc,
+                });
+                hold(&mut s, p, at);
+            }
+            if centre_held {
+                s.add_constraint(C::Fixed { point: c, at: None });
+            }
+            (s, c)
+        };
+        let (s, c) = arc(Some([0.0, 2.0]), false);
+        let placed = rounds_through_held_points(&s, 1e-6).unwrap();
+        assert_eq!(centre_of(&placed, c), [0.0, -3.0]);
+        let (s, _) = arc(None, false);
+        assert!(rounds_through_held_points(&s, 1e-6).is_none());
+        let (s, _) = arc(Some([0.0, 2.0]), true);
+        assert!(rounds_through_held_points(&s, 1e-6).is_none());
+        let (s, _) = arc(Some([1.0, 0.0]), false);
+        assert!(rounds_through_held_points(&s, 1e-6).is_none());
+        // A point on the arc that is not held does not count.
+        let (mut s, _) = arc(Some([0.0, 2.0]), false);
+        s.constraints.truncate(s.constraints.len() - 2);
+        assert!(rounds_through_held_points(&s, 1e-6).is_none());
+        // A circle with a free radius through three held points.
+        let mut s = Sketch::new();
+        let c = s.add_point(7.0, 7.0);
+        let circle = s.add_circle(c, 1.0);
+        for at in [[4.0, 0.0], [-4.0, 0.0], [0.0, 2.0]] {
+            let p = s.add_point(0.0, 0.0);
+            s.add_constraint(C::PointOnCircle { point: p, circle });
+            hold(&mut s, p, at);
+        }
+        let placed = rounds_through_held_points(&held_in_place(&s).unwrap(), 1e-6).unwrap();
+        assert_eq!(centre_of(&placed, c), [0.0, -3.0]);
+        assert_eq!(
+            placed.entities.get(circle.index()),
+            Some(&Entity::Circle {
+                center: c,
+                radius: 5.0
+            })
+        );
     }
 }
