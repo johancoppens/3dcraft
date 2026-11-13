@@ -28,9 +28,11 @@ use boolean_common::{SCALES, assert_close, mass, tolerance};
 use craft3d_geom::Surface;
 use craft3d_kernel::boolean::{BooleanOp, boolean};
 use craft3d_kernel::chamfer::{ChamferEdge, ChamferFace, ChamferSize, chamfer};
+use craft3d_kernel::extrude::extrude;
 use craft3d_kernel::fillet::{FilletEdge, FilletFace, fillet};
 use craft3d_kernel::primitives;
-use craft3d_math::{Frame, Vec3};
+use craft3d_kernel::profile::{SketchCurve, detect_profiles};
+use craft3d_math::{Frame, Portable, Vec3};
 use craft3d_tess::{SelfCheckParams, TessParams, body_self_intersections, tessellate_body};
 use craft3d_topo::{Body, EdgeId, FaceId, check};
 use std::f64::consts::PI;
@@ -256,8 +258,7 @@ fn two_rounds_use_up_an_end_face_of_spline_surface() {
     // proven one curve within the tolerance. The volume is the closed
     // form within what the fitted rounds may be off (their area times
     // the tolerance).
-    use craft3d_kernel::extrude::extrude;
-    use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
+    use craft3d_kernel::profile::{Curve2, Spline2};
     let section = 84.0 - 2.0 * (2.0 - PI / 2.0) * 9.0;
     let perimeter = 40.0 - 2.0 * (4.0 - PI) * 3.0;
     let (volume, area) = (section * 10.0, 2.0 * section + perimeter * 10.0);
@@ -346,10 +347,161 @@ fn two_rounds_use_up_an_end_face_of_spline_surface() {
     }
 }
 
+/// The prism of `height` over the closed outline `curves` (given at
+/// scale 1), in `frame`, at scale `k`.
+fn prism(frame: &Frame, k: f64, curves: &[SketchCurve], height: f64) -> Body {
+    let tol = tolerance(k);
+    let profiles = detect_profiles(&common::scale_curves(curves, k), &tol).unwrap();
+    extrude(&profiles, frame, 0.0, height * k, &tol)
+        .unwrap()
+        .body
+}
+
+#[test]
+fn two_rounds_use_up_a_curved_end_face() {
+    // A slab 6 wide and 10 tall whose end is a cylinder: the outline runs
+    // from (0, 0) to (14, 0), along the arc of radius 5 about (10, 3) to
+    // (14, 6) (its apex at (15, 3)), back to (0, 6). The two uprights at
+    // the end rounded 3: the ball touches the side 3 in from it and the
+    // arc's circle from inside, its centre 5 − 3 = 2 from (10, 3), at
+    // (12, 3): both rounds are that one circle, and they touch the end at
+    // its apex only, so it is used up. The section is the rectangle 12 × 6
+    // and the half disc of radius 3 about (12, 3); its perimeter
+    // 12 + 12 + 6 + 3π. The faces: top, bottom, back, the two sides and
+    // the two rounds (one cylinder).
+    use common::{arc, line};
+    let outline = [
+        line(1, [0.0, 0.0], [14.0, 0.0]),
+        arc(2, [10.0, 3.0], [14.0, 0.0], [14.0, 6.0]),
+        line(3, [14.0, 6.0], [0.0, 6.0]),
+        line(4, [0.0, 6.0], [0.0, 0.0]),
+    ];
+    let section = 72.0 + 4.5 * PI;
+    let perimeter = 30.0 + 3.0 * PI;
+    for k in SCALES {
+        for (index, frame) in frames(k).iter().enumerate() {
+            let what = format!("scale {k}, frame {index}");
+            let body = prism(frame, k, &outline, 10.0);
+            let uprights = [
+                edge_at(&body, frame, k, [14.0, 0.0, 5.0]),
+                edge_at(&body, frame, k, [14.0, 6.0, 5.0]),
+            ];
+            let end = shared(&body, uprights[0], uprights[1]);
+            assert!(matches!(
+                body.face(end).unwrap().surface,
+                Surface::Cylinder(_)
+            ));
+            let edges: Vec<FilletEdge> = uprights
+                .iter()
+                .map(|edge| FilletEdge {
+                    edge: *edge,
+                    radius: 3.0 * k,
+                })
+                .collect();
+            let made =
+                fillet(&body, &edges, &tolerance(k)).unwrap_or_else(|e| panic!("{what}: {e}"));
+            sound(&made.body, k, &what);
+            assert_mass(
+                &made.body,
+                section * 10.0,
+                2.0 * section + perimeter * 10.0,
+                k,
+                &what,
+            );
+            assert_eq!(made.body.faces.len(), 7, "{what}");
+            let rounds: Vec<FaceId> = (0..made.faces.len())
+                .filter(|i| matches!(made.faces[*i], FilletFace::Fillet(_)))
+                .map(|i| FaceId(i as u32))
+                .collect();
+            assert_eq!(rounds.len(), 2, "{what}");
+            assert!(neighbours(&made.body, rounds[0], rounds[1]), "{what}");
+            for face in &made.faces {
+                if let FilletFace::Kept(from) = face {
+                    assert!(!from.contains(&end), "{what}: the end is left");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn on_a_shallow_edge_a_vertex_within_the_band_of_the_border_is_not_a_way_in() {
+    // A wedge 5 tall whose blunt tip is a face `w` wide, the sides leaving
+    // it at 10° (the faces turn by θ = 10° at its two edges), both edges
+    // rounded 10. A ball of radius r touches each face r tan(θ/2) from the
+    // edge, so the tip is used up when w = 2 r tan(θ/2). Whether the
+    // boundary leads into what the blend takes is told inside by more than
+    // the tolerance in the measure's own terms: how much nearer than the
+    // radius the ball's centre comes to the other face, which along the
+    // tip face is the tolerance over sin θ (5.8 tolerances here). Narrower
+    // than that by half the tolerance (along the face): used up within the
+    // tolerance, built (refused before 2026-11-13, when the sign alone
+    // read the vertex as inside); by 3 tolerances (in the band, more than
+    // the tolerance along the face) and by 20 (past it): the blend is not
+    // taken as reaching on, and it does not fit: refused as too large.
+    // The section: the quadrilateral less two spandrels r² (tan(θ/2) − θ/2).
+    let theta = PI / 18.0;
+    let r = 10.0;
+    let exact = 2.0 * r * (0.5 * theta).ptan();
+    let spandrel = r * r * ((0.5 * theta).ptan() - 0.5 * theta);
+    for k in SCALES {
+        let tol = tolerance(k);
+        for (index, frame) in frames(k).iter().enumerate() {
+            for (narrower, builds) in [(0.0, true), (0.5, true), (3.0, false), (20.0, false)] {
+                let what = format!("scale {k}, frame {index}, {narrower} tolerances narrower");
+                // At scale 1, then scaled with the outline.
+                let w = exact - narrower * tol.linear / k;
+                let (p1, p2) = ([0.0, -w / 2.0], [0.0, w / 2.0]);
+                let out = 40.0;
+                let q1 = [p1[0] - out * theta.psin(), p1[1] - out * theta.pcos()];
+                let q2 = [p2[0] - out * theta.psin(), p2[1] + out * theta.pcos()];
+                let corners = [p1, p2, q2, q1];
+                let outline: Vec<SketchCurve> = (0..4)
+                    .map(|i| common::line(i as u64 + 1, corners[i], corners[(i + 1) % 4]))
+                    .collect();
+                let body = prism(frame, k, &outline, 5.0);
+                let edges = [p1, p2].map(|p| FilletEdge {
+                    edge: edge_at(&body, frame, k, [p[0], p[1], 2.5]),
+                    radius: r * k,
+                });
+                let made = fillet(&body, &edges, &tol);
+                if !builds {
+                    assert!(made.is_err(), "{what}");
+                    continue;
+                }
+                let made = made.unwrap_or_else(|e| panic!("{what}: {e}"));
+                sound(&made.body, k, &what);
+                // Top, bottom, back, two sides and the two rounds.
+                assert_eq!(made.body.faces.len(), 7, "{what}");
+                let quad = 0.5
+                    * (0..4)
+                        .map(|i| {
+                            let (a, b) = (corners[i], corners[(i + 1) % 4]);
+                            a[0] * b[1] - b[0] * a[1]
+                        })
+                        .sum::<f64>()
+                        .abs();
+                let want = (quad - 2.0 * spandrel) * 5.0 * k * k * k;
+                let m = mass(&made.body);
+                // Within what the second round's border moved onto the
+                // first by the tip's shortfall can change: that length
+                // times the round's radius and the prism's height.
+                let shortfall = narrower * tol.linear * (r * k) * (5.0 * k);
+                assert!(
+                    (m.volume - want).abs() <= (1e-9 * want).max(shortfall),
+                    "{what}: {} against {want}",
+                    m.volume
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn a_face_a_little_wider_than_its_rounds_stays_and_one_narrower_is_refused() {
     // 14 × 6 × 10 with the four uprights rounded: 2.9 leaves each end a
-    // strip 0.2 wide; 3.1 does not fit.
+    // strip 0.2 wide; 3.1 does not fit. A guard on the step, not a proof
+    // of it: it passes without the change of 2026-11-13 as well.
     for k in SCALES {
         let body = block(&Frame::WORLD, k, [0.0, 0.0, 0.0], [14.0, 6.0, 10.0]);
         let uprights: Vec<EdgeId> = [[0.0, 0.0], [0.0, 6.0], [14.0, 0.0], [14.0, 6.0]]

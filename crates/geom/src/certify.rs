@@ -1736,7 +1736,9 @@ pub fn curves_apart(
 /// of `a`'s range to the other, the bound holds both ways (every point of
 /// `a` near `b` as well as every point of `b` near `a`). Rounding:
 /// [`ROUNDING_ULPS`] of what enters each evaluation is added to every
-/// distance measured.
+/// distance measured. A range that is empty, runs backwards, or whose
+/// width is not a finite number (ends far apart overflow it), and a target
+/// that is not a positive number, are not proven, and never panic.
 pub fn curves_within(
     a: &CurveBound<'_>,
     range_a: (f64, f64),
@@ -1746,9 +1748,11 @@ pub fn curves_within(
     within: Within,
 ) -> Result<Proven, NotProven> {
     let middle = NotProven {
-        at: 0.5 * (range_b.0 + range_b.1),
+        at: 0.5 * range_b.0 + 0.5 * range_b.1,
     };
-    let valid = |(lo, hi): (f64, f64)| lo.is_finite() && hi.is_finite() && hi > lo;
+    // Finite ends and a finite width (ends far apart overflow it, and
+    // every place between would be lost to it).
+    let valid = |(lo, hi): (f64, f64)| (hi - lo).is_finite() && hi > lo;
     if !(valid(range_a) && valid(range_b) && within.target.is_finite() && within.target > 0.0) {
         return Err(middle);
     }
@@ -1759,7 +1763,7 @@ pub fn curves_within(
     };
     // `a`'s parameter at `b`'s, linear between the ends: the first guess
     // of every foot.
-    let linear = |t: f64| s_start + (s_end - s_start) * (t - range_b.0) / (range_b.1 - range_b.0);
+    let linear = |t: f64| s_start + (s_end - s_start) * ((t - range_b.0) / (range_b.1 - range_b.0));
     // The pairs `(t, s)` the pieces start from: the ends and `b`'s knots
     // with their feet on `a`, kept running one way along `a` (a foot
     // that rounding puts behind the one before is moved up to it: any
@@ -1772,10 +1776,14 @@ pub fn curves_within(
     nodes.push((range_b.1, s_end));
     let mut previous = s_start;
     for node in &mut nodes {
+        // `previous` and `s_end` are numbers in order, so no clamp here
+        // can meet a NaN bound; a foot that is not a number takes the
+        // place before it.
+        let s = if node.1.is_nan() { previous } else { node.1 };
         node.1 = if same_way {
-            node.1.clamp(previous, s_end)
+            s.clamp(previous, s_end)
         } else {
-            node.1.clamp(s_end, previous)
+            s.clamp(s_end, previous)
         };
         previous = node.1;
     }
@@ -1792,7 +1800,7 @@ pub fn curves_within(
     let mut pieces = 0_usize;
     while let Some([(t0, s0), (t1, s1)]) = stack.pop() {
         let at = NotProven {
-            at: 0.5 * (t0 + t1),
+            at: t0 + 0.5 * (t1 - t0),
         };
         let (lo, hi) = if s0 <= s1 { (s0, s1) } else { (s1, s0) };
         // A piece whose part of `a` reaches across a knot of `a` is cut
@@ -1825,11 +1833,11 @@ pub fn curves_within(
         if pieces + stack.len() + 2 > within.most {
             return Err(at);
         }
-        let tm = 0.5 * (t0 + t1);
+        let tm = t0 + 0.5 * (t1 - t0);
         if !(tm > t0 && tm < t1) {
             return Err(at);
         }
-        let sm = foot_on_curve(a, b.eval(tm), 0.5 * (s0 + s1), (lo, hi));
+        let sm = foot_on_curve(a, b.eval(tm), s0 + 0.5 * (s1 - s0), (lo, hi));
         stack.push([(tm, sm), (t1, s1)]);
         stack.push([(t0, s0), (tm, sm)]);
     }
@@ -1958,22 +1966,35 @@ fn hermite_apart(
 }
 
 /// The parameter of the point of `curve` nearest `point`, by Gauss-Newton
-/// steps from `guess`, kept within `range` (in either order).
+/// steps from `guess`, kept within `range` (in either order); always a
+/// number within it (the middle where the guess is not a number), so that
+/// what is built on it never meets a NaN.
 fn foot_on_curve(curve: &CurveBound<'_>, point: Vec3, guess: f64, range: (f64, f64)) -> f64 {
     let (lo, hi) = if range.0 <= range.1 {
         range
     } else {
         (range.1, range.0)
     };
-    let mut s = guess.clamp(lo, hi);
+    if !(lo.is_finite() && hi.is_finite()) {
+        return guess;
+    }
+    let mut s = if guess.is_nan() {
+        0.5 * lo + 0.5 * hi
+    } else {
+        guess.clamp(lo, hi)
+    };
     for _ in 0..FOOT_STEPS {
         let (p, d) = curve.derivatives(s);
         let dd = d.dot(d);
         if !(dd > 0.0) {
             break;
         }
-        let next = (s + (point - p).dot(d) / dd).clamp(lo, hi);
-        if !next.is_finite() || next == s {
+        let next = s + (point - p).dot(d) / dd;
+        if !next.is_finite() {
+            break;
+        }
+        let next = next.clamp(lo, hi);
+        if next == s {
             break;
         }
         s = next;
@@ -2345,61 +2366,91 @@ mod tests {
         NurbsCurve::polynomial(3, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], ctrl).unwrap()
     }
 
+    /// The ellipse of semi-axes `a` along `f`'s x and `b` along its y as
+    /// the rational quadratic: the circle's nine control points and
+    /// weights (`NurbsCurve::circle`) carried by the affine map that makes
+    /// the circle the ellipse.
+    fn rational_ellipse(f: &Frame, a: f64, b: f64) -> NurbsCurve {
+        let unit = NurbsCurve::circle(&Frame::WORLD, 1.0).unwrap();
+        let ctrl = unit
+            .control_points()
+            .iter()
+            .map(|p| f.point(p.x * a, p.y * b, 0.0))
+            .collect();
+        NurbsCurve::new(2, unit.knots().to_vec(), ctrl, unit.weights().to_vec()).unwrap()
+    }
+
     #[test]
     fn one_curve_given_twice_is_proven_within_and_the_bound_is_above_every_sample() {
         for k in [1e-3, 1.0, 1e6] {
-            let f = frame(k);
-            let target = 1e-6 * k;
-            let within = Within { target, most: 4096 };
-            let (p, q) = (
-                f.point(1.0 * k, 2.0 * k, 0.5 * k),
-                f.point(-3.0 * k, 0.5 * k, 2.0 * k),
-            );
-            let line = Curve3::Line(crate::Line::new(p, (q - p).normalized().unwrap()).unwrap());
-            let length = p.distance(q);
-            let cubic = Curve3::Nurbs(straight_cubic(p, q));
-            let reversed = Curve3::Nurbs(straight_cubic(q, p));
-            let circle = Curve3::Circle(crate::Circle::new(f, 2.0 * k).unwrap());
-            let rational = Curve3::Nurbs(NurbsCurve::circle(&f, 2.0 * k).unwrap());
-            // A cubic through 41 points of a helix: knots every fortieth,
-            // given twice, so the knots of the two coincide.
-            let fitted = {
-                let params: Vec<f64> = (0..=40).map(|i| f64::from(i) / 40.0).collect();
-                let values: Vec<Vec<f64>> = params
-                    .iter()
-                    .map(|t| {
-                        let p = f.point(k * (3.0 * t).pcos(), k * (3.0 * t).psin(), k * t);
-                        vec![p.x, p.y, p.z]
-                    })
-                    .collect();
-                let (knots, rows) = crate::refine::interpolate(&params, 3, &values).unwrap();
-                let ctrl = rows.iter().map(|r| Vec3::new(r[0], r[1], r[2])).collect();
-                Curve3::Nurbs(NurbsCurve::polynomial(3, knots, ctrl).unwrap())
-            };
-            // (a, its range, b, its range, b runs as a does)
-            let pairs = [
-                (&line, (0.0, length), &cubic, (0.0, 1.0), true),
-                (&line, (0.0, length), &reversed, (0.0, 1.0), false),
-                (&cubic, (0.0, 1.0), &reversed, (0.0, 1.0), false),
-                (&circle, (0.0, 0.5 * PI), &rational, (0.0, 0.25), true),
-                (&rational, (0.25, 1.0), &circle, (0.5 * PI, 2.0 * PI), true),
-                (&fitted, (0.0, 1.0), &fitted, (0.0, 1.0), true),
-            ];
-            for (index, (a, range_a, b, range_b, same_way)) in pairs.into_iter().enumerate() {
-                let (ab, bb) = (CurveBound::new(a), CurveBound::new(b));
-                let proven = curves_within(&ab, range_a, &bb, range_b, same_way, within)
-                    .unwrap_or_else(|e| panic!("pair {index} at {k}: {e:?}"));
-                assert!(proven.bound <= target, "pair {index} at {k}: {proven:?}");
-                let seen = hausdorff_seen(&ab, range_a, &bb, range_b);
-                assert!(
-                    proven.bound >= seen,
-                    "pair {index} at {k}: {proven:?} below {seen}"
+            for (place, f) in [frame(k), far(k)].into_iter().enumerate() {
+                let target = 1e-6 * k;
+                let within = Within { target, most: 4096 };
+                let (p, q) = (
+                    f.point(1.0 * k, 2.0 * k, 0.5 * k),
+                    f.point(-3.0 * k, 0.5 * k, 2.0 * k),
                 );
-                // Either way round.
-                curves_within(&bb, range_b, &ab, range_a, same_way, within)
-                    .unwrap_or_else(|e| panic!("pair {index} turned at {k}: {e:?}"));
+                let line =
+                    Curve3::Line(crate::Line::new(p, (q - p).normalized().unwrap()).unwrap());
+                let length = p.distance(q);
+                let cubic = Curve3::Nurbs(straight_cubic(p, q));
+                let reversed = Curve3::Nurbs(straight_cubic(q, p));
+                let circle = Curve3::Circle(crate::Circle::new(f, 2.0 * k).unwrap());
+                let rational = Curve3::Nurbs(NurbsCurve::circle(&f, 2.0 * k).unwrap());
+                // A cubic through 41 points of a helix: knots every fortieth,
+                // given twice, so the knots of the two coincide.
+                let fitted = {
+                    let params: Vec<f64> = (0..=40).map(|i| f64::from(i) / 40.0).collect();
+                    let values: Vec<Vec<f64>> = params
+                        .iter()
+                        .map(|t| {
+                            let p = f.point(k * (3.0 * t).pcos(), k * (3.0 * t).psin(), k * t);
+                            vec![p.x, p.y, p.z]
+                        })
+                        .collect();
+                    let (knots, rows) = crate::refine::interpolate(&params, 3, &values).unwrap();
+                    let ctrl = rows.iter().map(|r| Vec3::new(r[0], r[1], r[2])).collect();
+                    Curve3::Nurbs(NurbsCurve::polynomial(3, knots, ctrl).unwrap())
+                };
+                let ellipse = Curve3::Ellipse(crate::Ellipse::new(f, 3.0 * k, 1.5 * k).unwrap());
+                let spline_ellipse = Curve3::Nurbs(rational_ellipse(&f, 3.0 * k, 1.5 * k));
+                // (a, its range, b, its range, b runs as a does)
+                let pairs = [
+                    (&line, (0.0, length), &cubic, (0.0, 1.0), true),
+                    (&line, (0.0, length), &reversed, (0.0, 1.0), false),
+                    (&cubic, (0.0, 1.0), &reversed, (0.0, 1.0), false),
+                    (&circle, (0.0, 0.5 * PI), &rational, (0.0, 0.25), true),
+                    (&rational, (0.25, 1.0), &circle, (0.5 * PI, 2.0 * PI), true),
+                    (&fitted, (0.0, 1.0), &fitted, (0.0, 1.0), true),
+                    // Closed curves, whole: both ends at one point.
+                    (&circle, (0.0, 2.0 * PI), &rational, (0.0, 1.0), true),
+                    (&ellipse, (0.0, 2.0 * PI), &spline_ellipse, (0.0, 1.0), true),
+                    (&ellipse, (0.5 * PI, PI), &spline_ellipse, (0.25, 0.5), true),
+                ];
+                for (index, (a, range_a, b, range_b, same_way)) in pairs.into_iter().enumerate() {
+                    let what = format!("pair {index} at {k}, place {place}");
+                    let (ab, bb) = (CurveBound::new(a), CurveBound::new(b));
+                    let proven = curves_within(&ab, range_a, &bb, range_b, same_way, within)
+                        .unwrap_or_else(|e| panic!("{what}: {e:?}"));
+                    assert!(proven.bound <= target, "{what}: {proven:?}");
+                    let seen = hausdorff_seen(&ab, range_a, &bb, range_b);
+                    assert!(proven.bound >= seen, "{what}: {proven:?} below {seen}");
+                    // Either way round.
+                    curves_within(&bb, range_b, &ab, range_a, same_way, within)
+                        .unwrap_or_else(|e| panic!("{what} turned: {e:?}"));
+                }
             }
         }
+    }
+
+    /// A tilted frame far from the origin, at scale `k`.
+    fn far(k: f64) -> Frame {
+        Frame::new(
+            Vec3::new(1000.0 * k, -700.0 * k, 300.0 * k),
+            Vec3::new(0.2, 0.3, 1.0),
+            Vec3::new(1.0, -0.1, 0.0),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -2475,6 +2526,31 @@ mod tests {
             most: 1,
         };
         assert!(curves_within(&cb, (0.0, 0.5 * PI), &rb, (0.0, 0.25), true, one).is_err());
+        // Finite ranges whose width is not: a line and a cubic with a knot
+        // inside, both over (−1e308, 1e308). Before 2026-11-13 the foot of
+        // the knot came out NaN and a clamp on it panicked.
+        let cubic = Curve3::Nurbs(
+            NurbsCurve::polynomial(
+                3,
+                vec![0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0],
+                vec![
+                    Vec3::ZERO,
+                    Vec3::new(0.25, 0.0, 0.0),
+                    Vec3::new(0.5, 0.0, 0.0),
+                    Vec3::new(0.75, 0.0, 0.0),
+                    Vec3::X,
+                ],
+            )
+            .unwrap(),
+        );
+        let kb = CurveBound::new(&cubic);
+        let huge = (-1e308, 1e308);
+        for same_way in [true, false] {
+            assert!(curves_within(&lb, huge, &kb, huge, same_way, within).is_err());
+            assert!(curves_within(&kb, huge, &lb, huge, same_way, within).is_err());
+            assert!(curves_within(&lb, huge, &kb, (0.0, 1.0), same_way, within).is_err());
+            assert!(curves_within(&kb, (0.0, 1.0), &lb, huge, same_way, within).is_err());
+        }
     }
 
     #[test]

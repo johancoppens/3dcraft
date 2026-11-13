@@ -12,26 +12,36 @@
 //! and nothing could be built on it): the face goes, and each pair
 //! becomes one edge, which the faces on its two sides now share.
 //!
-//! **Why this is general.** Nothing here asks what the surfaces or curves
-//! are. A face is taken as used up only when every coedge of its loops is
-//! paired with another of the same face that runs between the same two
-//! vertices the other way, and the two curves are proven one within the
-//! tolerance (`craft3d_geom::certify::curves_within`: every point of
-//! either near the other, both ways, not sampled). A boundary that cancels
-//! bounds either nothing or the whole of a closed surface; a face beside
-//! a blended edge has a real edge with another face, so it never was the
-//! whole of a closed surface, and a blend only takes from it, so what is
-//! left is nothing. Only faces the blend changed are looked at (the body
-//! had them, and their loops are not the ones it had: the blend took
-//! edges out of them or put its borders in), so a face the blend did not
-//! touch stays as it was. The edge kept of a pair is proven on
-//! the surface of the face across the one dropped (to the tolerance,
-//! `curve_on_surface`), as every edge of a face has to lie on its
-//! surface; the lower-numbered edge first, the other if that fails, and
-//! the face stays (and the body is refused further on, as before) where
-//! neither holds or any pair is missing.
+//! **Why this is general.** Nothing here asks what the curves are, or how
+//! the face came to be so. A face is taken as used up only when every
+//! coedge of its loops is paired with another of the same face that runs
+//! between the same two vertices the other way, and the two curves are
+//! proven one within the tolerance (`craft3d_geom::certify::curves_within`:
+//! every point of either near the other, both ways, not sampled): its
+//! boundary cancels. A region of a surface whose boundary cancels is made
+//! of whole pieces of the surface that close up on themselves, with
+//! nothing round them. A surface with a border of its own has none: a
+//! plane, a cylinder and a cone run off to infinity, and a spline patch
+//! has the edges of its parameter rectangle wherever they are neither
+//! joined to the opposite edge nor pinched to a point. There the region
+//! is empty. On a surface that closes up everywhere (a sphere, a torus, a
+//! spline closed both ways, or closed one way and pinched to a pole at
+//! both ends of the other) the same loops bound nothing or the whole
+//! surface (a band of no width round a torus, and the torus less that
+//! circle, have one and the same loops), and they cannot tell which: the
+//! face is left as it is there, and the body is refused further on, as
+//! before (`closes_up`). Only faces the blend changed are looked at (the
+//! body had them, and their loops are not the ones it had), so a face the
+//! blend did not touch stays as it was, bit for bit. The edge kept of a
+//! pair is proven on the surface of the face across the one dropped (to
+//! the tolerance, `curve_on_surface`), as every edge of a face has to lie
+//! on its surface; the lower-numbered edge first, the other if that
+//! fails, and the face stays (refused further on) where neither holds or
+//! any pair is missing.
 
+use craft3d_geom::Surface;
 use craft3d_geom::certify::{CurveBound, Within, curve_on_surface, curves_within};
+use craft3d_geom::pole::{Border, poles};
 use craft3d_math::Tolerance;
 use craft3d_topo::{Body, Coedge, Edge, EdgeId, FaceId};
 use std::collections::BTreeSet;
@@ -48,36 +58,81 @@ struct Merge {
 
 /// Drops the faces of `body` that a blend of `before` used up (see the
 /// module): of the faces `before` had, those whose loops the blend
-/// changed. Returns the edges kept of the pairs, which lie between other
-/// faces now; the edges dropped and the faces' loops are left without
-/// uses, for `compact` and `compact_faces` to take out.
+/// changed, on a surface that does not close up. Returns the edges kept
+/// of the pairs, which lie between other faces now; the edges dropped and
+/// the faces' loops are left without uses, for `compact` and
+/// `compact_faces` to take out.
 pub(super) fn drop_used_up(
     body: &mut Body,
     before: &Body,
     tolerance: &Tolerance,
 ) -> BTreeSet<EdgeId> {
     let mut kept = BTreeSet::new();
+    // Which faces a shell has, once: a face taken out is in none.
+    let mut in_shell = vec![false; body.faces.len()];
+    for shell in &body.shells {
+        for face in &shell.faces {
+            if let Some(flag) = in_shell.get_mut(face.0 as usize) {
+                *flag = true;
+            }
+        }
+    }
     for index in 0..before.faces.len().min(body.faces.len()) {
         let face = FaceId(u32::try_from(index).unwrap_or(u32::MAX));
-        if !in_a_shell(body, face) {
+        if !in_shell.get(index).copied().unwrap_or(false) || !changed(body, before, face) {
+            continue;
+        }
+        if body.face(face).is_none_or(|f| closes_up(&f.surface)) {
             continue;
         }
         let coedges = coedges_of(body, face);
-        if coedges.is_empty() || coedges == coedges_of(before, face) {
+        if coedges.is_empty() {
             continue;
         }
         let Some(merges) = used_up(body, face, &coedges, tolerance) else {
             continue;
         };
         apply(body, face, &merges);
+        if let Some(flag) = in_shell.get_mut(index) {
+            *flag = false;
+        }
         kept.extend(merges.iter().map(|m| m.keep));
     }
     kept
 }
 
-/// Whether some shell of `body` has `face`.
-fn in_a_shell(body: &Body, face: FaceId) -> bool {
-    body.shells.iter().any(|s| s.faces.contains(&face))
+/// Whether the loops of `face` in `body` are not the ones it had in
+/// `before` (compared in place, nothing copied).
+fn changed(body: &Body, before: &Body, face: FaceId) -> bool {
+    let (Some(now), Some(then)) = (body.face(face), before.face(face)) else {
+        return true;
+    };
+    now.loops != then.loops
+        || now
+            .loops
+            .iter()
+            .any(|l| body.loop_(*l).map(|x| &x.coedges) != before.loop_(*l).map(|x| &x.coedges))
+}
+
+/// Whether `surface` closes up everywhere, so that a boundary that
+/// cancels could bound the whole of it (see the module): a sphere and a
+/// torus; a spline whose parameter rectangle has every side joined to
+/// the opposite one or pinched to a point (`craft3d_geom::closure`,
+/// `craft3d_geom::pole`, the tests the booleans and the tessellator take).
+fn closes_up(surface: &Surface) -> bool {
+    match surface {
+        Surface::Sphere(_) | Surface::Torus(_) => true,
+        Surface::Plane(_) | Surface::Cylinder(_) | Surface::Cone(_) => false,
+        Surface::Bezier(_) | Surface::Nurbs(_) => {
+            let [u, v] = craft3d_geom::closure::closes(surface);
+            let found = poles(surface);
+            let pinched = |a: Border, b: Border| {
+                found.iter().any(|p| p.border == a) && found.iter().any(|p| p.border == b)
+            };
+            (u || pinched(Border::UStart, Border::UEnd))
+                && (v || pinched(Border::VStart, Border::VEnd))
+        }
+    }
 }
 
 /// The coedges of every loop of `face`, in order.
@@ -291,5 +346,119 @@ fn apply(body: &mut Body, face: FaceId, merges: &[Merge]) {
     }
     for shell in &mut body.shells {
         shell.faces.retain(|f| *f != face);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+    use super::*;
+    use craft3d_geom::{Circle, Cone, Curve3, Cylinder, Plane, Sphere, Torus};
+    use craft3d_math::{Frame, Vec3};
+    use craft3d_topo::{BodyKind, Face, Loop, LoopId, Shell, Vertex, VertexId};
+    use std::f64::consts::TAU;
+
+    fn coedge(edge: u32, reversed: bool) -> Coedge {
+        Coedge {
+            edge: EdgeId(edge),
+            reversed,
+        }
+    }
+
+    /// Three faces: one on `surface` bounded by a circle run each way (two
+    /// edges on the one circle), and two flat faces across, one on each
+    /// edge; and the same before the blend, when the first face had the
+    /// first edge only (so the blend changed it). The circle, of radius 6
+    /// about the z axis in z = 0, lies on the plane z = 0, on the torus of
+    /// radii 5 and 1 about the z axis (its outer equator) and on the
+    /// sphere of radius 6 (its equator).
+    fn bodies(surface: Surface) -> (Body, Body) {
+        let circle = Curve3::Circle(Circle::new(Frame::WORLD, 6.0).unwrap());
+        let edge = || Edge {
+            curve: circle.clone(),
+            range: (0.0, TAU),
+            start: VertexId(0),
+            end: VertexId(0),
+        };
+        let flat = Surface::Plane(Plane::new(Frame::WORLD));
+        let face = |surface: Surface, l: u32| Face {
+            surface,
+            reversed: false,
+            loops: vec![LoopId(l)],
+        };
+        let body = |first: Vec<Coedge>| Body {
+            kind: BodyKind::Solid,
+            vertices: vec![Vertex {
+                point: Vec3::new(6.0, 0.0, 0.0),
+            }],
+            edges: vec![edge(), edge()],
+            loops: vec![
+                Loop { coedges: first },
+                Loop {
+                    coedges: vec![coedge(0, true)],
+                },
+                Loop {
+                    coedges: vec![coedge(1, false)],
+                },
+            ],
+            faces: vec![
+                face(surface.clone(), 0),
+                face(flat.clone(), 1),
+                face(flat.clone(), 2),
+            ],
+            shells: vec![Shell {
+                faces: vec![FaceId(0), FaceId(1), FaceId(2)],
+            }],
+            tolerances: Default::default(),
+        };
+        (
+            body(vec![coedge(0, false), coedge(1, true)]),
+            body(vec![coedge(0, false)]),
+        )
+    }
+
+    #[test]
+    fn a_cancelling_boundary_on_a_surface_that_closes_up_is_left_alone() {
+        let tolerance = Tolerance::new(1e-6, 1e-9).unwrap();
+        // On a torus and on a sphere the circle run each way bounds
+        // nothing or the whole surface less the circle: the face stays.
+        for surface in [
+            Surface::Torus(Torus::new(Frame::WORLD, 5.0, 1.0).unwrap()),
+            Surface::Sphere(Sphere::new(Frame::WORLD, 6.0).unwrap()),
+        ] {
+            let kind = surface.kind();
+            let (mut body, before) = bodies(surface);
+            let kept = drop_used_up(&mut body, &before, &tolerance);
+            assert!(kept.is_empty(), "{kind}");
+            assert_eq!(body.shells[0].faces.len(), 3, "{kind}");
+            assert_eq!(body.loops[0].coedges.len(), 2, "{kind}");
+        }
+        // On the plane the same loops bound nothing: the face goes, and
+        // the face across the dropped edge takes the one kept, run the
+        // same way.
+        let (mut body, before) = bodies(Surface::Plane(Plane::new(Frame::WORLD)));
+        let kept = drop_used_up(&mut body, &before, &tolerance);
+        assert_eq!(kept.into_iter().collect::<Vec<_>>(), [EdgeId(0)]);
+        assert_eq!(body.shells[0].faces, [FaceId(1), FaceId(2)]);
+        assert!(body.loops[0].coedges.is_empty());
+        assert_eq!(body.loops[1].coedges, [coedge(0, true)]);
+        assert_eq!(body.loops[2].coedges, [coedge(0, false)]);
+        // Unchanged since before: not looked at.
+        let (mut body, _) = bodies(Surface::Plane(Plane::new(Frame::WORLD)));
+        let same = body.clone();
+        assert!(drop_used_up(&mut body, &same, &tolerance).is_empty());
+        assert_eq!(body, same);
+    }
+
+    #[test]
+    fn surfaces_that_close_up_everywhere() {
+        let f = Frame::WORLD;
+        assert!(closes_up(&Surface::Torus(Torus::new(f, 5.0, 1.0).unwrap())));
+        assert!(closes_up(&Surface::Sphere(Sphere::new(f, 2.0).unwrap())));
+        assert!(!closes_up(&Surface::Plane(Plane::new(f))));
+        assert!(!closes_up(&Surface::Cylinder(
+            Cylinder::new(f, 2.0).unwrap()
+        )));
+        assert!(!closes_up(&Surface::Cone(Cone::new(f, 2.0, 0.3).unwrap())));
     }
 }

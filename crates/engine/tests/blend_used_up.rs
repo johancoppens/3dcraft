@@ -18,7 +18,7 @@ mod blend_common;
 mod common;
 
 use blend_common::{BACK, BOTTOM, FRONT, LEFT, RIGHT, SCALES, TOP};
-use common::checked::{assert_solid, built, names_of, new_document, session};
+use common::checked::{assert_solid, built, failed, names_of, new_document, run, session};
 use serde_json::{Value, json};
 use std::f64::consts::PI;
 
@@ -218,5 +218,62 @@ fn the_inside_bend_of_an_l_rounded_as_long_as_its_inside_faces() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn later_features_on_a_used_up_face_or_a_merged_edge_fail_by_name() {
+    // The box of the first test, its two ends used up. A later feature
+    // that names an end, by the box's name or by the round's copy of it,
+    // fails and names the face, with the faces there are; one that names
+    // the edge where the two rounds of an end now meet is refused for what
+    // that edge is (the rounds are tangent there). Nothing is retargeted.
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        built(
+            &mut s,
+            "feature.block",
+            json!({"size": [14.0 * k, 6.0 * k, 10.0 * k]}),
+        );
+        built(
+            &mut s,
+            "feature.fillet",
+            json!({
+                "edges": [[FRONT, LEFT], [FRONT, RIGHT], [BACK, RIGHT], [BACK, LEFT]],
+                "radius": 3.0 * k,
+                "chain": true,
+                "name": "Round",
+            }),
+        );
+        let gone = failed(
+            &mut s,
+            "feature.chamfer",
+            json!({"edges": [[TOP, LEFT]], "distance": 0.5 * k, "name": "OnGone"}),
+        );
+        assert!(gone.contains("F1:face(4) is gone"), "{gone}");
+        assert!(gone.contains("F2:fillet(0)"), "{gone}");
+        let merged = failed(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": [["F2:fillet(0)", "F2:fillet(3)"]], "radius": 0.5 * k, "name": "OnMerged"}),
+        );
+        assert!(
+            merged.contains("between F2:fillet(0) and F2:fillet(3)"),
+            "{merged}"
+        );
+        assert!(merged.contains("tangent"), "{merged}");
+        let sketch = failed(
+            &mut s,
+            "sketch.create",
+            json!({"face": "F2:copy(0)/F1:face(4)", "name": "OnTheEnd"}),
+        );
+        assert!(
+            sketch.contains("no longer has a face F2:copy(0)/F1:face(4)"),
+            "{sketch}"
+        );
+        // The round itself still stands.
+        let check = run(&mut s, "document.check", json!({"feature": "Round"}));
+        assert_eq!(check["status"], "ok", "{check}");
     }
 }
