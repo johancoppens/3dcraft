@@ -13,14 +13,27 @@
 //! value overflows and every value is a multiple of a power of two no
 //! smaller than 2⁻¹⁰⁷⁴ (then sums, products of halves and their errors are
 //! all representable, subnormal or not). With every coordinate 0 or of a
-//! size between 2⁻²⁹⁰ and 2²⁹⁰ ([`IN_RANGE`]), each is a multiple of 2⁻³⁴²
-//! (the last place of 2⁻²⁹⁰), so differences are, and the products of three
-//! of them that a 3 × 3 determinant forms are multiples of 2⁻¹⁰²⁶; their
-//! sizes stay below 2²⁹¹ for a difference, 2⁸⁸¹ for a sum of 192 products of
-//! three, and 2⁹⁰⁸ for Dekker's split of those, below 2¹⁰²⁴. Outside that
+//! size between 2⁻²⁸⁸ and 2²⁸⁸ ([`IN_RANGE`]), each is a multiple of 2⁻³⁴⁰
+//! (the last place of 2⁻²⁸⁸), so differences are, and the products of three
+//! of them that a 3 × 3 determinant forms are multiples of 2⁻¹⁰²⁰; their
+//! sizes stay below 2²⁸⁹ for a difference, 2⁸⁷⁵ for a sum of 192 products of
+//! three, and 2⁹⁰² for Dekker's split of those, below 2¹⁰²⁴. Outside that
 //! range the caller does not ask (`verify::meet` takes such triangles as
 //! meeting). Round to nearest, no fused multiply-add (Rust contracts
 //! nothing) and no `unsafe`.
+//!
+//! **The filter in front** (`verify::filtered`) is sound in the same range:
+//! every nonzero difference is at least 2⁻³⁴⁰, so every product of the
+//! permanent (two differences times a third) is at least 2⁻¹⁰²⁰, a normal
+//! number, and the permanent is computed with relative rounding as
+//! Shewchuk's bound assumes; the determinant's own products and sums may
+//! fall below 2⁻¹⁰²² (a 2 × 2 determinant that cancels, times a
+//! difference), but each such step costs at most half a unit of 2⁻¹⁰⁷⁴,
+//! 2⁻¹⁰⁷⁵, which is under ε/4 of 2⁻¹⁰²⁰ and so of the permanent: five of
+//! them stay far inside the filter's margin (64 ε of the permanent against
+//! Shewchuk's 7 ε). (At 2⁻²⁹⁰, the bound of the third review, a product of
+//! the permanent could be 2⁻¹⁰²⁶, subnormal, and five half units 80 ε of
+//! it: the fourth review asked why that held, and it need not.)
 //!
 //! The expansions live on the stack, each in an array as long as the most
 //! components it can have where it is made (a difference 2, a product of
@@ -31,8 +44,8 @@
 use craft3d_math::Vec3;
 
 /// The least and the greatest size of a coordinate (other than 0) for
-/// which the signs are proven exact: 2⁻²⁹⁰ and 2²⁹⁰.
-pub(crate) const IN_RANGE: (f64, f64) = (f64::from_bits(733 << 52), f64::from_bits(1313 << 52));
+/// which the signs are proven exact, filter and all: 2⁻²⁸⁸ and 2²⁸⁸.
+pub(crate) const IN_RANGE: (f64, f64) = (f64::from_bits(735 << 52), f64::from_bits(1311 << 52));
 
 /// 2^27 + 1: splits a double into halves of at most 26 bits, whose
 /// products are exact (Dekker).
@@ -226,6 +239,7 @@ mod tests {
         clippy::indexing_slicing
     )]
     use super::*;
+    use craft3d_math::Portable;
 
     /// Points with integer coordinates `base + δ` scaled by 2^e: as doubles
     /// exact (|base + δ| < 2^53), and their determinants exact in i128
@@ -500,6 +514,128 @@ mod tests {
                 1
             }
         }
+
+        /// Near its value as a double (Horner from the top word).
+        fn approx(&self) -> f64 {
+            let v = self
+                .mag
+                .iter()
+                .rev()
+                .fold(0.0, |v, &w| v * 4_294_967_296.0 + f64::from(w));
+            if self.neg { -v } else { v }
+        }
+    }
+
+    /// The exponent of the last place of a double other than 0.
+    fn last_place(x: f64) -> i32 {
+        let raw = ((x.to_bits() >> 52) & 0x7ff) as i32;
+        if raw == 0 { -1074 } else { raw - 1075 }
+    }
+
+    /// J-018's fourth review: two triangles whose nearest places are a side
+    /// of each, crossing over at a height h, turned by a seeded rotation and
+    /// moved along a seeded slanted direction: 1 across, 1e-5 apart, 1e6 out
+    /// (where the direction between the nearest points, taken back out
+    /// first, cost a median 2.2e-6 of the bound), and 1000 across, 1e-6
+    /// apart, at the origin and 1e6 out (where the normals alone bound
+    /// nothing); at scales 1e-3, 1 and 1e6, 100 pairs each. The exact
+    /// distance of the stored triangles is that of their two sides (the
+    /// rest lies below the one side's plane and above the other's, by
+    /// construction with room to spare), (r · n)² / (n · n) with
+    /// n = (b − a) × (q − p), r = p − a, in integers of any size: the bound is
+    /// never above it, and within 64 f64::EPSILON of the size below it.
+    #[test]
+    fn sides_over_sides_far_from_the_origin_are_bounded_close_to_their_distance() {
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+        let mut unit = || rng.int(1 << 40) as f64 / (1u64 << 40) as f64;
+        let mut checked = 0;
+        for k in [1e-3, 1.0, 1e6] {
+            for (across, gap, out) in [(1.0, 1e-5, 1e6), (1000.0, 1e-6, 0.0), (1000.0, 1e-6, 1e6)] {
+                for _ in 0..100 {
+                    let (w, x, y, z) = (unit(), unit(), unit(), unit());
+                    let n = (w * w + x * x + y * y + z * z).sqrt();
+                    let (w, x, y, z) = (w / n, x / n, y / n, z / n);
+                    let turn = |v: Vec3| {
+                        Vec3::new(
+                            (1.0 - 2.0 * (y * y + z * z)) * v.x
+                                + 2.0 * (x * y - w * z) * v.y
+                                + 2.0 * (x * z + w * y) * v.z,
+                            2.0 * (x * y + w * z) * v.x
+                                + (1.0 - 2.0 * (x * x + z * z)) * v.y
+                                + 2.0 * (y * z - w * x) * v.z,
+                            2.0 * (x * z - w * y) * v.x
+                                + 2.0 * (y * z + w * x) * v.y
+                                + (1.0 - 2.0 * (x * x + y * y)) * v.z,
+                        )
+                    };
+                    let dir = Vec3::new(unit(), unit(), unit());
+                    let o = dir * (out * k / dir.length().max(1e-3));
+                    // The sides' angle, 20° to 160° apart (as cos and sin).
+                    let angle = 0.35 + 2.44 * (0.5 + 0.5 * unit());
+                    let (c, s) = (angle.pcos(), angle.psin());
+                    let (l, h) = (across * k, gap * k);
+                    let at = |v: Vec3| o + turn(v);
+                    let t = [
+                        at(Vec3::new(-0.5 * l, 0.0, 0.0)),
+                        at(Vec3::new(0.5 * l, 0.0, 0.0)),
+                        at(Vec3::new(0.0, 0.3 * l, -0.5 * l)),
+                    ];
+                    let u = [
+                        at(Vec3::new(-0.5 * l * c, -0.5 * l * s, h)),
+                        at(Vec3::new(0.5 * l * c, 0.5 * l * s, h)),
+                        at(Vec3::new(-0.3 * l * s, 0.3 * l * c, h + 0.5 * l)),
+                    ];
+                    // The exact squared distance of the sides t0 t1 and
+                    // u0 u1, as N² / D in integers scaled by 2^shift.
+                    let side = [t[0], t[1], u[0], u[1]];
+                    for (b, ..) in [
+                        crate::verify::triangles_nearest(&t, &u),
+                        crate::verify::triangles_nearest(&u, &t),
+                    ] {
+                        let low = side
+                            .iter()
+                            .flat_map(|v| [v.x, v.y, v.z])
+                            .chain([b])
+                            .filter(|x| *x != 0.0)
+                            .map(last_place)
+                            .min()
+                            .unwrap_or(0);
+                        let big = |x: f64| Big::of(x, -low);
+                        let vb = |v: Vec3| [big(v.x), big(v.y), big(v.z)];
+                        let sub = |a: &[Big; 3], b: &[Big; 3]| {
+                            [a[0].sub(&b[0]), a[1].sub(&b[1]), a[2].sub(&b[2])]
+                        };
+                        let (a0, a1, p0, p1) = (vb(t[0]), vb(t[1]), vb(u[0]), vb(u[1]));
+                        let (d1, d2, r) = (sub(&a1, &a0), sub(&p1, &p0), sub(&p0, &a0));
+                        let n = [
+                            d1[1].mul(&d2[2]).sub(&d1[2].mul(&d2[1])),
+                            d1[2].mul(&d2[0]).sub(&d1[0].mul(&d2[2])),
+                            d1[0].mul(&d2[1]).sub(&d1[1].mul(&d2[0])),
+                        ];
+                        let num = r[0].mul(&n[0]).add(&r[1].mul(&n[1])).add(&r[2].mul(&n[2]));
+                        let den = n[0].mul(&n[0]).add(&n[1].mul(&n[1])).add(&n[2].mul(&n[2]));
+                        let bb = big(b);
+                        // b ≤ |num| / √den  ⇔  b² den ≤ num².
+                        assert!(
+                            num.mul(&num).sub(&bb.mul(&bb).mul(&den)).sign() >= 0,
+                            "{k} {across} {out}: {b} above"
+                        );
+                        let exact = num.approx().abs() / den.approx().sqrt() * two_to(low);
+                        let size = t
+                            .iter()
+                            .chain(u.iter())
+                            .map(|v| (*v - u[0]).length())
+                            .fold(0.0_f64, f64::max);
+                        assert!(
+                            b >= exact - 64.0 * f64::EPSILON * size,
+                            "{k} {across} {out}: {b} for {exact} (size {size})"
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 3 * 3 * 100 * 2);
     }
 
     /// The exact sign of the 3 × 3 determinant of the stored points, in

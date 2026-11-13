@@ -1358,11 +1358,13 @@ struct TrianglePair {
 /// What rounding can take off the gap between two triangles' projections,
 /// relative to the largest distance of a corner from the one they are
 /// taken from: 16 f64::EPSILON (32 ε, ε = 2⁻⁵³). Each projection is a dot
-/// product of a direction (of length at most 1 + 4 ε) with a difference
-/// of corners (each part rounded by at most ε of itself): at most
-/// (ε + γ₃(1 + ε)) |n| |d| ≤ 4.01 ε of the size off, γ₃ = 3ε / (1 − 3ε); two
-/// of them and the gap's own subtraction (ε of at most twice the size):
-/// 10.03 ε, taken three times over (the size being itself computed).
+/// product of a direction (of length at most 1 + 4.5 ε: `Vec3::normalized`
+/// keeps the squared length it divides by in the normal range) with a
+/// difference of corners (each part rounded by at most ε of itself): at
+/// most (ε + γ₃(1 + ε)) |n| |d| ≤ 4.02 ε of the size off,
+/// γ₃ = 3ε / (1 − 3ε); two of them and the gap's own subtraction (ε of at
+/// most twice the size): 10.04 ε, taken three times over (the size being
+/// itself computed).
 const GAP_ROUNDING: f64 = 16.0 * f64::EPSILON;
 
 /// The least distance between two triangles, with the nearest points: 0,
@@ -1376,7 +1378,12 @@ const GAP_ROUNDING: f64 = 16.0 * f64::EPSILON;
 /// directions: from the nearest corners and sides (Ericson, *Real-Time
 /// Collision Detection*, 5.1.5 and 5.1.9), which are the distance in
 /// exact arithmetic where the triangles do not meet, and, where that
-/// direction does not bear their distance out, the two normals. So the
+/// direction does not bear their distance out, the two normals and, where
+/// the nearest are two sides, the cross product of those sides (all worked
+/// out relative to a corner: J-018's fourth review found the direction
+/// between the nearest points, taken back far from the origin first, a
+/// tilt of ε |offset| / d off, and sides over sides 1e-5 apart 1e6 out
+/// bounded at a third of their distance). So the
 /// bound holds whatever rounding does to the corners' and sides'
 /// distance: in J-018's third review that distance was 3.35e-6 for sides
 /// 1e-12 apart and nearly parallel (1 m long, 7e-9 rad), and 9.0e-6 for a
@@ -1405,49 +1412,52 @@ fn nearest_pair(t: &[Vec3; 3], u: &[Vec3; 3], corners_start: bool) -> TrianglePa
         p,
         q,
     };
+    // Relative to `u`'s first corner, once for the search and the bound.
+    let o = u[0];
+    let (tr, ur) = (t.map(|p| p - o), u.map(|p| p - o));
     match meet(t, u) {
         Meet::No => {
-            let (found, p, q) = corners_and_sides(t, u);
+            let near = corners_and_sides_at(&tr, &ur);
             TrianglePair {
                 meets: false,
-                bound: gap_bound(t, u, found, q - p),
-                found,
-                p,
-                q,
+                bound: gap_bound(&tr, &ur, &near),
+                found: near.distance,
+                p: near.p + o,
+                q: near.q + o,
             }
         }
         Meet::At(x) if !corners_start => zero(0.0, x, x),
         Meet::At(_) => {
-            let (found, p, q) = corners_and_sides(t, u);
-            zero(found, p, q)
+            let near = corners_and_sides_at(&tr, &ur);
+            zero(near.distance, near.p + o, near.q + o)
         }
         Meet::Somewhere => {
-            let (found, p, q) = corners_and_sides(t, u);
+            let near = corners_and_sides_at(&tr, &ur);
             if corners_start {
-                zero(found, p, q)
+                zero(near.distance, near.p + o, near.q + o)
             } else {
-                let x = (p + q) * 0.5;
+                let x = (near.p + near.q) * 0.5 + o;
                 zero(0.0, x, x)
             }
         }
     }
 }
 
-/// No more than the distance of `t` and `u`: the gap of their projections
-/// on `along` (normalised), or where that falls short of `found` (the
-/// corners' and sides' distance) by more than rounding, the most of that
-/// and the gaps on their normals; less [`GAP_ROUNDING`] of their size, and
-/// divided by 1 + 8 ε (at least what a unit direction computed can
-/// measure). Worked out relative to `u`'s first corner. 0 where nothing is
-/// positive or a number.
-fn gap_bound(t: &[Vec3; 3], u: &[Vec3; 3], found: f64, along: Vec3) -> f64 {
-    let o = u[0];
-    let (tr, ur) = (t.map(|p| p - o), u.map(|p| p - o));
-    let size = tr
+/// No more than the distance of the triangles `t` and `u` (corners relative
+/// to `u`'s first): the gap of their projections on the direction between
+/// the nearest corners and sides `near`, or where that falls short of
+/// their distance by more than rounding, the most of that and the gaps on
+/// their normals and, where the nearest are two sides, on those sides'
+/// cross product; less [`GAP_ROUNDING`] of their size, and divided by
+/// 1 + 8 ε (at least what a unit direction computed can measure). 0 where
+/// nothing is positive or a number.
+fn gap_bound(t: &[Vec3; 3], u: &[Vec3; 3], near: &Nearest3) -> f64 {
+    let size = t
         .iter()
-        .chain(ur.iter())
-        .map(|v| v.length())
-        .fold(0.0_f64, f64::max);
+        .chain(u.iter())
+        .map(|v| v.length_squared())
+        .fold(0.0_f64, f64::max)
+        .sqrt();
     let gap = |d: Vec3| {
         let Some(n) = d.normalized() else {
             return f64::NEG_INFINITY;
@@ -1459,17 +1469,20 @@ fn gap_bound(t: &[Vec3; 3], u: &[Vec3; 3], found: f64, along: Vec3) -> f64 {
                     (l.min(x), h.max(x))
                 })
         };
-        let ((lo_t, hi_t), (lo_u, hi_u)) = (span(&tr), span(&ur));
+        let ((lo_t, hi_t), (lo_u, hi_u)) = (span(t), span(u));
         (lo_u - hi_t).max(lo_t - hi_u)
     };
     let slack = GAP_ROUNDING * size;
-    let mut best = gap(along);
-    if best.is_nan() || best < found - 2.0 * slack {
+    let mut best = gap(near.q - near.p);
+    if best.is_nan() || best < near.distance - 2.0 * slack {
         let normal = |c: &[Vec3; 3]| {
             let [a, b, d] = *c;
             (b - a).cross(d - a)
         };
-        best = best.max(gap(normal(&tr))).max(gap(normal(&ur)));
+        best = best.max(gap(normal(t))).max(gap(normal(u)));
+        if let Some(sides) = near.sides {
+            best = best.max(gap(sides));
+        }
     }
     let bound = (best - slack) * (1.0 - 8.0 * f64::EPSILON);
     if bound > 0.0 { bound } else { 0.0 }
@@ -1482,8 +1495,8 @@ fn gap_bound(t: &[Vec3; 3], u: &[Vec3; 3], found: f64, along: Vec3) -> f64 {
 /// apart (compared exactly) do not, and nor do two of which one lies
 /// wholly on one side of the other's plane. Where it cannot be told
 /// exactly, they are taken as meeting (0: no false bound): a corner that is
-/// not a number, or a coordinate other than 0 smaller than 2⁻²⁹⁰ or larger
-/// than 2²⁹⁰ ([`exact::IN_RANGE`], outside which the signs are not proven).
+/// not a number, or a coordinate other than 0 smaller than 2⁻²⁸⁸ or larger
+/// than 2²⁸⁸ ([`exact::IN_RANGE`], outside which the signs are not proven).
 fn meet(t: &[Vec3; 3], u: &[Vec3; 3]) -> Meet {
     let (small, large) = exact::IN_RANGE;
     let in_range = |c: f64| c == 0.0 || (c.abs() >= small && c.abs() <= large);
@@ -1725,43 +1738,64 @@ fn in_triangle_2d(p: [f64; 2], a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> Option<
     Some(o.iter().all(|&s| s >= 0) || o.iter().all(|&s| s <= 0))
 }
 
+/// [`corners_and_sides_at`] for corners as stored, relative to `u`'s first
+/// corner (tests only).
+#[cfg(test)]
+fn corners_and_sides(t: &[Vec3; 3], u: &[Vec3; 3]) -> (f64, Vec3, Vec3) {
+    let o = u[0];
+    let near = corners_and_sides_at(&t.map(|p| p - o), &u.map(|p| p - o));
+    (near.distance, near.p + o, near.q + o)
+}
+
+/// The nearest corners and sides of two triangles ([`corners_and_sides_at`]).
+struct Nearest3 {
+    distance: f64,
+    p: Vec3,
+    q: Vec3,
+    /// Where the nearest are a side of each: the cross product of the two.
+    sides: Option<Vec3>,
+}
+
 /// The least of the distances from each corner of two triangles to the
 /// other triangle and between their sides, with the nearest points: in
 /// exact arithmetic their distance where they do not meet. Computed, the
 /// points are on the triangles (to rounding) but can be farther apart than
 /// the triangles are where the computation is ill-conditioned (a corner
 /// over a sliver: J-018's third review, 9.0e-6 for 1e-12), so they only
-/// start the search and give [`gap_bound`] a direction; the bound is that
-/// function's. Worked out relative to the first corner of `u`, so that it
-/// is rounded at the triangles' size, not at their distance from the
-/// origin.
-fn corners_and_sides(t: &[Vec3; 3], u: &[Vec3; 3]) -> (f64, Vec3, Vec3) {
-    let o = u[0];
-    let (d, p, q) = corners_and_sides_at(&t.map(|p| p - o), &u.map(|p| p - o));
-    (d, p + o, q + o)
-}
-
-/// [`corners_and_sides`] in the coordinates given.
-fn corners_and_sides_at(t: &[Vec3; 3], u: &[Vec3; 3]) -> (f64, Vec3, Vec3) {
-    let mut best = (f64::INFINITY, t[0], u[0]);
-    let mut take = |p: Vec3, q: Vec3| {
+/// start the search and give [`gap_bound`] its directions; the bound is
+/// that function's. Callers give the corners relative to one of them
+/// ([`nearest_pair`]), so that it is rounded at the triangles' size, not at
+/// their distance from the origin.
+fn corners_and_sides_at(t: &[Vec3; 3], u: &[Vec3; 3]) -> Nearest3 {
+    let mut best = Nearest3 {
+        distance: f64::INFINITY,
+        p: t[0],
+        q: u[0],
+        sides: None,
+    };
+    let mut take = |p: Vec3, q: Vec3, sides: Option<Vec3>| {
         let d = p.distance(q);
-        if d < best.0 {
-            best = (d, p, q);
+        if d < best.distance {
+            best = Nearest3 {
+                distance: d,
+                p,
+                q,
+                sides,
+            };
         }
     };
     for &p in t {
-        take(p, closest_on_triangle(p, u));
+        take(p, closest_on_triangle(p, u), None);
     }
     for &q in u {
-        take(closest_on_triangle(q, t), q);
+        take(closest_on_triangle(q, t), q, None);
     }
     let [t0, t1, t2] = *t;
     let [u0, u1, u2] = *u;
     for (a, b) in [(t0, t1), (t1, t2), (t2, t0)] {
         for (c, d) in [(u0, u1), (u1, u2), (u2, u0)] {
             let (p, q) = segments_nearest(a, b, c, d);
-            take(p, q);
+            take(p, q, Some((b - a).cross(d - c)));
         }
     }
     best
@@ -3434,6 +3468,42 @@ mod tests {
         );
     }
 
+    /// J-018's fourth review: triangles about 1e-81 across (inside the
+    /// proven range) whose normals' squared lengths are subnormal: the unit
+    /// normal came out a fifth too long, and the bound 1.2861e-81 for an
+    /// exact distance of 2^-269 = 1.0542e-81 (`u` in the plane z = 0, `t`
+    /// level at that height over it). Now never above it, either way round.
+    #[test]
+    fn a_bound_at_a_tiny_scale_is_never_above_the_distance() {
+        let u = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.1084395886461046e-81, 0.0, 0.0),
+            Vec3::new(0.0, 1.2861481490741238e-81, 0.0),
+        ];
+        let t = [
+            Vec3::new(
+                4.2168791772922095e-82,
+                2.5722962981482476e-82,
+                1.0542197943230523e-81,
+            ),
+            Vec3::new(
+                1.0542197943230523e-81,
+                2.5722962981482476e-82,
+                1.0542197943230523e-81,
+            ),
+            Vec3::new(
+                4.2168791772922095e-82,
+                6.430740745370619e-82,
+                1.0542197943230523e-81,
+            ),
+        ];
+        let exact = f64::from_bits(754 << 52);
+        assert_eq!(exact, 1.0542197943230523e-81);
+        for (d, ..) in [triangles_nearest(&t, &u), triangles_nearest(&u, &t)] {
+            assert!(d <= exact && d > 0.99 * exact, "{d}");
+        }
+    }
+
     /// Seeded pairs whose distance is known exactly by construction, in
     /// the hard classes: two triangles in the planes z = Z and z = Z + h
     /// (exact doubles) whose shadows on the plane overlap (so h apart):
@@ -3542,7 +3612,7 @@ mod tests {
     }
 
     /// Outside the range in which the exact signs are proven (a coordinate
-    /// other than 0 smaller than 2^-290 or larger than 2^290) two triangles
+    /// other than 0 smaller than 2^-288 or larger than 2^288) two triangles
     /// are taken as meeting (0), never told apart on signs that may be
     /// wrong; just inside, a pair 1 apart (scaled) is apart.
     #[test]
@@ -4158,7 +4228,7 @@ mod tests {
                     })
                     .fold((f64::INFINITY, 0.0), |(b, _), (t, s)| (b.min(t), s))
             };
-            let (before, _) = time(&|t, u| corners_and_sides_at(t, u).0);
+            let (before, _) = time(&|t, u| corners_and_sides_at(t, u).distance);
             SIGNS.with(|s| s.set((0, 0)));
             let (now, _) = time(&|t, u| triangles_nearest(t, u).0);
             let (filtered, worked) = SIGNS.with(std::cell::Cell::get);
@@ -4211,12 +4281,13 @@ mod tests {
         ];
         // The corners' and sides' distance is the closed form; the bound
         // (since J-018's third review) is never above it and below it by
-        // no more than what rounding can take off (16 f64::EPSILON of the
-        // size, about 2.2 here, and 8 f64::EPSILON of itself): before, it
-        // was the corners' and sides' distance, held to 1e-15 either way.
+        // no more than what rounding can take off: 16 f64::EPSILON of the
+        // size (the largest distance of a corner from u's first, √5) and 8
+        // of itself, 7.9e-15 + 3.6e-15. Before, it was the corners' and
+        // sides' distance, held to 1e-15 either way.
         assert!((corners_and_sides(&t, &u).0 - 2.0).abs() < 1e-15);
         let d = triangles_nearest(&t, &u).0;
-        assert!(d <= 2.0 && d > 2.0 - 1e-13, "{d}");
+        assert!(d <= 2.0 && d > 2.0 - 1.25e-14, "{d}");
         let v = [
             Vec3::new(2.0, 2.0, 0.0),
             Vec3::new(3.0, 2.0, 0.0),
@@ -4225,7 +4296,9 @@ mod tests {
         // From the hypotenuse's middle (0.5, 0.5) to the corner (2, 2).
         let want = (4.5_f64).sqrt();
         assert!((corners_and_sides(&t, &v).0 - want).abs() < 1e-12);
+        // The size here is √8 (the corner (0, 0) from v's first, (2, 2)):
+        // 1.0e-14 + 3.8e-15.
         let d = triangles_nearest(&t, &v).0;
-        assert!(d <= want && d > want - 1e-12, "{d}");
+        assert!(d <= want && d > want - 1.5e-14, "{d}");
     }
 }
