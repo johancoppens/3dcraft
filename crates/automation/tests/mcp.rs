@@ -174,8 +174,10 @@ fn initialize_describes_the_server() {
         result["capabilities"],
         json!({"tools": {}, "resources": {}})
     );
-    assert_eq!(result["serverInfo"]["name"], "craft3d");
-    assert_eq!(result["serverInfo"]["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        result["serverInfo"],
+        json!({"name": "craft3d", "title": "3DCraft", "version": env!("CARGO_PKG_VERSION")})
+    );
     let instructions = result["instructions"].as_str().unwrap();
     assert!(
         instructions.contains("command_list") && instructions.contains("command_run"),
@@ -213,6 +215,39 @@ fn initialize_echoes_a_supported_version_and_offers_the_latest_otherwise() {
     let (code, message) = rpc_error(&mut s, "initialize", json!({"protocolVersion": 20250618}));
     assert_eq!(code, -32602);
     assert!(message.contains("protocolVersion"), "{message}");
+}
+
+/// The product's name for a client to show, `serverInfo.title` (issue 1 of
+/// the workshop, 2026-11-13), in the revisions that define it: MCP
+/// 2025-06-18 gave `Implementation` the `title` of `BaseMetadata`, "intended
+/// for UI and end-user contexts"; 2024-11-05 and 2025-03-26 define
+/// `Implementation` as `name` and `version` only, and a client that settles
+/// on one of them gets just those. `name` stays the machine name.
+#[test]
+fn the_server_gives_its_title_in_the_revisions_that_have_one() {
+    let mut s = session();
+    let version = env!("CARGO_PKG_VERSION");
+    let titled = json!({"name": "craft3d", "title": "3DCraft", "version": version});
+    let untitled = json!({"name": "craft3d", "version": version});
+    for (revision, expected) in [
+        ("2025-11-25", &titled),
+        ("2025-06-18", &titled),
+        ("2025-03-26", &untitled),
+        ("2024-11-05", &untitled),
+        // An unknown revision gets the latest, with its title.
+        ("2099-12-31", &titled),
+        ("1999-01-01", &titled),
+    ] {
+        let result = result(&mut s, "initialize", json!({"protocolVersion": revision}));
+        assert_eq!(&result["serverInfo"], expected, "{revision}");
+    }
+    // Every revision the server speaks is one of the four above.
+    assert_eq!(
+        mcp::PROTOCOL_VERSIONS,
+        ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+    );
+    assert_eq!(mcp::SERVER_NAME, "craft3d");
+    assert_eq!(mcp::SERVER_TITLE, "3DCraft");
 }
 
 #[test]
@@ -1630,4 +1665,397 @@ fn the_selection_is_a_tool_and_a_resource() {
     );
     assert_eq!(code, -32602);
     assert_still_serving(&mut s);
+}
+
+// ------------------------------------------------------------ annotations
+
+/// What each tool says about what it does to its surroundings (MCP's tool
+/// annotations, issue 2 of the workshop, 2026-11-13). A client may run a
+/// tool marked read-only without asking the person, so each hint is a
+/// claim, and the tests below hold each one to what the tool does.
+fn claimed(name: &str) -> Value {
+    match name {
+        // `command_list` reads the registry from a `&Session`; `doc_inspect`
+        // and `doc_render_preview` leave every document, the selection and
+        // the files as they were
+        // (`the_read_only_tools_leave_everything_as_it_was`).
+        "command_list" | "doc_inspect" | "doc_render_preview" => {
+            json!({"readOnlyHint": true, "openWorldHint": false})
+        }
+        // Reading the selection lets go of what no longer exists, so an
+        // undo afterwards does not bring it back: not read-only, and the
+        // same call again changes nothing more
+        // (`reading_the_selection_lets_go_of_what_is_gone`).
+        "selection_get" => json!({"idempotentHint": true, "openWorldHint": false}),
+        // Commands change documents and files, over what was there, and do
+        // more when run twice (`commands_change_things_and_twice_does_more`).
+        "command_run" | "command_batch" | "control_call" => json!({
+            "readOnlyHint": false,
+            "destructiveHint": true,
+            "idempotentHint": false,
+            "openWorldHint": false,
+        }),
+        other => panic!("no claim for the tool {other}"),
+    }
+}
+
+#[test]
+fn every_tool_says_what_it_does_to_its_surroundings() {
+    let mut s = session();
+    let tools = result(&mut s, "tools/list", json!({}))["tools"].clone();
+    let tools = tools.as_array().unwrap();
+    assert_eq!(tools.len(), 6);
+    for tool in tools {
+        let name = tool["name"].as_str().unwrap();
+        assert_eq!(tool["annotations"], claimed(name), "{name}");
+    }
+    // A window's server, and the bridge to it, has `control_call` too.
+    let mut handle = |_: &mut Session, _: &str, _: Option<&Value>| None;
+    let mut extension = craft3d_automation::rpc::Extension {
+        methods: &[],
+        handle: &mut handle,
+    };
+    let line = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).to_string();
+    let reply: Value =
+        serde_json::from_str(&mcp::handle_line_with(&mut s, &line, &mut extension).unwrap())
+            .unwrap();
+    let tools = reply["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 7);
+    for tool in tools {
+        let name = tool["name"].as_str().unwrap();
+        assert_eq!(tool["annotations"], claimed(name), "{name}");
+    }
+}
+
+/// A work folder of its own for a test, empty, with the session's roots in
+/// it.
+fn work_folder(name: &str) -> (std::path::PathBuf, Session) {
+    let dir = std::env::temp_dir().join(format!("craft3d-mcp-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = craft3d_engine::canonical(&dir).unwrap();
+    let session = Session::new(Workspace {
+        read: craft3d_engine::Access::Root(dir.clone()),
+        write: craft3d_engine::Access::Root(dir.clone()),
+    });
+    (dir, session)
+}
+
+/// What a tool that only reads leaves as it was: the active document (its
+/// `.3dcraft` bytes and revision), every open document as a status bar
+/// shows it (file, dirty, undo and redo, ...), which one is active and
+/// whose file it is, the selection, and every file in the work folder with
+/// its bytes. Not compared: what records the call (the agent log, the last
+/// failed command for a bug report) and the caches of what is derived from
+/// the document.
+#[derive(Debug, PartialEq)]
+struct Surroundings {
+    document: Option<Vec<u8>>,
+    revision: Option<u64>,
+    documents: Vec<craft3d_engine::DocumentStatus>,
+    active: Option<u64>,
+    person_file: Option<String>,
+    selection: craft3d_engine::SelectionView,
+    files: Vec<(String, Vec<u8>)>,
+}
+
+fn surroundings(s: &mut Session, dir: &std::path::Path) -> Surroundings {
+    let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            (name, std::fs::read(&path).unwrap())
+        })
+        .collect();
+    files.sort();
+    Surroundings {
+        document: s.document_bytes(),
+        revision: s.document_revision(),
+        documents: s.document_statuses(),
+        active: s.active_document_id(),
+        person_file: s.person_document_file(),
+        selection: s.selection(),
+        files,
+    }
+}
+
+/// The calls of the read-only tools: each argument they take, and calls
+/// that fail (the last two: a document with bodies refuses them).
+fn read_only_calls() -> Vec<(&'static str, Value)> {
+    vec![
+        ("command_list", json!({})),
+        ("command_list", json!({"brief": true})),
+        ("command_list", json!({"id": "feature.block"})),
+        (
+            "command_list",
+            json!({"filter": "file", "enabled_only": true}),
+        ),
+        ("doc_inspect", json!({})),
+        ("doc_render_preview", json!({"max_side": 64})),
+        (
+            "doc_render_preview",
+            json!({"view": "top", "projection": "orthographic", "zoom": 2, "max_side": 64}),
+        ),
+        ("doc_render_preview", json!({"mode": "ids", "max_side": 64})),
+        (
+            "doc_render_preview",
+            json!({"box": [[0, 0, 0], [5, 5, 5]], "tolerance": 0.5, "max_side": 64}),
+        ),
+        // Refused by the command: nothing is drawn, nothing changes.
+        ("doc_render_preview", json!({"zoom": -1, "max_side": 64})),
+        (
+            "doc_render_preview",
+            json!({"view": "sideways", "max_side": 64}),
+        ),
+    ]
+}
+
+/// `readOnlyHint` of `command_list`, `doc_inspect` and `doc_render_preview`:
+/// on a session with two documents, one saved and changed since, with an
+/// undo and a redo step, a selection and a file in the work folder, every
+/// call leaves all of it as it was, the files to the byte. Also as an
+/// agent in the window runs them (with an actor: what it runs goes into
+/// the agent log, which records the call and is not compared). And none
+/// of them lets go of a selected body that is gone for now, as reading the
+/// selection does (`reading_the_selection_lets_go_of_what_is_gone`).
+#[test]
+fn the_read_only_tools_leave_everything_as_it_was() {
+    let (dir, mut s) = work_folder("read-only");
+    let setup = json!([
+        {"id": "file.new"},
+        {"id": "feature.block", "params": {"name": "Other", "size": [3, 3, 3]}},
+        {"id": "file.new"},
+        {"id": "variable.set", "params": {"name": "w", "expr": "20 mm"}},
+        {"id": "feature.block", "params": {"name": "Base", "size": ["w", 10, 5]}},
+        {"id": "feature.cylinder", "params": {"name": "Post", "position": [5, 5, 5], "radius": 2, "height": 8}},
+        {"id": "file.save", "params": {"path": "part.3dcraft"}},
+        {"id": "feature.edit", "params": {"feature": "Base", "size": [30, 10, 5]}},
+        {"id": "feature.block", "params": {"name": "Extra", "size": [1, 1, 1]}},
+        {"id": "edit.undo"},
+        {"id": "select.set", "params": {"names": ["Post", "Base"]}},
+    ]);
+    let made = tool_report(&mut s, "command_batch", json!({"steps": setup}));
+    assert_eq!(made["failed"], 0, "{made}");
+    for actor in [None, Some("an agent in the window")] {
+        s.set_actor(actor);
+        let calls = read_only_calls();
+        let refused = calls.len() - 2;
+        for (at, (name, arguments)) in calls.into_iter().enumerate() {
+            let before = surroundings(&mut s, &dir);
+            assert!(before.document.is_some() && before.documents.len() == 2);
+            assert!(before.documents[1].dirty && before.documents[1].redo.is_some());
+            assert_eq!(before.selection.items.len(), 2);
+            let answer = tool(&mut s, name, arguments.clone());
+            assert_eq!(
+                answer["isError"],
+                at >= refused,
+                "{name} {arguments}: {answer}"
+            );
+            assert_eq!(
+                surroundings(&mut s, &dir),
+                before,
+                "{name} {arguments} changed something"
+            );
+        }
+    }
+    s.set_actor(None);
+    // The comparison sees what a command changes.
+    for (command, params) in [
+        ("select.set", json!({"mode": "clear"})),
+        (
+            "view.render",
+            json!({"path": "picture.png", "width": 32, "height": 24}),
+        ),
+        ("variable.set", json!({"name": "w", "expr": "21 mm"})),
+    ] {
+        let before = surroundings(&mut s, &dir);
+        run(&mut s, command, params);
+        assert_ne!(surroundings(&mut s, &dir), before, "{command}");
+    }
+    // Nothing open is a state too.
+    let mut empty = session();
+    for (name, arguments) in read_only_calls() {
+        tool(&mut empty, name, arguments);
+        assert!(!empty.has_document());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Selects the body `Post`, deletes its feature, runs `between`, takes the
+/// deletion back, and returns what is selected then.
+fn selected_after_an_undo(between: impl Fn(&mut Session)) -> Value {
+    let mut s = session();
+    run(&mut s, "file.new", json!({}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Base", "size": [10, 10, 2]}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"name": "Post", "position": [5, 5, 2], "radius": 2, "height": 8}),
+    );
+    run(&mut s, "select.set", json!({"names": ["Post"]}));
+    run(&mut s, "feature.delete", json!({"feature": "Post"}));
+    between(&mut s);
+    run(&mut s, "edit.undo", json!({}));
+    let selection = tool_json(&mut s, "selection_get", json!({}));
+    let names: Vec<Value> = selection["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["name"].clone())
+        .collect();
+    json!({"count": selection["count"], "items": names})
+}
+
+/// Why `selection_get` is not marked read-only: reading the selection
+/// checks it against the document as it is, and what no longer exists
+/// drops out of it for good. A body selected, its feature deleted and the
+/// deletion undone is selected again when nothing read the selection in
+/// between, and not when `selection_get` did. (The window reads the
+/// selection every frame, so there it changes nothing the window would
+/// not; a session of `craft3d-cli mcp` reads it only when asked.) The
+/// read-only tools leave it alone. And `idempotentHint`: a second call
+/// changes nothing more than the first.
+#[test]
+fn reading_the_selection_lets_go_of_what_is_gone() {
+    let kept = json!({"count": 1, "items": ["Post"]});
+    assert_eq!(selected_after_an_undo(|_| {}), kept);
+    for (name, arguments) in read_only_calls() {
+        assert_eq!(
+            selected_after_an_undo(|s| {
+                tool(s, name, arguments.clone());
+            }),
+            kept,
+            "{name} {arguments}"
+        );
+    }
+    let let_go = json!({"count": 0, "items": []});
+    assert_eq!(
+        selected_after_an_undo(|s| {
+            let read = tool_json(s, "selection_get", json!({}));
+            assert_eq!(read["count"], 0, "{read}");
+            assert_eq!(read["dropped"].as_array().unwrap().len(), 1, "{read}");
+        }),
+        let_go
+    );
+    // Twice: the second read finds it checked already and says the same.
+    assert_eq!(
+        selected_after_an_undo(|s| {
+            let first = tool_json(s, "selection_get", json!({}));
+            let serial = s.selection().serial;
+            let second = tool_json(s, "selection_get", json!({}));
+            assert_eq!(first, second);
+            assert_eq!(s.selection().serial, serial);
+        }),
+        let_go
+    );
+}
+
+/// `command_run` and `command_batch`: not read-only (they change the
+/// document), destructive (`file.save` replaces a file that was there,
+/// `feature.delete` takes a feature away), not idempotent (the same block
+/// twice is two blocks), and closed: a path is a file beneath the roots,
+/// never an address on the network, and one outside them is refused.
+#[test]
+fn commands_change_things_and_twice_does_more() {
+    let (dir, mut s) = work_folder("changes");
+    let features = |s: &mut Session| {
+        tool_json(s, "doc_inspect", json!({}))["features"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    let block = json!({"id": "feature.block", "params": {"size": [10, 10, 10]}});
+    run(&mut s, "file.new", json!({}));
+    for _ in 0..2 {
+        tool_json(&mut s, "command_run", block.clone());
+    }
+    assert_eq!(features(&mut s), 2, "the same call twice makes two blocks");
+    tool(&mut s, "command_batch", json!({"steps": [block.clone()]}));
+    tool(&mut s, "command_batch", json!({"steps": [block]}));
+    assert_eq!(features(&mut s), 4, "the same batch twice makes two blocks");
+    run(&mut s, "file.save", json!({"path": "part.3dcraft"}));
+    let first = std::fs::read(dir.join("part.3dcraft")).unwrap();
+    run(&mut s, "feature.delete", json!({"feature": "F1"}));
+    assert_eq!(features(&mut s), 3, "a feature taken away");
+    tool(
+        &mut s,
+        "command_batch",
+        json!({"steps": [{"id": "file.save", "params": {"path": "part.3dcraft"}}]}),
+    );
+    let second = std::fs::read(dir.join("part.3dcraft")).unwrap();
+    assert_ne!(first, second, "the file that was there is replaced");
+    for path in [
+        "https://example.com/part.3dcraft",
+        "../outside.3dcraft",
+        "/outside.3dcraft",
+    ] {
+        for command in ["file.open", "file.save"] {
+            tool_error(
+                &mut s,
+                "command_run",
+                json!({"id": command, "params": {"path": path}}),
+            );
+        }
+    }
+    let mut left: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .collect();
+    left.sort();
+    assert_eq!(left, ["part.3dcraft"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Issue 5 of the workshop (2026-11-13): an agent and a scorer read the
+/// tool list before any `command_list`, so `command_run` says that files
+/// are commands, with every format `file.export` writes as its params
+/// notation lists them (so a format added there is named here too), and
+/// when to take `command_batch` instead.
+#[test]
+fn command_run_says_that_files_are_commands() {
+    let mut s = session();
+    let tools = result(&mut s, "tools/list", json!({}))["tools"].clone();
+    let command_run = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "command_run")
+        .unwrap();
+    let description = command_run["description"].as_str().unwrap();
+    for named in [
+        "file.new",
+        "file.open",
+        "file.save",
+        "file.import",
+        "file.export",
+        "command_batch",
+        "STEP",
+        "FreeCAD",
+    ] {
+        assert!(description.contains(named), "{named}: {description}");
+    }
+    let export = Session::command("file.export").unwrap();
+    let formats = export
+        .params
+        .split("\"format\": \"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap();
+    assert!(formats.contains("3mf"), "{formats}");
+    for format in formats.split('|') {
+        // stl-ascii is STL.
+        let format = format.trim_end_matches("-ascii").to_uppercase();
+        assert!(description.contains(&format), "{format}: {description}");
+    }
+    let import = Session::command("file.import").unwrap();
+    assert!(
+        import.summary.contains("STEP") && import.summary.contains("FreeCAD"),
+        "{}",
+        import.summary
+    );
 }

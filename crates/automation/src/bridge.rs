@@ -736,6 +736,10 @@ mod tests {
             init["result"]["serverInfo"]["name"],
             crate::mcp::SERVER_NAME
         );
+        assert_eq!(
+            init["result"]["serverInfo"]["title"],
+            crate::mcp::SERVER_TITLE
+        );
         assert!(
             relay(
                 &mut bridge,

@@ -354,6 +354,11 @@ The server gives the agent these tools, and tells it how to start when it connec
 | `selection_get` | What is selected, including what you clicked in the window |
 | `control_call` | In the window only: a method of the window (`ui.get`, `ui.highlight`, `ui.screenshot`, …) |
 
+Each tool also tells your AI tool what it does, for one that asks you before a tool that changes
+things: `command_list`, `doc_inspect` and `doc_render_preview` only read; `command_run`,
+`command_batch` and `control_call` can change your model and write files. None of them reaches
+beyond your computer.
+
 The agent needs nothing else: the command summaries and the error messages are written for it to read.
 [Programs on 3DCraft](programs.md) says more about the server, for people who build on it.
 
