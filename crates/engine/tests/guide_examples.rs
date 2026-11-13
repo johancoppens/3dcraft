@@ -82,13 +82,15 @@ fn steps(script: &Value) -> Option<Vec<(String, Value)>> {
 /// 30 GB give 2. libtest would otherwise start all eighteen at once beside
 /// this file's other tests. A script holds its session: the bodies of its
 /// document, at most 1 GiB of the bodies that went into later features
-/// (the session's body budget), and after each command a regeneration from
-/// nothing to compare with, which keeps bodies within a budget of its own;
-/// the deep check at the end meshes every face. 12 GiB a script is a
-/// ceiling for that, beside the test binaries the gate runs with this one,
-/// not a measure: the process's peak is printed when a script ends (on
-/// Linux). Only how many build at once depends on the machine: each
-/// script builds in a session of its own, so what it builds does not.
+/// (the session's body budget), and up to [`COMPARISONS_AT_ONCE`]
+/// comparisons with a regeneration from nothing, each holding the session's
+/// regeneration after its command and building one with a body budget of
+/// its own; the deep check at the end meshes every face. 12 GiB a script
+/// is a ceiling for those four regenerations and the meshes, beside the
+/// test binaries the gate runs with this one, not a measure: the process's
+/// peak is printed when a script ends (on Linux). Only how many build at
+/// once depends on the machine: each script builds in a session of its
+/// own, so what it builds does not.
 fn scripts_at_once() -> usize {
     let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     match memory_gib() {
@@ -114,6 +116,14 @@ fn proc_kib(file: &str, key: &str) -> Option<usize> {
 fn memory_gib() -> Option<usize> {
     proc_kib("/proc/meminfo", "MemTotal:").map(|kib| kib / (1024 * 1024))
 }
+
+/// How many of a script's comparisons with a regeneration from nothing
+/// (after each of its commands, `common::checked::Overlapped`) run at once
+/// on threads of their own while the script goes on. They are most of a
+/// long script's time, the tank's 114 steps above all; the verdicts are
+/// taken in the order of the commands, so what fails, and with what
+/// message, does not depend on this number.
+const COMPARISONS_AT_ONCE: usize = 3;
 
 static BUILDING: Mutex<usize> = Mutex::new(0);
 static A_SCRIPT_ENDED: Condvar = Condvar::new();
@@ -168,10 +178,12 @@ fn builds_and_meets_its_assertions(path: &Path) {
         serde_json::from_str(&read_text(path)).unwrap_or_else(|e| panic!("{name}: not JSON: {e}"));
     let steps = steps(&script).unwrap_or_else(|| panic!("{name}: not a list of steps"));
     let mut s = common::session();
-    run(&mut s, "file.new", json!({"units": "mm"}));
+    let mut checks = common::checked::Overlapped::new(COMPARISONS_AT_ONCE);
+    checks.run(&mut s, "file.new", json!({"units": "mm"}));
     for (id, params) in steps {
-        run(&mut s, &id, params);
+        checks.run(&mut s, &id, params);
     }
+    checks.wait(&s);
     let document = run(&mut s, "document.inspect", json!({}));
     for feature in document["features"].as_array().unwrap() {
         assert_eq!(feature["status"], "ok", "{name}: {feature}");

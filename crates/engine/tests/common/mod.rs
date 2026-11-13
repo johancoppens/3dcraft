@@ -284,5 +284,97 @@ pub mod checked {
         result
     }
 
+    /// Commands run as [`run`] runs them, the comparison with a
+    /// regeneration from nothing after each one included, but done on
+    /// threads of their own while the next commands run: a long script
+    /// spends most of its time in those comparisons, each of which needs
+    /// only the document as it was after its command and what the session
+    /// held for it then. At most `at_once` comparisons are under way, and
+    /// each holds only that document and that regeneration. The verdicts
+    /// are taken in the order of the commands, so the first command after
+    /// which the two differ fails the test with [`run`]'s message, whatever
+    /// the number of threads; [`Overlapped::wait`] takes the last ones.
+    pub struct Overlapped {
+        at_once: usize,
+        pending: std::collections::VecDeque<(String, std::thread::JoinHandle<bool>)>,
+        /// The state the last comparison was started on.
+        started: Option<State>,
+    }
+
+    impl Overlapped {
+        pub fn new(at_once: usize) -> Self {
+            Self {
+                at_once: at_once.max(1),
+                pending: std::collections::VecDeque::new(),
+                started: None,
+            }
+        }
+
+        pub fn run(&mut self, session: &mut Session, id: &str, params: Value) -> Value {
+            let before = state(session);
+            let result = super::plain::run(session, id, params.clone());
+            let now = state(session);
+            // As in `run`: a command that only reads, on the document whose
+            // comparison was started last, would start the same comparison.
+            if READING.contains(&id) && before == now && self.started == Some(now) {
+                return result;
+            }
+            while self.pending.len() >= self.at_once {
+                self.take_oldest();
+            }
+            if let Some(compare) = session.regeneration_to_compare() {
+                let comparison = std::thread::spawn(move || compare.matches());
+                self.pending
+                    .push_back((format!("after {id} {params}"), comparison));
+            }
+            self.started = Some(state(session));
+            result
+        }
+
+        /// The verdict of the oldest comparison under way, which fails the
+        /// test as [`run`] fails it.
+        fn take_oldest(&mut self) {
+            let Some((after, comparison)) = self.pending.pop_front() else {
+                return;
+            };
+            match comparison.join() {
+                Ok(matches) => assert_ne!(Some(matches), Some(false), "{after}"),
+                Err(panicked) => std::panic::resume_unwind(panicked),
+            }
+        }
+
+        /// Takes every verdict still to come, in order, and leaves the
+        /// session to [`run`] as if it had checked every command itself.
+        pub fn wait(mut self, session: &Session) {
+            while !self.pending.is_empty() {
+                self.take_oldest();
+            }
+            if self.started == Some(state(session)) {
+                CHECKED.set(self.started);
+            }
+        }
+    }
+
+    impl Drop for Overlapped {
+        /// A test that fails while comparisons are under way still says
+        /// which commands' comparisons failed; one that forgot to wait
+        /// fails here.
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                for (after, comparison) in self.pending.drain(..) {
+                    if !matches!(comparison.join(), Ok(true)) {
+                        eprintln!(
+                            "also: the regeneration differed from one from nothing (or its comparison panicked) {after}"
+                        );
+                    }
+                }
+            } else {
+                while !self.pending.is_empty() {
+                    self.take_oldest();
+                }
+            }
+        }
+    }
+
     through_run!();
 }
