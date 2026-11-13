@@ -1,12 +1,22 @@
 # Decisions
 
-> **Last updated:** 2026-11-12
+> **Last updated:** 2026-11-13
 
 This is the record of the decisions taken while 3DCraft was built, written at the time and kept as it was. "The developer" is the project's maintainer; "an agent" and "the coordinator" are the AI agents that built it (the coordinator plans the others' work and merges it). A decision made by an agent "for the developer to overturn" (some of them overnight, while nobody could be asked) stood unless it was overturned, and a later entry says so where it was; dates are when a decision was taken, ids of runs and commits are the workshop's evidence of the day. From outside the project, an open decision is raised in an issue.
 
 Decisions that shape the project, newest first, each with its reason. An agent that needs something listed under *Open decisions* asks the developer; it does not pick silently. When one is settled, move it up with the date.
 
 ## Taken
+
+### 2026-11-13: After R1: the freeze ends, `main` is the coming 0.2, fixes for 0.1 from a maintenance branch (decided by the developer)
+
+0.1.0 and 0.1.1 are published (2026-11-12). The freeze of 2026-11-05, which kept `main` to the small fixes the release needed, ends.
+
+- **`main` is the coming 0.2**, starting with the hardening of the kernel.
+- **Fixes for 0.1 are released as 0.1.x from the maintenance branch `release/0.1`**, made from `main` as it stood after 0.1.1 (`052e3bf2`). A 0.1.x is tagged on that branch, on a commit the gate passed there.
+- **What may go into a 0.1.x:** only what is wrong, crashes or spoils the first impression; no change to the file format and no new command parameters. Everything else waits for 0.2.
+- **A version number and publishing stay the developer's word**, each time, as for 0.1.0 and 0.1.1.
+- **A fix to the user guide reaches the website through the next 0.1.x:** the website builds the guide of a release from its tag (the guide of 0.1 from `v0.1.1`), not from `main`, which moves on.
 
 ### 2026-11-12: On Windows the window stays a console program for 0.1.1 (decided by the developer)
 
