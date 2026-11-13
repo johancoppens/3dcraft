@@ -217,8 +217,8 @@ fn initialize_echoes_a_supported_version_and_offers_the_latest_otherwise() {
     assert!(message.contains("protocolVersion"), "{message}");
 }
 
-/// The product's name for a client to show, `serverInfo.title` (issue 1 of
-/// the workshop, 2026-11-13), in the revisions that define it: MCP
+/// The product's name for a client or a directory of servers to show,
+/// `serverInfo.title` (2026-11-13), in the revisions that define it: MCP
 /// 2025-06-18 gave `Implementation` the `title` of `BaseMetadata`, "intended
 /// for UI and end-user contexts"; 2024-11-05 and 2025-03-26 define
 /// `Implementation` as `name` and `version` only, and a client that settles
@@ -1670,9 +1670,9 @@ fn the_selection_is_a_tool_and_a_resource() {
 // ------------------------------------------------------------ annotations
 
 /// What each tool says about what it does to its surroundings (MCP's tool
-/// annotations, issue 2 of the workshop, 2026-11-13). A client may run a
-/// tool marked read-only without asking the person, so each hint is a
-/// claim, and the tests below hold each one to what the tool does.
+/// annotations, 2026-11-13). A client may run a tool marked read-only
+/// without asking the person, so each hint is a claim, and the tests below
+/// hold each one to what the tool does.
 fn claimed(name: &str) -> Value {
     match name {
         // `command_list` reads the registry from a `&Session`; `doc_inspect`
@@ -1689,6 +1689,11 @@ fn claimed(name: &str) -> Value {
         "selection_get" => json!({"idempotentHint": true, "openWorldHint": false}),
         // Commands change documents and files, over what was there, and do
         // more when run twice (`commands_change_things_and_twice_does_more`).
+        // The window's methods behind `control_call` move the camera,
+        // select, set a parameter, write a picture over a file and draw
+        // more frames each time (`ui.fit`, `ui.select`, `ui.param`,
+        // `ui.screenshot`, `ui.advance`); none opens a link, which the
+        // window does only for a click (by reading, in `crates/ui-egui`).
         "command_run" | "command_batch" | "control_call" => json!({
             "readOnlyHint": false,
             "destructiveHint": true,
@@ -2011,11 +2016,11 @@ fn commands_change_things_and_twice_does_more() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Issue 5 of the workshop (2026-11-13): an agent and a scorer read the
-/// tool list before any `command_list`, so `command_run` says that files
-/// are commands, with every format `file.export` writes as its params
-/// notation lists them (so a format added there is named here too), and
-/// when to take `command_batch` instead.
+/// An agent, and a directory that scores servers, read the tool list
+/// before any `command_list` (2026-11-13), so `command_run` says that
+/// files are commands, with every format `file.export` writes as its
+/// params notation lists them (so a format added there is named here too),
+/// and when to take `command_batch` instead.
 #[test]
 fn command_run_says_that_files_are_commands() {
     let mut s = session();
