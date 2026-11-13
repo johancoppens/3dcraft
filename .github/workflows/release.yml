@@ -14,6 +14,8 @@ name: Release
 #   gh workflow run Release -R johancoppens/3dcraft && gh run watch -R johancoppens/3dcraft
 # or only the web zip, on one Linux runner:
 #   gh workflow run Release -R johancoppens/3dcraft -f only=web && gh run watch -R johancoppens/3dcraft
+# or only the Windows packages with their smoke test and install check:
+#   gh workflow run Release -R johancoppens/3dcraft -f only=windows && gh run watch -R johancoppens/3dcraft
 # or by pushing a tag `v<version>` matching the workspace version to the
 # public repository (`git push public v<version>`), which also makes a
 # draft GitHub release with the packages for the developer to publish,
@@ -24,9 +26,9 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: "all: every package; web: only the web zip (one Linux runner)"
+        description: "all: every package; web: only the web zip (one Linux runner); windows: only the Windows packages, their smoke test and install check"
         type: choice
-        options: [all, web]
+        options: [all, web, windows]
         default: all
   push:
     tags: ["v*"]
@@ -51,21 +53,16 @@ jobs:
       && (github.event_name != 'workflow_dispatch' || inputs.only != 'web')
     strategy:
       fail-fast: false
+      # Every platform; with `only: windows` the Windows job alone (a tag
+      # has no inputs, so it gets every platform). The images: linux, the
+      # oldest supported Ubuntu (the binaries need the glibc they were
+      # linked against or newer); macos, the oldest macOS image on Apple
+      # Silicon (GitHub retired the macOS 14 images on 2026-11-02; the
+      # app's minimum macOS is not the runner's: Rust's default deployment
+      # target for aarch64-apple-darwin, 11.0, is what Info.plist's
+      # LSMinimumSystemVersion promises); windows, Windows Server 2022.
       matrix:
-        include:
-          # The oldest supported Ubuntu: the binaries need the glibc they
-          # were linked against or newer.
-          - name: linux
-            os: ubuntu-22.04
-          # The oldest macOS image on Apple Silicon (GitHub retired the
-          # macOS 14 images on 2026-11-02). The app's minimum macOS is not
-          # the runner's:
-          # Rust's default deployment target for aarch64-apple-darwin
-          # (11.0) is what Info.plist's LSMinimumSystemVersion promises.
-          - name: macos
-            os: macos-15
-          - name: windows
-            os: windows-2022
+        include: ${{ fromJSON(inputs.only == 'windows' && '[{"name":"windows","os":"windows-2022"}]' || '[{"name":"linux","os":"ubuntu-22.04"},{"name":"macos","os":"macos-15"},{"name":"windows","os":"windows-2022"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     defaults:
@@ -270,11 +267,32 @@ jobs:
             }
             Write-Host "msiexec $action $path ended with $($run.ExitCode)"
           }
-          # A property of a COM object read through IDispatch, the form that
-          # takes parameters (PowerShell's COM adapter may not offer the
-          # Windows Installer's parameterised properties as methods).
+          # A property of a COM object read through IDispatch
+          # (Type.InvokeMember, BindingFlags.GetProperty): the Windows
+          # Installer's properties take parameters, which PowerShell's COM
+          # adapter may not offer. The object and every argument go as plain
+          # .NET values in a new object[]: a value PowerShell has wrapped (a
+          # PSObject, as Join-Path's string is) reaches IDispatch as a type it
+          # cannot convert, DISP_E_TYPEMISMATCH (the first rehearsal,
+          # 2026-11-13, run 43488640983).
           function Get-ComProperty($object, [string] $name, [object[]] $arguments) {
-            $object.GetType().InvokeMember($name, [System.Reflection.BindingFlags]::GetProperty, $null, $object, $arguments)
+            $plain = [object[]]::new($arguments.Count)
+            for ($i = 0; $i -lt $arguments.Count; $i++) { $plain[$i] = $arguments[$i].psobject.BaseObject }
+            $target = $object.psobject.BaseObject
+            $target.GetType().InvokeMember($name, [System.Reflection.BindingFlags]::GetProperty, $null, $target, $plain)
+          }
+          # Each check below runs whatever failed before it; its failure is
+          # collected, said at once, and the step fails at the end with all of
+          # them (one rehearsal is an hour of a hosted Windows runner).
+          $failures = [System.Collections.Generic.List[string]]::new()
+          function Check([string] $what, [scriptblock] $test) {
+            try {
+              & $test
+              Write-Host "ok: $what"
+            } catch {
+              $failures.Add("${what}: $($_.Exception.Message)")
+              Write-Host "::error::${what}: $($_.Exception.Message)"
+            }
           }
           function Test-OnPath {
             $path = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').Path
@@ -321,70 +339,126 @@ jobs:
           }
           Invoke-Msi '/i' $msi 'this'
           Assert-One $core
-          foreach ($program in 'craft3d.exe', 'craft3d-cli.exe') {
-            $said = & (Join-Path $folder $program) --version
-            if ($LASTEXITCODE -ne 0 -or "$said" -notmatch [regex]::Escape(" $version ")) {
-              throw "$folder\$program --version said: $said"
-            }
-            Write-Host "$program from Program Files: $said"
-          }
-          # The Start menu entry starts the launcher: an advertised shortcut
-          # names a product and a component, whose key path is the program.
           $launcher = Join-Path $folder '3DCraft.exe'
-          if (-not (Test-Path -LiteralPath $launcher)) { throw "$launcher was not installed" }
           $lnk = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\3DCraft.lnk'
-          if (-not (Test-Path -LiteralPath $lnk)) { throw "the Start menu entry $lnk is missing" }
-          $installer = New-Object -ComObject WindowsInstaller.Installer
-          $target = Get-ComProperty $installer 'ShortcutTarget' @($lnk)
-          $product = Get-ComProperty $target 'StringData' @(1)
-          $component = Get-ComProperty $target 'StringData' @(3)
-          $started = Get-ComProperty $installer 'ComponentPath' @($product, $component)
-          if ($started -ne $launcher) { throw "the Start menu entry starts $started, not $launcher" }
-          Write-Host "the Start menu entry starts $started"
+          Check 'both console programs answer --version from Program Files' {
+            foreach ($program in 'craft3d.exe', 'craft3d-cli.exe') {
+              $said = & (Join-Path $folder $program) --version
+              if ($LASTEXITCODE -ne 0 -or "$said" -notmatch [regex]::Escape(" $version ")) {
+                throw "$folder\$program --version said: $said"
+              }
+              Write-Host "$program from Program Files: $said"
+            }
+          }
+          # The Start menu entry starts the launcher. The shortcut is
+          # advertised (packaging/windows/craft3d.wxs, Advertise="yes"): it
+          # names a product, a feature and a component, whose key path is the
+          # program. Two ways are tried and each says what it found; either
+          # one that gives the launcher will do.
+          Check 'the Start menu entry starts the launcher' {
+            if (-not (Test-Path -LiteralPath $launcher)) { throw "$launcher was not installed" }
+            if (-not (Test-Path -LiteralPath $lnk)) { throw "the Start menu entry $lnk is missing" }
+            $found = [System.Collections.Generic.List[string]]::new()
+            # Installer.ShortcutTarget(string ShortcutPath) is a Record of
+            # three fields, product code, feature and component code;
+            # Record.StringData(long Field), 1-based, gives each as a string;
+            # Installer.ComponentPath(string Product, string Component) the
+            # component's key path (Microsoft's Windows Installer automation
+            # reference). Passed: [string], [int], [string] and [string].
+            try {
+              $installer = New-Object -ComObject WindowsInstaller.Installer
+              $record = Get-ComProperty $installer 'ShortcutTarget' @([string]$lnk)
+              $product = [string](Get-ComProperty $record 'StringData' @([int]1))
+              $feature = [string](Get-ComProperty $record 'StringData' @([int]2))
+              $component = [string](Get-ComProperty $record 'StringData' @([int]3))
+              $path = [string](Get-ComProperty $installer 'ComponentPath' @($product, $component))
+              Write-Host "the Windows Installer: ShortcutTarget([string] $lnk) gave product $product, feature $feature, component $component; ComponentPath([string], [string]) gave $path"
+              $found.Add($path)
+            } catch {
+              Write-Host "the Windows Installer's way failed: $($_.Exception.Message)"
+            }
+            # WScript.Shell's CreateShortcut(string).TargetPath, an ordinary
+            # method and property: a plain shortcut's target (an advertised
+            # one may give another file, such as its icon).
+            try {
+              $shell = New-Object -ComObject WScript.Shell
+              $path = [string]$shell.CreateShortcut([string]$lnk).TargetPath
+              Write-Host "WScript.Shell: CreateShortcut([string] $lnk).TargetPath gave $path"
+              $found.Add($path)
+            } catch {
+              Write-Host "WScript.Shell's way failed: $($_.Exception.Message)"
+            }
+            if (-not ($found | Where-Object { $_ -eq $launcher })) {
+              throw "no way gave $launcher as its target (found: $($found -join '; '))"
+            }
+          }
           # A double-clicked .3dcraft, .3dcraftjig and .3dcraftasm too: each
           # names its file type, whose open verb the launcher's component
           # carries (packaging/windows/craft3d.wxs).
-          foreach ($pair in @(@('.3dcraft', 'Craft3D.Document.1'), @('.3dcraftjig', 'Craft3D.Jig.1'), @('.3dcraftasm', 'Craft3D.Assembly.1'))) {
-            $named = (Get-ItemProperty -LiteralPath "Registry::HKEY_CLASSES_ROOT\$($pair[0])").'(default)'
-            if ($named -ne $pair[1]) { throw "$($pair[0]) names $named, not $($pair[1])" }
+          Check 'the three file types are registered' {
+            foreach ($pair in @(@('.3dcraft', 'Craft3D.Document.1'), @('.3dcraftjig', 'Craft3D.Jig.1'), @('.3dcraftasm', 'Craft3D.Assembly.1'))) {
+              $named = (Get-ItemProperty -LiteralPath "Registry::HKEY_CLASSES_ROOT\$($pair[0])").'(default)'
+              if ($named -ne $pair[1]) { throw "$($pair[0]) names $named, not $($pair[1])" }
+            }
           }
-          Write-Host "the three file types are registered"
-          if (-not (Test-OnPath)) { throw "the system PATH does not name $folder" }
-          Write-Host "the system PATH names $folder"
+          Check 'the system PATH names the folder' {
+            if (-not (Test-OnPath)) { throw "the system PATH does not name $folder" }
+          }
           # The installed launcher passes a double-clicked file's path on
-          # whole: spaces, % and ^ (no shell stands between to expand them),
+          # whole: spaces, % and ^ (Start-Process hands the command line to
+          # Windows as written, no shell stands between to expand them),
           # through std's quoting of craft3d.exe's command line. The window
           # refuses a file that is not there before its window exists, naming
           # it; the launcher writes that line to the switch's file.
-          $file = 'C:\a b\x %y% ^z\no such.3dcraft'
-          $run = Start-Process -FilePath $launcher -ArgumentList "`"$file`"" -Wait -PassThru
-          if ($run.ExitCode -eq 0) { throw "3DCraft.exe ended well for a file that is not there" }
-          $log = $env:CRAFT3D_LAUNCHER_LOG
-          $said = if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Raw } else { '' }
-          Write-Host "3DCraft.exe ended with $($run.ExitCode) and said: $said"
-          if (-not $said.Contains($file)) { throw "the launcher's line does not name $file whole" }
+          Check 'the installed launcher passes a path with spaces, % and ^ whole' {
+            $file = 'C:\a b\x %y% ^z\no such.3dcraft'
+            $run = Start-Process -FilePath $launcher -ArgumentList "`"$file`"" -Wait -PassThru
+            $log = $env:CRAFT3D_LAUNCHER_LOG
+            # .NET's ReadAllText: '' for an empty file, where Get-Content -Raw
+            # gives $null (also through a [string] cast) and .Contains throws.
+            $said = ''
+            if (Test-Path -LiteralPath $log) { $said = [System.IO.File]::ReadAllText([string]$log) }
+            Write-Host "3DCraft.exe `"$file`" ended with $($run.ExitCode) and said: $said"
+            if ($run.ExitCode -eq 0) { throw "3DCraft.exe ended well for a file that is not there" }
+            if (-not $said.Contains($file)) { throw "the launcher's line does not name $file whole" }
+          }
           # Uninstalled, nothing of it is left: no entry in Apps, no Start menu
-          # entry, no file types, no files, no PATH entry.
-          Invoke-Msi '/x' $msi 'uninstall'
-          if (@(Get-Entries).Count -ne 0) { throw "Apps still lists 3DCraft after msiexec /x" }
-          if (Test-Path -LiteralPath $lnk) { throw "the Start menu entry $lnk is left" }
-          foreach ($key in '.3dcraft', '.3dcraftjig', '.3dcraftasm', 'Craft3D.Document.1', 'Craft3D.Jig.1', 'Craft3D.Assembly.1') {
-            if (Test-Path -LiteralPath "Registry::HKEY_CLASSES_ROOT\$key") { throw "HKEY_CLASSES_ROOT\$key is left" }
+          # entry, no file types, no files, no PATH entry; every leftover said.
+          Check 'msiexec /x leaves nothing behind' {
+            Invoke-Msi '/x' $msi 'uninstall'
+            # A file the system still holds is removed a moment later: up to
+            # 30 seconds for the folder and the Start menu entry to go.
+            for ($i = 0; $i -lt 30 -and ((Test-Path -LiteralPath $folder) -or (Test-Path -LiteralPath $lnk)); $i++) { Start-Sleep -Seconds 1 }
+            $left = [System.Collections.Generic.List[string]]::new()
+            if (@(Get-Entries).Count -ne 0) { $left.Add('an entry in Apps') }
+            if (Test-Path -LiteralPath $lnk) { $left.Add("the Start menu entry $lnk") }
+            foreach ($key in '.3dcraft', '.3dcraftjig', '.3dcraftasm', 'Craft3D.Document.1', 'Craft3D.Jig.1', 'Craft3D.Assembly.1') {
+              if (Test-Path -LiteralPath "Registry::HKEY_CLASSES_ROOT\$key") { $left.Add("HKEY_CLASSES_ROOT\$key") }
+            }
+            if (Test-Path -LiteralPath $folder) {
+              Get-ChildItem -LiteralPath $folder -Recurse -Force | ForEach-Object { Write-Host "left: $($_.FullName)" }
+              $left.Add($folder)
+            }
+            if (Test-OnPath) { $left.Add("$folder on the system PATH") }
+            if ($left.Count -gt 0) { throw "left behind: $($left -join '; ')" }
           }
-          if (Test-Path -LiteralPath $folder) {
-            Get-ChildItem -LiteralPath $folder -Recurse -Force | ForEach-Object { Write-Host $_.FullName }
-            throw "$folder is left"
+          if ($failures.Count -gt 0) {
+            Write-Host "$($failures.Count) check(s) failed:"
+            $failures | ForEach-Object { Write-Host "  $_" }
+            throw "$($failures.Count) check(s) failed (above)"
           }
-          if (Test-OnPath) { throw "the system PATH still names $folder" }
-          Write-Host "uninstalled: nothing of 3DCraft is left"
+          Write-Host "every check passed"
 
   # The browser build: wasm-bindgen's CLI of the version in Cargo.lock and
   # binaryen's wasm-opt, both release downloads pinned and checked against
   # their sha256 (docs/development.md, Web build).
   web:
     name: package (web)
-    # Only in the public repository, as `package` above.
-    if: github.repository == 'johancoppens/3dcraft'
+    # Only in the public repository, as `package` above; not for a
+    # rehearsal of Windows alone.
+    if: >-
+      github.repository == 'johancoppens/3dcraft'
+      && (github.event_name != 'workflow_dispatch' || inputs.only != 'windows')
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
