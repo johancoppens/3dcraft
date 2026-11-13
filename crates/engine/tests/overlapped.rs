@@ -176,3 +176,36 @@ fn a_full_queue_makes_the_next_command_wait_and_skips_none() {
     assert_eq!(log.iter().filter(|e| e.starts_with("end ")).count(), 10);
     assert!(running.lock().unwrap().1 <= 3, "{log:?}");
 }
+
+/// Command 4 fails (panics) while the comparison of command 2, which
+/// differs, is still under way: the test fails with `run`'s message for
+/// command 2, as `checked::run` would have before command 4 ran. With no
+/// difference under way, command 4's own failure goes on.
+#[test]
+fn a_failing_command_does_not_hide_an_earlier_difference() {
+    let outcome = catch_unwind(|| {
+        let mut checks = Overlapped::new(3);
+        checks.compare_after(after(1), || true);
+        checks.compare_after(after(2), || {
+            std::thread::sleep(Duration::from_millis(50));
+            false
+        });
+        checks.compare_after(after(3), || true);
+        checks.command(|| panic!("command 4 failed"));
+    });
+    let failure = said(outcome.unwrap_err().as_ref());
+    assert_eq!(failure, as_run_said_it(&after(2)));
+    let outcome = catch_unwind(|| {
+        let mut checks = Overlapped::new(3);
+        checks.compare_after(after(1), || true);
+        checks.compare_after(after(2), || {
+            std::thread::sleep(Duration::from_millis(50));
+            true
+        });
+        checks.command(|| panic!("command 3 failed"));
+    });
+    assert_eq!(said(outcome.unwrap_err().as_ref()), "command 3 failed");
+    let mut checks = Overlapped::new(3);
+    assert_eq!(checks.command(|| 7), 7);
+    checks.finish();
+}

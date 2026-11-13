@@ -261,16 +261,20 @@ pub mod checked {
         static CHECKED: Cell<Option<State>> = const { Cell::new(None) };
     }
 
+    /// A command that only reads, on the document the previous check
+    /// found sound (or, in [`Overlapped`], is comparing) and left at the
+    /// same revision: the same document, whose regeneration (kept per
+    /// revision) was compared already, and regeneration is deterministic.
+    /// Checking again would repeat the same comparison.
+    fn compared_already(id: &str, before: State, now: State, last: Option<State>) -> bool {
+        READING.contains(&id) && before == now && last == Some(now)
+    }
+
     pub fn run(session: &mut Session, id: &str, params: Value) -> Value {
         let before = state(session);
         let result = super::plain::run(session, id, params.clone());
         let now = state(session);
-        // A command that only reads, on the document the previous check
-        // found sound and left at the same revision: the same document,
-        // whose regeneration (kept per revision) was compared already, and
-        // regeneration is deterministic. Checking again would repeat the
-        // same comparison.
-        if READING.contains(&id) && before == now && CHECKED.get() == Some(now) {
+        if compared_already(id, before, now, CHECKED.get()) {
             return result;
         }
         // Built up edit by edit, the document is what regenerating it from
@@ -295,15 +299,18 @@ pub mod checked {
     /// first command after which the two differ fails the test with
     /// [`run`]'s message, whatever the number of threads and whichever
     /// comparison ends first, and no later command is named.
-    /// [`Overlapped::wait`] takes the last verdicts and holds the count:
-    /// every command was compared, or was a reading command on a document
-    /// already being compared (which [`run`] skips too), or had no document.
+    /// A command that panics (a command error) while comparisons are under
+    /// way first has their verdicts taken, so a difference after an
+    /// earlier command fails the test as [`run`] would have, before that
+    /// command; only then does the command's own panic go on.
+    /// [`Overlapped::wait`] takes the last verdicts and says how many
+    /// commands were compared, skipped as reading ones (as [`run`] skips
+    /// them) and run without a document.
     pub struct Overlapped {
         at_once: usize,
         pending: std::collections::VecDeque<(String, std::thread::JoinHandle<bool>)>,
         /// The state the last comparison was started on.
         started: Option<State>,
-        commands: usize,
         compared: usize,
         skipped: usize,
         without_document: usize,
@@ -319,7 +326,6 @@ pub mod checked {
                 at_once: at_once.max(1),
                 pending: std::collections::VecDeque::new(),
                 started: None,
-                commands: 0,
                 compared: 0,
                 skipped: 0,
                 without_document: 0,
@@ -330,12 +336,9 @@ pub mod checked {
 
         pub fn run(&mut self, session: &mut Session, id: &str, params: Value) -> Value {
             let before = state(session);
-            let result = super::plain::run(session, id, params.clone());
+            let result = self.command(|| super::plain::run(session, id, params.clone()));
             let now = state(session);
-            // As in `run`: a command that only reads, on the document whose
-            // comparison was started last, would start the same comparison.
-            if READING.contains(&id) && before == now && self.started == Some(now) {
-                self.commands += 1;
+            if compared_already(id, before, now, self.started) {
                 self.skipped += 1;
                 return result;
             }
@@ -343,13 +346,27 @@ pub mod checked {
                 Some(compare) => {
                     self.compare_after(format!("after {id} {params}"), move || compare.matches());
                 }
-                None => {
-                    self.commands += 1;
-                    self.without_document += 1;
-                }
+                None => self.without_document += 1,
             }
             self.started = Some(state(session));
             result
+        }
+
+        /// Runs a command; when it panics, the verdicts under way are
+        /// taken first, in order (one that differs fails the test with
+        /// [`run`]'s message), and then its panic goes on. [`Self::run`]
+        /// passes its command; the helper's own tests pass commands of their
+        /// making.
+        pub fn command<T>(&mut self, command: impl FnOnce() -> T) -> T {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(command)) {
+                Ok(done) => done,
+                Err(panicked) => {
+                    while !self.pending.is_empty() {
+                        self.take_oldest();
+                    }
+                    std::panic::resume_unwind(panicked)
+                }
+            }
         }
 
         /// A command's comparison, `after` naming the command as [`run`]'s
@@ -361,7 +378,6 @@ pub mod checked {
             after: String,
             comparison: impl FnOnce() -> bool + Send + 'static,
         ) {
-            self.commands += 1;
             while self.pending.len() >= self.at_once {
                 self.take_oldest();
             }
@@ -401,9 +417,7 @@ pub mod checked {
             }
         }
 
-        /// Takes every verdict still to come, in order, and holds the count
-        /// of commands to the comparisons made and the commands left out
-        /// for a reason.
+        /// Takes every verdict still to come, in order.
         pub fn finish(&mut self) {
             while !self.pending.is_empty() {
                 self.take_oldest();
@@ -412,22 +426,22 @@ pub mod checked {
                 self.verdicts, self.compared,
                 "every comparison started gives its verdict"
             );
-            assert_eq!(
-                self.commands,
-                self.compared + self.skipped + self.without_document,
-                "every command is compared ({} compared, {} reading ones skipped, {} without a document)",
-                self.compared,
-                self.skipped,
-                self.without_document
-            );
         }
 
         /// [`Self::finish`], then leaves the session to [`run`] as if it had
-        /// checked every command itself.
-        pub fn wait(mut self, session: &Session) {
+        /// checked every command itself. Says how many commands were
+        /// compared, skipped as reading ones on a document already being
+        /// compared, and run without a document (none compared then, as in
+        /// [`run`]).
+        pub fn wait(mut self, session: &Session) -> Counted {
             self.finish();
             if self.started == Some(state(session)) {
                 CHECKED.set(self.started);
+            }
+            Counted {
+                compared: self.compared,
+                skipped: self.skipped,
+                without_document: self.without_document,
             }
         }
 
@@ -435,6 +449,14 @@ pub mod checked {
         pub fn unreported(&self) -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
             std::sync::Arc::clone(&self.unreported)
         }
+    }
+
+    /// What [`Overlapped::wait`] counted.
+    #[derive(Debug, PartialEq)]
+    pub struct Counted {
+        pub compared: usize,
+        pub skipped: usize,
+        pub without_document: usize,
     }
 
     impl Drop for Overlapped {
