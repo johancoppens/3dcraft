@@ -1251,17 +1251,68 @@ impl Plane {
         let [a, b, c] = self.corners;
         let d = p - a;
         let volume = self.normal.dot(d);
-        let bound = ORIENT_ERROR
-            * (d.x.abs() * self.sizes.x + d.y.abs() * self.sizes.y + d.z.abs() * self.sizes.z);
-        count_sign(volume > bound || volume < -bound);
-        let sign = if volume > bound {
-            1
-        } else if volume < -bound {
-            -1
-        } else {
-            exact::orient3d(a, b, c, p)
-        };
-        (sign, volume)
+        let permanent =
+            d.x.abs() * self.sizes.x + d.y.abs() * self.sizes.y + d.z.abs() * self.sizes.z;
+        (
+            filtered(volume, permanent, ORIENT_ERROR, || {
+                exact::orient3d(a, b, c, p)
+            }),
+            volume,
+        )
+    }
+}
+
+/// The sign of a determinant computed as `value`, whose permanent (the
+/// same sum with every product taken by its size) is `permanent` and
+/// whose rounding is at most `error` of that: certain beyond the bound;
+/// 0 when the permanent is 0 (every product is then exactly 0, none of
+/// them falling below the smallest normal double in the range the exact
+/// arithmetic holds for); else worked out exactly by `exact`.
+fn filtered(value: f64, permanent: f64, error: f64, exact: impl FnOnce() -> i8) -> i8 {
+    let bound = error * permanent;
+    let certain = value > bound || value < -bound || permanent == 0.0;
+    count_sign(certain);
+    if value > bound {
+        1
+    } else if value < -bound {
+        -1
+    } else if permanent == 0.0 {
+        0
+    } else {
+        exact()
+    }
+}
+
+/// How far rounding can move the 2 × 2 determinant of [`orient2d`],
+/// relative to its permanent: Shewchuk's static bound is (3 + 16 ε) ε with
+/// ε = 2⁻⁵³ (`ccwerrboundA`); 4 f64::EPSILON is 8 ε, more than twice that.
+const ORIENT2_ERROR: f64 = 4.0 * f64::EPSILON;
+
+/// The exact sign of (b − a) × (c − a) for points of a plane (positive
+/// where `a b c` turn counter-clockwise), through the filter.
+fn orient2d(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> i8 {
+    let ([a0, a1], [b0, b1], [c0, c1]) = (a, b, c);
+    let (left, right) = ((b0 - a0) * (c1 - a1), (b1 - a1) * (c0 - a0));
+    filtered(
+        left - right,
+        left.abs() + right.abs(),
+        ORIENT2_ERROR,
+        || exact::orient2d(a, b, c),
+    )
+}
+
+impl Plane {
+    /// An axis along which the triangle's projection has area, so that the
+    /// projection is one to one on its plane (the one its normal has the
+    /// largest part along is tried first); none when it has no area.
+    fn flat_axis(&self) -> Option<usize> {
+        let n = self.normal;
+        let mut axes = [(n.x.abs(), 0), (n.y.abs(), 1), (n.z.abs(), 2)];
+        axes.sort_by(|x, y| y.0.total_cmp(&x.0));
+        let [a, b, c] = self.corners;
+        axes.into_iter()
+            .map(|(_, k)| k)
+            .find(|&k| orient2d(drop_axis(a, k), drop_axis(b, k), drop_axis(c, k)) != 0)
     }
 }
 
@@ -1330,12 +1381,36 @@ fn meet(t: &[Vec3; 3], u: &[Vec3; 3]) -> Meet {
     if apart(|p| p.x) || apart(|p| p.y) || apart(|p| p.z) {
         return Meet::No;
     }
+    let one_side = |s: &[(i8, f64); 3]| s.iter().all(|x| x.0 > 0) || s.iter().all(|x| x.0 < 0);
+    let on_plane = |s: &[(i8, f64); 3]| s.iter().all(|x| x.0 == 0);
+    // Both in one plane, that of a triangle with area: along an axis whose
+    // projection of that triangle has area the projection is one to one on
+    // the plane, and there they meet where they meet.
+    let flat = |axis: usize| {
+        if triangles_meet_2d(t.map(|p| drop_axis(p, axis)), u.map(|p| drop_axis(p, axis))) {
+            Meet::Somewhere
+        } else {
+            Meet::No
+        }
+    };
     let (pt, pu) = (Plane::of(t), Plane::of(u));
     let st = t.map(|p| pu.side(p));
-    let su = u.map(|p| pt.side(p));
-    let one_side = |s: &[(i8, f64); 3]| s.iter().all(|x| x.0 > 0) || s.iter().all(|x| x.0 < 0);
-    if one_side(&st) || one_side(&su) {
+    if one_side(&st) {
         return Meet::No;
+    }
+    if on_plane(&st)
+        && let Some(axis) = pu.flat_axis()
+    {
+        return flat(axis);
+    }
+    let su = u.map(|p| pt.side(p));
+    if one_side(&su) {
+        return Meet::No;
+    }
+    if on_plane(&su)
+        && let Some(axis) = pt.flat_axis()
+    {
+        return flat(axis);
     }
     let sides = |c: &[Vec3; 3], s: &[(i8, f64); 3]| {
         let [p0, p1, p2] = *c;
@@ -1417,8 +1492,7 @@ fn drop_axis(p: Vec3, k: usize) -> [f64; 2] {
 /// plane's normal has a part (there the projection is one to one).
 fn segment_meets_flat(p: Vec3, q: Vec3, tri: &[Vec3; 3]) -> bool {
     let [a, b, c] = *tri;
-    let flat =
-        (0..3).all(|k| exact::orient2d(drop_axis(a, k), drop_axis(b, k), drop_axis(c, k)) == 0);
+    let flat = (0..3).all(|k| orient2d(drop_axis(a, k), drop_axis(b, k), drop_axis(c, k)) == 0);
     if flat {
         return [(a, b), (b, c), (c, a)]
             .into_iter()
@@ -1439,7 +1513,7 @@ fn segment_meets_flat(p: Vec3, q: Vec3, tri: &[Vec3; 3]) -> bool {
 /// axes (one of which is one to one on that plane; for segments on one
 /// line, one in which the line is not a point).
 fn segments_meet(p: Vec3, q: Vec3, a: Vec3, b: Vec3) -> bool {
-    exact::orient3d(p, q, a, b) == 0
+    exact_orient(p, q, a, b) == 0
         && (0..3).all(|k| {
             segments_meet_2d(
                 drop_axis(p, k),
@@ -1464,8 +1538,8 @@ fn in_box_2d(x: [f64; 2], p: [f64; 2], q: [f64; 2]) -> bool {
 /// Whether two segments of a plane meet (closed, possibly points),
 /// exactly.
 fn segments_meet_2d(p: [f64; 2], q: [f64; 2], a: [f64; 2], b: [f64; 2]) -> bool {
-    let (o1, o2) = (exact::orient2d(p, q, a), exact::orient2d(p, q, b));
-    let (o3, o4) = (exact::orient2d(a, b, p), exact::orient2d(a, b, q));
+    let (o1, o2) = (orient2d(p, q, a), orient2d(p, q, b));
+    let (o3, o4) = (orient2d(a, b, p), orient2d(a, b, q));
     (o1 * o2 < 0 && o3 * o4 < 0)
         || (o1 == 0 && in_box_2d(a, p, q))
         || (o2 == 0 && in_box_2d(b, p, q))
@@ -1473,19 +1547,32 @@ fn segments_meet_2d(p: [f64; 2], q: [f64; 2], a: [f64; 2], b: [f64; 2]) -> bool 
         || (o4 == 0 && in_box_2d(q, a, b))
 }
 
+/// Whether two triangles of a plane meet (closed, possibly without area),
+/// exactly: a side of one meets a side of the other, or else one holds the
+/// other, and with it its first corner.
+fn triangles_meet_2d(t: [[f64; 2]; 3], u: [[f64; 2]; 3]) -> bool {
+    let sides = |c: [[f64; 2]; 3]| {
+        let [c0, c1, c2] = c;
+        [(c0, c1), (c1, c2), (c2, c0)]
+    };
+    let ([t0, t1, t2], [u0, u1, u2]) = (t, u);
+    sides(t).into_iter().any(|(p, q)| {
+        sides(u)
+            .into_iter()
+            .any(|(a, b)| segments_meet_2d(p, q, a, b))
+    }) || in_triangle_2d(t0, u0, u1, u2)
+        || in_triangle_2d(u0, t0, t1, t2)
+}
+
 /// Whether `p` lies in the closed triangle `a b c` of a plane, exactly (a
 /// triangle without area: on one of its sides).
 fn in_triangle_2d(p: [f64; 2], a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> bool {
-    if exact::orient2d(a, b, c) == 0 {
+    if orient2d(a, b, c) == 0 {
         return [(a, b), (b, c), (c, a)]
             .into_iter()
             .any(|(x, y)| segments_meet_2d(p, p, x, y));
     }
-    let o = [
-        exact::orient2d(a, b, p),
-        exact::orient2d(b, c, p),
-        exact::orient2d(c, a, p),
-    ];
+    let o = [orient2d(a, b, p), orient2d(b, c, p), orient2d(c, a, p)];
     o.iter().all(|&s| s >= 0) || o.iter().all(|&s| s <= 0)
 }
 

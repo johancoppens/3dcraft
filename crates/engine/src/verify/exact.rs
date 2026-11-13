@@ -180,7 +180,8 @@ mod tests {
         v.signum() as i8
     }
 
-    /// Against exact integer arithmetic (i128), on seeded random points and
+    /// Against exact integer arithmetic (i128), directly and through the
+    /// filters, on seeded random points and
     /// on the hard ones: coplanar (the fourth point an integer
     /// combination of the others), collinear, coincident corners, slivers
     /// (a third corner one unit off the line of the other two), nearly
@@ -260,6 +261,15 @@ mod tests {
                         let got =
                             orient3d(case.point(p), case.point(q), case.point(r), case.point(s));
                         assert_eq!(got, want, "{e} {big} {kind} {p:?} {q:?} {r:?} {s:?}");
+                        // And through the filter (with its rule for a
+                        // permanent of 0).
+                        let filtered = crate::verify::exact_orient(
+                            case.point(p),
+                            case.point(q),
+                            case.point(r),
+                            case.point(s),
+                        );
+                        assert_eq!(filtered, want, "filtered {e} {big} {kind}");
                         for k in 0..3 {
                             let pr = |a: [i64; 3]| [a[(k + 1) % 3], a[(k + 2) % 3]];
                             let pf = |a: Vec3| {
@@ -270,6 +280,12 @@ mod tests {
                             let got =
                                 orient2d(pf(case.point(p)), pf(case.point(q)), pf(case.point(r)));
                             assert_eq!(got, want, "2d {e} {big} {kind}");
+                            let filtered = crate::verify::orient2d(
+                                pf(case.point(p)),
+                                pf(case.point(q)),
+                                pf(case.point(r)),
+                            );
+                            assert_eq!(filtered, want, "2d filtered {e} {big} {kind}");
                         }
                         checked += 1;
                         zeros += usize::from(want == 0);
