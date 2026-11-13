@@ -13,6 +13,12 @@
 //! counted against a baseline, docs/testing.md › Performance tests) is one
 //! of those binaries; it finds `CARGO_TARGET_TMPDIR` set to `target/tmp`
 //! and leaves its counts there for `cargo xtask health`.
+//!
+//! `cargo xtask test -p <crate> [--test <file>]` runs some crates' test
+//! binaries the same way, for a check of less than the whole workspace:
+//! `cargo test -p craft3d-engine` runs its two hundred binaries one after
+//! the other. It adds the times of the binaries it ran to the same file and
+//! keeps every other entry, so the gate's order never shrinks to a subset.
 
 use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
@@ -41,38 +47,78 @@ pub fn run() -> Result<(), String> {
         "-D",
         "warnings",
     ])?;
-    let binaries = build_tests()?;
+    let binaries = build_tests(&["--workspace"])?;
     run_side_by_side(binaries)?;
     super::cargo(&["test", "--workspace", "--doc"])?;
     super::layers::check()?;
     super::wasm()
 }
 
+const TEST_USAGE: &str = "usage: cargo xtask test -p <crate> [-p <crate> ...] [--test <file> ...]";
+
+/// `cargo xtask test`: builds the tests of the crates named with `-p`
+/// (only the test files named with `--test`, when there are any) and runs
+/// their binaries side by side, slowest first, as `cargo xtask ci` runs the
+/// workspace's: the same lines per binary, the same report, an error when
+/// one failed. The doctests are not run (`cargo test -p <crate> --doc`; the
+/// gate runs them all).
+pub fn test(args: &[String]) -> Result<(), String> {
+    let selection = test_selection(args)?;
+    let selection: Vec<&str> = selection.iter().map(String::as_str).collect();
+    let binaries = build_tests(&selection)?;
+    run_side_by_side(binaries)
+}
+
+/// The arguments of `cargo xtask test` as cargo takes them: `-p` (or
+/// `--package`) and `--test`, each with a name, at least one crate.
+fn test_selection(args: &[String]) -> Result<Vec<String>, String> {
+    let mut selection = Vec::new();
+    let mut crates = 0usize;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let flag = match arg.as_str() {
+            "-p" | "--package" => {
+                crates += 1;
+                "-p"
+            }
+            "--test" => "--test",
+            other => return Err(format!("test: unknown argument `{other}`; {TEST_USAGE}")),
+        };
+        let name = args
+            .next()
+            .filter(|name| !name.is_empty() && !name.starts_with('-'))
+            .ok_or_else(|| format!("test: `{arg}` needs a name; {TEST_USAGE}"))?;
+        selection.push(flag.to_string());
+        selection.push(name.clone());
+    }
+    if crates == 0 {
+        return Err(format!(
+            "test: name the crates with -p (the whole workspace is `cargo xtask ci`); {TEST_USAGE}"
+        ));
+    }
+    Ok(selection)
+}
+
 fn field<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
     path.iter().try_fold(value, |v, key| v.get(key))
 }
 
-/// Builds every test of the workspace and lists the binaries. Compiler
-/// diagnostics go to the terminal as usual; the artifact messages on
-/// stdout say where each binary is.
-fn build_tests() -> Result<Vec<TestBinary>, String> {
-    let args = [
-        "test",
-        "--workspace",
-        "--no-run",
-        "--message-format=json-render-diagnostics",
-    ];
-    eprintln!("$ cargo test --workspace --no-run");
+/// Builds the tests `selection` names (`--workspace`, or `-p` and
+/// `--test` arguments) and lists the binaries. Compiler diagnostics go to
+/// the terminal as usual; the artifact messages on stdout say where each
+/// binary is.
+fn build_tests(selection: &[&str]) -> Result<Vec<TestBinary>, String> {
+    let shown = format!("cargo test {} --no-run", selection.join(" "));
+    eprintln!("$ {shown}");
     let output = Command::new(super::cargo_path())
-        .args(args)
+        .arg("test")
+        .args(selection)
+        .args(["--no-run", "--message-format=json-render-diagnostics"])
         .stderr(Stdio::inherit())
         .output()
         .map_err(|e| format!("cannot run cargo: {e}"))?;
     if !output.status.success() {
-        return Err(format!(
-            "`cargo test --workspace --no-run` failed ({})",
-            output.status
-        ));
+        return Err(format!("`{shown}` failed ({})", output.status));
     }
     let root = std::env::current_dir().unwrap_or_default();
     let mut binaries = Vec::new();
@@ -140,14 +186,30 @@ fn read_durations(path: &Path) -> BTreeMap<String, f64> {
         .collect()
 }
 
+/// Writes the durations whole or not at all: to a file of this process
+/// beside it, renamed over it, so a run that stops halfway, or another run
+/// writing at the same time, never leaves a torn file.
 fn write_durations(path: &Path, durations: &BTreeMap<String, f64>) {
     let text: String = durations
         .iter()
         .map(|(label, secs)| format!("{secs:.2}\t{label}\n"))
         .collect();
-    if let Err(e) = std::fs::write(path, text) {
+    let mut part = path.as_os_str().to_owned();
+    part.push(format!(".{}", std::process::id()));
+    let part = PathBuf::from(part);
+    if let Err(e) = std::fs::write(&part, text).and_then(|()| std::fs::rename(&part, path)) {
+        let _ = std::fs::remove_file(&part);
         eprintln!("warning: cannot write {}: {e}", path.display());
     }
+}
+
+/// The durations known before a run, with those of the binaries it ran
+/// put in: an entry of a binary it did not run is kept as it was.
+fn merged(mut known: BTreeMap<String, f64>, ran: &[(String, f64, bool)]) -> BTreeMap<String, f64> {
+    for (label, secs, _) in ran {
+        known.insert(label.clone(), *secs);
+    }
+    known
 }
 
 /// Binaries that must not run at the same time as each other: each GPU
@@ -161,7 +223,15 @@ fn serial_group(binary: &TestBinary) -> Option<&'static str> {
 /// directory as cargo would, and prints each one's output in one piece
 /// when it is done. Every binary runs even after one fails, so one gate
 /// run reports everything.
-fn run_side_by_side(mut binaries: Vec<TestBinary>) -> Result<(), String> {
+fn run_side_by_side(binaries: Vec<TestBinary>) -> Result<(), String> {
+    run_side_by_side_into(binaries, &Mutex::new(std::io::stdout()))
+}
+
+/// [`run_side_by_side`], printing each binary's output to `out`.
+fn run_side_by_side_into(
+    mut binaries: Vec<TestBinary>,
+    out: &Mutex<impl Write + Send>,
+) -> Result<(), String> {
     let target = binaries
         .first()
         .and_then(target_dir)
@@ -201,7 +271,6 @@ fn run_side_by_side(mut binaries: Vec<TestBinary>) -> Result<(), String> {
     let clock = Instant::now();
     let queue = Mutex::new(VecDeque::from(groups));
     let outcomes: Mutex<Vec<(String, f64, bool)>> = Mutex::new(Vec::new());
-    let stdout = std::io::stdout();
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {
@@ -234,7 +303,7 @@ fn run_side_by_side(mut binaries: Vec<TestBinary>) -> Result<(), String> {
                             ),
                         };
                         {
-                            let mut out = stdout.lock();
+                            let mut out = out.lock().unwrap_or_else(PoisonError::into_inner);
                             let _ = writeln!(
                                 out,
                                 "== {} ({secs:.1} s){}",
@@ -257,11 +326,7 @@ fn run_side_by_side(mut binaries: Vec<TestBinary>) -> Result<(), String> {
     let outcomes = outcomes
         .into_inner()
         .unwrap_or_else(PoisonError::into_inner);
-    let mut durations = known;
-    for (label, secs, _) in &outcomes {
-        durations.insert(label.clone(), *secs);
-    }
-    write_durations(&durations_file, &durations);
+    write_durations(&durations_file, &merged(known, &outcomes));
     let busy: f64 = outcomes.iter().map(|o| o.1).sum();
     let failed: Vec<&str> = outcomes
         .iter()
@@ -286,6 +351,163 @@ fn run_side_by_side(mut binaries: Vec<TestBinary>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use super::{TestBinary, merged, read_durations, run_side_by_side_into, test_selection};
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    fn args(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| (*w).to_string()).collect()
+    }
+
+    #[test]
+    fn the_crates_and_test_files_go_to_cargo_as_named() {
+        assert_eq!(
+            test_selection(&args(&[
+                "-p",
+                "craft3d-engine",
+                "--package",
+                "craft3d-kernel",
+                "--test",
+                "guide_examples",
+                "--test",
+                "panic_hunt"
+            ]))
+            .unwrap(),
+            args(&[
+                "-p",
+                "craft3d-engine",
+                "-p",
+                "craft3d-kernel",
+                "--test",
+                "guide_examples",
+                "--test",
+                "panic_hunt"
+            ])
+        );
+        assert_eq!(
+            test_selection(&args(&["-p", "xtask"])).unwrap(),
+            args(&["-p", "xtask"])
+        );
+    }
+
+    #[test]
+    fn a_test_without_a_crate_or_a_name_or_with_another_argument_is_refused() {
+        for (words, said) in [
+            (&[][..], "name the crates with -p"),
+            (&["--test", "guide_examples"][..], "name the crates with -p"),
+            (&["-p"][..], "`-p` needs a name"),
+            (&["-p", ""][..], "`-p` needs a name"),
+            (&["-p", "--test", "x"][..], "`-p` needs a name"),
+            (
+                &["-p", "craft3d-engine", "--test"][..],
+                "`--test` needs a name",
+            ),
+            (&["--workspace"][..], "unknown argument `--workspace`"),
+            (
+                &["-p", "craft3d-engine", "guide_examples"][..],
+                "unknown argument `guide_examples`",
+            ),
+            (
+                &["-p", "craft3d-engine", "--", "--nocapture"][..],
+                "unknown argument `--`",
+            ),
+        ] {
+            let refused = test_selection(&args(words)).unwrap_err();
+            assert!(refused.contains(said), "{words:?}: {refused}");
+            assert!(refused.contains("usage: cargo xtask test -p"), "{refused}");
+        }
+    }
+
+    #[test]
+    fn a_run_adds_its_durations_and_keeps_the_others() {
+        let known = BTreeMap::from([
+            ("crates/a: test long".to_string(), 600.0),
+            ("crates/b: test short".to_string(), 1.0),
+        ]);
+        let ran = [
+            ("crates/b: test short".to_string(), 2.5, true),
+            ("crates/c: test new".to_string(), 7.0, false),
+        ];
+        assert_eq!(
+            merged(known, &ran),
+            BTreeMap::from([
+                ("crates/a: test long".to_string(), 600.0),
+                ("crates/b: test short".to_string(), 2.5),
+                ("crates/c: test new".to_string(), 7.0),
+            ])
+        );
+    }
+
+    /// A binary that fails, and one that cannot be started, fail the run
+    /// with their names, after every binary ran, and are printed as failed;
+    /// the durations file then holds the binaries that ran beside the entry
+    /// of one that did not.
+    #[test]
+    fn a_failing_binary_fails_the_run_and_the_durations_keep_every_entry() {
+        let root = std::env::temp_dir().join(format!("xtask-side-by-side-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let deps = root.join("target/debug/deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        let binary = |name: &str| TestBinary {
+            label: format!("crates/x: test {name}"),
+            executable: deps.join(name),
+            manifest_dir: root.clone(),
+        };
+        let mut binaries = vec![binary("missing")];
+        // The system's `true` and `false` as test binaries that pass and
+        // fail, linked, not written: an executable written by a test can be
+        // "busy" while another thread starts a process.
+        #[cfg(unix)]
+        {
+            let system = |name: &str| {
+                ["/usr/bin", "/bin"]
+                    .iter()
+                    .map(|dir| Path::new(dir).join(name))
+                    .find(|p| p.is_file())
+            };
+            if let (Some(yes), Some(no)) = (system("true"), system("false")) {
+                std::os::unix::fs::symlink(yes, deps.join("passes")).unwrap();
+                std::os::unix::fs::symlink(no, deps.join("fails")).unwrap();
+                binaries.push(binary("passes"));
+                binaries.push(binary("fails"));
+            }
+        }
+        let file: PathBuf = root.join("target/ci-durations.txt");
+        std::fs::write(
+            &file,
+            "300.00\tcrates/y: test not run\n99.00\tcrates/x: test passes\n",
+        )
+        .unwrap();
+        let ran = binaries.len();
+        let printed = Mutex::new(Vec::new());
+        let failed = run_side_by_side_into(binaries, &printed).unwrap_err();
+        let printed = String::from_utf8(printed.into_inner().unwrap()).unwrap();
+        assert!(failed.contains("crates/x: test missing"), "{failed}");
+        assert!(
+            printed.contains("== crates/x: test missing (")
+                && printed.contains("): FAILED\ncannot run "),
+            "{printed}"
+        );
+        let durations = read_durations(&file);
+        assert_eq!(durations.get("crates/y: test not run"), Some(&300.0));
+        assert!(durations.contains_key("crates/x: test missing"));
+        if ran == 3 {
+            assert!(failed.starts_with("2 test binaries failed"), "{failed}");
+            assert!(failed.contains("crates/x: test fails"), "{failed}");
+            assert!(!failed.contains("crates/x: test passes"), "{failed}");
+            assert!(printed.contains("== crates/x: test fails ("), "{printed}");
+            assert!(
+                !printed.contains("test passes (0.0 s): FAILED"),
+                "{printed}"
+            );
+            assert!(durations["crates/x: test passes"] < 99.0, "{durations:?}");
+            assert!(durations.contains_key("crates/x: test fails"));
+        }
+        assert_eq!(durations.len(), ran + 1, "{durations:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A line of a workflow that asks for the workshop's own runners: it
     /// names a self-hosted runner or the Strix outside a comment (YAML's
     /// and the scripts' `#`; a comment may name the Strix).
