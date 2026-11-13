@@ -67,7 +67,15 @@
 //! `Fixed` constraint holds at a value already at that value (the start of
 //! a fresh build: a held end of an arc that jumped is then on the side of
 //! the circle its values pick, not the side it was on). That result is
-//! kept only when it has no conflict.
+//! kept only when it has no conflict. When that has a conflict too, a
+//! last attempt starts from there with every circle and arc that passes
+//! through three held points centred on the circle through them (where
+//! the values alone put it, and where Newton's method from a stale centre,
+//! far off or on the line of its chord, may never arrive), when that start
+//! reads every side and tangency as the stored solution does; it is kept
+//! only when it has no conflict and every arc it placed still runs through
+//! its points between its ends. A solve that succeeds before it is not
+//! touched.
 //!
 //! Before the first pass, image points that have moved since the starting
 //! guess was a solution ([`Sketch::image_starts`]: a count, step or angle

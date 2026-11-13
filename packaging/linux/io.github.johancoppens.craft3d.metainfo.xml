@@ -25,6 +25,12 @@
     <mediatype>application/x-craft3d-assembly</mediatype>
   </provides>
   <releases>
+    <release version="0.1.2" date="2026-11-13">
+      <url type="details">https://github.com/johancoppens/3dcraft/releases/tag/v0.1.2</url>
+      <description>
+        <p>A killed or crashed window no longer leaves a helper process behind, the MCP server says more about itself, and on Windows no console window opens beside 3DCraft.</p>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-11-12">
       <url type="details">https://github.com/johancoppens/3dcraft/releases/tag/v0.1.1</url>
       <description>

@@ -390,7 +390,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
         if let Some(j) = &options.jobs {
             cargo.extend(["-j", j.as_str()]);
         }
-        cargo.extend(["-p", "craft3d", "-p", "craft3d-cli"]);
+        // The launcher is packed on Windows only, and builds anywhere.
+        cargo.extend([
+            "-p",
+            "craft3d",
+            "-p",
+            "craft3d-cli",
+            "-p",
+            "craft3d-launcher",
+        ]);
         crate::cargo(&cargo)?;
     }
     let target = target_dir(&repo);
@@ -477,6 +485,24 @@ pub fn run(args: &[String]) -> Result<(), String> {
 /// `cargo xtask bundle-examples`), as it is named in every package and on
 /// the web site.
 pub const EXAMPLES_LICENCE: &str = "EXAMPLES-LICENSE.md";
+
+/// The name the Windows packages give the launcher (`craft3d-launcher`,
+/// docs/decisions.md, 2026-11-13): the program a person double-clicks in
+/// the zip and that the Start menu entry and the three file types start,
+/// so it carries the product's name; `craft3d.exe` and `craft3d-cli.exe`
+/// keep their machine names for terminals and agents.
+pub const LAUNCHER_FILE: &str = "3DCraft.exe";
+
+/// The Windows programs: the package each is built from, the name it is
+/// packed under, and the subsystem it must have. The launcher opens no
+/// console window; the window and the command line stay console programs,
+/// so `--version`, `--help`, start-up errors and the control channel's
+/// port line reach a terminal.
+const WINDOWS_PROGRAMS: [(&str, &str, u16); 3] = [
+    ("craft3d", "craft3d.exe", crate::pe::CONSOLE),
+    ("craft3d-cli", "craft3d-cli.exe", crate::pe::CONSOLE),
+    ("craft3d-launcher", LAUNCHER_FILE, crate::pe::GUI),
+];
 
 struct Packer {
     repo: PathBuf,
@@ -793,6 +819,28 @@ fn check_windows_program(name: &str, file: &[u8]) -> Result<(), String> {
     ))
 }
 
+/// Refuses the Windows program `file`, packed as `name`, when it is not
+/// built for `subsystem`: the launcher must open no console window, and
+/// the window and the command line must stay console programs.
+fn check_windows_subsystem(name: &str, file: &[u8], subsystem: u16) -> Result<(), String> {
+    let image = crate::pe::read(file).map_err(|e| format!("{name}: {e}"))?;
+    if image.subsystem == subsystem {
+        return Ok(());
+    }
+    Err(format!(
+        "{name} is built for the {}, not the {}: {}",
+        crate::pe::subsystem_name(image.subsystem),
+        crate::pe::subsystem_name(subsystem),
+        if subsystem == crate::pe::GUI {
+            "the launcher would open a console window (its main.rs sets \
+             `windows_subsystem = \"windows\"`)"
+        } else {
+            "a terminal and an agent would not see its output (`--version`, `--help`, \
+             start-up errors, the control channel's port line)"
+        }
+    ))
+}
+
 impl Packer {
     fn packaging(&self, rel: &str) -> PathBuf {
         self.repo.join("packaging").join(rel)
@@ -1077,13 +1125,14 @@ impl Packer {
         if dir.exists() {
             return Ok(dir);
         }
-        for name in ["craft3d", "craft3d-cli"] {
-            let exe = self.binary(name)?;
-            let file_name = exe.file_name().ok_or("a binary without a name")?;
-            // Whatever built it: no runtime a fresh Windows does not have.
-            // The bytes checked are the bytes packed.
+        for (package, file_name, subsystem) in WINDOWS_PROGRAMS {
+            let exe = self.binary(package)?;
+            // Whatever built it: no runtime a fresh Windows does not have,
+            // and the subsystem it must have. The bytes checked are the
+            // bytes packed.
             let bytes = read(&exe)?;
-            check_windows_program(&file_name.to_string_lossy(), &bytes)?;
+            check_windows_program(file_name, &bytes)?;
+            check_windows_subsystem(file_name, &bytes, subsystem)?;
             let to = dir.join(file_name);
             write(&to, &bytes)?;
             set_mode(&to, true)?;
@@ -2342,6 +2391,98 @@ mod tests {
             "{error}"
         );
         assert!(check_windows_program("craft3d.exe", &released[..300]).is_err());
+    }
+
+    /// The launcher is packed as `3DCraft.exe` for the Windows GUI
+    /// subsystem, so it opens no console window; the window and the
+    /// command line are packed as console programs, so a terminal sees
+    /// their output; a program built for the other subsystem is refused,
+    /// saying why (docs/decisions.md, 2026-11-13). The launcher's own
+    /// source asks for the GUI subsystem on Windows.
+    #[test]
+    fn each_windows_program_is_packed_with_its_subsystem() {
+        use crate::pe::{CONSOLE, GUI, synthetic::image};
+        assert_eq!(
+            WINDOWS_PROGRAMS,
+            [
+                ("craft3d", "craft3d.exe", CONSOLE),
+                ("craft3d-cli", "craft3d-cli.exe", CONSOLE),
+                ("craft3d-launcher", "3DCraft.exe", GUI),
+            ]
+        );
+        let gui = image(true, GUI, &["KERNEL32.dll", "USER32.dll"], &[]);
+        let console = image(true, CONSOLE, &["KERNEL32.dll"], &[]);
+        assert_eq!(check_windows_subsystem("3DCraft.exe", &gui, GUI), Ok(()));
+        assert_eq!(
+            check_windows_subsystem("craft3d.exe", &console, CONSOLE),
+            Ok(())
+        );
+        assert_eq!(
+            check_windows_subsystem("3DCraft.exe", &console, GUI).unwrap_err(),
+            "3DCraft.exe is built for the console subsystem, not the Windows GUI subsystem: \
+             the launcher would open a console window (its main.rs sets \
+             `windows_subsystem = \"windows\"`)"
+        );
+        let error = check_windows_subsystem("craft3d-cli.exe", &gui, CONSOLE).unwrap_err();
+        assert!(
+            error.starts_with(
+                "craft3d-cli.exe is built for the Windows GUI subsystem, not the console \
+                 subsystem: a terminal and an agent would not see its output"
+            ),
+            "{error}"
+        );
+        assert!(check_windows_subsystem("3DCraft.exe", b"MZ", GUI).is_err());
+        // The import check covers the launcher as the other two: it is
+        // refused for the Visual C++ runtime by the same function.
+        let needs_runtime = image(true, GUI, &["KERNEL32.dll", "VCRUNTIME140.dll"], &[]);
+        assert!(check_windows_program("3DCraft.exe", &needs_runtime).is_err());
+        let main =
+            std::fs::read_to_string(repo_root().join("apps/craft3d-launcher/src/main.rs")).unwrap();
+        assert!(main.contains("#![cfg_attr(windows, windows_subsystem = \"windows\")]"));
+    }
+
+    /// The Start menu entry and the three file types start the launcher:
+    /// in the `.msi` they belong to the component whose key path is
+    /// `3DCraft.exe` (advertised entries start their component's key
+    /// path), and the window's component holds only its file.
+    #[test]
+    fn the_msi_starts_the_launcher() {
+        let wxs =
+            std::fs::read_to_string(repo_root().join("packaging/windows/craft3d.wxs")).unwrap();
+        let component = |id: &str| -> String {
+            let start = wxs.find(&format!("<Component Id=\"{id}\">")).unwrap();
+            let rest = &wxs[start..];
+            rest[..rest.find("</Component>").unwrap()].to_string()
+        };
+        let launcher = component("Launcher");
+        assert!(launcher.contains(&format!(
+            "Source=\"$(var.BinDir)\\{LAUNCHER_FILE}\" KeyPath=\"yes\""
+        )));
+        assert_eq!(launcher.matches("<File ").count(), 1);
+        assert_eq!(launcher.matches("<Shortcut ").count(), 1);
+        assert!(launcher.contains("Directory=\"ProgramMenuFolder\""));
+        for extension in ["3dcraft", "3dcraftjig", "3dcraftasm"] {
+            assert!(
+                launcher.contains(&format!("<Extension Id=\"{extension}\"")),
+                "{extension}"
+            );
+        }
+        assert_eq!(
+            launcher
+                .matches("<Verb Id=\"open\" Command=\"Open\" Argument=\"&quot;%1&quot;\" />")
+                .count(),
+            3
+        );
+        // Nowhere else.
+        assert_eq!(wxs.matches("<Shortcut ").count(), 1);
+        assert_eq!(wxs.matches("<ProgId ").count(), 3);
+        let app = component("App");
+        assert!(app.contains("Source=\"$(var.BinDir)\\craft3d.exe\" KeyPath=\"yes\""));
+        assert!(
+            !app.contains("<Shortcut") && !app.contains("<ProgId"),
+            "{app}"
+        );
+        assert!(wxs.contains("<ComponentRef Id=\"Launcher\" />"));
     }
 
     /// Which DLLs belong to a refused runtime, in any case: those a fresh

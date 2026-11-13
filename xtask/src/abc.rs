@@ -1498,7 +1498,20 @@ mod tests {
         assert!(first.is_some());
         assert!(lock_chunk(&dir, 3).unwrap().is_none());
         drop(first);
-        assert!(lock_chunk(&dir, 3).unwrap().is_some());
+        // Free again, but not always at once: the tests of this binary run
+        // side by side and some of them start programs. A program being
+        // started holds a copy of every open file of this process from its
+        // fork until its exec (the files are close-on-exec), and the lock
+        // belongs to the open file, so for that moment it is still held.
+        // Seen once in a gate, on 2026-11-13.
+        let freed = (0..200).any(|_| {
+            let got = lock_chunk(&dir, 3).unwrap().is_some();
+            if !got {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            got
+        });
+        assert!(freed, "the lock is still held 2 s after it was dropped");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

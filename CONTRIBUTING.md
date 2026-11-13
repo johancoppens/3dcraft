@@ -37,7 +37,8 @@ A pull request holds the change with its tests, and its description says:
 
 - what changed and why, with a link to the issue;
 - what you ran: at least `cargo fmt --all --check`, `cargo clippy -p <crates> --all-targets -- -D warnings`
-  and `cargo test -p <crates>` for the crates you touched; `cargo xtask ci` runs everything, if your machine
+  and the tests you touched (each test file you changed or added, `cargo test -p <crate> --test <file>`, and a
+  small crate you touched whole: AGENTS.md §5); `cargo xtask ci` runs everything, if your machine
   can take it ([`docs/development.md`](docs/development.md)). Run `cargo xtask fonts` once before the tests:
   it fetches the built-in fonts, which are never committed, and the text tests fail without them;
 - every test expectation you changed, with its reason, under the four conditions of

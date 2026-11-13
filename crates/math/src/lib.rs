@@ -67,14 +67,32 @@ impl Vec3 {
     }
 
     /// Unit vector in the same direction; `None` for a zero-length or
-    /// non-finite vector.
+    /// non-finite vector (or one whose squared length overflows).
+    ///
+    /// Where the squared length falls below the normal range (a vector
+    /// shorter than about 1.5e-154, such as the normal of a triangle 1e-81
+    /// across), its square root loses precision and the vector it divides
+    /// comes out too long (by up to a fifth: J-018's fourth review, a proof
+    /// that took a unit direction to be at most 1 + 8 ε long). Such a
+    /// vector is divided by its largest part first, so its square lies
+    /// between 1 and 3; every other vector is normalised as it always was,
+    /// to the bit.
     pub fn normalized(self) -> Option<Vec3> {
-        let len = self.length();
-        if len.is_finite() && len > 0.0 {
-            Some(self * (1.0 / len))
-        } else {
-            None
+        let len2 = self.length_squared();
+        if len2 >= f64::MIN_POSITIVE {
+            let len = len2.sqrt();
+            return if len.is_finite() {
+                Some(self * (1.0 / len))
+            } else {
+                None
+            };
         }
+        let big = self.x.abs().max(self.y.abs()).max(self.z.abs());
+        if !self.is_finite() || big.is_nan() || big <= 0.0 {
+            return None;
+        }
+        let scaled = Vec3::new(self.x / big, self.y / big, self.z / big);
+        Some(scaled * (1.0 / scaled.length()))
     }
 
     pub fn lerp(self, o: Vec3, t: f64) -> Vec3 {
@@ -240,6 +258,31 @@ mod tests {
         assert!(Vec3::new(f64::INFINITY, 0.0, 0.0).normalized().is_none());
         let n = Vec3::new(0.0, 0.0, -2.5).normalized().unwrap();
         assert_eq!(n, Vec3::new(0.0, 0.0, -1.0));
+    }
+
+    /// J-018's fourth review: a vector whose squared length is below the
+    /// normal range (3e-170, 4e-170: squares underflow) is still made a unit
+    /// vector, (0.6, 0.8, 0) to rounding, never longer than 1 + 3e-16; one
+    /// of 3e-163 and 4e-163 (squares subnormal, the plain square root a
+    /// fifth off) likewise. Vectors in the normal range are as before, to
+    /// the bit.
+    #[test]
+    fn tiny_vectors_normalise_to_unit_length() {
+        for k in [1e-170, 1e-163, 1e-160, 1e-81] {
+            let n = Vec3::new(3.0 * k, 4.0 * k, 0.0).normalized().unwrap();
+            assert!(
+                (n.x - 0.6).abs() < 1e-15 && (n.y - 0.8).abs() < 1e-15 && n.z == 0.0,
+                "{k}: {n:?}"
+            );
+            assert!(n.length() <= 1.0 + 3e-16, "{k}: {}", n.length());
+        }
+        for v in [
+            Vec3::new(3.0, 4.0, 12.0),
+            Vec3::new(1e-150, 2e-151, -3e-150),
+            Vec3::new(1e150, 1.0, 0.0),
+        ] {
+            assert_eq!(v.normalized(), Some(v * (1.0 / v.length())));
+        }
     }
 
     #[test]

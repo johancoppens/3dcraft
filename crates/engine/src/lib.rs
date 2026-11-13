@@ -612,6 +612,22 @@ impl OpenDocument {
 /// the hashed keys of the trees its bodies hold.
 type HeldTrees = (u64, Option<(u64, u64)>, std::collections::BTreeSet<u64>);
 
+/// A document and what a session built for it edit by edit
+/// ([`Session::regeneration_to_compare`]); it can be sent to another
+/// thread.
+pub struct RegenerationToCompare {
+    held: Arc<Regen>,
+    document: Arc<Document>,
+}
+
+impl RegenerationToCompare {
+    /// Regenerates the document from nothing and says whether that is what
+    /// the session held.
+    pub fn matches(&self) -> bool {
+        *self.held == craft3d_regen::regenerate(&self.document)
+    }
+}
+
 /// Open documents plus the rules for touching files. A clone is an
 /// independent session with the same documents (bodies and meshes are
 /// shared until one of them changes).
@@ -967,9 +983,20 @@ impl Session {
     /// what the session holds, which was built up edit by edit. `None`
     /// when no document is open. For tests: the two must never differ.
     pub fn regeneration_matches_a_full_one(&mut self) -> Option<bool> {
+        Some(self.regeneration_to_compare()?.matches())
+    }
+
+    /// What [`Self::regeneration_matches_a_full_one`] compares, taken now
+    /// and compared later, on any thread: the active document as it is and
+    /// what the session holds for it. `None` when no document is open. For
+    /// tests that go on editing while the comparison runs elsewhere.
+    pub fn regeneration_to_compare(&mut self) -> Option<RegenerationToCompare> {
         let open = self.documents.get_mut(self.active)?;
         let held = open.regen_needing(Need::All);
-        Some(*held == craft3d_regen::regenerate(open.history.current()))
+        Some(RegenerationToCompare {
+            held,
+            document: Arc::clone(open.history.current()),
+        })
     }
 
     /// Whether `document.sample` lets go of what the kernel keeps per

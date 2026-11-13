@@ -1,0 +1,20 @@
+[
+ ["variable.set", {"name": "t", "expr": "0"}],
+ ["variable.set", {"name": "z", "expr": "312.3259849173512 mm + t * (267.77805096117135 mm - 312.3259849173512 mm)"}],
+ ["variable.set", {"name": "c0", "expr": "10.08 mm + t * 15.08 mm"}],
+ ["variable.set", {"name": "h", "expr": "9.58 mm + t * 0.059 mm"}],
+ ["variable.set", {"name": "dcr", "expr": "59.5 mm - t * 38.08 mm"}],
+ ["variable.set", {"name": "sor", "expr": "182 mm - t * 112 mm"}],
+ ["variable.set", {"name": "cor", "expr": "175 mm - t * 112 mm"}],
+ ["sketch.create", {"name": "Profile", "plane": "xy"}],
+ ["sketch.path", {"sketch": "Profile", "start": ["c0 - h", "z"], "segments": [
+   {"arc": ["c0", "z + dcr"], "through": ["c0 - 0.75 * h", "z + 0.5 * dcr"]},
+   {"line": ["5 mm", "z + cor"]},
+   {"arc": ["5 mm", "z + sor"], "through": ["1.5 mm", "z + cor + 3.5 mm"]},
+   {"line": ["40 mm", "z + sor"]},
+   {"line": ["40 mm", "z"]},
+   {"line": "start"}
+ ]}],
+ ["feature.extrude", {"sketch": "Profile", "distance": "5 mm", "name": "Plate"}],
+ ["variable.set", {"name": "t", "expr": "1"}]
+]

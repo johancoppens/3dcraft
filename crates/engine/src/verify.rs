@@ -19,6 +19,8 @@ use craft3d_tess::{Mesh, TessParams, tessellate_body};
 use craft3d_topo::{Body, Edge};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod exact;
+
 /// Most triangles of the mesh of one body.
 const MAX_TRIANGLES: usize = 400_000;
 /// The angle criterion of the meshes (radians): what bounds how far a
@@ -265,27 +267,13 @@ impl<'a> Part<'a> {
             .enumerate()
             .map(|(i, f)| {
                 let straight = face_edges(body, i).all(|e| matches!(e.curve, Curve3::Line(_)));
-                // The mesh holds a curved face's triangles to the angle
-                // (corner normals at most MESH_ANGLE apart) unless a side
-                // is shorter than the chord: so a round of radius r is
-                // off by no more than r (1 − cos(MESH_ANGLE / 2)), or the
-                // sagitta of a chord-long side.
-                let round = |r: f64| {
-                    let sagitta = if chord >= 2.0 * r {
-                        r
-                    } else {
-                        r - (r * r - chord * chord / 4.0).max(0.0).sqrt()
-                    };
-                    chord.min((r * (1.0 - (0.5 * MESH_ANGLE).pcos())).max(sagitta))
-                };
                 match &f.surface {
                     Surface::Plane(_) if straight => 0.0,
-                    Surface::Cylinder(c) => round(c.radius()),
-                    Surface::Sphere(c) => round(c.radius()),
-                    Surface::Torus(t) => {
-                        let (major, minor) = t.radii();
-                        round(major + minor)
-                    }
+                    Surface::Cylinder(c) => round_error(c.radius(), chord, false),
+                    Surface::Sphere(c) => round_error(c.radius(), chord, true),
+                    // A torus's normals turn slowly round its top and
+                    // bottom circles, so the angle does not bound its
+                    // triangles there: the chord does, as for any face.
                     _ => chord,
                 }
             })
@@ -312,6 +300,53 @@ impl<'a> Part<'a> {
     pub fn body(&self) -> &'a Body {
         self.probe.body()
     }
+}
+
+/// How far a round face of radius `r` (a cylinder, or with `sphere` a
+/// sphere) can lie from its triangles, the mesh holding every triangle's
+/// corner normals within [`MESH_ANGLE`] (θ) of each other unless a side is
+/// shorter than `chord`, and no farther than `chord` (the tessellator's
+/// promise, at samples). On a cylinder the corners lie on an arc of at
+/// most θ about the axis, and the triangle within the chord of that arc:
+/// r (1 − cos(θ/2)). On a sphere the point of a triangle farthest from the
+/// surface is the one nearest the centre: the triangle's circumcentre (the
+/// centre's foot on its plane, the corners being on the sphere) where that
+/// lies in it, else the middle of its longest side. Corners at most θ
+/// apart seen from the centre make sides of at most 2 r sin(θ/2), and the
+/// circumradius of a triangle so bounded is at most that over √3 (the
+/// equilateral one): r (1 − cos φ) with sin φ = 2 sin(θ/2) / √3, φ = 6.93°
+/// for θ = 12°, a third more than θ/2 (review of 2026-11-13; before, θ/2
+/// as for a cylinder). A triangle a side of which is no longer than the
+/// chord is bounded the same way by sides of the chord. (A torus is held
+/// to the chord alone: its normals turn slowly round its top and bottom
+/// circles, where the angle does not bound its triangles; before
+/// 2026-11-13 it was taken as a sphere of its outer radius.)
+fn round_error(r: f64, chord: f64, sphere: bool) -> f64 {
+    // The circumradius bound of a triangle of sides at most `side`
+    // (a cylinder's arc: its chord's half).
+    let reach = |side: f64| {
+        if sphere {
+            side / 3.0_f64.sqrt()
+        } else {
+            0.5 * side
+        }
+    };
+    // How far a circle of radius r is from a chord at `c` from its centre's
+    // foot.
+    let below = |c: f64| {
+        if c >= r {
+            r
+        } else {
+            r - (r * r - c * c).max(0.0).sqrt()
+        }
+    };
+    let by_angle = if sphere {
+        below(reach(2.0 * r * (0.5 * MESH_ANGLE).psin()))
+    } else {
+        r * (1.0 - (0.5 * MESH_ANGLE).pcos())
+    };
+    let by_side = below(reach(chord));
+    chord.min(by_angle.max(by_side))
 }
 
 /// The mesh of `body` at a chordal tolerance relative to its size, made
@@ -690,7 +725,16 @@ pub(crate) fn distance_to(a: &[Part<'_>], b: &[Part<'_>], stop: f64) -> Answer<N
             .iter()
             .map(|t| Bbox3::from_points(t.iter().copied()))
             .collect();
-        let mut pair_best: Option<(f64, Vec3, Vec3)> = None;
+        // Both faces' triangles are the faces themselves (flat, bounded by
+        // lines): where they cross, so do the faces.
+        let exact = err(a, ka) == 0.0 && err(b, kb) == 0.0;
+        // The least distance of the pairs of triangles (0 where they
+        // meet), and the least proven below it.
+        let mut pair_least: Option<f64> = None;
+        let mut pair_proven: Option<f64> = None;
+        // Where the search for the nearest places starts: the nearest
+        // points of the pair of triangles that ranks least.
+        let mut start: Option<(f64, Vec3, Vec3)> = None;
         for t in &ta {
             let ta_box = Bbox3::from_points(t.iter().copied());
             for (u, ub) in tb.iter().zip(&tb_boxes) {
@@ -703,14 +747,33 @@ pub(crate) fn distance_to(a: &[Part<'_>], b: &[Part<'_>], stop: f64) -> Answer<N
                         "more than {MAX_PAIRS} pairs of triangles lie near one another; name fewer faces"
                     ));
                 }
-                let (d, p, q) = triangles_nearest(t, u);
-                if pair_best.is_none_or(|(b, _, _)| d < b) {
-                    pair_best = Some((d, p, q));
+                // Where triangles of exact faces cross, the faces cross:
+                // the search starts from that point of both. Curved faces
+                // closer than the mesh can tell have triangles crossing all
+                // along, which says nothing of where the faces come
+                // nearest: the search starts, as before crossing pairs
+                // were 0, from the nearest corners and sides of the pair
+                // whose corners and sides come nearest, which settles
+                // nearly parallel faces far closer (a shaft 0.006 inside a
+                // bore of 50 to 4e-14 of the gap, from a crossing 2e-5).
+                // The value found is a distance between real places from
+                // any start; only how near it gets depends on the start.
+                let pair = nearest_pair(t, u, !exact);
+                // As the candidates are ranked: 0 where they meet.
+                let d = if pair.meets { 0.0 } else { pair.found };
+                if start.is_none_or(|(r, _, _)| pair.found < r) {
+                    start = Some((pair.found, pair.p, pair.q));
+                }
+                if pair_least.is_none_or(|l| d < l) {
+                    pair_least = Some(d);
+                }
+                if pair_proven.is_none_or(|l| pair.bound < l) {
+                    pair_proven = Some(pair.bound);
                 }
                 best = best.min(d);
             }
         }
-        if let Some((d, p, q)) = pair_best {
+        if let (Some(d), Some((_, p, q))) = (pair_least, start) {
             found.push((d, (ka, kb), p, q));
         }
         // A face pair without triangles: from points of their edges.
@@ -718,7 +781,7 @@ pub(crate) fn distance_to(a: &[Part<'_>], b: &[Part<'_>], stop: f64) -> Answer<N
             meshed.push(((ka, kb), box_distance));
             found.push((f64::INFINITY, (ka, kb), Vec3::ZERO, Vec3::ZERO));
         } else {
-            compared.push(((ka, kb), pair_best.map(|(d, ..)| d)));
+            compared.push(((ka, kb), pair_proven));
         }
     }
     for (key, least) in compared {
@@ -1107,9 +1170,14 @@ fn segments_nearest(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> (Vec3, Vec3) {
             s = (-c / a).clamp(0.0, 1.0);
         } else {
             let b = d1.dot(d2);
-            let denom = a * e - b * b;
+            // From the cross product of the sides, whose square is
+            // a e − b² without its cancellation where they are nearly
+            // parallel (J-018, third review: sides 7e-9 rad apart gave
+            // 3.35e-6 for 1e-12).
+            let n = d1.cross(d2);
+            let denom = n.dot(n);
             let s0 = if denom > 0.0 {
-                ((b * f - c * e) / denom).clamp(0.0, 1.0)
+                ((p2 - p1).cross(d2).dot(n) / denom).clamp(0.0, 1.0)
             } else {
                 0.0
             };
@@ -1131,28 +1199,603 @@ fn segments_nearest(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> (Vec3, Vec3) {
     (p1 + d1 * s, p2 + d2 * t)
 }
 
-/// The least distance between two triangles that do not cross, with the
-/// nearest points.
+/// How far rounding can move a determinant computed as in
+/// [`Plane::side`], relative to its permanent (the same sum with every
+/// product taken by its size). Shewchuk's static bound for this
+/// determinant of differences of doubles is (7 + 56 ε) ε with ε = 2⁻⁵³
+/// (`o3derrboundA`, covering the rounding of the differences, products and
+/// sums and of the permanent itself); 32 f64::EPSILON is 64 ε, nine times
+/// that. Beyond it the computed sign is the true one; within it the sign
+/// is worked out exactly ([`exact::orient3d`]): a filter, not a band.
+const ORIENT_ERROR: f64 = 32.0 * f64::EPSILON;
+
+#[cfg(test)]
+thread_local! {
+    /// Signs of determinants taken from the filter and worked out exactly,
+    /// for the tests to read what the exact path costs.
+    static SIGNS: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// Counts a sign taken from the filter or worked out exactly (tests only).
+#[cfg(test)]
+fn count_sign(filtered: bool) {
+    SIGNS.with(|s| {
+        let (f, e) = s.get();
+        s.set(if filtered { (f + 1, e) } else { (f, e + 1) });
+    });
+}
+
+#[cfg(not(test))]
+fn count_sign(_: bool) {}
+
+/// The plane of a triangle `a b c` with what its signs need, worked out
+/// once: (b − a) × (c − a) and the sums of the sizes of its products.
+struct Plane {
+    corners: [Vec3; 3],
+    normal: Vec3,
+    sizes: Vec3,
+}
+
+impl Plane {
+    fn of(t: &[Vec3; 3]) -> Self {
+        let [a, b, c] = *t;
+        let (d1, d2) = (b - a, c - a);
+        Plane {
+            corners: *t,
+            normal: d1.cross(d2),
+            sizes: Vec3::new(
+                (d1.y * d2.z).abs() + (d1.z * d2.y).abs(),
+                (d1.z * d2.x).abs() + (d1.x * d2.z).abs(),
+                (d1.x * d2.y).abs() + (d1.y * d2.x).abs(),
+            ),
+        }
+    }
+
+    /// The exact sign of the side of the plane `p` lies on (0: on it, or
+    /// the triangle has no plane), with the volume as computed (only for
+    /// where a side crosses the plane, the search's start); `None` where
+    /// the exact arithmetic gives no sign.
+    fn side(&self, p: Vec3) -> Option<(i8, f64)> {
+        let [a, b, c] = self.corners;
+        let d = p - a;
+        let volume = self.normal.dot(d);
+        let permanent =
+            d.x.abs() * self.sizes.x + d.y.abs() * self.sizes.y + d.z.abs() * self.sizes.z;
+        let sign = filtered(volume, permanent, ORIENT_ERROR, || {
+            exact::orient3d(a, b, c, p)
+        })?;
+        Some((sign, volume))
+    }
+
+    /// An axis along which the triangle's projection has area, so that the
+    /// projection is one to one on its plane (the one its normal has the
+    /// largest part along is tried first); `Some(None)` when it has no
+    /// area.
+    fn flat_axis(&self) -> Option<Option<usize>> {
+        let n = self.normal;
+        let mut axes = [(n.x.abs(), 0), (n.y.abs(), 1), (n.z.abs(), 2)];
+        axes.sort_by(|x, y| y.0.total_cmp(&x.0));
+        let [a, b, c] = self.corners;
+        for (_, k) in axes {
+            if orient2d(drop_axis(a, k), drop_axis(b, k), drop_axis(c, k))? != 0 {
+                return Some(Some(k));
+            }
+        }
+        Some(None)
+    }
+}
+
+/// The sign of a determinant computed as `value`, whose permanent (the
+/// same sum with every product taken by its size) is `permanent` and
+/// whose rounding is at most `error` of that: certain beyond the bound;
+/// 0 when the permanent is 0 (every product is then exactly 0: in the
+/// range [`exact::IN_RANGE`] none can fall to 0 by rounding); else worked
+/// out exactly by `exact`.
+fn filtered(
+    value: f64,
+    permanent: f64,
+    error: f64,
+    exact: impl FnOnce() -> Option<i8>,
+) -> Option<i8> {
+    let bound = error * permanent;
+    let certain = value > bound || value < -bound || permanent == 0.0;
+    count_sign(certain);
+    if value > bound {
+        Some(1)
+    } else if value < -bound {
+        Some(-1)
+    } else if permanent == 0.0 {
+        Some(0)
+    } else {
+        exact()
+    }
+}
+
+/// How far rounding can move the 2 × 2 determinant of [`orient2d`],
+/// relative to its permanent: Shewchuk's static bound is (3 + 16 ε) ε with
+/// ε = 2⁻⁵³ (`ccwerrboundA`); 4 f64::EPSILON is 8 ε, more than twice that.
+const ORIENT2_ERROR: f64 = 4.0 * f64::EPSILON;
+
+/// The exact sign of (b − a) × (c − a) for points of a plane (positive
+/// where `a b c` turn counter-clockwise), through the filter.
+fn orient2d(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> Option<i8> {
+    let ([a0, a1], [b0, b1], [c0, c1]) = (a, b, c);
+    let (left, right) = ((b0 - a0) * (c1 - a1), (b1 - a1) * (c0 - a0));
+    filtered(
+        left - right,
+        left.abs() + right.abs(),
+        ORIENT2_ERROR,
+        || exact::orient2d(a, b, c),
+    )
+}
+
+/// The exact sign of ((q − p) × (r − p)) · (s − p), through the filter.
+fn exact_orient(p: Vec3, q: Vec3, r: Vec3, s: Vec3) -> Option<i8> {
+    Some(Plane::of(&[p, q, r]).side(s)?.0)
+}
+
+/// Whether two triangles share a point, decided exactly for their corners
+/// as stored, and if so a point near where (for the search to start
+/// from).
+enum Meet {
+    No,
+    At(Vec3),
+    Somewhere,
+}
+
+/// Two triangles' distance as the search for the nearest places needs it.
+struct TrianglePair {
+    /// Whether they share a point.
+    meets: bool,
+    /// No more than their distance, proven ([`triangles_nearest`]).
+    bound: f64,
+    /// Where the search starts, and how far apart those places are.
+    found: f64,
+    p: Vec3,
+    q: Vec3,
+}
+
+/// What rounding can take off the gap between two triangles' projections,
+/// relative to the largest distance of a corner from the one they are
+/// taken from: 16 f64::EPSILON (32 ε, ε = 2⁻⁵³). Each projection is a dot
+/// product of a direction (of length at most 1 + 4.5 ε: `Vec3::normalized`
+/// keeps the squared length it divides by in the normal range) with a
+/// difference of corners (each part rounded by at most ε of itself): at
+/// most (ε + γ₃(1 + ε)) |n| |d| ≤ 4.02 ε of the size off,
+/// γ₃ = 3ε / (1 − 3ε); two of them and the gap's own subtraction (ε of at
+/// most twice the size): 10.04 ε, taken three times over (the size being
+/// itself computed).
+const GAP_ROUNDING: f64 = 16.0 * f64::EPSILON;
+
+/// The least distance between two triangles, with the nearest points: 0,
+/// at a point of both, where they share a point, decided exactly
+/// ([`meet`]); else no more than their distance, proven: the most, over a
+/// few directions, of the gap between the two triangles' projections on
+/// it (for any unit direction `n` and points `a`, `b` of them,
+/// |b − a| ≥ n · (b − a) ≥ the gap, and a triangle's projection is that of
+/// its corners), less what rounding can take off it ([`GAP_ROUNDING`]) and
+/// divided by the most a computed unit direction can measure. The
+/// directions: from the nearest corners and sides (Ericson, *Real-Time
+/// Collision Detection*, 5.1.5 and 5.1.9), which are the distance in
+/// exact arithmetic where the triangles do not meet, and, where that
+/// direction does not bear their distance out, the two normals and, where
+/// the nearest are two sides, the cross product of those sides (all worked
+/// out relative to a corner: J-018's fourth review found the direction
+/// between the nearest points, taken back far from the origin first, a
+/// tilt of ε |offset| / d off, and sides over sides 1e-5 apart 1e6 out
+/// bounded at a third of their distance). So the
+/// bound holds whatever rounding does to the corners' and sides'
+/// distance: in J-018's third review that distance was 3.35e-6 for sides
+/// 1e-12 apart and nearly parallel (1 m long, 7e-9 rad), and 9.0e-6 for a
+/// corner 1e-12 over a sliver. History: before J-018 the corners and sides
+/// were taken for every pair, so triangles passing through each other were
+/// apart (faces that cross measured 0.12 apart; a clearance of bodies
+/// sharing 13.5 mm³ proven positive); a first fix decided a crossing on
+/// coordinates rounded at their size, and missed some far from the
+/// origin; a second within a band of rounding, which took nearly coplanar
+/// pairs that were apart as crossing and let crossing slivers through.
 fn triangles_nearest(t: &[Vec3; 3], u: &[Vec3; 3]) -> (f64, Vec3, Vec3) {
-    let mut best = (f64::INFINITY, t[0], u[0]);
-    let mut take = |p: Vec3, q: Vec3| {
+    let pair = nearest_pair(t, u, false);
+    (pair.bound, pair.p, pair.q)
+}
+
+/// [`triangles_nearest`] with where the search for the nearest places
+/// starts: from the nearest corners and sides when `corners_start` (curved
+/// faces, whose meshes may cross where the faces do not), else from where
+/// they meet when they do. The corners and sides are searched at most
+/// once.
+fn nearest_pair(t: &[Vec3; 3], u: &[Vec3; 3], corners_start: bool) -> TrianglePair {
+    let zero = |found: f64, p: Vec3, q: Vec3| TrianglePair {
+        meets: true,
+        bound: 0.0,
+        found,
+        p,
+        q,
+    };
+    // Relative to `u`'s first corner, once for the search and the bound.
+    let o = u[0];
+    let (tr, ur) = (t.map(|p| p - o), u.map(|p| p - o));
+    match meet(t, u) {
+        Meet::No => {
+            let near = corners_and_sides_at(&tr, &ur);
+            TrianglePair {
+                meets: false,
+                bound: gap_bound(&tr, &ur, &near),
+                found: near.distance,
+                p: near.p + o,
+                q: near.q + o,
+            }
+        }
+        Meet::At(x) if !corners_start => zero(0.0, x, x),
+        Meet::At(_) => {
+            let near = corners_and_sides_at(&tr, &ur);
+            zero(near.distance, near.p + o, near.q + o)
+        }
+        Meet::Somewhere => {
+            let near = corners_and_sides_at(&tr, &ur);
+            if corners_start {
+                zero(near.distance, near.p + o, near.q + o)
+            } else {
+                let x = (near.p + near.q) * 0.5 + o;
+                zero(0.0, x, x)
+            }
+        }
+    }
+}
+
+/// No more than the distance of the triangles `t` and `u` (corners relative
+/// to `u`'s first): the gap of their projections on the direction between
+/// the nearest corners and sides `near`, or where that falls short of
+/// their distance by more than rounding, the most of that and the gaps on
+/// their normals and, where the nearest are two sides, on those sides'
+/// cross product; less [`GAP_ROUNDING`] of their size, and divided by
+/// 1 + 8 ε (at least what a unit direction computed can measure). 0 where
+/// nothing is positive or a number.
+fn gap_bound(t: &[Vec3; 3], u: &[Vec3; 3], near: &Nearest3) -> f64 {
+    let size = t
+        .iter()
+        .chain(u.iter())
+        .map(|v| v.length_squared())
+        .fold(0.0_f64, f64::max)
+        .sqrt();
+    let gap = |d: Vec3| {
+        let Some(n) = d.normalized() else {
+            return f64::NEG_INFINITY;
+        };
+        let span = |c: &[Vec3; 3]| {
+            c.iter()
+                .map(|v| n.dot(*v))
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), x| {
+                    (l.min(x), h.max(x))
+                })
+        };
+        let ((lo_t, hi_t), (lo_u, hi_u)) = (span(t), span(u));
+        (lo_u - hi_t).max(lo_t - hi_u)
+    };
+    let slack = GAP_ROUNDING * size;
+    let mut best = gap(near.q - near.p);
+    if best.is_nan() || best < near.distance - 2.0 * slack {
+        let normal = |c: &[Vec3; 3]| {
+            let [a, b, d] = *c;
+            (b - a).cross(d - a)
+        };
+        best = best.max(gap(normal(t))).max(gap(normal(u)));
+        if let Some(sides) = near.sides {
+            best = best.max(gap(sides));
+        }
+    }
+    let bound = (best - slack) * (1.0 - 8.0 * f64::EPSILON);
+    if bound > 0.0 { bound } else { 0.0 }
+}
+
+/// Whether `t` and `u` (closed, possibly without a plane) share a point,
+/// exactly: they do when a side of one meets the other (of two triangles
+/// that meet, an end of what they share lies on a side of one of them, or
+/// one holds the other and with it its sides). Triangles whose boxes are
+/// apart (compared exactly) do not, and nor do two of which one lies
+/// wholly on one side of the other's plane. Where it cannot be told
+/// exactly, they are taken as meeting (0: no false bound): a corner that is
+/// not a number, or a coordinate other than 0 smaller than 2⁻²⁸⁸ or larger
+/// than 2²⁸⁸ ([`exact::IN_RANGE`], outside which the signs are not proven).
+fn meet(t: &[Vec3; 3], u: &[Vec3; 3]) -> Meet {
+    let (small, large) = exact::IN_RANGE;
+    let in_range = |c: f64| c == 0.0 || (c.abs() >= small && c.abs() <= large);
+    if !t
+        .iter()
+        .chain(u.iter())
+        .all(|p| in_range(p.x) && in_range(p.y) && in_range(p.z))
+    {
+        return Meet::Somewhere;
+    }
+    let apart = |k: fn(&Vec3) -> f64| {
+        let span = |c: &[Vec3; 3]| {
+            c.iter()
+                .map(k)
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), x| {
+                    (l.min(x), h.max(x))
+                })
+        };
+        let ((lo_t, hi_t), (lo_u, hi_u)) = (span(t), span(u));
+        hi_t < lo_u || hi_u < lo_t
+    };
+    if apart(|p| p.x) || apart(|p| p.y) || apart(|p| p.z) {
+        return Meet::No;
+    }
+    meet_exactly(t, u).unwrap_or(Meet::Somewhere)
+}
+
+/// [`meet`] past its quick answers; `None` where a sign is not given.
+fn meet_exactly(t: &[Vec3; 3], u: &[Vec3; 3]) -> Option<Meet> {
+    let one_side = |s: &[(i8, f64); 3]| s.iter().all(|x| x.0 > 0) || s.iter().all(|x| x.0 < 0);
+    let on_plane = |s: &[(i8, f64); 3]| s.iter().all(|x| x.0 == 0);
+    // Both in one plane, that of a triangle with area: along an axis whose
+    // projection of that triangle has area the projection is one to one on
+    // the plane, and there they meet where they meet.
+    let flat = |axis: usize| -> Option<Meet> {
+        let meets =
+            triangles_meet_2d(t.map(|p| drop_axis(p, axis)), u.map(|p| drop_axis(p, axis)))?;
+        Some(if meets { Meet::Somewhere } else { Meet::No })
+    };
+    let signs = |c: &[Vec3; 3], plane: &Plane| -> Option<[(i8, f64); 3]> {
+        let [a, b, d] = *c;
+        Some([plane.side(a)?, plane.side(b)?, plane.side(d)?])
+    };
+    let (pt, pu) = (Plane::of(t), Plane::of(u));
+    let st = signs(t, &pu)?;
+    if one_side(&st) {
+        return Some(Meet::No);
+    }
+    if on_plane(&st)
+        && let Some(axis) = pu.flat_axis()?
+    {
+        return flat(axis);
+    }
+    let su = signs(u, &pt)?;
+    if one_side(&su) {
+        return Some(Meet::No);
+    }
+    if on_plane(&su)
+        && let Some(axis) = pt.flat_axis()?
+    {
+        return flat(axis);
+    }
+    let sides = |c: &[Vec3; 3], s: &[(i8, f64); 3]| {
+        let [p0, p1, p2] = *c;
+        let [s0, s1, s2] = *s;
+        [(p0, p1, s0, s1), (p1, p2, s1, s2), (p2, p0, s2, s0)]
+    };
+    for (p, q, sp, sq) in sides(t, &st) {
+        match side_meets(p, q, sp, sq, u)? {
+            Meet::No => {}
+            m => return Some(m),
+        }
+    }
+    for (p, q, sp, sq) in sides(u, &su) {
+        match side_meets(p, q, sp, sq, t)? {
+            Meet::No => {}
+            m => return Some(m),
+        }
+    }
+    Some(Meet::No)
+}
+
+/// Whether the side `p q` meets the triangle `tri`, given the exact signs
+/// of its ends against `tri`'s plane (both 0 when it lies in the plane, or
+/// `tri` has none). Off the plane, by Segura and Feito's test: the line
+/// through `p q` passes through the closed triangle where the volumes it
+/// spans with the triangle's three sides are all of one sign or 0; that
+/// line meets the plane once, at a point of the side when its ends are not
+/// on one side. In the plane, by exact tests in the plane.
+fn side_meets(p: Vec3, q: Vec3, sp: (i8, f64), sq: (i8, f64), tri: &[Vec3; 3]) -> Option<Meet> {
+    if (sp.0 > 0 && sq.0 > 0) || (sp.0 < 0 && sq.0 < 0) {
+        return Some(Meet::No);
+    }
+    if sp.0 == 0 && sq.0 == 0 {
+        return Some(if segment_meets_flat(p, q, tri)? {
+            Meet::Somewhere
+        } else {
+            Meet::No
+        });
+    }
+    let [a, b, c] = *tri;
+    let o = [
+        exact_orient(p, q, a, b)?,
+        exact_orient(p, q, b, c)?,
+        exact_orient(p, q, c, a)?,
+    ];
+    Some(if o.iter().all(|&s| s >= 0) || o.iter().all(|&s| s <= 0) {
+        let s = sp.1 / (sp.1 - sq.1);
+        let s = if s.is_finite() {
+            s.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        Meet::At(p + (q - p) * s)
+    } else {
+        Meet::No
+    })
+}
+
+/// The coordinates of `p` but the one along axis `k`: a projection that is
+/// exact, and one to one on any plane whose normal has a part along `k`.
+fn drop_axis(p: Vec3, k: usize) -> [f64; 2] {
+    match k {
+        0 => [p.y, p.z],
+        1 => [p.z, p.x],
+        _ => [p.x, p.y],
+    }
+}
+
+/// Whether the segment `p q` meets the triangle `tri` where both lie in one
+/// plane, or `tri` has none (its corners on a line). A triangle without a
+/// plane is its sides: the segment meets one of them. Otherwise the two
+/// meet where they meet in each of the three projections along the axes:
+/// they do in every one if they meet, and do not in one along which the
+/// plane's normal has a part (there the projection is one to one).
+fn segment_meets_flat(p: Vec3, q: Vec3, tri: &[Vec3; 3]) -> Option<bool> {
+    let [a, b, c] = *tri;
+    let mut flat = true;
+    for k in 0..3 {
+        if orient2d(drop_axis(a, k), drop_axis(b, k), drop_axis(c, k))? != 0 {
+            flat = false;
+        }
+    }
+    if flat {
+        for (x, y) in [(a, b), (b, c), (c, a)] {
+            if segments_meet(p, q, x, y)? {
+                return Some(true);
+            }
+        }
+        return Some(false);
+    }
+    for k in 0..3 {
+        let [p2, q2, a2, b2, c2] = [p, q, a, b, c].map(|v| drop_axis(v, k));
+        let mut meets = in_triangle_2d(p2, a2, b2, c2)? || in_triangle_2d(q2, a2, b2, c2)?;
+        for (x, y) in [(a2, b2), (b2, c2), (c2, a2)] {
+            meets = meets || segments_meet_2d(p2, q2, x, y)?;
+        }
+        if !meets {
+            return Some(false);
+        }
+    }
+    Some(true)
+}
+
+/// Whether two segments in space meet, exactly: they lie in one plane
+/// (their volume is 0) and meet in each of the three projections along the
+/// axes (one of which is one to one on that plane; for segments on one
+/// line, one in which the line is not a point). The volume is needed:
+/// (0,0,0)–(2,2,2) and (0,2,0)–(2,0,1) meet in all three projections but
+/// not in space.
+fn segments_meet(p: Vec3, q: Vec3, a: Vec3, b: Vec3) -> Option<bool> {
+    if exact_orient(p, q, a, b)? != 0 {
+        return Some(false);
+    }
+    for k in 0..3 {
+        if !segments_meet_2d(
+            drop_axis(p, k),
+            drop_axis(q, k),
+            drop_axis(a, k),
+            drop_axis(b, k),
+        )? {
+            return Some(false);
+        }
+    }
+    Some(true)
+}
+
+/// Whether `x` lies in the box of `p q` (both coordinates, exactly).
+fn in_box_2d(x: [f64; 2], p: [f64; 2], q: [f64; 2]) -> bool {
+    let ([x0, x1], [p0, p1], [q0, q1]) = (x, p, q);
+    p0.min(q0) <= x0 && x0 <= p0.max(q0) && p1.min(q1) <= x1 && x1 <= p1.max(q1)
+}
+
+/// Whether two segments of a plane meet (closed, possibly points),
+/// exactly.
+fn segments_meet_2d(p: [f64; 2], q: [f64; 2], a: [f64; 2], b: [f64; 2]) -> Option<bool> {
+    let (o1, o2) = (orient2d(p, q, a)?, orient2d(p, q, b)?);
+    let (o3, o4) = (orient2d(a, b, p)?, orient2d(a, b, q)?);
+    Some(
+        (o1 * o2 < 0 && o3 * o4 < 0)
+            || (o1 == 0 && in_box_2d(a, p, q))
+            || (o2 == 0 && in_box_2d(b, p, q))
+            || (o3 == 0 && in_box_2d(p, a, b))
+            || (o4 == 0 && in_box_2d(q, a, b)),
+    )
+}
+
+/// Whether two triangles of a plane meet (closed, possibly without area),
+/// exactly: a side of one meets a side of the other, or else one holds the
+/// other, and with it its first corner.
+fn triangles_meet_2d(t: [[f64; 2]; 3], u: [[f64; 2]; 3]) -> Option<bool> {
+    let sides = |c: [[f64; 2]; 3]| {
+        let [c0, c1, c2] = c;
+        [(c0, c1), (c1, c2), (c2, c0)]
+    };
+    for (p, q) in sides(t) {
+        for (a, b) in sides(u) {
+            if segments_meet_2d(p, q, a, b)? {
+                return Some(true);
+            }
+        }
+    }
+    let ([t0, t1, t2], [u0, u1, u2]) = (t, u);
+    Some(in_triangle_2d(t0, u0, u1, u2)? || in_triangle_2d(u0, t0, t1, t2)?)
+}
+
+/// Whether `p` lies in the closed triangle `a b c` of a plane, exactly (a
+/// triangle without area: on one of its sides).
+fn in_triangle_2d(p: [f64; 2], a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> Option<bool> {
+    if orient2d(a, b, c)? == 0 {
+        for (x, y) in [(a, b), (b, c), (c, a)] {
+            if segments_meet_2d(p, p, x, y)? {
+                return Some(true);
+            }
+        }
+        return Some(false);
+    }
+    let o = [orient2d(a, b, p)?, orient2d(b, c, p)?, orient2d(c, a, p)?];
+    Some(o.iter().all(|&s| s >= 0) || o.iter().all(|&s| s <= 0))
+}
+
+/// [`corners_and_sides_at`] for corners as stored, relative to `u`'s first
+/// corner (tests only).
+#[cfg(test)]
+fn corners_and_sides(t: &[Vec3; 3], u: &[Vec3; 3]) -> (f64, Vec3, Vec3) {
+    let o = u[0];
+    let near = corners_and_sides_at(&t.map(|p| p - o), &u.map(|p| p - o));
+    (near.distance, near.p + o, near.q + o)
+}
+
+/// The nearest corners and sides of two triangles ([`corners_and_sides_at`]).
+struct Nearest3 {
+    distance: f64,
+    p: Vec3,
+    q: Vec3,
+    /// Where the nearest are a side of each: the cross product of the two.
+    sides: Option<Vec3>,
+}
+
+/// The least of the distances from each corner of two triangles to the
+/// other triangle and between their sides, with the nearest points: in
+/// exact arithmetic their distance where they do not meet. Computed, the
+/// points are on the triangles (to rounding) but can be farther apart than
+/// the triangles are where the computation is ill-conditioned (a corner
+/// over a sliver: J-018's third review, 9.0e-6 for 1e-12), so they only
+/// start the search and give [`gap_bound`] its directions; the bound is
+/// that function's. Callers give the corners relative to one of them
+/// ([`nearest_pair`]), so that it is rounded at the triangles' size, not at
+/// their distance from the origin.
+fn corners_and_sides_at(t: &[Vec3; 3], u: &[Vec3; 3]) -> Nearest3 {
+    let mut best = Nearest3 {
+        distance: f64::INFINITY,
+        p: t[0],
+        q: u[0],
+        sides: None,
+    };
+    let mut take = |p: Vec3, q: Vec3, sides: Option<Vec3>| {
         let d = p.distance(q);
-        if d < best.0 {
-            best = (d, p, q);
+        if d < best.distance {
+            best = Nearest3 {
+                distance: d,
+                p,
+                q,
+                sides,
+            };
         }
     };
     for &p in t {
-        take(p, closest_on_triangle(p, u));
+        take(p, closest_on_triangle(p, u), None);
     }
     for &q in u {
-        take(closest_on_triangle(q, t), q);
+        take(closest_on_triangle(q, t), q, None);
     }
     let [t0, t1, t2] = *t;
     let [u0, u1, u2] = *u;
     for (a, b) in [(t0, t1), (t1, t2), (t2, t0)] {
         for (c, d) in [(u0, u1), (u1, u2), (u2, u0)] {
             let (p, q) = segments_nearest(a, b, c, d);
-            take(p, q);
+            take(p, q, Some((b - a).cross(d - c)));
         }
     }
     best
@@ -2662,6 +3305,968 @@ mod tests {
         assert_eq!(work_one, work_two);
     }
 
+    /// J-018: a big triangle in the plane z = 0 and an upright one in the
+    /// plane y = 0 whose top corners are 1 above it and whose bottom corner
+    /// is 1 below, so that its two slanted sides pass through the big one
+    /// at (±0.5, 0, 0) while every corner and side of each is at least 1
+    /// from the other (corners and sides alone said 1): 0 apart, at a point
+    /// of both, either way round, at scales 1e-3 to 1e6 and near the origin
+    /// or far from it. Lifted by 1 + h it is h apart (its bottom corner over
+    /// the big one's inside: the closed form), h a millionth of the scale,
+    /// not 0; lifted by 1 it touches (0). A crossing triangle without a
+    /// plane (corners on a line) is found from the other side; a NaN gives
+    /// no panic.
+    #[test]
+    fn triangles_that_pass_through_each_other_are_0_apart() {
+        for k in [1e-3, 1.0, 1e6] {
+            for o in [Vec3::ZERO, Vec3::new(3e3 * k, -2e3 * k, 5e2 * k)] {
+                let at = |x: f64, y: f64, z: f64| o + Vec3::new(x * k, y * k, z * k);
+                let t = [at(-4.0, -4.0, 0.0), at(4.0, -4.0, 0.0), at(0.0, 4.0, 0.0)];
+                let lifted = |dz: f64| {
+                    [
+                        at(-1.0, 0.0, 1.0 + dz),
+                        at(1.0, 0.0, 1.0 + dz),
+                        at(0.0, 0.0, dz - 1.0),
+                    ]
+                };
+                let u = lifted(0.0);
+                for (d, p, q) in [triangles_nearest(&t, &u), triangles_nearest(&u, &t)] {
+                    assert_eq!(d, 0.0, "{k} {o:?}");
+                    assert_eq!(p, q);
+                    // On both planes, at one of the two crossings.
+                    let rel = (p - o) * (1.0 / k);
+                    assert!(rel.z.abs() < 1e-9 && rel.y.abs() < 1e-9, "{rel:?}");
+                    assert!((rel.x.abs() - 0.5).abs() < 1e-9, "{rel:?}");
+                }
+                let h = 1e-6;
+                for (d, ..) in [
+                    triangles_nearest(&t, &lifted(1.0 + h)),
+                    triangles_nearest(&lifted(1.0 + h), &t),
+                ] {
+                    // To the rounding of coordinates up to 3000 k.
+                    assert!((d - h * k).abs() < 1e-11 * k, "{k} {o:?}: {d}");
+                }
+                assert!(triangles_nearest(&t, &lifted(1.0)).0 < 1e-12 * k);
+                let line = [at(-1.0, 0.0, 1.0), at(1.0, 0.0, -1.0), at(0.0, 0.0, 0.0)];
+                assert_eq!(triangles_nearest(&t, &line).0, 0.0);
+                assert_eq!(triangles_nearest(&line, &t).0, 0.0);
+            }
+        }
+        let nan = [Vec3::new(f64::NAN, 0.0, 0.0), Vec3::X, Vec3::Y];
+        let t = [Vec3::ZERO, Vec3::X, Vec3::Y * 2.0];
+        // Not a number: taken as meeting, 0 (no false bound), no panic.
+        assert_eq!(triangles_nearest(&nan, &t).0, 0.0);
+        assert_eq!(triangles_nearest(&t, &nan).0, 0.0);
+    }
+
+    /// Review of 2026-11-13, blocker 1: two triangles nearly in one plane
+    /// and clearly apart (in exact rational arithmetic every corner of `t`
+    /// lies strictly below `u`'s plane, and they are 1.0 apart). The band
+    /// of the first repair took them as crossing (0), which with faces side
+    /// by side made the distance fail or its bound fall to 0.
+    #[test]
+    fn nearly_coplanar_triangles_apart_are_not_taken_as_crossing() {
+        let t = [
+            Vec3::new(-39.56666217401829, 66.33592878596532, 60.13020375093315),
+            Vec3::new(-30.39476125332874, 65.56655379688814, 77.88645041590253),
+            Vec3::new(-13.038076312338324, 61.65533911493926, 68.7514688849467),
+        ];
+        let u = [
+            Vec3::new(-29.936166207294264, 65.52808504743429, 78.774262749151),
+            Vec3::new(-20.76426528660471, 64.75871005835711, 96.5305094141204),
+            Vec3::new(-3.4075803456142957, 60.847495376408226, 87.39552788316458),
+        ];
+        for (d, ..) in [triangles_nearest(&t, &u), triangles_nearest(&u, &t)] {
+            assert!((d - 1.0).abs() < 1e-9, "{d}");
+        }
+    }
+
+    /// Review of 2026-11-13, blocker 2: crossing slivers (in exact
+    /// arithmetic sides 0 and 2 of `t` pass through `u`, their ends 5.3e-8
+    /// and −7.9e-8 off its plane), which the band of the first repair left
+    /// to corners and sides (1.02e-8 apart): 0 apart, and so scaled by 256.
+    #[test]
+    fn crossing_slivers_are_0_apart() {
+        let t = [
+            Vec3::new(
+                -0.12640941947088802,
+                1.9299677578567604,
+                0.08770615116959918,
+            ),
+            Vec3::new(-0.12640934409735755, 1.929967896336676, 0.0877062451336964),
+            Vec3::new(
+                -0.12640941575542114,
+                1.9299677342472454,
+                0.08770637600867476,
+            ),
+        ];
+        let u = [
+            Vec3::new(0.10762422503707027, 2.4502492153928848, -0.2738958343748382),
+            Vec3::new(-0.23886586989284786, 1.6799651602794397, 0.2614611386379766),
+            Vec3::new(-0.23886590332311486, 1.6799651635482795, 0.261461121704748),
+        ];
+        for k in [1.0, 256.0] {
+            let (t, u) = (t.map(|p| p * k), u.map(|p| p * k));
+            assert_eq!(triangles_nearest(&t, &u).0, 0.0, "{k}");
+            assert_eq!(triangles_nearest(&u, &t).0, 0.0, "{k}");
+        }
+    }
+
+    /// J-018's third review: two triangles that do not meet and whose
+    /// corners' and sides' distance was far above their distance. (a) Two
+    /// sides 1000 long, nearly parallel (7e-9 rad), the one 1e-12 above the
+    /// other where they cross over at x = 500 (their common normal is along
+    /// z, both sides' z being 0 and 1e-12 as stored), the rest of `t` below
+    /// and of `u` above: 1e-12 apart, computed 3.35e-6. (b) A corner 1e-12
+    /// above the inside of a sliver in the plane z = 0 (10 long, 3.4e-5
+    /// wide; the rest of `t` 5 higher): 1e-12 apart, computed 9.0e-6. The
+    /// bound is never above the distance; scaled by 1e6 (a gap of 1e-6 with
+    /// sides of 1e9), it is that gap to the rounding of the size.
+    #[test]
+    fn the_bound_of_triangles_apart_is_never_above_their_distance() {
+        let skew_t = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1000.0, 0.0, 0.0),
+            Vec3::new(500.0, 300.0, -1000.0),
+        ];
+        let skew_u = [
+            Vec3::new(0.0, -3.5e-6, 1e-12),
+            Vec3::new(1000.0, 3.5e-6, 1e-12),
+            Vec3::new(500.0, -300.0, 1000.000000000001),
+        ];
+        let sliver_t = [
+            Vec3::new(4.8928682900761435, 9.442589559407916e-6, 1e-12),
+            Vec3::new(7.8928682900761435, 4.000009442589559, 5.000000000001),
+            Vec3::new(0.8928682900761435, 1.0000094425895594, 5.000000000001),
+        ];
+        let sliver_u = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(7.903876314765441, 3.387930886790226e-5, 0.0),
+        ];
+        for (t, u) in [(skew_t, skew_u), (sliver_t, sliver_u)] {
+            assert!(matches!(meet(&t, &u), Meet::No));
+            for (d, ..) in [triangles_nearest(&t, &u), triangles_nearest(&u, &t)] {
+                assert!((0.0..=1e-12).contains(&d), "{d}");
+            }
+        }
+        // The gap 1e-6 with everything else a million times larger: the
+        // bound is the gap to 16 f64::EPSILON of the size (about 1.5e9).
+        let up = |c: [Vec3; 3]| c.map(|p| Vec3::new(p.x * 1e6, p.y * 1e6, p.z));
+        let (t, u) = (up(skew_t), {
+            let mut u = up(skew_u);
+            for p in &mut u {
+                p.z += 1e-6 - 1e-12;
+            }
+            u
+        });
+        let d = triangles_nearest(&t, &u).0;
+        let gap = u[0].z - t[0].z;
+        assert!(
+            d <= gap && d > gap - 16.0 * f64::EPSILON * 1.5e9,
+            "{d} {gap}"
+        );
+    }
+
+    /// J-018's fourth review: triangles about 1e-81 across (inside the
+    /// proven range) whose normals' squared lengths are subnormal: the unit
+    /// normal came out a fifth too long, and the bound 1.2861e-81 for an
+    /// exact distance of 2^-269 = 1.0542e-81 (`u` in the plane z = 0, `t`
+    /// level at that height over it). Now never above it, either way round.
+    #[test]
+    fn a_bound_at_a_tiny_scale_is_never_above_the_distance() {
+        let u = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.1084395886461046e-81, 0.0, 0.0),
+            Vec3::new(0.0, 1.2861481490741238e-81, 0.0),
+        ];
+        let t = [
+            Vec3::new(
+                4.2168791772922095e-82,
+                2.5722962981482476e-82,
+                1.0542197943230523e-81,
+            ),
+            Vec3::new(
+                1.0542197943230523e-81,
+                2.5722962981482476e-82,
+                1.0542197943230523e-81,
+            ),
+            Vec3::new(
+                4.2168791772922095e-82,
+                6.430740745370619e-82,
+                1.0542197943230523e-81,
+            ),
+        ];
+        let exact = f64::from_bits(754 << 52);
+        assert_eq!(exact, 1.0542197943230523e-81);
+        for (d, ..) in [triangles_nearest(&t, &u), triangles_nearest(&u, &t)] {
+            assert!(d <= exact && d > 0.99 * exact, "{d}");
+        }
+    }
+
+    /// Seeded pairs whose distance is known exactly by construction, in
+    /// the hard classes: two triangles in the planes z = Z and z = Z + h
+    /// (exact doubles) whose shadows on the plane overlap (so h apart):
+    /// slivers and needles (one side a million times the other) and plain
+    /// ones; two sides crossing over 1e-9 to 1e-5 rad apart at height h,
+    /// the rest of each turned away; at scales 2^-20 to 2^20 and moved up
+    /// to 2^30 from the origin (offsets that keep every coordinate exact).
+    /// The bound is never above h, and where h is more than what rounding
+    /// can take off, within that of it.
+    #[test]
+    fn the_bound_holds_for_slivers_needles_and_nearly_parallel_sides() {
+        struct Rng(u64);
+        impl Rng {
+            fn unit(&mut self) -> f64 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                (self.0 >> 11) as f64 / (1u64 << 53) as f64
+            }
+            /// A double with 20 bits after the point at most, below 2^10.
+            fn coarse(&mut self) -> f64 {
+                ((self.unit() * 1024.0 * 1048576.0).floor()) / 1048576.0
+            }
+        }
+        let mut rng = Rng(0x0123_4567_89ab_cdef);
+        let (mut checked, mut tight) = (0, 0);
+        for k in [-20, 0, 20] {
+            let scale = if k >= 0 {
+                (1u64 << k) as f64
+            } else {
+                1.0 / (1u64 << -k) as f64
+            };
+            for offset in [0.0, (1u64 << 30) as f64] {
+                for kind in 0..3 {
+                    for _ in 0..300 {
+                        let h = (1.0 + rng.coarse()) * scale * 1e-3;
+                        // Exact in the plane z = offset + h: h a multiple of
+                        // the last place of the offset.
+                        let z0 = offset;
+                        let z1 = offset + h;
+                        let h = z1 - z0;
+                        if h <= 0.0 {
+                            continue;
+                        }
+                        let (t, u) = match kind {
+                            // Shadows overlapping round the origin: plain, a
+                            // sliver over a plain one, a needle under one.
+                            0 | 1 => {
+                                let thin = if kind == 1 { 1e-6 } else { 0.5 };
+                                let a = 1.0 + rng.coarse();
+                                let t = [
+                                    Vec3::new(-a * scale, -thin * scale, z0),
+                                    Vec3::new(a * scale, -thin * scale, z0),
+                                    Vec3::new(0.0, thin * scale, z0),
+                                ];
+                                let b = 1.0 + rng.coarse();
+                                let u = [
+                                    Vec3::new(-0.5 * scale, -b * scale, z1),
+                                    Vec3::new(0.5 * scale, -b * scale, z1),
+                                    Vec3::new(0.0, b * scale, z1),
+                                ];
+                                (t, u)
+                            }
+                            // Two sides crossing over, nearly parallel.
+                            _ => {
+                                let skew = 1e-9 * 10f64.ppowf(4.0 * rng.unit());
+                                let len = (1.0 + rng.coarse()) * scale;
+                                let w = skew * len;
+                                let t = [
+                                    Vec3::new(-len, 0.0, z0),
+                                    Vec3::new(len, 0.0, z0),
+                                    Vec3::new(0.0, len, z0 - len),
+                                ];
+                                let u = [
+                                    Vec3::new(-len, -w, z1),
+                                    Vec3::new(len, w, z1),
+                                    Vec3::new(0.0, -len, z1 + len),
+                                ];
+                                (t, u)
+                            }
+                        };
+                        // What the bound may fall short by: the slack it
+                        // takes off (16 f64::EPSILON of the size) and the
+                        // two it lets the gap on the corners' and sides'
+                        // direction fall short before the normals are
+                        // tried, and 8 f64::EPSILON of h.
+                        let size = t
+                            .iter()
+                            .chain(u.iter())
+                            .flat_map(|v| t.iter().chain(u.iter()).map(move |w| (*v - *w).length()))
+                            .fold(0.0_f64, f64::max);
+                        for (d, ..) in [triangles_nearest(&t, &u), triangles_nearest(&u, &t)] {
+                            assert!(d <= h, "{kind} {k} {offset}: {d} > {h}");
+                            let off = 64.0 * f64::EPSILON * (size + h);
+                            if h > 4.0 * off {
+                                assert!(d >= h - off, "{kind} {k} {offset}: {d} for {h}");
+                                tight += 1;
+                            }
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 5000 && tight > checked / 3, "{checked} {tight}");
+    }
+
+    /// Outside the range in which the exact signs are proven (a coordinate
+    /// other than 0 smaller than 2^-288 or larger than 2^288) two triangles
+    /// are taken as meeting (0), never told apart on signs that may be
+    /// wrong; just inside, a pair 1 apart (scaled) is apart.
+    #[test]
+    fn outside_the_proven_range_triangles_are_taken_as_meeting() {
+        let pair = |k: f64| {
+            (
+                [
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(k, 0.0, 0.0),
+                    Vec3::new(0.0, k, 0.0),
+                ],
+                [
+                    Vec3::new(0.0, 0.0, k),
+                    Vec3::new(k, 0.0, k),
+                    Vec3::new(0.0, k, k),
+                ],
+            )
+        };
+        let (small, large) = exact::IN_RANGE;
+        for k in [1e-110, 1e103, small * 0.5, large * 2.0] {
+            let (t, u) = pair(k);
+            assert_eq!(triangles_nearest(&t, &u).0, 0.0, "{k}");
+        }
+        for k in [small * 2.0, 1.0, large * 0.25] {
+            let (t, u) = pair(k);
+            let d = triangles_nearest(&t, &u).0;
+            assert!(d > 0.99 * k && d <= k, "{k}: {d}");
+        }
+    }
+
+    /// Two segments that meet in all three projections along the axes but
+    /// not in space: the volume they span (not 0) says so.
+    #[test]
+    fn segments_meeting_in_every_projection_need_not_meet() {
+        let (p, q) = (Vec3::new(0.0, 0.0, 0.0), Vec3::new(2.0, 2.0, 2.0));
+        let (a, b) = (Vec3::new(0.0, 2.0, 0.0), Vec3::new(2.0, 0.0, 1.0));
+        for k in 0..3 {
+            assert_eq!(
+                segments_meet_2d(
+                    drop_axis(p, k),
+                    drop_axis(q, k),
+                    drop_axis(a, k),
+                    drop_axis(b, k)
+                ),
+                Some(true),
+                "{k}"
+            );
+        }
+        assert_eq!(segments_meet(p, q, a, b), Some(false));
+    }
+
+    /// An exact rational (tests only), reduced, its denominator positive.
+    #[derive(Clone, Copy, Debug)]
+    struct Q(i128, i128);
+
+    impl Q {
+        fn int(n: i64) -> Q {
+            Q(i128::from(n), 1)
+        }
+        fn new(n: i128, d: i128) -> Q {
+            fn gcd(a: i128, b: i128) -> i128 {
+                if b == 0 { a.abs() } else { gcd(b, a % b) }
+            }
+            let g = gcd(n, d).max(1);
+            let (n, d) = (n / g, d / g);
+            if d < 0 { Q(-n, -d) } else { Q(n, d) }
+        }
+        fn add(self, o: Q) -> Q {
+            Q::new(self.0 * o.1 + o.0 * self.1, self.1 * o.1)
+        }
+        fn sub(self, o: Q) -> Q {
+            Q::new(self.0 * o.1 - o.0 * self.1, self.1 * o.1)
+        }
+        fn mul(self, o: Q) -> Q {
+            Q::new(self.0 * o.0, self.1 * o.1)
+        }
+        fn div(self, o: Q) -> Q {
+            Q::new(self.0 * o.1, self.1 * o.0)
+        }
+        fn sign(self) -> i128 {
+            self.0.signum()
+        }
+    }
+
+    /// Whether two triangles with integer corners (of any shape, also
+    /// without area) share a point, by linear programming in exact
+    /// rationals: weights α of t's corners and β of u's, each ≥ 0 and
+    /// summing to 1, with Σ α t = Σ β u. Gaussian elimination writes the
+    /// pivot weights in the free ones; Fourier and Motzkin's elimination
+    /// then decides whether the free ones can make every weight ≥ 0.
+    fn meet_by_programming(t: [[i64; 3]; 3], u: [[i64; 3]; 3]) -> bool {
+        // Rows: [coefficients of α0 α1 α2 β0 β1 β2 | right side].
+        let mut rows: Vec<[Q; 7]> = Vec::new();
+        let one = Q::int(1);
+        let zero = Q::int(0);
+        rows.push([one, one, one, zero, zero, zero, one]);
+        rows.push([zero, zero, zero, one, one, one, one]);
+        for k in 0..3 {
+            rows.push([
+                Q::int(t[0][k]),
+                Q::int(t[1][k]),
+                Q::int(t[2][k]),
+                Q::int(-u[0][k]),
+                Q::int(-u[1][k]),
+                Q::int(-u[2][k]),
+                zero,
+            ]);
+        }
+        // Reduced row echelon form.
+        let mut pivots: Vec<(usize, usize)> = Vec::new();
+        let mut r = 0;
+        for c in 0..6 {
+            let Some(p) = (r..rows.len()).find(|&i| rows[i][c].sign() != 0) else {
+                continue;
+            };
+            rows.swap(r, p);
+            let lead = rows[r][c];
+            for x in rows[r].iter_mut() {
+                *x = x.div(lead);
+            }
+            let pivot_row = rows[r];
+            for (i, row) in rows.iter_mut().enumerate() {
+                if i != r && row[c].sign() != 0 {
+                    let f = row[c];
+                    for (x, p) in row.iter_mut().zip(pivot_row) {
+                        *x = x.sub(f.mul(p));
+                    }
+                }
+            }
+            pivots.push((r, c));
+            r += 1;
+        }
+        // Inconsistent: a row 0 = nonzero.
+        if rows[r..].iter().any(|row| row[6].sign() != 0) {
+            return false;
+        }
+        let free: Vec<usize> = (0..6)
+            .filter(|c| pivots.iter().all(|p| p.1 != *c))
+            .collect();
+        // Inequalities Σ a_f x_f ≤ b over the free weights: each pivot
+        // weight ≥ 0 (x_p = b_p − Σ a x_f), each free one ≥ 0.
+        let mut ineqs: Vec<(Vec<Q>, Q)> = Vec::new();
+        for &(row, _) in &pivots {
+            ineqs.push((free.iter().map(|&f| rows[row][f]).collect(), rows[row][6]));
+        }
+        for i in 0..free.len() {
+            let mut a = vec![zero; free.len()];
+            a[i] = Q::int(-1);
+            ineqs.push((a, zero));
+        }
+        // Fourier–Motzkin, the last free weight first.
+        for v in (0..free.len()).rev() {
+            let (mut pos, mut neg, mut rest) = (Vec::new(), Vec::new(), Vec::new());
+            for (a, b) in ineqs {
+                match a[v].sign() {
+                    1 => pos.push((a, b)),
+                    -1 => neg.push((a, b)),
+                    _ => rest.push((a, b)),
+                }
+            }
+            for (ap, bp) in &pos {
+                for (an, bn) in &neg {
+                    // ap/ap[v] + an/(−an[v]): the v terms cancel.
+                    let (sp, sn) = (ap[v], Q::int(0).sub(an[v]));
+                    let a: Vec<Q> = ap
+                        .iter()
+                        .zip(an)
+                        .map(|(x, y)| x.div(sp).add(y.div(sn)))
+                        .collect();
+                    rest.push((a, bp.div(sp).add(bn.div(sn))));
+                }
+            }
+            ineqs = rest;
+        }
+        ineqs.iter().all(|(_, b)| b.sign() >= 0)
+    }
+
+    /// Whether two triangles meet, against linear programming in exact
+    /// rationals: corners on a small grid, of every shape the separating
+    /// axes leave out, triangles without area (on a line, at a point) and
+    /// sides parallel in two planes, besides plain ones and ones in one
+    /// plane; as doubles at scales 2^-30 to 2^30 and moved 2^40 units.
+    #[test]
+    fn whether_triangles_meet_agrees_with_linear_programming() {
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self, n: u64) -> i64 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                (self.0 % n) as i64
+            }
+            fn grid(&mut self) -> [i64; 3] {
+                [self.next(5), self.next(5), self.next(5)]
+            }
+        }
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        let (mut checked, mut meeting) = (0, 0);
+        let cases = [
+            (1.0 / (1u64 << 30) as f64, 0_i64),
+            (1.0, 1 << 40),
+            ((1u64 << 30) as f64, 0),
+        ];
+        for (scale, base) in cases {
+            for kind in 0..5 {
+                for _ in 0..800 {
+                    let t = [rng.grid(), rng.grid(), rng.grid()];
+                    let mut u = [rng.grid(), rng.grid(), rng.grid()];
+                    let t = match kind {
+                        // On a line.
+                        1 => {
+                            let k = rng.next(3) - 1;
+                            [
+                                t[0],
+                                t[1],
+                                [0, 1, 2].map(|i| t[0][i] + k * (t[1][i] - t[0][i])),
+                            ]
+                        }
+                        // A point.
+                        2 => [t[0], t[0], t[0]],
+                        _ => t,
+                    };
+                    if kind == 3 {
+                        // A side of u parallel to one of t, in another plane.
+                        let k = rng.next(2) + 1;
+                        u[1] = [0, 1, 2].map(|i| u[0][i] + k * (t[1][i] - t[0][i]));
+                    }
+                    if kind == 4 {
+                        // u on a line too.
+                        u[2] = u[0];
+                    }
+                    let want = meet_by_programming(t, u);
+                    let f = |c: [[i64; 3]; 3]| {
+                        c.map(|p| {
+                            Vec3::new(
+                                (base + p[0]) as f64 * scale,
+                                (base + p[1]) as f64 * scale,
+                                (base + p[2]) as f64 * scale,
+                            )
+                        })
+                    };
+                    let (tf, uf) = (f(t), f(u));
+                    assert_eq!(
+                        !matches!(meet(&tf, &uf), Meet::No),
+                        want,
+                        "{t:?} {u:?} {kind}"
+                    );
+                    assert_eq!(
+                        !matches!(meet(&uf, &tf), Meet::No),
+                        want,
+                        "{u:?} {t:?} {kind}"
+                    );
+                    checked += 1;
+                    meeting += usize::from(want);
+                }
+            }
+        }
+        assert!(
+            meeting > checked / 10 && meeting < checked * 9 / 10,
+            "{checked} {meeting}"
+        );
+    }
+
+    /// Whether two triangles meet, against a separating-axis test in exact
+    /// integer arithmetic (i128): corners on a small grid (0 to 6), so that
+    /// touching, shared corners and sides, one plane and parallel sides are
+    /// common, and the same with `u` in `t`'s plane, as doubles scaled by
+    /// 2^-30, 1 and 2^30 and moved 2^40 units from the origin. The axes:
+    /// both normals, each normal across its own sides (complete in one
+    /// plane) and each side of one across each of the other (with the
+    /// normals, complete for triangles in two planes without parallel
+    /// sides; pairs with parallel sides in two planes, and triangles
+    /// without area, are left out of the oracle).
+    #[test]
+    fn whether_triangles_meet_agrees_with_separating_axes() {
+        type P = [i64; 3];
+        fn sub(a: P, b: P) -> P {
+            [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+        }
+        fn wide(a: P) -> [i128; 3] {
+            a.map(i128::from)
+        }
+        fn cross(a: [i128; 3], b: [i128; 3]) -> [i128; 3] {
+            [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ]
+        }
+        fn dot(a: [i128; 3], b: [i128; 3]) -> i128 {
+            a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+        }
+        // Some(disjoint), or None where the oracle does not apply.
+        fn separated(t: [P; 3], u: [P; 3]) -> Option<bool> {
+            let edges = |c: [P; 3]| [0, 1, 2].map(|i| wide(sub(c[(i + 1) % 3], c[i])));
+            let (et, eu) = (edges(t), edges(u));
+            let nt = cross(et[0], wide(sub(t[2], t[0])));
+            let nu = cross(eu[0], wide(sub(u[2], u[0])));
+            if nt == [0; 3] || nu == [0; 3] {
+                return None;
+            }
+            let one_plane = cross(nt, nu) == [0; 3] && dot(nt, wide(sub(u[0], t[0]))) == 0;
+            let mut axes = vec![nt, nu];
+            axes.extend(et.map(|e| cross(nt, e)));
+            axes.extend(eu.map(|e| cross(nu, e)));
+            for e in et {
+                for f in eu {
+                    let a = cross(e, f);
+                    if a == [0; 3] && !one_plane {
+                        return None;
+                    }
+                    axes.push(a);
+                }
+            }
+            let span = |c: [P; 3], a: [i128; 3]| {
+                let v = c.map(|p| dot(wide(p), a));
+                (
+                    v.iter().copied().min().unwrap(),
+                    v.iter().copied().max().unwrap(),
+                )
+            };
+            Some(axes.into_iter().filter(|a| *a != [0; 3]).any(|a| {
+                let ((lt, ht), (lu, hu)) = (span(t, a), span(u, a));
+                ht < lu || hu < lt
+            }))
+        }
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self, n: u64) -> i64 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                (self.0 % n) as i64
+            }
+            fn grid(&mut self) -> P {
+                [self.next(7), self.next(7), self.next(7)]
+            }
+        }
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+        let (mut checked, mut meeting) = (0, 0);
+        let cases = [
+            (1.0 / (1u64 << 30) as f64, 0_i64),
+            (1.0, 0),
+            (1.0, 1 << 40),
+            ((1u64 << 30) as f64, 1 << 40),
+        ];
+        for (scale, base) in cases {
+            for kind in 0..2 {
+                for _ in 0..3000 {
+                    let t = [rng.grid(), rng.grid(), rng.grid()];
+                    let u = if kind == 0 {
+                        [rng.grid(), rng.grid(), rng.grid()]
+                    } else {
+                        // In t's plane: integer combinations of its sides.
+                        let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+                        let mut c = || {
+                            let (i, j) = (rng.next(5) - 2, rng.next(5) - 2);
+                            [0, 1, 2].map(|k| t[0][k] + i * e1[k] + j * e2[k])
+                        };
+                        [c(), c(), c()]
+                    };
+                    let Some(apart) = separated(t, u) else {
+                        continue;
+                    };
+                    let f = |c: [P; 3]| {
+                        c.map(|p| {
+                            Vec3::new(
+                                (base + p[0]) as f64 * scale,
+                                (base + p[1]) as f64 * scale,
+                                (base + p[2]) as f64 * scale,
+                            )
+                        })
+                    };
+                    let (tf, uf) = (f(t), f(u));
+                    let met = !matches!(meet(&tf, &uf), Meet::No);
+                    assert_eq!(met, !apart, "{t:?} {u:?} at {scale} {base}");
+                    assert_eq!(!matches!(meet(&uf, &tf), Meet::No), met, "{t:?} {u:?}");
+                    checked += 1;
+                    meeting += usize::from(met);
+                }
+            }
+        }
+        assert!(
+            checked > 10_000 && meeting > checked / 10 && meeting < checked * 9 / 10,
+            "{checked} {meeting}"
+        );
+    }
+
+    /// The review's pair (2026-11-13), about 1e6 from the origin and 10
+    /// across: in exact arithmetic two sides of `u` pass through `t`, so
+    /// they are 0 apart, while their corners and sides come 0.99999999995
+    /// apart.
+    #[test]
+    fn a_crossing_far_from_the_origin_is_0_apart() {
+        let t = [
+            Vec3::new(-416107.25459796394, 831669.229536776, -367666.02719767066),
+            Vec3::new(-416102.04477232957, 831675.2736724502, -367665.45611027733),
+            Vec3::new(-416101.85447886726, 831670.5315884767, -367673.0374312695),
+        ];
+        let u = [
+            Vec3::new(-416104.57697252836, 831671.254923877, -367669.864922142),
+            Vec3::new(-416103.2745161198, 831672.7659577954, -367669.72215029364),
+            Vec3::new(-416102.57841968996, 831670.7727522536, -367668.98554902565),
+        ];
+        assert!(corners_and_sides(&t, &u).0 > 0.9);
+        assert_eq!(triangles_nearest(&t, &u).0, 0.0);
+        assert_eq!(triangles_nearest(&u, &t).0, 0.0);
+    }
+
+    /// The crossing pair of `triangles_that_pass_through_each_other_are_0_apart`
+    /// (a triangle about 8 across, sides through it at (±0.5, 0, 0)) turned
+    /// by 500 seeded rotations and moved 5e3, 1.5e4 and 1.5e5 of its size
+    /// from the origin, at scales 1e-3, 1 and 1e6: always 0 apart either way
+    /// round (the review's model missed 4 % at 1.5e4 and 28 % at 1.5e5 when
+    /// the crossing was decided on coordinates); lifted clear by 1e-3 of the
+    /// scale, never 0, and 1e-3 apart to the rounding of the coordinates.
+    #[test]
+    fn turned_and_far_from_the_origin_a_crossing_is_never_missed() {
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+        };
+        for k in [1e-3, 1.0, 1e6] {
+            for ratio in [5e3, 1.5e4, 1.5e5] {
+                for _ in 0..500 {
+                    // A rotation from a unit quaternion, and a direction.
+                    let (w, x, y, z) = (next(), next(), next(), next());
+                    let n = (w * w + x * x + y * y + z * z).sqrt();
+                    let (w, x, y, z) = (w / n, x / n, y / n, z / n);
+                    let turn = |v: Vec3| {
+                        Vec3::new(
+                            (1.0 - 2.0 * (y * y + z * z)) * v.x
+                                + 2.0 * (x * y - w * z) * v.y
+                                + 2.0 * (x * z + w * y) * v.z,
+                            2.0 * (x * y + w * z) * v.x
+                                + (1.0 - 2.0 * (x * x + z * z)) * v.y
+                                + 2.0 * (y * z - w * x) * v.z,
+                            2.0 * (x * z - w * y) * v.x
+                                + 2.0 * (y * z + w * x) * v.y
+                                + (1.0 - 2.0 * (x * x + y * y)) * v.z,
+                        )
+                    };
+                    let dir = Vec3::new(next(), next(), next());
+                    let o = dir * (ratio * 8.0 * k / dir.length());
+                    let at = |x: f64, y: f64, z: f64| o + turn(Vec3::new(x, y, z) * k);
+                    let t = [at(-4.0, -4.0, 0.0), at(4.0, -4.0, 0.0), at(0.0, 4.0, 0.0)];
+                    let lifted = |dz: f64| {
+                        [
+                            at(-1.0, 0.0, 1.0 + dz),
+                            at(1.0, 0.0, 1.0 + dz),
+                            at(0.0, 0.0, dz - 1.0),
+                        ]
+                    };
+                    let u = lifted(0.0);
+                    assert_eq!(triangles_nearest(&t, &u).0, 0.0, "{k} {ratio} {o:?}");
+                    assert_eq!(triangles_nearest(&u, &t).0, 0.0, "{k} {ratio} {o:?}");
+                    let clear = lifted(1.0 + 1e-3);
+                    for (d, ..) in [triangles_nearest(&t, &clear), triangles_nearest(&clear, &t)] {
+                        // The corners themselves are rounded at the
+                        // coordinates: a part in 1e15 of them.
+                        let off = 1e-15 * o.length() + 1e-12 * k;
+                        assert!((d - 1e-3 * k).abs() <= off, "{k} {ratio}: {d}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Review of 2026-11-13 (S2): an equilateral triangle on a sphere of
+    /// radius 5 whose corners are 12° apart seen from the centre (corner
+    /// normals at the mesh's angle; checked from the corners) is farther
+    /// from the sphere at its centroid (the centre's foot on its plane:
+    /// 5 − |centroid|, worked from the corners) than r (1 − cos 6°), the
+    /// bound a side's middle gives and the one used before; the bound now
+    /// covers it. A cylinder's is still r (1 − cos 6°), and the chord caps
+    /// both.
+    #[test]
+    fn a_rounds_mesh_error_covers_a_triangle_at_the_meshs_angle() {
+        let r = 5.0;
+        let theta = MESH_ANGLE;
+        // Corners at a polar angle a about z, a third of a turn apart:
+        // sides √3 r sin a, made the chord of θ.
+        let sin_a = 2.0 * (0.5 * theta).psin() / 3.0_f64.sqrt();
+        let (sa, ca) = (sin_a, (1.0 - sin_a * sin_a).sqrt());
+        let corner = |k: f64| {
+            let b = k * 2.0 * std::f64::consts::PI / 3.0;
+            Vec3::new(r * sa * b.pcos(), r * sa * b.psin(), r * ca)
+        };
+        let [p, q, w] = [corner(0.0), corner(1.0), corner(2.0)];
+        for (x, y) in [(p, q), (q, w), (w, p)] {
+            let apart = (x.dot(y) / (r * r)).pacos();
+            assert!((apart - theta).abs() < 1e-12, "{apart}");
+        }
+        let centroid = (p + q + w) * (1.0 / 3.0);
+        let off = r - centroid.length();
+        let before = r * (1.0 - (0.5 * theta).pcos());
+        assert!(off > 1.3 * before, "{off} {before}");
+        // A chord of 0.1: its sides' own bound (a side of 0.1 bows
+        // 3e-4) is below the angle's.
+        let now = round_error(r, 0.1, true);
+        assert!(
+            now >= off - 1e-15 * r && now <= off + 1e-12 * r,
+            "{now} {off}"
+        );
+        assert_eq!(round_error(r, 0.1, false), before);
+        assert_eq!(round_error(r, 1e-3, true), 1e-3);
+    }
+
+    /// Rule 12 (review of 2026-11-13): what deciding whether triangles meet
+    /// costs, on a model of many faces: a plate of 841 holes and its copy 3
+    /// above it, on top of it (faces in one plane, touching) and moved
+    /// through it (the pairs of triangles of faces whose boxes are within
+    /// 3.5 of each other, each compared by the kernel before, corners and
+    /// sides alone, and as it is now, with how many signs the filter gave
+    /// and how many were worked out exactly), and the distance to the copy
+    /// above and the thickness measured whole as they are now.
+    /// Ignored: it only prints. `cargo test --release -p craft3d-engine
+    /// --lib triangle_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn triangle_cost_on_a_sieve() {
+        use crate::{Session, Workspace};
+        use serde_json::json;
+        use std::time::Instant;
+        let mut s = Session::new(Workspace::none());
+        let mut go = |id: &str, p: serde_json::Value| {
+            s.execute(id, &p).unwrap_or_else(|e| panic!("{id}: {e}"));
+        };
+        go("file.new", json!({"units": "mm"}));
+        go(
+            "feature.block",
+            json!({"name": "Plate", "size": [300, 300, 10]}),
+        );
+        go(
+            "sketch.create",
+            json!({"name": "Holes", "plane": "xy", "offset": 10}),
+        );
+        for i in 0..29 {
+            for j in 0..29 {
+                go(
+                    "sketch.circle",
+                    json!({"sketch": "Holes", "center": [10 + 10 * i, 10 + 10 * j], "radius": 3}),
+                );
+            }
+        }
+        go(
+            "feature.extrude",
+            json!({"sketch": "Holes", "distance": -10, "cut": "Plate", "name": "Sieve"}),
+        );
+        for (name, by) in [
+            ("Above", [0.0, 0.0, 13.0]),
+            ("Stacked", [0.0, 0.0, 10.0]),
+            ("Crossing", [5.0, 3.0, 4.0]),
+        ] {
+            go(
+                "feature.transform",
+                json!({"source": "Sieve", "keep": true, "translate": by, "name": name}),
+            );
+        }
+        // The stack turned 7° about a slanted axis: faces in one plane but
+        // not along the axes, where a permanent of 0 settles few signs.
+        for (source, name) in [("Sieve", "Sieve turned"), ("Stacked", "Stacked turned")] {
+            go(
+                "feature.transform",
+                json!({"source": source, "keep": true, "angle": "7 deg", "axis": [0.36, 0.48, 0.8], "pivot": [0, 0, 0], "name": name}),
+            );
+        }
+        let doc = std::sync::Arc::clone(s.document().unwrap().history.current());
+        let regen = s.document_mut().unwrap().regen();
+        let tolerance = craft3d_math::Tolerance::default();
+        let body = |name: &str| {
+            let id = doc.feature_by_name(name).unwrap().id;
+            std::sync::Arc::clone(regen.bodies().find(|(f, _)| *f == id).unwrap().1)
+        };
+        for (first, name, what) in [
+            ("Sieve", "Above", "3 above"),
+            ("Sieve", "Stacked", "on top, touching"),
+            (
+                "Sieve turned",
+                "Stacked turned",
+                "on top, touching, both turned 7°",
+            ),
+            ("Sieve", "Crossing", "moved (5, 3, 4), through it"),
+        ] {
+            let (a, b) = (body(first), body(name));
+            let pa = Part::new(&a, None, &tolerance).unwrap();
+            let pb = Part::new(&b, None, &tolerance).unwrap();
+            let mut pairs: Vec<([Vec3; 3], [Vec3; 3])> = Vec::new();
+            for (fa, ta) in &pa.every {
+                for (fb, tb) in &pb.every {
+                    if boxes_distance(&pa.every_boxes[fa], &pb.every_boxes[fb]) > 3.5 {
+                        continue;
+                    }
+                    for t in ta {
+                        let bt = Bbox3::from_points(t.iter().copied());
+                        for u in tb {
+                            if boxes_distance(&bt, &Bbox3::from_points(u.iter().copied())) <= 3.5 {
+                                pairs.push((*t, *u));
+                            }
+                        }
+                    }
+                }
+            }
+            let time = |kernel: &dyn Fn(&[Vec3; 3], &[Vec3; 3]) -> f64| {
+                (0..3)
+                    .map(|_| {
+                        let started = Instant::now();
+                        let sum: f64 = pairs.iter().map(|(t, u)| kernel(t, u)).sum();
+                        (started.elapsed().as_secs_f64(), sum)
+                    })
+                    .fold((f64::INFINITY, 0.0), |(b, _), (t, s)| (b.min(t), s))
+            };
+            let (before, _) = time(&|t, u| corners_and_sides_at(t, u).distance);
+            SIGNS.with(|s| s.set((0, 0)));
+            let (now, _) = time(&|t, u| triangles_nearest(t, u).0);
+            let (filtered, worked) = SIGNS.with(std::cell::Cell::get);
+            eprintln!(
+                "the sieve and its copy {what}: {} pairs of triangles: before {:.1} ns a pair ({:.3} s), now {:.1} ns ({:.3} s): {:+.0} %; signs of determinants: {filtered} from the filter, {worked} worked out exactly ({:.4} %)",
+                pairs.len(),
+                1e9 * before / pairs.len().max(1) as f64,
+                before,
+                1e9 * now / pairs.len().max(1) as f64,
+                now,
+                100.0 * (now / before - 1.0),
+                100.0 * worked as f64 / (filtered + worked).max(1) as f64
+            );
+        }
+        let (a, above) = (body("Sieve"), body("Above"));
+        let pa = Part::new(&a, None, &tolerance).unwrap();
+        let pb = Part::new(&above, None, &tolerance).unwrap();
+        let started = Instant::now();
+        let near = distance(&[pa], &[pb]).unwrap();
+        eprintln!(
+            "distance of the two sieves: {} (at least {}) in {:.3} s",
+            near.distance,
+            near.lower,
+            started.elapsed().as_secs_f64()
+        );
+        let part = Part::new(&a, None, &tolerance).unwrap();
+        let started = Instant::now();
+        let thin = thickness_to(&part, tolerance.linear, f64::INFINITY)
+            .unwrap()
+            .unwrap();
+        eprintln!(
+            "thickness of a sieve: {} (at least {}) in {:.3} s",
+            thin.thickness,
+            thin.lower,
+            started.elapsed().as_secs_f64()
+        );
+    }
+
     #[test]
     fn triangle_distances_are_exact_for_simple_cases() {
         let t = [
@@ -2674,13 +4279,26 @@ mod tests {
             Vec3::new(1.0, 0.0, 2.0),
             Vec3::new(0.0, 1.0, 2.0),
         ];
-        assert!((triangles_nearest(&t, &u).0 - 2.0).abs() < 1e-15);
+        // The corners' and sides' distance is the closed form; the bound
+        // (since J-018's third review) is never above it and below it by
+        // no more than what rounding can take off: 16 f64::EPSILON of the
+        // size (the largest distance of a corner from u's first, √5) and 8
+        // of itself, 7.9e-15 + 3.6e-15. Before, it was the corners' and
+        // sides' distance, held to 1e-15 either way.
+        assert!((corners_and_sides(&t, &u).0 - 2.0).abs() < 1e-15);
+        let d = triangles_nearest(&t, &u).0;
+        assert!(d <= 2.0 && d > 2.0 - 1.25e-14, "{d}");
         let v = [
             Vec3::new(2.0, 2.0, 0.0),
             Vec3::new(3.0, 2.0, 0.0),
             Vec3::new(2.0, 3.0, 0.0),
         ];
         // From the hypotenuse's middle (0.5, 0.5) to the corner (2, 2).
-        assert!((triangles_nearest(&t, &v).0 - (4.5_f64).sqrt()).abs() < 1e-12);
+        let want = (4.5_f64).sqrt();
+        assert!((corners_and_sides(&t, &v).0 - want).abs() < 1e-12);
+        // The size here is √8 (the corner (0, 0) from v's first, (2, 2)):
+        // 1.0e-14 + 3.8e-15.
+        let d = triangles_nearest(&t, &v).0;
+        assert!(d <= want && d > want - 1.5e-14, "{d}");
     }
 }

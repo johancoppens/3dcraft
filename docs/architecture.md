@@ -32,7 +32,7 @@ These are the invariants. Every part is built so that they hold by construction,
 ## 2. The parts and their layers
 
 ```text
- L8  apps          craft3d (window), craft3d-cli, craft3d-fuzz, craft3d-web (the page)
+ L8  apps          craft3d (window), craft3d-cli, craft3d-fuzz, craft3d-web (the page), craft3d-launcher
  L7  clients       ui-egui (the shell), automation (control server, MCP)
  L6  engine        Session: open documents, commands, undo, scenes
  L5  io            bodies and meshes <-> STEP, STL, 3MF, OBJ, DXF, SVG
@@ -78,6 +78,7 @@ These are the invariants. Every part is built so that they hold by construction,
 | `apps/craft3d` | L8 | the window: eframe, the engine thread, the control listener, file dialogs | holds modelling logic |
 | `apps/craft3d-cli` | L8 | the headless CLI: `run`, `info`, `render`, `convert`, `replay`, `score`, `check-range`, `commands`, `serve`, `mcp` | holds modelling logic |
 | `apps/craft3d-fuzz` | L8 | random multi-step designs held to the oracles, one seed or reproducer per process ([`testing.md`](testing.md) › Oracle 11) | holds modelling logic; is a dependency of anything |
+| `apps/craft3d-launcher` | L8 | `3DCraft.exe` in the Windows packages: starts the window beside it without a console window, passes its arguments on, says why a window could not start (a message box) | depends on a workspace crate; reads or writes a document |
 | `apps/craft3d-web` | L8 | the page: eframe's web runner, the session's files in memory, the file chooser and downloads, preferences in `localStorage` | holds modelling logic; starts a thread |
 | `xtask` | — | `layers`, `wasm`, `ci`, `stats`, `health`, `freecad`, `fonts`, `boolean-corpus`, `fuzz`, `abc`, `actions`, `notices`, `package` (installers and the web zip), `web-size`, `example-thumbs` | is shipped |
 

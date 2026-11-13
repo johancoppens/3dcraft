@@ -19,19 +19,28 @@ mod common;
 use common::checked::run;
 use craft3d_engine::Session;
 use serde_json::{Value, json};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Condvar, Mutex, PoisonError};
 
 fn docs() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs")
 }
 
-/// The folders of example scripts: the guide's lessons, and the models
-/// that were its examples until 2026-11-10 and stay as tests.
+/// The guide's lessons.
+fn lessons_dir() -> PathBuf {
+    docs().join("examples")
+}
+
+/// The models that were the guide's examples until 2026-11-10 and stay as
+/// tests.
+fn models_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/example_models")
+}
+
+/// The folders of example scripts.
 fn example_dirs() -> [PathBuf; 2] {
-    [
-        docs().join("examples"),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/example_models"),
-    ]
+    [lessons_dir(), models_dir()]
 }
 
 fn read_text(path: &Path) -> String {
@@ -66,46 +75,245 @@ fn steps(script: &Value) -> Option<Vec<(String, Value)>> {
         .collect()
 }
 
-#[test]
-fn every_example_builds_and_meets_its_assertions() {
-    let scripts: Vec<PathBuf> = example_dirs()
-        .iter()
-        .flat_map(|dir| files(dir, "json"))
-        .collect();
-    assert!(scripts.len() >= 18, "examples: {scripts:?}");
-    for path in &scripts {
-        let name = stem(path);
-        let script: Value = serde_json::from_str(&read_text(path))
-            .unwrap_or_else(|e| panic!("{name}: not JSON: {e}"));
-        let steps = steps(&script).unwrap_or_else(|| panic!("{name}: not a list of steps"));
-        let mut s = common::session();
-        run(&mut s, "file.new", json!({"units": "mm"}));
-        for (id, params) in steps {
-            run(&mut s, &id, params);
-        }
-        let document = run(&mut s, "document.inspect", json!({}));
-        for feature in document["features"].as_array().unwrap() {
-            assert_eq!(feature["status"], "ok", "{name}: {feature}");
-        }
-        assert!(
-            !document["bodies"].as_array().unwrap().is_empty(),
-            "{name}: no body"
-        );
-        let assertions = run(&mut s, "assert.list", json!({}));
-        assert_eq!(assertions["ok"], true, "{name}: {assertions}");
-        assert_eq!(
-            assertions["passed"], assertions["count"],
-            "{name}: {assertions}"
-        );
-        let volume = assertions["assertions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|a| a["measure"]["measure"] == "volume");
-        assert!(volume, "{name}: every example asserts its volume");
-        let check = run(&mut s, "document.check", json!({"deep": true}));
-        assert_eq!(check["ok"], true, "{name}: {check}");
+/// How many example scripts build at the same time, each in a test of its
+/// own: one per 4 of the machine's threads and per 12 GiB of the memory the
+/// process may use, at most 8, and one where that cannot be read (outside
+/// Linux). The build server's 32 threads and 123 GB give 8; a laptop's 16
+/// threads and 30 GB give 2, and one under a cap of 8 GB on the run. libtest would otherwise start all eighteen at once beside
+/// this file's other tests. A script holds its session: the bodies of its
+/// document, at most 1 GiB of the bodies that went into later features
+/// (the session's body budget), and up to [`COMPARISONS_AT_ONCE`]
+/// comparisons with a regeneration from nothing, each holding the session's
+/// regeneration after its command and building one with a body budget of
+/// its own; the deep check at the end meshes every face. 12 GiB a script
+/// is a ceiling for those four regenerations and the meshes, beside the
+/// test binaries the gate runs with this one, not a measure: the process's
+/// peak is printed when a script ends (on Linux). Only how many build at
+/// once depends on the machine: each script builds in a session of its
+/// own, so what it builds does not.
+fn scripts_at_once() -> usize {
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    match memory_gib() {
+        Some(memory) => (threads / 4).min(memory / 12).clamp(1, 8),
+        None => 1,
     }
+}
+
+/// A number of kibibytes from a line `<key> <number> kB` of a file under
+/// `/proc`, where there is one.
+fn proc_kib(file: &str, key: &str) -> Option<usize> {
+    std::fs::read_to_string(file)
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix(key))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// The memory this process may use in GiB (Linux): the machine's, or less
+/// where its control group or one above it has a limit, such as a run
+/// capped at 8 GB.
+fn memory_gib() -> Option<usize> {
+    let machine = proc_kib("/proc/meminfo", "MemTotal:")?.saturating_mul(1024);
+    let bytes = cgroup_limit().map_or(machine, |limit| limit.min(machine));
+    Some(bytes / (1 << 30))
+}
+
+/// The smallest `memory.max` of this process's control group and the
+/// groups above it (cgroup v2; "max" is no limit), where there is one.
+fn cgroup_limit() -> Option<usize> {
+    let groups = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    let path = groups.lines().find_map(|line| line.strip_prefix("0::"))?;
+    let root = Path::new("/sys/fs/cgroup");
+    let mut dir = root.join(path.trim_start_matches('/'));
+    let mut smallest: Option<usize> = None;
+    while dir.starts_with(root) {
+        let limit = std::fs::read_to_string(dir.join("memory.max"))
+            .ok()
+            .and_then(|text| text.trim().parse::<usize>().ok());
+        if let Some(limit) = limit {
+            smallest = Some(smallest.map_or(limit, |s| s.min(limit)));
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    smallest
+}
+
+/// How many of a script's comparisons with a regeneration from nothing
+/// (after each of its commands, `common::checked::Overlapped`) run at once
+/// on threads of their own while the script goes on. They are most of a
+/// long script's time, the tank's 114 steps above all; the verdicts are
+/// taken in the order of the commands, so what fails, and with what
+/// message, does not depend on this number.
+const COMPARISONS_AT_ONCE: usize = 3;
+
+static BUILDING: Mutex<usize> = Mutex::new(0);
+static A_SCRIPT_ENDED: Condvar = Condvar::new();
+
+/// A place among the scripts that build at once, given back when the test
+/// ends, also when it fails.
+struct Place;
+
+impl Place {
+    fn wait() -> Place {
+        let at_once = scripts_at_once();
+        let mut building = BUILDING.lock().unwrap_or_else(PoisonError::into_inner);
+        while *building >= at_once {
+            building = A_SCRIPT_ENDED
+                .wait(building)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        *building += 1;
+        Place
+    }
+}
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        let mut building = BUILDING.lock().unwrap_or_else(PoisonError::into_inner);
+        *building = building.saturating_sub(1);
+        A_SCRIPT_ENDED.notify_one();
+    }
+}
+
+/// Says in the test's log, past libtest's capture, how much memory the
+/// process has held at most so far (Linux; nothing elsewhere), so a run's
+/// log shows what the scripts building at once cost.
+fn print_peak_memory(name: &str) {
+    if let Some(kib) = proc_kib("/proc/self/status", "VmHWM:") {
+        let _ = writeln!(
+            std::io::stderr(),
+            "guide_examples: {name} built, {} scripts at once ({} GiB to use); the process's peak resident memory so far {} MiB",
+            scripts_at_once(),
+            memory_gib().unwrap_or_default(),
+            kib / 1024
+        );
+    }
+}
+
+/// An example script builds in a new document without a failed feature,
+/// meets every assertion it carries (one of them on its volume at least)
+/// and passes the deep check.
+fn builds_and_meets_its_assertions(path: &Path) {
+    let _place = Place::wait();
+    let name = stem(path);
+    let script: Value =
+        serde_json::from_str(&read_text(path)).unwrap_or_else(|e| panic!("{name}: not JSON: {e}"));
+    let steps = steps(&script).unwrap_or_else(|| panic!("{name}: not a list of steps"));
+    let mut s = common::session();
+    let mut checks = common::checked::Overlapped::new(COMPARISONS_AT_ONCE);
+    checks.run(&mut s, "file.new", json!({"units": "mm"}));
+    for (id, params) in steps {
+        checks.run(&mut s, &id, params);
+    }
+    let counted = checks.wait(&s);
+    // Every command of a script, from its `file.new` on, has a document to
+    // compare.
+    assert_eq!(counted.without_document, 0, "{name}: {counted:?}");
+    assert!(counted.compared > 0, "{name}: {counted:?}");
+    let document = run(&mut s, "document.inspect", json!({}));
+    for feature in document["features"].as_array().unwrap() {
+        assert_eq!(feature["status"], "ok", "{name}: {feature}");
+    }
+    assert!(
+        !document["bodies"].as_array().unwrap().is_empty(),
+        "{name}: no body"
+    );
+    let assertions = run(&mut s, "assert.list", json!({}));
+    assert_eq!(assertions["ok"], true, "{name}: {assertions}");
+    assert_eq!(
+        assertions["passed"], assertions["count"],
+        "{name}: {assertions}"
+    );
+    let volume = assertions["assertions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|a| a["measure"]["measure"] == "volume");
+    assert!(volume, "{name}: every example asserts its volume");
+    let check = run(&mut s, "document.check", json!({"deep": true}));
+    assert_eq!(check["ok"], true, "{name}: {check}");
+    print_peak_memory(&name);
+}
+
+/// One test per example script of a folder, so libtest builds them side by
+/// side (they were one test until 2026-11-13, eighteen scripts one after
+/// the other, and the longest test of the workspace), and the list of
+/// them, which `every_example_script_has_its_test` holds to the folder.
+/// A script is named by its test, `bracket` for `bracket.json`, or, when
+/// its file name is not a Rust identifier (a keyword such as `box`, a
+/// hyphen), by its test and its file name: `two_bars = "two-bars"`.
+macro_rules! one_test_per_script {
+    (@file $script:ident) => {
+        stringify!($script)
+    };
+    (@file $script:ident $file:literal) => {
+        $file
+    };
+    ($folder:ident in $dir:path: $($script:ident $(= $file:literal)?),* $(,)?) => {
+        mod $folder {
+            pub const SCRIPTS: &[&str] = &[$(one_test_per_script!(@file $script $($file)?)),*];
+
+            pub fn dir() -> std::path::PathBuf {
+                $dir()
+            }
+
+            $(
+                #[test]
+                fn $script() {
+                    let file = one_test_per_script!(@file $script $($file)?);
+                    super::builds_and_meets_its_assertions(&dir().join(format!("{file}.json")));
+                }
+            )*
+        }
+    };
+}
+
+one_test_per_script!(lesson in super::lessons_dir:
+    bracket, bushing, case, flange, gear, hopper, spring);
+
+one_test_per_script!(model in super::models_dir:
+    channel, chassis, clamp, fin, mouse, nameplate, panel, pipe, shade, tank, wedge);
+
+/// Every script in either folder has its test above, and every test names
+/// a script that is there: a new example cannot go untested, and a removed
+/// one leaves no test behind.
+#[test]
+fn every_example_script_has_its_test() {
+    let mut wrong = Vec::new();
+    let mut count = 0;
+    for (dir, listed) in [
+        (lesson::dir(), lesson::SCRIPTS),
+        (model::dir(), model::SCRIPTS),
+    ] {
+        let there: Vec<String> = files(&dir, "json").iter().map(|p| stem(p)).collect();
+        count += there.len();
+        for name in &there {
+            if !listed.contains(&name.as_str()) {
+                let test: String = name
+                    .chars()
+                    .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                    .collect();
+                wrong.push(format!(
+                    "{dir:?}: {name}.json has no test: add `{name}` to its `one_test_per_script!`, \
+                     or `{test}_script = \"{name}\"` when `{name}` is not a Rust identifier"
+                ));
+            }
+        }
+        for name in listed {
+            if !there.iter().any(|t| t == name) {
+                wrong.push(format!(
+                    "{dir:?}: the test of `{name}` names a script that is not there"
+                ));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    assert!(count >= 18, "{count} example scripts");
 }
 
 #[test]

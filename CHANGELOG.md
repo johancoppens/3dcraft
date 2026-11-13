@@ -16,12 +16,29 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ### Fixed
 
+- **A clearance could be reported as proven for parts that overlap.** Where the faces of two bodies passed through each other, but no corner of either lay inside the other, `clearance` could say the bodies were clear and prove a gap between them, and an assertion of a minimum clearance passed, although the bodies shared volume. Such a pair is now an overlap. The distance between faces (`distance`), the proof of a wall thickness and the press-brake check (`bendable`) shared the fault and are fixed with it.
+- **A proven distance to a sphere or a torus could be slightly too high.** The allowance for how far a sphere's or a torus's surface can lie from the triangles it is measured on was too small (a quarter for a sphere; for a torus it ignored where its surface turns slowly), so `atLeast` of a distance, clearance or thickness that such a face decided could be a little above the truth. It can now be a little lower than before.
+- **A proven distance could be above the truth for faces nearly parallel or very thin.** Where the triangles a distance is measured on were long and nearly parallel, or one was a long thin sliver, rounding could make the proven `atLeast` larger than the real gap (micrometres for faces a fraction of a nanometre apart). The proven value is now never above the gap.
+- **A sketch with an arc or circle through three points held at values builds again after an edit that made it fail**, also when a file saved in that state is opened. An arc drawn through a point (its ends and the point written with expressions) could fail with *"constraint … conflicts"* after several sizes changed at once or after the arc was made very flat, and then kept failing at those values, after saving and opening too, while a new document at the same values built. When the solve from the last result fails, 3DCraft now tries once more with the centre of every such arc or circle placed where its three points put it, and takes that result only if nothing conflicts, every arc still runs through its points between its ends, and nothing else in the sketch turns to another side. A sketch that solved before solves exactly as before. Not recovered: an arc whose point has crossed the line through its ends (it fails as before: draw it again through the point), and a sketch that fails for other reasons.
+
+## [0.1.2] - 2026-11-13
+
+Fixes for the first things a new user meets: on Windows no console window opens beside 3DCraft any more, the web version's page says what it is, and the MCP server says more about itself to the tools that connect to it. Files of 0.1.0 and 0.1.1 open unchanged.
+
+### Fixed
+
+- **Windows: no console window beside 3DCraft any more.** The Start menu entry and a double-clicked `.3dcraft`, `.3dcraftjig` or `.3dcraftasm` file start 3DCraft through a small launcher, `3DCraft.exe`, which opens no console window, so there is none to close 3DCraft by. If the window cannot start, a message box says why. In the zip, double-click `3DCraft.exe`. `craft3d.exe` and `craft3d-cli.exe` are unchanged for terminals and AI agents.
 - **Linux: a 3DCraft window that is killed or crashes no longer leaves a `gsettings monitor` process behind.** The window follows the desktop's light or dark setting through that program, which now ends with the window however the window ends.
 - **The web version's page says what it is**: its title, *3DCraft in your browser: parametric 3D CAD*, stays while no document is open, and it has a description for search engines.
 
 ### Changed
 
 - **The MCP server says more about itself.** It gives its display name, *3DCraft*, to clients that speak protocol version 2025-06-18 or later; its tools carry annotations, so a client knows that `command_list`, `doc_inspect` and `doc_render_preview` only read and that none of the tools reaches beyond your computer; and `command_run`'s description says that opening, saving, importing and exporting files are commands. The tools, their names and their inputs are unchanged.
+
+### Known limitations
+
+- Windows: the running window is `craft3d.exe`, while the Start menu entry starts `3DCraft.exe`, so the taskbar may show two buttons, and *Pin to taskbar* on the running window pins `craft3d.exe`, which opens a console window beside 3DCraft when started from that pin.
+- The [known limitations of 0.1.0](https://github.com/johancoppens/3dcraft/releases/tag/v0.1.0) still hold.
 
 ## [0.1.1] - 2026-11-12
 
@@ -150,6 +167,7 @@ The first release for people outside the project. 3DCraft is a parametric 3D CAD
 - An AI agent cannot drive the web version yet.
 - Some modelling cases are refused rather than built (the message says which): among them some booleans and freeform fillets, curved sheet-metal bends along a spline and some sharp ones, curved origami creases, and text wrapped onto a surface other than a cylinder or a cone. Text is laid out glyph by glyph with kerning; shaping for complex scripts (such as Arabic or the Indic scripts) is for a later version. Every refusal reported helps.
 
-[Unreleased]: https://github.com/johancoppens/3dcraft/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/johancoppens/3dcraft/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/johancoppens/3dcraft/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/johancoppens/3dcraft/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/johancoppens/3dcraft/releases/tag/v0.1.0

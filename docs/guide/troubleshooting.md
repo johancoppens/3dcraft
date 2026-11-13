@@ -127,15 +127,15 @@ against: `"renderer": "cpu"` asks for it.
 
 ## The window
 
-- **It does not start**, and a terminal says *no graphics adapter can show it*. 3DCraft's window is drawn
-  through Vulkan, Metal, DirectX 12 or OpenGL. On a computer without a suitable graphics card, install a
-  software one: on Linux Mesa's lavapipe (`mesa-vulkan-drivers`) or llvmpipe for OpenGL; on Windows,
-  update the graphics driver. Everything else works without it: `craft3d-cli` can still model, render and
-  export.
+- **It does not start**, and a terminal (on Windows, a message box) says *no graphics adapter can show
+  it*. 3DCraft's window is drawn through Vulkan, Metal, DirectX 12 or OpenGL. On a computer without a
+  suitable graphics card, install a software one: on Linux Mesa's lavapipe (`mesa-vulkan-drivers`) or
+  llvmpipe for OpenGL; on Windows, update the graphics driver. Everything else works without it:
+  `craft3d-cli` can still model, render and export.
 - **0.1.0 does not start on Windows**, and says *"The code execution cannot proceed because
   VCRUNTIME140.dll was not found"*. The Windows programs of 3DCraft 0.1.0 needed Microsoft's Visual C++
-  runtime, which many computers do not have; from 0.1.1 on they carry it inside them. Install 0.1.1 over
-  0.1.0 ([Installing a newer version](install.md#installing-a-newer-version)), or install Microsoft's
+  runtime, which many computers do not have; from 0.1.1 on they carry it inside them. Install the current
+  version over 0.1.0 ([Installing a newer version](install.md#installing-a-newer-version)), or install Microsoft's
   Visual C++ Redistributable for x64
   ([vc_redist.x64.exe](https://aka.ms/vs/17/release/vc_redist.x64.exe), from Microsoft).
 - **The model looks rough at first.** A heavy model first shows a quick picture, then the sharp one; the
@@ -183,8 +183,9 @@ against: `"renderer": "cpu"` asks for it.
 
 ## After a crash
 
-On Windows, 3DCraft also closes when you close the black console window that opens beside it: leave that
-window open.
+On Windows, a 3DCraft started as `craft3d.exe` itself also closes when you close the black console window
+beside it: leave that window open, or start 3DCraft from the Start menu or with `3DCraft.exe`, which open
+none.
 
 Start 3DCraft again. A bar under the menu says *3DCraft did not close properly* and offers what was
 autosaved:
