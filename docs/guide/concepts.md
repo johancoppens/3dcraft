@@ -215,9 +215,12 @@ learn the ids. (A feature inserted at the rollback marker leaves every id that w
   one profile. With several profiles they are refused, and the error lists the full names.
 
 An edge is named by the two faces it lies between: a fillet takes `"edges": [["F2:side(e9)",
-"F2:side(e10)"]]`. A feature that works on a body (a fillet, a chamfer, a shell, a thread) may use the
-names of an earlier body of its chain; they are followed to the newest one (`["F1:face(0)", "F1:face(2)"]`
-on the flange after two booleans).
+"F2:side(e10)"]]`, every edge between those two faces. Every edge also has a name of its own, which no other
+edge of the body has (`document.edges` lists it under `name`): give that name to pick one of several edges
+between the same two faces ([Features › Fillets and chamfers](features.md#fillets-and-chamfers)). A feature
+that works on a body (a fillet, a chamfer, a shell, a thread) may use the names of an earlier body of its
+chain; they are followed to the newest one (`["F1:face(0)", "F1:face(2)"]` on the flange after two
+booleans).
 
 A sketch or a datum plane placed on a face takes the face as it was in the body the name gives. When a
 later feature has moved that face into another plane (a draft, a moved face), the result says so under

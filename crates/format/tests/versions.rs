@@ -117,6 +117,10 @@ const FROZEN: &[(u32, usize, u64)] = &[
     // A periodic closed spline through points and one on control points,
     // and a closed one with periodic: false, each extruded (periodic).
     (69, 8469, 0x0bdd_b6c7_e128_6e6d),
+    // A plate and a pipe united, one of the two edges between them rounded
+    // by its own name, the other chamfered by its name with the face its
+    // first distance is measured along (edges by their own names).
+    (70, 7392, 0x5c20_6f0f_760b_7c39),
 ];
 
 fn dir() -> PathBuf {

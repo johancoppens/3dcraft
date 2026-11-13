@@ -1,0 +1,186 @@
+{
+  "format_version": 70,
+  "written_by": "a833cdfaa4f5c577f1d6ab16313921e71400f601",
+  "how": "the engine of that commit (on the developer's laptop, by a temporary test, crates/engine/tests/zz_write_fixture_v70.rs, that ran v70.steps.json in a session as craft3d-cli run --new '{\"units\": \"mm\"}' --script v70.steps.json --out v70.3dcraft does, printed the file and what document.inspect said of it opened again); a plate and a pipe sunk into it united, the one of the two edges between the plate's top and the pipe at y = 28 rounded r2 by its own name, and the other, at y = 12, chamfered 2 along the top and 1 along the pipe by its name of the union's body, followed through the round, with the top as its first face: an edge by its own name in a fillet and a chamfer, format 70",
+  "rollback": null,
+  "features": [
+    {
+      "bodyUsedBy": "F3",
+      "id": "F1",
+      "name": "Plate",
+      "params": {
+        "orientation": {
+          "angle": "0 deg",
+          "axis": [
+            "0",
+            "0",
+            "1"
+          ]
+        },
+        "position": [
+          "0",
+          "0",
+          "0"
+        ],
+        "size": [
+          "60",
+          "40",
+          "10"
+        ],
+        "type": "block"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "bodyUsedBy": "F3",
+      "id": "F2",
+      "name": "Pipe",
+      "params": {
+        "height": "60",
+        "orientation": {
+          "angle": "0 deg",
+          "axis": [
+            "1",
+            "0",
+            "0"
+          ]
+        },
+        "position": [
+          "0",
+          "20",
+          "16"
+        ],
+        "radius": "10",
+        "type": "cylinder"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "bodyUsedBy": "F4",
+      "id": "F3",
+      "name": "Joined",
+      "params": {
+        "keep_tool": false,
+        "op": "union",
+        "target": 1,
+        "tool": 2,
+        "type": "boolean"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "bodyUsedBy": "F5",
+      "id": "F4",
+      "name": "Round",
+      "params": {
+        "chain": false,
+        "edges": [
+          "F3:between[F3:copy(0)/F1:face(1),F3:copy(1)/F2:face(0)|F3:copy(0)/F1:face(3),F3:copy(0)/F1:face(4),F3:copy(0)/F1:face(5)]"
+        ],
+        "radius": "2 mm",
+        "type": "fillet"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "followed": {
+        "chain": false,
+        "edges": [
+          [
+            "F4:between[F4:copy(0)/F1:face(1),F4:copy(0)/F3:copy(1)/F2:face(0)]",
+            "F4:copy(0)/F1:face(1)"
+          ]
+        ],
+        "size": {
+          "distance": "2 mm",
+          "second": "1 mm",
+          "type": "twoDistances"
+        },
+        "type": "chamfer"
+      },
+      "id": "F5",
+      "name": "Bevel",
+      "params": {
+        "chain": false,
+        "edges": [
+          [
+            "F3:between[F3:copy(0)/F1:face(1),F3:copy(1)/F2:face(0)|F3:copy(0)/F1:face(2),F3:copy(0)/F1:face(4),F3:copy(0)/F1:face(5)]",
+            "F3:copy(0)/F1:face(1)"
+          ]
+        ],
+        "size": {
+          "distance": "2 mm",
+          "second": "1 mm",
+          "type": "twoDistances"
+        },
+        "type": "chamfer"
+      },
+      "status": "ok",
+      "suppressed": false
+    }
+  ],
+  "bodies": [
+    {
+      "area": 8810.146926694882,
+      "bbox": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          60.0,
+          40.0,
+          25.99963623426673
+        ]
+      ],
+      "bboxTolerance": 0.09386238291613357,
+      "centroid": [
+        30.000000000000007,
+        20.020074814465378,
+        9.93987329892321
+      ],
+      "edges": 26,
+      "faceAliases": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [
+          "F5:copy(0)/F3:copy(1)/F2:face(1)"
+        ],
+        [
+          "F5:copy(0)/F3:copy(1)/F2:face(2)"
+        ],
+        [],
+        [],
+        []
+      ],
+      "faceNames": [
+        "F5:copy(0)/F1:face(0)",
+        "F5:copy(0)/F1:face(1)",
+        "F5:copy(0)/F1:face(1)",
+        "F5:copy(0)/F1:face(2)",
+        "F5:copy(0)/F1:face(3)",
+        "F5:copy(0)/F1:face(4)",
+        "F5:copy(0)/F1:face(5)",
+        "F5:copy(0)/F3:copy(1)/F2:face(0)",
+        "F5:copy(0)/F4:fillet(0)",
+        "F5:chamfer(0)"
+      ],
+      "faces": 10,
+      "feature": "F5",
+      "kind": "solid",
+      "name": "Bevel",
+      "shells": 1,
+      "valid": true,
+      "vertices": 18,
+      "volume": 40350.024857348944
+    }
+  ]
+}

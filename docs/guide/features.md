@@ -203,11 +203,28 @@ A **fillet** rounds an edge off with a curved face of a given radius. A **chamfe
 it off with a flat face at an angle.
 
 `feature.fillet` (`radius`) and `feature.chamfer` (`distance`; or `distance` and `second`; or `distance`
-and `angle`) take `edges` as pairs of faces: `[["F1:face(2)", "F1:face(4)"], …]`. `chain: true` adds the
-edges that continue an edge smoothly. Straight edges between flat faces and circular edges round an axis
-are exact; other edges get a spline face within the tolerance. A radius that does not fit fails with the
-largest that does. `document.edges` lists every edge of a body with its two faces. Examples:
-[bracket](../examples/bracket.json), [case](../examples/case.json), [flange](../examples/flange.json).
+and `angle`) take `edges` as pairs of faces: `[["F1:face(2)", "F1:face(4)"], …]`. A pair means every edge
+between those two faces. `chain: true` adds the edges that continue an edge smoothly. Straight edges between
+flat faces and circular edges round an axis are exact; other edges get a spline face within the tolerance. A
+radius that does not fit fails with the largest that does. `document.edges` lists every edge of a body with
+its two faces. Examples: [bracket](../examples/bracket.json), [case](../examples/case.json),
+[flange](../examples/flange.json).
+
+Two faces can meet in more than one edge: a pipe sunk into a plate leaves the plate's top along two lines.
+To round only one of them, give that edge by its own name instead of the pair. `document.edges` lists it
+under `name`, and a click on the edge in the window gives it too. Here the line on the far side of the pipe:
+
+```json
+[
+  ["feature.block", {"size": [60, 40, 10], "position": [0, 0, 0], "name": "Plate"}],
+  ["feature.cylinder", {"radius": 10, "height": 60, "position": [0, 20, 16], "axis": [1, 0, 0], "name": "Pipe"}],
+  ["feature.boolean", {"op": "union", "target": "Plate", "tool": "Pipe", "name": "Joined"}],
+  ["feature.fillet", {"edges": ["Joined:between[Joined:copy(0)/Plate:face(1),Joined:copy(1)/Pipe:face(0)|Joined:copy(0)/Plate:face(3),Joined:copy(0)/Plate:face(4),Joined:copy(0)/Plate:face(5)]"], "radius": "2 mm", "name": "Round"}]
+]
+```
+
+A chamfer whose two sides differ (`second` or `angle`) also has to know which face its `distance` runs
+along: write the edge and that face, `[edge name, face name]`. Names and pairs can be mixed in one list.
 
 ## Shell and face operations
 

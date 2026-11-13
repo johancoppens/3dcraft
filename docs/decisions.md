@@ -659,6 +659,15 @@ Made by the agent, overnight; the developer can overturn any of them.
 - **`UiState::show` is a new group** (`{"datums": true}`) rather than a field at the top: other things to show or hide (sketches, edges, axes) can join it.
 - **The feature tree's marks are ✔ ⚠ ⏸ ○**, in the state's colour. The round dot (U+25CF) the tree drew before is not in egui's default fonts and was drawn as the replacement box; the four marks are, and a test checks it. The reason of a failed feature stays under its row (it was there already) and is also its hover text; the cause is a link under the row. A click on the link selects the cause and does not toggle, unlike a click on a row.
 
+### 2026-11-13: An edge by its own name in a fillet or a chamfer
+
+Made by an agent (the kernel brief's first item); the developer can overturn any of them. The method is in [`design/names.md`](design/names.md) › *An edge by its own name*.
+
+- **The pair of faces stays, and an edge's own name comes beside it** (the decision of 2026-10-14 that a chamfer holds an edge as its two faces is kept: a pair still means every edge between them, and every file of before reads as it did). An item of `edges` is `[face, face]`, `"edge"` or `["edge", "face"]`; the first name of a list of two says which. The alternative, a new parameter beside `edges` (`edgeNames`), was not taken: the numbers of the new faces (`F9:fillet(k)`) follow the place of a reference in one list, and two lists would number them twice.
+- **A chamfer whose sides differ asks for the face with the edge** (`["edge", "face"]`), and fails without it, listing the edge's two faces. The alternative, the first of the faces in the order names compare in, was not taken: the user could not turn a distance-and-angle chamfer the other way round, and a silent choice is the kind rule 4 warns about.
+- **An edge's name is followed by what each taker made of the edge**: its copy where the taker names one (as before, for a plate's joints), else the edge the kernel reports it kept, stored now per edge of a body named by its faces (16 bytes an edge). The alternative, rebuilding the name from the followed faces it lists, was not taken: it is lost by every edit that changes a face near the edge, such as a chamfer put in next to its end.
+- **Format version 70**, an identity step: a file of before holds pairs only. Raised so that 0.1.x, which cannot read an edge by name, says a newer 3DCraft is needed.
+
 ## Open decisions
 
 | # | Question | Options | Needed by | Default if nobody decides |
