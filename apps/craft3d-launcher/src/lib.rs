@@ -179,7 +179,7 @@ fn tail_of(path: &Path) -> String {
 /// go on over several lines, such as the help when no graphics adapter can
 /// show the window) to the end; without such a line its last few lines
 /// (a crash's). Control characters are left out, and at most
-/// [`MOST_LINES`] lines and [`MOST_CHARS`] characters are kept, from the
+/// `MOST_LINES` lines and `MOST_CHARS` characters are kept, from the
 /// end, where the error is: the end of the last line is always in it.
 /// Empty when the window said nothing.
 pub fn last_message(errors: &str) -> String {
@@ -242,10 +242,10 @@ pub fn exit_code_text(code: Option<i32>) -> String {
 /// What the launcher says when the window it started ended with `status`
 /// after `ran`, having written `errors`: `None` when there is nothing to
 /// say (it ended well, or ran for longer than [`START_UP`]). Always with
-/// the exit code. A window that had said it started ([`STARTED`]) *ended
+/// the exit code. A window that had said it started (`STARTED`) *ended
 /// unexpectedly* (a driver's crash, End task); one that had not *could not
 /// start*. The reason given is its last message ([`last_message`]) without
-/// the news of a good start ([`NEWS`]), which never is one.
+/// the news of a good start (`NEWS`), which never is one.
 pub fn start_up_failure(status: ExitStatus, ran: Duration, errors: &str) -> Option<String> {
     if status.success() || ran >= START_UP {
         return None;
