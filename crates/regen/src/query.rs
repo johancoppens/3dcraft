@@ -59,6 +59,62 @@ pub fn ambiguous_cap(names: &Names, name: &PersistentName) -> Option<String> {
     ))
 }
 
+/// Why a chamfer or a fillet (`noun`) does not take `name`, an edge's name
+/// numbered by place ([`PersistentName::is_numbered_by_place`]), and what
+/// names that edge instead: another name of it that is not numbered (an
+/// alias, which it kept from a body before), or the pair of its faces
+/// where they meet in that edge only; when nothing does, it says so.
+/// `at` is the body the name is of and its names, when they are there.
+pub fn numbered_edge(name: &PersistentName, noun: &str, at: Option<(&Body, &Names)>) -> String {
+    let why = format!(
+        "{name} tells its edge from the other edges between the same faces only by where it lies in space (the number at its end), which an edit can move to another edge without any failure, so a {noun} does not take it"
+    );
+    let Some((body, names)) = at else {
+        return format!(
+            "{why}; document.edges lists the names of the body's edges and their aliases"
+        );
+    };
+    let Some(index) = names.edge_named(name) else {
+        return format!(
+            "{why}; document.edges lists the names of the body's edges and their aliases"
+        );
+    };
+    let other: Vec<String> = names
+        .edge_names_of(index)
+        .into_iter()
+        .filter(|alias| alias != name && !alias.is_numbered_by_place())
+        .map(|alias| format!("\"{alias}\""))
+        .collect();
+    if !other.is_empty() {
+        return format!(
+            "{why}; the same edge is also called {}: give that name",
+            other.join(", ")
+        );
+    }
+    let sides: Vec<&PersistentName> = faces_of_edges(body)
+        .get(index)
+        .into_iter()
+        .flatten()
+        .filter_map(|face| names.faces.get(face.0 as usize))
+        .collect();
+    let pair = match sides.as_slice() {
+        [a, b] => Some((*a, *b)),
+        [a] => Some((*a, *a)),
+        _ => None,
+    };
+    match pair {
+        Some((a, b)) if edges_between(body, names, a, b).len() == 1 => {
+            format!("{why}; its faces meet in this edge only: give the pair [\"{a}\", \"{b}\"]")
+        }
+        Some((a, b)) => format!(
+            "{why}; no other name says which edge it is: the pair [\"{a}\", \"{b}\"] takes every edge between those faces, and one of them told apart only by place cannot be taken alone yet"
+        ),
+        None => format!(
+            "{why}; no other name says which edge it is, and one told apart only by place cannot be taken alone yet"
+        ),
+    }
+}
+
 /// For every edge of `body`, the faces that use it, in ascending order
 /// without repeats: two for an edge of a solid, one for a seam or for the
 /// border of a sheet.

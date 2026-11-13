@@ -633,10 +633,17 @@ fn faces(
     Ok(changed)
 }
 
-/// The same for the edges blends refer to: the pairs of faces each face
-/// as a face, an edge by its own name as an edge and the face given with
-/// it as a face.
-fn refs(doc: &Document, earlier: &[FeatureResult], list: &mut [EdgeRef]) -> Result<bool, String> {
+/// The same for the edges blends (`noun`) refer to: the pairs of faces
+/// each face as a face, an edge by its own name as an edge and the face
+/// given with it as a face. An edge's name numbered by place is refused
+/// as it is given, whatever body it is of: it would take whichever edge
+/// lies at that place after an edit ([`crate::numbered_edge`]).
+fn refs(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    list: &mut [EdgeRef],
+    noun: &str,
+) -> Result<bool, String> {
     let mut changed = false;
     for (index, reference) in list.iter_mut().enumerate() {
         let role = format!("edges.{index}");
@@ -649,6 +656,13 @@ fn refs(doc: &Document, earlier: &[FeatureResult], list: &mut [EdgeRef]) -> Resu
                 out
             }
             EdgeRef::Edge { edge: name, first } => {
+                if name.is_numbered_by_place() {
+                    let at = earlier
+                        .iter()
+                        .find(|r| r.id == name.feature)
+                        .and_then(|r| Some((r.body.as_deref()?, r.names.as_deref()?)));
+                    return Err(format!("{role}: {}", crate::numbered_edge(name, noun, at)));
+                }
                 let mut out = vec![edge(doc, earlier, name, &role)?];
                 if let Some(given) = first {
                     out.push(face(doc, earlier, given, &role)?);
@@ -666,37 +680,71 @@ fn refs(doc: &Document, earlier: &[FeatureResult], list: &mut [EdgeRef]) -> Resu
     Ok(changed)
 }
 
-/// The features whose names of edges following the edges `feature` names
-/// reads and that let them go with their bodies (`Names::has_entities`):
-/// the bodies those edges are of and every body they went into before
-/// it. The regeneration derives them again before it follows, so what is
-/// followed does not depend on what its cache let go of. Empty for
-/// almost every feature.
-pub(crate) fn edge_bodies(earlier: &[FeatureResult], feature: &Feature) -> Vec<FeatureId> {
+/// Every feature whose result following the edge `name` may read, at the
+/// end of `results`: the body it is of and every body its way can go on
+/// into, each taker and, for a body split in lumps, every split of it
+/// (one of which has the edge), and theirs. Ascending, without repeats;
+/// no longer than the history.
+pub fn edge_way(
+    doc: &Document,
+    results: &[FeatureResult],
+    name: &PersistentName,
+) -> Vec<FeatureId> {
+    let mut seen: BTreeSet<FeatureId> = BTreeSet::new();
+    let mut open = vec![name.feature];
+    // Each feature is looked at once, so the walk is bounded by the
+    // history.
+    while let Some(at) = open.pop() {
+        if !seen.insert(at) {
+            continue;
+        }
+        let Some(taker) = results
+            .iter()
+            .find(|r| r.id == at)
+            .and_then(|r| r.consumed_by)
+        else {
+            continue;
+        };
+        if crate::split::shared_by_splits(doc, at, taker) {
+            open.extend(crate::split::siblings(doc, results, at));
+        } else {
+            open.push(taker);
+        }
+    }
+    seen.into_iter().collect()
+}
+
+/// The features on the way of an edge `feature` names ([`edge_way`])
+/// whose names of edges were let go of with their bodies
+/// (`Names::has_entities`): following reads them, so the regeneration
+/// derives those bodies again before it follows, and what is followed
+/// does not depend on what its cache let go of. Empty for almost every
+/// feature.
+pub(crate) fn edge_bodies(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    feature: &Feature,
+) -> Vec<FeatureId> {
     let edges: Vec<&PersistentName> = match &feature.kind {
         FeatureKind::Chamfer(c) => c.edges.iter().map(EdgeRef::lead).collect(),
         FeatureKind::Fillet(f) => f.edges.iter().map(EdgeRef::lead).collect(),
         FeatureKind::Plate(p) => p.joints.iter().map(|j| &j.edge).collect(),
         _ => return Vec::new(),
     };
-    let mut out: Vec<FeatureId> = Vec::new();
+    let mut out: BTreeSet<FeatureId> = BTreeSet::new();
     for name in edges.into_iter().filter(|name| name.is_edge()) {
-        let takers = chain(earlier, name.feature);
-        if takers.is_empty() {
-            continue;
-        }
-        for id in std::iter::once(name.feature).chain(takers) {
+        for id in edge_way(doc, earlier, name) {
             let dropped = earlier
                 .iter()
                 .find(|r| r.id == id)
                 .and_then(|r| r.names.as_ref())
                 .is_some_and(|names| !names.has_entities());
-            if dropped && !out.contains(&id) {
-                out.push(id);
+            if dropped {
+                out.insert(id);
             }
         }
     }
-    out
+    out.into_iter().collect()
 }
 
 /// Leaves out of the faces and edges a feature changes those that are
@@ -767,8 +815,8 @@ pub(crate) fn feature(
     let mut kind = feature.kind.clone();
     let pruned = prune(doc, earlier, &mut kind);
     let changed = match &mut kind {
-        FeatureKind::Chamfer(chamfer) => refs(doc, earlier, &mut chamfer.edges)?,
-        FeatureKind::Fillet(fillet) => refs(doc, earlier, &mut fillet.edges)?,
+        FeatureKind::Chamfer(chamfer) => refs(doc, earlier, &mut chamfer.edges, "chamfer")?,
+        FeatureKind::Fillet(fillet) => refs(doc, earlier, &mut fillet.edges, "fillet")?,
         FeatureKind::OffsetFace(offset) => faces(doc, earlier, &mut offset.faces, "faces")?,
         FeatureKind::MoveFace(moving) => faces(doc, earlier, &mut moving.faces, "faces")?,
         FeatureKind::Thicken(layer) => faces(doc, earlier, &mut layer.faces, "faces")?,

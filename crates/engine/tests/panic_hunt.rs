@@ -214,6 +214,18 @@ fn adversarial() -> Vec<Value> {
         json!("F8:endCap(e5,e10[*])"),
         json!("F8:side(e10[65534])"),
         json!("F8:between[F8:side(e10[1]),F8:side(e5)]"),
+        // Edges by their own names, as a blend's `edges` take them: alone,
+        // with a face, numbered by place, of a sweep, of no body.
+        json!(["F8:between[F8:side(e10[1]),F8:side(e5)]"]),
+        json!([["F8:between[F8:side(e10[1]),F8:side(e5)]", "F8:side(e5)"]]),
+        json!(["F8:between[F8:side(e10[1]),F8:side(e5)|F8:startCap()](1)"]),
+        json!([
+            ["F7:lateralEdge(e5,e6)", "F7:side(e6)"],
+            "F7:lateralEdge(e6,e7)"
+        ]),
+        json!([["F7:lateralEdge(e5,e6)", "F7:lateralEdge(e6,e7)"]]),
+        json!(["F7:lateralEdge(e5,e6)", ["F7:side(e5)", "F7:side(e6)"]]),
+        json!(["F99:edge(0)", "F0:edge(18446744073709551615)"]),
         json!("e5[99]"),
         json!("e5[-1]"),
         json!("e5[last"),

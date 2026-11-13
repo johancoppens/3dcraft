@@ -811,7 +811,7 @@ pub(crate) fn features(
             // on its way, which go with a body let go of: those are
             // derived again first, so what is followed does not depend on
             // what the cache let go of.
-            let along = crate::follow::edge_bodies(&results, stated);
+            let along = crate::follow::edge_bodies(doc, &results, stated);
             if !along.is_empty() {
                 rederive_all(doc, &mut results, &at, cache, &mut build, &along);
             }

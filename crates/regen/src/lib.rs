@@ -77,7 +77,9 @@ pub use datum::{Datum, EdgeReference, References, references};
 pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
 pub use fold::{FlatFold, FoldAnalysis, FoldPattern, fold_analysis, fold_pattern};
-pub use follow::{follow_edge, follow_face, follow_face_pieces, newest_body, short_face_name};
+pub use follow::{
+    edge_way, follow_edge, follow_face, follow_face_pieces, newest_body, short_face_name,
+};
 
 /// The feature `feature` as regeneration builds it after `earlier` (the
 /// results before it): its faces, edges and a shell's body followed to
@@ -94,7 +96,7 @@ pub fn followed_feature(
 }
 pub use offset_profile::OffsetResult;
 pub use pass::{Passed, absent_name, left_out};
-pub use query::{ambiguous_cap, edges_between, faces_named, faces_of_edges};
+pub use query::{ambiguous_cap, edges_between, faces_named, faces_of_edges, numbered_edge};
 pub use sheetmetal::{SheetMetalPart, sheet_face_name, sheet_metal_part};
 pub use sketch::{
     ConstraintResult, ConstraintState, FittedCurve, SketchResult, face_changed_since,
@@ -753,10 +755,7 @@ impl Names {
         // an edge of the source is followed here, whatever it is named by.
         if kept_edges.iter().any(Option::is_some) {
             made.edge_from = (0..body.edges.len())
-                .map(|edge| {
-                    let (instance, there) = kept_edges.get(edge).copied().flatten()?;
-                    Some((instance, u32::try_from(there).ok()?))
-                })
+                .map(|edge| entity::kept_word(kept_edges.get(edge).copied().flatten()))
                 .collect();
         }
         self.entities = Entities::ByFaces(Box::new(made));

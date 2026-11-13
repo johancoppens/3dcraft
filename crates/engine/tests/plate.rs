@@ -297,6 +297,84 @@ fn an_end_lies_on_a_datum_plane_or_on_a_face() {
 }
 
 #[test]
+fn a_joint_named_by_its_faces_is_followed_through_a_later_boolean() {
+    // The floor sheet trimmed twice, a hole each time away from the joint:
+    // the joint's edge is given as the first trim names it, by its faces.
+    // A later boolean names its edges anew and keeps no name by faces, so
+    // until 2026-11-13 the joint failed ("is gone", 0.1.0 and 0.1.1); it
+    // is followed now to the edge the boolean reports it kept, and the
+    // plates are the mitre's less the two holes. Every edge of a sheet
+    // after a boolean lies on its one face, so the name is numbered by
+    // place: a plate takes such a name, which a blend refuses (owed for
+    // plates, docs/design/names.md › *An edge by its own name*).
+    let (a, b, l, t, r) = (3.0, 2.0, 1.5, 0.25, 0.2);
+    for k in SCALES {
+        let k3 = k * k * k;
+        let mut s = session();
+        new_document(&mut s, k);
+        let edges = l_shape(&mut s, a, b, l, k);
+        built(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": r * k, "height": 2.0 * k, "position": [1.6 * k, 0.75 * k, -k],
+                   "axis": [0, 0, 1], "name": "Hole1"}),
+        );
+        built(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "subtract", "target": "FloorSheet", "tool": "Hole1", "name": "Trim1"}),
+        );
+        // The floor's edge along x = 0, as the first trim names it.
+        let listed = run(&mut s, "document.edges", json!({"feature": "Trim1"}));
+        let at_zero: Vec<String> = listed["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["curve"] == "line")
+            .filter(|e| {
+                e["start"][0].as_f64().unwrap().abs() < 1e-9 * k
+                    && e["end"][0].as_f64().unwrap().abs() < 1e-9 * k
+            })
+            .map(|e| e["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(at_zero.len(), 1, "{listed}");
+        assert!(
+            at_zero[0].contains(":between[") && at_zero[0].ends_with(')'),
+            "{at_zero:?}"
+        );
+        built(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": r * k, "height": 2.0 * k, "position": [2.4 * k, 0.75 * k, -k],
+                   "axis": [0, 0, 1], "name": "Hole2"}),
+        );
+        built(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "subtract", "target": "Trim1", "tool": "Hole2", "name": "Trim2"}),
+        );
+        plates(
+            &mut s,
+            &(at_zero[0].clone(), edges.1.clone()),
+            "mitre",
+            "mitre",
+        );
+        let holes = 2.0 * std::f64::consts::PI * r * r * t;
+        near(
+            volume(&mut s, "Floor"),
+            (l * (a * t - t * t / 2.0) - holes) * k3,
+            "followed mitre floor",
+        );
+        near(
+            volume(&mut s, "Wall"),
+            l * (b * t - t * t / 2.0) * k3,
+            "followed mitre wall",
+        );
+        assert_eq!(built_joints(&mut s, "Floor"), Some(1));
+    }
+}
+
+#[test]
 fn a_plate_follows_its_variables_edits_and_reopens() {
     let (a, b, l) = (3.0, 2.0, 1.5);
     let k = 1.0;

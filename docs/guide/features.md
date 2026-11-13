@@ -226,6 +226,11 @@ under `name`, and a click on the edge in the window gives it too. Here the line 
 A chamfer whose two sides differ (`second` or `angle`) also has to know which face its `distance` runs
 along: write the edge and that face, `[edge name, face name]`. Names and pairs can be mixed in one list.
 
+A name that ends in a number, such as `…](1)`, tells its edge from the others only by where it lies, and
+an edit could move that number to another edge: a fillet or a chamfer refuses it, and says what names the
+edge instead (another name of it, or the pair when its faces meet in that edge only), or that nothing does.
+Then the pair takes all of those edges.
+
 ## Shell and face operations
 
 - `feature.shell` makes a body hollow with walls of `thickness`; the faces in `open` are taken away. A

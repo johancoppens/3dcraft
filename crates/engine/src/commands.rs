@@ -3448,6 +3448,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         }
         _ => {}
     }
+    crate::blend_cmds::numbered_refused("feature.edit", session, &kind)?;
     crate::blend_cmds::of_one_body("feature.edit", session, &kind)?;
     if let (FeatureKind::Extrude(extrusion), Some(end)) = (&mut kind, new_end) {
         let keep = only_distance

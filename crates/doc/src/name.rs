@@ -1418,6 +1418,18 @@ impl PersistentName {
         self.root().role.is_vertex()
     }
 
+    /// True when the name tells its entity from others only by where it
+    /// lies in space: an edge or a vertex named by its faces with a number
+    /// after its lists (`F7:between[a,b|c](1)`), or a copy of one. An edit
+    /// that keeps the tied entities and changes their order in space moves
+    /// such a number to another entity without any failure
+    /// (docs/design/names.md › *Edges and vertices by their faces*), so a
+    /// feature that changes the entity it names does not store one.
+    pub fn is_numbered_by_place(&self) -> bool {
+        let root = self.root();
+        root.role.is_by_faces() && !root.sources.is_empty()
+    }
+
     /// Whether the name is one that can be written and read back: a copy
     /// has one or more instance numbers and the name it is a copy of, a
     /// piece one number and the name it is a piece of, nothing else

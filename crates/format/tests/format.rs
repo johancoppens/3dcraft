@@ -2968,17 +2968,17 @@ fn edges_by_their_own_names_are_written_like_this_and_round_trip() {
     assert_eq!(FORMAT_VERSION, 70);
     let face = |n: u64| PersistentName::new(FeatureId(1), NameRole::Face, vec![n]);
     let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
-    // An edge of the fillet's body named by its faces, numbered, and a
-    // block's own edge.
+    // An edge of the fillet's body named by its faces and a face near it,
+    // and a block's own edge.
     let between: PersistentName =
-        "F2:between[F2:copy(0)/F1:face(1),F2:fillet(0)|F2:copy(0)/F1:face(4)](1)"
+        "F2:between[F2:copy(0)/F1:face(1),F2:fillet(0)|F2:copy(0)/F1:face(4)]"
             .parse()
             .unwrap();
     let copy_json = |n: u64| {
         serde_json::json!({"feature": 2, "role": "copy", "sources": [0],
             "of": {"feature": 1, "role": "face", "sources": [n]}})
     };
-    let between_json = serde_json::json!({"feature": 2, "role": "between", "sources": [1],
+    let between_json = serde_json::json!({"feature": 2, "role": "between", "sources": [],
         "faces": {"on": [copy_json(1), {"feature": 2, "role": "fillet", "sources": [0]}],
                   "near": [copy_json(4)]}});
     let own: PersistentName = "F1:edge(4)".parse().unwrap();

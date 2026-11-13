@@ -117,11 +117,29 @@ pub(crate) struct ByFaces {
     pub(crate) edge_aliases: Aliases,
     pub(crate) vertex_aliases: Aliases,
     /// Per edge, the instance and the edge of that instance's source it
-    /// is, or is a piece of, when the kernel says so: what a name of the
-    /// source's edge is followed by into this body (`crate::follow`).
-    /// Empty when no edge came from another body.
-    pub(crate) edge_from: Vec<Option<(u64, u32)>>,
+    /// is, or is a piece of, when the kernel says so ([`kept_word`]): what
+    /// a name of the source's edge is followed by into this body
+    /// (`crate::follow`). Empty when no edge came from another body.
+    pub(crate) edge_from: Vec<u64>,
 }
+
+/// An edge's instance and the edge of that instance's source it came
+/// from, in one word of 8 bytes: the instance in the high half, the edge
+/// in the low one; [`NOT_KEPT`] when the kernel says it came from nowhere,
+/// or when either number does not fit its half (the edge then cannot be
+/// followed into this body, and following it fails, never lands
+/// elsewhere).
+pub(crate) fn kept_word(kept: Option<(u64, usize)>) -> u64 {
+    kept.and_then(|(instance, edge)| {
+        let instance = u32::try_from(instance).ok().filter(|i| *i != u32::MAX)?;
+        let edge = u32::try_from(edge).ok()?;
+        Some((u64::from(instance) << 32) | u64::from(edge))
+    })
+    .unwrap_or(NOT_KEPT)
+}
+
+/// The word of an edge the kernel says came from nowhere.
+pub(crate) const NOT_KEPT: u64 = u64::MAX;
 
 /// One edge or vertex as it is named: where its ranks are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -284,8 +302,9 @@ impl ByFaces {
         self.edge_from
             .iter()
             .enumerate()
-            .filter_map(|(index, kept)| {
-                let (instance, there) = (*kept)?;
+            .filter(|(_, word)| **word != NOT_KEPT)
+            .filter_map(|(index, word)| {
+                let (instance, there) = (word >> 32, word & 0xFFFF_FFFF);
                 (there as usize == edge && from(instance)).then_some(index)
             })
             .collect()
@@ -667,6 +686,43 @@ mod tests {
             .collect();
         sort_in_space(&mut items, tolerance, 0);
         items.into_iter().map(|(i, _)| i).collect()
+    }
+
+    #[test]
+    fn where_an_edge_came_from_is_one_word_and_what_does_not_fit_is_kept_from_nowhere() {
+        assert_eq!(kept_word(None), NOT_KEPT);
+        assert_eq!(kept_word(Some((1, 5))), (1 << 32) | 5);
+        assert_eq!(kept_word(Some((0, 0))), 0);
+        // The instance u32::MAX would read as `NOT_KEPT` with the edge
+        // u32::MAX: it and everything wider are kept from nowhere.
+        for kept in [
+            (u64::from(u32::MAX), 0),
+            (u64::MAX, 7),
+            (3, usize::MAX),
+            (3, u32::MAX as usize + 1),
+        ] {
+            assert_eq!(kept_word(Some(kept)), NOT_KEPT, "{kept:?}");
+        }
+        let by = ByFaces {
+            feature: FeatureId(4),
+            ranked: Vec::new(),
+            ranks: Vec::new(),
+            edges: Vec::new(),
+            vertices: Vec::new(),
+            edge_aliases: Aliases::default(),
+            vertex_aliases: Aliases::default(),
+            edge_from: vec![
+                kept_word(Some((0, 2))),
+                NOT_KEPT,
+                kept_word(Some((1, 2))),
+                kept_word(Some((0, 2))),
+                kept_word(Some((0, 3))),
+            ],
+        };
+        assert_eq!(by.edges_kept_from(2, |_| true), [0, 2, 3]);
+        assert_eq!(by.edges_kept_from(2, |i| i == 0), [0, 3]);
+        assert_eq!(by.edges_kept_from(2, |i| i == 1), [2]);
+        assert!(by.edges_kept_from(9, |_| true).is_empty());
     }
 
     #[test]
