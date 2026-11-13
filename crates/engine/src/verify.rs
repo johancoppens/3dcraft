@@ -3524,6 +3524,14 @@ mod tests {
                 json!({"source": "Sieve", "keep": true, "translate": by, "name": name}),
             );
         }
+        // The stack turned 7° about a slanted axis: faces in one plane but
+        // not along the axes, where a permanent of 0 settles few signs.
+        for (source, name) in [("Sieve", "Sieve turned"), ("Stacked", "Stacked turned")] {
+            go(
+                "feature.transform",
+                json!({"source": source, "keep": true, "angle": "7 deg", "axis": [0.36, 0.48, 0.8], "pivot": [0, 0, 0], "name": name}),
+            );
+        }
         let doc = std::sync::Arc::clone(s.document().unwrap().history.current());
         let regen = s.document_mut().unwrap().regen();
         let tolerance = craft3d_math::Tolerance::default();
@@ -3531,14 +3539,18 @@ mod tests {
             let id = doc.feature_by_name(name).unwrap().id;
             std::sync::Arc::clone(regen.bodies().find(|(f, _)| *f == id).unwrap().1)
         };
-        let a = body("Sieve");
-        let pa = Part::new(&a, None, &tolerance).unwrap();
-        for (name, what) in [
-            ("Above", "3 above"),
-            ("Stacked", "on top, touching"),
-            ("Crossing", "moved (5, 3, 4), through it"),
+        for (first, name, what) in [
+            ("Sieve", "Above", "3 above"),
+            ("Sieve", "Stacked", "on top, touching"),
+            (
+                "Sieve turned",
+                "Stacked turned",
+                "on top, touching, both turned 7°",
+            ),
+            ("Sieve", "Crossing", "moved (5, 3, 4), through it"),
         ] {
-            let b = body(name);
+            let (a, b) = (body(first), body(name));
+            let pa = Part::new(&a, None, &tolerance).unwrap();
             let pb = Part::new(&b, None, &tolerance).unwrap();
             let mut pairs: Vec<([Vec3; 3], [Vec3; 3])> = Vec::new();
             for (fa, ta) in &pa.every {
@@ -3580,7 +3592,8 @@ mod tests {
                 100.0 * worked as f64 / (filtered + worked).max(1) as f64
             );
         }
-        let above = body("Above");
+        let (a, above) = (body("Sieve"), body("Above"));
+        let pa = Part::new(&a, None, &tolerance).unwrap();
         let pb = Part::new(&above, None, &tolerance).unwrap();
         let started = Instant::now();
         let near = distance(&[pa], &[pb]).unwrap();
