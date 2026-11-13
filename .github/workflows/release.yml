@@ -179,6 +179,11 @@ jobs:
           otool -l "$app/Contents/MacOS/craft3d" | grep -A4 LC_BUILD_VERSION || true
       - name: smoke test (windows)
         if: runner.os == 'Windows'
+        env:
+          # Every start of the launcher in this step writes what it would show
+          # in a message box to this file instead: on a runner a box would
+          # wait for the job's time limit.
+          CRAFT3D_LAUNCHER_LOG: ${{ runner.temp }}/launcher.log
         run: |
           dir=$(ls -d dist/stage/3dcraft-*-windows)
           "$dir/craft3d.exe" --version
@@ -193,15 +198,18 @@ jobs:
             "craft3d "*) ;;
             *) echo "::error::3DCraft.exe --version did not pass craft3d.exe's answer on"; exit 1 ;;
           esac
-          # ...and it says why a window could not start: with the switch, as
-          # a line in a file, since the runner has no desktop to show a box
-          # on. An unknown option is a start that fails without a GPU.
-          log="$RUNNER_TEMP/launcher.log"
-          if CRAFT3D_LAUNCHER_LOG="$log" "$dir/3DCraft.exe" --no-such-option; then
+          log="$CRAFT3D_LAUNCHER_LOG"
+          if [ -s "$log" ]; then
+            cat "$log"; echo "::error::3DCraft.exe said something for a window that ended well"; exit 1
+          fi
+          # ...and it says why a window could not start, with its exit code,
+          # here as a line in the switch's file. An unknown option is a start
+          # that fails without a GPU (the window's exit code 2, passed on).
+          if "$dir/3DCraft.exe" --no-such-option; then
             echo "::error::3DCraft.exe ended well for a window that could not start"; exit 1
           fi
           cat "$log"
-          grep -q '^craft3d-launcher: 3DCraft could not start\. | craft3d: unknown flag' "$log"
+          grep -q '^craft3d-launcher: 3DCraft could not start (exit code 2)\. | craft3d: unknown flag' "$log"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -223,6 +231,8 @@ jobs:
       # on the system PATH. The runner has the Visual C++ runtime, so a
       # start here proves nothing about a PC without it: the import lists
       # `cargo xtask package` writes and checks above are that proof.
+      # The installed launcher must pass a double-clicked file's path on
+      # whole, and `msiexec /x` must leave nothing behind.
       # After the upload, so the packages are kept whatever it finds; it
       # still fails the job, and with it the draft release: an .msi that
       # leaves two entries must stop a release. A failure that is not the
@@ -233,6 +243,8 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          # As in the smoke test: no message box on the runner.
+          CRAFT3D_LAUNCHER_LOG: ${{ runner.temp }}/launcher-installed.log
         run: |
           $ErrorActionPreference = 'Stop'
           # A native command's exit code is read by the script (the
@@ -242,9 +254,10 @@ jobs:
           $core = $version -replace '[-+].*$', ''
           $msi = (Resolve-Path "dist/3DCraft-$version-x86_64.msi").Path
           $folder = Join-Path $env:ProgramFiles '3DCraft'
-          function Install-Msi([string] $path, [string] $name) {
+          # msiexec /i (install) or /x (uninstall), silently, with a log.
+          function Invoke-Msi([string] $action, [string] $path, [string] $name) {
             $log = Join-Path $env:RUNNER_TEMP "msi-$name.log"
-            $run = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/i', "`"$path`"", '/qn', '/norestart', '/l*v', "`"$log`"")
+            $run = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @($action, "`"$path`"", '/qn', '/norestart', '/l*v', "`"$log`"")
             # 3010: installed, a restart asked for (not done: /norestart).
             if ($run.ExitCode -ne 0 -and $run.ExitCode -ne 3010) {
               if (Test-Path -LiteralPath $log) {
@@ -253,9 +266,19 @@ jobs:
                 Write-Host "msiexec wrote no log at $log"
               }
               $why = if ($run.ExitCode -eq 1618) { ' (1618: another installation is in progress; re-run the job)' } else { '' }
-              throw "msiexec /i $path ended with $($run.ExitCode)$why"
+              throw "msiexec $action $path ended with $($run.ExitCode)$why"
             }
-            Write-Host "installed $path (msiexec $($run.ExitCode))"
+            Write-Host "msiexec $action $path ended with $($run.ExitCode)"
+          }
+          # A property of a COM object read through IDispatch, the form that
+          # takes parameters (PowerShell's COM adapter may not offer the
+          # Windows Installer's parameterised properties as methods).
+          function Get-ComProperty($object, [string] $name, [object[]] $arguments) {
+            $object.GetType().InvokeMember($name, [System.Reflection.BindingFlags]::GetProperty, $null, $object, $arguments)
+          }
+          function Test-OnPath {
+            $path = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').Path
+            [bool]($path -split ';' | Where-Object { $_.TrimEnd('\') -eq $folder })
           }
           # What Apps (Settings) and Programs and Features list: the
           # uninstall keys, in both registry views.
@@ -291,12 +314,12 @@ jobs:
             }
             if (-not $fetched) { throw "the .msi of $previous could not be downloaded (3 attempts)" }
             $old = (Get-ChildItem -Path $dir -Filter '3DCraft-*-x86_64.msi' | Select-Object -First 1).FullName
-            Install-Msi $old 'previous'
+            Invoke-Msi '/i' $old 'previous'
             Assert-One $older
           } else {
             Write-Host "::notice::the latest published release is $previous, not older than ${version}: this .msi is installed without an upgrade"
           }
-          Install-Msi $msi 'this'
+          Invoke-Msi '/i' $msi 'this'
           Assert-One $core
           foreach ($program in 'craft3d.exe', 'craft3d-cli.exe') {
             $said = & (Join-Path $folder $program) --version
@@ -312,8 +335,10 @@ jobs:
           $lnk = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\3DCraft.lnk'
           if (-not (Test-Path -LiteralPath $lnk)) { throw "the Start menu entry $lnk is missing" }
           $installer = New-Object -ComObject WindowsInstaller.Installer
-          $target = $installer.ShortcutTarget($lnk)
-          $started = $installer.ComponentPath($target.StringData(1), $target.StringData(3))
+          $target = Get-ComProperty $installer 'ShortcutTarget' @($lnk)
+          $product = Get-ComProperty $target 'StringData' @(1)
+          $component = Get-ComProperty $target 'StringData' @(3)
+          $started = Get-ComProperty $installer 'ComponentPath' @($product, $component)
           if ($started -ne $launcher) { throw "the Start menu entry starts $started, not $launcher" }
           Write-Host "the Start menu entry starts $started"
           # A double-clicked .3dcraft, .3dcraftjig and .3dcraftasm too: each
@@ -324,11 +349,34 @@ jobs:
             if ($named -ne $pair[1]) { throw "$($pair[0]) names $named, not $($pair[1])" }
           }
           Write-Host "the three file types are registered"
-          $path = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').Path
-          if (-not ($path -split ';' | Where-Object { $_.TrimEnd('\') -eq $folder })) {
-            throw "the system PATH does not name $folder"
-          }
+          if (-not (Test-OnPath)) { throw "the system PATH does not name $folder" }
           Write-Host "the system PATH names $folder"
+          # The installed launcher passes a double-clicked file's path on
+          # whole: spaces, % and ^ (no shell stands between to expand them),
+          # through std's quoting of craft3d.exe's command line. The window
+          # refuses a file that is not there before its window exists, naming
+          # it; the launcher writes that line to the switch's file.
+          $file = 'C:\a b\x %y% ^z\no such.3dcraft'
+          $run = Start-Process -FilePath $launcher -ArgumentList "`"$file`"" -Wait -PassThru
+          if ($run.ExitCode -eq 0) { throw "3DCraft.exe ended well for a file that is not there" }
+          $log = $env:CRAFT3D_LAUNCHER_LOG
+          $said = if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Raw } else { '' }
+          Write-Host "3DCraft.exe ended with $($run.ExitCode) and said: $said"
+          if (-not $said.Contains($file)) { throw "the launcher's line does not name $file whole" }
+          # Uninstalled, nothing of it is left: no entry in Apps, no Start menu
+          # entry, no file types, no files, no PATH entry.
+          Invoke-Msi '/x' $msi 'uninstall'
+          if (@(Get-Entries).Count -ne 0) { throw "Apps still lists 3DCraft after msiexec /x" }
+          if (Test-Path -LiteralPath $lnk) { throw "the Start menu entry $lnk is left" }
+          foreach ($key in '.3dcraft', '.3dcraftjig', '.3dcraftasm', 'Craft3D.Document.1', 'Craft3D.Jig.1', 'Craft3D.Assembly.1') {
+            if (Test-Path -LiteralPath "Registry::HKEY_CLASSES_ROOT\$key") { throw "HKEY_CLASSES_ROOT\$key is left" }
+          }
+          if (Test-Path -LiteralPath $folder) {
+            Get-ChildItem -LiteralPath $folder -Recurse -Force | ForEach-Object { Write-Host $_.FullName }
+            throw "$folder is left"
+          }
+          if (Test-OnPath) { throw "the system PATH still names $folder" }
+          Write-Host "uninstalled: nothing of 3DCraft is left"
 
   # The browser build: wasm-bindgen's CLI of the version in Cargo.lock and
   # binaryen's wasm-opt, both release downloads pinned and checked against
