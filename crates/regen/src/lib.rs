@@ -765,7 +765,7 @@ impl Names {
 
     /// The edges of this body the kernel kept of edge `edge` of the body
     /// an instance came from, for the instances `from` accepts (a
-    /// boolean's target or tool, which ever that body was): one when the
+    /// boolean's target or tool, whichever that body was): one when the
     /// edge went on whole or shortened, several when it was cut in pieces
     /// or went into several instances, none when it is gone, and none for
     /// a body that does not name its edges by its faces (a body of copies
