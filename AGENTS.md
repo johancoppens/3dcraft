@@ -116,7 +116,8 @@ When you finish a milestone item, update its status in `docs/roadmap.md` with th
 
 ```sh
 cargo fmt --all
-cargo test -p <crate> --test <file>   # each test file you touched or added; a small crate you touched whole
+cargo test -p <crate> --test <file>          # each test file you touched or added
+cargo test -p <crate> --lib <module::path>   # the unit tests of each source file you touched (a small crate: cargo test -p <crate>, whole)
 cargo clippy -p <crates> --all-targets -- -D warnings
 cargo xtask layers
 cargo xtask wasm            # if you touched L0–L7
@@ -128,10 +129,10 @@ cargo test -p craft3d-engine --test panic_hunt                # if you added/cha
 
 **Two steps, so the gate is not paid for every commit** (the developer, 2026-10-13):
 
-- **Per commit, the quick check:** `cargo fmt --all --check`, `cargo clippy -p <crates you touched> --all-targets -- -D warnings`, and the tests you touched: each test file you changed or added (`cargo test -p <crate> --test <file>`; several of one crate side by side with `cargo xtask test -p <crate> --test <file> --test <file>`) and the tests of a small crate you touched, whole. Never `--workspace` and never a large crate whole (the engine, the kernel, `ui-egui`: their binaries run for half an hour and more): the gate runs everything. A commit that changes only docs, comments or the data of one test needs just the tests it can affect, and none when no test reads what it changed. Such commits go on a work branch, not on `main`.
+- **Per commit, the quick check:** `cargo fmt --all --check`, `cargo clippy -p <crates you touched> --all-targets -- -D warnings`, and the tests you touched: each test file you changed or added (`cargo test -p <crate> --test <file>`; several of one crate side by side with `cargo xtask test -p <crate> --test <file> --test <file>`), the unit tests of each source file you changed (`cargo test -p <crate> --lib <module::path>`: `--lib boolean::hits` for `crates/kernel/src/boolean/hits.rs`), and a small crate you touched whole. Never `--workspace` and never a large crate whole (the engine, the kernel, `ui-egui`, nor such a crate's `--lib` without a module path: their tests run for half an hour and more): the gate runs everything. A change to a large crate's code comes with a test that shows it, in one of those files or modules. A commit that changes only docs, comments or the data of one test needs just the tests it can affect, and none when no test reads what it changed. Such commits go on a work branch, not on `main`.
 - **Before `main` moves, the full gate:** `cargo xtask ci` on the exact commit, once per finished piece of work (a merged branch, a finished round), not once per commit. `main` only fast-forwards to a commit the full gate passed. In the workshop it runs on the Strix, the workshop's build server (`cargo xtask ci`, then `cargo xtask freecad`, then the web module's size, `cargo xtask web-size`), so work can go on meanwhile; read its exit status, not its last lines. From outside, `cargo xtask ci` on your own machine is the gate. If `cargo` is not on `PATH` in your shell, it is in `~/.cargo/bin`.
 
-While iterating, run less: `cargo test -p <crate> --test <file> <name>` runs one test, and `cargo test -p <crate> --lib` a crate's unit tests.
+While iterating, run less: `cargo test -p <crate> --test <file> <name>` runs one test, and `cargo test -p <crate> --lib <module::path>` the unit tests of one module.
 
 Commands must **never panic** on bad input (Rule 13). New commands come with a graceful-failure test (empty/out-of-range/wrong-type params → `Err`, not a crash).
 
