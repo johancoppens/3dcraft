@@ -494,9 +494,12 @@ fn same_verdict(a: &Solution, b: &Solution) -> bool {
 ///
 /// When that ends in a conflict or does not converge, one last attempt
 /// starts from the circles that the held points determine
-/// ([`rounds_through_held_points`]); its result is taken only when it has
-/// no conflict, and otherwise the result is the one before. A sketch that
-/// solves without a conflict at the first attempts never reaches it.
+/// ([`rounds_through_held_points`]), when that start reads every choice
+/// as the stored solution does ([`same_choices`]); its result is taken
+/// only when it has no conflict and every arc it placed still runs
+/// through its points ([`passes_through`]), and otherwise the result is
+/// the one before. A sketch that solves without a conflict at the first
+/// attempts never reaches it.
 pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution, SolveError> {
     validate(options)?;
     let mut spent = 0u64;
@@ -510,11 +513,14 @@ pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution,
         return before;
     }
     let held = held_in_place(sketch);
-    let Some(start) =
+    let Some((start, placed)) =
         rounds_through_held_points(held.as_ref().unwrap_or(sketch), options.tolerance.linear)
     else {
         return before;
     };
+    if !same_choices(sketch, &start, options.tolerance.linear) {
+        return before;
+    }
     // The last attempt spends what the ones before it left of the work.
     let left = options.work_limit.saturating_sub(spent);
     if left == 0 {
@@ -530,7 +536,10 @@ pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution,
         Err(_) => 0,
     };
     match settle(&start, options, &mut meter) {
-        Ok(mut solved) if conflicts(&solved) == 0 => {
+        Ok(mut solved)
+            if conflicts(&solved) == 0
+                && passes_through(&solved, &placed, options.tolerance.linear) =>
+        {
             solved.iterations = solved.iterations.saturating_add(iterations);
             Ok(solved)
         }
@@ -700,6 +709,10 @@ fn held_in_place(sketch: &Sketch) -> Option<Sketch> {
     })
 }
 
+/// A round the last attempt centred, and the held points it was centred
+/// through.
+type Placed = (EntityId, Vec<EntityId>);
+
 /// The sketch with every circle and arc whose centre no constraint holds,
 /// and which passes through three points whose coordinates constraints
 /// hold at values, centred on the circle through those three (a circle's
@@ -721,7 +734,9 @@ fn held_in_place(sketch: &Sketch) -> Option<Sketch> {
 /// the points `pointOn` puts on it, in the order of the constraints; the
 /// first three that lie apart (farther than the tolerance from each
 /// other) and are held in both coordinates (`x` and `y`, or `Fixed`).
-fn rounds_through_held_points(sketch: &Sketch, tolerance: f64) -> Option<Sketch> {
+/// With the sketch, the rounds placed and the points each was placed
+/// through.
+fn rounds_through_held_points(sketch: &Sketch, tolerance: f64) -> Option<(Sketch, Vec<Placed>)> {
     use crate::model::Constraint as C;
     let count = sketch.entities.len();
     let mut held = vec![[false; 2]; count];
@@ -758,7 +773,7 @@ fn rounds_through_held_points(sketch: &Sketch, tolerance: f64) -> Option<Sketch>
         }
     }
     let mut entities = sketch.entities.clone();
-    let mut moved = false;
+    let mut placed = Vec::new();
     for (index, entity) in sketch.entities.iter().enumerate() {
         let (center, circle) = match *entity {
             Entity::Arc { center, .. } => (center, false),
@@ -769,6 +784,7 @@ fn rounds_through_held_points(sketch: &Sketch, tolerance: f64) -> Option<Sketch>
             continue;
         }
         let mut points: Vec<[f64; 2]> = Vec::new();
+        let mut ids = Vec::new();
         for id in through.get(index).map(Vec::as_slice).unwrap_or(&[]) {
             if points.len() == 3 || !is_held(*id) {
                 continue;
@@ -781,6 +797,7 @@ fn rounds_through_held_points(sketch: &Sketch, tolerance: f64) -> Option<Sketch>
                 .all(|[px, py]| (x - px).abs().max((y - py).abs()) > tolerance);
             if apart {
                 points.push([x, y]);
+                ids.push(*id);
             }
         }
         let (Some(&a), Some(&b), Some(&c)) = (points.first(), points.get(1), points.get(2)) else {
@@ -791,7 +808,7 @@ fn rounds_through_held_points(sketch: &Sketch, tolerance: f64) -> Option<Sketch>
         };
         if let Some(slot) = entities.get_mut(center.index()) {
             *slot = Entity::Point { x: at[0], y: at[1] };
-            moved = true;
+            placed.push((EntityId(u32::try_from(index).unwrap_or(u32::MAX)), ids));
         }
         if circle && let Some(Entity::Circle { radius, .. }) = entities.get_mut(index) {
             let r = (a[0] - at[0]).phypot(a[1] - at[1]);
@@ -800,11 +817,70 @@ fn rounds_through_held_points(sketch: &Sketch, tolerance: f64) -> Option<Sketch>
             }
         }
     }
-    moved.then(|| Sketch {
-        entities,
-        constraints: sketch.constraints.clone(),
-        splines: sketch.splines.clone(),
-        image_starts: sketch.image_starts.clone(),
+    (!placed.is_empty()).then(|| {
+        (
+            Sketch {
+                entities,
+                constraints: sketch.constraints.clone(),
+                splines: sketch.splines.clone(),
+                image_starts: sketch.image_starts.clone(),
+            },
+            placed,
+        )
+    })
+}
+
+/// Whether the choices a pass reads off its starting guess (which side of
+/// a line a point or a centre keeps, a tangency inside or outside, the
+/// place of a point fixed where it is) are the same from `start` as from
+/// `stored`: the equations `prepare` makes of the two are equal. The last
+/// attempt moves centres, and a centre now on the other side of a line it
+/// is tangent to, or kept at a distance from, would turn that choice over
+/// and give a solution on another branch than the stored one.
+fn same_choices(stored: &Sketch, start: &Sketch, min_len: f64) -> bool {
+    match (
+        crate::equations::prepare(stored, min_len),
+        crate::equations::prepare(start, min_len),
+    ) {
+        (Ok(a), Ok(b)) => a.equations == b.equations,
+        _ => false,
+    }
+}
+
+/// Whether every arc the last attempt placed passes, between its ends in
+/// the direction it runs (counter-clockwise from its start), through each
+/// point it was placed through, in `solution` (within `tolerance` of an
+/// end counts); circles always do. An arc whose point crossed the line of
+/// its ends is solved with its circle through the point but runs the long
+/// way round its centre, away from it: a shape no new document draws and
+/// one that may have folded over, so it is not taken.
+fn passes_through(solution: &Solution, placed: &[Placed], tolerance: f64) -> bool {
+    placed.iter().all(|(round, through)| {
+        let Some(&Entity::Arc { center, start, end }) = solution.entities.get(round.index()) else {
+            return true;
+        };
+        let (Some(c), Some(s), Some(e)) = (
+            solution.point(center),
+            solution.point(start),
+            solution.point(end),
+        ) else {
+            return false;
+        };
+        let turn = |q: [f64; 2]| {
+            let a = (q[1] - c[1]).patan2(q[0] - c[0]) - (s[1] - c[1]).patan2(s[0] - c[0]);
+            a.rem_euclid(std::f64::consts::TAU)
+        };
+        let sweep = turn(e);
+        through
+            .iter()
+            .filter(|p| **p != start && **p != end)
+            .all(|p| {
+                let Some(q) = solution.point(*p) else {
+                    return false;
+                };
+                let near = |r: [f64; 2]| (q[0] - r[0]).phypot(q[1] - r[1]) <= tolerance;
+                turn(q) <= sweep || near(s) || near(e)
+            })
     })
 }
 
@@ -1423,7 +1499,8 @@ mod tests {
             (s, c)
         };
         let (s, c) = arc(Some([0.0, 2.0]), false);
-        let placed = rounds_through_held_points(&s, 1e-6).unwrap();
+        let (placed, rounds) = rounds_through_held_points(&s, 1e-6).unwrap();
+        assert_eq!(rounds.len(), 1);
         assert_eq!(centre_of(&placed, c), [0.0, -3.0]);
         let (s, _) = arc(None, false);
         assert!(rounds_through_held_points(&s, 1e-6).is_none());
@@ -1444,7 +1521,7 @@ mod tests {
             s.add_constraint(C::PointOnCircle { point: p, circle });
             hold(&mut s, p, at);
         }
-        let placed = rounds_through_held_points(&held_in_place(&s).unwrap(), 1e-6).unwrap();
+        let (placed, _) = rounds_through_held_points(&held_in_place(&s).unwrap(), 1e-6).unwrap();
         assert_eq!(centre_of(&placed, c), [0.0, -3.0]);
         assert_eq!(
             placed.entities.get(circle.index()),
@@ -1453,5 +1530,91 @@ mod tests {
                 radius: 5.0
             })
         );
+    }
+
+    /// An arc through (-20, 0), (20, 0) and (0, b), held, counter-clockwise
+    /// from (20, 0): stored solved at b = 6 (centre (0, -30.33)), its point
+    /// now held at `b`. Flattened to b = 0.0001 the solve from the stored
+    /// solution and the retry both blame the point (the centre runs off),
+    /// and the last attempt finds the centre at (0, -2e6).
+    fn stale_arc(b: f64) -> Sketch {
+        use crate::model::Constraint as C;
+        let mut s = Sketch::new();
+        let a = s.add_point(-20.0, 0.0);
+        let e = s.add_point(20.0, 0.0);
+        let c = s.add_point(0.0, (36.0 - 400.0) / 12.0);
+        let arc = s.add_arc(c, e, a);
+        let p = s.add_point(0.0, 6.0);
+        for (point, [x, y]) in [(a, [-20.0, 0.0]), (e, [20.0, 0.0])] {
+            s.add_constraint(C::CoordinateX { point, value: x });
+            s.add_constraint(C::CoordinateY { point, value: y });
+        }
+        s.add_constraint(C::PointOnCircle {
+            point: p,
+            circle: arc,
+        });
+        s.add_constraint(C::CoordinateX {
+            point: p,
+            value: 0.0,
+        });
+        s.add_constraint(C::CoordinateY { point: p, value: b });
+        s
+    }
+
+    /// The last attempt spends only what the attempts before it left of
+    /// the work limit: given exactly what it needs it solves, given half
+    /// of that it runs out and the verdict of before stands, and so it
+    /// does with nothing left. (Not one unit less: the last diagnosis of a
+    /// pass, which arc ends are pinned, gives up quietly when out of work.)
+    #[test]
+    fn the_last_attempt_spends_only_what_the_others_left() {
+        let mut options = SolveOptions::new(craft3d_math::Tolerance::default());
+        let sketch = stale_arc(1e-4);
+        let mut spent = 0;
+        let before = solve_from_the_stored_solution(&sketch, &options, &mut spent).unwrap();
+        assert!(conflicts(&before) > 0, "{:?}", before.constraints);
+        let held = held_in_place(&sketch).unwrap_or_else(|| sketch.clone());
+        let (start, _) = rounds_through_held_points(&held, options.tolerance.linear).unwrap();
+        let mut meter = Meter {
+            cap: None,
+            spent: 0,
+        };
+        settle(&start, &options, &mut meter).unwrap();
+        let needed = meter.spent;
+        assert!(needed > 0);
+        options.work_limit = spent + needed;
+        let solved = solve(&sketch, &options).unwrap();
+        assert_eq!(conflicts(&solved), 0, "{:?}", solved.constraints);
+        for limit in [spent + needed / 2, spent] {
+            options.work_limit = limit;
+            let again = solve(&sketch, &options).unwrap();
+            assert_eq!(again, before, "limit {limit}");
+        }
+    }
+
+    /// The last attempt is not made from a start on which a choice reads
+    /// otherwise than on the stored solution: here a line tangent to the
+    /// arc, the arc's centre on its left as stored; were the centre placed
+    /// on its right, the tangency would turn over.
+    #[test]
+    fn a_start_that_turns_a_choice_over_is_not_taken() {
+        use crate::model::Constraint as C;
+        let mut s = Sketch::new();
+        let c = s.add_point(0.0, 0.0);
+        let a = s.add_point(1.0, 0.0);
+        let b = s.add_point(0.0, 1.0);
+        let arc = s.add_arc(c, a, b);
+        // A line through (3, -1) and (3, 1): the centre on its left.
+        let q = s.add_point(3.0, -1.0);
+        let f = s.add_point(3.0, 1.0);
+        let line = s.add_line(q, f);
+        s.add_constraint(C::Tangent { a: line, b: arc });
+        let stored = s.clone();
+        let mut moved = s;
+        if let Some(centre) = moved.entities.get_mut(c.index()) {
+            *centre = Entity::Point { x: 5.0, y: 0.0 };
+        }
+        assert!(same_choices(&stored, &stored, 1e-6));
+        assert!(!same_choices(&stored, &moved, 1e-6));
     }
 }

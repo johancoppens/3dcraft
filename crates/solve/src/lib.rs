@@ -71,8 +71,10 @@
 //! last attempt starts from there with every circle and arc that passes
 //! through three held points centred on the circle through them (where
 //! the values alone put it, and where Newton's method from a stale centre,
-//! far off or on the line of its chord, may never arrive); it too is kept
-//! only when it has no conflict. A solve that succeeds before it is not
+//! far off or on the line of its chord, may never arrive), when that start
+//! reads every side and tangency as the stored solution does; it is kept
+//! only when it has no conflict and every arc it placed still runs through
+//! its points between its ends. A solve that succeeds before it is not
 //! touched.
 //!
 //! Before the first pass, image points that have moved since the starting

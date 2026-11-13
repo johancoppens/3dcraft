@@ -138,9 +138,12 @@ fn sweep(solution: &Solution, arc: EntityId) -> f64 {
 /// is: flat (a sagitta of 1/200000 of the chord, the centre 2 million
 /// half-chords out), back, across the chord and back. Several of these
 /// edits failed before (the centre ran away from the stale start). For the
-/// arc, across the chord it keeps the way round it was drawn with and turns
-/// the long way, 2 pi - 2 asin(h / r): the one solution of its constraints.
-/// At three scales, the tolerance the part's own.
+/// arc, across the chord the one solution of its constraints keeps the way
+/// round it was drawn with and runs the long way, 2 pi - 2 asin(h / r),
+/// away from its point: that is not taken, the edit fails as it did, and
+/// the next edit starts from the last solution that held, as a document's
+/// does. A full circle has no way round and follows across. At three
+/// scales, the tolerance the part's own.
 #[test]
 fn a_round_through_three_held_points_follows_them_flat_and_across() {
     for kind in [Round::Arc, Round::Circle] {
@@ -161,6 +164,18 @@ fn a_round_through_three_held_points_follows_them_flat_and_across() {
                 let what = format!("{kind:?}, scale {k}, step {step}: bulge {b}");
                 let changed = through(kind, at(b), centre(b0), radius(b0));
                 let solution = solved_with(&starting_at(&changed.sketch, &last), &options);
+                if let (Round::Arc, true) = (kind, b < 0.0) {
+                    // Across its chord the arc's circle through the point
+                    // would run the long way round, away from it: not
+                    // taken, the conflict of before stands, and the
+                    // document keeps its last solution (`last`).
+                    assert!(
+                        !solution.is_consistent(),
+                        "{what}: {:?}",
+                        solution.constraints
+                    );
+                    continue;
+                }
                 assert!(
                     solution.is_consistent(),
                     "{what}: {:?}",
@@ -184,12 +199,8 @@ fn a_round_through_three_held_points_follows_them_flat_and_across() {
                 let got = solution.radius(built.round).unwrap();
                 assert!((got - r).abs() <= 1e-9 * r, "{what}: radius {got}, {r}");
                 if let Round::Arc = kind {
-                    let minor = 2.0 * (h / r).pasin();
-                    let expected = if b > 0.0 {
-                        minor
-                    } else {
-                        std::f64::consts::TAU - minor
-                    };
+                    // Through the point, the short way: 2 asin(h / r).
+                    let expected = 2.0 * (h / r).pasin();
                     let turn = sweep(&solution, built.round);
                     assert!(
                         (turn - expected).abs() <= 1e-9,

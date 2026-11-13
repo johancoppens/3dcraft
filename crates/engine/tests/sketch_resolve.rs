@@ -103,10 +103,73 @@ fn a_document_saved_stuck_at_its_last_solution_opens_and_builds() {
         dir.join("stale.3dcraft"),
     )
     .unwrap();
+    // The fixture is stale, or it tests nothing: t is 1, and the sketch
+    // holds the solution at t = 0 (the cap's centre e3 where it was then,
+    // the roll's end e8 at y = 312.33 + 182), as 0.1.0 saved it.
+    let saved = craft3d_format::load(&dir.join("stale.3dcraft")).unwrap();
+    let t = saved.variables.iter().find(|v| v.name == "t").unwrap();
+    assert_eq!(t.expr.source(), "1");
+    let feature = saved.feature_by_name("Profile").unwrap();
+    let craft3d_doc::FeatureKind::Sketch(stored) = &feature.kind else {
+        panic!("not a sketch");
+    };
+    let id = |n: u64| craft3d_doc::sketch::EntityId(n);
+    assert_eq!(
+        stored.point(id(3)).unwrap(),
+        (193.65546450939456, 311.74756222827557)
+    );
+    assert_eq!(stored.point(id(8)).unwrap(), (5.0, 494.3259849173512));
+
     let mut opened = common::session_in(&dir);
     run(&mut opened, "file.open", json!({"path": "stale.3dcraft"}));
     let (status, here) = points(&mut opened, "Profile");
     assert_eq!(status, "ok");
+    // The held points where t = 1 puts them: z = 267.778..., the corners
+    // (c0 - h, z) = (15.521, z), (c0, z + dcr) = (25.16, z + 21.42),
+    // (5, z + 63), (5, z + 70), (40, z + 70), (40, z), the through points
+    // (c0 - 0.75 h, z + dcr / 2) = (17.93075, z + 10.71), (1.5, z + 66.5).
+    let z = 267.77805096117135;
+    let corners = [
+        ("e1", [15.521, z]),
+        ("e2", [25.16, z + 21.42]),
+        ("e6", [5.0, z + 63.0]),
+        ("e8", [5.0, z + 70.0]),
+        ("e12", [40.0, z + 70.0]),
+        ("e14", [40.0, z]),
+    ];
+    for (id, at) in corners
+        .iter()
+        .chain(&[("e5", [17.93075, z + 10.71]), ("e11", [1.5, z + 66.5])])
+    {
+        let [x, y] = point(&here, id);
+        assert!(
+            (x - at[0]).abs() <= 1e-9 && (y - at[1]).abs() <= 1e-9,
+            "{id} at ({x}, {y}), held at {at:?}"
+        );
+    }
+    // The volume in closed form: 5 times the area of the polygon of the
+    // corners (run clockwise: up the left, along the top, down the right,
+    // so its inside is on the right of each side) with the cap's segment
+    // (its through point is left of the side from e1 to e2: outside) and
+    // the roll's half disc of radius 3.5 (its point at x = 1.5 < 5:
+    // outside).
+    let polygon: f64 = corners
+        .iter()
+        .zip(corners.iter().cycle().skip(1))
+        .map(|((_, a), (_, b))| a[0] * b[1] - b[0] * a[1])
+        .sum::<f64>()
+        .abs()
+        / 2.0;
+    let segment = |a: [f64; 2], b: [f64; 2], p: [f64; 2]| {
+        let c = circumcentre(a, b, p);
+        let r = (a[0] - c[0]).phypot(a[1] - c[1]);
+        let chord = (a[0] - b[0]).phypot(a[1] - b[1]);
+        let theta = 2.0 * (chord / (2.0 * r)).pasin();
+        r * r / 2.0 * (theta - theta.psin())
+    };
+    let cap = segment([15.521, z], [25.16, z + 21.42], [17.93075, z + 10.71]);
+    let roll = std::f64::consts::PI * 3.5 * 3.5 / 2.0;
+    let expected = 5.0 * (polygon + cap + roll);
     for [c, a, b, p] in ARCS {
         let [cx, cy] = point(&here, c);
         let [ex, ey] = circumcentre(point(&here, a), point(&here, b), point(&here, p));
@@ -137,6 +200,10 @@ fn a_document_saved_stuck_at_its_last_solution_opens_and_builds() {
     }
     let (v, fv) = (volume(&mut opened, "Plate"), volume(&mut fresh, "Plate"));
     assert!((v - fv).abs() <= 1e-9 * fv, "volume {v}, new document {fv}");
+    assert!(
+        (v - expected).abs() <= 1e-9 * expected,
+        "volume {v}, closed form {expected}"
+    );
 
     run(
         &mut opened,
@@ -167,13 +234,14 @@ fn segment(c: f64, b: f64) -> f64 {
 /// An arc from (0, 0) to (40 k, 0) through (20 k, bulge) closing a plate
 /// 20 k deep below the chord, at three scales (the tolerance the part's
 /// own): flattened from a bulge of 6 k to 0.0001 k (the centre two million
-/// half-chords away), back to 6 k, across the chord to -3 k and back. Each
-/// edit failed with a conflict before, and the next started from where the
-/// last good one ended; now each builds, with the centre at the closed form
-/// (20 k, (b^2 - 400 k^2) / (2 b)) and, while the bulge is positive, the
-/// volume 5 k (800 k^2 + the segment). Across the chord the arc keeps the
-/// way round it was drawn with, so it goes the long way round its centre,
-/// its circle through the point: the one solution of its constraints.
+/// half-chords away), back to 6 k, across the chord to -3 k and back. The
+/// flattening failed with a conflict before; now it builds, with the
+/// centre at the closed form (20 k, (b^2 - 400 k^2) / (2 b)) and the volume
+/// 5 k (800 k^2 + the segment), as every step with the bulge positive does.
+/// Across the chord the one solution of the arc's constraints keeps the
+/// way round it was drawn with and runs the long way round its centre,
+/// away from its point (a body many times the plate's): it is not taken, and
+/// the edit fails as in 0.1.1, with no body; the next edit builds again.
 #[test]
 fn an_arc_through_a_point_goes_flat_and_across_by_edits_at_three_scales() {
     for k in [1e-3, 1.0, 1e6] {
@@ -208,6 +276,19 @@ fn an_arc_through_a_point_goes_flat_and_across_by_edits_at_three_scales() {
                 "variable.set",
                 json!({"name": "bulge", "expr": mm(bulge)}),
             );
+            if b < 0.0 {
+                // Across the chord the one solution runs the long way
+                // round, away from the point: not built, the sketch and the
+                // plate fail as in 0.1.1, no body.
+                let failed = result["failed"].as_array().unwrap();
+                assert_eq!(failed.len(), 2, "{what}: {result}");
+                let doc = run(&mut s, "document.inspect", json!({}));
+                assert!(
+                    doc["bodies"].as_array().is_none_or(Vec::is_empty),
+                    "{what}: {doc}"
+                );
+                continue;
+            }
             assert!(result.get("failed").is_none(), "{what}: {result}");
             let (status, p) = points(&mut s, "Arc");
             assert_eq!(status, "ok", "{what}");
