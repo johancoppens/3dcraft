@@ -76,10 +76,10 @@ fn steps(script: &Value) -> Option<Vec<(String, Value)>> {
 }
 
 /// How many example scripts build at the same time, each in a test of its
-/// own: one per 4 of the machine's threads and per 12 GiB of its memory, at
-/// most 8, and one where the memory cannot be read (outside Linux). The
-/// build server's 32 threads and 123 GB give 8; a laptop's 16 threads and
-/// 30 GB give 2. libtest would otherwise start all eighteen at once beside
+/// own: one per 4 of the machine's threads and per 12 GiB of the memory the
+/// process may use, at most 8, and one where that cannot be read (outside
+/// Linux). The build server's 32 threads and 123 GB give 8; a laptop's 16
+/// threads and 30 GB give 2, and one under a cap of 8 GB on the run. libtest would otherwise start all eighteen at once beside
 /// this file's other tests. A script holds its session: the bodies of its
 /// document, at most 1 GiB of the bodies that went into later features
 /// (the session's body budget), and up to [`COMPARISONS_AT_ONCE`]
@@ -112,9 +112,35 @@ fn proc_kib(file: &str, key: &str) -> Option<usize> {
         .ok()
 }
 
-/// The machine's memory in GiB (Linux).
+/// The memory this process may use in GiB (Linux): the machine's, or less
+/// where its control group or one above it has a limit, such as a run
+/// capped at 8 GB.
 fn memory_gib() -> Option<usize> {
-    proc_kib("/proc/meminfo", "MemTotal:").map(|kib| kib / (1024 * 1024))
+    let machine = proc_kib("/proc/meminfo", "MemTotal:")?.saturating_mul(1024);
+    let bytes = cgroup_limit().map_or(machine, |limit| limit.min(machine));
+    Some(bytes / (1 << 30))
+}
+
+/// The smallest `memory.max` of this process's control group and the
+/// groups above it (cgroup v2; "max" is no limit), where there is one.
+fn cgroup_limit() -> Option<usize> {
+    let groups = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    let path = groups.lines().find_map(|line| line.strip_prefix("0::"))?;
+    let root = Path::new("/sys/fs/cgroup");
+    let mut dir = root.join(path.trim_start_matches('/'));
+    let mut smallest: Option<usize> = None;
+    while dir.starts_with(root) {
+        let limit = std::fs::read_to_string(dir.join("memory.max"))
+            .ok()
+            .and_then(|text| text.trim().parse::<usize>().ok());
+        if let Some(limit) = limit {
+            smallest = Some(smallest.map_or(limit, |s| s.min(limit)));
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    smallest
 }
 
 /// How many of a script's comparisons with a regeneration from nothing
@@ -161,8 +187,9 @@ fn print_peak_memory(name: &str) {
     if let Some(kib) = proc_kib("/proc/self/status", "VmHWM:") {
         let _ = writeln!(
             std::io::stderr(),
-            "guide_examples: {name} built, {} scripts at once; the process's peak resident memory so far {} MiB",
+            "guide_examples: {name} built, {} scripts at once ({} GiB to use); the process's peak resident memory so far {} MiB",
             scripts_at_once(),
+            memory_gib().unwrap_or_default(),
             kib / 1024
         );
     }
@@ -183,7 +210,11 @@ fn builds_and_meets_its_assertions(path: &Path) {
     for (id, params) in steps {
         checks.run(&mut s, &id, params);
     }
-    checks.wait(&s);
+    let counted = checks.wait(&s);
+    // Every command of a script, from its `file.new` on, has a document to
+    // compare.
+    assert_eq!(counted.without_document, 0, "{name}: {counted:?}");
+    assert!(counted.compared > 0, "{name}: {counted:?}");
     let document = run(&mut s, "document.inspect", json!({}));
     for feature in document["features"].as_array().unwrap() {
         assert_eq!(feature["status"], "ok", "{name}: {feature}");
