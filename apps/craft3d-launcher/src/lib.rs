@@ -10,11 +10,13 @@
 //! (no console of its own) that the Start menu and the three file types
 //! point to: it starts `craft3d.exe` from its own folder with
 //! `CREATE_NO_WINDOW` (a console that is never shown), passes its
-//! arguments on unchanged, and waits for it. When the window ends with an
-//! error soon after it started, the launcher shows the window's last
-//! message in a message box (Windows; on another system on its own
-//! standard error), or, with [`LOG_SWITCH`] set to a file, writes it there
-//! instead, for a machine without a desktop.
+//! arguments on unchanged, waits for it, and ends with its exit code. When
+//! the window ends with an error within [`START_UP`], the launcher says
+//! that 3DCraft could not start, or, once the window had said it started,
+//! that it ended unexpectedly, with the exit code and the window's last
+//! message ([`start_up_failure`]), in a message box (Windows; on another
+//! system on its own standard error), or, with [`LOG_SWITCH`] set to a
+//! file, as a line there instead, for a machine without a desktop.
 //!
 //! The window's standard error goes to a file of its own in the system's
 //! temporary folder, read back only once the window has ended, so the
