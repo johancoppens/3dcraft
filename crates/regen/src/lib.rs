@@ -96,7 +96,9 @@ pub fn followed_feature(
 }
 pub use offset_profile::OffsetResult;
 pub use pass::{Passed, absent_name, left_out};
-pub use query::{ambiguous_cap, edges_between, faces_named, faces_of_edges, numbered_edge};
+pub use query::{
+    ambiguous_cap, edges_between, faces_named, faces_of_edges, numbered_edge, numbered_face,
+};
 pub use sheetmetal::{SheetMetalPart, sheet_face_name, sheet_metal_part};
 pub use sketch::{
     ConstraintResult, ConstraintState, FittedCurve, SketchResult, face_changed_since,

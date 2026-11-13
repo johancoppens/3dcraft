@@ -635,9 +635,11 @@ fn faces(
 
 /// The same for the edges blends (`noun`) refer to: the pairs of faces
 /// each face as a face, an edge by its own name as an edge and the face
-/// given with it as a face. An edge's name numbered by place is refused
-/// as it is given, whatever body it is of: it would take whichever edge
-/// lies at that place after an edit ([`crate::numbered_edge`]).
+/// given with it as a face. An edge's name, or the face given with it,
+/// with a part numbered by place (`PersistentName::place_part`, at any
+/// depth) is refused as it is given, whatever body it is of: it would take
+/// whichever entity lies at that place after an edit
+/// ([`crate::numbered_edge`]). A pair is followed as it always was.
 fn refs(
     doc: &Document,
     earlier: &[FeatureResult],
@@ -656,12 +658,15 @@ fn refs(
                 out
             }
             EdgeRef::Edge { edge: name, first } => {
-                if name.is_numbered_by_place() {
+                if name.depends_on_place() {
                     let at = earlier
                         .iter()
                         .find(|r| r.id == name.feature)
                         .and_then(|r| Some((r.body.as_deref()?, r.names.as_deref()?)));
                     return Err(format!("{role}: {}", crate::numbered_edge(name, noun, at)));
+                }
+                if let Some(given) = first.as_ref().filter(|f| f.depends_on_place()) {
+                    return Err(format!("{role}: {}", crate::numbered_face(given, noun)));
                 }
                 let mut out = vec![edge(doc, earlier, name, &role)?];
                 if let Some(given) = first {

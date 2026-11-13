@@ -59,35 +59,60 @@ pub fn ambiguous_cap(names: &Names, name: &PersistentName) -> Option<String> {
     ))
 }
 
-/// Why a chamfer or a fillet (`noun`) does not take `name`, an edge's name
-/// numbered by place ([`PersistentName::is_numbered_by_place`]), and what
-/// names that edge instead: another name of it that is not numbered (an
-/// alias, which it kept from a body before), or the pair of its faces
-/// where they meet in that edge only; when nothing does, it says so.
-/// `at` is the body the name is of and its names, when they are there.
+/// Why a name with a part numbered by place
+/// ([`PersistentName::place_part`]) does not name an entity a feature
+/// keeps: the number says where something lies in space, and an edit that
+/// keeps the tied entities and changes their order moves it to another
+/// one without any failure. `name` is that name and `part` the part.
+fn place_reason(name: &PersistentName, part: &PersistentName) -> String {
+    let inner = part.place_link().unwrap_or(part);
+    if part == name && inner == name && name.role.is_by_faces() {
+        format!(
+            "{name} tells its entity from the others on the same faces only by where it lies in space (the number at its end), which an edit can move to another one without any failure"
+        )
+    } else if inner.role == craft3d_doc::NameRole::Rim {
+        format!(
+            "{name} holds the plate's rim {part}, named by a hash of the name of the sheet's edge, which may be numbered by where it lies in space and cannot be read back, so an edit may move it to another rim without any failure"
+        )
+    } else {
+        format!(
+            "{name} holds {part}, which is numbered by where it lies in space, and an edit can move that number to another entity without any failure, so the name can come to mean another one"
+        )
+    }
+}
+
+/// Why a chamfer or a fillet (`noun`) does not take `name`, an edge's
+/// name with a part numbered by place ([`PersistentName::place_part`]),
+/// and what names that edge instead: another name of it that is wholly by
+/// how it was made (an alias it kept from a body before); when there is
+/// none, it says so, and that the pair of its faces takes every edge
+/// between them. `at` is the body the name is of and its names, when they
+/// are there.
 pub fn numbered_edge(name: &PersistentName, noun: &str, at: Option<(&Body, &Names)>) -> String {
-    let why = format!(
-        "{name} tells its edge from the other edges between the same faces only by where it lies in space (the number at its end), which an edit can move to another edge without any failure, so a {noun} does not take it"
-    );
+    let why = match name.place_part() {
+        Some(part) => place_reason(name, part),
+        None => format!("{name} is numbered by place"),
+    };
+    let why = format!("{why}; a {noun} does not take it");
     let Some((body, names)) = at else {
         return format!(
-            "{why}; document.edges lists the names of the body's edges and their aliases"
+            "{why}: document.edges lists the names of the body's edges and their aliases"
         );
     };
     let Some(index) = names.edge_named(name) else {
         return format!(
-            "{why}; document.edges lists the names of the body's edges and their aliases"
+            "{why}: document.edges lists the names of the body's edges and their aliases"
         );
     };
     let other: Vec<String> = names
         .edge_names_of(index)
         .into_iter()
-        .filter(|alias| alias != name && !alias.is_numbered_by_place())
+        .filter(|alias| alias != name && !alias.depends_on_place())
         .map(|alias| format!("\"{alias}\""))
         .collect();
     if !other.is_empty() {
         return format!(
-            "{why}; the same edge is also called {}: give that name",
+            "{why}: the same edge is also called {}; give that name",
             other.join(", ")
         );
     }
@@ -97,22 +122,31 @@ pub fn numbered_edge(name: &PersistentName, noun: &str, at: Option<(&Body, &Name
         .flatten()
         .filter_map(|face| names.faces.get(face.0 as usize))
         .collect();
-    let pair = match sides.as_slice() {
-        [a, b] => Some((*a, *b)),
-        [a] => Some((*a, *a)),
-        _ => None,
-    };
-    match pair {
-        Some((a, b)) if edges_between(body, names, a, b).len() == 1 => {
-            format!("{why}; its faces meet in this edge only: give the pair [\"{a}\", \"{b}\"]")
-        }
-        Some((a, b)) => format!(
-            "{why}; no other name says which edge it is: the pair [\"{a}\", \"{b}\"] takes every edge between those faces, and one of them told apart only by place cannot be taken alone yet"
+    match sides.as_slice() {
+        [a, b] => format!(
+            "{why}: no other name says which edge it is by how it was made, so it cannot be taken alone yet; the pair [\"{a}\", \"{b}\"] takes every edge between those faces"
         ),
-        None => format!(
-            "{why}; no other name says which edge it is, and one told apart only by place cannot be taken alone yet"
+        [a] => format!(
+            "{why}: no other name says which edge it is by how it was made, so it cannot be taken alone yet; the pair [\"{a}\", \"{a}\"] takes every edge of that face with itself"
+        ),
+        _ => format!(
+            "{why}: no other name says which edge it is by how it was made, so it cannot be taken alone yet"
         ),
     }
+}
+
+/// Why a chamfer or a fillet (`noun`) does not take `face` with an edge
+/// as the face its first size is measured along: a part of the name is
+/// numbered by place ([`PersistentName::place_part`]), so an edit could
+/// turn the sizes round without any failure.
+pub fn numbered_face(face: &PersistentName, noun: &str) -> String {
+    let why = match face.place_part() {
+        Some(part) => place_reason(face, part),
+        None => format!("{face} is numbered by place"),
+    };
+    format!(
+        "{why}; a {noun} does not take it as the face its first size is measured along: give that face by a name made by how it was made, or a size the same on both sides"
+    )
 }
 
 /// For every edge of `body`, the faces that use it, in ascending order

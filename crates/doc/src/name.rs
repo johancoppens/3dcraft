@@ -1418,16 +1418,78 @@ impl PersistentName {
         self.root().role.is_vertex()
     }
 
-    /// True when the name tells its entity from others only by where it
-    /// lies in space: an edge or a vertex named by its faces with a number
-    /// after its lists (`F7:between[a,b|c](1)`), or a copy of one. An edit
-    /// that keeps the tied entities and changes their order in space moves
-    /// such a number to another entity without any failure
-    /// (docs/design/names.md › *Edges and vertices by their faces*), so a
-    /// feature that changes the entity it names does not store one.
-    pub fn is_numbered_by_place(&self) -> bool {
-        let root = self.root();
-        root.role.is_by_faces() && !root.sources.is_empty()
+    /// The first part of this name, at any depth, whose number says where
+    /// an entity lies in space rather than how it was made: the link
+    /// itself, a link it is a copy of, or a face it lists (on either side
+    /// of `|`). `None` when every part identifies by origin. An edit that
+    /// keeps the tied entities and changes their order in space moves such
+    /// a number to another entity without any failure, so a feature that
+    /// changes the entity it names does not store such a name
+    /// (docs/design/names.md › *Which numbers in a name are identity*).
+    /// The parts that are place:
+    /// - an edge or a vertex named by its faces with a number after its
+    ///   lists (`F7:between[a,b|c](1)`): the order in space among those
+    ///   on the same faces;
+    /// - a blend's face with a second number (`F9:fillet(0,1)`,
+    ///   `F9:chamfer(2,0)`): the order in space among the edges one
+    ///   reference gave;
+    /// - a plate's rim (`F9:rim(h)/…`): `h` hashes the name of the sheet's
+    ///   edge, which may itself be numbered by place, and the hash cannot
+    ///   be read back.
+    ///
+    /// Every other number (a primitive's entity, a sketch entity or an
+    /// instance of a sketch pattern, a piece along a curve, a copy's
+    /// instance, a blend's reference, a thread's face) is fixed by how the
+    /// entity was made.
+    ///
+    /// The part is the link of this name's own chain that is numbered, or
+    /// the whole of a face it lists that holds such a link
+    /// ([`PersistentName::place_link`] says which link of it that is).
+    pub fn place_part(&self) -> Option<&PersistentName> {
+        let mut link = self;
+        // A name is finite; the cap is for one built by hand.
+        for _ in 0..=MAX_NAME_DEPTH {
+            if link.is_numbered_here() {
+                return Some(link);
+            }
+            if let Some(face) = link.listed().find(|face| face.place_link().is_some()) {
+                return Some(face);
+            }
+            link = link.of.as_deref()?;
+        }
+        None
+    }
+
+    /// True when some part of the name is numbered by place
+    /// ([`PersistentName::place_part`]).
+    pub fn depends_on_place(&self) -> bool {
+        self.place_part().is_some()
+    }
+
+    /// The link of this name's own chain (itself, or a link it is a copy
+    /// of) that is numbered by place, without looking into the faces it
+    /// lists: for a face a name lists, which lists none itself, all there
+    /// is to look at.
+    pub fn place_link(&self) -> Option<&PersistentName> {
+        let mut link = self;
+        for _ in 0..=MAX_NAME_DEPTH {
+            if link.is_numbered_here() {
+                return Some(link);
+            }
+            link = link.of.as_deref()?;
+        }
+        None
+    }
+
+    /// Whether this one link carries a number by place (see
+    /// [`PersistentName::place_part`]).
+    fn is_numbered_here(&self) -> bool {
+        match self.role {
+            NameRole::Between | NameRole::Corner => !self.sources.is_empty(),
+            NameRole::Chamfer | NameRole::Fillet => self.sources.len() > 1,
+            NameRole::Rim => true,
+            _ => false,
+        }
     }
 
     /// Whether the name is one that can be written and read back: a copy
@@ -2168,6 +2230,73 @@ mod tests {
             };
         }
         assert_eq!(deep.check(), Err("it is made of too many names"));
+    }
+
+    /// Which numbers in a name are place and which are identity
+    /// (docs/design/names.md › *Which numbers in a name are identity*), at
+    /// any depth: the name itself, what it is a copy of, the faces it
+    /// lists on either side of `|`.
+    #[test]
+    fn a_number_by_place_is_found_at_any_depth_and_no_other_number_is() {
+        let place = |text: &str| {
+            let name: PersistentName = text.parse().unwrap();
+            name.place_part().map(ToString::to_string)
+        };
+        // Identity: primitives, sketch entities and pattern instances,
+        // pieces, copies' instances, a blend's reference, corners, threads.
+        for text in [
+            "F1:face(3)",
+            "F1:edge(7)",
+            "F2:lateralEdge(e5,e6)",
+            "F2:side(e7[3])",
+            "F2:side(e3[2][1])",
+            "F2:endCap(e5,e7[*])",
+            "F2:piece(2)/F2:side(e7)",
+            "F9:copy(1,3)/F2:side(e7)",
+            "F9:fillet(4)",
+            "F9:filletCorner(0,1,2)",
+            "F9:chamferCorner(0,1,2)",
+            "F9:piece(3)/F9:thread(1)",
+            "F7:between[F7:copy(0)/F1:face(1),F7:copy(1)/F2:face(0)]",
+            "F7:between[F7:copy(0)/F1:face(1),F7:copy(1)/F2:face(0)|F7:copy(0)/F1:face(4)]",
+            "F8:copy(0)/F7:between[F7:copy(0)/F1:face(1),F9:fillet(2)]",
+        ] {
+            assert_eq!(place(text), None, "{text}");
+        }
+        // Place: the number at the end of a name by faces, a blend face's
+        // second number, a rim (its hash may stand for either), wherever
+        // they are.
+        for (text, part) in [
+            (
+                "F7:between[F7:copy(0)/F1:face(1),F7:copy(1)/F2:face(0)](1)",
+                "F7:between[F7:copy(0)/F1:face(1),F7:copy(1)/F2:face(0)](1)",
+            ),
+            (
+                "F7:corner[F7:copy(0)/F1:face(1),F7:copy(0)/F1:face(2),F7:copy(1)/F2:face(0)](0)",
+                "F7:corner[F7:copy(0)/F1:face(1),F7:copy(0)/F1:face(2),F7:copy(1)/F2:face(0)](0)",
+            ),
+            (
+                "F9:copy(1)/F7:between[F7:copy(0)/F1:face(1),F7:copy(1)/F2:face(0)](0)",
+                "F7:between[F7:copy(0)/F1:face(1),F7:copy(1)/F2:face(0)](0)",
+            ),
+            ("F9:fillet(0,1)", "F9:fillet(0,1)"),
+            ("F10:copy(0)/F9:chamfer(2,0)", "F9:chamfer(2,0)"),
+            (
+                "F8:between[F8:copy(0)/F1:face(2),F8:copy(1)/F2:face(0)|F8:copy(0)/F6:fillet(0,0)]",
+                "F8:copy(0)/F6:fillet(0,0)",
+            ),
+            (
+                "F8:between[F8:copy(0)/F6:fillet(0,1),F8:copy(1)/F2:face(0)]",
+                "F8:copy(0)/F6:fillet(0,1)",
+            ),
+            ("F9:rim(77)/F5:face(0)", "F9:rim(77)/F5:face(0)"),
+            (
+                "F10:between[F10:copy(0)/F9:rim(77)/F5:face(0),F10:copy(1)/F2:face(0)]",
+                "F10:copy(0)/F9:rim(77)/F5:face(0)",
+            ),
+        ] {
+            assert_eq!(place(text).as_deref(), Some(part), "{text}");
+        }
     }
 
     /// Every instance of a pattern names a face of its seed alike, whether

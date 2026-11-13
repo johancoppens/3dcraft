@@ -4,6 +4,16 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- **A fillet or a chamfer takes one edge by its own name.** Until now an edge was given as the two faces it lies between, which means every edge between them, so one of two edges between the same faces (where a pipe sunk into a plate leaves its top, say) could not be rounded alone. Give the edge's name instead, as `document.edges` lists it or a click in the window gives it: `"edges": ["F3:between[…]"]`, or `[edge name, face name]` to say which face a chamfer's first distance runs along. The name keeps meaning that edge when earlier features change or are put in before it. Pairs mean what they always meant.
+
+### Changed
+
+- **Names that say where an edge lies are refused by a fillet or a chamfer.** A name with a number at its end (`…](1)`), or one that lists a face numbered by where it lies (a round's `fillet(0,1)`), tells its edge apart only by its place, and an edit could move it to another edge without anything failing. The refusal says what names the edge instead, or that nothing does yet; then give the pair of its faces, which takes every edge between them.
+- **Files are format version 70.** A file saved by this version is not opened by 0.1.x, which says that a newer 3DCraft is needed; every file of 0.1.x opens as before.
+- **A plate's joint that failed may build now.** A joint whose edge was named by its faces in a body a later boolean took failed with "is gone"; it is followed to the edge the boolean kept and built. A joint that built is unchanged.
+
 ### Fixed
 
 - **Linux: a 3DCraft window that is killed or crashes no longer leaves a `gsettings monitor` process behind.** The window follows the desktop's light or dark setting through that program, which now ends with the window however the window ends.

@@ -17,9 +17,13 @@
 //! [`MAX_NEAR_HOPS`]) as it takes to tell all of them apart. Entities
 //! that even that does not tell apart (two concentric circles in which a
 //! torus cuts a plane) are numbered in the order of where they lie in
-//! space (`F7:between[a,b|c](1)`); such a number is the one part of a
-//! name an edit can move to another entity, which docs/design/names.md
-//! says.
+//! space (`F7:between[a,b|c](1)`). Such a number says where the entity
+//! lies, not how it was made, so an edit can move it to another entity
+//! without any failure; so can a face the name lists that is itself
+//! numbered by place (a blend's `fillet(0,1)`), and a plate's rim, whose
+//! name hashes an edge name that may be. docs/design/names.md › *Which
+//! numbers in a name are identity* has every number a name holds, and
+//! `PersistentName::place_part` finds the ones by place.
 //!
 //! An entity an operand already had also keeps the name the primitive or
 //! the sweep that first made it gave it, as a copy and as an alias

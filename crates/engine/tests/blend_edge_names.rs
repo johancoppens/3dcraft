@@ -392,24 +392,35 @@ fn an_edge_name_is_followed_through_the_features_that_take_its_body() {
         run(&mut s, "feature.delete", json!({"feature": "Bottom"}));
         assert_solid(&mut s, "Round", rounded, None, k);
 
-        // A chamfer put in at the marker on the plate's top edges at x = 0,
-        // one of which ends where the rounded edge does: the faces near
-        // that edge change, so its name in the chamfer's body is another
-        // (no rule rebuilding the name from those faces would find it),
-        // and the round follows the edge the kernel kept. The oracle: the
-        // same round built after the chamfer by the name the chamfer's
+        // A chamfer put in at the marker on the plate's top edge at x = 0
+        // behind the pipe, which ends where the rounded edge does: the
+        // faces near that edge change, so its name in the chamfer's body is
+        // another (no rule rebuilding the name from those faces would find
+        // it), and the round follows the edge the kernel kept. The oracle:
+        // the same round built after the chamfer by the name the chamfer's
         // body gives the edge.
-        let side = json!({"edges": [[TOP, "F3:copy(0)/F1:face(4)"]], "distance": 1.0 * k,
-                          "name": "Side"});
         let mut direct = session();
         plate_with_pipe(&mut direct, k, 16.0);
         let [_, high] = pipe_edges(&mut direct, "Joined");
+        let listed = run(&mut direct, "document.edges", json!({"feature": "Joined"}));
+        let behind: Vec<String> = listed["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| {
+                e["faces"] == json!([TOP, "F3:copy(0)/F1:face(4)"])
+                    && e["start"][1].as_f64().unwrap() > 20.0 * k
+            })
+            .map(|e| e["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(behind.len(), 1, "{listed}");
+        let side = json!({"edges": [behind[0]], "distance": 1.0 * k, "name": "Side"});
         built(&mut direct, "feature.chamfer", side.clone());
         let [_, there] = pipe_edges(&mut direct, "Side");
         // Near it now: the chamfer's face, no longer the plate's back and
         // left faces.
         assert!(
-            there.contains("|F4:copy(0)/F1:face(5),F4:chamfer(0,"),
+            there.contains("|F4:copy(0)/F1:face(5),F4:chamfer(0)]"),
             "{high} became {there}"
         );
         built(
@@ -1119,6 +1130,293 @@ fn numbered_lines(session: &mut Session, feature: &str) -> Vec<(String, Value)> 
     found
 }
 
+/// The volume a feature `name` adds to the body it takes (negative when it
+/// takes material away) and the centroid of what it adds or takes: the
+/// feature against itself suppressed, which passes that body on.
+fn added_by(session: &mut Session, name: &str) -> (f64, [f64; 3]) {
+    let moment = |b: &Value| {
+        let v = b["volume"].as_f64().unwrap();
+        let c = &b["centroid"];
+        (v, [0, 1, 2].map(|i| c[i].as_f64().unwrap() * v))
+    };
+    let state = feature(session, name);
+    assert_eq!(state["status"], "ok", "{state}");
+    let after = moment(&body(session, name));
+    run(session, "feature.suppress", json!({"feature": name}));
+    let before = moment(&body(session, name));
+    run(
+        session,
+        "feature.suppress",
+        json!({"feature": name, "suppressed": false}),
+    );
+    let added = after.0 - before.0;
+    assert!(added.abs() > 0.0, "{name} changed nothing");
+    (added, [0, 1, 2].map(|i| (after.1[i] - before.1[i]) / added))
+}
+
+#[test]
+fn a_name_that_lists_a_face_numbered_by_place_is_refused_since_an_edit_could_move_it() {
+    // (1) The half cylinder's two lines rounded by the pair: the round's
+    // faces are `fillet(0,0)` (at y < 0) and `fillet(0,1)`, numbered by
+    // where they lie. (2) A slab across the wall, unchanged by a half
+    // turn about z, cut from it. (3) The slab's floor meets the wall in two
+    // arcs, told apart by the round near each: their names end in no
+    // number, but list `fillet(0,0)` or `fillet(0,1)`. (4) Turned half a
+    // turn, `fillet(0,0)` is the image of the other round, so the name of
+    // the arc at y < 0 names the image of the other arc, at y < 0 again,
+    // without any failure. A blend by that name was taken before and
+    // would have moved with it; it is refused now, naming that face.
+    let arc_at = |s: &mut Session, name: &str| -> f64 {
+        let listed = run(s, "document.edges", json!({"feature": "Slotted"}));
+        let edge = listed["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == name)
+            .unwrap_or_else(|| panic!("no {name}: {listed}"))
+            .clone();
+        edge["start"][1].as_f64().unwrap() + edge["end"][1].as_f64().unwrap()
+    };
+    let mut s = session();
+    half_cylinder(&mut s);
+    let lines = numbered_lines(&mut s, "Half");
+    let faces = lines[0].1["faces"].clone();
+    built(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [faces], "radius": 1, "name": "Round"}),
+    );
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [4, 40, 2], "position": [-2, -20, 4], "name": "Slab"}),
+    );
+    // Turned with the rest, so every face but the rounds keeps its name on
+    // its image.
+    built(
+        &mut s,
+        "feature.transform",
+        json!({"source": "Slab", "angle": "turn", "name": "Slab turned"}),
+    );
+    built(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Round", "tool": "Slab turned", "name": "Slotted"}),
+    );
+    let listed = run(&mut s, "document.edges", json!({"feature": "Slotted"}));
+    let mut arcs: Vec<(f64, String)> = listed["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["curve"] != "line")
+        .filter(|e| {
+            let faces = e["faces"].to_string();
+            faces.contains("F7:face(0)\"") && faces.contains("F1:face(0)\"")
+        })
+        .map(|e| {
+            let y = e["start"][1].as_f64().unwrap() + e["end"][1].as_f64().unwrap();
+            (y, e["name"].as_str().unwrap().to_string())
+        })
+        .collect();
+    arcs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert_eq!(arcs.len(), 2, "{listed}");
+    let low = arcs[0].1.clone();
+    assert!(
+        low.ends_with(']') && low.contains("F6:fillet(0,0)"),
+        "the arc at y < 0 lists the round there: {low}"
+    );
+    assert!(arc_at(&mut s, &low) < 0.0);
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "turn", "expr": "180 deg"}),
+    );
+    // The arc that was at y < 0 is at y > 0 now; the name went with the
+    // place.
+    assert!(arc_at(&mut s, &low) < 0.0, "the name moved with the place");
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "turn", "expr": "0 deg"}),
+    );
+    for edges in [json!([low]), json!([[low, "F9:copy(1)/F7:face(0)"]])] {
+        let message = error(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": edges, "radius": 0.3, "name": "Arc"}),
+        );
+        assert!(
+            message.contains("edges.0")
+                && message.contains("holds F9:copy(0)/F6:fillet(0,0)")
+                && message.contains("numbered by where it lies in space"),
+            "{message}"
+        );
+    }
+    // A face given with an edge is held to the same rule: it says which
+    // side a chamfer's first size is on.
+    let message = error(
+        &mut s,
+        "feature.chamfer",
+        json!({"edges": [["F1:edge(0)", "F9:copy(0)/F6:fillet(0,0)"]], "distance": 1,
+               "second": 2, "name": "Bevel"}),
+    );
+    assert!(
+        message.contains("edges.0")
+            && message.contains("numbered by where it lies in space")
+            && message.contains("as the face its first size is measured along"),
+        "{message}"
+    );
+}
+
+#[test]
+fn names_numbered_by_how_they_were_made_follow_their_entity_through_the_edit_that_moves_places() {
+    // The edit that moves a place number: the lens drilled through, turned
+    // half a turn about its middle. Its two tip edges are numbered by
+    // place as edges of the cut (`(0)` at y < 0 whatever the turn), and
+    // answer to the extrusion's names of them (`lateralEdge(e6,e4)`, by
+    // the sketch's curves): a round by that name follows its edge to
+    // y > 0. And a pattern's instance: a round at the foot of pin 1 of
+    // two, named by the instance, follows pin 1 when the step turns
+    // round and it stands on the other side of pin 0.
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "turn", "expr": "0 deg"}),
+    );
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "xy", "name": "LensProfile"}),
+    );
+    run(
+        &mut s,
+        "sketch.arc",
+        json!({"sketch": "LensProfile", "center": [36, 0], "start": [40, -3], "end": [40, 3]}),
+    );
+    run(
+        &mut s,
+        "sketch.arc",
+        json!({"sketch": "LensProfile", "center": [44, 0], "start": "e3", "end": "e2"}),
+    );
+    built(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "LensProfile", "distance": 2, "name": "Lens"}),
+    );
+    built(
+        &mut s,
+        "feature.transform",
+        json!({"source": "Lens", "angle": "turn", "pivot": [40, 0, 0], "name": "Turned"}),
+    );
+    built(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 0.3, "height": 4, "position": [40, 0, -1], "axis": [0, 0, 1],
+               "name": "Drill"}),
+    );
+    built(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Turned", "tool": "Drill", "name": "Drilled"}),
+    );
+    let lines = numbered_lines(&mut s, "Drilled");
+    let (zero, line) = &lines[0];
+    assert!(zero.ends_with("(0)") && line["start"][1].as_f64().unwrap() < 0.0);
+    let alias = line["aliases"][0].as_str().unwrap().to_string();
+    assert!(alias.ends_with(":lateralEdge(e6,e4)"), "{alias}");
+    assert!(
+        !alias
+            .parse::<craft3d_doc::PersistentName>()
+            .unwrap()
+            .depends_on_place()
+    );
+    built(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [alias], "radius": 0.1, "name": "Tip"}),
+    );
+    let (taken, at) = added_by(&mut s, "Tip");
+    assert!(taken < 0.0 && at[1] < 0.0, "{taken} at {at:?}");
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "turn", "expr": "180 deg"}),
+    );
+    let (again, at) = added_by(&mut s, "Tip");
+    assert!(at[1] > 0.0, "the round follows its edge to y > 0: {at:?}");
+    assert!(
+        (again - taken).abs() <= 1e-9 * taken.abs(),
+        "{again} {taken}"
+    );
+    // The place number stays at y < 0: on the image of the other edge.
+    run(&mut s, "history.rollback", json!({"feature": "Drilled"}));
+    let (zero_now, line_now) = &numbered_lines(&mut s, "Drilled")[0];
+    assert_eq!(zero_now, zero);
+    assert!(line_now["start"][1].as_f64().unwrap() < 0.0);
+    assert!(line_now["aliases"][0] != json!(alias), "{line_now}");
+    run(&mut s, "history.rollback", json!({"feature": null}));
+
+    // Two pins, the second `dx` from the first.
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "dx", "expr": "20 mm"}),
+    );
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [100, 40, 10], "position": [0, 0, 0], "name": "Plate"}),
+    );
+    built(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 5, "height": 20, "position": [50, 20, 5], "axis": [0, 0, 1],
+               "name": "Pin"}),
+    );
+    built(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Pin", "count": 2, "step": ["dx", 0, 0], "name": "Pins"}),
+    );
+    built(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "union", "target": "Plate", "tool": "Pins", "name": "Joined"}),
+    );
+    let foot = edge_between(&mut s, "Joined", "F1:face(1)", "copy(1,1)/F2:face(0)");
+    assert!(
+        !foot
+            .parse::<craft3d_doc::PersistentName>()
+            .unwrap()
+            .depends_on_place()
+    );
+    built(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [foot], "radius": 1, "name": "Foot"}),
+    );
+    let (added, at) = added_by(&mut s, "Foot");
+    assert!(
+        added > 0.0 && (at[0] - 70.0).abs() < 1.0,
+        "{added} at {at:?}"
+    );
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "dx", "expr": "-20 mm"}),
+    );
+    let (again, at) = added_by(&mut s, "Foot");
+    assert!(
+        (at[0] - 30.0).abs() < 1.0,
+        "the round follows pin 1: {at:?}"
+    );
+    assert!((again - added).abs() <= 1e-9 * added, "{again} {added}");
+}
+
 #[test]
 fn an_edge_named_by_its_place_alone_is_refused_since_an_edit_could_move_it() {
     // Taken, the name `(0)` (the line at y = -sqrt(24)) would round, after
@@ -1262,17 +1560,18 @@ fn an_edge_numbered_by_place_that_has_another_name_is_refused_with_that_name() {
                 && message.contains(&format!("also called \"{alias}\"")),
             "{message}"
         );
-        // The other name is taken, and means that edge.
-        let made = run(
+        // The other name is taken, and means that edge: the round it
+        // makes takes its material on the edge's side of the lens.
+        built(
             &mut s,
             "feature.fillet",
             json!({"edges": [alias], "radius": 0.1, "name": "Tip"}),
         );
-        assert_ne!(made["status"], json!(null), "{made}");
-        let state = feature(&mut s, "Tip");
+        let (taken, at) = added_by(&mut s, "Tip");
+        let y = line["start"][1].as_f64().unwrap();
         assert!(
-            state["status"] == "ok" || !state["error"].as_str().unwrap().contains("has no edge"),
-            "{state}"
+            taken < 0.0 && at[1] * y > 0.0,
+            "{taken} at {at:?}, edge at y {y}"
         );
         run(&mut s, "feature.delete", json!({"feature": "Tip"}));
     }
@@ -1380,4 +1679,45 @@ fn edge_names_through_a_blend_that_uses_a_face_up_are_followed_or_refused() {
             "{followed}"
         );
     }
+}
+
+#[test]
+#[ignore = "owed, older than edge names (0.1.0): a face pair that lists a blend face numbered by place moves with the place; the pair path is kept as it was for the files that hold such pairs, docs/design/names.md"]
+fn a_pair_that_lists_a_blend_face_numbered_by_place_follows_that_face() {
+    // The half cylinder's two lines rounded by the pair (`fillet(0,0)` at
+    // y < 0, `fillet(0,1)`): the pair of `fillet(0,0)` and the top names
+    // the edge where that round meets the top, at y < 0. After both bodies
+    // are turned half a turn, `fillet(0,0)` is the image of the other
+    // round, and the same pair names the image of the other edge, at y < 0
+    // again, without a failure; a blend given that pair goes with it.
+    // Following the round it named, the pair would name the edge at y > 0.
+    // (Shown by the edges the pair names: a chamfer of that edge, its end
+    // between a round and the cut, is refused by the kernel.)
+    let mut s = session();
+    half_cylinder(&mut s);
+    let lines = numbered_lines(&mut s, "Half");
+    let faces = lines[0].1["faces"].clone();
+    built(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [faces], "radius": 1, "name": "Round"}),
+    );
+    let pair = json!(["F6:fillet(0,0)", "F6:copy(0)/F1:face(2)"]);
+    let side = |s: &mut Session| {
+        let listed = run(
+            s,
+            "document.edges",
+            json!({"feature": "Round", "between": pair}),
+        );
+        let edges = listed["edges"].as_array().unwrap();
+        assert_eq!(edges.len(), 1, "{listed}");
+        edges[0]["start"][1].as_f64().unwrap() + edges[0]["end"][1].as_f64().unwrap()
+    };
+    assert!(side(&mut s) < 0.0);
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "turn", "expr": "180 deg"}),
+    );
+    assert!(side(&mut s) > 0.0, "the pair stayed with the place");
 }
