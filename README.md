@@ -4,6 +4,10 @@
 
 *An agent builds. A machine checks. You decide.*
 
+**[3dcraft.dev](https://3dcraft.dev/)**: the website, with the guide and the examples ·
+**[Try it in your browser](https://3dcraft.dev/app/)** ·
+**[Download](https://github.com/johancoppens/3dcraft/releases/latest)**
+
 ![The 3DCraft window with the spiral staircase example: its 93 features and 16 checks, all passing, in the side panel, the history player under them, the view cube and the display bar](docs/img/window.png)
 
 ## Three ways to use it
