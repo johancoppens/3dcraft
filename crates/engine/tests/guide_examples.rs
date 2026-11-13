@@ -20,18 +20,26 @@ use common::checked::run;
 use craft3d_engine::Session;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::sync::{Condvar, Mutex, PoisonError};
 
 fn docs() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs")
 }
 
-/// The folders of example scripts: the guide's lessons, and the models
-/// that were its examples until 2026-11-10 and stay as tests.
+/// The guide's lessons.
+fn lessons_dir() -> PathBuf {
+    docs().join("examples")
+}
+
+/// The models that were the guide's examples until 2026-11-10 and stay as
+/// tests.
+fn models_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/example_models")
+}
+
+/// The folders of example scripts.
 fn example_dirs() -> [PathBuf; 2] {
-    [
-        docs().join("examples"),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/example_models"),
-    ]
+    [lessons_dir(), models_dir()]
 }
 
 fn read_text(path: &Path) -> String {
@@ -66,46 +74,149 @@ fn steps(script: &Value) -> Option<Vec<(String, Value)>> {
         .collect()
 }
 
-#[test]
-fn every_example_builds_and_meets_its_assertions() {
-    let scripts: Vec<PathBuf> = example_dirs()
-        .iter()
-        .flat_map(|dir| files(dir, "json"))
-        .collect();
-    assert!(scripts.len() >= 18, "examples: {scripts:?}");
-    for path in &scripts {
-        let name = stem(path);
-        let script: Value = serde_json::from_str(&read_text(path))
-            .unwrap_or_else(|e| panic!("{name}: not JSON: {e}"));
-        let steps = steps(&script).unwrap_or_else(|| panic!("{name}: not a list of steps"));
-        let mut s = common::session();
-        run(&mut s, "file.new", json!({"units": "mm"}));
-        for (id, params) in steps {
-            run(&mut s, &id, params);
+/// How many example scripts build at the same time, each in a test of its
+/// own: a quarter of the machine's threads, at most 8. libtest would start
+/// all eighteen at once beside this file's other tests, each holding its
+/// document, bodies and deep check in memory, while the scripts' own work
+/// (meshing, booleans, the deep check) uses several threads already and
+/// the gate runs other test binaries beside this one. With four threads or
+/// fewer they build one at a time, as when they were one test. Only how
+/// many run at once depends on the machine: each script builds in a session
+/// of its own, so what it builds does not.
+fn scripts_at_once() -> usize {
+    std::thread::available_parallelism()
+        .map_or(1, |n| n.get() / 4)
+        .clamp(1, 8)
+}
+
+static BUILDING: Mutex<usize> = Mutex::new(0);
+static A_SCRIPT_ENDED: Condvar = Condvar::new();
+
+/// A place among the scripts that build at once, given back when the test
+/// ends, also when it fails.
+struct Place;
+
+impl Place {
+    fn wait() -> Place {
+        let at_once = scripts_at_once();
+        let mut building = BUILDING.lock().unwrap_or_else(PoisonError::into_inner);
+        while *building >= at_once {
+            building = A_SCRIPT_ENDED
+                .wait(building)
+                .unwrap_or_else(PoisonError::into_inner);
         }
-        let document = run(&mut s, "document.inspect", json!({}));
-        for feature in document["features"].as_array().unwrap() {
-            assert_eq!(feature["status"], "ok", "{name}: {feature}");
-        }
-        assert!(
-            !document["bodies"].as_array().unwrap().is_empty(),
-            "{name}: no body"
-        );
-        let assertions = run(&mut s, "assert.list", json!({}));
-        assert_eq!(assertions["ok"], true, "{name}: {assertions}");
-        assert_eq!(
-            assertions["passed"], assertions["count"],
-            "{name}: {assertions}"
-        );
-        let volume = assertions["assertions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|a| a["measure"]["measure"] == "volume");
-        assert!(volume, "{name}: every example asserts its volume");
-        let check = run(&mut s, "document.check", json!({"deep": true}));
-        assert_eq!(check["ok"], true, "{name}: {check}");
+        *building += 1;
+        Place
     }
+}
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        let mut building = BUILDING.lock().unwrap_or_else(PoisonError::into_inner);
+        *building = building.saturating_sub(1);
+        A_SCRIPT_ENDED.notify_one();
+    }
+}
+
+/// An example script builds in a new document without a failed feature,
+/// meets every assertion it carries (one of them on its volume at least)
+/// and passes the deep check.
+fn builds_and_meets_its_assertions(path: &Path) {
+    let _place = Place::wait();
+    let name = stem(path);
+    let script: Value =
+        serde_json::from_str(&read_text(path)).unwrap_or_else(|e| panic!("{name}: not JSON: {e}"));
+    let steps = steps(&script).unwrap_or_else(|| panic!("{name}: not a list of steps"));
+    let mut s = common::session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    for (id, params) in steps {
+        run(&mut s, &id, params);
+    }
+    let document = run(&mut s, "document.inspect", json!({}));
+    for feature in document["features"].as_array().unwrap() {
+        assert_eq!(feature["status"], "ok", "{name}: {feature}");
+    }
+    assert!(
+        !document["bodies"].as_array().unwrap().is_empty(),
+        "{name}: no body"
+    );
+    let assertions = run(&mut s, "assert.list", json!({}));
+    assert_eq!(assertions["ok"], true, "{name}: {assertions}");
+    assert_eq!(
+        assertions["passed"], assertions["count"],
+        "{name}: {assertions}"
+    );
+    let volume = assertions["assertions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|a| a["measure"]["measure"] == "volume");
+    assert!(volume, "{name}: every example asserts its volume");
+    let check = run(&mut s, "document.check", json!({"deep": true}));
+    assert_eq!(check["ok"], true, "{name}: {check}");
+}
+
+/// One test per example script of a folder, so libtest builds them side by
+/// side (they were one test until 2026-11-13, eighteen scripts one after
+/// the other, and the longest test of the workspace), and the list of
+/// them, which `every_example_script_has_its_test` holds to the folder.
+macro_rules! one_test_per_script {
+    ($folder:ident in $dir:path: $($script:ident),* $(,)?) => {
+        mod $folder {
+            pub const SCRIPTS: &[&str] = &[$(stringify!($script)),*];
+
+            pub fn dir() -> std::path::PathBuf {
+                $dir()
+            }
+
+            $(
+                #[test]
+                fn $script() {
+                    super::builds_and_meets_its_assertions(
+                        &dir().join(concat!(stringify!($script), ".json")),
+                    );
+                }
+            )*
+        }
+    };
+}
+
+one_test_per_script!(lesson in super::lessons_dir:
+    bracket, bushing, case, flange, gear, hopper, spring);
+
+one_test_per_script!(model in super::models_dir:
+    channel, chassis, clamp, fin, mouse, nameplate, panel, pipe, shade, tank, wedge);
+
+/// Every script in either folder has its test above, and every test names
+/// a script that is there: a new example cannot go untested, and a removed
+/// one leaves no test behind.
+#[test]
+fn every_example_script_has_its_test() {
+    let mut wrong = Vec::new();
+    let mut count = 0;
+    for (dir, listed) in [
+        (lesson::dir(), lesson::SCRIPTS),
+        (model::dir(), model::SCRIPTS),
+    ] {
+        let there: Vec<String> = files(&dir, "json").iter().map(|p| stem(p)).collect();
+        count += there.len();
+        for name in &there {
+            if !listed.contains(&name.as_str()) {
+                wrong.push(format!(
+                    "{dir:?}: {name}.json has no test: add `{name}` to its `one_test_per_script!`"
+                ));
+            }
+        }
+        for name in listed {
+            if !there.iter().any(|t| t == name) {
+                wrong.push(format!(
+                    "{dir:?}: the test `{name}` names a script that is not there"
+                ));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    assert!(count >= 18, "{count} example scripts");
 }
 
 #[test]
