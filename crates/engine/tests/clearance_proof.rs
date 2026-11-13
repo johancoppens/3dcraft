@@ -541,3 +541,52 @@ fn the_clamp_turned_far_from_the_origin_overlaps_and_no_clearance_is_proven() {
         );
     }
 }
+
+/// Review of 2026-11-13, blocker 1: two blocks 20 × 20 × 10, the second at
+/// x = 21, so their facing sides are 1 apart, both turned 7°, 14°, …, 84°
+/// about [0.36, 0.48, 0.8] and moved by [60, −40, 66], at scales 1e-3, 1
+/// and 1e6: the distance is 1 (the facing sides, by hand: a rigid motion
+/// keeps it) and the clearance clear and proven above twice the
+/// tolerance. Triangles of the coplanar tops and bottoms, nearly in one
+/// plane once turned, were taken as crossing by the first repair's band.
+#[test]
+fn blocks_side_by_side_turned_are_their_gap_apart() {
+    for k in [1e-3, 1.0, 1e6] {
+        let tol = 1e-6 * k;
+        for turn in 1..=12 {
+            let mut s = document(k);
+            build(
+                &mut s,
+                &[
+                    (
+                        "feature.block",
+                        json!({"name": "A0", "size": [mm(20.0 * k), mm(20.0 * k), mm(10.0 * k)]}),
+                    ),
+                    (
+                        "feature.block",
+                        json!({"name": "B0", "size": [mm(20.0 * k), mm(20.0 * k), mm(10.0 * k)], "position": [mm(21.0 * k), mm(0.0), mm(0.0)]}),
+                    ),
+                ],
+            );
+            for (source, name) in [("A0", "A"), ("B0", "B")] {
+                run(
+                    &mut s,
+                    "feature.transform",
+                    json!({"source": source, "angle": format!("{} deg", 7 * turn), "axis": [0.36, 0.48, 0.8], "pivot": [mm(0.0), mm(0.0), mm(0.0)], "translate": [mm(60.0 * k), mm(-40.0 * k), mm(66.0 * k)], "name": name}),
+                );
+            }
+            let what = format!("turned {}° at {k}", 7 * turn);
+            let d = run(&mut s, "measure.distance", json!({"from": "A", "to": "B"}));
+            let (found, at_least) = (
+                d["distance"].as_f64().unwrap(),
+                d["atLeast"].as_f64().unwrap(),
+            );
+            assert!((found - k).abs() <= tol, "{what}: {d}");
+            assert!(at_least > 2.0 * tol && at_least <= found, "{what}: {d}");
+            let (status, value, at_least) = clearance(&mut s, "A", "B");
+            assert_eq!(status, "clear", "{what}");
+            assert!((value.unwrap() - k).abs() <= tol, "{what}: {value:?}");
+            assert!(at_least.unwrap() > 2.0 * tol, "{what}: {at_least:?}");
+        }
+    }
+}
