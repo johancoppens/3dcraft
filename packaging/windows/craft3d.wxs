@@ -8,10 +8,14 @@
      licence of the examples (MIT), Jigs and assemblies (CC BY 4.0) built into
      them, are taken from BinDir.
 
-     It installs both programs into Program Files\3DCraft for all users,
+     It installs the programs into Program Files\3DCraft for all users,
      adds that folder to the system PATH (so `craft3d-cli` works in a new
      terminal), a Start menu entry, and opens .3dcraft documents and
-     .3dcraftjig Jigs and .3dcraftasm assemblies with 3DCraft.
+     .3dcraftjig Jigs and .3dcraftasm assemblies with 3DCraft. The Start
+     menu entry and the three file types start the launcher, 3DCraft.exe
+     (`craft3d-launcher`), which starts craft3d.exe without a console window
+     (docs/decisions.md, 2026-11-13); craft3d.exe and craft3d-cli.exe stay
+     console programs for terminals and agents.
      The UpgradeCode never changes: a newer MSI replaces an older one. -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="3DCraft"
@@ -34,7 +38,13 @@
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="3DCraft">
         <Component Id="App">
-          <File Id="craft3d.exe" Source="$(var.BinDir)\craft3d.exe" KeyPath="yes">
+          <File Id="craft3d.exe" Source="$(var.BinDir)\craft3d.exe" KeyPath="yes" />
+        </Component>
+        <!-- The launcher, the key path of the Start menu entry and of the
+             three file types, which advertised entries take as their
+             target. -->
+        <Component Id="Launcher">
+          <File Id="launcher.exe" Source="$(var.BinDir)\3DCraft.exe" KeyPath="yes">
             <Shortcut Id="StartMenuShortcut"
                       Directory="ProgramMenuFolder"
                       Name="3DCraft"
@@ -107,6 +117,7 @@
 
     <Feature Id="Main" Title="3DCraft" Level="1">
       <ComponentRef Id="App" />
+      <ComponentRef Id="Launcher" />
       <ComponentRef Id="Cli" />
       <ComponentRef Id="Licence" />
       <ComponentRef Id="ThirdPartyNotices" />

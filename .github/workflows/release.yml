@@ -184,6 +184,24 @@ jobs:
           "$dir/craft3d.exe" --version
           "$dir/craft3d-cli.exe" --version
           "$dir/craft3d-cli.exe" commands > /dev/null
+          # The launcher, 3DCraft.exe (the Windows GUI subsystem: the package
+          # log says so), starts craft3d.exe beside it with its arguments,
+          # and its output passes through...
+          said=$("$dir/3DCraft.exe" --version)
+          echo "3DCraft.exe --version: $said"
+          case "$said" in
+            "craft3d "*) ;;
+            *) echo "::error::3DCraft.exe --version did not pass craft3d.exe's answer on"; exit 1 ;;
+          esac
+          # ...and it says why a window could not start: with the switch, as
+          # a line in a file, since the runner has no desktop to show a box
+          # on. An unknown option is a start that fails without a GPU.
+          log="$RUNNER_TEMP/launcher.log"
+          if CRAFT3D_LAUNCHER_LOG="$log" "$dir/3DCraft.exe" --no-such-option; then
+            echo "::error::3DCraft.exe ended well for a window that could not start"; exit 1
+          fi
+          cat "$log"
+          grep -q '^craft3d-launcher: 3DCraft could not start\. | craft3d: unknown flag' "$log"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -287,6 +305,25 @@ jobs:
             }
             Write-Host "$program from Program Files: $said"
           }
+          # The Start menu entry starts the launcher: an advertised shortcut
+          # names a product and a component, whose key path is the program.
+          $launcher = Join-Path $folder '3DCraft.exe'
+          if (-not (Test-Path -LiteralPath $launcher)) { throw "$launcher was not installed" }
+          $lnk = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\3DCraft.lnk'
+          if (-not (Test-Path -LiteralPath $lnk)) { throw "the Start menu entry $lnk is missing" }
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $target = $installer.ShortcutTarget($lnk)
+          $started = $installer.ComponentPath($target.StringData(1), $target.StringData(3))
+          if ($started -ne $launcher) { throw "the Start menu entry starts $started, not $launcher" }
+          Write-Host "the Start menu entry starts $started"
+          # A double-clicked .3dcraft, .3dcraftjig and .3dcraftasm too: each
+          # names its file type, whose open verb the launcher's component
+          # carries (packaging/windows/craft3d.wxs).
+          foreach ($pair in @(@('.3dcraft', 'Craft3D.Document.1'), @('.3dcraftjig', 'Craft3D.Jig.1'), @('.3dcraftasm', 'Craft3D.Assembly.1'))) {
+            $named = (Get-ItemProperty -LiteralPath "Registry::HKEY_CLASSES_ROOT\$($pair[0])").'(default)'
+            if ($named -ne $pair[1]) { throw "$($pair[0]) names $named, not $($pair[1])" }
+          }
+          Write-Host "the three file types are registered"
           $path = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').Path
           if (-not ($path -split ';' | Where-Object { $_.TrimEnd('\') -eq $folder })) {
             throw "the system PATH does not name $folder"
