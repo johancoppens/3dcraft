@@ -297,7 +297,7 @@ The resource `craft3d://selection` (`resources/list`, `resources/read`) is the s
 
 | Tool | `annotations` | Why |
 |---|---|---|
-| `command_list`, `doc_inspect`, `doc_render_preview` | `readOnlyHint: true`, `openWorldHint: false` | No document, selection, view or file changes: `command_list` reads the registry from a shared reference, `doc_render_preview` returns its picture and writes none, with a camera of its own (not the window's) |
+| `command_list`, `doc_inspect`, `doc_render_preview` | `readOnlyHint: true`, `openWorldHint: false` | No document, selection, view or file changes: `command_list` only reads the registry, `doc_render_preview` returns its picture and writes none, with a camera of its own (not the window's) |
 | `selection_get` | `idempotentHint: true`, `openWorldHint: false` | Not read-only: reading the selection checks it against the document, and what no longer exists drops out for good, so a deletion undone afterwards does not bring it back as it would had nothing read the selection (the window reads it every frame anyway; `craft3d-cli mcp` only when asked). A second read changes nothing more |
 | `command_run`, `command_batch`, `control_call` | `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: false`, `openWorldHint: false` | A command deletes a feature, overwrites a file or discards a document's changes; the same block twice is two blocks; a window method moves the camera, selects or writes a picture |
 

@@ -9,6 +9,10 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 - **Linux: a 3DCraft window that is killed or crashes no longer leaves a `gsettings monitor` process behind.** The window follows the desktop's light or dark setting through that program, which now ends with the window however the window ends.
 - **The web version's page says what it is**: its title, *3DCraft in your browser: parametric 3D CAD*, stays while no document is open, and it has a description for search engines.
 
+### Changed
+
+- **The MCP server says more about itself.** It gives its display name, *3DCraft*, to clients that speak protocol version 2025-06-18 or later; its tools carry annotations, so a client knows that `command_list`, `doc_inspect` and `doc_render_preview` only read and that none of the tools reaches beyond your computer; and `command_run`'s description says that opening, saving, importing and exporting files are commands. The tools, their names and their inputs are unchanged.
+
 ## [0.1.1] - 2026-11-12
 
 A fix for the Windows packages. On Linux, macOS and the web, 0.1.1 is 0.1.0 with a new version number.
