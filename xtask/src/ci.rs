@@ -66,7 +66,9 @@ pub fn test(args: &[String]) -> Result<(), String> {
     let selection = test_selection(args)?;
     let selection: Vec<&str> = selection.iter().map(String::as_str).collect();
     let binaries = build_tests(&selection)?;
-    run_side_by_side(binaries)
+    let result = run_side_by_side(binaries);
+    eprintln!("xtask test: the doctests were not run (`cargo test -p <crate> --doc`)");
+    result
 }
 
 /// The arguments of `cargo xtask test` as cargo takes them: `-p` (or
@@ -203,11 +205,21 @@ fn write_durations(path: &Path, durations: &BTreeMap<String, f64>) {
     }
 }
 
+/// How a test binary's run ended.
+struct Outcome {
+    label: String,
+    secs: f64,
+    passed: bool,
+    /// `exit status: 101`, `signal: 9 (SIGKILL)` (killed: out of memory, a
+    /// time limit), or `not started`.
+    ended: String,
+}
+
 /// The durations known before a run, with those of the binaries it ran
 /// put in: an entry of a binary it did not run is kept as it was.
-fn merged(mut known: BTreeMap<String, f64>, ran: &[(String, f64, bool)]) -> BTreeMap<String, f64> {
-    for (label, secs, _) in ran {
-        known.insert(label.clone(), *secs);
+fn merged(mut known: BTreeMap<String, f64>, ran: &[Outcome]) -> BTreeMap<String, f64> {
+    for outcome in ran {
+        known.insert(outcome.label.clone(), outcome.secs);
     }
     known
 }
@@ -220,9 +232,12 @@ fn serial_group(binary: &TestBinary) -> Option<&'static str> {
 }
 
 /// Runs the test binaries on a pool of workers, each in its package
-/// directory as cargo would, and prints each one's output in one piece
-/// when it is done. Every binary runs even after one fails, so one gate
-/// run reports everything.
+/// directory as cargo would, and prints a line `-> <binary>` when one
+/// starts (so a run cut off says which were still running) and its output
+/// in one piece when it is done, after a line `== <binary> (<time>)`, or
+/// `== <binary> (<time>, <how it ended>): FAILED` (`xtask health` reads
+/// those). Every binary runs even after one fails, so one gate run reports
+/// everything.
 fn run_side_by_side(binaries: Vec<TestBinary>) -> Result<(), String> {
     run_side_by_side_into(binaries, &Mutex::new(std::io::stdout()))
 }
@@ -270,7 +285,7 @@ fn run_side_by_side_into(
     eprintln!("running {count} test binaries, {workers} at a time");
     let clock = Instant::now();
     let queue = Mutex::new(VecDeque::from(groups));
-    let outcomes: Mutex<Vec<(String, f64, bool)>> = Mutex::new(Vec::new());
+    let outcomes: Mutex<Vec<Outcome>> = Mutex::new(Vec::new());
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {
@@ -281,6 +296,11 @@ fn run_side_by_side_into(
                         .pop_front();
                     let Some(group) = next else { break };
                     for binary in group {
+                        {
+                            let mut out = out.lock().unwrap_or_else(PoisonError::into_inner);
+                            let _ = writeln!(out, "-> {}", binary.label);
+                            let _ = out.flush();
+                        }
                         let started = Instant::now();
                         let result = Command::new(&binary.executable)
                             .current_dir(&binary.manifest_dir)
@@ -288,9 +308,10 @@ fn run_side_by_side_into(
                             .env("CARGO_TARGET_TMPDIR", &tmp)
                             .output();
                         let secs = started.elapsed().as_secs_f64();
-                        let (ok, text) = match result {
+                        let (ok, ended, text) = match result {
                             Ok(output) => (
                                 output.status.success(),
+                                output.status.to_string(),
                                 format!(
                                     "{}{}",
                                     String::from_utf8_lossy(&output.stdout),
@@ -299,24 +320,29 @@ fn run_side_by_side_into(
                             ),
                             Err(e) => (
                                 false,
+                                "not started".to_string(),
                                 format!("cannot run {}: {e}\n", binary.executable.display()),
                             ),
                         };
                         {
                             let mut out = out.lock().unwrap_or_else(PoisonError::into_inner);
-                            let _ = writeln!(
-                                out,
-                                "== {} ({secs:.1} s){}",
-                                binary.label,
-                                if ok { "" } else { ": FAILED" }
-                            );
+                            let _ = if ok {
+                                writeln!(out, "== {} ({secs:.1} s)", binary.label)
+                            } else {
+                                writeln!(out, "== {} ({secs:.1} s, {ended}): FAILED", binary.label)
+                            };
                             let _ = out.write_all(text.as_bytes());
                             let _ = out.flush();
                         }
                         outcomes
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
-                            .push((binary.label.clone(), secs, ok));
+                            .push(Outcome {
+                                label: binary.label.clone(),
+                                secs,
+                                passed: ok,
+                                ended,
+                            });
                     }
                 }
             });
@@ -327,11 +353,11 @@ fn run_side_by_side_into(
         .into_inner()
         .unwrap_or_else(PoisonError::into_inner);
     write_durations(&durations_file, &merged(known, &outcomes));
-    let busy: f64 = outcomes.iter().map(|o| o.1).sum();
-    let failed: Vec<&str> = outcomes
+    let busy: f64 = outcomes.iter().map(|o| o.secs).sum();
+    let failed: Vec<String> = outcomes
         .iter()
-        .filter(|o| !o.2)
-        .map(|o| o.0.as_str())
+        .filter(|o| !o.passed)
+        .map(|o| format!("{} ({})", o.label, o.ended))
         .collect();
     eprintln!(
         "tests: {} binaries, {} failed, {wall:.0} s wall, {busy:.0} s of binary time",
@@ -351,7 +377,9 @@ fn run_side_by_side_into(
 
 #[cfg(test)]
 mod tests {
-    use super::{TestBinary, merged, read_durations, run_side_by_side_into, test_selection};
+    use super::{
+        Outcome, TestBinary, merged, read_durations, run_side_by_side_into, test_selection,
+    };
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
@@ -425,9 +453,15 @@ mod tests {
             ("crates/a: test long".to_string(), 600.0),
             ("crates/b: test short".to_string(), 1.0),
         ]);
+        let outcome = |label: &str, secs: f64, passed: bool| Outcome {
+            label: label.to_string(),
+            secs,
+            passed,
+            ended: String::new(),
+        };
         let ran = [
-            ("crates/b: test short".to_string(), 2.5, true),
-            ("crates/c: test new".to_string(), 7.0, false),
+            outcome("crates/b: test short", 2.5, true),
+            outcome("crates/c: test new", 7.0, false),
         ];
         assert_eq!(
             merged(known, &ran),
@@ -483,28 +517,46 @@ mod tests {
         let printed = Mutex::new(Vec::new());
         let failed = run_side_by_side_into(binaries, &printed).unwrap_err();
         let printed = String::from_utf8(printed.into_inner().unwrap()).unwrap();
-        assert!(failed.contains("crates/x: test missing"), "{failed}");
         assert!(
-            printed.contains("== crates/x: test missing (")
-                && printed.contains("): FAILED\ncannot run "),
+            failed.contains("crates/x: test missing (not started)"),
+            "{failed}"
+        );
+        assert!(printed.contains("-> crates/x: test missing\n"), "{printed}");
+        assert!(
+            printed.contains(", not started): FAILED\ncannot run "),
             "{printed}"
         );
         let durations = read_durations(&file);
         assert_eq!(durations.get("crates/y: test not run"), Some(&300.0));
-        assert!(durations.contains_key("crates/x: test missing"));
+        let mut expected = vec![
+            "crates/x: test missing",
+            "crates/x: test passes",
+            "crates/y: test not run",
+        ];
         if ran == 3 {
             assert!(failed.starts_with("2 test binaries failed"), "{failed}");
-            assert!(failed.contains("crates/x: test fails"), "{failed}");
-            assert!(!failed.contains("crates/x: test passes"), "{failed}");
-            assert!(printed.contains("== crates/x: test fails ("), "{printed}");
             assert!(
-                !printed.contains("test passes (0.0 s): FAILED"),
-                "{printed}"
+                failed.contains("crates/x: test fails (exit status: 1)"),
+                "{failed}"
             );
+            assert!(!failed.contains("test passes"), "{failed}");
+            assert!(printed.contains("-> crates/x: test fails\n"), "{printed}");
+            assert!(printed.contains(", exit status: 1): FAILED\n"), "{printed}");
+            let passes = printed
+                .lines()
+                .find(|l| l.starts_with("== crates/x: test passes ("))
+                .unwrap();
+            assert!(!passes.ends_with("FAILED"), "{printed}");
             assert!(durations["crates/x: test passes"] < 99.0, "{durations:?}");
-            assert!(durations.contains_key("crates/x: test fails"));
+            expected.push("crates/x: test fails");
+        } else {
+            // Not run here (no `true` and `false`): its entry is kept.
+            assert!(failed.starts_with("1 test binaries failed"), "{failed}");
+            assert_eq!(durations.get("crates/x: test passes"), Some(&99.0));
         }
-        assert_eq!(durations.len(), ran + 1, "{durations:?}");
+        expected.sort_unstable();
+        let keys: Vec<&str> = durations.keys().map(String::as_str).collect();
+        assert_eq!(keys, expected);
         let _ = std::fs::remove_dir_all(&root);
     }
 
