@@ -19,6 +19,7 @@ mod common;
 use common::checked::run;
 use craft3d_engine::Session;
 use serde_json::{Value, json};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, PoisonError};
 
@@ -75,18 +76,43 @@ fn steps(script: &Value) -> Option<Vec<(String, Value)>> {
 }
 
 /// How many example scripts build at the same time, each in a test of its
-/// own: a quarter of the machine's threads, at most 8. libtest would start
-/// all eighteen at once beside this file's other tests, each holding its
-/// document, bodies and deep check in memory, while the scripts' own work
-/// (meshing, booleans, the deep check) uses several threads already and
-/// the gate runs other test binaries beside this one. With four threads or
-/// fewer they build one at a time, as when they were one test. Only how
-/// many run at once depends on the machine: each script builds in a session
-/// of its own, so what it builds does not.
+/// own: one per 4 of the machine's threads and per 12 GiB of its memory, at
+/// most 8, and one where the memory cannot be read (outside Linux). The
+/// build server's 32 threads and 123 GB give 8; a laptop's 16 threads and
+/// 30 GB give 2. libtest would otherwise start all eighteen at once beside
+/// this file's other tests. A script holds its session: the bodies of its
+/// document, at most 1 GiB of the bodies that went into later features
+/// (the session's body budget), and after each command a regeneration from
+/// nothing to compare with, which keeps bodies within a budget of its own;
+/// the deep check at the end meshes every face. 12 GiB a script is a
+/// ceiling for that, beside the test binaries the gate runs with this one,
+/// not a measure: the process's peak is printed when a script ends (on
+/// Linux). Only how many build at once depends on the machine: each
+/// script builds in a session of its own, so what it builds does not.
 fn scripts_at_once() -> usize {
-    std::thread::available_parallelism()
-        .map_or(1, |n| n.get() / 4)
-        .clamp(1, 8)
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    match memory_gib() {
+        Some(memory) => (threads / 4).min(memory / 12).clamp(1, 8),
+        None => 1,
+    }
+}
+
+/// A number of kibibytes from a line `<key> <number> kB` of a file under
+/// `/proc`, where there is one.
+fn proc_kib(file: &str, key: &str) -> Option<usize> {
+    std::fs::read_to_string(file)
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix(key))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// The machine's memory in GiB (Linux).
+fn memory_gib() -> Option<usize> {
+    proc_kib("/proc/meminfo", "MemTotal:").map(|kib| kib / (1024 * 1024))
 }
 
 static BUILDING: Mutex<usize> = Mutex::new(0);
@@ -115,6 +141,20 @@ impl Drop for Place {
         let mut building = BUILDING.lock().unwrap_or_else(PoisonError::into_inner);
         *building = building.saturating_sub(1);
         A_SCRIPT_ENDED.notify_one();
+    }
+}
+
+/// Says in the test's log, past libtest's capture, how much memory the
+/// process has held at most so far (Linux; nothing elsewhere), so a run's
+/// log shows what the scripts building at once cost.
+fn print_peak_memory(name: &str) {
+    if let Some(kib) = proc_kib("/proc/self/status", "VmHWM:") {
+        let _ = writeln!(
+            std::io::stderr(),
+            "guide_examples: {name} built, {} scripts at once; the process's peak resident memory so far {} MiB",
+            scripts_at_once(),
+            kib / 1024
+        );
     }
 }
 
@@ -154,16 +194,26 @@ fn builds_and_meets_its_assertions(path: &Path) {
     assert!(volume, "{name}: every example asserts its volume");
     let check = run(&mut s, "document.check", json!({"deep": true}));
     assert_eq!(check["ok"], true, "{name}: {check}");
+    print_peak_memory(&name);
 }
 
 /// One test per example script of a folder, so libtest builds them side by
 /// side (they were one test until 2026-11-13, eighteen scripts one after
 /// the other, and the longest test of the workspace), and the list of
 /// them, which `every_example_script_has_its_test` holds to the folder.
+/// A script is named by its test, `bracket` for `bracket.json`, or, when
+/// its file name is not a Rust identifier (a keyword such as `box`, a
+/// hyphen), by its test and its file name: `two_bars = "two-bars"`.
 macro_rules! one_test_per_script {
-    ($folder:ident in $dir:path: $($script:ident),* $(,)?) => {
+    (@file $script:ident) => {
+        stringify!($script)
+    };
+    (@file $script:ident $file:literal) => {
+        $file
+    };
+    ($folder:ident in $dir:path: $($script:ident $(= $file:literal)?),* $(,)?) => {
         mod $folder {
-            pub const SCRIPTS: &[&str] = &[$(stringify!($script)),*];
+            pub const SCRIPTS: &[&str] = &[$(one_test_per_script!(@file $script $($file)?)),*];
 
             pub fn dir() -> std::path::PathBuf {
                 $dir()
@@ -172,9 +222,8 @@ macro_rules! one_test_per_script {
             $(
                 #[test]
                 fn $script() {
-                    super::builds_and_meets_its_assertions(
-                        &dir().join(concat!(stringify!($script), ".json")),
-                    );
+                    let file = one_test_per_script!(@file $script $($file)?);
+                    super::builds_and_meets_its_assertions(&dir().join(format!("{file}.json")));
                 }
             )*
         }
@@ -202,15 +251,20 @@ fn every_example_script_has_its_test() {
         count += there.len();
         for name in &there {
             if !listed.contains(&name.as_str()) {
+                let test: String = name
+                    .chars()
+                    .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                    .collect();
                 wrong.push(format!(
-                    "{dir:?}: {name}.json has no test: add `{name}` to its `one_test_per_script!`"
+                    "{dir:?}: {name}.json has no test: add `{name}` to its `one_test_per_script!`, \
+                     or `{test}_script = \"{name}\"` when `{name}` is not a Rust identifier"
                 ));
             }
         }
         for name in listed {
             if !there.iter().any(|t| t == name) {
                 wrong.push(format!(
-                    "{dir:?}: the test `{name}` names a script that is not there"
+                    "{dir:?}: the test of `{name}` names a script that is not there"
                 ));
             }
         }
