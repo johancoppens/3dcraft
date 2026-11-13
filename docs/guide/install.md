@@ -49,10 +49,12 @@ off for other programs.
    `C:\Program Files\3DCraft`.
 
 3DCraft is now in the Start menu, `.3dcraft`, `.3dcraftjig` and `.3dcraftasm` files open with it, and
-`craft3d-cli` works in a new terminal window.
+`craft3d-cli` works in a new terminal window. In a terminal, start the window as `craft3d`: `3dcraft`
+starts the launcher, `3DCraft.exe`, which writes nothing there (not even for `--version`).
 
-> **Prefer not to install?** Unzip `3dcraft-0.1.1-x86_64-windows.zip` anywhere and double-click
-> `3DCraft.exe` in the folder. SmartScreen asks the same question the first time (More info › Run anyway).
+> **Prefer not to install?** Unzip the Windows zip anywhere and double-click `3DCraft.exe` in the
+> folder (in 0.1.1 and before, `craft3d.exe`). SmartScreen asks the same question the first time (More
+> info › Run anyway).
 
 3DCraft opens its window and nothing beside it. If the window cannot start (for instance on a computer
 whose graphics cannot show it), a message box says why. `craft3d.exe`, in the same folder, is the same
@@ -131,8 +133,8 @@ this:
   by itself and installs the new one in its place. An older `.msi` does not install over a newer version:
   it says *A newer version of 3DCraft is already installed.*
 - **Windows zip**: unzip the new zip. It makes a folder of its own, named with the new version, beside
-  the old one. Start `3DCraft.exe` from the new folder, and delete the old folder when you no longer need
-  it.
+  the old one. Start `3DCraft.exe` (in 0.1.1 and before, `craft3d.exe`) from the new folder, and delete
+  the old folder when you no longer need it.
 - **macOS (`.dmg`)**: open the new `.dmg` and drag **3DCraft** onto the **Applications** folder again.
   Choose **Replace** when macOS asks whether to replace the older one.
 - **AppImage**: download the new AppImage, make it executable as the first time, and delete the old file.

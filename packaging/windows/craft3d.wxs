@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- The Windows installer of 3DCraft, for the WiX Toolset v5 (`wix build`,
      MS-RL; a build tool, not a dependency). `cargo xtask package` passes the
-     variables: Version (numeric, x.y.z), BinDir (with craft3d.exe and
-     craft3d-cli.exe), Icon (craft3d.ico), JigIcon (craft3d-jig.ico), AsmIcon
+     variables: Version (numeric, x.y.z), BinDir (with 3DCraft.exe, the
+     launcher, craft3d.exe and craft3d-cli.exe), Icon (craft3d.ico), JigIcon (craft3d-jig.ico), AsmIcon
      (craft3d-asm.ico) and Licence (LICENSE); THIRD-PARTY-NOTICES.txt, the
      licences of the crates in the programs, and EXAMPLES-LICENSE.md, the
      licence of the examples (MIT), Jigs and assemblies (CC BY 4.0) built into

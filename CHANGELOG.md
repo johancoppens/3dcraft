@@ -14,6 +14,10 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 - **The MCP server says more about itself.** It gives its display name, *3DCraft*, to clients that speak protocol version 2025-06-18 or later; its tools carry annotations, so a client knows that `command_list`, `doc_inspect` and `doc_render_preview` only read and that none of the tools reaches beyond your computer; and `command_run`'s description says that opening, saving, importing and exporting files are commands. The tools, their names and their inputs are unchanged.
 
+### Known limitations
+
+- Windows: the running window is `craft3d.exe`, while the Start menu entry starts `3DCraft.exe`, so the taskbar may show two buttons, and *Pin to taskbar* on the running window pins `craft3d.exe`, which opens a console window beside 3DCraft when started from that pin.
+
 ## [0.1.1] - 2026-11-12
 
 A fix for the Windows packages. On Linux, macOS and the web, 0.1.1 is 0.1.0 with a new version number.
