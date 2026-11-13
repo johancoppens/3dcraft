@@ -86,6 +86,7 @@ mod chain;
 mod cross;
 mod exact;
 pub(crate) mod rebuild;
+mod used_up;
 
 /// How many times a step between two sections may be halved to follow
 /// the ball from one to the other.
@@ -3326,6 +3327,9 @@ pub(super) fn blend(
             seen.insert(data.end);
         }
     }
+    // A face the blends used up exactly goes; the edges on its two sides
+    // become one.
+    let merged = used_up::drop_used_up(&mut out, body, tolerance);
     let (edge_was, vertex_was) = compact(&mut out);
     let face_was = compact_faces(&mut out);
     let mut defects = craft3d_topo::check_remembered(&out, tolerance);
@@ -3347,7 +3351,8 @@ pub(super) fn blend(
             *slot = Face::Blend(vec![*index]);
         }
     }
-    // A face a border carried across a smooth edge took whole is gone.
+    // A face a border carried across a smooth edge took whole, or the
+    // blends used up, is gone.
     let faces: Vec<Face> = face_was
         .iter()
         .map(|&i| faces.get(i).cloned().unwrap_or(Face::Kept(Vec::new())))
@@ -3357,7 +3362,7 @@ pub(super) fn blend(
         .iter()
         .map(|&i| {
             let id = EdgeId(u32::try_from(i).unwrap_or(u32::MAX));
-            (i < body.edges.len() && !replaced.contains(&id)).then_some(id)
+            (i < body.edges.len() && !replaced.contains(&id) && !merged.contains(&id)).then_some(id)
         })
         .collect();
     let vertices = vertex_was

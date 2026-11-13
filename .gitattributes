@@ -26,6 +26,12 @@ packaging/** text eol=lf
 # well, so a checkout made before this rule passes too (2026-11-12).
 /.cargo/config.toml text eol=lf
 /Cargo.toml text eol=lf
+# The licence of the bundled examples, which `cargo xtask bundle-examples`
+# writes and its test compares with what it makes, and which
+# THIRD-PARTY-NOTICES.txt quotes (`include_str!`, xtask/src/notices.rs)
+# among its own LF lines: LF in every checkout, so a notices file built on
+# Windows does not mix line ends (2026-11-13).
+/docs/examples/published/LICENSE.md text eol=lf
 # Binary files last, so no text rule above (packaging/**) claims them:
 # a later line wins in .gitattributes.
 *.png binary

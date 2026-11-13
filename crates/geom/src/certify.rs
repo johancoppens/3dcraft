@@ -1699,11 +1699,315 @@ pub fn curves_apart(
     Apart::Yes
 }
 
+/// Whether the curve `b` over `range_b` and the curve `a` over `range_a`
+/// are one curve within `within.target`, proven, not sampled: both run
+/// between the same two ends (`same_way`: `b`'s start is `a`'s start;
+/// otherwise `b`'s start is `a`'s end), and every point of either lies
+/// within the bound of a point of the other.
+///
+/// The method is the error of interpolation, as for a curve on a surface.
+/// The two parameters are paired along a correspondence `σ` from `b`'s to
+/// `a`'s that runs from end to end: over a piece `[t0, t1] → [s0, s1]`
+/// (`τ` from 0 to 1 across it) the difference `f(τ) = b(t(τ)) − a(σ(τ))`
+/// is bounded in one of two ways, whichever is less (the Peano kernels
+/// keep their sign, so both hold for vectors as for numbers):
+///
+/// - `σ` linear: `|f| ≤ max |f(end)| + max |f''| / 8`, `|f''|` at most
+///   `b`'s second derivative over its piece plus `a`'s over its piece,
+///   both in `τ`;
+/// - `σ` the cubic Hermite path whose slopes at the ends take `b`'s
+///   tangent's share along `a`'s:
+///   `|f| ≤ max |f(end)| + ¼ max |f'(end)| + max |f⁗| / 384`,
+///   where `f'` at an end is what is left of `b`'s
+///   tangent off `a`'s, and `f⁗` is bounded from `b`'s fourth derivative
+///   and `a`'s derivatives composed with `σ`'s (see `hermite_apart`).
+///   The remainder falls with the fourth power of the piece, so curves
+///   that are one are proven in few pieces.
+///
+/// The pieces start at `b`'s knots (paired with their feet on `a`), are
+/// cut at `a`'s knots where they reach across one (paired with their feet
+/// on `b`), and are halved, in a fixed order, until every bound is within
+/// the target, a new pairing taken at each middle from the foot of `b`'s
+/// point on `a`; at most `within.most` pieces, else not proven, with the
+/// place. The feet are found by Gauss-Newton steps and
+/// decide only how tight the bound is, never whether it holds: any `σ`
+/// that runs from end to end gives a true bound. Since every piece's `σ`
+/// passes through all of its `[s0, s1]` and the pieces' run from one end
+/// of `a`'s range to the other, the bound holds both ways (every point of
+/// `a` near `b` as well as every point of `b` near `a`). Rounding:
+/// [`ROUNDING_ULPS`] of what enters each evaluation is added to every
+/// distance measured. A range that is empty, runs backwards, or whose
+/// width is not a finite number (ends far apart overflow it), and a target
+/// that is not a positive number, are not proven, and never panic.
+pub fn curves_within(
+    a: &CurveBound<'_>,
+    range_a: (f64, f64),
+    b: &CurveBound<'_>,
+    range_b: (f64, f64),
+    same_way: bool,
+    within: Within,
+) -> Result<Proven, NotProven> {
+    let middle = NotProven {
+        at: 0.5 * range_b.0 + 0.5 * range_b.1,
+    };
+    // Finite ends and a finite width (ends far apart overflow it, and
+    // every place between would be lost to it).
+    let valid = |(lo, hi): (f64, f64)| (hi - lo).is_finite() && hi > lo;
+    if !(valid(range_a) && valid(range_b) && within.target.is_finite() && within.target > 0.0) {
+        return Err(middle);
+    }
+    let (s_start, s_end) = if same_way {
+        range_a
+    } else {
+        (range_a.1, range_a.0)
+    };
+    // `a`'s parameter at `b`'s, linear between the ends: the first guess
+    // of every foot.
+    let linear = |t: f64| s_start + (s_end - s_start) * ((t - range_b.0) / (range_b.1 - range_b.0));
+    // The pairs `(t, s)` the pieces start from: the ends and `b`'s knots
+    // with their feet on `a`, kept running one way along `a` (a foot
+    // that rounding puts behind the one before is moved up to it: any
+    // pairing that runs from end to end gives a true bound). `a`'s knots
+    // are paired where a piece reaches across one (below).
+    let mut nodes: Vec<(f64, f64)> = vec![(range_b.0, s_start)];
+    for t in b.breaks(range_b.0, range_b.1) {
+        nodes.push((t, foot_on_curve(a, b.eval(t), linear(t), range_a)));
+    }
+    nodes.push((range_b.1, s_end));
+    let mut previous = s_start;
+    for node in &mut nodes {
+        // `previous` and `s_end` are numbers in order, so no clamp here
+        // can meet a NaN bound; a foot that is not a number takes the
+        // place before it.
+        let s = if node.1.is_nan() { previous } else { node.1 };
+        node.1 = if same_way {
+            s.clamp(previous, s_end)
+        } else {
+            s.clamp(s_end, previous)
+        };
+        previous = node.1;
+    }
+    // Pieces still to prove, the leftmost last (taken first).
+    let mut stack: Vec<[(f64, f64); 2]> = nodes
+        .windows(2)
+        .rev()
+        .filter_map(|w| match w {
+            [p, q] => Some([*p, *q]),
+            _ => None,
+        })
+        .collect();
+    let mut worst = 0.0_f64;
+    let mut pieces = 0_usize;
+    while let Some([(t0, s0), (t1, s1)]) = stack.pop() {
+        let at = NotProven {
+            at: t0 + 0.5 * (t1 - t0),
+        };
+        let (lo, hi) = if s0 <= s1 { (s0, s1) } else { (s1, s0) };
+        // A piece whose part of `a` reaches across a knot of `a` is cut
+        // there first: the bounds hold within one piece of each curve. The
+        // knot is paired with its foot on `b`, or, where rounding puts
+        // that at an end of the piece, with the point as far along it.
+        if let Some(knot) = a.breaks(lo, hi).first().copied() {
+            if pieces + stack.len() + 2 > within.most {
+                return Err(at);
+            }
+            let share = (knot - s0) / (s1 - s0);
+            let even = t0 + (t1 - t0) * share;
+            let foot = foot_on_curve(b, a.eval(knot), even, (t0, t1));
+            let t = if foot > t0 && foot < t1 { foot } else { even };
+            if !(t > t0 && t < t1) {
+                return Err(at);
+            }
+            stack.push([(t, knot), (t1, s1)]);
+            stack.push([(t0, s0), (t, knot)]);
+            continue;
+        }
+        let Some(bound) = piece_apart(a, range_a, b, [(t0, s0), (t1, s1)]) else {
+            return Err(at);
+        };
+        if bound <= within.target {
+            worst = worst.max(bound);
+            pieces += 1;
+            continue;
+        }
+        if pieces + stack.len() + 2 > within.most {
+            return Err(at);
+        }
+        let tm = t0 + 0.5 * (t1 - t0);
+        if !(tm > t0 && tm < t1) {
+            return Err(at);
+        }
+        let sm = foot_on_curve(a, b.eval(tm), s0 + 0.5 * (s1 - s0), (lo, hi));
+        stack.push([(tm, sm), (t1, s1)]);
+        stack.push([(t0, s0), (tm, sm)]);
+    }
+    Ok(Proven {
+        bound: worst,
+        pieces,
+    })
+}
+
+/// A bound on how far apart the points of `b` over `[t0, t1]` and of `a`
+/// paired with them from `s0` to `s1` are ([`curves_within`]): the less
+/// of the bound for the linear pairing and, where it can be had, the one
+/// for the cubic Hermite pairing. `None` where neither can be had.
+fn piece_apart(
+    a: &CurveBound<'_>,
+    range_a: (f64, f64),
+    b: &CurveBound<'_>,
+    ends: [(f64, f64); 2],
+) -> Option<f64> {
+    let [(t0, s0), (t1, s1)] = ends;
+    let dt = t1 - t0;
+    if !(dt > 0.0) {
+        return None;
+    }
+    let (pb0, db0) = b.derivatives(t0);
+    let (pb1, db1) = b.derivatives(t1);
+    let (pa0, da0) = a.derivatives(s0);
+    let (pa1, da1) = a.derivatives(s1);
+    // The ends, with what rounding may hide.
+    let ends_apart = (pb0.distance(pa0) + b.rounding(t0) + a.rounding(s0))
+        .max(pb1.distance(pa1) + b.rounding(t1) + a.rounding(s1));
+    let jb = b.jets(t0, t1, pb0)?;
+    // Linear: `|f''| ≤ |b''| + |a''|` in `τ` (the pairing is linear, so
+    // no first derivatives enter); a piece of `a` of no length is a point.
+    let ja2 = if s0 == s1 {
+        0.0
+    } else {
+        get(&a.jets(s0.min(s1), s0.max(s1), pa0)?, 2)
+    };
+    let linear = ends_apart + (get(&jb, 2) + ja2) / 8.0;
+    let hermite = hermite_apart(a, range_a, ends, [db0, db1], [da0, da1], dt, &jb)
+        .map(|rest| ends_apart + rest);
+    let bound = match hermite {
+        Some(h) if h < linear => h,
+        _ => linear,
+    };
+    bound.is_finite().then_some(bound)
+}
+
+/// The part of the cubic Hermite bound past the ends' distance: the
+/// pairing `σ` runs from `s0` to `s1` as the cubic whose slopes at the ends
+/// take `b`'s tangent's share along `a`'s, so `f' = b' Δt − a' σ'` there is
+/// what is left of `b`'s tangent off `a`'s (nothing where the curves are
+/// one); then `|f| ≤ max |f(end)| + ¼ max |f'(end)| + max |f⁗| / 384`,
+/// `f⁗` bounded by `b`'s fourth derivative over its piece and by `a`'s
+/// derivatives over the interval `σ` can sweep composed with the bounds
+/// on `σ`'s (the majorant series, as for a path on a surface). The
+/// interval `σ` sweeps is held within `¼` of the largest difference
+/// between an end's slope and `s1 − s0` beyond `[s0, s1]` (what the cubic
+/// Hermite basis allows), and has to lie in one piece of `a` and within
+/// `range_a` (a point of `a` past its range is not a point of it). `None`
+/// where that does not hold or a tangent of `a` has no length.
+fn hermite_apart(
+    a: &CurveBound<'_>,
+    range_a: (f64, f64),
+    [(_, s0), (_, s1)]: [(f64, f64); 2],
+    db: [Vec3; 2],
+    da: [Vec3; 2],
+    dt: f64,
+    jb: &Jet,
+) -> Option<f64> {
+    let [db0, db1] = db;
+    let [da0, da1] = da;
+    let slope = |d_b: Vec3, d_a: Vec3| -> Option<f64> {
+        let dd = d_a.dot(d_a);
+        (dd > 0.0).then(|| dt * d_b.dot(d_a) / dd)
+    };
+    let (m0, m1) = (slope(db0, da0)?, slope(db1, da1)?);
+    let ds = s1 - s0;
+    // f' at the ends, with what rounding may hide in the difference.
+    let rounding = |d_b: Vec3, d_a: Vec3, m: f64| {
+        ROUNDING_ULPS * f64::EPSILON * (d_b.length() * dt + d_a.length() * m.abs())
+    };
+    let f0 = (db0 * dt - da0 * m0).length() + rounding(db0, da0, m0);
+    let f1 = (db1 * dt - da1 * m1).length() + rounding(db1, da1, m1);
+    // σ = s0 + m0 τ + c2 τ² + c3 τ³.
+    let c2 = 3.0 * ds - 2.0 * m0 - m1;
+    let c3 = -2.0 * ds + m0 + m1;
+    let first = {
+        let at = |t: f64| (m0 + 2.0 * c2 * t + 3.0 * c3 * t * t).abs();
+        let mut most = at(0.0).max(at(1.0));
+        if c3 != 0.0 {
+            let vertex = -c2 / (3.0 * c3);
+            if vertex > 0.0 && vertex < 1.0 {
+                most = most.max(at(vertex));
+            }
+        }
+        most
+    };
+    let second = (2.0 * c2).abs().max((2.0 * c2 + 6.0 * c3).abs());
+    let third = (6.0 * c3).abs();
+    let sigma: Jet = [0.0, first, second, third, 0.0];
+    let past = 0.25 * (m0 - ds).abs().max((m1 - ds).abs());
+    let (lo, hi) = (s0.min(s1) - past, s0.max(s1) + past);
+    if !(lo.is_finite() && hi.is_finite() && lo >= range_a.0 && hi <= range_a.1)
+        || !a.breaks(lo, hi).is_empty()
+    {
+        return None;
+    }
+    let composed = if hi > lo {
+        let jet = a.jets(lo, hi, a.eval(lo))?;
+        // From `τ` over `[lo, hi]` back to `a`'s own parameter.
+        let h = hi - lo;
+        let mut table: Table = [[0.0; N]; N];
+        for (k, row) in table.iter_mut().enumerate().skip(1) {
+            if let Some(slot) = row.first_mut() {
+                *slot = get(&jet, k) / h.ppowi(k as i32);
+            }
+        }
+        compose(&table, &sigma, &[0.0; N])
+    } else {
+        [0.0; N]
+    };
+    let rest = 0.25 * f0.max(f1) + (get(jb, 4) + get(&composed, 4)) / 384.0;
+    rest.is_finite().then_some(rest)
+}
+
+/// The parameter of the point of `curve` nearest `point`, by Gauss-Newton
+/// steps from `guess`, kept within `range` (in either order); always a
+/// number within it (the middle where the guess is not a number), so that
+/// what is built on it never meets a NaN.
+fn foot_on_curve(curve: &CurveBound<'_>, point: Vec3, guess: f64, range: (f64, f64)) -> f64 {
+    let (lo, hi) = if range.0 <= range.1 {
+        range
+    } else {
+        (range.1, range.0)
+    };
+    if !(lo.is_finite() && hi.is_finite()) {
+        return guess;
+    }
+    let mut s = if guess.is_nan() {
+        0.5 * lo + 0.5 * hi
+    } else {
+        guess.clamp(lo, hi)
+    };
+    for _ in 0..FOOT_STEPS {
+        let (p, d) = curve.derivatives(s);
+        let dd = d.dot(d);
+        if !(dd > 0.0) {
+            break;
+        }
+        let next = s + (point - p).dot(d) / dd;
+        if !next.is_finite() {
+            break;
+        }
+        let next = next.clamp(lo, hi);
+        if next == s {
+            break;
+        }
+        s = next;
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{BezierPatch, Cone, Cylinder, NurbsSurface, Plane, Sphere, Torus};
     use craft3d_math::Frame;
+    use std::f64::consts::PI;
 
     fn frame(k: f64) -> Frame {
         Frame::new(
@@ -2014,6 +2318,238 @@ mod tests {
                     Apart::Unknown => panic!("{k} {gap}: unknown"),
                 }
             }
+        }
+    }
+
+    /// The farthest a point of `b` over `range_b` is from `a` over
+    /// `range_a`, densely, both ways: each point's distance to the nearest
+    /// of many points of the other, less the spacing of those points.
+    fn hausdorff_seen(
+        a: &CurveBound<'_>,
+        range_a: (f64, f64),
+        b: &CurveBound<'_>,
+        range_b: (f64, f64),
+    ) -> f64 {
+        let n = 2000;
+        let points = |c: &CurveBound<'_>, (lo, hi): (f64, f64)| -> Vec<Vec3> {
+            (0..=n)
+                .map(|i| c.eval(lo + (hi - lo) * f64::from(i) / f64::from(n)))
+                .collect()
+        };
+        let (pa, pb) = (points(a, range_a), points(b, range_b));
+        let spacing = |p: &[Vec3]| {
+            p.windows(2)
+                .map(|w| w[0].distance(w[1]))
+                .fold(0.0, f64::max)
+        };
+        let one_way = |from: &[Vec3], to: &[Vec3]| {
+            from.iter()
+                .map(|p| {
+                    to.iter()
+                        .map(|q| p.distance(*q))
+                        .fold(f64::INFINITY, f64::min)
+                })
+                .fold(0.0, f64::max)
+                - spacing(to)
+        };
+        one_way(&pa, &pb).max(one_way(&pb, &pa)).max(0.0)
+    }
+
+    /// The segment from `p` to `q` as a cubic whose speed varies (its
+    /// inner control points at a tenth and at four fifths), and the
+    /// circle's quarter as the exact rational quadratic.
+    fn straight_cubic(p: Vec3, q: Vec3) -> NurbsCurve {
+        let ctrl = [0.0, 0.1, 0.8, 1.0]
+            .iter()
+            .map(|s| p + (q - p) * *s)
+            .collect();
+        NurbsCurve::polynomial(3, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], ctrl).unwrap()
+    }
+
+    /// The ellipse of semi-axes `a` along `f`'s x and `b` along its y as
+    /// the rational quadratic: the circle's nine control points and
+    /// weights (`NurbsCurve::circle`) carried by the affine map that makes
+    /// the circle the ellipse.
+    fn rational_ellipse(f: &Frame, a: f64, b: f64) -> NurbsCurve {
+        let unit = NurbsCurve::circle(&Frame::WORLD, 1.0).unwrap();
+        let ctrl = unit
+            .control_points()
+            .iter()
+            .map(|p| f.point(p.x * a, p.y * b, 0.0))
+            .collect();
+        NurbsCurve::new(2, unit.knots().to_vec(), ctrl, unit.weights().to_vec()).unwrap()
+    }
+
+    #[test]
+    fn one_curve_given_twice_is_proven_within_and_the_bound_is_above_every_sample() {
+        for k in [1e-3, 1.0, 1e6] {
+            for (place, f) in [frame(k), far(k)].into_iter().enumerate() {
+                let target = 1e-6 * k;
+                let within = Within { target, most: 4096 };
+                let (p, q) = (
+                    f.point(1.0 * k, 2.0 * k, 0.5 * k),
+                    f.point(-3.0 * k, 0.5 * k, 2.0 * k),
+                );
+                let line =
+                    Curve3::Line(crate::Line::new(p, (q - p).normalized().unwrap()).unwrap());
+                let length = p.distance(q);
+                let cubic = Curve3::Nurbs(straight_cubic(p, q));
+                let reversed = Curve3::Nurbs(straight_cubic(q, p));
+                let circle = Curve3::Circle(crate::Circle::new(f, 2.0 * k).unwrap());
+                let rational = Curve3::Nurbs(NurbsCurve::circle(&f, 2.0 * k).unwrap());
+                // A cubic through 41 points of a helix: knots every fortieth,
+                // given twice, so the knots of the two coincide.
+                let fitted = {
+                    let params: Vec<f64> = (0..=40).map(|i| f64::from(i) / 40.0).collect();
+                    let values: Vec<Vec<f64>> = params
+                        .iter()
+                        .map(|t| {
+                            let p = f.point(k * (3.0 * t).pcos(), k * (3.0 * t).psin(), k * t);
+                            vec![p.x, p.y, p.z]
+                        })
+                        .collect();
+                    let (knots, rows) = crate::refine::interpolate(&params, 3, &values).unwrap();
+                    let ctrl = rows.iter().map(|r| Vec3::new(r[0], r[1], r[2])).collect();
+                    Curve3::Nurbs(NurbsCurve::polynomial(3, knots, ctrl).unwrap())
+                };
+                let ellipse = Curve3::Ellipse(crate::Ellipse::new(f, 3.0 * k, 1.5 * k).unwrap());
+                let spline_ellipse = Curve3::Nurbs(rational_ellipse(&f, 3.0 * k, 1.5 * k));
+                // (a, its range, b, its range, b runs as a does)
+                let pairs = [
+                    (&line, (0.0, length), &cubic, (0.0, 1.0), true),
+                    (&line, (0.0, length), &reversed, (0.0, 1.0), false),
+                    (&cubic, (0.0, 1.0), &reversed, (0.0, 1.0), false),
+                    (&circle, (0.0, 0.5 * PI), &rational, (0.0, 0.25), true),
+                    (&rational, (0.25, 1.0), &circle, (0.5 * PI, 2.0 * PI), true),
+                    (&fitted, (0.0, 1.0), &fitted, (0.0, 1.0), true),
+                    // Closed curves, whole: both ends at one point.
+                    (&circle, (0.0, 2.0 * PI), &rational, (0.0, 1.0), true),
+                    (&ellipse, (0.0, 2.0 * PI), &spline_ellipse, (0.0, 1.0), true),
+                    (&ellipse, (0.5 * PI, PI), &spline_ellipse, (0.25, 0.5), true),
+                ];
+                for (index, (a, range_a, b, range_b, same_way)) in pairs.into_iter().enumerate() {
+                    let what = format!("pair {index} at {k}, place {place}");
+                    let (ab, bb) = (CurveBound::new(a), CurveBound::new(b));
+                    let proven = curves_within(&ab, range_a, &bb, range_b, same_way, within)
+                        .unwrap_or_else(|e| panic!("{what}: {e:?}"));
+                    assert!(proven.bound <= target, "{what}: {proven:?}");
+                    let seen = hausdorff_seen(&ab, range_a, &bb, range_b);
+                    assert!(proven.bound >= seen, "{what}: {proven:?} below {seen}");
+                    // Either way round.
+                    curves_within(&bb, range_b, &ab, range_a, same_way, within)
+                        .unwrap_or_else(|e| panic!("{what} turned: {e:?}"));
+                }
+            }
+        }
+    }
+
+    /// A tilted frame far from the origin, at scale `k`.
+    fn far(k: f64) -> Frame {
+        Frame::new(
+            Vec3::new(1000.0 * k, -700.0 * k, 300.0 * k),
+            Vec3::new(0.2, 0.3, 1.0),
+            Vec3::new(1.0, -0.1, 0.0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn two_curves_between_the_same_ends_that_part_are_not_proven_within() {
+        for k in [1e-3, 1.0, 1e6] {
+            let f = frame(k);
+            let within = Within {
+                target: 1e-6 * k,
+                most: 4096,
+            };
+            // The two halves of a circle, between the same two points.
+            let circle = Curve3::Circle(crate::Circle::new(f, 2.0 * k).unwrap());
+            let cb = CurveBound::new(&circle);
+            assert!(curves_within(&cb, (0.0, PI), &cb, (PI, 2.0 * PI), false, within).is_err());
+            // A line and a bow over it: apart by more than the target in
+            // the middle only; within it, a bow a tenth as high.
+            let line = Curve3::Line(crate::Line::new(f.origin(), f.x()).unwrap());
+            let lb = CurveBound::new(&line);
+            let bowed = |height: f64| {
+                let ctrl = vec![
+                    f.origin(),
+                    f.point(k / 3.0, height * k, 0.0),
+                    f.point(2.0 * k / 3.0, height * k, 0.0),
+                    f.point(k, 0.0, 0.0),
+                ];
+                Curve3::Nurbs(
+                    NurbsCurve::polynomial(3, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], ctrl)
+                        .unwrap(),
+                )
+            };
+            let high = bowed(4e-6);
+            let low = bowed(4e-8);
+            let (hb, wb) = (CurveBound::new(&high), CurveBound::new(&low));
+            // The bow is 3/4 of its control height at the middle.
+            let not = curves_within(&lb, (0.0, k), &hb, (0.0, 1.0), true, within).unwrap_err();
+            assert!(not.at > 0.0 && not.at < 1.0, "{k}: {not:?}");
+            let proven = curves_within(&lb, (0.0, k), &wb, (0.0, 1.0), true, within)
+                .unwrap_or_else(|e| panic!("{k}: {e:?}"));
+            assert!(proven.bound >= 3e-8 * k, "{k}: {proven:?}");
+            // Paired the wrong way round: the ends are a whole length apart.
+            assert!(curves_within(&lb, (0.0, k), &wb, (0.0, 1.0), false, within).is_err());
+        }
+    }
+
+    #[test]
+    fn curves_within_takes_bad_ranges_and_budgets_without_panicking() {
+        let line = Curve3::Line(crate::Line::new(Vec3::ZERO, Vec3::X).unwrap());
+        let lb = CurveBound::new(&line);
+        let within = Within {
+            target: 1e-6,
+            most: 64,
+        };
+        for r in [
+            (1.0, 0.0),
+            (0.0, f64::NAN),
+            (f64::NEG_INFINITY, 0.0),
+            (0.0, 0.0),
+        ] {
+            assert!(curves_within(&lb, r, &lb, (0.0, 1.0), true, within).is_err());
+            assert!(curves_within(&lb, (0.0, 1.0), &lb, r, true, within).is_err());
+        }
+        for target in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let bad = Within { target, most: 64 };
+            assert!(curves_within(&lb, (0.0, 1.0), &lb, (0.0, 1.0), true, bad).is_err());
+        }
+        // One piece allowed where the circle needs many: not proven.
+        let circle = Curve3::Circle(crate::Circle::new(Frame::WORLD, 1.0).unwrap());
+        let cb = CurveBound::new(&circle);
+        let rational = Curve3::Nurbs(NurbsCurve::circle(&Frame::WORLD, 1.0).unwrap());
+        let rb = CurveBound::new(&rational);
+        let one = Within {
+            target: 1e-9,
+            most: 1,
+        };
+        assert!(curves_within(&cb, (0.0, 0.5 * PI), &rb, (0.0, 0.25), true, one).is_err());
+        // Finite ranges whose width is not: a line and a cubic with a knot
+        // inside, both over (−1e308, 1e308). Before 2026-11-13 the foot of
+        // the knot came out NaN and a clamp on it panicked.
+        let cubic = Curve3::Nurbs(
+            NurbsCurve::polynomial(
+                3,
+                vec![0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0],
+                vec![
+                    Vec3::ZERO,
+                    Vec3::new(0.25, 0.0, 0.0),
+                    Vec3::new(0.5, 0.0, 0.0),
+                    Vec3::new(0.75, 0.0, 0.0),
+                    Vec3::X,
+                ],
+            )
+            .unwrap(),
+        );
+        let kb = CurveBound::new(&cubic);
+        let huge = (-1e308, 1e308);
+        for same_way in [true, false] {
+            assert!(curves_within(&lb, huge, &kb, huge, same_way, within).is_err());
+            assert!(curves_within(&kb, huge, &lb, huge, same_way, within).is_err());
+            assert!(curves_within(&lb, huge, &kb, (0.0, 1.0), same_way, within).is_err());
+            assert!(curves_within(&kb, (0.0, 1.0), &lb, huge, same_way, within).is_err());
         }
     }
 

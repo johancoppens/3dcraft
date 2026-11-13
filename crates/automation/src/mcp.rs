@@ -3,7 +3,7 @@
 //!
 //! Implemented from the public MCP specification: `initialize`, `ping`,
 //! `tools/list` and `tools/call`, with notifications accepted and never
-//! answered. Five tools cover the whole command registry:
+//! answered. Six tools cover the whole command registry:
 //!
 //! | Tool | Does |
 //! |---|---|
@@ -11,7 +11,13 @@
 //! | `command_run` | runs one command |
 //! | `command_batch` | runs several in order |
 //! | `doc_inspect` | `document.inspect`, or `{"document": null}` with nothing open |
+//! | `selection_get` | `select.get`, or `{"document": null}` with nothing open |
 //! | `doc_render_preview` | a PNG of the model as an image block |
+//!
+//! Each tool says what it does to its surroundings in its `annotations`
+//! (`read_only`, `reads_the_selection`, `changes`): only what the code
+//! proves, so a client that asks the person before a tool that changes
+//! things can rely on them.
 //!
 //! Errors come in the two kinds MCP distinguishes. A request the server
 //! cannot act on (unknown method or tool, an unknown or ill-typed argument)
@@ -33,8 +39,18 @@ use std::io::{self, BufRead, Write};
 /// otherwise.
 pub const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
-/// The name the server gives itself in `initialize`.
+/// The name the server gives itself in `initialize`: the machine name.
 pub const SERVER_NAME: &str = "craft3d";
+
+/// The name a client shows for the server (`serverInfo.title`): the
+/// product's.
+pub const SERVER_TITLE: &str = "3DCraft";
+
+/// The first revision whose `Implementation` has `title` (`BaseMetadata`,
+/// MCP 2025-06-18). A client that settles on an earlier one gets
+/// `serverInfo` without it, as that revision defines it: `name` and
+/// `version`.
+const TITLE_SINCE: &str = "2025-06-18";
 
 /// Default and largest longest side of a preview, in pixels.
 pub const PREVIEW_DEFAULT_SIDE: u64 = 1024;
@@ -312,10 +328,17 @@ fn initialize(params: Option<&Map<String, Value>>) -> Result<Value, RpcError> {
             )));
         }
     };
+    let mut server = json!({ "name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION") });
+    // Revisions are ISO dates, which sort as text.
+    if version >= TITLE_SINCE
+        && let Some(map) = server.as_object_mut()
+    {
+        map.insert("title".into(), SERVER_TITLE.into());
+    }
     Ok(json!({
         "protocolVersion": version,
         "capabilities": { "tools": {}, "resources": {} },
-        "serverInfo": { "name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION") },
+        "serverInfo": server,
         "instructions": INSTRUCTIONS,
     }))
 }
@@ -396,6 +419,55 @@ pub fn tool_names() -> Vec<String> {
     }
 }
 
+/// The annotations of a tool that only reads (MCP's `ToolAnnotations`,
+/// since 2025-03-26). `readOnlyHint`: "the tool does not modify its
+/// environment": no document, selection, view or file changes. What
+/// records the call itself (the window's status line and agent log, the
+/// last failed command kept for a bug report) is not that environment,
+/// nor are the caches of what is derived from the document (its
+/// regeneration, meshes, measures). `openWorldHint: false`: "the tool's
+/// domain of interaction is closed", here the session's documents and the
+/// files beneath its roots, on this machine. `destructiveHint` and
+/// `idempotentHint` mean something only beside `readOnlyHint: false`, and
+/// are left out. `tests/mcp.rs` holds each claim to what the tool does.
+fn read_only() -> Value {
+    json!({ "readOnlyHint": true, "openWorldHint": false })
+}
+
+/// The annotations of `selection_get`. No `readOnlyHint`: reading the
+/// selection checks it against the document as it is now (`select.get`),
+/// and what no longer exists drops out of it for good, so a deletion
+/// undone afterwards does not bring it back as it would had nothing read
+/// the selection in between (the window reads it every frame; a session
+/// of `craft3d-cli mcp` only when asked). `destructiveHint` keeps its
+/// default, true: what drops out is taken away. `idempotentHint`: a second
+/// read finds the selection checked at that revision already and changes
+/// nothing more.
+fn reads_the_selection() -> Value {
+    json!({ "idempotentHint": true, "openWorldHint": false })
+}
+
+/// The annotations of a tool that changes things (`command_run`,
+/// `command_batch`, the window's `control_call`). It may update
+/// destructively: a command deletes a feature, overwrites a file
+/// (`file.save`, `file.export`) or closes a document and drops its
+/// unsaved changes (`file.close` with `discard`). It is not idempotent:
+/// the same call twice adds two blocks. Its domain is closed all the
+/// same: no command and no method of the window opens a network
+/// connection or a link (the window opens one only for a click:
+/// `Shell::open_external` takes the frame's `egui::Context`, which a
+/// method never has), and what is read and written lies beneath the roots
+/// (videos are made there by a local ffmpeg), besides the autosave in the
+/// recovery folder the server or the window was given.
+fn changes() -> Value {
+    json!({
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+    })
+}
+
 /// The tool definitions `tools/list` returns. Every schema refuses unknown
 /// arguments, and `call_tool` enforces the same before running anything.
 fn tools() -> Value {
@@ -424,11 +496,12 @@ fn tools() -> Value {
                     }
                 },
                 "additionalProperties": false
-            }
+            },
+            "annotations": read_only()
         },
         {
             "name": "command_run",
-            "description": "Runs one command by id and returns its JSON result (its wall-clock milliseconds in the tool result's _meta.ms; a command_batch step has them in its entry). Start with file.new or file.open. A failed command returns isError with a message that names the command and the parameter.",
+            "description": "Runs one command by id and returns its JSON result (its wall-clock milliseconds in the tool result's _meta.ms; a command_batch step has them in its entry); several commands in order go in one command_batch. Start with file.new or file.open; files are commands too: file.save, file.import (STEP, FreeCAD), file.export (STEP, STL, 3MF, OBJ, DXF, SVG). A failed command returns isError with a message that names the command and the parameter.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -448,7 +521,8 @@ fn tools() -> Value {
                 },
                 "required": ["id"],
                 "additionalProperties": false
-            }
+            },
+            "annotations": changes()
         },
         {
             "name": "command_batch",
@@ -490,7 +564,8 @@ fn tools() -> Value {
                 },
                 "required": ["steps"],
                 "additionalProperties": false
-            }
+            },
+            "annotations": changes()
         },
         {
             "name": "doc_inspect",
@@ -499,7 +574,8 @@ fn tools() -> Value {
                 "type": "object",
                 "properties": {},
                 "additionalProperties": false
-            }
+            },
+            "annotations": read_only()
         },
         {
             "name": "selection_get",
@@ -508,7 +584,8 @@ fn tools() -> Value {
                 "type": "object",
                 "properties": {},
                 "additionalProperties": false
-            }
+            },
+            "annotations": reads_the_selection()
         },
         {
             "name": "doc_render_preview",
@@ -551,7 +628,8 @@ fn tools() -> Value {
                     }
                 },
                 "additionalProperties": false
-            }
+            },
+            "annotations": read_only()
         }
     ])
 }
@@ -589,7 +667,10 @@ fn control_call_tool(extension: &Extension<'_>) -> Value {
             },
             "required": ["method"],
             "additionalProperties": false
-        }
+        },
+        // The camera, what is highlighted and selected, a parameter, a
+        // picture written to a file: it changes things.
+        "annotations": changes()
     })
 }
 
@@ -693,8 +774,9 @@ fn call_tool(
     Ok(reply)
 }
 
+/// Takes the session to read only: its `readOnlyHint` is the compiler's.
 fn tool_command_list(
-    session: &mut Session,
+    session: &Session,
     arguments: Option<&Value>,
 ) -> Result<ToolOutput, ToolFailure> {
     let a = Fields::new(

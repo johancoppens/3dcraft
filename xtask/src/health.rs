@@ -300,10 +300,19 @@ fn command_count(repo: &Path) -> Option<usize> {
 }
 
 /// The text of a source file without its `#[cfg(test)]` part (by
-/// convention a `mod tests` at the end).
+/// convention a `mod tests` at the end), with LF or CRLF line ends (a
+/// checkout on Windows).
 fn without_tests(text: &str) -> &str {
-    text.find("#[cfg(test)]\nmod tests")
-        .and_then(|at| text.get(..at))
+    const ATTRIBUTE: &str = "#[cfg(test)]";
+    text.match_indices(ATTRIBUTE)
+        .find(|&(at, _)| {
+            let after = text.get(at + ATTRIBUTE.len()..).unwrap_or_default();
+            after
+                .strip_prefix("\r\n")
+                .or_else(|| after.strip_prefix('\n'))
+                .is_some_and(|next| next.starts_with("mod tests"))
+        })
+        .and_then(|(at, _)| text.get(..at))
         .unwrap_or(text)
 }
 
@@ -648,7 +657,7 @@ pub fn run() -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod fuzz_tests {
+mod tests {
     #![allow(clippy::unwrap_used)]
 
     /// The morning report gives the fuzz run's bugs (a bug the code caught
@@ -667,5 +676,30 @@ mod fuzz_tests {
         super::fuzz_section(&mut out, &main);
         assert!(out.contains("bugs **3**, crashes **1**"), "{out}");
         std::fs::remove_dir_all(&main).ok();
+    }
+
+    /// The tests at the end of a source file are left out of the refusal
+    /// count with LF and with CRLF line ends (a Windows checkout, where
+    /// the match across `\n` alone found nothing and counted them).
+    #[test]
+    fn the_tests_are_cut_off_with_either_line_end() {
+        let lf = "fn f() -> Result<(), E> {\n    Err(E::Unsupported)\n}\n#[cfg(test)]\nmod tests {\n    fn g() { let _ = E::Unsupported; }\n}\n";
+        let crlf = lf.replace('\n', "\r\n");
+        assert_eq!(
+            super::without_tests(lf),
+            "fn f() -> Result<(), E> {\n    Err(E::Unsupported)\n}\n"
+        );
+        assert_eq!(
+            super::without_tests(&crlf),
+            "fn f() -> Result<(), E> {\r\n    Err(E::Unsupported)\r\n}\r\n"
+        );
+        // A `#[cfg(test)]` on something else is not the tests' start.
+        let other = "#[cfg(test)]\nfn helper() {}\nfn f() {}\n#[cfg(test)]\r\nmod tests {}\n";
+        assert_eq!(
+            super::without_tests(other),
+            "#[cfg(test)]\nfn helper() {}\nfn f() {}\n"
+        );
+        // Without tests the whole text is code.
+        assert_eq!(super::without_tests("fn f() {}\n"), "fn f() {}\n");
     }
 }

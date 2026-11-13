@@ -1559,10 +1559,19 @@ Part B, as far as it went on 2026-11-02:
   reads `org.gnome.desktop.interface color-scheme` (what the XDG portal's `org.freedesktop.appearance
   color-scheme` is made from) with `gsettings get`, then follows `gsettings monitor` on a thread of its own and
   asks for a frame when it changes; no crate is added. `Shell::set_desktop_theme` is the fallback under
-  egui's `system_theme()`. Without `gsettings` (or `'default'`) System stays light. The monitor is killed when
+  egui's `system_theme()`. Without `gsettings` (or `'default'`) System stays light. The monitor is ended when
   the window goes, also when it goes while the monitor is being started (a `stopped` flag under the same lock).
-  Known limit: when 3DCraft dies without unwinding (SIGKILL, an abort) the `gsettings monitor` it started
-  lives on until the setting next changes and its write finds no reader.
+  *Ending with a killed window* (2026-11-13): until then a window that died without unwinding (SIGKILL, an
+  abort) left its `gsettings monitor` running until the setting next changed and its write found no reader
+  (seven such orphans on the developer's laptop on 2026-11-12, the oldest 42 hours old; a normal close,
+  `ui.quit`, left none). Now `gsettings monitor` is started by a POSIX shell (`Watcher`) in a process group of
+  its own (std's safe `process_group(0)`; no `pre_exec`, no `prctl`): the shell runs it in the background,
+  lets go of its copy of the output pipe, and reads its own input, a pipe of which only 3DCraft holds the
+  other end. That end closes when 3DCraft drops the watcher and when the kernel closes a dead process's
+  files, so the read returns and the shell kills its group (`kill -s KILL -- -$$`). The tests start the test
+  binary itself as a stand-in window, kill it with SIGKILL and see in `/proc` that the watched `sleep` (and,
+  where GNOME's schema is, `gsettings monitor`) and the shell are gone within 10 s; a wrapper that waits on
+  the program instead fails them.
 - **The Studio and Analysis popovers** (board s1, `look_panel.rs`, `layout.rs` › `analysis_options`): the kit's
   plate (`popover_fill`, its rim), grouped by section headers: *Light* (Environment, Rotation, Exposure, Tone
   curve, Shadows/AO/Reflections, Bloom), *Scene* (Background, Ground as a switch, Reflection), *Lens* (its switch

@@ -20,10 +20,13 @@
 //! between the side's face and the third face is followed from the blended
 //! edge's vertex (across vertices that only split it) to the first vertex
 //! where another edge leaves it; when that boundary lies inside what the
-//! blend takes all along, and the edge is tangent there and leads to
-//! another face whose boundary with the third face goes on there, it is
-//! a candidate. A point counts only ahead of the edge (on the side the
-//! face is on: behind it the same surfaces go on, and a ball there may
+//! blend takes all along, by more than the tolerance in the measure of
+//! how far inside a point is (a vertex within that band of the border is
+//! where the border ends, not a way in: `Blend::margin`), and the edge is
+//! tangent there and leads to another face whose boundary with the third
+//! face goes on there, it is a candidate. A point counts only ahead of
+//! the edge (on the side the face is on: behind it the same surfaces go
+//! on, and a ball there may
 //! reach the other surface too). Along it, a point is inside what the blend takes when
 //! the ball touching the side's face there (its centre the radius in
 //! along the face's normal) is nearer the other face than the radius (a
@@ -168,17 +171,31 @@ fn branch(
 
 /// Whether every edge of `path` (from the blended edge's vertex along
 /// the boundary with the third face) lies inside what the blend takes on
-/// side `k`, at its far end and at points between (the points of the
-/// face's surface whose balls reach the other face: further on, the same
-/// faces may meet again, as both root edges of a boss do).
+/// side `k` by more than the tolerance in the measure of
+/// [`Blend::inside`] ([`Blend::margin`]), at its far end and at points
+/// between (the points of the face's surface whose balls reach the other
+/// face: further on, the same faces may meet again, as both root edges of
+/// a boss do). A point within that band of the border of what the blend
+/// takes counts as on it: where the boundary ends there, the blend's
+/// border ends on the vertex (a face it uses up exactly, whose other edge
+/// is that border: `used_up`), and nothing is crossed. Told by the sign
+/// alone, such a vertex was inside or outside as rounding fell. The band
+/// only ever turns an answer from crossed to not crossed; a vertex that
+/// is then further from the blend's corner than the tolerance is not
+/// taken by `cut_back`, and the blend is refused as too large.
 fn inside_along(body: &Body, blend: &Blend<'_>, k: usize, path: &[EdgeId]) -> bool {
     const POINTS: u32 = 16;
+    let Some(margin) = blend.margin(k) else {
+        return false;
+    };
     path.iter().all(|e| {
         body.edge(*e).is_some_and(|data| {
             (0..=POINTS).all(|j| {
                 let t =
                     data.range.0 + (data.range.1 - data.range.0) * f64::from(j) / f64::from(POINTS);
-                blend.inside(k, data.curve.eval(t)).is_some_and(|g| g < 0.0)
+                blend
+                    .inside(k, data.curve.eval(t))
+                    .is_some_and(|g| g < -margin)
             })
         })
     })
@@ -253,6 +270,27 @@ impl Blend<'_> {
                 g.is_finite().then_some(g)
             }
         }
+    }
+
+    /// The tolerance in the measure [`Blend::inside`] gives on side `k`:
+    /// that measure times the radius is how much nearer than the radius
+    /// the centre of the ball on a point is to the other face, and for a
+    /// chamfer, times its distance on that side, how much nearer than the
+    /// distance the point is to the edge; so the band is the tolerance in
+    /// those lengths, whatever the scale. It is not the point's distance
+    /// from the border along the face: for a ball, a step along the face
+    /// moves its centre towards the other face by the step times the sine
+    /// of the angle at which the two faces' surfaces meet, so along the
+    /// face the band is the tolerance over that sine, wider than the
+    /// tolerance at a shallow edge (pinned by `tests/blend_used_up.rs` ›
+    /// `on_a_shallow_edge_a_vertex_within_the_band_of_the_border_is_not_a_way_in`).
+    fn margin(&self, k: usize) -> Option<f64> {
+        let size = match self.shape {
+            Shape::Ball { radius, .. } => radius,
+            Shape::Cut { distances } => *distances.get(k)?,
+        };
+        let margin = self.tol / size;
+        (margin.is_finite() && margin >= 0.0).then_some(margin)
     }
 
     /// The place along the blend (the spine's `s`) of the section whose

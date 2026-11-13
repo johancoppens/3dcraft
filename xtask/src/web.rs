@@ -450,6 +450,20 @@ mod tests {
         assert!(
             index.contains("id=\"craft3d_canvas\"") && index.contains("id=\"craft3d_loading\"")
         );
+        // What a search engine shows for the page: its title, which the
+        // page keeps while no document is open (`craft3d_web::host::
+        // page_title`), and one sentence of description.
+        assert!(index.contains("<title>3DCraft in your browser: parametric 3D CAD</title>"));
+        let description = index
+            .split("<meta name=\"description\" content=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .unwrap();
+        assert!(
+            description.starts_with("3DCraft") && description.ends_with('.'),
+            "{description}"
+        );
+        assert_eq!(description.matches(". ").count(), 0, "{description}");
         let manifest: serde_json::Value =
             serde_json::from_str(&fill(&read("manifest.webmanifest"), "", "", "", "")).unwrap();
         assert_eq!(manifest["start_url"], "./");

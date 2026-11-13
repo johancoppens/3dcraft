@@ -1389,9 +1389,10 @@ fn mcp_answers_json_rpc_on_stdin() {
 
     assert_eq!(replies[0]["id"], 1);
     assert_eq!(replies[0]["result"]["protocolVersion"], "2025-06-18");
+    // The product's name for display (`title`) since MCP 2025-06-18.
     assert_eq!(
         replies[0]["result"]["serverInfo"],
-        json!({"name": "craft3d", "version": env!("CARGO_PKG_VERSION")})
+        json!({"name": "craft3d", "title": "3DCraft", "version": env!("CARGO_PKG_VERSION")})
     );
     assert_eq!(replies[1]["id"], 2);
     assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 6);

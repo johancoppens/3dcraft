@@ -2066,6 +2066,19 @@ impl WebHost {
     }
 }
 
+/// The page's title (the browser's tab, a bookmark, a search engine's
+/// result): with a document open the desktop window's title for it
+/// (`window_title`), and with none the title `index.html` gave the page
+/// (`page`, read when the page started), so the start screen keeps the
+/// page's own title; the product's name where the page gave none.
+pub fn page_title(status: Option<&craft3d_engine::DocumentStatus>, page: &str) -> String {
+    match status {
+        Some(status) => craft3d_ui_egui::window_title(Some(status)),
+        None if !page.trim().is_empty() => page.to_string(),
+        None => craft3d_ui_egui::window_title(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2383,6 +2396,28 @@ mod tests {
         assert_eq!(written[0].bytes, want[0].bytes);
         assert_eq!(host.shell.state.export.format.extension(), "stl");
         assert_eq!(host.session.work_here(), work);
+    }
+
+    /// The start screen keeps the title `index.html` gives the page (it
+    /// was replaced by "3DCraft" on the first frame, 0.1.1); a document
+    /// gets the desktop window's title.
+    #[test]
+    fn the_page_keeps_its_own_title_until_a_document_opens() {
+        let page = "3DCraft in your browser: parametric 3D CAD";
+        let mut host = host();
+        assert!(host.session.document_status().is_none());
+        assert_eq!(
+            page_title(host.session.document_status().as_ref(), page),
+            page
+        );
+        assert_eq!(page_title(None, " "), "3DCraft");
+        host.session
+            .execute("file.new", &json!({"units": "mm"}))
+            .unwrap();
+        let status = host.session.document_status().unwrap();
+        let title = page_title(Some(&status), page);
+        assert_eq!(title, craft3d_ui_egui::window_title(Some(&status)));
+        assert!(title.ends_with("– 3DCraft"), "{title}");
     }
 
     fn modelled() -> WebHost {

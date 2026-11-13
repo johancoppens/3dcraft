@@ -197,6 +197,102 @@ jobs:
             dist/*.zip
             dist/*.msi
 
+      # The .msi installed as a person installs it, silently: first the
+      # latest published release's, when it is older, then this one over
+      # it. The upgrade must leave one 3DCraft in Apps (the UpgradeCode
+      # never changes; MajorUpgrade removes the older one), of this
+      # version, whose programs answer from Program Files, with the folder
+      # on the system PATH. The runner has the Visual C++ runtime, so a
+      # start here proves nothing about a PC without it: the import lists
+      # `cargo xtask package` writes and checks above are that proof.
+      # After the upload, so the packages are kept whatever it finds; it
+      # still fails the job, and with it the draft release: an .msi that
+      # leaves two entries must stop a release. A failure that is not the
+      # package's (msiexec 1618, another installation busy; GitHub's API)
+      # is answered by re-running the job.
+      - name: install (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # A native command's exit code is read by the script (the
+          # retries below), never turned into an error that ends it.
+          $PSNativeCommandUseErrorActionPreference = $false
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"$' | Select-Object -First 1).Matches[0].Groups[1].Value
+          $core = $version -replace '[-+].*$', ''
+          $msi = (Resolve-Path "dist/3DCraft-$version-x86_64.msi").Path
+          $folder = Join-Path $env:ProgramFiles '3DCraft'
+          function Install-Msi([string] $path, [string] $name) {
+            $log = Join-Path $env:RUNNER_TEMP "msi-$name.log"
+            $run = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/i', "`"$path`"", '/qn', '/norestart', '/l*v', "`"$log`"")
+            # 3010: installed, a restart asked for (not done: /norestart).
+            if ($run.ExitCode -ne 0 -and $run.ExitCode -ne 3010) {
+              if (Test-Path -LiteralPath $log) {
+                Get-Content -LiteralPath $log -Tail 40 -ErrorAction SilentlyContinue | Write-Host
+              } else {
+                Write-Host "msiexec wrote no log at $log"
+              }
+              $why = if ($run.ExitCode -eq 1618) { ' (1618: another installation is in progress; re-run the job)' } else { '' }
+              throw "msiexec /i $path ended with $($run.ExitCode)$why"
+            }
+            Write-Host "installed $path (msiexec $($run.ExitCode))"
+          }
+          # What Apps (Settings) and Programs and Features list: the
+          # uninstall keys, in both registry views.
+          function Get-Entries {
+            Get-ItemProperty -ErrorAction SilentlyContinue -Path @(
+              'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+              'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+            ) | Where-Object { $_.DisplayName -eq '3DCraft' }
+          }
+          function Assert-One([string] $want) {
+            $entries = @(Get-Entries)
+            $entries | Format-Table -AutoSize DisplayName, DisplayVersion, PSChildName | Out-String | Write-Host
+            if ($entries.Count -ne 1) {
+              throw "Apps lists $($entries.Count) entries named 3DCraft, not one"
+            }
+            if ($entries[0].DisplayVersion -ne $want) {
+              throw "Apps lists 3DCraft $($entries[0].DisplayVersion), not $want"
+            }
+          }
+          $previous = $null
+          for ($attempt = 1; $attempt -le 3 -and -not $previous; $attempt++) {
+            $tag = gh release view --repo $env:GITHUB_REPOSITORY --json tagName --jq .tagName
+            if ($LASTEXITCODE -eq 0 -and $tag) { $previous = "$tag".Trim() } else { Start-Sleep -Seconds 20 }
+          }
+          if (-not $previous) { throw "the latest published release could not be read (gh release view, 3 attempts)" }
+          $older = $previous.TrimStart('v') -replace '[-+].*$', ''
+          if ([version]$older -lt [version]$core) {
+            $dir = Join-Path $env:RUNNER_TEMP 'previous'
+            $fetched = $false
+            for ($attempt = 1; $attempt -le 3 -and -not $fetched; $attempt++) {
+              gh release download $previous --repo $env:GITHUB_REPOSITORY --pattern '3DCraft-*-x86_64.msi' --dir $dir --clobber
+              if ($LASTEXITCODE -eq 0) { $fetched = $true } else { Start-Sleep -Seconds 20 }
+            }
+            if (-not $fetched) { throw "the .msi of $previous could not be downloaded (3 attempts)" }
+            $old = (Get-ChildItem -Path $dir -Filter '3DCraft-*-x86_64.msi' | Select-Object -First 1).FullName
+            Install-Msi $old 'previous'
+            Assert-One $older
+          } else {
+            Write-Host "::notice::the latest published release is $previous, not older than ${version}: this .msi is installed without an upgrade"
+          }
+          Install-Msi $msi 'this'
+          Assert-One $core
+          foreach ($program in 'craft3d.exe', 'craft3d-cli.exe') {
+            $said = & (Join-Path $folder $program) --version
+            if ($LASTEXITCODE -ne 0 -or "$said" -notmatch [regex]::Escape(" $version ")) {
+              throw "$folder\$program --version said: $said"
+            }
+            Write-Host "$program from Program Files: $said"
+          }
+          $path = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').Path
+          if (-not ($path -split ';' | Where-Object { $_.TrimEnd('\') -eq $folder })) {
+            throw "the system PATH does not name $folder"
+          }
+          Write-Host "the system PATH names $folder"
+
   # The browser build: wasm-bindgen's CLI of the version in Cargo.lock and
   # binaryen's wasm-opt, both release downloads pinned and checked against
   # their sha256 (docs/development.md, Web build).
