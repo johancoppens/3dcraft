@@ -49,7 +49,7 @@ fn edge_value(command: &str, value: &Value) -> Result<EdgeRef, CommandError> {
             Ok(EdgeRef::Edge { edge, first: None })
         }
         Value::Array(items) => {
-            let [lead, _] = items.as_slice() else {
+            let [lead, second] = items.as_slice() else {
                 return fail(format!(
                     "{command}: `edges` holds a list of {} names; {EDGE_FORMS}",
                     items.len()
@@ -59,13 +59,9 @@ fn edge_value(command: &str, value: &Value) -> Result<EdgeRef, CommandError> {
             if !lead.is_edge() {
                 return Ok(EdgeRef::Faces(between_value(command, "edges", value)?));
             }
-            let face = items.get(1).map_or_else(
-                || fail(format!("{command}: `edges`: {EDGE_FORMS}")),
-                |face| face_value(command, "edges", face),
-            )?;
             Ok(EdgeRef::Edge {
                 edge: lead,
-                first: Some(face),
+                first: Some(face_value(command, "edges", second)?),
             })
         }
         _ => fail(format!(

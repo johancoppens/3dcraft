@@ -59,27 +59,22 @@ pub(crate) enum First {
     Measured,
 }
 
-/// The faces `name` names in `body`, refused with the reason when they
-/// are none, several caps a short name cannot choose between, or not of
-/// the body the blend takes.
-fn checked_face(
+/// Refused, with the reason, when the face `name` is not of the body the
+/// blend takes (`source`, the feature the first reference is of).
+fn of_the_body(
     name: &PersistentName,
     role: &str,
     noun: &str,
     source: FeatureId,
-    names: &Names,
     made_by: &str,
-) -> Result<Vec<FaceId>, String> {
+) -> Result<(), String> {
     if name.feature != source {
         return Err(format!(
             "{role}: {name} is a face of {}, and the first edge is of `{made_by}`; one {noun} takes edges of one body",
             name.feature
         ));
     }
-    if let Some(why) = crate::query::ambiguous_cap(names, name) {
-        return Err(format!("{role}: {why}"));
-    }
-    Ok(faces_named(names, name))
+    Ok(())
 }
 
 /// The one edge of `body` the reference by its own name `edge` means,
@@ -133,7 +128,11 @@ fn named_edge(
                     "{role}: {face} is not a face; after an edge's name comes the face of it the first distance is measured along"
                 ));
             }
-            let named = checked_face(face, role, noun, source, names, made_by)?;
+            of_the_body(face, role, noun, source, made_by)?;
+            if let Some(why) = crate::query::ambiguous_cap(names, face) {
+                return Err(format!("{role}: {why}"));
+            }
+            let named = faces_named(names, face);
             let Some(side) = sides.iter().copied().find(|side| named.contains(side)) else {
                 return Err(format!(
                     "{role}: {face} is not a face of the edge {edge}; its faces are: {}",
@@ -174,15 +173,22 @@ fn edges_of_pair(
     users: &[Vec<FaceId>],
     made_by: &str,
 ) -> Result<Vec<(EdgeId, FaceId)>, String> {
+    // In the order a pair was always checked in: each a face of the body,
+    // then neither a short cap that cannot choose.
     for face in [a, b] {
         if !face.is_face() {
             return Err(format!(
                 "{role}: {face} is not a face; an edge is referred to by the two faces it lies between, or by its own name alone (or followed by the face its first distance is measured along)"
             ));
         }
+        of_the_body(face, role, noun, source, made_by)?;
     }
-    let first = checked_face(a, role, noun, source, names, made_by)?;
-    let second = checked_face(b, role, noun, source, names, made_by)?;
+    for face in [a, b] {
+        if let Some(why) = crate::query::ambiguous_cap(names, face) {
+            return Err(format!("{role}: {why}"));
+        }
+    }
+    let (first, second) = (faces_named(names, a), faces_named(names, b));
     // A reference of two names says every one of them that is gone.
     let gone: Vec<String> = [(a, &first), (b, &second)]
         .into_iter()

@@ -388,7 +388,106 @@ fn an_edge_name_is_followed_through_the_features_that_take_its_body() {
         assert_solid(&mut s, "Round", rounded - 30.0, None, k);
         run(&mut s, "feature.delete", json!({"feature": "Bottom"}));
         assert_solid(&mut s, "Round", rounded, None, k);
+
+        // A chamfer put in at the marker on the plate's top edges at x = 0,
+        // one of which ends where the rounded edge does: the faces near
+        // that edge change, so its name in the chamfer's body is another
+        // (no rule rebuilding the name from those faces would find it),
+        // and the round follows the edge the kernel kept. The oracle: the
+        // same round built after the chamfer by the name the chamfer's
+        // body gives the edge.
+        let side = json!({"edges": [[TOP, "F3:copy(0)/F1:face(4)"]], "distance": 1.0 * k,
+                          "name": "Side"});
+        let mut direct = session();
+        plate_with_pipe(&mut direct, k, 16.0);
+        let [_, high] = pipe_edges(&mut direct, "Joined");
+        built(&mut direct, "feature.chamfer", side.clone());
+        let [_, there] = pipe_edges(&mut direct, "Side");
+        // Near it now: the chamfer's face, no longer the plate's back and
+        // left faces.
+        assert!(
+            there.contains("|F4:copy(0)/F1:face(5),F4:chamfer(0,"),
+            "{high} became {there}"
+        );
+        built(
+            &mut direct,
+            "feature.fillet",
+            json!({"edges": [there], "radius": 2.0 * k, "name": "Round"}),
+        );
+        let expected = body(&mut direct, "Round");
+        let mut s = session();
+        plate_with_pipe(&mut s, k, 16.0);
+        built(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": [high], "radius": 2.0 * k, "name": "Round"}),
+        );
+        run(&mut s, "history.rollback", json!({"feature": "Joined"}));
+        built(&mut s, "feature.chamfer", side);
+        run(&mut s, "history.rollback", json!({"feature": null}));
+        assert_eq!(feature(&mut s, "Round")["status"], "ok");
+        let round = body(&mut s, "Round");
+        // The same body (the features' ids differ: the chamfer came in
+        // later here).
+        assert_eq!(round["volume"], expected["volume"]);
+        assert_eq!(round["area"], expected["area"]);
+        assert_eq!(
+            round["faceNames"].as_array().unwrap().len(),
+            expected["faceNames"].as_array().unwrap().len()
+        );
+        assert!(centroid_y(&mut s, "Round") > 20.0 * k * (1.0 + 1e-9));
+        common::checked::deep(&mut s);
     }
+}
+
+#[test]
+fn an_edge_name_is_followed_the_same_when_the_cache_let_the_bodies_go() {
+    // With a budget of nothing, the union's body goes as soon as the
+    // chamfer takes it, and with it the names of its edges: following the
+    // union's edge name reads them, so they are derived again first, and
+    // the round is the one built with every body kept.
+    use common::plain::run;
+    let (_, rounded) = plate_and_pipe(16.0, 2.0);
+    let mut s = Session::new(Workspace::none());
+    s.set_body_budget(0);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [60, 40, 10], "position": [0, 0, 0], "name": "Plate"}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 10, "height": 60, "position": [0, 20, 16], "axis": [1, 0, 0],
+               "name": "Pipe"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "union", "target": "Plate", "tool": "Pipe", "name": "Joined"}),
+    );
+    let [_, high] = pipe_edges(&mut s, "Joined");
+    run(
+        &mut s,
+        "feature.chamfer",
+        json!({"edges": [["F3:copy(0)/F1:face(0)", "F3:copy(0)/F1:face(2)"]],
+               "distance": 1, "name": "Bottom"}),
+    );
+    assert!(s.bodies_held().unwrap().1 > 0, "the union was let go of");
+    let made = run(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [high], "radius": 2, "name": "Round"}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+    let measured = run(&mut s, "document.measure", json!({}));
+    assert_rel(
+        measured["volume"].as_f64().unwrap(),
+        rounded - 30.0,
+        1e-9,
+        "the round",
+    );
 }
 
 #[test]
