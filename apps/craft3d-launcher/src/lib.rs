@@ -19,8 +19,10 @@
 //! The window's standard error goes to a file of its own in the system's
 //! temporary folder, read back only once the window has ended, so the
 //! window never waits on a full pipe and the launcher holds nothing while
-//! it runs, however long that is. Its standard output is the launcher's,
-//! so `3DCraft.exe --version | more` still answers.
+//! it runs, however long that is. Its standard output is the launcher's:
+//! where the launcher was given one (a pipe, as in the Release workflow's
+//! smoke test, which reads `3DCraft.exe --version`), the window answers
+//! there.
 //!
 //! Everything but the start itself and the box is in portable functions
 //! with tests here; `main.rs` only joins them.
