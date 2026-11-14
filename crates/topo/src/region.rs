@@ -1131,12 +1131,17 @@ const MOST_GROWTH: f64 = 1_048_576.0;
 
 /// An upper bound on how far rounding can put a spline outside the convex
 /// hull of the points made for a stretch of it (its control points, or
-/// those of its Bézier pieces cut to the stretch inside their spans): 64
-/// units in the last place of its largest coordinate, times the ratio of
-/// its largest weight to its least (a rational spline is a quotient, and
-/// loses that many figures; measured to 5e-7 of the size for weights of
-/// 1e-6 to 1e6, where this gives 1e-2). `None` for a weight that is not
-/// positive and finite: no hull of control points holds such a curve.
+/// those of its Bézier pieces cut to the stretch inside their spans): 16
+/// units in the last place of its largest coordinate for each control
+/// point of a span (64 for a cubic: a piece is made by as many rounds of
+/// blends as its degree, and so is a point of the curve), times the ratio
+/// of its largest weight to its least (a rational spline is a quotient,
+/// and loses that many figures). Measured on 5,883 splines (review of
+/// 2026-11-14): the curve at most 2.4e-14 of its largest coordinate
+/// outside the hull of a cut piece at degree 21 (this gives 7.8e-14), and
+/// 8.6e-8 of its size for weights of 1e-6 to 1e6 at degree 5 (2e-2).
+/// `None` for a weight that is not positive and finite: no hull of control
+/// points holds such a curve.
 fn hull_rounding(curve: &NurbsCurve) -> Option<f64> {
     let (mut least, mut most) = (f64::INFINITY, 0.0_f64);
     for w in curve.weights() {
@@ -1149,7 +1154,8 @@ fn hull_rounding(curve: &NurbsCurve) -> Option<f64> {
     let size = curve.control_points().iter().fold(0.0_f64, |m, p| {
         m.max(p.x.abs()).max(p.y.abs()).max(p.z.abs())
     });
-    let rounding = 64.0 * f64::EPSILON * (most / least) * size;
+    let points = (curve.degree() + 1) as f64;
+    let rounding = 16.0 * points * f64::EPSILON * (most / least) * size;
     rounding.is_finite().then_some(rounding)
 }
 
