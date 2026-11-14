@@ -1186,7 +1186,17 @@ pub fn sound(after: &Body, tol: &Tolerance, found: &mut Found) -> Option<Measure
         return None;
     }
     let Some(m) = measured(after) else {
-        found.problems.push("cannot be measured".into());
+        // A body that passes the checker but can be neither measured nor
+        // meshed is an invalid body the checker does not see.
+        let size = size_of(after);
+        if let Err(e) = mesh_volume(after, 1e-3 * size) {
+            found.unmeshable = true;
+            found.problems.push(format!(
+                "passes the checker but can be neither measured nor meshed: {e}"
+            ));
+        } else {
+            found.problems.push("cannot be measured".into());
+        }
         return None;
     };
     if m.volume <= 0.0 {
@@ -1631,4 +1641,35 @@ pub fn curves(sides: &[Side], k: f64) -> Vec<SketchCurve> {
             },
         })
         .collect()
+}
+
+/// The signed distances (outward positive) at which `face` moved along its
+/// normal passes through a vertex of `body` that is not on it; empty for a
+/// face that is not a plane, a cylinder or a sphere.
+pub fn critical(body: &Body, face: FaceId, tol: f64) -> Vec<f64> {
+    let Some(found) = body.face(face) else {
+        return Vec::new();
+    };
+    let sense = if found.reversed { -1.0 } else { 1.0 };
+    let mut out = Vec::new();
+    for v in &body.vertices {
+        let p = v.point;
+        let c = match &found.surface {
+            Surface::Plane(plane) => sense * (p - plane.frame().origin()).dot(plane.frame().z()),
+            Surface::Cylinder(c) => {
+                let f = c.frame();
+                let off = p - f.origin();
+                let radial = off - f.z() * off.dot(f.z());
+                sense * (radial.length() - c.radius())
+            }
+            Surface::Sphere(sphere) => {
+                sense * (p.distance(sphere.frame().origin()) - sphere.radius())
+            }
+            _ => return Vec::new(),
+        };
+        if c.abs() > 100.0 * tol && !out.iter().any(|o: &f64| (o - c).abs() <= 100.0 * tol) {
+            out.push(c);
+        }
+    }
+    out
 }

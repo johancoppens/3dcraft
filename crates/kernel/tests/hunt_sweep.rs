@@ -51,6 +51,9 @@ fn sweeps(cases: std::ops::Range<usize>) -> Tally {
             .fold(f64::NEG_INFINITY, f64::max);
         let radius = reach.max(0.0) + rng.between(3.0, 30.0);
         let (first, second) = (rng.between(0.0, 30.0), rng.between(0.0, 30.0));
+        // A first line shorter than a half is left out: the arc starts
+        // where the profile is.
+        let first = if first > 0.5 { first } else { 0.0 };
         let angle = rng.between(0.2, 3.0);
         let frame = hunt_common::frame(&mut rng, k);
         let (s, c) = (angle.psin(), angle.pcos());

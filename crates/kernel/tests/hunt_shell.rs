@@ -44,8 +44,8 @@ use craft3d_math::{Portable, Tolerance, Transform, Vec3};
 use craft3d_topo::{Body, FaceId, face_areas};
 use hunt_common::{
     Cube, Found, KINDS, Kind, Made, Measured, SCALES, Tally, allowance, case_seed, classify,
-    distance_to, frames, g, guarded, identity, letter, make, measured, mesh, neighbours, normal_at,
-    points_in_box, points_near, prism_like, ribbon, size_of, sound, tolerance,
+    critical, distance_to, frames, g, guarded, identity, letter, make, measured, mesh, neighbours,
+    normal_at, points_in_box, points_near, prism_like, ribbon, size_of, sound, tolerance,
 };
 use std::f64::consts::PI;
 
@@ -261,10 +261,23 @@ const SEED_SHELL: u64 = 0x05E1_1ED0_2026_1114;
 
 /// Seeded random shells.
 fn shells(cases: std::ops::Range<usize>) -> Tally {
+    shells_from(SEED_SHELL, false, cases)
+}
+
+/// Shells at critical thicknesses: half the distance from a face to one
+/// of the two nearest vertices of the body behind it, exactly or a
+/// hundredth or a ten-thousandth either side, where walls moved in meet.
+fn critical_shells(cases: std::ops::Range<usize>) -> Tally {
+    shells_from(SEED_CRITICAL_SHELL, true, cases)
+}
+
+const SEED_CRITICAL_SHELL: u64 = 0x0C51_E110_2026_1114;
+
+fn shells_from(seed: u64, at_critical: bool, cases: std::ops::Range<usize>) -> Tally {
     let mut tally = Tally::new();
     for n in cases {
         let clock = std::time::Instant::now();
-        let mut rng = Rng(case_seed(SEED_SHELL, n));
+        let mut rng = Rng(case_seed(seed, n));
         let kind = KINDS[n % KINDS.len()];
         let k = SCALES[rng.below(SCALES.len() as u64) as usize];
         let tol = tolerance(k);
@@ -278,7 +291,25 @@ fn shells(cases: std::ops::Range<usize>) -> Tally {
             continue;
         };
         let size = size_of(body);
-        let t = [0.005, 0.01, 0.02, 0.04, 0.08, 0.15][rng.below(6) as usize] * size;
+        let mut t = [0.005, 0.01, 0.02, 0.04, 0.08, 0.15][rng.below(6) as usize] * size;
+        if at_critical {
+            let face = FaceId(rng.below(body.faces.len() as u64) as u32);
+            // The nearest two vertices behind the face: where the body is
+            // thin.
+            let mut behind: Vec<f64> = critical(body, face, tol.linear)
+                .into_iter()
+                .filter(|c| *c < 0.0)
+                .collect();
+            if behind.is_empty() {
+                tally.outcomes.push('N');
+                continue;
+            }
+            behind.sort_by(|a, b| b.total_cmp(a));
+            behind.truncate(2);
+            let c = behind[rng.below(behind.len() as u64) as usize];
+            let e = [-1e-2, -1e-4, 0.0, 1e-4, 1e-2][rng.below(5) as usize];
+            t = -0.5 * c * (1.0 + e);
+        }
         let count = (rng.below(3) as usize).min(body.faces.len().saturating_sub(1));
         let mut open: Vec<FaceId> = Vec::new();
         while open.len() < count {
@@ -877,3 +908,71 @@ fn random_thicken_0_to_40_hold_their_oracles() {
 /// What the thicken hunt's gate cases did when it was written (outcome
 /// letters, `hunt_common::Tally`), recorded on 2026-11-14.
 const PINNED_THICKEN: &str = "BBBBRBBBBRBBBRRBRRBBBBBBBBBBRBBRBRBBRBBB";
+
+/// The wide hunt of shells at critical thicknesses: 480 cases in 8 parts,
+/// run by hand (`-- --ignored`), not in the gate.
+fn wide_critical_shell(part: usize) {
+    let r = part * 60..(part + 1) * 60;
+    let start = r.start;
+    critical_shells(r).hold("critical shell", start, &KNOWN_CRITICAL_SHELL, 0);
+}
+
+#[test]
+#[ignore = "the wide hunt, run by hand"]
+fn wide_critical_shell_0() {
+    wide_critical_shell(0);
+}
+
+#[test]
+#[ignore = "the wide hunt, run by hand"]
+fn wide_critical_shell_1() {
+    wide_critical_shell(1);
+}
+
+#[test]
+#[ignore = "the wide hunt, run by hand"]
+fn wide_critical_shell_2() {
+    wide_critical_shell(2);
+}
+
+#[test]
+#[ignore = "the wide hunt, run by hand"]
+fn wide_critical_shell_3() {
+    wide_critical_shell(3);
+}
+
+#[test]
+#[ignore = "the wide hunt, run by hand"]
+fn wide_critical_shell_4() {
+    wide_critical_shell(4);
+}
+
+#[test]
+#[ignore = "the wide hunt, run by hand"]
+fn wide_critical_shell_5() {
+    wide_critical_shell(5);
+}
+
+#[test]
+#[ignore = "the wide hunt, run by hand"]
+fn wide_critical_shell_6() {
+    wide_critical_shell(6);
+}
+
+#[test]
+#[ignore = "the wide hunt, run by hand"]
+fn wide_critical_shell_7() {
+    wide_critical_shell(7);
+}
+
+#[test]
+fn hunt_critical_shell_scratch() {
+    let Some(r) = hunt_common::scratch_range() else {
+        return;
+    };
+    let start = r.start;
+    critical_shells(r).hold("critical shell", start, &KNOWN_CRITICAL_SHELL, 0);
+}
+
+/// Shells at critical thicknesses seen wrong, owed (none known yet).
+const KNOWN_CRITICAL_SHELL: [usize; 0] = [];

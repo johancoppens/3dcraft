@@ -51,9 +51,9 @@ use craft3d_kernel::offset_face::{FaceOffset, offset_faces};
 use craft3d_math::{Portable, Transform, Vec3};
 use craft3d_topo::{Body, FaceId, check, face_areas};
 use hunt_common::{
-    Cube, Found, KINDS, Kind, SCALES, Tally, allowance, case_seed, face_area_centroid, frames, g,
-    guarded, identity, least_sine, letter, make, measured, mesh, mesh_volume, neighbours, points,
-    prism_like, ribbon, size_of, sound, tolerance,
+    Cube, Found, KINDS, Kind, SCALES, Tally, allowance, case_seed, critical, face_area_centroid,
+    frames, g, guarded, identity, least_sine, letter, make, measured, mesh, mesh_volume,
+    neighbours, points, prism_like, ribbon, size_of, sound, tolerance,
 };
 
 /// The volume of a primitive with every face moved out by `d`, in
@@ -106,37 +106,6 @@ fn critical_offsets(cases: std::ops::Range<usize>) -> Tally {
 }
 
 const SEED_CRITICAL: u64 = 0x0C41_7EC0_2026_1114;
-
-/// The signed distances (outward positive) at which `face` moved along its
-/// normal passes through a vertex of `body` that is not on it; empty for a
-/// face that is not a plane, a cylinder or a sphere.
-fn critical(body: &Body, face: FaceId, tol: f64) -> Vec<f64> {
-    let Some(found) = body.face(face) else {
-        return Vec::new();
-    };
-    let sense = if found.reversed { -1.0 } else { 1.0 };
-    let mut out = Vec::new();
-    for v in &body.vertices {
-        let p = v.point;
-        let c = match &found.surface {
-            Surface::Plane(plane) => sense * (p - plane.frame().origin()).dot(plane.frame().z()),
-            Surface::Cylinder(c) => {
-                let f = c.frame();
-                let off = p - f.origin();
-                let radial = off - f.z() * off.dot(f.z());
-                sense * (radial.length() - c.radius())
-            }
-            Surface::Sphere(sphere) => {
-                sense * (p.distance(sphere.frame().origin()) - sphere.radius())
-            }
-            _ => return Vec::new(),
-        };
-        if c.abs() > 100.0 * tol && !out.iter().any(|o: &f64| (o - c).abs() <= 100.0 * tol) {
-            out.push(c);
-        }
-    }
-    out
-}
 
 fn offsets_from(seed: u64, at_critical: bool, cases: std::ops::Range<usize>) -> Tally {
     let mut tally = Tally::new();
@@ -1001,9 +970,213 @@ fn hunt_critical_scratch() {
     critical_offsets(r).hold("critical offset", start, &KNOWN_CRITICAL, 0);
 }
 
-/// Offsets at critical distances seen wrong, owed (none known yet).
-const KNOWN_CRITICAL: [usize; 0] = [];
+/// Offsets at critical distances seen wrong, owed: invalid bodies that
+/// pass the checker (the tessellator cannot mesh them, and the measure
+/// refuses some), each a face moved up to or past a face that bounds its
+/// neighbours. Cases 777, 815, 872, 188 and 321: a vase's cap offset past
+/// the cap across from it (the reduced form is
+/// `a_cap_offset_past_the_cap_across_from_it_is_refused`); 1019: a lying
+/// cone's end cap past the block's end face (as
+/// `an_end_cap_offset_past_the_face_it_stands_out_of_is_refused_or_built_right`);
+/// 182 and 714: a block's end face moved out or in to a slanted cylinder's
+/// end; 1041: a spline-walled prism's flat side moved in to within a
+/// ten-thousandth of the far side.
+const KNOWN_CRITICAL: [usize; 9] = [182, 188, 321, 714, 777, 815, 872, 1019, 1041];
 
 /// What the critical offsets' gate cases did when the hunt was written;
 /// recorded on 2026-11-14.
 const PINNED_CRITICAL: &str = "RRRNNRRRRRRRRRRNNBNBRNNNRRRRBRRRRRRBNRRRRNNBRBBRBRRRRNNNNBBR";
+
+/// One offset case at a critical distance again (`HUNT_CRITICAL=n`), told
+/// in detail: what the checker, the measure, the mesh and the self-check
+/// say of the result.
+#[test]
+fn hunt_critical_debug() {
+    let Some(n) = std::env::var("HUNT_CRITICAL")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+    else {
+        return;
+    };
+    let mut rng = Rng(case_seed(SEED_CRITICAL, n));
+    let kind = KINDS[n % KINDS.len()];
+    let k = SCALES[rng.below(SCALES.len() as u64) as usize];
+    let tol = tolerance(k);
+    let made = make(&mut rng, kind, k, &tol).unwrap();
+    let body = &made.body;
+    let face = FaceId(rng.below(body.faces.len() as u64) as u32);
+    let _sign = rng.below(2);
+    let _size = rng.below(10);
+    let found = critical(body, face, tol.linear);
+    let c = found[rng.below(found.len() as u64) as usize];
+    let e = [-1e-2, -1e-4, 0.0, 1e-4, 1e-2][rng.below(5) as usize];
+    let d = c * (1.0 + e);
+    println!(
+        "case {n}: {} frame {:?}; face {} ({}) offset {} (critical {}, {e})",
+        made.what,
+        made.frame,
+        face.0,
+        body.face(face).unwrap().surface.kind(),
+        g(d),
+        g(c)
+    );
+    for (i, f) in body.faces.iter().enumerate() {
+        println!(
+            "  before face {i}: {} loops {}",
+            f.surface.kind(),
+            f.loops.len()
+        );
+    }
+    println!("  before: {:?}", measured(body));
+    match offset_faces(body, &[FaceOffset { face, distance: d }], &tol) {
+        Err(e) => println!("  refused: {e}"),
+        Ok(r) => {
+            let after = r.body;
+            println!("  check: {:?}", check(&after, &tol));
+            println!("  measure: {:?}", craft3d_topo::mass_properties(&after));
+            println!("  mesh: {:?}", mesh_volume(&after, 1e-3 * size_of(&after)));
+            println!(
+                "  self-check: {:?}",
+                craft3d_tess::body_self_intersections(
+                    &after,
+                    &craft3d_tess::SelfCheckParams::new(tol.linear)
+                )
+                .map(|c| c.is_clean())
+            );
+            for (i, v) in after.vertices.iter().enumerate() {
+                println!(
+                    "  vertex {i}: {:?} (was {:?})",
+                    v.point, body.vertices[i].point
+                );
+            }
+        }
+    }
+}
+
+/// The top cap of a block, a cylinder and a vase (a spline profile turned
+/// about its axis) offset inward through the whole body: up to the height
+/// built right, past the cap across from it refused. What was built
+/// otherwise, by the checker, the measure and the mesh.
+fn cap_through(which: usize, past: f64) -> Result<(), String> {
+    use craft3d_kernel::primitives;
+    use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
+    use craft3d_kernel::revolve::revolve;
+    use craft3d_math::Frame;
+    let tol = tolerance(1.0);
+    let line = |id: u64, s: [f64; 2], e: [f64; 2]| SketchCurve {
+        id,
+        curve: Curve2::Line { start: s, end: e },
+    };
+    let body = match which {
+        0 => primitives::block(&Frame::WORLD, 40.0, 30.0, 20.0).unwrap(),
+        1 => primitives::cylinder(&Frame::WORLD, 8.0, 20.0).unwrap(),
+        _ => {
+            // From r 8 at the bottom to r 12 at the top, bulging out.
+            let bulge = if which == 2 { 4.0 } else { 0.0 };
+            let curves = vec![
+                line(1, [0.0, 0.0], [8.0, 0.0]),
+                SketchCurve {
+                    id: 2,
+                    curve: Curve2::Spline(Spline2 {
+                        degree: 3,
+                        knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                        control: vec![
+                            [8.0, 0.0],
+                            [8.0 + bulge, 20.0 / 3.0],
+                            [10.0, 40.0 / 3.0],
+                            [12.0, 20.0],
+                        ],
+                    }),
+                },
+                line(3, [12.0, 20.0], [0.0, 20.0]),
+                line(4, [0.0, 20.0], [0.0, 0.0]),
+            ];
+            let profiles = detect_profiles(&curves, &tol).unwrap();
+            let plane = Frame::new(
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, -1.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+            )
+            .unwrap();
+            revolve(
+                &profiles,
+                &plane,
+                [0.0, 0.0],
+                [0.0, 1.0],
+                0.0,
+                std::f64::consts::TAU,
+                &tol,
+            )
+            .unwrap()
+            .body
+        }
+    };
+    let height = |f: &FaceId| match &body.face(*f).unwrap().surface {
+        Surface::Plane(p) => p.frame().origin().z,
+        _ => f64::NEG_INFINITY,
+    };
+    let top = (0..body.faces.len() as u32)
+        .map(FaceId)
+        .max_by(|a, b| height(a).total_cmp(&height(b)))
+        .unwrap();
+    let Ok(made) = offset_faces(
+        &body,
+        &[FaceOffset {
+            face: top,
+            distance: -(20.0 + past),
+        }],
+        &tol,
+    ) else {
+        return Ok(());
+    };
+    if past > 0.0 {
+        return Err(format!(
+            "built through the bottom: check {:?}, measure {:?}, mesh {:?}",
+            check(&made.body, &tol).first(),
+            craft3d_topo::mass_properties(&made.body).map(|m| m.volume),
+            mesh_volume(&made.body, 0.04)
+        ));
+    }
+    let measured_ok = craft3d_topo::mass_properties(&made.body).is_ok();
+    let meshed = mesh_volume(&made.body, 0.04);
+    if check(&made.body, &tol).is_empty() && measured_ok && meshed.is_ok() {
+        Ok(())
+    } else {
+        Err(format!("built and not sound: mesh {meshed:?}"))
+    }
+}
+
+/// The reduced form of the critical offsets' vase cases (777, 815, 872,
+/// 188, 321; 2026-11-14): a vase from r 8 to r 12 over 20, its side a
+/// spline bulging out by 4, its top offset inward by 20.0001 or 20.01
+/// (past its bottom) is built and passes the checker, but its side's loops
+/// run the wrong way round, enclosing next to no area: the measure refuses
+/// it ("unbounded face") and the tessellator cannot mesh it. By 20.5 the
+/// operation's own check refuses it ("every loop runs clockwise"); the
+/// same vase without the bulge, a cylinder and a block are refused from
+/// 20.0001 on ("too far"). Owed, known: [`CAP_THROUGH_KNOWN`].
+#[test]
+fn a_cap_offset_past_the_cap_across_from_it_is_refused() {
+    let names = ["block", "cylinder", "vase", "straight vase"];
+    let mut unexpected = Vec::new();
+    for (which, name) in names.iter().enumerate() {
+        for past in [-0.5, -1e-2, 1e-4, 1e-2, 0.5] {
+            let known = CAP_THROUGH_KNOWN.contains(&(which, past));
+            match cap_through(which, past) {
+                Ok(()) if known => unexpected.push(format!(
+                    "{}, past by {past}: refused or right now: take it off CAP_THROUGH_KNOWN",
+                    name
+                )),
+                Err(e) if !known => {
+                    unexpected.push(format!("{}, past by {past}: {e}", name));
+                }
+                Err(e) => println!("{}, past by {past}: known wrong: {e}", name),
+                Ok(()) => println!("{}, past by {past}: refused or right", name),
+            }
+        }
+    }
+    assert!(unexpected.is_empty(), "{unexpected:#?}");
+}
+
+/// The vase's top offset past its bottom by these, built invalid.
+const CAP_THROUGH_KNOWN: [(usize, f64); 2] = [(2, 1e-4), (2, 1e-2)];
