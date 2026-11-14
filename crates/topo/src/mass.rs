@@ -2114,35 +2114,39 @@ fn sampled(
 ///
 /// The boundary integral sums `G du` along the curve of the feet (`G` is
 /// evaluated at the foot), so its rates must be the feet's: then the rates
-/// of a loop add up to the change of its feet's parameters, which is zero
-/// around it, and Green's theorem holds for the region the feet bound.
-/// The least-squares rates are the foot's only when the point lies on the
-/// surface. An edge within the tolerance of its face but not on it (an
-/// edge fitted where two faces meet, held to a share of the tolerance) has
-/// feet that move otherwise, and its rates then add up to more or less
-/// than its feet go: the loop does not close by that much, and the sum
-/// counts a strip that wide from the reference of `G` across the whole
-/// face. Where the face lies far from the middle the moments are taken
-/// about, `G` is large and so is the strip (2026-11-14: the end cap of a
-/// turned blade of the action matrix's rotor offset by 0.055 mm, its new
-/// edge up to 8.7e-8 mm past the border of the side face continued for
-/// it; the rates along that edge added up to 1.00000064 for feet from 0
-/// to 1, and the rotor's volume came out 10.08 mm³ smaller where the cap
-/// added 0.0013).
+/// of a piece add up to how far its feet go, a loop closes, and Green's
+/// theorem holds for the region the feet bound. The least-squares rates
+/// are the foot's only when the point lies on the surface. Along an edge
+/// within the tolerance of its face but not on it (an edge fitted where
+/// two faces meet, held to a share of the tolerance) the foot moves faster
+/// or slower than they say, by the distance times the curvature, and the
+/// rates add up to more or less than the feet go: the loop does not close
+/// by that much, and the sum counts a strip that wide from the reference
+/// of `G` across the whole face. Where the face lies far from the middle
+/// the moments are taken about, `G` is large and so is the strip
+/// (2026-11-14: the end cap of a turned blade of the action matrix's rotor
+/// offset by 0.055 mm, its new edge up to 8.7e-8 mm off the side face; the
+/// rates along that edge added up to 1.00000064 for feet from 0 to 1, and
+/// the rotor's volume came out 10.08 mm³ smaller where the cap added
+/// 0.0013).
 ///
 /// The feet's rates, by the implicit function theorem on the conditions
 /// that make a foot one, `(p − S)·Sᵤ = 0` and `(p − S)·Sᵥ = 0`, with
 /// `r = p − S`:
 /// `[[Sᵤ·Sᵤ − r·Sᵤᵤ, Sᵤ·Sᵥ − r·Sᵤᵥ], [Sᵤ·Sᵥ − r·Sᵤᵥ, Sᵥ·Sᵥ − r·Sᵥᵥ]] (du, dv)
 /// = (tangent·Sᵤ, tangent·Sᵥ)` (the first fundamental form less the
-/// second along `r`). A foot held on a border of a freeform surface's
-/// parameters (the point lies beyond it by more than rounding) slides
-/// along that border: its
-/// rate across it is zero, and along it `(Sᵤ·Sᵤ − r·Sᵤᵤ) du = tangent·Sᵤ`
-/// (on a border of constant v; likewise in v); at a corner both are zero.
-/// "Off by more than rounding" is 16 units in the last place of the
-/// coordinates of the point or its foot, so a point that lies on the
-/// surface keeps the least-squares rates, bit for bit.
+/// second along `r`). Where a point lies past a border of a freeform
+/// surface and its foot is held on the border, the same rates are those of
+/// its foot on the surface continued past the border as its end spans are
+/// (which agrees with the surface there to second order): the curve summed
+/// runs on smoothly past the border and comes back to the feet where the
+/// edge does, rather than turning along the border with a kink inside a
+/// panel. (Turning along it was tried: on the run-off faces of
+/// `kernel/tests/mass_run_off.rs` it put the area up to 1.2e-7 off the
+/// region of the feet integrated another way, where these rates are
+/// within 3e-11.) "Off by more than rounding" is 16 units in the last
+/// place of the coordinates of the point or its foot, so a point that lies
+/// on the surface keeps the least-squares rates, bit for bit.
 fn foot_rates(
     surface: &Surface,
     (u, v): (f64, f64),
@@ -2162,35 +2166,11 @@ fn foot_rates(
         sv.dot(sv) - r.dot(svv),
     );
     let (ru, rv) = (tangent.dot(su), tangent.dot(sv));
-    let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
-    let ((u0, u1), (v0, v1)) = surface.domain();
-    // Beyond a border: the foot is on it and the point lies past it by more
-    // than rounding (on a seam where a spline surface closes on itself, `r`
-    // is square to the surface, and rounding alone must not say which side).
-    let across = |tangent: Vec3| {
-        let length = tangent.length();
-        if length > 0.0 {
-            r.dot(tangent) / length
-        } else {
-            0.0
-        }
-    };
-    let (out_u, out_v) = (across(su), across(sv));
-    let beyond_u = freeform && ((u <= u0 && out_u < -rounding) || (u >= u1 && out_u > rounding));
-    let beyond_v = freeform && ((v <= v0 && out_v < -rounding) || (v >= v1 && out_v > rounding));
-    let rates = match (beyond_u, beyond_v) {
-        (true, true) => (0.0, 0.0),
-        (false, true) => (ru / a, 0.0),
-        (true, false) => (0.0, rv / c),
-        (false, false) => {
-            let det = a * c - b * b;
-            if det.partial_cmp(&(1e-24 * a.max(c) * a.max(c))) != Some(std::cmp::Ordering::Greater)
-            {
-                return None;
-            }
-            ((c * ru - b * rv) / det, (a * rv - b * ru) / det)
-        }
-    };
+    let det = a * c - b * b;
+    if det.partial_cmp(&(1e-24 * a.max(c) * a.max(c))) != Some(std::cmp::Ordering::Greater) {
+        return None;
+    }
+    let rates = ((c * ru - b * rv) / det, (a * rv - b * ru) / det);
     (rates.0.is_finite() && rates.1.is_finite()).then_some(rates)
 }
 
@@ -5784,9 +5764,9 @@ mod tests {
     /// its foot's (`foot_rates`), so the loop of feet closes: a point
     /// `h` off a cylinder of radius `r` going round it at speed 1 has its
     /// foot turn at `1 / (r + h)`, not at the `1 / r` the least-squares
-    /// solve gives; a point beyond the border `v = 1` of a freeform patch
-    /// has its foot slide along that border (`dv = 0`), beyond a corner
-    /// stand still; a point on the surface keeps the least-squares rates
+    /// solve gives; a point past the border `v = 1` of a freeform patch,
+    /// its foot held there, has the rates of its foot on the patch
+    /// continued; a point on the surface keeps the least-squares rates
     /// (`None`). Each at three scales.
     #[test]
     fn the_rates_of_a_point_off_its_surface_are_its_foots() {
@@ -5838,28 +5818,31 @@ mod tests {
                 .unwrap(),
             );
             let tangent = Vec3::new(0.8, 0.6, 0.0);
-            let beyond = Vec3::new(0.4 * k, (1.0 + 1e-5) * k, 1e-6 * k);
-            let (u, v) = patch.project(beyond).unwrap();
-            assert_eq!(v, 1.0, "{k}: the foot is held on the border");
-            let (foot, su, sv) = patch.derivatives(u, v);
-            let (du, dv) = foot_rates(&patch, (u, v), (beyond, foot, su, sv), tangent).unwrap();
-            assert!((du - 0.8 / k).abs() <= 1e-12 / k, "{k}: {du}");
-            assert_eq!(dv, 0.0, "{k}");
-            let corner = Vec3::new((1.0 + 1e-5) * k, (1.0 + 1e-5) * k, 0.0);
-            let (u, v) = patch.project(corner).unwrap();
-            let (foot, su, sv) = patch.derivatives(u, v);
-            assert_eq!(
-                foot_rates(&patch, (u, v), (corner, foot, su, sv), tangent),
-                Some((0.0, 0.0)),
-                "{k}"
-            );
-            // Above the patch, inside its borders: the foot moves as the
-            // point does, across as along.
-            let above = Vec3::new(0.4 * k, 0.5 * k, 1e-3 * k);
-            let (u, v) = patch.project(above).unwrap();
-            let (foot, su, sv) = patch.derivatives(u, v);
-            let (du, dv) = foot_rates(&patch, (u, v), (above, foot, su, sv), tangent).unwrap();
-            assert!((du - 0.8 / k).abs() <= 1e-12 / k && (dv - 0.6 / k).abs() <= 1e-12 / k);
+            // Above the patch, inside its borders, and past its border
+            // `v = 1` and its corner, where the foot is held on the border:
+            // the rates of the foot on the patch continued, which move as
+            // the point does, across as along.
+            for (point, held) in [
+                (Vec3::new(0.4 * k, 0.5 * k, 1e-3 * k), false),
+                (Vec3::new(0.4 * k, (1.0 + 1e-5) * k, 1e-6 * k), true),
+                (
+                    Vec3::new((1.0 + 1e-5) * k, (1.0 + 1e-5) * k, 1e-6 * k),
+                    true,
+                ),
+            ] {
+                let (u, v) = patch.project(point).unwrap();
+                assert_eq!(
+                    v == 1.0,
+                    held,
+                    "{k} {point:?}: the foot is held on the border"
+                );
+                let (foot, su, sv) = patch.derivatives(u, v);
+                let (du, dv) = foot_rates(&patch, (u, v), (point, foot, su, sv), tangent).unwrap();
+                assert!(
+                    (du - 0.8 / k).abs() <= 1e-12 / k && (dv - 0.6 / k).abs() <= 1e-12 / k,
+                    "{k} {point:?}: {du} {dv}"
+                );
+            }
         }
     }
 }
