@@ -86,6 +86,7 @@ mod chain;
 mod cross;
 mod exact;
 pub(crate) mod rebuild;
+mod shown;
 
 /// How many times a step between two sections may be halved to follow
 /// the ball from one to the other.
@@ -1966,7 +1967,8 @@ fn stays_on(
 /// The borders `borders` of a blend face, each with the face it lies on:
 /// each stays on its face ([`stays_on`]), and a fillet face is tangent to
 /// it, measured again on the body at seven points (to ten times what the
-/// approximation was refined to); a chamfer passes.
+/// approximation was refined to); a chamfer passes (whether its line
+/// runs through a face beside the edge is `shown`'s).
 fn tangent_along(
     body: &Body,
     edge: EdgeId,
@@ -3284,9 +3286,45 @@ pub(super) fn blend(
             convex,
         });
     }
+    // Every chamfer held to keeping clear of the faces beside its edge in
+    // the planes across it looked at (`shown`). What it refuses is said
+    // after what the construction itself refuses (a chamfer that cannot
+    // end at an apex, a fold over a cap, a border that runs off its face),
+    // which says more.
+    let mut unclear = None;
+    for item in &items {
+        if let Err(error) = shown::shown_wrong(body, item, tolerance) {
+            unclear.get_or_insert(error);
+        }
+    }
+    match (
+        blend_items(body, &uses, &items, requests, tolerance),
+        unclear,
+    ) {
+        (Ok(made), None) => Ok(made),
+        (
+            Ok(_)
+            | Err(BlendError::Refused {
+                reason: Reason::Through,
+                ..
+            }),
+            Some(error),
+        ) => Err(error),
+        (Err(error), _) => Err(error),
+    }
+}
+
+/// [`blend`] of the requests worked out as `items`, built.
+fn blend_items(
+    body: &Body,
+    uses: &[Vec<craft3d_topo::EdgeUse>],
+    items: &[Item],
+    requests: &[Request],
+    tolerance: &Tolerance,
+) -> Result<Blended, BlendError> {
     // Edges that go on into each other are blended as one chain; no
     // other two may share a vertex.
-    let (chains, meets) = chain::group(body, &uses, &items, tolerance)?;
+    let (chains, meets) = chain::group(body, uses, items, tolerance)?;
     let mut out = body.clone();
     let mut blends = Vec::with_capacity(requests.len());
     let mut with_meets = Vec::new();
@@ -3302,20 +3340,20 @@ pub(super) fn blend(
             let face = blend_one(&mut out, found, item, tolerance)?;
             blends.push((face, piece.item));
         } else {
-            let made = chain::build(&mut out, found, &items, tolerance)?;
-            behind_all(body, &out, &made, &items, first, tolerance)?;
+            let made = chain::build(&mut out, found, items, tolerance)?;
+            behind_all(body, &out, &made, items, first, tolerance)?;
             blends.extend(made);
         }
         no_stranded_loop(&out, first, tolerance)?;
     }
     if !with_meets.is_empty() {
-        let made = chain::build_meets(&mut out, &chains, &with_meets, &meets, &items, tolerance)?;
+        let made = chain::build_meets(&mut out, &chains, &with_meets, &meets, items, tolerance)?;
         let first = with_meets
             .first()
             .and_then(|c| chains.get(*c))
             .and_then(|c| c.pieces.first())
             .map_or(EdgeId(u32::MAX), |p| p.edge);
-        behind_all(body, &out, &made, &items, first, tolerance)?;
+        behind_all(body, &out, &made, items, first, tolerance)?;
         blends.extend(made);
         no_stranded_loop(&out, first, tolerance)?;
     }

@@ -1399,13 +1399,81 @@ fn edges_after_one_a_chamfer_takes_whole_keep_their_requests() {
 /// double cone through itself, which `check` passed and the mass
 /// integrator could not measure. Now refused (rolling.rs, `folds`),
 /// naming the edge and the sphere, from just past the line from rim to
-/// top on; a distance short of it is built, valid and measured, and fills
-/// part of the groove (no more than the cylinder over the rim widened by
-/// it, as high as the cap).
+/// top on.
+///
+/// Short of that, from 0.326 on, the line from the cut line on the plate
+/// to the one on the cap runs into the cap (the cap flattens towards its
+/// top, so the line's slope passes the cap's there): no chamfer of the
+/// size exists, and since 2026-11-13 it is refused as passing through the
+/// cap (held against the cap in planes across the rim, `rolling::shown`:
+/// the cap's trace there is a circle, past the line by more than a
+/// quarter of the tolerance). Until then 0.45 was built and only held to lie
+/// within the groove (more than before, less than the cylinder over the
+/// rim widened by it, as high as the cap): it filled the corner and cut a
+/// lens off the cap. A distance short of 0.326 is built, valid and is the
+/// ring Pappus gives: the section through the axis (the triangle of the
+/// rim and the two feet less the circular segment of the cap between the
+/// rim and its foot) turned about the axis.
 #[test]
 fn a_chamfer_wider_than_the_cap_it_cuts_into_is_refused() {
     let (radius, h): (f64, f64) = (7.5, 7.5 - 5.0 - 2.4840230333138704);
     let rim = (radius * radius - (radius - h) * (radius - h)).sqrt();
+    // The section through the cap's axis: r out from the axis, z up from
+    // the block's face; the ball's centre at (0, h - R). The foot on the
+    // cap `d` (straight) from the rim, by bisection on the angle from the
+    // axis.
+    let below = radius - h;
+    let on_cap = |d: f64| {
+        let (mut lo, mut hi) = (0.0, (rim / radius).pasin());
+        for _ in 0..200 {
+            let middle = 0.5 * (lo + hi);
+            let p = [radius * middle.psin(), radius * middle.pcos() - below];
+            if (p[0] - rim).phypot(p[1]) > d {
+                lo = middle;
+            } else {
+                hi = middle;
+            }
+        }
+        let a = 0.5 * (lo + hi);
+        ([radius * a.psin(), radius * a.pcos() - below], a)
+    };
+    // How the line from the foot on the cap to the one on the face leaves
+    // the cap: along its outward normal there (positive: out of the cap,
+    // as a chamfer that fills a concave corner has to).
+    let leaves = |d: f64| {
+        let (g2, a) = on_cap(d);
+        let g1 = [rim + d, 0.0];
+        let t = [g1[0] - g2[0], g1[1] - g2[1]];
+        (t[0] * a.psin() + t[1] * a.pcos()) / t[0].phypot(t[1])
+    };
+    let (mut lo, mut hi) = (0.1, 0.45);
+    assert!(leaves(lo) > 0.0 && leaves(hi) < 0.0);
+    for _ in 0..200 {
+        let middle = 0.5 * (lo + hi);
+        if leaves(middle) > 0.0 {
+            lo = middle;
+        } else {
+            hi = middle;
+        }
+    }
+    let limit = 0.5 * (lo + hi);
+    assert!((limit - 0.326).abs() < 1e-3, "{limit}");
+    // The ring of a size short of it: Pappus.
+    let ring = |d: f64| {
+        let (g2, _) = on_cap(d);
+        let (e, g1) = ([rim, 0.0], [rim + d, 0.0]);
+        let triangle = 0.5 * ((g1[0] - e[0]) * (g2[1] - e[1]) - (g2[0] - e[0]) * (g1[1] - e[1]));
+        let triangle_r = (e[0] + g1[0] + g2[0]) / 3.0;
+        let chord = (g2[0] - e[0]).phypot(g2[1] - e[1]);
+        let half = (chord / (2.0 * radius)).pasin();
+        let segment = 0.5 * radius * radius * (2.0 * half - (2.0 * half).psin());
+        // The segment's centroid lies on the bisector from the ball's
+        // centre, 4 R sin³(half) / (3 (2 half - sin 2 half)) from it.
+        let from = 4.0 * radius * half.psin().ppowi(3) / (3.0 * (2.0 * half - (2.0 * half).psin()));
+        let mid = [0.5 * (e[0] + g2[0]), 0.5 * (e[1] + g2[1]) + below];
+        let segment_r = from * mid[0] / mid[0].phypot(mid[1]);
+        2.0 * PI * (triangle.abs() * triangle_r - segment * segment_r)
+    };
     for k in SCALES {
         let tol = tolerance(k);
         // The finding's ball and block: the cap on the block's
@@ -1449,13 +1517,29 @@ fn a_chamfer_wider_than_the_cap_it_cuts_into_is_refused() {
                 other => panic!("at scale {k}: expected a refusal, got {other:?}"),
             }
         }
-        for d in [0.2, 0.45] {
+        // Past where the line runs into the cap and short of where the
+        // faces fold: refused, naming the edge and the cap.
+        for d in [limit + 0.02, 0.45] {
+            match chamfer(&united, &[sized(d)], &tol) {
+                Err(KernelError::Chamfer {
+                    edge: e,
+                    face,
+                    reason,
+                }) => {
+                    assert_eq!(e, Some(edge), "{d} at scale {k}: {reason}");
+                    assert_eq!(face, Some(sphere), "{d} at scale {k}: {reason}");
+                    assert!(reason.contains("pass through"), "{d} at {k}: {reason}");
+                }
+                other => panic!("{d} at scale {k}: expected a refusal, got {other:?}"),
+            }
+        }
+        for d in [0.2, limit - 0.02] {
             let fits = solve(&united, &[sized(d)], k);
-            let after = mass(&fits.body).volume;
-            let most = PI * (rim + d) * (rim + d) * h * k * k * k;
+            let added = mass(&fits.body).volume - before;
+            let expected = ring(d) * k * k * k;
             assert!(
-                after > before && after < before + most,
-                "at scale {k}: {before} to {after}"
+                (added - expected).abs() <= 1e-5 * expected,
+                "{d} at scale {k}: {added} for {expected}"
             );
         }
     }

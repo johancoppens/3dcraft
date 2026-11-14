@@ -85,6 +85,7 @@
 //! names the edge.
 
 use crate::KernelError;
+use crate::boolean::probe::{OnFace, Probe};
 use crate::boolean::{
     BooleanOp, BooleanOptions, BooleanResult, EdgeSource, FaceSource, Operand, VertexSource,
     boolean_with,
@@ -99,6 +100,7 @@ use craft3d_geom::{Curve3, GeomError, Surface};
 use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, EdgeId, EdgeUse as Use, FaceId, VertexId, edge_uses};
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
 
@@ -210,6 +212,11 @@ pub(crate) enum Reason {
     FreeRunsOver,
     /// The blend face would fold through itself.
     FreeFolds,
+    /// A chamfer face would pass through a face beside its edge: a face's
+    /// trace from the edge to the cut line is shown on the other side of
+    /// the chamfer's line.
+    Through,
+
     FreeGoesOn,
     FreeRollOver,
     TakenWhole,
@@ -321,6 +328,9 @@ impl Reason {
             }
             Reason::FreeFolds => {
                 "the chamfer face along this edge would fold through itself: its cut line on a face beside the edge goes past where the lines across the edge meet (over the top of a small cap, say): the distance is too large for that face"
+            }
+            Reason::Through => {
+                "the chamfer face would pass through a face beside the edge (its line across the edge runs through that face, as through a pipe chamfered far along it): the distance is too large for that face"
             }
             Reason::FreeRunsOver => {
                 "the chamfer's border runs off a face beside the edge across one of its other edges along the way: the distance is too large for that face, or the chamfer would have to carry on onto the next face, which is not built yet"
@@ -434,6 +444,9 @@ impl Reason {
             }
             Reason::FreeFolds => {
                 "the fillet face along this edge would fold through itself: where the ball touches a face beside the edge goes past where the sections across the edge meet (over the top of a small cap, say): the radius is too large for that face"
+            }
+            Reason::Through => {
+                craft3d_math::bug_text!("a fillet was refused with a reason only a chamfer has")
             }
             Reason::FreeRunsOver => {
                 "the fillet's border runs off a face beside the edge across one of its other edges along the way (where the ball would roll on over a smooth edge onto the next face, or the face is too narrow for the radius); a fillet that carries on onto the next face in the middle of an edge is not built yet: give a smaller radius"
@@ -593,6 +606,9 @@ struct Across {
     /// The directions along the faces away from the edge.
     into: [Vec3; 2],
     turn: Turn,
+    /// How far they turn: the sine of the angle between the faces,
+    /// negative where the edge is convex.
+    sine: f64,
 }
 
 /// Below this sine two faces are tangent along their edge.
@@ -622,12 +638,25 @@ fn sine_at(
 }
 
 fn across(body: &Body, uses: &[Vec<Use>], edge: EdgeId) -> Result<Option<Across>, BlendError> {
+    let Some(data) = body.edge(edge) else {
+        return Ok(None);
+    };
+    across_at(body, uses, edge, 0.5 * (data.range.0 + data.range.1))
+}
+
+/// What `edge` looks like across itself at the parameter `t` of its
+/// curve ([`across`] takes the middle).
+fn across_at(
+    body: &Body,
+    uses: &[Vec<Use>],
+    edge: EdgeId,
+    t: f64,
+) -> Result<Option<Across>, BlendError> {
     let (Some(data), Some([a, b])) = (body.edge(edge), two_faces(uses, edge)) else {
         return Ok(None);
     };
-    let middle = 0.5 * (data.range.0 + data.range.1);
-    let point = data.curve.eval(middle);
-    let along = tangent(&data.curve, middle)?;
+    let point = data.curve.eval(t);
+    let along = tangent(&data.curve, t)?;
     let side = |used: Use| -> Result<(Vec3, Vec3), BlendError> {
         let normal = outward(body, used.face, point)?;
         let run = if used.reversed { -along } else { along };
@@ -649,6 +678,7 @@ fn across(body: &Body, uses: &[Vec<Use>], edge: EdgeId) -> Result<Option<Across>
         faces: [a.face, b.face],
         into: [into_a, into_b],
         turn,
+        sine,
     }))
 }
 
@@ -708,6 +738,10 @@ struct Plan {
     /// across the edge ([`section`]). `None` between two planes and along
     /// a circle.
     section: Option<Section>,
+    /// A chamfer whose line across the edge enters the face on this side
+    /// (`section::enters`, exact for its lines and circles): no chamfer of
+    /// the size exists, and [`construct`] builds nothing.
+    enters: Option<usize>,
     /// What a distance along each face is in the size asked for: one for
     /// a chamfer, the radius over the distance for a fillet.
     scale: [f64; 2],
@@ -997,6 +1031,7 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
         None => [1.0, 1.0],
     };
     let mut section = None;
+    let mut enters = None;
     if let Path::Line { start, along, .. } = path
         && !surfaces.iter().all(|s| matches!(s, Surface::Plane(_)))
     {
@@ -1032,6 +1067,8 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
         distances = made.distances;
         if let Some(radius) = round {
             scale = [radius / distances[0], radius / distances[1]];
+        } else {
+            enters = section::enters(&made, normals, convex, tol);
         }
         section = Some(made);
     }
@@ -1092,6 +1129,7 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
         trims: [None, None],
         past_axis,
         section,
+        enters,
         scale,
     })
 }
@@ -2014,6 +2052,108 @@ fn smooth_seams(
 /// same: a seam is not held to less.
 const SEAM_ROUNDING: f64 = 1e-9;
 
+/// Whether `edge` of `body` turns the other way from an edge that is
+/// `convex` (or concave) somewhere along it: concave at one of the points
+/// [`SEAM_SAMPLES`] where that one is convex, convex where it is concave,
+/// as [`across`] tells them; smooth turns neither way, and a point where
+/// a face has no normal (a cone's tip) tells nothing.
+///
+/// A chamfer face meets each face it was measured along in an edge that
+/// turns as the edge the chamfer replaces did: the chamfer cuts a convex
+/// corner off and fills a concave one, so its line across the edge leaves
+/// each face into the material at a convex edge and out of it at a
+/// concave one. One that turns back passes through the face beside it (a
+/// chamfer next to a pipe whose line across the edge runs through the
+/// pipe), and what is built is not the chamfer: it takes material from
+/// the pipe while it fills the corner. This holds what the tools build to
+/// it; where the faces across the edge are lines and circles,
+/// `section::touching` works out the size at which it starts. A turn back
+/// whose lens (`lens`, from the sine of the turn) is no deeper than
+/// `limit` is within the tolerance of none, and passes.
+fn turns_back(
+    body: &Body,
+    uses: &[Vec<Use>],
+    edge: EdgeId,
+    convex: bool,
+    lens: &dyn Fn(f64) -> f64,
+    limit: f64,
+) -> bool {
+    let Some(data) = body.edge(edge) else {
+        return false;
+    };
+    let back = if convex { Turn::Concave } else { Turn::Convex };
+    SEAM_SAMPLES.iter().any(|s| {
+        let t = data.range.0 + s * (data.range.1 - data.range.0);
+        // A NaN lens is deep.
+        let deep = |a: &Across| {
+            let depth = lens(a.sine.abs());
+            depth > limit || depth.is_nan()
+        };
+        matches!(across_at(body, uses, edge, t), Ok(Some(a)) if a.turn == back && deep(&a))
+    })
+}
+
+/// Every edge between a chamfer face and a face its edge was measured
+/// along turns as that edge did ([`turns_back`]), or back by a lens no
+/// deeper than the tolerance `tol` (as `section::enters` holds the plan);
+/// else the size is too large for that face (`Reason::Through`).
+fn chamfers_turn(
+    state: &State,
+    now: &[Vec<Use>],
+    plans: &[Plan],
+    tol: f64,
+) -> Result<(), BlendError> {
+    for (index, users) in now.iter().enumerate() {
+        let [a, b] = users.as_slice() else { continue };
+        for (cut, other) in [(a.face, b.face), (b.face, a.face)] {
+            let (Some(made), Some(beside)) = (
+                state.faces.get(cut.0 as usize),
+                state.faces.get(other.0 as usize),
+            ) else {
+                continue;
+            };
+            let found = made
+                .blends
+                .iter()
+                .filter_map(|i| plans.get(*i))
+                .filter(|p| p.round.is_none())
+                .find_map(|p| {
+                    let face = beside.kept.iter().find(|f| p.faces.contains(f))?;
+                    Some((p, *face))
+                });
+            let Some((plan, neighbour)) = found else {
+                continue;
+            };
+            // The neighbour's trace across the edge (a line where the
+            // plan has no section: planes, and every face along a circle)
+            // and the length of the chamfer's line.
+            let side = usize::from(plan.faces[1] == neighbour);
+            let (trace, chord) = match &plan.section {
+                Some(made) => (
+                    made.traces.get(side).copied(),
+                    (made.feet[0] - made.feet[1]).length(),
+                ),
+                None => (
+                    None,
+                    (plan.into[0] * plan.distances[0] - plan.into[1] * plan.distances[1]).length(),
+                ),
+            };
+            let line = section::Trace::Line { into: plan.into[0] };
+            let trace = trace.unwrap_or(line);
+            let lens = |wrong: f64| section::lens(&trace, chord, wrong);
+            let edge = EdgeId(index_u32(index));
+            if turns_back(&state.body, now, edge, plan.convex, &lens, tol) {
+                return Err(BlendError::Refused {
+                    edge: Some(plan.edge),
+                    face: Some(neighbour),
+                    reason: Reason::Through,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Holds the result against what a blend is (see the module
 /// documentation) and turns it into what is reported.
 fn finish(
@@ -2133,6 +2273,7 @@ fn finish(
             });
         }
     }
+    chamfers_turn(&state, &now, plans, tolerance.linear)?;
     smooth_seams(&state, &now, plans, tolerance)?;
     for (index, plan) in plans.iter().enumerate() {
         reframe(&mut state.body, &of_plan, index, plan);
@@ -2530,6 +2671,52 @@ fn construct(
     routed: &[usize],
     tolerance: &Tolerance,
 ) -> Result<Blended, Failure> {
+    // Nothing is built of a size whose line across the edge is known to
+    // run through a face: the search for what fits looks smaller. The
+    // section holds each face as its whole line or circle; where a foot
+    // lies off its face (a cylinder that ends at a smooth edge, the cut
+    // line carried on across it) it shows nothing, and the construction's
+    // own checks decide.
+    let probe: OnceCell<Option<Probe<'_>>> = OnceCell::new();
+    let feet_on_faces = |plan: &Plan| {
+        let (
+            Some(section),
+            Path::Line {
+                start,
+                along,
+                length,
+            },
+        ) = (&plan.section, &plan.path)
+        else {
+            return true;
+        };
+        let middle = *start + *along * (0.5 * length);
+        let Some(probe) = probe
+            .get_or_init(|| Probe::new(body, tolerance).ok())
+            .as_ref()
+        else {
+            return true;
+        };
+        plan.faces.iter().zip(section.feet).all(|(face, foot)| {
+            !matches!(
+                probe.on_face(face.0 as usize, middle + foot),
+                Ok(OnFace::Out)
+            )
+        })
+    };
+    if let Some((plan, side)) = plans
+        .iter()
+        .find_map(|p| p.enters.filter(|_| feet_on_faces(p)).map(|side| (p, side)))
+    {
+        return Err(Failure {
+            edge: Some(plan.edge),
+            error: BlendError::Refused {
+                edge: Some(plan.edge),
+                face: plan.faces.get(side).copied(),
+                reason: Reason::Through,
+            },
+        });
+    }
     if routed.is_empty() {
         return build(body, uses, at, plans, tolerance);
     }

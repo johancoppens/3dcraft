@@ -26,7 +26,7 @@
 
 use super::{
     BlendError, Failure, Path, Plan, Reason, Request, Size, Use, construct, face_edges, half_tan,
-    plan,
+    outward, plan, section,
 };
 use crate::KernelError;
 use crate::chamfer::ChamferSize;
@@ -91,6 +91,7 @@ fn sized(error: &BlendError) -> bool {
                 | Reason::FreeTooLarge
                 | Reason::FreeRunsOver
                 | Reason::FreeFolds
+                | Reason::Through
         ),
     }
 }
@@ -109,7 +110,8 @@ fn no_room(error: &BlendError) -> bool {
                 | Reason::InPieces
                 | Reason::FreeTooLarge
                 | Reason::FreeRunsOver
-                | Reason::FreeFolds,
+                | Reason::FreeFolds
+                | Reason::Through,
             ..
         }
     )
@@ -360,12 +362,57 @@ fn nearest(body: &Body, plan: &Plan, side: usize, other: EdgeId) -> Vec<f64> {
 }
 
 /// Every event of the plans of the group, on both faces of each.
-fn events(body: &Body, plans: &[Plan], group: &BTreeSet<usize>, tol: f64) -> Vec<Event> {
+fn events(
+    body: &Body,
+    plans: &[Plan],
+    requests: &[Request],
+    group: &BTreeSet<usize>,
+    tol: f64,
+) -> Vec<Event> {
     let mut found = Vec::new();
     for &index in group {
         let Some(plan) = plans.get(index) else {
             continue;
         };
+        // A chamfer's line across the edge that enters a face beside it at
+        // the size asked for: the size at which it comes to lie along that
+        // face (`section::touching`). For a distance and an angle it is
+        // said as the distance, the one length given.
+        if let (None, Some(section), Path::Line { start, along, .. }, Some(request)) = (
+            plan.round,
+            plan.section.as_ref(),
+            plan.path,
+            requests.get(index),
+        ) && let Size::Chamfer(size) = request.size
+            && let [Ok(a), Ok(b)] = plan.faces.map(|face| outward(body, face, start))
+            && let Some((at, entered)) = section::touching(
+                plan.edge,
+                plan.faces,
+                section.traces,
+                [a, b],
+                along,
+                plan.convex,
+                size,
+                tol,
+            )
+        {
+            let side = match size {
+                ChamferSize::Distances { .. } => entered,
+                ChamferSize::DistanceAngle { .. } => 0,
+            };
+            if let Some(&distance) = plan.distances.get(side)
+                && distance.is_finite()
+                && distance > 0.0
+            {
+                found.push(Event {
+                    scale: at,
+                    unit: tol / distance,
+                    plan: index,
+                    side,
+                    size: at * distance,
+                });
+            }
+        }
         let ends: Vec<VertexId> = plan.ends.into_iter().flatten().collect();
         for (side, face) in plan.faces.into_iter().enumerate() {
             let Some(&distance) = plan.distances.get(side) else {
@@ -552,7 +599,7 @@ pub(super) fn explain(
         fails = fits;
         fits *= QUARTER;
     }
-    let events: Vec<Event> = events(body, plans, &group, tol)
+    let events: Vec<Event> = events(body, plans, requests, &group, tol)
         .into_iter()
         .filter(|e| e.scale > fits + PAST * e.unit && e.scale < fails + PAST * e.unit)
         .collect();
