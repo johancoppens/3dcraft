@@ -580,13 +580,15 @@ fn moves(cases: std::ops::Range<usize>) -> Tally {
     tally
 }
 
-/// Offset cases seen wrong, owed. Case 822 (a block united with a
+/// Offset cases seen wrong, owed: none. Case 822 (a block united with a
 /// cylinder lying along it that stands out of both end faces, scale 1e-3,
-/// the end cap offset inward past the end face): an invalid body that
-/// passes the checker, its cylinder face's loops crossing in its
-/// parameters (the tessellator cannot mesh it); the reduced form is
-/// `an_end_cap_offset_past_the_face_it_stands_out_of_is_refused_or_built_right`.
-const KNOWN_OFFSET: [usize; 1] = [822];
+/// the end cap offset inward past the end face) was one until 2026-11-14:
+/// an invalid body that passed the checker, its cylinder face's loops
+/// crossing in its parameters (the tessellator could not mesh it). It is
+/// refused as too far now (two edges of the cylinder face would cross);
+/// the reduced form is
+/// `an_end_cap_offset_past_the_face_it_stands_out_of_is_refused`.
+const KNOWN_OFFSET: [usize; 0] = [];
 
 /// Move face cases seen wrong, owed (none known yet).
 const KNOWN_MOVE: [usize; 0] = [];
@@ -674,9 +676,10 @@ fn hunt_offset_debug() {
 fn unused(_: Kind) {}
 
 /// What an offset of the end cap of a cylinder that stands out of a
-/// block's end face did, held to the block united with the cylinder
-/// shortened as far (built by the boolean, not by the offset).
-fn end_cap(k: f64, d: f64) -> Result<(), String> {
+/// block's end face did: `Ok(None)` built, and the block united with the
+/// cylinder shortened as far (built by the boolean, not by the offset);
+/// `Ok(Some(error))` refused; `Err` built and not that body.
+fn end_cap(k: f64, d: f64) -> Result<Option<craft3d_kernel::KernelError>, String> {
     use craft3d_kernel::boolean::{BooleanOp, boolean};
     use craft3d_kernel::primitives;
     use craft3d_math::Frame;
@@ -703,15 +706,16 @@ fn end_cap(k: f64, d: f64) -> Result<(), String> {
         .unwrap();
     let reference = rod(-1.0 - d);
     let mr = measured(&reference).unwrap();
-    let Ok(made) = offset_faces(
+    let made = match offset_faces(
         &body,
         &[FaceOffset {
             face: cap,
             distance: d * k,
         }],
         &tol,
-    ) else {
-        return Ok(());
+    ) {
+        Ok(made) => made,
+        Err(error) => return Ok(Some(error)),
     };
     let m = measured(&made.body).unwrap();
     let mut wrong = Vec::new();
@@ -731,7 +735,7 @@ fn end_cap(k: f64, d: f64) -> Result<(), String> {
         ));
     }
     if wrong.is_empty() {
-        Ok(())
+        Ok(None)
     } else {
         Err(wrong.join("; "))
     }
@@ -740,37 +744,46 @@ fn end_cap(k: f64, d: f64) -> Result<(), String> {
 /// The reduced form of the offset hunt's first finding (2026-11-14): a
 /// block 40 x 30 x 20 united with a cylinder r 7 along x whose axis lies 3
 /// over the top and which stands 1 out of both end faces; its end cap
-/// offset inward by more than the 1 it stands out (past the block's end
-/// face) is built and passes the checker, but its cylinder face's loops
-/// cross in its parameters (the tessellator: "its loops do not bound a
-/// region") and its volume is 36.29 short of the block united with the
-/// cylinder shortened as far, with which points classified by rays agree
-/// (offset by 2; 18.15 short by 1.5). By 1 (the cap in the end face) it is
-/// refused by the check of simple loops; by 0.5 it is built right. Owed,
-/// known: the offsets in [`END_CAP_KNOWN`] are built wrong; a fix has to
-/// take them off.
+/// offset inward. By 0.5 it is built, and is the block united with the
+/// cylinder shortened as far. At 1 the cap reaches the block's end face,
+/// which ends the cylinder's wall below the block's top, and from there on
+/// the cap's rim would lie on, then cross, the edges that wall ends in:
+/// the same faces cannot bound that body (past the end face the cap is a
+/// segment of its disc), so it is refused as too far, with what fits (a
+/// distance within a hundred-thousandth below 1, and not above it).
+///
+/// Until 2026-11-14 the offsets past 1 (1.5, 2, 3, at every scale) were
+/// built: bodies that passed the checker, with the cylinder face's loops
+/// crossing (the tessellator: "its loops do not bound a region") and a
+/// volume 36.29 short of the right body's per unit past the end face; and
+/// 1 itself was refused as an invalid result, with no limit. The reason
+/// and the limit are held here; that no body comes back is what the hunt
+/// found missing.
 #[test]
-fn an_end_cap_offset_past_the_face_it_stands_out_of_is_refused_or_built_right() {
+fn an_end_cap_offset_past_the_face_it_stands_out_of_is_refused() {
     let mut unexpected = Vec::new();
     for k in [1e-3, 1.0, 1e3] {
         for d in [-0.5, -1.0, -1.5, -2.0, -3.0] {
-            let known = END_CAP_KNOWN.contains(&d);
+            let what = format!("scale {k}, offset {d}");
             match end_cap(k, d) {
-                Ok(()) if known => unexpected.push(format!(
-                    "scale {k}, offset {d}: refused or built right now: take it off END_CAP_KNOWN"
-                )),
-                Err(e) if !known => unexpected.push(format!("scale {k}, offset {d}: {e}")),
-                Err(e) => println!("scale {k}, offset {d}: known wrong: {e}"),
-                Ok(()) => println!("scale {k}, offset {d}: refused or right"),
+                Err(e) => unexpected.push(format!("{what}: {e}")),
+                Ok(None) if d > -1.0 => println!("{what}: built right"),
+                Ok(None) => unexpected.push(format!("{what}: built")),
+                Ok(Some(error)) if d > -1.0 => unexpected.push(format!("{what}: {error}")),
+                Ok(Some(craft3d_kernel::KernelError::FaceOpTooFar {
+                    reason, largest, ..
+                })) if reason.contains("two edges of one face would cross or touch")
+                    && largest <= k
+                    && largest >= (1.0 - 1e-5) * k =>
+                {
+                    println!("{what}: too far, what fits is below {largest}");
+                }
+                Ok(Some(error)) => unexpected.push(format!("{what}: {error}")),
             }
         }
     }
     assert!(unexpected.is_empty(), "{unexpected:#?}");
 }
-
-/// The offsets of the end cap built wrong (an invalid body that passes
-/// the checker), at every scale.
-const END_CAP_KNOWN: [f64; 3] = [-1.5, -2.0, -3.0];
 
 /// The wide hunt of offset: 1200 cases in 8 parts, run by hand
 /// (`-- --ignored`), not in the gate.
@@ -970,18 +983,22 @@ fn hunt_critical_scratch() {
     critical_offsets(r).hold("critical offset", start, &KNOWN_CRITICAL, 0);
 }
 
-/// Offsets at critical distances seen wrong, owed: invalid bodies that
-/// pass the checker (the tessellator cannot mesh them, and the measure
-/// refuses some), each a face moved up to or past a face that bounds its
-/// neighbours. Cases 777, 815, 872, 188 and 321: a vase's cap offset past
-/// the cap across from it (the reduced form is
+/// Offsets at critical distances seen wrong, owed: none. Until 2026-11-14
+/// nine were: invalid bodies that passed the checker (the tessellator
+/// could not mesh them, and the measure refused some), each a face moved
+/// up to or past a face that bounds its neighbours. All are refused as too
+/// far now, with what fits. Cases 777, 815, 872, 188 and 321: a vase's cap
+/// offset past the cap across from it (the seam between the halves of its
+/// side turns round; the reduced form is
 /// `a_cap_offset_past_the_cap_across_from_it_is_refused`); 1019: a lying
-/// cone's end cap past the block's end face (as
-/// `an_end_cap_offset_past_the_face_it_stands_out_of_is_refused_or_built_right`);
-/// 182 and 714: a block's end face moved out or in to a slanted cylinder's
-/// end; 1041: a spline-walled prism's flat side moved in to within a
-/// ten-thousandth of the far side.
-const KNOWN_CRITICAL: [usize; 9] = [182, 188, 321, 714, 777, 815, 872, 1019, 1041];
+/// cone's end cap past the block's end face (two edges of the cone's face
+/// would cross, as in
+/// `an_end_cap_offset_past_the_face_it_stands_out_of_is_refused`); 182 and
+/// 714: a block's end face moved out or in to a slanted cylinder's end,
+/// and 1041: a spline-walled prism's flat side moved in to within a
+/// ten-thousandth of the far side (two edges of a face beside it would
+/// cross).
+const KNOWN_CRITICAL: [usize; 0] = [];
 
 /// What the critical offsets' gate cases did when the hunt was written;
 /// recorded on 2026-11-14.
@@ -1055,9 +1072,10 @@ fn hunt_critical_debug() {
 
 /// The top cap of a block, a cylinder and a vase (a spline profile turned
 /// about its axis) offset inward through the whole body: up to the height
-/// built right, past the cap across from it refused. What was built
-/// otherwise, by the checker, the measure and the mesh.
-fn cap_through(which: usize, past: f64) -> Result<(), String> {
+/// built right (`Ok(None)`), past the cap across from it refused
+/// (`Ok(Some(error))`, also short of it). What was built otherwise, by the
+/// checker, the measure and the mesh.
+fn cap_through(which: usize, past: f64) -> Result<Option<craft3d_kernel::KernelError>, String> {
     use craft3d_kernel::primitives;
     use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
     use craft3d_kernel::revolve::revolve;
@@ -1119,15 +1137,16 @@ fn cap_through(which: usize, past: f64) -> Result<(), String> {
         .map(FaceId)
         .max_by(|a, b| height(a).total_cmp(&height(b)))
         .unwrap();
-    let Ok(made) = offset_faces(
+    let made = match offset_faces(
         &body,
         &[FaceOffset {
             face: top,
             distance: -(20.0 + past),
         }],
         &tol,
-    ) else {
-        return Ok(());
+    ) {
+        Ok(made) => made,
+        Err(error) => return Ok(Some(error)),
     };
     if past > 0.0 {
         return Err(format!(
@@ -1140,7 +1159,7 @@ fn cap_through(which: usize, past: f64) -> Result<(), String> {
     let measured_ok = craft3d_topo::mass_properties(&made.body).is_ok();
     let meshed = mesh_volume(&made.body, 0.04);
     if check(&made.body, &tol).is_empty() && measured_ok && meshed.is_ok() {
-        Ok(())
+        Ok(None)
     } else {
         Err(format!("built and not sound: mesh {meshed:?}"))
     }
@@ -1149,34 +1168,41 @@ fn cap_through(which: usize, past: f64) -> Result<(), String> {
 /// The reduced form of the critical offsets' vase cases (777, 815, 872,
 /// 188, 321; 2026-11-14): a vase from r 8 to r 12 over 20, its side a
 /// spline bulging out by 4, its top offset inward by 20.0001 or 20.01
-/// (past its bottom) is built and passes the checker, but its side's loops
-/// run the wrong way round, enclosing next to no area: the measure refuses
-/// it ("unbounded face") and the tessellator cannot mesh it. By 20.5 the
-/// operation's own check refuses it ("every loop runs clockwise"); the
-/// same vase without the bulge, a cylinder and a block are refused from
-/// 20.0001 on ("too far"). Owed, known: [`CAP_THROUGH_KNOWN`].
+/// (past its bottom). The side is two halves that meet in two seams from
+/// the bottom to the top; with the top below the bottom each seam runs
+/// from its bottom end down to its top end, the other way along the side
+/// than it did: an edge turned round, which is a face that vanished. So
+/// the offset is refused as too far, with what fits (not more than 20,
+/// to a few tolerances), as the same vase without the bulge, a cylinder
+/// and a block are.
+///
+/// Until 2026-11-14 the vase past its bottom by 1e-4 and 1e-2 was built:
+/// a body that passed the checker, its side's loops running the wrong way
+/// round and enclosing next to no area (the measure: "unbounded face"; the
+/// tessellator could not mesh it); the seam was made again as the border
+/// of the side between its new ends, whichever way that ran. Past by 0.5
+/// the operation's own check refused it ("every loop runs clockwise").
 #[test]
 fn a_cap_offset_past_the_cap_across_from_it_is_refused() {
     let names = ["block", "cylinder", "vase", "straight vase"];
     let mut unexpected = Vec::new();
     for (which, name) in names.iter().enumerate() {
         for past in [-0.5, -1e-2, 1e-4, 1e-2, 0.5] {
-            let known = CAP_THROUGH_KNOWN.contains(&(which, past));
+            let what = format!("{name}, past by {past}");
             match cap_through(which, past) {
-                Ok(()) if known => unexpected.push(format!(
-                    "{}, past by {past}: refused or right now: take it off CAP_THROUGH_KNOWN",
-                    name
-                )),
-                Err(e) if !known => {
-                    unexpected.push(format!("{}, past by {past}: {e}", name));
+                Err(e) => unexpected.push(format!("{what}: {e}")),
+                Ok(None) => println!("{what}: built right"),
+                Ok(Some(error)) if past < 0.0 => {
+                    println!("{what}: refused short of it: {error}");
                 }
-                Err(e) => println!("{}, past by {past}: known wrong: {e}", name),
-                Ok(()) => println!("{}, past by {past}: refused or right", name),
+                Ok(Some(craft3d_kernel::KernelError::FaceOpTooFar { largest, .. }))
+                    if largest <= 20.0 + 8e-6 =>
+                {
+                    println!("{what}: too far, what fits is below {largest}");
+                }
+                Ok(Some(error)) => unexpected.push(format!("{what}: {error}")),
             }
         }
     }
     assert!(unexpected.is_empty(), "{unexpected:#?}");
 }
-
-/// The vase's top offset past its bottom by these, built invalid.
-const CAP_THROUGH_KNOWN: [(usize, f64); 2] = [(2, 1e-4), (2, 1e-2)];

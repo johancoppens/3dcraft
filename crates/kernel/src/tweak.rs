@@ -35,8 +35,12 @@
 //! that shrinks to nothing or turns round (which is how a neighbour that
 //! vanishes shows), a flat face whose outline crosses itself or whose
 //! hole leaves it, and a round face whose rims change places are each an
-//! error that names the entity. What such a local check cannot see, two
-//! faces far apart running into each other, is left to the caller's
+//! error that names the entity; so are two edges of any face that come
+//! to meet where they did not, a vertex a moved face went through and an
+//! edge made again that goes through a face not its own ([`passes`]:
+//! faces moved up to or past what ends their neighbours, 2026-11-14).
+//! What these cannot see, a moved face running into a smooth face far
+//! from it with no vertex and no edge in the way, is left to the caller's
 //! check on the whole body (regeneration meshes the result and looks for
 //! places where it passes through itself).
 
@@ -44,6 +48,7 @@ use crate::KernelError;
 use crate::profile::{Curve2, SketchCurve, detect_profiles};
 use crate::shared::{curve_through, index_u32};
 
+mod passes;
 mod split;
 use craft3d_geom::{Circle, Curve3, Line, NurbsCurve, Plane, Surface};
 use craft3d_math::{Frame, Tolerance, Transform, Vec3};
@@ -89,6 +94,8 @@ pub(crate) const RIMS: &str = "the two rims of the face would change places: the
 pub(crate) const THROUGH: &str =
     "the face would pass through another part of the body, or lie in another face of it";
 pub(crate) const TURNED: &str = "the face would be turned inside out: it would vanish";
+pub(crate) const CROSSED: &str = "two edges of one face would cross or touch: a face that moves would reach or pass the face that ends its neighbour there";
+pub(crate) const INSIDE_OUT: &str = "the body would be turned inside out: a face that moves would pass right through the rest of it (how far it can go before it first does was not found: try a smaller distance)";
 
 /// The signed distance from `point` to `surface` and the direction it
 /// grows in. `None` where the surface has no nearest point with a normal
@@ -1614,6 +1621,42 @@ fn iso_curve(
     (holds && more(to, from)).then_some((curve, (from, to)))
 }
 
+/// Whether an open edge that ran along the border `along` of `surface`
+/// (its curve `old` over `range`) would run along it the other way from
+/// `start` to `end`: its ends have changed places along the border, which
+/// is an edge turned round ([`EDGE_GONE`]), not the same edge
+/// ([`iso_curve`] alone would give the border between the new ends,
+/// whichever way it runs: the seam of a vase whose cap went past the cap
+/// across from it came out so, 2026-11-14). Not told, and so not said, for
+/// a border that closes on itself, where a parameter says nothing of an
+/// order, or where a point does not project onto the border.
+fn iso_turned(
+    surface: &craft3d_geom::NurbsSurface,
+    along: &Iso,
+    old: &Curve3,
+    range: (f64, f64),
+    start: Vec3,
+    end: Vec3,
+    tol: f64,
+) -> bool {
+    let Some((curve, (a, b))) = whole_iso(surface, along) else {
+        return false;
+    };
+    if curve.eval(a).distance(curve.eval(b)) <= tol {
+        return false;
+    }
+    let at = |p: Vec3| curve.project(p).ok().filter(|t| t.is_finite());
+    let (Some(from_was), Some(to_was), Some(from), Some(to)) = (
+        at(old.eval(range.0)),
+        at(old.eval(range.1)),
+        at(start),
+        at(end),
+    ) else {
+        return false;
+    };
+    (to_was - from_was) * (to - from) < 0.0
+}
+
 /// [`resurface`], with the vertices of `also` found again too, although
 /// none of their faces has a new surface: the vertices a change of
 /// topology put where they do not lie yet (delete face merges the two
@@ -2005,9 +2048,15 @@ fn resurface_with(
                 }
             }
         };
+        // An edge along a border whose ends have changed places along it
+        // has turned round.
+        let turned = |along: &Iso, surface: &craft3d_geom::NurbsSurface| {
+            !closed && iso_turned(surface, along, &edge.curve, edge.range, start, end, tol)
+        };
         // Along a border of a face with a new surface: that border of it.
         if let Some(along) = iso.get(&id).filter(|a| surfaces.contains_key(&a.face))
             && let Some(Surface::Nurbs(new)) = surfaces.get(&along.face)
+            && !turned(along, new)
             && let Some((curve, range)) = iso_curve(new, along, start, end, closed, tol)
             && lies_on(&curve, range, &on, tol)
         {
@@ -2038,13 +2087,17 @@ fn resurface_with(
                 .get(&id)
                 .filter(|a| !surfaces.contains_key(&a.face))
                 .and_then(|along| match iso_surface(along.face) {
+                    Some(Surface::Nurbs(new)) if turned(along, new) => Some(None),
                     Some(Surface::Nurbs(new)) => {
                         iso_curve(new, along, start, end, closed, EDGE_SHARE * tol)
                             .filter(|(curve, range)| lies_on(curve, *range, &on, EDGE_SHARE * tol))
+                            .map(Some)
                     }
                     _ => None,
                 }) {
-                Some((curve, range)) => Remade::Edge(curve, range),
+                Some(Some((curve, range))) => Remade::Edge(curve, range),
+                // Its ends changed places along the border it runs along.
+                Some(None) => Remade::Gone,
                 None => fitted(
                     &edge.curve,
                     edge.range,
@@ -2161,6 +2214,27 @@ fn resurface_with(
         }
     }
 
+    // Two edges of one face that meet where they did not: a face that
+    // moved reached or passed the face that ends a neighbour of it. Before
+    // the checker: where the edges lie on each other it would refuse the
+    // body as invalid, with nothing to say of how far the face can go.
+    if let Some((face, edge, other)) = passes::crossed(body, &made, &uses_made, &remade, tolerance)
+    {
+        let mut faces = vec![face];
+        for id in [edge, other] {
+            for next in uses_made.get(id.0 as usize).into_iter().flatten() {
+                if !faces.contains(next) {
+                    faces.push(*next);
+                }
+            }
+        }
+        return Err(TweakError::Vanishes {
+            faces,
+            edge: Some(edge),
+            reason: CROSSED,
+        });
+    }
+
     let defects = craft3d_topo::check_remembered(&made, tolerance);
     if !defects.is_empty() {
         return Err(TweakError::Kernel(KernelError::InvalidBody {
@@ -2171,12 +2245,61 @@ fn resurface_with(
     if craft3d_geom::allowance::pass() {
         return Err(spent());
     }
-    if let Some(face) = buried(&made, &uses_made, &remade, tolerance) {
+    if let Some((face, _)) = buried(&made, &uses_made, &remade, tolerance) {
         return Err(TweakError::Vanishes {
             faces: vec![face],
             edge: None,
             reason: THROUGH,
         });
+    }
+    // What the faces that moved went through on their way (`passes`): the
+    // same question beside the edges at a vertex one of them passed, and
+    // beside every stretch of an edge made again that goes through a face
+    // not its own; and where a face far from them lay in their way,
+    // whether the body still encloses what it did.
+    if !surfaces.is_empty() {
+        let layout = passes::Layout::of(&made);
+        let swept = passes::swept(body, &made, &layout, surfaces, tolerance);
+        let pierced = passes::pierced(&made, &layout, &uses_made, &remade, tolerance);
+        // Where to ask, and the face that was passed or gone through.
+        let mut ask: BTreeMap<EdgeId, Vec<f64>> = BTreeMap::new();
+        let mut by: BTreeMap<EdgeId, FaceId> = BTreeMap::new();
+        for (id, face) in &swept.edges {
+            if remade.contains(id) {
+                continue;
+            }
+            if let Some(edge) = made.edge(*id) {
+                ask.insert(*id, vec![0.5 * (edge.range.0 + edge.range.1)]);
+                by.insert(*id, *face);
+            }
+        }
+        for (id, (middles, face)) in pierced {
+            ask.insert(id, middles);
+            by.insert(id, face);
+        }
+        if !ask.is_empty() {
+            if craft3d_geom::allowance::pass() {
+                return Err(spent());
+            }
+            if let Some((face, edge)) = buried_at(&made, &uses_made, &ask, tolerance) {
+                let mut faces: Vec<FaceId> = by.get(&edge).copied().into_iter().collect();
+                if !faces.contains(&face) {
+                    faces.push(face);
+                }
+                return Err(TweakError::Vanishes {
+                    faces,
+                    edge: None,
+                    reason: THROUGH,
+                });
+            }
+        }
+        if swept.near && passes::inside_out(body, &made, tolerance) {
+            return Err(TweakError::Unsupported {
+                faces: surfaces.keys().copied().take(crate::MAX_REPORTED).collect(),
+                edge: None,
+                reason: INSIDE_OUT,
+            });
+        }
     }
     Ok(made)
 }
@@ -2194,23 +2317,42 @@ fn spent() -> TweakError {
 /// points lie that are asked about, in tolerances.
 const INSIDE_FACE: f64 = 8.0;
 const OFF_FACE: f64 = 4.0;
-
 /// A face next to an edge of `remade` that is not skin of `made` any
 /// more: just outside it there is material, or just inside it there is
 /// none, which is what a body that passes through itself looks like next
 /// to the faces that moved. The question is put to the classification of
 /// the booleans (a ray from the point), at a point beside the middle of
-/// every such edge; a point it cannot tell for says nothing.
+/// every such edge; a point it cannot tell for says nothing. The face,
+/// and the edge it was asked beside.
 fn buried(
     made: &Body,
     uses: &[Vec<FaceId>],
     remade: &BTreeSet<EdgeId>,
     tolerance: &Tolerance,
-) -> Option<FaceId> {
+) -> Option<(FaceId, EdgeId)> {
+    let middles: BTreeMap<EdgeId, Vec<f64>> = remade
+        .iter()
+        .filter_map(|id| {
+            let edge = made.edge(*id)?;
+            Some((*id, vec![0.5 * (edge.range.0 + edge.range.1)]))
+        })
+        .collect();
+    buried_at(made, uses, &middles, tolerance)
+}
+
+/// [`buried`], asked beside each edge of `places` at the parameters given
+/// with it.
+fn buried_at(
+    made: &Body,
+    uses: &[Vec<FaceId>],
+    places: &BTreeMap<EdgeId, Vec<f64>>,
+    tolerance: &Tolerance,
+) -> Option<(FaceId, EdgeId)> {
     let tol = tolerance.linear;
-    let mut asked: Vec<(FaceId, bool)> = Vec::new();
+    let mut asked: Vec<(FaceId, EdgeId, bool)> = Vec::new();
     let mut points: Vec<Vec3> = Vec::new();
-    for id in faces_with(uses, remade) {
+    let edges: BTreeSet<EdgeId> = places.keys().copied().collect();
+    for id in faces_with(uses, &edges) {
         let Some(face) = made.face(id) else {
             continue;
         };
@@ -2224,36 +2366,38 @@ fn buried(
             .filter_map(|l| made.loop_(*l))
             .flat_map(|l| &l.coedges)
         {
-            if !remade.contains(&coedge.edge) {
+            let Some(at) = places.get(&coedge.edge) else {
                 continue;
-            }
+            };
             let Some(edge) = made.edge(coedge.edge) else {
                 continue;
             };
-            let (middle, along) = edge.curve.derivatives(0.5 * (edge.range.0 + edge.range.1));
-            let along = if coedge.reversed { -along } else { along };
-            let Some((_, normal)) = outward(middle) else {
-                continue;
-            };
-            // The face lies to the left of its edges, seen from outside.
-            let Some(into) = normal.cross(along).normalized() else {
-                continue;
-            };
-            let Some((foot, normal)) = outward(middle + into * (INSIDE_FACE * tol)) else {
-                continue;
-            };
-            points.push(foot + normal * (OFF_FACE * tol));
-            asked.push((id, false));
-            points.push(foot - normal * (OFF_FACE * tol));
-            asked.push((id, true));
+            for t in at {
+                let (middle, along) = edge.curve.derivatives(*t);
+                let along = if coedge.reversed { -along } else { along };
+                let Some((_, normal)) = outward(middle) else {
+                    continue;
+                };
+                // The face lies to the left of its edges, seen from outside.
+                let Some(into) = normal.cross(along).normalized() else {
+                    continue;
+                };
+                let Some((foot, normal)) = outward(middle + into * (INSIDE_FACE * tol)) else {
+                    continue;
+                };
+                points.push(foot + normal * (OFF_FACE * tol));
+                asked.push((id, coedge.edge, false));
+                points.push(foot - normal * (OFF_FACE * tol));
+                asked.push((id, coedge.edge, true));
+            }
         }
     }
     let found = crate::boolean::contains_points(made, &points, tolerance).ok()?;
     asked
         .iter()
         .zip(found)
-        .find(|((_, expected), inside)| inside.is_some_and(|inside| inside != *expected))
-        .map(|((face, _), _)| *face)
+        .find(|((_, _, expected), inside)| inside.is_some_and(|inside| inside != *expected))
+        .map(|((face, edge, _), _)| (*face, *edge))
 }
 
 /// The vertices on the loops of `face`, ascending, each once.
