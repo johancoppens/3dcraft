@@ -82,6 +82,37 @@ pub fn handle_line_with(
     handle_line_extended(session, line, MAX_REPLY_BYTES, Some(extension))
 }
 
+/// [`handle_line_with`] for a host whose session runs the commands that
+/// need bodies it does not have where they are (the browser's page,
+/// `craft3d-web`, whose worker has them): `engine.execute` runs its
+/// command as one a person or an agent asked for
+/// (`Session::execute_deferrable`), so such a command answers at once with
+/// `{deferred: true, job}` and the host replies with its answer, under the
+/// same id, when it comes. Everything else is as [`handle_line_with`].
+pub fn handle_line_deferrable(
+    session: &mut Session,
+    line: &str,
+    extension: &mut Extension<'_>,
+) -> Option<String> {
+    handle_line_run(
+        session,
+        line,
+        MAX_REPLY_BYTES,
+        Some(extension),
+        Execute::Deferrable,
+    )
+}
+
+/// How `engine.execute` runs its command.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Execute {
+    /// At once, here (`Session::execute`).
+    Here,
+    /// Where the bodies are when the host has them elsewhere
+    /// (`Session::execute_deferrable`).
+    Deferrable,
+}
+
 /// The reply to a request that failed, as one line.
 pub fn error_reply(id: &Value, error: &str) -> String {
     failure(id, error)
@@ -127,7 +158,17 @@ fn handle_line_extended(
     session: &mut Session,
     line: &str,
     max_reply: usize,
+    extension: Option<&mut Extension<'_>>,
+) -> Option<String> {
+    handle_line_run(session, line, max_reply, extension, Execute::Here)
+}
+
+fn handle_line_run(
+    session: &mut Session,
+    line: &str,
+    max_reply: usize,
     mut extension: Option<&mut Extension<'_>>,
+    execute: Execute,
 ) -> Option<String> {
     if line.trim().is_empty() {
         return None;
@@ -187,7 +228,7 @@ fn handle_line_extended(
     // catches a panic inside a command; this one covers this module.
     let clock = registry::Stopwatch::start();
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        dispatch(session, method, params, extension.as_deref_mut())
+        dispatch(session, method, params, extension.as_deref_mut(), execute)
     }))
     .unwrap_or_else(|payload| {
         Err(format!(
@@ -232,6 +273,7 @@ fn dispatch(
     method: &str,
     params: Option<&Value>,
     extension: Option<&mut Extension<'_>>,
+    execute: Execute,
 ) -> Result<Value, String> {
     let extra: &[Method] = extension.as_ref().map_or(&[], |e| e.methods);
     match method {
@@ -245,9 +287,11 @@ fn dispatch(
             let command = p.required_str("command")?;
             let command_params = p.object("params")?;
             session.with_intent(p.str("intent")?, |session| {
-                session
-                    .execute(command, command_params)
-                    .map_err(|e| e.message().to_string())
+                match execute {
+                    Execute::Here => session.execute(command, command_params),
+                    Execute::Deferrable => session.execute_deferrable(command, command_params),
+                }
+                .map_err(|e| e.message().to_string())
             })
         }
         "engine.commands" => {
@@ -384,6 +428,60 @@ mod tests {
         let mut session = Session::new(Workspace::none());
         let under = parse(handle_line_capped(&mut session, request, full.len() - 1));
         assert_eq!(under["ok"], false);
+    }
+}
+
+#[cfg(test)]
+mod deferrable_tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+
+    use super::*;
+    use craft3d_engine::Workspace;
+
+    fn reply(line: Option<String>) -> Value {
+        serde_json::from_str(&line.unwrap()).unwrap()
+    }
+
+    /// A host that has the bodies elsewhere (the browser's worker): a
+    /// command that needs them answers that it runs there, under the
+    /// request's id; one that does not answers at once, as everywhere; the
+    /// plain dispatch runs both here.
+    #[test]
+    fn engine_execute_hands_a_command_that_needs_the_bodies_over() {
+        let mut session = Session::new(Workspace::none());
+        session.set_stepwise(true);
+        session.set_checks_elsewhere(true);
+        session.set_regen_elsewhere(true);
+        session.set_commands_elsewhere(true);
+        let mut none = |_: &mut Session, _: &str, _: Option<&Value>| None;
+        let mut extension = Extension {
+            methods: &[],
+            handle: &mut none,
+        };
+        for line in [
+            r#"{"id": 1, "method": "engine.execute", "params": {"command": "file.new", "params": {"units": "mm"}}}"#,
+            r#"{"id": 2, "method": "engine.execute", "params": {"command": "feature.block", "params": {"size": [10, 20, 30]}}}"#,
+        ] {
+            let done = reply(handle_line_deferrable(&mut session, line, &mut extension));
+            assert_eq!(done["ok"], true, "{done}");
+            assert!(done["result"].get("deferred").is_none(), "{done}");
+        }
+        let measure =
+            r#"{"id": "m", "method": "engine.execute", "params": {"command": "document.measure"}}"#;
+        let handed = reply(handle_line_deferrable(
+            &mut session,
+            measure,
+            &mut extension,
+        ));
+        assert_eq!(handed["id"], "m");
+        assert_eq!(handed["ok"], true);
+        assert_eq!(handed["result"]["deferred"], true, "{handed}");
+        assert!(handed["result"]["job"].as_u64().is_some(), "{handed}");
+        assert_eq!(session.command_jobs().len(), 1);
+        // The plain dispatch measures here.
+        let here = reply(handle_line_with(&mut session, measure, &mut extension));
+        assert_eq!(here["ok"], true, "{here}");
+        assert!(here["result"].get("deferred").is_none(), "{here}");
     }
 }
 
