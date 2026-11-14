@@ -910,7 +910,7 @@ pub const MAX_GRID_POINTS: usize = 1 << 18;
 
 /// Most points along one side of a grid surface
 /// (`craft3d_geom::grid::MAX_GRID_SIDE`).
-pub const MAX_GRID_SIDE: usize = 1 << 14;
+pub const MAX_GRID_SIDE: usize = 1 << 10;
 
 /// A sheet through an `m × n` grid of points, passing through every one
 /// (docs/design/surfacing.md › *A sheet through a grid of points*): the

@@ -64,13 +64,13 @@
 //! `γ_k` times the largest control point it made, `k = 3 (p + 1)` for
 //! degree `p`; the evaluation adds `γ_{4(p+1)}` of the largest control
 //! point. So [`Grid::bound`] is `(γ_{3(p_u+1)} + γ_{3(p_v+1)} + γ_{4(p+1)})
-//! M`, `M` the largest coordinate size of the points and of either pass's
-//! control points, `p` the larger degree, about `40 ε M` for bicubics:
+//! √3 M`, `M` the largest coordinate size of the points and of either pass's
+//! control points, `p` the larger degree, about `70 ε M` for bicubics:
 //! [`Grid::deviation`], the largest distance found at the points, is held
 //! to it by the tests, at scales from 1e-3 to 1e6 and in turned frames far
 //! from the origin.
 
-use crate::refine::{MAX_INTERPOLATED_BANDED, interpolate_on};
+use crate::refine::interpolate_on;
 use crate::{GeomError, NurbsSurface, RationalBezierPatch};
 use craft3d_math::{Portable, Vec3};
 use std::fmt;
@@ -82,9 +82,13 @@ use std::fmt;
 /// file at that size, half the format's cap on a manifest.
 pub const MAX_GRID_POINTS: usize = 1 << 18;
 
-/// Most points along one side of a grid: what the banded interpolation
-/// takes.
-pub const MAX_GRID_SIDE: usize = MAX_INTERPOLATED_BANDED;
+/// Most points along one side of a grid: 1024. The grid's own work is
+/// linear in its points, but meshing and measuring its sheet cut the
+/// surface into its Bézier spans by inserting knots one at a time
+/// (`NurbsSurface::bezier_spans`), which costs the square of a side's
+/// knots times the other side: a 63 × 2000 grid took 73 s there, a
+/// 400 × 300 one 11 s. Raised when that is linear (owed).
+pub const MAX_GRID_SIDE: usize = 1 << 10;
 
 /// How many times a span whose normal is not proven non-zero at once is
 /// halved, each way, before it is refused.
@@ -482,23 +486,124 @@ fn nearest(params: &[f64], t: f64) -> usize {
 /// *Regular*), or names the grid point nearest the first span it could
 /// not prove.
 fn regular(surface: &NurbsSurface, u: &[f64], v: &[f64]) -> Result<(), GridError> {
-    let spans = surface.bezier_spans_shared()?;
+    let (pu, pv) = surface.degrees();
+    let (ku, kv) = (surface.knots_u(), surface.knots_v());
+    let (spans_u, spans_v) = (spans(ku, pu), spans(kv, pv));
+    let count_v = surface.counts().1;
+    let ctrl = surface.control_points();
     let mut spent = 0_usize;
-    for span in spans.iter() {
-        if proven(&span.patch, 0, &mut spent)? {
-            continue;
+    for &(su, range_u) in &spans_u {
+        for &(sv, range_v) in &spans_v {
+            // The span's window of control points, (pu + 1) × (pv + 1).
+            let mut net = Vec::with_capacity((pu + 1) * (pv + 1));
+            for i in su - pu..=su {
+                for j in sv - pv..=sv {
+                    net.push(ctrl.get(i * count_v + j).copied().ok_or_else(internal)?);
+                }
+            }
+            let patch =
+                RationalBezierPatch::from_bezier(&span_patch(net, (ku, su, pu), (kv, sv, pv))?);
+            if proven(&patch, 0, &mut spent)? {
+                continue;
+            }
+            let (r, c) = (
+                nearest(v, 0.5 * (range_v.0 + range_v.1)),
+                nearest(u, 0.5 * (range_u.0 + range_u.1)),
+            );
+            return refused(format!(
+                "the sheet through the points folds near row {}, point {}: its normal vanishes or turns over there (a row or a column runs back there, or its points are spaced too unevenly for these parameters: chord spacing follows how far apart they are)",
+                r + 1,
+                c + 1
+            ));
         }
-        let (r, c) = (
-            nearest(v, 0.5 * (span.v.0 + span.v.1)),
-            nearest(u, 0.5 * (span.u.0 + span.u.1)),
-        );
-        return refused(format!(
-            "the sheet through the points folds near row {}, point {}: its normal vanishes or turns over there (a row or a column runs back there, or its points are spaced too unevenly for these parameters: chord spacing follows how far apart they are)",
-            r + 1,
-            c + 1
-        ));
     }
     Ok(())
+}
+
+/// The knot spans of a clamped knot vector: the index `k` of each non-empty
+/// span `[knots[k], knots[k + 1])` and its range.
+fn spans(knots: &[f64], degree: usize) -> Vec<(usize, (f64, f64))> {
+    let count = knots.len().saturating_sub(degree + 1);
+    (degree..count)
+        .filter_map(|k| match (knots.get(k), knots.get(k + 1)) {
+            (Some(&lo), Some(&hi)) if hi > lo => Some((k, (lo, hi))),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The blossom of the B-spline segment of span `k` (degree `p`, control
+/// points `window`, the `p + 1` of the span) at `args` (`p` parameters),
+/// by de Boor's algorithm with the `r`-th argument at level `r`
+/// (Ramshaw's blossoming; Piegl & Tiller, *The NURBS Book*, A3.1 for one
+/// argument).
+fn blossom(
+    window: &[Vec3],
+    knots: &[f64],
+    k: usize,
+    p: usize,
+    args: &[f64],
+) -> Result<Vec3, GridError> {
+    let mut d = window.to_vec();
+    for (r, &x) in (1..=p).zip(args) {
+        for j in (r..=p).rev() {
+            let (Some(&lo), Some(&hi)) = (knots.get(j + k - p), knots.get(j + 1 + k - r)) else {
+                return Err(internal().into());
+            };
+            let alpha = if hi > lo { (x - lo) / (hi - lo) } else { 0.0 };
+            let (Some(&before), Some(&here)) = (d.get(j - 1), d.get(j)) else {
+                return Err(internal().into());
+            };
+            *d.get_mut(j).ok_or_else(internal)? = before * (1.0 - alpha) + here * alpha;
+        }
+    }
+    d.get(p).copied().ok_or_else(|| internal().into())
+}
+
+/// The Bézier net of one span of a polynomial tensor-product spline from
+/// its window of control points alone: along u each column's Bézier points
+/// are the blossoms `b(a^{p−i}, b^i)` at the span's ends, then likewise
+/// along v. Linear in the size of the surface over all spans, where
+/// knot insertion over the whole surface costs the square of its knots.
+fn span_patch(
+    window: Vec<Vec3>,
+    (ku, su, pu): (&[f64], usize, usize),
+    (kv, sv, pv): (&[f64], usize, usize),
+) -> Result<crate::BezierPatch, GridError> {
+    let ends = |knots: &[f64], k: usize| -> Result<(f64, f64), GridError> {
+        match (knots.get(k), knots.get(k + 1)) {
+            (Some(&a), Some(&b)) => Ok((a, b)),
+            _ => Err(internal().into()),
+        }
+    };
+    let (au, bu) = ends(ku, su)?;
+    let (av, bv) = ends(kv, sv)?;
+    let width = pv + 1;
+    // Along u: column j of the window.
+    let mut along_u = vec![Vec3::ZERO; window.len()];
+    for j in 0..=pv {
+        let column: Vec<Vec3> = (0..=pu)
+            .filter_map(|i| window.get(i * width + j).copied())
+            .collect();
+        for i in 0..=pu {
+            let args: Vec<f64> = (0..pu).map(|r| if r < i { bu } else { au }).collect();
+            *along_u.get_mut(i * width + j).ok_or_else(internal)? =
+                blossom(&column, ku, su, pu, &args)?;
+        }
+    }
+    // Along v: row i of that.
+    let mut net = vec![Vec3::ZERO; window.len()];
+    for i in 0..=pu {
+        let row = along_u
+            .get(i * width..(i + 1) * width)
+            .ok_or_else(internal)?
+            .to_vec();
+        for j in 0..=pv {
+            let args: Vec<f64> = (0..pv).map(|r| if r < j { bv } else { av }).collect();
+            *net.get_mut(i * width + j).ok_or_else(internal)? = blossom(&row, kv, sv, pv, &args)?;
+        }
+    }
+    Ok(crate::BezierPatch::new(pu, pv, net)?)
 }
 
 /// Whether the normal net of a polynomial patch (`∂u × ∂v` in Bernstein
@@ -821,6 +926,50 @@ mod tests {
             why.contains("folds near row") || why.contains("doubles back"),
             "{why}"
         );
+    }
+
+    #[test]
+    fn spans_blossomed_one_by_one_are_the_surfaces_bezier_spans() {
+        let pts = grid(6, 9, |r, c| {
+            Vec3::new(
+                c as f64 * 1.3,
+                r as f64 + 0.2 * (c as f64).psin(),
+                (c as f64 * r as f64 * 0.1).pcos(),
+            )
+        });
+        for spacing in [Spacing::Greville, Spacing::Chord] {
+            let made = interpolate(&pts, 6, 9, spacing, TOL, ANG).unwrap();
+            let s = &made.surface;
+            let (pu, pv) = s.degrees();
+            let whole = s.bezier_spans().unwrap();
+            let (su, sv) = (spans(s.knots_u(), pu), spans(s.knots_v(), pv));
+            assert_eq!(whole.len(), su.len() * sv.len());
+            let ctrl = s.control_points();
+            let count_v = s.counts().1;
+            let mut k = 0;
+            for &(a, ru) in &su {
+                for &(b, rv) in &sv {
+                    let mut window = Vec::new();
+                    for i in a - pu..=a {
+                        for j in b - pv..=b {
+                            window.push(ctrl[i * count_v + j]);
+                        }
+                    }
+                    let patch =
+                        span_patch(window, (s.knots_u(), a, pu), (s.knots_v(), b, pv)).unwrap();
+                    let span = &whole[k];
+                    assert_eq!((span.u, span.v), (ru, rv));
+                    for (p, q) in patch
+                        .control_points()
+                        .iter()
+                        .zip(span.patch.control_points())
+                    {
+                        assert!(p.distance(q) <= 1e-13, "{spacing:?} span {k}: {p:?} {q:?}");
+                    }
+                    k += 1;
+                }
+            }
+        }
     }
 
     #[test]
