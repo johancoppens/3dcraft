@@ -689,36 +689,52 @@ fn torus_band(
 /// its axis and 13 (or 29) times about its tube is a right face (3 and 13
 /// have no common factor, so each curve is simple, and the two keep a
 /// constant tube angle apart); so is one between two curves once round the
-/// axis. The spline edges are followed in steps shown to move less than a
-/// quarter turn about the axis, but nothing shows how far they move about
-/// the tube: at 13 tube turns in 16 half steps each moves 292.5°, read as
-/// 67.5° back, so the loop read as going round the tube 3 times and was
-/// refused ("goes round the torus 3 times about its axis and 3 times about
-/// its tube"), at every scale. How often a loop goes round the axis is
-/// shown, but says nothing without the other (three times round the axis
-/// is simple with 13 turns about the tube and not with 3), so off a loop
-/// with a spline edge on a torus nothing is read.
+/// axis. While a spline edge was followed in steps shown to move less than
+/// a quarter turn about the axis and nothing showed how far it moved about
+/// the tube, 13 tube turns in 16 half steps, 292.5° each, read as 67.5°
+/// back: the loop read as going round the tube 3 times and was refused
+/// ("goes round the torus 3 times about its axis and 3 times about its
+/// tube"), at every scale; and then, off a loop with a spline edge on a
+/// torus, nothing was read at all. Now each half step is also shown to
+/// move less than a quarter turn about the tube
+/// (`docs/design/topology.md` › *A band of a torus between curves that wind
+/// about its tube*), so the loop is followed round both ways as it goes.
 ///
-/// **Known misses**, each a band whose curves run over themselves, listed
-/// so that a fix takes them off (`docs/design/topology.md` › *A band of a
-/// torus between curves that wind about its tube* has what a fix needs):
-/// curves twice round the axis and twice round the tube, (2, 2); curves
-/// twice or three times round the axis alone, (2, 0) and (3, 0), which a
-/// loop shown to keep to one half of the tube would give away.
+/// The bands whose curves run over themselves, known misses until
+/// 2026-11-14, are refused, each by how often it goes round: curves twice
+/// round the axis and twice round the tube, (2, 2), and curves twice or
+/// three times round the axis alone, (2, 0) and (3, 0).
 #[test]
 fn a_band_of_a_torus_between_two_curves_that_wind_about_its_tube_is_a_face() {
     let right = [(3.0, 13.0), (3.0, 29.0), (1.0, 0.0)];
-    let known_misses = [(2.0, 2.0), (2.0, 0.0), (3.0, 0.0)];
+    let doubled = [(2.0, 2.0), (2.0, 0.0), (3.0, 0.0)];
     let mut wrong = Vec::new();
     for scale in [1e-3, 1.0, 1e6] {
-        for pq in right.into_iter().chain(known_misses) {
-            for radii in [(3.0 * scale, scale), (2.0 * scale, 0.5 * scale)] {
-                for reversed in [false, true] {
+        for radii in [(3.0 * scale, scale), (2.0 * scale, 0.5 * scale)] {
+            for reversed in [false, true] {
+                for pq in right {
                     let (body, tol) = torus_band(scale, pq, radii, reversed);
                     let found = check(&body, &tol);
                     if !found.is_empty() {
                         wrong.push(format!(
                             "scale {scale}, {pq:?}, radii {radii:?}, reversed {reversed}: {found:?}"
+                        ));
+                    }
+                }
+                for pq in doubled {
+                    let (body, tol) = torus_band(scale, pq, radii, reversed);
+                    let found = check(&body, &tol);
+                    let want = format!(
+                        "it goes round the torus {} times about its axis and {} times about its tube",
+                        pq.0, pq.1
+                    );
+                    let refused = matches!(
+                        found.as_slice(),
+                        [Defect::LoopNotSimple { reason, .. }] if reason.starts_with(&want)
+                    );
+                    if !refused {
+                        wrong.push(format!(
+                            "scale {scale}, {pq:?}, radii {radii:?}, reversed {reversed}, not refused: {found:?}"
                         ));
                     }
                 }

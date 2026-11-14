@@ -853,11 +853,6 @@ pub(crate) fn follow(
             }
             _ => steps,
         };
-        // The angle about a torus's tube is not shown for a spline edge:
-        // nothing is read off how often its loop goes round.
-        if matches!(chart.surface, Surface::Torus(_)) && matches!(edge.curve, Curve3::Nurbs(_)) {
-            aliased = true;
-        }
         *total = total.saturating_add(2 * steps);
         if *total > MOST_PER_FACE {
             return None;
@@ -944,6 +939,10 @@ enum Lay {
     /// A spline surface: nothing is known of how its chart takes a
     /// direction in space.
     Space,
+    /// For the tests of the proof about an axis alone: only the angle
+    /// about the axis through `origin` along `z` is shown.
+    #[cfg(test)]
+    Turning { origin: Vec3, z: Vec3 },
 }
 
 /// How `v` is read off a point about an axis ([`Lay::About`]), at the
@@ -958,10 +957,43 @@ enum Rise {
     Slant { slope: f64, radius: f64 },
     /// A sphere: the latitude, `v = atan2(h, ρ)`.
     Latitude,
-    /// A torus: the angle about its tube, which nothing here shows. Only
-    /// the angle about the axis is shown, and nothing is read off how often
-    /// a loop with a spline edge goes round ([`Ring::aliased`]).
-    Unshown,
+    /// A torus whose tube's centre circle has the radius `major`: the
+    /// angle about the tube, `v = atan2(h, ρ − major)`, whose period is a
+    /// turn as well.
+    Tube { major: f64 },
+}
+
+impl Rise {
+    /// Whether a stretch within `reach` keeps to where `v` is read off it
+    /// as this says and can be followed: on a cone, to the cone's own side
+    /// of its apex, where `v` is the ruling's and not stopped; on a torus,
+    /// within less than a quarter turn about the tube, so that the chart,
+    /// which moves each point by whole periods to the one before, follows
+    /// the edge round the tube as it does round the axis (the box of the
+    /// stretch's distances from the axis and its heights lies in a fan
+    /// about the tube's centre narrower than that, and so clear of it).
+    fn keeps(&self, reach: &Reach) -> bool {
+        let (near, far) = reach.off;
+        let (below, above) = reach.height;
+        match self {
+            Rise::Height | Rise::Latitude => true,
+            Rise::Slant { slope, radius } => {
+                let ruling = if *slope > 0.0 { below } else { above };
+                (near * slope + ruling) * slope + radius > 0.0
+            }
+            Rise::Tube { major } => {
+                let mut fan = Fan::within(QUARTER_TURN);
+                [
+                    (near - major, below),
+                    (near - major, above),
+                    (far - major, below),
+                    (far - major, above),
+                ]
+                .into_iter()
+                .all(|corner| fan.add(corner))
+            }
+        }
+    }
 }
 
 impl Lay {
@@ -985,21 +1017,20 @@ impl Lay {
                 },
             ),
             Surface::Sphere(s) => about(s.frame(), Rise::Latitude),
-            Surface::Torus(t) => about(t.frame(), Rise::Unshown),
+            Surface::Torus(t) => about(t.frame(), Rise::Tube { major: t.radii().0 }),
             Surface::Bezier(_) | Surface::Nurbs(_) => Lay::Space,
         }
     }
 
-    /// Whether an edge is held to running one way in this chart
-    /// ([`one_way`]): not on a torus, where nothing is read off it.
-    fn asks(&self) -> bool {
-        !matches!(
-            self,
-            Lay::About {
-                rise: Rise::Unshown,
-                ..
-            }
-        )
+    /// Whether a stretch within `reach` about the axis can be followed in
+    /// this chart ([`Rise::keeps`]).
+    fn keeps(&self, reach: &Reach) -> bool {
+        match self {
+            Lay::About { rise, .. } => rise.keeps(reach),
+            Lay::Flat { .. } | Lay::Space => true,
+            #[cfg(test)]
+            Lay::Turning { .. } => true,
+        }
     }
 
     /// The axis the surface closes about, as a point on it and its unit
@@ -1008,6 +1039,8 @@ impl Lay {
         match self {
             Lay::About { origin, z, .. } => Some((*origin, *z)),
             Lay::Flat { .. } | Lay::Space => None,
+            #[cfg(test)]
+            Lay::Turning { origin, z } => Some((*origin, *z)),
         }
     }
 }
@@ -1192,20 +1225,18 @@ fn spline_steps(
         // the axis can take from that as the point goes round by up to
         // half the angle, and what the direction itself can change by
         // over half the stretch (its second derivative's bound).
-        let round = lay.asks()
+        let within = Reach {
+            low: middle * cos - on * sin,
+            high: middle * cos + on * sin,
+            off: (low, off + 0.5 * reach),
+            height: (height - 0.5 * reach, height + 0.5 * reach),
+        };
+        let round = lay.keeps(&within)
             && bend_over(a, b, made).is_some_and(|bend| {
                 let lost = going.dot(middle).abs() * sin + bend * 0.5 * (b - a);
                 going.dot(on).abs() * cos - lost > ROUND_CLEAR * speed
             });
-        Some((
-            Reach {
-                low: middle * cos - on * sin,
-                high: middle * cos + on * sin,
-                off: (low, off + 0.5 * reach),
-                height: (height - 0.5 * reach, height + 0.5 * reach),
-            },
-            round,
-        ))
+        Some((within, round))
     };
     // (3) The Bézier pieces, each made once where (1) and (2) do not show
     // it, and the points of a stretch's cut pieces.
@@ -1301,6 +1332,8 @@ fn spline_steps(
     let most = match lay {
         Lay::Space => SPLINE_STEPS,
         Lay::Flat { .. } | Lay::About { .. } => MOST_SPLINE_STEPS,
+        #[cfg(test)]
+        Lay::Turning { .. } => MOST_SPLINE_STEPS,
     };
     steps_shown(SPLINE_STEPS, most, range, work, |a, b, work| {
         shown(a, b, false, work)
@@ -1459,8 +1492,7 @@ impl Fan {
 /// nothing and is passed over; a shorter one than [`LEG_CLEAR`] times its
 /// clearance has no direction that can be read, and the stretch is not
 /// shown. On a spline surface ([`Lay::Space`]) the legs are held to running
-/// forward along the chord from the first point to the last, in space. On a
-/// torus ([`Rise::Unshown`]) nothing is asked.
+/// forward along the chord from the first point to the last, in space.
 fn one_way(
     lay: &Lay,
     points: &[Vec3],
@@ -1497,10 +1529,6 @@ fn one_way(
             }
             (true, looked)
         }
-        Lay::About {
-            rise: Rise::Unshown,
-            ..
-        } => (true, 0),
         Lay::About { z, rise, .. } => {
             let Some(reach) = reach else {
                 return (false, 0);
@@ -1510,17 +1538,14 @@ fn one_way(
             if !(near > 0.0 && far.is_finite() && below.is_finite() && above.is_finite()) {
                 return (false, 0);
             }
-            // A cone's `v` stops at the apex: the stretch must keep to the
-            // cone's own side of it, where `v` is the ruling's.
+            // Where `v` cannot be read off the stretch (past a cone's
+            // apex, too far round a torus's tube) nothing is shown.
+            if !rise.keeps(reach) {
+                return (false, 0);
+            }
             let norm = match rise {
-                Rise::Slant { slope, radius } => {
-                    let ruling = if *slope > 0.0 { below } else { above };
-                    if !longer((near * slope + ruling) * slope + radius, 0.0) {
-                        return (false, 0);
-                    }
-                    1.0 / (slope * slope + 1.0).sqrt()
-                }
-                Rise::Height | Rise::Latitude | Rise::Unshown => 1.0,
+                Rise::Slant { slope, .. } => 1.0 / (slope * slope + 1.0).sqrt(),
+                Rise::Height | Rise::Latitude | Rise::Tube { .. } => 1.0,
             };
             let (round_low, round_high) = (z.cross(reach.low), z.cross(reach.high));
             // First the angle about the axis alone, which is what a helix
@@ -1556,15 +1581,28 @@ fn one_way(
                 return (true, looked);
             }
             let widest = far / near;
-            // The latitude's rate is over the square of the distance from
-            // the centre: between these.
-            let least = if below <= 0.0 && above >= 0.0 {
-                0.0
-            } else {
-                below.abs().min(above.abs())
+            // The rate of a latitude, or of the angle about a tube, is over
+            // the square of the distance from the centre it is taken about
+            // (the sphere's, the tube's): between these, over the box of the
+            // stretch's distances from the axis and its heights.
+            let (inside, outside) = match rise {
+                Rise::Tube { major } => (near - major, far - major),
+                Rise::Height | Rise::Slant { .. } | Rise::Latitude => (near, far),
             };
-            let most = below.abs().max(above.abs());
-            let (inner, outer) = (near * near + least * least, far * far + most * most);
+            let span = |low: f64, high: f64| {
+                let least = if low <= 0.0 && high >= 0.0 {
+                    0.0
+                } else {
+                    low.abs().min(high.abs())
+                };
+                (least, low.abs().max(high.abs()))
+            };
+            let ((least_off, most_off), (least, most)) =
+                (span(inside, outside), span(below, above));
+            let (inner, outer) = (
+                least_off * least_off + least * least,
+                most_off * most_off + most * most,
+            );
             let mut fan = Fan::within(ONE_WAY);
             for (w, clear) in legs() {
                 looked += ABOUT_UNITS;
@@ -1599,14 +1637,15 @@ fn one_way(
                 let u = (round.0.min(round.0 * widest), round.1.max(round.1 * widest));
                 // `v'`, as a length as well.
                 let v = match rise {
-                    Rise::Height | Rise::Unshown => (along, along),
+                    Rise::Height => (along, along),
                     Rise::Slant { slope, .. } => {
                         let (a, b) = (slope * away.0, slope * away.1);
                         ((a.min(b) + along) * norm, (a.max(b) + along) * norm)
                     }
-                    Rise::Latitude => {
-                        // `(ρ w·z − h w·r) / (ρ² + h²)`.
-                        let (a, b) = (near * along, far * along);
+                    Rise::Latitude | Rise::Tube { .. } => {
+                        // `(ρ w·z − h w·r) / (ρ² + h²)`, `ρ` from the axis
+                        // or, about a tube, from its centre circle.
+                        let (a, b) = (inside * along, outside * along);
                         let lifts = [
                             below * away.0,
                             below * away.1,
@@ -1631,6 +1670,8 @@ fn one_way(
             }
             (true, looked)
         }
+        #[cfg(test)]
+        Lay::Turning { .. } => (true, 0),
         Lay::Space => {
             let (Some(first), Some(last)) = (points.first(), points.last()) else {
                 return (false, 0);
@@ -2323,11 +2364,7 @@ mod tests {
     /// A chart of which only the angle about `axis` is shown, for the tests
     /// of that proof alone.
     fn turning((origin, z): (Vec3, Vec3)) -> Lay {
-        Lay::About {
-            origin,
-            z,
-            rise: Rise::Unshown,
-        }
+        Lay::Turning { origin, z }
     }
 
     fn tilted() -> Frame {
