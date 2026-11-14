@@ -296,3 +296,201 @@ fn a_chamfer_on_the_rim_of_a_hole_that_touches_the_bottom_is_the_ring_in_the_blo
         }
     }
 }
+
+/// The boss whose wall leaves the top of a plate as an arc and goes on as
+/// its tangent plane (the kernel's side: crates/kernel/tests/blend_through.rs
+/// › the boss): the section (x, y) of the plate (x from 0 to 40, y from 0
+/// to 10), its wall leaving the top at (28, 10) as the arc about (20, 16) of
+/// radius 10, counter-clockwise up to `phi` degrees, on as the tangent
+/// plane for 10, over to x = 10 and down to the top; sketched, and 40 long
+/// along z.
+fn boss(s: &mut Session, k: f64, phi: f64) {
+    new_document(s, k);
+    let t = phi.to_radians();
+    let tangent = [20.0 + 10.0 * t.pcos(), 16.0 + 10.0 * t.psin()];
+    let run_on = [tangent[0] - 10.0 * t.psin(), tangent[1] + 10.0 * t.pcos()];
+    let at = |p: [f64; 2]| json!([p[0] * k, p[1] * k]);
+    run(s, "sketch.create", json!({"name": "Outline"}));
+    run(
+        s,
+        "sketch.path",
+        json!({"sketch": "Outline", "start": at([0.0, 0.0]), "segments": [
+            {"line": at([40.0, 0.0])},
+            {"line": at([40.0, 10.0])},
+            {"line": at([28.0, 10.0])},
+            {"arc": at(tangent), "center": at([20.0, 16.0])},
+            {"line": at(run_on)},
+            {"line": at([10.0, run_on[1]])},
+            {"line": at([10.0, 10.0])},
+            {"line": at([0.0, 10.0])},
+            {"line": "start"},
+        ]}),
+    );
+    built(
+        s,
+        "feature.extrude",
+        json!({"sketch": "Outline", "distance": 40.0 * k, "name": "Boss"}),
+    );
+}
+
+/// The boss's top and its wall (the arc's face), as the extrusion names
+/// them.
+const BOSS_TOP: &str = "F2:side(e7)";
+const BOSS_WALL: &str = "F2:side(e10)";
+
+/// The area of the polygon through `points`, counter-clockwise positive.
+fn polygon(points: &[[f64; 2]]) -> f64 {
+    let n = points.len();
+    (0..n)
+        .map(|i| {
+            let (p, q) = (points[i], points[(i + 1) % n]);
+            0.5 * (p[0] * q[1] - q[0] * p[1])
+        })
+        .sum()
+}
+
+/// The boss's section (scale 1), and what a chamfer of its edge `b` of arc
+/// along the wall and `a` along the top adds per unit of length: the cut
+/// line on the wall is the point of it at the straight distance from the
+/// edge that `b` gives on the wall's circle (its chord), on the tangent
+/// plane once the arc ends short of that; the region between the wall,
+/// the line to the top's foot and the top.
+fn boss_cut(phi: f64, b: f64, a: f64) -> (f64, f64) {
+    let start = (-6.0_f64).patan2(8.0);
+    let theta = phi.to_radians() - start;
+    let t = phi.to_radians();
+    let tangent = [20.0 + 10.0 * t.pcos(), 16.0 + 10.0 * t.psin()];
+    let dir = [-t.psin(), t.pcos()];
+    let run_on = [tangent[0] + 10.0 * dir[0], tangent[1] + 10.0 * dir[1]];
+    let outline = [
+        [0.0, 0.0],
+        [40.0, 0.0],
+        [40.0, 10.0],
+        [28.0, 10.0],
+        tangent,
+        run_on,
+        [10.0, run_on[1]],
+        [10.0, 10.0],
+        [0.0, 10.0],
+    ];
+    let section = polygon(&outline) + 50.0 * (theta - theta.psin());
+    let (e, g) = ([28.0, 10.0], [28.0 + a, 10.0]);
+    let chord = 20.0 * (b / 20.0).psin();
+    let added = if b <= 10.0 * theta {
+        -polygon(&[e, on_pipe(b, true), g]) - 50.0 * (b / 10.0 - (b / 10.0).psin())
+    } else {
+        let w = [tangent[0] - e[0], tangent[1] - e[1]];
+        let half = w[0] * dir[0] + w[1] * dir[1];
+        let s = -half + (half * half - (w[0] * w[0] + w[1] * w[1]) + chord * chord).sqrt();
+        let foot = [tangent[0] + s * dir[0], tangent[1] + s * dir[1]];
+        -polygon(&[e, tangent, foot, g]) - 50.0 * (theta - theta.psin())
+    };
+    (section, added)
+}
+
+#[test]
+fn a_chamfer_whose_cut_line_runs_past_the_end_of_an_arc_onto_its_tangent_plane() {
+    // The boss with its tangent point at -15°, its edge chamfered 4.2 along
+    // the wall and 1 along the top: the cut line on the wall lies past the
+    // arc's end (3.817 of arc), on the tangent plane. Until 2026-11-14 the
+    // feature failed as "the result is not a valid body: edge 19 is
+    // 7.236281787861207e-3 away from the surface of face 10" (0.1.0 and
+    // 0.1.1): now it is the chamfer, its cut line carried onto the tangent
+    // plane, and an edit to 5.5 follows. With the tangent point at -10°
+    // the line from there to the top's foot runs through the arc (5 along
+    // the wall: by 8.4e-3), and the feature fails as too large, with the
+    // size at which the line enters the wall's circle by the tolerance,
+    // which builds.
+    for k in SCALES {
+        let mut s = session();
+        boss(&mut s, k, -15.0);
+        let edges = run(&mut s, "document.edges", json!({"feature": "Boss"}));
+        assert!(
+            edges["edges"].as_array().unwrap().iter().any(|e| {
+                let f = &e["faces"];
+                (f[0] == BOSS_TOP && f[1] == BOSS_WALL) || (f[0] == BOSS_WALL && f[1] == BOSS_TOP)
+            }),
+            "{edges}"
+        );
+        let (section, _) = boss_cut(-15.0, 4.2, 1.0);
+        assert_solid(&mut s, "Boss", 40.0 * section, None, k);
+        built(
+            &mut s,
+            "feature.chamfer",
+            json!({"edges": [[BOSS_WALL, BOSS_TOP]], "distance": 4.2 * k, "second": k,
+                   "name": "Bevel"}),
+        );
+        let (_, added) = boss_cut(-15.0, 4.2, 1.0);
+        assert_solid(&mut s, "Bevel", 40.0 * (section + added), None, k);
+        built(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Bevel", "distance": 5.5 * k}),
+        );
+        let (_, added) = boss_cut(-15.0, 5.5, 1.0);
+        assert_solid(&mut s, "Bevel", 40.0 * (section + added), None, k);
+
+        let mut s = session();
+        boss(&mut s, k, -10.0);
+        let (section, _) = boss_cut(-10.0, 5.0, 1.0);
+        run(
+            &mut s,
+            "feature.chamfer",
+            json!({"edges": [[BOSS_WALL, BOSS_TOP]], "distance": 5.0 * k, "second": k,
+                   "name": "Bevel"}),
+        );
+        let reason = failure(&mut s, "Bevel");
+        assert!(
+            reason.starts_with(&format!(
+                "size.distance: too large for edges.0 (between {BOSS_WALL} and {BOSS_TOP})"
+            )),
+            "{k}: {reason}"
+        );
+        let largest = said_largest(&reason);
+        let expected = touching(1.0, 5.0, true) * 5.0 * k;
+        assert!(
+            (largest - expected).abs() <= 1e-4 * expected,
+            "{k}: {largest} for {expected}"
+        );
+        let scale = 0.99 * largest / (5.0 * k);
+        built(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Bevel", "distance": scale * 5.0 * k, "second": scale * k}),
+        );
+        let (_, added) = boss_cut(-10.0, scale * 5.0, scale);
+        assert_solid(&mut s, "Bevel", 40.0 * (section + added), None, k);
+
+        // The faces named the other way round, 1 along the top and 5 up
+        // the wall: until 2026-11-14 built, valid and wrong, the deep check
+        // silent (+50.68 mm³ at scale 1, the length times the signed area
+        // of the region that crosses itself); now too large for the wall,
+        // the same size said, which builds.
+        run(&mut s, "feature.delete", json!({"feature": "Bevel"}));
+        run(
+            &mut s,
+            "feature.chamfer",
+            json!({"edges": [[BOSS_TOP, BOSS_WALL]], "distance": k, "second": 5.0 * k,
+                   "name": "Bevel"}),
+        );
+        let reason = failure(&mut s, "Bevel");
+        assert!(
+            reason.starts_with(&format!(
+                "size.second: too large for edges.0 (between {BOSS_TOP} and {BOSS_WALL})"
+            )),
+            "{k}: {reason}"
+        );
+        let largest = said_largest(&reason);
+        assert!(
+            (largest - expected).abs() <= 1e-4 * expected,
+            "{k}: {largest} for {expected}"
+        );
+        let scale = 0.99 * largest / (5.0 * k);
+        built(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Bevel", "distance": scale * k, "second": scale * 5.0 * k}),
+        );
+        assert_solid(&mut s, "Bevel", 40.0 * (section + added), None, k);
+    }
+}

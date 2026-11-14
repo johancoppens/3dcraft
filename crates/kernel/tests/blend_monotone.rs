@@ -12,8 +12,10 @@
 //! the other face chamfered or filleted at random sizes from small to well
 //! past what fits, convex and concave, with sections the same all along
 //! and changing along the edge (docs/design/blends.md › *A chamfer through
-//! a face beside it*). Cost: about 5 minutes for the five parts side by
-//! side in the test profile (the last, with the lying ring, the longest).
+//! a face beside it*); and the wall's edge filleted near a radius at which
+//! the ball touches the wall at two places (*A fillet through a face beside
+//! it*). Cost: about 5 minutes for the seven parts side by side in the
+//! test profile (the one with the lying ring the longest).
 //!
 //! A body whose points cannot all be classified is held to its volume
 //! only; they are counted, and more than one in ten fails the test.
@@ -90,6 +92,11 @@ enum Kind {
     BeadSlope,
     /// The same with a hollow.
     HollowSlope,
+    /// The wall with a bead, its edge filleted near a radius at which the
+    /// ball that first touches the wall touches it at two points.
+    BeadRound,
+    /// The same with a hollow.
+    HollowRound,
 }
 
 const KINDS: [Kind; 9] = [
@@ -117,6 +124,13 @@ const SLOPE_KINDS: [Kind; 2] = [Kind::BeadSlope, Kind::HollowSlope];
 
 /// The first case of [`SLOPE_KINDS`].
 const FIRST_SLOPE: usize = 600;
+
+/// The kinds of the cases from [`FIRST_ROUND`] on (2026-11-14): a fillet
+/// near a radius at which the ball touches the wall twice ([`round`]).
+const ROUND_KINDS: [Kind; 2] = [Kind::BeadRound, Kind::HollowRound];
+
+/// The first case of [`ROUND_KINDS`].
+const FIRST_ROUND: usize = 720;
 
 /// The block with its top shaped across y by a spline from (a, 20) to
 /// (b, 20) (its `control` points, clamped `knots`): above the top as a
@@ -303,6 +317,333 @@ impl Wall {
         }
         None
     }
+
+    /// Its derivative at `t`, exactly: the spline of degree two of the
+    /// control points' differences.
+    fn derivative(&self, t: f64) -> [f64; 2] {
+        let p = 3;
+        let n = self.control.len();
+        let mut span = p;
+        while span + 1 < n && self.knots[span + 1] <= t {
+            span += 1;
+        }
+        let q: Vec<[f64; 2]> = (0..n - 1)
+            .map(|i| {
+                let den = self.knots[i + p + 1] - self.knots[i + 1];
+                let s = if den > 0.0 { p as f64 / den } else { 0.0 };
+                [
+                    s * (self.control[i + 1][0] - self.control[i][0]),
+                    s * (self.control[i + 1][1] - self.control[i][1]),
+                ]
+            })
+            .collect();
+        let knots = &self.knots[1..self.knots.len() - 1];
+        let p = 2;
+        let span = span - 1;
+        let mut d: Vec<[f64; 2]> = (0..=p).map(|j| q[span - p + j]).collect();
+        for r in 1..=p {
+            for j in (r..=p).rev() {
+                let i = span - p + j;
+                let den = knots[i + p + 1 - r] - knots[i];
+                let a = if den > 0.0 { (t - knots[i]) / den } else { 0.0 };
+                d[j] = [
+                    (1.0 - a) * d[j - 1][0] + a * d[j][0],
+                    (1.0 - a) * d[j - 1][1] + a * d[j][1],
+                ];
+            }
+        }
+        d[p]
+    }
+
+    /// The wall from the edge to [`WALL_END`] as `n` chords, with the
+    /// parameters of their ends.
+    fn polyline(&self, n: usize) -> Vec<(f64, [f64; 2])> {
+        (0..=n)
+            .map(|i| {
+                let t = WALL_END * i as f64 / n as f64;
+                (t, self.at(t))
+            })
+            .collect()
+    }
+
+    /// The ball of radius `r` resting on the top (its centre `sigma` r
+    /// above it: under the top in a groove, over it beside a ridge) that
+    /// first touches the wall, coming from the top's side: its centre's y
+    /// and the parameter of the place it touches, on the chords `line`.
+    /// Stepped towards the wall by a sixty-fourth of the radius, then
+    /// halved.
+    fn first_contact(&self, line: &[(f64, [f64; 2])], r: f64, sigma: f64) -> Option<(f64, f64)> {
+        let z = 20.0 + sigma * r;
+        let near = |y: f64| nearest(line, [y, z]);
+        let mut hi = self.a + 4.0 * r + 2.0;
+        if near(hi).0 <= r {
+            return None;
+        }
+        let mut lo = hi;
+        loop {
+            lo -= r / 64.0;
+            if lo < self.a - 4.0 * r - 2.0 {
+                return None;
+            }
+            if near(lo).0 <= r {
+                break;
+            }
+            hi = lo;
+        }
+        for _ in 0..60 {
+            let middle = 0.5 * (lo + hi);
+            if near(middle).0 <= r {
+                lo = middle;
+            } else {
+                hi = middle;
+            }
+        }
+        let y = 0.5 * (lo + hi);
+        Some((y, near(y).1))
+    }
+
+    /// The radii from 0.2 to 8 at which the ball resting on the top that
+    /// first touches the wall touches it at two places apart (where it
+    /// first touches jumps from one to the other as the radius passes
+    /// through), each worked out on the spline: Newton on the centre's y,
+    /// the radius and the two parameters, the ball the radius away from
+    /// both places and square to the wall there. Past such a radius on one
+    /// side the other place lies inside the ball: a fillet that touches the
+    /// wall there passes through the wall between the edge and its foot
+    /// (property cases 585 and 716).
+    fn touching(&self, sigma: f64) -> Vec<f64> {
+        let line = self.polyline(3000);
+        let radius = |i: usize| 0.2 * 40.0_f64.ppowf(i as f64 / 160.0);
+        let mut found = Vec::new();
+        let mut last: Option<(f64, f64)> = None;
+        for i in 0..=160 {
+            let r = radius(i);
+            let Some((_, t)) = self.first_contact(&line, r, sigma) else {
+                last = None;
+                continue;
+            };
+            if let Some((r0, t0)) = last
+                && (t - t0).abs() > 0.03
+            {
+                // Halved on the chords to where it jumps.
+                let (mut lo, mut hi) = (r0, r);
+                let (mut t_lo, mut t_hi) = (t0, t);
+                for _ in 0..40 {
+                    let middle = 0.5 * (lo + hi);
+                    let Some((_, tm)) = self.first_contact(&line, middle, sigma) else {
+                        break;
+                    };
+                    if (tm - t_lo).abs() < (tm - t_hi).abs() {
+                        (lo, t_lo) = (middle, tm);
+                    } else {
+                        (hi, t_hi) = (middle, tm);
+                    }
+                }
+                let r = 0.5 * (lo + hi);
+                if let Some((y, _)) = self.first_contact(&line, r, sigma)
+                    && let Some(exact) = self.twice(y, r, t_lo, t_hi, sigma)
+                {
+                    found.push(exact);
+                }
+            }
+            last = Some((r, t));
+        }
+        found
+    }
+
+    /// Newton on (y, r, s0, s1): the ball of radius r centred at
+    /// (y, 20 + `sigma` r) the radius from the wall at s0 and at s1 and
+    /// square to it at both. The radius, where it converges to two places
+    /// apart on the wall with nothing of the wall inside the ball.
+    fn twice(&self, y: f64, r: f64, s0: f64, s1: f64, sigma: f64) -> Option<f64> {
+        let f = |x: [f64; 4]| {
+            let c = [x[0], 20.0 + sigma * x[1]];
+            let mut out = [0.0; 4];
+            for (k, s) in [x[2], x[3]].into_iter().enumerate() {
+                let (p, d) = (self.at(s), self.derivative(s));
+                let q = [c[0] - p[0], c[1] - p[1]];
+                out[2 * k] = q[0].phypot(q[1]) - x[1];
+                out[2 * k + 1] = q[0] * d[0] + q[1] * d[1];
+            }
+            out
+        };
+        let mut x = [y, r, s0, s1];
+        for _ in 0..60 {
+            let now = f(x);
+            if now.iter().all(|v| v.abs() < 1e-13) {
+                break;
+            }
+            let mut jac = [[0.0; 4]; 4];
+            for j in 0..4 {
+                let h = 1e-7 * x[j].abs().max(1.0);
+                let (mut up, mut down) = (x, x);
+                up[j] += h;
+                down[j] -= h;
+                let (fu, fd) = (f(up), f(down));
+                for i in 0..4 {
+                    jac[i][j] = (fu[i] - fd[i]) / (2.0 * h);
+                }
+            }
+            let step = solve4(jac, now.map(|v| -v))?;
+            for j in 0..4 {
+                x[j] += step[j];
+            }
+        }
+        let fine = f(x).iter().all(|v| v.abs() < 1e-11)
+            && x[2] > 0.0
+            && x[3] > 0.0
+            && x[2] < WALL_END
+            && x[3] < WALL_END
+            && (x[2] - x[3]).abs() > 0.02
+            && x[1] > 0.2
+            && x[1] < 8.0;
+        let line = self.polyline(20_000);
+        let clear = nearest(&line, [x[0], 20.0 + sigma * x[1]]).0 >= x[1] - 1e-6;
+        (fine && clear).then_some(x[1])
+    }
+
+    /// For a fillet whose ball rests on the top centred at (`y`,
+    /// 20 + `sigma` r): how deep the wall between the edge and the ball's
+    /// foot on it lies inside the ball, between the rays from the centre to
+    /// its two feet (the arc's sector). The foot is where the distance from
+    /// the centre to the wall has a least value nearest the radius (within
+    /// 1e-6 of it); `None` where there is none.
+    fn inside_ball(&self, y: f64, r: f64, sigma: f64) -> Option<f64> {
+        let c = [y, 20.0 + sigma * r];
+        let steps = 40_000;
+        let from = |t: f64| {
+            let p = self.at(t);
+            (p[0] - c[0]).phypot(p[1] - c[1])
+        };
+        let ts: Vec<f64> = (0..=steps)
+            .map(|i| f64::from(i) / f64::from(steps))
+            .collect();
+        let ds: Vec<f64> = ts.iter().map(|t| from(*t)).collect();
+        let mut foot: Option<(f64, f64)> = None;
+        for i in 1..steps as usize {
+            if ds[i] <= ds[i - 1] && ds[i] <= ds[i + 1] {
+                // The least value, by golden sections between the
+                // neighbours.
+                let (mut a, mut b) = (ts[i - 1], ts[i + 1]);
+                for _ in 0..100 {
+                    let m1 = a + (b - a) * 0.381_966;
+                    let m2 = b - (b - a) * 0.381_966;
+                    if from(m1) < from(m2) {
+                        b = m2;
+                    } else {
+                        a = m1;
+                    }
+                }
+                let t = 0.5 * (a + b);
+                let off = (from(t) - r).abs();
+                if foot.is_none_or(|(_, o)| off < o) {
+                    foot = Some((t, off));
+                }
+            }
+        }
+        let (t1, off) = foot?;
+        if off > 1e-6 {
+            return None;
+        }
+        let g = self.at(t1);
+        let (a1, a2) = ([0.0, -sigma * r], [g[0] - c[0], g[1] - c[1]]);
+        let cross = |u: [f64; 2], v: [f64; 2]| u[0] * v[1] - u[1] * v[0];
+        let turn = cross(a1, a2).signum();
+        let mut deepest: f64 = 0.0;
+        for i in 1..steps {
+            let p = self.at(t1 * f64::from(i) / f64::from(steps));
+            let q = [p[0] - c[0], p[1] - c[1]];
+            if cross(a1, q) * turn > 0.0 && cross(q, a2) * turn > 0.0 {
+                deepest = deepest.max(r - q[0].phypot(q[1]));
+            }
+        }
+        Some(deepest)
+    }
+}
+
+/// How far up the wall (in its parameter) a ball resting on the top is
+/// held against it: past this the spline turns over towards the far side
+/// (its control point over the top weighs in from 4/7 on).
+const WALL_END: f64 = 5.0 / 7.0;
+
+/// The point of the chords `line` nearest `p`: its distance and the
+/// parameter there (interpolated along its chord).
+fn nearest(line: &[(f64, [f64; 2])], p: [f64; 2]) -> (f64, f64) {
+    let mut best = (f64::INFINITY, 0.0);
+    for w in line.windows(2) {
+        let ((t0, a), (t1, b)) = (w[0], w[1]);
+        let d = [b[0] - a[0], b[1] - a[1]];
+        let len2 = d[0] * d[0] + d[1] * d[1];
+        let s = if len2 > 0.0 {
+            (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let q = [a[0] + d[0] * s, a[1] + d[1] * s];
+        let dist = (p[0] - q[0]).phypot(p[1] - q[1]);
+        if dist < best.0 {
+            best = (dist, t0 + (t1 - t0) * s);
+        }
+    }
+    best
+}
+
+/// The solution of four linear equations (Gaussian elimination with
+/// partial pivoting); `None` where they are singular.
+fn solve4(mut a: [[f64; 4]; 4], mut b: [f64; 4]) -> Option<[f64; 4]> {
+    for c in 0..4 {
+        let pivot = (c..4).max_by(|i, j| a[*i][c].abs().total_cmp(&a[*j][c].abs()))?;
+        a.swap(c, pivot);
+        b.swap(c, pivot);
+        if a[c][c].is_nan() || a[c][c].abs() <= f64::MIN_POSITIVE {
+            return None;
+        }
+        let row = a[c];
+        for r in 0..4 {
+            if r != c {
+                let m = a[r][c] / row[c];
+                for (x, p) in a[r].iter_mut().zip(row) {
+                    *x -= m * p;
+                }
+                b[r] -= m * b[c];
+            }
+        }
+    }
+    Some([
+        b[0] / a[0][0],
+        b[1] / a[1][1],
+        b[2] / a[2][2],
+        b[3] / a[3][3],
+    ])
+}
+
+/// Where the fillet face of a body built lies against the top: the y of
+/// its border with the top's plane in the middle of that border.
+fn top_border(body: &Body, blends: &[bool], frame: &Frame) -> Option<f64> {
+    for (index, users) in edge_uses(body).iter().enumerate() {
+        let [x, y] = users.as_slice() else { continue };
+        for (own, other) in [(x, y), (y, x)] {
+            if blends.get(own.face.0 as usize) != Some(&true) {
+                continue;
+            }
+            let Some(craft3d_geom::Surface::Plane(plane)) =
+                body.face(other.face).map(|f| &f.surface)
+            else {
+                continue;
+            };
+            let top = plane.frame().z().cross(frame.z()).length() < 1e-9
+                && (plane.frame().origin() - frame.point(0.0, 0.0, 20.0))
+                    .dot(frame.z())
+                    .abs()
+                    < 1e-6;
+            if top {
+                let data = body.edge(EdgeId(index as u32))?;
+                let p = data.curve.eval(0.5 * (data.range.0 + data.range.1));
+                return Some((p - frame.origin()).dot(frame.y()));
+            }
+        }
+    }
+    None
 }
 
 /// A case of [`SLOPE_KINDS`]: the wall's edge at (a, 20) chamfered `d2` (2
@@ -387,6 +728,94 @@ fn slope(
                 edge,
                 convex,
                 2.0 * d1.max(d2),
+                tol,
+                &what,
+                &mut tally.wrong,
+                &mut tally.unclassified,
+            );
+            tally
+                .outcomes
+                .push(if tally.wrong.len() > found { 'W' } else { 'B' });
+        }
+        Err(e) => {
+            tally.refused += 1;
+            tally.outcomes.push('R');
+            tally.measures.push_str("--------");
+            println!("{what}: refused: {e}");
+        }
+    }
+    Some(())
+}
+
+/// A case of [`ROUND_KINDS`]: the wall's edge at (a, 20) filleted near a
+/// radius at which the ball resting on the top that first touches the wall
+/// touches it at two places ([`Wall::touching`], one of them at random),
+/// off it by one of a few steps either way. A body built is held to the
+/// property and to the section in 2D: the ball read off the body (the
+/// fillet face's border with the top), and the wall between the edge and
+/// its foot more than the tolerance inside it, between the rays to its two
+/// feet, is wrong ([`Wall::inside_ball`]). `None` where no such radius is
+/// found: then the case is set up as the others are.
+#[allow(clippy::too_many_arguments)]
+fn round(
+    rng: &mut Rng,
+    at: u64,
+    body: &Body,
+    wall: &Wall,
+    frame: &Frame,
+    union: bool,
+    tol: &Tolerance,
+    what: &str,
+    tally: &mut Tally,
+) -> Option<()> {
+    let sigma = if union { 1.0 } else { -1.0 };
+    let radii = wall.touching(sigma);
+    let star = *radii.get(rng.below(radii.len().max(1) as u64) as usize)?;
+    let steps = [
+        -2e-2, -1e-3, -1e-5, -1e-6, -2e-7, 2e-7, 1e-6, 1e-5, 1e-3, 2e-2,
+    ];
+    let r = star * (1.0 + steps[rng.below(steps.len() as u64) as usize]);
+    let (edge, convex) = candidates(body, frame).into_iter().find(|(e, _)| {
+        let data = body.edge(*e).unwrap();
+        let m = data.curve.eval(0.5 * (data.range.0 + data.range.1)) - frame.origin();
+        (m.dot(frame.y()) - wall.a).abs() < 1e-6
+    })?;
+    let what = format!(
+        "{what}, {}: fillet {r:.9} (two touches at {star:.9})",
+        if convex { "convex" } else { "concave" }
+    );
+    match fillet(body, &[FilletEdge { edge, radius: r }], tol) {
+        Ok(made) => {
+            tally.built += 1;
+            println!("{what}: built");
+            let found = tally.wrong.len();
+            let measured = craft3d_topo::mass_properties(&made.body)
+                .map_or_else(|_| "????????".to_string(), |m| measure(m.volume, m.area));
+            tally.measures.push_str(&measured);
+            let blends = made
+                .faces
+                .iter()
+                .map(|f| matches!(f, FilletFace::Fillet(_)))
+                .collect::<Vec<_>>();
+            match top_border(&made.body, &blends, frame).and_then(|y| wall.inside_ball(y, r, sigma))
+            {
+                Some(depth) if depth > tol.linear => tally.wrong.push(format!(
+                    "{what}: the section shows it wrong (the wall between the edge and \
+                     its foot {depth:.3e} inside the ball)"
+                )),
+                Some(_) => {}
+                None => tally
+                    .wrong
+                    .push(format!("{what}: its ball cannot be read off the body")),
+            }
+            judge(
+                &mut Rng(at ^ 0x5DEE_CE66_D1CE_4E5B),
+                body,
+                &made.body,
+                &blends,
+                edge,
+                convex,
+                8.0 * r,
                 tol,
                 &what,
                 &mut tally.wrong,
@@ -512,7 +941,12 @@ fn case(
             let axis = Frame::new(frame.point(-1.0, y, z), frame.x(), frame.y()).unwrap();
             primitives::cone(&axis, r, rng.between(70.0, 200.0)).unwrap()
         }
-        Kind::Bead | Kind::Hollow | Kind::BeadSlope | Kind::HollowSlope => {
+        Kind::Bead
+        | Kind::Hollow
+        | Kind::BeadSlope
+        | Kind::HollowSlope
+        | Kind::BeadRound
+        | Kind::HollowRound => {
             // A clamped cubic spline from (a, 20) up the wall at the
             // angle `slope` from the top, a bead (or a hollow) lifting
             // its second and third inner points off the wall, then over
@@ -522,7 +956,7 @@ fn case(
             let wall = [-slope.pcos(), slope.psin()];
             let out = [slope.psin(), slope.pcos()];
             let w = rng.between(1.5, 4.0);
-            let bead = matches!(kind, Kind::Bead | Kind::BeadSlope);
+            let bead = matches!(kind, Kind::Bead | Kind::BeadSlope | Kind::BeadRound);
             let lift = rng.between(0.1, 0.35) * w * if bead { 1.0 } else { -1.0 };
             let h = rng.between(10.0, 16.0);
             let at = |along: f64, off: f64| {
@@ -954,7 +1388,9 @@ fn sweep(seed: u64, cases: std::ops::Range<usize>) -> Tally {
         // does not depend on how another came out.
         let at = seed ^ (n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
         let mut rng = Rng(at);
-        let kind = if let Some(m) = n.checked_sub(FIRST_SLOPE) {
+        let kind = if let Some(m) = n.checked_sub(FIRST_ROUND) {
+            ROUND_KINDS[m % ROUND_KINDS.len()]
+        } else if let Some(m) = n.checked_sub(FIRST_SLOPE) {
             SLOPE_KINDS[m % SLOPE_KINDS.len()]
         } else if let Some(m) = n.checked_sub(FIRST_NEW) {
             NEW_KINDS[m % NEW_KINDS.len()]
@@ -964,7 +1400,11 @@ fn sweep(seed: u64, cases: std::ops::Range<usize>) -> Tally {
         let union = rng.below(2) == 0;
         let frame = frames[rng.below(2) as usize];
         let mut wall = None;
-        let keep = matches!(kind, Kind::BeadSlope | Kind::HollowSlope).then_some(&mut wall);
+        let keep = matches!(
+            kind,
+            Kind::BeadSlope | Kind::HollowSlope | Kind::BeadRound | Kind::HollowRound
+        )
+        .then_some(&mut wall);
         let Some(body) = case(&mut rng, &frame, kind, union, &tol, keep) else {
             tally.outcomes.push('S');
             tally.measures.push_str("--------");
@@ -975,7 +1415,14 @@ fn sweep(seed: u64, cases: std::ops::Range<usize>) -> Tally {
                 "case {n} ({kind:?}, {})",
                 if union { "united" } else { "taken out" }
             );
-            if slope(&mut rng, at, &body, wall, &frame, &tol, &what, &mut tally).is_some() {
+            let done = if matches!(kind, Kind::BeadRound | Kind::HollowRound) {
+                round(
+                    &mut rng, at, &body, wall, &frame, union, &tol, &what, &mut tally,
+                )
+            } else {
+                slope(&mut rng, at, &body, wall, &frame, &tol, &what, &mut tally)
+            };
+            if done.is_some() {
                 continue;
             }
         }
@@ -1164,9 +1611,12 @@ fn hold(cases: std::ops::Range<usize>) {
 /// spline 5, a slanted cylinder or its groove 7, a ring 5, a lying cone 3,
 /// a ball, a lying cylinder, an ogee, a lying ring 1 each, a wall with a
 /// hollow 3, with a bead and the foot on its far slope 7) and two fillets
-/// (beside a bead). Since 2026-11-13 33 of the chamfers are refused, and
-/// every other case builds as it did, the same body, or is refused as it
-/// was ([`RELEASED`], [`MEASURES`]); the other three are [`KNOWN`].
+/// (beside a bead). Since 2026-11-13 33 of the chamfers are refused, since
+/// 2026-11-14 the two fillets too, and every other case builds as it did,
+/// the same body, or is refused as it was ([`RELEASED`], [`MEASURES`]); the
+/// other chamfer is [`KNOWN`]. Of the 120 cases from [`FIRST_ROUND`]
+/// (fillets near a radius at which the ball touches the wall twice) 0.1.0's
+/// kernel builds 16 wrong, all refused since 2026-11-14.
 const SEED: u64 = 0x00C4_A3F3_2026_1113;
 
 /// Cases built wrong with 0.1.0 and still, by what the chamfer's search
@@ -1176,12 +1626,12 @@ const SEED: u64 = 0x00C4_A3F3_2026_1113;
 /// face's trace past the line by more than a quarter of the tolerance) but
 /// its face, 3e-5 inside the cylinder 0.1 from the start of the edge, next
 /// to its border on the cylinder (a point 2e-5 off the chamfer face on the
-/// side it leaves empty lies 1.1e-5 inside the cylinder). Cases 585 and
-/// 716 (a groove with a bead beside it, its convex edge filleted 5.1258
-/// and 3.4172): fillets, which the search does not hold; a point next to
-/// the fillet face (1.0844 and 2.2609 from the edge), on the side it leaves
-/// solid, was outside before: the bead reaches into the ball.
-const KNOWN: [usize; 3] = [377, 585, 716];
+/// side it leaves empty lies 1.1e-5 inside the cylinder). (Cases 585 and
+/// 716, fillets of a groove's rim with a bead on its wall reaching 0.1305
+/// and 0.2045 into the ball between the edge and its foot, were known
+/// until 2026-11-14 and are refused since: docs/design/blends.md › *A
+/// fillet through a face beside it*.)
+const KNOWN: [usize; 1] = [377];
 
 /// The volume and area of each body the released kernel built, in the
 /// digits of [`Tally::measures`], ten cases to a line. Recorded from
@@ -1189,7 +1639,9 @@ const KNOWN: [usize; 3] = [377, 585, 716];
 /// that follows edges off their faces (2026-11-14): its outcomes are
 /// [`RELEASED`] for every case, and 163 of its measures differ from those
 /// 0.1.0's own measure gave (150 of bodies built right, 13 of bodies built
-/// wrong), the bodies being the same.
+/// wrong), the bodies being the same. The cases from [`FIRST_ROUND`]
+/// (fillets) recorded with release/0.1's kernel at 72e0880 (2026-11-14),
+/// whose fillets are 0.1.0's.
 const MEASURES: &str = concat!(
     "5c16c5b5f1c44a298ad2ad18ccfcf252220083a84480b4563ca0b53e--------ff84213897125370",
     "8ddcf41541ddd2f0c51df8af030d03d8c0c910daca5f400a5bd5d39fc1088ffa9f59682aa250f4af",
@@ -1263,6 +1715,21 @@ const MEASURES: &str = concat!(
     "311bc406cbff3f5dc07950ff4eebcf4241c060295c1da02952296482a282575f24f8616c2d338ff8",
     "aac10d976f31ee999943ec2a71a1ed2b905908ac166f14a8365a44cba7839e0c4d9318389c741d71",
     "ba52561d6a16ec47abbd465cdbf8cc4c--------de7736992ea856f150e5cd2d705f2c239031c344",
+    // From case 720 (2026-11-14): fillets near a radius at which the ball
+    // touches the wall twice, recorded with release/0.1's kernel at 72e0880
+    // (its fillets are 0.1.0's).
+    "6de7f3cc--------daac02e1b73534b5----------------1f7a54b15d70fd7931e4215b--------",
+    "725f4fb5--------3f12d6dc--------44c8894d--------1efc645b--------3388ce3c--------",
+    "36b156408a3831999bc77192--------97284ea1--------bf4394e7394a1e5872cc3111--------",
+    "4e288667--------872e13f7--------f0615fee657ca49218f7a57f--------f9b149b0--------",
+    "c7edfab2--------2f835396--------839e8a0f--------61e63a493599b44ef69a526d--------",
+    "7e2329be80b22c9036d64ccf--------cd2bf468--------2eddd158--------464445ca--------",
+    "d21618e3--------1ec8c7db--------ec70b853--------8bff18f2--------bb33af1f--------",
+    "335134dd915c886f91412a69--------3edf42fa--------8794e0c50afd9b3eb4a31342--------",
+    "f20c85c6984079ad057477dc--------e7e86fcd475d16a1----------------9ff0ec73--------",
+    "0498cdbb5fb60a5f95b9ee06--------8a95ddc5--------95473731--------19b686a051a19ab8",
+    "85f389c2--------fae95905--------1a558816514abbbdf8077a33--------d2030f5c--------",
+    "9e07c144--------f9e6793fb5f97e06076cad1eb8094c24414ad20f----------------916a4c21",
 );
 
 /// What the released kernel (0.1.0's blends) did with each case of the
@@ -1277,6 +1744,9 @@ const RELEASED: &str = concat!(
     "BBRBBRBRBBBBBBRBRBBBBBBBBBBBBBBBRBBBBBBBBRBWBBBWBRRBBRBBRBBRBBRRBBBBRBBBBBBBBBBB",
     "BBBBBBBRBRBRRBBBBBRBBRBBBWBRBBRBBRBBRBBRBBBBBBBBBBWBBBBBBBBBBBWRBBBRBBBBBRBBBBWB",
     "BBBBBRBBWBWRWBBBBBBBBBRBBBRBBBBBBWBBBBBBBBRBRBBBBRBBBBBBBBBBBBBBBBBBBBBBBBRBWBWW",
+    // From case 720, as recorded with release/0.1's kernel at 72e0880.
+    "BRBBRRBBBRBRBRBRBRBRBBWRWRBBBRBRBRBBBRBRBRBRBRBBWRBBBRWRBRBRBRWRBRWRBRBBBRBRBWBR",
+    "WBWRBBRRBRBBBRBRWRBBWRWRBBBRWRWRWWBBBRRB",
 );
 
 #[test]
@@ -1307,4 +1777,9 @@ fn random_blends_fill_concave_corners_and_cut_convex_ones_only_near_the_edge_5()
 #[test]
 fn random_blends_fill_concave_corners_and_cut_convex_ones_only_near_the_edge_3() {
     hold(360..480);
+}
+
+#[test]
+fn random_blends_fill_concave_corners_and_cut_convex_ones_only_near_the_edge_6() {
+    hold(FIRST_ROUND..FIRST_ROUND + 120);
 }
