@@ -11,6 +11,18 @@
 //! fillet face is a cylinder and the chamfer face a plane, and the tool is
 //! an extrusion, as between two planes. (The cut edges of a halved rod or
 //! tube; the sharp leading edge of a blade made of two arcs.)
+//!
+//! A chamfer's chord has to leave each face on the side the chamfer
+//! changes ([`enters`]): into the material at a convex edge, out of it at
+//! a concave one. Past that (a pipe on a plate chamfered far along the
+//! pipe, its chord running through the pipe) there is no chamfer of the
+//! size: the region between the faces and the chord crosses itself, and
+//! what the tool or the construction in place would build takes material
+//! from the pipe. A chord that enters by a lens no deeper than the
+//! tolerance is within the tolerance of one that does not, and is built
+//! ([`lens`]). What is built is held to it (`super::turns_back`),
+//! and the size at which the lens grows past that is where the search for
+//! what fits looks ([`touching`]).
 
 // `!(x > 0.0)` is deliberate: unlike `x <= 0.0` it is also true for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
@@ -26,6 +38,11 @@ use std::f64::consts::PI;
 /// A trace may run at most this far round its circle: the tool's section
 /// is drawn with the short arc.
 const MOST_TURN: f64 = PI * (1.0 - 1e-6);
+
+/// Most halvings of the search for the size at which a chamfer's chord
+/// starts to enter a face: more than the halvings from a size down to its
+/// tolerance.
+const HALVINGS: usize = 64;
 
 /// A face in the plane across the edge. Offsets are from the edge's
 /// point in that plane.
@@ -100,6 +117,21 @@ impl Trace {
         match *self {
             Trace::Line { .. } => None,
             Trace::Circle { centre, radius, .. } => Some((centre, radius)),
+        }
+    }
+
+    /// The face's normal out of the body at the point `offset` of the
+    /// trace, given `normal`, the one at the edge: a plane's is the same
+    /// everywhere; a cylinder's lies along the radius, away from the
+    /// centre where it is so at the edge (a rod) and towards it otherwise
+    /// (a hole).
+    fn normal_at(&self, normal: Vec3, offset: Vec3) -> Vec3 {
+        match *self {
+            Trace::Line { .. } => normal,
+            Trace::Circle { centre, radius, .. } => {
+                let bulge = normal.dot(Trace::out(centre, radius)).signum();
+                (offset - centre) * (bulge / radius)
+            }
         }
     }
 }
@@ -249,7 +281,7 @@ pub(super) fn section(
     tol: f64,
 ) -> Result<Section, BlendError> {
     crate::work::blend_section();
-    let [t1, t2] = traces;
+    let [t1, _] = traces;
     let too_large = |side: usize, size: f64, largest: f64| BlendError::TooLarge {
         edge,
         face: faces.get(side).copied().unwrap_or(faces[0]),
@@ -342,7 +374,35 @@ pub(super) fn section(
                 centre: Some(centre),
             })
         }
-        Size::Chamfer(ChamferSize::Distances { first, second }) => {
+        // Whether its line enters a face is held on what is built
+        // (`super::turns_back`); where it starts to is an event of the
+        // search for what fits ([`touching`]).
+        Size::Chamfer(size) => chord(edge, faces, traces, along, size),
+    }
+}
+
+/// A chamfer's section: the points the distances away from the edge
+/// along each trace (or, for a distance and an angle, the point along the
+/// first and where the line at the angle from it meets the second), as
+/// the size asks, before it is held against the faces ([`enters`]).
+fn chord(
+    edge: EdgeId,
+    faces: [FaceId; 2],
+    traces: [Trace; 2],
+    along: Vec3,
+    size: ChamferSize,
+) -> Result<Section, BlendError> {
+    let [t1, t2] = traces;
+    let too_large = |side: usize, size: f64, largest: f64| BlendError::TooLarge {
+        edge,
+        face: faces.get(side).copied().unwrap_or(faces[0]),
+        size,
+        largest: largest.max(0.0),
+    };
+    // How far round its circle a trace may go.
+    let most = |trace: &Trace| trace.circle().map_or(f64::INFINITY, |(_, r)| MOST_TURN * r);
+    match size {
+        ChamferSize::Distances { first, second } => {
             let distances = [first, second];
             let mut feet = [Vec3::new(0.0, 0.0, 0.0); 2];
             for (side, (trace, &s)) in traces.iter().zip(&distances).enumerate() {
@@ -360,7 +420,7 @@ pub(super) fn section(
                 centre: None,
             })
         }
-        Size::Chamfer(ChamferSize::DistanceAngle { distance, angle }) => {
+        ChamferSize::DistanceAngle { distance, angle } => {
             if !(distance < most(&t1)) {
                 return Err(too_large(0, distance, most(&t1)));
             }
@@ -425,4 +485,114 @@ pub(super) fn section(
             })
         }
     }
+}
+
+/// The side whose face a chamfer's chord enters: where the chord leaves
+/// its foot on that face on the wrong side (out of the material at a
+/// convex edge, into it at a concave one) by more than the sine below
+/// which two faces count as tangent, and the lens it cuts from that face
+/// ([`lens`]) is deeper than the tolerance `tol` (a chamfer within the
+/// tolerance of its largest is not shown wrong, and builds). That is, the edge the chamfer face
+/// would make there with the face turns the other way from the edge the
+/// chamfer replaces (what `super::turns_back` holds the built result to).
+/// A line meets a circle twice: a chord that leaves the circle on the
+/// right side meets it nowhere else between the feet, so for the traces
+/// here this is exactly a chord that passes through a face (a pipe on a
+/// plate, chamfered so far along the pipe that the chord runs through it).
+/// `None` when it enters neither.
+pub(super) fn enters(
+    section: &Section,
+    normals: [Vec3; 2],
+    convex: bool,
+    tol: f64,
+) -> Option<usize> {
+    let [f1, f2] = section.feet;
+    for (side, (from, to)) in [(f1, f2), (f2, f1)].into_iter().enumerate() {
+        let (Some(trace), Some(normal)) = (section.traces.get(side), normals.get(side)) else {
+            return Some(side);
+        };
+        let Some(into) = (to - from).normalized() else {
+            return Some(side);
+        };
+        let sine = into.dot(trace.normal_at(*normal, from));
+        // The way `super::across` tells a convex edge from a concave one:
+        // positive where it turns back.
+        let wrong = if convex { sine } else { -sine };
+        if !(wrong <= super::SMOOTH_SINE) && !(lens(trace, (to - from).length(), wrong) <= tol) {
+            return Some(side);
+        }
+    }
+    None
+}
+
+/// How deep a lens a chamfer's line cuts from a face whose trace is
+/// `trace` when it leaves its foot there turning back by the sine `wrong`
+/// (positive), `chord` being the line's length: of a circle, the segment
+/// the line cuts off, `R (1 - cos α)`; of a line, how far past it the
+/// line's other end lies, `chord sin α`. NaN for a NaN sine.
+pub(super) fn lens(trace: &Trace, chord: f64, wrong: f64) -> f64 {
+    let w = wrong.clamp(0.0, 1.0);
+    match trace.circle() {
+        // `1 - cos α` without the cancellation of `1 - sqrt(1 - w²)`.
+        Some((_, radius)) => radius * w * w / (1.0 + (1.0 - w * w).sqrt()),
+        None => chord * w,
+    }
+}
+
+/// Where a chamfer of `size` (along a straight edge whose faces' traces
+/// are `traces`, their outward normals at the edge `normals`) starts to
+/// enter a face ([`enters`]), when the size asked for does: the multiple
+/// of the size (both distances together, or the distance at the angle
+/// given, as the search for what fits scales a size) at which the lens it
+/// cuts from that face grows past the tolerance, to a tolerance, and the
+/// side of that face. The search for what fits takes it
+/// as an event (`fit::events`): just short of it the line across the edge
+/// comes to lie along the face, and past it no chamfer of the size exists
+/// within the tolerance.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn touching(
+    edge: EdgeId,
+    faces: [FaceId; 2],
+    traces: [Trace; 2],
+    normals: [Vec3; 2],
+    along: Vec3,
+    convex: bool,
+    size: ChamferSize,
+    tol: f64,
+) -> Option<(f64, usize)> {
+    let scaled = |s: f64| match size {
+        ChamferSize::Distances { first, second } => ChamferSize::Distances {
+            first: first * s,
+            second: second * s,
+        },
+        ChamferSize::DistanceAngle { distance, angle } => ChamferSize::DistanceAngle {
+            distance: distance * s,
+            angle,
+        },
+    };
+    let enters_at = |s: f64| match chord(edge, faces, traces, along, scaled(s)) {
+        Ok(made) => enters(&made, normals, convex, tol),
+        // A size whose section cannot be drawn says nothing here.
+        Err(_) => None,
+    };
+    let side = enters_at(1.0)?;
+    let biggest = match size {
+        ChamferSize::Distances { first, second } => first.max(second),
+        ChamferSize::DistanceAngle { distance, .. } => distance,
+    };
+    // Clear of the faces at no size, entering one at the size asked for:
+    // halved until the two are a tolerance apart.
+    let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+    for _ in 0..HALVINGS {
+        let middle = 0.5 * (lo + hi);
+        if !((hi - lo) * biggest > tol) || middle <= lo || middle >= hi {
+            break;
+        }
+        if enters_at(middle).is_none() {
+            lo = middle;
+        } else {
+            hi = middle;
+        }
+    }
+    Some((0.5 * (lo + hi), side))
 }

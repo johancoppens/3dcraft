@@ -172,8 +172,20 @@ findings! {
         "N0": OK, "N1": OK, "N2": OK, "N3": REFUSED, "N5": OK,
     ],
     pattern_of_ten_thousand_overlapping_spheres: "9611" => ["N0": OK, "N1": OK],
+    // N5, 2.5 along both tori from the curves where they meet, was built
+    // until 2026-11-13. The tori (major 15, minor 10, their axis z turned
+    // 45 deg about (1, 1, 0), centred at (10, -5, 2.5) and at that moved by
+    // (-1.25, 3.75, 2.5)) united; in planes square to the curves every 0.2
+    // along them, each torus's trace walked from the curve, outside the
+    // other torus, to its foot 2.5 (straight) from it: the line between the
+    // feet leaves the tori inward, its sine against their outward normals
+    // down to -0.118 on one curve and -0.090 on the other (the trace comes
+    // to its foot from past the line), so what was built took material
+    // from both while it filled the corner (docs/design/blends.md › *The
+    // fuzzer's seed 12372, worked out*). Here a regression pin: the replay
+    // ends, refusing it.
     chain_chamfers_on_a_pattern_of_tori: "12372" => [
-        "N0": OK, "N1": OK, "N2": OK, "N3": OK, "N4": OK, "N5": OK,
+        "N0": OK, "N1": OK, "N2": OK, "N3": OK, "N4": OK, "N5": REFUSED,
     ],
     union_after_a_chamfer_of_a_cylinder_and_sphere: "1573" => [
         "N0": OK, "N1": OK, "N2": OK, "N3": OK, "S5": OK, "Extrude1": OK, "N5": OK,
