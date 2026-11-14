@@ -19,6 +19,7 @@ pub mod projection_proof;
 pub mod refine;
 pub mod support;
 mod surface;
+pub mod tip;
 mod transform;
 pub mod trim;
 
