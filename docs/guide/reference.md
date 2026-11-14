@@ -8,7 +8,7 @@ The full description of any command, with every value it takes and what it refus
 
 ## Commands
 
-3DCraft 0.1.2 has 174 commands. A command's id is its family and its name: `feature.fillet`.
+3DCraft 0.1.2 has 175 commands. A command's id is its family and its name: `feature.fillet`.
 
 ### Documents and files
 
@@ -23,6 +23,7 @@ The full description of any command, with every value it takes and what it refus
 | `edit.undo`, `edit.redo` | Undo and redo, one change at a time |
 | `recovery.list`, `recovery.open`, `recovery.discard` | What was autosaved before a crash |
 | `session.report` | A bug report of the last failed command |
+| `session.whatsNew` | What changed since a version (`since`), from the release notes the program carries: the versions, their entries by kind, and which of them change a result ([The window › What's new](window.md#whats-new)) |
 
 ### Variables, tables and parameters
 

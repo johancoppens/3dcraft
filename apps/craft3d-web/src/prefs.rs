@@ -1,12 +1,14 @@
 //! The preferences the page keeps between visits, in the browser's
 //! `localStorage` (as JSON under [`KEY`]): which panels are open, whether
 //! sketches and datums are shown, the appearance (system, light or dark),
-//! and the format of the last export.
+//! the format of the last export, and the newest version whose release
+//! notes were seen here (What's new: [`seen`], [`notes_at_start`]).
 //! Storage may be missing, blocked or full (a private window, a sandboxed
 //! iframe, a browser that partitions third-party storage): the page then
 //! starts with the defaults and keeps nothing, without an error. Whatever
 //! is stored is read as hostile input: what does not read is the default.
 
+use craft3d_engine::changelog::{Seen, Version};
 use craft3d_ui_egui::UiState;
 use craft3d_ui_egui::state::{Appearance, Panels, Show};
 use serde_json::{Value, json};
@@ -24,6 +26,64 @@ pub struct Prefs {
     pub appearance: Appearance,
     /// The extension of the last export, lower case (`step`, `stl`, …).
     pub export_extension: Option<String>,
+    /// The newest version whose release notes were seen in this browser
+    /// (`0.2.0`); `None` while that is not known: preferences an earlier
+    /// version stored have no such field.
+    pub seen_version: Option<String>,
+}
+
+/// What the stored preferences say of the release notes seen in this
+/// browser. Nothing stored (a first visit, or storage that is missing or
+/// blocked, which looks the same) is [`Seen::Never`]: nothing is old, and
+/// nothing can be remembered. Preferences without a version are an
+/// earlier 3DCraft's ([`Seen::Earlier`]); what does not read as
+/// preferences at all is nothing stored.
+pub fn seen(stored: Option<&str>) -> Seen {
+    let Some(text) = stored.filter(|text| text.len() <= MAX_STORED) else {
+        return Seen::Never;
+    };
+    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(text) else {
+        return Seen::Never;
+    };
+    match map.get("seenVersion") {
+        Some(Value::String(version)) => {
+            Version::parse(version).map_or(Seen::Earlier, Seen::Version)
+        }
+        _ => Seen::Earlier,
+    }
+}
+
+/// What a page of version `running` knows as it starts, from the stored
+/// preferences (`stored`) and whether they could be written back just
+/// now (`writable`): what was seen, for the card *New in …*, and the
+/// version to keep in the preferences until the notes are closed.
+///
+/// A first visit is seen as `running` at once. Where the preferences
+/// cannot be written, nothing is offered, rather than the same card at
+/// every visit: the answer is [`Seen::Never`] and the version stays what
+/// it was.
+pub fn notes_at_start(
+    stored: Option<&str>,
+    writable: bool,
+    running: Version,
+) -> (Seen, Option<String>) {
+    match seen(stored) {
+        Seen::Never => (Seen::Never, Some(running.to_string())),
+        Seen::Earlier if writable => (Seen::Earlier, None),
+        Seen::Earlier => (Seen::Never, None),
+        Seen::Version(version) if writable => (Seen::Version(version), Some(version.to_string())),
+        Seen::Version(version) => (Seen::Never, Some(version.to_string())),
+    }
+}
+
+/// The version to keep once the person closed the notes of `running`:
+/// `running`, or the newer one seen here before (a page served again in
+/// an older version).
+pub fn seen_after_closing(kept: Option<&str>, running: Version) -> String {
+    kept.and_then(|version| Version::parse(version).ok())
+        .filter(|version| *version > running)
+        .unwrap_or(running)
+        .to_string()
 }
 
 impl Prefs {
@@ -34,7 +94,14 @@ impl Prefs {
             show: state.show,
             appearance: state.appearance,
             export_extension: export_extension.map(str::to_string),
+            seen_version: None,
         }
+    }
+
+    /// With the newest version whose release notes were seen.
+    pub fn with_seen(mut self, version: Option<String>) -> Self {
+        self.seen_version = version;
+        self
     }
 
     /// Puts them into the shell's state: the format of the last export is
@@ -58,6 +125,7 @@ impl Prefs {
             "show": self.show,
             "appearance": self.appearance,
             "exportExtension": self.export_extension,
+            "seenVersion": self.seen_version,
         })
         .to_string()
     }
@@ -86,6 +154,11 @@ impl Prefs {
             if known && extension.len() <= 8 {
                 prefs.export_extension = Some(extension.to_ascii_lowercase());
             }
+        }
+        if let Some(Value::String(version)) = map.get("seenVersion")
+            && let Ok(version) = Version::parse(version)
+        {
+            prefs.seen_version = Some(version.to_string());
         }
         prefs
     }
@@ -167,5 +240,110 @@ mod tests {
         state.show.datums = true;
         let text = Prefs::of(&state, None).to_json();
         assert!(shown(&text).datums);
+    }
+
+    fn v(text: &str) -> Version {
+        Version::parse(text).unwrap()
+    }
+
+    /// What 0.1's page stored: no version in it.
+    const EARLIER: &str =
+        "{\"panels\": {\"tree\": true}, \"appearance\": \"dark\", \"exportExtension\": \"step\"}";
+
+    #[test]
+    fn the_version_seen_is_kept_with_the_preferences() {
+        let prefs = defaults().with_seen(Some("0.2.0".to_string()));
+        let text = prefs.to_json();
+        assert_eq!(Prefs::from_json(&text, defaults()), prefs);
+        assert_eq!(seen(Some(&text)), Seen::Version(v("0.2.0")));
+        // The other preferences are untouched by it, and it by them.
+        let read = Prefs::from_json(EARLIER, defaults());
+        assert_eq!(read.seen_version, None);
+        assert_eq!(read.appearance, Appearance::Dark);
+        // A version that is not one is not kept.
+        for junk in [
+            "{\"seenVersion\": \"soon\"}",
+            "{\"seenVersion\": 7}",
+            "{\"seenVersion\": [\"0.1.0\"]}",
+            "{\"seenVersion\": \"1.2\"}",
+        ] {
+            assert_eq!(
+                Prefs::from_json(junk, defaults()).seen_version,
+                None,
+                "{junk}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_first_visit_an_earlier_version_and_a_version_seen_are_told_apart() {
+        // Nothing stored: a first visit, or storage that keeps nothing.
+        assert_eq!(seen(None), Seen::Never);
+        // What does not read as preferences is nothing stored.
+        let long = format!("{{\"x\": \"{}\"}}", "a".repeat(MAX_STORED));
+        for junk in ["", "null", "[1, 2]", "7", "{{{{", long.as_str()] {
+            assert_eq!(seen(Some(junk)), Seen::Never, "{junk:?}");
+        }
+        // Preferences of a 3DCraft that kept no version: an earlier one.
+        assert_eq!(seen(Some(EARLIER)), Seen::Earlier);
+        assert_eq!(seen(Some("{}")), Seen::Earlier);
+        assert_eq!(seen(Some("{\"seenVersion\": null}")), Seen::Earlier);
+        assert_eq!(seen(Some("{\"seenVersion\": \"soon\"}")), Seen::Earlier);
+        assert_eq!(
+            seen(Some("{\"seenVersion\": \"0.1.2\"}")),
+            Seen::Version(v("0.1.2"))
+        );
+    }
+
+    #[test]
+    fn the_page_offers_notes_only_where_it_can_remember_them() {
+        let running = v("0.2.0");
+        // A first visit: nothing is old; this version is seen at once.
+        assert_eq!(
+            notes_at_start(None, false, running),
+            (Seen::Never, Some("0.2.0".to_string()))
+        );
+        // After an earlier version: offered, and no version kept until
+        // the notes are closed.
+        assert_eq!(
+            notes_at_start(Some(EARLIER), true, running),
+            (Seen::Earlier, None)
+        );
+        // After a version seen.
+        let stored = "{\"seenVersion\": \"0.1.1\"}";
+        assert_eq!(
+            notes_at_start(Some(stored), true, running),
+            (Seen::Version(v("0.1.1")), Some("0.1.1".to_string()))
+        );
+        // Storage that reads but does not write: nothing is offered, and
+        // what is kept stays as it was.
+        assert_eq!(
+            notes_at_start(Some(EARLIER), false, running),
+            (Seen::Never, None)
+        );
+        assert_eq!(
+            notes_at_start(Some(stored), false, running),
+            (Seen::Never, Some("0.1.1".to_string()))
+        );
+        // Closing the notes keeps this version, or a newer one seen here.
+        assert_eq!(seen_after_closing(None, running), "0.2.0");
+        assert_eq!(seen_after_closing(Some("0.1.1"), running), "0.2.0");
+        assert_eq!(seen_after_closing(Some("0.3.0"), running), "0.3.0");
+        assert_eq!(seen_after_closing(Some("junk"), running), "0.2.0");
+    }
+
+    /// The notes this build carries read, and name this version: what the
+    /// page hands the engine.
+    #[test]
+    fn the_notes_the_page_carries_read() {
+        let notes = craft3d_engine::changelog::Changelog::parse(crate::RELEASE_NOTES).unwrap();
+        let running = v(craft3d_engine::VERSION);
+        assert!(notes.version(running).is_some_and(|s| !s.is_blank()));
+        // Nothing of the first release's own notes is carried: nothing is
+        // older, so they are new to nobody.
+        let first = notes.oldest().unwrap();
+        if first != running {
+            assert!(notes.version(first).unwrap().is_blank());
+        }
     }
 }

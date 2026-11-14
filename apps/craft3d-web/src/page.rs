@@ -105,6 +105,11 @@ type Mailbox = Rc<RefCell<Vec<Mail>>>;
 /// Starts the page once the module is loaded.
 #[wasm_bindgen(start)]
 pub fn start() {
+    // The release notes the build script took from CHANGELOG.md, for
+    // What's new and `session.whatsNew`, in the page and in its workers
+    // (a command may run in either). The build read them before, so they
+    // read here.
+    let _ = craft3d_engine::set_release_notes(crate::RELEASE_NOTES);
     // The same module runs the checking worker (`worker.rs`), where there
     // is no window and no page to start.
     if web_sys::window().is_none() {
@@ -640,10 +645,24 @@ fn storage() -> Option<web_sys::Storage> {
     window()?.local_storage().ok().flatten()
 }
 
-fn load_prefs(defaults: Prefs) -> Prefs {
-    match storage().and_then(|s| s.get_item(prefs::KEY).ok().flatten()) {
-        Some(text) => Prefs::from_json(&text, defaults),
+/// The preferences as stored, when there are any.
+fn stored_prefs() -> Option<String> {
+    storage().and_then(|s| s.get_item(prefs::KEY).ok().flatten())
+}
+
+fn load_prefs(stored: Option<&str>, defaults: Prefs) -> Prefs {
+    match stored {
+        Some(text) => Prefs::from_json(text, defaults),
         None => defaults,
+    }
+}
+
+/// True when the stored preferences can be written back as they are: the
+/// page then can remember that release notes were closed.
+fn prefs_writable(stored: Option<&str>) -> bool {
+    match (storage(), stored) {
+        (Some(storage), Some(text)) => storage.set_item(prefs::KEY, text).is_ok(),
+        _ => false,
     }
 }
 
@@ -688,6 +707,9 @@ struct Page {
     /// open ([`page_title`]).
     page_title: String,
     stored: String,
+    /// The newest version whose release notes were seen in this browser,
+    /// as the preferences keep it (`prefs::notes_at_start`).
+    seen_version: Option<String>,
     /// The assertions and outputs, measured in the checking worker
     /// (`checks.rs`); `None` on a page that names no worker, which
     /// measures them itself a piece per frame.
@@ -805,13 +827,29 @@ impl Page {
         }
         // The embedded stand reads and writes nothing in the page's
         // storage: it starts with the defaults and the page's options.
-        let prefs = if embedded {
-            Prefs::of(&host.shell.state, None)
-        } else {
-            load_prefs(Prefs::of(&host.shell.state, None))
-        };
+        let text = if embedded { None } else { stored_prefs() };
+        let prefs = load_prefs(text.as_deref(), Prefs::of(&host.shell.state, None));
         prefs.apply(&mut host.shell.state);
         let stored = prefs.to_json();
+        // What's new: after the page was served in a newer version, the
+        // start screen offers once what changed, where the browser keeps
+        // what was seen. The embedded stand offers nothing and remembers
+        // nothing; its Help menu, where the whole window is shown, has
+        // this version's notes as everywhere.
+        let running = craft3d_engine::running_version();
+        let (seen, seen_version) = match running {
+            Some(running) if !embedded => {
+                let writable = prefs_writable(text.as_deref());
+                prefs::notes_at_start(text.as_deref(), writable, running)
+            }
+            _ => (craft3d_engine::changelog::Seen::Never, None),
+        };
+        if let (Some(notes), Some(running)) = (craft3d_engine::release_notes(), running) {
+            host.shell
+                .set_whats_new(craft3d_ui_egui::shell::WhatsNew::for_start(
+                    notes, running, seen,
+                ));
+        }
         // In the browser the page decides how much of the window is drawn
         // (`ui.set`), and in the embedded stand its option says it first.
         host.shell.allow_presentations(true);
@@ -848,6 +886,7 @@ impl Page {
             title: String::new(),
             page_title: document().map(|d| d.title()).unwrap_or_default(),
             stored,
+            seen_version,
             checks,
             replies,
             scenes,
@@ -1532,10 +1571,20 @@ impl eframe::App for Page {
             }
             self.title = title;
         }
+        // The release notes the person closed are seen from now on.
+        if self.host.shell.take_whats_new_closed()
+            && let Some(running) = craft3d_engine::running_version()
+        {
+            self.seen_version = Some(prefs::seen_after_closing(
+                self.seen_version.as_deref(),
+                running,
+            ));
+        }
         let prefs = Prefs::of(
             &self.host.shell.state,
             Some(self.host.shell.state.export.format.extension()),
-        );
+        )
+        .with_seen(self.seen_version.clone());
         let text = prefs.to_json();
         if text != self.stored {
             store_prefs(&text);

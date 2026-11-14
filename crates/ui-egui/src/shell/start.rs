@@ -601,6 +601,9 @@ pub(crate) struct StartMemory {
     pictures: Option<Pictures>,
     /// The layout of the last frame.
     layout: Option<StartLayout>,
+    /// The height the window gives the start screen, in points: the card
+    /// *New in …* takes a share of it at most (`whats_new.rs`).
+    room: f32,
 }
 
 /// How the start screen is laid out for the room the window gives it
@@ -875,6 +878,7 @@ impl Shell {
         };
         let layout = StartLayout::for_room(inner.size() - egui::vec2(2.0 * gutter, 0.0));
         self.start.layout = Some(layout);
+        self.start.room = inner.height();
         let width = layout.width;
         let top = inner.top() + tokens.inset * layout.spacing;
         let area = egui::Rect::from_min_max(egui::pos2(inner.left(), top), inner.max);
@@ -981,7 +985,16 @@ impl Shell {
                 self.request_file_action(FileAction::Open);
             }
         });
-        ui.add_space(space * 1.6);
+        // After an update, once: what is new and which results may
+        // differ, until it is closed (`whats_new.rs`). Nothing otherwise.
+        if self.state.whats_new.card && self.whats_new().is_some() {
+            ui.add_space(space);
+            let room = self.start.room;
+            self.whats_new_card(ui, &kit, width, room);
+            ui.add_space(space * 0.8);
+        } else {
+            ui.add_space(space * 1.6);
+        }
         self.section_row(ui, &kit, width);
         ui.add_space(space * 0.3);
         self.section_hint(ui, &kit, width);

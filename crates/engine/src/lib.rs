@@ -127,6 +127,7 @@ mod view_curves;
 mod view_elsewhere;
 mod view_export;
 mod visibility_cmds;
+mod whats_new;
 mod when_cmds;
 mod workspace;
 
@@ -143,6 +144,10 @@ pub use assert_cmds::{AssertionState, AssertionStatus};
 pub use checks_elsewhere::{CheckRequest, measure_checks};
 pub use commands::{DARK_BACKGROUND, EXPORT_QUALITIES, VIEWPORT_BACKGROUND};
 pub use commands_elsewhere::{Answered, CommandAnswer, CommandRequest};
+/// The changelog a program carries, as read: its versions, sections and
+/// entries (`craft3d-changelog`), for the hosts and the shell that show
+/// the release notes.
+pub use craft3d_changelog as changelog;
 pub use craft3d_regen::progress::Progress;
 pub use history_view::{HistoryEntry, HistoryView, KeyEdit, VariableEntry};
 pub use memory_files::{MAX_MEMORY_BYTES, MAX_MEMORY_FILE_BYTES, MAX_MEMORY_FILES};
@@ -186,6 +191,7 @@ pub use selection::{
     summary as selection_summary,
 };
 pub use typed::TypedKind;
+pub use whats_new::{release_notes, running_version, set_release_notes, whats_new};
 pub use workspace::{Access, FileHelp, Workspace};
 pub use workspace::{canonical, plain};
 
@@ -968,6 +974,7 @@ impl Session {
                 drive_cmds::SPECS,
                 bake_cmds::SPECS,
                 report::SPECS,
+                whats_new::SPECS,
                 unit_cmds::SPECS,
                 tolerance_cmds::SPECS,
             ]

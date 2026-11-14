@@ -150,6 +150,9 @@ this:
 Windows and macOS may warn about the new version the first time you open it, as they did the first time
 ([Why your computer warns you](#why-your-computer-warns-you)).
 
+The first time the newer version starts, its start screen says what is new, and first which results
+may differ from before ([The window › What's new](window.md#whats-new)).
+
 Your documents, the work folder and the autosave folder (**Help › Open data folder**) are not touched.
 A file you save with the newer version may not open in an older one: an older version refuses it and
 says so ([Files › Saving](files.md#saving-the-3dcraft-file)).

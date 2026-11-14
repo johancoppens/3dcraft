@@ -1437,6 +1437,78 @@ mod tests {
         );
     }
 
+    /// The programs carry CHANGELOG.md and show a version's notes after an
+    /// update (`craft3d-changelog`); the Release workflow puts a version's
+    /// notes on its draft release with an `awk` program of its own. The
+    /// two read the file the same way: for every version the file names,
+    /// the workflow's own program, taken from `release.yml` and run by
+    /// `awk`, gives exactly `craft3d_changelog::release_section`, and its
+    /// check that a version has a section agrees too. A change to either
+    /// reading fails here. Where there is no `awk` (a Windows runner) the
+    /// comparison is skipped, and says so.
+    #[test]
+    fn the_programs_read_the_changelog_as_the_release_workflow_does() {
+        let root = repo_root();
+        let path = root.join("CHANGELOG.md");
+        let changelog = std::fs::read_to_string(&path).unwrap();
+        let workflow = std::fs::read_to_string(root.join(".github/workflows/release.yml")).unwrap();
+        // The step `release notes`: the program between the quotes.
+        let opens = "awk -v head=\"## [$version]\" '\n";
+        let from = workflow.find(opens).unwrap() + opens.len();
+        let rest = &workflow[from..];
+        let notes_program = &rest[..rest.find("' src/CHANGELOG.md").unwrap()];
+        assert!(notes_program.contains("found { print }"), "{notes_program}");
+        // The packaging jobs' check that the tag has a section.
+        let opens = "awk -v head=\"## [$version]\" '";
+        let checks: Vec<&str> = workflow
+            .match_indices(opens)
+            .map(|(at, _)| &workflow[at + opens.len()..])
+            .filter(|rest| !rest.starts_with('\n'))
+            .map(|rest| &rest[..rest.find("' CHANGELOG.md").unwrap()])
+            .collect();
+        assert!(!checks.is_empty(), "the check of a tag's section is gone");
+        let check_program = checks[0];
+        assert!(checks.iter().all(|check| *check == check_program));
+
+        let parsed = craft3d_changelog::Changelog::parse(&changelog).unwrap();
+        let mut versions: Vec<String> = parsed
+            .sections()
+            .iter()
+            .map(|section| match section.version {
+                Some(version) => version.to_string(),
+                None => "Unreleased".to_string(),
+            })
+            .collect();
+        assert!(versions.contains(&env!("CARGO_PKG_VERSION").to_string()));
+        // Versions the file does not name, and one that only begins as a
+        // heading does.
+        versions.extend(["99.0.0", "0.1", "0"].map(str::to_string));
+        let awk = |program: &str, version: &str| {
+            std::process::Command::new("awk")
+                .arg("-v")
+                .arg(format!("head=## [{version}]"))
+                .arg(program)
+                .arg(&path)
+                .output()
+        };
+        if awk("BEGIN { exit 0 }", "0").is_err() {
+            eprintln!("skipped: there is no awk here to run the Release workflow's program");
+            return;
+        }
+        for version in &versions {
+            let ours = craft3d_changelog::release_section(&changelog, version);
+            let theirs = awk(notes_program, version).unwrap();
+            assert!(theirs.status.success(), "{version}");
+            assert_eq!(
+                String::from_utf8(theirs.stdout).unwrap(),
+                ours.clone().unwrap_or_default(),
+                "the notes of {version}"
+            );
+            let has = awk(check_program, version).unwrap().status.success();
+            assert_eq!(has, ours.is_some(), "whether {version} has a section");
+        }
+    }
+
     #[test]
     fn the_zip_keeps_the_whole_folder_name() {
         assert_eq!(

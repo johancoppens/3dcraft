@@ -14,7 +14,7 @@ select.
 
 | | Part | What it is for |
 |---|---|---|
-| 1 | **File**, **Edit**, **View** and **Help** menus | Files, recent files, Jigs; Undo and Redo; panels and light or dark; the guide, the keys, updates, About |
+| 1 | **File**, **Edit**, **View** and **Help** menus | Files, recent files, Jigs; Undo and Redo; panels and light or dark; the guide, the keys, what is new, updates, About |
 | 2 | **Tabs** | One per open document |
 | 3 | **Feature list** | The history of the design, in order, with each step's status |
 | 4 | **Eye** | Hides a feature's body, sketch or datum in the view |
@@ -85,6 +85,35 @@ Without a document, the window shows the **start screen** (its picture is in
 
 The start screen comes back when you close the last tab.
 
+### What's new
+
+After you installed a newer version, the start screen shows a card **New in** with the version, once,
+under **New part** and **Open…**. In the browser the card comes up when the page has moved to a newer
+version since your last visit. It says:
+
+1. **Results that may differ from before**, first. These are the changes to an answer 3DCraft gave: a
+   measure, a proof or a check that can come out differently now, or a body that an earlier version
+   built wrong and that is now built right or refused. If you relied on one of them in a design, check
+   that design again.
+2. **New**: what the version adds.
+3. **Also changed and fixed**, folded away: a click on it unfolds the rest.
+
+A click on a line unfolds what the release notes say about it. When you skipped versions, the card
+holds them all, the newest first, and each line says which version it is of.
+
+The **×** closes the card, and 3DCraft remembers that you have seen this version. Until you close it,
+the card comes back with the start screen. It is never over a document: when you open a file by
+double-clicking it, or an agent is at work, the card waits until the start screen shows.
+
+**Help › What's new** shows the notes again at any time: as the card on the start screen, and in a
+window while a document is open.
+
+3DCraft does not look anything up for this. The notes are part of the program: they are the text of
+its [changelog](https://github.com/johancoppens/3dcraft/blob/main/CHANGELOG.md) for your version. On a
+first start of a fresh installation there is no card, since nothing is old there. An agent gets the same
+notes as data from the command `session.whatsNew`
+([Programs › What a command answers](programs.md#what-a-command-answers)).
+
 ## Menus and tabs
 
 **Tabs** run along the top, one per open document, each with a small icon of its kind (a part, an
@@ -148,6 +177,8 @@ The **Help** menu:
 - **Open data folder** shows 3DCraft's folder: the autosaves, what can be recovered after a crash, and the
   recent files (not in the browser).
 - **Connect an AI agent…** opens the agent panel over the pill (not in the browser).
+- **What's new** shows what this version changed, and which results may differ from before
+  ([What's new](#whats-new)).
 - **Check for updates…** opens a page of the website in your browser, with your version in its address.
   The page says whether there is a newer version and offers it
   ([Install › Installing a newer version](install.md#installing-a-newer-version)). 3DCraft itself does

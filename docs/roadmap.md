@@ -226,6 +226,7 @@ Oracles 1 and 4 for all primitives at three scales; exported meshes closed and o
 - The angle criterion on spline faces in a plane and on a grid graded to where the surface turns: the turbofan's spline faces 30,720 triangles instead of 35,302, a twisted blade within 1.4 times a grid that meets both criteria unrefined (was 1.9) ([`design/tessellator.md`](design/tessellator.md), *The angle on a spline face*) (2026-10-15)
 - A spline surface's pole is shaded with its limit normal, and `view.render`, `view.pick` and `view.replay` mesh at a quarter to half a pixel of the picture within a total triangle budget, never finer than the display's floor, coarsening a body too fine for the tessellator instead of refusing ([`design/tessellator.md`](design/tessellator.md)) (2026-10-15)
 - `view.replay` and `craft3d-cli replay`: a showcase video (frames, MP4, GIF) of how a document is built, one fixed camera, an optional orbit, captions as subtitles; the document is not touched (2026-10-14)
+- What's new after an update (for 0.2): the start screen shows a card *New in <version>* once, what changes an answer first, from the changelog the program carries; Help › What's new; `session.whatsNew` for agents; in the web build too, never in the embedded stand ([`guide/window.md`](guide/window.md#whats-new), [`control-protocol.md`](control-protocol.md)) (2026-11-14)
 
 #### Open
 - [ ] `ui.screenshot {"window": true}` once gave no answer for over 120 s (the protocol promises an error after 8 s), and `ui.set {"camera": {"autoFit": true}}` does not refit where `ui.fit` does (Perseverance, 2026-10-21).
@@ -750,6 +751,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-14 | minor | M4: What's new after an update, a Done line |
 | 2026-11-14 | minor | M10: Embed's first slice, a Done line |
 | 2026-11-13 | minor | After R1: the public `main` is the latest release, and 0.1.x fixes land on `release/0.1` and are merged forward into `main`: the stage and the current focus |
 | 2026-11-13 | minor | After R1: the freeze ended, `main` is the coming 0.2 and 0.1.x comes from `release/0.1`: the stage and the current focus |
