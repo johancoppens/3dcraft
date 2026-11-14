@@ -413,6 +413,7 @@ fn at(
     offsets: &[FaceOffset],
     fillets: &BTreeMap<FaceId, Fillet>,
     fraction: f64,
+    corners: tweak::Corners,
     operation: &'static str,
     tolerance: &Tolerance,
 ) -> Result<Body, TweakError> {
@@ -456,7 +457,7 @@ fn at(
             None => (0.0, [false; 4]),
         };
         let got = surfaced(
-            &wider, offsets, fillets, fraction, &reach_of, operation, tolerance,
+            &wider, offsets, fillets, fraction, &reach_of, corners, operation, tolerance,
         );
         match got {
             Err(error @ (TweakError::Unsupported { .. } | TweakError::Vanishes { .. }))
@@ -605,12 +606,14 @@ fn ends_on_freeform(error: &TweakError) -> bool {
 }
 
 /// [`at`] with each freeform face that moves continued by `reach_of` it.
+#[allow(clippy::too_many_arguments)]
 fn surfaced(
     body: &Body,
     offsets: &[FaceOffset],
     fillets: &BTreeMap<FaceId, Fillet>,
     fraction: f64,
     reach_of: &dyn Fn(FaceId) -> (f64, Growth),
+    corners: tweak::Corners,
     operation: &'static str,
     tolerance: &Tolerance,
 ) -> Result<Body, TweakError> {
@@ -708,7 +711,9 @@ fn surfaced(
             },
         })?;
     let iso = crate::offset_normal::iso_edges(body, &moving, tolerance);
-    tweak::resurface_along(body, &surfaces, &iso, &rebuilt, operation, tolerance)
+    tweak::resurface_along(
+        body, &surfaces, &iso, &rebuilt, corners, operation, tolerance,
+    )
 }
 
 /// [`offset_faces`] in the words of `operation`, for the operations that
@@ -720,18 +725,31 @@ pub(crate) fn offset_for(
     operation: &'static str,
     tolerance: &Tolerance,
 ) -> Result<Body, KernelError> {
-    offset_for_known(body, offsets, blends, None, operation, tolerance)
+    offset_for_known(
+        body,
+        offsets,
+        blends,
+        None,
+        tweak::Corners::Kept,
+        operation,
+        tolerance,
+    )
 }
 
 /// [`offset_for`], with the fillets among the faces that move already
 /// recognised (`crate::offset_blend::fillets` of exactly those faces and
 /// `blends`), so a caller that needed them first does not prove them
 /// twice.
+///
+/// `corners`: what becomes of a vertex of four or more faces that the moved
+/// faces no longer meet in (`tweak::Corners`): split for the shell's hollow
+/// only.
 pub(crate) fn offset_for_known(
     body: &Body,
     offsets: &[FaceOffset],
     blends: &Blends,
     known: Option<BTreeMap<FaceId, Fillet>>,
+    corners: tweak::Corners,
     operation: &'static str,
     tolerance: &Tolerance,
 ) -> Result<Body, KernelError> {
@@ -847,7 +865,11 @@ pub(crate) fn offset_for_known(
             })
         };
         fitting_with(
-            |fraction| at(body, offsets, fillets, fraction, operation, tolerance),
+            |fraction| {
+                at(
+                    body, offsets, fillets, fraction, corners, operation, tolerance,
+                )
+            },
             Some(&unfolded),
             largest,
             operation,

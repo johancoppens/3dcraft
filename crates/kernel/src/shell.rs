@@ -380,6 +380,20 @@ fn prism(
     Ok(crate::extrude::extrude(&profiles, &frame, 0.0, height, tolerance)?.body)
 }
 
+/// Per vertex of `body`, the faces of the edges that end in it.
+fn faces_round_vertices(body: &Body) -> Vec<BTreeSet<FaceId>> {
+    let uses = edge_faces(body);
+    let mut round: Vec<BTreeSet<FaceId>> = vec![BTreeSet::new(); body.vertices.len()];
+    for (index, edge) in body.edges.iter().enumerate() {
+        for vertex in [edge.start, edge.end] {
+            if let (Some(list), Some(faces)) = (round.get_mut(vertex.0 as usize), uses.get(index)) {
+                list.extend(faces.iter().copied());
+            }
+        }
+    }
+    round
+}
+
 fn skin(operand: Operand) -> Skin {
     match operand {
         Operand::A => Skin::Outer,
@@ -596,14 +610,32 @@ fn shell_at(
     } else {
         None
     };
+    // A vertex of four or more faces that the moved faces no longer meet in
+    // becomes a tree of vertices of three faces joined by new edges
+    // (`tweak::Corners::Split`; 2026-11-14): the new ones come after the
+    // old ones, and the old vertex is one of them.
     let hollow = offset_for_known(
         inner_of,
         &offsets,
         &inner_blends,
         known,
+        crate::tweak::Corners::Split,
         OPERATION,
         tolerance,
     )?;
+    // A vertex that was split is none of the solid's any more (each of its
+    // pieces is named by its faces): where the faces round a vertex of the
+    // hollow are not those round it in the body it was offset from.
+    let mut inner_vertices = inner_vertices;
+    if hollow.vertices.len() > inner_of.vertices.len() {
+        let before = faces_round_vertices(inner_of);
+        let after = faces_round_vertices(&hollow);
+        for (index, slot) in inner_vertices.iter_mut().enumerate() {
+            if before.get(index) != after.get(index) {
+                *slot = None;
+            }
+        }
+    }
     // Both passed the checker a moment ago.
     let options = BooleanOptions {
         trust_operands: true,

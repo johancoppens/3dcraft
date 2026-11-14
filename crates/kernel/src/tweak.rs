@@ -23,6 +23,13 @@
 //!    a separate step, its boundary simply moves;
 //! 3. the result is held against what a body is.
 //!
+//! **One exception, for the shell's hollow** ([`Corners::Split`]; the
+//! kernel set's H-01, H-06, H-07, 2026-11-14): a vertex of four or more
+//! faces that the new surfaces no longer meet in one point becomes the
+//! tree of vertices of three faces its moved faces make ([`split`]), the
+//! new vertices and edges after the old ones, the old vertex one of them.
+//! Every other operation refuses such a vertex, as before.
+//!
 //! **Never a wrong solid.** A vertex whose faces no longer meet in a
 //! point, an edge that would no longer lie on both its faces, an edge
 //! that shrinks to nothing or turns round (which is how a neighbour that
@@ -36,6 +43,8 @@
 use crate::KernelError;
 use crate::profile::{Curve2, SketchCurve, detect_profiles};
 use crate::shared::{curve_through, index_u32};
+
+mod split;
 use craft3d_geom::{Circle, Curve3, Line, NurbsCurve, Plane, Surface};
 use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_topo::{Body, EdgeId, FaceId, VertexId, edge_faces};
@@ -913,6 +922,22 @@ type Sample = (f64, Vec3, Vec<Option<(f64, f64)>>);
 /// (it turns round or shrinks to nothing) is gone; one whose points do
 /// not meet on all its surfaces, or whose fit does not come within the
 /// tolerance, is no longer there in the form it had.
+///
+/// **When that loses the edge, once more from a better guess**
+/// (2026-11-14, the kernel set's H-02): an edge that shrinks far more
+/// than its ends move (the mitre where two rounds of 2.4 meet, shelled
+/// 2: six times smaller, its ends moved 2.8) is guessed badly by its old
+/// points moved as its ends moved: they lie far off the new curve, and
+/// the planes square to the old curve there cut the new one out of
+/// order, so it looked turned round. It is tried again with the old
+/// curve carried onto the new ends by the similarity that takes the old
+/// chord to the new one ([`Similarity`]), each point held to the plane
+/// square to the carried curve; every check is the same (in order along
+/// the carried curve, on its surfaces, fitted to a share of the
+/// tolerance). An edge found by the first try is never tried again, and
+/// an edge with a freeform face is not tried again here at all (a lost
+/// edge there sends the operation on to continue the freeform faces past
+/// their borders, as before), so what was built before is built the same.
 #[allow(clippy::too_many_arguments)]
 fn fitted(
     old: &Curve3,
@@ -922,6 +947,106 @@ fn fitted(
     surfaces: &[&Surface],
     tangent: bool,
     sideways: bool,
+    tolerance: &Tolerance,
+) -> Remade {
+    let first = fitted_from(
+        old, range, start, end, surfaces, tangent, sideways, None, tolerance,
+    );
+    // Not with a freeform surface among the edge's: a lost edge there is
+    // answered by continuing the freeform faces past their borders and
+    // trying again (`offset_face::at`), and a retry here, on the faces not
+    // yet continued, could find the edge where that path found it later
+    // and so change a body that built before (the review of 2026-11-14).
+    let freeform = surfaces
+        .iter()
+        .any(|s| matches!(s, Surface::Bezier(_) | Surface::Nurbs(_)));
+    if freeform
+        || !matches!(first, Remade::Gone | Remade::Lost)
+        || craft3d_geom::allowance::exhausted()
+    {
+        return first;
+    }
+    let Some(carried) = Similarity::onto(old, range, start, end, tolerance.linear) else {
+        return first;
+    };
+    match fitted_from(
+        old,
+        range,
+        start,
+        end,
+        surfaces,
+        tangent,
+        sideways,
+        Some(&carried),
+        tolerance,
+    ) {
+        found @ Remade::Edge(..) => found,
+        _ => first,
+    }
+}
+
+/// The similarity (a turn, a scale and a shift) that takes the chord of
+/// an open edge's old curve onto the chord between its new ends: the
+/// shortest turn from the old chord's direction to the new one's. Only
+/// for chords longer than the tolerance whose directions are less than a
+/// right angle apart: an edge whose ends changed places has turned round,
+/// and no guess makes it the same edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Similarity {
+    from: Vec3,
+    to: Vec3,
+    scale: f64,
+    /// The old chord's direction crossed with the new one's (its length
+    /// the sine of the turn), and the cosine of the turn.
+    axis: Vec3,
+    cosine: f64,
+}
+
+impl Similarity {
+    fn onto(old: &Curve3, range: (f64, f64), start: Vec3, end: Vec3, tol: f64) -> Option<Self> {
+        let (a, b) = (old.eval(range.0), old.eval(range.1));
+        let (was, is) = (b - a, end - start);
+        if !(more(was.length(), tol) && more(is.length(), tol)) {
+            return None;
+        }
+        let (u, w) = (was.normalized()?, is.normalized()?);
+        let cosine = u.dot(w);
+        if !(cosine.is_finite() && cosine > 0.0) {
+            return None;
+        }
+        let scale = is.length() / was.length();
+        scale.is_finite().then_some(Self {
+            from: a,
+            to: start,
+            scale,
+            axis: u.cross(w),
+            cosine,
+        })
+    }
+
+    /// The direction `v` turned (Rodrigues' rule from the cross product and
+    /// the cosine: no angle is taken).
+    fn turned(&self, v: Vec3) -> Vec3 {
+        v * self.cosine + self.axis.cross(v) + self.axis * (self.axis.dot(v) / (1.0 + self.cosine))
+    }
+
+    fn point(&self, p: Vec3) -> Vec3 {
+        self.to + self.turned(p - self.from) * self.scale
+    }
+}
+
+/// [`fitted`]'s try: the points guessed from the old curve moved as its
+/// ends moved (`carried` none), or carried by a similarity.
+#[allow(clippy::too_many_arguments)]
+fn fitted_from(
+    old: &Curve3,
+    range: (f64, f64),
+    start: Vec3,
+    end: Vec3,
+    surfaces: &[&Surface],
+    tangent: bool,
+    sideways: bool,
+    carried: Option<&Similarity>,
     tolerance: &Tolerance,
 ) -> Remade {
     let tol = tolerance.linear;
@@ -942,9 +1067,12 @@ fn fitted(
     } else {
         (start - old.eval(range.0), end - old.eval(range.1))
     };
-    let moved = |t: f64| {
-        let share = (t - range.0) / (range.1 - range.0);
-        old.eval(t) + from * (1.0 - share) + to * share
+    let moved = |t: f64| match carried {
+        Some(similarity) => similarity.point(old.eval(t)),
+        None => {
+            let share = (t - range.0) / (range.1 - range.0);
+            old.eval(t) + from * (1.0 - share) + to * share
+        }
     };
     // Faces tangent all along the edge (their normals one direction but
     // for what fitting left, [`TANGENT`]) meet in it as one surface: the
@@ -964,6 +1092,10 @@ fn fitted(
         let count = meeting.len();
         let from = moved(t);
         let (_, along) = old.derivatives(t);
+        let along = match carried {
+            Some(similarity) => similarity.turned(along),
+            None => along,
+        };
         let across = Surface::Plane(Plane::new(Frame::from_z(from, along)?));
         let mut held: Vec<&Surface> = meeting.to_vec();
         held.push(&across);
@@ -1015,7 +1147,13 @@ fn fitted(
         }
         for (pair, t) in points.windows(2).zip(&params) {
             let [a, b] = pair else { continue };
+            // In order along the guess the points were held across: the
+            // old curve, or the old curve carried.
             let (_, along) = old.derivatives(*t);
+            let along = match carried {
+                Some(similarity) => similarity.turned(along),
+                None => along,
+            };
             if (*b - *a).dot(along) < -tol * along.length() {
                 return Remade::Gone;
             }
@@ -1289,11 +1427,15 @@ pub(crate) struct Iso {
 /// fillet rebuilt between offset faces: the same `u` is the same section):
 /// a vertex or an edge on one is looked for from where its old points
 /// are on the new surface ([`Foreseen`]), not from where they were.
+///
+/// `corners` says what becomes of a vertex of four or more faces that the
+/// new surfaces no longer meet in ([`Corners`]).
 pub(crate) fn resurface_along(
     body: &Body,
     surfaces: &BTreeMap<FaceId, Surface>,
     iso: &BTreeMap<EdgeId, Iso>,
     rebuilt: &BTreeSet<FaceId>,
+    corners: Corners,
     operation: &'static str,
     tolerance: &Tolerance,
 ) -> Result<Body, TweakError> {
@@ -1304,6 +1446,7 @@ pub(crate) fn resurface_along(
         None,
         iso,
         rebuilt,
+        corners,
         operation,
         tolerance,
     )
@@ -1497,6 +1640,7 @@ pub(crate) fn resurface_at(
         None,
         &BTreeMap::new(),
         &BTreeSet::new(),
+        Corners::Kept,
         operation,
         tolerance,
     )
@@ -1521,9 +1665,23 @@ pub(crate) fn resurface_rigid(
         Some(rigid),
         &BTreeMap::new(),
         &BTreeSet::new(),
+        Corners::Kept,
         operation,
         tolerance,
     )
+}
+
+/// What becomes of a vertex of four or more faces that the new surfaces no
+/// longer meet in one point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Corners {
+    /// Refused, as every operation but the shell's hollow does: its
+    /// entities keep their numbers and nothing is added.
+    Kept,
+    /// Split into the tree of vertices of three faces its moved faces
+    /// make, when that is one tree ([`split`]); the new vertices and edges
+    /// come after the old ones, and the old vertex is one of them.
+    Split,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1534,6 +1692,7 @@ fn resurface_with(
     rigid: Option<&Transform>,
     iso: &BTreeMap<EdgeId, Iso>,
     rebuilt: &BTreeSet<FaceId>,
+    corners: Corners,
     operation: &'static str,
     tolerance: &Tolerance,
 ) -> Result<Body, TweakError> {
@@ -1574,6 +1733,10 @@ fn resurface_with(
         }
     }
     let mut moved_vertices: BTreeSet<VertexId> = BTreeSet::new();
+    // Vertices of four or more faces the new surfaces no longer meet in,
+    // to be split once the others are placed: where it was, and the error
+    // said if it cannot be.
+    let mut to_split: Vec<(VertexId, Vec3, TweakError)> = Vec::new();
     for (index, faces) in around.iter().enumerate() {
         let vertex = VertexId(index_u32(index));
         if !(also.contains(&vertex) || faces.iter().any(|face| surfaces.contains_key(face))) {
@@ -1613,20 +1776,31 @@ fn resurface_with(
             if craft3d_geom::allowance::exhausted() {
                 return Err(spent());
             }
-            if meeting
+            let error = if meeting
                 .iter()
                 .any(|s| matches!(s, Surface::Bezier(_) | Surface::Nurbs(_)))
             {
-                return Err(TweakError::Unsupported {
+                TweakError::Unsupported {
                     faces: faces.iter().copied().collect(),
                     edge: None,
                     reason: FREEFORM,
-                });
+                }
+            } else {
+                TweakError::Vanishes {
+                    faces: faces.iter().copied().collect(),
+                    edge: None,
+                    reason: NO_MEETING,
+                }
+            };
+            if corners == Corners::Split && faces.len() >= 4 {
+                to_split.push((vertex, was, error));
+                continue;
             }
-            return Err(TweakError::Vanishes {
-                faces: faces.iter().copied().collect(),
-                edge: None,
-                reason: NO_MEETING,
+            // Refused as before: by the first vertex whose faces do not
+            // meet, a deferred one included.
+            return Err(match to_split.into_iter().next() {
+                Some((_, _, first)) => first,
+                None => error,
             });
         };
         if let Some(slot) = made.vertices.get_mut(index) {
@@ -1669,10 +1843,39 @@ fn resurface_with(
         }
     }
 
+    // The vertices the new surfaces no longer meet in, split (the shell's
+    // hollow only): the old edges end in the new vertices, the new edges
+    // are found again below like the others.
+    let mut new_edges: Vec<EdgeId> = Vec::new();
+    for (vertex, was, error) in to_split {
+        match split::split(body, &mut made, vertex, was, tol) {
+            Some(done) => {
+                moved_vertices.extend(done.vertices);
+                new_edges.extend(done.edges);
+            }
+            None => return Err(error),
+        }
+    }
+    // Which faces each edge lies between, the new edges' among them (the
+    // old body's when nothing was split).
+    let uses_made: std::borrow::Cow<'_, [Vec<FaceId>]> = if new_edges.is_empty() {
+        std::borrow::Cow::Borrowed(&uses)
+    } else {
+        std::borrow::Cow::Owned(edge_faces(&made))
+    };
+
     // Every edge that ends in a vertex that moved, on its two surfaces.
     let mut remade: BTreeSet<EdgeId> = BTreeSet::new();
     for (index, edge) in body.edges.iter().enumerate() {
-        if !(moved_vertices.contains(&edge.start) || moved_vertices.contains(&edge.end)) {
+        // Its ends as they are now: an end at a split vertex is one of the
+        // new vertices.
+        let (Some(start_id), Some(end_id)) = (
+            made.edges.get(index).map(|e| e.start),
+            made.edges.get(index).map(|e| e.end),
+        ) else {
+            continue;
+        };
+        if !(moved_vertices.contains(&start_id) || moved_vertices.contains(&end_id)) {
             continue;
         }
         if craft3d_geom::allowance::pass() {
@@ -1686,8 +1889,8 @@ fn resurface_with(
             .collect();
         let moved = faces.iter().any(|face| surfaces.contains_key(face));
         let (Some(start), Some(end)) = (
-            made.vertex(edge.start).map(|v| v.point),
-            made.vertex(edge.end).map(|v| v.point),
+            made.vertex(start_id).map(|v| v.point),
+            made.vertex(end_id).map(|v| v.point),
         ) else {
             continue;
         };
@@ -1763,9 +1966,54 @@ fn resurface_with(
         }
         remade.insert(id);
     }
+    // The new edges of split vertices: between two faces that met only in
+    // the vertex, from one new vertex to another; a line where that lies on
+    // both faces, else found where they meet from the line as the guess.
+    for id in &new_edges {
+        if craft3d_geom::allowance::pass() {
+            return Err(spent());
+        }
+        let faces: Vec<FaceId> = uses_made.get(id.0 as usize).cloned().unwrap_or_default();
+        let fail = |reason: &'static str| TweakError::Vanishes {
+            faces: faces.clone(),
+            edge: None,
+            reason,
+        };
+        let on: Vec<&Surface> = faces
+            .iter()
+            .filter_map(|face| made.face(*face).map(|f| &f.surface))
+            .collect();
+        let Some(edge) = made.edge(*id) else {
+            return Err(fail(LOST));
+        };
+        let (Some(start), Some(end)) = (
+            made.vertex(edge.start).map(|v| v.point),
+            made.vertex(edge.end).map(|v| v.point),
+        ) else {
+            return Err(fail(LOST));
+        };
+        let (guess, range) = (edge.curve.clone(), edge.range);
+        let found = if lies_on(&guess, range, &on, tol) {
+            Remade::Edge(guess, range)
+        } else {
+            fitted(&guess, range, start, end, &on, false, false, tolerance)
+        };
+        match found {
+            Remade::Edge(curve, range) => {
+                if let Some(slot) = made.edges.get_mut(id.0 as usize) {
+                    slot.curve = curve;
+                    slot.range = range;
+                }
+            }
+            Remade::Lost if craft3d_geom::allowance::exhausted() => return Err(spent()),
+            Remade::Gone => return Err(fail(EDGE_GONE)),
+            Remade::OffSurface | Remade::Lost => return Err(fail(LOST)),
+        }
+        remade.insert(*id);
+    }
 
     // What a face next to a moved edge has to be still.
-    for face in faces_with(&uses, &remade) {
+    for face in faces_with(&uses_made, &remade) {
         let (Some(before), Some(after)) = (body.face(face), made.face(face)) else {
             continue;
         };
@@ -1810,7 +2058,7 @@ fn resurface_with(
     if craft3d_geom::allowance::pass() {
         return Err(spent());
     }
-    if let Some(face) = buried(&made, &uses, &remade, tolerance) {
+    if let Some(face) = buried(&made, &uses_made, &remade, tolerance) {
         return Err(TweakError::Vanishes {
             faces: vec![face],
             edge: None,
@@ -1996,5 +2244,130 @@ mod seam_tests {
             "{found:?} moved {:e} from the corner",
             found.distance(corner)
         );
+    }
+}
+
+#[cfg(test)]
+mod similarity_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::{Remade, Similarity, fitted};
+    use craft3d_geom::{Curve3, Cylinder, Ellipse, Line, NurbsSurface, Surface};
+    use craft3d_math::{Frame, Tolerance, Vec3};
+
+    /// The kernel set's H-02 mitre, shelled 2: the ellipse where two rounds
+    /// of 2.4 meet (one along x, one along y, axes crossing at (37.6, 2.4,
+    /// 2.4)), and its new ends on the rounds moved in to 0.4.
+    fn mitre() -> (Curve3, (f64, f64), Vec3, Vec3) {
+        let centre = Vec3::new(37.6, 2.4, 2.4);
+        let frame =
+            Frame::new(centre, Vec3::new(1.0, 1.0, 0.0), Vec3::new(1.0, -1.0, 0.0)).unwrap();
+        let old = Curve3::Ellipse(Ellipse::new(frame, 2.4 * 2.0_f64.sqrt(), 2.4).unwrap());
+        let range = (0.0, std::f64::consts::FRAC_PI_2);
+        (
+            old,
+            range,
+            Vec3::new(38.0, 2.0, 2.4),
+            Vec3::new(37.6, 2.4, 2.0),
+        )
+    }
+
+    /// The round along x moved in to 0.4: the cylinder, or its rational
+    /// twin (the quarter facing −y to −z, x from 30 to 45).
+    fn along_x(spline: bool) -> Surface {
+        let axis = Vec3::new(0.0, 2.4, 2.4);
+        if !spline {
+            let frame = Frame::new(axis, Vec3::X, Vec3::Y).unwrap();
+            return Surface::Cylinder(Cylinder::new(frame, 0.4).unwrap());
+        }
+        let w = 0.5 * 2.0_f64.sqrt();
+        let (y0, z0) = (2.4, 2.4);
+        let arc = [(y0 - 0.4, z0), (y0 - 0.4, z0 - 0.4), (y0, z0 - 0.4)];
+        let mut ctrl = Vec::new();
+        for x in [30.0, 45.0] {
+            for (y, z) in arc {
+                ctrl.push(Vec3::new(x, y, z));
+            }
+        }
+        let weights = vec![1.0, w, 1.0, 1.0, w, 1.0];
+        let knots_u = vec![0.0, 0.0, 1.0, 1.0];
+        let knots_v = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        Surface::Nurbs(NurbsSurface::new(1, 2, knots_u, knots_v, 2, 3, ctrl, weights).unwrap())
+    }
+
+    /// The retry from the chords' similarity runs only where no surface of
+    /// the edge is freeform (the review of 2026-11-14): with a spline twin
+    /// of a round the edge is left to the old path (continuing the freeform
+    /// faces and trying again), exactly as before the retry existed.
+    #[test]
+    fn the_retry_leaves_an_edge_with_a_freeform_face_to_the_old_path() {
+        let tol = Tolerance::new(1e-6, 1e-9).unwrap();
+        let (old, range, start, end) = mitre();
+        let along_y = Surface::Cylinder(
+            Cylinder::new(
+                Frame::new(Vec3::new(37.6, 0.0, 2.4), Vec3::Y, Vec3::X).unwrap(),
+                0.4,
+            )
+            .unwrap(),
+        );
+        // Both rounds closed forms: lost by the first try, found by the
+        // retry, on both rounds.
+        let a = along_x(false);
+        match fitted(&old, range, start, end, &[&a, &along_y], false, false, &tol) {
+            Remade::Edge(curve, (t0, t1)) => {
+                assert!(curve.eval(t0).distance(start) <= 1e-9);
+                assert!(curve.eval(t1).distance(end) <= 1e-9);
+                let mid = curve.eval(0.5 * (t0 + t1));
+                // In the mitre plane x + y = 40, on the round along y.
+                assert!((mid.x + mid.y - 40.0).abs() <= 1e-6, "{mid:?}");
+            }
+            _ => panic!("the retry did not find the mitre"),
+        }
+        // With the round along x a spline: what the first try gives.
+        let b = along_x(true);
+        assert!(matches!(
+            fitted(&old, range, start, end, &[&b, &along_y], false, false, &tol),
+            Remade::Gone | Remade::Lost
+        ));
+    }
+
+    fn chord(a: Vec3, b: Vec3) -> Curve3 {
+        Curve3::Line(Line::through(a, b).unwrap())
+    }
+
+    /// The old chord's ends go to the new ends, directions turn the
+    /// shortest way and keep their length (times the scale), and a chord
+    /// that turned round or shrank to nothing gives no guess.
+    #[test]
+    fn the_similarity_takes_the_old_chord_onto_the_new_one() {
+        let (a, b) = (Vec3::new(40.0, 0.0, 2.4), Vec3::new(37.6, 2.4, 0.0));
+        let old = chord(a, b);
+        let range = (0.0, a.distance(b));
+        for (start, end) in [
+            (Vec3::new(38.0, 2.0, 2.4), Vec3::new(37.6, 2.4, 2.0)),
+            (Vec3::new(1.0, -3.0, 7.0), Vec3::new(-2.0, -1.5, 5.0)),
+        ] {
+            let s = Similarity::onto(&old, range, start, end, 1e-9).unwrap();
+            assert!(s.point(a).distance(start) <= 1e-12);
+            assert!(s.point(b).distance(end) <= 1e-12);
+            let v = Vec3::new(0.3, -0.7, 0.2);
+            assert!((s.turned(v).length() - v.length()).abs() <= 1e-12);
+            let mid = a + (b - a) * 0.5;
+            assert!(s.point(mid).distance(start + (end - start) * 0.5) <= 1e-12);
+        }
+        // Shrunk about the point where the chord's lines meet: exact.
+        let s = Similarity::onto(
+            &old,
+            range,
+            Vec3::new(38.0, 2.0, 2.4),
+            Vec3::new(37.6, 2.4, 2.0),
+            1e-9,
+        )
+        .unwrap();
+        assert!((s.scale - 1.0 / 6.0).abs() <= 1e-12);
+        // Turned round, or nothing left of it: no guess.
+        assert!(Similarity::onto(&old, range, b, a, 1e-9).is_none());
+        assert!(Similarity::onto(&old, range, a, a, 1e-9).is_none());
+        assert!(Similarity::onto(&old, range, a, Vec3::new(f64::NAN, 0.0, 0.0), 1e-9).is_none());
     }
 }
