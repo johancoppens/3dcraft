@@ -49,7 +49,14 @@
 //! (some network mounts) every other launch looks dead, a running one
 //! included; a lock file deleted by hand under a live launch makes it
 //! look dead. The process id in the record is information for a person,
-//! not a check, so a reused process id cannot mislead.
+//! not a check, so a reused process id cannot mislead. The lock belongs
+//! to the open file, and a child process being started holds a copy of
+//! every open file from its fork until its exec: so whoever lets go of a
+//! lock while the process lives on (a store dropped, a scan done with a
+//! dead launch's files) unlocks it before closing the file, which
+//! releases it for every copy (`recovery_store::Held`, 2026-11-14). A
+//! process killed while a child it was starting had not reached its exec
+//! looks alive until that exec, a matter of microseconds.
 //!
 //! **Recovering.** `recovery.open` loads the file, opens it as an unsaved
 //! document that remembers its original path, and *adopts* the file: it

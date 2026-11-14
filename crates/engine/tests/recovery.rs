@@ -1051,3 +1051,61 @@ fn an_example_is_autosaved_only_once_edited_and_comes_back_under_its_title() {
         3
     );
 }
+
+/// A launch is dead as soon as its session is gone, also while the
+/// process starts child processes (2026-11-14). Each child holds a copy
+/// of every descriptor from its fork until its exec closes them, the
+/// lock's among them, and a lock merely closed stayed held until that
+/// copy went: the dead launch looked alive to the next scan, or a scan's
+/// own hold on it outlived the scan and `recovery.open` refused "still
+/// running" (`recovery_store.rs` › `Held`). The cycle of a crash and a
+/// recovery, again and again, beside two threads that start `true` over
+/// and over: before the repair 287 of 600 cycles went wrong this way on
+/// a laptop, without the threads none of 600.
+#[cfg(unix)]
+#[test]
+fn a_dead_launch_is_recovered_while_child_processes_start() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let stop = Arc::new(AtomicBool::new(false));
+    let starters: Vec<_> = (0..2)
+        .map(|_| {
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                let mut started = 0_u64;
+                while !stop.load(Ordering::Relaxed) {
+                    if std::process::Command::new("true").status().is_ok() {
+                        started += 1;
+                    }
+                }
+                started
+            })
+        })
+        .collect();
+    let top = workdir("while-children-start");
+    let mut wrong = Vec::new();
+    for round in 0..100 {
+        let dir = top.join(format!("r{round}"));
+        let (mut crashed, _) = session(&dir);
+        build_part(&mut crashed);
+        crashed.autosave_now();
+        drop(crashed);
+        let (mut host, _) = session(&dir);
+        let found = s_found(&host);
+        if found.len() == 1 {
+            if let Err(e) = host.execute("recovery.open", &json!({"id": found[0].id})) {
+                wrong.push(format!("round {round}: {e}"));
+            }
+        } else {
+            wrong.push(format!("round {round}: the scan found {}", found.len()));
+        }
+        host.end_recovery();
+    }
+    stop.store(true, Ordering::Relaxed);
+    let started: u64 = starters.into_iter().map(|t| t.join().unwrap()).sum();
+    let _ = std::fs::remove_dir_all(&top);
+    assert!(
+        wrong.is_empty(),
+        "{} of 100 cycles went wrong while {started} children were started: {wrong:?}",
+        wrong.len()
+    );
+}

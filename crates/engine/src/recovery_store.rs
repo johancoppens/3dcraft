@@ -197,7 +197,7 @@ struct Shared {
     state: Mutex<State>,
     wake: Condvar,
     /// The lock on this launch's lock file, once it is held.
-    disk: Mutex<Option<File>>,
+    disk: Mutex<Option<Held>>,
 }
 
 pub(crate) struct Store {
@@ -287,13 +287,38 @@ fn read_record(path: &Path) -> Result<Record, String> {
     })
 }
 
+/// A lock file whose lock this launch holds: its own, or a dead launch's
+/// while a scan or a command acts on that launch's files. Dropped, it
+/// lets go of the lock before it closes the file.
+///
+/// Closing is not enough. A lock taken with `File::lock` (`flock` on
+/// Unix) belongs to the open file description, and a child process that
+/// is being started holds a copy of every descriptor from its fork until
+/// its exec closes them: a lock merely closed by its owner stays held
+/// until the last copy goes. A launch then looked alive after its session
+/// was gone, or a scan's brief hold on a dead launch outlived the scan,
+/// for as long as a child started meanwhile took to exec (2026-11-14:
+/// `recovery.open` refused "still running" right after a scan; beside
+/// threads that start children, 287 of 600 cycles of a crash and a
+/// recovery went wrong before, none of 3,900 after: `docs/design/engine.md`
+/// › *A gone launch that looked alive*). `unlock` releases the lock for
+/// every copy of the description at once.
+struct Held(File);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        // A failed unlock leaves it to the close, as before.
+        let _ = self.0.unlock();
+    }
+}
+
 /// Whether the launch with this key is gone.
 enum Liveness {
     /// Its process holds the lock.
     Alive,
     /// Nobody holds the lock. The file is our hold on it while we act;
     /// `None` when there is no lock file.
-    Dead(Option<File>),
+    Dead(Option<Held>),
 }
 
 impl Shared {
@@ -319,7 +344,7 @@ impl Shared {
     /// The directory exists and this launch holds its lock. A file system
     /// that cannot lock is no reason not to save: the files are written
     /// without one (and another launch cannot tell this one is alive).
-    fn ensure_ready(&self, lock: &mut Option<File>) -> Result<(), String> {
+    fn ensure_ready(&self, lock: &mut Option<Held>) -> Result<(), String> {
         fs::create_dir_all(&self.dir).map_err(|e| {
             format!(
                 "cannot create the recovery directory `{}`: {e}",
@@ -350,8 +375,9 @@ impl Shared {
             if file.lock().is_err() {
                 return Ok(());
             }
+            let held = Held(file);
             if path.exists() {
-                *lock = Some(file);
+                *lock = Some(held);
                 return Ok(());
             }
         }
@@ -365,7 +391,7 @@ impl Shared {
             .open(self.lock_path(key));
         match file {
             Ok(file) => match file.try_lock() {
-                Ok(()) => Liveness::Dead(Some(file)),
+                Ok(()) => Liveness::Dead(Some(Held(file))),
                 Err(TryLockError::WouldBlock) => Liveness::Alive,
                 // Locks do not work here: nothing says it is alive.
                 Err(TryLockError::Error(_)) => Liveness::Dead(None),
@@ -1085,6 +1111,64 @@ mod tests {
             read_record(&new).unwrap().title.as_deref(),
             Some("Moka pot")
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A lock let go of is free at once, also while a copy of its
+    /// descriptor lives on: what a child process being started holds
+    /// from its fork to its exec (2026-11-14). Before, a dropped launch
+    /// looked alive, and a scan's hold on a dead launch outlived the
+    /// scan, until that copy went: `recovery.open` refused "still
+    /// running". Each copy here is made with `try_clone`, as a fork makes
+    /// it: one open file description, two descriptors.
+    #[test]
+    fn a_lock_let_go_of_is_free_while_a_copy_of_its_descriptor_lives() {
+        let dir = std::env::temp_dir().join(format!("craft3d-lock-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let clock = Arc::new(crate::recovery::ManualClock::new(1_800_000_000));
+        let options = || RecoveryOptions::manual(&dir, clock.clone());
+        let document = Arc::new(Document::default());
+
+        // A launch writes a document, so it holds its lock; a copy of the
+        // lock's descriptor outlives the launch.
+        let crashed = Store::new(options());
+        crashed.sync(
+            &[DocView {
+                id: 1,
+                revision: 1,
+                worth: true,
+                document: &document,
+                path: None,
+                title: Some("Kept"),
+                original: None,
+                recovered: false,
+            }],
+            true,
+        );
+        let key = crashed.shared.key.clone();
+        let copy = guard(&crashed.shared.disk)
+            .as_ref()
+            .map(|held| held.0.try_clone().unwrap())
+            .expect("the launch holds its lock once it has written");
+        let host = Store::new(options());
+        assert!(matches!(host.shared.liveness(&key), Liveness::Alive));
+        drop(crashed);
+        let found = host.scan();
+        assert_eq!(found.len(), 1, "the dropped launch looks alive");
+        assert_eq!(found[0].name, "Kept");
+
+        // A scan's hold on the dead launch, copied, then let go of.
+        let Liveness::Dead(Some(held)) = host.shared.liveness(&key) else {
+            panic!("the dead launch's lock is not free");
+        };
+        let scan_copy = held.0.try_clone().unwrap();
+        drop(held);
+        let adopted = host.adopt(&found[0].id, 1);
+        assert!(adopted.is_ok(), "{:?}", adopted.err());
+        assert_eq!(adopted.unwrap().title.as_deref(), Some("Kept"));
+
+        drop((copy, scan_copy));
+        host.end();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

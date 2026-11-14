@@ -170,7 +170,10 @@ peak memory over the first hundreds of moments (more on a machine with more core
 in the Gate, +3 MiB with `MALLOC_ARENA_MAX=2`), while the bodies alive stay those of the moments in flight; so
 `motion_check_memory` counts the placed bodies alive during and after its runs (`track_placed_bodies`,
 `placed_high_water`, `live_placed_bodies`: 19 at most in runs of 129 and of 513 moments, 2 after each; a run that
-kept its moments' bodies, tried, held 269 and 782) instead of the peak, which it prints.
+kept its moments' bodies, tried, held 269 and 782) instead of the peak, which it prints. Which moments are in
+flight at once is the scheduler's doing, so the most of a run with the workers is a sample, held to the bound the
+pipeline sets (40); that it does not grow with the moments is asked on one thread, where it is one number for any
+run (6, in runs of 33 and 513 moments), since 2026-11-14 (findings below).
 
 **Memory streams.** A sample keeps only what the next one needs: the copy's document state replaces the one before
 (one merged undo step), its placement is held in place of the one before, and the answers the checks remember are
@@ -606,3 +609,21 @@ pieces until the hint goes), and a dismissal per document that outlives an edit.
   not a provisional moment recorded: both frames showed the exact moment, and one said `refining` in its status
   bar, a text held from a pass before the recording on the wall clock ([`engine.md`](engine.md) › *A recorded
   frame that said "refining"*). A frame-exact recording now starts with nothing held in the status bar.
+- 2026-11-14: `motion_check_memory` failed in a gate on a loaded build server with "22 alive at once in 513
+  moments, 19 in 129": it asked the most placed bodies alive at once in a run of 513 moments with the sample workers
+  to be at most that of a run of 129 plus 2. Nothing grew: the bodies alive at once are those of the moments in
+  flight (the moment being placed, at most one waiting per worker in the channel, one being measured per worker and
+  the one it measured before until the new one takes its place, the two placements the sweep keeps; one new body a
+  moment, the turning wheel, since the standing wheel's copy is the same in every moment), a number the pipeline
+  bounds whatever the number of moments; but how many of them are alive at the instant of a placement depends on
+  where each thread is, so the most of a run is the maximum of a sample, and a longer run reaches further into the
+  tail. Measured with `probe_high_water_marks` (ignored; `-- --ignored --nocapture`): on the laptop 19 in every
+  run, also beside eight busy threads; on the build server, three probes side by side while a gate ran, 24 rounds:
+  129 moments 19 (21 times), 20 (2), 21 (1); 513 moments 19 (4), 20 (18), 21 (2); a run of 129 above its run of 513
+  once. Then 120 rounds (three probes side by side, every other round beside 16 busy threads): 129 moments 18 (2),
+  19 (102), 20 (15), 21 (1); 513 moments 19 (43), 20 (64), 21 (10), 22 (3); 513 over 129 plus 2, the old failure,
+  in 1 round; 129 above 513 in 5; on one thread 6 in all 240 runs of 33 and of 513 moments. The test now holds both runs with the workers to the bound (2 · (8 + 8 + 4) = 40, before only the run of
+  129), and asks that the count does not grow where no schedule decides it: on one thread (the test holds the
+  pool's threads), each moment placed, measured and let go of in turn, the most alive at once is the same in runs of
+  33 and 513 moments (6). A leak of one moment in 50 kept until the run ends, tried: 21 and 28 with the workers,
+  under the bound, and 7 against 16 on one thread, which fails.

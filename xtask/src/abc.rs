@@ -292,11 +292,26 @@ fn need_free(dir: &Path, gb: u64, what: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A chunk's lock, held. Dropped, it lets go of the lock before it closes
+/// the file: the lock belongs to the open file, and a program being
+/// started holds a copy of every open file of this process from its fork
+/// until its exec, so a lock merely closed stayed held for that moment
+/// (`a_held_lock_is_seen` in a gate, 2026-11-13). `unlock` releases it for
+/// every copy at once.
+struct ChunkLock(std::fs::File);
+
+impl Drop for ChunkLock {
+    fn drop(&mut self) {
+        // A failed unlock leaves it to the close, as before.
+        let _ = self.0.unlock();
+    }
+}
+
 /// A chunk's lock: held (an advisory lock on `abc_NNNN.lock`, which the
 /// system releases when the process ends, also when it is killed) for the
 /// whole run, so that two runs never download, unpack or read the same
 /// chunk at once, nor delete one another's.
-fn lock_chunk(cache: &Path, chunk: u32) -> Result<Option<std::fs::File>, String> {
+fn lock_chunk(cache: &Path, chunk: u32) -> Result<Option<ChunkLock>, String> {
     let path = cache.join(format!("abc_{chunk:04}.lock"));
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -305,7 +320,7 @@ fn lock_chunk(cache: &Path, chunk: u32) -> Result<Option<std::fs::File>, String>
         .open(&path)
         .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
     match file.try_lock() {
-        Ok(()) => Ok(Some(file)),
+        Ok(()) => Ok(Some(ChunkLock(file))),
         Err(std::fs::TryLockError::WouldBlock) => Ok(None),
         Err(std::fs::TryLockError::Error(e)) => Err(format!("cannot lock {}: {e}", path.display())),
     }
@@ -1217,8 +1232,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
             // Written, so its time says when the chunk was last used.
             {
                 use std::io::Write as _;
-                let _ = lock.set_len(0);
-                let _ = writeln!(lock, "{} {}", std::process::id(), now());
+                let _ = lock.0.set_len(0);
+                let _ = writeln!(lock.0, "{} {}", std::process::id(), now());
             }
             _lock = Some(lock);
             evict(&c.cache, c.chunk, c.keep);
@@ -1494,24 +1509,21 @@ mod tests {
     fn a_held_lock_is_seen() {
         let dir = std::env::temp_dir().join(format!("xtask-abc-lock-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let first = lock_chunk(&dir, 3).unwrap();
-        assert!(first.is_some());
+        let first = lock_chunk(&dir, 3).unwrap().unwrap();
         assert!(lock_chunk(&dir, 3).unwrap().is_none());
+        // Free again at once when dropped, also while a copy of its open
+        // file lives on: what a program being started by a neighbouring
+        // test holds from its fork until its exec (the tests of this binary
+        // run side by side and some start programs; seen in a gate on
+        // 2026-11-13). The copy is made as a fork makes it: one open file,
+        // two descriptors.
+        let copy = first.0.try_clone().unwrap();
         drop(first);
-        // Free again, but not always at once: the tests of this binary run
-        // side by side and some of them start programs. A program being
-        // started holds a copy of every open file of this process from its
-        // fork until its exec (the files are close-on-exec), and the lock
-        // belongs to the open file, so for that moment it is still held.
-        // Seen once in a gate, on 2026-11-13.
-        let freed = (0..200).any(|_| {
-            let got = lock_chunk(&dir, 3).unwrap().is_some();
-            if !got {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            got
-        });
-        assert!(freed, "the lock is still held 2 s after it was dropped");
+        assert!(
+            lock_chunk(&dir, 3).unwrap().is_some(),
+            "the lock is still held after it was dropped"
+        );
+        drop(copy);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
