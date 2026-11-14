@@ -83,8 +83,12 @@ fn view_is_the_3d_view_alone_and_form_the_form_beside_it() {
     assert!(shown(&shell).iter().any(|h| h == "Open for editing"));
 
     // The view alone, over the whole window: no menu, no tabs, no side
-    // panel, no status bar; the view cube and the controls stay.
-    shell.state.presentation = Presentation::View;
+    // panel, no status bar; the view cube and the controls stay. The web
+    // build lets a page choose it; the sketches' lines go off with it.
+    assert!(shell.state.show.sketches);
+    shell.allow_presentations(true);
+    assert!(shell.set_presentation(Presentation::View));
+    assert!(!shell.state.show.sketches, "a visitor sees the model");
     draw(&mut shell, &mut session, width, height, 4);
     let view = shell.viewport_rect().unwrap();
     assert_eq!(view, Rect::from_min_size(Pos2::ZERO, vec2(width, height)));
@@ -126,6 +130,27 @@ fn view_is_the_3d_view_alone_and_form_the_form_beside_it() {
         !fields.iter().any(|h| h == "Open for editing"),
         "{fields:?}"
     );
+    assert!(!shell.state.show.sketches);
+    // Still the page's to switch on, in the same patch or after.
+    shell
+        .handle_method(
+            &mut session,
+            "ui.set",
+            Some(&json!({"show": {"sketches": true}})),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(shell.state.show.sketches);
+    shell
+        .handle_method(
+            &mut session,
+            "ui.set",
+            Some(&json!({"presentation": "view", "show": {"sketches": true}})),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(shell.state.show.sketches);
+    assert!(shell.set_presentation(Presentation::Form));
 
     // In a narrow window the form is a sheet under the view.
     draw(&mut shell, &mut session, 390.0, 844.0, 4);
@@ -135,10 +160,54 @@ fn view_is_the_3d_view_alone_and_form_the_form_beside_it() {
     draw(&mut shell, &mut session, 390.0, 844.0, 4);
     assert!(shell.parameters_sheet_rect().is_none());
 
-    // And back: the window as before.
-    shell.state.presentation = Presentation::Full;
+    // And back: the window as before, its sketches' lines on.
+    assert!(shell.set_presentation(Presentation::Full));
+    assert!(shell.state.show.sketches);
     draw(&mut shell, &mut session, width, height, 4);
     assert_eq!(shell.viewport_rect().unwrap(), full);
+    assert!(!shell.status_hits().is_empty());
+}
+
+/// The developer's decision of 2026-11-14 (4): on the desktop (a shell
+/// that does not allow presentations, as `Shell::new` makes it) `ui.set`
+/// of a presentation other than `full` is refused, saying why, and
+/// nothing of the patch is taken; the menu, the status bar and its agents
+/// pill stay. `full` is taken.
+#[test]
+fn the_desktop_refuses_a_presentation_other_than_full() {
+    let mut session = jig();
+    let mut shell = Shell::new();
+    assert!(!shell.presentations_allowed());
+    draw(&mut shell, &mut session, 1280.0, 800.0, 3);
+    for name in ["view", "form"] {
+        let error = shell
+            .handle_method(
+                &mut session,
+                "ui.set",
+                Some(&json!({"presentation": name, "notice": "taken?"})),
+            )
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            error.contains("presentation") && error.contains("person's"),
+            "{error}"
+        );
+        assert_eq!(shell.state.presentation, Presentation::Full);
+        assert!(shell.state.notice.is_empty(), "nothing of the patch");
+        assert!(shell.state.show.sketches);
+        let presentation = Presentation::from_name(name).unwrap();
+        assert!(!shell.set_presentation(presentation));
+        assert_eq!(shell.state.presentation, Presentation::Full);
+    }
+    shell
+        .handle_method(
+            &mut session,
+            "ui.set",
+            Some(&json!({"presentation": "full"})),
+        )
+        .unwrap()
+        .unwrap();
+    draw(&mut shell, &mut session, 1280.0, 800.0, 3);
     assert!(!shell.status_hits().is_empty());
 }
 
@@ -146,10 +215,11 @@ fn view_is_the_3d_view_alone_and_form_the_form_beside_it() {
 fn without_the_whole_window_there_is_no_start_screen() {
     let mut session = Session::new(Workspace::none());
     let mut shell = Shell::new();
+    shell.allow_presentations(true);
     draw(&mut shell, &mut session, 1280.0, 800.0, 3);
     assert!(shell.start_shown());
     for presentation in [Presentation::View, Presentation::Form] {
-        shell.state.presentation = presentation;
+        assert!(shell.set_presentation(presentation));
         draw(&mut shell, &mut session, 1280.0, 800.0, 3);
         assert!(!shell.start_shown(), "{presentation:?}");
         let got = shell

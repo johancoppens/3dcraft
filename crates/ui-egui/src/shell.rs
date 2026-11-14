@@ -939,6 +939,12 @@ pub struct Shell {
     drawer_button: Option<egui::Rect>,
     /// The narrow layout's ⋯ (File, Edit, View, Help), as last drawn.
     more_menu: Option<egui::Rect>,
+    /// The host lets `state.presentation` be other than `full`: the web
+    /// build, where the page that embeds it decides
+    /// ([`Self::allow_presentations`]). Off (the desktop), `ui.set`
+    /// refuses it: the menu, the status bar and its agents pill are the
+    /// person's.
+    presentations: bool,
     /// Two fingers were on the viewport: the finger left on it does not
     /// turn the camera until it is lifted.
     touch_gesture: bool,
@@ -1492,6 +1498,7 @@ impl Shell {
             last_tap: None,
             drawer_button: None,
             more_menu: None,
+            presentations: false,
             touch_gesture: false,
             player_shown: false,
             player_hits: Vec::new(),
@@ -2884,6 +2891,35 @@ impl Shell {
     /// (the recovery bar's buttons) waits.
     pub fn ui_away(&mut self, ui: &mut egui::Ui) {
         self.ui_with(ui, None);
+    }
+
+    /// Lets the presentation be other than `full` (`ui.set`,
+    /// [`Self::set_presentation`]): the web build, where the page that
+    /// embeds it decides. Off by default, as on the desktop.
+    pub fn allow_presentations(&mut self, allow: bool) {
+        self.presentations = allow;
+    }
+
+    /// True when the presentation may be other than `full`.
+    pub fn presentations_allowed(&self) -> bool {
+        self.presentations
+    }
+
+    /// Shows the window as `presentation` (Embed: the page's option at the
+    /// start). Without the whole window the sketches' lines are off, so a
+    /// visitor sees the model; with it they are on, as by default.
+    /// `ui.set {"show": {"sketches": …}}` still switches them. Refused
+    /// (false) for a presentation other than `full` where the host does
+    /// not allow it ([`Self::allow_presentations`]).
+    pub fn set_presentation(&mut self, presentation: crate::state::Presentation) -> bool {
+        if !presentation.is_full() && !self.presentations {
+            return false;
+        }
+        if presentation != self.state.presentation {
+            self.state.show.sketches = presentation.is_full();
+        }
+        self.state.presentation = presentation;
+        true
     }
 
     fn ui_with(&mut self, ui: &mut egui::Ui, mut session: Option<&mut Session>) {

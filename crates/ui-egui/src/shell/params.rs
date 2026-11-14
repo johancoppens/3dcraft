@@ -48,6 +48,10 @@ const STEPPER_MOST: f64 = 12.0;
 const NO_PARAMETERS: &str =
     "No parameters. Publish a variable (variable.publish) to make this document a Jig.";
 
+/// What the `form` presentation (a page's visitor) says of a document
+/// without public parameters.
+const NO_PARAMETERS_TO_SET: &str = "This model has no parameters to set.";
+
 /// What kind of value a parameter holds (`param.list` `kind`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ParamKind {
@@ -1714,7 +1718,13 @@ impl Shell {
             return;
         };
         if !list.jig {
-            ui.add(egui::Label::new(egui::RichText::new(NO_PARAMETERS).color(dim)).wrap());
+            // A page's visitor is not told how to publish a variable.
+            let text = if self.state.presentation.is_full() {
+                NO_PARAMETERS
+            } else {
+                NO_PARAMETERS_TO_SET
+            };
+            ui.add(egui::Label::new(egui::RichText::new(text).color(dim)).wrap());
             return;
         }
         // The form keeps clear of the split on its right as it does of
