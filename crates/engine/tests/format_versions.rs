@@ -430,3 +430,36 @@ fn the_v67_ring_is_a_torus_centred_by_its_symmetry() {
         );
     }
 }
+
+/// What pins v72's grids besides their fixture: the grid read from the
+/// table lies on the plane `z = 7 + 0.2 x + 0.2 y` (heights `1 + r + c`
+/// mm, 10 mm apart, times `lift` = 2, from 5 mm up), which a grid's sheet
+/// gives exactly, so the 20 × 20 mm block cut by it is a wedge of
+/// `∫∫ 7 + 0.2 x + 0.2 y = 4400` mm³, and 6800 mm³ at `lift` = 4; the grid
+/// given point by point follows `lift` too, its middle point `lift * 1 mm`
+/// high.
+#[test]
+fn the_v72_wedge_under_a_grid_is_its_closed_form() {
+    let dir = workdir("format-versions", "v72-grid");
+    std::fs::copy(fixtures().join("v72.3dcraft"), dir.join("v72.3dcraft")).unwrap();
+    let mut s = session_in(&dir);
+    run(&mut s, "file.open", json!({"path": "v72.3dcraft"}));
+    let body = |s: &mut craft3d_engine::Session, name: &str| -> Value {
+        let inspect = run(s, "document.inspect", json!({}));
+        inspect["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["name"] == name)
+            .unwrap_or_else(|| panic!("no {name} in {inspect}"))
+            .clone()
+    };
+    let volume = body(&mut s, "Wedge")["volume"].as_f64().unwrap();
+    assert!((volume - 4400.0).abs() <= 1e-9 * 4400.0, "{volume}");
+    let low = body(&mut s, "Dome")["area"].as_f64().unwrap();
+    run(&mut s, "variable.set", json!({"name": "lift", "expr": "4"}));
+    let high = body(&mut s, "Dome")["area"].as_f64().unwrap();
+    assert!(high > low + 1.0, "{low} {high}");
+    let volume = body(&mut s, "Wedge")["volume"].as_f64().unwrap();
+    assert!((volume - 6800.0).abs() <= 1e-9 * 6800.0, "{volume}");
+}

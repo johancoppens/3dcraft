@@ -164,7 +164,7 @@ pub use recovery::{
 };
 pub use regen_elsewhere::{
     SceneRequest, SceneStep, run_command, run_on_state, scene_begin, scene_bytes, scene_forget,
-    scene_next, scene_side_work, scene_step,
+    scene_next, scene_side_held_solves, scene_side_work, scene_step,
 };
 pub use report::{
     FailedCommand, MAX_REPORT_FIELD_CHARS, VERSION, bug_report, build_commit, platform,
@@ -350,6 +350,10 @@ pub(crate) struct WorkHere {
     /// not one kept): what a host that has them placed elsewhere checks
     /// never moves.
     placements: std::sync::atomic::AtomicU64,
+    /// Solves of an assembly with a joint held by hand (`view.drive`,
+    /// `drive_cmds.rs`) made here: each value of its grid, each value
+    /// asked and each trial of the search for where it stops.
+    held_solves: std::sync::atomic::AtomicU64,
 }
 
 impl WorkHere {
@@ -360,6 +364,11 @@ impl WorkHere {
 
     pub(crate) fn placed(&self) {
         self.placements
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub(crate) fn solved_held(&self) {
+        self.held_solves
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -786,6 +795,16 @@ impl Session {
         }
     }
 
+    /// How many solves of an assembly with a joint held by hand
+    /// (`view.drive`) this session made itself since it was made: a held
+    /// joint asked at the next value goes on from the solves it keeps, so a
+    /// test can count what a value cost without a clock.
+    pub fn held_solves(&self) -> u64 {
+        self.work
+            .held_solves
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// The camera the window's viewport shows the active document with:
     /// what `file.export {view: "current"}` draws to DXF or SVG. A window
     /// says it whenever it syncs; it holds for the document active now
@@ -1096,7 +1115,11 @@ impl Session {
     /// document changed since it was last regenerated.
     pub fn failed_features(&mut self) -> Vec<Value> {
         let mut out = Value::Object(serde_json::Map::new());
+        // A host that refuses what needs the bodies it builds elsewhere
+        // (`set_refuse_bodies`) does not build them here for this either:
+        // none is said to fail.
         if !self.has_document()
+            || (self.refusing_bodies() && self.regen_elsewhere() && !self.regenerated_here())
             || commands::add_failed_waiting(self, &[], None, &mut out, true).is_err()
         {
             return Vec::new();
@@ -1217,6 +1240,10 @@ impl Session {
                 commands_elsewhere::Trial::Deferred(result) => {
                     self.new_when = None;
                     return Ok(result);
+                }
+                commands_elsewhere::Trial::Refused(why) => {
+                    self.new_when = None;
+                    return Err(CommandError::new(why));
                 }
                 commands_elsewhere::Trial::RunHere => {
                     outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

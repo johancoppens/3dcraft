@@ -14,8 +14,19 @@
 //! files are chosen with the page's file input. There is no control
 //! channel and no MCP in the browser.
 //!
+//! Embed (experimental, 2026-11-14): a page that loads the module itself
+//! and asks for the embedded stand (`data-craft3d-embed` on the canvas)
+//! keeps its title, focus, keys, storage and address, and drives 3DCraft
+//! through the control channel's envelope on a `MessagePort`
+//! (`craft3d_connect`): commands, the window's state (`full`, `view` or
+//! `form`), events, files in and out as bytes (packaging/web/HOSTING.md ›
+//! *Embedding*; docs/control-protocol.md › *The page as a transport*).
+//!
 //! - [`flags`]: `?webgl`, `?cpu`, `?download`, `?open=` in the page's
-//!   address.
+//!   address (or, in the embedded stand, the canvas's attribute, with
+//!   `presentation=` and `warn`).
+//! - [`embed`]: what a page that embeds 3DCraft asks and hears, without a
+//!   browser in it: tested natively; `door` (wasm32 only) is the port.
 //! - [`prefs`]: preferences in `localStorage`, which may be missing.
 //! - [`host`]: the session (files in memory) and the shell, and the File
 //!   menu's actions: everything but the browser, tested natively.
@@ -44,6 +55,13 @@
 #[cfg(test)]
 mod beside_tests;
 pub mod checks;
+#[cfg(target_arch = "wasm32")]
+mod door;
+pub mod embed;
+#[cfg(test)]
+mod embed_fuzz;
+#[cfg(test)]
+mod embed_tests;
 pub mod flags;
 pub mod fonts;
 pub mod host;

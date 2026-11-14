@@ -29,6 +29,15 @@ pub struct Flags {
     /// `?open=<url>`: a `.3dcraft`, `.3dcraftjig` or STEP file of the same site, opened
     /// at the start.
     pub open: Option<String>,
+    /// `presentation=full|view|form`: how much of the window is drawn at
+    /// the start. Read only in the embedded stand, from the canvas's
+    /// `data-craft3d-embed` (Embed, experimental; `crate::embed`); the
+    /// plain page's address leaves it alone.
+    pub presentation: Option<craft3d_ui_egui::state::Presentation>,
+    /// `warn`: the browser asks before the page is left while a document
+    /// has unsaved changes. The plain page always asks; in the embedded
+    /// stand only a page that says so.
+    pub warn: bool,
 }
 
 /// The longest `open` address taken.
@@ -50,10 +59,84 @@ pub fn parse(search: &str) -> Flags {
             "fullmove" => flags.full_move = true,
             "movescale" => flags.move_scale = value.parse::<u32>().ok().map(|n| n.clamp(1, 4)),
             "open" => flags.open = decode(value).filter(|url| same_site(url)),
+            "presentation" => {
+                flags.presentation = craft3d_ui_egui::state::Presentation::from_name(value);
+            }
+            "warn" => flags.warn = true,
             _ => {}
         }
     }
     flags
+}
+
+/// The options the embedded stand understands (`data-craft3d-embed`).
+pub const EMBED_OPTIONS: [&str; 9] = [
+    "presentation",
+    "warn",
+    "open",
+    "webgl",
+    "cpu",
+    "download",
+    "pageregen",
+    "fullmove",
+    "movescale",
+];
+
+/// The longest option said back in a warning, in characters.
+const MAX_SAID: usize = 60;
+
+/// Most warnings said for one attribute.
+const MAX_WARNINGS: usize = 16;
+
+/// What 3DCraft did not take of the embedded stand's options (`options`,
+/// the value of `data-craft3d-embed`), one sentence each saying what it
+/// does instead and why: an option it does not know, a presentation it
+/// does not have (the whole window is shown), a `movescale` that is not a
+/// number, an `open` that is not of the page's own site.
+pub fn embed_warnings(options: &str) -> Vec<String> {
+    let said = |text: &str| -> String {
+        let mut cut: String = text
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(MAX_SAID)
+            .collect();
+        if text.chars().count() > MAX_SAID {
+            cut.push('…');
+        }
+        cut
+    };
+    let mut warnings = Vec::new();
+    let query = options.strip_prefix('?').unwrap_or(options);
+    for pair in query.split('&').map(str::trim).filter(|p| !p.is_empty()) {
+        if warnings.len() >= MAX_WARNINGS {
+            break;
+        }
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let warning = match key {
+            "presentation" if craft3d_ui_egui::state::Presentation::from_name(value).is_none() => {
+                Some(format!(
+                    "`presentation={}` is not a presentation (full, view or form): the whole window is shown",
+                    said(value)
+                ))
+            }
+            "movescale" if value.parse::<u32>().is_err() => Some(format!(
+                "`movescale={}` is not a whole number from 1 to 4: the studio look is drawn half size while the camera moves",
+                said(value)
+            )),
+            "open" if decode(value).filter(|url| same_site(url)).is_none() => Some(format!(
+                "`open={}` is not an address of the page's own site: nothing is opened",
+                said(value)
+            )),
+            known if EMBED_OPTIONS.contains(&known) => None,
+            unknown => Some(format!(
+                "`{}` is not an option of data-craft3d-embed ({}): it is left alone",
+                said(unknown),
+                EMBED_OPTIONS.join(", ")
+            )),
+        };
+        warnings.extend(warning);
+    }
+    warnings
 }
 
 /// True for an address on the page's own site: relative, or a path from
@@ -159,6 +242,65 @@ mod tests {
             assert_eq!(parse(bad).open, None, "{bad}");
         }
         assert_eq!(parse("?open=/m/a.step").open.as_deref(), Some("/m/a.step"));
+    }
+
+    /// The embedded stand's own options (Embed, 2026-11-14), in the same
+    /// syntax: a presentation by its name, anything else none; `warn`.
+    #[test]
+    fn the_embedded_options_are_read_in_the_same_syntax() {
+        use craft3d_ui_egui::state::Presentation;
+        let flags = parse("presentation=view&webgl&warn");
+        assert_eq!(flags.presentation, Some(Presentation::View));
+        assert!(flags.webgl && flags.warn);
+        assert_eq!(
+            parse("presentation=form").presentation,
+            Some(Presentation::Form)
+        );
+        assert_eq!(
+            parse("presentation=full").presentation,
+            Some(Presentation::Full)
+        );
+        for bad in [
+            "presentation=none",
+            "presentation=",
+            "presentation=VIEW",
+            "presentation",
+        ] {
+            assert_eq!(parse(bad).presentation, None, "{bad}");
+        }
+        assert!(!parse("webgl").warn);
+    }
+
+    /// What the embedded stand does not take is said, one sentence each,
+    /// with what it gives instead; what it takes is not (2026-11-14).
+    #[test]
+    fn an_unknown_or_misspelt_option_is_said() {
+        assert!(
+            embed_warnings("presentation=view&webgl&warn&open=a.3dcraft&movescale=3").is_empty()
+        );
+        assert!(embed_warnings("").is_empty());
+        let said =
+            embed_warnings("presentation=veiw&webgel&movescale=x&open=https://x.example/a.step");
+        assert_eq!(said.len(), 4, "{said:?}");
+        assert!(
+            said[0].contains("presentation=veiw") && said[0].contains("whole window"),
+            "{said:?}"
+        );
+        assert!(
+            said[1].contains("`webgel`") && said[1].contains("left alone"),
+            "{said:?}"
+        );
+        assert!(said[2].contains("movescale=x"), "{said:?}");
+        assert!(said[3].contains("nothing is opened"), "{said:?}");
+        // Hostile: long, with control characters, many.
+        let long = format!("{}\u{0}=1", "k".repeat(10_000));
+        let said = embed_warnings(&long);
+        assert_eq!(said.len(), 1);
+        assert!(
+            said[0].chars().count() < 300 && !said[0].contains('\u{0}'),
+            "{said:?}"
+        );
+        assert_eq!(embed_warnings(&"x&".repeat(1000)).len(), 16);
     }
 
     #[test]
