@@ -746,6 +746,8 @@ enum Remade {
     /// Found again as no closed form, and the faces do not meet all along
     /// it as it ran.
     Lost,
+    /// To be found again where its faces meet ([`fitted`]).
+    Fit,
 }
 
 /// True when `a` is more than `b`, and both are numbers.
@@ -754,12 +756,13 @@ fn more(a: f64, b: f64) -> bool {
 }
 
 /// The edge with curve `old` over `range` made again from `start` to
-/// `end` on `surfaces`, the surfaces of its faces; `moved` says whether
-/// one of them is new, `tangent` whether its faces were tangent along it
-/// ([`tangent_along`]), `sideways` whether one of them is a rebuilt fillet
-/// (its points are found as [`meet_foreseen`] finds a vertex).
+/// `end` on `surfaces`, the surfaces of its faces (`moved` says whether
+/// one of them is new): a line, a circle, or the same curve between its
+/// new ends; [`Remade::Fit`] where it has to be found again where its
+/// faces meet ([`fitted`], which the caller calls, or takes the border's
+/// iso-curve of a face that keeps its surface).
 #[allow(clippy::too_many_arguments)]
-fn remake(
+fn remake_unfitted(
     old: &Curve3,
     range: (f64, f64),
     start: Vec3,
@@ -767,8 +770,6 @@ fn remake(
     closed: bool,
     surfaces: &[&Surface],
     moved: bool,
-    tangent: bool,
-    sideways: bool,
     tolerance: &Tolerance,
 ) -> Remade {
     let tol = tolerance.linear;
@@ -780,9 +781,7 @@ fn remake(
     // curve of another kind: found again where the surfaces meet.
     let general = |closed_form: Remade| match closed_form {
         Remade::OffSurface if freeform || !matches!(old, Curve3::Line(_) | Curve3::Circle(_)) => {
-            fitted(
-                old, range, start, end, surfaces, tangent, sideways, tolerance,
-            )
+            Remade::Fit
         }
         other => other,
     };
@@ -855,15 +854,11 @@ fn remake(
         }
         Curve3::Ellipse(_) | Curve3::Nurbs(_) => {
             if moved {
-                return fitted(
-                    old, range, start, end, surfaces, tangent, sideways, tolerance,
-                );
+                return Remade::Fit;
             }
             // The same curve, between the places its ends moved to.
             let (Ok(at_start), Ok(at_end)) = (old.project(start), old.project(end)) else {
-                return fitted(
-                    old, range, start, end, surfaces, tangent, sideways, tolerance,
-                );
+                return Remade::Fit;
             };
             let (from, to) = match old.period() {
                 Some(_) if closed => {
@@ -874,9 +869,7 @@ fn remake(
                 None => (at_start, at_end),
             };
             if old.eval(from).distance(start) > tol || old.eval(to).distance(end) > tol {
-                return fitted(
-                    old, range, start, end, surfaces, tangent, sideways, tolerance,
-                );
+                return Remade::Fit;
             }
             if !more(to, from) {
                 return Remade::Gone;
@@ -894,7 +887,7 @@ const EDGE_PASSES: usize = 24;
 
 /// How far an edge found again may be from where its surfaces meet, as a
 /// share of the tolerance (as the offset of a freeform face is held).
-const EDGE_SHARE: f64 = 0.25;
+pub(crate) const EDGE_SHARE: f64 = 0.25;
 
 /// A point of an edge found again: its parameter, where it is, and the
 /// feet on its surfaces it was found from.
@@ -1652,6 +1645,9 @@ fn resurface_with(
         let Some(faces) = uses.get(index) else {
             continue;
         };
+        // Its moved end is put on the border (below); a line or a circle is
+        // then made again through its ends as one (`remake_unfitted`), and
+        // only a curve that would be fitted becomes the border's iso-curve.
         if iso.contains_key(&id)
             || faces.is_empty()
             || faces.iter().any(|face| surfaces.contains_key(face))
@@ -1660,7 +1656,7 @@ fn resurface_with(
         }
         if let Some(along) = faces
             .iter()
-            .find_map(|face| crate::offset_normal::edge_border(body, *face, id, tol))
+            .find_map(|face| crate::offset_normal::edge_border(body, *face, id, EDGE_SHARE * tol))
         {
             iso.insert(id, along);
         }
@@ -1757,8 +1753,9 @@ fn resurface_with(
                 }
             }
         };
-        if let Some(along) = iso.get(&id)
-            && let Some(Surface::Nurbs(new)) = iso_surface(along.face)
+        // Along a border of a face with a new surface: that border of it.
+        if let Some(along) = iso.get(&id).filter(|a| surfaces.contains_key(&a.face))
+            && let Some(Surface::Nurbs(new)) = surfaces.get(&along.face)
             && let Some((curve, range)) = iso_curve(new, along, start, end, closed, tol)
             && lies_on(&curve, range, &on, tol)
         {
@@ -1770,7 +1767,7 @@ fn resurface_with(
             continue;
         }
         let tangent = tangent_along(body, &faces, &edge.curve, edge.range);
-        match remake(
+        let made_again = match remake_unfitted(
             &edge.curve,
             edge.range,
             start,
@@ -1778,10 +1775,38 @@ fn resurface_with(
             closed,
             &on,
             moved,
-            tangent,
-            faces.iter().any(|f| rebuilt.contains(f)),
             tolerance,
         ) {
+            // Where it would be fitted, an edge between faces that keep
+            // their surfaces along a border of one of them is that border
+            // between its new ends, held to the share of the tolerance a
+            // fit is held to; a line, a circle or the old curve between
+            // new ends stays what `remake_unfitted` makes it.
+            Remade::Fit => match iso
+                .get(&id)
+                .filter(|a| !surfaces.contains_key(&a.face))
+                .and_then(|along| match iso_surface(along.face) {
+                    Some(Surface::Nurbs(new)) => {
+                        iso_curve(new, along, start, end, closed, EDGE_SHARE * tol)
+                            .filter(|(curve, range)| lies_on(curve, *range, &on, EDGE_SHARE * tol))
+                    }
+                    _ => None,
+                }) {
+                Some((curve, range)) => Remade::Edge(curve, range),
+                None => fitted(
+                    &edge.curve,
+                    edge.range,
+                    start,
+                    end,
+                    &on,
+                    tangent,
+                    faces.iter().any(|f| rebuilt.contains(f)),
+                    tolerance,
+                ),
+            },
+            other => other,
+        };
+        match made_again {
             Remade::Edge(curve, range) => {
                 if let Some(slot) = made.edges.get_mut(index) {
                     slot.curve = curve;
@@ -1797,7 +1822,8 @@ fn resurface_with(
             // A search cut short by the work bound says so, not that the
             // edge was lost.
             Remade::Lost if craft3d_geom::allowance::exhausted() => return Err(spent()),
-            Remade::Lost => return Err(fail(true, LOST)),
+            // `Fit` was answered by the fit above.
+            Remade::Lost | Remade::Fit => return Err(fail(true, LOST)),
         }
         remade.insert(id);
     }

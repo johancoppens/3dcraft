@@ -471,6 +471,10 @@ pub(crate) fn still_iso_edges(
         let Some(faces) = uses.get(index) else {
             continue;
         };
+        // Only an edge along the border within the share of the tolerance a
+        // fit is held to. Its moved end is put on the border; a line or a
+        // circle is then made again as one (`tweak::remake_unfitted`), and
+        // only a curve that would be fitted becomes the border's iso-curve.
         if faces.is_empty() || faces.iter().any(|f| moving.contains_key(f)) {
             continue;
         }
@@ -478,10 +482,8 @@ pub(crate) fn still_iso_edges(
             continue;
         };
         let id = EdgeId(number);
-        if let Some(along) = faces
-            .iter()
-            .find_map(|f| edge_border(body, *f, id, tolerance.linear))
-        {
+        let share = crate::tweak::EDGE_SHARE * tolerance.linear;
+        if let Some(along) = faces.iter().find_map(|f| edge_border(body, *f, id, share)) {
             out.insert(id, along);
         }
     }

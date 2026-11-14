@@ -2024,6 +2024,16 @@ fn sampled(
 ) -> Result<(Vec<Sample>, Vec<Sampled>), MassError> {
     let mut samples = Vec::new();
     let mut where_ = Vec::new();
+    // The second derivatives a sample off a Bézier face asks for
+    // (`foot_rates`) come from its NURBS form: made once here, not per
+    // sample (`geom::curvature::second_derivatives` makes it each time).
+    let twin = match surface {
+        Surface::Bezier(patch) => craft3d_geom::NurbsSurface::from_bezier(patch)
+            .ok()
+            .map(Surface::Nurbs),
+        _ => None,
+    };
+    let curved = twin.as_ref().unwrap_or(surface);
     for (loop_index, pieces) in outline.loops.iter().enumerate() {
         for (piece_index, piece) in pieces.iter().enumerate() {
             let Some(panels) = which(loop_index, piece_index, piece) else {
@@ -2047,7 +2057,7 @@ fn sampled(
                     let ((u, v), (foot, su, sv)) = follow
                         .project(point)
                         .map_err(|error| MassError::Geometry { face: index, error })?;
-                    let (du, dv) = match foot_rates(surface, (u, v), (point, foot, su, sv), tangent)
+                    let (du, dv) = match foot_rates(curved, (u, v), (point, foot, su, sv), tangent)
                     {
                         Some(rates) => rates,
                         None => {
@@ -2105,30 +2115,41 @@ fn sampled(
     Ok((samples, where_))
 }
 
-/// How fast the foot on `surface` of a boundary point moves in the
-/// surface's parameters as the point moves along `tangent`, where the
+/// How fast the foot of a boundary point on its face's surface moves in
+/// the surface's parameters as the point moves along `tangent`, where the
 /// point is off the surface by more than its coordinates' rounding; `None`
 /// where it lies on it (and where the rates below cannot be had), for the
 /// least-squares solve of `[Sᵤ Sᵥ] (du, dv) = tangent`, which is exact
-/// there.
+/// there. `surface` is the face's surface, or the NURBS form of a Bézier
+/// one (only its second derivatives are taken here).
 ///
 /// The boundary integral sums `G du` along the curve of the feet (`G` is
 /// evaluated at the foot), so its rates must be the feet's: then the rates
-/// of a piece add up to how far its feet go, a loop closes, and Green's
-/// theorem holds for the region the feet bound. The least-squares rates
-/// are the foot's only when the point lies on the surface. Along an edge
-/// within the tolerance of its face but not on it (an edge fitted where
-/// two faces meet, held to a share of the tolerance) the foot moves faster
-/// or slower than they say, by the distance times the curvature, and the
-/// rates add up to more or less than the feet go: the loop does not close
-/// by that much, and the sum counts a strip that wide from the reference
-/// of `G` across the whole face. Where the face lies far from the middle
-/// the moments are taken about, `G` is large and so is the strip
-/// (2026-11-14: the end cap of a turned blade of the action matrix's rotor
-/// offset by 0.055 mm, its new edge up to 8.7e-8 mm off the side face; the
-/// rates along that edge added up to 1.00000064 for feet from 0 to 1, and
-/// the rotor's volume came out 10.08 mm³ smaller where the cap added
-/// 0.0013).
+/// of a piece add up to how far its feet go from its first end to its
+/// last, and Green's theorem holds for the region those feet bound. The
+/// least-squares rates are the foot's only when the point lies on the
+/// surface. Along an edge within the tolerance of its face but not on it
+/// (an edge fitted where two faces meet, held to a share of the tolerance)
+/// the foot moves faster or slower than they say, by the distance times
+/// the curvature, and the rates add up to more or less than the feet go:
+/// the piece does not reach its last foot by that much, and the sum counts
+/// a strip that wide from the reference of `G` across the whole face.
+/// Where the face lies far from the middle the moments are taken about,
+/// `G` is large and so is the strip (2026-11-14: the end cap of a turned
+/// blade of the action matrix's rotor offset by 0.055 mm, its new edge up
+/// to 8.7e-8 mm off the side face; the rates along that edge added up to
+/// 1.00000064 for feet from 0 to 1, and the rotor's volume came out 10.08
+/// mm³ smaller where the cap added 0.0013).
+///
+/// What this does not close: the pieces are summed edge by edge, with no
+/// step from one piece's last foot to the next one's first. Where two
+/// edges' ends miss each other at a vertex, within the tolerance, the loop
+/// stays open by that much, and the same strip `G δu` is counted (on the
+/// three faces of `kernel/tests/mass_run_off.rs` the misses are 5.3e-7 to
+/// 1.3e-6 in u; on a face 20 m long, 4.65 m from the middle, a miss of
+/// 1e-9 mm would be about 0.03 mm³). `gap_bound` does not cover it (a disc
+/// per loose vertex, nothing for a body without loose entities). Owed:
+/// docs/design/topology.md › *The rates of the feet*.
 ///
 /// The feet's rates, by the implicit function theorem on the conditions
 /// that make a foot one, `(p − S)·Sᵤ = 0` and `(p − S)·Sᵥ = 0`, with
@@ -2144,9 +2165,14 @@ fn sampled(
 /// panel. (Turning along it was tried: on the run-off faces of
 /// `kernel/tests/mass_run_off.rs` it put the area up to 1.2e-7 off the
 /// region of the feet integrated another way, where these rates are
-/// within 3e-11.) "Off by more than rounding" is 16 units in the last
-/// place of the coordinates of the point or its foot, so a point that lies
-/// on the surface keeps the least-squares rates, bit for bit.
+/// within 1e-12 of it.)
+///
+/// "Off by more than rounding" is 16 units in the last place of the
+/// coordinates of the point or its foot, so a point that lies on the
+/// surface keeps the least-squares rates, bit for bit. The threshold is a
+/// step: a sample just short of it keeps the least-squares rates, whose
+/// error there is the old one (distance times curvature), so a body whose
+/// edges sit right at it measures with the old error on those samples.
 fn foot_rates(
     surface: &Surface,
     (u, v): (f64, f64),
@@ -5761,7 +5787,8 @@ mod tests {
     }
 
     /// The rates of a sample of a boundary that lies off its surface are
-    /// its foot's (`foot_rates`), so the loop of feet closes: a point
+    /// its foot's (`foot_rates`), so a piece's rates add up to how far its
+    /// feet go: a point
     /// `h` off a cylinder of radius `r` going round it at speed 1 has its
     /// foot turn at `1 / (r + h)`, not at the `1 / r` the least-squares
     /// solve gives; a point past the border `v = 1` of a freeform patch,
@@ -5843,6 +5870,75 @@ mod tests {
                     "{k} {point:?}: {du} {dv}"
                 );
             }
+        }
+    }
+
+    /// Past the border `v = 1` of a curved patch, its foot held on the
+    /// border, a point has the rates of its foot on the patch continued
+    /// (`foot_rates`): the patch is a quarter of a cylinder of radius `r` as
+    /// a rational quadratic in u, straight in v, so its continuation is the
+    /// same cylinder; a point `h` outside it and 1e-5 beyond the border,
+    /// going round at speed 1, turns at `1 / (r + h)`, which is `du/dθ` of
+    /// the patch's parameter over `r + h` (`du/dθ` from feet on the patch
+    /// at angles a millionth either side), and does not move in v. The
+    /// least-squares rate is off by `h / r`. At three scales.
+    #[test]
+    fn the_rates_past_a_border_of_a_curved_patch_are_its_continuations() {
+        for k in [1e-3, 1.0, 1e6] {
+            let r = 2.0 * k;
+            let w = std::f64::consts::FRAC_1_SQRT_2;
+            let ctrl = vec![
+                Vec3::new(r, 0.0, 0.0),
+                Vec3::new(r, 0.0, k),
+                Vec3::new(r, r, 0.0),
+                Vec3::new(r, r, k),
+                Vec3::new(0.0, r, 0.0),
+                Vec3::new(0.0, r, k),
+            ];
+            let patch = Surface::Nurbs(
+                craft3d_geom::NurbsSurface::new(
+                    2,
+                    1,
+                    vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                    vec![0.0, 0.0, 1.0, 1.0],
+                    3,
+                    2,
+                    ctrl,
+                    vec![1.0, 1.0, w, w, 1.0, 1.0],
+                )
+                .unwrap(),
+            );
+            let h = 1e-5 * r;
+            let theta: f64 = 0.6;
+            let at = |angle: f64, radius: f64, z: f64| {
+                let (s, c) = angle.psin_cos();
+                Vec3::new(radius * c, radius * s, z)
+            };
+            let epsilon = 1e-6;
+            let (u_minus, _) = patch.project(at(theta - epsilon, r, 0.5 * k)).unwrap();
+            let (u_plus, _) = patch.project(at(theta + epsilon, r, 0.5 * k)).unwrap();
+            let du_dtheta = (u_plus - u_minus) / (2.0 * epsilon);
+            let point = at(theta, r + h, (1.0 + 1e-5) * k);
+            let (s, c) = theta.psin_cos();
+            let tangent = Vec3::new(-s, c, 0.0);
+            let (u, v) = patch.project(point).unwrap();
+            assert_eq!(v, 1.0, "{k}: the foot is held on the border");
+            let (foot, su, sv) = patch.derivatives(u, v);
+            let (du, dv) = foot_rates(&patch, (u, v), (point, foot, su, sv), tangent).unwrap();
+            let want = du_dtheta / (r + h);
+            assert!(
+                (du - want).abs() <= 1e-8 * want.abs(),
+                "{k}: {du} against {want}"
+            );
+            assert!(dv.abs() <= 1e-12 * want.abs(), "{k}: {dv}");
+            // The least-squares rate there.
+            let (a, b, cc) = (su.dot(su), su.dot(sv), sv.dot(sv));
+            let (ru, rv) = (tangent.dot(su), tangent.dot(sv));
+            let least = (cc * ru - b * rv) / (a * cc - b * b);
+            assert!(
+                ((least - want) / want).abs() > 0.5 * h / r,
+                "{k}: {least} {want}"
+            );
         }
     }
 }

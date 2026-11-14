@@ -377,3 +377,74 @@ fn an_offset_of_a_copys_face_that_cannot_be_built_is_refused() {
     }
     assert_eq!(volume(&mut session, "Blades").0, v0);
 }
+
+/// The rotor's whole blade (its eight stations, `bench_models/rotor.steps.json`)
+/// turned 120° about y, its end cap offset out by 0.055 mm: the blade's
+/// leading and trailing edges run 20 m between its two side faces, which
+/// do not move; they stay on both faces to rounding (the border of the
+/// side they lie along, continued), where they came out as curves fitted
+/// 1.9e-7 mm off both faces before. Read from the saved document's bodies
+/// regenerated (the edges' curves are not in a command's answer).
+#[test]
+fn a_turned_blades_leading_and_trailing_edges_stay_on_their_faces() {
+    let dir = common::workdir("offset-copies", "blade-edges");
+    let mut session = common::session_in(&dir);
+    new_document(&mut session, 1.0);
+    let steps: Vec<(String, Value)> =
+        serde_json::from_str(include_str!("bench_models/rotor.steps.json")).unwrap();
+    for (id, params) in steps.iter().take_while(|(id, _)| id != "feature.loft") {
+        run(&mut session, id, params.clone());
+    }
+    let sections: Vec<String> = (0..8).map(|k| format!("Station{k}")).collect();
+    built(
+        &mut session,
+        "feature.loft",
+        json!({"sections": sections, "name": "Blade"}),
+    );
+    built(
+        &mut session,
+        "feature.transform",
+        json!({"source": "Blade", "angle": "120 deg", "axis": [0, 1, 0], "name": "Turned"}),
+    );
+    built(
+        &mut session,
+        "feature.offsetFace",
+        json!({"faces": ["F10:copy(0)/F9:endCap(e5,e8)"], "distance": "0.055 mm", "name": "Off"}),
+    );
+    let path = dir.join("blade.3dcraft");
+    run(
+        &mut session,
+        "file.save",
+        json!({"path": path.to_str().unwrap()}),
+    );
+    let doc = craft3d_format::load(&path).unwrap();
+    let regen = craft3d_regen::regenerate(&doc);
+    let off = doc.features.iter().find(|f| f.name == "Off").unwrap();
+    let body = regen.feature(off.id).unwrap().body.as_ref().unwrap();
+    let uses = craft3d_topo::edge_faces(body);
+    let freeform = |f: &craft3d_topo::FaceId| {
+        matches!(
+            body.faces[f.0 as usize].surface,
+            craft3d_geom::Surface::Nurbs(_)
+        )
+    };
+    let seams: Vec<usize> = (0..body.edges.len())
+        .filter(|&i| uses[i].len() == 2 && uses[i].iter().all(freeform))
+        .collect();
+    assert_eq!(seams.len(), 2, "{seams:?}");
+    for i in seams {
+        let edge = &body.edges[i];
+        let (t0, t1) = edge.range;
+        for face in &uses[i] {
+            let surface = &body.faces[face.0 as usize].surface;
+            let worst = (0..=200)
+                .map(|k| {
+                    let p = edge.curve.eval(t0 + (t1 - t0) * f64::from(k) / 200.0);
+                    let (u, v) = surface.project(p).unwrap();
+                    surface.eval(u, v).distance(p)
+                })
+                .fold(0.0_f64, f64::max);
+            assert!(worst <= 1e-9, "edge {i}: {worst:e} mm off face {}", face.0);
+        }
+    }
+}
