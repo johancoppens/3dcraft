@@ -13,7 +13,9 @@ mod common;
 
 use common::plain::run;
 use common::{refused, session_in, workdir};
-use craft3d_engine::{SceneQuality, Session, Workspace, scene_begin, scene_bytes, scene_next};
+use craft3d_engine::{
+    SceneQuality, Session, Workspace, scene_begin, scene_bytes, scene_next, scene_side_held_solves,
+};
 use serde_json::{Value, json};
 
 fn example(name: &str) -> Session {
@@ -521,30 +523,48 @@ fn a_joint_the_worker_cannot_hold_is_let_go_of_on_the_page() {
 }
 
 /// In the worker the next value of the same joint goes on from the
-/// solves it keeps, not from the document's pose each time.
+/// solves it keeps, not from the document's pose each time. Counted, not
+/// timed (a clock measures the machine's load as well; until 2026-11-14
+/// this asked that 725° took less than 0.6 of 720°'s wall-clock time): a
+/// held angle is carried along a grid of 5° from the joint's value in the
+/// document, one solve per grid value (`drive_cmds.rs`), so 720° away
+/// costs at least the 144 grid values on the way, and 725° after it the
+/// one grid value past them and the solve at 725° itself; from the
+/// document's pose again it would cost the 145 grid values once more (147
+/// solves, measured with the kept solves let go of). The page solves
+/// nothing itself.
 #[test]
 fn the_worker_keeps_its_solves_from_value_to_value() {
     let mut page = page();
     answer_page_scenes(&mut page);
+    let solves = || scene_side_held_solves().unwrap_or(0);
+    let before = solves();
     run(
         &mut page,
         "view.drive",
         json!({"mate": "Output", "value": 720}),
     );
-    let (_, cold) = timed(|| answer_page_scenes(&mut page));
+    answer_page_scenes(&mut page);
+    let cold = solves() - before;
     run(
         &mut page,
         "view.drive",
         json!({"mate": "Output", "value": 725}),
     );
-    let (_, warm) = timed(|| answer_page_scenes(&mut page));
+    answer_page_scenes(&mut page);
+    let warm = solves() - before - cold;
     let came = run(&mut page, "view.drive", json!({}));
     assert!(
         (came["reached"].as_f64().unwrap() - 725.0).abs() < 1e-9,
         "{came}"
     );
-    eprintln!("worker, planetary Output 720°: {cold:.3} s, then 725°: {warm:.3} s");
-    assert!(warm < cold * 0.6, "{cold} {warm}");
+    eprintln!("worker, planetary Output 720°: {cold} solves, then 725°: {warm} solves");
+    // 720° is 144 grid steps of 5°, besides the solve at the value and the
+    // trials of which drivers to let go of.
+    assert!(cold >= 144, "{cold} solves for 720°");
+    // The one grid value past those kept, and the value asked.
+    assert_eq!(warm, 2, "solves for 725° after 720°");
+    assert_eq!(page.held_solves(), 0, "the page solved a held joint itself");
 }
 
 /// What the view shows of a held joint, whole: `view.drive`'s answer,
