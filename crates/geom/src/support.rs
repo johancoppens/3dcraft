@@ -528,6 +528,19 @@ fn cut_net(span: &SpanNet, (u0, u1): (f64, f64), (v0, v1): (f64, f64)) -> Vec<Ho
 /// directions' mean and the largest angle from it, widened by what
 /// rounding can turn a difference by; `None` when they do not lie within
 /// a right angle of it (or there are none, or one is zero).
+///
+/// Each angle is read from its sine and cosine together
+/// ([`Vec3::angle_to`]), which is right to a few units in the last place
+/// at any angle, well inside the margin. It was the `acos` of the dot,
+/// which near 0 is off by up to about 1.5e-8 (the dot rounds to 1 below
+/// about 1.05e-8, and one unit in the last place below 1 is an `acos` of
+/// 1.5e-8), either way, while the margin is 1e-12: a cone around nearly
+/// parallel differences could be that much narrower than they are
+/// (2026-11-14, docs/design/plates.md › *Limits*). A cone is a bound, so
+/// it must err on the wide side: every caller uses it only to rule
+/// something out (a normal or a tangent outside it, a pair of pieces
+/// whose difference cannot lie along a normal), and a wider cone, or none,
+/// rules out less, never more.
 fn cone_of(differences: &[Vec3], reach: f64) -> Option<(Vec3, f64)> {
     let mut units = Vec::with_capacity(differences.len());
     let mut shortest = f64::INFINITY;
@@ -542,11 +555,8 @@ fn cone_of(differences: &[Vec3], reach: f64) -> Option<(Vec3, f64)> {
     }
     let sum = units.iter().fold(Vec3::ZERO, |s, d| s + *d);
     let axis = sum.normalized()?;
-    let half = units
-        .iter()
-        .map(|d| d.dot(axis).clamp(-1.0, 1.0).pacos())
-        .fold(0.0, f64::max)
-        + turn_margin(reach, shortest);
+    let half =
+        units.iter().map(|d| d.angle_to(axis)).fold(0.0, f64::max) + turn_margin(reach, shortest);
     (half < FRAC_PI_2).then_some((axis, half))
 }
 
@@ -555,7 +565,7 @@ fn cone_of(differences: &[Vec3], reach: f64) -> Option<(Vec3, f64)> {
 /// (the magnitudes their computation, de Casteljau's included, scales
 /// with), each of them, so a difference of length `shortest` turns by at
 /// most about twice that over it; four times for the axis's and the
-/// `acos`'s own rounding; never less than 1e-12. Infinite (no cone) when
+/// angle's own rounding; never less than 1e-12. Infinite (no cone) when
 /// a difference is not longer than what rounding moves it by.
 fn turn_margin(reach: f64, shortest: f64) -> f64 {
     let moved = 2.0 * ROUNDING * reach;
@@ -1035,6 +1045,34 @@ mod tests {
             .cone()
             .unwrap();
         assert!(cone.half_angle < 0.5, "{cone:?}");
+    }
+
+    /// A cone around nearly parallel differences holds them (2026-11-14):
+    /// two differences `(1, ±s, 0)` in a frame turned off the axes, at
+    /// three scales, at `atan(s)` either side of their mean, with the
+    /// cosine of that angle `1 − 1e-16` to `1 − 1e-12`. The half-angle read by the `acos` of the
+    /// dot was up to 1.5e-8 short of `atan(s)` (0 where the dot rounds to
+    /// 1), beyond the margin of 1e-12; it is `atan(s)` to within the margin
+    /// now, never under it.
+    #[test]
+    fn a_cone_around_nearly_parallel_differences_holds_them() {
+        let frame = frame();
+        let mut short = 0;
+        for gap in [1e-16_f64, 3e-16, 1e-15, 1e-14, 1e-13, 1e-12] {
+            let s = (2.0 * gap).sqrt();
+            let truth = s.patan();
+            let (a, b) = (frame.vector(1.0, s, 0.0), frame.vector(1.0, -s, 0.0));
+            let mean = (a + b).normalized().unwrap();
+            if a.normalized().unwrap().dot(mean).clamp(-1.0, 1.0).pacos() < truth - 1e-12 {
+                short += 1;
+            }
+            for scale in [1e-3, 1.0, 1e3] {
+                let (_, half) = cone_of(&[a * scale, b * scale], scale).unwrap();
+                assert!(half >= truth, "{gap} {scale}: {half} < {truth}");
+                assert!(half <= truth + 2e-12, "{gap} {scale}: {half} > {truth}");
+            }
+        }
+        assert!(short > 0, "the acos's reading was never short");
     }
 
     #[test]

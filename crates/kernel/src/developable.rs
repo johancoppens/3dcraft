@@ -233,7 +233,7 @@ impl Rail {
     /// The joints where the rail has a corner: the tangent turns there by
     /// more than `angular` (as whole-number rail parameters, in order).
     fn corners(&self, angular: f64) -> Vec<f64> {
-        let turn = |u: Vec3, w: Vec3| u.cross(w).length().patan2(u.dot(w));
+        let turn = |u: Vec3, w: Vec3| u.angle_to(w);
         (1..self.pieces.len())
             .filter_map(|k| {
                 let s = k as f64;
@@ -334,7 +334,7 @@ impl Rail {
                 // The tangents on both sides of the joint (their limits
                 // where a curve stands still there).
                 let joint = (index + 1) as f64;
-                let turn = |u: Vec3, w: Vec3| u.cross(w).length().patan2(u.dot(w));
+                let turn = |u: Vec3, w: Vec3| u.angle_to(w);
                 if let (Some(u), Some(w)) = (
                     self.tangent_side(joint, true),
                     self.tangent_side(joint, false),
@@ -2235,7 +2235,7 @@ fn tube(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connected, KernelEr
         if rail.at_side(0.0, false).is_none() || rail.at_side(rail.len(), false).is_none() {
             return Err(no_point());
         }
-        let turn = |u: Vec3, w: Vec3| u.cross(w).length().patan2(u.dot(w));
+        let turn = |u: Vec3, w: Vec3| u.angle_to(w);
         Ok(
             match (
                 rail.tangent_side(rail.len(), true),
@@ -3471,7 +3471,7 @@ fn build(
                     // whose rulings keep their tangent plane.
                     let fitted = Surface::Nurbs(surface.clone());
                     if let (Some(n0), Some(n1)) = (fitted.normal(um, 0.0), fitted.normal(um, 1.0)) {
-                        let turn = n0.cross(n1).length().patan2(n0.dot(n1));
+                        let turn = n0.angle_to(n1);
                         off = off.max(turn * pa.distance(pb));
                     }
                     // The true ruling's middle against the surface.
@@ -3558,7 +3558,7 @@ fn build(
                 }
                 worst = worst.max(off);
                 if let Some(stored) = fitted.normal(u, 0.5).and_then(|n| n.normalized()) {
-                    let turn = stored.cross(intended).length().patan2(stored.dot(intended));
+                    let turn = stored.angle_to(intended);
                     let gap = turn * pa.distance(pb);
                     if gap.is_finite() {
                         rounded = rounded.max(gap);
@@ -4017,7 +4017,7 @@ mod tests {
                 for (v, rail, row) in [(0.0, &a, 0), (1.0, &b, 1)] {
                     let (_, du, _) = surface.derivatives(u, v);
                     let (_, tangent) = rail.at(s).unwrap();
-                    let angle = du.cross(tangent).length().patan2(du.dot(tangent));
+                    let angle = du.angle_to(tangent);
                     // What the control points' coordinates resolve of the
                     // direction of the first control leg.
                     let (p0, p1) = (ctrl[2 * end + row], ctrl[2 * next + row]);
@@ -4187,7 +4187,7 @@ mod tests {
             let (a, first, last) = standing_rail(k, 0.0);
             let (b, _, _) = standing_rail(k, h);
             assert!(a.at(0.0).unwrap().1.normalized().is_none(), "{k}");
-            let angle = |u: Vec3, w: Vec3| u.cross(w).length().patan2(u.dot(w));
+            let angle = |u: Vec3, w: Vec3| u.angle_to(w);
             assert!(
                 angle(a.tangent_side(0.0, false).unwrap(), first) < 1e-9,
                 "{k}"

@@ -66,6 +66,22 @@ impl Vec3 {
         (self - o).length()
     }
 
+    /// The angle between `self` and `o`, in radians from 0 (the same way)
+    /// to π (opposite ways), read from its sine and its cosine together:
+    /// `atan2(|self × o|, self · o)`. Accurate to rounding over the whole
+    /// range, near 0 and π too, where the cosine alone is not: `cos θ` is
+    /// `1 − θ²/2`, which rounds to 1 for every `θ` below about 1.05e-8, so
+    /// `acos` of a dot, or a dot compared with the cosine of a small angle
+    /// such as an angular tolerance of 1e-9, cannot tell those angles
+    /// apart (docs/design/plates.md › *Corners*, 2026-11-14). Neither
+    /// vector need be a unit vector (the angle does not depend on their
+    /// lengths); for a zero vector it means nothing (0 or π). The same
+    /// operations in the same order as the copies written out before it,
+    /// so it gives their bits.
+    pub fn angle_to(self, o: Vec3) -> f64 {
+        self.cross(o).length().patan2(self.dot(o))
+    }
+
     /// Unit vector in the same direction; `None` for a zero-length or
     /// non-finite vector (or one whose squared length overflows).
     ///
@@ -249,6 +265,37 @@ mod tests {
         let v = Vec3::new(3.0, 4.0, 12.0);
         assert_eq!(v.length(), 13.0);
         assert_eq!(v.dot(Vec3::new(1.0, 1.0, 1.0)), 19.0);
+    }
+
+    /// The angle between two vectors is read to rounding near 0 and π,
+    /// where the cosine rounds to ±1: at turns of 1e-15 to 1e-6 (the dot 1
+    /// in floating point below about 1.05e-8) it is the turn to a few units
+    /// in the last place, the same either way round, the same for vectors
+    /// of other lengths, and π less the turn for the opposite vector; a
+    /// right angle is π/2.
+    #[test]
+    fn the_angle_between_vectors_is_read_to_rounding_near_0_and_pi() {
+        for turn in [1e-15, 3e-12, 1e-9, 5e-9, 1e-8, 2.5e-8, 1e-6] {
+            let (s, c) = (turn.psin(), turn.pcos());
+            let u = Vec3::new(c, s, 0.0);
+            assert!((Vec3::X.angle_to(u) - turn).abs() <= 8.0 * f64::EPSILON * turn);
+            assert_eq!(Vec3::X.angle_to(u), u.angle_to(Vec3::X));
+            let long = Vec3::new(1e6 * c, 1e6 * s, 0.0);
+            assert!((Vec3::X.angle_to(long) - turn).abs() <= 8.0 * f64::EPSILON * turn);
+            let opposite = Vec3::X.angle_to(-u);
+            assert!((opposite - (std::f64::consts::PI - turn)).abs() <= 8.0 * f64::EPSILON);
+            if turn < 1e-8 {
+                assert_eq!(Vec3::X.dot(u), 1.0, "the cosine's reading: {turn}");
+            }
+        }
+        let right = Vec3::new(0.0, 0.0, 2.0).angle_to(Vec3::new(3.0, 0.0, 0.0));
+        assert!((right - std::f64::consts::FRAC_PI_2).abs() <= f64::EPSILON);
+        // The copies it replaces, written out: the same bits.
+        let (a, b) = (Vec3::new(0.3, -1.2, 2.5), Vec3::new(0.2, 0.3, 1.0));
+        assert_eq!(
+            a.angle_to(b).to_bits(),
+            a.cross(b).length().patan2(a.dot(b)).to_bits()
+        );
     }
 
     #[test]

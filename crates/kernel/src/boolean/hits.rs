@@ -1442,8 +1442,12 @@ fn ruling(
     // How far the ruling with the line's direction from the apex is from
     // the line over the piece: the apex's distance from the line, and the
     // angle between the line and the cone (from the axis) times the reach.
+    // The angle from the axis is read from its sine and cosine together:
+    // the `acos` of the dot is off by up to about 1.5e-8 near 0, which for
+    // a cone of a small half-angle, whose apex is far, times that reach
+    // was more than the tolerance (2026-11-14).
     let miss = (o + d * at).distance(apex);
-    let angle = (ray.dot(into).clamp(-1.0, 1.0).pacos() - alpha.abs()).abs();
+    let angle = (ray.angle_to(into) - alpha.abs()).abs();
     let reach = (t0 - at).abs().max((t1 - at).abs());
     // (False for NaN as well.)
     let close = miss + angle * reach <= 0.25 * tol;
@@ -1637,6 +1641,44 @@ mod tests {
             surface.kind()
         );
         crossings
+    }
+
+    /// A line along a ruling of a cone of a small half-angle, whose apex
+    /// is far away, is on the cone (2026-11-14). The angle between the line
+    /// and the axis was read by the `acos` of their dot, off by up to
+    /// about 1.5e-8 near 0 (by ε / α at a half-angle α), which times the
+    /// reach to the apex (1.5e5 radii at 1e-5) was more than a quarter of
+    /// the tolerance: the ruling was not recognised and the line was left
+    /// to the numeric path. Half-angles from 1e-7 to 1e-4, either way, in a
+    /// tilted frame at three scales; for some of them (at least one) the
+    /// `acos`'s error alone, times the least reach to the apex, is more
+    /// than a quarter of the tolerance.
+    #[test]
+    fn a_line_along_a_ruling_of_a_narrow_cone_is_on_it() {
+        let mut missed_before = 0;
+        for k in [1e-3, 1.0, 1e3] {
+            let f = tilted(k);
+            let tol = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+            for alpha in [1e-7, -1e-7, 1e-6, -1e-6, 1e-5, -1e-5, 1e-4] {
+                let cone = Surface::Cone(Cone::new(f, 1.5 * k, alpha).unwrap());
+                // The ruling through (r, 0, 0): along (tan α, 0, 1).
+                let o = f.point(1.5 * k, 0.0, 0.0);
+                let line = Line::new(o, f.vector(alpha.ptan(), 0.0, 1.0)).unwrap();
+                // Into the cone from the apex is along the line either way.
+                let read = line.direction().dot(f.z()).clamp(-1.0, 1.0).pacos();
+                let reach = 1.5 * k / alpha.abs().ptan();
+                if (read - alpha.abs()).abs() * reach > 0.25 * tol.linear {
+                    missed_before += 1;
+                }
+                let line = Curve3::Line(line);
+                let found = ruling(&line, (0.0, 10.0 * k), Sheet::bare(&cone), &tol);
+                assert!(
+                    matches!(found, Some(CurveIntersection::OnSurface)),
+                    "{k} {alpha}: {found:?}"
+                );
+            }
+        }
+        assert!(missed_before > 0, "the acos's reading never missed");
     }
 
     #[test]
