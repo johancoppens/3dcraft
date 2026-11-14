@@ -120,6 +120,146 @@ fn a_bend_down_tighter_than_a_fiftieth_of_the_thickness_is_refused() {
     }
 }
 
+/// KNOWN INVALID (the plate, in a sheet-metal part): a base 50 × 40,
+/// 1 thick, with a flange 20 long on its right edge bent **down** 140
+/// degrees about the inner radius 0.1762914118095948 (K 0.4), is a body
+/// that `topo::check` passes, whose volume measures 3213.85 where the
+/// closed form `2000 + 40 (θ (R + ½) + 20)` is 2866.10 (12 % over), and
+/// which cannot be meshed ("face 12 cannot be tessellated: its loops do
+/// not bound a region: the boundary crosses itself in parameter space";
+/// face 12 is the rim along the bend's outer arc at its end, a plane).
+/// Its edges along that arc at both ends (17, 19) are splines over a
+/// parameter range of 15 where every neighbour's are circles over the
+/// bend's 2.44 rad: the traced run was not taken for its circle. The
+/// bottom skin of a bend down has the inner radius `R`, whose arcs are
+/// traced `2T/R` past each end; here the run, `θ + 4T/R`, is 8π (four
+/// turns): the cause of
+/// `a_hole_whose_rims_run_an_even_number_of_turns_is_an_invalid_body`. At
+/// radii a few parts in a hundred thousand about it the part is refused
+/// or, at some values, this body (also a hundredth of a billionth smaller,
+/// while that much larger builds right); at 90 degrees and two turns
+/// (R ≈ 0.36378) it is refused over a like band. Found by the radius sweep of
+/// `hunt_sheet_sizes.rs` (200 values from 1e-5 to 1 T, log-spaced). The
+/// regeneration refuses it (its self-intersection check meshes the part),
+/// so by command it is a refusal a billionth from values that build
+/// (`crates/engine/tests/hunt_sheet_engine.rs`). When it is fixed this
+/// test fails: take it off.
+#[test]
+fn a_bend_down_at_one_radius_is_an_invalid_body() {
+    use craft3d_geom::Curve3;
+    let tol = tolerance(1.0);
+    let th = 140f64.to_radians();
+    let make = |r: f64| {
+        build(
+            &rect_spec(
+                50.0,
+                40.0,
+                1.0,
+                1.0,
+                vec![flange(2, th, Direction::Down, r, 0.4, 20.0)],
+            ),
+            &tol,
+        )
+        .unwrap()
+    };
+    let want = |r: f64| 2000.0 + 40.0 * (th * (r + 0.5) + 20.0);
+    let r0 = 0.1762914118095948;
+    for r in [r0 * (1.0 - 1e-3), r0 * (1.0 + 1e-12), r0 * (1.0 + 1e-3)] {
+        let p = make(r);
+        let b = &p.solid.body;
+        assert!(check(b, &tol).is_empty());
+        let v = mass_properties(b).unwrap().volume;
+        assert!((v / want(r) - 1.0).abs() < 1e-10, "{r}: {v}");
+        assert!(mesh_volume(b, 1e-3 * size_of(b)).is_ok());
+        assert!(matches!(b.edges[17].curve, Curve3::Circle(_)));
+    }
+    let p = make(r0);
+    let b = &p.solid.body;
+    assert!(check(b, &tol).is_empty(), "known: the checker passes it");
+    let v = mass_properties(b).unwrap().volume;
+    assert!(
+        (v / want(r0) - 1.12133).abs() < 1e-4,
+        "known: 12 % over: {v} for {}",
+        want(r0)
+    );
+    assert!(
+        mesh_volume(b, 1e-3 * size_of(b)).is_err(),
+        "known: it cannot be meshed"
+    );
+    assert!(matches!(b.edges[17].curve, Curve3::Nurbs(_)));
+}
+
+/// KNOWN INVALID (the plate): a plate 1 thick of a square 20 × 20 with a
+/// round hole drawn as two half circles of radius `r = 4t/(7π)`
+/// (0.18189136353359467) is a body that `topo::check` passes but that
+/// cannot be measured or meshed ("face … cannot be tessellated: its loops
+/// do not bound a region"); at `r = 4t/(3π)` (0.4244131815783876) the
+/// plate is refused. A billionth larger or smaller, both build right. The
+/// cause, found by measuring and confirmed by reading: each arc's rim is
+/// traced past both ends by twice the thickness, `2t/r` radians, so the
+/// traced run is the arc's sweep plus `4t/r`; at these radii it is an
+/// even number of whole turns (4 and 2), its first and last points meet,
+/// and `plate::simplest` takes the run as closed and fits the circle
+/// through its first point, the point a quarter along and the middle one
+/// by index (`crates/kernel/src/plate.rs`, `simplest`), which for an even
+/// number of turns lie (nearly) on top of each other; the circle is not
+/// found and the edge is the spline through the whole run, round its
+/// circle several times. The same in sheet metal (bends down, whose
+/// bottom skin's arcs have the inner radius:
+/// `a_bend_down_at_one_radius_is_an_invalid_body`). When it is fixed this
+/// test fails: take it off.
+#[test]
+fn a_hole_whose_rims_run_an_even_number_of_turns_is_an_invalid_body() {
+    use craft3d_kernel::extrude::fill;
+    use craft3d_kernel::plate::{Side, plate};
+    use std::collections::BTreeMap;
+    let tol = tolerance(1.0);
+    let plated = |r: f64| {
+        let hole = reversed(&split_circle([0.0, 0.0], r, &[0.3, 0.3 + PI]));
+        let shape = Shape {
+            what: String::new(),
+            outer: polygon_loop(&[[-10.0, -10.0], [10.0, -10.0], [10.0, 10.0], [-10.0, 10.0]]),
+            holes: vec![hole],
+            inner: ([5.0, 5.0], 3.0),
+            hole_discs: vec![([0.0, 0.0], r)],
+            feature: r,
+        };
+        let placing = Placing {
+            turn: 0.0,
+            k: 1.0,
+            at: [0.0, 0.0],
+            flip_lines: false,
+        };
+        let curves = sketch(&shape, &placing, 1);
+        let profiles = detect_profiles(&curves, &tol).unwrap();
+        let sheet = fill(&profiles, &Frame::WORLD, &tol).unwrap().body;
+        (
+            plate(&sheet, &[FaceId(0)], 1.0, Side::Out, &BTreeMap::new(), &tol),
+            shape.area(),
+        )
+    };
+    for r0 in [4.0 / (7.0 * PI), 4.0 / (3.0 * PI)] {
+        for r in [r0 * (1.0 - 1e-9), r0 * (1.0 + 1e-9)] {
+            let (made, want) = plated(r);
+            let b = made.unwrap().body;
+            assert!(check(&b, &tol).is_empty());
+            let v = mass_properties(&b).unwrap().volume;
+            assert!((v / want - 1.0).abs() < 1e-9, "{r}: {v} for {want}");
+            assert!(mesh_volume(&b, 1e-3 * size_of(&b)).is_ok());
+        }
+    }
+    let (made, _) = plated(4.0 / (7.0 * PI));
+    let b = made.expect("known: built").body;
+    assert!(check(&b, &tol).is_empty(), "known: the checker passes it");
+    assert!(mass_properties(&b).is_err(), "known: it cannot be measured");
+    assert!(
+        mesh_volume(&b, 1e-3 * size_of(&b)).is_err(),
+        "known: it cannot be meshed"
+    );
+    let (made, _) = plated(4.0 / (3.0 * PI));
+    assert!(made.is_err(), "known: refused");
+}
+
 /// REFUSED, owed (the plate): a plate of a whole sphere or torus (a face
 /// without boundary) is a hollow ball or ring, two shells; the plate puts
 /// both skins in one shell and refuses its own result ("plate produced an

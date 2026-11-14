@@ -395,6 +395,96 @@ fn seeded_sheet_metal_parts_by_command_and_their_exported_patterns() {
     assert!(tally.0 >= 6, "too few built: {tally:?}");
 }
 
+/// A pan: a disc of radius `a` with a curved flange round its rim, by
+/// command: the volume by Pappus (the section's `∫ ρ dA` about the axis
+/// over a turn), the flat area and the DXF's outline (the tip circle)
+/// `π (a + BA + L)²`.
+#[test]
+fn pans_by_command_and_their_exported_patterns() {
+    let mut failures = Vec::new();
+    for (n, k) in SCALES.iter().flat_map(|k| [*k; 3]).enumerate() {
+        let mut rng = Rng(0x0BA4_E461 ^ (n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let dir = workdir("hunt-sheet", &format!("pan-{n}"));
+        let mut s = session_in(&dir);
+        new_document(&mut s, k);
+        run(
+            &mut s,
+            "sketch.create",
+            json!({"plane": "xy", "name": "Base"}),
+        );
+        let a = rng.between(20.0, 60.0) * k;
+        let made = run(
+            &mut s,
+            "sketch.circle",
+            json!({"sketch": "Base", "center": [0.0, 0.0], "radius": a}),
+        );
+        let circle = made["entity"].as_str().unwrap().to_string();
+        let t = rng.between(0.3, 3.0) * k;
+        let th = rng.between(20.0, 170.0).to_radians();
+        let r = t * rng.between(0.5, 3.0);
+        let kk = rng.between(0.0, 1.0);
+        let l = rng.between(3.0, 15.0) * k;
+        let up = rng.below(2) == 0;
+        let result = run(
+            &mut s,
+            "feature.sheetMetal",
+            json!({"sketch": "Base", "name": "Pan", "thickness": format!("{t} mm"),
+                   "radius": format!("{r} mm"), "kFactor": kk,
+                   "curvedFlanges": [{"edge": circle, "length": format!("{l} mm"),
+                                      "angle": format!("{} deg", th.to_degrees()),
+                                      "direction": if up { "up" } else { "down" }}]}),
+        );
+        let what = format!(
+            "pan {n} at {k}: a {a:e}, T {t:e}, {} deg R {r:e} K {kk} L {l:e} {}",
+            th.to_degrees(),
+            if up { "up" } else { "down" }
+        );
+        if result["status"] != "ok" {
+            failures.push(format!("{what}: refused: {}", result["error"]));
+            continue;
+        }
+        let ro = r + t;
+        let section = a * (th * (ro * ro - r * r) / 2.0 + l * t)
+            + (1.0 - th.pcos()) * (ro.ppowi(3) - r.ppowi(3)) / 3.0
+            + th.psin() * l * (ro * ro - r * r) / 2.0
+            + th.pcos() * t * l * l / 2.0;
+        let volume = PI * a * a * t + TAU * section;
+        let tip = a + th * (r + kk * t) + l;
+        let flat = PI * tip * tip;
+        let b = body(&mut s, "Pan");
+        let v = b["volume"].as_f64().unwrap();
+        if b["valid"] != true || (v - volume).abs() > 1e-7 * volume {
+            failures.push(format!(
+                "{what}: valid {}, volume {v:e} against {volume:e}",
+                b["valid"]
+            ));
+        }
+        let out = run(
+            &mut s,
+            "file.export",
+            json!({"path": "p.dxf", "sheetMetal": "Pan"}),
+        );
+        let fa = out["flatArea"].as_f64().unwrap();
+        if (fa - flat).abs() > 1e-9 * flat {
+            failures.push(format!("{what}: flatArea {fa:e} against {flat:e}"));
+        }
+        let text = std::fs::read_to_string(dir.join("p.dxf")).unwrap();
+        let (pieces, _) = dxf_pieces(&text, "outline");
+        match loops(&pieces, 1e-9 * tip) {
+            Some(areas) => {
+                let outer = areas.iter().fold(0.0f64, |m, a| m.max(a.abs()));
+                if (outer - flat).abs() > 1e-9 * flat || areas.len() != 1 {
+                    failures.push(format!(
+                        "{what}: the DXF's outline holds {areas:?} against {flat:e}"
+                    ));
+                }
+            }
+            None => failures.push(format!("{what}: the DXF's outline does not chain")),
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 #[test]
 fn discs_of_arcs_plated_by_command_are_their_closed_form() {
     let mut failures = Vec::new();
@@ -468,4 +558,63 @@ fn discs_of_arcs_plated_by_command_are_their_closed_form() {
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The kernel's finding by command (crates/kernel/tests/hunt_sheet_repro.rs
+/// › `a_bend_down_at_one_radius_is_an_invalid_body`): a base 50 × 40, 1
+/// thick, with a flange 20 long bent down 140 degrees about the inner
+/// radius 0.1762914118095948 (K 0.4). What the user gets there, and a
+/// thousandth either side: each built part held to the
+/// closed form `2000 + 40 (θ (R + ½) + 20)`, each failure printed.
+#[test]
+fn a_bend_down_at_one_radius_by_command() {
+    let mut seen = Vec::new();
+    for r in [
+        0.1762914118095948 * (1.0 - 1e-3),
+        0.1762914118095948,
+        0.1762914118095948 * (1.0 + 1e-3),
+    ] {
+        let dir = workdir("hunt-sheet", &format!("down-{r}"));
+        let mut s = session_in(&dir);
+        new_document(&mut s, 1.0);
+        run(
+            &mut s,
+            "sketch.create",
+            json!({"plane": "xy", "name": "Base"}),
+        );
+        let made = run(
+            &mut s,
+            "sketch.rect",
+            json!({"sketch": "Base", "from": [0.0, 0.0], "to": [50.0, 40.0]}),
+        );
+        let right = made["lines"][1].as_str().unwrap().to_string();
+        let result = run(
+            &mut s,
+            "feature.sheetMetal",
+            json!({"sketch": "Base", "name": "Part", "thickness": "1 mm",
+                   "radius": format!("{r:?} mm"), "kFactor": 0.4,
+                   "flanges": [{"edge": right, "length": "20 mm", "angle": "140 deg",
+                                "direction": "down"}]}),
+        );
+        let th = 140f64.to_radians();
+        let want = 2000.0 + 40.0 * (th * (r + 0.5) + 20.0);
+        if result["status"] == "ok" {
+            let b = body(&mut s, "Part");
+            let v = b["volume"].as_f64().unwrap();
+            println!(
+                "R {r:?}: built, valid {}, volume {v} for {want}",
+                b["valid"]
+            );
+            seen.push(((v - want).abs() <= 1e-9 * want, b["valid"] == true));
+        } else {
+            println!("R {r:?}: {}: {}", result["status"], result["error"]);
+            seen.push((false, false));
+        }
+    }
+    // Pinned as found: the neighbours build right; the value itself is
+    // refused (the regeneration's own check meshes the part and finds
+    // the face it cannot), never a wrong body.
+    assert_eq!(seen[0], (true, true), "{seen:?}");
+    assert_eq!(seen[2], (true, true), "{seen:?}");
+    assert_eq!(seen[1], (false, false), "known refused: {seen:?}");
 }

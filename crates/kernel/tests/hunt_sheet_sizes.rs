@@ -30,6 +30,14 @@ use hunt_sheet_common::*;
 use std::collections::BTreeMap;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
+/// The sweeps known to build wrong or invalid bodies at some of their
+/// values, by name: each a finding, reduced in
+/// crates/kernel/tests/hunt_sheet_repro.rs; a fix has to take it off.
+/// The bend down at 140 degrees about `R = 0.1763 T`: the traced run of
+/// its bottom skin's arcs is four whole turns there
+/// (`a_bend_down_at_one_radius_is_an_invalid_body`).
+const KNOWN_WRONG: &[&str] = &["L at 140 degrees down, radius about 0.1763 T by 1e-11"];
+
 /// A body built (with its flat area and the closed form's, for a sheet-
 /// metal part) or why not, or a panic's message.
 type Made = Result<Result<(Body, Option<(f64, f64)>), String>, String>;
@@ -149,6 +157,17 @@ impl Sweep {
     /// values), and at most `changes` changes of outcome.
     fn hold(&self, changes: usize) {
         let runs = self.runs();
+        if KNOWN_WRONG.contains(&self.name.as_str()) {
+            // Known to build wrong bodies at some of its values (a finding:
+            // crates/kernel/tests/hunt_sheet_repro.rs has it reduced); held
+            // to still doing so, so that a fix takes it off the list.
+            assert!(
+                !self.wrong.is_empty(),
+                "{}: known wrong, now nothing wrong: take it off KNOWN_WRONG",
+                self.name
+            );
+            return;
+        }
         assert!(self.wrong.is_empty(), "{}: {:#?}", self.name, self.wrong);
         assert!(
             runs.len() <= changes + 1,
@@ -370,6 +389,37 @@ fn sheet_sweeps(n: usize) -> Vec<Sweep> {
             let v = 50.0 * 40.0 * t + 40.0 * (th * t * (r + 0.5 * t) + 20.0 * t);
             let a = 2000.0 + 40.0 * (th * (r + kk * t) + 20.0);
             s.record(r, sheet(&spec, &tol, a), v, &tol, false);
+        }
+        out.push(s);
+    }
+    // A bend down at 140 degrees whose radius is 0.1763 times the
+    // thickness, give or take a hundredth of a billionth (the value of
+    // the radius sweep above that built a wrong body), and the radius
+    // through 0.1 to 0.3 times the thickness.
+    for (name, values) in [
+        (
+            "L at 140 degrees down, radius about 0.1763 T by 1e-11",
+            steps(0.1762914118095948, 1e-11, n),
+        ),
+        (
+            "L at 140 degrees down, radius 0.1 to 0.3 T",
+            (0..n)
+                .map(|i| 0.1 + 0.2 * i as f64 / (n - 1) as f64)
+                .collect::<Vec<f64>>(),
+        ),
+    ] {
+        let mut s = Sweep::new(name);
+        let th = 140f64.to_radians();
+        for r in values {
+            let spec = rect(
+                1.0,
+                t,
+                vec![flange(2, 20.0, th, Direction::Down, r * t, 0.4)],
+                Vec::new(),
+            );
+            let v = 2000.0 * t + 40.0 * (th * t * (r * t + 0.5 * t) + 20.0 * t);
+            let a = 2000.0 + 40.0 * (th * (r * t + 0.4 * t) + 20.0);
+            s.record(r, sheet(&spec, &tol, a), v, &tol, true);
         }
         out.push(s);
     }
