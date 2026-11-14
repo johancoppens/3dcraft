@@ -169,7 +169,7 @@ pub use recovery::{
 };
 pub use regen_elsewhere::{
     SceneRequest, SceneStep, run_command, run_on_state, scene_begin, scene_bytes, scene_forget,
-    scene_next, scene_side_work, scene_step,
+    scene_next, scene_side_held_solves, scene_side_work, scene_step,
 };
 pub use report::{
     FailedCommand, MAX_REPORT_FIELD_CHARS, VERSION, bug_report, build_commit, platform,
@@ -356,6 +356,10 @@ pub(crate) struct WorkHere {
     /// not one kept): what a host that has them placed elsewhere checks
     /// never moves.
     placements: std::sync::atomic::AtomicU64,
+    /// Solves of an assembly with a joint held by hand (`view.drive`,
+    /// `drive_cmds.rs`) made here: each value of its grid, each value
+    /// asked and each trial of the search for where it stops.
+    held_solves: std::sync::atomic::AtomicU64,
 }
 
 impl WorkHere {
@@ -366,6 +370,11 @@ impl WorkHere {
 
     pub(crate) fn placed(&self) {
         self.placements
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub(crate) fn solved_held(&self) {
+        self.held_solves
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -790,6 +799,16 @@ impl Session {
             meshes: self.scene.meshes.made(),
             placements: self.work.placements.load(Relaxed),
         }
+    }
+
+    /// How many solves of an assembly with a joint held by hand
+    /// (`view.drive`) this session made itself since it was made: a held
+    /// joint asked at the next value goes on from the solves it keeps, so a
+    /// test can count what a value cost without a clock.
+    pub fn held_solves(&self) -> u64 {
+        self.work
+            .held_solves
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The camera the window's viewport shows the active document with:

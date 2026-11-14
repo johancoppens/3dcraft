@@ -207,6 +207,69 @@ the top run on into the flat flanks without a kink or a jump in width; with the 
 "curvature"`) the curvature rises from zero at each seam
 ([The window › Surface analysis](window.md#surface-analysis)).
 
+## Surfaces through a grid of points
+
+When a surface is known by its points (a measured or computed surface, a scan's patch, a hull's offsets, a
+lens, a terrain), `feature.surface.grid` lays one smooth sheet through a grid of them, passing through every
+point. Give the points row by row, or read the heights of a regular grid from a
+[table](formulas.md#tables):
+
+```json
+[
+ ["table.set", {"name": "heights", "columns": ["row", "a", "b", "c", "d", "e"],
+                "rows": [[1, 0, 1, 2, 1, 0], [2, 1, 3, 5, 3, 1], [3, 1, 4, 6, 3, 1], [4, 0, 1, 2, 1, 0]]}],
+ ["variable.set", {"name": "lift", "expr": "2"}],
+ ["feature.surface.grid", {"table": "heights", "step": ["10 mm", "10 mm"], "origin": [0, 0, "5 mm"], "factor": "lift", "name": "Hill"}],
+ ["feature.block", {"size": ["40 mm", "30 mm", "40 mm"], "name": "Blank"}],
+ ["feature.boolean", {"op": "intersect", "target": "Blank", "tool": "Hill", "name": "Base"}]
+]
+```
+
+The table's rows are the grid's rows, along y from `origin` in steps of the second `step`; its columns other
+than the key are the grid's columns, along x in steps of the first. Each point stands at `origin.z` plus its
+cell times `factor`: here a hill on a floor 5 mm up, twice as high as the table says, because `factor` is the
+variable `lift`. Change `lift` or the table, and the sheet follows. A sheet read from a table looks up, so the
+block cut by it keeps the part below: a solid of 12 450 mm³.
+
+- **Points given outright**: `"points": [[["0 mm", "0 mm", "1 mm"], ["10 mm", "0 mm", "1.5 mm"], ...], ...]`,
+  every row as many points, each coordinate an expression, so `"1910 m * vertical_scale"` follows a variable
+  too. The sheet looks along a row turned towards the next row (the right-hand rule): the same points with the
+  rows reversed, or transposed, give the same sheet looking the other way, and a block cut by it then keeps
+  the other side.
+- **Where it takes its points** (`spacing`; the feature keeps the one it was made with): `even` (the default
+  for a table) spaces the parameters evenly, `chord` (the default for points given) by how far apart the
+  points are, `greville` as a live spline does. Choose by the points: on a regular grid (a table's, or points
+  given on even steps) `even` gives the textbook bicubic spline of the heights: a surface of degree three or
+  less each way comes back exactly, a height field never folds however steep, and between the points it
+  keeps closest to the smooth surface they came from (its error falls about 16 times each time the step
+  halves). On unevenly spaced points choose `chord`: `even` is accepted there too, but strays 2 to 4 times
+  as far between the points, and where its rows run back over themselves it is refused (about a quarter of
+  grids with steps varying by a third). `greville` keeps a column of the sheet the same curve as a live
+  spline through the same points (its error falls about 4 times per halving); on very uneven steps it can run
+  back too, which is refused, naming the row.
+- **What it reports**: under `grid`, the rows and columns, how far the sheet passes from its points
+  (`deviation`, rounding), and `warnings`: a table whose heights rise more than a thousand times the step
+  (a `factor` left out), a sheet larger than a boolean takes.
+- **Names**: the face is `F1:face(0)`, its edges `edge(0)` to `edge(3)` along the first row, the last row, the
+  first column and the last column, its corners `vertex(0)` to `vertex(3)` at the first row's first and last
+  point and the last row's. Moving the points renames nothing.
+- **Refused**, naming the row and the point: rows of different lengths, fewer than 2 × 2 points, two
+  neighbouring points at one place, a row or column that runs back on itself, a sheet that would fold (the
+  refusal says whether a row runs back there or the proof could not decide), and a grid so far from the origin
+  that no model there holds the tolerance (from 1.126e9 mm at the default tolerance of 1e-6 mm; from about
+  6.5e7 mm on it is built and warned of: work nearer the origin, or in metres).
+- **How large**: a table holds at most 63 heights a row (64 columns with its key) and 10 000 rows; give a
+  wider grid's points outright (at most 262 144 points, 1 024 a side). A solid under the sheet is made by a
+  boolean, which takes a sheet of at most 32 768 spans: a grid of 184 × 184 points (the result warns past
+  it). `feature.plate` gives a small sheet a thickness; on a large one (150 × 120 points) plate, thicken and
+  shell are refused. `feature.extrude` with `upTo` does not take a sheet's face.
+- **Rough sheets**: a sheet whose heights zigzag several steps up and down between neighbours (±12 at every
+  point, or random within ±3 steps) is built, but cannot be measured or meshed yet: `document.check` says it
+  cannot be measured and an STL is refused. Random heights within ±1 step, smooth slopes of 25 and
+  shoulders of 20 steps are fine. Smooth the heights, or space the points closer.
+- **Warnings** stay with the sheet: `document.check` lists them (kind `gridSurface`) as they stand, also when a
+  variable or a table brought them about.
+
 ## Trimmed faces and N-sided fills
 
 `feature.surface.trim` makes a face on the surface of a face you already have, the surface itself, bounded by

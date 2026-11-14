@@ -8,7 +8,7 @@ The full description of any command, with every value it takes and what it refus
 
 ## Commands
 
-3DCraft 0.1.2 has 175 commands. A command's id is its family and its name: `feature.fillet`.
+3DCraft 0.1.2 has 176 commands. A command's id is its family and its name: `feature.fillet`.
 
 ### Documents and files
 
@@ -63,6 +63,7 @@ The full description of any command, with every value it takes and what it refus
 | `feature.developable`, `feature.unfold`, `unfold.map`, `measure.developability` | Developable sheets between two curves, flat patterns ([Surfaces and developables](surfaces.md#developable-surfaces-and-unfolding)) |
 | `feature.surface.network`, `feature.surface.coons` | Sheets through curve networks, edges held tangent to faces ([Surfaces and developables](surfaces.md#surfaces-from-curve-networks)) |
 | `feature.surface.trim`, `feature.surface.nsided` | A face of a surface bounded by curves on it; a smooth patch inside a loop of 3 to 6 curves ([Surfaces and developables](surfaces.md#trimmed-faces-and-n-sided-fills)) |
+| `feature.surface.grid` | A sheet through a grid of points, given row by row or as a table's heights times a factor ([Surfaces and developables](surfaces.md#surfaces-through-a-grid-of-points)) |
 | `feature.plate` | A plate of a sheet, with joints to its neighbours |
 | `feature.sheetMetal`, `sheetMetal.edit`, `sheetMetal.bends`, `sheetMetal.bendSequence` | Sheet metal: a base with flanges bent by radius and K-factor, reliefs, the bend table, the press-brake check ([Sheet metal](sheet-metal.md)) |
 | `feature.offsetProfile` | A sketch's profiles grown or shrunk |

@@ -413,6 +413,63 @@ fn the_primitives_name_every_edge_and_vertex() {
     }
 }
 
+/// A sheet through a grid of points names its four corners and four
+/// borders by the grid (`vertex(0..3)`, `edge(0..3)`), so each name stays
+/// on its corner as the points move, the corner a variable lifts included,
+/// and a row added moves the last row's corners with the last row.
+#[test]
+fn a_grid_surface_names_its_corners_by_the_grid_as_its_points_move() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    run(&mut s, "variable.set", json!({"name": "lift", "expr": "2"}));
+    run(&mut s, "variable.set", json!({"name": "hump", "expr": "1"}));
+    let points = |rows: usize| -> Value {
+        let row = |r: usize| -> Value {
+            (0..4)
+                .map(|c| {
+                    let z = match (r, c) {
+                        (1, 1) => "hump * 1 mm".to_string(),
+                        (r, 3) if r + 1 == rows => "lift * 1 mm".to_string(),
+                        _ => "0 mm".to_string(),
+                    };
+                    json!([format!("{} mm", 3 * c), format!("{} mm", 2 * r), z])
+                })
+                .collect()
+        };
+        (0..rows).map(row).collect()
+    };
+    built(
+        &mut s,
+        "feature.surface.grid",
+        json!({"points": points(3), "name": "Grid"}),
+    );
+    let (corners, rims) = named_and_shown(&mut s, "Grid");
+    assert_eq!(corners.len(), 4);
+    assert_eq!(rims.len(), 4);
+    let at = |s: &mut Session, name: &str| probe(s, name).unwrap_or_else(|e| panic!("{e}"));
+    assert!(distance(at(&mut s, "F1:vertex(0)"), [0.0, 0.0, 0.0]) < 1e-9);
+    assert!(distance(at(&mut s, "F1:vertex(3)"), [9.0, 4.0, 2.0]) < 1e-9);
+    // The inner point and the corner move; every name stays.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "hump", "expr": "-3"}),
+    );
+    run(&mut s, "variable.set", json!({"name": "lift", "expr": "5"}));
+    assert!(distance(at(&mut s, "F1:vertex(3)"), [9.0, 4.0, 5.0]) < 1e-9);
+    assert!(distance(at(&mut s, "F1:vertex(1)"), [9.0, 0.0, 0.0]) < 1e-9);
+    // A row added: the last row's corners are the new last row's.
+    let edited = run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Grid", "points": points(4)}),
+    );
+    assert_eq!(edited["status"], "ok", "{edited}");
+    assert!(distance(at(&mut s, "F1:vertex(2)"), [0.0, 6.0, 0.0]) < 1e-9);
+    assert!(distance(at(&mut s, "F1:vertex(3)"), [9.0, 6.0, 5.0]) < 1e-9);
+    named_and_shown(&mut s, "Grid");
+}
+
 type P = [f64; 2];
 
 /// Two splines that share both ends: a leaf.

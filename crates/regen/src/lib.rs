@@ -37,6 +37,8 @@ mod face_ops;
 mod fillet;
 mod fold;
 mod follow;
+mod grid;
+pub use grid::Gridded;
 mod loft;
 mod move_face;
 mod network;
@@ -1277,6 +1279,10 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         FeatureKind::SurfaceNsided(_) => {
             return Err("an N-sided fill needs its curves".to_string());
         }
+        // Built in `features`, which keeps its names and report.
+        FeatureKind::SurfaceGrid(_) => {
+            return Err("a grid surface is built with its names".to_string());
+        }
         // Placed in `features`; reference geometry is not a body.
         FeatureKind::DatumPlane(_)
         | FeatureKind::DatumAxis(_)
@@ -1818,6 +1824,17 @@ fn build_feature(
             Ok((body, made_names, report)) => {
                 names = Some(Arc::new(made_names));
                 developed = Some(Developed::Network(report));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::SurfaceGrid(sheet) = &feature.kind {
+        match grid::build(doc, variables, feature.id, sheet)
+            .and_then(|(body, names, report)| checked(doc, body).map(|body| (body, names, report)))
+        {
+            Ok((body, made_names, report)) => {
+                names = Some(Arc::new(made_names));
+                developed = Some(Developed::Grid(report));
                 (Status::Ok, Some(Arc::new(body)))
             }
             Err(reason) => (Status::Failed(reason), None),
