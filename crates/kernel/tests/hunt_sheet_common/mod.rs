@@ -507,7 +507,12 @@ pub fn moved(segs: &[Seg], d: P2) -> Vec<Seg> {
 /// and radii in `[r_lo, r_hi]`.
 pub fn star(rng: &mut Rng, n: usize, r_lo: f64, r_hi: f64) -> Vec<P2> {
     let mut angles: Vec<f64> = (0..n)
-        .map(|i| (i as f64 + rng.between(0.15, 0.85)) * TAU / n as f64)
+        .map(|i| {
+            // Three corners hold the centre only while no gap between them
+            // is half a turn or more.
+            let (lo, hi) = if n == 3 { (0.35, 0.65) } else { (0.15, 0.85) };
+            (i as f64 + rng.between(lo, hi)) * TAU / n as f64
+        })
         .collect();
     angles.sort_by(f64::total_cmp);
     angles

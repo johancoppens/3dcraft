@@ -19,6 +19,7 @@ use craft3d_kernel::primitives;
 use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
 use craft3d_kernel::sheetmetal::{Closing, Direction, FlangeSpec, LengthFrom, On, Spec, build};
 use craft3d_kernel::unfold::develop;
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_topo::{FaceId, check, mass_properties};
 use hunt_sheet_common::*;
@@ -258,6 +259,82 @@ fn a_hole_whose_rims_run_an_even_number_of_turns_is_an_invalid_body() {
     );
     let (made, _) = plated(4.0 / (3.0 * PI));
     assert!(made.is_err(), "known: refused");
+}
+
+/// REFUSED by the regeneration, owed (a hole across a tight bend): a base
+/// 25.867 × 74.256, 1.1204 thick, with a flange 15.663 long on its top
+/// edge bent up 90 degrees about the inner radius 0.001 (K 0.5), and a
+/// round hole of radius 1 drawn over the middle of the bend's strip, is
+/// a body that `topo::check` passes and whose volume is the closed form
+/// (the flats less the hole's part on them times `T`, the bend less the
+/// hole's part on the strip times `T (R + T/2) / (R + K T)`), but that
+/// cannot be meshed ("face … cannot be tessellated: its loops do not
+/// bound a region"), so the regeneration's self-intersection check
+/// refuses the part. The same hole with the radius 0.1, or a hole on the
+/// base's tangent line with the radius 0.001, is meshed. Found by the
+/// wide sweep of `hunt_sheet_metal.rs` (cases 3150 and 3348, at 1e6 and
+/// 1; case 525, at 1e-3, could not be measured, though meshed). When it
+/// is fixed this test fails: take it off.
+#[test]
+fn a_hole_across_a_tight_bend_cannot_be_meshed() {
+    use craft3d_kernel::sheetmetal::Cutout;
+    let tol = tolerance(1.0);
+    let (w, d, t) = (25.866747247304552, 74.25551480120751, 1.120411010680168);
+    let l = 15.663052181070924;
+    let part = |r: f64| {
+        let mut spec = rect_spec(
+            w,
+            d,
+            t,
+            1.0,
+            vec![flange(3, FRAC_PI_2, Direction::Up, r, 0.5, l)],
+        );
+        let ba = FRAC_PI_2 * (r + 0.5 * t);
+        spec.cutouts.push(Cutout {
+            profile: detect_profiles(
+                &[SketchCurve {
+                    id: 100,
+                    curve: Curve2::Circle {
+                        center: [0.5 * w, d + 0.5 * ba],
+                        radius: 1.0,
+                    },
+                }],
+                &tol,
+            )
+            .unwrap()
+            .remove(0),
+            from: "hole".into(),
+        });
+        // The hole lies wholly on the strip when its diameter is less
+        // than the strip's width; else its part beyond lies on the flats.
+        let rho: f64 = 1.0;
+        let g = |x: f64| {
+            let x = x.clamp(-rho, rho);
+            x * (rho * rho - x * x).max(0.0).sqrt() + rho * rho * (x / rho).pasin()
+        };
+        let band = g(0.5 * ba) - g(-0.5 * ba);
+        let disc = PI * rho * rho;
+        let want = t * (w * d + w * l - (disc - band)) + w * FRAC_PI_2 * t * (r + 0.5 * t)
+            - band * t * (r + 0.5 * t) / (r + 0.5 * t);
+        (build(&spec, &tol).unwrap(), want)
+    };
+    let (p, want) = part(0.1);
+    let b = &p.solid.body;
+    assert!(check(b, &tol).is_empty());
+    assert!((mass_properties(b).unwrap().volume / want - 1.0).abs() < 1e-9);
+    assert!(mesh_volume(b, 1e-3 * size_of(b)).is_ok());
+    let (p, want) = part(1e-3);
+    let b = &p.solid.body;
+    assert!(check(b, &tol).is_empty(), "known: the checker passes it");
+    let v = mass_properties(b).unwrap().volume;
+    assert!(
+        (v / want - 1.0).abs() < 1e-9,
+        "its volume is right: {v} for {want}"
+    );
+    assert!(
+        mesh_volume(b, 1e-3 * size_of(b)).is_err(),
+        "known: it cannot be meshed"
+    );
 }
 
 /// REFUSED, owed (the plate): a plate of a whole sphere or torus (a face

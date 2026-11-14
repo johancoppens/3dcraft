@@ -168,13 +168,9 @@ impl Sweep {
         let runs = self.runs();
         if KNOWN_WRONG.contains(&self.name.as_str()) {
             // Known to build wrong bodies at some of its values (a finding:
-            // crates/kernel/tests/hunt_sheet_repro.rs has it reduced); held
-            // to still doing so, so that a fix takes it off the list.
-            assert!(
-                !self.wrong.is_empty(),
-                "{}: known wrong, now nothing wrong: take it off KNOWN_WRONG",
-                self.name
-            );
+            // crates/kernel/tests/hunt_sheet_repro.rs has it reduced): not
+            // held here; the gated test holds the sweep about the value to
+            // still being wrong.
             return;
         }
         assert!(self.wrong.is_empty(), "{}: {:#?}", self.name, self.wrong);
@@ -543,9 +539,16 @@ fn sheet_sweeps(n: usize) -> Vec<Sweep> {
 
 #[test]
 fn sheet_metal_stepped_by_billionths_changes_only_at_real_limits() {
-    for s in sheet_sweeps(200) {
+    let sweeps = sheet_sweeps(200);
+    for s in &sweeps {
         s.hold(3);
     }
+    let about = sweeps.iter().find(|s| s.name == KNOWN_WRONG[0]).unwrap();
+    assert!(
+        !about.wrong.is_empty(),
+        "{}: known wrong, now nothing wrong: take it off KNOWN_WRONG",
+        about.name
+    );
 }
 
 #[test]

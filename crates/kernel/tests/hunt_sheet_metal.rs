@@ -552,6 +552,7 @@ fn flanged(rng: &mut Rng, k: f64, jog: bool) -> Drawn {
         .map(|f| f.spec.radius + t)
         .fold(0.0, f64::max)
         .max(relief.map_or(0.0, |r| 2.0 * r.size))
+        .max(bend_relief.map_or(0.0, |r| 2.0 * r.size))
         .max(0.05 * w.min(d));
     let mut base_points = Vec::new();
     let xmax = if jogged {
@@ -1042,7 +1043,14 @@ fn seeded(range: std::ops::Range<usize>) -> Tally {
 
 /// Cases of the seeded sweep known wrong, by number, each with what is
 /// wrong.
-const KNOWN_SEEDED: &[usize] = &[];
+const KNOWN_SEEDED: &[usize] = &[
+    // A hole across a bend whose inner radius is about a ten-thousandth
+    // of the thickness: the body passes the checker and has its closed-form
+    // volume but cannot be measured (525, at 1e-3) or meshed (3150 at 1e6,
+    // 3348 at 1): `hunt_sheet_repro.rs` ›
+    // `a_hole_across_a_tight_bend_cannot_be_meshed`.
+    525, 3150, 3348,
+];
 
 #[test]
 fn seeded_sheet_metal_parts_are_their_closed_forms() {
