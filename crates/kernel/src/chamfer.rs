@@ -100,6 +100,10 @@ pub(crate) fn said(error: BlendError) -> KernelError {
             error,
             smaller_fails,
         },
+        // A chamfer meets it only for the middle of its edge.
+        BlendError::Pinched { edge, pinch } => {
+            KernelError::ChamferTangentMiddle { edge, at: pinch.at }
+        }
     }
 }
 

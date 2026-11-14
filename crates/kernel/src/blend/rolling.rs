@@ -3300,6 +3300,27 @@ pub(super) fn blend(
             convex,
         });
     }
+    // A fillet whose section runs to nothing at a place inside its edge
+    // (the faces tangent there, or the edge turning from convex to
+    // concave) is not a face there: refused with the place, before
+    // anything is built ([`super::along`]).
+    for item in &items {
+        if let Size::Radius(radius) = item.request.size
+            && let Some(pinch) = super::along::pinched(
+                body,
+                &uses,
+                item.request.edge,
+                item.convex,
+                radius,
+                tolerance.linear,
+            )
+        {
+            return Err(BlendError::Pinched {
+                edge: item.request.edge,
+                pinch,
+            });
+        }
+    }
     // Every chamfer and fillet held to keeping clear of the faces beside
     // its edge in the planes across it looked at (`shown`). What it refuses
     // is said after what the construction itself refuses (a chamfer that

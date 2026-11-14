@@ -104,6 +104,7 @@ use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
 
+mod along;
 mod carried;
 mod fit;
 mod rolling;
@@ -494,6 +495,11 @@ pub(crate) enum BlendError {
         /// Smaller sizes, tried, fail the same way.
         smaller_fails: bool,
     },
+    /// The two faces of `edge` are tangent at a place strictly inside it
+    /// (or too close to it for the radius), though not all along it: a
+    /// fillet's section runs to nothing there ([`along`]); for a chamfer,
+    /// the place is the edge's middle, where its side is read.
+    Pinched { edge: EdgeId, pinch: along::Pinch },
 }
 
 impl From<KernelError> for BlendError {
@@ -948,7 +954,14 @@ fn oriented(
     let convex = match found.turn {
         Turn::Convex => true,
         Turn::Concave => false,
-        Turn::Smooth => return Err(refused(edge, Reason::Smooth)),
+        // Tangent at the middle: all along the edge (no corner), or only
+        // there, which is said with the place.
+        Turn::Smooth => {
+            return Err(match along::tangent_at_middle(body, uses, edge) {
+                Some(pinch) => BlendError::Pinched { edge, pinch },
+                None => refused(edge, Reason::Smooth),
+            });
+        }
     };
     Ok((faces, into, convex))
 }
@@ -2548,6 +2561,10 @@ fn named_before(
             },
             None => BlendError::Kernel(*error),
         },
+        BlendError::Pinched { edge, pinch } => match edge_was(edge) {
+            Some(edge) => BlendError::Pinched { edge, pinch },
+            None => lost(),
+        },
     }
 }
 
@@ -2997,7 +3014,8 @@ impl From<BlendError> for Failure {
             BlendError::Refused { edge, .. } => *edge,
             BlendError::Boolean { edge, .. }
             | BlendError::TooLarge { edge, .. }
-            | BlendError::Spindle { edge, .. } => Some(*edge),
+            | BlendError::Spindle { edge, .. }
+            | BlendError::Pinched { edge, .. } => Some(*edge),
             BlendError::Kernel(_) => None,
         };
         Failure { edge, error }

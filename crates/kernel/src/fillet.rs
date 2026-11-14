@@ -97,6 +97,12 @@ fn said(error: BlendError) -> KernelError {
             error,
             smaller_fails,
         },
+        BlendError::Pinched { edge, pinch } => KernelError::FilletPinched {
+            edge,
+            at: pinch.at,
+            why: pinch.why,
+            places: pinch.places,
+        },
     }
 }
 

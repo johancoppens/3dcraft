@@ -73,6 +73,16 @@ fn explain(
                 None => format!("{at}: {reason}"),
             }
         }
+        KernelError::FilletPinched {
+            edge,
+            at,
+            why,
+            places,
+        } => format!(
+            "{}: {}",
+            role(edge),
+            craft3d_kernel::fillet_pinched_text(at, why, places, &format!(" {unit}"))
+        ),
         KernelError::FilletBoolean {
             edge,
             error,
