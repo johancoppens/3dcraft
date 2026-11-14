@@ -10,6 +10,7 @@ pub mod closure;
 pub mod curvature;
 mod curve;
 mod extend;
+pub mod grid;
 pub mod intersect;
 pub mod network;
 mod nurbs;

@@ -398,11 +398,14 @@ impl Document {
         }
         for feature in &self.features {
             let formulas = feature.kind.formula_exprs();
-            if feature
-                .exprs()
-                .iter()
-                .chain(formulas.iter())
-                .any(|(_, e)| uses(e))
+            // A grid surface reads its heights from a table by name.
+            let reads = matches!(&feature.kind, crate::FeatureKind::SurfaceGrid(g) if g.table() == Some(name));
+            if reads
+                || feature
+                    .exprs()
+                    .iter()
+                    .chain(formulas.iter())
+                    .any(|(_, e)| uses(e))
             {
                 users.push(format!("feature {} ({})", feature.id, feature.name));
             }
@@ -538,6 +541,14 @@ impl Document {
         for feature in &mut doc.features {
             for expr in feature.exprs_mut() {
                 rename(expr)?;
+            }
+            if let crate::FeatureKind::SurfaceGrid(crate::SurfaceGrid {
+                points: crate::GridPoints::Table { table, .. },
+                ..
+            }) = &mut feature.kind
+                && table == old
+            {
+                *table = new.to_string();
             }
             // The formulas of curves look tables up as any expression does.
             for expr in feature.kind.formula_exprs_mut() {

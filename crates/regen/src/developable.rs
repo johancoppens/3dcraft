@@ -301,6 +301,8 @@ pub enum Developed {
     Trim(crate::trimfill::Trimmed),
     /// An N-sided fill: how its seams meet.
     Fill(crate::trimfill::Filled),
+    /// A grid surface: its size and how close it passes its points.
+    Grid(crate::grid::Gridded),
 }
 
 /// The faces of an unfold in its source's body, in the order given.

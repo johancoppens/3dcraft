@@ -1125,6 +1125,13 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rise: Option<String>,
     },
+    /// A sheet through a grid of points (format version 72): `points`
+    /// where they come from (`GridPoints`), `spacing` the parameters it
+    /// takes them at, always written (a file never depends on a default).
+    SurfaceGrid {
+        points: GridPoints,
+        spacing: GridSpacing,
+    },
     /// Faces of an earlier body laid flat as one piece (format version
     /// 39), placed at `at` and turned by `angle` about +z.
     Unfold {
@@ -2203,6 +2210,35 @@ pub enum SketchGeometry {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<TextPath>,
     },
+}
+
+/// Where the points of a grid surface come from (format version 72;
+/// `craft3d_doc::GridPoints`), tagged with `"from"`: `given`, rows of
+/// points of three expressions each; or `table`, the heights of a regular
+/// grid read from the table `table`, its first point at `origin`, `step`
+/// apart along x and y, each height times `factor`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "from", rename_all = "camelCase", deny_unknown_fields)]
+pub enum GridPoints {
+    Given {
+        rows: Vec<Vec<[String; 3]>>,
+    },
+    Table {
+        table: String,
+        origin: [String; 3],
+        step: [String; 2],
+        factor: String,
+    },
+}
+
+/// The parameters a grid surface takes its points at (format version 72;
+/// `craft3d_doc::GridSpacing`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GridSpacing {
+    Greville,
+    Chord,
+    Even,
 }
 
 /// The parameters a spline through points takes its points at (format
