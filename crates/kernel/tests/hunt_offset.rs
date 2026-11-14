@@ -1172,9 +1172,15 @@ fn cap_through(which: usize, past: f64) -> Result<Option<craft3d_kernel::KernelE
 /// the bottom to the top; with the top below the bottom each seam runs
 /// from its bottom end down to its top end, the other way along the side
 /// than it did: an edge turned round, which is a face that vanished. So
-/// the offset is refused as too far, with what fits (not more than 20,
-/// to a few tolerances), as the same vase without the bulge, a cylinder
-/// and a block are.
+/// the offset is refused, as the same vase without the bulge, a cylinder
+/// and a block are. What fits is said where it is found (not more than
+/// 20, to a few tolerances). On this vase it is not: smaller offsets on
+/// the way are refused too (an older fault: a seam's end, found where the
+/// top's plane meets the two halves of one turned surface, can slide
+/// round their circle), so the seam is far from gone at the largest
+/// offset found to fit, and the refusal says that how far the top can go
+/// was not found, rather than a distance that is not the limit (the
+/// review of 2026-11-14: "below 19.68", where 19.9999 builds).
 ///
 /// Until 2026-11-14 the vase past its bottom by 1e-4 and 1e-2 was built:
 /// a body that passed the checker, its side's loops running the wrong way
@@ -1196,9 +1202,16 @@ fn a_cap_offset_past_the_cap_across_from_it_is_refused() {
                     println!("{what}: refused short of it: {error}");
                 }
                 Ok(Some(craft3d_kernel::KernelError::FaceOpTooFar { largest, .. }))
-                    if largest <= 20.0 + 8e-6 =>
+                    if largest <= 20.0 + 8e-6 && largest >= 20.0 * (1.0 - 1e-5) =>
                 {
                     println!("{what}: too far, what fits is below {largest}");
+                }
+                Ok(Some(craft3d_kernel::KernelError::FaceOp { reason, .. }))
+                    if which == 2
+                        && reason.contains("the edge shrinks to nothing or turns round")
+                        && reason.contains("was not found") =>
+                {
+                    println!("{what}: refused, no limit said");
                 }
                 Ok(Some(error)) => unexpected.push(format!("{what}: {error}")),
             }
@@ -1206,3 +1219,95 @@ fn a_cap_offset_past_the_cap_across_from_it_is_refused() {
     }
     assert!(unexpected.is_empty(), "{unexpected:#?}");
 }
+
+/// What became of a block 40 x 30 x 20 with a dimple in its top (a ball
+/// of radius 6 about a point 3 over the middle of the top taken out: its
+/// lowest point is 17 over the bottom), its bottom offset inward by 17 and
+/// `depth` more: `Ok(false)` refused, or built without the fault looked
+/// for; `Ok(true)` built wrong: a point under the moved bottom, in the
+/// part of the ball the bottom went through, is found inside the body (by
+/// rays, `classify_points`), where everything under a body's flat bottom
+/// is outside it.
+fn dimple(k: f64, depth: f64) -> Result<bool, String> {
+    use craft3d_kernel::boolean::{BooleanOp, Place, boolean, classify_points};
+    use craft3d_kernel::primitives;
+    use craft3d_math::Frame;
+    let tol = tolerance(k);
+    let block = primitives::block(&Frame::WORLD, 40.0 * k, 30.0 * k, 20.0 * k).unwrap();
+    let centre = Frame::WORLD
+        .at(Vec3::new(20.0 * k, 15.0 * k, 23.0 * k))
+        .unwrap();
+    let ball = primitives::sphere(&centre, 6.0 * k).unwrap();
+    let body = boolean(&block, &ball, BooleanOp::Subtract, &tol)
+        .unwrap()
+        .body;
+    let bottom = (0..body.faces.len() as u32)
+        .map(FaceId)
+        .find(|f| match &body.face(*f).unwrap().surface {
+            Surface::Plane(p) => {
+                p.frame().origin().z.abs() < 1e-9 * k && p.frame().z().z.abs() > 0.5
+            }
+            _ => false,
+        })
+        .unwrap();
+    let made = match offset_faces(
+        &body,
+        &[FaceOffset {
+            face: bottom,
+            distance: -(17.0 + depth) * k,
+        }],
+        &tol,
+    ) {
+        Ok(made) => made,
+        Err(_) => return Ok(false),
+    };
+    // Half way between the ball's lowest point and the moved bottom.
+    let under = Vec3::new(20.0 * k, 15.0 * k, (17.0 + 0.5 * depth) * k);
+    match classify_points(&made.body, &[under], &tol).map_err(|e| e.to_string())?[..] {
+        // Short of the dimple the point lies in the material between
+        // the two: inside is right there.
+        [Place::Inside] => Ok(depth > 0.0),
+        [Place::Outside] => Ok(depth <= 0.0),
+        ref other => Err(format!(
+            "the point under the bottom cannot be placed: {other:?}"
+        )),
+    }
+}
+
+/// **Known wrong, owed** (the review of 2026-11-14): a face moved a little
+/// way into a smooth face far from it is built, by the kernel and through
+/// the commands alike (a bottom moved 2 thousandths into this dimple:
+/// status ok, `document.check` deep ok). No vertex and no edge lies in the
+/// bottom's way, the volume stays positive, and from that depth the mesh
+/// the regeneration looks at shows nothing either (it finds the crossing
+/// from 0.017 on in this dimple; the kernel returns the body at every
+/// depth short of turning it inside out). The repair is the faces'
+/// intersection on one body (`docs/design/face-operations.md` › *A face
+/// moved up to or past what ends its neighbours* › what is still not
+/// found); it has to take the depths off [`DIMPLE_KNOWN`].
+#[test]
+fn a_bottom_moved_into_a_dimple_of_the_top_is_refused() {
+    let mut unexpected = Vec::new();
+    for k in [1e-3, 1.0, 1e3] {
+        for depth in [-0.5, 0.002, 0.017, 0.1, 1.0] {
+            let known = DIMPLE_KNOWN.contains(&depth);
+            match dimple(k, depth) {
+                Err(e) => unexpected.push(format!("scale {k}, {depth} into the dimple: {e}")),
+                Ok(true) if !known => {
+                    unexpected.push(format!("scale {k}, {depth} into the dimple: built wrong"));
+                }
+                Ok(false) if known => unexpected.push(format!(
+                    "scale {k}, {depth} into the dimple: refused or built right now: take it off DIMPLE_KNOWN"
+                )),
+                Ok(wrong) => println!(
+                    "scale {k}, {depth} into the dimple: {}",
+                    if wrong { "known wrong" } else { "refused or right" }
+                ),
+            }
+        }
+    }
+    assert!(unexpected.is_empty(), "{unexpected:#?}");
+}
+
+/// The depths into the dimple at which the bottom is built through it.
+const DIMPLE_KNOWN: [f64; 4] = [0.002, 0.017, 0.1, 1.0];

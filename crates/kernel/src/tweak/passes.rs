@@ -14,7 +14,9 @@
 //!    made again, on any surface and with any curves, in space: an edge
 //!    made again and another edge of the same face that come within half
 //!    the tolerance of each other away from a vertex they share, where the
-//!    edges they were did not.
+//!    edges they were did not. Only the edges whose hulls reach the edges
+//!    made again are followed, and their steps are swept along one axis,
+//!    so that a step is held only against the steps whose boxes reach it.
 //! 2. **A vertex a moved face went through** ([`swept`]). A vertex that is
 //!    not on a face that moved, and lies on the other side of that face's
 //!    surface than it did (or on it), with the face over it: beside the
@@ -22,7 +24,8 @@
 //!    are still skin, as beside the edges made again (`super::buried`).
 //!    The question decides, the vertex only says where to ask: a vertex
 //!    under an overhang the face grew into is passed by its surface, and
-//!    is fine.
+//!    is fine. A largest move that fits is said only where the vertex is
+//!    the first thing the face can have met ([`first_met`]).
 //! 3. **An edge made again that goes through a face not its own**
 //!    ([`pierced`]). The rim of a pocket's floor moved down a pocket that
 //!    widens runs out through the sides of the block: where an edge made
@@ -30,18 +33,37 @@
 //!    on that face, the edge is cut into stretches, and the same question
 //!    is asked beside the middle of each (the middle of the whole edge,
 //!    which is where it was asked before, can lie on the right side).
+//!
+//!    2 and 3 ask how far a point is from a face's surface, of every
+//!    vertex and every step of an edge near it, and so only of faces
+//!    where that is a closed form ([`analytic`]): a freeform face that
+//!    moves through a vertex, and an edge that runs out through a freeform
+//!    face, are not looked for.
 //! 4. **A body turned inside out** ([`inside_out`]). A shell that enclosed
 //!    a volume and is measured to enclose a negative one. Measured only
 //!    where a face that does not touch a moved face lies in the box the
 //!    moved face went through ([`Swept::near`]): the measure costs what
 //!    `document.measure` costs.
 //!
+//! **Cost.** 1 to 3 are counted against the operation's work bound
+//! (`craft3d_geom::allowance`: the evaluations of freeform curves count
+//! themselves, each pair looked at closely is charged besides), and have
+//! no cap of their own: a check that cannot end within the bound refuses
+//! the operation as needing too much work ([`Spent`]), which says so, and
+//! never stops without a word. The measure of 4 is not counted (it has
+//! its own bound per face, and is taken only where a far face lay in the
+//! way). Measured on a plate whose top has 240 wavy spline edges, its top
+//! offset: `docs/design/face-operations.md` › *What the checks cost*.
+//!
 //! What these do not find: a moved face that passes a face far from it
 //! where no vertex lies in its way, no edge made again goes through it
 //! and the volume stays positive (the bottom of a block moved up into a
-//! groove of its top). That needs the faces' intersection, and is left,
-//! as before, to the mesh the regeneration looks for self-intersections
-//! on.
+//! groove of its top, a dimple, the point of a drilled hole). That needs
+//! the faces' intersection. The mesh the regeneration looks for
+//! self-intersections on finds it only from some depth on: a few
+//! thousandths of a millimetre into a smooth face it is still built
+//! wrong, also through the commands (owed; pinned as known in
+//! `crates/kernel/tests/hunt_offset.rs`).
 
 use super::distance;
 use craft3d_geom::{Curve3, Surface};
@@ -61,10 +83,6 @@ const NEAREST_STEPS: usize = 24;
 /// Places between a vertex two edges share and a place where they meet at
 /// which they are asked whether they part.
 const BETWEEN: usize = 8;
-/// Most places looked at closely for one pair of edges, and pairs of edges
-/// looked at in one operation; past them the check says nothing.
-const MOST_LOOKS: usize = 64;
-const MOST_PAIRS: usize = 1 << 20;
 /// How near two edges of one face come where they meet, as a share of the
 /// tolerance: edges a tolerance apart bound a face that is thin, which is
 /// a face (`craft3d_topo`'s rule of simple loops), and crossing edges are
@@ -298,46 +316,95 @@ fn meet(a: &Edge, pa: &Path, b: &Edge, pb: &Path, tol: f64) -> bool {
     if !boxes_near(pa, pb, reach) {
         return false;
     }
-    let shared: Vec<f64> = [(a.start, a.range.0), (a.end, a.range.1)]
+    (0..pa.points.len().saturating_sub(1))
+        .any(|i| (0..pb.points.len().saturating_sub(1)).any(|j| look(a, pa, i, b, pb, j, tol)))
+}
+
+/// [`meet`] for one step of each edge (`i` of `a`, `j` of `b`): whether the
+/// two come within `tol` of each other at a place found from where those
+/// steps are nearest, that is not a vertex the edges share.
+fn look(a: &Edge, pa: &Path, i: usize, b: &Edge, pb: &Path, j: usize, tol: f64) -> bool {
+    let (Some([s0, s1]), Some([p0, p1]), Some([t0, t1]), Some([q0, q1])) = (
+        pa.params.get(i..i.saturating_add(2)),
+        pa.points.get(i..i.saturating_add(2)),
+        pb.params.get(j..j.saturating_add(2)),
+        pb.points.get(j..j.saturating_add(2)),
+    ) else {
+        return false;
+    };
+    let (along, across, off) = segments(*p0, *p1, *q0, *q1);
+    if off.is_nan() || off > pa.slack + pb.slack + tol {
+        return false;
+    }
+    let (s, _, apart) = nearest_pair(a, b, s0 + (s1 - s0) * along, t0 + (t1 - t0) * across, tol);
+    if apart.is_nan() || apart > tol {
+        return false;
+    }
+    // The vertex's own: the edges never part between it and here.
+    let own = [(a.start, a.range.0), (a.end, a.range.1)]
         .into_iter()
         .filter(|(vertex, _)| *vertex == b.start || *vertex == b.end)
-        .map(|(_, at)| at)
-        .collect();
-    let mut looks = 0_usize;
-    for (ts, ps) in pa.params.windows(2).zip(pa.points.windows(2)) {
-        let ([s0, s1], [p0, p1]) = (ts, ps) else {
-            continue;
-        };
-        for (us, qs) in pb.params.windows(2).zip(pb.points.windows(2)) {
-            let ([t0, t1], [q0, q1]) = (us, qs) else {
-                continue;
-            };
-            let (along, across, off) = segments(*p0, *p1, *q0, *q1);
-            if off.is_nan() || off > reach {
-                continue;
-            }
-            looks += 1;
-            if looks > MOST_LOOKS {
-                return false;
-            }
-            let (s, _, apart) =
-                nearest_pair(a, b, s0 + (s1 - s0) * along, t0 + (t1 - t0) * across, tol);
-            if apart.is_nan() || apart > tol {
-                continue;
-            }
-            // The vertex's own: the edges never part between it and here.
-            let own = shared.iter().any(|end| {
-                !(1..=BETWEEN).any(|k| {
-                    let at = end + (s - end) * k as f64 / (BETWEEN + 1) as f64;
-                    gap(a.curve.eval(at), b, pb) > tol
-                })
-            });
-            if !own {
-                return true;
-            }
+        .any(|(_, end)| {
+            !(1..=BETWEEN).any(|k| {
+                let at = end + (s - end) * k as f64 / (BETWEEN + 1) as f64;
+                gap(a.curve.eval(at), b, pb) > tol
+            })
+        });
+    !own
+}
+
+/// The work bound of the operation was reached while a check ran
+/// ([`craft3d_geom::allowance`]): the operation is refused as needing too
+/// much work, which says so; a check never stops without a word.
+pub(super) struct Spent;
+
+/// One step of an edge of a face, for the sweep of [`crossed`]: the edge,
+/// the step's place along its path, and the step's box grown by how far
+/// the curve may be from its chord and half of how near two edges meet.
+#[derive(Clone, Copy)]
+struct Step {
+    edge: EdgeId,
+    at: usize,
+    remade: bool,
+    lo: Vec3,
+    hi: Vec3,
+}
+
+/// A box that holds the edge, from points that take no evaluation of its
+/// curve along the way: a line's ends, a circle's or an ellipse's centre
+/// and largest radius, a spline's control points (its hull; the whole
+/// curve's, also where the edge is a part of it). `None` for an edge whose
+/// box is not finite.
+fn hull(edge: &Edge) -> Option<(Vec3, Vec3)> {
+    let (lo, hi) = match &edge.curve {
+        Curve3::Line(_) => {
+            let (a, b) = (edge.curve.eval(edge.range.0), edge.curve.eval(edge.range.1));
+            (a.min(b), a.max(b))
         }
+        Curve3::Circle(circle) => {
+            let (centre, r) = (circle.frame().origin(), circle.radius());
+            (centre - Vec3::new(r, r, r), centre + Vec3::new(r, r, r))
+        }
+        Curve3::Ellipse(ellipse) => {
+            let (a, b) = ellipse.semi_axes();
+            let (centre, r) = (ellipse.frame().origin(), a.max(b));
+            (centre - Vec3::new(r, r, r), centre + Vec3::new(r, r, r))
+        }
+        Curve3::Nurbs(spline) => {
+            let mut points = spline.control_points().iter();
+            let first = *points.next()?;
+            points.fold((first, first), |(lo, hi), p| (lo.min(*p), hi.max(*p)))
+        }
+    };
+    (lo.is_finite() && hi.is_finite()).then_some((lo, hi))
+}
+
+fn part(v: Vec3, axis: usize) -> f64 {
+    match axis {
+        0 => v.x,
+        1 => v.y,
+        _ => v.z,
     }
-    false
 }
 
 /// The first edge of `remade` that comes within half the tolerance
@@ -352,11 +419,11 @@ pub(super) fn crossed(
     uses: &[Vec<FaceId>],
     remade: &BTreeSet<EdgeId>,
     tolerance: &Tolerance,
-) -> Option<(FaceId, EdgeId, EdgeId)> {
+) -> Result<Option<(FaceId, EdgeId, EdgeId)>, Spent> {
     let tol = MEET * tolerance.linear;
     let mut paths: BTreeMap<EdgeId, Option<Path>> = BTreeMap::new();
-    let mut seen: BTreeSet<(EdgeId, EdgeId)> = BTreeSet::new();
-    let mut pairs = 0_usize;
+    // Pairs that met before the operation too: not looked at again.
+    let mut old: BTreeSet<(EdgeId, EdgeId)> = BTreeSet::new();
     for face in super::faces_with(uses, remade) {
         let edges: BTreeSet<EdgeId> = made
             .face(face)
@@ -365,47 +432,137 @@ pub(super) fn crossed(
             .filter_map(|l| made.loop_(*l))
             .flat_map(|l| l.coedges.iter().map(|c| c.edge))
             .collect();
-        for first in edges.iter().filter(|e| remade.contains(e)) {
-            for second in edges.iter().filter(|e| *e != first) {
-                let key = (*first.min(second), *first.max(second));
-                if !seen.insert(key) {
-                    continue;
-                }
-                pairs += 1;
-                if pairs > MOST_PAIRS || craft3d_geom::allowance::exhausted() {
-                    return None;
-                }
-                let (Some(a), Some(b)) = (made.edge(*first), made.edge(*second)) else {
+        // The box round the edges made again, from their hulls: an edge
+        // whose own hull does not reach it is not followed at all (a side
+        // moved on a plate whose top has hundreds of slots follows the
+        // top's one edge that moved and the few beside it).
+        let mut around: Option<(Vec3, Vec3)> = None;
+        for id in edges.iter().filter(|id| remade.contains(id)) {
+            let Some((lo, hi)) = made.edge(*id).and_then(hull) else {
+                continue;
+            };
+            around = Some(match around {
+                Some((all_lo, all_hi)) => (all_lo.min(lo), all_hi.max(hi)),
+                None => (lo, hi),
+            });
+        }
+        let Some((around_lo, around_hi)) = around else {
+            continue;
+        };
+        let reaches = |id: &EdgeId| {
+            remade.contains(id)
+                || made.edge(*id).and_then(hull).is_none_or(|(lo, hi)| {
+                    (0..3).all(|k| {
+                        part(lo, k) <= part(around_hi, k) + tol
+                            && part(around_lo, k) <= part(hi, k) + tol
+                    })
+                })
+        };
+        // Every step of every such edge of the face, boxed.
+        let mut steps: Vec<Step> = Vec::new();
+        for id in edges.iter().filter(|id| reaches(id)) {
+            if craft3d_geom::allowance::exhausted() {
+                return Err(Spent);
+            }
+            let followed = paths
+                .entry(*id)
+                .or_insert_with(|| made.edge(*id).and_then(path));
+            let Some(followed) = followed else {
+                continue;
+            };
+            let grow = followed.slack + 0.5 * tol;
+            let grow = Vec3::new(grow, grow, grow);
+            let made_again = remade.contains(id);
+            for (at, ends) in followed.points.windows(2).enumerate() {
+                let [p0, p1] = ends else {
                     continue;
                 };
-                for id in [first, second] {
-                    paths
-                        .entry(*id)
-                        .or_insert_with(|| made.edge(*id).and_then(path));
+                steps.push(Step {
+                    edge: *id,
+                    at,
+                    remade: made_again,
+                    lo: p0.min(*p1) - grow,
+                    hi: p0.max(*p1) + grow,
+                });
+            }
+        }
+        // Swept along the axis the steps spread furthest along: a step is
+        // held against the steps whose boxes reach it, and only a step of
+        // an edge made again against a step of another edge.
+        let Some(first) = steps.first().copied() else {
+            continue;
+        };
+        let (lo, hi) = steps.iter().fold((first.lo, first.hi), |(lo, hi), s| {
+            (lo.min(s.lo), hi.max(s.hi))
+        });
+        let axis = (0..3)
+            .max_by(|a, b| (part(hi, *a) - part(lo, *a)).total_cmp(&(part(hi, *b) - part(lo, *b))))
+            .unwrap_or(0);
+        let others = [(axis + 1) % 3, (axis + 2) % 3];
+        steps.sort_by(|a, b| {
+            part(a.lo, axis)
+                .total_cmp(&part(b.lo, axis))
+                .then(a.edge.cmp(&b.edge))
+                .then(a.at.cmp(&b.at))
+        });
+        let mut reaching: Vec<Step> = Vec::new();
+        for step in &steps {
+            reaching.retain(|other| part(other.hi, axis) >= part(step.lo, axis));
+            for other in &reaching {
+                if other.edge == step.edge
+                    || !(step.remade || other.remade)
+                    || others.iter().any(|k| {
+                        part(other.hi, *k) < part(step.lo, *k)
+                            || part(step.hi, *k) < part(other.lo, *k)
+                    })
+                {
+                    continue;
                 }
-                let (Some(Some(pa)), Some(Some(pb))) = (paths.get(first), paths.get(second)) else {
+                // The edge made again first (of two, the lower number).
+                let (a, b) = if step.remade && (!other.remade || step.edge < other.edge) {
+                    (step, other)
+                } else {
+                    (other, step)
+                };
+                if old.contains(&(a.edge, b.edge)) {
+                    continue;
+                }
+                // Counted, also for lines and circles, whose evaluations
+                // are not: a face of many near edges ends at the bound.
+                craft3d_geom::allowance::charge(1);
+                if craft3d_geom::allowance::exhausted() {
+                    return Err(Spent);
+                }
+                let (Some(ea), Some(eb), Some(Some(pa)), Some(Some(pb))) = (
+                    made.edge(a.edge),
+                    made.edge(b.edge),
+                    paths.get(&a.edge),
+                    paths.get(&b.edge),
+                ) else {
                     continue;
                 };
-                if !meet(a, pa, b, pb, tol) {
+                if !look(ea, pa, a.at, eb, pb, b.at, tol) {
                     continue;
                 }
                 // Where they were: edges that met already are not this
                 // operation's doing.
-                let before = match (body.edge(*first), body.edge(*second)) {
-                    (Some(a), Some(b)) => match (path(a), path(b)) {
-                        (Some(pa), Some(pb)) => meet(a, &pa, b, &pb, tol),
+                let before = match (body.edge(a.edge), body.edge(b.edge)) {
+                    (Some(ea), Some(eb)) => match (path(ea), path(eb)) {
+                        (Some(pa), Some(pb)) => meet(ea, &pa, eb, &pb, tol),
                         // Not followed: it cannot be told, and says nothing.
                         _ => true,
                     },
                     _ => false,
                 };
                 if !before {
-                    return Some((face, *first, *second));
+                    return Ok(Some((face, a.edge, b.edge)));
                 }
+                old.insert((a.edge, b.edge));
             }
+            reaching.push(*step);
         }
     }
-    None
+    Ok(None)
 }
 
 /// What the faces that moved went through ([`swept`]).
@@ -416,6 +573,13 @@ pub(super) struct Swept {
     /// Whether a face that shares no vertex with a moved face lies in the
     /// box that face went through.
     pub near: bool,
+    /// Whether the vertices passed are the first of the body each moved
+    /// face can have met on its way, so that the largest move that fits,
+    /// found by trying smaller ones, is where the face first touches
+    /// something ([`first_met`]). Where they may not be, a smaller move
+    /// can pass every check and still run into a smooth face no vertex
+    /// stands for, and no limit is said.
+    pub first: bool,
 }
 
 /// Whether two boxes share a point.
@@ -456,33 +620,45 @@ impl Layout {
 
 /// Halvings of the search for where an edge crosses a surface.
 const CUT_STEPS: usize = 48;
-/// Most pairs of an edge and a face near it ([`pierced`]), and of a moved
-/// face and a vertex in its way ([`swept`]), that are looked at closely in
-/// one operation; past them the check says nothing more. These checks are
-/// not counted against the operation's work bound (`super::resurface_with`),
-/// so each is held by a count of its own.
-const MOST_NEAR: usize = 1 << 13;
+
+/// Whether the distance from a point to `surface` is a closed form (a
+/// plane, a cylinder, a cone, a sphere, a torus). [`swept`] and [`pierced`]
+/// ask it of every vertex and every step of an edge near a face, which a
+/// freeform face answers by a search each time: on a plate with 240 wavy
+/// slots, `pierced` alone, asked of the slots' freeform walls too, took
+/// longer than the whole offset of the plate's top had (the review of
+/// 2026-11-14). So a freeform face is not asked: an edge that runs out
+/// through one, and a vertex one moves through, are left to the mesh the
+/// regeneration looks at, as before these checks.
+fn analytic(surface: &Surface) -> bool {
+    match surface {
+        Surface::Plane(_)
+        | Surface::Cylinder(_)
+        | Surface::Cone(_)
+        | Surface::Sphere(_)
+        | Surface::Torus(_) => true,
+        Surface::Bezier(_) | Surface::Nurbs(_) => false,
+    }
+}
 
 /// The edges of `remade` that cross the surface of a face of `made` that
-/// shares no vertex with them, on that face (or where that cannot be
-/// told): per edge, the middles of the stretches the crossings cut it
-/// into, and the first face it goes through (the module documentation).
-/// Found from the edge followed in steps: a stretch that goes in and out
-/// again between two steps is not seen.
+/// shares no vertex with them and lies on a surface with a closed form
+/// ([`analytic`]), on that face (or where that cannot be told): per edge,
+/// the middles of the stretches the crossings cut it into, and the first
+/// face it goes through (the module documentation). Found from the edge
+/// followed in steps: a stretch that goes in and out again between two
+/// steps is not seen. Every pair of an edge and a face near it is counted
+/// against the operation's work bound; reaching it is [`Spent`].
 pub(super) fn pierced(
     made: &Body,
     layout: &Layout,
     uses: &[Vec<FaceId>],
     remade: &BTreeSet<EdgeId>,
     tolerance: &Tolerance,
-) -> BTreeMap<EdgeId, (Vec<f64>, FaceId)> {
+) -> Result<BTreeMap<EdgeId, (Vec<f64>, FaceId)>, Spent> {
     let tol = tolerance.linear;
     let mut found = BTreeMap::new();
-    let mut looked = 0_usize;
     for id in remade {
-        if looked > MOST_NEAR {
-            break;
-        }
         let Some(edge) = made.edge(*id) else {
             continue;
         };
@@ -504,12 +680,12 @@ pub(super) fn pierced(
             {
                 continue;
             }
-            let Some(data) = made.face(face) else {
+            let Some(data) = made.face(face).filter(|f| analytic(&f.surface)) else {
                 continue;
             };
-            looked += 1;
-            if looked > MOST_NEAR {
-                break;
+            craft3d_geom::allowance::charge(1);
+            if craft3d_geom::allowance::exhausted() {
+                return Err(Spent);
             }
             let off = |t: f64| distance(&data.surface, edge.curve.eval(t)).map(|(d, _)| d);
             let sides: Vec<Option<f64>> = followed.params.iter().map(|t| off(*t)).collect();
@@ -583,7 +759,7 @@ pub(super) fn pierced(
             .collect();
         found.insert(*id, (middles, through));
     }
-    found
+    Ok(found)
 }
 
 /// The vertices of `body` the faces of `surfaces` passed on their way to
@@ -597,14 +773,14 @@ pub(super) fn swept(
     layout: &Layout,
     surfaces: &BTreeMap<FaceId, Surface>,
     tolerance: &Tolerance,
-) -> Swept {
+) -> Result<Swept, Spent> {
     let tol = tolerance.linear;
     let mut found = Swept {
         edges: BTreeMap::new(),
         near: false,
+        first: true,
     };
     let (vertices, boxes) = (&layout.vertices, &layout.boxes);
-    let mut looked = 0_usize;
     // The edges at every vertex.
     let mut at: Vec<Vec<EdgeId>> = vec![Vec::new(); made.vertices.len()];
     for (index, edge) in made.edges.iter().enumerate() {
@@ -635,6 +811,14 @@ pub(super) fn swept(
                     && v.is_disjoint(own)
             });
         }
+        // Where its vertices went is asked of a face on a plane, a
+        // cylinder, a cone, a sphere or a torus only ([`analytic`]).
+        if !(analytic(&was.surface) && analytic(&is.surface)) {
+            continue;
+        }
+        // The nearest of the vertices passed, as it lay before the face
+        // (its distance, and which side of the face that was).
+        let mut nearest: Option<(f64, f64)> = None;
         for (index, (old, new)) in body.vertices.iter().zip(&made.vertices).enumerate() {
             let vertex = VertexId(super::index_u32(index));
             if !(way.contains(old.point, tol) || way.contains(new.point, tol))
@@ -642,9 +826,9 @@ pub(super) fn swept(
             {
                 continue;
             }
-            looked += 1;
-            if looked > MOST_NEAR {
-                return found;
+            craft3d_geom::allowance::charge(1);
+            if craft3d_geom::allowance::exhausted() {
+                return Err(Spent);
             }
             let (Some((d0, _)), Some((d1, out))) = (
                 distance(&was.surface, old.point),
@@ -668,9 +852,76 @@ pub(super) fn swept(
             for edge in at.get(index).into_iter().flatten() {
                 found.edges.entry(*edge).or_insert(*face);
             }
+            if nearest.is_none_or(|(least, _)| d0.abs() < least) {
+                nearest = Some((d0.abs(), d0.signum()));
+            }
+        }
+        if let Some((least, side)) = nearest
+            && !first_met(made, layout, *face, &was.surface, &way, least, side, tol)
+        {
+            found.first = false;
         }
     }
-    found
+    Ok(found)
+}
+
+/// Whether nothing of the body lay nearer before the flat face `face`
+/// (on `was` before it moved, its way the box `way`) than a vertex at
+/// `least` on the side `side` of it: so that the face, moved toward that
+/// vertex, meets nothing sooner.
+///
+/// Told only where it can be told from vertices: every face that shares
+/// no vertex with `face` and whose box lies in its way has to be a plane
+/// parallel to it or a cylinder along its normal (each is nearest the face
+/// at its vertices), and none of their vertices may lie nearer than
+/// `least`. Any other face in the way (a cone, whose point has no vertex:
+/// a drilled hole's bottom; a ball, a ring, a freeform face, a face at a
+/// slant) can be met between its vertices, where nothing looks: `false`,
+/// and so is a face that moved and is no plane.
+#[allow(clippy::too_many_arguments)]
+fn first_met(
+    made: &Body,
+    layout: &Layout,
+    face: FaceId,
+    was: &Surface,
+    way: &Bbox3,
+    least: f64,
+    side: f64,
+    tol: f64,
+) -> bool {
+    let Surface::Plane(plane) = was else {
+        return false;
+    };
+    let normal = plane.frame().z();
+    let Some(own) = layout.vertices.get(face.0 as usize) else {
+        return false;
+    };
+    for (index, (bounds, vertices)) in layout.boxes.iter().zip(&layout.vertices).enumerate() {
+        if index == face.0 as usize
+            || !bounds.as_ref().is_some_and(|b| boxes_meet(b, way))
+            || !vertices.is_disjoint(own)
+        {
+            continue;
+        }
+        let along = match made.faces.get(index).map(|f| &f.surface) {
+            Some(Surface::Plane(other)) => other.frame().z(),
+            Some(Surface::Cylinder(other)) => other.frame().z(),
+            _ => return false,
+        };
+        if along.cross(normal).length() > super::SQUARE {
+            return false;
+        }
+        for vertex in vertices {
+            let Some(point) = made.vertex(*vertex).map(|v| v.point) else {
+                return false;
+            };
+            match distance(was, point) {
+                Some((d, _)) if side * d >= least - tol => {}
+                _ => return false,
+            }
+        }
+    }
+    true
 }
 
 /// Whether a shell of `made` encloses a negative volume where the same

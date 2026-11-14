@@ -448,3 +448,258 @@ fn faces_at_a_sharp_edge_are_moved() {
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
+
+/// The frames of the review of 2026-11-14: the world, a tilted frame, and
+/// a tilted frame a thousand sizes away.
+fn review_frames(k: f64) -> [Frame; 3] {
+    [
+        Frame::WORLD,
+        Frame::new(
+            Vec3::new(7.0 * k, -11.0 * k, 3.0 * k),
+            Vec3::new(2.0, -1.0, 3.0),
+            Vec3::new(1.0, 0.3, -0.2),
+        )
+        .unwrap(),
+        Frame::new(
+            Vec3::new(31000.0 * k, -24000.0 * k, 17000.0 * k),
+            Vec3::new(-1.0, 3.0, 2.0),
+            Vec3::new(0.2, 1.0, -0.7),
+        )
+        .unwrap(),
+    ]
+}
+
+/// The cubic of the vase's side, (8, 0), (11, 7), (9, 13), (12, 20) in
+/// (radius, height), at `t`.
+fn vase_side(t: f64) -> [f64; 2] {
+    let u = 1.0 - t;
+    let b = |p: [f64; 4]| {
+        u * u * u * p[0] + 3.0 * u * u * t * p[1] + 3.0 * u * t * t * p[2] + t * t * t * p[3]
+    };
+    [b([8.0, 11.0, 9.0, 12.0]), b([0.0, 7.0, 13.0, 20.0])]
+}
+
+/// The volume of the vase from its foot up to height `z` (scale 1): the
+/// integral of `pi r^2 dz` along the cubic, by Simpson's rule in 4000
+/// steps of the parameter (the height rises with it).
+fn vase_volume(z: f64) -> f64 {
+    let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+    for _ in 0..200 {
+        let middle = 0.5 * (lo + hi);
+        if vase_side(middle)[1] < z {
+            lo = middle;
+        } else {
+            hi = middle;
+        }
+    }
+    let end = 0.5 * (lo + hi);
+    // dz/dt of the cubic's heights 0, 7, 13, 20.
+    let rise = |t: f64| {
+        let u = 1.0 - t;
+        3.0 * (u * u * 7.0 + 2.0 * u * t * 6.0 + t * t * 7.0)
+    };
+    let f = |t: f64| PI * vase_side(t)[0] * vase_side(t)[0] * rise(t);
+    let steps = 4000;
+    let h = end / f64::from(steps);
+    let mut sum = f(0.0) + f(end);
+    for i in 1..steps {
+        sum += f(f64::from(i) * h) * if i % 2 == 1 { 4.0 } else { 2.0 };
+    }
+    sum * h / 3.0
+}
+
+/// The vase on `frame` at scale `k`, and its top.
+fn vase(frame: &Frame, k: f64, tol: &Tolerance) -> (Body, FaceId) {
+    use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
+    use craft3d_kernel::revolve::revolve;
+    let s = |p: [f64; 2]| [p[0] * k, p[1] * k];
+    let line = |id: u64, a: [f64; 2], b: [f64; 2]| SketchCurve {
+        id,
+        curve: Curve2::Line {
+            start: s(a),
+            end: s(b),
+        },
+    };
+    let curves = vec![
+        line(1, [0.0, 0.0], [8.0, 0.0]),
+        SketchCurve {
+            id: 2,
+            curve: Curve2::Spline(Spline2 {
+                degree: 3,
+                knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                control: vec![
+                    s([8.0, 0.0]),
+                    s([11.0, 7.0]),
+                    s([9.0, 13.0]),
+                    s([12.0, 20.0]),
+                ],
+            }),
+        },
+        line(3, [12.0, 20.0], [0.0, 20.0]),
+        line(4, [0.0, 20.0], [0.0, 0.0]),
+    ];
+    let profiles = detect_profiles(&curves, tol).unwrap();
+    // The sketch plane: x the radius, y the height.
+    let plane = Frame::new(frame.origin(), frame.y() * -1.0, frame.x()).unwrap();
+    let body = revolve(
+        &profiles,
+        &plane,
+        [0.0, 0.0],
+        [0.0, 1.0],
+        0.0,
+        2.0 * PI,
+        tol,
+    )
+    .unwrap()
+    .body;
+    let top = flat_face(&body, frame, k, [1.0, 1.0, 20.0], frame.z());
+    (body, top)
+}
+
+/// A vase (a cubic from radius 8 at its foot to 12 at its top, 20 high,
+/// turned a whole turn), its top offset inward to within tolerances of
+/// its foot: a slab between the two caps, whose volume is the vase's up
+/// to that height. The seven offsets a review found built right before
+/// 2026-11-14 and refused after the first form of `tweak::iso_turned`
+/// ("the edge shrinks to nothing or turns round", with a largest distance
+/// that fits below one that builds): the top's vertex on a seam, found
+/// where the top's plane meets the two halves of one turned surface, can
+/// come to lie far round that circle, and its nearest point on the seam's
+/// border was taken for where the seam ends. They are built again, as
+/// before, and held to the closed form.
+///
+/// And past the foot it stays refused, by the seam that does turn round.
+/// What fits is said as the vase's height (not above it by more than a
+/// few tolerances, within a hundred-thousandth below it) where the search
+/// for it runs down to the seam's end; where smaller offsets on the way
+/// are refused for the seam's end sliding round its circle (an older
+/// fault, on some frames), the seam is far from gone at the largest
+/// offset found to fit, and no limit is said (`offset_face::goes_at`).
+#[test]
+fn a_vases_top_moves_to_within_tolerances_of_its_foot() {
+    let mut wrong = Vec::new();
+    for (k, index, d) in [
+        (1.0, 1_usize, 19.99),
+        (1.0, 1, 19.9995),
+        (1.0, 0, 19.99998),
+        (1.0, 0, 19.999985),
+        (1.0, 0, 19.999993),
+        (1e6, 1, 19.999995),
+        (1e6, 2, 19.999995),
+    ] {
+        let tol = tolerance(k);
+        let (body, top) = vase(&review_frames(k)[index], k, &tol);
+        let what = format!("vase, scale {k}, frame {index}, top in by {d}");
+        let did = offset(&what, &body, top, -d * k, &tol);
+        held(
+            &what,
+            did,
+            Some(true),
+            vase_volume(20.0 - d) * k * k * k,
+            "",
+            0.0,
+            &tol,
+            &mut wrong,
+        );
+    }
+    let mut said = 0;
+    for k in [1e-3, 1.0, 1e6] {
+        let tol = tolerance(k);
+        for (index, frame) in review_frames(k).iter().enumerate() {
+            let (body, top) = vase(frame, k, &tol);
+            for past in [1e-4, 1e-2, 0.5] {
+                let what = format!("vase, scale {k}, frame {index}, top past the foot by {past}");
+                match offset(&what, &body, top, -(20.0 + past) * k, &tol) {
+                    // The limit, where the search for it ran down to the
+                    // seam's end.
+                    did @ Did::Refused(KernelError::FaceOpTooFar { .. }) => {
+                        said += 1;
+                        held(
+                            &what,
+                            did,
+                            Some(false),
+                            0.0,
+                            "the edge shrinks to nothing or turns round",
+                            20.0 * k,
+                            &tol,
+                            &mut wrong,
+                        );
+                    }
+                    // No limit, where smaller offsets were refused for
+                    // the seam's end sliding (the older fault): what the
+                    // search found is not where the seam goes.
+                    Did::Refused(KernelError::FaceOp { reason, .. })
+                        if reason.contains("the edge shrinks to nothing or turns round")
+                            && reason.contains("was not found") => {}
+                    Did::Refused(error) => wrong.push(format!("{what}: {error}")),
+                    Did::Built(_) => wrong.push(format!("{what}: built past the foot")),
+                }
+            }
+        }
+    }
+    println!("the vase's top past its foot: a limit said in {said} of 27");
+    assert!(
+        said >= 9,
+        "a limit is said where the search is not disturbed"
+    );
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// A drilled hole: a cylinder of radius 4 from 13 over the bottom to the
+/// top, and under it a cone to a point at 9. The bottom moved up 8.9 is
+/// built (the block is 11.1 thick, less the hole). Moved up 14 it would
+/// pass through the hole; the first vertex in its way is on the cone's rim
+/// at 13, but the cone's point, which has no vertex, is in its way from 9
+/// on, and between 9 and 13 the operation's checks see nothing. So it is
+/// refused without a largest distance that fits: until 2026-11-14 it said
+/// "below 13", which is past where the body is first wrong.
+#[test]
+fn a_bottom_moved_past_a_drill_point_is_refused_without_a_limit() {
+    let mut wrong = Vec::new();
+    for k in SCALES {
+        let tol = tolerance(k);
+        for (index, frame) in frames(k).iter().enumerate() {
+            let hole = primitives::cylinder(
+                &at(frame, k, [20.0, 15.0, 13.0], frame.z(), frame.x()),
+                4.0 * k,
+                20.0 * k,
+            )
+            .unwrap();
+            let point = primitives::cone(
+                &at(frame, k, [20.0, 15.0, 13.0], frame.z() * -1.0, frame.x()),
+                4.0 * k,
+                4.0 * k,
+            )
+            .unwrap();
+            let drilled = boolean(&block(frame, k), &hole, BooleanOp::Subtract, &tol)
+                .unwrap()
+                .body;
+            let body = boolean(&drilled, &point, BooleanOp::Subtract, &tol)
+                .unwrap()
+                .body;
+            let bottom = flat_face(&body, frame, k, [20.0, 15.0, 0.0], frame.z());
+            let what = format!("drill point, scale {k}, frame {index}, up 8.9");
+            let did = offset(&what, &body, bottom, -8.9 * k, &tol);
+            let volume = 1200.0 * 11.1 - PI * 16.0 * 7.0 - PI * 16.0 * 4.0 / 3.0;
+            held(
+                &what,
+                did,
+                Some(true),
+                volume * k * k * k,
+                "",
+                0.0,
+                &tol,
+                &mut wrong,
+            );
+            let what = format!("drill point, scale {k}, frame {index}, up 14");
+            match offset(&what, &body, bottom, -14.0 * k, &tol) {
+                Did::Built(_) => wrong.push(format!("{what}: built")),
+                Did::Refused(KernelError::FaceOp { reason, .. })
+                    if reason.contains("pass through another part")
+                        && reason.contains("was not found") => {}
+                Did::Refused(error) => wrong.push(format!("{what}: {error}")),
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
