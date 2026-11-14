@@ -916,22 +916,23 @@ pub const MAX_GRID_SIDE: usize = 1 << 10;
 /// (docs/design/surfacing.md › *A sheet through a grid of points*): the
 /// parameter along a row from its first point to its last, across the rows
 /// from the first row to the last. `spacing` sets the parameters it takes
-/// the points at, as a live spline's does.
+/// the points at; it is always stored, so a file never depends on a
+/// default (the command's are even for a table, chord for points given).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SurfaceGrid {
     pub points: GridPoints,
-    #[serde(default, skip_serializing_if = "GridSpacing::is_greville")]
     pub spacing: GridSpacing,
 }
 
 /// The parameters a grid surface takes its points at, one set each way
 /// (docs/design/surfacing.md › *A sheet through a grid of points*): a live
 /// spline's two (greville, chord) and even, which a spline does not offer.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// No default here: the command chooses one by the form of the points
+/// (the developer, 2026-11-14), and the document keeps what it chose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum GridSpacing {
     /// Uniform knots, each point at its control point's Greville abscissa.
-    #[default]
     Greville,
     /// Each row's chord lengths averaged over the rows, on averaged knots.
     Chord,
@@ -941,10 +942,6 @@ pub enum GridSpacing {
 }
 
 impl GridSpacing {
-    pub fn is_greville(&self) -> bool {
-        *self == GridSpacing::Greville
-    }
-
     /// The spacing's name, as a command and a file write it.
     pub fn name(&self) -> &'static str {
         match self {

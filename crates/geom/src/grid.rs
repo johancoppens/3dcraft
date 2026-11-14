@@ -709,7 +709,7 @@ fn mean_normal(
                 .zip(unit(b))
                 .and_then(|(a, b)| a.cross(b).normalized())
             {
-                sum = sum + n;
+                sum += n;
             }
         }
     }
@@ -986,8 +986,8 @@ fn normal_clear(patch: &RationalBezierPatch, directions: &[Vec3]) -> bool {
                         / choose(kb, l);
                     let slot = k * (kb + 1) + l;
                     if let (Some(a), Some(b)) = (normal.get_mut(slot), size.get_mut(slot)) {
-                        *a = *a + fu.cross(gv) * w;
-                        *b = *b + cross_size(fu, gv) * w;
+                        *a += fu.cross(gv) * w;
+                        *b += cross_size(fu, gv) * w;
                     }
                 }
             }
@@ -1407,7 +1407,8 @@ mod tests {
         // The shapes a review found refused from 12 to 248 steps high: the
         // normal's z, a product of the parameters' positive speeds, holds
         // every coefficient whatever the heights (the review's least: 0.94).
-        let shapes: [(&str, fn(usize, usize) -> f64); 5] = [
+        type Shape = fn(usize, usize) -> f64;
+        let shapes: [(&str, Shape); 5] = [
             (
                 "checkerboard",
                 |r, c| if (r + c) % 2 == 0 { 1.0 } else { -1.0 },

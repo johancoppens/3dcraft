@@ -102,10 +102,10 @@ fn a_grid_on_a_slanted_plane_is_that_plane_named_by_its_borders() {
         new_document(&mut s, k);
         // Uneven steps, on the plane z = 0.3 x + 0.2 y + k. At Greville's
         // parameters the sheet through them runs back along its rows
-        // (x(u) through 0, 1, 2.5, 3, 5 at 0, 1/6, 1/2, 5/6, 1 falls by
-        // 3.4e-5 near u = 0.61, so the flat sheet folds over itself
-        // there): refused, by the proof of its normal; chord spacing
-        // follows the steps.
+        // (x(u) through 0, 1, 2.5, 3, 5 at 0, 1/6, 1/2, 5/6, 1 runs back
+        // by 2.1e-3, dx/du −0.067 at u = 0.609, so the flat sheet folds
+        // over itself there): refused, the run-back named; chord spacing
+        // (the default for points given) follows the steps.
         let xs = [0.0, 1.0, 2.5, 3.0, 5.0];
         let ys = [0.0, 2.0, 3.0, 6.0];
         let points = rows(4, 5, |r, c| {
@@ -115,7 +115,7 @@ fn a_grid_on_a_slanted_plane_is_that_plane_named_by_its_borders() {
         let why = failed(
             &mut s,
             "feature.surface.grid",
-            json!({"points": points.clone()}),
+            json!({"points": points.clone(), "spacing": "greville"}),
         );
         assert!(
             why.contains("folds near row") && why.contains("chord"),
@@ -441,12 +441,13 @@ fn moving_the_points_renames_nothing_and_what_follows_stays() {
         (number(&body(&mut s, "Skin")["volume"]) - skin).abs() > 1e-6,
         "the plate followed the new points"
     );
-    // Chord spacing is another sheet through the same points.
+    // Greville spacing is another sheet through the same points (chord
+    // is the default for points given).
     let area = number(&body(&mut s, "Panel")["area"]);
     run(
         &mut s,
         "feature.edit",
-        json!({"feature": "Panel", "spacing": "chord"}),
+        json!({"feature": "Panel", "spacing": "greville"}),
     );
     assert!((number(&body(&mut s, "Panel")["area"]) - area).abs() > 1e-9);
     // Undo and redo.
@@ -562,7 +563,7 @@ fn hostile_grids_are_errors_that_say_what_to_change() {
             "doubles back on itself",
         ),
         (
-            json!({"points": rows(4, 6, |r, c| if r == 2 { [[0.0, 1.0, 2.0, 1.2, 0.4, -0.4][c], 2.0, if c >= 3 { 0.3 } else { 0.0 }] } else { flat(r, c) })}),
+            json!({"spacing": "greville", "points": rows(4, 6, |r, c| if r == 2 { [[0.0, 1.0, 2.0, 1.2, 0.4, -0.4][c], 2.0, if c >= 3 { 0.3 } else { 0.0 }] } else { flat(r, c) })}),
             "folds near row",
         ),
         (

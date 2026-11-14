@@ -1127,10 +1127,9 @@ pub enum FeatureKind {
     },
     /// A sheet through a grid of points (format version 72): `points`
     /// where they come from (`GridPoints`), `spacing` the parameters it
-    /// takes them at, as a live spline's (written when not `greville`).
+    /// takes them at, always written (a file never depends on a default).
     SurfaceGrid {
         points: GridPoints,
-        #[serde(default, skip_serializing_if = "GridSpacing::is_greville")]
         spacing: GridSpacing,
     },
     /// Faces of an earlier body laid flat as one piece (format version
@@ -2234,19 +2233,12 @@ pub enum GridPoints {
 
 /// The parameters a grid surface takes its points at (format version 72;
 /// `craft3d_doc::GridSpacing`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum GridSpacing {
-    #[default]
     Greville,
     Chord,
     Even,
-}
-
-impl GridSpacing {
-    fn is_greville(&self) -> bool {
-        *self == GridSpacing::Greville
-    }
 }
 
 /// The parameters a spline through points takes its points at (format

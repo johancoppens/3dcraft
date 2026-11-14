@@ -6426,6 +6426,12 @@ fn a_grid_surface_is_written_like_this_and_round_trips() {
         serde_json::json!({"type": "surfaceGrid", "points": {"from": "table", "table": "heights",
             "origin": ["0", "0", "5 mm"], "step": ["5 mm", "-5 mm"], "factor": "scale"}, "spacing": "even"})
     );
+    // The spacing is always written: a file without it is refused, never
+    // read with a default.
+    let mut bare = value.clone();
+    let kind = &mut bare["document"]["features"][n - 1]["kind"];
+    assert!(kind.as_object_mut().unwrap().remove("spacing").is_some());
+    assert!(from_manifest_json(bare.to_string().as_bytes()).is_err());
     assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
     assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
     // A form of points no build knows is refused, not read.
