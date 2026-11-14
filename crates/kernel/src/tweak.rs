@@ -2317,6 +2317,50 @@ fn spent() -> TweakError {
 /// points lie that are asked about, in tolerances.
 const INSIDE_FACE: f64 = 8.0;
 const OFF_FACE: f64 = 4.0;
+/// How far from a face a point has to lie for the classification to place
+/// it, in tolerances (`crate::boolean::contains_points` says nothing of a
+/// point within twice the tolerance of the boundary), and the furthest
+/// from an edge a point is asked about.
+const CLEAR_OF_FACE: f64 = 2.0;
+const MOST_INSIDE_FACE: f64 = 1024.0;
+
+/// How far from an edge, along a face, the point just outside the face
+/// and the point just inside it are asked about ([`buried`]), in
+/// tolerances, given the outward normal of the face across the edge there
+/// as its parts `along` the first face (into it, away from the edge) and
+/// `off` it (along its outward normal).
+///
+/// At [`INSIDE_FACE`] and [`OFF_FACE`] the point inside lies behind the
+/// face across a convex edge only where the two meet at more than about
+/// 27 degrees, and the classification places it only above about 41; below
+/// about 13.6 degrees it lies beyond that face by more than the
+/// classification's band, in the open, and was found outside: every
+/// operation at such an edge was refused as passing through the body (the
+/// groove of a cylinder that leaves a face at 8.5 degrees, a face moved
+/// within its own plane beside it: the move hunt's case 676, 2026-11-14).
+/// Where a point lies that clearly on the wrong side of the face across
+/// the edge (the one inside at a convex edge, the one outside at a concave
+/// one), it is asked about further from the edge instead, where it is as
+/// far behind (or before) that face as it is off its own; where it does
+/// not, both points lie where they always did. `None` for a point that
+/// would lie further than [`MOST_INSIDE_FACE`] from the edge: not asked.
+fn sharp_places(along: f64, off: f64) -> (Option<f64>, Option<f64>) {
+    // Convex: the face across the edge looks away from this one.
+    let inside = if along < 0.0 && INSIDE_FACE * along - OFF_FACE * off >= CLEAR_OF_FACE {
+        Some(OFF_FACE * (off - 1.0) / along)
+    } else {
+        Some(INSIDE_FACE)
+    };
+    // Concave: it looks across this one.
+    let outside = if along > 0.0 && INSIDE_FACE * along + OFF_FACE * off <= -CLEAR_OF_FACE {
+        Some(OFF_FACE * (1.0 - off) / along)
+    } else {
+        Some(INSIDE_FACE)
+    };
+    let kept = |at: Option<f64>| at.filter(|a| a.is_finite() && *a <= MOST_INSIDE_FACE);
+    (kept(outside), kept(inside))
+}
+
 /// A face next to an edge of `remade` that is not skin of `made` any
 /// more: just outside it there is material, or just inside it there is
 /// none, which is what a body that passes through itself looks like next
@@ -2382,13 +2426,36 @@ fn buried_at(
                 let Some(into) = normal.cross(along).normalized() else {
                     continue;
                 };
-                let Some((foot, normal)) = outward(middle + into * (INSIDE_FACE * tol)) else {
-                    continue;
+                // How far from the edge each of the two points lies: at
+                // an edge sharper than the usual place allows, further.
+                let beyond = uses
+                    .get(coedge.edge.0 as usize)
+                    .and_then(|faces| match faces.as_slice() {
+                        [a, b] if *a == id && *b != id => Some(*b),
+                        [a, b] if *b == id && *a != id => Some(*a),
+                        _ => None,
+                    })
+                    .and_then(|other| made.face(other))
+                    .and_then(|other| other.outward(middle));
+                let (out_at, in_at) = match beyond {
+                    Some(other) => sharp_places(other.dot(into), other.dot(normal)),
+                    None => (Some(INSIDE_FACE), Some(INSIDE_FACE)),
                 };
-                points.push(foot + normal * (OFF_FACE * tol));
-                asked.push((id, coedge.edge, false));
-                points.push(foot - normal * (OFF_FACE * tol));
-                asked.push((id, coedge.edge, true));
+                let beside = |at: Option<f64>| outward(middle + into * (at? * tol));
+                let outside = beside(out_at);
+                let inside = if in_at == out_at {
+                    outside
+                } else {
+                    beside(in_at)
+                };
+                if let Some((foot, normal)) = outside {
+                    points.push(foot + normal * (OFF_FACE * tol));
+                    asked.push((id, coedge.edge, false));
+                }
+                if let Some((foot, normal)) = inside {
+                    points.push(foot - normal * (OFF_FACE * tol));
+                    asked.push((id, coedge.edge, true));
+                }
             }
         }
     }
@@ -2410,6 +2477,73 @@ pub(crate) fn face_vertices(body: &Body, face: FaceId) -> BTreeSet<VertexId> {
         .filter_map(|c| body.edge(c.edge))
         .flat_map(|e| [e.start, e.end])
         .collect()
+}
+
+#[cfg(test)]
+mod sharp_tests {
+    use super::*;
+    use craft3d_math::Portable;
+
+    /// The two faces of an edge that meet at `degrees` inside the material
+    /// (convex below 180): the outward normal of the face across the edge,
+    /// as its parts along the first face and off it.
+    fn across(degrees: f64) -> (f64, f64) {
+        let (sine, cosine) = degrees.to_radians().psin_cos();
+        (-sine, -cosine)
+    }
+
+    /// Where the point just inside a face and the point just outside it
+    /// lie from the edge, by the angle the faces meet at: the usual 8
+    /// tolerances wherever the point is not clearly on the wrong side of
+    /// the face across the edge (from about 13.7 degrees on, either way
+    /// round), further where it is, and there four tolerances clear of
+    /// that face; not asked where that is past the cap.
+    #[test]
+    fn points_beside_a_sharp_edge_are_asked_about_where_the_wedge_holds_them() {
+        for degrees in [
+            14.0, 27.0, 41.0, 90.0, 135.0, 179.0, 181.0, 270.0, 330.0, 346.0,
+        ] {
+            let (along, off) = across(degrees);
+            assert_eq!(
+                sharp_places(along, off),
+                (Some(INSIDE_FACE), Some(INSIDE_FACE)),
+                "{degrees} degrees"
+            );
+        }
+        // Convex and sharp: the point inside moves out, the one outside
+        // stays.
+        for degrees in [1.0_f64, 5.0, 8.5, 12.0, 13.5] {
+            let (along, off) = across(degrees);
+            let (outside, inside) = sharp_places(along, off);
+            assert_eq!(outside, Some(INSIDE_FACE), "{degrees} degrees");
+            let at = inside.unwrap();
+            assert!(at > INSIDE_FACE, "{degrees} degrees: {at}");
+            // Behind the face across the edge by as much as it is under
+            // its own.
+            let behind = at * along - OFF_FACE * off;
+            assert!(
+                (behind + OFF_FACE).abs() < 1e-9,
+                "{degrees} degrees: {behind}"
+            );
+        }
+        // Concave and sharp (the faces fold back to within 13.6 degrees of
+        // each other, air between them): the point outside moves out.
+        for degrees in [346.5_f64, 352.0, 359.0] {
+            let (along, off) = across(degrees);
+            let (outside, inside) = sharp_places(along, off);
+            assert_eq!(inside, Some(INSIDE_FACE), "{degrees} degrees");
+            let at = outside.unwrap();
+            assert!(at > INSIDE_FACE, "{degrees} degrees: {at}");
+            let before = at * along + OFF_FACE * off;
+            assert!(
+                (before - OFF_FACE).abs() < 1e-9,
+                "{degrees} degrees: {before}"
+            );
+        }
+        // Past the cap: not asked.
+        let (along, off) = across(0.1);
+        assert_eq!(sharp_places(along, off), (Some(INSIDE_FACE), None));
+    }
 }
 
 #[cfg(test)]

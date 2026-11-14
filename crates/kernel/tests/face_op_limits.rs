@@ -368,3 +368,83 @@ fn a_bottom_moved_through_a_groove_of_the_top_is_refused_as_inside_out() {
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
+
+/// A wedge: the triangle (0, 0), (40, 0), (40, 40 tan a) drawn on the
+/// frame's xy plane, 30 thick, its edge along z at the origin `a` degrees
+/// sharp. Its bottom (y = 0) moved outward by 0.5 takes the sharp edge
+/// with it, to x = -0.5 / tan a: the section is then the triangle
+/// (-0.5 / tan a, -0.5), (40, -0.5), (40, 40 tan a). And the bottom moved
+/// 3 within its own plane changes nothing.
+///
+/// Until 2026-11-14 both were refused below about 13.6 degrees ("the face
+/// would pass through another part of the body"): the point the operation
+/// asks about just inside the bottom, 8 tolerances from the edge and 4
+/// under the face, lies above the slanted face there, in the open. It is
+/// asked about further from the edge now, where the wedge is thick enough
+/// to hold it (`tweak::sharp_places`).
+#[test]
+fn faces_at_a_sharp_edge_are_moved() {
+    use craft3d_kernel::extrude::extrude;
+    use craft3d_kernel::move_face::{Motion, move_faces};
+    use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
+    use craft3d_math::Portable;
+    let mut wrong = Vec::new();
+    for k in SCALES {
+        let tol = tolerance(k);
+        for (index, frame) in frames(k).iter().enumerate() {
+            for degrees in [2.0_f64, 5.0, 8.5, 12.0, 13.0, 20.0, 45.0] {
+                let slope = degrees.to_radians().ptan();
+                let line = |id: u64, a: [f64; 2], b: [f64; 2]| SketchCurve {
+                    id,
+                    curve: Curve2::Line {
+                        start: [a[0] * k, a[1] * k],
+                        end: [b[0] * k, b[1] * k],
+                    },
+                };
+                let outline = [
+                    line(1, [0.0, 0.0], [40.0, 0.0]),
+                    line(2, [40.0, 0.0], [40.0, 40.0 * slope]),
+                    line(3, [40.0, 40.0 * slope], [0.0, 0.0]),
+                ];
+                let profiles = detect_profiles(&outline, &tol).unwrap();
+                let body = extrude(&profiles, frame, 0.0, 30.0 * k, &tol).unwrap().body;
+                let before = measured(&body).unwrap().volume;
+                let bottom = flat_face(&body, frame, k, [20.0, 0.0, 15.0], frame.y());
+                let what =
+                    format!("wedge of {degrees} degrees, scale {k}, frame {index}, bottom out");
+                let did = offset(&what, &body, bottom, 0.5 * k, &tol);
+                let section = 0.5 * (40.0 + 0.5 / slope) * (40.0 * slope + 0.5);
+                held(
+                    &what,
+                    did,
+                    Some(true),
+                    30.0 * section * k * k * k,
+                    "",
+                    0.0,
+                    &tol,
+                    &mut wrong,
+                );
+                let what =
+                    format!("wedge of {degrees} degrees, scale {k}, frame {index}, bottom along");
+                let motion = Motion {
+                    translate: frame.x() * (3.0 * k),
+                    pivot: frame.origin(),
+                    axis: frame.z(),
+                    angle: 0.0,
+                };
+                let did = match move_faces(&body, &[bottom], &motion, &tol) {
+                    Ok(made) => {
+                        println!("probe {what}: built {:016x}", digest(&made.body));
+                        Did::Built(made.body)
+                    }
+                    Err(error) => {
+                        println!("probe {what}: refused: {error}");
+                        Did::Refused(error)
+                    }
+                };
+                held(&what, did, Some(true), before, "", 0.0, &tol, &mut wrong);
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
