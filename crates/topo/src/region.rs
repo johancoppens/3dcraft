@@ -1319,14 +1319,18 @@ const QUARTER_TURN: f64 = 0.5 * PI;
 struct Wedge {
     origin: Vec3,
     z: Vec3,
+    /// The cosine of the widest the wedge may be.
     most: f64,
     /// Across the axis: towards the first point, and a quarter turn on.
     frame: Option<(Vec3, Vec3)>,
-    low: f64,
-    high: f64,
-    /// The least and the largest distance of a point from the axis, the
-    /// least and the largest height along it above the axis's point, and
-    /// the most a point had to keep clear ([`Wedge::halves`]).
+    /// The points furthest round either way, as they lie across the axis
+    /// in that frame (not of unit length).
+    low: (f64, f64),
+    high: (f64, f64),
+    /// The squares of the least and the largest distance of a point from
+    /// the axis, the least and the largest height along it above the
+    /// axis's point, and the most a point had to keep clear
+    /// ([`Wedge::halves`]).
     near: f64,
     far: f64,
     below: f64,
@@ -1345,16 +1349,26 @@ impl Wedge {
         Wedge {
             origin,
             z,
-            most,
+            most: most.pcos(),
             frame: None,
-            low: 0.0,
-            high: 0.0,
+            low: (1.0, 0.0),
+            high: (1.0, 0.0),
             near: f64::INFINITY,
             far: 0.0,
             below: f64::INFINITY,
             above: f64::NEG_INFINITY,
             clear: 0.0,
         }
+    }
+
+    /// The cosine of the angle between the two points furthest round,
+    /// times the product of their distances from the axis, and the square
+    /// of that product.
+    fn spread(&self) -> (f64, f64) {
+        let dot = self.low.0 * self.high.0 + self.low.1 * self.high.1;
+        let sizes = (self.low.0 * self.low.0 + self.low.1 * self.low.1)
+            * (self.high.0 * self.high.0 + self.high.1 * self.high.1);
+        (dot, sizes)
     }
 
     /// Which halves of the tube of a torus about this axis, its centre
@@ -1371,10 +1385,13 @@ impl Wedge {
     /// them from end to end does not go round the tube.
     fn halves(&self, major: f64) -> u8 {
         let mut halves = NO_HALF;
-        if self.near * (0.5 * (self.high - self.low)).pcos() > major + self.clear {
+        // The cosine of half an angle from the cosine of the whole.
+        let (dot, sizes) = self.spread();
+        let half = (0.5 * (1.0 + dot / sizes.sqrt())).max(0.0).sqrt();
+        if self.near.sqrt() * half > major + self.clear {
             halves |= 0b0001;
         }
-        if self.far < major - self.clear {
+        if self.far.sqrt() < major - self.clear {
             halves |= 0b0010;
         }
         if self.below > self.clear {
@@ -1387,11 +1404,17 @@ impl Wedge {
     }
 
     /// Takes `p`, which must keep more than `clear` from the axis: whether
-    /// the points so far lie in such a wedge.
+    /// the points so far lie in such a wedge. No arc tangent is taken: a
+    /// point outside the wedge so far lies to the left of its last point
+    /// or to the right of its first (a cross product each, right while the
+    /// wedge is narrower than a half turn, which it is as long as points
+    /// are taken), and the wedge is narrow while the cosine of the angle
+    /// between those two is above the cosine of the most.
     fn add(&mut self, p: Vec3, clear: f64) -> bool {
         let d = p - self.origin;
         let height = d.dot(self.z);
         let q = d - self.z * height;
+        let first = self.frame.is_none();
         let (x, y) = match self.frame {
             Some(frame) => frame,
             None => {
@@ -1406,25 +1429,33 @@ impl Wedge {
             }
         };
         let (c, s) = (q.dot(x), q.dot(y));
-        let off = c.phypot(s);
-        if off.is_nan()
-            || off <= 0.0
-            || off.partial_cmp(&clear) != Some(std::cmp::Ordering::Greater)
-        {
+        let off = c * c + s * s;
+        // Not `<=`: a number that is none is refused too.
+        if !(off > 0.0 && off > clear * clear && off.is_finite()) {
             return false;
         }
-        let angle = s.patan2(c);
-        if !angle.is_finite() {
-            return false;
+        if first {
+            self.low = (c, s);
+            self.high = (c, s);
+        } else if self.high.0 * s - self.high.1 * c > 0.0 {
+            self.high = (c, s);
+        } else if self.low.0 * s - self.low.1 * c < 0.0 {
+            self.low = (c, s);
         }
-        self.low = self.low.min(angle);
-        self.high = self.high.max(angle);
         self.near = self.near.min(off);
         self.far = self.far.max(off);
         self.below = self.below.min(height);
         self.above = self.above.max(height);
         self.clear = self.clear.max(clear);
-        self.high - self.low < self.most
+        // The cosine of the angle above that of the most, without a root
+        // or a division: by their squares, on the side of their signs.
+        let (dot, sizes) = self.spread();
+        let bound = self.most * self.most * sizes;
+        if self.most >= 0.0 {
+            dot > 0.0 && dot * dot > bound
+        } else {
+            dot >= 0.0 || dot * dot < bound
+        }
     }
 }
 
