@@ -127,9 +127,12 @@ const NEWTON_STEPS: usize = 40;
 const SETTLE_STEPS: usize = 40;
 /// The foot is short where sliding it along the surface would still
 /// bring it nearer by more than this fraction of the size of the
-/// coordinates: ten thousand times what rounding moves a distance by,
-/// and far below any tolerance the coordinates can hold.
-const UNSETTLED: f64 = 1e-12;
+/// coordinates: sixty-four of their last bits. The first steps end
+/// where no step brings the foot nearer by one last bit of the distance
+/// (which is no more than one of the coordinates), so a foot they
+/// settled on is never taken for short, and one short by less is short
+/// by what the coordinates cannot hold.
+const UNSETTLED: f64 = 64.0 * f64::EPSILON;
 
 #[cfg(test)]
 thread_local! {
