@@ -90,17 +90,25 @@
 //! surface with a pole is caught only where a neighbouring face can be
 //! charted). A spline surface that `closure` finds closed one way is
 //! charted with its domain's width as a period (`crate::region`), and held
-//! as a cylinder is. A spline surface that closes within the tolerance but
-//! not to `closure`'s
+//! as a cylinder is, where the steps of every edge of the face are shown
+//! by the surface's cells not to go round unseen (`region::Cells`); a face
+//! with an edge that is not shown (a surface that comes near itself or
+//! whose Bézier spans cost too much to make, an edge too long for the
+//! work a face is allowed) is not followed. A spline surface that closes
+//! within the tolerance but not to `closure`'s
 //! rounding (or on knots that are not clamped) is charted as one that does
 //! not close: its seam passes, but a loop across the seam is not followed
 //! right. A spline edge on a surface that closes about an axis is followed
 //! in steps its control points show to move less than a quarter turn about
 //! it (`crate::region`), so a helix of many turns as one edge is read as it
-//! goes round; elsewhere (the angle about a torus's tube, a conic near a
-//! pole) a loop whose half step moves more than a quarter period is not
-//! held to 2 or 3 (a half step of more than three quarters of a period
-//! wraps unseen). A loop narrower than twice its margin has no point clear
+//! goes round. A loop with a spline edge on a torus is not held to 2 or 3,
+//! nor to 4 between two of its own stretches: nothing shows how far such
+//! an edge moves about the tube from one point to the next. Elsewhere (a
+//! conic near a pole) a loop whose half step moves more than a quarter
+//! period is not held to 2 or 3 (a conic's half step, a sixteenth of a
+//! half turn of its own, cannot move the three quarters of a period that
+//! would wrap unseen unless the axis passes within the arc's own sagitta
+//! of it). A loop narrower than twice its margin has no point clear
 //! of it for 3. A spline overlap shorter than about a quarter of both
 //! edges, or one the samples or the Newton steps do not show (a spline
 //! that bends between its samples by more than an eighth of a step), and
@@ -298,14 +306,7 @@ fn turns_of(curve: &Curve3, (t0, t1): (f64, f64), near: f64) -> Option<f64> {
 fn walk(body: &Body, face: &Face, near: f64) -> Option<Followed> {
     let surface = &face.surface;
     let periods = [surface.period_u(), surface.period_v()];
-    let mut chart = Chart {
-        surface,
-        periods,
-        freeform: false,
-        near,
-        last: None,
-        scale: f64::INFINITY,
-    };
+    let mut chart = Chart::new(surface, periods, false, near);
     let mut total = 0_usize;
     let mut rings = Vec::with_capacity(face.loops.len());
     for id in &face.loops {

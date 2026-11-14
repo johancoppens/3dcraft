@@ -871,6 +871,114 @@ impl NurbsCurve {
         }
         hull_points_in(&self.bezier_pieces(), (r0, r1))
     }
+
+    /// The knot span of the domain that holds `t`, as the `k` of
+    /// `knots[k] ≤ t < knots[k + 1]`: the first for a `t` before the
+    /// domain, the last that is not empty for one at or past its end.
+    pub fn span_at(&self, t: f64) -> usize {
+        let count = self.homogeneous.len();
+        let last = count.saturating_sub(1).max(self.degree);
+        let mut k = self
+            .knots
+            .partition_point(|x| *x <= t)
+            .saturating_sub(1)
+            .clamp(self.degree, last);
+        // At either end of the domain the clamp may land on a span of no
+        // width (equal knots): on to the first that has one from the
+        // domain's start, back to the last that has one from its end.
+        let wide = |k: usize| matches!((self.knots.get(k), self.knots.get(k + 1)), (Some(a), Some(b)) if b > a);
+        let start = self.knots.get(self.degree).copied();
+        while k < last && !wide(k) && self.knots.get(k + 1).copied() == start {
+            k += 1;
+        }
+        while k > self.degree && !wide(k) {
+            k -= 1;
+        }
+        k
+    }
+
+    /// The Bézier piece of the knot span `span` alone
+    /// (`knots[span]..knots[span + 1]`, [`Self::span_at`]): the piece
+    /// [`Self::bezier_pieces`] gives for it, to rounding (the same polynomial
+    /// or rational function; not the same bits, the knots being inserted in
+    /// another order), made from the span's own `degree + 1` control points
+    /// and the `2 · degree` knots about it by inserting its two end knots
+    /// (*The NURBS Book* A5.1), so that its cost is the degree's square
+    /// whatever the curve's length: `bezier_pieces` of a curve of `n` spans
+    /// costs `n²`. `None` for a span that is not one of the domain's or has
+    /// no width.
+    pub fn bezier_piece(&self, span: usize) -> Option<CurvePiece> {
+        let degree = self.degree;
+        let first = span.checked_sub(degree)?;
+        let (lo, hi) = (*self.knots.get(span)?, *self.knots.get(span + 1)?);
+        let (start, end) = self.domain();
+        if !(hi > lo && lo >= start && hi <= end) {
+            return None;
+        }
+        // The span as a curve of its own: one span, with the knots that
+        // reach into it.
+        let mut knots = self
+            .knots
+            .get(first..=span.checked_add(degree)?.checked_add(1)?)?
+            .to_vec();
+        let mut rows = vec![self.homogeneous.get(first..=span)?.to_vec()];
+        make_bezier(&mut knots, degree, &mut rows);
+        let row = rows.first()?;
+        for k in degree..row.len() {
+            let (Some(&a), Some(&b)) = (knots.get(k), knots.get(k + 1)) else {
+                continue;
+            };
+            if a == lo && b == hi {
+                let piece = row.get(k - degree..=k)?;
+                return Some((
+                    (lo, hi),
+                    piece.iter().map(|h| (h.p * (1.0 / h.w), h.w)).collect(),
+                ));
+            }
+        }
+        None
+    }
+}
+
+/// The control points of one Bézier `piece` of a curve cut to `range` (low
+/// end first) by de Casteljau's algorithm: points whose convex hull holds
+/// the curve over the range, as [`hull_points_in`] gives them for a range
+/// inside the piece's span. The range may also run past the span: the cut
+/// is then of the piece's own polynomial (or rational function) continued,
+/// which is the curve only past the ends of its domain, where
+/// [`NurbsCurve::eval`] continues its first and its last span, so only
+/// there may the caller ask for it. `None` when the range is not finite or
+/// is empty, begins at or past the span's end, or a weight of the cut piece
+/// is not positive and finite (no hull of control points is known to hold
+/// the curve: a rational piece continued too far).
+pub fn piece_points_over(piece: &CurvePiece, range: (f64, f64)) -> Option<Vec<Vec3>> {
+    let ((a, b), points) = piece;
+    let (a, b) = (*a, *b);
+    let (from, to) = range;
+    if !(from.is_finite() && to.is_finite() && to >= from && b > a && from < b) {
+        return None;
+    }
+    let mut row: Vec<H> = points.iter().map(|&(p, w)| H { p: p * w, w }).collect();
+    // The right part from the range's start, then the left part of that
+    // to the range's end.
+    if from != a {
+        row = split_row(&row, (from - a) / (b - a)).1;
+    }
+    if to != b {
+        row = split_row(&row, (to - from) / (b - from)).0;
+    }
+    let mut out = Vec::with_capacity(row.len());
+    for h in row {
+        if !(h.w.is_finite() && h.w > 0.0) {
+            return None;
+        }
+        let p = h.p * (1.0 / h.w);
+        if !p.is_finite() {
+            return None;
+        }
+        out.push(p);
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 /// Points whose convex hull holds a curve over `range` (its two parameters

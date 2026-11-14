@@ -252,6 +252,59 @@ fn helical_strip(
     scale: f64,
     place: &Transform,
     turns: f64,
+    sides: (bool, bool),
+    reversed: bool,
+) -> (Body, Tolerance) {
+    helical_strip_on(false, scale, place, turns, sides, reversed)
+}
+
+/// The rational quadratic cylinder of `radius` about the world's z from
+/// `low` to `high` (a net of 9 × 2, as a STEP file brings a cylinder): a
+/// spline surface that closes along `u`, whose period is the width of its
+/// domain, 4.
+fn spline_cylinder(radius: f64, low: f64, high: f64) -> craft3d_geom::Surface {
+    use craft3d_math::Vec3;
+    let h = 0.5 * 2.0_f64.sqrt();
+    let ring = [
+        (1.0, 0.0, 1.0),
+        (1.0, 1.0, h),
+        (0.0, 1.0, 1.0),
+        (-1.0, 1.0, h),
+        (-1.0, 0.0, 1.0),
+        (-1.0, -1.0, h),
+        (0.0, -1.0, 1.0),
+        (1.0, -1.0, h),
+        (1.0, 0.0, 1.0),
+    ];
+    let (mut ctrl, mut weights) = (Vec::new(), Vec::new());
+    for (x, y, w) in ring {
+        for z in [low, high] {
+            ctrl.push(Vec3::new(radius * x, radius * y, z));
+            weights.push(w);
+        }
+    }
+    craft3d_geom::Surface::Nurbs(
+        craft3d_geom::NurbsSurface::new(
+            2,
+            1,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 4.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            9,
+            2,
+            ctrl,
+            weights,
+        )
+        .unwrap(),
+    )
+}
+
+/// [`helical_strip`] on the analytic cylinder, or with `spline` on the
+/// same cylinder as a rational spline surface ([`spline_cylinder`]).
+fn helical_strip_on(
+    spline: bool,
+    scale: f64,
+    place: &Transform,
+    turns: f64,
     (single_low, single_high): (bool, bool),
     reversed: bool,
 ) -> (Body, Tolerance) {
@@ -325,11 +378,12 @@ fn helical_strip(
     }));
     coedges.push(forward(down));
     let lp = body.add_loop(coedges);
-    let face = body.add_face(
-        Surface::Cylinder(Cylinder::new(Frame::WORLD, scale).unwrap()),
-        reversed,
-        vec![lp],
-    );
+    let surface = if spline {
+        spline_cylinder(scale, -scale, (turns + 2.0) * scale)
+    } else {
+        Surface::Cylinder(Cylinder::new(Frame::WORLD, scale).unwrap())
+    };
+    let face = body.add_face(surface, reversed, vec![lp]);
     body.add_shell(vec![face]);
     (body.transformed(place).unwrap(), tol)
 }
@@ -437,6 +491,228 @@ fn a_long_helical_strip_is_not_taken_for_a_loop_that_goes_round_often() {
             );
         }
     }
+}
+
+/// A helical strip of ten or twelve turns whose two single spline edges
+/// run past their curves' domains (by a billionth of their length at each
+/// end, as an edge whose ends were moved by rounding has them) is read the
+/// way it goes round like any other: the right way round it passes, the
+/// wrong way round it is refused by its area. Such an edge had no hull of
+/// control points read of it and was followed in eight steps whatever it
+/// did, as every spline edge was before 2026-11-14, so the right strip was
+/// refused ("every loop runs clockwise"). Now its first and last Bézier
+/// pieces are cut as far as the edge goes (the curve is those pieces
+/// continued there), and an edge that cannot be shown is not followed.
+#[test]
+fn a_helical_strip_whose_edges_run_past_their_curves_is_read_the_way_it_goes_round() {
+    use craft3d_geom::Curve3;
+    let world = Transform::from_frame(&Frame::WORLD);
+    let mut wrong = Vec::new();
+    for turns in [1.0, 10.0, 12.0, 15.0] {
+        for sides in [(true, true), (true, false)] {
+            for reversed in [false, true] {
+                let (mut body, tol) = helical_strip(1.0, &world, turns, sides, reversed);
+                for edge in &mut body.edges {
+                    if matches!(edge.curve, Curve3::Nurbs(_)) {
+                        let by = 1e-9 * (edge.range.1 - edge.range.0);
+                        edge.range = (edge.range.0 - by, edge.range.1 + by);
+                    }
+                }
+                let found = check(&body, &tol);
+                let what = format!("{turns} turns, single {sides:?}");
+                if reversed {
+                    if !refused_by_its_area(&found, 0.3 * 2.0 * PI * turns) {
+                        wrong.push(format!("wrong way, {what}: {found:?}"));
+                    }
+                } else if !found.is_empty() {
+                    wrong.push(format!("right way, {what}: {found:?}"));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// A helical strip on a spline surface that closes (the cylinder as a
+/// rational spline surface, as a STEP file brings one) is read the way it
+/// goes round, as on the cylinder: the right way round it passes the whole
+/// check whatever its sides are made of, at every number of turns. Charted
+/// with its domain's width as the period but its spline edges still
+/// followed in eight steps, the right strip was refused at 10 and 12 turns
+/// with both sides single edges ("every loop runs clockwise about the
+/// outward normal", areas -5.538e-1 ...) and at 12 to 19, 31, 32, 47 and 64
+/// with one side single ("goes round the nurbs surface 16 times"): right
+/// faces refused that were passed while such a surface was not charted at
+/// all (review of 2026-11-14). Now every edge on such a surface is followed
+/// in steps the surface's cells show to move less than a quarter of the
+/// period, or its face is not followed.
+///
+/// The wrong way round (the face flipped) is refused where the strip's
+/// area in the surface's parameters can be told from its polyline's error,
+/// and by that area alone (the parameter round a rational cylinder does not
+/// run evenly with the angle, so a helix is no straight line in its
+/// parameters as it is on the analytic cylinder, and a strip this thin and
+/// long is passed past a few turns: a miss, as before the surface was
+/// charted). No face here costs more to show than a face is allowed.
+#[test]
+fn a_helical_strip_on_a_spline_cylinder_is_read_the_way_it_goes_round() {
+    use craft3d_topo::{forget_passed, step_proofs};
+    let mut wrong = Vec::new();
+    let mut caught = Vec::new();
+    let cut = step_proofs().1;
+    for scale in [1e-3, 1.0, 1e6] {
+        for place in places(scale) {
+            for turns in [
+                1.0, 3.0, 8.0, 10.0, 12.0, 13.0, 15.0, 16.0, 19.0, 20.0, 31.0, 32.0, 47.0, 64.0,
+            ] {
+                if turns > 20.0 && scale != 1.0 {
+                    continue;
+                }
+                for sides in SIDES {
+                    let what = format!("scale {scale}, {turns} turns, single {sides:?}");
+                    forget_passed();
+                    let (right, tol) = helical_strip_on(true, scale, &place, turns, sides, false);
+                    let found = check(&right, &tol);
+                    if !found.is_empty() {
+                        wrong.push(format!("right way, {what}: {found:?}"));
+                    }
+                    let (flipped, tol) = helical_strip_on(true, scale, &place, turns, sides, true);
+                    let found = check(&flipped, &tol);
+                    // In the surface's parameters: 4 round a turn, the
+                    // strip's width over the surface's height.
+                    let area = 4.0 * turns * 0.3 / (turns + 3.0);
+                    if refused_by_its_area(&found, area) {
+                        caught.push((turns, sides));
+                    } else if !found.is_empty() {
+                        wrong.push(format!("wrong way, {what}: {found:?}"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    assert_eq!(step_proofs().1, cut, "faces not followed for their cost");
+    // Caught at every scale and place: sides in half turns (eight steps a
+    // half turn) at 1 and 3 turns, single sides at 8 and 16 (whose steps
+    // fall alike on every quarter of the surface).
+    for case in [
+        (1.0, (false, false)),
+        (3.0, (false, false)),
+        (8.0, (true, true)),
+        (16.0, (true, true)),
+    ] {
+        let times = caught.iter().filter(|c| **c == case).count();
+        assert_eq!(times, 6, "{case:?}: {caught:?}");
+    }
+}
+
+/// A face whose steps cost more to show than the check allows one face
+/// (`craft3d_topo::MOST_PROOF_WORK`) is not followed: it passes, either way
+/// round, and is counted (`craft3d_topo::step_proofs`), and the work stops
+/// at the bound. Here a strip of 400 turns between two single edges on the
+/// spline cylinder; counted in points looked at, never timed.
+#[test]
+fn a_face_whose_steps_cost_too_much_to_show_passes_and_is_counted() {
+    use craft3d_topo::{MOST_PROOF_WORK, forget_passed, step_proofs};
+    let world = Transform::from_frame(&Frame::WORLD);
+    for reversed in [false, true] {
+        let (body, tol) = helical_strip_on(true, 1.0, &world, 400.0, (true, true), reversed);
+        forget_passed();
+        let (work, cut) = step_proofs();
+        assert_eq!(check(&body, &tol), vec![], "reversed {reversed}");
+        let (work_now, cut_now) = step_proofs();
+        assert_eq!(cut_now - cut, 1, "reversed {reversed}");
+        // Past the bound by no more than the last points looked at (one
+        // stretch's control points).
+        let spent = work_now - work;
+        assert!(
+            spent > MOST_PROOF_WORK as u64 && spent <= MOST_PROOF_WORK as u64 + (1 << 16),
+            "{spent}"
+        );
+    }
+    // The same strip of 20 turns is followed, for a twentieth of the bound.
+    let (body, tol) = helical_strip_on(true, 1.0, &world, 20.0, (true, true), false);
+    forget_passed();
+    let (work, cut) = step_proofs();
+    assert_eq!(check(&body, &tol), vec![]);
+    let (work_now, cut_now) = step_proofs();
+    assert_eq!(cut_now, cut);
+    assert!(
+        (1..=MOST_PROOF_WORK as u64 / 16).contains(&(work_now - work)),
+        "{}",
+        work_now - work
+    );
+}
+
+/// A band of a torus between two curves that go round it 3 times about
+/// its axis and 13 (or 29) times about its tube, each one spline edge
+/// closed on itself: a right face (3 and 13 have no common factor, so each
+/// curve is simple, and the two keep a constant tube angle apart). The
+/// spline edges are followed in steps shown to move less than a quarter
+/// turn about the axis, but nothing shows how far they move about the
+/// tube: at 13 tube turns in 16 half steps each moves 292.5°, read as
+/// 67.5° back, so the loop read as going round the tube 3 times and was
+/// refused ("goes round the torus 3 times about its axis and 3 times about
+/// its tube"), at every scale. Nothing is read off how often a loop with a
+/// spline edge goes round a torus any more.
+#[test]
+fn a_band_of_a_torus_between_two_curves_that_wind_about_its_tube_is_a_face() {
+    use craft3d_geom::{Curve3, Surface, Torus};
+    use craft3d_math::Vec3;
+    use craft3d_topo::{BodyKind, Coedge};
+    use std::f64::consts::TAU;
+    let mut wrong = Vec::new();
+    for scale in [1e-3, 1.0, 1e6] {
+        let tol = Tolerance::new(Tolerance::default().linear * scale, 1e-9).unwrap();
+        for (p, q) in [(3.0, 13.0), (3.0, 29.0)] {
+            for (major, minor) in [(3.0 * scale, scale), (2.0 * scale, 0.5 * scale)] {
+                for reversed in [false, true] {
+                    // The curve at the tube angle `q · s + shift` over the
+                    // axis angle `p · s`, a cubic through 64 points a tube
+                    // turn (within a twentieth of the tolerance).
+                    let knot = |shift: f64| {
+                        let count = 64 * q as usize + 1;
+                        let params: Vec<f64> =
+                            (0..count).map(|i| i as f64 / (count - 1) as f64).collect();
+                        let values: Vec<Vec<f64>> = params
+                            .iter()
+                            .map(|s| {
+                                let (su, cu) = (TAU * p * s).psin_cos();
+                                let (sv, cv) = (TAU * q * s + shift).psin_cos();
+                                let r = major + minor * cv;
+                                vec![r * cu, r * su, minor * sv]
+                            })
+                            .collect();
+                        let (knots, ctrl) =
+                            craft3d_geom::refine::interpolate(&params, 3, &values).unwrap();
+                        let points = ctrl.iter().map(|c| Vec3::new(c[0], c[1], c[2])).collect();
+                        NurbsCurve::polynomial(3, knots, points).unwrap()
+                    };
+                    let mut body = Body::new(BodyKind::Sheet);
+                    let mut closed = |c: NurbsCurve, back: bool| {
+                        let r = c.domain();
+                        let v = body.add_vertex(c.eval(r.0));
+                        let edge = body.add_edge(Curve3::Nurbs(c), r, v, v);
+                        body.add_loop(vec![Coedge {
+                            edge,
+                            reversed: back,
+                        }])
+                    };
+                    let loops = vec![closed(knot(0.0), reversed), closed(knot(0.8), !reversed)];
+                    let torus = Torus::new(Frame::WORLD, major, minor).unwrap();
+                    let face = body.add_face(Surface::Torus(torus), reversed, loops);
+                    body.add_shell(vec![face]);
+                    let found = check(&body, &tol);
+                    if !found.is_empty() {
+                        wrong.push(format!(
+                            "scale {scale}, ({p}, {q}), radii {major} and {minor}, reversed {reversed}: {found:?}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
 /// A spiral on the cone of radius `r0` at height 0 widening by `slope` a
