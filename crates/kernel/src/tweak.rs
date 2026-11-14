@@ -2050,8 +2050,13 @@ fn resurface_with(
         };
         // An edge along a border whose ends have changed places along it
         // has turned round.
+        // (Not counted against the operation's work bound, as none of the
+        // checks of 2026-11-14 is: `passes`.)
         let turned = |along: &Iso, surface: &craft3d_geom::NurbsSurface| {
-            !closed && iso_turned(surface, along, &edge.curve, edge.range, start, end, tol)
+            !closed
+                && craft3d_geom::allowance::uncounted(|| {
+                    iso_turned(surface, along, &edge.curve, edge.range, start, end, tol)
+                })
         };
         // Along a border of a face with a new surface: that border of it.
         if let Some(along) = iso.get(&id).filter(|a| surfaces.contains_key(&a.face))
@@ -2218,8 +2223,10 @@ fn resurface_with(
     // moved reached or passed the face that ends a neighbour of it. Before
     // the checker: where the edges lie on each other it would refuse the
     // body as invalid, with nothing to say of how far the face can go.
-    if let Some((face, edge, other)) = passes::crossed(body, &made, &uses_made, &remade, tolerance)
-    {
+    let crossed = craft3d_geom::allowance::uncounted(|| {
+        passes::crossed(body, &made, &uses_made, &remade, tolerance)
+    });
+    if let Some((face, edge, other)) = crossed {
         let mut faces = vec![face];
         for id in [edge, other] {
             for next in uses_made.get(id.0 as usize).into_iter().flatten() {
@@ -2256,49 +2263,53 @@ fn resurface_with(
     // same question beside the edges at a vertex one of them passed, and
     // beside every stretch of an edge made again that goes through a face
     // not its own; and where a face far from them lay in their way,
-    // whether the body still encloses what it did.
+    // whether the body still encloses what it did. Not counted against
+    // the operation's work bound (each has a cap of its own): what an
+    // operation was allowed before these checks it is allowed with them.
     if !surfaces.is_empty() {
-        let layout = passes::Layout::of(&made);
-        let swept = passes::swept(body, &made, &layout, surfaces, tolerance);
-        let pierced = passes::pierced(&made, &layout, &uses_made, &remade, tolerance);
-        // Where to ask, and the face that was passed or gone through.
-        let mut ask: BTreeMap<EdgeId, Vec<f64>> = BTreeMap::new();
-        let mut by: BTreeMap<EdgeId, FaceId> = BTreeMap::new();
-        for (id, face) in &swept.edges {
-            if remade.contains(id) {
-                continue;
+        let gone_through = craft3d_geom::allowance::uncounted(|| {
+            let layout = passes::Layout::of(&made);
+            let swept = passes::swept(body, &made, &layout, surfaces, tolerance);
+            let pierced = passes::pierced(&made, &layout, &uses_made, &remade, tolerance);
+            // Where to ask, and the face that was passed or gone through.
+            let mut ask: BTreeMap<EdgeId, Vec<f64>> = BTreeMap::new();
+            let mut by: BTreeMap<EdgeId, FaceId> = BTreeMap::new();
+            for (id, face) in &swept.edges {
+                if remade.contains(id) {
+                    continue;
+                }
+                if let Some(edge) = made.edge(*id) {
+                    ask.insert(*id, vec![0.5 * (edge.range.0 + edge.range.1)]);
+                    by.insert(*id, *face);
+                }
             }
-            if let Some(edge) = made.edge(*id) {
-                ask.insert(*id, vec![0.5 * (edge.range.0 + edge.range.1)]);
-                by.insert(*id, *face);
+            for (id, (middles, face)) in pierced {
+                ask.insert(id, middles);
+                by.insert(id, face);
             }
-        }
-        for (id, (middles, face)) in pierced {
-            ask.insert(id, middles);
-            by.insert(id, face);
-        }
-        if !ask.is_empty() {
-            if craft3d_geom::allowance::pass() {
-                return Err(spent());
-            }
-            if let Some((face, edge)) = buried_at(&made, &uses_made, &ask, tolerance) {
+            if !ask.is_empty()
+                && let Some((face, edge)) = buried_at(&made, &uses_made, &ask, tolerance)
+            {
                 let mut faces: Vec<FaceId> = by.get(&edge).copied().into_iter().collect();
                 if !faces.contains(&face) {
                     faces.push(face);
                 }
-                return Err(TweakError::Vanishes {
+                return Some(TweakError::Vanishes {
                     faces,
                     edge: None,
                     reason: THROUGH,
                 });
             }
-        }
-        if swept.near && passes::inside_out(body, &made, tolerance) {
-            return Err(TweakError::Unsupported {
-                faces: surfaces.keys().copied().take(crate::MAX_REPORTED).collect(),
-                edge: None,
-                reason: INSIDE_OUT,
-            });
+            (swept.near && passes::inside_out(body, &made, tolerance)).then(|| {
+                TweakError::Unsupported {
+                    faces: surfaces.keys().copied().take(crate::MAX_REPORTED).collect(),
+                    edge: None,
+                    reason: INSIDE_OUT,
+                }
+            })
+        });
+        if let Some(error) = gone_through {
+            return Err(error);
         }
     }
     Ok(made)

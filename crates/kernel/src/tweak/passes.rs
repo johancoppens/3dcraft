@@ -456,6 +456,12 @@ impl Layout {
 
 /// Halvings of the search for where an edge crosses a surface.
 const CUT_STEPS: usize = 48;
+/// Most pairs of an edge and a face near it ([`pierced`]), and of a moved
+/// face and a vertex in its way ([`swept`]), that are looked at closely in
+/// one operation; past them the check says nothing more. These checks are
+/// not counted against the operation's work bound (`super::resurface_with`),
+/// so each is held by a count of its own.
+const MOST_NEAR: usize = 1 << 13;
 
 /// The edges of `remade` that cross the surface of a face of `made` that
 /// shares no vertex with them, on that face (or where that cannot be
@@ -472,8 +478,9 @@ pub(super) fn pierced(
 ) -> BTreeMap<EdgeId, (Vec<f64>, FaceId)> {
     let tol = tolerance.linear;
     let mut found = BTreeMap::new();
+    let mut looked = 0_usize;
     for id in remade {
-        if craft3d_geom::allowance::exhausted() {
+        if looked > MOST_NEAR {
             break;
         }
         let Some(edge) = made.edge(*id) else {
@@ -490,16 +497,20 @@ pub(super) fn pierced(
         let mut through = None;
         for (index, (bounds, vertices)) in layout.boxes.iter().zip(&layout.vertices).enumerate() {
             let face = FaceId(super::index_u32(index));
-            if own.contains(&face)
+            if !bounds.as_ref().is_some_and(|b| boxes_meet(b, &around))
+                || own.contains(&face)
                 || vertices.contains(&edge.start)
                 || vertices.contains(&edge.end)
-                || !bounds.as_ref().is_some_and(|b| boxes_meet(b, &around))
             {
                 continue;
             }
             let Some(data) = made.face(face) else {
                 continue;
             };
+            looked += 1;
+            if looked > MOST_NEAR {
+                break;
+            }
             let off = |t: f64| distance(&data.surface, edge.curve.eval(t)).map(|(d, _)| d);
             let sides: Vec<Option<f64>> = followed.params.iter().map(|t| off(*t)).collect();
             // Where the edge crosses the surface between two parameters on
@@ -593,6 +604,7 @@ pub(super) fn swept(
         near: false,
     };
     let (vertices, boxes) = (&layout.vertices, &layout.boxes);
+    let mut looked = 0_usize;
     // The edges at every vertex.
     let mut at: Vec<Vec<EdgeId>> = vec![Vec::new(); made.vertices.len()];
     for (index, edge) in made.edges.iter().enumerate() {
@@ -629,6 +641,10 @@ pub(super) fn swept(
                 || own.contains(&vertex)
             {
                 continue;
+            }
+            looked += 1;
+            if looked > MOST_NEAR {
+                return found;
             }
             let (Some((d0, _)), Some((d1, out))) = (
                 distance(&was.surface, old.point),
