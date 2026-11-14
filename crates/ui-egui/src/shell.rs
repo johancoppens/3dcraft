@@ -945,6 +945,16 @@ pub struct Shell {
     /// refuses it: the menu, the status bar and its agents pill are the
     /// person's.
     presentations: bool,
+    /// Whether the sketches' lines were shown before the window left
+    /// `full`: what they are again when it comes back.
+    sketches_in_full: Option<bool>,
+    /// Draw a ring round the window while it has the keyboard (the web
+    /// build embedded in a page, whose canvas has no outline of its own).
+    focus_ring: bool,
+    focus_ring_shown: bool,
+    /// The feature list was drawn in the last frame: its menu and the
+    /// keys that walk it take an Escape (`Self::escape_has_work`).
+    features_drawn: bool,
     /// Two fingers were on the viewport: the finger left on it does not
     /// turn the camera until it is lifted.
     touch_gesture: bool,
@@ -1499,6 +1509,10 @@ impl Shell {
             drawer_button: None,
             more_menu: None,
             presentations: false,
+            sketches_in_full: None,
+            focus_ring: false,
+            focus_ring_shown: false,
+            features_drawn: false,
             touch_gesture: false,
             player_shown: false,
             player_hits: Vec::new(),
@@ -2915,19 +2929,101 @@ impl Shell {
         if !presentation.is_full() && !self.presentations {
             return false;
         }
-        if presentation != self.state.presentation {
-            self.state.show.sketches = presentation.is_full();
-        }
+        let (was, sketches) = (self.state.presentation, self.state.show.sketches);
         self.state.presentation = presentation;
+        self.sketches_follow(was, sketches, false);
         true
+    }
+
+    /// The sketches' lines after the presentation went from `was` (with
+    /// the lines `sketches`) to what it is: off when the window leaves
+    /// `full`, what they were kept; as they were in `full` again when it
+    /// comes back. `said`: the same change set them itself (a `ui.set`
+    /// patch with `show.sketches`), which stays.
+    pub(crate) fn sketches_follow(
+        &mut self,
+        was: crate::state::Presentation,
+        sketches: bool,
+        said: bool,
+    ) {
+        let now = self.state.presentation;
+        if was.is_full() && !now.is_full() {
+            self.sketches_in_full = Some(sketches);
+            if !said {
+                self.state.show.sketches = false;
+            }
+        } else if !was.is_full() && now.is_full() {
+            let kept = self.sketches_in_full.take();
+            if !said {
+                self.state.show.sketches = kept.unwrap_or(true);
+            }
+        }
+    }
+
+    /// Draws a ring round the window while it has the keyboard: for the
+    /// web build embedded in a page, whose canvas shows nothing of its
+    /// focus (eframe sets `outline: none`); the colour and width are the
+    /// tokens' (`info_accent`, `highlight_width`).
+    pub fn set_focus_ring(&mut self, on: bool) {
+        self.focus_ring = on;
+    }
+
+    /// True when Escape has something of the window's to do now (as the
+    /// window was last drawn): a field has the keys; a menu, a list, a
+    /// popover, the narrow layout's drawer or a dialog is open (an egui
+    /// popup, the Studio or Analysis popover, or any area drawn over the
+    /// panels but those that stay, the shell's banner and `staying`); a
+    /// joint is held by hand; the pointer is over the view while something
+    /// is selected; the keys walk the feature list shown. A page that
+    /// embeds the web build lets an Escape leave the canvas only when
+    /// nothing of this is so. Only what an Escape does close counts (what
+    /// the state says open but is not drawn, such as a feature's menu
+    /// while the list is not shown, does not): an Escape always leaves in
+    /// the end.
+    pub fn escape_has_work(&self, ctx: &egui::Context, staying: &[egui::Id]) -> bool {
+        if ctx.memory(|m| m.focused().is_some()) || egui::Popup::is_any_open(ctx) {
+            return true;
+        }
+        let panels = &self.state.panels;
+        let popover = (self.narrow() && panels.drawer)
+            || (self.state.analysis.is_on() && panels.analysis_options)
+            || (self.state.look.is_studio() && !self.state.analysis.is_on() && panels.look_options);
+        let list_shown = self.features_drawn;
+        let walking = list_shown
+            && self.state.side_panel.hover.is_some()
+            && !self.side.hover_by_pointer
+            && self.state.side_panel.menu.is_none();
+        let selected_under_pointer = !self.select.view.items.is_empty()
+            && ctx
+                .pointer_hover_pos()
+                .zip(self.rect)
+                .is_some_and(|(at, view)| view.contains(at));
+        if popover
+            || walking
+            || selected_under_pointer
+            || self.joints.driven.is_some()
+            || self.select.menu.is_some()
+            || (list_shown && self.state.side_panel.menu.is_some())
+        {
+            return true;
+        }
+        let banner = egui::Id::new(params::TROUBLE_ID);
+        ctx.memory(|m| {
+            m.areas().visible_layer_ids().into_iter().any(|layer| {
+                layer.order == egui::Order::Foreground
+                    && layer.id != banner
+                    && !staying.contains(&layer.id)
+            })
+        })
     }
 
     fn ui_with(&mut self, ui: &mut egui::Ui, mut session: Option<&mut Session>) {
         // Worked out again where the viewport is drawn this frame; a frame
         // without it (the start screen) leaves no stale light look.
         self.interacting = false;
-        // Set again where the drawer is drawn.
+        // Set again where the drawer is drawn, and the feature list.
         self.drawer_sliding = false;
+        self.features_drawn = false;
         // The viewport may show a provisional moment of a playing motion,
         // a picture that is recorded or captured may not.
         if let Some(session) = session.as_deref_mut() {
@@ -3228,6 +3324,29 @@ impl Shell {
         }
         self.closing_dialog(ui);
         self.help_windows(ui);
+        // The ring of a window embedded in a page while it has the keys.
+        if self.focus_ring && ui.input(|i| i.focused) {
+            let width = self.tokens.highlight_width;
+            let rect = ui.ctx().content_rect().shrink(width * 0.5);
+            ui.ctx()
+                .layer_painter(egui::LayerId::new(
+                    egui::Order::Tooltip,
+                    egui::Id::new("craft3d-focus-ring"),
+                ))
+                .rect_stroke(
+                    rect,
+                    egui::CornerRadius::ZERO,
+                    egui::Stroke::new(width, color(self.tokens.info_accent)),
+                    egui::StrokeKind::Middle,
+                );
+        }
+        self.focus_ring_shown = self.focus_ring && ui.input(|i| i.focused);
+    }
+
+    /// True when the last frame drew the ring of a window that has the
+    /// keys ([`Self::set_focus_ring`]).
+    pub fn focus_ring_shown(&self) -> bool {
+        self.focus_ring_shown
     }
 
     /// The File shortcuts, wherever the pointer is; not under a modal
@@ -4736,11 +4855,12 @@ impl Shell {
         }
         // Esc closes an open popover of the Studio or Analysis chip first,
         // wherever the pointer is, then lets go of a joint held by hand;
-        // then it clears the selection over the viewport.
+        // then it closes the "select other" list, wherever the pointer is,
+        // or clears the selection over the viewport.
         if !ui.ctx().egui_wants_keyboard_input() && ui.input(|i| i.key_pressed(help::CLEAR_KEY)) {
             if self.close_popover() || self.let_go_of_drive() {
                 ui.ctx().request_repaint();
-            } else if response.contains_pointer() {
+            } else if self.select.menu.is_some() || response.contains_pointer() {
                 self.escape_selection();
                 ui.ctx().request_repaint();
             }

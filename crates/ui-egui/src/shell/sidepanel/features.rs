@@ -1304,6 +1304,7 @@ impl Shell {
         }
         self.side.hits.rows = rows_drawn;
         self.tree_row_hits = self.side.hits.rows.clone();
+        self.features_drawn = true;
         self.tree_zoom_hits = zooms_drawn;
         if let Some((id, at)) = menu_open {
             self.state.side_panel.menu = Some(id);

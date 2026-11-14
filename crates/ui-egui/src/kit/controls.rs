@@ -836,7 +836,11 @@ impl Kit {
             let elsewhere = ui.input(|i| i.pointer.any_pressed())
                 && !area.response.contains_pointer()
                 && !response.contains_pointer();
-            if elsewhere || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            // Escape closes the list and is used up by it: the dialog the
+            // list is in stays open, for the next Escape.
+            if elsewhere
+                || ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+            {
                 open = false;
             }
         }

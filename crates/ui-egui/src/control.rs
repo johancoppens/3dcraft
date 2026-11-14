@@ -469,7 +469,8 @@ impl Shell {
         // Less than the whole window only where the host lets a page
         // decide (the web build): on the desktop the menu, the status bar
         // and its agents pill are the person's. Without the whole window
-        // the sketches' lines are off unless the patch says otherwise.
+        // the sketches' lines are off unless the patch says otherwise, and
+        // back in it they are as they were there.
         if self.state.presentation != before.presentation {
             if !self.presentations_allowed() && !self.state.presentation.is_full() {
                 self.state = before;
@@ -478,9 +479,11 @@ impl Shell {
                         .to_string(),
                 );
             }
-            if patch.pointer("/show/sketches").is_none() {
-                self.state.show.sketches = self.state.presentation.is_full();
-            }
+            self.sketches_follow(
+                before.presentation,
+                before.show.sketches,
+                patch.pointer("/show/sketches").is_some(),
+            );
         }
         // The side panel's width is held to the tokens' range here, as it
         // is when the panel is drawn, so `ui.get` says the width in use.

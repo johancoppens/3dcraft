@@ -229,3 +229,256 @@ fn without_the_whole_window_there_is_no_start_screen() {
         assert_eq!(got["startScreen"], false);
     }
 }
+
+/// The developer's choice of 2026-11-14 (round 3 of Embed): back in the
+/// whole window the sketches' lines are as they were there, on or off,
+/// whether the presentation is set by the host or by `ui.set`; a patch
+/// that says them itself keeps what it says.
+#[test]
+fn back_in_full_the_sketches_lines_are_as_they_were() {
+    let mut session = jig();
+    let mut shell = Shell::new();
+    shell.allow_presentations(true);
+    let set = |shell: &mut Shell, session: &mut Session, patch: Value| {
+        shell
+            .handle_method(session, "ui.set", Some(&patch))
+            .unwrap()
+            .unwrap();
+    };
+    for (sketches, away) in [
+        (false, Presentation::View),
+        (true, Presentation::Form),
+        (false, Presentation::Form),
+        (true, Presentation::View),
+    ] {
+        shell.state.show.sketches = sketches;
+        assert!(shell.set_presentation(away));
+        assert!(!shell.state.show.sketches, "{away:?}");
+        assert!(shell.set_presentation(Presentation::Full));
+        assert_eq!(shell.state.show.sketches, sketches, "{away:?}");
+        // The same through `ui.set`.
+        set(
+            &mut shell,
+            &mut session,
+            json!({"presentation": away.name()}),
+        );
+        assert!(!shell.state.show.sketches, "{away:?}");
+        set(&mut shell, &mut session, json!({"presentation": "full"}));
+        assert_eq!(shell.state.show.sketches, sketches, "{away:?}");
+    }
+    // A patch that says the lines keeps them; what they were in the whole
+    // window comes back after.
+    shell.state.show.sketches = false;
+    set(
+        &mut shell,
+        &mut session,
+        json!({"presentation": "view", "show": {"sketches": true}}),
+    );
+    assert!(shell.state.show.sketches);
+    assert!(shell.set_presentation(Presentation::Full));
+    assert!(!shell.state.show.sketches);
+}
+
+/// A window of 1280 × 800 points drawn frame by frame, with the events
+/// of each frame, in one egui context (what is open stays open).
+struct Window {
+    ctx: egui::Context,
+    time: f64,
+    focused: bool,
+}
+
+impl Window {
+    fn new() -> Self {
+        Self {
+            ctx: egui::Context::default(),
+            time: 0.0,
+            focused: true,
+        }
+    }
+
+    /// One frame; `over` is drawn after the shell, as a page's own UI.
+    fn frame_with(
+        &mut self,
+        shell: &mut Shell,
+        session: &mut Session,
+        events: Vec<egui::Event>,
+        over: &mut dyn FnMut(&egui::Context),
+    ) {
+        self.time += 1.0 / 60.0;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))),
+            time: Some(self.time),
+            focused: self.focused,
+            events,
+            ..Default::default()
+        };
+        let mut output = self.ctx.run_ui(input, |ui| {
+            shell.ui(ui, session);
+            over(ui.ctx());
+        });
+        output.textures_delta.clear();
+    }
+
+    fn frame(&mut self, shell: &mut Shell, session: &mut Session, events: Vec<egui::Event>) {
+        self.frame_with(shell, session, events, &mut |_| {});
+    }
+
+    fn frames(&mut self, shell: &mut Shell, session: &mut Session, n: usize) {
+        for _ in 0..n {
+            self.frame(shell, session, Vec::new());
+        }
+    }
+
+    fn key(&mut self, shell: &mut Shell, session: &mut Session, key: egui::Key) {
+        for pressed in [true, false] {
+            self.frame(
+                shell,
+                session,
+                vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        self.frames(shell, session, 2);
+    }
+
+    fn click(&mut self, shell: &mut Shell, session: &mut Session, at: Pos2) {
+        self.frame(shell, session, vec![egui::Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            self.frame(
+                shell,
+                session,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        // The pointer leaves the window: what it is over does not count.
+        self.frame(shell, session, vec![egui::Event::PointerGone]);
+        self.frames(shell, session, 2);
+    }
+
+    fn busy(&self, shell: &Shell) -> bool {
+        shell.escape_has_work(&self.ctx, &[])
+    }
+}
+
+/// R2-1 of the review of Embed's round 2 (2026-11-14): in a page, Escape
+/// left the canvas while a menu, the export dialog or a choice list stayed
+/// open. `Shell::escape_has_work`, which the page's listener reads, is
+/// true while something of the window's is open or has the keys, and
+/// false once Escape has closed it: one Escape closes it, the next one
+/// (nothing to do) is the page's to leave with.
+#[test]
+fn escape_has_work_while_something_is_open_and_none_once_it_closed() {
+    let mut session = Session::new(Workspace::memory());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(
+        &mut session,
+        "feature.block",
+        json!({"name": "Plate", "size": [60, 40, 8]}),
+    );
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    window.frames(&mut shell, &mut session, 4);
+    assert!(!window.busy(&shell), "nothing open");
+
+    // The export dialog.
+    shell.open_export(&mut session).unwrap();
+    window.frames(&mut shell, &mut session, 2);
+    assert!(window.busy(&shell), "the export dialog");
+    window.key(&mut shell, &mut session, egui::Key::Escape);
+    assert!(!shell.state.export.open);
+    assert!(!window.busy(&shell), "the export dialog closed");
+
+    // A feature's menu in the side panel.
+    let feature = shell.tree_rows().first().unwrap().id.clone();
+    shell.state.side_panel.menu = Some(feature);
+    window.frames(&mut shell, &mut session, 2);
+    assert!(window.busy(&shell), "the feature's menu");
+    window.key(&mut shell, &mut session, egui::Key::Escape);
+    assert!(shell.state.side_panel.menu.is_none());
+    assert!(!window.busy(&shell), "the menu closed");
+
+    // The Studio popover.
+    shell
+        .handle_method(
+            &mut session,
+            "ui.set",
+            Some(&json!({"look": {"mode": "studio"}, "panels": {"lookOptions": true}})),
+        )
+        .unwrap()
+        .unwrap();
+    window.frames(&mut shell, &mut session, 2);
+    assert!(window.busy(&shell), "the Studio popover");
+    window.key(&mut shell, &mut session, egui::Key::Escape);
+    assert!(!shell.state.panels.look_options);
+    assert!(!window.busy(&shell), "the popover closed");
+
+    // A field that has the keys: the See-through value, typed into.
+    let (_, _, value) = shell
+        .slider_hits()
+        .into_iter()
+        .find(|(name, _, _)| *name == "see-through")
+        .unwrap();
+    window.click(&mut shell, &mut session, value.unwrap().center());
+    assert!(shell.typing().is_some(), "typing into the value");
+    assert!(window.busy(&shell), "a field has the keys");
+    window.key(&mut shell, &mut session, egui::Key::Escape);
+    assert!(shell.typing().is_none());
+    assert!(!window.busy(&shell), "the field gave the keys back");
+
+    // Any area drawn over the panels (a list, a menu of the kit's), but
+    // those that stay: the page's own plate named in `staying`.
+    let list = egui::Id::new("a list over the panels");
+    let mut area = |ctx: &egui::Context| {
+        egui::Area::new(list)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| ui.label("an item"));
+    };
+    window.frame_with(&mut shell, &mut session, Vec::new(), &mut area);
+    window.frame_with(&mut shell, &mut session, Vec::new(), &mut area);
+    assert!(window.busy(&shell), "an area over the panels");
+    assert!(
+        !shell.escape_has_work(&window.ctx, &[list]),
+        "one that stays"
+    );
+    window.frames(&mut shell, &mut session, 2);
+    assert!(!window.busy(&shell), "gone with its frame");
+
+    // What the state says open but is not drawn takes no Escape, so an
+    // Escape always leaves in the end: a feature's menu set (by a page's
+    // `ui.set`) while the view alone is shown, without the list.
+    shell.allow_presentations(true);
+    assert!(shell.set_presentation(Presentation::View));
+    let feature = shell.tree_rows().first().unwrap().id.clone();
+    shell.state.side_panel.menu = Some(feature);
+    window.frames(&mut shell, &mut session, 2);
+    assert!(!window.busy(&shell), "a menu that is not drawn");
+}
+
+/// The cue the developer asked for (2026-11-14, round 3 of Embed): the
+/// web build embedded in a page draws a ring round the window while it
+/// has the keyboard, and none without it; a shell that was not asked to
+/// (the desktop, the plain page) never does.
+#[test]
+fn the_focus_ring_is_drawn_while_the_window_has_the_keys() {
+    let mut session = jig();
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    window.frames(&mut shell, &mut session, 2);
+    assert!(!shell.focus_ring_shown(), "not asked for");
+    shell.set_focus_ring(true);
+    window.frames(&mut shell, &mut session, 1);
+    assert!(shell.focus_ring_shown(), "asked for, with the keys");
+    window.focused = false;
+    window.frames(&mut shell, &mut session, 1);
+    assert!(!shell.focus_ring_shown(), "without the keys");
+}

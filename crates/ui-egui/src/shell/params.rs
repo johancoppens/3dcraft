@@ -48,6 +48,10 @@ const STEPPER_MOST: f64 = 12.0;
 const NO_PARAMETERS: &str =
     "No parameters. Publish a variable (variable.publish) to make this document a Jig.";
 
+/// The area of the banner of a value that breaks the model: it stays over
+/// the view, Escape does not close it (`Shell::escape_has_work`).
+pub(super) const TROUBLE_ID: &str = "craft3d-param-trouble";
+
 /// What the `form` presentation (a page's visitor) says of a document
 /// without public parameters.
 const NO_PARAMETERS_TO_SET: &str = "This model has no parameters to set.";
@@ -1949,7 +1953,7 @@ impl Shell {
         let at = egui::pos2(left, top);
         let mut back = None;
         let kit = crate::kit::Kit::plate(&tokens);
-        let shown = egui::Area::new(egui::Id::new("craft3d-param-trouble"))
+        let shown = egui::Area::new(egui::Id::new(TROUBLE_ID))
             .order(egui::Order::Foreground)
             // Shown at once, in full: a fade would wait for frames an
             // idle window does not draw.
