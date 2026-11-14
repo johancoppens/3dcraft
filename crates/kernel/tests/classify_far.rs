@@ -1467,6 +1467,89 @@ fn booleans(seeds: std::ops::Range<u64>, scales: &[f64], far: f64) -> Booleans {
     found
 }
 
+/// The smallest of them, in round numbers: a block 30 by 50 by 50 (times
+/// 1e6, tolerance 1) whose side at y = 50 is a strip ruled across it (`u`
+/// the 30 along x, `v` from 0 to 1 across the 50 along z), and a block 16
+/// by 40 by 16 that stands in it and out through that side by 10. The
+/// volumes of the union, the intersection and the subtraction, in the
+/// world and in a turned frame.
+fn through_a_ruled_side(frame: &Frame) -> [Result<f64, String>; 3] {
+    let k = 1e6;
+    let tol = tolerance(k);
+    let mut a = primitives::block(frame, 30.0 * k, 50.0 * k, 50.0 * k).unwrap();
+    let index = a
+        .faces
+        .iter()
+        .position(|f| match &f.surface {
+            Surface::Plane(p) => {
+                p.frame().z().dot(frame.y()).abs() > 0.999_999
+                    && (frame.local(p.frame().origin()).1 - 50.0 * k).abs() < 1.0
+            }
+            _ => false,
+        })
+        .unwrap();
+    let corner = |x: f64, z: f64| frame.point(x * 30.0 * k, 50.0 * k, z * 50.0 * k);
+    let strip = NurbsSurface::new(
+        1,
+        1,
+        vec![0.0, 0.0, 30.0 * k, 30.0 * k],
+        vec![0.0, 0.0, 1.0, 1.0],
+        2,
+        2,
+        vec![
+            corner(0.0, 0.0),
+            corner(0.0, 1.0),
+            corner(1.0, 0.0),
+            corner(1.0, 1.0),
+        ],
+        vec![1.0; 4],
+    )
+    .unwrap();
+    // The strip's normal is against the frame's y: the side looks along it.
+    a.faces[index].surface = Surface::Nurbs(strip);
+    a.faces[index].reversed = true;
+    assert_eq!(check(&a, &tol), []);
+    let at = frame.at(frame.point(10.0 * k, 20.0 * k, 30.0 * k)).unwrap();
+    let b = primitives::block(&at, 16.0 * k, 40.0 * k, 16.0 * k).unwrap();
+    [BooleanOp::Union, BooleanOp::Intersect, BooleanOp::Subtract].map(|op| {
+        let result = boolean(&a, &b, op, &tol).map_err(|e| shortened(&e.to_string()))?;
+        if !check(&result.body, &tol).is_empty() {
+            return Err("fails the checker".to_string());
+        }
+        mass_bound(&result.body)
+            .map(|(m, _)| m.volume)
+            .map_err(|e| format!("not measured: {e}"))
+    })
+}
+
+/// The union of the two is both less what they share (30 · 50 · 50 + 16
+/// · 40 · 16 − 16 · 30 · 16 = 77 560), the intersection what they share
+/// (7 680), the subtraction the first less that (67 320), all times 1e18.
+/// Before the repair the second block's edges were not found to cross
+/// the ruled side, and all three were refused in the world's frame
+/// ("boolean produced an invalid body: edge … is used … times"); with
+/// other sizes the same pair came out wrong (the seeds below).
+#[test]
+fn a_block_through_a_ruled_side_of_a_block() {
+    let turned = Frame::new(
+        Vec3::new(0.0, 0.0, 0.0),
+        Vec3::new(-0.68, -0.16, 0.71),
+        Vec3::new(-0.05, 0.98, 0.17),
+    )
+    .unwrap();
+    for (name, frame) in [("the world", Frame::WORLD), ("a turned frame", turned)] {
+        let found = through_a_ruled_side(&frame);
+        println!("{name}: {found:?}");
+        for (volume, expected) in found.iter().zip([77_560.0, 7_680.0, 67_320.0]) {
+            let volume = volume.clone().unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(
+                (volume / 1e18 - expected).abs() < 1e-6 * expected,
+                "{name}: {volume:e} for {expected} e18: {found:?}"
+            );
+        }
+    }
+}
+
 /// The booleans that were built wrong (2026-11-14, seeds 4 and 8 of the
 /// wide measure, at scale 1e6): a block with ruled sides and a block that
 /// shares a corner of it, in a turned frame at the origin and 2.6e8 from
@@ -1476,8 +1559,11 @@ fn booleans(seeds: std::ops::Range<u64>, scales: &[f64], far: f64) -> Booleans {
 /// 8.805e22): solids that pass the checker and are not the result, where
 /// an edge of one block was not found to cross a ruled side of the other
 /// (the search for the nearest point of the side ended short,
-/// `boolean/freeform.rs` › `descend`). All three booleans of both pairs
-/// are their closed forms.
+/// `boolean/freeform.rs` › `descend`). The first union was both blocks
+/// whole and the subtraction the first block untouched, as if the two
+/// did not meet; the other union was the first block alone, the part of
+/// the second that stands out of it gone. All three booleans of both
+/// pairs are their closed forms.
 #[test]
 fn the_booleans_that_were_built_wrong_are_their_closed_forms() {
     for (seed, far) in [(4, 0.0), (4, 260.0), (8, 0.0), (8, 260.0)] {
