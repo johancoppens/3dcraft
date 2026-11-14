@@ -59,6 +59,8 @@ pub mod checks;
 mod door;
 pub mod embed;
 #[cfg(test)]
+mod embed_fuzz;
+#[cfg(test)]
 mod embed_tests;
 pub mod flags;
 pub mod fonts;

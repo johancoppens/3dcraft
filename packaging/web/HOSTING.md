@@ -123,10 +123,15 @@ protocol, the events and the files are in `docs/control-protocol.md` › *The pa
 repository.
 
 **What the page must have.** The app's files beside the page (the module, its glue, the worker, `fonts/`
-and `environments/`, fetched relative to the page), and a canvas with the id `craft3d_canvas` that asks
-for the embedded stand with the attribute `data-craft3d-embed`. Its value holds the options, in the syntax
-of the address's flags: `presentation=full|view|form`, `webgl`, `cpu`, `download`, `pageregen`, `warn`.
-The canvas can name the worker too (`data-craft3d-worker`), so the page needs nothing in its head.
+and `environments/`, fetched relative to the page), and, when the module starts, a canvas with the id
+`craft3d_canvas` that asks for the embedded stand with the attribute `data-craft3d-embed`. Its value holds
+the options, in the syntax of the address's flags: `presentation=full|view|form`, `warn`, `open=<file of
+the same site>`, `webgl`, `cpu`, `download`, `pageregen`, `fullmove`, `movescale=1..4`. An option 3DCraft
+does not know or cannot take (`presentation=veiw`, `webgel`) is said in the browser's console and in the
+`ready` event's `warnings`, with what is shown instead (for a presentation it does not have, the whole
+window). The canvas can name the worker too (`data-craft3d-worker`), so the page needs nothing in its head.
+Without the canvas, or without WebGPU and WebGL2, the port says `failed` and answers every request with
+that error.
 
 ```html
 <div style="position: relative; width: 800px; height: 500px">
@@ -138,23 +143,38 @@ The canvas can name the worker too (`data-craft3d-worker`), so the page needs no
   import init, { craft3d_connect } from './craft3d-web-<hash>.js';
   await init({ module_or_path: './craft3d-web-<hash>_bg.wasm' });
   const port = craft3d_connect();
-  port.onmessage = (event) => console.log(event.data);      // replies and events, as objects
+  const waiting = new Map();
+  let next = 1;
+  const call = (method, params, bytes) => new Promise((resolve) => {
+    const id = next++;
+    waiting.set(id, resolve);
+    port.postMessage(bytes ? { id, method, params, bytes } : { id, method, params });
+  });
+  const ready = new Promise((resolve, reject) => {
+    port.onmessage = ({ data }) => {
+      if (data.event === 'ready') resolve(data);
+      else if (data.event === 'failed') reject(new Error(data.error));
+      else if (data.event === 'regenerated') console.log('built', data.revision);
+      else { waiting.get(data.id)?.(data); waiting.delete(data.id); }
+    };
+  });
+  await ready;
   const bytes = await (await fetch('shelf.3dcraftjig')).arrayBuffer();
-  port.postMessage({ id: 1, method: 'embed.give', params: { name: 'shelf.3dcraftjig' }, bytes });
-  port.postMessage({ id: 2, method: 'engine.execute',
-                     params: { command: 'param.set', params: { values: { width: '900 mm' } } } });
-  port.postMessage({ id: 3, method: 'engine.execute',
-                     params: { command: 'file.export', params: { path: 'shelf.stl' } } });
-  // The reply to 3 carries files: [{ name: 'shelf.stl', bytes: Uint8Array }].
+  await call('embed.give', { name: 'shelf.3dcraftjig' }, bytes);
+  await call('engine.execute', { command: 'param.set', params: { values: { width: '900 mm' } } });
+  const stl = await call('engine.execute', { command: 'file.export', params: { path: 'shelf.stl' } });
+  // stl.files: [{ name: 'shelf.stl', bytes: Uint8Array }]
 </script>
 ```
 
 **The presentations**, a setting rather than a build: `full` is the window as the plain page shows it;
 `view` is the 3D view with its view cube and controls, without the menu, the tabs, the side panel, the
-status bar and the start screen; `form` puts a Jig's parameter form and its outputs beside the view (under
-it in a narrow box), without the menu and the tabs. `ui.set {"presentation": "form"}` changes it while the
-page runs. Without the whole window a file dropped on the canvas is let be, and the File, Edit and tab keys
-are the page's.
+status bar and the start screen; `form` puts a Jig's parameter form and its outputs beside the view (in a
+box narrower than about 700 points, a sheet over the lower part of the view, which then covers part of the
+model), without the menu and the tabs. In `view` and `form` the sketches' lines are off, as a visitor wants
+the model (`ui.set {"show": {"sketches": true}}` shows them). `ui.set {"presentation": "form"}` changes it
+while the page runs. Without the whole window a file dropped on the canvas is let be, and the File, Edit
+and tab keys are the page's. A document without public parameters shows, in `form`, only that it has none.
 
 **What 3DCraft takes from the page, and what it leaves.** In the embedded stand it leaves the page's title,
 its focus (eframe's start gives its own text field the focus before it first waits; 3DCraft gives it back
@@ -163,9 +183,32 @@ the keys outside its canvas (Ctrl+Z and its kin are kept from the browser only w
 focus), `window.onbeforeunload` (with `warn` it asks before leaving with unsaved changes through a listener
 beside the page's own), `localStorage` (no preferences are read or kept) and the page's address (the
 options come from the attribute). What any embed of the module keeps: the canvas's `tabindex` and `outline`,
-a hidden text field next to the canvas (eframe's, for typing), listeners on the canvas and on the document
-that act only while 3DCraft has the focus or the pointer is over the canvas, and, while the canvas has the
-focus, every key, Tab included. Without the attribute, the page is the plain app's, exactly as above.
+a hidden text field next to the canvas (eframe's, for typing; out of the order Tab follows), listeners on
+the canvas and on the document that act only while 3DCraft has the focus or the pointer is over the canvas,
+and, while the canvas has the focus, every key but those below. Without the attribute, the page is the
+plain app's, exactly as above.
+
+**The keyboard and the wheel in the embedded stand.** eframe keeps Tab inside its canvas whatever its
+options say; 3DCraft lets the keyboard out where nothing of its window has the keys: in `view`, Tab and
+Shift+Tab move on to the page's next or previous element; in every presentation, Escape leaves the canvas
+(a field of the form gives the keys back on the first Escape, the canvas on the second), and the page's Tab
+order goes on from there. The wheel over the canvas zooms only while 3DCraft has the focus (after a click
+in it) or with Ctrl (⌘) held, a pinch on a touchpad; otherwise it scrolls the page.
+
+**Trust.** The page that loads the module may send every command, with no token and no list of allowed
+commands (the developer, 2026-11-14): it runs in the same JavaScript realm as 3DCraft and could call into
+the module anyway. So a host page can read everything a person opens in an embedded 3DCraft (a file they
+give it, what they change in the form) and change it; embed 3DCraft in a page whose code you trust as you
+trust 3DCraft. What a page cannot do through it: reach the person's disk (the files are in memory; Save and
+Export go to the page as bytes or to the person as downloads or through their own file dialogs), reach
+another site's 3DCraft, or drive the desktop app. A list of allowed commands comes with the iframe's door,
+for a page that should not be trusted that far.
+
+**Files.** `embed.give` takes a document up to 256 MiB and a STEP file up to 128 MiB. `file.save {path}`
+gives the document's file and names the document after it, as Save As does (it counts as saved: with `warn`
+nothing is asked before leaving afterwards); `embed.take` gives the document's file and leaves it as it
+was. One port for the page's lifetime: a second `craft3d_connect()` throws, also after the page closed its
+port, and 3DCraft runs as long as the page (no teardown yet).
 
 ## Renderer selection and fallback flags
 

@@ -66,6 +66,7 @@ web-sys = { workspace = true, features = [
     "Response",
     "Storage",
     "Url",
+    "WheelEvent",
     "Window",
     "Worker",
     "WorkerOptions",

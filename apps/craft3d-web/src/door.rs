@@ -101,16 +101,37 @@ pub fn connected() -> bool {
 }
 
 /// 3DCraft could not start in the page: said now to a page that listens,
-/// and to one that connects later.
+/// and to one that connects later; what waits in the inbox, and every
+/// request from now on, is answered with that error (no frame will come
+/// to answer it).
 pub fn failed(why: &str) {
-    DOOR.with(|door| {
-        if let Ok(mut door) = door.try_borrow_mut() {
-            if let Some(port) = &door.port {
-                post_line(port, &embed::failed_event(why), Vec::new());
-            }
-            door.failed = Some(why.to_string());
+    let waiting = DOOR.with(|door| {
+        let Ok(mut door) = door.try_borrow_mut() else {
+            return Vec::new();
+        };
+        if let Some(port) = &door.port {
+            post_line(port, &embed::failed_event(why), Vec::new());
         }
+        door.failed = Some(why.to_string());
+        door.inbox_bytes = 0;
+        std::mem::take(&mut door.inbox)
     });
+    for message in waiting {
+        refuse(&id_in(&message.line), &not_running(why));
+    }
+}
+
+/// What a request gets while 3DCraft is not running in the page.
+fn not_running(why: &str) -> String {
+    format!("3DCraft is not running in this page: {why}")
+}
+
+/// The `id` of a request line, where it reads.
+fn id_in(line: &str) -> Value {
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|v| v.get("id").cloned())
+        .unwrap_or(Value::Null)
 }
 
 /// The messages that came since the last call, in order.
@@ -159,6 +180,12 @@ fn arrived(data: &JsValue) {
         .line
         .len()
         .saturating_add(message.bytes.as_ref().map_or(0, Vec::len));
+    // 3DCraft did not start: the request is answered with why, at once.
+    let failed = DOOR.with(|door| door.try_borrow().ok().and_then(|door| door.failed.clone()));
+    if let Some(why) = failed {
+        refuse(&id_in(&message.line), &not_running(&why));
+        return;
+    }
     let kept = DOOR.with(move |door| {
         let Ok(mut door) = door.try_borrow_mut() else {
             return Err(message);
@@ -175,10 +202,7 @@ fn arrived(data: &JsValue) {
         Ok(())
     });
     if let Err(message) = kept {
-        let id = serde_json::from_str::<Value>(&message.line)
-            .ok()
-            .and_then(|v| v.get("id").cloned())
-            .unwrap_or(Value::Null);
+        let id = id_in(&message.line);
         refuse(
             &id,
             &format!(

@@ -439,11 +439,16 @@ pub struct WebHost {
     /// opened in the next pump, after a frame drawn with it.
     example_said: Option<&'static str>,
     /// The commands run in the worker for requests of the page that
-    /// embeds 3DCraft, by number, and their answers that came
-    /// ([`Self::page_job`]).
+    /// embeds 3DCraft, by number, and their answers that came, each with
+    /// the files its own command wrote ([`Self::page_job`]).
     page_jobs: BTreeSet<u64>,
-    page_answers: Vec<craft3d_engine::Answered>,
+    page_answers: Vec<PageAnswer>,
 }
+
+/// The answer of a command the page asked for, run in the worker, with
+/// the files that command wrote (taken out of memory as it came, so that
+/// no other request's reply takes them, nor the window's own files).
+pub type PageAnswer = (craft3d_engine::Answered, Vec<(String, Vec<u8>)>);
 
 /// An example from the start screen being built a step at a time
 /// ([`WebHost::pump`]): each step is run as a command the person asked
@@ -1809,14 +1814,25 @@ impl WebHost {
     /// that selects in the status bar only.
     pub fn answered(&mut self, answered: Vec<craft3d_engine::Answered>) -> Outcome {
         let mut outcome = Outcome::default();
-        for answer in answered {
-            // A request of the page that embeds 3DCraft: its answer is the
-            // page's (`crate::embed`), whichever way it came (the worker,
-            // a cancel, a worker that stopped).
-            if self.page_jobs.remove(&answer.token) {
-                self.page_answers.push(answer);
-                continue;
+        // A request of the page that embeds 3DCraft: its answer is the
+        // page's (`crate::embed`), whichever way it came (the worker, a
+        // cancel, a worker that stopped), with the files its command
+        // wrote, taken now, before anything of the window's own (which
+        // empties the memory after an action) could take them.
+        let mut answered = answered;
+        answered.retain(|answer| {
+            if !self.page_jobs.remove(&answer.token) {
+                return true;
             }
+            let files = answer
+                .files
+                .iter()
+                .filter_map(|name| Some((name.clone(), self.session.take_file(name)?)))
+                .collect();
+            self.page_answers.push((answer.clone(), files));
+            false
+        });
+        for answer in answered {
             // A step of the example being built, made in the worker: the
             // next steps run now (a failure ends the example).
             if let Some(run) = &mut self.example_run
@@ -2110,9 +2126,19 @@ impl WebHost {
         self.page_jobs.insert(token);
     }
 
-    /// The answers of the page's commands that came since the last call.
-    pub fn take_page_answers(&mut self) -> Vec<craft3d_engine::Answered> {
+    /// The answers of the page's commands that came since the last call,
+    /// each with the files its command wrote.
+    pub fn take_page_answers(&mut self) -> Vec<PageAnswer> {
         std::mem::take(&mut self.page_answers)
+    }
+
+    /// The files named `names`, taken out of memory (those that are
+    /// there): what one command of the page wrote, for its reply.
+    pub fn take_files(&mut self, names: &[String]) -> Vec<(String, Vec<u8>)> {
+        names
+            .iter()
+            .filter_map(|name| Some((name.clone(), self.session.take_file(name)?)))
+            .collect()
     }
 
     /// True while answers of the page's commands wait to be taken.
@@ -2123,19 +2149,11 @@ impl WebHost {
     /// After a request of the page ran a command (`label`, with
     /// `outcome`): said in the status bar as the desktop says a request of
     /// its control channel (without the error dialog: the page says its
-    /// own errors), the window brought up to the state it left as after
-    /// any action, and the files it wrote taken out of memory, for the
-    /// page instead of a download.
-    pub fn page_did(
-        &mut self,
-        label: &str,
-        outcome: &Result<Value, String>,
-    ) -> Vec<(String, Vec<u8>)> {
-        let files = self
-            .forget_files()
-            .into_iter()
-            .map(|file| (file.name, file.bytes))
-            .collect();
+    /// own errors), and the window brought up to the state it left as
+    /// after any action. The files the command wrote are the caller's to
+    /// take, by name ([`Self::take_files`]): only those, so that no other
+    /// request's reply and none of the window's own exports get them.
+    pub fn page_did(&mut self, label: &str, outcome: &Result<Value, String>) {
         self.said = self.said.wrapping_add(1);
         self.last_answer = outcome.as_ref().ok().cloned();
         let (ok, text) = match outcome {
@@ -2154,7 +2172,6 @@ impl WebHost {
         } else {
             self.shell.sync(&mut self.session);
         }
-        files
     }
 }
 

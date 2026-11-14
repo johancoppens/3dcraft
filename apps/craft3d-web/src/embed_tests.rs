@@ -11,7 +11,10 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::checks::{Reply, Transport};
-use crate::embed::{Embed, GIVE, MAX_FILE_BYTES, MAX_WAITING, Message, Out, PROTOCOL};
+use crate::embed::{
+    BATCH_REFUSED, Embed, GIVE, MAX_FILE_BYTES, MAX_WAITING, Message, Out, PROTOCOL, TAKE,
+    WAIT_REFUSED,
+};
 use crate::host::WebHost;
 use crate::scenes::Scenes;
 use craft3d_automation::MAX_REQUEST_BYTES;
@@ -99,6 +102,8 @@ struct Page {
     worker: Beside,
     clock: Rc<Cell<f64>>,
     out: Vec<Out>,
+    /// What the window's own exports downloaded (`WebHost::answered`).
+    downloads: Vec<crate::host::Download>,
 }
 
 impl Page {
@@ -114,6 +119,9 @@ impl Page {
 
     fn new(worker: bool) -> Self {
         let mut host = WebHost::new(Shell::new());
+        // As `page.rs` has it: in the browser the page decides how much
+        // of the window is drawn.
+        host.shell.allow_presentations(true);
         let beside = Beside::default();
         let scenes = worker.then(|| {
             host.set_stepwise(true);
@@ -130,6 +138,7 @@ impl Page {
             worker: beside,
             clock,
             out: Vec::new(),
+            downloads: Vec::new(),
         }
     }
 
@@ -161,7 +170,8 @@ impl Page {
             let replies = self.worker.answers();
             let done = scenes.frame_at(&mut self.host.session, quality, replies, self.clock.get());
             if !done.commands.is_empty() {
-                self.host.answered(done.commands);
+                let outcome = self.host.answered(done.commands);
+                self.downloads.extend(outcome.downloads);
             }
         }
         self.host.pump();
@@ -286,6 +296,18 @@ fn a_page_hears_ready_and_its_commands_are_answered_under_their_ids() {
     assert_eq!(said[0]["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(said[0]["presentation"], "full");
     assert_eq!(said[0]["embedded"], true);
+    assert_eq!(said[0]["warnings"], json!([]));
+    // What the page's options said that was not taken is in `ready`.
+    let mut warned = Page::alone();
+    warned
+        .embed
+        .set_warnings(vec!["`webgel` is not an option".into()]);
+    warned.embed.greet(&warned.host);
+    warned.collect();
+    assert_eq!(
+        warned.replies()[0]["warnings"],
+        json!(["`webgel` is not an option"])
+    );
 
     let made = page.ask(&execute(1, "file.new", json!({"units": "mm"})));
     assert_eq!(made["id"], 1);
@@ -329,6 +351,7 @@ fn a_page_hears_ready_and_its_commands_are_answered_under_their_ids() {
             "batch",
             "methods",
             GIVE,
+            TAKE,
             "ui.get",
             "ui.set"
         ]
@@ -761,4 +784,357 @@ fn sixty_changes_of_a_slider_are_answered_in_order_and_the_newest_is_shown() {
         ids.len(),
         regenerated.len()
     );
+}
+
+/// The block opened through the page with its worker, shown and said
+/// regenerated; nothing left to read.
+fn opened_block() -> Page {
+    let (document, _) = block_files();
+    let mut page = Page::with_worker();
+    page.send_file(
+        &json!({"id": "g", "method": GIVE, "params": {"name": "block.3dcraft"}}).to_string(),
+        document,
+    );
+    for _ in 0..10 {
+        page.frame();
+        if !page.host.away() && !page.host.session.commands_waiting() {
+            break;
+        }
+    }
+    page.frames(2);
+    page.take();
+    page
+}
+
+fn names(files: &Files) -> Vec<&str> {
+    files.iter().map(|(name, _)| name.as_str()).collect()
+}
+
+/// B1 of the review of 2026-11-14: a read and an export sent together and
+/// answered in the same frame gave the export's file to the read's reply.
+/// Each reply carries exactly the files its own command wrote; the
+/// window's own export made at the same time keeps its file too; and
+/// what a command on the page writes goes with its reply only.
+#[test]
+fn each_reply_carries_the_files_its_own_command_wrote_and_no_others() {
+    let mut page = opened_block();
+    page.send(execute(1, "document.measure", json!({})));
+    page.send(execute(2, "file.export", json!({"path": "box.stl"})));
+    // The window's own export, from its menu, made in the worker as well.
+    assert!(page.host.export_as("mine.stl").is_empty());
+    page.frames(3);
+    let got = page.take();
+    let reply = |id: i64| got.iter().find(|(r, _)| r["id"] == id).unwrap();
+    assert_eq!(reply(1).0["ok"], true, "{}", reply(1).0);
+    assert!(
+        reply(1).1.is_empty(),
+        "the read's reply: {:?}",
+        names(&reply(1).1)
+    );
+    assert_eq!(reply(2).0["ok"], true, "{}", reply(2).0);
+    assert_eq!(names(&reply(2).1), ["box.stl"]);
+    let downloaded: Vec<&str> = page.downloads.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(downloaded, ["mine.stl"], "the window's own export");
+    // On the page, at once: a save and a list sent together.
+    page.send(execute(3, "file.save", json!({"path": "copy.3dcraft"})));
+    page.send(execute(4, "file.list", json!({})));
+    let got = page.take();
+    let reply = |id: i64| got.iter().find(|(r, _)| r["id"] == id).unwrap();
+    assert_eq!(names(&reply(3).1), ["copy.3dcraft"]);
+    assert!(reply(4).1.is_empty());
+    assert!(page.host.session.file_names().is_empty());
+}
+
+/// B2 of the review of 2026-11-14: `document.inspect` answered by the
+/// worker said the worker's copy's history (`["state"]`) and no path.
+/// What a read says of the document is the page's own session's: its
+/// place, its file, its unsaved mark, its undo history; and no other read
+/// run in the worker says anything of them that the session would not.
+#[test]
+fn what_a_read_says_of_the_document_is_the_pages_own_session() {
+    let (document, _) = block_files();
+    let mut page = Page::with_worker();
+    // Another document first, so that the block is the second.
+    page.send(execute("n", "file.new", json!({"units": "mm"})));
+    page.send_file(
+        &json!({"id": "g", "method": GIVE, "params": {"name": "block.3dcraft"}}).to_string(),
+        document,
+    );
+    page.frames(3);
+    for (id, command, params) in [
+        ("w1", "param.set", json!({"values": {"width": "12 mm"}})),
+        ("w2", "param.set", json!({"values": {"width": "14 mm"}})),
+        ("s", "file.save", json!({"path": "kept.3dcraft"})),
+        ("w3", "param.set", json!({"values": {"width": "16 mm"}})),
+        ("u", "edit.undo", json!({})),
+    ] {
+        let reply = page.answer(&execute(id, command, params));
+        assert_eq!(reply["ok"], true, "{id}: {reply}");
+    }
+    page.frames(3);
+    let asked = page.worker.commands.get();
+    let reads = [
+        ("document.inspect", json!({"measures": false})),
+        ("document.measure", json!({})),
+        ("document.check", json!({})),
+        ("document.edges", json!({"feature": "Block"})),
+        ("assert.list", json!({})),
+        ("select.get", json!({})),
+        ("select.query", json!({"kind": "face"})),
+        ("document.interference", json!({})),
+    ];
+    let mut there = Vec::new();
+    for (n, (command, params)) in reads.iter().enumerate() {
+        let reply = page.answer(&execute(n as i64, command, params.clone()));
+        assert_eq!(reply["ok"], true, "{command}: {reply}");
+        there.push(reply["result"].clone());
+    }
+    assert!(
+        page.worker.commands.get() > asked,
+        "document.inspect at least was run in the worker"
+    );
+    // The same reads on the page's own session (here, after: they
+    // regenerate it).
+    let fields = [
+        "document", "path", "dirty", "history", "title", "file", "jigInUse",
+    ];
+    for ((command, params), there) in reads.iter().zip(&there) {
+        let here = page.host.session.execute(command, params).unwrap();
+        for field in fields {
+            assert_eq!(
+                there.get(field),
+                here.get(field),
+                "{command}: `{field}` through the page is not the session's"
+            );
+        }
+    }
+    let inspect = &there[0];
+    assert_eq!(inspect["document"], 1);
+    assert_eq!(inspect["path"], "kept.3dcraft");
+    assert_eq!(inspect["dirty"], false, "undone back to what was saved");
+    let undo = inspect["history"]["undo"].as_array().unwrap();
+    assert!(
+        undo.len() >= 2 && undo.iter().all(|l| l != "state"),
+        "{inspect}"
+    );
+    assert_eq!(inspect["history"]["redo"], json!(["Set width"]));
+}
+
+/// The developer's decision of 2026-11-14 (5): what would hold the page's
+/// own thread is refused for a page, naming engine.execute: a batch step
+/// that needs the bodies, a command sent with `wait: true` that needs
+/// them. A batch of what needs none runs; nothing is regenerated on the
+/// page.
+#[test]
+fn a_batch_step_or_a_wait_that_needs_the_bodies_is_refused_for_a_page() {
+    let mut page = opened_block();
+    let added = page.answer(&execute("a", "assert.add", assertion("the block")));
+    assert_eq!(added["ok"], true, "{added}");
+    page.frames(3);
+    // A state whose bodies the page does not have (an edit made on it): a
+    // command on it needs them built.
+    let set = page.answer(&execute(
+        "p",
+        "param.set",
+        json!({"values": {"width": "11 mm"}}),
+    ));
+    assert_eq!(set["ok"], true, "{set}");
+    assert!(!page.host.session.regenerated_here());
+    let work = page.host.session.work_here();
+    let batch = page.answer(
+        &json!({"id": "b", "method": "batch", "params": {"steps": [
+            {"command": "file.list"},
+            {"command": "document.measure"},
+        ]}})
+        .to_string(),
+    );
+    assert_eq!(batch["ok"], true, "{batch}");
+    assert_eq!(batch["result"]["completed"], 1, "{batch}");
+    assert_eq!(batch["result"]["failed"], 1, "{batch}");
+    let error = batch["result"]["results"][1]["error"].as_str().unwrap();
+    assert!(
+        error.contains("engine.execute") && error.contains(BATCH_REFUSED),
+        "{error}"
+    );
+    let fine = page.answer(
+        &json!({"id": "c", "method": "batch", "params": {"steps": [
+            {"command": "file.list"},
+            {"command": "param.list"},
+        ]}})
+        .to_string(),
+    );
+    assert_eq!(fine["result"]["completed"], 2, "{fine}");
+    let waited = page.answer(&execute(
+        "w",
+        "param.set",
+        json!({"values": {"width": "12 mm"}, "wait": true}),
+    ));
+    assert_eq!(waited["ok"], false, "{waited}");
+    let error = waited["error"].as_str().unwrap();
+    assert!(
+        error.contains("engine.execute") && error.contains(WAIT_REFUSED),
+        "{error}"
+    );
+    let set = page.answer(&execute(
+        "s",
+        "param.set",
+        json!({"values": {"width": "12 mm"}}),
+    ));
+    assert_eq!(set["ok"], true, "{set}");
+    assert_eq!(
+        page.host.session.work_here(),
+        work,
+        "the page built nothing"
+    );
+}
+
+/// The review of 2026-11-14: `regenerated` never came after an edit that
+/// changes nothing, and a reply carried no revision. A reply that ran a
+/// command says the state it left; `regenerated` follows for it (or a
+/// later one) exactly when that state was not said already.
+#[test]
+fn a_reply_says_the_state_it_left_and_whether_regenerated_follows() {
+    let mut page = opened_block();
+    let wait_for = |page: &mut Page, document: i64, revision: u64| -> bool {
+        for _ in 0..10 {
+            page.frame();
+            if page.replies().iter().any(|e| {
+                e["event"] == "regenerated"
+                    && e["document"] == document
+                    && e["revision"].as_u64().is_some_and(|r| r >= revision)
+            }) {
+                return true;
+            }
+        }
+        false
+    };
+    // An edit that changes the document.
+    let set = page.ask(&execute(
+        1,
+        "param.set",
+        json!({"values": {"width": "20 mm"}}),
+    ));
+    let state = set["state"].clone();
+    assert_eq!(state["document"], 0, "{set}");
+    assert_eq!(state["regenerated"], false, "{set}");
+    let revision = state["revision"].as_u64().unwrap();
+    assert!(
+        wait_for(&mut page, 0, revision),
+        "regenerated for {revision}"
+    );
+    // The same value again: nothing changes, and the reply says no event
+    // follows for it.
+    let same = page.ask(&execute(
+        2,
+        "param.set",
+        json!({"values": {"width": "20 mm"}}),
+    ));
+    assert_eq!(same["ok"], true, "{same}");
+    if same["state"]["revision"].as_u64() == Some(revision) {
+        assert_eq!(same["state"]["regenerated"], true, "{same}");
+        page.frames(3);
+        assert!(!page.replies().iter().any(|e| e["event"] == "regenerated"));
+    } else {
+        let again = same["state"]["revision"].as_u64().unwrap();
+        assert!(wait_for(&mut page, 0, again));
+    }
+    // A read: the state as it is, said already.
+    let read = page.ask(&execute(3, "file.list", json!({})));
+    assert_eq!(read["state"]["regenerated"], true, "{read}");
+    // A new document: its state, and the event for it.
+    let made = page.ask(&execute(4, "file.new", json!({"units": "mm"})));
+    assert_eq!(made["state"]["document"], 1, "{made}");
+    let fresh = made["state"]["revision"].as_u64().unwrap();
+    if made["state"]["regenerated"] == false {
+        assert!(wait_for(&mut page, 1, fresh), "regenerated after file.new");
+    }
+    // An undo back to a state said before: said again.
+    page.ask(&execute(5, "file.activate", json!({"document": 0})));
+    page.frames(3);
+    page.replies();
+    let undone = page.ask(&execute(6, "edit.undo", json!({})));
+    assert_eq!(undone["state"]["regenerated"], false, "{undone}");
+    let after = undone["state"]["revision"].as_u64().unwrap();
+    assert!(wait_for(&mut page, 0, after), "regenerated after the undo");
+    // Without a document: no state.
+    page.ask(&execute(7, "file.close", json!({"discard": true})));
+    let closed = page.ask(&execute(8, "file.close", json!({"discard": true})));
+    assert_eq!(closed["state"], Value::Null, "{closed}");
+}
+
+/// The review of 2026-11-14: a read that needs the bodies was lost when
+/// an edit made on the page came behind it (a price that follows a
+/// slider: 0 of 60 measures). Each read is answered on the state it was
+/// sent for.
+#[test]
+fn a_read_is_answered_on_the_state_it_was_sent_for() {
+    let mut page = opened_block();
+    for n in 0..6 {
+        page.send(execute(
+            format!("p{n}"),
+            "param.set",
+            json!({"values": {"width": format!("{} mm", 10 + n)}, "merge": n > 0}),
+        ));
+        page.send(execute(format!("m{n}"), "document.measure", json!({})));
+    }
+    let mut got = Vec::new();
+    for _ in 0..20 {
+        page.frame();
+        got.extend(page.replies());
+    }
+    for n in 0..6 {
+        let measured = got.iter().find(|r| r["id"] == format!("m{n}")).unwrap();
+        assert_eq!(measured["ok"], true, "{measured}");
+        let want = f64::from(10 + n) * 600.0;
+        assert!((volume(measured) - want).abs() < 1e-6, "m{n}: {measured}");
+    }
+    assert!(page.host.session.file_names().is_empty());
+}
+
+/// `embed.take`: the document's own file, and the document as it was
+/// (its name, its file, its unsaved mark), where `file.save {path}` names
+/// the document after the file and marks it saved.
+#[test]
+fn take_gives_the_documents_file_and_leaves_the_document_as_it_was() {
+    let (document, _) = block_files();
+    let mut page = Page::alone();
+    let none = page.ask(&json!({"id": 0, "method": TAKE}).to_string());
+    assert_eq!(none["ok"], false, "{none}");
+    page.send_file(
+        &json!({"id": "g", "method": GIVE, "params": {"name": "block.3dcraft"}}).to_string(),
+        document,
+    );
+    page.take();
+    page.ask(&execute(
+        1,
+        "param.set",
+        json!({"values": {"width": "30 mm"}}),
+    ));
+    let before = page.host.session.document_status().unwrap();
+    assert!(before.dirty);
+    page.send(json!({"id": 2, "method": TAKE}).to_string());
+    let (reply, files) = page.take().remove(0);
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(names(&files), ["block.3dcraft"]);
+    assert_eq!(reply["result"]["bytes"], files[0].1.len());
+    let after = page.host.session.document_status().unwrap();
+    assert_eq!(after.path, before.path);
+    assert!(after.dirty, "still unsaved");
+    let mut check = Session::new(Workspace::memory());
+    check.put_file("x.3dcraft", files[0].1.clone()).unwrap();
+    check
+        .execute("file.open", &json!({"path": "x.3dcraft"}))
+        .unwrap();
+    let measured = check.execute("document.measure", &json!({})).unwrap();
+    assert!((measured["volume"].as_f64().unwrap() - 18000.0).abs() < 1e-6);
+    page.send(json!({"id": 3, "method": TAKE, "params": {"name": "../mine.3dcraft"}}).to_string());
+    let (reply, files) = page.take().remove(0);
+    assert_eq!(reply["result"]["name"], "mine.3dcraft", "{reply}");
+    assert_eq!(names(&files), ["mine.3dcraft"]);
+    let bad = page.ask(&json!({"id": 4, "method": TAKE, "params": {"path": "x"}}).to_string());
+    assert!(
+        bad["error"].as_str().unwrap().contains("unknown parameter"),
+        "{bad}"
+    );
+    assert!(page.host.session.file_names().is_empty());
 }

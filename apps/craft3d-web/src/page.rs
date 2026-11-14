@@ -160,6 +160,10 @@ async fn run() {
         .and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok())
     else {
         say("3DCraft cannot start: the page has no canvas.");
+        // A page that connected hears it, and every request it sends.
+        door::failed(&format!(
+            "3DCraft cannot start: the page has no <canvas id=\"{CANVAS_ID}\"> when the module starts"
+        ));
         return;
     };
     // The embedded stand (Embed, experimental): a page that sets
@@ -167,9 +171,17 @@ async fn run() {
     // title, its focus, its keys outside 3DCraft, its question before
     // leaving, its storage and its address. The options come from the
     // attribute, in the syntax of the address's flags
-    // (`presentation=view&webgl`), not from the page's address.
+    // (`presentation=view&webgl`), not from the page's address; what of
+    // them is not taken is said in the console and in `ready`.
     let embed_options = canvas.get_attribute(EMBED_ATTRIBUTE);
     let embedded = embed_options.is_some();
+    let warnings = embed_options
+        .as_deref()
+        .map(flags::embed_warnings)
+        .unwrap_or_default();
+    for warning in &warnings {
+        log::warn!("3DCraft, {EMBED_ATTRIBUTE}: {warning}");
+    }
     let search = match embed_options {
         Some(options) => options,
         None => window()
@@ -177,6 +189,7 @@ async fn run() {
             .unwrap_or_default(),
     };
     let flags = flags::parse(&search);
+    let keys = Keys::default();
     let mut options = eframe::WebOptions::default();
     if flags.webgl {
         let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
@@ -198,16 +211,21 @@ async fn run() {
     let runner = eframe::WebRunner::new();
     let (for_app, for_unsaved) = (Rc::clone(&inbox), Rc::clone(&unsaved));
     let open = flags.open.clone();
+    let stand = Stand {
+        embedded,
+        warnings,
+        keys: keys.clone(),
+    };
     let start = runner.start(
         canvas.clone(),
         options,
         Box::new(move |creation| {
-            let app = Page::new(creation, &flags, for_app, for_unsaved, embedded);
+            let app = Page::new(creation, &flags, for_app, for_unsaved, stand);
             Ok(Box::new(app))
         }),
     );
     let started = if embedded {
-        start_leaving_focus(start, &canvas, focused).await
+        start_leaving_focus(start, &canvas, focused, keys).await
     } else {
         start.await
     };
@@ -233,6 +251,25 @@ async fn run() {
     std::mem::forget(runner);
 }
 
+/// What the page asked for at the start, for [`Page::new`].
+struct Stand {
+    /// The embedded stand (`data-craft3d-embed`).
+    embedded: bool,
+    /// What of its options was not taken, for `ready`.
+    warnings: Vec<String>,
+    keys: Keys,
+}
+
+/// What the embedded stand's own listeners on the canvas need to know of
+/// the window, set each frame ([`Page::logic`]).
+#[derive(Clone, Default)]
+struct Keys {
+    /// A widget of the window has the keyboard (a field of the form).
+    widget: Rc<Cell<bool>>,
+    /// The presentation is `view`: Tab has nothing to move to inside.
+    view: Rc<Cell<bool>>,
+}
+
 /// eframe's start in the embedded stand: it makes its hidden text field
 /// beside the canvas and gives it the focus before it first waits (for the
 /// graphics adapter), with no option to leave it be. The focus goes back
@@ -240,10 +277,22 @@ async fn run() {
 /// the same task, so no key of the page's goes astray; and Undo, Redo and
 /// the File keys are kept from the browser only where 3DCraft has the
 /// focus (its canvas, its text field), not on the whole page.
+///
+/// And a keyboard user can leave: eframe keeps Tab inside its canvas
+/// whatever its options say, so 3DCraft's own listeners, called before
+/// eframe's (the capture phase on the canvas), let it go to the browser
+/// where nothing of the window has the keyboard: Tab and Shift+Tab in
+/// `view` move on to the page's next or previous element; Escape leaves
+/// the canvas in every presentation (a field of the form gives the
+/// keyboard back on the first Escape). eframe's text field is taken out of
+/// the order Tab follows. The wheel over the canvas turns into a zoom
+/// only while 3DCraft has the focus or with Ctrl (⌘) held, a pinch;
+/// otherwise it scrolls the page.
 async fn start_leaving_focus(
     start: impl std::future::Future<Output = Result<(), JsValue>>,
     canvas: &web_sys::HtmlCanvasElement,
     focused: Option<web_sys::Element>,
+    keys: Keys,
 ) -> Result<(), JsValue> {
     use std::task::Poll;
     let mut start = std::pin::pin!(start);
@@ -273,13 +322,76 @@ async fn start_leaving_focus(
             }
         }
     }
+    if let Some(agent) = &agent {
+        let _ = agent.set_attribute("tabindex", "-1");
+    }
     let mut targets: Vec<web_sys::EventTarget> = vec![canvas.clone().into()];
-    targets.extend(agent.map(web_sys::EventTarget::from));
+    targets.extend(agent.clone().map(web_sys::EventTarget::from));
     keep_file_shortcuts(&targets);
+    let_the_keyboard_and_the_wheel_out(canvas, agent, &targets, keys);
     match first {
         Poll::Ready(started) => started,
         Poll::Pending => start.await,
     }
+}
+
+/// The embedded stand's listeners on the canvas and eframe's text field,
+/// in the capture phase so that they come before eframe's own
+/// ([`start_leaving_focus`]). Kept for the page's lifetime.
+fn let_the_keyboard_and_the_wheel_out(
+    canvas: &web_sys::HtmlCanvasElement,
+    agent: Option<web_sys::Element>,
+    targets: &[web_sys::EventTarget],
+    keys: Keys,
+) {
+    let (out, agent_out) = (canvas.clone(), agent.clone());
+    let key =
+        Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |event: web_sys::KeyboardEvent| {
+            if keys.widget.get() || event.ctrl_key() || event.meta_key() || event.alt_key() {
+                return;
+            }
+            match event.key().as_str() {
+                // The browser moves the focus on; eframe does not see it.
+                "Tab" if keys.view.get() => event.stop_immediate_propagation(),
+                "Escape" => {
+                    let _ = out.blur();
+                    if let Some(agent) = agent_out
+                        .as_ref()
+                        .and_then(|a| a.dyn_ref::<web_sys::HtmlElement>())
+                    {
+                        let _ = agent.blur();
+                    }
+                }
+                _ => {}
+            }
+        });
+    for target in targets {
+        let _ = target.add_event_listener_with_callback_and_bool(
+            "keydown",
+            key.as_ref().unchecked_ref(),
+            true,
+        );
+    }
+    key.forget();
+    let (own, agent_own) = (canvas.clone(), agent);
+    let wheel =
+        Closure::<dyn FnMut(web_sys::WheelEvent)>::new(move |event: web_sys::WheelEvent| {
+            let active = document().and_then(|d| d.active_element());
+            let ours = active.as_ref().is_some_and(|a| {
+                a == own.as_ref() || agent_own.as_ref().is_some_and(|agent| agent == a)
+            });
+            if !ours && !event.ctrl_key() && !event.meta_key() {
+                // eframe does not see it, so it does not cancel it: the page
+                // scrolls.
+                event.stop_immediate_propagation();
+            }
+        });
+    let _ = canvas.add_event_listener_with_callback_and_bool(
+        "wheel",
+        wheel.as_ref().unchecked_ref(),
+        true,
+    );
+    wheel.forget();
 }
 
 /// The browser's question before the page is closed or reloaded while a
@@ -574,6 +686,9 @@ struct Page {
     /// The page asked for the embedded stand: its title and its storage
     /// are left alone.
     embedded: bool,
+    /// What the embedded stand's listeners on the canvas read of the
+    /// window, set each frame.
+    keys: Keys,
     /// What the page that embeds 3DCraft asked through the door, and
     /// what goes back (`crate::embed`).
     embed: Embed,
@@ -585,8 +700,13 @@ impl Page {
         flags: &Flags,
         inbox: Inbox,
         unsaved: Rc<Cell<bool>>,
-        embedded: bool,
+        stand: Stand,
     ) -> Self {
+        let Stand {
+            embedded,
+            warnings,
+            keys,
+        } = stand;
         // A message through the door asks for a frame.
         door::set_context(creation.egui_ctx.clone());
         let choice = if flags.cpu {
@@ -675,8 +795,11 @@ impl Page {
         };
         prefs.apply(&mut host.shell.state);
         let stored = prefs.to_json();
+        // In the browser the page decides how much of the window is drawn
+        // (`ui.set`), and in the embedded stand its option says it first.
+        host.shell.allow_presentations(true);
         if embedded && let Some(presentation) = flags.presentation {
-            host.shell.state.presentation = presentation;
+            host.shell.set_presentation(presentation);
         }
         // The system's file dialogs where the browser has them, unless the
         // address asks for downloads (`?download`).
@@ -710,7 +833,12 @@ impl Page {
             scenes,
             scene_replies,
             embedded,
-            embed: Embed::new(embedded, Box::new(now_ms)),
+            keys,
+            embed: {
+                let mut embed = Embed::new(embedded, Box::new(now_ms));
+                embed.set_warnings(warnings);
+                embed
+            },
         }
     }
 
@@ -1230,7 +1358,11 @@ impl eframe::App for Page {
         }
         self.read_mail();
         // What the page that embeds 3DCraft asked through the door, in
-        // order (answered now, or kept behind an edit made in the worker).
+        // order (answered now, or kept behind an edit made in the worker),
+        // after `ready`, which comes first.
+        if door::connected() {
+            self.embed.greet(&self.host);
+        }
         for message in door::take() {
             self.embed.receive(&mut self.host, message);
         }
@@ -1320,13 +1452,15 @@ impl eframe::App for Page {
                 ctx.request_repaint_after(std::time::Duration::from_secs(30));
             }
         }
-        // The page's door: `ready` once a page listens, the replies of
-        // commands run in the worker, what waited, `regenerated`.
-        if door::connected() {
-            self.embed.greet(&self.host);
-        }
+        // The page's door: the replies of commands run in the worker, what
+        // waited, `regenerated`.
         self.embed.frame(&mut self.host);
         door::post(self.embed.take_out());
+        // What the embedded stand's listeners on the canvas read.
+        self.keys.widget.set(ctx.memory(|m| m.focused().is_some()));
+        self.keys
+            .view
+            .set(self.host.shell.state.presentation == craft3d_ui_egui::state::Presentation::View);
         self.unsaved.set(self.host.has_unsaved());
         // The page's title and its storage are its own in the embedded
         // stand.
