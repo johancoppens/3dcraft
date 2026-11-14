@@ -605,6 +605,15 @@ impl Session {
         !self.commands.jobs.is_empty()
     }
 
+    /// True while as many commands wait for their answers as may: the
+    /// next command that needs the bodies would run here
+    /// ([`Session::try_without_bodies`] hands over no more). A host that
+    /// must never build them here (a page that embeds 3DCraft) keeps its
+    /// next request until one is answered.
+    pub fn commands_full(&self) -> bool {
+        self.commands.jobs.len() >= MAX_JOBS
+    }
+
     /// The command numbered `token`, written out for
     /// [`crate::run_command`]; from then on it waits for its answer. An
     /// error when there is no such job (the job is then gone) or its
