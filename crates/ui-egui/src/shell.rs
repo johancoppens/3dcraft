@@ -2943,29 +2943,43 @@ impl Shell {
             }
             None => (self.shown_scene.clone(), self.shown_status.clone()),
         };
-        self.file_shortcuts(ui, status.is_some());
-        self.edit_shortcuts(ui, status.as_ref());
-        self.tab_shortcuts(ui);
+        // Without the whole window (Embed's `view` and `form`, set by the
+        // page it sits in) the File, Edit, tab and Help keys are the
+        // page's business: the window keeps those of the view.
+        let full = self.state.presentation.is_full();
+        let form = self.state.presentation == crate::state::Presentation::Form;
+        if full {
+            self.file_shortcuts(ui, status.is_some());
+            self.edit_shortcuts(ui, status.as_ref());
+            self.tab_shortcuts(ui);
+        }
         self.view_shortcuts(ui);
-        self.help_keys(ui);
+        if full {
+            self.help_keys(ui);
+        }
         // The next step of the history player, when it is time.
         self.advance_player(ui.ctx());
         self.settle_work(ui.ctx());
         let tokens = self.tokens;
-        egui::Panel::top("craft3d-menu")
-            .resizable(false)
-            .show_separator_line(false)
-            .frame(chrome_frame(tokens.menu_fill))
-            .show(ui, |ui| {
-                ui.style_mut().visuals = tokens.chrome_visuals();
-                self.menu_bar(ui, status.as_ref());
-            });
+        if full {
+            egui::Panel::top("craft3d-menu")
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(chrome_frame(tokens.menu_fill))
+                .show(ui, |ui| {
+                    ui.style_mut().visuals = tokens.chrome_visuals();
+                    self.menu_bar(ui, status.as_ref());
+                });
+        } else {
+            self.drawer_button = None;
+            self.more_menu = None;
+        }
         if self.file_action.is_some() || self.doc_action.is_some() || !self.edit_actions.is_empty()
         {
             // The host does it between frames: have one come.
             ui.ctx().request_repaint();
         }
-        if self.state.panels.recovery && !self.recovery.found.is_empty() {
+        if full && self.state.panels.recovery && !self.recovery.found.is_empty() {
             let clicked = egui::Panel::top("craft3d-recovery")
                 .resizable(false)
                 .show_separator_line(false)
@@ -2991,7 +3005,11 @@ impl Shell {
             self.recovery_hits.clear();
             self.discard_armed = None;
         }
-        if self.narrow {
+        if !full {
+            // No tab row in `view` and `form`: the page shows what it
+            // opened.
+            self.tab_hits.clear();
+        } else if self.narrow {
             // The top bar names the document and lists the others (its
             // ▾), or 3DCraft on the start screen: no tab row on a phone or
             // a tablet (boards m1, m2, t1).
@@ -3013,7 +3031,7 @@ impl Shell {
                 )
                 .show(ui, |ui| self.tab_row(ui));
         }
-        if self.state.panels.status {
+        if full && self.state.panels.status {
             egui::Panel::bottom("craft3d-status")
                 .resizable(false)
                 .show_separator_line(false)
@@ -3031,12 +3049,23 @@ impl Shell {
         // Put away while the welcome shows (`start.rs`).
         // A Jig in use on a phone: its form is a half sheet under the model
         // (board m8); on a tablet the side panel docks beside it (t2).
+        // In `form` (Embed) the form is shown as a Jig in use shows it,
+        // also for a model with public parameters; in `view` never.
         let window = ui.ctx().content_rect().width();
-        let jig = self.jig_in_use() && !self.welcome();
-        let docked = self.narrow && jig && window >= tokens.docked_min_window;
-        let half_sheet = self.narrow && jig && !docked;
-        let drawer = self.narrow && !docked && self.state.panels.tree && !self.welcome();
-        if self.state.panels.tree && !self.welcome() && (!self.narrow || docked) {
+        let welcome = self.welcome();
+        let view = self.state.presentation == crate::state::Presentation::View;
+        let jig = self.jig_in_use() && !welcome;
+        let wants_form = !view && (jig || (form && !welcome));
+        let docked = self.narrow && wants_form && window >= tokens.docked_min_window;
+        let half_sheet = self.narrow && wants_form && !docked;
+        let drawer = full && self.narrow && !docked && self.state.panels.tree && !welcome;
+        let side = !welcome
+            && if form {
+                !self.narrow || docked
+            } else {
+                full && self.state.panels.tree && (!self.narrow || docked)
+            };
+        if side {
             // No margin on the right: the list's scroll bar lies against
             // the panel's edge, the split it is resized by.
             let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin {
@@ -3057,10 +3086,21 @@ impl Shell {
                 .resizable(false)
                 .exact_size(width)
                 .frame(frame)
-                .show(ui, |ui| self.side_panel(ui, status.is_some()));
+                .show(ui, |ui| {
+                    if form {
+                        self.form_panel(ui, status.is_some());
+                    } else {
+                        self.side_panel(ui, status.is_some());
+                    }
+                });
             self.tree_panel = Some(panel.response.rect);
         } else {
             self.tree_panel = None;
+            // No form drawn in `view` (or not yet, under a sheet): none of
+            // its fields are hit.
+            if !full {
+                self.parameters_hidden();
+            }
         }
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui, scene.as_ref()));
         // The status bar is laid out before the viewport draws: its
@@ -3077,7 +3117,7 @@ impl Shell {
         }
         // The side panel's split, over the viewport's edge: interacted
         // after it, so a drag there resizes the panel and does not orbit.
-        if let Some(panel) = self.tree_panel.filter(|_| !self.narrow) {
+        if let Some(panel) = self.tree_panel.filter(|_| full && !self.narrow) {
             self.tree_split(ui, panel);
         }
         // In the narrow layout the side panel is a drawer over the
@@ -3087,16 +3127,20 @@ impl Shell {
         } else if self.narrow && !docked {
             self.tree_panel = None;
         }
-        if half_sheet && !self.state.panels.drawer {
+        // In `form` the sheet is the form alone: no drawer opens over it.
+        if half_sheet && (form || !self.state.panels.drawer) {
             self.parameters_sheet(ui);
         } else {
             self.params_sheet_rect = None;
         }
-        if half_sheet && self.state.panels.drawer {
+        if half_sheet && !form && self.state.panels.drawer {
             self.drawer(ui, status.is_some());
         }
-        // A parameter's value that broke the model, and the way back.
-        self.trouble_banner(ui);
+        // A parameter's value that broke the model, and the way back: the
+        // form's, so not over the bare view.
+        if !view {
+            self.trouble_banner(ui);
+        }
         // Space, the arrows, Home and End over the viewport or the list.
         self.player_keys(ui.ctx());
         // A number typed into a field of the viewport, once Enter was
@@ -4780,7 +4824,11 @@ impl Shell {
                 color(tokens.viewport_text),
             );
         };
-        let start = self.welcome();
+        let welcome = self.welcome();
+        // The start screen only in the whole window: in Embed's `view` and
+        // `form` the page decides what is opened, and the view stays empty
+        // until it does.
+        let start = welcome && self.state.presentation.is_full();
         // Nothing drawn yet while a file opens: what is opening, in the
         // middle, gone with the first body.
         let nothing_yet = scene.is_none_or(|scene| scene.bodies.is_empty());
@@ -4838,7 +4886,7 @@ impl Shell {
         self.paint_selecting(ui);
         // The view cube, the triad and the controls over the viewport;
         // the start screen instead while there is no document.
-        if start {
+        if welcome {
             self.controls_layout = None;
         } else {
             self.viewport_controls(ui, rect, scene);

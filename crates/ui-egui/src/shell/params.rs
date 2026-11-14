@@ -1522,6 +1522,29 @@ impl Shell {
         self.side_tabs(ui, has_document, jig, joints);
     }
 
+    /// The side panel of the `form` presentation (Embed): the Parameters
+    /// tab alone, its header naming it as on a phone's sheet (there is no
+    /// tab row), with an assembly's joints above it; the form's own text
+    /// for a document without public parameters.
+    pub(super) fn form_panel(&mut self, ui: &mut egui::Ui, has_document: bool) {
+        if !has_document {
+            self.parameters_hidden();
+            return;
+        }
+        let jig = self.params.list.as_ref().is_some_and(|l| l.jig);
+        let joints = self.has_joint_sliders();
+        if joints {
+            self.joints_ui(ui);
+        }
+        if jig || !joints {
+            self.params.in_sheet = true;
+            self.parameters_tab(ui);
+            self.params.in_sheet = false;
+        } else {
+            self.parameters_hidden();
+        }
+    }
+
     /// The Parameters tab is not shown: none of its fields are hit.
     pub(super) fn parameters_hidden(&mut self) {
         self.params.hits.clear();
@@ -1830,8 +1853,9 @@ impl Shell {
                     self.params.ask(json!({ "reset": true }), None);
                 }
                 // A Jig in use changes only through its parameters;
-                // editing it takes a model of its own.
-                if self.jig_in_use() {
+                // editing it takes a model of its own (not offered in a
+                // page's form, where the page decides what is opened).
+                if self.jig_in_use() && self.state.presentation.is_full() {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         self.open_for_editing_button(ui);
                     });
