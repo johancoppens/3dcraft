@@ -135,7 +135,8 @@ impl Glyph {
             "sheetMetal" | "fold" => Glyph::SheetMetal,
             "unfold" => Glyph::Unfold,
             "developable" => Glyph::Developable,
-            "surfaceNetwork" | "surfaceTrim" | "surfaceNsided" | "fill" | "plate" => Glyph::Surface,
+            "surfaceNetwork" | "surfaceTrim" | "surfaceNsided" | "surfaceGrid" | "fill"
+            | "plate" => Glyph::Surface,
             "offsetProfile" => Glyph::OffsetProfile,
             _ => Glyph::Feature,
         }
