@@ -6,13 +6,12 @@
 
 use crate::{Names, length_or_number, to_document};
 use craft3d_doc::{
-    Document, FeatureId, GridPoints, NameRole, PersistentName, SplineSpacing, SurfaceGrid,
-    TableCell,
+    Document, FeatureId, GridPoints, GridSpacing, NameRole, PersistentName, SurfaceGrid, TableCell,
 };
 use craft3d_expr::{Dimension, Evaluation, Quantity};
 use craft3d_geom::grid::{self, Spacing};
 use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
-use craft3d_math::{Tolerance, Vec3};
+use craft3d_math::{Portable, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge};
 
 /// What a grid surface made beside its body, for its feature's result.
@@ -25,7 +24,18 @@ pub struct Gridded {
     pub deviation: f64,
     /// What rounding may leave there (`craft3d_geom::grid::Grid::bound`).
     pub bound: f64,
+    /// What the sheet is too large for, in words: a boolean takes a
+    /// freeform face of at most `craft3d_kernel::boolean::MAX_FREEFORM_SPANS`
+    /// Bézier spans.
+    pub warnings: Vec<String>,
 }
+
+// The document's caps are the geometry's: one number each, written twice
+// because the document does not depend on the geometry.
+const _: () = assert!(
+    craft3d_doc::MAX_GRID_POINTS == grid::MAX_GRID_POINTS
+        && craft3d_doc::MAX_GRID_SIDE == grid::MAX_GRID_SIDE
+);
 
 /// The points of the grid, row by row, in the document's unit; with the
 /// number of rows and of points per row, and whether the face is to be
@@ -210,8 +220,13 @@ fn coordinate(
         Ok(value)
     } else {
         Err(format!(
-            "{name}: `{}` is {value}; a point of a grid is finite numbers",
-            expr.source()
+            "{name}: `{}` is {}; a point of a grid is finite numbers",
+            expr.source(),
+            if value.is_nan() {
+                "not a number"
+            } else {
+                "infinite"
+            }
         ))
     }
 }
@@ -226,13 +241,47 @@ pub(crate) fn build(
         .ok_or("the document's tolerance is not positive and finite".to_string())?;
     let (pts, rows, columns, turned) = points(doc, variables, feature)?;
     let spacing = match feature.spacing {
-        SplineSpacing::Greville => Spacing::Greville,
-        SplineSpacing::Chord => Spacing::Chord,
+        GridSpacing::Greville => Spacing::Greville,
+        GridSpacing::Chord => Spacing::Chord,
+        GridSpacing::Even => Spacing::Even,
     };
-    let made = grid::interpolate(&pts, rows, columns, spacing, tol.linear, tol.angular)
-        .map_err(|e| format!("points: {e}"))?;
+    // A table's heights stand along +z: the proof that the sheet does not
+    // fold tries that direction first.
+    let up = matches!(feature.points, GridPoints::Table { .. }).then_some(Vec3::Z);
+    let steep = match up {
+        Some(_) => steepest(&pts, rows, columns),
+        None => 0.0,
+    };
+    let made = grid::interpolate_with(
+        &pts,
+        rows,
+        columns,
+        &grid::Options {
+            spacing,
+            tolerance: tol.linear,
+            angular: tol.angular,
+            up,
+        },
+    )
+    .map_err(|e| format!("points: {e}"))?;
     drop(pts);
     let (deviation, bound) = (made.deviation, made.bound);
+    let (pu, pv) = made.surface.degrees();
+    let spans = (columns - pu).saturating_mul(rows - pv);
+    let most = craft3d_kernel::boolean::MAX_FREEFORM_SPANS;
+    let mut warnings = Vec::new();
+    if steep > STEEP {
+        warnings.push(format!(
+            "the heights rise up to {steep:.0} times the step between neighbours: is the factor right (heights in metres over steps of millimetres want the map's scale)?"
+        ));
+    }
+    if spans > most {
+        warnings.push(format!(
+            "the sheet has {spans} spans, more than the {most} of a face a boolean takes: feature.boolean will refuse it (a cut by it, the solid under it); a grid of at most {} × {} points is taken",
+            boolean_side(most),
+            boolean_side(most)
+        ));
+    }
     let body = sheet(made.surface, rows, columns, turned)?;
     // Numbered as a primitive's entities are, in a fixed order: the edges
     // along the first row (0), the last row (1), the first column (2) and
@@ -256,8 +305,41 @@ pub(crate) fn build(
             columns,
             deviation,
             bound,
+            warnings,
         },
     ))
+}
+
+/// A table's rises between neighbours above this many times the step are
+/// warned of: a factor left out, most likely.
+const STEEP: f64 = 1e3;
+
+/// The largest rise in z between neighbours of a table's grid over their
+/// distance in x and y.
+fn steepest(pts: &[Vec3], rows: usize, columns: usize) -> f64 {
+    let at = |r: usize, c: usize| pts.get(r * columns + c).copied();
+    let mut most = 0.0_f64;
+    for r in 0..rows {
+        for c in 0..columns {
+            let right = (c + 1 < columns).then(|| at(r, c + 1)).flatten();
+            let up = (r + 1 < rows).then(|| at(r + 1, c)).flatten();
+            for (a, b) in [(at(r, c), right), (at(r, c), up)] {
+                if let (Some(a), Some(b)) = (a, b) {
+                    let run = (b.x - a.x).phypot(b.y - a.y);
+                    if run > 0.0 {
+                        most = most.max((b.z - a.z).abs() / run);
+                    }
+                }
+            }
+        }
+    }
+    most
+}
+
+/// The most points a side of a square cubic grid may have for a boolean to
+/// take its sheet: `(n − 3)² ≤ most`.
+fn boolean_side(most: usize) -> usize {
+    (0..=most).take_while(|k| k * k <= most).last().unwrap_or(0) + 3
 }
 
 /// The body of one face on `surface`, bounded by its four border curves:
@@ -270,6 +352,7 @@ pub(crate) fn build(
 fn sheet(surface: NurbsSurface, rows: usize, columns: usize, turned: bool) -> Result<Body, String> {
     let (pu, pv) = surface.degrees();
     let ctrl = surface.control_points();
+    let lost = || craft3d_math::bug_text!("a grid's sheet lost a control point").to_string();
     // A border of the net: control point (c, r) at c * rows + r.
     let border = |along_u: bool, at: usize| -> Result<NurbsCurve, String> {
         let (degree, knots, points): (usize, Vec<f64>, Vec<Vec3>) = if along_u {
@@ -277,16 +360,16 @@ fn sheet(surface: NurbsSurface, rows: usize, columns: usize, turned: bool) -> Re
                 pu,
                 surface.knots_u().to_vec(),
                 (0..columns)
-                    .map(|c| ctrl.get(c * rows + at).copied().unwrap_or(Vec3::ZERO))
-                    .collect(),
+                    .map(|c| ctrl.get(c * rows + at).copied().ok_or_else(lost))
+                    .collect::<Result<_, _>>()?,
             )
         } else {
             (
                 pv,
                 surface.knots_v().to_vec(),
                 (0..rows)
-                    .map(|r| ctrl.get(at * rows + r).copied().unwrap_or(Vec3::ZERO))
-                    .collect(),
+                    .map(|r| ctrl.get(at * rows + r).copied().ok_or_else(lost))
+                    .collect::<Result<_, _>>()?,
             )
         };
         NurbsCurve::polynomial(degree, knots, points).map_err(|e| e.to_string())
@@ -295,12 +378,12 @@ fn sheet(surface: NurbsSurface, rows: usize, columns: usize, turned: bool) -> Re
     let last_row = border(true, rows - 1)?;
     let first_column = border(false, 0)?;
     let last_column = border(false, columns - 1)?;
-    let corner = |c: usize, r: usize| ctrl.get(c * rows + r).copied().unwrap_or(Vec3::ZERO);
+    let corner = |c: usize, r: usize| ctrl.get(c * rows + r).copied().ok_or_else(lost);
     let corners = [
-        corner(0, 0),
-        corner(columns - 1, 0),
-        corner(0, rows - 1),
-        corner(columns - 1, rows - 1),
+        corner(0, 0)?,
+        corner(columns - 1, 0)?,
+        corner(0, rows - 1)?,
+        corner(columns - 1, rows - 1)?,
     ];
     let mut body = Body::new(BodyKind::Sheet);
     let [c00, c10, c01, c11] = corners.map(|p| body.add_vertex(p));

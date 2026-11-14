@@ -97,9 +97,14 @@ pub const MAX_GRID_SIDE: usize = 1 << 10;
 /// halved, each way, before it is refused.
 pub const REGULAR_DEPTH: usize = 6;
 
-/// Most pieces the proof of one sheet's regularity may look at beyond its
-/// spans (the halving of the spans not proven at once).
-pub const MAX_REGULAR_PIECES: usize = 1 << 16;
+/// Most pieces the proof may look at for one span beyond the span itself
+/// (its quarters, theirs, …): the budget is a span's, so a sheet's size
+/// does not decide whether one of its spans is proven.
+pub const MAX_SPAN_PIECES: usize = 1 << 10;
+
+/// Most pieces the proof of one sheet may look at beyond its spans, all
+/// spans together: what bounds its time (a refusal past it says so).
+pub const MAX_REGULAR_PIECES: usize = 1 << 20;
 
 /// The parameters at which the sheet takes its points, one set for each
 /// direction (all its rows, or all its columns).
@@ -114,6 +119,26 @@ pub enum Spacing {
     /// row's length, averaged over all rows (columns) (*The NURBS Book*,
     /// eqs. 9.4, 9.5 and §9.2.5), on knots averaged from them (eq. 9.8).
     Chord,
+    /// Evenly spaced parameters, point `i` of `n` at `i / (n − 1)` (eq.
+    /// 9.3), on knots averaged from them (eq. 9.8): over a regular grid
+    /// `x` and `y` are then linear in `u` and `v`, so a height field's sheet
+    /// is the textbook bicubic spline of its heights.
+    Even,
+}
+
+/// What [`interpolate_with`] is told besides the points.
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    pub spacing: Spacing,
+    /// The linear tolerance: two neighbours within it are one point, and
+    /// the sheet must pass within it of every point, rounding included.
+    pub tolerance: f64,
+    /// The angular tolerance: two legs within it of opposite double back.
+    pub angular: f64,
+    /// A direction the sheet's normal is expected near, where the caller
+    /// knows one (a height field's heights' axis), tried first by the
+    /// proof that the sheet does not fold; either way round.
+    pub up: Option<Vec3>,
 }
 
 /// Why a grid was refused.
@@ -181,6 +206,50 @@ pub fn interpolate(
     tolerance: f64,
     angular: f64,
 ) -> Result<Grid, GridError> {
+    interpolate_with(
+        points,
+        rows,
+        columns,
+        &Options {
+            spacing,
+            tolerance,
+            angular,
+            up: None,
+        },
+    )
+}
+
+/// The rounding the sheet may leave at its points, `(γ_{3(p_u+1)} +
+/// γ_{3(p_v+1)} + γ_{4(p+1)}) √3 M` (the module's *At the points*).
+fn rounding_bound(pu: usize, pv: usize, size: f64) -> f64 {
+    (gamma(3 * (pu + 1)) + gamma(3 * (pv + 1)) + gamma(4 * (pu.max(pv) + 1)))
+        * size
+        * 3.0_f64.sqrt()
+}
+
+/// The refusal of a grid whose sheet rounding alone may take further from
+/// its points than the tolerance: too far from the origin for the
+/// precision a double holds there.
+fn too_far(size: f64, bound: f64, tolerance: f64) -> GridError {
+    GridError::Refused(format!(
+        "the grid reaches {size:.3e} from the origin, where a number holds a position only to about {:.1e}: the sheet through its points is certain only to {bound:.1e} there, more than the tolerance {tolerance:.1e}; move the points nearer the origin (and the sheet back with feature.transform) or loosen the tolerance",
+        size * f64::EPSILON
+    ))
+}
+
+/// [`interpolate`] with every option.
+pub fn interpolate_with(
+    points: &[Vec3],
+    rows: usize,
+    columns: usize,
+    options: &Options,
+) -> Result<Grid, GridError> {
+    let Options {
+        spacing,
+        tolerance,
+        angular,
+        up,
+    } = *options;
     if !(tolerance.is_finite() && tolerance > 0.0 && angular.is_finite() && angular > 0.0) {
         return refused("the tolerance is not positive and finite".into());
     }
@@ -215,20 +284,34 @@ pub fn interpolate(
     for r in 0..rows {
         for c in 0..columns {
             let p = at(r, c)?;
-            if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
+            if let Some((axis, value)) = [("x", p.x), ("y", p.y), ("z", p.z)]
+                .into_iter()
+                .find(|(_, value)| !value.is_finite())
+            {
                 return refused(format!(
-                    "row {}, point {} is ({}, {}, {}): a point of the grid is finite numbers",
+                    "row {}, point {}: its {axis} is {}; a point of the grid is finite numbers",
                     r + 1,
                     c + 1,
-                    p.x,
-                    p.y,
-                    p.z
+                    if value.is_nan() {
+                        "not a number"
+                    } else {
+                        "infinite"
+                    }
                 ));
             }
         }
     }
-    check_legs(&at, rows, columns, tolerance, angular)?;
     let (pu, pv) = ((columns - 1).min(3), (rows - 1).min(3));
+    // Rounding alone, at the points' own size, may already exceed the
+    // tolerance: refused before anything is computed there.
+    let reach = points
+        .iter()
+        .map(|p| p.x.abs().max(p.y.abs()).max(p.z.abs()))
+        .fold(0.0, f64::max);
+    if !(rounding_bound(pu, pv, reach) <= tolerance) {
+        return Err(too_far(reach, rounding_bound(pu, pv, reach), tolerance));
+    }
+    check_legs(&at, rows, columns, tolerance, angular)?;
     let (u, ku) = parameters(&at, rows, columns, pu, spacing, Direction::AlongRows)?;
     let (v, kv) = parameters(&at, rows, columns, pv, spacing, Direction::AcrossRows)?;
 
@@ -285,15 +368,17 @@ pub fn interpolate(
     }
     // Three coordinates: the length of a residual is at most √3 times its
     // largest coordinate's size.
-    let bound = (gamma(3 * (pu + 1)) + gamma(3 * (pv + 1)) + gamma(4 * (pu.max(pv) + 1)))
-        * size
-        * 3.0_f64.sqrt();
+    let bound = rounding_bound(pu, pv, size);
+    if !(bound <= tolerance) {
+        return Err(too_far(size, bound, tolerance));
+    }
     if !(deviation <= tolerance) {
         return refused(format!(
-            "the sheet through the points misses one by {deviation:e}, more than the tolerance {tolerance:e}: the points are too unevenly spaced for a sheet through them"
+            "the sheet through the points misses one by {:.1e}, more than the tolerance {tolerance:.1e}: the points are too unevenly spaced for a sheet through them",
+            deviation.min(f64::MAX)
         ));
     }
-    regular(&surface, &u, &v)?;
+    regular(&surface, &u, &v, &at, (rows, columns), up)?;
     Ok(Grid {
         surface,
         u,
@@ -339,13 +424,13 @@ fn check_legs(
                 if !(len > tolerance) {
                     return refused(match direction {
                         Direction::AlongRows => format!(
-                            "row {}: points {} and {} are {len:e} apart, within the tolerance {tolerance:e}: each point of a grid needs a place of its own",
+                            "row {}: points {} and {} are {len:.1e} apart, within the tolerance {tolerance:.1e}: each point of a grid needs a place of its own",
                             line + 1,
                             k,
                             k + 1
                         ),
                         Direction::AcrossRows => format!(
-                            "point {} of rows {} and {} are {len:e} apart, within the tolerance {tolerance:e}: each point of a grid needs a place of its own",
+                            "point {} of rows {} and {} are {len:.1e} apart, within the tolerance {tolerance:.1e}: each point of a grid needs a place of its own",
                             line + 1,
                             k,
                             k + 1
@@ -353,9 +438,12 @@ fn check_legs(
                     });
                 }
                 if let Some(previous) = before {
-                    // The angle between the legs, from their sine and
-                    // cosine together (right at any angle).
-                    let turn = previous.cross(leg).length().patan2(previous.dot(leg));
+                    // The angle between the legs' directions (made without
+                    // overflow), from their sine and cosine together.
+                    let turn = match (unit(previous), unit(leg)) {
+                        (Some(a), Some(b)) => a.cross(b).length().patan2(a.dot(b)),
+                        _ => 0.0,
+                    };
                     if !(turn < std::f64::consts::PI - angular) {
                         return refused(match direction {
                             Direction::AlongRows => format!(
@@ -418,6 +506,14 @@ fn parameters(
             }
             Ok((params, knots))
         }
+        Spacing::Even => {
+            let last = (n - 1) as f64;
+            let params: Vec<f64> = (0..n)
+                .map(|i| if i + 1 == n { 1.0 } else { i as f64 / last })
+                .collect();
+            let knots = averaged_knots(&params, degree);
+            Ok((params, knots))
+        }
         Spacing::Chord => {
             let mut sums = vec![0.0; n];
             for line in 0..lines {
@@ -465,14 +561,27 @@ fn parameters(
                     ),
                 });
             }
-            let mut knots = vec![0.0; degree + 1];
-            for window in params.get(1..n - 1).unwrap_or(&[]).windows(degree) {
-                knots.push(window.iter().sum::<f64>() / degree as f64);
-            }
-            knots.extend(std::iter::repeat_n(1.0, degree + 1));
+            let knots = averaged_knots(&params, degree);
             Ok((params, knots))
         }
     }
+}
+
+/// Clamped knots averaged from rising parameters from 0 to 1 (*The NURBS
+/// Book*, eq. 9.8): `degree + 1` zeros, inner knot `j` the mean of
+/// `params[j..j + degree]`, `degree + 1` ones.
+fn averaged_knots(params: &[f64], degree: usize) -> Vec<f64> {
+    let n = params.len();
+    let mut knots = vec![0.0; degree + 1];
+    for window in params
+        .get(1..n.saturating_sub(1))
+        .unwrap_or(&[])
+        .windows(degree.max(1))
+    {
+        knots.push(window.iter().sum::<f64>() / degree as f64);
+    }
+    knots.extend(std::iter::repeat_n(1.0, degree + 1));
+    knots
 }
 
 /// The index of the parameter nearest `t` among `params` (rising).
@@ -483,44 +592,6 @@ fn nearest(params: &[f64], t: f64) -> usize {
         (Some(b), None) => b,
         _ => after,
     }
-}
-
-/// Proves the surface's normal non-zero everywhere (the module's
-/// *Regular*), or names the grid point nearest the first span it could
-/// not prove.
-fn regular(surface: &NurbsSurface, u: &[f64], v: &[f64]) -> Result<(), GridError> {
-    let (pu, pv) = surface.degrees();
-    let (ku, kv) = (surface.knots_u(), surface.knots_v());
-    let (spans_u, spans_v) = (spans(ku, pu), spans(kv, pv));
-    let count_v = surface.counts().1;
-    let ctrl = surface.control_points();
-    let mut spent = 0_usize;
-    for &(su, range_u) in &spans_u {
-        for &(sv, range_v) in &spans_v {
-            // The span's window of control points, (pu + 1) × (pv + 1).
-            let mut net = Vec::with_capacity((pu + 1) * (pv + 1));
-            for i in su - pu..=su {
-                for j in sv - pv..=sv {
-                    net.push(ctrl.get(i * count_v + j).copied().ok_or_else(internal)?);
-                }
-            }
-            let patch =
-                RationalBezierPatch::from_bezier(&span_patch(net, (ku, su, pu), (kv, sv, pv))?);
-            if proven(&patch, 0, &mut spent)? {
-                continue;
-            }
-            let (r, c) = (
-                nearest(v, 0.5 * (range_v.0 + range_v.1)),
-                nearest(u, 0.5 * (range_u.0 + range_u.1)),
-            );
-            return refused(format!(
-                "the sheet through the points folds near row {}, point {}: its normal vanishes or turns over there (a row or a column runs back there, or its points are spaced too unevenly for these parameters: chord spacing follows how far apart they are)",
-                r + 1,
-                c + 1
-            ));
-        }
-    }
-    Ok(())
 }
 
 /// The knot spans of a clamped knot vector: the index `k` of each non-empty
@@ -609,63 +680,401 @@ fn span_patch(
     Ok(crate::BezierPatch::new(pu, pv, net)?)
 }
 
-/// Whether the normal net of a polynomial patch (`∂u × ∂v` in Bernstein
-/// form, `RationalBezierPatch::normal_net`) lies in an open half-space:
-/// every coefficient has a dot product above the rounding margin with one
-/// direction (their sum, or the sum of their directions), so the normal,
-/// a convex combination of them, does not vanish on the patch. The margin
-/// covers the rounding of the coefficients (`1e-12` of the product of the
-/// derivative nets' sizes, some 4500 units in the last place) and of the
-/// net the patch was cut from (`64 ε` of its reach, carried into the
-/// derivatives).
-fn normal_clear(patch: &RationalBezierPatch) -> bool {
-    let (Some(net), Some((du, dv))) = (patch.normal_net(), patch.derivative_nets()) else {
-        return false;
-    };
-    let size = |net: &[Vec3]| net.iter().map(|d| d.length()).fold(0.0, f64::max);
-    let (fu, fv) = (size(&du), size(&dv));
-    let reach = patch.points().map(|p| p.length()).fold(0.0, f64::max);
-    let (m, n) = patch.degrees();
-    let margin = 1e-12 * fu * fv + 64.0 * f64::EPSILON * reach * (m + n) as f64 * (fu + fv);
-    if !margin.is_finite() {
-        return false;
-    }
-    let sum = net.iter().fold(Vec3::ZERO, |s, d| s + *d);
-    let units = net
-        .iter()
-        .filter_map(|d| d.normalized())
-        .fold(Vec3::ZERO, |s, d| s + d);
-    [sum, units].into_iter().any(|d| {
-        d.normalized()
-            .is_some_and(|d| net.iter().all(|c| c.dot(d) > margin))
-    })
+/// How the proof of a span ended.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    Proven,
+    /// Not proven within the span's depth or its own budget.
+    NotProven,
+    /// The sheet's budget ran out.
+    OutOfWork,
 }
 
-/// Whether the patch's normal is proven non-zero, halving it up to
-/// [`REGULAR_DEPTH`] times; an error past [`MAX_REGULAR_PIECES`].
-fn proven(patch: &RationalBezierPatch, depth: usize, spent: &mut usize) -> Result<bool, GridError> {
-    if normal_clear(patch) {
-        return Ok(true);
+/// The mean of the grid's cell normals, each `(P[r][c+1] − P[r+1][c]) ×
+/// (P[r+1][c+1] − P[r][c])` (the direction of `∂u × ∂v` over the cell)
+/// made a unit first, so no cell outweighs the rest; `None` where they
+/// cancel. A direction the grid gives, not one guessed: a height field's
+/// is near its heights' axis, a sheet's that turns little near its normal.
+fn mean_normal(
+    at: &dyn Fn(usize, usize) -> Result<Vec3, GridError>,
+    rows: usize,
+    columns: usize,
+) -> Result<Option<Vec3>, GridError> {
+    let mut sum = Vec3::ZERO;
+    for r in 0..rows - 1 {
+        for c in 0..columns - 1 {
+            let a = at(r, c + 1)? - at(r + 1, c)?;
+            let b = at(r + 1, c + 1)? - at(r, c)?;
+            if let Some(n) = unit(a)
+                .zip(unit(b))
+                .and_then(|(a, b)| a.cross(b).normalized())
+            {
+                sum = sum + n;
+            }
+        }
     }
-    if depth >= REGULAR_DEPTH {
-        return Ok(false);
+    Ok(sum.normalized())
+}
+
+/// A vector's direction, found without overflow: scaled by its largest
+/// coordinate first.
+fn unit(a: Vec3) -> Option<Vec3> {
+    let big = a.x.abs().max(a.y.abs()).max(a.z.abs());
+    if !(big > 0.0 && big.is_finite()) {
+        return None;
     }
+    (a * (1.0 / big)).normalized()
+}
+
+/// Proves the surface's normal non-zero everywhere (the module's
+/// *Regular*), or says where it could not and what it saw there.
+fn regular(
+    surface: &NurbsSurface,
+    u: &[f64],
+    v: &[f64],
+    at: &dyn Fn(usize, usize) -> Result<Vec3, GridError>,
+    (rows, columns): (usize, usize),
+    up: Option<Vec3>,
+) -> Result<(), GridError> {
+    let mean = mean_normal(at, rows, columns)?;
+    let mut directions = Vec::new();
+    for d in [up, mean, Some(Vec3::X), Some(Vec3::Y), Some(Vec3::Z)]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(d) = unit(d) {
+            directions.push(d);
+            directions.push(d * -1.0);
+        }
+    }
+    let (pu, pv) = surface.degrees();
+    let (ku, kv) = (surface.knots_u(), surface.knots_v());
+    let (spans_u, spans_v) = (spans(ku, pu), spans(kv, pv));
+    let count_v = surface.counts().1;
+    let ctrl = surface.control_points();
+    let mut spent = 0_usize;
+    for &(su, range_u) in &spans_u {
+        for &(sv, range_v) in &spans_v {
+            // The span's window of control points, (pu + 1) × (pv + 1).
+            let mut net = Vec::with_capacity((pu + 1) * (pv + 1));
+            for i in su - pu..=su {
+                for j in sv - pv..=sv {
+                    net.push(ctrl.get(i * count_v + j).copied().ok_or_else(internal)?);
+                }
+            }
+            let patch =
+                RationalBezierPatch::from_bezier(&span_patch(net, (ku, su, pu), (kv, sv, pv))?);
+            let mut own = 0_usize;
+            let verdict = proven(&patch, 0, &directions, &mut own, &mut spent);
+            if verdict != Verdict::Proven {
+                let place = Place {
+                    surface,
+                    u,
+                    v,
+                    at,
+                    rows,
+                    columns,
+                };
+                return refused(place.why(range_u, range_v, verdict, mean)?);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The surface and the grid, to say where and why a span was not proven.
+struct Place<'a> {
+    surface: &'a NurbsSurface,
+    u: &'a [f64],
+    v: &'a [f64],
+    at: &'a dyn Fn(usize, usize) -> Result<Vec3, GridError>,
+    rows: usize,
+    columns: usize,
+}
+
+/// Rises between neighbours above this many times their spacing are
+/// named as a scale that may be wrong.
+const STEEP: f64 = 1e3;
+
+impl Place<'_> {
+    /// The leg of the grid between two neighbours.
+    fn leg(&self, from: (usize, usize), to: (usize, usize)) -> Result<Vec3, GridError> {
+        Ok((self.at)(to.0, to.1)? - (self.at)(from.0, from.1)?)
+    }
+
+    /// The interval `[params[k], params[k + 1]]` that holds `t`.
+    fn interval(params: &[f64], t: f64) -> usize {
+        params
+            .partition_point(|p| *p <= t)
+            .saturating_sub(1)
+            .min(params.len().saturating_sub(2))
+    }
+
+    /// The largest rise between neighbours along `normal` over their
+    /// distance across it (a height field's slope), anywhere in the grid.
+    fn steepest(&self, normal: Vec3) -> Result<f64, GridError> {
+        let mut most = 0.0_f64;
+        for r in 0..self.rows {
+            for c in 0..self.columns {
+                for to in [(r, c + 1), (r + 1, c)] {
+                    if to.0 >= self.rows || to.1 >= self.columns {
+                        continue;
+                    }
+                    let Some(leg) = unit(self.leg((r, c), to)?) else {
+                        continue;
+                    };
+                    let rise = leg.dot(normal).abs();
+                    let run = (leg - normal * leg.dot(normal)).length();
+                    most = most.max(if run > 1e-12 { rise / run } else { 1e12 });
+                }
+            }
+        }
+        Ok(most)
+    }
+
+    /// Why the span over `range_u × range_v` was not proven, in words.
+    fn why(
+        &self,
+        range_u: (f64, f64),
+        range_v: (f64, f64),
+        verdict: Verdict,
+        mean: Option<Vec3>,
+    ) -> Result<String, GridError> {
+        let (r, c) = (
+            nearest(self.v, 0.5 * (range_v.0 + range_v.1)),
+            nearest(self.u, 0.5 * (range_u.0 + range_u.1)),
+        );
+        // A witness that a row or a column runs back: the sheet's tangent
+        // along it, at 5 × 5 places of the span, against the leg of the
+        // grid it lies beside.
+        for i in 0..=4 {
+            for j in 0..=4 {
+                let s = range_u.0 + (range_u.1 - range_u.0) * f64::from(i) / 4.0;
+                let t = range_v.0 + (range_v.1 - range_v.0) * f64::from(j) / 4.0;
+                let (_, su, sv) = self.surface.derivatives(s, t);
+                let (ci, ri) = (Self::interval(self.u, s), Self::interval(self.v, t));
+                let (row, column) = (nearest(self.v, t), nearest(self.u, s));
+                if su.dot(self.leg((row, ci), (row, ci + 1))?) < 0.0 {
+                    return Ok(format!(
+                        "row {} runs back between points {} and {}: the sheet through it turns against the row there, so it folds near row {}, point {} (chord spacing follows unevenly spaced points, even spacing a regular grid's)",
+                        row + 1,
+                        ci + 1,
+                        ci + 2,
+                        row + 1,
+                        ci + 1
+                    ));
+                }
+                if sv.dot(self.leg((ri, column), (ri + 1, column))?) < 0.0 {
+                    return Ok(format!(
+                        "the column of point {} runs back between rows {} and {}: the sheet through it turns against the column there, so it folds near row {}, point {} (chord spacing follows unevenly spaced points, even spacing a regular grid's)",
+                        column + 1,
+                        ri + 1,
+                        ri + 2,
+                        ri + 1,
+                        column + 1
+                    ));
+                }
+            }
+        }
+        let steep = match mean {
+            Some(normal) => self.steepest(normal)?,
+            None => 0.0,
+        };
+        let scale = if steep >= 1e12 {
+            ": the points rise straight up between neighbours, far more than a smooth sheet through them follows: is their scale right (a table's factor)?".to_string()
+        } else if steep > STEEP {
+            format!(
+                ": the points rise up to {steep:.0} times their spacing between neighbours, far more than a smooth sheet through them follows: is their scale right (a table's factor)?"
+            )
+        } else {
+            String::new()
+        };
+        Ok(match verdict {
+            Verdict::OutOfWork => format!(
+                "the proof that the sheet does not fold ran out of its work ({MAX_REGULAR_PIECES} pieces) near row {}, point {}: nothing there was seen to fold, nothing proven either{scale}",
+                r + 1,
+                c + 1
+            ),
+            Verdict::NotProven | Verdict::Proven => format!(
+                "the sheet through the points could not be proven free of folds near row {}, point {}: its normal may vanish there (no row or column was seen to run back; the proof quarters a span {REGULAR_DEPTH} times, at most {MAX_SPAN_PIECES} pieces){scale}",
+                r + 1,
+                c + 1
+            ),
+        })
+    }
+}
+
+/// `n` choose `k` as a float (small arguments: the degrees of a patch).
+fn choose(n: usize, k: usize) -> f64 {
+    (0..k).fold(1.0, |acc, i| acc * (n - i) as f64 / (i + 1) as f64)
+}
+
+/// The cross product of the magnitudes: what each coordinate of `a × b`
+/// is a difference of, added instead.
+fn cross_size(a: Vec3, b: Vec3) -> Vec3 {
+    let (a, b) = (
+        Vec3::new(a.x.abs(), a.y.abs(), a.z.abs()),
+        Vec3::new(b.x.abs(), b.y.abs(), b.z.abs()),
+    );
+    Vec3::new(
+        a.y * b.z + a.z * b.y,
+        a.z * b.x + a.x * b.z,
+        a.x * b.y + a.y * b.x,
+    )
+}
+
+/// Whether the normal field `∂u × ∂v` of a polynomial patch, a Bernstein
+/// form whose coefficients `N_kl` are binomially weighted cross products of
+/// its derivative nets, lies in an open half-space: some direction `d`
+/// with `N_kl · d` above its rounding for every coefficient, so the normal,
+/// a convex combination of them, is not zero on the patch. Each
+/// coefficient's rounding is bounded by running error analysis (Higham,
+/// §3.1): `γ_K` of the same sum taken over magnitudes (`M_kl`, by
+/// [`cross_size`]; `K` the terms it adds) and `γ_4 |N_kl|` for the dot;
+/// the patch's own points are off the exact span's by at most `γ` of
+/// their reach (made by blossoming, cut by de Casteljau), carried into the
+/// derivatives and their products. The directions tried: the sheet's
+/// (`directions`), then the coefficients' sum and the sum of their
+/// directions, each followed by a perceptron's steps (16 at most).
+fn normal_clear(patch: &RationalBezierPatch, directions: &[Vec3]) -> bool {
+    let (m, n) = patch.degrees();
+    if m == 0 || n == 0 {
+        return false;
+    }
+    let points = patch.control_points();
+    let at = |i: usize, j: usize| points.get(i * (n + 1) + j).copied();
+    let mut f = Vec::with_capacity(m * (n + 1));
+    for i in 0..m {
+        for j in 0..=n {
+            let (Some(a), Some(b)) = (at(i, j), at(i + 1, j)) else {
+                return false;
+            };
+            f.push((b - a) * m as f64);
+        }
+    }
+    let mut g = Vec::with_capacity((m + 1) * n);
+    for i in 0..=m {
+        for j in 0..n {
+            let (Some(a), Some(b)) = (at(i, j), at(i, j + 1)) else {
+                return false;
+            };
+            g.push((b - a) * n as f64);
+        }
+    }
+    crate::allowance::charge(
+        ((m * (n + 1) * (m + 1) * n) as u64).saturating_mul(32)
+            / crate::allowance::ARITHMETIC_PER_UNIT
+            + 1,
+    );
+    let (ka, kb) = (2 * m - 1, 2 * n - 1);
+    let mut normal = vec![Vec3::ZERO; (ka + 1) * (kb + 1)];
+    let mut size = vec![Vec3::ZERO; (ka + 1) * (kb + 1)];
+    for i in 0..m {
+        for j in 0..=n {
+            let Some(&fu) = f.get(i * (n + 1) + j) else {
+                return false;
+            };
+            for i2 in 0..=m {
+                for j2 in 0..n {
+                    let Some(&gv) = g.get(i2 * n + j2) else {
+                        return false;
+                    };
+                    let (k, l) = (i + i2, j + j2);
+                    let w = choose(m - 1, i) * choose(m, i2) / choose(ka, k)
+                        * choose(n, j)
+                        * choose(n - 1, j2)
+                        / choose(kb, l);
+                    let slot = k * (kb + 1) + l;
+                    if let (Some(a), Some(b)) = (normal.get_mut(slot), size.get_mut(slot)) {
+                        *a = *a + fu.cross(gv) * w;
+                        *b = *b + cross_size(fu, gv) * w;
+                    }
+                }
+            }
+        }
+    }
+    let largest = |net: &[Vec3]| net.iter().map(|d| d.length()).fold(0.0, f64::max);
+    let (big_f, big_g) = (largest(&f), largest(&g));
+    let reach = points.iter().map(|p| p.length()).fold(0.0, f64::max);
+    let terms = (m + 1) * (m + 1) * (n + 1) * (n + 1) + 8;
+    let off = gamma(6 * (m + n) + 8 + 4 * (m + n) * REGULAR_DEPTH) * reach;
+    let carried =
+        2.0 * off * (m as f64 * big_g + n as f64 * big_f) + 4.0 * (m * n) as f64 * off * off;
+    if !(carried.is_finite() && big_f.is_finite() && big_g.is_finite()) {
+        return false;
+    }
+    // The first coefficient a direction does not clear, if any.
+    let blocked = |d: Vec3| -> Option<usize> {
+        let d_size = Vec3::new(d.x.abs(), d.y.abs(), d.z.abs());
+        normal.iter().zip(&size).position(|(c, s)| {
+            !(c.dot(d) > gamma(terms) * s.dot(d_size) + gamma(4) * c.length() + carried)
+        })
+    };
+    if directions.iter().any(|d| blocked(*d).is_none()) {
+        return true;
+    }
+    let sum = normal.iter().fold(Vec3::ZERO, |s, d| s + *d);
+    let units = normal
+        .iter()
+        .filter_map(|d| unit(*d))
+        .fold(Vec3::ZERO, |s, d| s + d);
+    for start in [sum, units] {
+        let Some(mut d) = unit(start) else {
+            continue;
+        };
+        for _ in 0..16 {
+            let Some(k) = blocked(d) else {
+                return true;
+            };
+            let Some(next) = normal
+                .get(k)
+                .copied()
+                .and_then(unit)
+                .and_then(|c| unit(d + c))
+            else {
+                break;
+            };
+            d = next;
+        }
+        if blocked(d).is_none() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether the patch's normal is proven non-zero, quartering it up to
+/// [`REGULAR_DEPTH`] times and [`MAX_SPAN_PIECES`] pieces (`own`), all of
+/// one sheet's quartering within [`MAX_REGULAR_PIECES`] (`spent`).
+fn proven(
+    patch: &RationalBezierPatch,
+    depth: usize,
+    directions: &[Vec3],
+    own: &mut usize,
+    spent: &mut usize,
+) -> Verdict {
+    if normal_clear(patch, directions) {
+        return Verdict::Proven;
+    }
+    if depth >= REGULAR_DEPTH || *own >= MAX_SPAN_PIECES {
+        return Verdict::NotProven;
+    }
+    *own = own.saturating_add(4);
     *spent = spent.saturating_add(4);
     if *spent > MAX_REGULAR_PIECES {
-        return refused(format!(
-            "the sheet through the points could not be proven free of folds within {MAX_REGULAR_PIECES} pieces: the points are too uneven for a smooth sheet through them"
-        ));
+        return Verdict::OutOfWork;
     }
     let (low, high) = patch.split_u(0.5);
     for half in [low, high] {
         let (a, b) = half.split_v(0.5);
         for quarter in [a, b] {
-            if !proven(&quarter, depth + 1, spent)? {
-                return Ok(false);
+            let verdict = proven(&quarter, depth + 1, directions, own, spent);
+            if verdict != Verdict::Proven {
+                return verdict;
             }
         }
     }
-    Ok(true)
+    Verdict::Proven
 }
 
 #[cfg(test)]
@@ -986,5 +1395,160 @@ mod tests {
             let made = interpolate(&pts, 5, 5, spacing, TOL, ANG).unwrap();
             assert!(made.deviation <= made.bound, "{spacing:?}");
         }
+    }
+
+    /// A height field over a regular grid of unit steps, `rows × columns`.
+    fn field(rows: usize, columns: usize, h: impl Fn(usize, usize) -> f64) -> Vec<Vec3> {
+        grid(rows, columns, |r, c| Vec3::new(c as f64, r as f64, h(r, c)))
+    }
+
+    #[test]
+    fn height_fields_over_a_regular_grid_are_sheets_however_steep() {
+        // The shapes a review found refused from 12 to 248 steps high: the
+        // normal's z, a product of the parameters' positive speeds, holds
+        // every coefficient whatever the heights (the review's least: 0.94).
+        let shapes: [(&str, fn(usize, usize) -> f64); 5] = [
+            (
+                "checkerboard",
+                |r, c| if (r + c) % 2 == 0 { 1.0 } else { -1.0 },
+            ),
+            ("ridges", |_, c| if c % 2 == 0 { 1.0 } else { -1.0 }),
+            ("one spike", |r, c| if (r, c) == (3, 4) { 1.0 } else { 0.0 }),
+            ("a cliff in two rows", |r, c| {
+                if c >= 5 && (3..5).contains(&r) {
+                    1.0
+                } else {
+                    0.0
+                }
+            }),
+            (
+                "a cliff in every row",
+                |_, c| if c >= 5 { 1.0 } else { 0.0 },
+            ),
+        ];
+        for (name, shape) in shapes {
+            for h in [12.0, 50.0, 250.0, 1e4] {
+                let pts = field(7, 9, |r, c| h * shape(r, c));
+                for spacing in [Spacing::Greville, Spacing::Even] {
+                    let made = interpolate(&pts, 7, 9, spacing, 1e-6, ANG)
+                        .unwrap_or_else(|e| panic!("{name} {h} {spacing:?}: {e}"));
+                    assert!(made.deviation <= made.bound, "{name} {h} {spacing:?}");
+                }
+                // Chord's parameters follow the heights, so its x may run
+                // back: refused then, and the refusal says so.
+                if let Err(e) = interpolate(&pts, 7, 9, Spacing::Chord, 1e-6, ANG) {
+                    assert!(e.to_string().contains("runs back"), "{name} {h}: {e}");
+                }
+            }
+        }
+        // Each span has a budget of its own: a rough field is a sheet at
+        // any size (refused at 200 × 200 while the budget was the sheet's).
+        let mut seed = 0x5eed_0007_u64;
+        let mut rough = || {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 11) as f64 / (1_u64 << 53) as f64 * 2.0 - 1.0
+        };
+        for n in [60, 200] {
+            let heights: Vec<f64> = (0..n * n).map(|_| 3.0 * rough()).collect();
+            let pts = field(n, n, |r, c| heights[r * n + c]);
+            for spacing in [Spacing::Greville, Spacing::Even] {
+                interpolate(&pts, n, n, spacing, TOL, ANG)
+                    .unwrap_or_else(|e| panic!("rough {n} {spacing:?}: {e}"));
+            }
+        }
+    }
+
+    #[test]
+    fn even_spacing_gives_a_regular_grids_bicubic_height_field_exactly() {
+        let f = |x: f64, y: f64| {
+            0.5 + 0.3 * x - 0.2 * y + 0.4 * x * x * y * y - 0.25 * x.ppowi(3) * y
+                + 0.15 * x.ppowi(3) * y.ppowi(3)
+        };
+        for (rows, columns) in [(4, 4), (9, 6), (17, 33)] {
+            let pts = grid(rows, columns, |r, c| {
+                let (x, y) = (c as f64 * 0.5, r as f64 * 0.25);
+                Vec3::new(x, y, f(x, y))
+            });
+            let made = interpolate(&pts, rows, columns, Spacing::Even, TOL, ANG).unwrap();
+            let (w, d) = ((columns - 1) as f64 * 0.5, (rows - 1) as f64 * 0.25);
+            let (mut off, mut size) = (0.0_f64, 0.0_f64);
+            for i in 0..=40 {
+                for j in 0..=40 {
+                    let (s, t) = (f64::from(i) / 40.0, f64::from(j) / 40.0);
+                    let p = made.surface.eval(s, t);
+                    size = size.max(p.z.abs());
+                    // x and y linear in the parameters, z the field there.
+                    off = off.max((p.x - s * w).abs()).max((p.y - t * d).abs());
+                    off = off.max((p.z - f(p.x, p.y)).abs());
+                }
+            }
+            // Rounding: a few units in the last place of the size.
+            assert!(
+                off <= 1e-14 * size.max(1.0),
+                "{rows} × {columns}: {off:e} of {size:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn even_spacing_never_folds_a_height_field() {
+        // A zigzag a thousand steps high: its normal's z is constant.
+        let pts = field(9, 11, |r, c| if (r + c) % 2 == 0 { 1e3 } else { -1e3 });
+        let made = interpolate(&pts, 9, 11, Spacing::Even, TOL, ANG).unwrap();
+        for i in 0..=20 {
+            for j in 0..=20 {
+                let (_, su, sv) = made
+                    .surface
+                    .derivatives(f64::from(i) / 20.0, f64::from(j) / 20.0);
+                let z = su.cross(sv).z;
+                assert!((z - 80.0).abs() <= 1e-9, "{z}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_grid_too_far_from_the_origin_for_the_tolerance_is_refused() {
+        // At 1e12 from the origin a double holds a position to 1e-4: no
+        // sheet there is certain to 1e-6.
+        let pts = grid(3, 3, |r, c| {
+            Vec3::new(1e12 + c as f64, -2e12 + r as f64, 3e12)
+        });
+        let why = refusal(interpolate(&pts, 3, 3, Spacing::Greville, 1e-6, ANG));
+        assert!(
+            why.contains("from the origin") && why.contains("more than the tolerance"),
+            "{why}"
+        );
+        // At 1e160, and with a tolerance that takes it, no refusal or
+        // report prints a number that is not one.
+        for (k, tol) in [(1e160, 1e-6), (1e300, 1e-6), (1e160, 1e300)] {
+            let pts = grid(4, 4, |r, c| {
+                Vec3::new(c as f64 * k, r as f64 * k, ((r * c) as f64).psin() * k)
+            });
+            match interpolate(&pts, 4, 4, Spacing::Greville, tol, ANG) {
+                Err(e) => {
+                    let why = e.to_string();
+                    assert!(
+                        !why.contains("NaN") && !why.contains("inf"),
+                        "{k} {tol}: {why}"
+                    );
+                }
+                Ok(made) => assert!(made.deviation.is_finite() && made.bound.is_finite()),
+            }
+        }
+    }
+
+    #[test]
+    fn a_run_back_is_named_and_a_doubt_is_not_called_a_fold() {
+        // Points on a plane at uneven steps: at Greville's parameters x(u)
+        // runs back (by 2.1e-3, dx/du −0.067 at u = 0.609): named.
+        let pts = grid(4, 5, |r, c| {
+            Vec3::new([0.0, 1.0, 2.5, 3.0, 5.0][c], r as f64, 0.0)
+        });
+        let why = refusal(interpolate(&pts, 4, 5, Spacing::Greville, TOL, ANG));
+        assert!(
+            why.contains("runs back") && why.contains("folds near row"),
+            "{why}"
+        );
+        interpolate(&pts, 4, 5, Spacing::Chord, TOL, ANG).unwrap();
     }
 }

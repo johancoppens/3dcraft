@@ -521,8 +521,8 @@ fn hostile_grids_are_errors_that_say_what_to_change() {
         (json!({"points": [[wide.clone()], [wide]]}), "2 to"),
         (json!({"points": many}), "at most 262144 points"),
         (
-            json!({"points": rows(2, 2, flat), "spacing": "even"}),
-            "greville or chord",
+            json!({"points": rows(2, 2, flat), "spacing": "uniform"}),
+            "greville, chord or even",
         ),
         (
             json!({"points": rows(2, 2, flat), "step": [1, 1]}),
@@ -626,4 +626,162 @@ fn hostile_grids_are_errors_that_say_what_to_change() {
     );
     assert_eq!(edited["status"], "ok", "{edited}");
     assert_eq!(edited["grid"]["rows"], 2, "{edited}");
+}
+
+/// A table of heights `h(r, c)` (in mm) of `rows × columns`.
+fn heights(
+    s: &mut Session,
+    name: &str,
+    rows: usize,
+    columns: usize,
+    h: impl Fn(usize, usize) -> f64,
+) {
+    let mut cols = vec![json!("row")];
+    cols.extend((0..columns).map(|c| json!(format!("c{c}"))));
+    let cells: Vec<Value> = (0..rows)
+        .map(|r| {
+            let mut row = vec![json!(r + 1)];
+            row.extend((0..columns).map(|c| json!(h(r, c))));
+            Value::Array(row)
+        })
+        .collect();
+    run(
+        s,
+        "table.set",
+        json!({"name": name, "columns": cols, "rows": cells}),
+    );
+}
+
+#[test]
+fn a_steep_height_field_is_a_sheet_and_a_forgotten_factor_is_warned_of() {
+    let dir = workdir("surface-grid", "steep");
+    let mut s = session_in(&dir);
+    new_document(&mut s, 1.0);
+    // Refused as folding before (from 12 steps high): a zigzag of ±12 and
+    // of ±250 at 1 mm steps, every spacing that keeps x and y in order.
+    for (name, h) in [("zig", 12.0), ("zag", 250.0)] {
+        heights(
+            &mut s,
+            name,
+            5,
+            6,
+            |r, c| if (r + c) % 2 == 0 { h } else { -h },
+        );
+        for spacing in ["greville", "even"] {
+            built(
+                &mut s,
+                "feature.surface.grid",
+                json!({"table": name, "step": ["1 mm", "1 mm"], "spacing": spacing}),
+            );
+        }
+    }
+    // Elevations in metres over 5 mm steps, the scale left out: built, and
+    // warned of.
+    heights(&mut s, "elevation", 4, 5, |r, c| {
+        300.0 + 120.0 * (r * c) as f64
+    });
+    let made = built(
+        &mut s,
+        "feature.surface.grid",
+        json!({"table": "elevation", "step": ["5 mm", "5 mm"], "factor": "1 m"}),
+    );
+    let warned = made["grid"]["warnings"].to_string();
+    assert!(warned.contains("is the factor right"), "{made}");
+}
+
+#[test]
+fn even_spacing_gives_a_regular_grids_height_field_exactly() {
+    let dir = workdir("surface-grid", "even");
+    let mut s = session_in(&dir);
+    new_document(&mut s, 1.0);
+    // z = x y / 10 over [0, 8] × [0, 6]: bilinear, so the sheet is the
+    // hyperbolic paraboloid itself and the block under it holds
+    // ∫∫ (5 + x y / 10) = 240 + 8² 6² / 40 = 297.6.
+    heights(&mut s, "saddle", 7, 9, |r, c| (c * r) as f64 / 10.0);
+    built(
+        &mut s,
+        "feature.surface.grid",
+        json!({"table": "saddle", "step": ["1 mm", "1 mm"], "origin": [0, 0, "5 mm"], "spacing": "even", "name": "Even"}),
+    );
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": ["8 mm", "6 mm", "20 mm"], "name": "Blank"}),
+    );
+    built(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "intersect", "target": "Blank", "tool": "Even", "keepTool": true, "name": "Under"}),
+    );
+    near(
+        number(&body(&mut s, "Under")["volume"]),
+        297.6,
+        1e-12,
+        "the solid under the even sheet",
+    );
+    // The same points given outright, and the spacing changed by an edit.
+    let points = rows(7, 9, |r, c| {
+        [c as f64, r as f64, 5.0 + (c * r) as f64 / 10.0]
+    });
+    built(
+        &mut s,
+        "feature.surface.grid",
+        json!({"points": points, "name": "Given"}),
+    );
+    let edited = run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Given", "spacing": "even"}),
+    );
+    assert_eq!(edited["status"], "ok", "{edited}");
+    near(
+        number(&body(&mut s, "Given")["area"]),
+        number(&body(&mut s, "Even")["area"]),
+        1e-12,
+        "given or from a table, the same sheet",
+    );
+}
+
+#[test]
+fn a_grid_too_far_from_the_origin_is_refused_with_what_precision_is_left() {
+    let dir = workdir("surface-grid", "far");
+    let mut s = session_in(&dir);
+    new_document(&mut s, 1.0);
+    heights(&mut s, "far", 3, 3, |r, c| (r + c) as f64);
+    let why = failed(
+        &mut s,
+        "feature.surface.grid",
+        json!({"table": "far", "step": ["1 mm", "1 mm"], "origin": ["1e12 mm", "-2e12 mm", "3e12 mm"]}),
+    );
+    assert!(
+        why.contains("from the origin") && why.contains("more than the tolerance"),
+        "{why}"
+    );
+    assert!(!why.contains("NaN") && !why.contains("inf"), "{why}");
+}
+
+#[test]
+fn a_sheet_larger_than_a_boolean_takes_is_warned_of() {
+    let dir = workdir("surface-grid", "large");
+    let mut s = session_in(&dir);
+    new_document(&mut s, 1.0);
+    // 185 × 185 points: 182² = 33 124 spans, over the 32 768 a boolean
+    // takes.
+    let points = rows(185, 185, |r, c| {
+        [
+            c as f64,
+            r as f64,
+            ((c as f64) * 0.1).psin() + ((r as f64) * 0.13).pcos(),
+        ]
+    });
+    let made = built(
+        &mut s,
+        "feature.surface.grid",
+        json!({"points": points, "name": "Large"}),
+    );
+    let warned = made["grid"]["warnings"].to_string();
+    assert!(
+        warned.contains("33124 spans") && warned.contains("184 × 184"),
+        "{made}"
+    );
 }

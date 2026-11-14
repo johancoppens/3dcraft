@@ -1130,8 +1130,8 @@ pub enum FeatureKind {
     /// takes them at, as a live spline's (written when not `greville`).
     SurfaceGrid {
         points: GridPoints,
-        #[serde(default, skip_serializing_if = "SplineSpacing::is_greville")]
-        spacing: SplineSpacing,
+        #[serde(default, skip_serializing_if = "GridSpacing::is_greville")]
+        spacing: GridSpacing,
     },
     /// Faces of an earlier body laid flat as one piece (format version
     /// 39), placed at `at` and turned by `angle` about +z.
@@ -2230,6 +2230,23 @@ pub enum GridPoints {
         step: [String; 2],
         factor: String,
     },
+}
+
+/// The parameters a grid surface takes its points at (format version 72;
+/// `craft3d_doc::GridSpacing`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GridSpacing {
+    #[default]
+    Greville,
+    Chord,
+    Even,
+}
+
+impl GridSpacing {
+    fn is_greville(&self) -> bool {
+        *self == GridSpacing::Greville
+    }
 }
 
 /// The parameters a spline through points takes its points at (format

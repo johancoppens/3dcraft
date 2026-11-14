@@ -38,6 +38,11 @@ fn bicubic(x: f64, y: f64) -> f64 {
 }
 const BICUBIC_VOLUME: f64 = 0.5 * 4.0 + 0.4 * 4.0 / 9.0 - 0.3 * 4.0 / 3.0 + 0.2 * 4.0 / 3.0;
 
+/// A wave no cubic holds, `z = sin(2x) cos(3y) / 2`.
+fn wave(x: f64, y: f64) -> f64 {
+    0.5 * (2.0 * x).psin() * (3.0 * y).pcos()
+}
+
 /// The `n × n` grid of `f` over `[-1, 1]²`, scaled by `k` and moved by
 /// `offset`.
 fn sampled(f: Height, n: usize, k: f64, offset: Vec3) -> Vec<Vec3> {
@@ -116,8 +121,9 @@ fn the_error_between_the_points_falls_with_the_step_as_the_theory_says() {
     for (name, f) in [
         ("paraboloid", paraboloid as Height),
         ("bicubic", bicubic as Height),
+        ("wave", wave as Height),
     ] {
-        for spacing in [Spacing::Greville, Spacing::Chord] {
+        for spacing in [Spacing::Greville, Spacing::Chord, Spacing::Even] {
             let mut gaps = Vec::new();
             for n in [9, 17, 33, 65, 129] {
                 let pts = sampled(f, n, 1.0, Vec3::ZERO);
@@ -126,13 +132,25 @@ fn the_error_between_the_points_falls_with_the_step_as_the_theory_says() {
             }
             let rates: Vec<f64> = gaps.windows(2).map(|w| (w[0].1 / w[1].1).plog2()).collect();
             lines.push(format!("{name} {spacing:?}: {gaps:?}, orders {rates:?}"));
-            // The order of the last halvings: chordal cubic interpolation
+            // Even parameters over a regular grid keep x and y linear, so a
+            // field of degree 3 or less each way comes back to rounding.
+            if spacing == Spacing::Even && name != "wave" {
+                assert!(
+                    gaps.iter().all(|(_, g)| *g <= 1e-14),
+                    "{}",
+                    lines.join("\n")
+                );
+                continue;
+            }
+            // The order: chordal cubic interpolation
             // is fourth-order accurate (Floater, IMA J. Numer. Anal. 26,
             // 2006); Greville's parameters, uneven near the ends, give
             // second order there.
-            let last = rates[rates.len() - 1].min(rates[rates.len() - 2]);
+            // Over the last three halvings, as the order of averaged
+            // chord parameters wanders from one halving to the next.
+            let last = (gaps[gaps.len() - 4].1 / gaps[gaps.len() - 1].1).plog2() / 3.0;
             let want = match spacing {
-                Spacing::Chord => 3.5,
+                Spacing::Chord | Spacing::Even => 3.5,
                 Spacing::Greville => 1.8,
             };
             assert!(last >= want, "{}", lines.join("\n"));
@@ -148,7 +166,7 @@ fn the_volume_under_the_sheet_converges_to_the_integral() {
         ("paraboloid", paraboloid as Height, PARABOLOID_VOLUME),
         ("bicubic", bicubic as Height, BICUBIC_VOLUME),
     ] {
-        for spacing in [Spacing::Greville, Spacing::Chord] {
+        for spacing in [Spacing::Greville, Spacing::Chord, Spacing::Even] {
             let mut errors = Vec::new();
             for n in [9, 17, 33, 65] {
                 let made = interpolate(&sampled(f, n, 1.0, Vec3::ZERO), n, n, spacing, 1e-9, 1e-9)
@@ -160,6 +178,15 @@ fn the_volume_under_the_sheet_converges_to_the_integral() {
             ));
             let (_, last) = errors[errors.len() - 1];
             assert!(last < 1e-5, "{}", lines.join("\n"));
+            if spacing == Spacing::Even {
+                // Exact: the sheet is the field itself.
+                assert!(
+                    errors.iter().all(|(_, e)| *e <= 1e-13),
+                    "{}",
+                    lines.join("\n")
+                );
+                continue;
+            }
             assert!(
                 errors.windows(2).all(|w| w[1].1 < w[0].1),
                 "{}",

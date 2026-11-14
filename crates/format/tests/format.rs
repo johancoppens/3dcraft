@@ -6376,7 +6376,7 @@ fn sheet_metal_curved_flanges_are_written_like_this_and_round_trip() {
 /// same, and a form no build knows refused.
 #[test]
 fn a_grid_surface_is_written_like_this_and_round_trips() {
-    use craft3d_doc::{GridPoints, SplineSpacing, SurfaceGrid};
+    use craft3d_doc::{GridPoints, GridSpacing, SurfaceGrid};
     assert_eq!(FORMAT_VERSION, 72);
     let e = |s: &str| Expr::new(s);
     let mut doc = small();
@@ -6392,7 +6392,7 @@ fn a_grid_surface_is_written_like_this_and_round_trips() {
                     ],
                 ],
             },
-            spacing: SplineSpacing::Chord,
+            spacing: GridSpacing::Chord,
         }),
     )
     .unwrap();
@@ -6405,7 +6405,7 @@ fn a_grid_surface_is_written_like_this_and_round_trips() {
                 step: [e("5 mm"), e("-5 mm")],
                 factor: e("scale"),
             },
-            spacing: SplineSpacing::Greville,
+            spacing: GridSpacing::Even,
         }),
     )
     .unwrap();
@@ -6424,7 +6424,7 @@ fn a_grid_surface_is_written_like_this_and_round_trips() {
     assert_eq!(
         features[n - 1]["kind"],
         serde_json::json!({"type": "surfaceGrid", "points": {"from": "table", "table": "heights",
-            "origin": ["0", "0", "5 mm"], "step": ["5 mm", "-5 mm"], "factor": "scale"}})
+            "origin": ["0", "0", "5 mm"], "step": ["5 mm", "-5 mm"], "factor": "scale"}, "spacing": "even"})
     );
     assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
     assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);

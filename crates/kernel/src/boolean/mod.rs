@@ -74,7 +74,8 @@ pub use contact::{
     Contact, ContactKind, Interference, MAX_CONTACT_POINTS, common_volume, contact, interference,
 };
 pub use freeform::{
-    HELD_TOGETHER, held_keys, held_together, release_unheld, release_unused, shelf_keys, shelf_size,
+    HELD_TOGETHER, MAX_LEAVES as MAX_FREEFORM_SPANS, held_keys, held_together, release_unheld,
+    release_unused, shelf_keys, shelf_size,
 };
 pub(crate) use hits::speed_bound;
 pub use knit::sew_sheets;

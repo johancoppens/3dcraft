@@ -920,8 +920,52 @@ pub const MAX_GRID_SIDE: usize = 1 << 10;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SurfaceGrid {
     pub points: GridPoints,
-    #[serde(default, skip_serializing_if = "SplineSpacing::is_greville")]
-    pub spacing: SplineSpacing,
+    #[serde(default, skip_serializing_if = "GridSpacing::is_greville")]
+    pub spacing: GridSpacing,
+}
+
+/// The parameters a grid surface takes its points at, one set each way
+/// (docs/design/surfacing.md › *A sheet through a grid of points*): a live
+/// spline's two (greville, chord) and even, which a spline does not offer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GridSpacing {
+    /// Uniform knots, each point at its control point's Greville abscissa.
+    #[default]
+    Greville,
+    /// Each row's chord lengths averaged over the rows, on averaged knots.
+    Chord,
+    /// Evenly spaced parameters on averaged knots: over a regular grid the
+    /// textbook bicubic spline of its heights.
+    Even,
+}
+
+impl GridSpacing {
+    pub fn is_greville(&self) -> bool {
+        *self == GridSpacing::Greville
+    }
+
+    /// The spacing's name, as a command and a file write it.
+    pub fn name(&self) -> &'static str {
+        match self {
+            GridSpacing::Greville => "greville",
+            GridSpacing::Chord => "chord",
+            GridSpacing::Even => "even",
+        }
+    }
+
+    /// The names of every spacing, as a command lists them.
+    pub const NAMES: &'static str = "greville, chord or even";
+
+    /// The spacing a command or a file names.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "greville" => Some(GridSpacing::Greville),
+            "chord" => Some(GridSpacing::Chord),
+            "even" => Some(GridSpacing::Even),
+            _ => None,
+        }
+    }
 }
 
 /// Where the points of a grid surface come from.

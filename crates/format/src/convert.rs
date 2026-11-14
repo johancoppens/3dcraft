@@ -1533,8 +1533,9 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                         },
                     },
                     spacing: match spacing {
-                        doc::SplineSpacing::Greville => manifest::SplineSpacing::Greville,
-                        doc::SplineSpacing::Chord => manifest::SplineSpacing::Chord,
+                        doc::GridSpacing::Greville => manifest::GridSpacing::Greville,
+                        doc::GridSpacing::Chord => manifest::GridSpacing::Chord,
+                        doc::GridSpacing::Even => manifest::GridSpacing::Even,
                     },
                 }
             }
@@ -3660,8 +3661,9 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                         },
                     },
                     spacing: match spacing {
-                        manifest::SplineSpacing::Greville => doc::SplineSpacing::Greville,
-                        manifest::SplineSpacing::Chord => doc::SplineSpacing::Chord,
+                        manifest::GridSpacing::Greville => doc::GridSpacing::Greville,
+                        manifest::GridSpacing::Chord => doc::GridSpacing::Chord,
+                        manifest::GridSpacing::Even => doc::GridSpacing::Even,
                     },
                 })
             }
