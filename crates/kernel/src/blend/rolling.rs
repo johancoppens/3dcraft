@@ -113,7 +113,7 @@ const BEND: f64 = 1e-9;
 /// angle the linear tolerance makes over the size, whichever is more. The
 /// tangency of a fillet along its borders, across a joint and across a
 /// crossed smooth edge is measured to ten times it.
-fn bend(tolerance: &Tolerance, size: f64) -> f64 {
+pub(super) fn bend(tolerance: &Tolerance, size: f64) -> f64 {
     tolerance.angular.max(BEND).max(tolerance.linear / size)
 }
 
@@ -1659,6 +1659,21 @@ fn first_section(
     into: [Vec3; 2],
     edge: EdgeId,
 ) -> Result<Section, BlendError> {
+    let seed = flat_seed(solver, s, into, edge)?;
+    solver
+        .section(s, &seed)
+        .ok_or_else(|| refuse(edge, None, Reason::FreeSurface))
+}
+
+/// What [`first_section`] settles from: the flat estimate in the plane at
+/// `s` (the feet the size along `into` from the edge's point, a fillet's
+/// centre between the two tangent planes).
+fn flat_seed(
+    solver: &Solver<'_>,
+    s: f64,
+    into: [Vec3; 2],
+    edge: EdgeId,
+) -> Result<Section, BlendError> {
     let unsolvable = || refuse(edge, None, Reason::FreeSurface);
     let middle = solver.spine.at(s).ok_or_else(unsolvable)?;
     let sides = solver.sides;
@@ -1706,12 +1721,11 @@ fn first_section(
         Shape::Ball { .. } => return Err(refused(edge, Reason::Smooth)),
         Shape::Cut { .. } => None,
     };
-    let seed = Section {
+    Ok(Section {
         feet: seed_feet,
         params: seed_params,
         centre,
-    };
-    solver.section(s, &seed).ok_or_else(unsolvable)
+    })
 }
 
 /// Why a march past the end of an edge stopped.
@@ -3287,11 +3301,11 @@ pub(super) fn blend(
             convex,
         });
     }
-    // Every chamfer held to keeping clear of the faces beside its edge in
-    // the planes across it looked at (`shown`). What it refuses is said
-    // after what the construction itself refuses (a chamfer that cannot
-    // end at an apex, a fold over a cap, a border that runs off its face),
-    // which says more.
+    // Every chamfer and fillet held to keeping clear of the faces beside
+    // its edge in the planes across it looked at (`shown`). What it refuses
+    // is said after what the construction itself refuses (a chamfer that
+    // cannot end at an apex, a fold over a cap, a border that runs off its
+    // face), which says more.
     let mut unclear = None;
     for item in &items {
         if let Err(error) = shown::shown_wrong(body, item, tolerance) {

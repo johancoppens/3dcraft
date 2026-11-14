@@ -104,6 +104,7 @@ use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
 
+mod carried;
 mod fit;
 mod rolling;
 pub(crate) use rolling::rebuild;
@@ -214,7 +215,8 @@ pub(crate) enum Reason {
     FreeFolds,
     /// A chamfer face would pass through a face beside its edge: a face's
     /// trace from the edge to the cut line is shown on the other side of
-    /// the chamfer's line.
+    /// the chamfer's line. A fillet face would: a face's trace from the
+    /// edge to the ball's foot is shown inside the ball, behind its arc.
     Through,
 
     FreeGoesOn,
@@ -446,7 +448,7 @@ impl Reason {
                 "the fillet face along this edge would fold through itself: where the ball touches a face beside the edge goes past where the sections across the edge meet (over the top of a small cap, say): the radius is too large for that face"
             }
             Reason::Through => {
-                craft3d_math::bug_text!("a fillet was refused with a reason only a chamfer has")
+                "the fillet face would pass through a face beside the edge: between the edge and where the rolling ball touches that face, the face bulges into the ball (a bead beside a groove's rim, say); a fillet whose ball rests on the bulge instead is not built yet: give another radius"
             }
             Reason::FreeRunsOver => {
                 "the fillet's border runs off a face beside the edge across one of its other edges along the way (where the ball would roll on over a smooth edge onto the next face, or the face is too narrow for the radius); a fillet that carries on onto the next face in the middle of an edge is not built yet: give a smaller radius"
@@ -2276,7 +2278,7 @@ fn finish(
     chamfers_turn(&state, &now, plans, tolerance.linear)?;
     smooth_seams(&state, &now, plans, tolerance)?;
     for (index, plan) in plans.iter().enumerate() {
-        reframe(&mut state.body, &of_plan, index, plan);
+        reframe(&mut state.body, &of_plan, index, plan, tolerance.linear);
     }
     Ok(Blended {
         body: state.body,
@@ -2293,7 +2295,7 @@ fn finish(
 /// direction. (What the boolean left is the frame of the tool's face,
 /// whose origin lies wherever the tool began.) The plane is the same
 /// plane.
-fn reframe(body: &mut Body, of_plan: &[Vec<usize>], index: usize, plan: &Plan) {
+fn reframe(body: &mut Body, of_plan: &[Vec<usize>], index: usize, plan: &Plan, tol: f64) {
     let Path::Line {
         start,
         along,
@@ -2320,6 +2322,7 @@ fn reframe(body: &mut Body, of_plan: &[Vec<usize>], index: usize, plan: &Plan) {
         return;
     };
     let normal = plane.frame().z();
+    let built = plane.frame().origin();
     let outward = if face.reversed { -normal } else { normal };
     let [b1, b2] = plan.into;
     let forward = b1.cross(b2).dot(along) >= 0.0;
@@ -2329,7 +2332,18 @@ fn reframe(body: &mut Body, of_plan: &[Vec<usize>], index: usize, plan: &Plan) {
         (-along, start + along * length)
     };
     let [f1, _] = plan.feet();
-    if let Some(frame) = Frame::new(from + f1, outward, x) {
+    // The plan's foot on the first face lies in the plane, unless the
+    // construction in place carried the cut line across a smooth edge of
+    // that face onto the face beyond (`carried`): its foot is then on that
+    // face, where the plane's own origin (the construction's foot) lies,
+    // moved along the edge into the plane across it at `from`. Either way
+    // the plane stays the plane that was built.
+    let mut origin = from + f1;
+    let off = (origin - built).dot(normal).abs();
+    if off.is_nan() || off > tol {
+        origin = built + along * (from - built).dot(along);
+    }
+    if let Some(frame) = Frame::new(origin, outward, x) {
         face.surface = Surface::Plane(craft3d_geom::Plane::new(frame));
         face.reversed = false;
     }
@@ -2675,9 +2689,10 @@ fn construct(
     // run through a face: the search for what fits looks smaller. The
     // section holds each face as its whole line or circle; where a foot
     // lies off its face (a cylinder that ends at a smooth edge, the cut
-    // line carried on across it) it shows nothing, and the construction's
-    // own checks decide.
-    let probe: OnceCell<Option<Probe<'_>>> = OnceCell::new();
+    // line carried on across it) it shows nothing: there the chamfer in
+    // place is held as the construction carries its cut line (below), and
+    // otherwise the construction's own checks decide.
+    let probe: carried::LazyProbe<'_> = OnceCell::new();
     let feet_on_faces = |plan: &Plan| {
         let (
             Some(section),
@@ -2713,6 +2728,23 @@ fn construct(
             error: BlendError::Refused {
                 edge: Some(plan.edge),
                 face: plan.faces.get(side).copied(),
+                reason: Reason::Through,
+            },
+        });
+    }
+    // A chamfer in place whose cut line runs past a smooth edge of its
+    // face onto the face beyond: held against both faces, as the
+    // construction places it.
+    if let Some((plan, face)) = routed
+        .iter()
+        .filter_map(|i| plans.get(*i))
+        .find_map(|p| carried::through(body, uses, &probe, p, tolerance).map(|f| (p, f)))
+    {
+        return Err(Failure {
+            edge: Some(plan.edge),
+            error: BlendError::Refused {
+                edge: Some(plan.edge),
+                face: Some(face),
                 reason: Reason::Through,
             },
         });
@@ -2757,7 +2789,7 @@ fn construct(
     }
     for (local, index) in routed.iter().enumerate() {
         if let Some(plan) = plans.get(*index) {
-            reframe(&mut rolled.body, &of_plan, local, plan);
+            reframe(&mut rolled.body, &of_plan, local, plan, tolerance.linear);
         }
     }
     let rest: Vec<usize> = (0..requests.len())
@@ -3169,6 +3201,11 @@ mod reason_tests {
                 .contains(craft3d_math::BUG)
         );
         assert!(Reason::NoNormal.text(Kind::Fillet).contains("no normal"));
+        // A fillet whose ball takes in a face beside its edge is refused
+        // for what the input is (2026-11-14), with a way out.
+        let through = Reason::Through.text(Kind::Fillet);
+        assert!(!through.contains(craft3d_math::BUG), "{through}");
+        assert!(through.contains("another radius"), "{through}");
         assert!(
             Reason::MeetsWithinAngle
                 .text(Kind::Fillet)
