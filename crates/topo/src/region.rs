@@ -23,17 +23,21 @@
 //! that does not project back onto the surface, a loop whose area is not
 //! larger than its polyline's error allows to be told from nothing, a
 //! face with more than [`MOST_PER_FACE`] points, and a face with a spline
-//! edge whose steps are not shown not to go round unseen (below) within
+//! edge whose steps are not shown to hide no turn (below) within
 //! [`MOST_SPLINE_STEPS`] and [`MOST_PROOF_WORK`]. On a sphere loops that
 //! all run clockwise are the sphere less some caps, which is a region.
 //!
 //! **How.** Each edge is followed in a few steps (a line in one on a
 //! plane, else in two; a circle or an ellipse in steps of at most π/8; a
-//! spline in eight per edge, and about the axis of a cylinder, a cone, a
-//! sphere or a torus in as many more as are shown to move less than a
-//! quarter turn about it from each point to the next, [`spline_steps`], so
-//! that a helix of many turns as one edge is followed round every turn: a
-//! step that is not shown is not taken, and the face passes), each point
+//! spline in eight per edge, or in as many more as it takes for every half
+//! step to be shown to hide no turn from the walk, [`spline_steps`]: about
+//! the axis of a cylinder, a cone, a sphere or a torus it moves less than a
+//! quarter turn, about a torus's tube as well, so that a helix of many
+//! turns as one edge is followed round every turn; and in the chart of a
+//! plane or of one of those it runs one way, so that the chord from one
+//! point to the next goes round no point the edge does not, and a spiral
+//! of many turns about a point of the chart is followed round every one;
+//! a step that is not shown is not taken, and the face passes), each point
 //! projected onto the surface
 //! (from the one before on a freeform surface, checked against the point,
 //! else from nothing) and moved by whole periods to the one before it.
@@ -56,11 +60,11 @@ use std::sync::{Mutex, PoisonError};
 
 /// Most points one face is followed at; a larger face is passed.
 pub const MOST_PER_FACE: usize = 1 << 18;
-/// Steps of a spline edge (at least: on a surface that closes about an
-/// axis, as many more as [`spline_steps`] needs).
+/// Steps of a spline edge (at least: as many more as [`spline_steps`]
+/// needs).
 const SPLINE_STEPS: usize = 8;
-/// Most steps of a spline edge on a surface that closes about an axis
-/// ([`steps_shown`]); an edge that needs more is not followed.
+/// Most steps of a spline edge ([`steps_shown`]); an edge that needs more
+/// is not followed.
 const MOST_SPLINE_STEPS: usize = 1 << 12;
 /// Most work that showing the steps of one face's spline edges, and
 /// following those that need more than eight, may take, in units
@@ -148,17 +152,13 @@ pub(crate) struct Ring {
     pub(crate) high: [f64; 2],
     /// Where each coedge's points begin in `points`, in the loop's order.
     pub(crate) starts: Vec<usize>,
-    /// Whether a half step moved more than a quarter period, or the loop
-    /// has a spline edge on a torus: the step may have gone round by more
-    /// than the chart shows, so how often the loop goes round, and where
-    /// along it a point lies, are not to be read off it (the region rule
-    /// reads it as before). A spline edge on a surface that closes about
-    /// an axis is followed in steps shown to move less than that about it
-    /// ([`spline_steps`]); what is left is a conic near a pole, read by
-    /// this flag, and the angle about a torus's tube, which nothing shows
-    /// for a spline edge (a curve going round the tube 13 times in 16 half
-    /// steps moves 292.5° a half step, which reads as 67.5° back and
-    /// raises no flag).
+    /// Whether a half step moved more than a quarter period: the step may
+    /// have gone round by more than the chart shows, so how often the loop
+    /// goes round, and where along it a point lies, are not to be read off
+    /// it (the region rule reads it as before). A spline edge is followed
+    /// in steps shown to move less than that about its surface's axis, and
+    /// about a torus's tube ([`spline_steps`]); what is left is a conic near
+    /// a pole, read by this flag.
     pub(crate) aliased: bool,
 }
 
@@ -1134,8 +1134,10 @@ fn steps_shown(
 /// whole stretch, so over any part of it. The whole edge is looked at
 /// first, by its control points alone, (1): an edge shown at one look,
 /// which is nearly every edge, is followed in `SPLINE_STEPS` at the points
-/// it always was, and that look, which costs less than the edge's first
-/// step, is not counted against the face's work. `None` where it cannot be
+/// it always was, and that look, a pass over the edge's control points as
+/// the key a face is remembered by makes one, is not counted against the
+/// face's work (it stops at the first point or leg that does not fit).
+/// `None` where it cannot be
 /// shown within [`MOST_SPLINE_STEPS`] (a curve through or very near the
 /// axis, a helix of thousands of turns, an edge that turns back on itself
 /// at a point no halving reaches) or within the face's work: the loop
@@ -3015,7 +3017,7 @@ mod tests {
             .map(|_| {
                 heading += 1.6 * (next() - 0.5);
                 let (s, c) = heading.psin_cos();
-                at = at + Vec3::new(c, s, 0.3 * (next() - 0.5)) * (0.2 + next());
+                at += Vec3::new(c, s, 0.3 * (next() - 0.5)) * (0.2 + next());
                 at
             })
             .collect();

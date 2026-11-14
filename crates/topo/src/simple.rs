@@ -85,26 +85,22 @@
 //! (a loop through a sphere's pole or a cone's apex, every spline surface
 //! that `geom::closure` finds closed or collapsed), a loop whose area its
 //! polyline cannot tell from nothing, a face past its caps of points and
-//! work, a face with a spline edge whose steps about its surface's axis
-//! are not shown within the steps and the work a face is allowed
-//! (`crate::region`): such a face is held to rule 1 and to rule 4 between
+//! work, a face with a spline edge whose steps are not shown to hide no
+//! turn within the steps and the work a face is allowed (`crate::region`):
+//! such a face is held to rule 1 and to rule 4 between
 //! different loops only (so a loop gone round twice on a face of a
 //! revolved spline is caught only where a neighbouring face can be
 //! charted). A spline surface that closes within the tolerance but not to
 //! `closure`'s rounding (or on knots that are not clamped) is charted as
 //! one that does not close: its seam passes, but a loop across the seam is
-//! not followed right. A spline edge on a surface that closes about an
-//! axis is followed in steps its control points show to move less than a
-//! quarter turn about it (`crate::region`), so a helix of many turns as one
-//! edge is read as it goes round. A loop with a spline edge on a torus is
-//! not held to 2 or 3, nor to 4 between two of its own stretches: how far
-//! such an edge moves about the axis is shown, but nothing shows how far
-//! it moves about the tube from one point to the next, and how often a
-//! loop goes round the axis says nothing without the other (three times
-//! round the axis is a simple loop with 13 turns about the tube and not
-//! with 3). Elsewhere (a
-//! conic near a pole) a loop whose half step moves more than a quarter
-//! period is not held to 2 or 3 (a conic's half step, a sixteenth of a
+//! not followed right. A spline edge is followed in steps shown to move
+//! less than a quarter turn about the axis of a surface that closes about
+//! one, and about a torus's tube, and to run one way in the chart
+//! (`crate::region`), so a helix of many turns as one edge, a curve that
+//! winds about a torus's tube and a spiral about a point of the chart are
+//! read as they go round. A loop with a conic near a pole, whose half
+//! step moves more than a quarter period, is not held to 2 or 3 (a
+//! conic's half step, a sixteenth of a
 //! half turn of its own, cannot move the three quarters of a period that
 //! would wrap unseen unless the axis passes within the arc's own sagitta
 //! of it). A loop narrower than twice its margin has no point clear
