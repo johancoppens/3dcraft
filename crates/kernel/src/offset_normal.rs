@@ -375,6 +375,121 @@ pub(crate) fn iso_edges(
     out
 }
 
+/// The border of the parameter range of the surface of freeform `face`
+/// that `edge` lies along (its points at a sixth to five sixths along it
+/// within `tol` of that border, as [`along_borders`] decides it), as an
+/// [`crate::tweak::Iso`]: the first of [`BORDERS`] it lies along. `None`
+/// for a face that is not freeform, and for an edge along none.
+pub(crate) fn edge_border(
+    body: &Body,
+    face: FaceId,
+    edge: EdgeId,
+    tol: f64,
+) -> Option<crate::tweak::Iso> {
+    let data = body.face(face)?;
+    if !freeform(&data.surface) {
+        return None;
+    }
+    let curve = body.edge(edge)?;
+    let domain = data.surface.domain();
+    let points: Vec<(Vec3, (f64, f64))> = (1..=5)
+        .map(|k| {
+            let f = f64::from(k) / 6.0;
+            let p = curve
+                .curve
+                .eval(curve.range.0 + (curve.range.1 - curve.range.0) * f);
+            data.surface.project(p).ok().map(|uv| (p, uv))
+        })
+        .collect::<Option<_>>()?;
+    let ((u0, u1), (v0, v1)) = domain;
+    BORDERS.into_iter().find_map(|border| {
+        let on = points.iter().all(|(p, (u, v))| {
+            let q = if border.along_u_fixed { *v } else { *u };
+            let (bu, bv) = border.at(domain, q);
+            data.surface.eval(bu, bv).distance(*p) <= tol
+        });
+        on.then_some(crate::tweak::Iso {
+            face,
+            u_fixed: border.along_u_fixed,
+            value: match (border.along_u_fixed, border.end) {
+                (true, false) => u0,
+                (true, true) => u1,
+                (false, false) => v0,
+                (false, true) => v1,
+            },
+        })
+    })
+}
+
+/// The edges between faces none of which is in `moving` that end in a
+/// vertex of a face of `moving` and lie along a border of the parameter
+/// range of one of their freeform faces, with that face and border (the
+/// first such face, in order).
+///
+/// Such an edge does not move: both its faces keep their surfaces, and
+/// only its end on the moving face goes elsewhere along it. An offset
+/// continues a face whose vertex passes its border as the functions its
+/// end spans are, so every point keeps its parameters and the old border
+/// is the same iso-curve of the continued surface (`continued_each`):
+/// made again as that iso-curve between its new ends
+/// ([`crate::tweak::resurface_along`]) it lies exactly on that face, as
+/// it did. Found again where its two faces meet, it is a fitted curve
+/// held only to a share of the tolerance (the leading and the trailing
+/// edges of the rotor's blades, 20 m long, 1.9e-7 mm off both faces where
+/// they had been 1e-11, when the blade's end cap moved: the measured
+/// volume of the rotor then moved by 10 mm³ where the cap added 0.0013,
+/// docs/design/face-operations.md › *A seam that does not move*).
+pub(crate) fn still_iso_edges(
+    body: &Body,
+    moving: &BTreeMap<FaceId, f64>,
+    tolerance: &Tolerance,
+) -> BTreeMap<EdgeId, crate::tweak::Iso> {
+    let uses = craft3d_topo::edge_faces(body);
+    // The vertices of the faces that move.
+    let mut ends = std::collections::BTreeSet::new();
+    for face in moving.keys() {
+        let Some(data) = body.face(*face) else {
+            continue;
+        };
+        for coedge in data
+            .loops
+            .iter()
+            .filter_map(|l| body.loop_(*l))
+            .flat_map(|l| &l.coedges)
+        {
+            if let Some(edge) = body.edge(coedge.edge) {
+                ends.insert(edge.start);
+                ends.insert(edge.end);
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    for (index, edge) in body.edges.iter().enumerate() {
+        if !(ends.contains(&edge.start) || ends.contains(&edge.end)) {
+            continue;
+        }
+        let Some(faces) = uses.get(index) else {
+            continue;
+        };
+        // Only an edge along the border within the share of the tolerance a
+        // fit is held to. Its moved end is put on the border; a line or a
+        // circle is then made again as one (`tweak::remake_unfitted`), and
+        // only a curve that would be fitted becomes the border's iso-curve.
+        if faces.is_empty() || faces.iter().any(|f| moving.contains_key(f)) {
+            continue;
+        }
+        let Ok(number) = u32::try_from(index) else {
+            continue;
+        };
+        let id = EdgeId(number);
+        let share = crate::tweak::EDGE_SHARE * tolerance.linear;
+        if let Some(along) = faces.iter().find_map(|f| edge_border(body, *f, id, share)) {
+            out.insert(id, along);
+        }
+    }
+    out
+}
+
 /// The turns of the faces of `moving` (face and distance) that need one,
 /// in the sense of `∂u × ∂v` of each face's surface.
 ///
