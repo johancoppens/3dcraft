@@ -46,15 +46,14 @@ mod hunt_common;
 
 use boolean_common::Rng;
 use craft3d_geom::Surface;
-use craft3d_kernel::boolean::Place;
 use craft3d_kernel::move_face::{Motion, move_faces};
 use craft3d_kernel::offset_face::{FaceOffset, offset_faces};
 use craft3d_math::{Portable, Transform, Vec3};
 use craft3d_topo::{Body, FaceId, check, face_areas};
 use hunt_common::{
-    Cube, Found, KINDS, Kind, SCALES, Tally, allowance, case_seed, classify, face_area_centroid,
-    frames, g, guarded, identity, least_sine, letter, make, measured, mesh, mesh_volume,
-    neighbours, points, points_in_box, prism_like, ribbon, size_of, sound, tolerance,
+    Cube, Found, KINDS, Kind, SCALES, Tally, allowance, case_seed, face_area_centroid, frames, g,
+    guarded, identity, least_sine, letter, make, measured, mesh, mesh_volume, neighbours, points,
+    prism_like, ribbon, size_of, sound, tolerance,
 };
 
 /// The volume of a primitive with every face moved out by `d`, in
@@ -645,86 +644,104 @@ fn hunt_offset_debug() {
 #[allow(dead_code)]
 fn unused(_: Kind) {}
 
-/// Scratch: the reduced form of offset case 396.
-#[test]
-fn hunt_offset_reduce_396() {
-    if std::env::var("HUNT_REDUCE").is_err() {
-        return;
-    }
+/// What an offset of the end cap of a cylinder that stands out of a
+/// block's end face did, held to the block united with the cylinder
+/// shortened as far (built by the boolean, not by the offset).
+fn end_cap(k: f64, d: f64) -> Result<(), String> {
     use craft3d_kernel::boolean::{BooleanOp, boolean};
     use craft3d_kernel::primitives;
     use craft3d_math::Frame;
-    let tol = tolerance(1.0);
-    let block = primitives::block(&Frame::WORLD, 40.0, 30.0, 20.0).unwrap();
-    for (r, y, z, d) in [
-        (7.041, 13.859, 23.169, -2.278125),
-        (7.0, 15.0, 23.0, -2.0),
-        (7.0, 15.0, 23.0, -1.5),
-        (7.0, 15.0, 23.0, -1.0),
-        (7.0, 15.0, 23.0, -0.5),
-        (7.0, 15.0, 15.0, -2.0),
-        (7.0, 15.0, 30.0, -2.0),
-    ] {
-        let x = Vec3::new(1.0, 0.0, 0.0);
-        let yy = Vec3::new(0.0, 1.0, 0.0);
-        let axis = Frame::new(Vec3::new(-1.0, y, z), x, yy).unwrap();
-        let cyl = primitives::cylinder(&axis, r, 42.0).unwrap();
-        let body = boolean(&block, &cyl, BooleanOp::Union, &tol).unwrap().body;
-        // The cap at x = -1.
-        let cap = (0..body.faces.len() as u32)
-            .map(FaceId)
-            .find(|f| {
-                matches!(&body.face(*f).unwrap().surface, Surface::Plane(p)
-                    if (p.frame().origin().x + 1.0).abs() < 1e-9)
-            })
-            .unwrap();
-        let reference = {
-            let axis = Frame::new(Vec3::new(-1.0 - d, y, z), x, yy).unwrap();
-            let cyl = primitives::cylinder(&axis, r, 42.0 + d).unwrap();
-            boolean(&block, &cyl, BooleanOp::Union, &tol).unwrap().body
-        };
-        let mr = measured(&reference).unwrap();
-        match offset_faces(
-            &body,
-            &[FaceOffset {
-                face: cap,
-                distance: d,
-            }],
-            &tol,
-        ) {
-            Err(e) => println!("r {r} y {y} z {z} d {d}: refused: {e}"),
-            Ok(made) => {
-                let m = measured(&made.body).unwrap();
-                println!(
-                    "r {r} y {y} z {z} d {d}: built, check {:?}, volume {} reference {} (off {}), mesh {:?}",
-                    check(&made.body, &tol).len(),
-                    g(m.volume),
-                    g(mr.volume),
-                    g(m.volume - mr.volume),
-                    mesh_volume(&made.body, 0.05)
-                );
-                let mut rng = Rng(7);
-                let pts = points_in_box(&mut rng, &reference, 4000);
-                let a = classify(&made.body, &pts, &tol).unwrap();
-                let b = classify(&reference, &pts, &tol).unwrap();
-                let differ = a
-                    .iter()
-                    .zip(&b)
-                    .filter(|(x, y)| {
-                        matches!(
-                            (x, y),
-                            (Place::Inside, Place::Outside) | (Place::Outside, Place::Inside)
-                        )
-                    })
-                    .count();
-                println!(
-                    "  points that differ from the reference: {differ} of {}",
-                    pts.len()
-                );
+    let tol = tolerance(k);
+    let block = primitives::block(&Frame::WORLD, 40.0 * k, 30.0 * k, 20.0 * k).unwrap();
+    let (x, y) = (Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
+    // A cylinder r 7 along x, its axis 3 over the block's top, from 1 before
+    // the block's end face x = 0 to 1 past the other.
+    let rod = |from: f64| {
+        let axis = Frame::new(Vec3::new(from * k, 15.0 * k, 23.0 * k), x, y).unwrap();
+        let cylinder = primitives::cylinder(&axis, 7.0 * k, (41.0 - from) * k).unwrap();
+        boolean(&block, &cylinder, BooleanOp::Union, &tol)
+            .unwrap()
+            .body
+    };
+    let body = rod(-1.0);
+    let at_start = |f: &FaceId| match &body.face(*f).unwrap().surface {
+        Surface::Plane(p) => (p.frame().origin().x + k).abs() < 1e-9 * k,
+        _ => false,
+    };
+    let cap = (0..body.faces.len() as u32)
+        .map(FaceId)
+        .find(at_start)
+        .unwrap();
+    let reference = rod(-1.0 - d);
+    let mr = measured(&reference).unwrap();
+    let Ok(made) = offset_faces(
+        &body,
+        &[FaceOffset {
+            face: cap,
+            distance: d * k,
+        }],
+        &tol,
+    ) else {
+        return Ok(());
+    };
+    let m = measured(&made.body).unwrap();
+    let mut wrong = Vec::new();
+    if !check(&made.body, &tol).is_empty() {
+        wrong.push("not valid".to_string());
+    }
+    if let Err(e) = mesh_volume(&made.body, 1e-3 * size_of(&made.body)) {
+        wrong.push(format!("passes the checker but {e}"));
+    }
+    let allowed = allowance(&m, &mr, 0.0, &tol);
+    if (m.volume - mr.volume).abs() > allowed {
+        wrong.push(format!(
+            "volume {} for {} (off {})",
+            g(m.volume),
+            g(mr.volume),
+            g(m.volume - mr.volume)
+        ));
+    }
+    if wrong.is_empty() {
+        Ok(())
+    } else {
+        Err(wrong.join("; "))
+    }
+}
+
+/// The reduced form of the offset hunt's first finding (2026-11-14): a
+/// block 40 x 30 x 20 united with a cylinder r 7 along x whose axis lies 3
+/// over the top and which stands 1 out of both end faces; its end cap
+/// offset inward by more than the 1 it stands out (past the block's end
+/// face) is built and passes the checker, but its cylinder face's loops
+/// cross in its parameters (the tessellator: "its loops do not bound a
+/// region") and its volume is 36.29 short of the block united with the
+/// cylinder shortened as far, with which points classified by rays agree
+/// (offset by 2; 18.15 short by 1.5). By 1 (the cap in the end face) it is
+/// refused by the check of simple loops; by 0.5 it is built right. Owed,
+/// known: the offsets in [`END_CAP_KNOWN`] are built wrong; a fix has to
+/// take them off.
+#[test]
+fn an_end_cap_offset_past_the_face_it_stands_out_of_is_refused_or_built_right() {
+    let mut unexpected = Vec::new();
+    for k in [1e-3, 1.0, 1e3] {
+        for d in [-0.5, -1.0, -1.5, -2.0, -3.0] {
+            let known = END_CAP_KNOWN.contains(&d);
+            match end_cap(k, d) {
+                Ok(()) if known => unexpected.push(format!(
+                    "scale {k}, offset {d}: refused or built right now: take it off END_CAP_KNOWN"
+                )),
+                Err(e) if !known => unexpected.push(format!("scale {k}, offset {d}: {e}")),
+                Err(e) => println!("scale {k}, offset {d}: known wrong: {e}"),
+                Ok(()) => println!("scale {k}, offset {d}: refused or right"),
             }
         }
     }
+    assert!(unexpected.is_empty(), "{unexpected:#?}");
 }
+
+/// The offsets of the end cap built wrong (an invalid body that passes
+/// the checker), at every scale.
+const END_CAP_KNOWN: [f64; 3] = [-1.5, -2.0, -3.0];
 
 /// The wide hunt of offset: 1200 cases in 8 parts, run by hand
 /// (`-- --ignored`), not in the gate.
