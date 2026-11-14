@@ -990,6 +990,18 @@ impl Lay {
         }
     }
 
+    /// Whether an edge is held to running one way in this chart
+    /// ([`one_way`]): not on a torus, where nothing is read off it.
+    fn asks(&self) -> bool {
+        !matches!(
+            self,
+            Lay::About {
+                rise: Rise::Unshown,
+                ..
+            }
+        )
+    }
+
     /// The axis the surface closes about, as a point on it and its unit
     /// direction.
     fn axis(&self) -> Option<(Vec3, Vec3)> {
@@ -1119,14 +1131,50 @@ fn spline_steps(
     };
     let spanned = |a: f64, b: f64| ctrl.get(span(a).saturating_sub(degree)..=span(b));
     // (2) The angle moves at most at the speed over the distance from the
-    // axis: what the stretch keeps within, about its middle. The bound is
-    // made once, where (1) first fails.
+    // axis: what the stretch keeps within, about its middle, and whether
+    // it is shown there to go round the axis one way. The speed's bound
+    // is made once, where (1) first fails; the bound on how fast the
+    // direction changes span by span, each once (`made` counts the legs
+    // read for them).
     let speed = std::cell::OnceCell::new();
-    let slow = |a: f64, b: f64| -> Option<Reach> {
+    let bends: std::cell::RefCell<BTreeMap<usize, Option<f64>>> = Default::default();
+    let bend_over = |a: f64, b: f64, made: &mut usize| -> Option<f64> {
+        // The spans the stretch lies in, up to the one it ends in (not one
+        // that only starts where it ends).
+        let first = span(a);
+        let last = knots
+            .partition_point(|k| *k < b)
+            .saturating_sub(1)
+            .clamp(first, ctrl.len().saturating_sub(1));
+        if last - first > MANY_SPANS {
+            return None;
+        }
+        let mut most = 0.0_f64;
+        let mut before: Option<usize> = None;
+        for k in first..=last {
+            if !matches!((knots.get(k), knots.get(k + 1)), (Some(x), Some(y)) if y > x) {
+                continue;
+            }
+            // Between two spans the direction is one only where fewer
+            // knots than the degree lie on each other.
+            if before.is_some_and(|j| k - j >= degree) {
+                return None;
+            }
+            before = Some(k);
+            let bend = *bends.borrow_mut().entry(k).or_insert_with(|| {
+                *made += degree;
+                bend_bound(curve, k)
+            });
+            most = most.max(bend?);
+        }
+        before.map(|_| most)
+    };
+    let slow = |a: f64, b: f64, made: &mut usize| -> Option<(Reach, bool)> {
         let (origin, z) = axis?;
         let speed = (*speed.get_or_init(|| speed_bound(curve)))?;
         let reach = (b - a) * speed;
-        let d = curve.eval(0.5 * (a + b)) - origin;
+        let (at, going) = curve.derivatives(0.5 * (a + b));
+        let d = at - origin;
         let height = d.dot(z);
         let across = d - z * height;
         let off = across.length();
@@ -1139,12 +1187,25 @@ fn spline_steps(
         let (sin, cos) = (0.5 * reach / low).psin_cos();
         let middle = across * (1.0 / off);
         let on = z.cross(middle);
-        Some(Reach {
-            low: middle * cos - on * sin,
-            high: middle * cos + on * sin,
-            off: (low, off + 0.5 * reach),
-            height: (height - 0.5 * reach, height + 0.5 * reach),
-        })
+        // Round the axis one way: the curve's direction at its middle
+        // runs round the axis there by more than what its part away from
+        // the axis can take from that as the point goes round by up to
+        // half the angle, and what the direction itself can change by
+        // over half the stretch (its second derivative's bound).
+        let round = lay.asks()
+            && bend_over(a, b, made).is_some_and(|bend| {
+                let lost = going.dot(middle).abs() * sin + bend * 0.5 * (b - a);
+                going.dot(on).abs() * cos - lost > ROUND_CLEAR * speed
+            });
+        Some((
+            Reach {
+                low: middle * cos - on * sin,
+                high: middle * cos + on * sin,
+                off: (low, off + 0.5 * reach),
+                height: (height - 0.5 * reach, height + 0.5 * reach),
+            },
+            round,
+        ))
     };
     // (3) The Bézier pieces, each made once where (1) and (2) do not show
     // it, and the points of a stretch's cut pieces.
@@ -1170,7 +1231,19 @@ fn spline_steps(
                         match narrow.then(|| wedge.reach()).flatten() {
                             Some(reach) => Some(Some(reach)),
                             None if look => None,
-                            None => slow(a, b).map(Some),
+                            None => {
+                                let mut made = 0;
+                                let slow = slow(a, b, &mut made);
+                                charge(work, made)?;
+                                match slow {
+                                    // Shown to go round one way: the
+                                    // image keeps to one side of a line
+                                    // of constant `u`, whatever `v` does.
+                                    Some((_, true)) => return Some(true),
+                                    Some((reach, false)) => Some(Some(reach)),
+                                    None => None,
+                                }
+                            }
                         }
                     }
                     None => Some(None),
@@ -1378,7 +1451,11 @@ impl Fan {
 ///
 /// and the image of the edge runs one way where all of those lie in a fan
 /// narrower than a half turn ([`Fan`], [`ONE_WAY`]): its direction is then
-/// a sum of them, on one side of a line all along. A leg of no length says
+/// a sum of them, on one side of a line all along. About an axis the legs
+/// are first held to running round it one way (`w·e` of one sign at both
+/// ends of the reach, so all along it: `u` moves one way), which costs two
+/// products a leg and is all a helix needs; the boxes are made where that
+/// fails. A leg of no length says
 /// nothing and is passed over; a shorter one than [`LEG_CLEAR`] times its
 /// clearance has no direction that can be read, and the stretch is not
 /// shown. On a spline surface ([`Lay::Space`]) the legs are held to running
@@ -1391,22 +1468,24 @@ fn one_way(
     reach: Option<&Reach>,
 ) -> (bool, usize) {
     // Each leg with the clearance of its run.
-    let mut starts = 0_usize;
-    let legs = runs.iter().flat_map(|&(end, clear)| {
-        let run = points.get(starts..end).unwrap_or(&[]);
-        starts = end;
-        run.windows(2).filter_map(move |pair| match pair {
-            [a, b] => Some((*b - *a, LEG_CLEAR * clear)),
-            _ => None,
+    let legs = || {
+        let mut starts = 0_usize;
+        runs.iter().flat_map(move |&(end, clear)| {
+            let run = points.get(starts..end).unwrap_or(&[]);
+            starts = end;
+            run.windows(2).filter_map(move |pair| match pair {
+                [a, b] => Some((*b - *a, LEG_CLEAR * clear)),
+                _ => None,
+            })
         })
-    });
+    };
     let mut looked = 0_usize;
     let nothing = |w: Vec3| w.x == 0.0 && w.y == 0.0 && w.z == 0.0;
     let longer = |a: f64, b: f64| a.partial_cmp(&b) == Some(std::cmp::Ordering::Greater);
     match lay {
         Lay::Flat { x, y } => {
             let mut fan = Fan::within(ONE_WAY);
-            for (w, clear) in legs {
+            for (w, clear) in legs() {
                 looked += 1;
                 if nothing(w) {
                     continue;
@@ -1444,6 +1523,38 @@ fn one_way(
                 Rise::Height | Rise::Latitude | Rise::Unshown => 1.0,
             };
             let (round_low, round_high) = (z.cross(reach.low), z.cross(reach.high));
+            // First the angle about the axis alone, which is what a helix
+            // or any edge that goes round takes: where every leg runs
+            // round the axis the same way at both ends of the reach, it
+            // does all along it (the ends are less than a quarter turn
+            // apart), so `u` moves one way and the image keeps to one
+            // side of a line of constant `u`. Two products a leg, less
+            // than half of what a point looked at costs.
+            let mut way = 0_i8;
+            let mut round = true;
+            for (w, clear) in legs() {
+                looked += 1;
+                if nothing(w) {
+                    continue;
+                }
+                let (e0, e1) = (w.dot(round_low), w.dot(round_high));
+                let now = if longer(e0, clear) && longer(e1, clear) {
+                    1
+                } else if longer(-e0, clear) && longer(-e1, clear) {
+                    -1
+                } else {
+                    0
+                };
+                if now == 0 || (way != 0 && way != now) {
+                    round = false;
+                    break;
+                }
+                way = now;
+            }
+            looked = looked.div_ceil(2);
+            if round {
+                return (true, looked);
+            }
             let widest = far / near;
             // The latitude's rate is over the square of the distance from
             // the centre: between these.
@@ -1455,7 +1566,7 @@ fn one_way(
             let most = below.abs().max(above.abs());
             let (inner, outer) = (near * near + least * least, far * far + most * most);
             let mut fan = Fan::within(ONE_WAY);
-            for (w, clear) in legs {
+            for (w, clear) in legs() {
                 looked += ABOUT_UNITS;
                 if nothing(w) {
                     continue;
@@ -1529,7 +1640,7 @@ fn one_way(
             if !(length.is_finite() && length > 0.0) {
                 return (false, 0);
             }
-            for (w, clear) in legs {
+            for (w, clear) in legs() {
                 looked += 1;
                 if nothing(w) {
                     continue;
@@ -1543,9 +1654,9 @@ fn one_way(
     }
 }
 
-/// What a leg looked at about an axis counts for against
-/// [`MOST_PROOF_WORK`] ([`one_way`]): its five components and the four
-/// corners of its box, about two points looked at.
+/// What a leg whose box of directions is made about an axis counts for
+/// against [`MOST_PROOF_WORK`] ([`one_way`]): its five components and the
+/// four corners of its box, about two points looked at.
 const ABOUT_UNITS: usize = 2;
 
 /// How many times the rounding of a curve's hull points the points of a
@@ -1739,6 +1850,48 @@ fn speed_bound(curve: &NurbsCurve) -> Option<f64> {
     }
     most.is_finite().then_some(most)
 }
+
+/// An upper bound on how fast a polynomial spline's direction and speed
+/// change over its knot span `k` (the length of its second derivative
+/// there): the longest of the control points of its derivative's own
+/// derivative that reach into the span,
+/// `(p − 1) (Q[j+1] − Q[j]) / (u[j+p+1] − u[j+2])` for `j` from `k − p` to
+/// `k − 2`, `Q[j] = p (P[j+1] − P[j]) / (u[j+p+1] − u[j+1])` the
+/// derivative's (whose hull holds it; each of those gaps holds the span, so
+/// none is empty for a span that has a width). 0 for a spline of degree 1,
+/// a straight line over a span. `None` for a span the curve does not have
+/// or a number that is none. For a spline whose weights are all alike
+/// ([`speed_bound`]).
+fn bend_bound(curve: &NurbsCurve, k: usize) -> Option<f64> {
+    let (knots, ctrl, p) = (curve.knots(), curve.control_points(), curve.degree());
+    if k >= ctrl.len() {
+        return None;
+    }
+    let first = k.checked_sub(p)?;
+    let rate = |j: usize| -> Option<Vec3> {
+        let gap = *knots.get(j + p + 1)? - *knots.get(j + 1)?;
+        (gap.is_finite() && gap > 0.0)
+            .then(|| Some((*ctrl.get(j + 1)? - *ctrl.get(j)?) * (p as f64 / gap)))
+            .flatten()
+    };
+    let mut most = 0.0_f64;
+    let mut before = rate(first)?;
+    for j in first..k.saturating_sub(1) {
+        let gap = *knots.get(j + p + 1)? - *knots.get(j + 2)?;
+        if !(gap.is_finite() && gap > 0.0) {
+            return None;
+        }
+        let next = rate(j + 1)?;
+        most = most.max((p as f64 - 1.0) * (next - before).length() / gap);
+        before = next;
+    }
+    most.is_finite().then_some(most)
+}
+
+/// How far above nothing, as a share of the spline's speed bound, the rate
+/// at which a stretch goes round its axis must be shown to keep
+/// ([`spline_steps`], (2)): well above the rounding of a derivative.
+const ROUND_CLEAR: f64 = 1e-9;
 
 /// The angle about its axis the stretch of a spline edge over a half step
 /// stays within ([`spline_steps`]): a quarter of the period, which is what
@@ -2692,6 +2845,44 @@ mod tests {
         assert_eq!(speed_bound(&jumps), None);
     }
 
+    /// The bound on how fast a polynomial spline's direction changes over
+    /// a knot span is above its second derivative there, sampled (as the
+    /// change of its first over a short way): on 300 splines of degrees 1
+    /// to 7, their knots clamped or not and repeated.
+    #[test]
+    fn a_polynomial_splines_direction_changes_no_faster_than_its_bound() {
+        let mut spans = 0;
+        for seed in 0..300_u64 {
+            let degree = 1 + (seed % 7) as usize;
+            let curve = wandering(seed, degree, degree + 2 + (seed % 9) as usize, false);
+            let knots = curve.knots();
+            let (d0, d1) = curve.domain();
+            for k in degree..curve.control_points().len() {
+                let (lo, hi) = (knots[k], knots[k + 1]);
+                if !(hi > lo && lo >= d0 && hi <= d1) {
+                    assert!(hi <= lo || bend_bound(&curve, k).is_some());
+                    continue;
+                }
+                let bound = bend_bound(&curve, k).unwrap();
+                spans += 1;
+                let h = 1e-4 * (hi - lo);
+                let mut fastest = 0.0_f64;
+                for j in 1..64 {
+                    let t = lo + (hi - lo) * j as f64 / 64.0;
+                    let change = curve.derivatives(t + h).1 - curve.derivatives(t - h).1;
+                    fastest = fastest.max(change.length() / (2.0 * h));
+                }
+                assert!(
+                    fastest <= bound * (1.0 + 1e-6) + 1e-6,
+                    "seed {seed}, degree {degree}, span {k}: {fastest} above {bound}"
+                );
+            }
+            assert_eq!(bend_bound(&curve, 0), None);
+            assert_eq!(bend_bound(&curve, usize::MAX), None);
+        }
+        assert!(spans > 1000, "{spans}");
+    }
+
     fn turn(degrees: f64, length: f64) -> (f64, f64) {
         let (s, c) = degrees.to_radians().psin_cos();
         (length * c, length * s)
@@ -2986,24 +3177,28 @@ mod tests {
     /// runs one way (sampled finely, its directions lie in less than a half
     /// turn), so no chord of the walk hides a turn: 16 turns in 32 steps or
     /// more, where eight read it as a straight line. Up to four turns it
-    /// keeps the eight steps it always had.
+    /// keeps the eight steps it always had. Through 64 points a turn, which
+    /// the control points show, and through 8, whose spans are too wide for
+    /// that: shown by the speed and by the cut pieces.
     #[test]
     fn a_spline_that_spirals_in_the_chart_runs_one_way_each_half_step() {
-        for k in [1e-3, 1.0, 1e6] {
+        for (k, a_turn) in [(1e-3, 64.0), (1.0, 64.0), (1e6, 64.0), (1.0, 8.0)] {
             for (surface, at, scale) in charted(tilted(), k) {
                 let lay = Lay::of(&surface);
                 for turns in [0.25, 1.0, 4.0, 16.0, 40.0] {
-                    let count = ((64.0 * turns) as usize).max(16);
+                    let count = ((a_turn * turns) as usize).max(16);
                     let curve = fitted_spiral(at.as_ref(), turns, count);
                     let range = curve.domain();
                     let steps = spline_steps(&curve, range, &lay, &mut 0).unwrap();
                     let kind = surface.kind();
-                    if turns <= 4.0 {
+                    // A half step of three eighths of a turn at the most,
+                    // so more than four thirds of a step a turn.
+                    let least = (turns * 4.0 / 3.0) as usize;
+                    if a_turn < 64.0 {
+                        assert!(steps >= least, "{kind}, {turns} turns: {steps} steps");
+                    } else if turns <= 4.0 {
                         assert_eq!(steps, SPLINE_STEPS, "{kind} at {k}, {turns} turns");
                     } else {
-                        // A half step of three eighths of a turn at the
-                        // most, so more than four thirds of a step a turn.
-                        let least = (turns * 4.0 / 3.0) as usize;
                         assert!(
                             (least..=4 * least).contains(&steps),
                             "{kind} at {k}, {turns} turns: {steps} steps"
