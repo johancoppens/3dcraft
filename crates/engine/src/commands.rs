@@ -88,7 +88,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Adds a ring torus about axis (expressions, as for feature.block), centred at position: major is the radius of the ring, minor of the tube.", doc: true, feature_torus),
     spec!("feature.extrude", "Extrude", r#"{"sketch": id or name, "distance": expr, "throughAll": boolean = false, "upTo": face name, "wrap": face name, "symmetric": boolean = false, "reversed": boolean = false, "cut": id or name, "join": id or name, "intersect": id or name, "name": string = automatic, "when": expr = always on}"#,
         "Adds a solid by sweeping the closed profiles of a sketch along its normal: loops of lines and arcs, and circles; a loop inside another is a hole. Give one end: distance (a negative one goes the other way; symmetric puts half on each side of the sketch plane), throughAll (past every body the features before this one have built that lies in the way; symmetric goes through on both sides) or upTo (a face name from document.inspect: the solid ends on that face's surface, flat or curved, and follows it when the face moves). reversed goes against the sketch's normal. With cut, join or intersect (a feature with a body) the solid is combined with that body at once: two features are added in one undo step, the extrusion and a boolean, and the result is the boolean's (the one to build on; name applies to it) with the extrusion under sweep. A hole through a plate: sketch a circle on its top, extrude with throughAll, reversed and cut. wrap (a cylinder's or a cone's face name) lays the profiles on that face by its development instead (the sketch's x round the axis from the face's frame, y along it) and gives them distance as depth: raised (out of the face) when positive, engraved (into it) when negative (reversed turns that over); join raises a text on the body, cut engraves it.", doc: true, names: ["upTo", "wrap"], feature_extrude),
-    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "sketch": id or name, "path": id or name, "sections": [sketch, or {sketch, start}; ...], "ruled": boolean, "closed": boolean, "source": id or name, "target": id or name, "tool": id or name, "op": "union|subtract|intersect", "size": [expr; 3] or a thread's "M10" or expr or null, "position": [expr; 3], "axis": [expr; 3] or datum axis or "x|y" or line id, "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "throughAll": boolean, "upTo": face name, "wrap": face name, "symmetric": boolean, "reversed": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [expr; 3], "plane": datum plane id or name, "step": [expr; 3] (a circular pattern: expr along its axis, or null for a plain turn), "count": expr, "keep": boolean, "keepTool": boolean, "edges": [[face name, face name], ...], "second": expr, "chain": boolean, "faces": [face name, ...], "thickness": expr, "side": "outside|inside|both" (a plate's: "in|out|mid"), "neutral": plane, "open": [face name, ...], "pitch": expr (or null for a thread: the coarse pitch of its size), "turns": expr, "leftHanded": boolean, "length": expr, "cosmetic": boolean, "modeled": boolean, "a": sketch or {edges}, "b": sketch or {edges}, "at": [expr; 3], "joints": [joint, ...] (a plate's, as feature.plate takes them), "u": [curve, ...], "v": [curve, ...], "acrossDegree": 3 or 5 or null (a network surface's; null is the default, 3; its "edges" are its conditions, as feature.surface.network takes them)}"#,
+    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "sketch": id or name, "path": id or name, "sections": [sketch, or {sketch, start}; ...], "ruled": boolean, "closed": boolean, "source": id or name, "target": id or name, "tool": id or name, "op": "union|subtract|intersect", "size": [expr; 3] or a thread's "M10" or expr or null, "position": [expr; 3], "axis": [expr; 3] or datum axis or "x|y" or line id, "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "throughAll": boolean, "upTo": face name, "wrap": face name, "symmetric": boolean, "reversed": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [expr; 3], "plane": datum plane id or name, "step": [expr; 3] (a circular pattern: expr along its axis, or null for a plain turn), "count": expr, "keep": boolean, "keepTool": boolean, "edges": [[face name, face name], ...], "second": expr, "chain": boolean, "faces": [face name, ...], "thickness": expr, "side": "outside|inside|both" (a plate's: "in|out|mid"), "neutral": plane, "open": [face name, ...], "pitch": expr (or null for a thread: the coarse pitch of its size), "turns": expr, "leftHanded": boolean, "length": expr, "cosmetic": boolean, "modeled": boolean, "a": sketch or {edges}, "b": sketch or {edges}, "at": [expr; 3], "joints": [joint, ...] (a plate's, as feature.plate takes them), "u": [curve, ...], "v": [curve, ...], "acrossDegree": 3 or 5 or null (a network surface's; null is the default, 3; its "edges" are its conditions, as feature.surface.network takes them), "points": [[[x, y, z], ...], ...], "table": table name, "origin": [expr; 3], "factor": expr, "spacing": "greville|chord|even" (a grid surface's, as feature.surface.grid takes them; its "step" is [x, y])}"#,
         "Changes parameters of a feature; give only the ones to change. Which ones a feature has depends on its kind (document.inspect shows them under params). The end of an extrusion is changed by giving the new one: distance, throughAll, upTo or wrap (a wrapped extrusion keeps its face when only distance, its depth, is given). A mirror is pointed at a datum plane with plane, and back at a plane of its own with normal or point; a circular pattern at a datum axis with axis (its name or id), and back at a line of its own with axis as a direction or point; a circular pattern becomes a screw with step (one length along the axis) and a plain turn again with step null. What a feature is made from is changed the same way, which is how a feature that lost it is repaired: sketch for an extrusion, a revolution or a sweep (its profile), path for a sweep, axis for a revolution (x, y, a line of the sketch or a datum axis), source for a moved, mirrored or patterned body, target, tool and op for a boolean, edges for a chamfer or a fillet (which is also how its body is chosen: the body of the feature the faces are of); the feature keeps its id and its place in the history, and the names of its faces are those of a feature built that way from the start. A chamfer's size: distance alone changes the first distance and keeps the form; with second it becomes two distances, with angle a distance and an angle (give second the same as distance for equal ones). A fillet's radius is changed with radius. An offset's faces and distance are changed with faces and distance (the faces also choose its body, as the edges of a chamfer do), a moved face's with faces, translate, pivot, axis and angle, a thickened one's with faces, thickness and side, a plate's with faces, thickness, side and joints (the whole list), a draft's with faces, neutral, angle and reversed, a deletion's faces with faces; a shell's with source, thickness and open. A datum plane's distance or angle and the position of a datum point at coordinates are changed here; what a datum is placed by, with datum.plane, datum.axis or datum.point and replace.", doc: true, names: ["upTo", "wrap", "edges", "faces", "neutral", "open", "plane", "joints"], feature_edit),
     spec!("feature.rename", "Rename Feature", r#"{"feature": id or name, "name": string}"#,
         "Renames a feature.", doc: true, feature_rename),
@@ -103,7 +103,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("document.inspect", "Inspect", r#"{"measures": boolean = true, "named": boolean = false, "inertia": boolean = true, "wait": boolean = false}"#,
         "Returns the whole document state; assertions still being measured in the background are pending, with whenPending saying so (wait: true waits for them, up to 60 s) (with named: true each feature's parameters also under named, in the commands' words: keys as the commands spell them, keepTool, and features by name, where they differ from params): units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (volume, area, centroid; with a material: mass and inertia) and bbox, appearance and material, faceColors (how many colours of their own its faces carry, wherever along its history they were given, that colour this body alone: what face.appearance {body, clear: true} clears) and sharedFaceColors with sharedWith (how many colour a face of another body too, and those bodies: cleared by their own names where they were given), each only when there are any, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), faceAppearances (the colours face.appearance gave single faces) and lostFaces (those whose face an edit took away, which colour nothing), inserted (when there are any: each feature inserted at the rollback marker that took a body, with repointed: [{feature, param, was}], the parameters of later features it pointed at itself and the feature each named before; a parameter pointed elsewhere by a command since is dropped from it, as the user's own choice), assertions (when there are any: each with status passed, failed, notProven, error or pending (still being measured after two seconds), what was measured and what was expected, as assert.list), undo history. With measures: false the bodies are listed without what takes measuring them (volume, area, centroid, mass, inertia, bbox and bboxTolerance; a body with a spline face can take seconds the first time), the rest as always: the quick way to read the features, their status and the face names of a large model. inertia: false measures the bodies but leaves out each body's inertia (and does not integrate it), its mass then its volume times its density: what a viewer listing volumes and masses needs.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false, "feature": id or name = every feature}"#,
-        "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies, each body held to the document's cap on any entity's own tolerance, broken assertions, and a sketch line the solver shrank to a point under two directions or more (horizontal and vertical, or a direction and a perpendicular or an angle: a contradiction it reports as holding; with line and constraints). ok is true when there is none. warnings (never part of ok), each with kind: assertion (one not proven either way), collapsedLine (a line with no length under one direction), pointOffArc (a point held on an arc by pointOn that lies on its circle beyond its ends, so the arc does not pass through it: an arc drawn through a point turns the long way round once the point crosses the line through its ends; with feature, point, arc and constraint), lostFace (a face colour whose face is gone: it colours nothing, as lostFaces in document.inspect says, with feature and face), underConstrained (one entry for every sketch with degrees of freedom left, listed under sketches with feature, name and dof), plainAngle (a parameter read as an angle, in a document whose angle unit is degrees, whose value is a plain number with a pi in it that has no unit and is not inside sin, cos or tan, itself or in a variable it uses: `2 * pi / n` is a few degrees there; with feature, name, parameter and expr; the value is kept). loose lists the bodies with entities that have a tolerance of their own (edges, vertices, the largest), when there are. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal; and for two shells of a body that touch at a vertex or the middle of an edge (zero thickness). deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked), and meshes every body with loose entities at a thousandth of its size, every point of a face's mesh on its surface or, on its boundary, within the tolerance of the edge or vertex it lies on (counted under looseMeshesChecked).", doc: true, document_check),
+        "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies, each body held to the document's cap on any entity's own tolerance, broken assertions, and a sketch line the solver shrank to a point under two directions or more (horizontal and vertical, or a direction and a perpendicular or an angle: a contradiction it reports as holding; with line and constraints). ok is true when there is none. warnings (never part of ok), each with kind: assertion (one not proven either way), collapsedLine (a line with no length under one direction), pointOffArc (a point held on an arc by pointOn that lies on its circle beyond its ends, so the arc does not pass through it: an arc drawn through a point turns the long way round once the point crosses the line through its ends; with feature, point, arc and constraint), lostFace (a face colour whose face is gone: it colours nothing, as lostFaces in document.inspect says, with feature and face), gridSurface (what a grid surface's result warns of as it stands now: a sheet with more spans than a boolean takes, heights far steeper than the step, a grid far from the origin; with feature and name), underConstrained (one entry for every sketch with degrees of freedom left, listed under sketches with feature, name and dof), plainAngle (a parameter read as an angle, in a document whose angle unit is degrees, whose value is a plain number with a pi in it that has no unit and is not inside sin, cos or tan, itself or in a variable it uses: `2 * pi / n` is a few degrees there; with feature, name, parameter and expr; the value is kept). loose lists the bodies with entities that have a tolerance of their own (edges, vertices, the largest), when there are. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal; and for two shells of a body that touch at a vertex or the middle of an edge (zero thickness). deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked), and meshes every body with loose entities at a thousandth of its size, every point of a face's mesh on its surface or, on its boundary, within the tolerance of the edge or vertex it lies on (counted under looseMeshesChecked).", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies, "bound": boolean = false, "inertia": boolean = true}"#,
         "Returns volume, area and centroid, per body and in total, in document units. With bound also volumeBound and areaBound, per body and summed: how far the volume and the area can be off by the integrator's own account (every sum refined until two in a row agree; an estimate, not a guarantee). A body with a material (body.material) also has its mass (kg) and its inertia tensor about its centroid (kg times the length unit squared, along the model's axes), and its appearance (body.appearance); the total has the mass when every body has one. inertia: false leaves the inertia out and does not integrate it (on a body with large spline faces that takes seconds): the mass is then the measured volume times the density.", doc: true, document_measure),
     spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the picture's, "background": "light|dark" = "light", "look": {mode: "plain|studio" = "studio", environment: "studio|outdoor|workshop" = "studio", exposure: stops = 0, rotation: degrees = 0, ground: boolean = true, ao: boolean = true, shadows: boolean = true, tonemap: "agx|aces|linear" = "agx", light: [azimuth, elevation] = the environment's, background: "environment|plain" = "environment", reflections: boolean = true, contactShadows: boolean = true, specularShadow: boolean = true, groundReflection: 0 to 1 = 0, bloom: 0 to 1 = 0.04, dof: {fstop: positive f-number, clamped to 0.5 to 64 = 2.8, focus: distance or [x, y, z] or "selection" (the centre of the box of the session's selection, select.get; the model's centre when nothing is selected) or "centre" = "centre"} = null, accumulate: frames 1 to 256 = 1} = the plain look, "analysis": {mode: "zebra|highlight|curvature|draft|none" = "none", stripes: 1 to 512 = 16, direction: degrees = 0, width: 0 to 1 = 0.5, offset: periods = 0, pull: [x, y, z] = [0, 0, 1], minDraft: degrees = 1, curvature: "gaussian|mean|max" = "gaussian", range: [low, high] = from the values, combs: {edges: boolean or [edge name, ...], iso: [{face, feature, u or v from 0 to 1}], scale: number = automatic, density: 2 to 400 = 40} = null} = none, "renderer": "auto|cpu|gpu" = "auto", "camera": {eye, target, up, projection, fovY, height} = framed by view, projection, zoom and box}"#,
@@ -2590,7 +2590,7 @@ fn symmetric_fits(end: &ExtrudeEnd, symmetric: bool, command: &str) -> Result<()
 /// The parameters of a thread that `feature.edit` takes as null.
 const THREAD_NULLS: [&str; 2] = ["size", "pitch"];
 
-const EDITABLE: [&str; 65] = [
+const EDITABLE: [&str; 70] = [
     "sketch",
     "sections",
     "ruled",
@@ -2656,6 +2656,11 @@ const EDITABLE: [&str; 65] = [
     "rail",
     "scale",
     "up",
+    "points",
+    "table",
+    "origin",
+    "factor",
+    "spacing",
 ];
 
 fn feature_edit(session: &mut Session, params: &Value) -> Run {
@@ -2688,6 +2693,16 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
             .feature(id)
             .map(|f| &f.kind),
         Some(FeatureKind::SurfaceNetwork(_))
+    );
+    // A grid surface's step is two lengths, checked with the kind.
+    let is_grid = matches!(
+        session
+            .document()?
+            .history
+            .current()
+            .feature(id)
+            .map(|f| &f.kind),
+        Some(FeatureKind::SurfaceGrid(_))
     );
     // Validate the shape of everything given before touching anything.
     // An axis given as a string is a datum axis, for a circular pattern.
@@ -2813,7 +2828,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         }
         // The step of a circular pattern is one length along its axis
         // (a screw), checked with the kind.
-        if key == "step" && circular {
+        if key == "step" && (circular || is_grid) {
             continue;
         }
         // The size of a thread is a designation (`M10`), checked with
@@ -3017,6 +3032,17 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                 ("holes", Slot::Elsewhere),
                 ("space", Slot::Elsewhere),
                 ("along", Slot::Elsewhere),
+            ],
+        ),
+        FeatureKind::SurfaceGrid(_) => (
+            "grid surface",
+            vec![
+                ("points", Slot::Elsewhere),
+                ("table", Slot::Elsewhere),
+                ("origin", Slot::Elsewhere),
+                ("step", Slot::Elsewhere),
+                ("factor", Slot::Elsewhere),
+                ("spacing", Slot::Elsewhere),
             ],
         ),
         FeatureKind::SurfaceNsided(_) => (
@@ -3428,6 +3454,10 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
             let doc = session.document()?.history.current();
             crate::trimfill_cmds::edit_nsided(doc, &p, fill)?;
         }
+        FeatureKind::SurfaceGrid(grid) => {
+            let doc = session.document()?.history.current();
+            crate::surface_cmds::edit_grid(doc, &p, grid)?;
+        }
         FeatureKind::Unfold(pattern) => {
             if let Some(value) = p.get("faces") {
                 pattern.faces =
@@ -3616,6 +3646,23 @@ fn history_rollback(session: &mut Session, params: &Value) -> Run {
 }
 
 // --------------------------------------------------------------- document
+
+/// What `document.inspect` says of the open document `open` (at `index`)
+/// in this session rather than of its design: its place among the open
+/// documents, its file, its unsaved mark and its undo history. A copy run
+/// elsewhere (`commands_elsewhere.rs`) has none of them, so its answer
+/// takes these from the session that asked.
+pub(crate) fn session_fields(open: &crate::OpenDocument, index: usize) -> Value {
+    json!({
+        "document": index,
+        "path": open.path,
+        "dirty": open.dirty(),
+        "history": {
+            "undo": open.history.undo_labels().collect::<Vec<_>>(),
+            "redo": open.history.redo_labels().collect::<Vec<_>>(),
+        },
+    })
+}
 
 fn document_inspect(session: &mut Session, params: &Value) -> Run {
     let p = Params::new(
@@ -3889,9 +3936,6 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         .collect();
     let lost_faces = crate::appearance_cmds::lost_faces_json(doc, &regen);
     let mut out = json!({
-        "document": index,
-        "path": open.path,
-        "dirty": open.dirty(),
         "units": { "length": unit, "angle": match doc.units.angle {
             craft3d_doc::AngleUnit::Degree => "deg",
             craft3d_doc::AngleUnit::Radian => "rad",
@@ -3907,14 +3951,15 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         "rollback": doc.rollback.map(|id| id.to_string()),
         "bodies": bodies,
         "ok": regen.is_ok(),
-        "history": {
-            "undo": open.history.undo_labels().collect::<Vec<_>>(),
-            "redo": open.history.redo_labels().collect::<Vec<_>>(),
-        },
     });
     // The colours given to single faces, and those whose face is gone:
     // only when there are any.
     if let Some(map) = out.as_object_mut() {
+        // What this session knows of the document (also put over the
+        // answer of a copy elsewhere, `commands_elsewhere.rs`).
+        if let Value::Object(fields) = session_fields(open, index) {
+            map.extend(fields);
+        }
         if !face_colors.is_empty() {
             map.insert("faceAppearances".into(), face_colors.into());
         }
@@ -4426,6 +4471,28 @@ pub(crate) fn check_document(
                 "face": lost.get("face"),
                 "warning": lost.get("notice"),
             }));
+        }
+    }
+    // What a grid surface warned of when it was built (a sheet larger than
+    // a boolean takes, heights far steeper than the step, a grid far from
+    // the origin), as its regeneration has it now: also when a variable,
+    // a table or a reopened file brought it about.
+    for outcome in &regen.features {
+        if only.is_some_and(|id| id != outcome.id) {
+            continue;
+        }
+        if let Some(craft3d_regen::Developed::Grid(made)) = &outcome.developed {
+            let name = doc
+                .feature(outcome.id)
+                .map_or_else(|| outcome.id.to_string(), |f| f.name.clone());
+            for warning in &made.warnings {
+                sketch_warnings.push(json!({
+                    "kind": "gridSurface",
+                    "feature": outcome.id.to_string(),
+                    "name": name,
+                    "warning": warning,
+                }));
+            }
         }
     }
     // Broken assertions are problems of the design, like failed

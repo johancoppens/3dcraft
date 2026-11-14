@@ -346,6 +346,60 @@ fn the_controls_answer_clicks() {
     assert!(!open, "choosing an item closes the context menu");
 }
 
+/// Round 3 of Embed's review (2026-11-14): an Escape with a dropdown open
+/// in the export dialog closed the list and the dialog at once. Escape
+/// closes the list and is used up by it, so what the list is in (a
+/// dialog) sees no Escape in that frame and stays, for the next one.
+#[test]
+fn escape_closes_a_dropdown_and_is_used_up_by_it() {
+    let tokens = Tokens::light();
+    let kit = Kit::panel(&tokens);
+    let ctx = egui::Context::default();
+    tokens.apply(&ctx);
+    let mut pick = 0;
+    let mut field = Rect::NOTHING;
+    let options = ["DXF", "SVG"];
+    click_frames(&ctx, None, PointerButton::Primary, |ui| {
+        field = kit.dropdown(ui, "format", &mut pick, &options, 150.0).rect;
+    });
+    click_frames(&ctx, Some(field.center()), PointerButton::Primary, |ui| {
+        kit.dropdown(ui, "format", &mut pick, &options, 150.0);
+    });
+    let list_shown = |ctx: &egui::Context| {
+        ctx.memory(|m| {
+            m.areas()
+                .visible_layer_ids()
+                .iter()
+                .any(|layer| layer.order == egui::Order::Foreground)
+        })
+    };
+    assert!(list_shown(&ctx), "the list is open");
+    let escape = |pressed| Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers: Default::default(),
+    };
+    let mut seen_after = None;
+    for events in [
+        vec![escape(true)],
+        vec![escape(false)],
+        Vec::new(),
+        Vec::new(),
+    ] {
+        let _ = run(&ctx, input([600.0, 400.0], events), |ui| {
+            kit.dropdown(ui, "format", &mut pick, &options, 150.0);
+            // What the dialog round the list reads after it.
+            let pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            seen_after.get_or_insert(pressed);
+        });
+    }
+    assert_eq!(seen_after, Some(false), "the list used the Escape up");
+    assert!(!list_shown(&ctx), "the list closed");
+    assert_eq!(pick, 0, "nothing chosen");
+}
+
 /// Hostile values draw without a panic: a slider at NaN or with an empty
 /// range, a field narrower than nothing, an empty list, a choice beyond
 /// the options.

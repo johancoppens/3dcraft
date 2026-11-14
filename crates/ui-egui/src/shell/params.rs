@@ -48,6 +48,14 @@ const STEPPER_MOST: f64 = 12.0;
 const NO_PARAMETERS: &str =
     "No parameters. Publish a variable (variable.publish) to make this document a Jig.";
 
+/// The area of the banner of a value that breaks the model: it stays over
+/// the view, Escape does not close it (`Shell::escape_has_work`).
+pub(super) const TROUBLE_ID: &str = "craft3d-param-trouble";
+
+/// What the `form` presentation (a page's visitor) says of a document
+/// without public parameters.
+const NO_PARAMETERS_TO_SET: &str = "This model has no parameters to set.";
+
 /// What kind of value a parameter holds (`param.list` `kind`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ParamKind {
@@ -1522,6 +1530,29 @@ impl Shell {
         self.side_tabs(ui, has_document, jig, joints);
     }
 
+    /// The side panel of the `form` presentation (Embed): the Parameters
+    /// tab alone, its header naming it as on a phone's sheet (there is no
+    /// tab row), with an assembly's joints above it; the form's own text
+    /// for a document without public parameters.
+    pub(super) fn form_panel(&mut self, ui: &mut egui::Ui, has_document: bool) {
+        if !has_document {
+            self.parameters_hidden();
+            return;
+        }
+        let jig = self.params.list.as_ref().is_some_and(|l| l.jig);
+        let joints = self.has_joint_sliders();
+        if joints {
+            self.joints_ui(ui);
+        }
+        if jig || !joints {
+            self.params.in_sheet = true;
+            self.parameters_tab(ui);
+            self.params.in_sheet = false;
+        } else {
+            self.parameters_hidden();
+        }
+    }
+
     /// The Parameters tab is not shown: none of its fields are hit.
     pub(super) fn parameters_hidden(&mut self) {
         self.params.hits.clear();
@@ -1691,7 +1722,13 @@ impl Shell {
             return;
         };
         if !list.jig {
-            ui.add(egui::Label::new(egui::RichText::new(NO_PARAMETERS).color(dim)).wrap());
+            // A page's visitor is not told how to publish a variable.
+            let text = if self.state.presentation.is_full() {
+                NO_PARAMETERS
+            } else {
+                NO_PARAMETERS_TO_SET
+            };
+            ui.add(egui::Label::new(egui::RichText::new(text).color(dim)).wrap());
             return;
         }
         // The form keeps clear of the split on its right as it does of
@@ -1830,8 +1867,9 @@ impl Shell {
                     self.params.ask(json!({ "reset": true }), None);
                 }
                 // A Jig in use changes only through its parameters;
-                // editing it takes a model of its own.
-                if self.jig_in_use() {
+                // editing it takes a model of its own (not offered in a
+                // page's form, where the page decides what is opened).
+                if self.jig_in_use() && self.state.presentation.is_full() {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         self.open_for_editing_button(ui);
                     });
@@ -1915,7 +1953,7 @@ impl Shell {
         let at = egui::pos2(left, top);
         let mut back = None;
         let kit = crate::kit::Kit::plate(&tokens);
-        let shown = egui::Area::new(egui::Id::new("craft3d-param-trouble"))
+        let shown = egui::Area::new(egui::Id::new(TROUBLE_ID))
             .order(egui::Order::Foreground)
             // Shown at once, in full: a fade would wait for frames an
             // idle window does not draw.

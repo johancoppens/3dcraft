@@ -657,6 +657,73 @@ fn the_weight_of_the_measuring_chapter_is_as_it_says() {
     assert_eq!(checked["failed"], 1, "{checked}");
 }
 
+/// The grid of the surfaces chapter (`surfaces.md` › *Surfaces through a
+/// grid of points*) builds as written and is what the text says: a sheet
+/// `F1:face(0)` through the table's heights at its default spacing, even
+/// (kept with the feature), the block under it 12 450 mm³, more when
+/// `lift` raises the hill, less when the table lowers it.
+#[test]
+fn the_grid_of_the_surfaces_chapter_is_as_it_says() {
+    let text = read_text(&docs().join("guide/surfaces.md"));
+    for said in ["12 450 mm³", "`F1:face(0)`"] {
+        assert!(text.contains(said), "the page says {said}");
+    }
+    let block = json_blocks(&text)
+        .into_iter()
+        .find(|b| b.contains("feature.surface.grid"))
+        .expect("the chapter has a block with a grid");
+    let steps = steps(&serde_json::from_str(&block).unwrap()).unwrap();
+    let mut s = Session::new(craft3d_engine::Workspace::unrestricted());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    for (id, params) in steps {
+        let made = run(&mut s, &id, params);
+        if id.starts_with("feature.") {
+            assert_eq!(made["status"], "ok", "{id}: {made}");
+        }
+    }
+    let base = |s: &mut Session| {
+        let document = run(s, "document.inspect", json!({}));
+        let bodies = document["bodies"].as_array().unwrap().clone();
+        let sheet = bodies.iter().find(|b| b["name"] == "Hill").cloned();
+        let base = bodies.iter().find(|b| b["name"] == "Base").unwrap().clone();
+        (sheet, base)
+    };
+    let (sheet, solid) = base(&mut s);
+    // The block took the sheet; its top face is the sheet's.
+    assert!(sheet.is_none(), "{sheet:?}");
+    assert!(
+        solid["faceNames"].to_string().contains("F1:face(0)"),
+        "{solid}"
+    );
+    let volume = solid["volume"].as_f64().unwrap();
+    assert!((volume - 12_450.0).abs() < 1e-6, "{volume}");
+    let document = run(&mut s, "document.inspect", json!({}));
+    let hill = document["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "Hill")
+        .unwrap()
+        .clone();
+    assert_eq!(hill["params"]["spacing"], "even", "{hill}");
+    run(&mut s, "variable.set", json!({"name": "lift", "expr": "3"}));
+    let (_, higher) = base(&mut s);
+    assert!(
+        higher["volume"].as_f64().unwrap() > volume + 100.0,
+        "{higher}"
+    );
+    run(
+        &mut s,
+        "table.set",
+        json!({"name": "heights", "columns": ["row", "a", "b", "c", "d", "e"], "rows": [[1, 0, 0, 0, 0, 0], [2, 0, 1, 1, 1, 0], [3, 0, 1, 1, 1, 0], [4, 0, 0, 0, 0, 0]]}),
+    );
+    let (_, lower) = base(&mut s);
+    assert!(
+        lower["volume"].as_f64().unwrap() < volume - 1000.0,
+        "{lower}"
+    );
+}
+
 /// The hull of the engineering chapter (`engineering-checks.md` ›
 /// *Stability as outputs*) runs as written and says what the text says:
 /// the box hull's GM is 65 mm, the assertion on it passes, and with KG at

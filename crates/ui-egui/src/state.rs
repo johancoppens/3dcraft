@@ -1017,6 +1017,53 @@ pub struct UiState {
     /// The side panel's filters, folds, hover and menu
     /// (`shell/sidepanel`).
     pub side_panel: SidePanelView,
+    /// How much of the window is drawn: all of it (the default), the 3D
+    /// view alone, or a Jig's form beside it. Set by the page that embeds
+    /// the web build (Embed, experimental); `ui.set {"presentation":
+    /// "view"}` sets it on every transport. Not written while it is the
+    /// default, so the state reads as it did before it existed.
+    #[serde(skip_serializing_if = "Presentation::is_full")]
+    pub presentation: Presentation,
+}
+
+/// How much of the window the shell draws ([`UiState::presentation`]):
+/// a setting, not a build (Embed, experimental; docs/control-protocol.md ›
+/// *The page as a transport*). A presentation without a canvas at all
+/// (`none`, the engine alone) is for later; the names are lower case.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Presentation {
+    /// The whole window: menus, tabs, the side panel, the status bar.
+    #[default]
+    Full,
+    /// The 3D view with its view cube and its controls: no menu, no tabs,
+    /// no side panel, no status bar, no start screen.
+    View,
+    /// A Jig's parameter form and its outputs beside the view (an
+    /// assembly's joints too): no menu, no tabs, no status bar.
+    Form,
+}
+
+impl Presentation {
+    /// True for the whole window, the default.
+    pub fn is_full(&self) -> bool {
+        *self == Presentation::Full
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Presentation::Full => "full",
+            Presentation::View => "view",
+            Presentation::Form => "form",
+        }
+    }
+
+    /// The presentation named `name` (`full`, `view`, `form`).
+    pub fn from_name(name: &str) -> Option<Self> {
+        [Presentation::Full, Presentation::View, Presentation::Form]
+            .into_iter()
+            .find(|p| p.name() == name)
+    }
 }
 
 /// Which colours the panels have (`theme::Palette`): the system's choice
@@ -1887,6 +1934,10 @@ mod tests {
                 mate: Some("Drive".to_string()),
                 mate_hover: None,
             },
+            // Added with Embed (2026-11-14): the default is not written,
+            // so this state's JSON is the one from before
+            // (`a_presentation_other_than_full_is_written_and_read_back`).
+            presentation: Presentation::Full,
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -1951,6 +2002,39 @@ mod tests {
         let text = serde_json::to_string(&default).unwrap();
         assert_eq!(serde_json::from_str::<UiState>(&text).unwrap(), default);
         assert_eq!(serde_json::from_str::<UiState>("{}").unwrap(), default);
+    }
+
+    /// The presentation (Embed, 2026-11-14): `full` is the default and is
+    /// not written, so a state reads as before; `view` and `form` are
+    /// written, read back and set by a patch; anything else is refused
+    /// with nothing changed.
+    #[test]
+    fn a_presentation_other_than_full_is_written_and_read_back() {
+        let default = serde_json::to_value(UiState::default()).unwrap();
+        assert!(default.get("presentation").is_none(), "{default}");
+        for (name, presentation) in [("view", Presentation::View), ("form", Presentation::Form)] {
+            let mut state = UiState::default();
+            state.apply_patch(&json!({ "presentation": name })).unwrap();
+            assert_eq!(state.presentation, presentation);
+            assert_eq!(Presentation::from_name(name), Some(presentation));
+            assert_eq!(presentation.name(), name);
+            let json = serde_json::to_value(&state).unwrap();
+            assert_eq!(json["presentation"], name);
+            assert_eq!(serde_json::from_value::<UiState>(json).unwrap(), state);
+        }
+        let mut state = UiState::default();
+        state.apply_patch(&json!({"presentation": "form"})).unwrap();
+        state.apply_patch(&json!({"presentation": "full"})).unwrap();
+        assert_eq!(state, UiState::default());
+        for bad in [json!("none"), json!("View"), json!(3), json!(null)] {
+            let mut state = UiState::default();
+            assert!(
+                state.apply_patch(&json!({ "presentation": bad })).is_err(),
+                "{bad}"
+            );
+            assert_eq!(state, UiState::default());
+        }
+        assert_eq!(Presentation::from_name("none"), None);
     }
 
     /// A tab's view is the document's part of the state, and putting it

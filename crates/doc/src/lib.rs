@@ -905,6 +905,158 @@ impl SurfaceNsided {
     }
 }
 
+/// Most points one grid surface holds (`craft3d_geom::grid::MAX_GRID_POINTS`).
+pub const MAX_GRID_POINTS: usize = 1 << 18;
+
+/// Most points along one side of a grid surface
+/// (`craft3d_geom::grid::MAX_GRID_SIDE`).
+pub const MAX_GRID_SIDE: usize = 1 << 10;
+
+/// A sheet through an `m × n` grid of points, passing through every one
+/// (docs/design/surfacing.md › *A sheet through a grid of points*): the
+/// parameter along a row from its first point to its last, across the rows
+/// from the first row to the last. `spacing` sets the parameters it takes
+/// the points at; it is always stored, so a file never depends on a
+/// default (the command's are even for a table, chord for points given).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceGrid {
+    pub points: GridPoints,
+    pub spacing: GridSpacing,
+}
+
+/// The parameters a grid surface takes its points at, one set each way
+/// (docs/design/surfacing.md › *A sheet through a grid of points*): a live
+/// spline's two (greville, chord) and even, which a spline does not offer.
+/// No default here: the command chooses one by the form of the points
+/// (the developer, 2026-11-14), and the document keeps what it chose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GridSpacing {
+    /// Uniform knots, each point at its control point's Greville abscissa.
+    Greville,
+    /// Each row's chord lengths averaged over the rows, on averaged knots.
+    Chord,
+    /// Evenly spaced parameters on averaged knots: over a regular grid the
+    /// textbook bicubic spline of its heights.
+    Even,
+}
+
+impl GridSpacing {
+    /// The spacing's name, as a command and a file write it.
+    pub fn name(&self) -> &'static str {
+        match self {
+            GridSpacing::Greville => "greville",
+            GridSpacing::Chord => "chord",
+            GridSpacing::Even => "even",
+        }
+    }
+
+    /// The names of every spacing, as a command lists them.
+    pub const NAMES: &'static str = "greville, chord or even";
+
+    /// The spacing a command or a file names.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "greville" => Some(GridSpacing::Greville),
+            "chord" => Some(GridSpacing::Chord),
+            "even" => Some(GridSpacing::Even),
+            _ => None,
+        }
+    }
+}
+
+/// Where the points of a grid surface come from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "from")]
+pub enum GridPoints {
+    /// Rows of points, each coordinate an expression of a length.
+    Given { rows: Vec<Vec<[Expr; 3]>> },
+    /// A regular grid whose heights are the numbers of a table: row `r` of
+    /// the table is row `r` of the grid, at `y = origin.y + r · step.y`; its
+    /// columns other than the key, in order, are the grid's columns, column
+    /// `c` at `x = origin.x + c · step.x`; a point stands at `z = origin.z +
+    /// cell · factor`, which must be a length (the cell in its column's
+    /// unit, times `factor`).
+    Table {
+        table: String,
+        origin: [Expr; 3],
+        step: [Expr; 2],
+        factor: Expr,
+    },
+}
+
+impl SurfaceGrid {
+    /// How many rows and points per row it gives, as stored: `None` for
+    /// the table form, whose size the table decides.
+    pub fn given_size(&self) -> Option<(usize, usize)> {
+        match &self.points {
+            GridPoints::Given { rows } => {
+                Some((rows.len(), rows.iter().map(Vec::len).max().unwrap_or(0)))
+            }
+            GridPoints::Table { .. } => None,
+        }
+    }
+
+    /// The table it reads its heights from, if any.
+    pub fn table(&self) -> Option<&str> {
+        match &self.points {
+            GridPoints::Table { table, .. } => Some(table),
+            GridPoints::Given { .. } => None,
+        }
+    }
+
+    fn exprs(&self) -> Vec<(String, &Expr)> {
+        match &self.points {
+            GridPoints::Given { rows } => {
+                let mut out = Vec::with_capacity(rows.iter().map(Vec::len).sum::<usize>() * 3);
+                for (r, row) in rows.iter().enumerate() {
+                    for (c, point) in row.iter().enumerate() {
+                        for (e, axis) in point.iter().zip(["x", "y", "z"]) {
+                            out.push((format!("points[{r}][{c}].{axis}"), e));
+                        }
+                    }
+                }
+                out
+            }
+            GridPoints::Table {
+                origin,
+                step,
+                factor,
+                ..
+            } => {
+                let mut out: Vec<(String, &Expr)> = origin
+                    .iter()
+                    .zip(["x", "y", "z"])
+                    .map(|(e, axis)| (format!("origin.{axis}"), e))
+                    .collect();
+                out.extend(
+                    step.iter()
+                        .zip(["x", "y"])
+                        .map(|(e, axis)| (format!("step.{axis}"), e)),
+                );
+                out.push(("factor".to_string(), factor));
+                out
+            }
+        }
+    }
+
+    fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+        match &mut self.points {
+            GridPoints::Given { rows } => rows.iter_mut().flatten().flatten().collect(),
+            GridPoints::Table {
+                origin,
+                step,
+                factor,
+                ..
+            } => origin
+                .iter_mut()
+                .chain(step.iter_mut())
+                .chain([factor])
+                .collect(),
+        }
+    }
+}
+
 /// Faces of an earlier body laid flat as one piece, a flat sheet of its
 /// own in the plane `z = at.z`: the first face's first vertex at `at`,
 /// that vertex's first edge along +x turned by `angle` about +z. The
@@ -1467,6 +1619,7 @@ pub enum FeatureKind {
     SurfaceNetwork(SurfaceNetwork),
     SurfaceTrim(SurfaceTrim),
     SurfaceNsided(SurfaceNsided),
+    SurfaceGrid(SurfaceGrid),
 }
 
 impl FeatureKind {
@@ -1508,6 +1661,7 @@ impl FeatureKind {
             FeatureKind::SurfaceNetwork(_) => "surfaceNetwork",
             FeatureKind::SurfaceTrim(_) => "surfaceTrim",
             FeatureKind::SurfaceNsided(_) => "surfaceNsided",
+            FeatureKind::SurfaceGrid(_) => "surfaceGrid",
             FeatureKind::Unfold(_) => "unfold",
             FeatureKind::Import(_) => "import",
             FeatureKind::Fold(_) => "fold",
@@ -1657,6 +1811,7 @@ impl FeatureKind {
             | FeatureKind::SurfaceNetwork(_)
             | FeatureKind::SurfaceTrim(_)
             | FeatureKind::SurfaceNsided(_)
+            | FeatureKind::SurfaceGrid(_)
             | FeatureKind::Import(_) => None,
         }
     }
@@ -1719,6 +1874,7 @@ impl FeatureKind {
             FeatureKind::SurfaceNetwork(n) => n.inputs(),
             FeatureKind::SurfaceTrim(t) => t.inputs(),
             FeatureKind::SurfaceNsided(n) => n.inputs(),
+            FeatureKind::SurfaceGrid(_) => Vec::new(),
             FeatureKind::Developable(d) => {
                 let mut out = d.a.inputs();
                 for id in d.b.inputs() {
@@ -1841,6 +1997,7 @@ impl FeatureKind {
                 out = triple("at", &u.at);
                 out.push(named("angle", &u.angle));
             }
+            FeatureKind::SurfaceGrid(g) => out = g.exprs(),
             FeatureKind::SurfaceTrim(t) => {
                 out = match &t.along {
                     Some(along) => triple("along", along),
@@ -2018,6 +2175,7 @@ impl FeatureKind {
             | FeatureKind::Developable(_)
             | FeatureKind::Import(_) => Vec::new(),
             FeatureKind::Unfold(u) => u.at.iter_mut().chain([&mut u.angle]).collect(),
+            FeatureKind::SurfaceGrid(g) => g.exprs_mut(),
             FeatureKind::SurfaceTrim(t) => match &mut t.along {
                 Some(along) => along.iter_mut().collect(),
                 None => Vec::new(),
@@ -2651,6 +2809,26 @@ impl Document {
                     }
                     names.extend(n.edges.iter().filter_map(EdgeHold::face));
                     names
+                }
+                FeatureKind::SurfaceGrid(grid) => {
+                    // What a hand-edited file may make regeneration
+                    // allocate; the rest of its shape is checked there.
+                    if let Some((rows, widest)) = grid.given_size() {
+                        let points: usize = match &grid.points {
+                            GridPoints::Given { rows } => rows.iter().map(Vec::len).sum(),
+                            GridPoints::Table { .. } => 0,
+                        };
+                        if rows > MAX_GRID_SIDE
+                            || widest > MAX_GRID_SIDE
+                            || points > MAX_GRID_POINTS
+                        {
+                            return Err(DocError::Invalid(format!(
+                                "`{}` has {points} points in {rows} rows of up to {widest}; a grid holds at most {MAX_GRID_POINTS} points, at most {MAX_GRID_SIDE} a side",
+                                feature.name
+                            )));
+                        }
+                    }
+                    Vec::new()
                 }
                 FeatureKind::Loft(loft) => {
                     if loft.guides.len() > MAX_NETWORK_CURVES {

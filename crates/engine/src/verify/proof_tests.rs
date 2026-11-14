@@ -263,3 +263,69 @@ fn a_rational_sphere_face_is_proven_to_its_distance_without_a_normal_cone() {
         assert!(gap - proven <= 1e-6 * gap, "at {k}: proven only {proven}");
     }
 }
+
+/// The work of a proof is bounded by count where a pair of pieces is
+/// dear, not only by its pairs. A cone 4 by 12 cut by a plane 0.0004
+/// beside its axis (it keeps its apex; the cut is a spline edge a hair
+/// from it) and a block 0.5 over the apex: the value found, 0.5012, is at
+/// the cut's top, so the proof is held to a bound out of reach (the
+/// truth is 0.5, at the apex) and ends only with its work; and telling
+/// one piece by the apex in from out of the face costs the kernel some
+/// hundred thousand evaluations of that edge. With the telling unbounded
+/// a fiftieth of the pairs spends more than three times what a whole
+/// proof may (37.6 million units measured; the whole proof took 579 s);
+/// bounded (`MAX_TELLING`) the proof spends that much and one point
+/// more, and all its pairs, and proves the same 0.4999999999999; with no
+/// telling at all it still proves no more than the truth. Counted, never
+/// clocked: the units are evaluations (`craft3d_geom::allowance`).
+#[test]
+fn the_work_of_telling_pieces_in_from_out_is_bounded() {
+    use crate::verify_bound::{MAX_NODES, MAX_TELLING, TELLING_CAP, TOLD};
+    use craft3d_kernel::primitives::cone;
+    let k = 1.0;
+    let whole = cone(&Frame::WORLD, 4.0, 12.0).unwrap();
+    let cutter = block(
+        &at(Vec3::new(0.0004, -20.0, -10.0), Vec3::Z),
+        20.0,
+        40.0,
+        40.0,
+    )
+    .unwrap();
+    let a = boolean(&whole, &cutter, BooleanOp::Subtract, &tol(k))
+        .unwrap()
+        .body;
+    let b = block(&at(Vec3::new(-4.2, -3.7, 12.5), Vec3::Z), 8.0, 8.0, 3.0).unwrap();
+    let truth = 0.5;
+    let told = || TOLD.with(std::cell::Cell::get);
+    // Unbounded telling, 2000 pairs.
+    CAPS.with(|caps| caps.set(Some((2000, usize::MAX))));
+    TELLING_CAP.with(|cap| cap.set(Some(u64::MAX)));
+    let (_, proven) = measure(&a, &b, k);
+    let unbounded = told();
+    CAPS.with(|caps| caps.set(None));
+    TELLING_CAP.with(|cap| cap.set(None));
+    eprintln!("unbounded, 2000 pairs: proven {proven}, {unbounded} units of telling");
+    assert!(proven <= truth && proven >= truth - 1e-9, "{proven}");
+    assert!(unbounded > 3 * MAX_TELLING, "{unbounded}");
+    // As it is: bounded.
+    let (found, proven) = measure(&a, &b, k);
+    let (pairs, _) = SPENT.with(std::cell::Cell::get);
+    eprintln!(
+        "bounded: found {found}, proven {proven}, {} units of telling, {pairs} pairs",
+        told()
+    );
+    assert!(proven <= truth && proven >= truth - 1e-9, "{proven}");
+    assert!((truth..truth + 2e-3).contains(&found), "{found}");
+    // The bound and what one more point may cost.
+    assert!(told() <= MAX_TELLING + MAX_TELLING / 8, "{}", told());
+    assert!(pairs <= MAX_NODES + 64, "{pairs}");
+    // No telling at all: nothing is told in from out, and nothing false
+    // is proven.
+    TELLING_CAP.with(|cap| cap.set(Some(0)));
+    let (_, proven) = measure(&a, &b, k);
+    let spent = told();
+    TELLING_CAP.with(|cap| cap.set(None));
+    eprintln!("no telling: proven {proven}, {spent} units");
+    assert!(proven <= truth, "{proven}");
+    assert!(spent <= MAX_TELLING / 8, "{spent}");
+}

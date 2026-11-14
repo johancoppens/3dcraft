@@ -508,7 +508,8 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
             while walk.solved.len() < whole && walk.dead.is_none() {
                 let k = walk.solved.len();
                 let from = walk.solved.last().unwrap_or(&carried).clone();
-                let trial = open.asm.place_held(
+                let trial = solve_held(
+                    open,
                     &doc,
                     path.as_deref(),
                     &from,
@@ -532,7 +533,8 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
             };
             let base_value = at(k);
             let target = if k < whole { at(k + 1) } else { value };
-            let held = open.asm.place_held(
+            let held = solve_held(
+                open,
                 &doc,
                 path.as_deref(),
                 &from,
@@ -550,22 +552,23 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
                     let why = if target.to_bits() == end.to_bits() {
                         failed
                     } else {
-                        open.asm
-                            .place_held(
-                                &doc,
-                                path.as_deref(),
-                                &from,
-                                &hold_at(end, base_value),
-                                false,
-                            )
-                            .solve_error
-                            .unwrap_or(failed)
+                        solve_held(
+                            open,
+                            &doc,
+                            path.as_deref(),
+                            &from,
+                            &hold_at(end, base_value),
+                            false,
+                        )
+                        .solve_error
+                        .unwrap_or(failed)
                     };
                     let (mut good, mut bad) = (0.0f64, 1.0f64);
                     for _ in 0..SEARCH_STEPS {
                         let mid = 0.5 * (good + bad);
                         let v = base_value + (end - base_value) * mid;
-                        let trial = open.asm.place_held(
+                        let trial = solve_held(
+                            open,
                             &doc,
                             path.as_deref(),
                             &from,
@@ -579,7 +582,8 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
                         }
                     }
                     let mut reached = base_value + (end - base_value) * good;
-                    let mut held = open.asm.place_held(
+                    let mut held = solve_held(
+                        open,
                         &doc,
                         path.as_deref(),
                         &from,
@@ -592,7 +596,8 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
                         held = if k == 0 {
                             (*placed).clone()
                         } else {
-                            open.asm.place_held(
+                            solve_held(
+                                open,
                                 &doc,
                                 path.as_deref(),
                                 &from,
@@ -643,6 +648,21 @@ fn view_drive(session: &mut Session, params: &Value) -> Run {
     Ok(answer(open, &doc))
 }
 
+/// The assembly solved with a joint held (`asm`'s `place_held`), counted
+/// in the session's work ([`Session::held_solves`]): every solve
+/// `view.drive` makes goes through here.
+fn solve_held(
+    open: &mut OpenDocument,
+    doc: &Document,
+    path: Option<&str>,
+    from: &Carried,
+    hold: &Hold,
+    bodies: bool,
+) -> Placed {
+    open.work.solved_held();
+    open.asm.place_held(doc, path, from, hold, bodies)
+}
+
 /// The drivers to let go of so that the joint `slot` of `mate` can be
 /// held (the module's documentation): none when its own variable drives
 /// it or it is free, else the first other driver whose release frees it,
@@ -685,7 +705,7 @@ fn to_release(
             held: None,
             release,
         };
-        open.asm.place_held(doc, path, carried, &hold, false)
+        solve_held(open, doc, path, carried, &hold, false)
     };
     for driver in &drivers {
         let p = trial(open, BTreeSet::from([driver.clone()]));

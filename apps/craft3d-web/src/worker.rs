@@ -32,6 +32,8 @@ use wasm_bindgen::prelude::*;
 
 /// The name of the meta element that names the worker's script.
 const META: &str = "craft3d-worker";
+/// The canvas's attribute that may name it instead.
+const CANVAS_ATTRIBUTE: &str = "data-craft3d-worker";
 
 /// What the worker answers a job with: `craft3d_engine::measure_checks`.
 #[wasm_bindgen]
@@ -91,10 +93,19 @@ pub fn craft3d_command(document: &[u8], work: &str) -> JsValue {
     reply.into()
 }
 
-/// The worker's script, as the page names it; `None` on a page that
-/// names none (the checks are then measured on the page).
+/// The worker's script, as the page names it: on the canvas
+/// (`data-craft3d-worker`, so that a page that embeds 3DCraft needs no
+/// element in its head), else in the `<meta>`; `None` on a page that names
+/// none (the checks are then measured on the page).
 pub fn script() -> Option<String> {
     let document = web_sys::window()?.document()?;
+    if let Some(named) = document
+        .get_element_by_id(crate::page::CANVAS_ID)
+        .and_then(|canvas| canvas.get_attribute(CANVAS_ATTRIBUTE))
+        .filter(|s| !s.is_empty())
+    {
+        return Some(named);
+    }
     let meta = document
         .query_selector(&format!("meta[name=\"{META}\"]"))
         .ok()??;

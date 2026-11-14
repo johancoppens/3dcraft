@@ -620,6 +620,9 @@ pub(crate) fn load_state(session: &mut Session, doc: Document) {
         None => {
             let mut open = OpenDocument::new(doc, None);
             open.history = open.history.clone().with_limit(1);
+            // What it costs is this side's session's work, as a document's
+            // is in every session (`Session::add_document`).
+            open.work = Arc::clone(&session.work);
             session.documents.push(open);
         }
     }
@@ -900,6 +903,19 @@ pub fn scene_side_work() -> Option<crate::WorkCount> {
             .session
             .as_ref()
             .map(Session::work_here)
+    })
+}
+
+/// [`Session::held_solves`] of this side's session: the solves of a joint
+/// held by hand that the worker made for the views it was asked for.
+pub fn scene_side_held_solves() -> Option<u64> {
+    BUILDER.with(|builder| {
+        builder
+            .try_borrow()
+            .ok()?
+            .session
+            .as_ref()
+            .map(Session::held_solves)
     })
 }
 
