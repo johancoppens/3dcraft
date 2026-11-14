@@ -27,21 +27,25 @@
 //! across an edge wherever the kernel asks; it is *opposite* where the
 //! edge turns the other way than at its middle by more than that. Then:
 //!
-//! - a stretch of stations that are not turned like the middle, with such
-//!   stations on both sides of it, is a place inside the edge: where the
-//!   turn passes through zero when the stretch has an opposite station
-//!   (found by bisection: the edge is convex on one side and concave on
-//!   the other), else where the turn is least (the faces become tangent
-//!   and part again, or come too close to it for the radius);
+//! - a stretch of stations that are not turned like the middle and one of
+//!   which is opposite: the edge is convex on one side and concave on the
+//!   other of the place where the turn passes through zero, between the
+//!   stretch and the station turned like the middle beside it (found by
+//!   bisection; a place on each side of the stretch that has one);
+//! - a stretch of tangent stations with stations turned like the middle
+//!   on both sides of it: the place where the turn is least (the faces
+//!   become tangent and part again, or come too close to it for the
+//!   radius);
 //! - a station turned like the middle that is lower than both its
 //!   neighbours, and so near the bound that the turn between the stations
 //!   could reach it, is looked at between them (a golden-section search
 //!   for the least turn): a dip under the bound that the stations step
 //!   over is found;
-//! - a stretch that reaches an end of the edge is the edge's end, not a
-//!   place inside it (a fillet that narrows towards the end of its edge is
-//!   cut off there by the face it runs into, and is built as before), and
-//!   so is a place within the linear tolerance of an end vertex.
+//! - a stretch of tangent stations that reaches an end of the edge is the
+//!   edge's end, not a place inside it (a fillet that narrows towards the
+//!   end of its edge is cut off there by the face it runs into, and is
+//!   built as before), and so is a place within the linear tolerance of an
+//!   end vertex.
 //!
 //! A fillet of an edge with such a place is refused, with the place. What
 //! is not seen: a dip between two stations that leaves no station lower
@@ -276,9 +280,9 @@ pub(super) fn pinched(
         if turned(value) {
             // Lower than both neighbours, and near enough to the bound for
             // the turn between the stations to reach it: the bottom of a
-            // parabola through three stations lies below the lowest by an
-            // eighth of the larger step at most; eight times that is
-            // allowed for.
+            // parabola through three stations lies below the lowest of
+            // them by at most an eighth of what the higher neighbour is
+            // above it; eight times that is allowed for.
             if i > 0 && i < last {
                 let (before, left) = *read.get(i - 1)?;
                 let (after, right) = *read.get(i + 1)?;
