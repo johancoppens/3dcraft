@@ -506,7 +506,12 @@ fn tessellate_some(
     only: Option<&[bool]>,
 ) -> Result<(EdgeSamples, Vec<Option<FaceResult>>), TessError> {
     let searched = tessellate_placed(body, params, threads, mesh, only, &[])?;
-    if !mesh {
+    // Under a bound on its work (an operation's own look at what it made:
+    // `craft3d_geom::allowance::within`) the body is as the search places
+    // it and nothing more is tried: a second try is work the bound would
+    // count, and an operation that kept within it before would not now (a
+    // STEP file with such a face that was read was refused for its work).
+    if !mesh || craft3d_geom::allowance::scope().is_some() {
         return Ok(searched);
     }
     // A face on a spline surface with a pole that is refused as the

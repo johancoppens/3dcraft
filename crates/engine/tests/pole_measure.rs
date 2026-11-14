@@ -69,13 +69,9 @@ fn imported_tips_measure_as_their_closed_forms_within_their_bounds() {
         let mut s = session_in(&dir);
         run(&mut s, "file.new", json!({"units": "mm"}));
         let result = run(&mut s, "file.import", json!({"path": file}));
-        if result["bodies"][0]["status"] != "ok" {
-            // A body the import refuses is measured by no one: what it
-            // says is the tessellator's (docs/design/tessellator.md ›
-            // *The rails of a squeezed pole*).
-            println!("{name}: not imported: {}", result["bodies"][0]["error"]);
-            continue;
-        }
+        // Every one of them was read before the borders were looked at
+        // (and by 0.1.x): none may be refused for a foot put right.
+        assert_eq!(result["bodies"][0]["status"], "ok", "{name}: {result}");
         let measure = run(&mut s, "document.measure", json!({"bound": true}));
         let want = share * polygon_area(corners) * length * k * k * k;
         let volume = measure["volume"].as_f64().unwrap();
@@ -95,7 +91,5 @@ fn imported_tips_measure_as_their_closed_forms_within_their_bounds() {
         );
         measured.push(name);
     }
-    // The bodies the import takes today (the others wait for the
-    // tessellator, which meshes every import to look for crossings).
-    assert!(measured.contains(&"blade"), "{measured:?}");
+    assert_eq!(measured.len(), 4, "{measured:?}");
 }
