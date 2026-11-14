@@ -1108,3 +1108,131 @@ fn a_plane_that_misses_the_bodies_has_no_section_extent() {
         assert!(section_extent(&[], &upright(), 0.0, x, &t).is_err());
     }
 }
+
+// ------------------------------------------- directions near the z axis
+
+/// The unit direction `theta` off +z (`up`) or off −z, at azimuth `psi`
+/// about it.
+fn near_z(theta: f64, psi: f64, up: bool) -> Vec3 {
+    let (s, c) = theta.psin_cos();
+    let (sp, cp) = psi.psin_cos();
+    Vec3::new(s * cp, s * sp, if up { c } else { -c })
+        .normalized()
+        .unwrap()
+}
+
+/// A box 1000 long (x), 1 wide and 1 deep, centred on the z axis with
+/// its bottom at z = 0, at three scales, along unit directions `n` tilted
+/// 3e-9, 1e-8 and 1e-7 rad off +z and off −z at four azimuths, and along
+/// ±z and the four axes square to it: its extent along `n` is that of its
+/// corners, `lo = −(L/2 |n.x| + B/2 |n.y|) + D min(n.z, 0)` and
+/// `hi = L/2 |n.x| + B/2 |n.y| + D max(n.z, 0)`, and its floor (the least
+/// of its faces' bounds) is `lo`; each within 1e-13 of the box's reach,
+/// a few units in the last place. The body was turned onto `n` by the
+/// `acos` of `n · z`, which is 0 wherever the cosine of the tilt rounds
+/// to 1 (every tilt below 1.05e-8), so at 3e-9 and 1e-8 the box was not
+/// turned at all and its extent was read along z, `L/2 sin θ` off (1.5e-6
+/// and 5e-6 at a scale of 1, the default tolerance being 1e-6), and at
+/// 1e-7 it was turned 4e-11 rad too little, 2e-8 off (2026-11-14).
+#[test]
+fn a_long_box_along_a_direction_near_z_has_the_extent_of_its_corners() {
+    let mut wrong = Vec::new();
+    for k in SCALES {
+        let (l, b, d) = (1000.0 * k, k, k);
+        let body = boxed(k, (1000.0, 1.0, 1.0));
+        let reach = 0.5 * l + 0.5 * b + d;
+        let mut directions = vec![Vec3::Z, -Vec3::Z, Vec3::X, -Vec3::X, Vec3::Y, -Vec3::Y];
+        for theta in [3e-9, 1e-8, 1e-7] {
+            for psi in [0.0, 0.7, 2.0, PI] {
+                for up in [true, false] {
+                    directions.push(near_z(theta, psi, up));
+                }
+            }
+        }
+        for n in directions {
+            let side = 0.5 * l * n.x.abs() + 0.5 * b * n.y.abs();
+            let (want_lo, want_hi) = (-side + d * n.z.min(0.0), side + d * n.z.max(0.0));
+            let (lo, hi, _) = extent(&[&body], n).unwrap();
+            let prepared = prepare(&[&body], n).unwrap();
+            let lowest = floor(&prepared[0], n, f64::NEG_INFINITY, &tol(k)).unwrap();
+            for (what, got, want) in [
+                ("lo", lo, want_lo),
+                ("hi", hi, want_hi),
+                ("floor", lowest, want_lo),
+            ] {
+                if got.is_nan() || (got - want).abs() > 1e-13 * reach {
+                    wrong.push(format!(
+                        "scale {k:e}, n {:?}: {what} {got:e}, want {want:e}, off by {:e} of the reach",
+                        [n.x, n.y, n.z],
+                        (got - want) / reach
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} off:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+/// What the extent decides at a plane near z: a square prism standing on
+/// an edge (a V of 90° below it), 2 long along x, its edge at y = ±Y
+/// (Y = 1e4) and z = 0, and the plane's normal `(0, sin θ, cos θ)` tilted
+/// θ = 1e-8 about x, so that the edge is the prism's lowest along it, at
+/// `±Y sin θ` (±1e-4, a hundred tolerances), at three scales. With the
+/// edge at −Y, the plane `h` (half of that) above the edge cuts a V of
+/// volume `L h² / cos 2θ` and section `2 h L / cos 2θ` (the V's walls at
+/// 45° ∓ θ to the plane; `cos 2θ` is 1 to 2e-16); it was read as nothing
+/// below, the edge taken to lie at 0. With the edge at +Y, the plane `h`
+/// below the edge misses the prism: nothing below; it was refused as
+/// possibly losing what lies below, the prism's floor read along z
+/// (2026-11-14).
+#[test]
+fn a_plane_near_z_by_the_lowest_edge_of_a_far_prism_cuts_what_lies_below_it() {
+    let theta: f64 = 1e-8;
+    let (sine, cosine) = theta.psin_cos();
+    for k in SCALES {
+        let (l, side, far) = (2.0 * k, k, 1e4 * k);
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let plane = CutPlane::new(Vec3::new(0.0, sine, cosine), Vec3::X).unwrap();
+        let prism = |y: f64| {
+            let frame = Frame::new(
+                Vec3::new(-0.5 * l, y, 0.0),
+                Vec3::new(0.0, -s, s),
+                Vec3::new(1.0, 0.0, 0.0),
+            )
+            .unwrap();
+            block(&frame, l, side, side).unwrap()
+        };
+        // The edge at −Y: a V below the plane.
+        let body = prism(-far);
+        let edge = Vec3::new(0.0, -far, 0.0).dot(plane.normal);
+        let h = -0.5 * edge;
+        let wide = (2.0 * theta).pcos();
+        let im = below(&[&body], &plane, edge + h, &tol(k)).unwrap();
+        // The V's depth read back from its volume and from its section,
+        // within the rounding of points that lie Y from the origin (1e-14
+        // of it, a ten-thousandth of the tolerance).
+        for (what, depth) in [
+            ("from V = L h² / cos 2θ", (im.volume * wide / l).sqrt()),
+            (
+                "from A = 2 h L / cos 2θ",
+                im.section.area * wide / (2.0 * l),
+            ),
+        ] {
+            assert!(
+                (depth - h).abs() <= 1e-14 * far,
+                "the depth {what}: {depth:e}, want {h:e}"
+            );
+        }
+        // The edge at +Y: the plane misses it.
+        let body = prism(far);
+        let edge = Vec3::new(0.0, far, 0.0).dot(plane.normal);
+        let none = below(&[&body], &plane, 0.5 * edge, &tol(k)).unwrap();
+        assert_eq!(none.volume, 0.0, "nothing below");
+        assert_eq!(none.section.area, 0.0, "no section");
+    }
+}

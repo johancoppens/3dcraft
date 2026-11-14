@@ -371,6 +371,206 @@ fn lines_meet_spheres_cones_and_tori() {
     }
 }
 
+/// A hit a line should have: its parameter, whether it is a touch, and
+/// the sine of the angle at which the line leaves the surface there (a
+/// hit within the tolerance of the surface may lie the tolerance over it
+/// away along the line).
+type Want = (f64, bool, f64);
+
+/// Where a line in the plane through a cone's axis meets the cone. In the
+/// frame's coordinates x and v (along the axis), with y = 0, the line is
+/// `(x0, v0) + t (sin φ, cos φ)` and the cone `x = ±r(v)`,
+/// `r(v) = r0 + v tan α`, its rulings at u = 0 and u = π, each only above
+/// the apex (the cone has one nappe). The line meets the first at
+/// `t = (r(v0) − x0) cos α / sin(φ − α)` and the second at
+/// `t = −(r(v0) + x0) cos α / sin(φ + α)`, leaving them at angles whose
+/// sines are `|sin(φ ∓ α)|`; it meets neither where it is parallel to it.
+fn in_axis_plane(r0: f64, alpha: f64, (x0, v0): (f64, f64), phi: f64) -> Vec<Want> {
+    let (cos, tan) = (alpha.pcos(), alpha.ptan());
+    let cp = phi.pcos();
+    let apex = -r0 / tan;
+    let r = r0 + v0 * tan;
+    let mut hits = Vec::new();
+    for (numerator, sine) in [
+        (r - x0, (phi - alpha).psin()),
+        (-(r + x0), (phi + alpha).psin()),
+    ] {
+        if sine != 0.0 {
+            let t = numerator * cos / sine;
+            if v0 + t * cp > apex {
+                hits.push((t, false, sine.abs()));
+            }
+        }
+    }
+    hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+    hits
+}
+
+/// Lines against cones of half-angle 1e-6, 1e-5, 1e-4 and 1e-3 rad (and
+/// 0.4 beside them), radius `s` at the origin of a tilted frame, at three
+/// scales, against hits known by construction: lines in the plane through
+/// the axis parallel to a ruling (and within 1e-10, 1e-7 and 1e-5 rad of
+/// it) through a point of the opposite ruling, lines crossing the axis
+/// steeper and flatter than the rulings and within 1e-7 of them, lines
+/// through the apex (the axis; steeper, flatter and within 1e-7 of a
+/// ruling; a ruling and one within 1e-10 of it, which are on the
+/// surface), lines tangent to the cone at an angle β to the ruling there
+/// (π/2, 0.3, 1e-3: one touch where the tangent plane holds the line),
+/// and chords between two points of the cone. Each line's origin is
+/// moved back along it. A hit found must be one wanted, within the
+/// tolerance over the sine of its angle along the line, of the same kind,
+/// and within the tolerance of the cone; a touch within the stretch where
+/// the line stays within the tolerance of the cone. (The constructions are
+/// the roots of the quadratic solved exactly in rational arithmetic, to 80
+/// digits, for half-angles 1e-6 and 1e-3 at scale 1.) Of the 405 lines,
+/// 158 were wrong before 2026-11-14: every line within 4.5e-5 rad of a
+/// narrow cone's axis was taken as parallel to a ruling, the coefficients
+/// taken about a far apex cancelled, and a line through the apex was a
+/// touch or a crossing by where its origin lay (docs/design/geometry.md ›
+/// *A line and a cone*).
+#[test]
+fn lines_meet_narrow_cones_where_their_construction_says() {
+    let mut wrong: Vec<String> = Vec::new();
+    for s in SCALES {
+        let f = tilted(s);
+        let t = tol(s);
+        for alpha in [1e-6_f64, 1e-5, 1e-4, 1e-3, 0.4] {
+            let c = cone(f, s, alpha);
+            let tan = alpha.ptan();
+            let apex = -s / tan;
+            // A line in the axis plane through (x, v) at φ from the axis,
+            // its origin moved `back` along it.
+            let planar = |(x, v): (f64, f64), phi: f64, back: f64| {
+                let (sp, cp) = phi.psin_cos();
+                let from = (x - back * sp, v - back * cp);
+                (from, f.point(from.0, 0.0, from.1), f.vector(sp, 0.0, cp))
+            };
+            let mut cases: Vec<(String, Vec3, Vec3, Option<Vec<Want>>)> = Vec::new();
+            // Parallel to the ruling at u = 0 (and nearly), through the
+            // point of the ruling at u = π at v = 0: that point, and where
+            // the line is not parallel within the angular tolerance, the
+            // ruling at u = 0 far away.
+            for delta in [0.0, 1e-10, -1e-10, 1e-7, -1e-7, 1e-5, -1e-5] {
+                let (from, o, d) = planar((-s, 0.0), alpha + delta, 2.0 * s);
+                let mut want = in_axis_plane(s, alpha, from, alpha + delta);
+                if delta.abs() <= t.angular {
+                    want.retain(|h| (h.0 - 2.0 * s).abs() <= s);
+                }
+                cases.push((
+                    format!("parallel to a ruling, {delta:e} off"),
+                    o,
+                    d,
+                    Some(want),
+                ));
+            }
+            // Crossing the axis at v = 0, steeper and flatter than the
+            // rulings, within 1e-7 of them, and across.
+            for phi in [
+                0.5 * alpha,
+                2.0 * alpha,
+                alpha + 1e-7,
+                alpha - 1e-7,
+                0.3 + alpha,
+                1.2,
+            ] {
+                let (from, o, d) = planar((0.0, 0.0), phi, 3.0 * s);
+                let want = in_axis_plane(s, alpha, from, phi);
+                cases.push((format!("crossing the axis at {phi:e}"), o, d, Some(want)));
+            }
+            // Through the apex: steeper than the rulings a crossing there,
+            // flatter a touch, along a ruling (or within the angular
+            // tolerance of one) on the surface.
+            for phi in [
+                0.0,
+                0.5 * alpha,
+                2.0 * alpha,
+                alpha + 1e-7,
+                alpha - 1e-7,
+                1.2,
+            ] {
+                let (_, o, d) = planar((0.0, apex), phi, 3.0 * s);
+                let off = (phi - alpha).psin().abs();
+                let want = vec![(3.0 * s, phi > alpha, off)];
+                cases.push((format!("through the apex at {phi:e}"), o, d, Some(want)));
+            }
+            for delta in [0.0, 1e-10] {
+                let (_, o, d) = planar((0.0, apex), alpha + delta, 3.0 * s);
+                cases.push((format!("a ruling, {delta:e} off"), o, d, None));
+            }
+            // Tangent at the point of the ruling at u = 0 at v = 0, at β to
+            // the ruling in the tangent plane: one touch there, the line
+            // within the tolerance of the cone `√(2 tol r / (sin²β cos α))`
+            // either way (its normal curvature `sin²β cos α / r`).
+            for beta in [std::f64::consts::FRAC_PI_2, 0.3, 1e-3] {
+                let (sb, cb) = beta.psin_cos();
+                let d = f.vector(cb * alpha.psin(), sb, cb * alpha.pcos());
+                let o = f.point(s, 0.0, 0.0) - d * (2.0 * s);
+                let stretch = (2.0 * t.linear * s / (sb * sb * alpha.pcos())).sqrt();
+                let want = vec![(2.0 * s, true, t.linear / stretch)];
+                cases.push((
+                    format!("tangent at {beta:e} to the ruling"),
+                    o,
+                    d,
+                    Some(want),
+                ));
+            }
+            // Chords between two points of the cone.
+            for (u2, v2) in [(0.5, 0.25 * s / alpha), (2.0, s), (3.0, -0.5 * s)] {
+                let (p1, p2) = (c.eval(0.0, 0.0), c.eval(u2, v2));
+                let Some(d) = (p2 - p1).normalized() else {
+                    continue;
+                };
+                let sine = |u: f64, v: f64| c.normal(u, v).map_or(1.0, |n| n.dot(d).abs());
+                let want = vec![
+                    (s, false, sine(0.0, 0.0)),
+                    (s + p1.distance(p2), false, sine(u2, v2)),
+                ];
+                cases.push((
+                    format!("a chord to ({u2}, {v2:e})"),
+                    p1 - d * s,
+                    d,
+                    Some(want),
+                ));
+            }
+            for (label, o, d, want) in cases {
+                let label = format!("scale {s:e}, α {alpha:e}: {label}");
+                let curve = line(o, d);
+                let found = intersect_curve_surface(&curve, &c, &t);
+                match (found, want) {
+                    (Ok(CurveIntersection::OnSurface), None) => {}
+                    (Ok(CurveIntersection::Hits(found)), Some(want)) => {
+                        let fits = |h: &CurveHit, w: &Want| {
+                            h.tangent == w.1
+                                && (h.t - w.0).abs() * w.2 <= t.linear
+                                && curve.eval(h.t).distance(h.point) <= 1e-12 * s.max(h.t.abs())
+                                && distance(&c, h.point) <= t.linear
+                        };
+                        let ok = found.len() == want.len()
+                            && found.iter().zip(&want).all(|(h, w)| fits(h, w));
+                        if !ok {
+                            let got: Vec<_> = found
+                                .iter()
+                                .map(|h| (h.t, h.tangent, distance(&c, h.point)))
+                                .collect();
+                            wrong.push(format!("{label}: got {got:?} (t, touch, off), want {want:?} (t, touch, sine)"));
+                        }
+                    }
+                    (Ok(other), want) => {
+                        wrong.push(format!("{label}: got {other:?}, want {want:?}"));
+                    }
+                    (Err(e), _) => wrong.push(format!("{label}: {e}")),
+                }
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} wrong:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
 #[test]
 fn circles_and_ellipses_meet_curved_surfaces() {
     for s in SCALES {

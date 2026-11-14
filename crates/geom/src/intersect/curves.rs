@@ -30,7 +30,7 @@ use super::{CurveHit, CurveIntersection, wrap};
 use crate::{Circle, Cone, Curve3, GeomError, Line, Sphere, Surface};
 use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Tolerance, Vec3};
-use std::f64::consts::TAU;
+use std::f64::consts::{PI, TAU};
 
 const MAX_INTERVALS: usize = 200_000;
 const MAX_FLOOR: usize = 4_000;
@@ -75,24 +75,50 @@ pub(super) fn line_sphere(line: &Line, sphere: &Sphere, tol: &Tolerance) -> Curv
     })
 }
 
-/// A line and a cone: `cos²α |q|² = (q·a)²` along `q = o + d t` is a
-/// quadratic; the roots with `q·a ≥ 0` are on the cone's own nappe. A line
-/// along a ruling is on the surface (the cone ends at its apex; the line
-/// does not).
+/// A line and a cone. In the cone's frame, about the frame's origin, the
+/// cone is `x² + y² = R(z)²` with `R(z) = r + z tan α`, its radius, which
+/// is not negative on its own nappe; along the line `o + d t` (in the
+/// frame) that is the quadratic `A t² + B t + C` with
+/// `A = (ρ_d − d.z tan α)(ρ_d + d.z tan α)`,
+/// `B = 2 (o.x d.x + o.y d.y − d.z tan α R(o.z))` and
+/// `C = (ρ_o − R(o.z))(ρ_o + R(o.z))` (`ρ` the distance from the axis),
+/// written as products where their terms cancel. About the apex instead,
+/// `cos²α |q|² − (q · a)²` cancels for a narrow cone, whose apex is
+/// `r / tan α` away: at a half-angle of 1e-6 nothing was left of the roots
+/// of a chord at 45° to the axis (2026-11-14).
+///
+/// The line is parallel to a ruling when its angle to the axis, read from
+/// its sine and cosine together (`Vec3::angle_to`), is the half-angle
+/// within the angular tolerance. Through the apex it is then a ruling, on
+/// the surface (the cone ends at its apex; the line does not); otherwise
+/// it meets the cone once, at the root that stays where the other goes to
+/// infinity. (A difference of the cosines compared with the tolerance as
+/// if it were that angle took every line within about `√(2 · angular)` of
+/// a narrow cone's axis for one parallel to a ruling, and its one root
+/// from the linear term alone: 2026-11-14.) Any other line through the
+/// apex (within the tolerance) meets the cone there alone, wherever its
+/// origin lies: a crossing where it is steeper than the rulings, a touch
+/// where it is flatter.
 pub(super) fn line_cone(
     line: &Line,
     cone: &Cone,
     tol: &Tolerance,
 ) -> Result<CurveIntersection, GeomError> {
     let (apex, axis) = cone_apex_axis(cone);
-    let cos = cone.half_angle().pcos();
-    let (o, d) = (line.origin() - apex, line.direction());
-    let (da, oa) = (d.dot(axis), o.dot(axis));
-    let cos2 = cos * cos;
+    let frame = cone.frame();
+    let half = cone.half_angle();
+    let rate = half.ptan();
+    let d = line.direction();
+    let (ox, oy, oz) = frame.local(line.origin());
+    let (dx, dy, dz) = (d.dot(frame.x()), d.dot(frame.y()), d.dot(frame.z()));
+    let (across_o, across_d) = (ox.phypot(oy), dx.phypot(dy));
+    // The cone's radius at the height of the line's origin, and how fast
+    // it grows along the line.
+    let (radius, rise) = (cone.radius() + rate * oz, rate * dz);
     let (a, b, c) = (
-        cos2 - da * da,
-        2.0 * (cos2 * o.dot(d) - oa * da),
-        cos2 * o.length_squared() - oa * oa,
+        (across_d - rise) * (across_d + rise),
+        2.0 * (ox * dx + oy * dy - rise * radius),
+        (across_o - radius) * (across_o + radius),
     );
     let field = Field::new(&Surface::Cone(*cone))?;
     let distance = |t: f64| {
@@ -105,28 +131,43 @@ pub(super) fn line_cone(
         point: line.origin() + d * t,
         tangent,
     };
-    let parallel = (da.abs() - cos).abs() <= tol.angular; // to a ruling
+    // The angle between the line and the axis, as lines: in [0, π/2].
+    let turn = d.angle_to(axis);
+    let steep = turn.min(PI - turn);
+    let parallel = (steep - half.abs()).abs() <= tol.angular; // to a ruling
+    // Where the line comes nearest the apex, and whether within the
+    // tolerance of it.
+    let at = (apex - line.origin()).dot(d);
+    let through_apex = (line.origin() + d * at).distance(apex) <= tol.linear;
     if parallel {
-        // Through the apex it is a ruling; otherwise it meets the cone once.
-        let past = -o.dot(d);
-        if (o + d * past).length() <= tol.linear {
+        if through_apex {
             return Ok(CurveIntersection::OnSurface);
         }
-        if b == 0.0 {
-            return Ok(hits(Vec::new()));
-        }
-        let t = -c / b;
-        return Ok(hits(if distance(t) <= tol.linear {
-            vec![hit(t, false)]
+        // The root that stays where it is as `A` goes to 0; where there is
+        // no real root, the one of the linear term, held to the distance
+        // like any other.
+        let disc = b * b - 4.0 * a * c;
+        let t = if disc >= 0.0 {
+            let q = -0.5 * (b + if b >= 0.0 { 1.0 } else { -1.0 } * disc.sqrt());
+            (q != 0.0).then(|| c / q)
         } else {
-            Vec::new()
+            (b != 0.0).then(|| -c / b)
+        };
+        return Ok(hits(match t {
+            Some(t) if distance(t) <= tol.linear => vec![hit(t, false)],
+            _ => Vec::new(),
         }));
+    }
+    if through_apex {
+        // Steeper than the rulings the line passes from outside the cone
+        // to inside it there; flatter it stays outside on both sides.
+        return Ok(hits(vec![hit(at, steep > half.abs())]));
     }
     // Where the line comes closest to crossing: the quadratic's vertex.
     let vertex = -b / (2.0 * a);
     let mut roots: Vec<f64> = quadratic(a, b, c)
         .into_iter()
-        .filter(|t| (o + d * *t).dot(axis) >= 0.0 && distance(*t) <= tol.linear)
+        .filter(|t| radius + rise * *t >= 0.0 && distance(*t) <= tol.linear)
         .collect();
     roots.sort_by(f64::total_cmp);
     roots.dedup();
@@ -136,9 +177,6 @@ pub(super) fn line_cone(
         [first, second] if touching && *first <= vertex && vertex <= *second => {
             vec![hit(vertex, true)]
         }
-        // Through the apex: flatter than the rulings the line stays
-        // outside on both sides and only touches there.
-        [only] if (o + d * *only).length() <= tol.linear => vec![hit(*only, da.abs() < cos)],
         _ => roots.iter().map(|t| hit(*t, false)).collect(),
     }))
 }

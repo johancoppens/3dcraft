@@ -427,16 +427,31 @@ fn body_extent(index: usize, body: &Body, direction: Vec3) -> Result<(f64, f64, 
     Ok((lo, hi, bbox))
 }
 
-/// A rotation that turns the unit `direction` onto z.
+/// A rotation that turns the unit `direction` onto z: about their common
+/// normal `k = direction × z / |direction × z|`, by the angle between
+/// them read from its sine and cosine together (`Vec3::angle_to`). The
+/// turned z of a point is then its height along `direction` to rounding:
+/// the rotation's last row is `(−k.y s, k.x s, c)` (`k.z` is 0), the
+/// sine and cosine of `atan2(|direction × z|, direction · z)`, which are
+/// that cross product's length and that dot to a few units in the last
+/// place, near 0, near π (to the last place of π there) and between, so
+/// the row is `direction` to rounding. The `acos` of the dot alone was
+/// off by all of the angle `θ` wherever its cosine rounds to ±1 (any
+/// direction within 1.05e-8 rad of z or of −z) and by up to about
+/// `5.5e-17 / θ` beyond, so a body's extent and floor were read along an
+/// axis tilted that much from `direction`: 5e-6 off on a box 1000 long
+/// at 1e-8 rad (2026-11-14). Along the axes the angle is the very
+/// `acos` it was (`π/2`, exact z and −z by the branches below), so the
+/// turn is the same to the bit. Along z: no turn; against it, where the
+/// normal is zero: half a turn about x.
 fn onto_z(direction: Vec3) -> Result<Transform, CutError> {
     let z = Vec3::new(0.0, 0.0, 1.0);
-    let cos = direction.dot(z).clamp(-1.0, 1.0);
     let axis = direction.cross(z);
     match axis.normalized() {
         // Turning `direction` onto z about their common normal.
-        Some(axis) if axis.is_finite() => Transform::rotation(axis, cos.pacos()),
+        Some(axis) if axis.is_finite() => Transform::rotation(axis, direction.angle_to(z)),
         // Along z already, or against it.
-        _ if cos > 0.0 => Some(Transform::IDENTITY),
+        _ if direction.dot(z) > 0.0 => Some(Transform::IDENTITY),
         _ => Transform::rotation(Vec3::new(1.0, 0.0, 0.0), PI),
     }
     .ok_or(CutError::InvalidPlane("the normal gives no rotation"))
