@@ -532,13 +532,14 @@ fn bump_under_arm(lift: f64, k: f64, tol: &Tolerance) -> Option<Body> {
 }
 
 /// The bump moved up by `rise` (as a move of the face, or as an offset
-/// of it): by 2 it stays under the arm, by 4 its top is in the arm with
-/// no vertex of the arm in its way, by 6 it is past the arm's free
-/// corners as well. A move up to under the arm is the body with the
-/// block that much higher. In the arm that body is the union of the
-/// higher block and the arm, which has other faces than the body moved:
-/// no result of an operation that keeps every face, so refused is right,
-/// and what is built measures the part of the arm the bump took twice.
+/// of it): by 2 it stays under the arm, by 4 its top is in the arm
+/// (moved straight up, with no vertex of the arm in its way), by 6 it is
+/// past the arm's free corners as well. A move up to under the arm is
+/// the body with the block that much higher. In the arm that body is the
+/// union of the higher block and the arm, which has other faces than the
+/// body moved: no result of an operation that keeps every face, so
+/// refused is right, and what is built measures the part of the arm the
+/// bump took twice.
 fn bump_into_arm(k: f64, rise: f64, as_offset: bool) -> Result<(Did, String), String> {
     let tol = tolerance(k);
     let body = bump_under_arm(0.0, k, &tol).ok_or("no body")?;
