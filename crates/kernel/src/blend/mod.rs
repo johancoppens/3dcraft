@@ -215,7 +215,8 @@ pub(crate) enum Reason {
     FreeFolds,
     /// A chamfer face would pass through a face beside its edge: a face's
     /// trace from the edge to the cut line is shown on the other side of
-    /// the chamfer's line.
+    /// the chamfer's line. A fillet face would: a face's trace from the
+    /// edge to the ball's foot is shown inside the ball, behind its arc.
     Through,
 
     FreeGoesOn,
@@ -447,7 +448,7 @@ impl Reason {
                 "the fillet face along this edge would fold through itself: where the ball touches a face beside the edge goes past where the sections across the edge meet (over the top of a small cap, say): the radius is too large for that face"
             }
             Reason::Through => {
-                craft3d_math::bug_text!("a fillet was refused with a reason only a chamfer has")
+                "the fillet face would pass through a face beside the edge: between the edge and where the rolling ball touches that face, the face bulges into the ball (a bead beside a groove's rim, say); a fillet whose ball rests on the bulge instead is not built yet: give another radius"
             }
             Reason::FreeRunsOver => {
                 "the fillet's border runs off a face beside the edge across one of its other edges along the way (where the ball would roll on over a smooth edge onto the next face, or the face is too narrow for the radius); a fillet that carries on onto the next face in the middle of an edge is not built yet: give a smaller radius"
@@ -3200,6 +3201,11 @@ mod reason_tests {
                 .contains(craft3d_math::BUG)
         );
         assert!(Reason::NoNormal.text(Kind::Fillet).contains("no normal"));
+        // A fillet whose ball takes in a face beside its edge is refused
+        // for what the input is (2026-11-14), with a way out.
+        let through = Reason::Through.text(Kind::Fillet);
+        assert!(!through.contains(craft3d_math::BUG), "{through}");
+        assert!(through.contains("another radius"), "{through}");
         assert!(
             Reason::MeetsWithinAngle
                 .text(Kind::Fillet)
