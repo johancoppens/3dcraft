@@ -2170,10 +2170,14 @@ pub enum SketchGeometry {
         end: u64,
     },
     /// A B-spline through the points `through`, fitted again at every
-    /// regeneration (format version 35).
+    /// regeneration (format version 35). `spacing` (format 71): the
+    /// parameters it takes its points at, `"chord"`; written only when not
+    /// `"greville"`, which an older file means.
     Interpolated {
         degree: u32,
         through: Vec<u64>,
+        #[serde(default, skip_serializing_if = "SplineSpacing::is_greville")]
+        spacing: SplineSpacing,
     },
     /// A text (format version 55): a template with formulas in braces, a
     /// font, a size and the point `at` it is anchored at; laid out at
@@ -2199,6 +2203,24 @@ pub enum SketchGeometry {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<TextPath>,
     },
+}
+
+/// The parameters a spline through points takes its points at (format
+/// version 71; `craft3d_doc::SplineSpacing`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SplineSpacing {
+    /// Uniform knots, each point at its control point's Greville abscissa:
+    /// every live spline of a file before version 71.
+    #[default]
+    Greville,
+    Chord,
+}
+
+impl SplineSpacing {
+    fn is_greville(&self) -> bool {
+        *self == SplineSpacing::Greville
+    }
 }
 
 fn zero_expr() -> String {

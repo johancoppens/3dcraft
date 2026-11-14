@@ -1,0 +1,19 @@
+[
+ ["variable.set", {"name": "rb", "expr": "13.155697 mm"}],
+ ["sketch.create", {"name": "Chord ramp"}],
+ ["sketch.spline", {"sketch": "Chord ramp", "live": true, "spacing": "chord", "through": [
+  ["0 mm", "0 mm"], ["1.5 mm", "0.75 mm"], ["4 mm", "2 mm"], ["16 mm", "8 mm"], ["19 mm", "9.5 mm"], ["20 mm", "10 mm"]
+ ]}],
+ ["sketch.point", {"sketch": "Chord ramp", "at": ["20 mm", "0 mm"]}],
+ ["sketch.line", {"sketch": "Chord ramp", "from": "e6", "to": "e8"}],
+ ["sketch.line", {"sketch": "Chord ramp", "from": "e8", "to": "e1"}],
+ ["feature.extrude", {"sketch": "Chord ramp", "distance": "2 mm", "name": "Ramp"}],
+ ["sketch.create", {"name": "Chord flank", "plane": "xy", "offset": "5 mm"}],
+ ["sketch.point", {"sketch": "Chord flank", "at": ["0 mm", "0 mm"]}],
+ ["sketch.spline", {"sketch": "Chord flank", "live": true, "spacing": "chord", "through": [
+  ["rb", "0 mm"], ["13.5 mm", "0.08 mm"], ["14.6 mm", "0.5 mm"], ["16 mm", "1.5 mm"]
+ ]}],
+ ["sketch.line", {"sketch": "Chord flank", "from": "e5", "to": "e1"}],
+ ["sketch.line", {"sketch": "Chord flank", "from": "e1", "to": "e2"}],
+ ["feature.extrude", {"sketch": "Chord flank", "distance": "2 mm", "name": "Chord"}]
+]

@@ -1332,9 +1332,11 @@ fn sketch_inspect(session: &mut Session, params: &Value) -> Run {
                     Geometry::Interpolated {
                         degree,
                         ref through,
+                        spacing,
                     } => {
                         map.insert("degree".into(), degree.into());
                         map.insert("through".into(), ids(through).into());
+                        map.insert("spacing".into(), spacing.name().into());
                         map.insert(
                             "closed".into(),
                             (through.len() > 1 && through.first() == through.last()).into(),

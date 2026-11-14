@@ -540,24 +540,80 @@ pub enum Geometry {
         end: EntityId,
     },
     /// A B-spline of `degree` through the points `through`, in order,
-    /// fitted again at every regeneration from where the solve puts them
-    /// (on clamped uniform knots, each point at the Greville abscissa of
-    /// its control point, as `sketch.spline {through}` fits once). It has
-    /// no unknowns of its own: the points shape it, also points held by
-    /// formulas. With the first point also as the last it closes, and is
-    /// periodic: smooth where it closes as everywhere else, point `i` of
-    /// the `k` distinct ones at `i / k` on uniform knots, written as a
-    /// clamped spline of `k + degree` control points (since 2026-11-04;
-    /// before, a closed one was the open fit back to its first point, with
-    /// a corner there, and a saved one now rebuilds smooth).
+    /// fitted again at every regeneration from where the solve puts them,
+    /// with the parameters `spacing` gives its points ([`SplineSpacing`]:
+    /// by default on clamped uniform knots, each point at the Greville
+    /// abscissa of its control point, as `sketch.spline {through}` fits
+    /// once). It has no unknowns of its own: the points shape it, also
+    /// points held by formulas. With the first point also as the last it
+    /// closes, and is periodic: smooth where it closes as everywhere else,
+    /// point `i` of the `k` distinct ones at `i / k` on uniform knots,
+    /// written as a clamped spline of `k + degree` control points (since
+    /// 2026-11-04; before, a closed one was the open fit back to its first
+    /// point, with a corner there, and a saved one now rebuilds smooth).
     Interpolated {
         degree: u32,
         through: Vec<EntityId>,
+        /// Since 2026-11-13 (format 71); [`SplineSpacing::Greville`], as
+        /// before, when not given.
+        #[serde(default, skip_serializing_if = "SplineSpacing::is_greville")]
+        spacing: SplineSpacing,
     },
     /// A text ([`crate::SketchText`]): no unknowns of its own; its point
     /// `at` places it, and regeneration lays it out into the outlines of
     /// its glyphs (docs/design/text.md).
     Text(Box<crate::SketchText>),
+}
+
+/// Where a spline through points ([`Geometry::Interpolated`]) takes its
+/// points: the parameters at which it passes through them, which decide
+/// its shape between them (docs/design/document.md › *A live spline*).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SplineSpacing {
+    /// On clamped uniform knots, point `i` at the Greville abscissa of
+    /// control point `i` (the mean of its `degree` inner knots): the
+    /// parameters do not follow the points, and near the ends they are not
+    /// evenly spaced either (for a cubic the first and last two gaps are a
+    /// third and two thirds of the others), so between points it strays
+    /// more than a textbook interpolant (measured: its error falls about 4
+    /// times when the points double, where theirs falls about 16 times).
+    /// What every spline through points was before 2026-11-13, and still
+    /// the default.
+    #[default]
+    Greville,
+    /// Chord-length parameters, each gap the distance between its points
+    /// as a share of the polygon's length, on knots averaged from them
+    /// (*The NURBS Book*, eqs. 9.4, 9.5 and 9.8): measured, its error falls
+    /// about 16 times when the points along a smooth curve double, evenly
+    /// spaced or not, and points on a line give that line.
+    Chord,
+}
+
+impl SplineSpacing {
+    pub fn is_greville(&self) -> bool {
+        *self == SplineSpacing::Greville
+    }
+
+    /// The name a command or a file gives it.
+    pub fn name(self) -> &'static str {
+        match self {
+            SplineSpacing::Greville => "greville",
+            SplineSpacing::Chord => "chord",
+        }
+    }
+
+    /// The names of every spacing, as a command lists them.
+    pub const NAMES: &'static str = "greville or chord";
+
+    /// The spacing a command or a file names.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "greville" => Some(SplineSpacing::Greville),
+            "chord" => Some(SplineSpacing::Chord),
+            _ => None,
+        }
+    }
 }
 
 /// Expressions with the names of their parameters.
@@ -1486,10 +1542,29 @@ impl Sketch {
         through: Vec<EntityId>,
         construction: bool,
     ) -> Result<EntityId, SketchError> {
+        self.add_interpolated_spaced(degree, through, SplineSpacing::Greville, construction)
+    }
+
+    /// [`Self::add_interpolated`] with the points at the parameters
+    /// `spacing` gives them.
+    pub fn add_interpolated_spaced(
+        &mut self,
+        degree: u32,
+        through: Vec<EntityId>,
+        spacing: SplineSpacing,
+        construction: bool,
+    ) -> Result<EntityId, SketchError> {
         if let Some(fault) = Geometry::spline_fault(degree, &through) {
             return invalid(fault);
         }
-        self.push(Geometry::Interpolated { degree, through }, construction)
+        self.push(
+            Geometry::Interpolated {
+                degree,
+                through,
+                spacing,
+            },
+            construction,
+        )
     }
 
     /// A text anchored at the point `text.at` ([`Geometry::Text`]).
@@ -1693,6 +1768,15 @@ impl Sketch {
             .find(|&(p, q)| tied(p, q))
     }
 
+    /// Why a `pointOn` or `tangent` on `spline`, a live spline with chord
+    /// spacing, is not taken: said where the constraint is made and, for a
+    /// file that holds one, where the sketch is solved.
+    pub fn chord_constraint_refusal(spline: EntityId) -> String {
+        format!(
+            "{spline} is a live spline with chord spacing, whose parameters move with its points: a pointOn or tangent on it is not supported yet; to hold a point on a live spline or make a curve tangent to it, make the spline with the default spacing (greville)"
+        )
+    }
+
     pub fn add_constraint(&mut self, kind: ConstraintKind) -> Result<ConstraintId, SketchError> {
         if self.constraints.len() >= MAX_SKETCH_CONSTRAINTS {
             return invalid(format!(
@@ -1716,6 +1800,26 @@ impl Sketch {
             return invalid(format!(
                 "a spline is tangent to another curve at an end point the two share, but {a} and {b} share none: build both on one point, or make their ends coincident first"
             ));
+        }
+        // A live spline with chord spacing takes its points at parameters
+        // that move with them, which the solve's equations do not take yet;
+        // refused here so that the sketch is not left failing (a file that
+        // holds one fails at regeneration with the same reason).
+        let curves = match &kind {
+            ConstraintKind::PointOn { curve, .. } => vec![*curve],
+            ConstraintKind::Tangent { a, b } => vec![*a, *b],
+            _ => Vec::new(),
+        };
+        if let Some(chord) = curves.into_iter().find(|id| {
+            matches!(
+                self.entity(*id).map(|e| &e.geometry),
+                Ok(Geometry::Interpolated {
+                    spacing: SplineSpacing::Chord,
+                    ..
+                })
+            )
+        }) {
+            return invalid(Self::chord_constraint_refusal(chord));
         }
         // A formula curve or live spline touches a line or a round
         // anywhere; another curve only at an end the two share. Two
@@ -2669,6 +2773,7 @@ impl Sketch {
                 | Geometry::Interpolated {
                     degree,
                     through: control,
+                    ..
                 } => {
                     spline = true;
                     if let Some(fault) = Geometry::spline_fault(*degree, control) {
@@ -3917,6 +4022,29 @@ mod tests {
         assert!(message.contains("share none"), "{message}");
         let message = refused(&mut s, ConstraintKind::Parallel { a: line, b: curve });
         assert!(message.contains("formula curve"), "{message}");
+        // A live spline with chord spacing takes neither pointOn nor
+        // tangent (its parameters move with its points), and the sketch is
+        // left as it was.
+        let chord = s
+            .add_interpolated_spaced(2, vec![e1, e2, e3], SplineSpacing::Chord, false)
+            .unwrap();
+        let before = s.clone();
+        for kind in [
+            ConstraintKind::PointOn {
+                point: d,
+                curve: chord,
+            },
+            ConstraintKind::Tangent { a: line, b: chord },
+            ConstraintKind::Tangent { a: chord, b: line },
+        ] {
+            let message = refused(&mut s, kind);
+            assert!(
+                message.contains("chord spacing") && message.contains("default spacing (greville)"),
+                "{message}"
+            );
+        }
+        assert_eq!(s, before);
+        s.remove_entity(chord).unwrap();
         for id in s.constraints.iter().map(|c| c.id).collect::<Vec<_>>() {
             s.remove_constraint(id).unwrap();
         }

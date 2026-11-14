@@ -210,4 +210,15 @@ as they are and fits the spline through them again at every regeneration, so poi
 once and then shaped by its control points. A live spline takes `pointOn` and `tangent` as a formula curve
 does, and what hangs on it follows its points.
 
+- Between its points a spline's shape depends on where it takes them, its *spacing*. By default
+  (`"greville"`, what every spline through points did in 0.1) the spacing does not follow the points and is
+  uneven near the ends, so the spline strays further from a smooth curve through the same points than it
+  need: eight points of an involute flank, evenly spaced in roll angle, give a spline 0.0095 mm off the
+  involute. A live spline takes `"spacing": "chord"` (each step as long as the distance between its points:
+  0.00044 mm off that flank; points on a line give that line). A closed spline with chord spacing is refused,
+  and so are `pointOn` and `tangent` on a spline with chord spacing: make it with the default spacing to hold
+  a point on it.
+- For a curve you can write as formulas, `sketch.curve` fits it to the document's tolerance and needs no
+  points at all.
+
 **Next:** [Modelling features](features.md).

@@ -250,7 +250,18 @@ pub fn polyline(spline: &Spline2, tolerance: f64) -> Vec<P2> {
 /// (Schoenberg and Whitney's condition holds by construction). The first
 /// and last control points are the first and last points themselves.
 /// `sketch.spline {through}` fits a spline so once; a live spline
-/// (`craft3d_doc::Geometry::Interpolated`) at every regeneration.
+/// (`craft3d_doc::Geometry::Interpolated`) at every regeneration, with
+/// Greville spacing, its default.
+///
+/// Those parameters do not follow the points and are uneven near the ends
+/// (for a cubic the first and last two gaps are a third and two thirds of
+/// the others), so between its points the spline strays more than the
+/// textbook interpolants: measured, its error falls about 4 times when the
+/// points double, even evenly spaced ones on a circle, where theirs falls
+/// about 16 times (J-034; `curve_fit_spacing_tests.rs`).
+/// [`chord_parameters`] gives a live spline chord-length parameters
+/// instead; this fit stays as it is, so that every spline made with it
+/// keeps its shape.
 ///
 /// It is always open: points whose last is their first make a spline
 /// from the first point back to it, which leaves and reaches it in
@@ -301,6 +312,138 @@ pub fn interpolate(degree: u32, through: &[(f64, f64)]) -> Result<Vec<(f64, f64)
         *last = *point;
     }
     Ok(control)
+}
+
+/// The chord-length parameters at which the open spline of `degree`
+/// through `through` passes through its points, from 0 to 1, and its
+/// knots: `degree + 1` zeros, each inner knot the mean of `degree`
+/// parameters in a row, `degree + 1` ones (*The NURBS Book*, eqs. 9.4, 9.5
+/// and 9.8: [`chord_lengths`] and [`averaged_knots`], which the formula fit
+/// uses too). The parameters rise strictly, so the averaged knots satisfy
+/// Schoenberg and Whitney's condition and the spline through them is
+/// determined.
+///
+/// Every point needs a place of its own: two in a row at one place, or so
+/// close that their leg is at most [`LEAST_LEG`] of the polygon's length
+/// (where [`chord_lengths`] would have to stretch it), are refused, naming
+/// them, as is a length that is not a finite number.
+pub fn chord_parameters(degree: usize, through: &[P2]) -> Result<(Vec<f64>, Vec<f64>), String> {
+    let n = through.len();
+    if degree == 0 || degree > craft3d_doc::MAX_SPLINE_DEGREE as usize || n <= degree {
+        return Err(format!(
+            "a spline of degree {degree} through points needs from {} to {} of them, got {n}",
+            degree.saturating_add(1),
+            MAX_THROUGH_POINTS
+        ));
+    }
+    if n > MAX_THROUGH_POINTS {
+        return Err(format!(
+            "a spline is fitted through at most {MAX_THROUGH_POINTS} points, got {n}"
+        ));
+    }
+    if !through.iter().all(|[x, y]| x.is_finite() && y.is_finite()) {
+        return Err("a point of the spline is not a finite number".into());
+    }
+    let legs = leg_lengths(through);
+    let total: f64 = legs.iter().sum();
+    if !(total.is_finite() && total > 0.0) {
+        return Err(
+            "the points of the spline have no length between them that is a finite number".into(),
+        );
+    }
+    if let Some(i) = legs.iter().position(|leg| *leg <= total * LEAST_LEG) {
+        return Err(too_close(&legs, i, total));
+    }
+    let params = chord_lengths(through);
+    if let Some(i) = params
+        .windows(2)
+        .position(|pair| matches!(pair, [a, b] if b <= a))
+    {
+        return Err(too_close(&legs, i, total));
+    }
+    let knots = averaged_knots(degree, &params);
+    Ok((params, knots))
+}
+
+/// Why points `i + 1` and `i + 2` (counted from 1) of a spline through
+/// points are refused: their leg is too short beside the polygon's length.
+fn too_close(legs: &[f64], i: usize, total: f64) -> String {
+    let leg = legs.get(i).copied().unwrap_or(0.0);
+    if leg == 0.0 {
+        format!(
+            "points {} and {} of the spline are at the same place; a spline with chord spacing takes each place once",
+            i + 1,
+            i + 2
+        )
+    } else {
+        format!(
+            "points {} and {} of the spline are {leg:e} apart, too close beside the length of {total:e} through them all for a spline with chord spacing to tell them apart",
+            i + 1,
+            i + 2
+        )
+    }
+}
+
+/// The clamped knots of a spline of `degree` through points at `params`
+/// (rising from 0 to 1): `degree + 1` zeros, inner knot `j` the mean of
+/// `params[j..j + degree]` (*The NURBS Book*, eq. 9.8), `degree + 1` ones;
+/// `params.len() + degree + 1` in all. Empty for a degree of 0 or fewer
+/// than `degree + 1` parameters.
+pub fn averaged_knots(degree: usize, params: &[f64]) -> Vec<f64> {
+    let n = params.len();
+    if degree == 0 || n <= degree {
+        return Vec::new();
+    }
+    let mut knots = Vec::with_capacity(n + degree + 1);
+    knots.extend(std::iter::repeat_n(0.0, degree + 1));
+    for window in params.get(1..n - 1).unwrap_or(&[]).windows(degree) {
+        knots.push(window.iter().sum::<f64>() / degree as f64);
+    }
+    knots.extend(std::iter::repeat_n(1.0, degree + 1));
+    knots
+}
+
+/// The open spline of `degree` through `through` with chord spacing: its
+/// knots and control points, as many as there are points, the first and
+/// last the end points exactly ([`chord_parameters`]). When the system
+/// cannot be solved, the reason names the two points in a row that are
+/// closest beside the others.
+fn interpolate_chord(degree: usize, through: &[P2]) -> Result<Spline2, String> {
+    let (params, knots) = chord_parameters(degree, through)?;
+    let count = through.len();
+    let mut rows: Vec<(Vec<f64>, f64, f64)> = Vec::with_capacity(count);
+    for (u, point) in params.iter().zip(through) {
+        let (span, values) = basis(degree, &knots, count, *u).ok_or("the knots do not fit")?;
+        let first = span.checked_sub(degree).ok_or("the knots do not fit")?;
+        let mut row = vec![0.0; count];
+        for (slot, value) in row.iter_mut().skip(first).zip(&values) {
+            *slot = *value;
+        }
+        rows.push((row, point[0], point[1]));
+    }
+    let solved = solve_dense(rows).map_err(|why| {
+        let legs = leg_lengths(through);
+        let total: f64 = legs.iter().sum();
+        let shortest = legs
+            .iter()
+            .enumerate()
+            .min_by(|a, b| a.1.total_cmp(b.1))
+            .map_or(0, |(i, _)| i);
+        format!("{why}: {}", too_close(&legs, shortest, total))
+    })?;
+    let mut control: Vec<P2> = solved.into_iter().map(|(x, y)| [x, y]).collect();
+    // The ends are the end points exactly, not within rounding.
+    if let (Some(first), Some(point)) = (control.first_mut(), through.first()) {
+        *first = *point;
+    }
+    if let (Some(last), Some(point)) = (control.last_mut(), through.last()) {
+        *last = *point;
+    }
+    Ok(Spline2 {
+        degree,
+        knots,
+        control,
+    })
 }
 
 /// The square system of `rows` (each the coefficients and the right-hand
@@ -558,10 +701,29 @@ fn insert_knot(
 }
 
 /// The live spline of `degree` through `through` as the kernel takes it:
-/// [`interpolate`] on clamped uniform knots.
+/// with Greville spacing [`interpolate`] on clamped uniform knots, with
+/// chord spacing on the knots averaged from its chord-length parameters
+/// ([`chord_parameters`]).
 /// `closed` (its first point is its last, as the same point): the
-/// periodic spline of [`interpolate_closed`].
-pub fn interpolated(degree: u32, through: &[P2], closed: bool) -> Result<Spline2, String> {
+/// periodic spline of [`interpolate_closed`], point `i` of the `k` distinct
+/// ones at `i / k`; a closed spline with chord spacing is not fitted yet.
+pub fn interpolated(
+    degree: u32,
+    through: &[P2],
+    closed: bool,
+    spacing: craft3d_doc::SplineSpacing,
+) -> Result<Spline2, String> {
+    use craft3d_doc::SplineSpacing;
+    if spacing == SplineSpacing::Chord {
+        if closed {
+            return Err(
+                "a closed spline with chord spacing is not supported yet; make it with the default spacing (greville)"
+                    .into(),
+            );
+        }
+        let p = usize::try_from(degree).map_err(|_| "the degree is too high".to_string())?;
+        return interpolate_chord(p, through);
+    }
     let points: Vec<(f64, f64)> = through.iter().map(|p| (p[0], p[1])).collect();
     let control = if closed {
         if points.len() > MAX_THROUGH_POINTS {
@@ -595,12 +757,7 @@ fn interpolate_at(params: &[f64], points: &[P2]) -> Result<Spline2, String> {
         return Err(format!("a fit needs at least {} samples", p + 1));
     }
     // p + 1 zeros, n − p − 1 averaged knots, p + 1 ones.
-    let mut knots = vec![0.0; p + 1];
-    for j in 1..n - p {
-        let window = params.get(j..j + p).ok_or("the samples are too few")?;
-        knots.push(window.iter().sum::<f64>() / p as f64);
-    }
-    knots.extend(std::iter::repeat_n(1.0, p + 1));
+    let knots = averaged_knots(p, params);
     // Row i holds the columns i − p ..= i + p.
     let width = 2 * p + 1;
     let mut band = vec![0.0; n * width];
@@ -673,12 +830,7 @@ fn interpolate_with_ends(
             doubled.push(*u);
         }
     }
-    let mut knots = vec![0.0; p + 1];
-    for j in 1..m - p {
-        let window = doubled.get(j..j + p).ok_or("the samples are too few")?;
-        knots.push(window.iter().sum::<f64>() / p as f64);
-    }
-    knots.extend(std::iter::repeat_n(1.0, p + 1));
+    let knots = averaged_knots(p, &doubled);
     let (Some(&first), Some(&last)) = (points.first(), points.last()) else {
         return Err("there are no samples".into());
     };
@@ -861,21 +1013,30 @@ fn band_solve(p: usize, n: usize, mut band: Vec<f64>, mut rhs: Vec<P2>) -> Resul
     Ok(control)
 }
 
-/// The parameters of `points` by the length of the polygon through them,
-/// from 0 to 1: the spline then runs at about even speed, also where the
-/// formula's parameter does not (an involute leaves its base circle at
-/// speed zero). A leg is counted at least a billionth of the whole, so the
-/// parameters rise.
-fn chord_lengths(points: &[P2]) -> Vec<f64> {
-    let legs: Vec<f64> = points
+/// The share of a polygon's length below which [`chord_lengths`] counts a
+/// leg as that share: a billionth.
+pub const LEAST_LEG: f64 = 1e-9;
+
+/// The lengths of the legs of the polygon through `points`.
+fn leg_lengths(points: &[P2]) -> Vec<f64> {
+    points
         .windows(2)
         .map(|w| match *w {
             [a, b] => distance(a, b),
             _ => 0.0,
         })
-        .collect();
+        .collect()
+}
+
+/// The parameters of `points` by the length of the polygon through them,
+/// from 0 to 1: the spline then runs at about even speed, also where the
+/// formula's parameter does not (an involute leaves its base circle at
+/// speed zero). A leg is counted at least [`LEAST_LEG`] of the whole, so
+/// the parameters rise.
+fn chord_lengths(points: &[P2]) -> Vec<f64> {
+    let legs = leg_lengths(points);
     let total: f64 = legs.iter().sum();
-    let least = total * 1e-9;
+    let least = total * LEAST_LEG;
     let legs: Vec<f64> = legs.into_iter().map(|l| l.max(least)).collect();
     let total: f64 = legs.iter().sum();
     let mut params = Vec::with_capacity(points.len());
@@ -1181,9 +1342,74 @@ pub fn fit_formula(
 }
 
 #[cfg(test)]
+#[path = "curve_fit_spacing_tests.rs"]
+mod spacing_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use craft3d_math::Portable;
+
+    /// The formula fits are bit for bit what they were before the live
+    /// splines' chord spacing came to share their averaged knots and chord
+    /// lengths (2026-11-14): an FNV-1a digest of the degree and of every
+    /// knot's and control coordinate's bits, recorded with the code before.
+    /// A circle and an involute (free ends: `interpolate_at`), a parabola
+    /// and a spiral (end directions: `interpolate_with_ends`).
+    #[test]
+    fn formula_fits_are_bit_for_bit_what_they_were() {
+        let digest = |s: &Spline2| {
+            let bits = std::iter::once(s.degree as u64)
+                .chain(s.knots.iter().map(|k| k.to_bits()))
+                .chain(s.control.iter().flatten().map(|c| c.to_bits()));
+            bits.fold(0xcbf2_9ce4_8422_2325_u64, |hash, word| {
+                word.to_le_bytes().iter().fold(hash, |h, byte| {
+                    (h ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+                })
+            })
+        };
+        let rb = 20.0;
+        let fits = [
+            fit_formula(
+                |t: f64| Ok([20.0 * t.pcos(), 20.0 * t.psin()]),
+                0.0,
+                3.0,
+                1e-6,
+            ),
+            fit_formula(
+                |t: f64| {
+                    Ok([
+                        rb * (t.pcos() + t * t.psin()),
+                        rb * (t.psin() - t * t.pcos()),
+                    ])
+                },
+                0.0,
+                0.6,
+                1e-6,
+            ),
+            fit_formula(|t: f64| Ok([t, t * t]), 0.0, 1.0, 1e-6),
+            fit_formula(
+                |t: f64| Ok([(1.0 + t) * t.pcos(), (1.0 + t) * t.psin()]),
+                0.0,
+                12.0,
+                1e-4,
+            ),
+        ];
+        let digests: Vec<u64> = fits
+            .iter()
+            .map(|f| digest(&f.as_ref().unwrap().spline))
+            .collect();
+        assert_eq!(
+            digests,
+            vec![
+                0xb663_97eb_a99b_1626,
+                0xdc82_a832_9078_4bdc,
+                0xa137_fa18_c25d_4b8b,
+                0x730d_add0_5ef5_bac7
+            ],
+            "{digests:#x?}"
+        );
+    }
 
     #[test]
     fn a_circle_is_fitted_within_the_tolerance() {
@@ -1493,6 +1719,7 @@ mod tests {
                     degree,
                     &through.iter().map(|p| [p.0, p.1]).collect::<Vec<_>>(),
                     true,
+                    craft3d_doc::SplineSpacing::Greville,
                 )
                 .unwrap();
                 let p = degree as usize;

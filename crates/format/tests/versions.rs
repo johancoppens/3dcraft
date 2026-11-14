@@ -121,6 +121,9 @@ const FROZEN: &[(u32, usize, u64)] = &[
     // by its own name, the other chamfered by its name with the face its
     // first distance is measured along (edges by their own names).
     (70, 7392, 0x5c20_6f0f_760b_7c39),
+    // Two live splines with chord spacing: one through uneven points of a
+    // line (which it is), one through points near an involute.
+    (71, 10411, 0x2817_1d74_7408_006d),
 ];
 
 fn dir() -> PathBuf {

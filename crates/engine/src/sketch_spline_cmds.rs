@@ -9,7 +9,9 @@
 //! given points are worked out here, once, and from then on it is a spline
 //! like any other. With `live`, it is: a spline through points that is
 //! fitted again at every regeneration (`craft3d_doc::Geometry::Interpolated`),
-//! so points held by formulas move it.
+//! so points held by formulas move it, and which may take its points at
+//! chord-length parameters (`spacing`, `craft3d_doc::SplineSpacing`)
+//! instead of the Greville abscissae of uniform knots.
 
 use crate::commands::{Run, fail, spec};
 use crate::params::Params;
@@ -17,7 +19,8 @@ use crate::sketch_cmds::{PointArg, change, ids, sketch_ref, sketch_result};
 use crate::typed::Typed;
 use crate::{CommandSpec, Session};
 use craft3d_doc::{
-    EntityId, MAX_SPLINE_DEGREE, MAX_SPLINE_POINTS, Sketch, SketchError, clamped_uniform_knots,
+    EntityId, MAX_SPLINE_DEGREE, MAX_SPLINE_POINTS, Sketch, SketchError, SplineSpacing,
+    clamped_uniform_knots,
 };
 use craft3d_math::Portable;
 use craft3d_regen::curve_fit::{basis, interpolate, periodic_control};
@@ -27,8 +30,8 @@ use serde_json::{Value, json};
 const MAX_DRAWN_POINTS: usize = 4096;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("sketch.spline", "Sketch Spline", r#"{"sketch": id or name, "control": [point id or [x, y], ...], "through": [point id or [x, y], ...], "degree": integer = 3, "closed": boolean = false, "periodic": boolean = closed, "live": boolean = false, "construction": boolean = false}"#,
-        "Adds a B-spline. Give either control: its control points in order (it starts at the first, ends at the last and leaves each along the leg to the next; the points in between pull it without lying on it), or through: points it passes through, from which the control points are worked out once (the first and last are shared as given, the ones in between become new control points). An existing point (\"e1\") shares an end with a line, an arc or another spline, which is how a spline closes a profile; a tangent constraint between the two then makes the corner smooth. degree is from 1 to 7 and needs degree + 1 points; closed brings the spline back to its first point, smooth all round: a periodic spline, also where it closes and when its points are moved later (written as a clamped spline of degree more control points than the points given, the first and last its seam). Closed with through, it passes through every point given and its seam is the first one; an even degree needs an odd number of points. Closed with control, the points given are a closed control polygon it passes through none of; its seam lies across the first point, and the control points near it are new points (the result lists them all). periodic: false (only with closed, not live) makes the closed spline as before 2026-11-04 instead: clamped, from its first point back to it, which it leaves and reaches in directions of their own (a corner there, as a teardrop's tip), its points as given. A profile takes splines that do not cross or touch themselves or other curves, extruded or revolved: a closed spline is a profile on its own (its wall is made in two faces, the second called F2:piece(1)/F2:side(eN), eN the spline), and a spline of degree 1 is a polyline whose every leg sweeps a flat face (numbered the same way). Revolved, a spline has to stay clear of the axis (a line may lie on it). Returns the spline and its control points; move one with sketch.edit (entity and at). With live (only with through) the points given are the spline's own points, kept as they are, and the spline is fitted through them again at every regeneration: points held by formulas ([\"r * cos(30 deg)\", \"r * sin(30 deg)\"]) or by constraints move it, and the fit is the same as through gives once. A live spline takes pointOn and tangent as a formula curve does (see sketch.constrain); returns the spline and its through points.", doc: true, sketch_spline),
+    spec!("sketch.spline", "Sketch Spline", r#"{"sketch": id or name, "control": [point id or [x, y], ...], "through": [point id or [x, y], ...], "degree": integer = 3, "closed": boolean = false, "periodic": boolean = closed, "live": boolean = false, "spacing": "greville|chord" = "greville", "construction": boolean = false}"#,
+        "Adds a B-spline. Give either control: its control points in order (it starts at the first, ends at the last and leaves each along the leg to the next; the points in between pull it without lying on it), or through: points it passes through, from which the control points are worked out once (the first and last are shared as given, the ones in between become new control points). An existing point (\"e1\") shares an end with a line, an arc or another spline, which is how a spline closes a profile; a tangent constraint between the two then makes the corner smooth. degree is from 1 to 7 and needs degree + 1 points; closed brings the spline back to its first point, smooth all round: a periodic spline, also where it closes and when its points are moved later (written as a clamped spline of degree more control points than the points given, the first and last its seam). Closed with through, it passes through every point given and its seam is the first one; an even degree needs an odd number of points. Closed with control, the points given are a closed control polygon it passes through none of; its seam lies across the first point, and the control points near it are new points (the result lists them all). periodic: false (only with closed, not live) makes the closed spline as before 2026-11-04 instead: clamped, from its first point back to it, which it leaves and reaches in directions of their own (a corner there, as a teardrop's tip), its points as given. A profile takes splines that do not cross or touch themselves or other curves, extruded or revolved: a closed spline is a profile on its own (its wall is made in two faces, the second called F2:piece(1)/F2:side(eN), eN the spline), and a spline of degree 1 is a polyline whose every leg sweeps a flat face (numbered the same way). Revolved, a spline has to stay clear of the axis (a line may lie on it). Returns the spline and its control points; move one with sketch.edit (entity and at). With live (only with through) the points given are the spline's own points, kept as they are, and the spline is fitted through them again at every regeneration: points held by formulas ([\"r * cos(30 deg)\", \"r * sin(30 deg)\"]) or by constraints move it, and the fit is the same as through gives once. A live spline takes pointOn and tangent as a formula curve does (see sketch.constrain); returns the spline and its through points. spacing (with through) sets the parameters at which the spline takes its points, which decide its shape between them: greville (the default, as every spline through points before 2026-11-13) puts them on uniform knots, each at its control point's Greville abscissa, which does not follow the points and is not even near the ends, so between points it strays more than a textbook interpolant (through 8 points of an involute flank 0.0095 mm, where chord spacing stays within 0.00044 mm); chord takes them at the length of the polygon through them up to each, on knots averaged from those parameters (The NURBS Book, eqs. 9.4, 9.5, 9.8), for points spaced any way along a smooth curve (points on a line give that line, at even speed). Only a live spline takes chord (one made once is kept as control points on uniform knots, which only greville fits); a closed spline with chord spacing is refused (not built yet), and so are pointOn and tangent on a chord spline (its parameters move with its points: make the spline with the default spacing to hold a point on it). Two points in a row at one place, or so close that their leg is at most a billionth of the length through them all, are refused with chord spacing, naming them.", doc: true, sketch_spline),
 ];
 
 /// A sketch spline of `degree` on these control points, for evaluating.
@@ -166,6 +169,7 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
             "closed",
             "periodic",
             "live",
+            "spacing",
             "construction",
         ],
     )?;
@@ -208,6 +212,33 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
         None => closed,
     };
     let construction = p.bool("construction")?.unwrap_or(false);
+    let spacing = match p.str("spacing")? {
+        None => SplineSpacing::Greville,
+        Some(name) => SplineSpacing::from_name(name).ok_or_else(|| {
+            crate::CommandError::new(format!(
+                "{COMMAND}: `spacing` is {}, got \"{name}\"",
+                SplineSpacing::NAMES
+            ))
+        })?,
+    };
+    if !spacing.is_greville() {
+        if !fitted {
+            return fail(format!(
+                "{COMMAND}: `spacing` is for a spline through points: give `through` (and `live: true`), not `control`"
+            ));
+        }
+        if !live {
+            return fail(format!(
+                "{COMMAND}: spacing {} puts the spline on knots averaged from its points' parameters, which only a live spline keeps (one made once is kept as control points on uniform knots): give `live: true`",
+                spacing.name()
+            ));
+        }
+        if closed {
+            return fail(format!(
+                "{COMMAND}: a closed spline with chord spacing is not supported yet; make it with the default spacing (greville)"
+            ));
+        }
+    }
     if live && !fitted {
         return fail(format!(
             "{COMMAND}: `live` fits a spline through points at every regeneration: give `through`, not `control`"
@@ -293,7 +324,8 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
                     point.place(s)?
                 });
             }
-            let spline = s.add_interpolated(degree, points.clone(), construction)?;
+            let spline =
+                s.add_interpolated_spaced(degree, points.clone(), spacing, construction)?;
             Ok((spline, points))
         })?;
         let (start, end) = (points.first().copied(), points.last().copied());
@@ -305,6 +337,7 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
                 "entity": spline.to_string(),
                 "degree": degree,
                 "live": true,
+                "spacing": spacing.name(),
                 "through": ids(&points),
                 "start": start.map(|id| id.to_string()),
                 "end": end.map(|id| id.to_string()),

@@ -2521,12 +2521,18 @@ fn entity_to_manifest(entity: &doc::Entity) -> manifest::SketchEntity {
                 start: raw(start),
                 end: raw(end),
             },
-            doc::Geometry::Interpolated { degree, through } => {
-                manifest::SketchGeometry::Interpolated {
-                    degree: *degree,
-                    through: through.iter().map(raw).collect(),
-                }
-            }
+            doc::Geometry::Interpolated {
+                degree,
+                through,
+                spacing,
+            } => manifest::SketchGeometry::Interpolated {
+                degree: *degree,
+                through: through.iter().map(raw).collect(),
+                spacing: match spacing {
+                    doc::SplineSpacing::Greville => manifest::SplineSpacing::Greville,
+                    doc::SplineSpacing::Chord => manifest::SplineSpacing::Chord,
+                },
+            },
             doc::Geometry::Text(text) => text_to_manifest(text),
             doc::Geometry::Image {
                 of,
@@ -2911,12 +2917,18 @@ fn entity_to_doc(entity: manifest::SketchEntity) -> doc::Entity {
                 start: Id(start),
                 end: Id(end),
             },
-            manifest::SketchGeometry::Interpolated { degree, through } => {
-                doc::Geometry::Interpolated {
-                    degree,
-                    through: through.into_iter().map(Id).collect(),
-                }
-            }
+            manifest::SketchGeometry::Interpolated {
+                degree,
+                through,
+                spacing,
+            } => doc::Geometry::Interpolated {
+                degree,
+                through: through.into_iter().map(Id).collect(),
+                spacing: match spacing {
+                    manifest::SplineSpacing::Greville => doc::SplineSpacing::Greville,
+                    manifest::SplineSpacing::Chord => doc::SplineSpacing::Chord,
+                },
+            },
             manifest::SketchGeometry::Text {
                 text,
                 font,

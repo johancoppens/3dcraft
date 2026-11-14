@@ -565,9 +565,18 @@ fn problem(
                 );
                 (number, Vec::new())
             }
-            Geometry::Interpolated { degree, through }
-                if through.len() > 2 && through.first() == through.last() =>
-            {
+            Geometry::Interpolated {
+                degree,
+                through,
+                spacing,
+            } if through.len() > 2 && through.first() == through.last() => {
+                // Chord spacing is not fitted closed yet (refused by the
+                // command; a file that holds one fails here).
+                if *spacing == craft3d_doc::SplineSpacing::Chord {
+                    return Err(format!(
+                        "{curve}: a closed spline with chord spacing is not supported yet; make it with the default spacing (greville)"
+                    ));
+                }
                 // Closed: periodic, smooth where it closes. The solver has
                 // it as the clamped spline it is, on `k + p` control points
                 // (the first and last the first point), through point `i`
@@ -586,7 +595,7 @@ fn problem(
                 let at: Option<Vec<[f64; 2]>> = through.iter().map(|id| stored_at(*id)).collect();
                 let guess = at
                     .as_ref()
-                    .and_then(|at| curve_fit::interpolated(*degree, at, true).ok())
+                    .and_then(|at| curve_fit::interpolated(*degree, at, true, *spacing).ok())
                     .map(|fit| fit.control)
                     .filter(|control| control.len() == count);
                 let seam = find(*first)?;
@@ -614,7 +623,17 @@ fn problem(
                 let number = input.add_closed_spline_through(p, knots, control.clone(), passes);
                 (number, control)
             }
-            Geometry::Interpolated { degree, through } => {
+            Geometry::Interpolated {
+                degree,
+                through,
+                spacing,
+            } => {
+                // Chord-length parameters move with the points the solve
+                // moves, which its equations do not take yet (refused when
+                // the constraint is made; a file that holds one fails here).
+                if *spacing == craft3d_doc::SplineSpacing::Chord {
+                    return Err(Sketch::chord_constraint_refusal(curve));
+                }
                 let p = usize::try_from(*degree)
                     .map_err(|_| format!("{curve}: the degree is too high"))?;
                 let knots = craft3d_doc::clamped_uniform_knots(*degree, through.len());
@@ -629,7 +648,7 @@ fn problem(
                 let at: Option<Vec<[f64; 2]>> = through.iter().map(|id| stored_at(*id)).collect();
                 let guess = at
                     .as_ref()
-                    .and_then(|at| curve_fit::interpolated(*degree, at, false).ok())
+                    .and_then(|at| curve_fit::interpolated(*degree, at, false, *spacing).ok())
                     .map(|fit| fit.control);
                 let mut control = vec![find(*first)?];
                 let mut passes = Vec::new();
@@ -2125,13 +2144,17 @@ fn fitted_curves(
                 }
                 curves.push(curve);
             }
-            Geometry::Interpolated { degree, through } => {
+            Geometry::Interpolated {
+                degree,
+                through,
+                spacing,
+            } => {
                 // Closed by its points: the same point first and last.
                 let closed = through.len() > 2 && through.first() == through.last();
                 let at: Option<Vec<[f64; 2]>> = through.iter().map(|id| solved_at(*id)).collect();
                 let spline = at
                     .ok_or_else(|| "a point it passes through has no solved position".to_string())
-                    .and_then(|at| curve_fit::interpolated(*degree, &at, closed));
+                    .and_then(|at| curve_fit::interpolated(*degree, &at, closed, *spacing));
                 match spline {
                     Ok(spline) => curves.push(FittedCurve {
                         id: entity.id,
@@ -2487,9 +2510,9 @@ fn seam_tangent(sketch: &Sketch, a: EntityId, b: EntityId) -> Option<String> {
                 periodic: true,
                 degree,
             } if *degree >= 2 => control.first().copied(),
-            Geometry::Interpolated { through, degree }
-                if *degree >= 2 && through.len() > 2 && through.first() == through.last() =>
-            {
+            Geometry::Interpolated {
+                through, degree, ..
+            } if *degree >= 2 && through.len() > 2 && through.first() == through.last() => {
                 through.first().copied()
             }
             _ => None,

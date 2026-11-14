@@ -1,0 +1,526 @@
+{
+  "format_version": 71,
+  "written_by": "d11d2eb0bcc667d1c6f3c28da1094550d19541c1",
+  "how": "craft3d-cli of that commit (a debug build, on the developer's laptop): craft3d-cli run --new '{\"units\": \"mm\"}' --script v71.steps.json --out v71.3dcraft, then craft3d-cli run v71.3dcraft --cmd document.inspect for the features and bodies; two live splines with chord spacing, each closed to a profile by two lines and extruded 2 mm: six points of the line y = x / 2, spaced 1.5, 2.5, 12, 3 and 1 mm apart in x, which chord spacing gives as that line (the ramp's volume is 200, its area 260 + 20 sqrt 5, closed forms), and four points near an involute flank: the spacing of a live spline, format 71. Re-recorded on 2026-11-14 when even spacing was taken out before format 71 left its branch",
+  "rollback": null,
+  "features": [
+    {
+      "dof": 0,
+      "id": "F1",
+      "name": "Chord ramp",
+      "params": {
+        "constraints": [
+          {
+            "id": 1,
+            "kind": {
+              "point": 1,
+              "type": "x",
+              "value": "0 mm"
+            }
+          },
+          {
+            "id": 2,
+            "kind": {
+              "point": 1,
+              "type": "y",
+              "value": "0 mm"
+            }
+          },
+          {
+            "id": 3,
+            "kind": {
+              "point": 2,
+              "type": "x",
+              "value": "1.5 mm"
+            }
+          },
+          {
+            "id": 4,
+            "kind": {
+              "point": 2,
+              "type": "y",
+              "value": "0.75 mm"
+            }
+          },
+          {
+            "id": 5,
+            "kind": {
+              "point": 3,
+              "type": "x",
+              "value": "4 mm"
+            }
+          },
+          {
+            "id": 6,
+            "kind": {
+              "point": 3,
+              "type": "y",
+              "value": "2 mm"
+            }
+          },
+          {
+            "id": 7,
+            "kind": {
+              "point": 4,
+              "type": "x",
+              "value": "16 mm"
+            }
+          },
+          {
+            "id": 8,
+            "kind": {
+              "point": 4,
+              "type": "y",
+              "value": "8 mm"
+            }
+          },
+          {
+            "id": 9,
+            "kind": {
+              "point": 5,
+              "type": "x",
+              "value": "19 mm"
+            }
+          },
+          {
+            "id": 10,
+            "kind": {
+              "point": 5,
+              "type": "y",
+              "value": "9.5 mm"
+            }
+          },
+          {
+            "id": 11,
+            "kind": {
+              "point": 6,
+              "type": "x",
+              "value": "20 mm"
+            }
+          },
+          {
+            "id": 12,
+            "kind": {
+              "point": 6,
+              "type": "y",
+              "value": "10 mm"
+            }
+          },
+          {
+            "id": 13,
+            "kind": {
+              "point": 8,
+              "type": "x",
+              "value": "20 mm"
+            }
+          },
+          {
+            "id": 14,
+            "kind": {
+              "point": 8,
+              "type": "y",
+              "value": "0 mm"
+            }
+          }
+        ],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 1.5,
+              "y": 0.75
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 4.0,
+              "y": 2.0
+            },
+            "id": 3
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 16.0,
+              "y": 8.0
+            },
+            "id": 4
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 19.0,
+              "y": 9.5
+            },
+            "id": 5
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 20.0,
+              "y": 10.0
+            },
+            "id": 6
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "degree": 3,
+              "spacing": "chord",
+              "through": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6
+              ],
+              "type": "interpolated"
+            },
+            "id": 7
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 20.0,
+              "y": 0.0
+            },
+            "id": 8
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 8,
+              "start": 6,
+              "type": "line"
+            },
+            "id": 9
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 1,
+              "start": 8,
+              "type": "line"
+            },
+            "id": 10
+          }
+        ],
+        "next_constraint_id": 15,
+        "next_entity_id": 11,
+        "plane": {
+          "offset": "0",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F2",
+      "name": "Ramp",
+      "params": {
+        "distance": "2 mm",
+        "end": {
+          "type": "distance"
+        },
+        "reversed": false,
+        "sketch": 1,
+        "symmetric": false,
+        "type": "extrude"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 0,
+      "id": "F3",
+      "name": "Chord flank",
+      "params": {
+        "constraints": [
+          {
+            "id": 1,
+            "kind": {
+              "point": 1,
+              "type": "x",
+              "value": "0 mm"
+            }
+          },
+          {
+            "id": 2,
+            "kind": {
+              "point": 1,
+              "type": "y",
+              "value": "0 mm"
+            }
+          },
+          {
+            "id": 3,
+            "kind": {
+              "point": 2,
+              "type": "x",
+              "value": "rb"
+            }
+          },
+          {
+            "id": 4,
+            "kind": {
+              "point": 2,
+              "type": "y",
+              "value": "0 mm"
+            }
+          },
+          {
+            "id": 5,
+            "kind": {
+              "point": 3,
+              "type": "x",
+              "value": "13.5 mm"
+            }
+          },
+          {
+            "id": 6,
+            "kind": {
+              "point": 3,
+              "type": "y",
+              "value": "0.08 mm"
+            }
+          },
+          {
+            "id": 7,
+            "kind": {
+              "point": 4,
+              "type": "x",
+              "value": "14.6 mm"
+            }
+          },
+          {
+            "id": 8,
+            "kind": {
+              "point": 4,
+              "type": "y",
+              "value": "0.5 mm"
+            }
+          },
+          {
+            "id": 9,
+            "kind": {
+              "point": 5,
+              "type": "x",
+              "value": "16 mm"
+            }
+          },
+          {
+            "id": 10,
+            "kind": {
+              "point": 5,
+              "type": "y",
+              "value": "1.5 mm"
+            }
+          }
+        ],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 13.155697,
+              "y": 0.0
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 13.5,
+              "y": 0.08
+            },
+            "id": 3
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 14.6,
+              "y": 0.5
+            },
+            "id": 4
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 16.0,
+              "y": 1.5
+            },
+            "id": 5
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "degree": 3,
+              "spacing": "chord",
+              "through": [
+                2,
+                3,
+                4,
+                5
+              ],
+              "type": "interpolated"
+            },
+            "id": 6
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 1,
+              "start": 5,
+              "type": "line"
+            },
+            "id": 7
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 2,
+              "start": 1,
+              "type": "line"
+            },
+            "id": 8
+          }
+        ],
+        "next_constraint_id": 11,
+        "next_entity_id": 9,
+        "plane": {
+          "offset": "5 mm",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F4",
+      "name": "Chord",
+      "params": {
+        "distance": "2 mm",
+        "end": {
+          "type": "distance"
+        },
+        "reversed": false,
+        "sketch": 3,
+        "symmetric": false,
+        "type": "extrude"
+      },
+      "status": "ok",
+      "suppressed": false
+    }
+  ],
+  "bodies": [
+    {
+      "area": 304.7213595499959,
+      "bbox": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          20.0,
+          10.0,
+          2.0
+        ]
+      ],
+      "bboxTolerance": 0.0197592719340777,
+      "centroid": [
+        13.333333333333334,
+        3.333333333333333,
+        0.9999999999999999
+      ],
+      "edges": 9,
+      "faceNames": [
+        "F2:side(e7)",
+        "F2:side(e10)",
+        "F2:side(e9)",
+        "F2:startCap(e7,e9,e10)",
+        "F2:endCap(e7,e9,e10)"
+      ],
+      "faces": 5,
+      "feature": "F2",
+      "kind": "solid",
+      "name": "Ramp",
+      "shells": 1,
+      "valid": true,
+      "vertices": 6,
+      "volume": 200.00000000000006
+    },
+    {
+      "area": 85.70746781483479,
+      "bbox": [
+        [
+          0.0,
+          0.0,
+          5.0
+        ],
+        [
+          16.0,
+          1.5,
+          7.0
+        ]
+      ],
+      "bboxTolerance": 0.0197592719340777,
+      "centroid": [
+        9.955396500479,
+        0.5080978091435138,
+        6.0
+      ],
+      "edges": 9,
+      "faceNames": [
+        "F4:side(e6)",
+        "F4:side(e7)",
+        "F4:side(e8)",
+        "F4:startCap(e6,e7,e8)",
+        "F4:endCap(e6,e7,e8)"
+      ],
+      "faces": 5,
+      "feature": "F4",
+      "kind": "solid",
+      "name": "Chord",
+      "shells": 1,
+      "valid": true,
+      "vertices": 6,
+      "volume": 20.735166418514833
+    }
+  ]
+}

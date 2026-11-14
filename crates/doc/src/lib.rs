@@ -75,7 +75,8 @@ pub use sketch::{
     FORMULA_PARAMETER, Geometry, ImagePlace, InstanceIndex, MAX_ENTITY_ID, MAX_PATTERN_DEPTH,
     MAX_PATTERN_INSTANCES, MAX_SKETCH_PATTERNS, MAX_SPLINE_DEGREE, MAX_SPLINE_POINTS, PatternId,
     PlaceMap, Removal, SecondDirection, Sketch, SketchError, SketchPattern, SketchPatternLayout,
-    SketchPlane, WorldPlane, clamped_uniform_knots, parse_image_path, parse_image_ref,
+    SketchPlane, SplineSpacing, WorldPlane, clamped_uniform_knots, parse_image_path,
+    parse_image_ref,
 };
 
 use craft3d_expr::{VariableError, VariableTable};
