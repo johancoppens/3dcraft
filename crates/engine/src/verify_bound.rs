@@ -94,6 +94,66 @@ fn max_total_strata_pairs() -> usize {
     MAX_TOTAL_STRATA_PAIRS
 }
 
+/// Most freeform work one distance, or one thickness, spends telling its
+/// faces' pieces in from out, in the units of [`craft3d_geom::allowance`]
+/// (evaluations of freeform curves and surfaces: some millions a second).
+/// The pairs of pieces bound what the search itself does; what one piece
+/// costs they do not: whether its middle is in its face is asked of the
+/// kernel (`Probe::on_face`), which is cheap for a face bounded by lines
+/// and circles and may take milliseconds beside a spline edge that passes
+/// a hair from a cone's apex (a hundred thousand evaluations a point:
+/// minutes for a search held to a bound out of reach). Past this much, a
+/// piece is no longer told: it is kept whole, as one that reaches across
+/// its face's boundary is, so what it bounds still holds every point of
+/// the face it covers, and more; what is proven can only be lower.
+pub(crate) const MAX_TELLING: u64 = 8_000_000;
+
+#[cfg(test)]
+thread_local! {
+    /// In tests, a cap lower than [`MAX_TELLING`]; per thread.
+    pub(crate) static TELLING_CAP: std::cell::Cell<Option<u64>> =
+        const { std::cell::Cell::new(None) };
+    /// In tests, the freeform work the last proof on this thread spent
+    /// (a distance's; a thickness's so far).
+    pub(crate) static TOLD: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The freeform work of one search: counted from when it began.
+struct Telling {
+    from: u64,
+    most: u64,
+}
+
+impl Telling {
+    fn start() -> Self {
+        #[cfg(test)]
+        let most = TELLING_CAP
+            .with(std::cell::Cell::get)
+            .unwrap_or(MAX_TELLING);
+        #[cfg(not(test))]
+        let most = MAX_TELLING;
+        Telling {
+            from: craft3d_geom::allowance::spent(),
+            most,
+        }
+    }
+
+    fn spent(&self) -> u64 {
+        craft3d_geom::allowance::spent().saturating_sub(self.from)
+    }
+
+    /// Whether the work allowed for telling is spent.
+    fn over(&self) -> bool {
+        self.spent() >= self.most
+    }
+
+    /// Notes what was spent, for the tests.
+    fn note(&self) {
+        #[cfg(test)]
+        TOLD.with(|told| told.set(self.spent()));
+    }
+}
+
 /// How deep an edge is halved to tell whether it meets a piece's box.
 const EDGE_DEPTH: u32 = 14;
 /// What counts as one axis, or a direction along a plane, in the
@@ -605,6 +665,8 @@ struct Search<'p, 'a> {
     rays: bool,
     /// [`Search::floor`] per face and axis.
     floors: std::cell::RefCell<BTreeMap<(usize, [u64; 6]), f64>>,
+    /// The work spent telling pieces in from out ([`MAX_TELLING`]).
+    telling: Telling,
 }
 
 impl<'p, 'a> Search<'p, 'a>
@@ -817,6 +879,10 @@ where
             if edge_near(edge, &reach) {
                 return None;
             }
+        }
+        // Past the work allowed for it, not told: kept whole.
+        if self.telling.over() {
+            return None;
         }
         match part.probe.on_face(prim.index, middle) {
             Ok(OnFace::In) => Some(true),
@@ -1077,7 +1143,7 @@ where
         let (Some(a), Some(b)) = (self.prims.get(pa), self.prims.get(pb)) else {
             return false;
         };
-        if a.kind != Kind::Face || b.kind != Kind::Face {
+        if a.kind != Kind::Face || b.kind != Kind::Face || self.telling.over() {
             return false;
         }
         let (Some(Surface::Plane(x)), Some(Surface::Plane(y))) = (a.surface, b.surface) else {
@@ -1151,7 +1217,7 @@ where
             return false;
         }
         let near = self.tol.min(0.25 * enough);
-        if px.kind != Kind::Face && lo >= -near && hi <= near {
+        if px.kind != Kind::Face && lo >= -near && hi <= near && !self.telling.over() {
             let point = match (px.curve, px.root) {
                 (Some(c), Param::Edge(t)) => c.eval(t.0),
                 (_, Param::Vertex(p)) => p,
@@ -1219,9 +1285,10 @@ where
             return known;
         }
         let foot = o + z * (o2 - o).dot(z);
-        let out = self
-            .part(prim.side, prim.part)
-            .is_some_and(|part| matches!(part.probe.on_face(prim.index, foot), Ok(OnFace::Out)));
+        let out = !self.telling.over()
+            && self.part(prim.side, prim.part).is_some_and(|part| {
+                matches!(part.probe.on_face(prim.index, foot), Ok(OnFace::Out))
+            });
         let mut least = if out { f64::INFINITY } else { 0.0 };
         for edge in &prim.boundary {
             if least <= 0.0 {
@@ -1716,6 +1783,7 @@ pub(crate) fn prove(
         failed: std::collections::BTreeSet::new(),
         rays: false,
         floors: Default::default(),
+        telling: Telling::start(),
     };
     let mut best = found;
     let mut nearer: Option<Nearer> = None;
@@ -1880,6 +1948,7 @@ pub(crate) fn prove(
     }
     #[cfg(test)]
     SPENT.with(|spent| spent.set((work, stratum_pairs.len())));
+    search.telling.note();
     // A pair of strata with a piece that could not be enclosed proves
     // nothing: its pairs of faces fall back on the mesh.
     let mut unproven = vec![false; pair_faces.len()];
@@ -1936,6 +2005,7 @@ where
                 failed: std::collections::BTreeSet::new(),
                 rays: true,
                 floors: Default::default(),
+                telling: Telling::start(),
             },
         }
     }
@@ -2050,6 +2120,7 @@ fn prove_rays(
             );
         }
     }
+    search.telling.note();
     made.iter()
         .zip(least)
         .map(|(prims, least)| {
@@ -2240,6 +2311,7 @@ mod tests {
             failed: std::collections::BTreeSet::new(),
             rays: false,
             floors: Default::default(),
+            telling: Telling::start(),
         };
         let top = body
             .faces
@@ -2355,6 +2427,7 @@ mod tests {
             failed: std::collections::BTreeSet::new(),
             rays: false,
             floors: Default::default(),
+            telling: Telling::start(),
         };
         let mut out = Vec::new();
         for (index, face) in body.faces.iter().enumerate() {
@@ -2558,6 +2631,7 @@ mod tests {
                     failed: std::collections::BTreeSet::new(),
                     rays,
                     floors: Default::default(),
+                    telling: Telling::start(),
                 };
                 let prim = search.prim((0, 0, Kind::Face, top)).unwrap();
                 // A piece at the fan's point, and one clear of it.

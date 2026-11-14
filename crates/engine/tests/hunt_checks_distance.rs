@@ -39,7 +39,13 @@
 //! (`HUNT_CASES` cases per kind, default 120) and prints every case that is
 //! not right. Cases found wrong are pinned in [`KNOWN`] with what is wrong
 //! (none at present: the ten a cone's face that holds its apex gave were
-//! repaired on 2026-11-14).
+//! repaired on 2026-11-14). Known wrong and pinned in tests of their own,
+//! which fail when it is mended: the distance of faces that cross at a
+//! shallow angle is not 0
+//! (`a_big_ball_sunk_into_a_block_is_given_a_distance_known`), and a
+//! huge ball sunk a few tolerances into a cone's or a cylinder's side is
+//! answered clear
+//! (`a_huge_ball_sunk_a_few_tolerances_into_a_side_is_answered_clear_known`).
 
 #![allow(
     clippy::unwrap_used,
@@ -2115,4 +2121,118 @@ fn a_big_ball_sunk_into_a_block_is_given_a_distance_known() {
         "the crossing faces are given {found} now: if within the tolerance (1e-3) of 0, it is \
          fixed; make this the right answer"
     );
+}
+
+/// Found by the review of the cone's proof (2026-11-14), owed, known
+/// wrong: **a pair that shares volume is answered clear, with nothing
+/// proven, and an assertion of a clearance of at least 0 passes.** A ball
+/// about 2500 times the body, sunk 3 to 10 tolerances into a cone's or a
+/// cylinder's side:
+/// - a cone of radius 4 and height 12 and a ball of radius 10 000 at
+///   (9488.832971018304, 0, 3168.277657006102): its centre is 10 000 −
+///   1e-5 from the side at half its height along the side's normal
+///   (closed form), so its surface lies 1e-5 (10 tolerances) inside the
+///   cone; `measure.clearance` answers clear, 1.097e-6, `atLeast` 0;
+/// - a cylinder of radius 4 and height 10 from z = −5 and a ball of
+///   radius 10 000 at (10003.999997, 0, 0.7), 3e-6 (3 tolerances) inside
+///   its wall: clear the same way.
+///
+/// Nothing false is proven (`atLeast` is 0), but the status is false, and
+/// `clearance min "0 mm"` and `overlap is false` pass on bodies that
+/// overlap. The cause is not in the distance or its proof: where nothing
+/// is proven beyond twice the tolerance, `verify_cmds::clearance_status`
+/// asks the kernel (`craft3d_kernel::boolean::contact`), which answers
+/// Clear for such a pair (`feature.boolean` intersect of it leaves
+/// nothing, `document.interference` says clear): a common volume a few
+/// tolerances deep under a ball thousands of times the body. Balls of
+/// 0.5 to 200 sunk 3 to 200 tolerances are answered overlap (168 of 168
+/// in the review). The same before and after the repair of the cone's
+/// proof (before it, the cone's case was clear with a false proof).
+/// When the kernel's contact is fixed this test fails: make it the right
+/// answer (an overlap; both assertions failed).
+#[test]
+fn a_huge_ball_sunk_a_few_tolerances_into_a_side_is_answered_clear_known() {
+    let tol = 1e-6;
+    let (rb, r): (f64, f64) = (10_000.0, 4.0);
+    // The cone's case by its closed form: from the side's point at half
+    // height, along its normal, 1e-5 short of the ball's radius.
+    let slant = 12.0_f64.phypot(r);
+    let (foot, n) = ((2.0, 6.0), (12.0 / slant, r / slant));
+    let by_form = V::new(foot.0 + n.0 * (rb - 1e-5), 0.0, foot.1 + n.1 * (rb - 1e-5));
+    assert!(
+        (by_form.x - 9488.832971018304).abs() < 1e-8
+            && (by_form.z - 3168.277657006102).abs() < 1e-8,
+        "{by_form:?}"
+    );
+    // (the body, the ball's centre, how deep its surface is in the body)
+    let cases = [
+        (
+            (
+                "feature.cone",
+                json!({"name": "A", "radius": mm(r), "height": mm(12.0)}),
+            ),
+            V::new(9488.832971018304, 0.0, 3168.277657006102),
+            1e-5,
+        ),
+        (
+            (
+                "feature.cylinder",
+                json!({"name": "A", "radius": mm(r), "height": mm(10.0), "position": mm3(V::new(0.0, 0.0, -5.0))}),
+            ),
+            V::new(10003.999997, 0.0, 0.7),
+            rb + r - 10003.999997,
+        ),
+    ];
+    for (body, centre, depth) in cases {
+        let what = body.0;
+        assert!(depth > 2.5 * tol && depth < 11.0 * tol, "{what}: {depth:e}");
+        let mut s = document(1.0);
+        build(
+            &mut s,
+            &[
+                body,
+                (
+                    "feature.sphere",
+                    json!({"name": "B", "radius": mm(rb), "position": mm3(centre)}),
+                ),
+            ],
+        )
+        .unwrap();
+        let Ran::Ok(clear) = run(
+            &mut s,
+            "measure.clearance",
+            &json!({"from": "A", "to": "B"}),
+        ) else {
+            panic!("{what}: clearance");
+        };
+        let Ran::Ok(apart) = run(
+            &mut s,
+            "assert.add",
+            &json!({"name": "apart", "measure": "clearance", "from": "A", "to": "B", "min": "0 mm"}),
+        ) else {
+            panic!("{what}: assertion");
+        };
+        let Ran::Ok(none) = run(
+            &mut s,
+            "assert.add",
+            &json!({"name": "none", "measure": "overlap", "of": ["A", "B"], "is": false}),
+        ) else {
+            panic!("{what}: overlap");
+        };
+        // Never a proof above the truth, known or not.
+        let at_least = clear["atLeast"].as_f64().unwrap_or(0.0);
+        assert!(
+            at_least <= 0.0,
+            "{what}: proven {at_least:e} apart: {clear}"
+        );
+        assert!(
+            clear["pairs"][0]["status"] == "clear"
+                && apart["status"] == "passed"
+                && none["status"] == "passed",
+            "{what}, sunk {depth:e}, is answered otherwise now: {clear}; at least 0: {}; no \
+             overlap: {}: if an overlap and both failed, it is fixed; make this the right answer",
+            apart["status"],
+            none["status"]
+        );
+    }
 }

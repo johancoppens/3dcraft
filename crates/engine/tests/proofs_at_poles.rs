@@ -41,8 +41,11 @@
 //! there (`measure.ray`, which takes no part in the proof) and at most
 //! the closed form.
 //!
-//! The gate runs a fixed set per shape; `-- --ignored` runs the wide
-//! sweep (`HUNT_CASES` cases per shape and partner, default 60).
+//! The gate runs a fixed set: six cases per partner of the shapes whose
+//! proofs were false before the repair (`feature.cone`, a turned
+//! triangle, two cones, a pit to a point) and one of each of the others;
+//! `-- --ignored` runs the wide sweep (`HUNT_CASES` cases per shape and
+//! partner, default 60).
 
 #![allow(
     clippy::unwrap_used,
@@ -1042,27 +1045,27 @@ fn hold(shapes: &[Shape], count: usize) {
     assert_eq!(all.wrong + all.panic, 0, "wrong or panicking cases");
 }
 
+/// The gate's cases per partner of a shape whose proofs were false
+/// before the repair of 2026-11-14 (a cone that holds its apex), and of
+/// the others, which the code before it had right: one of each keeps
+/// their generators and oracles alive, the wide sweep holds the rest.
 const GATE_CASES: usize = 6;
+const GATE_OTHERS: usize = 1;
 
 #[test]
 fn cones_with_and_without_their_apex() {
     hold(
-        &[
-            Shape::Cone,
-            Shape::RevolvedCone,
-            Shape::Bicone,
-            Shape::Frustum,
-            Shape::PartCone,
-        ],
+        &[Shape::Cone, Shape::RevolvedCone, Shape::Bicone],
         GATE_CASES,
     );
+    hold(&[Shape::Frustum, Shape::PartCone], GATE_OTHERS);
 }
 
 #[test]
 fn spheres_through_their_poles_and_rings() {
     hold(
         &[Shape::Dome, Shape::Ball, Shape::PartDome, Shape::Torus],
-        GATE_CASES,
+        GATE_OTHERS,
     );
 }
 
@@ -1070,13 +1073,14 @@ fn spheres_through_their_poles_and_rings() {
 fn tips_of_arcs_and_splines_turned_about_their_end() {
     hold(
         &[Shape::Ogive, Shape::BluntTip, Shape::SharpTip],
-        GATE_CASES,
+        GATE_OTHERS,
     );
 }
 
 #[test]
 fn pits_that_come_to_a_point_or_a_pole() {
-    hold(&[Shape::ConePit, Shape::BallPit], GATE_CASES);
+    hold(&[Shape::ConePit], GATE_CASES);
+    hold(&[Shape::BallPit], GATE_OTHERS);
 }
 
 /// The wide sweep's cases per shape and partner.
