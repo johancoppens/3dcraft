@@ -855,17 +855,16 @@ fn the_longest_length_is_bracketed_at_the_true_limit() {
                 )
             };
             let report = |what: &str, found: TipLength, limit: f64| {
-                // A tip is refused a margin's worth before the limit, where
-                // the faces are seen from it all but edge-on.
+                // The limit lies between the two, which are a billionth
+                // apart: the last length that is proven and the first
+                // that is not.
                 let fails = found.fails.unwrap();
-                assert!(
-                    found.fits < fails && found.fits < limit * k,
-                    "{what}: {found:?}"
-                );
+                assert!(found.fits < limit * k, "{what}: {found:?}");
+                assert!(fails > limit * k * (1.0 - 1e-9), "{what}: {found:?}");
                 assert!(fails - found.fits <= LENGTH_RESOLUTION * fails);
-                assert!(fails <= limit * k * (1.0 + 1e-12), "{what}: {found:?}");
+                assert_eq!(found.again, None);
                 let short = 1.0 - found.fits / (limit * k);
-                assert!(short < 2e-8, "{what}: {short:e} short of the limit");
+                assert!(short < 2e-9, "{what}: {short:e} short of the limit");
                 if k == 1.0 && frame == Frame::WORLD {
                     println!("longest length, {what}: {short:.2e} short of the true limit");
                 }
@@ -891,7 +890,8 @@ fn the_longest_length_is_bracketed_at_the_true_limit() {
                 search(&rims, [1.0, 0.2], 50.0).unwrap(),
                 TipLength {
                     fits: 50.0 * k,
-                    fails: None
+                    fails: None,
+                    again: None,
                 }
             );
             assert_eq!(search(&rims, [7.0, 0.0], 50.0), Err(TipError::NoLengthFits));
@@ -1196,18 +1196,20 @@ fn hostile_input_is_refused_with_a_reason() {
             NurbsCurve::new(1, one_piece(1), vec![Vec3::X, Vec3::Y], vec![1.0, weight]).is_err()
         );
     }
-    // A cross row whose weights take the side's to zero on the way.
+    // A cross row with a weight part of its own: in step with the rim's
+    // weights it stands for another direction, which its neighbours do
+    // not share; out of step it is refused as that.
     let mut sinking = rims.clone();
     for d in &mut sinking[0].cross {
         d[3] = -1.0;
     }
-    let error = refused(&sinking, good);
-    assert!(
-        error.starts_with("Unsupported")
-            || error.starts_with("WeightsRunOut")
-            || error.starts_with("NotOnward"),
-        "{error}"
-    );
+    assert!(refused(&sinking, good).starts_with("SidesDisagree"));
+    sinking[0].cross[1][3] = 0.5;
+    assert!(refused(&sinking, good).starts_with("Unsupported"));
+    for bad in [f64::MAX, -f64::MAX] {
+        sinking[0].cross[1][3] = bad;
+        let _ = refused(&sinking, good);
+    }
     // Sides that go different ways where they meet.
     let mut split = rims.clone();
     for d in &mut split[0].cross {
@@ -1294,17 +1296,16 @@ fn the_general_net_is_the_level_net_raised_a_degree_where_the_sides_are_level() 
                     let at = frame.point(foot[0] * k, foot[1] * k, 3.0 * k);
                     let (normal, omega) = checked(frame.z(), fullness, at).unwrap();
                     let prepared = prepare(&rims_of(&sides), 1e-9 * k).unwrap();
-                    let level = solve(&prepared, at, normal, omega, 1e-9 * k, 1e-9, None).unwrap();
-                    let general = solve(
-                        &prepared,
-                        at,
+                    let asked = Asked {
+                        tip: at,
                         normal,
                         omega,
-                        1e-9 * k,
-                        1e-9,
-                        Some(TipForm::General),
-                    )
-                    .unwrap();
+                        tolerance: 1e-9 * k,
+                        angular: 1e-9,
+                    };
+                    let work = &mut Work(MAX_WORK);
+                    let level = solve(&prepared, &asked, None, work).unwrap();
+                    let general = solve(&prepared, &asked, Some(TipForm::General), work).unwrap();
                     assert_eq!(
                         (level.form, general.form),
                         (TipForm::Level, TipForm::General)
@@ -1426,6 +1427,7 @@ fn carried_shoulder_faces(sides: &[NurbsSurface], at: Vec3, normal: Vec3, omega:
         onward: 0.0,
         star: 0.0,
         smooth: Vec::new(),
+        creases: Vec::new(),
     }
 }
 
@@ -1535,42 +1537,600 @@ fn a_rod_cut_aslant_takes_a_tip_square_to_its_axis() {
     }
 }
 
+// ------------------------------------------- what the rim must be
+
+/// Straight rim curves from point to point, the side's step at every
+/// point given.
+fn polygon_rims(points: &[Vec3], steps: &[Vec3]) -> Vec<TipRim> {
+    let count = points.len();
+    (0..count)
+        .map(|i| {
+            let j = (i + 1) % count;
+            TipRim {
+                curve: NurbsCurve::polynomial(1, one_piece(1), vec![points[i], points[j]]).unwrap(),
+                cross: [steps[i], steps[j]]
+                    .iter()
+                    .map(|s| [s.x, s.y, s.z, 0.0])
+                    .collect(),
+            }
+        })
+        .collect()
+}
+
+fn flat(corners: &[[f64; 2]]) -> Vec<Vec3> {
+    corners.iter().map(|c| Vec3::new(c[0], c[1], 0.0)).collect()
+}
+
 #[test]
-fn sides_whose_rows_are_out_of_step_get_rails_that_are_edges_and_are_told_so() {
-    // A circle's quarters with the row before them polynomial: across
-    // the rim the weights change at the middle control point of each
-    // quarter and not at its ends. The two sides of a rail are tangent
-    // along their common edge (it is straight), but their rows do not
-    // leave it at one ratio: no rows in the rim's basis are tangent to
-    // both sides and to one another. The tip still runs on from each
-    // side and has its one plane at the point; the rails are edges, and
-    // `smooth` says so.
-    for k in SCALES {
-        for frame in frames(k) {
-            let sides: Vec<NurbsSurface> = rim_curves(&frame, k, &ellipse(5.0, 5.0))
-                .iter()
-                .map(|rim| side_to(rim, |_, c, _| (c - frame.z() * (2.0 * k), 1.0)))
-                .collect();
-            let at = frame.point(0.0, 0.0, 3.0 * k);
-            let tip = tip_nets(&rims_of(&sides), &spec(at, frame.z(), ROUND, k)).unwrap();
-            assert_eq!(tip.form, TipForm::General);
-            assert_eq!(tip.smooth, [false; 4]);
-            assert!(rim_angle(&sides, &tip) < 1e-13);
-            let angles = [1e-2, 1e-3, 1e-4].map(|off| tip_angle(&tip, frame.z(), off));
-            for pair in angles.windows(2) {
-                assert!((9.0..11.0).contains(&(pair[0] / pair[1])), "{angles:?}");
-            }
-            let mut across = 0.0_f64;
-            for rail in 0..4 {
-                assert!(rail_angle(&tip, rail, 0.0) < 1e-13);
-                for i in 0..=99 {
-                    across = across.max(rail_angle(&tip, rail, f64::from(i) / 100.0));
-                }
-            }
-            assert!((0.1..0.2).contains(&across), "{across:e}");
-            if k == 1.0 && frame == Frame::WORLD {
-                println!("rows out of step: rails creased by up to {across:.3e} rad");
+fn a_rim_that_is_not_one_simple_curve_in_a_plane_is_refused() {
+    let the_spec = spec(Vec3::new(0.0, 0.0, 4.0), Vec3::Z, ROUND, 1.0);
+    let over = |points: &[Vec3]| {
+        tip_nets(
+            &polygon_rims(points, &vec![Vec3::Z; points.len()]),
+            &the_spec,
+        )
+    };
+    // A simple closed curve in space that goes twice round the axis:
+    // seen from the tip it crosses itself, and so would the faces (the
+    // review found hundreds of crossing triangles in them).
+    let twice: Vec<Vec3> = (0..48)
+        .map(|i| {
+            let t = 4.0 * PI * f64::from(i) / 48.0;
+            let r = 5.0 + 1.5 * (0.5 * t).pcos();
+            Vec3::new(r * t.pcos(), r * t.psin(), -1.0 + 0.8 * (0.5 * t).psin())
+        })
+        .collect();
+    assert!(matches!(over(&twice), Err(TipError::Unsupported(text)) if text.contains("one plane")));
+    // The same pressed flat: in a plane, and crossing itself.
+    let pressed: Vec<Vec3> = twice.iter().map(|p| Vec3::new(p.x, p.y, 0.0)).collect();
+    assert!(matches!(over(&pressed), Err(TipError::RimCrosses { .. })));
+    // An octagon gone round twice lies on itself.
+    let octagon: Vec<Vec3> = (0..16)
+        .map(|i| {
+            let t = PI * f64::from(i) / 4.0;
+            Vec3::new(5.0 * t.pcos(), 5.0 * t.psin(), 0.0)
+        })
+        .collect();
+    assert!(matches!(over(&octagon), Err(TipError::RimCrosses { .. })));
+    assert!(over(&octagon[..8]).is_ok());
+    // A bow that passes through one point twice, and a loop that crosses.
+    let touching = flat(&[
+        [-2.0, -1.0],
+        [0.0, 0.0],
+        [2.0, -1.0],
+        [2.0, 1.0],
+        [0.0, 0.0],
+        [-2.0, 1.0],
+    ]);
+    assert!(matches!(over(&touching), Err(TipError::RimCrosses { .. })));
+    let crossing = flat(&[
+        [3.0, -3.0],
+        [3.0, 3.0],
+        [-3.0, 3.0],
+        [1.0, -1.0],
+        [-1.0, -3.0],
+        [0.0, 2.0],
+    ]);
+    assert!(over(&crossing).is_err());
+    // A corner lifted out of the plane: by less than the tolerance it is
+    // the plane's, by more the rim is not planar. (A plane that is not
+    // square to the normal is one too: `a_rod_cut_aslant_…`.)
+    for (lift, planar) in [(1e-10, true), (1e-6, false)] {
+        let mut square = flat(&[[3.0, -3.0], [3.0, 3.0], [-3.0, 3.0], [-3.0, -3.0]]);
+        square[1].z = lift;
+        match over(&square) {
+            Ok(tip) => assert!(planar && tip.form == TipForm::Level),
+            Err(error) => assert!(
+                !planar && matches!(error, TipError::Unsupported(_)),
+                "{error}"
+            ),
+        }
+    }
+}
+
+#[test]
+fn a_rim_curve_that_jumps_is_refused() {
+    // A knot as often as the degree plus one inside a curve: its two
+    // sides are two curves, here half a unit and then one unit apart.
+    let the_spec = spec(Vec3::new(0.0, 0.0, 3.0), Vec3::Z, ROUND, 1.0);
+    let up = [0.0, 0.0, 1.0, 0.0];
+    let rest = polygon_rims(
+        &flat(&[[5.0, 5.0], [-5.0, 5.0], [-5.0, -5.0], [5.0, -5.0]]),
+        &[Vec3::Z; 4],
+    );
+    for gap in [0.0, 0.5] {
+        let first = TipRim {
+            curve: NurbsCurve::polynomial(
+                1,
+                vec![0.0, 0.0, 1.0, 1.0, 2.0, 2.0],
+                flat(&[[5.0, -5.0], [5.0, -gap], [5.0, gap], [5.0, 5.0]]),
+            )
+            .unwrap(),
+            cross: vec![up; 4],
+        };
+        let mut rims = vec![first];
+        rims.extend(rest.iter().take(3).cloned());
+        assert!(
+            matches!(tip_nets(&rims, &the_spec), Err(TipError::Invalid(text)) if text.contains("more often than its degree"))
+        );
+    }
+    // The same edge with its knot once is a curve with a corner in it.
+    let first = TipRim {
+        curve: NurbsCurve::polynomial(
+            1,
+            vec![0.0, 0.0, 1.0, 2.0, 2.0],
+            flat(&[[5.0, -5.0], [5.0, 0.0], [5.0, 5.0]]),
+        )
+        .unwrap(),
+        cross: vec![up; 3],
+    };
+    let mut rims = vec![first];
+    rims.extend(rest.iter().take(3).cloned());
+    assert!(tip_nets(&rims, &the_spec).is_ok());
+}
+
+// --------------------------------------------------- the floor
+
+#[test]
+fn a_right_tip_is_accepted_however_thin_full_or_weighted() {
+    let frame = Frame::WORLD;
+    // A blade ten thousand times longer than thick, the tip over its
+    // middle: convex, so every such tip is right, at any fullness and
+    // length.
+    for t in [1e-2, 1e-4] {
+        let section = polygon(&[
+            [-0.5, -0.5 * t],
+            [0.5, -0.5 * t],
+            [0.5, 0.5 * t],
+            [-0.5, 0.5 * t],
+        ]);
+        let rims = rims_of(&prism(&frame, 1.0, &section));
+        for length in [1e-4, 1e-3, 1e-2, 1.0, 10.0] {
+            for fullness in [1e-3, 0.05, ROUND, 0.95, 0.999] {
+                let the_spec = TipSpec {
+                    tip: frame.point(0.0, 0.0, length),
+                    normal: frame.z(),
+                    fullness,
+                    tolerance: 1e-12,
+                    angular: 1e-9,
+                };
+                let tip = tip_nets(&rims, &the_spec);
+                assert!(
+                    tip.is_ok(),
+                    "{t:e} thick, {length:e} long, fullness {fullness}: {tip:?}"
+                );
             }
         }
     }
+    // Nor do the weights' size or the model's count: a square with one
+    // edge written as a rational quadratic with a heavy middle point, and
+    // every weight of another edge a million times the rest.
+    for k in SCALES {
+        let written = |middle: f64| {
+            let mut section = square();
+            section[0] = (
+                2,
+                vec![[1.0, -1.0], [1.0, 0.0], [1.0, 1.0]],
+                vec![1.0, middle, 1.0],
+            );
+            section[2].2 = vec![1e6, 1e6];
+            over(&frame, k, &section, [0.3, -0.2])
+        };
+        let plain = over(&frame, k, &square(), [0.3, -0.2]).unwrap();
+        let heavy = written(1e4).unwrap();
+        // (The volume by quadrature needs a milder parametrisation.)
+        let mild = written(4.0).unwrap();
+        let _ = assert_near(
+            volume(&mild, frame.origin()),
+            volume(&plain, frame.origin()),
+            1e-9,
+            "volume",
+        );
+        // The bound on the shoulder's sine is of the shape alone: the
+        // same at every fullness, scale and weight (within what the
+        // heavier hulls give away).
+        for fullness in [1e-3, 0.5, 0.999] {
+            let rims = rims_of(&prism(&frame, k, &square()));
+            let at = frame.point(0.3 * k, -0.2 * k, k);
+            let other = tip_nets(&rims, &spec(at, frame.z(), fullness, k)).unwrap();
+            let _ = assert_near(other.star, plain.star, 1e-9, "the sine's bound");
+        }
+        assert!(plain.star > 0.3 && plain.star < 1.0, "{}", plain.star);
+        assert!(heavy.star > 0.0);
+    }
+}
+
+#[test]
+fn what_rounding_could_decide_either_way_is_told_as_not_proven() {
+    for k in SCALES {
+        for frame in frames(k) {
+            // The tip exactly over an edge of the square: the shoulder
+            // passes through it.
+            assert!(matches!(
+                over(&frame, k, &square(), [1.0, 0.3]),
+                Err(TipError::NotProven { .. })
+            ));
+            // A hair inside it is right and a hair outside wrong, and
+            // each is told as what it is.
+            assert!(over(&frame, k, &square(), [1.0 - 1e-9, 0.3]).is_ok());
+            assert!(matches!(
+                over(&frame, k, &square(), [1.0 + 1e-9, 0.3]),
+                Err(TipError::NotStarShaped { rim: 0, .. })
+            ));
+            // A cone carried exactly to its apex: everything in one point.
+            let apex = frame.point(0.0, 0.0, 10.0 * k);
+            let rims = rims_of(&cone(&frame, k, &ellipse(5.0, 5.0), apex));
+            assert!(matches!(
+                tip_nets(&rims, &spec(apex, frame.z(), ROUND, k)),
+                Err(TipError::NotProven { .. })
+            ));
+        }
+    }
+    // A rim curve that stands still at one end (a doubled control
+    // point) is the same shape, and its faces' determinant is nothing
+    // there: not proven, and said so.
+    let mut section = oval();
+    section[0].1[1] = section[0].1[0];
+    assert!(matches!(
+        over(&Frame::WORLD, 1.0, &section, [0.3, 0.1]),
+        Err(TipError::NotProven { rim: 0, .. })
+    ));
+}
+
+// ------------------------------------------ lengths in two stretches
+
+#[test]
+fn the_longest_length_is_the_end_of_the_first_stretch_and_says_when_more_fit() {
+    // A square with a vertex in the middle of its lower edge that is
+    // carried far to the right, the corner beside it less: seen from the
+    // tip the first overtakes the second and is caught up again. The
+    // shoulder is star-shaped below (3 − √5)/2 and above (3 + √5)/2; with
+    // the upper corners leaning in, up to 5.
+    let points = flat(&[
+        [-1.0, -1.0],
+        [0.0, -1.0],
+        [1.0, -1.0],
+        [1.0, 1.0],
+        [-1.0, 1.0],
+    ]);
+    let steps = [
+        Vec3::new(0.0, 0.0, 1.0),
+        Vec3::new(5.0, -1.0, 1.0),
+        Vec3::new(1.0, 0.0, 1.0),
+        Vec3::new(0.0, -0.2, 1.0),
+        Vec3::new(0.0, -0.2, 1.0),
+    ];
+    let rims = polygon_rims(&points, &steps);
+    let first = 0.5 * (3.0 - 5.0_f64.sqrt());
+    let second = 0.5 * (3.0 + 5.0_f64.sqrt());
+    let fits = |length: f64| {
+        tip_nets(
+            &rims,
+            &spec(Vec3::new(0.0, 0.0, length), Vec3::Z, ROUND, 1.0),
+        )
+        .is_ok()
+    };
+    assert!(fits(0.38) && !fits(0.39) && !fits(2.6) && fits(2.63) && fits(4.9) && !fits(5.1));
+    for (upto, again) in [
+        (4.0, Some(4.0)),
+        (6.0, Some(3.0)),
+        (8.0, Some(4.0)),
+        (100.0, Some(3.125)),
+    ] {
+        let found = longest_tip_length(&rims, Vec3::ZERO, Vec3::Z, ROUND, 1e-9, upto).unwrap();
+        let _ = assert_near(found.fits, first, 1e-8, "the first stretch's end");
+        assert!(
+            found.fits < first
+                && found
+                    .fails
+                    .is_some_and(|l| l - found.fits <= LENGTH_RESOLUTION * l)
+        );
+        assert_eq!(found.again, again, "upto {upto}");
+        assert!(found.again.is_some_and(|l| l > second && fits(l)));
+    }
+    // A stretch narrower than a factor of two can fall between the
+    // lengths tried: nothing is said of it then, and what is said holds.
+    let found = longest_tip_length(&rims, Vec3::ZERO, Vec3::Z, ROUND, 1e-9, 20.0).unwrap();
+    let _ = assert_near(found.fits, first, 1e-8, "the first stretch's end");
+    assert_eq!(found.again, None);
+    // Within the first stretch the length asked for is the answer.
+    let found = longest_tip_length(&rims, Vec3::ZERO, Vec3::Z, ROUND, 1e-9, 0.3).unwrap();
+    assert_eq!(
+        found,
+        TipLength {
+            fits: 0.3,
+            fails: None,
+            again: None
+        }
+    );
+}
+
+// --------------------------------------- how a side is written
+
+#[test]
+fn the_tip_does_not_depend_on_how_a_sides_weights_are_written() {
+    for k in SCALES {
+        for frame in frames(k) {
+            let at = frame.point(0.3 * k, 0.2 * k, 3.0 * k);
+            let rims = rim_curves(&frame, k, &ellipse(5.0, 5.0));
+            // The rod's sides with the row before the rim weighted by
+            // another number on every quarter, and one quarter's row
+            // twice as far back: the same surfaces, the same tip.
+            let plain: Vec<NurbsSurface> = rims
+                .iter()
+                .map(|rim| side_to(rim, |_, c, w| (c - frame.z() * (2.0 * k), w)))
+                .collect();
+            let written: Vec<NurbsSurface> = rims
+                .iter()
+                .enumerate()
+                .map(|(q, rim)| {
+                    let (weight, back) = [(1.0, 2.0), (0.5, 2.0), (3.0, 4.0), (0.25, 0.5)][q];
+                    side_to(rim, |_, c, w| (c - frame.z() * (back * k), w * weight))
+                })
+                .collect();
+            let want = tip_nets(&rims_of(&plain), &spec(at, frame.z(), 0.6, k)).unwrap();
+            let got = tip_nets(&rims_of(&written), &spec(at, frame.z(), 0.6, k)).unwrap();
+            assert_eq!(got.form, TipForm::Level);
+            for (a, b) in want.faces.iter().zip(&got.faces) {
+                for (p, q) in a.control_points().iter().zip(b.control_points()) {
+                    assert!(p.distance(*q) < 1e-12 * 10.0 * k, "{}", p.distance(*q));
+                }
+                assert_eq!(a.weights(), b.weights());
+            }
+            assert_eq!(got.smooth, [true; 4]);
+        }
+    }
+    // Where the weights across the rim are out of step with the rim's,
+    // the side is one writing among others with other directions: a
+    // plane side of a square prism whose row before the rim is weighted
+    // 1, 2, 1, and a rod's quarter with that row polynomial.
+    let frame = Frame::WORLD;
+    let edge = (2, vec![[1.0, -1.0], [1.0, 0.0], [1.0, 1.0]], vec![1.0; 3]);
+    let mut section = square();
+    section[0] = edge;
+    let mut sides = prism(&frame, 1.0, &section);
+    let rim = rim_curves(&frame, 1.0, &section).remove(0);
+    sides[0] = side_to(&rim, |i, c, w| {
+        (c - frame.z() * 2.0, if i == 1 { 2.0 * w } else { w })
+    });
+    let at = frame.point(0.0, 0.0, 1.0);
+    assert!(matches!(
+        tip_nets(&rims_of(&sides), &spec(at, frame.z(), ROUND, 1.0)),
+        Err(TipError::Unsupported(text)) if text.contains("out of step")
+    ));
+    let sides: Vec<NurbsSurface> = rim_curves(&frame, 1.0, &ellipse(5.0, 5.0))
+        .iter()
+        .map(|rim| side_to(rim, |_, c, _| (c - frame.z() * 2.0, 1.0)))
+        .collect();
+    assert!(matches!(
+        tip_nets(&rims_of(&sides), &spec(frame.point(0.0, 0.0, 3.0), frame.z(), ROUND, 1.0)),
+        Err(TipError::Unsupported(text)) if text.contains("out of step")
+    ));
+}
+
+// ------------------------------- sides that agree within the tolerance
+
+#[test]
+fn sides_that_agree_within_the_tolerance_are_built_on_one_row() {
+    let frame = Frame::WORLD;
+    let tolerance = 1e-7;
+    let section = polygon(&[[5.0, -5.0], [5.0, 5.0], [-5.0, 5.0], [-5.0, -5.0]]);
+    let curves = rim_curves(&frame, 1.0, &section);
+    // One side's row before the rim moved sideways at the shared edge,
+    // as two sewn or imported faces differ; then the sides lean, so that
+    // the net is the general one.
+    for lean in [0.0, 0.2] {
+        let sides = |off: f64| -> Vec<NurbsSurface> {
+            curves
+                .iter()
+                .enumerate()
+                .map(|(q, rim)| {
+                    side_to(rim, |i, c, w| {
+                        let (x, _, _) = frame.local(c);
+                        let mut back = c - frame.z() * (2.0 + lean * x / 5.0);
+                        if q == 1 && i == 0 {
+                            back.x += off;
+                        }
+                        (back, w)
+                    })
+                })
+                .collect()
+        };
+        for length in [1.0, 10.0, 300.0] {
+            let the_spec = TipSpec {
+                tip: frame.point(0.3, 0.2, length),
+                normal: frame.z(),
+                fullness: ROUND,
+                tolerance,
+                angular: 1e-9,
+            };
+            let exact = tip_nets(&rims_of(&sides(0.0)), &the_spec).unwrap();
+            let near = tip_nets(&rims_of(&sides(0.5 * tolerance)), &the_spec).unwrap();
+            assert_eq!(near.form, exact.form);
+            assert_eq!(
+                near.form,
+                if lean == 0.0 {
+                    TipForm::Level
+                } else {
+                    TipForm::General
+                }
+            );
+            // Built on the later side's row: the rail is that side's own.
+            let (_, rows) = near.faces[1].counts();
+            let (count, _) = near.faces[0].counts();
+            let column = &near.faces[1].control_points()[..rows];
+            assert_eq!(
+                bits_of(&column.to_vec()),
+                bits_of(&near.rails[1].control_points().to_vec())
+            );
+            let last = &near.faces[0].control_points()[(count - 1) * rows..];
+            assert_eq!(bits_of(&last[1..].to_vec()), bits_of(&column[1..].to_vec()));
+            let _ = assert_near(
+                volume(&near, frame.origin()),
+                volume(&exact, frame.origin()),
+                1e-6,
+                "volume",
+            );
+            // Three tolerances off is another direction.
+            assert!(matches!(
+                tip_nets(&rims_of(&sides(3.0 * tolerance)), &the_spec),
+                Err(TipError::SidesDisagree { rim: 1, gap }) if gap > 2.9 * tolerance && gap < 3.1 * tolerance
+            ));
+        }
+    }
+}
+
+// --------------------------------------------------- creases
+
+#[test]
+fn every_rail_tells_the_angle_between_its_faces() {
+    for k in SCALES {
+        for frame in frames(k) {
+            for (name, section, foot, smooth) in sections() {
+                for sides in [
+                    prism(&frame, k, &section),
+                    leaning_loft(&frame, k, &section),
+                ] {
+                    let at = frame.point(foot[0] * k, foot[1] * k, 3.0 * k);
+                    let tip = tip_nets(&rims_of(&sides), &spec(at, frame.z(), ROUND, k)).unwrap();
+                    assert_eq!(tip.creases.len(), tip.rails.len());
+                    for (rail, crease) in tip.creases.iter().enumerate() {
+                        // What the faces' own evaluation gives.
+                        let at_rim = rail_angle(&tip, rail, 0.0);
+                        let largest = (0..64)
+                            .map(|i| rail_angle(&tip, rail, f64::from(i) / 64.0))
+                            .fold(0.0, f64::max);
+                        assert!(
+                            (crease.at_rim - at_rim).abs() < 1e-11,
+                            "{name}: {crease:?} {at_rim}"
+                        );
+                        assert!(
+                            (crease.largest - largest).abs() < 1e-11,
+                            "{name}: {crease:?} {largest}"
+                        );
+                        if smooth[rail] {
+                            assert!(
+                                tip.smooth[rail] && crease.largest < 1e-12,
+                                "{name}: {crease:?}"
+                            );
+                        } else {
+                            assert!(!tip.smooth[rail] && crease.at_rim > 0.3);
+                            assert!(crease.largest >= crease.at_rim, "{name}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // A square's corners are square.
+    let tip = over(&Frame::WORLD, 1.0, &square(), [0.2, -0.1]).unwrap();
+    for crease in &tip.creases {
+        assert!((crease.at_rim - 0.5 * PI).abs() < 1e-14);
+    }
+}
+
+#[test]
+fn a_rail_is_called_smooth_only_where_its_crease_is_below_the_angular_tolerance() {
+    // An oval whose two arcs meet at a small angle: the second arc's
+    // first leg turned by `turn`.
+    let frame = Frame::WORLD;
+    for (angular, turn, smooth) in [
+        (1e-6, 1e-7, true),
+        (1e-6, 4e-7, false),
+        (1e-6, 1e-5, false),
+        (1e-9, 1e-7, false),
+    ] {
+        let mut section = oval();
+        section[1].1[1] = [-6.0 + turn, -1.0];
+        let rims = rims_of(&prism(&frame, 1.0, &section));
+        let the_spec = TipSpec {
+            angular,
+            ..spec(frame.point(0.3, 0.1, 3.0), frame.z(), ROUND, 1.0)
+        };
+        let tip = tip_nets(&rims, &the_spec).unwrap();
+        assert_eq!(
+            tip.smooth[1], smooth,
+            "{turn:e} against {angular:e}: {:?}",
+            tip.creases[1]
+        );
+        assert!((tip.creases[1].at_rim - turn).abs() < 1e-3 * turn);
+        if smooth {
+            assert!(tip.creases[1].largest < angular);
+        }
+    }
+}
+
+// --------------------------------------------------- far and large
+
+#[test]
+fn a_tip_far_from_the_origin_is_the_same_tip() {
+    // A cone a million sizes away, with a tolerance its coordinates can
+    // hold: level as it is at the origin, and the same faces moved.
+    let frame = frames(1.0)[1];
+    let away = Vec3::new(1.0e7, -2.0e7, 1.5e7);
+    let far = frame.at(frame.origin() + away).unwrap();
+    let tips: Vec<Tip> = [frame, far]
+        .iter()
+        .map(|f| {
+            let apex = f.point(0.0, 0.0, 12.0);
+            let rims = rims_of(&cone(f, 1.0, &ellipse(5.0, 3.0), apex));
+            let the_spec = TipSpec {
+                tolerance: 1e-6,
+                angular: 1e-6,
+                ..spec(f.point(0.2, 0.1, 3.0), f.z(), ROUND, 1.0)
+            };
+            tip_nets(&rims, &the_spec).unwrap()
+        })
+        .collect();
+    assert_eq!(
+        (tips[0].form, tips[1].form),
+        (TipForm::Level, TipForm::Level)
+    );
+    for (near, moved) in tips[0].faces.iter().zip(&tips[1].faces) {
+        for (p, q) in near.control_points().iter().zip(moved.control_points()) {
+            assert!((*p + away).distance(*q) < 1e-7);
+        }
+    }
+    assert_eq!(tips[0].smooth, tips[1].smooth);
+}
+
+#[test]
+fn the_work_of_a_call_is_bounded() {
+    // A rim of the most control points allowed, of high degree, and a
+    // tip that is nowhere near right: the answer comes, whatever it is.
+    let degree = 16;
+    let spans = (MAX_TIP_POINTS / 2 - 1) / degree;
+    let half = |turned: f64| {
+        let count = spans * degree + 1;
+        let mut knots = vec![0.0; degree + 1];
+        for s in 1..spans {
+            knots.extend(std::iter::repeat_n(s as f64, degree));
+        }
+        knots.extend(std::iter::repeat_n(spans as f64, degree + 1));
+        let points: Vec<Vec3> = (0..count)
+            .map(|i| {
+                let t = turned + PI * i as f64 / (count - 1) as f64;
+                let r = 5.0 + 0.3 * (40.0 * t).psin();
+                Vec3::new(r * t.pcos(), r * t.psin(), 0.0)
+            })
+            .collect();
+        TipRim {
+            cross: vec![[0.0, 0.0, 1.0, 0.0]; count],
+            curve: NurbsCurve::polynomial(degree, knots, points).unwrap(),
+        }
+    };
+    let rims = vec![half(0.0), half(PI)];
+    let started = std::time::Instant::now();
+    let tip = tip_nets(&rims, &spec(Vec3::new(0.2, 0.1, 3.0), Vec3::Z, ROUND, 1.0));
+    let length = longest_tip_length(&rims, Vec3::new(4.9, 0.0, 0.0), Vec3::Z, ROUND, 1e-9, 50.0);
+    println!(
+        "{} control points of degree {degree}: {} and {} in {:.1?}",
+        2 * (spans * degree + 1),
+        tip.map(|t| format!("{:?}", t.form))
+            .unwrap_or_else(|e| format!("{e:?}")),
+        length
+            .map(|l| format!("{l:?}"))
+            .unwrap_or_else(|e| format!("{e:?}")),
+        started.elapsed()
+    );
 }
