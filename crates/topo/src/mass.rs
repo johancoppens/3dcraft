@@ -2009,6 +2009,11 @@ struct Sampled {
 /// the panels `which` gives for each piece (by its loop and its place in
 /// the loop, in increasing order of the curve's parameter; a piece it
 /// says `None` of is left out), and where each panel's samples are.
+///
+/// The rates `du`, `dv` of a sample are those of its foot
+/// ([`foot_rates`]): the boundary is summed as the curve of the feet, so
+/// the rates of each piece add up to how far its feet go and the loop of
+/// feet closes.
 fn sampled(
     outline: &Outline,
     surface: &Surface,
@@ -2042,23 +2047,30 @@ fn sampled(
                     let ((u, v), (foot, su, sv)) = follow
                         .project(point)
                         .map_err(|error| MassError::Geometry { face: index, error })?;
-                    // Solve [Sᵤ Sᵥ] (du, dv) = tangent in the least-squares
-                    // sense: the edge lies on the surface, so this is exact
-                    // up to the modelling tolerance.
-                    let (a, b, c) = (su.dot(su), su.dot(sv), sv.dot(sv));
-                    let det = a * c - b * b;
-                    let (ru, rv) = (tangent.dot(su), tangent.dot(sv));
-                    // At a pole or an apex Sᵤ vanishes and u has no rate of
-                    // change; `G` is zero there or the boundary is not. (At
-                    // a pole of a freeform surface it may be Sᵥ and v.)
-                    let (du, dv) = if det > 1e-24 * a.max(c) * a.max(c) && det.is_finite() {
-                        ((c * ru - b * rv) / det, (a * rv - b * ru) / det)
-                    } else if a > c {
-                        (ru / a, 0.0)
-                    } else if c > 0.0 {
-                        (0.0, rv / c)
-                    } else {
-                        (0.0, 0.0)
+                    let (du, dv) = match foot_rates(surface, (u, v), (point, foot, su, sv), tangent)
+                    {
+                        Some(rates) => rates,
+                        None => {
+                            // Solve [Sᵤ Sᵥ] (du, dv) = tangent in the
+                            // least-squares sense: exact where the edge
+                            // lies on the surface.
+                            let (a, b, c) = (su.dot(su), su.dot(sv), sv.dot(sv));
+                            let det = a * c - b * b;
+                            let (ru, rv) = (tangent.dot(su), tangent.dot(sv));
+                            // At a pole or an apex Sᵤ vanishes and u has no
+                            // rate of change; `G` is zero there or the
+                            // boundary is not. (At a pole of a freeform
+                            // surface it may be Sᵥ and v.)
+                            if det > 1e-24 * a.max(c) * a.max(c) && det.is_finite() {
+                                ((c * ru - b * rv) / det, (a * rv - b * ru) / det)
+                            } else if a > c {
+                                (ru / a, 0.0)
+                            } else if c > 0.0 {
+                                (0.0, rv / c)
+                            } else {
+                                (0.0, 0.0)
+                            }
+                        }
                     };
                     samples.push(Sample {
                         off: point.distance(foot),
@@ -2091,6 +2103,94 @@ fn sampled(
         }
     }
     Ok((samples, where_))
+}
+
+/// How fast the foot on `surface` of a boundary point moves in the
+/// surface's parameters as the point moves along `tangent`, where the
+/// point is off the surface by more than its coordinates' rounding; `None`
+/// where it lies on it (and where the rates below cannot be had), for the
+/// least-squares solve of `[Sᵤ Sᵥ] (du, dv) = tangent`, which is exact
+/// there.
+///
+/// The boundary integral sums `G du` along the curve of the feet (`G` is
+/// evaluated at the foot), so its rates must be the feet's: then the rates
+/// of a loop add up to the change of its feet's parameters, which is zero
+/// around it, and Green's theorem holds for the region the feet bound.
+/// The least-squares rates are the foot's only when the point lies on the
+/// surface. An edge within the tolerance of its face but not on it (an
+/// edge fitted where two faces meet, held to a share of the tolerance) has
+/// feet that move otherwise, and its rates then add up to more or less
+/// than its feet go: the loop does not close by that much, and the sum
+/// counts a strip that wide from the reference of `G` across the whole
+/// face. Where the face lies far from the middle the moments are taken
+/// about, `G` is large and so is the strip (2026-11-14: the end cap of a
+/// turned blade of the action matrix's rotor offset by 0.055 mm, its new
+/// edge up to 8.7e-8 mm past the border of the side face continued for
+/// it; the rates along that edge added up to 1.00000064 for feet from 0
+/// to 1, and the rotor's volume came out 10.08 mm³ smaller where the cap
+/// added 0.0013).
+///
+/// The feet's rates, by the implicit function theorem on the conditions
+/// that make a foot one, `(p − S)·Sᵤ = 0` and `(p − S)·Sᵥ = 0`, with
+/// `r = p − S`:
+/// `[[Sᵤ·Sᵤ − r·Sᵤᵤ, Sᵤ·Sᵥ − r·Sᵤᵥ], [Sᵤ·Sᵥ − r·Sᵤᵥ, Sᵥ·Sᵥ − r·Sᵥᵥ]] (du, dv)
+/// = (tangent·Sᵤ, tangent·Sᵥ)` (the first fundamental form less the
+/// second along `r`). A foot held on a border of a freeform surface's
+/// parameters (the point lies beyond it by more than rounding) slides
+/// along that border: its
+/// rate across it is zero, and along it `(Sᵤ·Sᵤ − r·Sᵤᵤ) du = tangent·Sᵤ`
+/// (on a border of constant v; likewise in v); at a corner both are zero.
+/// "Off by more than rounding" is 16 units in the last place of the
+/// coordinates of the point or its foot, so a point that lies on the
+/// surface keeps the least-squares rates, bit for bit.
+fn foot_rates(
+    surface: &Surface,
+    (u, v): (f64, f64),
+    (point, foot, su, sv): (Vec3, Vec3, Vec3, Vec3),
+    tangent: Vec3,
+) -> Option<(f64, f64)> {
+    let r = point - foot;
+    let rounding = 16.0 * f64::EPSILON * point.length().max(foot.length());
+    // Not `<=`: a NaN has no rates of its own.
+    if !(r.length() > rounding) {
+        return None;
+    }
+    let (suu, suv, svv) = craft3d_geom::curvature::second_derivatives(surface, u, v);
+    let (a, b, c) = (
+        su.dot(su) - r.dot(suu),
+        su.dot(sv) - r.dot(suv),
+        sv.dot(sv) - r.dot(svv),
+    );
+    let (ru, rv) = (tangent.dot(su), tangent.dot(sv));
+    let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    // Beyond a border: the foot is on it and the point lies past it by more
+    // than rounding (on a seam where a spline surface closes on itself, `r`
+    // is square to the surface, and rounding alone must not say which side).
+    let across = |tangent: Vec3| {
+        let length = tangent.length();
+        if length > 0.0 {
+            r.dot(tangent) / length
+        } else {
+            0.0
+        }
+    };
+    let (out_u, out_v) = (across(su), across(sv));
+    let beyond_u = freeform && ((u <= u0 && out_u < -rounding) || (u >= u1 && out_u > rounding));
+    let beyond_v = freeform && ((v <= v0 && out_v < -rounding) || (v >= v1 && out_v > rounding));
+    let rates = match (beyond_u, beyond_v) {
+        (true, true) => (0.0, 0.0),
+        (false, true) => (ru / a, 0.0),
+        (true, false) => (0.0, rv / c),
+        (false, false) => {
+            let det = a * c - b * b;
+            if !(det > 1e-24 * a.max(c) * a.max(c)) {
+                return None;
+            }
+            ((c * ru - b * rv) / det, (a * rv - b * ru) / det)
+        }
+    };
+    (rates.0.is_finite() && rates.1.is_finite()).then_some(rates)
 }
 
 /// `∬ f du dv` over a whole closed surface.
@@ -5677,5 +5777,88 @@ mod tests {
             assert!((ratio / h - 1.0).abs() < 1e-9, "{h}: {ratio}");
         }
         assert_eq!(uneven_weights(&weighted_square([2.0; 4])), None);
+    }
+
+    /// The rates of a sample of a boundary that lies off its surface are
+    /// its foot's (`foot_rates`), so the loop of feet closes: a point
+    /// `h` off a cylinder of radius `r` going round it at speed 1 has its
+    /// foot turn at `1 / (r + h)`, not at the `1 / r` the least-squares
+    /// solve gives; a point beyond the border `v = 1` of a freeform patch
+    /// has its foot slide along that border (`dv = 0`), beyond a corner
+    /// stand still; a point on the surface keeps the least-squares rates
+    /// (`None`). Each at three scales.
+    #[test]
+    fn the_rates_of_a_point_off_its_surface_are_its_foots() {
+        for k in [1e-3, 1.0, 1e6] {
+            let r = 2.0 * k;
+            let cylinder = Surface::Cylinder(Cylinder::new(Frame::WORLD, r).unwrap());
+            for h in [1e-5 * k, -1e-5 * k] {
+                let angle: f64 = 0.3;
+                let (s, c) = angle.psin_cos();
+                let point = Vec3::new((r + h) * c, (r + h) * s, 0.5 * k);
+                let tangent = Vec3::new(-s, c, 0.0);
+                let (u, v) = cylinder.project(point).unwrap();
+                let (foot, su, sv) = cylinder.derivatives(u, v);
+                let (du, dv) =
+                    foot_rates(&cylinder, (u, v), (point, foot, su, sv), tangent).unwrap();
+                let want = 1.0 / (r + h);
+                assert!((du - want).abs() <= 1e-9 * want, "{k} {h}: {du} {want}");
+                assert!(dv.abs() <= 1e-9 * want, "{k} {h}: {dv}");
+                // What the least-squares rate would be: off by h / r.
+                assert!((su.dot(tangent) / su.dot(su) - want).abs() > 1e-7 * want);
+                // On the surface: the least-squares rates.
+                let on = Vec3::new(r * c, r * s, 0.5 * k);
+                let (u, v) = cylinder.project(on).unwrap();
+                let (foot, su, sv) = cylinder.derivatives(u, v);
+                assert_eq!(
+                    foot_rates(&cylinder, (u, v), (on, foot, su, sv), tangent),
+                    None
+                );
+            }
+            // The patch S(u, v) = (u, v, 0) k over [0, 1]².
+            let ctrl = vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, k, 0.0),
+                Vec3::new(k, 0.0, 0.0),
+                Vec3::new(k, k, 0.0),
+            ];
+            let knots = vec![0.0, 0.0, 1.0, 1.0];
+            let patch = Surface::Nurbs(
+                craft3d_geom::NurbsSurface::new(
+                    1,
+                    1,
+                    knots.clone(),
+                    knots,
+                    2,
+                    2,
+                    ctrl,
+                    vec![1.0; 4],
+                )
+                .unwrap(),
+            );
+            let tangent = Vec3::new(0.8, 0.6, 0.0);
+            let beyond = Vec3::new(0.4 * k, (1.0 + 1e-5) * k, 1e-6 * k);
+            let (u, v) = patch.project(beyond).unwrap();
+            assert_eq!(v, 1.0, "{k}: the foot is held on the border");
+            let (foot, su, sv) = patch.derivatives(u, v);
+            let (du, dv) = foot_rates(&patch, (u, v), (beyond, foot, su, sv), tangent).unwrap();
+            assert!((du - 0.8 / k).abs() <= 1e-12 / k, "{k}: {du}");
+            assert_eq!(dv, 0.0, "{k}");
+            let corner = Vec3::new((1.0 + 1e-5) * k, (1.0 + 1e-5) * k, 0.0);
+            let (u, v) = patch.project(corner).unwrap();
+            let (foot, su, sv) = patch.derivatives(u, v);
+            assert_eq!(
+                foot_rates(&patch, (u, v), (corner, foot, su, sv), tangent),
+                Some((0.0, 0.0)),
+                "{k}"
+            );
+            // Above the patch, inside its borders: the foot moves as the
+            // point does, across as along.
+            let above = Vec3::new(0.4 * k, 0.5 * k, 1e-3 * k);
+            let (u, v) = patch.project(above).unwrap();
+            let (foot, su, sv) = patch.derivatives(u, v);
+            let (du, dv) = foot_rates(&patch, (u, v), (above, foot, su, sv), tangent).unwrap();
+            assert!((du - 0.8 / k).abs() <= 1e-12 / k && (dv - 0.6 / k).abs() <= 1e-12 / k);
+        }
     }
 }

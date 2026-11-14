@@ -1635,12 +1635,50 @@ fn resurface_with(
         moved_vertices.insert(vertex);
     }
 
-    // A vertex at the end of an edge along a border of a new freeform
-    // surface (`iso`), where a face crosses that surface: on that border.
-    // Found where the surfaces meet, it is as good as the tangent faces
-    // let it be along the border, which is not good enough for the border.
-    for (id, along) in iso {
-        let Some(Surface::Nurbs(new)) = surfaces.get(&along.face) else {
+    // An edge between faces that keep their surfaces, which ends in a
+    // vertex that moved and lies along a border of one of them, does not
+    // move: only its end goes elsewhere along it. It is that border
+    // between its new ends, exactly on the face as it was, not a curve
+    // found again where the faces meet within a share of the tolerance
+    // (`crate::offset_normal::still_iso_edges`, which an offset gives for
+    // the faces it continued: their borders before that are no borders of
+    // `body`). The surface of such a face is its surface in `body`.
+    let mut iso = iso.clone();
+    for (index, edge) in body.edges.iter().enumerate() {
+        if !(moved_vertices.contains(&edge.start) || moved_vertices.contains(&edge.end)) {
+            continue;
+        }
+        let id = EdgeId(index_u32(index));
+        let Some(faces) = uses.get(index) else {
+            continue;
+        };
+        if iso.contains_key(&id)
+            || faces.is_empty()
+            || faces.iter().any(|face| surfaces.contains_key(face))
+        {
+            continue;
+        }
+        if let Some(along) = faces
+            .iter()
+            .find_map(|face| crate::offset_normal::edge_border(body, *face, id, tol))
+        {
+            iso.insert(id, along);
+        }
+    }
+    // The surface an edge of `iso` is the iso-curve of: the new one of its
+    // face, or the one it keeps.
+    let iso_surface = |face: FaceId| {
+        surfaces
+            .get(&face)
+            .or_else(|| body.face(face).map(|data| &data.surface))
+    };
+
+    // A vertex at the end of an edge along a border of a freeform surface
+    // (`iso`), where a face crosses that surface: on that border. Found
+    // where the surfaces meet, it is as good as the tangent faces let it
+    // be along the border, which is not good enough for the border.
+    for (id, along) in &iso {
+        let Some(Surface::Nurbs(new)) = iso_surface(along.face) else {
             continue;
         };
         let Some(edge) = body.edge(*id) else {
@@ -1720,7 +1758,7 @@ fn resurface_with(
             }
         };
         if let Some(along) = iso.get(&id)
-            && let Some(Surface::Nurbs(new)) = surfaces.get(&along.face)
+            && let Some(Surface::Nurbs(new)) = iso_surface(along.face)
             && let Some((curve, range)) = iso_curve(new, along, start, end, closed, tol)
             && lies_on(&curve, range, &on, tol)
         {
