@@ -178,6 +178,9 @@ struct Prim<'a> {
     /// which `on_face` tells in from out) can be from its edges' curves.
     tolerant: f64,
     boundary: Vec<Bound<'a>>,
+    /// A face's vertices (the ends of its edges): each a stratum of its
+    /// own in a distance.
+    corners: Vec<Vec3>,
     sym: Sym,
     root: Param,
     /// A face's outward normal is its surface's times this (-1 for a
@@ -426,8 +429,73 @@ fn img_distance(a: &Img, b: &Img) -> f64 {
 
 // ------------------------------------------------------------ strata
 
-/// The parameters of a face's surface that hold the whole face.
-fn face_root(part: &Part<'_>, face: usize, surface: &Surface, slack: f64) -> Option<Param> {
+/// The heights along its axis that hold a cone's face: those of its
+/// edges (`edges`, grown already), and on to the apex unless the face is
+/// shown to end before it.
+///
+/// The height over a cone has no extreme inside a face but at the apex,
+/// so the face lies between its edges' heights and the apex. Whether it
+/// reaches the apex: the cone from the apex to `clear` short of the
+/// nearest edge's height (the apex with it) is connected and holds no
+/// point of the face's boundary, nor one within `clear` of it (heights
+/// are lengths along the axis), so it is all in the face or all out of
+/// it, and one point of it tells which, as a piece clear of its face's
+/// edges is told by its middle ([`Search::membership`]). Anything but a
+/// plain *out* (in, on the boundary, no answer, no room for the test)
+/// keeps the apex: the heights then hold more than the face, never less.
+fn cone_heights(
+    part: &Part<'_>,
+    face: usize,
+    cone: &craft3d_geom::Cone,
+    edges: (f64, f64),
+    clear: f64,
+) -> (f64, f64) {
+    let (lo, hi) = edges;
+    let apex = cone.apex_v();
+    // No apex within reach of numbers: no finite face holds it.
+    if !apex.is_finite() {
+        return edges;
+    }
+    // The apex is above the edges where the cone narrows along +z.
+    let above = cone.half_angle() < 0.0;
+    let (end, with_apex) = if above {
+        (hi, (lo, hi.max(apex)))
+    } else {
+        (lo, (lo.min(apex), hi))
+    };
+    let toward = if above { 1.0 } else { -1.0 };
+    // From the edges' end to the apex, less what is kept clear.
+    let room = (apex - end) * toward - clear;
+    if room.is_nan() || room <= 0.0 {
+        return with_apex;
+    }
+    // A point well within that stretch: half-way, and no further from the
+    // edges than the face is high or wide there.
+    let start = end + toward * clear;
+    let slope = cone.half_angle().ptan();
+    let size = (hi - lo)
+        .max((cone.radius() + start * slope).abs())
+        .max(16.0 * clear);
+    let v = start + toward * (0.5 * room).min(size);
+    let point = craft3d_geom::Surface::Cone(*cone).eval(0.0, v);
+    if !point.is_finite() {
+        return with_apex;
+    }
+    match part.probe.on_face(face, point) {
+        Ok(OnFace::Out) => edges,
+        _ => with_apex,
+    }
+}
+
+/// The parameters of a face's surface that hold the whole face. `clear`:
+/// how far from a face's edges a piece is told in from out by one point.
+fn face_root(
+    part: &Part<'_>,
+    face: usize,
+    surface: &Surface,
+    slack: f64,
+    clear: f64,
+) -> Option<Param> {
     let body = part.body();
     let edges: Vec<Piece> = face_edges(body, face)
         .filter_map(|e| curve_piece(&e.curve, &CurveNets::of(&e.curve), e.range))
@@ -450,14 +518,19 @@ fn face_root(part: &Part<'_>, face: usize, surface: &Surface, slack: f64) -> Opt
     };
     let turn = (0.0, TAU);
     // A linear function over a plane, and the height along the axis over
-    // a cylinder or a cone, is least and most on the face's boundary.
+    // a cylinder, is least and most on the face's boundary: neither
+    // surface has a point where the function could turn inside a face. A
+    // cone has one, its apex, which is no edge of a face that holds it.
     Some(match surface {
         Surface::Plane(p) => {
             let f = p.frame();
             Param::Face(range(f.x(), f.origin())?, range(f.y(), f.origin())?)
         }
         Surface::Cylinder(c) => Param::Face(turn, range(c.frame().z(), c.frame().origin())?),
-        Surface::Cone(c) => Param::Face(turn, range(c.frame().z(), c.frame().origin())?),
+        Surface::Cone(c) => {
+            let edges = range(c.frame().z(), c.frame().origin())?;
+            Param::Face(turn, cone_heights(part, face, c, edges, clear))
+        }
         Surface::Sphere(_) => Param::Face(turn, (-FRAC_PI_2, FRAC_PI_2)),
         Surface::Torus(_) => Param::Face(turn, turn),
         Surface::Bezier(_) | Surface::Nurbs(_) => {
@@ -570,6 +643,7 @@ where
                 let surface = &face.surface;
                 let snets = SurfaceNets::of(surface).ok()?;
                 let mut boundary = Vec::new();
+                let mut corners = Vec::new();
                 let mut seen = std::collections::BTreeSet::new();
                 for coedge in face
                     .loops
@@ -581,6 +655,11 @@ where
                         continue;
                     }
                     let edge = body.edges.get(coedge.edge.0 as usize)?;
+                    for end in [edge.start, edge.end] {
+                        if let Some(v) = body.vertices.get(end.0 as usize) {
+                            corners.push(v.point);
+                        }
+                    }
                     let nets = CurveNets::of(&edge.curve);
                     let piece = curve_piece(&edge.curve, &nets, edge.range)?;
                     boundary.push(Bound {
@@ -591,7 +670,7 @@ where
                         leaves: std::cell::OnceCell::new(),
                     });
                 }
-                let root = face_root(part, index, surface, slack)?;
+                let root = face_root(part, index, surface, slack, 2.0 * self.tol + slack)?;
                 Some(Prim {
                     part: part_index,
                     side,
@@ -604,6 +683,7 @@ where
                     slack: 0.0,
                     tolerant: slack,
                     boundary,
+                    corners,
                     sym: surface_sym(surface),
                     root,
                     sign: if face.reversed { -1.0 } else { 1.0 },
@@ -627,6 +707,7 @@ where
                     slack,
                     tolerant: slack,
                     boundary: Vec::new(),
+                    corners: Vec::new(),
                     sym: curve_sym(&edge.curve),
                     root: Param::Edge(edge.range),
                     sign: 1.0,
@@ -646,6 +727,7 @@ where
                     slack,
                     tolerant: slack,
                     boundary: Vec::new(),
+                    corners: Vec::new(),
                     sym: Sym::None,
                     root: Param::Vertex(v.point),
                     sign: 1.0,
@@ -686,7 +768,21 @@ where
             return None;
         }
         let bbox = piece.bbox();
-        let cone = piece.cone();
+        // A line into the material leaves a face where it has a normal,
+        // so the cone of a piece's normals holds for every line that
+        // leaves it; and one that comes out at a tip (a cone's apex, a
+        // spline's pole: a point without a normal) comes out through a
+        // piece round the tip whose normals it does not point into,
+        // which is kept. A distance, though, may be least at the tip
+        // itself, where nothing is normal to anything: the cone of the
+        // piece's other points says nothing of it, and is used only
+        // where the tip is a vertex of the face, a stratum of its own.
+        let whole = piece.cone();
+        let cone = if self.rays || tips_are_corners(prim, &piece) {
+            whole
+        } else {
+            None
+        };
         let out = oriented(cone, normal);
         let mut inside = inside || prim.kind != Kind::Face;
         if !inside {
@@ -1154,6 +1250,19 @@ where
         let (ib, mb) = section_image(pb, b, o, z, e1, e2);
         img_distance(&ia, &ib) - ma - mb
     }
+}
+
+/// Whether every tip of a face's piece (`Piece::tips`: a point where
+/// its surface has no normal) is a vertex of the face, to within what a
+/// vertex's own bounds take off (the body's tolerance; nothing for an
+/// exact body, whose vertex is then the very point). True for a piece
+/// without tips.
+fn tips_are_corners(prim: &Prim<'_>, piece: &Piece) -> bool {
+    piece.tips().iter().all(|tip| {
+        prim.corners
+            .iter()
+            .any(|corner| corner.distance(*tip) <= prim.tolerant)
+    })
 }
 
 /// What the angle between two cones' axes may be off by in rounding
@@ -2217,6 +2326,258 @@ mod tests {
         .unwrap();
         moved.faces[face].surface = Surface::Nurbs(perturbed);
         assert!(crate::verify::extruded(&moved, face).is_none());
+    }
+
+    /// The first body of a document made by `steps`.
+    fn made(steps: &[(&str, serde_json::Value)]) -> Arc<craft3d_topo::Body> {
+        let mut s = Session::new(Workspace::none());
+        s.execute("file.new", &json!({"units": "mm"})).unwrap();
+        for (id, params) in steps {
+            s.execute(id, params)
+                .unwrap_or_else(|e| panic!("{id}: {e}"));
+        }
+        let regen = s.document_mut().unwrap().regen();
+        let (_, body) = regen.bodies().last().unwrap();
+        Arc::clone(body)
+    }
+
+    /// The heights the proof starts a cone's face from, per cone face of
+    /// the body: (least, most, the apex's).
+    fn cone_roots(body: &craft3d_topo::Body) -> Vec<(f64, f64, f64)> {
+        let tolerance = craft3d_math::Tolerance::new(1e-6, 1e-9).unwrap();
+        let parts = [Part::new(body, None, &tolerance).unwrap()];
+        let mut search = Search {
+            parts: [&parts, &parts],
+            prims: Vec::new(),
+            keys: BTreeMap::new(),
+            recs: Vec::new(),
+            tol: tolerance.linear,
+            failed: std::collections::BTreeSet::new(),
+            rays: false,
+            floors: Default::default(),
+        };
+        let mut out = Vec::new();
+        for (index, face) in body.faces.iter().enumerate() {
+            let Surface::Cone(cone) = &face.surface else {
+                continue;
+            };
+            let prim = search.prim((0, 0, Kind::Face, index)).unwrap();
+            let Param::Face(_, (lo, hi)) = search.prims[prim].root else {
+                panic!("a face")
+            };
+            out.push((lo, hi, cone.apex_v()));
+        }
+        out
+    }
+
+    /// A cone's face is cut from its edges on to its apex where it holds
+    /// the apex, which is no edge of it (`feature.cone`, a triangle
+    /// turned about its side, a drill point), and from edge to edge where
+    /// it does not (a frustum, a countersink). Before, every cone's face
+    /// was cut from edge to edge: a cone with its apex was a band at its
+    /// base, 2e-9 high.
+    #[test]
+    fn a_cones_face_is_cut_as_far_as_its_apex_where_it_holds_it() {
+        let holds = |roots: &[(f64, f64, f64)], what: &str| {
+            assert!(!roots.is_empty(), "{what}: no cone");
+            for &(lo, hi, apex) in roots {
+                assert!(
+                    lo <= apex && apex <= hi,
+                    "{what}: {lo} to {hi}, apex {apex}"
+                );
+                assert!(hi - lo > 1.0, "{what}: {lo} to {hi}");
+            }
+        };
+        let ends_before = |roots: &[(f64, f64, f64)], what: &str| {
+            assert!(!roots.is_empty(), "{what}: no cone");
+            for &(lo, hi, apex) in roots {
+                assert!(
+                    apex < lo - 0.5 || apex > hi + 0.5,
+                    "{what}: {lo} to {hi}, apex {apex}"
+                );
+            }
+        };
+        let cone =
+            craft3d_kernel::primitives::cone(&craft3d_math::Frame::WORLD, 0.3, 20.0).unwrap();
+        let roots = cone_roots(&cone);
+        holds(&roots, "feature.cone");
+        assert!(roots[0].0.abs() < 1e-8 && roots[0].1 == 20.0, "{roots:?}");
+        let profile = |points: serde_json::Value| -> Vec<(&'static str, serde_json::Value)> {
+            vec![
+                ("sketch.create", json!({"name": "P", "plane": "xy"})),
+                (
+                    "sketch.polyline",
+                    json!({"sketch": "P", "points": points, "closed": true}),
+                ),
+                ("feature.revolve", json!({"sketch": "P", "axis": "y"})),
+            ]
+        };
+        holds(
+            &cone_roots(&made(&profile(json!([[0, 0], [3, 0], [0, 5]])))),
+            "a triangle turned about its side",
+        );
+        // Two apexes: each face holds its own.
+        let both = cone_roots(&made(&profile(json!([[0, -4], [3, 0], [0, 5]]))));
+        assert_eq!(both.len(), 2);
+        holds(&both, "two cones base to base");
+        ends_before(
+            &cone_roots(&made(&profile(json!([[0, 0], [3, 0], [1, 5], [0, 5]])))),
+            "a frustum",
+        );
+        // A countersunk hole: a cone's face between two circles.
+        ends_before(
+            &cone_roots(&made(&profile(json!([
+                [2, 0],
+                [6, 0],
+                [6, 5],
+                [4, 5],
+                [2, 3]
+            ])))),
+            "a countersink",
+        );
+        // A pit that comes to a point, and one cut short by a flat.
+        holds(
+            &cone_roots(&made(&profile(json!([
+                [0, 0],
+                [6, 0],
+                [6, 5],
+                [3, 5],
+                [0, 2]
+            ])))),
+            "a pit to a point",
+        );
+        ends_before(
+            &cone_roots(&made(&profile(json!([
+                [0, 0],
+                [6, 0],
+                [6, 5],
+                [4, 5],
+                [1, 2],
+                [0, 2]
+            ])))),
+            "a pit with a flat",
+        );
+    }
+
+    /// The smallest case of the false proof: a cone of radius 0.3 and
+    /// height 20 and a ball of radius 200 sunk 1e-4 into its side at half
+    /// its height. The side's proof against the ball is 0 (they cross);
+    /// before, it was the distance of the band at the cone's base from
+    /// the ball, 0.2498, and the least found, 7.6e-4, stood as proven. A
+    /// cylinder in the same place was and is 0.
+    #[test]
+    fn the_side_of_a_cone_sunk_into_a_ball_is_proven_no_more_than_0_apart() {
+        use craft3d_kernel::primitives::{cone, cylinder, sphere};
+        use craft3d_math::Frame;
+        let tolerance = craft3d_math::Tolerance::new(1e-6, 1e-9).unwrap();
+        let centre = Vec3::new(120.07644228444678, 160.10192304592908, 12.99966105711117);
+        // The closed form: the centre's distance from the side's line in
+        // the plane through the axis.
+        let rho = centre.x.phypot(centre.y);
+        let from_side = pt_seg((rho, centre.z), (0.3, 0.0), (0.0, 20.0));
+        assert!((from_side - (200.0 - 1e-4)).abs() < 1e-9, "{from_side}");
+        let ball = sphere(&Frame::new(centre, Vec3::Z, Vec3::X).unwrap(), 200.0).unwrap();
+        for (what, body) in [
+            ("cone", cone(&Frame::WORLD, 0.3, 20.0).unwrap()),
+            ("cylinder", cylinder(&Frame::WORLD, 0.3, 20.0).unwrap()),
+        ] {
+            let (a, b) = (
+                [Part::new(&body, None, &tolerance).unwrap()],
+                [Part::new(&ball, None, &tolerance).unwrap()],
+            );
+            let side = body
+                .faces
+                .iter()
+                .position(|f| !matches!(f.surface, Surface::Plane(_)))
+                .unwrap();
+            let proof = prove(
+                &a,
+                &b,
+                &[((0, side), (0, 0))],
+                7.6e-4,
+                0.25e-6,
+                f64::INFINITY,
+                1e-6,
+            );
+            assert_eq!(proof.lower, vec![Some(0.0)], "{what}");
+            let near = crate::verify::distance(&a, &b).unwrap();
+            assert_eq!(near.lower, 0.0, "{what}: {near:?}");
+        }
+    }
+
+    /// A face's piece that holds a tip (a point where its surface has no
+    /// normal) keeps the cone of its other points' normals for a
+    /// distance only where the tip is a vertex of the face, which is
+    /// then a stratum of its own; for lines into the material it always
+    /// keeps it. The top of a block put on a flat fan (a patch with a
+    /// row of its net drawn into one point), the fan's point at a corner
+    /// of the face and at the middle of one of its sides. (Flat, so
+    /// nothing can go wrong here: the rule is what is held.)
+    #[test]
+    fn a_tip_that_is_no_vertex_of_its_face_takes_the_cone_from_a_distance() {
+        use craft3d_kernel::primitives::block;
+        let tolerance = craft3d_math::Tolerance::new(1e-6, 1e-9).unwrap();
+        let fan = |tip: Vec3, a: Vec3, m: Vec3, b: Vec3| {
+            Surface::Bezier(
+                craft3d_geom::BezierPatch::new(2, 1, vec![tip, a, tip, m, tip, b]).unwrap(),
+            )
+        };
+        let z = 10.0;
+        for (what, tip, at_corner) in [
+            ("at a corner", Vec3::new(0.0, 0.0, z), true),
+            ("on a side", Vec3::new(5.0, 0.0, z), false),
+        ] {
+            let mut body = block(&craft3d_math::Frame::WORLD, 10.0, 10.0, z).unwrap();
+            let top = body
+                .faces
+                .iter()
+                .position(|f| match &f.surface {
+                    Surface::Plane(p) => (p.frame().origin().z - z).abs() < 1e-9,
+                    _ => false,
+                })
+                .unwrap();
+            // A parabola round the face, from far along x on one side of
+            // the tip to far on the other.
+            let patch = fan(
+                tip,
+                Vec3::new(-40.0, 0.0, z),
+                Vec3::new(5.0, 90.0, z),
+                Vec3::new(50.0, 0.0, z),
+            );
+            let up = patch.normal(0.5, 0.5).unwrap().dot(Vec3::Z) > 0.0;
+            body.faces[top].surface = patch;
+            body.faces[top].reversed = !up;
+            let parts = [Part::new(&body, None, &tolerance).unwrap()];
+            for rays in [false, true] {
+                let mut search = Search {
+                    parts: [&parts, &parts],
+                    prims: Vec::new(),
+                    keys: BTreeMap::new(),
+                    recs: Vec::new(),
+                    tol: tolerance.linear,
+                    failed: std::collections::BTreeSet::new(),
+                    rays,
+                    floors: Default::default(),
+                };
+                let prim = search.prim((0, 0, Kind::Face, top)).unwrap();
+                // A piece at the fan's point, and one clear of it.
+                let at_tip = Param::Face((0.25, 0.5), (0.0, 0.25));
+                let Made::Rec(rec) = search.make_rec(prim, Some((at_tip, true))) else {
+                    panic!("{what}: no piece")
+                };
+                assert_eq!(search.recs[rec].piece.tips(), vec![tip], "{what}");
+                assert_eq!(
+                    search.recs[rec].cone.is_some(),
+                    rays || at_corner,
+                    "{what}, lines {rays}"
+                );
+                let clear = Param::Face((0.25, 0.5), (0.25, 0.5));
+                let Made::Rec(rec) = search.make_rec(prim, Some((clear, true))) else {
+                    panic!("{what}: no piece")
+                };
+                assert!(search.recs[rec].cone.is_some(), "{what}, lines {rays}");
+            }
+        }
     }
 
     #[test]

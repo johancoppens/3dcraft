@@ -45,7 +45,18 @@
 //! v-differences of its net (axes `a`, `b`, half-angles `α`, `β`), so its
 //! normal is within `asin((2 sin(α/2) + 2 sin(β/2)) / |a × b|)` of `a × b`.
 //! No cone (`None`) where none is known: a rational freeform surface, a
-//! cone whose piece reaches the apex, a piece wider than half a turn.
+//! piece wider than half a turn.
+//!
+//! **Tips.** A surface may come to a point where it has no normal: a
+//! cone at its apex, a freeform surface where a row of its net is one
+//! point (a pole, a corner drawn into a point). A piece that holds such
+//! a point still has its cone, around the normals of all its other
+//! points (a cone's turn with `u` alone right up to the apex; a freeform
+//! piece's from the differences of its net that are not zero), and says
+//! where the point is ([`Piece::tips`]): what is concluded from the
+//! normals of a piece does not hold at its tip, which whoever uses the
+//! cone must see to (docs/design/verification.md › *The proven
+//! distance*).
 
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
@@ -248,6 +259,9 @@ pub enum Piece {
         reach: f64,
         /// Around the normals, for a polynomial piece (see [`Piece::cone`]).
         cone: Option<Cone>,
+        /// The points a row or a column of the cut nets is drawn into
+        /// (see [`Piece::tips`]).
+        tips: Vec<Vec3>,
     },
     Segment {
         a: Vec3,
@@ -442,6 +456,7 @@ pub fn surface_piece(
             let mut cut = 0_usize;
             // The differences of the cut nets along u and along v.
             let (mut along_u, mut along_v) = (Vec::new(), Vec::new());
+            let mut tips = Vec::new();
             let mut polynomial = true;
             let mut rounding = 0.0_f64;
             for span in &nets.spans {
@@ -468,11 +483,13 @@ pub fn surface_piece(
                             && let (Some(p), Some(q)) = (at(i, j), at(i + 1, j))
                         {
                             along_u.push(q - p);
+                            note_tip(&mut tips, p, q);
                         }
                         if j < span.n
                             && let (Some(p), Some(q)) = (at(i, j), at(i, j + 1))
                         {
                             along_v.push(q - p);
+                            note_tip(&mut tips, p, q);
                         }
                     }
                 }
@@ -491,9 +508,18 @@ pub fn surface_piece(
                 points: all,
                 reach,
                 cone,
+                tips,
             }
         }
     })
+}
+
+/// Notes the point where two neighbours of a net are one (`p == q`: a
+/// difference [`cone_of`] leaves out), once.
+fn note_tip(tips: &mut Vec<Vec3>, p: Vec3, q: Vec3) {
+    if p == q && !tips.contains(&p) {
+        tips.push(p);
+    }
 }
 
 /// The net of a span over `[u0, u1] × [v0, v1]` of its local `[0, 1]²`.
@@ -755,8 +781,29 @@ impl Piece {
         }
     }
 
+    /// The points of the piece where its surface comes to a point and
+    /// has no normal: a cone's apex, and the points a freeform piece's
+    /// net is drawn into (two neighbours of the cut net that are one
+    /// point). The piece's cone ([`Piece::cone`]) holds the normals of
+    /// its other points only.
+    pub fn tips(&self) -> Vec<Vec3> {
+        match self {
+            Piece::Revolved {
+                o,
+                z,
+                r,
+                slope,
+                apex: true,
+                ..
+            } => vec![*o - *z * (*r / *slope)],
+            Piece::SurfaceHull { tips, .. } => tips.clone(),
+            _ => Vec::new(),
+        }
+    }
+
     /// A cone holding the piece's normals or tangents (see the module
-    /// documentation); `None` where none is known.
+    /// documentation); `None` where none is known. The normals of a
+    /// piece with [`Piece::tips`] are those of its other points.
     pub fn cone(&self) -> Option<Cone> {
         let width = |r: (f64, f64)| r.1 - r.0;
         let mid = |r: (f64, f64)| 0.5 * (r.0 + r.1);
@@ -769,18 +816,11 @@ impl Piece {
         };
         match self {
             Piece::Plane { z, .. } => within(Some(*z), 0.0),
+            // A cone's normal turns with `u` alone, right up to its apex
+            // (which has none: [`Piece::tips`]).
             Piece::Revolved {
-                x,
-                y,
-                z,
-                slope,
-                u,
-                apex,
-                ..
+                x, y, z, slope, u, ..
             } => {
-                if *apex {
-                    return None;
-                }
                 let (s, c) = mid(*u).psin_cos();
                 let n = (*x * c + *y * s) - *z * *slope;
                 within(n.normalized(), 0.5 * width(*u))
@@ -974,6 +1014,64 @@ mod tests {
         };
         let (g1, g2) = (gap(0.1), gap(0.05));
         assert!(g2 < 0.3 * g1, "{g1} then {g2}");
+    }
+
+    /// A cone's piece that holds its apex, and a polynomial patch's piece
+    /// that holds the point a row of its net is drawn into, say where
+    /// that point is; their cones hold the normals of all their other
+    /// points. A piece clear of such a point has no tip.
+    #[test]
+    fn a_piece_says_where_its_surface_comes_to_a_point() {
+        let f = frame();
+        let cone = Surface::Cone(ConeSurface::new(f, 1.0, 0.4).unwrap());
+        let apex_v = -1.0 / 0.4_f64.ptan();
+        let nets = SurfaceNets::default();
+        let (u, v) = ((0.3, 1.1), (apex_v - 1.0, 2.0));
+        let piece = surface_piece(&cone, &nets, u, v).unwrap();
+        let tips = piece.tips();
+        assert_eq!(tips.len(), 1, "{tips:?}");
+        assert!(tips[0].distance(f.point(0.0, 0.0, apex_v)) < 1e-12);
+        let held = piece.cone().expect("the cone of its other points' normals");
+        assert!(held.half_angle <= 0.4 + 1e-12, "{held:?}");
+        for i in 0..=20 {
+            for j in 1..=20 {
+                let a = u.0 + (u.1 - u.0) * i as f64 / 20.0;
+                let b = apex_v + (v.1 - apex_v) * j as f64 / 20.0;
+                let n = cone.normal(a, b).expect("a normal off the apex");
+                let angle = n.dot(held.axis).abs().min(1.0).pacos();
+                assert!(angle <= held.half_angle + 1e-9, "a normal outside the cone");
+            }
+        }
+        assert!(cone.normal(0.7, apex_v).is_none(), "a normal at the apex");
+        let clear = surface_piece(&cone, &nets, u, (0.0, 2.0)).unwrap();
+        assert!(clear.tips().is_empty());
+        // A fan from `tip` over a parabola that leaves its plane: the
+        // row at v = 0 is the tip, three times.
+        let tip = Vec3::new(0.5, -0.25, 2.0);
+        let row = [
+            Vec3::new(-2.0, 0.0, 0.0),
+            Vec3::new(0.5, 3.0, -1.0),
+            Vec3::new(3.0, 0.0, 0.0),
+        ];
+        let fan = Surface::Bezier(
+            crate::BezierPatch::new(2, 1, vec![tip, row[0], tip, row[1], tip, row[2]]).unwrap(),
+        );
+        let nets = SurfaceNets::of(&fan).unwrap();
+        let (u, v) = ((0.25, 0.5), (0.0, 0.5));
+        let piece = surface_piece(&fan, &nets, u, v).unwrap();
+        assert_eq!(piece.tips(), vec![tip]);
+        let held = piece.cone().expect("the cone of its other points' normals");
+        for i in 0..=20 {
+            for j in 1..=20 {
+                let a = u.0 + (u.1 - u.0) * i as f64 / 20.0;
+                let b = v.1 * j as f64 / 20.0;
+                let n = fan.normal(a, b).expect("a normal off the tip");
+                let angle = n.dot(held.axis).abs().min(1.0).pacos();
+                assert!(angle <= held.half_angle + 1e-9, "a normal outside the cone");
+            }
+        }
+        let clear = surface_piece(&fan, &nets, u, (0.25, 0.5)).unwrap();
+        assert!(clear.tips().is_empty() && clear.cone().is_some());
     }
 
     /// A tiny piece of a spline patch a million from the origin: its net's

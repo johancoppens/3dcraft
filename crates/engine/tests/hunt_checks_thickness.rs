@@ -680,21 +680,23 @@ fn wide_torus_shells() {
     wide(&[Kind::TorusShell]);
 }
 
-/// Found by this hunt (2026-11-14), owed, lesser: a blind hole with a
-/// 118° drill point (a cylinder of radius 2 and a cone at its end, apex
-/// down) in a block, 0.5 of floor left under the apex and every other
-/// wall thicker. The thinnest place is under the apex: the kernel's ray
-/// straight up through it meets the bottom face and the apex 0.5 apart.
-/// `measure.thickness` answers 0.50000004 with `atLeast` the same, 3.5e-8
-/// (0.035 tolerances) above the truth: the proof misses the point's face
-/// near its apex (its parameter box is taken from the heights of its edges,
-/// and the apex is on none; as for the clearance of a ball sunk into a
-/// cone, `hunt_checks_distance.rs`), so `atLeast` is the place found,
-/// which the search along the face leaves a little short of the apex.
-/// Within the tolerance here, as long as the search comes that close.
-/// When fixed the test fails: make it the right answer.
+/// Found by this hunt (2026-11-14) and repaired the same day: a blind
+/// hole with a 118° drill point (a cylinder of radius 2 and a cone at its
+/// end, apex down) in a block, 0.5 of floor left under the apex and every
+/// other wall thicker. The thinnest place is under the apex: the kernel's
+/// ray straight up through it meets the bottom face and the apex 0.5
+/// apart. `measure.thickness` answered 0.50000004 with `atLeast` the
+/// same, 3.5e-8 (0.035 tolerances) above the truth: the proof missed the
+/// point's face near its apex (its parameter box was taken from the
+/// heights of its edges, and the apex is on none; as for the clearance of
+/// a ball sunk into a cone, `hunt_checks_distance.rs`), so `atLeast` was
+/// the place found, which the search along the face leaves a little
+/// short of the apex. Now what is proven is no more than the floor, and
+/// within a billionth of it (`proofs_at_poles.rs` holds the same at three
+/// scales and far from the origin, and under a pit that is a cone or a
+/// ball nose).
 #[test]
-fn the_floor_under_a_drill_point_is_proven_thicker_than_it_is_known() {
+fn the_floor_under_a_drill_point_is_proven_no_thicker_than_it_is() {
     let (r, w, depth) = (2.0_f64, 0.5_f64, 6.0_f64);
     let tip = r / (59.0_f64.to_radians()).ptan();
     let size = V::new(4.0 * r + 6.0, 4.0 * r + 6.0, depth + tip + w);
@@ -742,8 +744,7 @@ fn the_floor_under_a_drill_point_is_proven_thicker_than_it_is_known() {
     };
     let at_least = out["atLeast"].as_f64().unwrap();
     assert!(
-        at_least > floor + 1e-9,
-        "the floor under the point is proven {at_least} now, against {floor}: if no longer \
-         above it, it is fixed; make this the right answer"
+        at_least <= floor && at_least >= floor * (1.0 - 1e-9),
+        "the floor under the point is proven {at_least}, against {floor}"
     );
 }

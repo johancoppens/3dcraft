@@ -402,9 +402,21 @@ fn grown(b: &Bbox3, by: f64) -> Bbox3 {
     }
 }
 
-/// The box of a face from its edges' points (for a face the mesh left
-/// without triangles).
+/// A box that holds a face the mesh left without triangles: the body's
+/// own box of the face (`Body::face_bbox`: its edges, and what a face
+/// can reach beyond them, a cone's apex, a sphere or a torus whole, a
+/// spline's net), which is what a distance of boxes may be proven from;
+/// the box of points along its edges only where that fails. (A face lies
+/// within its edges' box by right only on a plane or a cylinder: before
+/// 2026-11-14 the points of the edges were all of it.)
 fn face_box(body: &Body, face: usize) -> Bbox3 {
+    if let Ok(held) = u32::try_from(face)
+        .map_err(|_| ())
+        .and_then(|id| body.face_bbox(craft3d_topo::FaceId(id)).map_err(|_| ()))
+        && !held.is_empty()
+    {
+        return held;
+    }
     let mut b = Bbox3::from_points([]);
     for edge in face_edges(body, face) {
         for p in edge_points(edge, 8) {
@@ -2136,6 +2148,35 @@ fn least_height(part: &Part<'_>, face: usize, o: Vec3, n: Vec3) -> f64 {
     (least - err).max(0.0)
 }
 
+/// Whether face `face` is on a cone from which no line into the
+/// material comes back to the cone. Such a line stays in the plane
+/// through the axis and its start, where the cone is two lines from the
+/// apex, each at the half-angle α from the axis. With the apex at the
+/// origin, the axis along z, a start `p` at height `z_p` and a point `q`
+/// of the cone at height `z_q` (both from the apex, the same side) and
+/// the turn φ about the axis between them, `(q − p) · e = ∓ sin α z_q
+/// (cos φ − 1)` for the inward normal `e` at `p`:
+/// - from a concave cone (the material outside it: a pit, a countersink)
+///   that is never above 0, for any `q` of the cone: the line leads away
+///   from all of it;
+/// - from a convex one the line crosses the axis and meets the other
+///   line of the cone at `2 z_p sin α / cos 2α` from its start, which is
+///   behind the start where 2α is above a right angle: past the apex, on
+///   the cone's other half, which no face is on. (Below a right angle it
+///   does come back, ever nearer toward the apex: a sharp cone is as
+///   thin as one likes at its tip, which is what its thickness is.)
+fn cone_never_meets_itself(body: &Body, face: usize) -> bool {
+    let Some(f) = body.faces.get(face) else {
+        return false;
+    };
+    let Surface::Cone(cone) = &f.surface else {
+        return false;
+    };
+    // A cone's own normal leads away from its axis: the material is
+    // inside unless the face is reversed.
+    f.reversed || cone.half_angle().abs().ptan() > 1.0 + 1e-9
+}
+
 /// A bound, proven, below the length of any line that leaves face `a` of
 /// `part` into the material along its inward normal and comes out through
 /// face `b` (`None`: no such line can come out there), and where to look
@@ -2145,6 +2186,9 @@ fn pair_bound(part: &Part<'_>, a: usize, b: usize, tol: f64) -> (Option<f64>, Ve
     let (sa, sb) = (shape(body, a), shape(body, b));
     let mut seeds = Vec::new();
     if a == b {
+        if cone_never_meets_itself(body, a) {
+            return (None, seeds);
+        }
         let bound = match sa {
             // A line into the material from a flat face never meets its
             // plane again; one from a hole's wall never comes back to it.
@@ -2379,6 +2423,8 @@ fn thickness_bound(part: &Part<'_>, tol: f64, below: f64, stop: f64) -> (f64, Ve
     let mut seeds: Vec<(usize, Vec3)> = Vec::new();
     let mut budget = BOUND_WORK;
     let mut nodes = crate::verify_bound::MAX_NODES;
+    // What rounds that find the work spent may still take, in all.
+    let mut spare = crate::verify_bound::MAX_NODES;
     let flat = |f| matches!(shape(part.body(), f), Shape::Flat(..));
     // Per pair looked at, its bound (infinite: no line comes out there).
     let mut bounds: Vec<f64> = Vec::new();
@@ -2435,6 +2481,16 @@ fn thickness_bound(part: &Part<'_>, tol: f64, below: f64, stop: f64) -> (f64, Ve
             .filter(|(_, b)| **b < target)
             .filter_map(|(i, _)| pairs.get(i).map(|&(_, a, b)| (i, (a, b))))
             .collect();
+        // A round whose pairs cannot be proven as far as asked (the least
+        // of the samples above the least there is) ends only with the
+        // work, and the rounds after it would be left at the mesh's
+        // bounds: 0 for two faces that share an edge, which a few cuts
+        // drop. A round that finds the work spent still gets a tenth of
+        // it, as much again in all.
+        if !short.is_empty() && nodes == 0 {
+            nodes = spare.min(crate::verify_bound::MAX_NODES / 10);
+            spare -= nodes;
+        }
         if !short.is_empty() && nodes > 0 {
             let list: Vec<(usize, usize)> = short.iter().map(|(_, p)| *p).collect();
             let proven = rays.prove(&list, below, target, &mut nodes);
@@ -3219,6 +3275,52 @@ mod settle_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The box of a face the mesh leaves without triangles holds the
+    /// face: a cone's side with its apex, which no edge of it reaches.
+    /// (Before, the box of points of its base circle: flat, a cone's
+    /// height short of the apex.)
+    #[test]
+    fn the_box_of_a_face_without_triangles_holds_a_cones_apex() {
+        let cone =
+            craft3d_kernel::primitives::cone(&craft3d_math::Frame::WORLD, 3.0, 20.0).unwrap();
+        let side = cone
+            .faces
+            .iter()
+            .position(|f| matches!(f.surface, Surface::Cone(_)))
+            .unwrap();
+        let held = face_box(&cone, side);
+        assert!(held.contains(Vec3::new(0.0, 0.0, 20.0), 1e-9), "{held:?}");
+        assert!(held.contains(Vec3::new(3.0, 0.0, 0.0), 1e-9), "{held:?}");
+        assert!(held.contains(Vec3::new(0.0, -3.0, 0.0), 1e-9), "{held:?}");
+    }
+
+    /// A cone's face against itself: left out where no line into the
+    /// material comes back to it (a pit, a countersink; a cone whose
+    /// sides are more than a right angle apart), kept where one does (a
+    /// sharp cone, as thin as one likes at its tip).
+    #[test]
+    fn a_cone_is_asked_against_itself_only_where_a_line_comes_back() {
+        let frame = craft3d_math::Frame::WORLD;
+        let side = |body: &Body| {
+            body.faces
+                .iter()
+                .position(|f| matches!(f.surface, Surface::Cone(_)))
+                .unwrap()
+        };
+        // Sides 2 atan(3 / 20) = 17° apart, and 2 atan(20 / 3) = 163°.
+        let sharp = craft3d_kernel::primitives::cone(&frame, 3.0, 20.0).unwrap();
+        assert!(!cone_never_meets_itself(&sharp, side(&sharp)));
+        let blunt = craft3d_kernel::primitives::cone(&frame, 20.0, 3.0).unwrap();
+        assert!(cone_never_meets_itself(&blunt, side(&blunt)));
+        // The sharp cone as a pit: the material outside it.
+        let mut pit = sharp.clone();
+        let at = side(&pit);
+        pit.faces[at].reversed = true;
+        assert!(cone_never_meets_itself(&pit, at));
+        // Not a cone.
+        assert!(!cone_never_meets_itself(&sharp, 1 - side(&sharp)));
+    }
 
     /// A tube (a cylinder less a coaxial one) measured, then a body equal
     /// to it but made again (another copy, as each point of a Jig's

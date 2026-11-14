@@ -37,7 +37,9 @@
 //!
 //! The gate runs a fixed set per kind; `-- --ignored` runs the wide sweeps
 //! (`HUNT_CASES` cases per kind, default 120) and prints every case that is
-//! not right. Cases found wrong are pinned in [`KNOWN`] with what is wrong.
+//! not right. Cases found wrong are pinned in [`KNOWN`] with what is wrong
+//! (none at present: the ten a cone's face that holds its apex gave were
+//! repaired on 2026-11-14).
 
 #![allow(
     clippy::unwrap_used,
@@ -1556,67 +1558,12 @@ fn sweep(kind: Kind, seed: u64, count: usize) -> Tally {
 /// Cases found wrong, by kind and index in the gate's sweep (seed
 /// [`GATE_SEED`]), with what is wrong. A fix takes them off.
 ///
-/// Every one of them is a cone's face that holds its apex: the proof on
-/// the exact faces covers only a band of it at its base (see
-/// [`a_ball_sunk_into_a_slender_cone_is_answered_clear_known`]), so
-/// `atLeast` is the distance found, wherever the settling stopped.
-const KNOWN: [(Kind, usize, &str); 10] = [
-    (
-        Kind::BallCone,
-        0,
-        "a ball 1e-9 (the tolerance) from a cone's side at scale 1e-3: atLeast 1.00025e-9, \
-         2.5e-13 above the true gap (decimal arithmetic on the inputs; the kernel's ray along \
-         the normal meets the side 1e-9 + rb from the centre); atLeast is the distance found, \
-         which the settling leaves above the gap",
-    ),
-    (
-        Kind::BallCone,
-        3,
-        "a ball 1e-7 from a cone's side at scale 1e-3: atLeast 1.17e-13 above the true gap, \
-         equal to the distance found",
-    ),
-    (
-        Kind::ConeBigBall,
-        0,
-        "gap 1e-5 at scale 1e-3: atLeast 1.4e-9 above it",
-    ),
-    (
-        Kind::ConeBigBall,
-        1,
-        "gap 2e-6 at scale 1: clear, proven 7.38e-3 (3690 times the gap)",
-    ),
-    (
-        Kind::ConeBigBall,
-        2,
-        "touching (sunk 1e-12) at scale 1e-3: proven 1.46e-5 apart one way (14600 tolerances)",
-    ),
-    (
-        Kind::ConeBigBall,
-        4,
-        "gap 1e-5 at scale 1: atLeast 3.2e-8 above it",
-    ),
-    (
-        Kind::ConeBigBall,
-        5,
-        "sunk 3 (three tolerances) at scale 1e6: clear one way, proven 7.96 apart, overlap the \
-         other",
-    ),
-    (
-        Kind::ConeBigBall,
-        6,
-        "sunk 1e-6 at scale 1e3: the faces proven 6.3e-4 apart",
-    ),
-    (
-        Kind::ConeBigBall,
-        7,
-        "sunk 1e-4 at scale 1e3: proven 2.1e-3 apart",
-    ),
-    (
-        Kind::ConeBigBall,
-        8,
-        "gap 1e-7 at scale 1e-3: atLeast 1.2e-11 above it",
-    ),
-];
+/// None at present. The ten it held until 2026-11-14 (BallCone 0 and 3,
+/// ConeBigBall 0 to 2 and 4 to 8) were each a cone's face that holds its
+/// apex: the proof on the exact faces covered only a band of it at its
+/// base, so `atLeast` was the distance found, wherever the settling
+/// stopped (see [`a_ball_sunk_into_a_slender_cone_is_an_overlap`]).
+const KNOWN: [(Kind, usize, &str); 0] = [];
 
 const GATE_SEED: u64 = 0x5EED_C4EC_0001;
 
@@ -1897,180 +1844,212 @@ fn seen(s: &mut craft3d_engine::Session, c: V, dir: V, min: f64) -> Seen {
     }
 }
 
-/// Found by this hunt (2026-11-14), owed: a ball of radius 200 beside a
-/// slender cone (radius 0.3, height 20, at the origin along z), 3e-6 (three
-/// tolerances) from its side at half its height. The true clearance is
-/// 3e-6: the ball's centre is 200 + 3e-6 from a point of the side along
-/// its normal (closed form, and the kernel's exact ray from the centre
-/// along that normal meets the side at 200.000003), and no point of the
-/// cone is nearer (in the meridian plane the side is the segment nearest
-/// the centre, and the foot lies within it). `measure.clearance` answers
-/// clear at 4.12e-4 with `atLeast` 4.12e-4 (and 1.94e-4 the other way):
-/// it proves 137 times the true gap, so an assertion `min 0.0002 mm`
-/// passes. `atLeast` is the distance found, which the settling leaves far
-/// above the gap here; the proof on the exact faces does not bring it
-/// down. A cylinder of the cone's radius in the same place is answered
-/// right (3.09e-6, proven 2.999999e-6; the assertion fails). Smaller cases
-/// of the same: `KNOWN` (BallCone 0 and 3, a ball by an ordinary cone at
-/// gaps of 1 and 100 tolerances, `atLeast` above the gap by 1e-4 and 1e-6
-/// of it). When this is fixed the test fails: turn its known half into
-/// the right answer and take the cases off `KNOWN`.
+/// The frames a pinned case is held in: the world, and turned about a
+/// random axis and moved a thousand sizes off.
+fn frames(rng: &mut Rng, k: f64) -> [Motion; 2] {
+    [
+        Motion::NONE,
+        Motion {
+            turn: Turn::random(rng),
+            shift: rng.direction() * (1000.0 * k),
+        },
+    ]
+}
+
+/// Found by this hunt (2026-11-14) and repaired the same day: a ball of
+/// radius 200 beside a slender cone (radius 0.3, height 20, at the origin
+/// along z), 3e-6 (three tolerances) from its side at half its height.
+/// The true clearance is 3e-6: the ball's centre is 200 + 3e-6 from a
+/// point of the side along its normal (closed form, and the kernel's
+/// exact ray from the centre along that normal meets the side at
+/// 200.000003), and no point of the cone is nearer (in the meridian plane
+/// the side is the segment nearest the centre, and the foot lies within
+/// it). `measure.clearance` answered clear at 4.12e-4 with `atLeast`
+/// 4.12e-4 (and 1.94e-4 the other way): it proved 137 times the true gap,
+/// so an assertion `min 0.0002 mm` passed. `atLeast` was the distance
+/// found, which the settling leaves far above the gap here; the proof on
+/// the exact faces looked at a band of the cone at its base only (a
+/// cone's face that holds its apex has no edge there) and did not bring
+/// it down. Now, as for a cylinder of the cone's radius in the same
+/// place: what is proven is never above the gap, and the assertion of 200
+/// tolerances fails; at three scales, in the world and turned and moved
+/// far off.
 #[test]
-fn a_ball_by_a_slender_cone_is_proven_farther_than_it_is_known() {
-    let (r, h, rb, g, t): (f64, f64, f64, f64, f64) = (0.3, 20.0, 200.0, 3e-6, 0.5);
-    let tol = 1e-6;
-    for cone in [true, false] {
-        let (foot, n) = if cone {
-            let sl = h.phypot(r);
-            ((r * (1.0 - t), h * t), (h / sl, r / sl))
-        } else {
-            ((r, h * t), (1.0, 0.0))
-        };
-        let p = (foot.0 + n.0 * (rb + g), foot.1 + n.1 * (rb + g));
-        let c = V::new(p.0 * 0.6, p.0 * 0.8, p.1);
-        let dir = V::new(-n.0 * 0.6, -n.0 * 0.8, -n.1);
-        let mut s = document(1.0);
-        let a = if cone {
-            (
-                "feature.cone",
-                json!({"name": "A", "radius": mm(r), "height": mm(h)}),
-            )
-        } else {
-            (
-                "feature.cylinder",
-                json!({"name": "A", "radius": mm(r), "height": mm(h)}),
-            )
-        };
-        build(
-            &mut s,
-            &[
-                a,
-                (
-                    "feature.sphere",
-                    json!({"name": "B", "radius": mm(rb), "position": mm3(c)}),
-                ),
-            ],
-        )
-        .unwrap();
-        let got = seen(&mut s, c, dir, 200.0 * tol);
-        // The second means: a point of A's side at `hit` from the centre,
-        // so the bodies are at most `hit − rb` apart.
-        let gap = got.hit - rb;
-        assert!(
-            (gap - g).abs() < 1e-12,
-            "{cone}: the ray meets the side at {}",
-            got.hit
-        );
-        if cone {
-            // Known wrong: proven far above the gap, and the assertion of
-            // 200 tolerances passes.
-            assert!(
-                got.at_least.iter().all(|&l| l > gap + 100.0 * tol) && got.status == "passed",
-                "the slender cone is answered otherwise now (atLeast {:?}, clearance {:?}, \
-                 the assertion {}): if no longer above the gap {gap:e}, it is fixed; make this \
-                 the right answer and take BallCone 0 and 3 off KNOWN",
-                got.at_least,
-                got.value,
-                got.status
-            );
-        } else {
-            assert!(
-                got.at_least.iter().all(|&l| l <= gap) && got.status == "failed",
-                "the cylinder: atLeast {:?}, clearance {:?}, the assertion {} (gap {gap:e})",
-                got.at_least,
-                got.value,
-                got.status
-            );
+fn a_ball_by_a_slender_cone_is_proven_no_farther_than_it_is() {
+    let mut rng = Rng(GATE_SEED ^ 0xC0E1);
+    for k in [1e-3, 1.0, 1e6] {
+        let (r, h, rb, g, t): (f64, f64, f64, f64, f64) =
+            (0.3 * k, 20.0 * k, 200.0 * k, 3e-6 * k, 0.5);
+        let tol = 1e-6 * k;
+        for motion in frames(&mut rng, k) {
+            for cone in [true, false] {
+                let (foot, n) = if cone {
+                    let sl = h.phypot(r);
+                    ((r * (1.0 - t), h * t), (h / sl, r / sl))
+                } else {
+                    ((r, h * t), (1.0, 0.0))
+                };
+                let p = (foot.0 + n.0 * (rb + g), foot.1 + n.1 * (rb + g));
+                let c = V::new(p.0 * 0.6, p.0 * 0.8, p.1);
+                let dir = V::new(-n.0 * 0.6, -n.0 * 0.8, -n.1);
+                let label = format!(
+                    "{} at scale {k:e}, {}",
+                    if cone { "the cone" } else { "the cylinder" },
+                    motion.describe()
+                );
+                let mut s = document(k);
+                let a = if cone {
+                    (
+                        "feature.cone",
+                        json!({"name": "A0", "radius": mm(r), "height": mm(h)}),
+                    )
+                } else {
+                    (
+                        "feature.cylinder",
+                        json!({"name": "A0", "radius": mm(r), "height": mm(h)}),
+                    )
+                };
+                build(
+                    &mut s,
+                    &[
+                        a,
+                        (
+                            "feature.sphere",
+                            json!({"name": "B0", "radius": mm(rb), "position": mm3(c)}),
+                        ),
+                        motion.step("A0", "A"),
+                        motion.step("B0", "B"),
+                    ],
+                )
+                .unwrap_or_else(|e| panic!("{label}: {e:?}"));
+                let got = seen(&mut s, motion.apply(c), motion.turn.apply(dir), 200.0 * tol);
+                // The second means: a point of A's side at `hit` from the
+                // centre, so the bodies are at most `hit − rb` apart.
+                let gap = got.hit - rb;
+                let eps = 1e-13 * (motion.reach() + 1000.0 * k);
+                assert!(
+                    (gap - g).abs() < 1e-3 * tol + eps,
+                    "{label}: the ray meets the side at {}",
+                    got.hit
+                );
+                assert!(
+                    got.at_least.iter().all(|&l| l <= gap + eps) && got.status == "failed",
+                    "{label}: atLeast {:?}, clearance {:?}, the assertion {} (gap {gap:e})",
+                    got.at_least,
+                    got.value,
+                    got.status
+                );
+            }
         }
     }
 }
 
-/// Found by this hunt (2026-11-14), owed, the worst of it: the same
-/// slender cone (radius 0.3, height 20) and a ball of radius 200 sunk
-/// 1e-4 (a hundred tolerances) into its side at half its height. They
-/// share volume: the ball's centre is 200 − 1e-4 from a point of the side
-/// (closed form), and the kernel's intersection (the measure `overlap`,
-/// which no distance code takes part in) finds a common volume of about
-/// 1.7e-7. `measure.clearance` answers clear, 7.6e-4 apart, proven at
-/// least 7.6e-4, and an assertion of a clearance of at least 0 passes.
-/// Sunk 3e-6 and 1e-5 it is answered clear too. Of 192 such pairs (cones
-/// from flat to slender, balls of radius 0.5 to 500, sunk 3 to 1000
-/// tolerances at a quarter, half and three quarters of the height) 13 were
-/// answered clear, the worst a ball of radius 500 sunk 1e-3 (a thousand
-/// tolerances) into the slender cone, proven 0.0377 apart.
+/// Found by this hunt (2026-11-14) and repaired the same day, the worst
+/// of it: the same slender cone (radius 0.3, height 20) and a ball of
+/// radius 200 sunk 1e-4 (a hundred tolerances) into its side at half its
+/// height. They share volume: the ball's centre is 200 − 1e-4 from a
+/// point of the side (closed form), and the kernel's intersection (the
+/// measure `overlap`, which no distance code takes part in) finds a
+/// common volume of about 1.7e-7. `measure.clearance` answered clear,
+/// 7.6e-4 apart, proven at least 7.6e-4, and an assertion of a clearance
+/// of at least 0 passed. Sunk 3e-6 and 1e-5 it was answered clear too. Of
+/// 192 such pairs (cones from flat to slender, balls of radius 0.5 to
+/// 500, sunk 3 to 1000 tolerances at a quarter, half and three quarters
+/// of the height) 13 were answered clear, the worst a ball of radius 500
+/// sunk 1e-3 (a thousand tolerances) into the slender cone, proven 0.0377
+/// apart.
 ///
-/// Why, as far as measured: the proof on the exact faces starts a face of
-/// a cone from the box of its heights along the axis taken from its edges
+/// Why: the proof on the exact faces started a face of a cone from the
+/// box of its heights along the axis taken from its edges
 /// (`verify_bound.rs`, `face_root`: "the height along the axis over a
 /// cylinder or a cone, is least and most on the face's boundary"); a
 /// cone's face that holds its apex has no edge there (feature.cone's side
-/// is bounded by its base circle alone), so the box holds a band at the
-/// base and none of the rest of the face. What the proof then bounds is
-/// that band, which lies farther than the place found, so `atLeast` is the
-/// place found, however far the settling stopped above the truth; with
-/// the bound above twice the tolerance the kernel is not asked, and each
-/// body's points lie outside the other, so the pair is clear. When fixed
-/// the test fails: make it the right answer (overlap, the assertion
-/// failed).
+/// is bounded by its base circle alone), so the box held a band at the
+/// base and none of the rest of the face. What the proof then bounded was
+/// that band, which lies farther than the place found, so `atLeast` was
+/// the place found, however far the settling stopped above the truth;
+/// with the bound above twice the tolerance the kernel was not asked, and
+/// each body's points lie outside the other, so the pair was clear.
+///
+/// Now, at three scales, in the world and turned and moved far off, sunk
+/// 10, 100 and 1000 tolerances: never clear either way round and never
+/// with a value, an overlap wherever the kernel tells (always in the
+/// world), and an assertion of a clearance of at least 0 never passes.
 #[test]
-fn a_ball_sunk_into_a_slender_cone_is_answered_clear_known() {
-    let (r, h, rb, g, t): (f64, f64, f64, f64, f64) = (0.3, 20.0, 200.0, -1e-4, 0.5);
-    let sl = h.phypot(r);
-    let (foot, n) = ((r * (1.0 - t), h * t), (h / sl, r / sl));
-    let p = (foot.0 + n.0 * (rb + g), foot.1 + n.1 * (rb + g));
-    let c = V::new(p.0 * 0.6, p.0 * 0.8, p.1);
-    let mut s = document(1.0);
-    build(
-        &mut s,
-        &[
-            (
-                "feature.cone",
-                json!({"name": "A", "radius": mm(r), "height": mm(h)}),
-            ),
-            (
-                "feature.sphere",
-                json!({"name": "B", "radius": mm(rb), "position": mm3(c)}),
-            ),
-        ],
-    )
-    .unwrap();
-    // The second means: the kernel's common volume.
-    let Ran::Ok(shared) = run(
-        &mut s,
-        "assert.add",
-        &json!({"name": "overlap", "measure": "overlap", "of": ["A", "B"], "is": false}),
-    ) else {
-        panic!("overlap");
-    };
-    let volume: f64 = shared["detail"]["overlaps"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|o| o["volume"].as_f64())
-        .sum();
-    assert!(volume > 1e-8, "{shared}");
-    let Ran::Ok(clear) = run(
-        &mut s,
-        "measure.clearance",
-        &json!({"from": "A", "to": "B"}),
-    ) else {
-        panic!("clearance");
-    };
-    let Ran::Ok(apart) = run(
-        &mut s,
-        "assert.add",
-        &json!({"name": "apart", "measure": "clearance", "from": "A", "to": "B", "min": "0 mm"}),
-    ) else {
-        panic!("assertion");
-    };
-    assert!(
-        clear["pairs"][0]["status"] == "clear"
-            && clear["atLeast"].as_f64().unwrap() > 1e-4
-            && apart["status"] == "passed",
-        "the cone sunk into the ball is answered otherwise now: {clear}, the assertion {}: if \
-         it is an overlap and the assertion failed, it is fixed; make this the right answer",
-        apart["status"]
-    );
+fn a_ball_sunk_into_a_slender_cone_is_an_overlap() {
+    let mut rng = Rng(GATE_SEED ^ 0xC0E2);
+    for k in [1e-3, 1.0, 1e6] {
+        for (far, motion) in frames(&mut rng, k).into_iter().enumerate() {
+            for sunk in [1e-5, 1e-4, 1e-3] {
+                let (r, h, rb, g, t): (f64, f64, f64, f64, f64) =
+                    (0.3 * k, 20.0 * k, 200.0 * k, -sunk * k, 0.5);
+                let sl = h.phypot(r);
+                let (foot, n) = ((r * (1.0 - t), h * t), (h / sl, r / sl));
+                let p = (foot.0 + n.0 * (rb + g), foot.1 + n.1 * (rb + g));
+                let c = V::new(p.0 * 0.6, p.0 * 0.8, p.1);
+                let label = format!("sunk {sunk:e} at scale {k:e}, {}", motion.describe());
+                let mut s = document(k);
+                build(
+                    &mut s,
+                    &[
+                        (
+                            "feature.cone",
+                            json!({"name": "A0", "radius": mm(r), "height": mm(h)}),
+                        ),
+                        (
+                            "feature.sphere",
+                            json!({"name": "B0", "radius": mm(rb), "position": mm3(c)}),
+                        ),
+                        motion.step("A0", "A"),
+                        motion.step("B0", "B"),
+                    ],
+                )
+                .unwrap_or_else(|e| panic!("{label}: {e:?}"));
+                // The second means: the kernel's common volume (where the
+                // ball is deep enough for it to tell).
+                if far == 0 && sunk >= 1e-4 {
+                    let Ran::Ok(shared) = run(
+                        &mut s,
+                        "assert.add",
+                        &json!({"name": "overlap", "measure": "overlap", "of": ["A", "B"], "is": false}),
+                    ) else {
+                        panic!("{label}: overlap");
+                    };
+                    let volume: f64 = shared["detail"]["overlaps"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter_map(|o| o["volume"].as_f64())
+                        .sum();
+                    assert!(volume > 1e-8 * k * k * k, "{label}: {shared}");
+                }
+                for (a, b) in [("A", "B"), ("B", "A")] {
+                    match run(&mut s, "measure.clearance", &json!({"from": a, "to": b})) {
+                        Ran::Ok(clear) => assert!(
+                            clear["pairs"][0]["status"] == "overlap"
+                                && clear["clearance"].is_null()
+                                && clear["atLeast"].is_null(),
+                            "{label}: {a} to {b}: {clear}"
+                        ),
+                        // Declined with a reason: only far off.
+                        Ran::Err(e) => assert!(far == 1, "{label}: {a} to {b}: {e}"),
+                        Ran::Panic(e) => panic!("{label}: {a} to {b}: {e}"),
+                    }
+                }
+                let Ran::Ok(apart) = run(
+                    &mut s,
+                    "assert.add",
+                    &json!({"name": "apart", "measure": "clearance", "from": "A", "to": "B", "min": "0 mm"}),
+                ) else {
+                    panic!("{label}: assertion");
+                };
+                assert!(
+                    apart["status"] == "failed" || (far == 1 && apart["status"] == "error"),
+                    "{label}: {apart}"
+                );
+            }
+        }
+    }
 }
 
 /// Found by this hunt (2026-11-14), owed, lesser: a ball of radius
