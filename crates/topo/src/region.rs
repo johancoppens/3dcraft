@@ -3149,12 +3149,12 @@ mod tests {
         NurbsCurve::polynomial(3, knots, points).unwrap()
     }
 
-    /// A plane, a cylinder, a cone and a sphere of size `k` in `frame`,
-    /// each with the map from a chart about `(0, 0)` to it, and the lengths
-    /// a unit of its `u` and of its `v` are on it there.
+    /// A plane, a cylinder, a cone, a sphere and a torus of size `k` in
+    /// `frame`, each with the map from a chart about `(0, 0)` to it, and
+    /// the lengths a unit of its `u` and of its `v` are on it there.
     #[allow(clippy::type_complexity)]
     fn charted(frame: Frame, k: f64) -> Vec<(Surface, Box<dyn Fn(f64, f64) -> Vec3>, (f64, f64))> {
-        use craft3d_geom::{Cone, Cylinder, Plane, Sphere};
+        use craft3d_geom::{Cone, Cylinder, Plane, Sphere, Torus};
         let slope = 0.4_f64.ptan();
         vec![
             (
@@ -3180,6 +3180,14 @@ mod tests {
                 }),
                 (2.0 * k, 2.0 * k),
             ),
+            (
+                Surface::Torus(Torus::new(frame, 3.0 * k, k).unwrap()),
+                Box::new(move |x, y| {
+                    let (s, c) = y.psin_cos();
+                    about(&frame, 3.0 * k + k * c, 0.5 * x, k * s)
+                }),
+                (4.0 * k, k),
+            ),
         ]
     }
 
@@ -3196,12 +3204,16 @@ mod tests {
         let mut last: Option<(f64, f64)> = None;
         let mut out = Vec::new();
         for k in 0..=64 {
-            let (mut u, v) = surface
+            let (u, v) = surface
                 .project(curve.eval(a + (b - a) * k as f64 / 64.0))
                 .unwrap();
+            let (mut u, mut v) = (u, v);
             if let Some((lu, lv)) = last {
                 if let Some(period) = surface.period_u() {
                     u += ((lu - u) / period).round() * period;
+                }
+                if let Some(period) = surface.period_v() {
+                    v += ((lv - v) / period).round() * period;
                 }
                 out.push(((u - lu) * scale.0, (v - lv) * scale.1));
             }
@@ -3211,7 +3223,8 @@ mod tests {
     }
 
     /// A spline edge that spirals about a point of the chart, on a plane, a
-    /// cylinder, a cone and a sphere, turned and moved, at three scales, is
+    /// cylinder, a cone, a sphere and a torus, turned and moved, at three
+    /// scales, is
     /// followed in steps over each half of which its image in the chart
     /// runs one way (sampled finely, its directions lie in less than a half
     /// turn), so no chord of the walk hides a turn: 16 turns in 32 steps or
@@ -3233,7 +3246,7 @@ mod tests {
                     // A half step of three eighths of a turn at the most,
                     // so more than four thirds of a step a turn.
                     let least = (turns * 4.0 / 3.0) as usize;
-                    if a_turn < 64.0 {
+                    if a_turn < 64.0 || kind == "torus" {
                         assert!(steps >= least, "{kind}, {turns} turns: {steps} steps");
                     } else if turns <= 4.0 {
                         assert_eq!(steps, SPLINE_STEPS, "{kind} at {k}, {turns} turns");
@@ -3253,6 +3266,70 @@ mod tests {
                             fanned(&directions, 0.999 * PI),
                             "{kind} at {k}, {turns} turns: half step {h} of {halves} turns back"
                         );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A curve that winds about a torus's tube as it goes round its axis
+    /// (`p` times round the axis and `q` about the tube, a cubic through 64
+    /// points a turn of the faster) is followed in steps each half of
+    /// which moves less than a quarter turn about the axis and about the
+    /// tube (sampled finely, each unwrapped from point to point): what the
+    /// walk needs to follow it round both ways. Three scales, two tori.
+    #[test]
+    fn a_spline_on_a_torus_moves_less_than_a_quarter_turn_about_its_tube_a_half_step() {
+        let f = tilted();
+        for k in [1e-3, 1.0, 1e6] {
+            for (major, minor) in [(3.0 * k, k), (2.0 * k, 0.5 * k)] {
+                let torus = Surface::Torus(craft3d_geom::Torus::new(f, major, minor).unwrap());
+                let lay = Lay::of(&torus);
+                for (p, q) in [
+                    (1.0_f64, 0.0_f64),
+                    (0.0, 1.0),
+                    (3.0, 13.0),
+                    (13.0, 3.0),
+                    (2.0, 2.0),
+                    (1.0, 40.0),
+                ] {
+                    let count = 64 * (p.max(q) as usize) + 1;
+                    let params: Vec<f64> =
+                        (0..count).map(|i| i as f64 / (count - 1) as f64).collect();
+                    let values: Vec<Vec<f64>> = params
+                        .iter()
+                        .map(|s| {
+                            let (sv, cv) = (TAU * q * s + 0.3).psin_cos();
+                            let at = about(&f, major + minor * cv, TAU * p * s, minor * sv);
+                            vec![at.x, at.y, at.z]
+                        })
+                        .collect();
+                    let (knots, ctrl) =
+                        craft3d_geom::refine::interpolate(&params, 3, &values).unwrap();
+                    let points = ctrl.iter().map(|c| Vec3::new(c[0], c[1], c[2])).collect();
+                    let curve = NurbsCurve::polynomial(3, knots, points).unwrap();
+                    let range = curve.domain();
+                    let steps = spline_steps(&curve, range, &lay, &mut 0).unwrap();
+                    let halves = 2 * steps;
+                    for h in 0..halves {
+                        let end =
+                            |j: usize| range.0 + (range.1 - range.0) * (j as f64 / halves as f64);
+                        let moved =
+                            chart_directions(&torus, (1.0, 1.0), &curve, (end(h), end(h + 1)));
+                        for d in 0..2 {
+                            let (mut at, mut low, mut high) = (0.0_f64, 0.0_f64, 0.0_f64);
+                            for step in &moved {
+                                at += if d == 0 { step.0 } else { step.1 };
+                                low = low.min(at);
+                                high = high.max(at);
+                            }
+                            assert!(
+                                high - low < QUARTER_TURN,
+                                "({p}, {q}) at {k}, radii {major} and {minor}: half step {h} of {halves} moves {} about {}",
+                                high - low,
+                                if d == 0 { "the axis" } else { "the tube" }
+                            );
+                        }
                     }
                 }
             }
