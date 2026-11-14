@@ -964,6 +964,21 @@ fn a_batch_step_or_a_wait_that_needs_the_bodies_is_refused_for_a_page() {
         .to_string(),
     );
     assert_eq!(fine["result"]["completed"], 2, "{fine}");
+    // The review of round 2: a step that reports which features fail
+    // after it needs the bodies too, so `variable.set` in a document with
+    // features is refused like a feature added; `param.set` reports none
+    // and is made.
+    let edits = page.answer(
+        &json!({"id": "e", "method": "batch", "params": {"stopOnError": false, "steps": [
+            {"command": "variable.set", "params": {"name": "width", "expr": "13 mm"}},
+            {"command": "param.set", "params": {"values": {"width": "14 mm"}}},
+        ]}})
+        .to_string(),
+    );
+    assert_eq!(edits["result"]["completed"], 1, "{edits}");
+    let error = edits["result"]["results"][0]["error"].as_str().unwrap();
+    assert!(error.contains(BATCH_REFUSED), "{error}");
+    assert_eq!(edits["result"]["results"][1]["ok"], true, "{edits}");
     let waited = page.answer(&execute(
         "w",
         "param.set",
@@ -1137,4 +1152,120 @@ fn take_gives_the_documents_file_and_leaves_the_document_as_it_was() {
         "{bad}"
     );
     assert!(page.host.session.file_names().is_empty());
+}
+
+/// R2-2 of the review of Embed's round 2 (2026-11-14): N changes of a
+/// parameter with a measure behind each, posted in one task, held the
+/// page's thread 0.7 s for N = 40 and 11.7 s for N = 200: past the
+/// commands the session hands to the worker at once (64), the next read
+/// had its bodies built on the page. Now a page's request waits for an
+/// answer instead, so nothing is built on the page's own thread
+/// (`Session::work_here`, counted, not timed), and every request is
+/// answered once, each measure on the state it was sent for.
+#[test]
+fn past_the_commands_the_worker_takes_a_request_waits_and_nothing_is_built_here() {
+    let mut page = opened_block();
+    let work = page.host.session.work_here();
+    let width = |n: usize| 10 + n % 50;
+    page.worker.held.set(true);
+    let n = 200;
+    for i in 0..n {
+        page.send(execute(
+            format!("p{i}"),
+            "param.set",
+            json!({"values": {"width": format!("{} mm", width(i))}, "merge": i > 0}),
+        ));
+        page.send(execute(format!("m{i}"), "document.measure", json!({})));
+    }
+    // As many reads wait for the worker as may; the rest wait here, for
+    // an answer (not for the next frame: the worker's answer wakes them).
+    assert!(page.host.session.commands_full());
+    assert!(page.embed.waiting() > 0);
+    assert!(!page.embed.goes_on_next_frame(&page.host));
+    assert_eq!(page.host.session.work_here(), work, "built on the page");
+    page.frames(3);
+    assert_eq!(page.host.session.work_here(), work, "built on the page");
+    page.worker.held.set(false);
+    let mut got = Vec::new();
+    for _ in 0..100 {
+        page.frame();
+        got.extend(page.replies());
+        if page.embed.waiting() == 0 && !page.host.session.commands_waiting() {
+            break;
+        }
+    }
+    page.frames(2);
+    got.extend(page.replies());
+    assert_eq!(page.host.session.work_here(), work, "built on the page");
+    for i in 0..n {
+        let replies: Vec<&Value> = got
+            .iter()
+            .filter(|r| r["id"] == format!("p{i}") || r["id"] == format!("m{i}"))
+            .collect();
+        assert_eq!(replies.len(), 2, "p{i}, m{i}: {replies:?}");
+        assert!(replies.iter().all(|r| r["ok"] == true), "{replies:?}");
+        let measured = replies.iter().find(|r| r["id"] == format!("m{i}")).unwrap();
+        let expected = width(i) as f64 * 600.0;
+        assert!(
+            (volume(measured) - expected).abs() < 1e-6 * expected,
+            "m{i}: {measured}, expected {expected}"
+        );
+    }
+    eprintln!(
+        "{n} param.set with a measure each in one go: each answered once on its own state, nothing built on the page"
+    );
+}
+
+/// The other half of R2-2: requests that need no worker were all handled
+/// in the frame they came in, however many (80 messages of N = 40 held
+/// the page 0.7 s). The requests handled in one frame take at most
+/// `FRAME_MS` of the page's clock together; the rest wait for the next
+/// frame, which the page asks for, and are answered in order.
+#[test]
+fn the_requests_of_one_frame_take_at_most_its_share_and_the_rest_wait() {
+    let mut page = opened_block();
+    // A clock that goes on 3 ms each time it is read, as if each request
+    // took that long.
+    let ticks = Rc::clone(&page.clock);
+    page.embed = Embed::new(
+        true,
+        Box::new(move || {
+            ticks.set(ticks.get() + 3.0);
+            ticks.get()
+        }),
+    );
+    let n = 30;
+    for i in 0..n {
+        page.send(execute(i, "file.list", json!({})));
+    }
+    let now: Vec<Value> = page
+        .replies()
+        .into_iter()
+        .filter(|r| r.get("id").is_some())
+        .collect();
+    assert!(
+        !now.is_empty() && now.len() < 5,
+        "a few in this frame: {}",
+        now.len()
+    );
+    assert_eq!(page.embed.waiting(), n - now.len());
+    assert!(page.embed.goes_on_next_frame(&page.host));
+    let mut ids: Vec<i64> = now.iter().filter_map(|r| r["id"].as_i64()).collect();
+    let mut frames = 0;
+    while page.embed.waiting() > 0 && frames < 100 {
+        page.frame();
+        frames += 1;
+        ids.extend(
+            page.replies()
+                .iter()
+                .filter_map(|r| r.get("id").and_then(Value::as_i64)),
+        );
+    }
+    assert_eq!(
+        ids,
+        (0..n as i64).collect::<Vec<_>>(),
+        "in order, each once"
+    );
+    assert!(frames > 3, "over several frames: {frames}");
+    assert!(!page.embed.goes_on_next_frame(&page.host));
 }

@@ -35,9 +35,14 @@
 //! the worker, whose reply comes with its answer (a page matches replies
 //! by `id`); while an edit made in the worker waits for its answer, the
 //! requests after it wait too and run on the document it leaves, in
-//! order, as the menu's do. Input is hostile: no message makes it panic,
-//! and what a message can make it keep is capped ([`MAX_WAITING`],
-//! [`MAX_WAITING_BYTES`], [`MAX_FILE_BYTES`]).
+//! order, as the menu's do. A page's request never has the bodies built on
+//! the page's own thread, nor holds it: while as many commands wait for
+//! the worker as may (`Session::commands_full`), the next `engine.execute`
+//! waits for one of their answers (the session would run it on the page);
+//! and the requests handled in one frame take at most [`FRAME_MS`]
+//! together, the rest wait for the next frame. Input is hostile: no
+//! message makes it panic, and what a message can make it keep is capped
+//! ([`MAX_WAITING`], [`MAX_WAITING_BYTES`], [`MAX_FILE_BYTES`]).
 
 use crate::host::{WebHost, memory_name, receive_into, received_kind};
 use craft3d_automation::rpc::{self, Extension, ExtensionResult, Method};
@@ -60,8 +65,18 @@ pub const GIVE: &str = "embed.give";
 pub const TAKE: &str = "embed.take";
 
 /// Most requests that wait at once (behind an edit made in the worker,
-/// or for the window): one more is answered with an error.
-pub const MAX_WAITING: usize = 256;
+/// for the commands the worker has not answered, for the window, or for
+/// the next frame): one more is answered with an error. As many as the
+/// door takes between two frames.
+pub const MAX_WAITING: usize = 1024;
+
+/// What a request is refused with when [`MAX_WAITING`] wait already.
+pub const TOO_MANY_WAIT: &str = "too many requests wait";
+
+/// How long the requests handled in one frame may take together, in
+/// milliseconds of the page's clock: the next waits for the next frame
+/// (one is handled in every frame, however long it takes).
+pub const FRAME_MS: f64 = 8.0;
 
 /// Most bytes the requests that wait may hold together (their lines and
 /// their files).
@@ -230,6 +245,9 @@ pub struct Embed {
     built: Option<(u64, u64)>,
     /// `ready` was said.
     greeted: bool,
+    /// When the first request of this frame was handled (the page's
+    /// clock), for [`FRAME_MS`].
+    frame_started: Option<f64>,
 }
 
 impl Embed {
@@ -246,6 +264,7 @@ impl Embed {
             out: Vec::new(),
             built: None,
             greeted: false,
+            frame_started: None,
         }
     }
 
@@ -260,9 +279,33 @@ impl Embed {
         std::mem::take(&mut self.out)
     }
 
-    /// How many requests wait (behind an edit, or for the window).
+    /// How many requests wait (behind an edit, for the worker's answers,
+    /// for the window, or for the next frame).
     pub fn waiting(&self) -> usize {
         self.waiting.len()
+    }
+
+    /// A request waits only for the next frame ([`FRAME_MS`]): the page
+    /// asks for one. (One that waits for the worker or the window is
+    /// woken by what it waits for.)
+    pub fn goes_on_next_frame(&self, host: &WebHost) -> bool {
+        self.waiting
+            .front()
+            .is_some_and(|front| !must_wait(host, &peek(&front.line)))
+    }
+
+    /// Whether this frame has room for one more request: the first one
+    /// always, the next while less than [`FRAME_MS`] went by since the
+    /// first began.
+    fn room(&mut self) -> bool {
+        let now = (self.clock)();
+        match self.frame_started {
+            None => {
+                self.frame_started = Some(now);
+                true
+            }
+            Some(started) => now - started <= FRAME_MS || !(now - started).is_finite(),
+        }
     }
 
     /// Says `ready` once: the window is there and a page listens. Called
@@ -300,7 +343,7 @@ impl Embed {
             );
             return;
         }
-        if !self.waiting.is_empty() || must_wait(host, &peek) {
+        if !self.waiting.is_empty() || must_wait(host, &peek) || !self.room() {
             let size = message.size();
             if self.waiting.len() >= MAX_WAITING
                 || self.waiting_bytes.saturating_add(size) > MAX_WAITING_BYTES
@@ -308,7 +351,7 @@ impl Embed {
                 self.refuse(
                     &peek.id,
                     &format!(
-                        "too many requests wait for an edit made beside the page (at most {MAX_WAITING}, {MAX_WAITING_BYTES} bytes); send it again once the replies have come"
+                        "{TOO_MANY_WAIT} (at most {MAX_WAITING}, {MAX_WAITING_BYTES} bytes), behind an edit or reads still in the worker: nothing of it was done; send it again once replies have come, and keep fewer requests outstanding (a slider: send a read only when the last one was answered)"
                     ),
                 );
                 return;
@@ -327,7 +370,7 @@ impl Embed {
     pub fn frame(&mut self, host: &mut WebHost) {
         self.answers(host);
         while let Some(front) = self.waiting.front() {
-            if must_wait(host, &peek(&front.line)) {
+            if must_wait(host, &peek(&front.line)) || !self.room() {
                 break;
             }
             let Some(message) = self.waiting.pop_front() else {
@@ -340,6 +383,7 @@ impl Embed {
             self.answers(host);
         }
         self.regenerated(host);
+        self.frame_started = None;
     }
 
     /// The replies of the commands run in the worker that were answered,
@@ -389,16 +433,20 @@ impl Embed {
             json!({
                 "event": "regenerated",
                 "document": status.index,
+                "documentId": status.id,
                 "revision": revision,
             })
             .to_string(),
         ));
     }
 
-    /// The state a reply leaves: the document shown, its revision, and
-    /// whether it was said `regenerated` already (if not, a `regenerated`
-    /// for this revision, or a later one of the same document, follows).
-    /// Null while no document is open.
+    /// The state a reply leaves: the document shown (its place among the
+    /// open ones, which the next takes when one before it closes, and its
+    /// id, which no other document of the session ever has), its revision,
+    /// and whether it was said `regenerated` already (if not, a
+    /// `regenerated` for this revision, or a later one of the same
+    /// document, follows while that document is the one shown). Null while
+    /// no document is open.
     fn state_of(&self, host: &WebHost) -> Value {
         match (
             host.session.document_status(),
@@ -406,6 +454,7 @@ impl Embed {
         ) {
             (Some(status), Some(revision)) => json!({
                 "document": status.index,
+                "documentId": status.id,
                 "revision": revision,
                 "regenerated": self.built == Some((status.id, revision)),
             }),
@@ -622,11 +671,16 @@ pub fn failed_event(why: &str) -> String {
 }
 
 /// A request waits: behind an edit made in the worker (it runs on the
-/// document that edit leaves, as the menu's do), or a `ui.set` while the
-/// window does not show the document yet (setting it there would build
-/// the scene on the page, all at once).
+/// document that edit leaves, as the menu's do); a command while as many
+/// commands wait for the worker as may (the session would run it on the
+/// page, its bodies built there); a `ui.set` while the window does not
+/// show the document yet (setting it there would build the scene on the
+/// page, all at once).
 fn must_wait(host: &WebHost, peek: &Peek) -> bool {
-    host.session.edits_waiting() || (peek.method.as_deref() == Some("ui.set") && host.away())
+    let method = peek.method.as_deref();
+    host.session.edits_waiting()
+        || (method == Some("engine.execute") && host.session.commands_full())
+        || (method == Some("ui.set") && host.away())
 }
 
 /// The job a command was handed over under (`{deferred: true, job}`).

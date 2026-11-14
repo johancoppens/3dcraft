@@ -498,6 +498,10 @@ const MAX_HELD: usize = 8;
 /// What an edit the person cancelled while it was made says.
 pub const CANCELLED: &str = "cancelled: the edit was not made";
 
+/// The area of the plate of an edit that takes a while (its Cancel): it
+/// stays while the edit runs, Escape does not close it.
+pub(crate) const WORKING_ID: &str = "craft3d-web-working";
+
 impl WebHost {
     /// A host whose session keeps its files in memory, around `shell`,
     /// within the page's memory budgets ([`WEB_SCENE_BUDGET`]; the bodies
@@ -1174,7 +1178,7 @@ impl WebHost {
         } else {
             tokens.popover_fill
         };
-        egui::Area::new(egui::Id::new("craft3d-web-working"))
+        egui::Area::new(egui::Id::new(WORKING_ID))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -48.0))
             .show(ctx, |ui| {

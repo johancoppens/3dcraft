@@ -63,6 +63,11 @@ type Inbox = Rc<RefCell<Vec<Arrived>>>;
 /// whole.
 const FRAME_WORK_MS: f64 = 40.0;
 
+/// How many frames the embedded stand draws after a key or a click while
+/// Escape had something of the window's to do, so that what it closed is
+/// seen gone ([`Page::keys_after`]).
+const SETTLING_FRAMES: u8 = 3;
+
 /// What a file dialog or a write in the background left for the next
 /// frame.
 enum Mail {
@@ -261,13 +266,18 @@ struct Stand {
 }
 
 /// What the embedded stand's own listeners on the canvas need to know of
-/// the window, set each frame ([`Page::logic`]).
+/// the window, set at the end of each frame ([`Page::ui`]).
 #[derive(Clone, Default)]
 struct Keys {
-    /// A widget of the window has the keyboard (a field of the form).
-    widget: Rc<Cell<bool>>,
+    /// Escape has something of the window's to do: a field has the keys,
+    /// a menu, a list, a popover or a dialog is open
+    /// ([`craft3d_ui_egui::Shell::escape_has_work`]).
+    busy: Rc<Cell<bool>>,
     /// The presentation is `view`: Tab has nothing to move to inside.
     view: Rc<Cell<bool>>,
+    /// Frames still to draw after a key or a click while Escape had work
+    /// ([`Page::keys_after`]).
+    settling: Rc<Cell<u8>>,
 }
 
 /// eframe's start in the embedded stand: it makes its hidden text field
@@ -281,11 +291,13 @@ struct Keys {
 /// And a keyboard user can leave: eframe keeps Tab inside its canvas
 /// whatever its options say, so 3DCraft's own listeners, called before
 /// eframe's (the capture phase on the canvas), let it go to the browser
-/// where nothing of the window has the keyboard: Tab and Shift+Tab in
+/// where Escape has nothing of the window's to do: Tab and Shift+Tab in
 /// `view` move on to the page's next or previous element; Escape leaves
-/// the canvas in every presentation (a field of the form gives the
-/// keyboard back on the first Escape). eframe's text field is taken out of
-/// the order Tab follows. The wheel over the canvas turns into a zoom
+/// the canvas in every presentation, but first closes what is open (a
+/// menu, a list, a popover, a dialog) or gives a field's keyboard back,
+/// one Escape each, as in the desktop app. eframe's text field is taken
+/// out of the order Tab follows. A ring round the canvas shows when 3DCraft
+/// has the keys. The wheel over the canvas turns into a zoom
 /// only while 3DCraft has the focus or with Ctrl (⌘) held, a pinch;
 /// otherwise it scrolls the page.
 async fn start_leaving_focus(
@@ -347,12 +359,16 @@ fn let_the_keyboard_and_the_wheel_out(
     let (out, agent_out) = (canvas.clone(), agent.clone());
     let key =
         Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |event: web_sys::KeyboardEvent| {
-            if keys.widget.get() || event.ctrl_key() || event.meta_key() || event.alt_key() {
+            if keys.busy.get() || event.ctrl_key() || event.meta_key() || event.alt_key() {
                 return;
             }
             match event.key().as_str() {
                 // The browser moves the focus on; eframe does not see it.
                 "Tab" if keys.view.get() => event.stop_immediate_propagation(),
+                // Nothing of the window's to close: the canvas lets go of
+                // the keys. The Escape is 3DCraft's still, in every browser
+                // alike (eframe in Firefox would take it otherwise): a page
+                // hears that 3DCraft let go by the canvas's `blur`.
                 "Escape" => {
                     let _ = out.blur();
                     if let Some(agent) = agent_out
@@ -361,6 +377,7 @@ fn let_the_keyboard_and_the_wheel_out(
                     {
                         let _ = agent.blur();
                     }
+                    event.stop_immediate_propagation();
                 }
                 _ => {}
             }
@@ -801,6 +818,9 @@ impl Page {
         if embedded && let Some(presentation) = flags.presentation {
             host.shell.set_presentation(presentation);
         }
+        // The canvas shows nothing of its focus (eframe takes its outline
+        // away): in a page, a ring shows when 3DCraft has the keys.
+        host.shell.set_focus_ring(embedded);
         // The system's file dialogs where the browser has them, unless the
         // address asks for downloads (`?download`).
         host.pickers = !flags.download && pickers::available();
@@ -839,6 +859,42 @@ impl Page {
                 embed.set_warnings(warnings);
                 embed
             },
+        }
+    }
+
+    /// What the embedded stand's listeners on the canvas read, as the
+    /// window was just drawn: whether Escape has something of the window's
+    /// to do, and whether the presentation is `view`. egui counts an area
+    /// that closed in this frame as shown until the next one, and a field
+    /// of a dialog that closed as having the keys until the end of the
+    /// frame after; so a frame that took a key or a click while something
+    /// was open asks for [`SETTLING_FRAMES`] more: the next Escape finds
+    /// the window as it is (the review's second Escape after the export
+    /// dialog closed did nothing, as nothing had drawn the window since).
+    fn keys_after(&mut self, ctx: &egui::Context) {
+        let staying = [egui::Id::new(crate::host::WORKING_ID)];
+        let busy = self.host.shell.escape_has_work(ctx, &staying);
+        self.keys.busy.set(busy);
+        self.keys
+            .view
+            .set(self.host.shell.state.presentation == craft3d_ui_egui::state::Presentation::View);
+        let acted = ctx.input(|i| {
+            i.events.iter().any(|e| {
+                matches!(
+                    e,
+                    egui::Event::Key { .. } | egui::Event::PointerButton { .. }
+                )
+            })
+        });
+        let settling = &self.keys.settling;
+        if busy && acted {
+            settling.set(SETTLING_FRAMES);
+        }
+        if busy && settling.get() > 0 {
+            settling.set(settling.get() - 1);
+            ctx.request_repaint();
+        } else if !busy {
+            settling.set(0);
         }
     }
 
@@ -1456,11 +1512,10 @@ impl eframe::App for Page {
         // waited, `regenerated`.
         self.embed.frame(&mut self.host);
         door::post(self.embed.take_out());
-        // What the embedded stand's listeners on the canvas read.
-        self.keys.widget.set(ctx.memory(|m| m.focused().is_some()));
-        self.keys
-            .view
-            .set(self.host.shell.state.presentation == craft3d_ui_egui::state::Presentation::View);
+        // Requests left for the next frame (`embed::FRAME_MS`).
+        if self.embed.goes_on_next_frame(&self.host) {
+            ctx.request_repaint();
+        }
         self.unsaved.set(self.host.has_unsaved());
         // The page's title and its storage are its own in the embedded
         // stand.
@@ -1524,6 +1579,9 @@ impl eframe::App for Page {
         // its reply goes in the next frame.
         if self.host.page_answers_waiting() {
             ui.ctx().request_repaint();
+        }
+        if self.embedded {
+            self.keys_after(ui.ctx());
         }
     }
 }

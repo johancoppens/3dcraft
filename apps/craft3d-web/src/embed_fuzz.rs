@@ -20,6 +20,13 @@
 //!   reply, and the document is the one a plain `Session` gives for the
 //!   edits that were answered ok, in order.
 //!
+//! - `slider`: written by the review of Embed's round 2 (2026-11-14,
+//!   `check/review-embed-core-r2`): a slider with a price behind it, 600
+//!   changes of a variable with a measure behind each and the worker held
+//!   now and then. Each answered once, each measure on its own state, and
+//!   (R2-2 of that review) nothing built on the page's own thread
+//!   (`Session::work_here`), though more reads wait than the worker takes.
+//!
 //! `EMBED_FUZZ_SEEDS` sets how many seeds each runs (the defaults keep the
 //! three under a minute in a debug build).
 
@@ -197,10 +204,12 @@ impl Page {
         self.most_waiting = self.most_waiting.max(self.embed.waiting());
     }
 
-    /// Frames until nothing waits any more (the worker answering).
+    /// Frames until nothing waits any more (the worker answering; a pair
+    /// of an edit made there and a read takes two frames of this worker,
+    /// and as many requests wait as the door takes in a frame).
     fn settle(&mut self) {
         self.worker.held.set(false);
-        for _ in 0..400 {
+        for _ in 0..4000 {
             self.frame();
             if self.embed.waiting() == 0
                 && !self.host.session.commands_waiting()
@@ -889,4 +898,136 @@ fn a_cancel_in_the_middle_still_answers_every_request_once() {
     eprintln!(
         "cancel: {seeds} seeds, {requests} requests, each answered once; {cancelled} edits cancelled, {lost} reads ended by a cancel"
     );
+}
+
+/// A slider with a price behind it: 600 changes of one variable, a
+/// measure sent behind each, with frames in between as a browser has them
+/// (and none for a while, as when the worker is busy). Every request is
+/// answered once; each measure answered ok has the volume of the state it
+/// was sent for, and one that is not is refused because too many requests
+/// wait, saying so; and the page's own thread built nothing, though more
+/// reads waited than the session hands to the worker (R2-2 of the review
+/// of round 2: past that cap the next read had its bodies built on the
+/// page, which held it seconds).
+#[test]
+fn a_slider_of_600_changes_with_a_measure_each_is_answered_on_each_state() {
+    let mut page = Page::new(true);
+    for (n, (command, params)) in START.iter().enumerate() {
+        page.send(Message::line(execute(
+            format!("s{n}"),
+            command,
+            serde_json::from_str(params).unwrap(),
+        )));
+    }
+    page.settle();
+    page.take_replies();
+    let work = page.host.session.work_here();
+    let mut rng = Rng::new(7);
+    let mut full = 0usize;
+    let mut widths = Vec::new();
+    for n in 0..600usize {
+        let width = 5 + (n % 97);
+        widths.push(width);
+        page.send(Message::line(execute(
+            format!("p{n}"),
+            "variable.set",
+            json!({"name": "w", "expr": format!("{width} mm")}),
+        )));
+        page.send(Message::line(execute(
+            format!("m{n}"),
+            "document.measure",
+            json!({}),
+        )));
+        match rng.below(6) {
+            0 | 1 => page.frame(),
+            2 => page.worker.held.set(true),
+            3 => page.worker.held.set(false),
+            _ => {}
+        }
+        full += usize::from(page.host.session.commands_full());
+        assert_eq!(
+            page.host.session.work_here(),
+            work,
+            "after request {n}: built on the page's own thread"
+        );
+    }
+    page.settle();
+    assert_eq!(
+        page.host.session.work_here(),
+        work,
+        "built on the page's own thread"
+    );
+    let mut answers: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for (reply, _) in page.take_replies() {
+        answers
+            .entry(reply["id"].as_str().unwrap_or("?").to_string())
+            .or_default()
+            .push(reply);
+    }
+    let missing: Vec<String> = (0..600)
+        .flat_map(|n| [format!("p{n}"), format!("m{n}")])
+        .filter(|id| !answers.contains_key(id))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "{} not answered (first {:?}); {} waiting, commands waiting {}, page answers waiting {}",
+        missing.len(),
+        missing.iter().take(6).collect::<Vec<_>>(),
+        page.embed.waiting(),
+        page.host.session.commands_waiting(),
+        page.host.page_answers_waiting()
+    );
+    let too_many = |reply: &Value| {
+        reply["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains(crate::embed::TOO_MANY_WAIT)
+    };
+    let (mut right, mut refused, mut wrong, mut other) = (0usize, 0usize, 0usize, 0usize);
+    let mut first_wrong = String::new();
+    // The width the document has: the last edit that was made.
+    let mut current = 10usize;
+    for (n, width) in widths.iter().enumerate() {
+        let edit = &answers[&format!("p{n}")];
+        assert_eq!(edit.len(), 1, "p{n}");
+        if edit[0]["ok"] == true {
+            current = *width;
+        } else if too_many(&edit[0]) {
+            refused += 1;
+        } else {
+            other += 1;
+            if first_wrong.is_empty() {
+                first_wrong = format!("p{n}: {}", edit[0]);
+            }
+        }
+        let measure = &answers[&format!("m{n}")];
+        assert_eq!(measure.len(), 1, "m{n}: {measure:?}");
+        if measure[0]["ok"] == true {
+            let volume = measure[0]["result"]["volume"].as_f64().unwrap_or(-1.0);
+            let expected = (current as f64) * 20.0 * 30.0;
+            if (volume - expected).abs() <= 1e-6 * expected {
+                right += 1;
+            } else {
+                wrong += 1;
+                if first_wrong.is_empty() {
+                    first_wrong =
+                        format!("m{n}: width {current}, volume {volume}, expected {expected}");
+                }
+            }
+        } else if too_many(&measure[0]) {
+            refused += 1;
+        } else {
+            other += 1;
+            if first_wrong.is_empty() {
+                first_wrong = format!("m{n}: {}", measure[0]);
+            }
+        }
+    }
+    eprintln!(
+        "slider: 600 changes with a measure each: {right} measures right, {wrong} wrong, {refused} requests refused because too many waited, {other} other errors; the worker's cap reached after {full} of 600 pairs; most waiting {}; nothing built on the page",
+        page.most_waiting
+    );
+    assert_eq!((wrong, other), (0, 0), "{first_wrong}");
+    assert!(right > 0);
+    assert!(page.most_waiting <= MAX_WAITING);
 }
