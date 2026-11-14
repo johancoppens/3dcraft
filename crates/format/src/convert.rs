@@ -1507,6 +1507,37 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                     doc::InnerSeams::Curvature => manifest::InnerSeams::Curvature,
                 },
             },
+            doc::FeatureKind::SurfaceGrid(doc::SurfaceGrid { points, spacing }) => {
+                manifest::FeatureKind::SurfaceGrid {
+                    points: match points {
+                        doc::GridPoints::Given { rows } => manifest::GridPoints::Given {
+                            rows: rows
+                                .iter()
+                                .map(|row| {
+                                    row.iter()
+                                        .map(|p| p.clone().map(|e| expr_to_manifest(&e)))
+                                        .collect()
+                                })
+                                .collect(),
+                        },
+                        doc::GridPoints::Table {
+                            table,
+                            origin,
+                            step,
+                            factor,
+                        } => manifest::GridPoints::Table {
+                            table: table.clone(),
+                            origin: origin.clone().map(|e| expr_to_manifest(&e)),
+                            step: step.clone().map(|e| expr_to_manifest(&e)),
+                            factor: expr_to_manifest(factor),
+                        },
+                    },
+                    spacing: match spacing {
+                        doc::SplineSpacing::Greville => manifest::SplineSpacing::Greville,
+                        doc::SplineSpacing::Chord => manifest::SplineSpacing::Chord,
+                    },
+                }
+            }
             doc::FeatureKind::Unfold(doc::Unfold { faces, at, angle }) => {
                 manifest::FeatureKind::Unfold {
                     faces: faces.iter().map(name_to_manifest).collect(),
@@ -3607,6 +3638,33 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                     manifest::InnerSeams::Curvature => doc::InnerSeams::Curvature,
                 },
             }),
+            manifest::FeatureKind::SurfaceGrid { points, spacing } => {
+                doc::FeatureKind::SurfaceGrid(doc::SurfaceGrid {
+                    points: match points {
+                        manifest::GridPoints::Given { rows } => doc::GridPoints::Given {
+                            rows: rows
+                                .into_iter()
+                                .map(|row| row.into_iter().map(exprs_to_doc).collect())
+                                .collect(),
+                        },
+                        manifest::GridPoints::Table {
+                            table,
+                            origin,
+                            step,
+                            factor,
+                        } => doc::GridPoints::Table {
+                            table,
+                            origin: exprs_to_doc(origin),
+                            step: step.map(doc::Expr),
+                            factor: doc::Expr(factor),
+                        },
+                    },
+                    spacing: match spacing {
+                        manifest::SplineSpacing::Greville => doc::SplineSpacing::Greville,
+                        manifest::SplineSpacing::Chord => doc::SplineSpacing::Chord,
+                    },
+                })
+            }
             manifest::FeatureKind::Unfold { faces, at, angle } => {
                 doc::FeatureKind::Unfold(doc::Unfold {
                     faces: faces.into_iter().map(name_to_doc).collect(),

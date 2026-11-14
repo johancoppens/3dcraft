@@ -82,6 +82,10 @@ struct Context {
     /// For a sketch with texts: the fonts of the document
     /// ([`text_fonts`]), which its texts are laid out in.
     fonts: Vec<(String, String, bool)>,
+    /// For a grid surface that reads its heights from a table: that table
+    /// as it stands (`None` inside when it is missing), which its result
+    /// depends on though no expression of it names the table.
+    grid_table: Option<Option<craft3d_doc::Table>>,
     /// For a split: the other splits of the same body as they stand,
     /// each with whether it is built (`crate::split::group_state`), which
     /// its result depends on (a lump is one split's, and the last split
@@ -852,6 +856,10 @@ pub(crate) fn features(
             ));
             fonts = text_fonts(doc, sketch);
         }
+        let grid_table = match &feature.kind {
+            FeatureKind::SurfaceGrid(grid) => grid.table().map(|name| doc.table(name).cloned()),
+            _ => None,
+        };
         let group = crate::split::group_state(doc, variables, stated);
         let unchanged = !changed.is_marked(stated.id)
             && feature
@@ -874,6 +882,7 @@ pub(crate) fn features(
                     && entry.context.tolerance == bits(doc.tolerance)
                     && entry.context.values == values
                     && entry.context.fonts == fonts
+                    && entry.context.grid_table == grid_table
                     && entry.context.followed == followed
                     && entry.context.group == group
             })
@@ -899,6 +908,7 @@ pub(crate) fn features(
                         tolerance: bits(doc.tolerance),
                         inputs: Vec::new(),
                         fonts,
+                        grid_table,
                         group,
                         later_at: None,
                     },

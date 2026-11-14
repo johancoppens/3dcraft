@@ -175,6 +175,7 @@ fn lump_chosen_unproven(doc: &Document, kind: &FeatureKind) -> bool {
         | FeatureKind::SurfaceTrim(_)
         | FeatureKind::SurfaceNsided(_)
         | FeatureKind::SurfaceNetwork(_)
+        | FeatureKind::SurfaceGrid(_)
         | FeatureKind::Unfold(_)
         | FeatureKind::Fold(_)
         | FeatureKind::Sketch(_)
@@ -260,6 +261,10 @@ fn entity_numbered_by_origin(kind: &FeatureKind, link: &PersistentName) -> bool 
         // An imported solid's entities are numbered in the order of the
         // stored file, which an edit does not change.
         FeatureKind::Import(_) => true,
+        // A grid surface's face, edges and corners are numbered by the
+        // borders of the grid they lie on, which no edit of its points
+        // changes (`regen::grid`).
+        FeatureKind::SurfaceGrid(_) => true,
         // A sheet-metal part's faces by a flange's id, a bend's `2n - 1`
         // and a flat's `2n` (one number below 2^32; a piece above it is
         // numbered by its place among a cell's pieces), and a formed
@@ -341,7 +346,9 @@ fn swept_by_curves(kind: &FeatureKind, link: &PersistentName) -> bool {
                 .all(|rail| matches!(rail, Some(Rail::Sketch(_))))
         }
         // A trimmed face's and a fill's entities by places in rail lists,
-        // a fold's by its panels: not proven.
+        // a fold's by its panels: not proven; a grid surface names no
+        // entity so.
+        FeatureKind::SurfaceGrid(_) => false,
         FeatureKind::SurfaceTrim(_)
         | FeatureKind::SurfaceNsided(_)
         | FeatureKind::Developable(_)
