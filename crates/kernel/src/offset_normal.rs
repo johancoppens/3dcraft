@@ -408,7 +408,7 @@ pub(crate) fn edge_border(
             let (bu, bv) = border.at(domain, q);
             data.surface.eval(bu, bv).distance(*p) <= tol
         });
-        on.then(|| crate::tweak::Iso {
+        on.then_some(crate::tweak::Iso {
             face,
             u_fixed: border.along_u_fixed,
             value: match (border.along_u_fixed, border.end) {

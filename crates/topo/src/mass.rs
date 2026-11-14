@@ -2151,8 +2151,8 @@ fn foot_rates(
 ) -> Option<(f64, f64)> {
     let r = point - foot;
     let rounding = 16.0 * f64::EPSILON * point.length().max(foot.length());
-    // Not `<=`: a NaN has no rates of its own.
-    if !(r.length() > rounding) {
+    // Only more than rounding: a NaN has no rates of its own.
+    if r.length().partial_cmp(&rounding) != Some(std::cmp::Ordering::Greater) {
         return None;
     }
     let (suu, suv, svv) = craft3d_geom::curvature::second_derivatives(surface, u, v);
@@ -2184,7 +2184,8 @@ fn foot_rates(
         (true, false) => (0.0, rv / c),
         (false, false) => {
             let det = a * c - b * b;
-            if !(det > 1e-24 * a.max(c) * a.max(c)) {
+            if det.partial_cmp(&(1e-24 * a.max(c) * a.max(c))) != Some(std::cmp::Ordering::Greater)
+            {
                 return None;
             }
             ((c * ru - b * rv) / det, (a * rv - b * ru) / det)
