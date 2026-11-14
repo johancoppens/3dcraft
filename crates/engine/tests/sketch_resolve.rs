@@ -402,8 +402,20 @@ fn a_hundred_re_solves_leave_held_corners_where_they_are_held() {
     let set = |s: &mut Session, hw: &str| {
         run(s, "variable.set", json!({"name": "hw", "expr": hw}));
     };
+    // At 50 each corner is a cylinder of radius 1 exactly (50 - 49). A
+    // `min` bound is matched within the tolerance (J-024), so exactness is
+    // read with a tolerance of 0.
+    let exactly_1 = |s: &mut Session| {
+        let found = run(
+            s,
+            "select.query",
+            json!({"kind": "face", "where": {"in": "Rail", "surface": "cylinder", "radius": {"eq": 1, "tol": 0}}}),
+        );
+        found["count"].as_u64().unwrap_or_else(|| panic!("{found}"))
+    };
     let at_50 = points(&mut s, "Rail section");
     assert_eq!(count(&mut s), 3);
+    assert_eq!(exactly_1(&mut s), 3);
     set(&mut s, "113.15 mm");
     let at_113 = points(&mut s, "Rail section");
     let wide = count(&mut s);
@@ -411,10 +423,92 @@ fn a_hundred_re_solves_leave_held_corners_where_they_are_held() {
         set(&mut s, "50 mm");
         assert_eq!(points(&mut s, "Rail section"), at_50, "round {round}");
         assert_eq!(count(&mut s), 3, "round {round}");
+        assert_eq!(exactly_1(&mut s), 3, "round {round}");
         set(&mut s, "113.15 mm");
         assert_eq!(points(&mut s, "Rail section"), at_113, "round {round}");
         assert_eq!(count(&mut s), wide, "round {round}");
     }
+}
+
+/// A gear sector drawn at the width `w` and tooth hand `hand`: a tooth (root
+/// arcs, flanks, tip arc, every point and centre held by expressions of the
+/// variables about a centre that moves with `w`) repeated `3 + hand` times
+/// by a chained sketch pattern, closed through the centre and extruded.
+fn sector(w: &str, hand: &str) -> Value {
+    let at = |r: &str, angle: &str| {
+        json!([
+            format!("{r} * cos({angle})"),
+            format!("w / 2 + 18 mm + {r} * sin({angle})")
+        ])
+    };
+    let centre = json!(["0 mm", "w / 2 + 18 mm"]);
+    json!([
+        ["variable.set", {"name": "w", "expr": w}],
+        ["variable.set", {"name": "hand", "expr": hand}],
+        ["variable.publish", {"name": "w", "label": "Width", "min": "30 mm", "max": "50 mm"}],
+        ["variable.publish", {"name": "hand", "label": "Hand", "kind": "integer", "min": "0", "max": "1"}],
+        ["variable.set", {"name": "first", "expr": "141.65 deg - (2 + hand) * 18 deg"}],
+        ["sketch.create", {"name": "Sector", "plane": "xy"}],
+        ["sketch.path", {"sketch": "Sector", "start": at("16 mm", "first - 18 deg"), "segments": [
+            {"arc": at("16 mm", "first - 10 deg"), "center": centre, "clockwise": false},
+            {"line": at("20 mm", "first - 6 deg")},
+            {"arc": at("20 mm", "first + 6 deg"), "center": centre, "clockwise": false},
+            {"line": at("16 mm", "first + 10 deg")},
+            {"arc": at("16 mm", "first + 18 deg"), "center": centre, "clockwise": false}
+        ]}],
+        ["sketch.pattern", {"sketch": "Sector", "entities": ["e4", "e6", "e9", "e11", "e14"],
+            "chain": ["e1", "e12"], "angle": "36 deg", "center": centre, "count": "3 + hand"}],
+        ["sketch.line", {"sketch": "Sector", "from": "e12[last]", "to": centre}],
+        ["sketch.line", {"sketch": "Sector", "from": "e16", "to": "e1"}],
+        ["feature.extrude", {"sketch": "Sector", "distance": "3 mm", "name": "Gear"}]
+    ])
+}
+
+/// A-019: a part edited to values by `param.set` is the part a new document
+/// draws at those values, bit for bit: the sketch's points (held ones and
+/// the pattern's images) and the body's volume. The gear sector is built at
+/// a width of 41.5 mm and hand 0 (three teeth), set to 34 mm and hand 1
+/// (four teeth, the centre moved) in one edit, and set back. With 0.1.0 the
+/// edit left the centre of the first root arc 1.1e-11 off its value and the
+/// volume differed in its last digits from the new document's (measured:
+/// 1199.4518007219342 against 1199.451800721935); in the sheet-metal arm
+/// this was taken from, a plate that a new document built failed after the
+/// same edit. What the edit kept was the sketch's stored solution: held
+/// coordinates a few units in the last place off, which the solver now
+/// lands exactly (*Held values exact*, docs/design/document.md).
+#[test]
+fn a_part_edited_to_values_is_the_part_drawn_at_them() {
+    let drawn = |w: &str, hand: &str| {
+        let mut s = common::session();
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        steps(&mut s, &sector(w, hand));
+        let built = (points(&mut s, "Sector"), volume(&mut s, "Gear").to_bits());
+        (s, built)
+    };
+    let (mut edited, before) = drawn("41.5 mm", "0");
+    let (_, after) = drawn("34 mm", "1");
+    assert_eq!(before.0.0, "ok");
+    assert_eq!(after.0.0, "ok");
+    run(
+        &mut edited,
+        "param.set",
+        json!({"values": {"w": 34, "hand": 1}}),
+    );
+    let got = (
+        points(&mut edited, "Sector"),
+        volume(&mut edited, "Gear").to_bits(),
+    );
+    assert_eq!(got, after);
+    run(
+        &mut edited,
+        "param.set",
+        json!({"values": {"w": 41.5, "hand": 0}}),
+    );
+    let back = (
+        points(&mut edited, "Sector"),
+        volume(&mut edited, "Gear").to_bits(),
+    );
+    assert_eq!(back, before);
 }
 
 /// A point held on a quarter arc about a held centre, from (10, 0) round to

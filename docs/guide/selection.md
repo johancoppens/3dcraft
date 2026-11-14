@@ -77,7 +77,8 @@ variables:
 
 After `tB` = 3 mm, B leaves *Cut sheet: 4 mm*; give it 4 mm again and it is back.
 
-- A value is matched within the document's tolerance (and a millionth of it); `{min, max}` takes a range;
+- A value is matched within the document's tolerance (and a millionth of it); `{min, max}` takes a range,
+  its bounds matched the same way (a radius a hair under 1 mm is at `{min: 1 mm}`, so inside);
   an expression of the variables (`tA`) is worked out again whenever the set is.
 - A face has a thickness only when every line into the material from it is equally long and leaves
   through such an opposite face. A curved face, a face over a step, a pocket or a slanted back has none,

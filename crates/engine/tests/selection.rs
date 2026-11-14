@@ -861,3 +861,99 @@ fn a_selection_stays_on_its_feature_when_names_change() {
     assert_eq!(back["items"][0]["feature"], "F1");
     assert_eq!(back["items"][0]["name"], "Block1");
 }
+
+/// How many items `select.query` finds of `kind` with the filter `filter`.
+fn count(s: &mut Session, kind: &str, filter: Value) -> u64 {
+    let found = run(s, "select.query", json!({"kind": kind, "where": filter}));
+    found["count"].as_u64().unwrap()
+}
+
+/// A bound of `{min, max}` is matched as `eq` matches a value: a measure
+/// within the tolerance `eq` gives (a millionth of the value plus the
+/// document's tolerance, to the power of the dimension) of a bound is at
+/// it, and a range holds its bounds. Before, `eq` had that tolerance and
+/// `{min, max}` compared exactly, so `{eq: b}` found a face that `{min: b}`
+/// and `{max: b}` both missed whenever the measure lay a unit in the last
+/// place on the wrong side of `b`, which rounding decides (J-024: corner
+/// arcs a few units in the last place under 1 mm fell out of `radius:
+/// {min: 1 mm}`). The bounds are built from the measured radius and volume
+/// themselves, so the oracle is the definition of the tolerance, not a
+/// number the code printed; a bound farther out than the tolerance still
+/// leaves a measure out, at the default tolerance and at a coarse one.
+#[test]
+fn a_bound_is_matched_as_eq_matches_it() {
+    for linear in [1e-6, 1e-3] {
+        let mut s = Session::new(Workspace::none());
+        run(
+            &mut s,
+            "file.new",
+            json!({"units": "mm", "tolerance": linear}),
+        );
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"name": "Pin", "radius": 0.3, "height": 2}),
+        );
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": "Block", "size": [10, 20, 6], "position": [5, 0, 0]}),
+        );
+        // The wall's radius to the last bit: `context` rounds it to twelve
+        // decimals, `{eq, tol: 0}` compares exactly, so the one of the
+        // nearby numbers that it finds is the radius.
+        let wall = run(
+            &mut s,
+            "select.query",
+            json!({"kind": "face", "where": {"surface": "cylinder"}, "context": true}),
+        );
+        let rounded = wall["items"][0]["surface"]["radius"].as_f64().unwrap();
+        let mut near = vec![rounded];
+        for _ in 0..64 {
+            let (lo, hi) = (near[0].next_down(), near[near.len() - 1].next_up());
+            near.insert(0, lo);
+            near.push(hi);
+        }
+        let exact: Vec<f64> = near
+            .into_iter()
+            .filter(|&r| count(&mut s, "face", json!({"radius": {"eq": r, "tol": 0}})) == 1)
+            .collect();
+        let [r] = exact[..] else {
+            panic!("the radius is one number near {rounded}: {exact:?}")
+        };
+        let measured = run(&mut s, "document.measure", json!({"feature": "Block"}));
+        let v = measured["bodies"][0]["volume"].as_f64().unwrap();
+        // The tolerance `eq` gives a length and a volume.
+        let tol_r = 1e-6 * r + linear;
+        let tol_v = 1e-6 * v + linear * linear * linear;
+        // Of the pin's faces only its wall has a radius; of the bodies the
+        // block is the one measured.
+        for (key, at, tol, kind, of) in [
+            ("radius", r, tol_r, "face", "Pin"),
+            ("volume", v, tol_v, "body", "Block"),
+        ] {
+            let (up, down) = (at.next_up(), at.next_down());
+            let mut found = |range: Value| count(&mut s, kind, json!({ key: range, "in": of }));
+            let what = format!("{key} {at} at the tolerance {linear}");
+            // `at` is the measure the filter compares, to the last bit.
+            assert_eq!(found(json!({"eq": at, "tol": 0})), 1, "{what}");
+            assert_eq!(found(json!({"eq": up, "tol": 0})), 0, "{what}");
+            // At the bound within rounding: inside from either side, as
+            // `eq` has it.
+            assert_eq!(found(json!({"eq": up})), 1, "{what}");
+            assert_eq!(found(json!({"min": up})), 1, "{what}");
+            assert_eq!(found(json!({"max": down})), 1, "{what}");
+            assert_eq!(found(json!({"min": up, "max": up})), 1, "{what}");
+            // Within the tolerance: at the bound; beyond it: outside.
+            assert_eq!(found(json!({"min": at + 0.5 * tol})), 1, "{what}");
+            assert_eq!(found(json!({"max": at - 0.5 * tol})), 1, "{what}");
+            assert_eq!(found(json!({"min": at + 2.0 * tol})), 0, "{what}");
+            assert_eq!(found(json!({"max": at - 2.0 * tol})), 0, "{what}");
+            assert_eq!(
+                found(json!({"min": at + 2.0 * tol, "max": at + 3.0 * tol})),
+                0,
+                "{what}"
+            );
+        }
+    }
+}
