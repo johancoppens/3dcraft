@@ -296,6 +296,153 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A changelog for a program of this version: one release before it.
+    fn changelog() -> craft3d_engine::changelog::Changelog {
+        let running = craft3d_engine::VERSION;
+        let text = format!(
+            "## [{running}] - 2026-11-14\n\n### Results that changed\n\n- **A measured volume could be wrong.** It is right now.\n\n### Added\n\n- **Something new.**\n\n## [0.0.1] - 2026-01-01\n\n- The first release.\n"
+        );
+        craft3d_engine::changelog::Changelog::parse(&text).unwrap()
+    }
+
+    /// The window on its start screen: frames of the host's shell, and a
+    /// click at a point.
+    struct Frames {
+        ctx: eframe::egui::Context,
+        time: f64,
+    }
+
+    impl Frames {
+        fn new() -> Self {
+            Self {
+                ctx: eframe::egui::Context::default(),
+                time: 0.0,
+            }
+        }
+
+        fn draw(&mut self, host: &mut Host, events: Vec<eframe::egui::Event>) {
+            use eframe::egui;
+            self.time += 1.0 / 60.0;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1100.0, 760.0),
+                )),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let Host { session, shell, .. } = host;
+            let mut output = self.ctx.run_ui(input, |ui| shell.ui(ui, session));
+            output.textures_delta.clear();
+        }
+
+        fn click(&mut self, host: &mut Host, at: eframe::egui::Pos2) {
+            use eframe::egui::{Event, Modifiers, PointerButton};
+            self.draw(host, vec![Event::PointerMoved(at)]);
+            for pressed in [true, false] {
+                self.draw(
+                    host,
+                    vec![Event::PointerButton {
+                        pos: at,
+                        button: PointerButton::Primary,
+                        pressed,
+                        modifiers: Modifiers::NONE,
+                    }],
+                );
+            }
+            self.draw(host, Vec::new());
+        }
+    }
+
+    /// The whole way round on the desktop: after an update the window
+    /// offers the card; closed through `ui.set` (an agent's doing) nothing
+    /// is remembered; closed by the person with its ×, this version is
+    /// written as seen, and the next start offers nothing.
+    #[test]
+    fn the_person_closing_the_card_is_remembered_and_the_next_start_offers_nothing() {
+        let dir = workdir("closing");
+        let file = dir.join(SEEN_FILE);
+        let running = craft3d_engine::running_version().unwrap();
+        store_seen(&file, Some(v("0.0.1"))).unwrap();
+        let start = |file: &Path| {
+            let seen = seen_at_start(Some(file), running);
+            WhatsNew::for_start(&changelog(), running, seen).unwrap()
+        };
+        let notes = start(&file);
+        assert!(notes.offered);
+        let mut host = Host::new(craft3d_engine::Session::new(
+            craft3d_engine::Workspace::none(),
+        ));
+        host.seen_file = Some(file.clone());
+        host.shell.set_whats_new(Some(notes));
+        let mut frames = Frames::new();
+        for _ in 0..4 {
+            frames.draw(&mut host, Vec::new());
+        }
+        assert_eq!(host.shell.whats_new_shown(), Some("card"));
+        // An agent closes it: the person has not seen it for that.
+        host.shell.state.whats_new.card = false;
+        frames.draw(&mut host, Vec::new());
+        host.pump_places();
+        assert_eq!(read_seen(&file), Seen::Version(v("0.0.1")));
+        // The person closes it.
+        host.shell.state.whats_new.card = true;
+        for _ in 0..3 {
+            frames.draw(&mut host, Vec::new());
+        }
+        let close = host
+            .shell
+            .whats_new_hits()
+            .iter()
+            .find(|(name, _)| name == "close")
+            .map(|(_, rect)| *rect)
+            .unwrap();
+        frames.click(&mut host, close.center());
+        assert_eq!(host.shell.whats_new_shown(), None);
+        assert!(host.pump_places(), "something was written");
+        assert_eq!(read_seen(&file), Seen::Version(running));
+        assert!(!host.pump_places(), "once");
+        // The next start: the same version, nothing offered; Help has it.
+        let again = start(&file);
+        assert!(!again.offered);
+        // A newer version seen here before (a downgrade) is kept when the
+        // notes are closed from Help.
+        store_seen(&file, Some(v("999.0.0"))).unwrap();
+        host.shell.state.whats_new.card = true;
+        for _ in 0..3 {
+            frames.draw(&mut host, Vec::new());
+        }
+        let close = host
+            .shell
+            .whats_new_hits()
+            .iter()
+            .find(|(name, _)| name == "close")
+            .map(|(_, rect)| *rect)
+            .unwrap();
+        frames.click(&mut host, close.center());
+        host.pump_places();
+        assert_eq!(read_seen(&file), Seen::Version(v("999.0.0")));
+        // A window that keeps no note writes none.
+        let other = dir.join("other").join(SEEN_FILE);
+        host.seen_file = None;
+        host.shell.state.whats_new.card = true;
+        for _ in 0..3 {
+            frames.draw(&mut host, Vec::new());
+        }
+        let close = host
+            .shell
+            .whats_new_hits()
+            .iter()
+            .find(|(name, _)| name == "close")
+            .map(|(_, rect)| *rect)
+            .unwrap();
+        frames.click(&mut host, close.center());
+        assert!(!host.pump_places());
+        assert!(!other.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn what_is_stored_reads_back() {
         let dir = workdir("round");

@@ -387,6 +387,10 @@ impl Shell {
             if !subtitle.is_empty() {
                 kit.paragraph(ui, &subtitle, true);
             }
+            // The scroll bar shows at rest, as on the start screen: it is
+            // seen that there is more.
+            let scroll = &mut ui.spacing_mut().scroll;
+            scroll.dormant_handle_opacity = scroll.active_handle_opacity;
             let list = egui::ScrollArea::vertical()
                 .id_salt("craft3d-whats-new-window")
                 .max_height(most)

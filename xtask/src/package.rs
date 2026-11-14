@@ -1451,7 +1451,11 @@ mod tests {
         let root = repo_root();
         let path = root.join("CHANGELOG.md");
         let changelog = std::fs::read_to_string(&path).unwrap();
-        let workflow = std::fs::read_to_string(root.join(".github/workflows/release.yml")).unwrap();
+        // As the runner reads it: a checkout with CRLF (Windows) has the
+        // same program.
+        let workflow = std::fs::read_to_string(root.join(".github/workflows/release.yml"))
+            .unwrap()
+            .replace("\r\n", "\n");
         // The step `release notes`: the program between the quotes.
         let opens = "awk -v head=\"## [$version]\" '\n";
         let from = workflow.find(opens).unwrap() + opens.len();
