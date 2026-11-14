@@ -1244,6 +1244,13 @@ fn spline_steps(
     // it, and the points of a stretch's cut pieces.
     let mut pieces = Pieces::of(curve);
     let mut held = Held::default();
+    // The last run of control points (the first and the last of them)
+    // found too wide: for a wedge about the axis, or on a plane for their
+    // legs to lie in a fan. A stretch whose spans' control points hold all
+    // of that run is too wide as well, and they are not looked at again:
+    // each half of a stretch found too wide from its start is not read
+    // from that start a second time.
+    let mut wide: Option<(usize, usize)> = None;
     // Whether the edge over `(a, b)` is shown; `look` for the one look at
     // the whole edge, by its control points alone and not counted.
     let mut shown = |a: f64, b: f64, look: bool, work: &mut usize| -> Option<bool> {
@@ -1255,11 +1262,26 @@ fn spline_steps(
             // curve (each counted against an operation's work,
             // `geom::allowance`).
             if let Some(points) = spanned(a, b) {
+                let first = span(a).saturating_sub(degree);
+                let known = wide.is_some_and(|(from, to)| {
+                    first <= from && to < first.saturating_add(points.len())
+                });
                 let reach = match axis {
+                    // On a plane the legs are what can be too wide.
+                    None if known => None,
                     Some(axis) => {
                         let mut wedge = Wedge::about(axis, QUARTER_TURN);
-                        let within = points.iter().take_while(|p| wedge.add(**p, clear)).count();
-                        charge(work, within)?;
+                        let within = if known {
+                            0
+                        } else {
+                            let within =
+                                points.iter().take_while(|p| wedge.add(**p, clear)).count();
+                            charge(work, within)?;
+                            if within < points.len() {
+                                wide = Some((first, first.saturating_add(within)));
+                            }
+                            within
+                        };
                         let narrow = within > 0 && within == points.len();
                         match narrow.then(|| wedge.reach()).flatten() {
                             Some(reach) => Some(Some(reach)),
@@ -1287,6 +1309,10 @@ fn spline_steps(
                     charge(work, legs)?;
                     if one {
                         return Some(true);
+                    }
+                    // The legs up to the one that did not fit, on a plane.
+                    if axis.is_none() && matches!(lay, Lay::Flat { .. }) {
+                        wide = Some((first, first.saturating_add(legs)));
                     }
                 }
             }
@@ -3340,7 +3366,11 @@ mod tests {
     /// of a helix than showing its angle about the axis does: a helix is a
     /// straight line in a cylinder's chart. (The steps of the helices of
     /// `showing_the_steps_of_a_spline_edge_costs_about_its_control_points`,
-    /// on a cylinder's own chart.)
+    /// on a cylinder's own chart.) And little more work: a strip of 64
+    /// turns between two cubics through 16384 points each, the finest a
+    /// fit may be, is still judged within the work of a face
+    /// (`MOST_PROOF_WORK`: both sides shown, and their 256 steps each
+    /// followed), as it was while only the angle was shown.
     #[test]
     fn a_helix_keeps_the_steps_its_angle_needs() {
         let f = tilted();
@@ -3367,6 +3397,14 @@ mod tests {
                 curve.control_points().len()
             );
         }
+        let finest = fitted_helix(&f, 64.0, 16384);
+        let mut work = 0;
+        let steps = spline_steps(&finest, finest.domain(), &cylinder, &mut work).unwrap();
+        assert_eq!(steps, 256);
+        assert!(
+            2 * (work + steps * WALK_UNITS) < MOST_PROOF_WORK,
+            "{work} units a side"
+        );
     }
 
     /// Nothing shows how the chart of a spline surface takes an edge, so
