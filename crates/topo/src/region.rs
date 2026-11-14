@@ -812,7 +812,7 @@ pub(crate) fn follow(
     bands: bool,
 ) -> Option<Ring> {
     let planar = matches!(chart.surface, Surface::Plane(_));
-    let axis = axis_of(chart.surface);
+    let lay = Lay::of(chart.surface);
     let mut points = Vec::new();
     let mut starts = Vec::with_capacity(coedges.len());
     let mut aliased = false;
@@ -839,11 +839,12 @@ pub(crate) fn follow(
             }
             Curve3::Nurbs(_) => SPLINE_STEPS,
         };
-        // About an axis the steps of a spline edge are shown not to go
-        // round unseen, or the loop is not followed.
-        let steps = match (&edge.curve, axis) {
-            (Curve3::Nurbs(n), Some(axis)) => {
-                let shown = spline_steps(n, (t0, t1), axis, &mut chart.work)?;
+        // The steps of a spline edge are shown to hide no turn, about the
+        // axis of a surface that closes and about any point of the chart,
+        // or the loop is not followed.
+        let steps = match &edge.curve {
+            Curve3::Nurbs(n) => {
+                let shown = spline_steps(n, (t0, t1), &lay, &mut chart.work)?;
                 if shown > steps {
                     // Following it costs too: counted with the showing.
                     spend(&mut chart.work, shown.saturating_mul(WALK_UNITS))?;
@@ -926,45 +927,98 @@ pub(crate) fn follow(
     })
 }
 
-/// The axis a surface closes about, as a point on it and its unit
-/// direction: where `u`, whose period is a turn, is the angle about the
-/// frame's z axis (a cylinder, a cone, a sphere, a torus), so the point of
-/// the surface nearest a point off it, which the chart takes, has the
-/// point's own angle about that axis. `None` for every other surface.
-fn axis_of(surface: &Surface) -> Option<(Vec3, Vec3)> {
-    let frame = match surface {
-        Surface::Cylinder(c) => c.frame(),
-        Surface::Cone(c) => c.frame(),
-        Surface::Sphere(s) => s.frame(),
-        Surface::Torus(t) => t.frame(),
-        Surface::Plane(_) | Surface::Bezier(_) | Surface::Nurbs(_) => return None,
-    };
-    Some((frame.origin(), frame.z()))
+/// What the chart of a surface makes of a spline edge, for showing its
+/// steps ([`spline_steps`]).
+#[derive(Clone, Copy, Debug)]
+enum Lay {
+    /// A plane: `(u, v)` are a point's coordinates along `x` and `y`, so
+    /// the chart's image of a spline is the spline with its control points
+    /// read along them.
+    Flat { x: Vec3, y: Vec3 },
+    /// A surface that closes about the axis through `origin` along the
+    /// unit `z` (a cylinder, a cone, a sphere, a torus): `u`, whose period
+    /// is a turn, is a point's angle about that axis, also of a point off
+    /// the surface (the point of the surface nearest it, which the chart
+    /// takes, has its angle); `v` is read as `rise` says.
+    About { origin: Vec3, z: Vec3, rise: Rise },
+    /// A spline surface: nothing is known of how its chart takes a
+    /// direction in space.
+    Space,
 }
 
-/// The steps an edge over `(t0, t1)` is followed in where a parameter of
-/// its surface closes: the fewest `base · 2^k` such that `shown` holds of
-/// every half step, `shown(a, b, work)` saying whether the edge over
-/// `(a, b)` is shown to move by less than a quarter period in the
-/// parameter that closes (`None`: the face's work is spent, [`spend`]).
-/// Then the chart, which moves each point by whole periods to the one
-/// before, unwraps the loop as it goes round: a helix of many turns as one
-/// edge is followed round every turn, where eight steps of it read as a few
-/// turns the other way (`docs/design/topology.md` › *Loops that bound a
-/// region*). What `shown` holds of a stretch it holds of every part of it,
-/// so each of the `2 · base` half steps is halved only until it is shown,
-/// and the deepest it needed sets the steps. `None` where a half step
-/// cannot be shown within [`MOST_SPLINE_STEPS`] steps or the work is spent:
-/// the loop cannot be followed without doubt.
+/// How `v` is read off a point about an axis ([`Lay::About`]), at the
+/// distance `ρ` from the axis and the height `h` along it.
+#[derive(Clone, Copy, Debug)]
+enum Rise {
+    /// A cylinder: `v = h`.
+    Height,
+    /// A cone of the radius `radius` at `h = 0` that widens by `slope` a
+    /// unit of height: the nearest point of its ruling,
+    /// `v = ((ρ − radius) slope + h) / (slope² + 1)`, stopped at the apex.
+    Slant { slope: f64, radius: f64 },
+    /// A sphere: the latitude, `v = atan2(h, ρ)`.
+    Latitude,
+    /// A torus: the angle about its tube, which nothing here shows. Only
+    /// the angle about the axis is shown, and nothing is read off how often
+    /// a loop with a spline edge goes round ([`Ring::aliased`]).
+    Unshown,
+}
+
+impl Lay {
+    fn of(surface: &Surface) -> Lay {
+        let about = |frame: &craft3d_math::Frame, rise: Rise| Lay::About {
+            origin: frame.origin(),
+            z: frame.z(),
+            rise,
+        };
+        match surface {
+            Surface::Plane(p) => Lay::Flat {
+                x: p.frame().x(),
+                y: p.frame().y(),
+            },
+            Surface::Cylinder(c) => about(c.frame(), Rise::Height),
+            Surface::Cone(c) => about(
+                c.frame(),
+                Rise::Slant {
+                    slope: c.half_angle().ptan(),
+                    radius: c.radius(),
+                },
+            ),
+            Surface::Sphere(s) => about(s.frame(), Rise::Latitude),
+            Surface::Torus(t) => about(t.frame(), Rise::Unshown),
+            Surface::Bezier(_) | Surface::Nurbs(_) => Lay::Space,
+        }
+    }
+
+    /// The axis the surface closes about, as a point on it and its unit
+    /// direction.
+    fn axis(&self) -> Option<(Vec3, Vec3)> {
+        match self {
+            Lay::About { origin, z, .. } => Some((*origin, *z)),
+            Lay::Flat { .. } | Lay::Space => None,
+        }
+    }
+}
+
+/// The steps an edge over `(t0, t1)` is followed in: the fewest
+/// `base · 2^k`, `most` at the most, such that `shown` holds of every half
+/// step, `shown(a, b, work)` saying whether the edge over `(a, b)` is shown
+/// to hide no turn there (`None`: the face's work is spent, [`spend`]).
+/// What `shown` holds of a stretch it holds of every part of it, so each of
+/// the `2 · base` half steps is halved only until it is shown, and the
+/// deepest it needed sets the steps. `None` where a half step cannot be
+/// shown within `most` steps or the work is spent: the loop cannot be
+/// followed without doubt.
 fn steps_shown(
     base: usize,
+    most: usize,
     (t0, t1): (f64, f64),
     work: &mut usize,
     mut shown: impl FnMut(f64, f64, &mut usize) -> Option<bool>,
 ) -> Option<usize> {
     let width = t1 - t0;
     let halves = base.checked_mul(2).filter(|h| *h > 0)?;
-    let deepest = (MOST_SPLINE_STEPS / base).max(1).ilog2();
+    let deepest = (most / base).max(1).ilog2();
     let mut level = 0_u32;
     // Each half step of `base` halved until it is shown: (the stretch's
     // index at its level, the level). At most `halves · 2^(deepest + 1)`.
@@ -988,42 +1042,72 @@ fn steps_shown(
 }
 
 /// The steps a spline edge over `(t0, t1)` is followed in on a surface
-/// that closes about `axis` (`u` the angle about it, [`axis_of`]): the
-/// fewest `SPLINE_STEPS · 2^k` such that the curve's angle about the axis is
-/// shown to move by less than a quarter turn over each half step
-/// ([`steps_shown`]). Shown by the first of: (1) the convex hull of the
-/// control points of the knot spans the half step meets in a wedge about
-/// the axis narrower than a quarter turn ([`Wedge`]); (2) for a polynomial
-/// spline, its speed bound ([`speed_bound`]) times the half step's width,
-/// over the least distance from the axis the stretch can have (its middle's
-/// less half that length: the distance from a line changes no faster than
-/// the point moves), less than a quarter turn (one evaluation of the curve,
-/// counted against an operation's work, where (1) does not show it); (3)
-/// the Bézier pieces of the spans the half step meets, each made from its
-/// own span alone and cut to the stretch ([`Pieces`]), in such a wedge (of a
-/// stretch that meets no more than [`MANY_SPANS`] spans: a longer one not
-/// shown by (1) or (2) is halved).
+/// whose chart is `lay`: the fewest `SPLINE_STEPS · 2^k` such that over
+/// each half step the edge is shown to hide no turn from the walk
+/// ([`steps_shown`]), which reads the edge at the ends and the middle of
+/// each step and takes the chord between them for it. Two things are shown
+/// of a half step.
+///
+/// **About an axis** ([`Lay::About`]) the curve's angle about it moves by
+/// less than a quarter turn, so the chart, which moves each point by whole
+/// periods to the one before, unwraps the loop as it goes round: a helix of
+/// many turns as one edge is followed round every turn, where eight steps
+/// of it read as a few turns the other way. Shown by the first of: (1) the
+/// convex hull of the control points of the knot spans the half step meets
+/// in a wedge about the axis narrower than a quarter turn ([`Wedge`]); (2)
+/// for a polynomial spline, its speed bound ([`speed_bound`]) times the half
+/// step's width, over the least distance from the axis the stretch can have
+/// (its middle's less half that length: the distance from a line changes no
+/// faster than the point moves), less than a quarter turn (one evaluation
+/// of the curve, counted against an operation's work, where (1) does not
+/// show it); (3) the Bézier pieces of the spans the half step meets, each
+/// made from its own span alone and cut to the stretch ([`Pieces`]), in
+/// such a wedge (of a stretch that meets no more than [`MANY_SPANS`] spans:
+/// a longer one not shown by (1) or (2) is halved).
+///
+/// **In the chart** the edge's image runs one way: its direction keeps
+/// within a fan narrower than a half turn ([`ONE_WAY`], [`one_way`]), read
+/// off the legs of the same control points, (1), or of the cut pieces, (3):
+/// the direction of a spline with positive weights is, at each of its
+/// points, a sum of the legs between the control points of its span with
+/// weights that are not negative, and the chart takes directions in space
+/// to directions of its own by a linear map at each point ([`Lay`]). The
+/// image and its chord then cross every line square to the fan's middle
+/// once each, so together they go round no point more than once, and only
+/// round points that lie between them: the chord hides no turn about any
+/// point of the chart, and what lies between the two is what the walk
+/// measures at the step's middle. On a spline surface ([`Lay::Space`]),
+/// whose chart is not known, the edge is held to running one way along its
+/// stretch's own chord in space, and only as a reason not to follow it: an
+/// edge so shown within `SPLINE_STEPS` is followed in them, as every spline
+/// edge was before, and one that is not is not followed.
+///
 /// (1) and (2) are read only of a stretch inside the curve's domain; past
 /// it (3) cuts the first or the last piece as far as the stretch goes, the
 /// curve being that piece continued there. Each looks at the points of a
-/// stretch only until they are too wide, and bounds the angle's movement
-/// over the whole stretch, so over any part of it. Shown within
-/// `SPLINE_STEPS`, the edge is followed at the points it always was. `None`
-/// where it cannot be shown within [`MOST_SPLINE_STEPS`] (a curve through or
-/// very near the axis, a helix of thousands of turns) or within the face's
-/// work: the loop cannot be followed without doubt.
+/// stretch only until they are too wide, and bounds the movement over the
+/// whole stretch, so over any part of it. The whole edge is looked at
+/// first, by its control points alone, (1): an edge shown at one look,
+/// which is nearly every edge, is followed in `SPLINE_STEPS` at the points
+/// it always was, and that look, which costs less than the edge's first
+/// step, is not counted against the face's work. `None` where it cannot be
+/// shown within [`MOST_SPLINE_STEPS`] (a curve through or very near the
+/// axis, a helix of thousands of turns, an edge that turns back on itself
+/// at a point no halving reaches) or within the face's work: the loop
+/// cannot be followed without doubt.
 fn spline_steps(
     curve: &NurbsCurve,
     range: (f64, f64),
-    axis: (Vec3, Vec3),
+    lay: &Lay,
     work: &mut usize,
 ) -> Option<usize> {
     let (d0, d1) = curve.domain();
     // How far rounding can put the curve outside the hull of points made
     // for it, and so how far from the axis such points must keep
-    // ([`Wedge`]): none for a curve with a weight that is not positive.
+    // ([`Wedge`]) and how long a leg must be to have a direction
+    // ([`one_way`]): none for a curve with a weight that is not positive.
     let clear = HULL_CLEAR * hull_rounding(curve)?;
-    let (origin, z) = axis;
+    let axis = lay.axis();
     // (1) The control points whose basis functions are not zero over
     // `(a, b)`, found without inserting a knot.
     let (knots, ctrl, degree) = (curve.knots(), curve.control_points(), curve.degree());
@@ -1035,47 +1119,434 @@ fn spline_steps(
     };
     let spanned = |a: f64, b: f64| ctrl.get(span(a).saturating_sub(degree)..=span(b));
     // (2) The angle moves at most at the speed over the distance from the
-    // axis. The bound is made once, where (1) first fails.
+    // axis: what the stretch keeps within, about its middle. The bound is
+    // made once, where (1) first fails.
     let speed = std::cell::OnceCell::new();
-    let slow = |a: f64, b: f64| {
-        let Some(speed) = *speed.get_or_init(|| speed_bound(curve)) else {
-            return false;
-        };
+    let slow = |a: f64, b: f64| -> Option<Reach> {
+        let (origin, z) = axis?;
+        let speed = (*speed.get_or_init(|| speed_bound(curve)))?;
         let reach = (b - a) * speed;
         let d = curve.eval(0.5 * (a + b)) - origin;
-        let low = (d - z * d.dot(z)).length() - 0.5 * reach;
-        low > clear && reach < QUARTER_TURN * low
+        let height = d.dot(z);
+        let across = d - z * height;
+        let off = across.length();
+        let low = off - 0.5 * reach;
+        if !(low > clear && reach < QUARTER_TURN * low) {
+            return None;
+        }
+        // Half the stretch either side of its middle: at most half the
+        // angle each way, less than an eighth of a turn.
+        let (sin, cos) = (0.5 * reach / low).psin_cos();
+        let middle = across * (1.0 / off);
+        let on = z.cross(middle);
+        Some(Reach {
+            low: middle * cos - on * sin,
+            high: middle * cos + on * sin,
+            off: (low, off + 0.5 * reach),
+            height: (height - 0.5 * reach, height + 0.5 * reach),
+        })
     };
     // (3) The Bézier pieces, each made once where (1) and (2) do not show
-    // it.
+    // it, and the points of a stretch's cut pieces.
     let mut pieces = Pieces::of(curve);
-    steps_shown(SPLINE_STEPS, range, work, |a, b, work| {
+    let mut held = Held::default();
+    // Whether the edge over `(a, b)` is shown; `look` for the one look at
+    // the whole edge, by its control points alone and not counted.
+    let mut shown = |a: f64, b: f64, look: bool, work: &mut usize| -> Option<bool> {
+        let charge = |work: &mut usize, units: usize| {
+            if look { Some(()) } else { spend(work, units) }
+        };
         if a >= d0 && b <= d1 {
             // The control points first: they cost no evaluation of the
             // curve (each counted against an operation's work,
             // `geom::allowance`).
             if let Some(points) = spanned(a, b) {
-                let mut wedge = Wedge::about(axis, QUARTER_TURN);
-                let within = points.iter().take_while(|p| wedge.add(**p, clear)).count();
-                spend(work, within)?;
-                if within > 0 && within == points.len() {
-                    return Some(true);
+                let reach = match axis {
+                    Some(axis) => {
+                        let mut wedge = Wedge::about(axis, QUARTER_TURN);
+                        let within = points.iter().take_while(|p| wedge.add(**p, clear)).count();
+                        charge(work, within)?;
+                        let narrow = within > 0 && within == points.len();
+                        match narrow.then(|| wedge.reach()).flatten() {
+                            Some(reach) => Some(Some(reach)),
+                            None if look => None,
+                            None => slow(a, b).map(Some),
+                        }
+                    }
+                    None => Some(None),
+                };
+                if let Some(reach) = reach {
+                    let (one, legs) =
+                        one_way(lay, points, &[(points.len(), clear)], reach.as_ref());
+                    charge(work, legs)?;
+                    if one {
+                        return Some(true);
+                    }
                 }
-            }
-            if slow(a, b) {
-                return Some(true);
             }
             // Over many spans the pieces say little more than the control
             // points did, and making them all would cost more than the
             // walk: halved first.
-            if span(b).saturating_sub(span(a)) > MANY_SPANS {
+            if look || span(b).saturating_sub(span(a)) > MANY_SPANS {
                 return Some(false);
             }
         }
-        let mut wedge = Wedge::about(axis, QUARTER_TURN);
-        pieces.each_point((a, b), work, |p, growth| wedge.add(p, clear * growth))
+        if look {
+            return Some(false);
+        }
+        held.clear();
+        let mut wedge = axis.map(|axis| Wedge::about(axis, QUARTER_TURN));
+        let taken = pieces.each_piece((a, b), work, |points, growth| {
+            let clear = clear * growth;
+            if let Some(wedge) = wedge.as_mut()
+                && !points.iter().all(|p| wedge.add(*p, clear))
+            {
+                return false;
+            }
+            held.take(points, clear);
+            true
+        })?;
+        if !taken {
+            return Some(false);
+        }
+        let reach = match &wedge {
+            Some(wedge) => match wedge.reach() {
+                Some(reach) => Some(reach),
+                None => return Some(false),
+            },
+            None => None,
+        };
+        let (one, legs) = one_way(lay, &held.points, &held.runs, reach.as_ref());
+        spend(work, legs)?;
+        Some(one)
+    };
+    if shown(range.0, range.1, true, work)? {
+        return Some(SPLINE_STEPS);
+    }
+    // Nothing shows how the chart of a spline surface takes an edge: an
+    // edge that needs more steps than it always had is not followed.
+    let most = match lay {
+        Lay::Space => SPLINE_STEPS,
+        Lay::Flat { .. } | Lay::About { .. } => MOST_SPLINE_STEPS,
+    };
+    steps_shown(SPLINE_STEPS, most, range, work, |a, b, work| {
+        shown(a, b, false, work)
     })
 }
+
+/// The widest fan the directions of a half step of a spline edge may keep
+/// within in the chart ([`one_way`]): three eighths of a turn, as computed.
+/// A leg has its direction to an eighth of a radian ([`LEG_CLEAR`]), so a
+/// fan found that narrow is narrower than a half turn, which is what the
+/// proof needs: all its directions on one side of a line.
+const ONE_WAY: f64 = 0.75 * PI;
+
+/// How many times the rounding of a curve's hull points ([`hull_rounding`],
+/// times [`HULL_CLEAR`] already) a leg between two of them must be long for
+/// its direction to be read: each end is right to an eighth of that, so the
+/// leg's direction to an eighth of a radian.
+const LEG_CLEAR: f64 = 2.0;
+
+/// What a stretch of a spline edge keeps within about an axis
+/// ([`Lay::About`]): its angle between the unit vectors `low` and `high`
+/// across the axis (from `low` anticlockwise to `high`, less than a quarter
+/// turn), its distance from the axis and its height along it from the
+/// axis's origin between the two of `off` and of `height`.
+#[derive(Clone, Copy, Debug)]
+struct Reach {
+    low: Vec3,
+    high: Vec3,
+    off: (f64, f64),
+    height: (f64, f64),
+}
+
+/// The points of a stretch's cut Bézier pieces, piece by piece: where each
+/// piece's points end in `points`, with how far a point of it must keep
+/// clear (its rounding grown where the piece is continued past its span).
+#[derive(Default)]
+struct Held {
+    points: Vec<Vec3>,
+    runs: Vec<(usize, f64)>,
+}
+
+impl Held {
+    fn clear(&mut self) {
+        self.points.clear();
+        self.runs.clear();
+    }
+
+    fn take(&mut self, points: &[Vec3], clear: f64) {
+        self.points.extend_from_slice(points);
+        self.runs.push((self.points.len(), clear));
+    }
+}
+
+/// Directions in a plane taken one by one, held to a fan narrower than
+/// `most` (radians, less than a half turn): all of them then lie on one
+/// side of a line through the origin, and so does every sum of them with
+/// weights that are not negative. No arc tangent is taken: the two
+/// directions furthest round are kept, and a new one is told inside or
+/// outside them by a cross product with each.
+struct Fan {
+    /// The cosine of the widest the fan may be.
+    most: f64,
+    /// The directions furthest round clockwise and anticlockwise (not of
+    /// unit length); the second is never clockwise of the first.
+    ends: Option<((f64, f64), (f64, f64))>,
+}
+
+impl Fan {
+    fn within(most: f64) -> Self {
+        Fan {
+            most: most.pcos(),
+            ends: None,
+        }
+    }
+
+    /// Takes the direction `t`: whether the directions so far keep within
+    /// the fan. Not for a direction of no length or one that is not a
+    /// number.
+    fn add(&mut self, t: (f64, f64)) -> bool {
+        let size = t.0 * t.0 + t.1 * t.1;
+        if !(size > 0.0 && size.is_finite()) {
+            return false;
+        }
+        let cross = |a: (f64, f64), b: (f64, f64)| a.0 * b.1 - a.1 * b.0;
+        let dot = |a: (f64, f64), b: (f64, f64)| a.0 * b.0 + a.1 * b.1;
+        let Some((low, high)) = self.ends else {
+            self.ends = Some((t, t));
+            return true;
+        };
+        // Anticlockwise of the low end and clockwise of the high one, it
+        // lies between them; clockwise of the low end and, by less than a
+        // half turn, of the high one, it is the new low end, and likewise
+        // the other way; else it lies across from the fan.
+        let (from_low, to_high) = (cross(low, t), cross(t, high));
+        let (low, high) = if from_low >= 0.0 && to_high >= 0.0 {
+            // Along both ends: a fan of one direction, and `t` along it
+            // or straight against it.
+            let against = dot(low, t).partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater);
+            if from_low == 0.0 && to_high == 0.0 && against {
+                return false;
+            }
+            (low, high)
+        } else if from_low < 0.0 && to_high > 0.0 {
+            (t, high)
+        } else if to_high < 0.0 && from_low > 0.0 {
+            (low, t)
+        } else {
+            return false;
+        };
+        self.ends = Some((low, high));
+        // The angle between the ends under the most, by its cosine and
+        // their sizes' squares (no root).
+        let between = dot(low, high);
+        let sizes = dot(low, low) * dot(high, high);
+        let squares = self.most * self.most * sizes;
+        if self.most >= 0.0 {
+            between > 0.0 && between * between > squares
+        } else {
+            between >= 0.0 || between * between < squares
+        }
+    }
+}
+
+/// Whether a spline edge runs one way in the chart `lay` over a stretch,
+/// and the legs looked at. `points` are points made for the stretch, in
+/// runs (`runs`: where each run ends in `points`, and how far a point of it
+/// must keep clear): the control points of the spans the stretch meets, one
+/// run, or of its Bézier pieces cut to it, a run each. The curve over the
+/// stretch lies in their hull, and its direction at each of its points is a
+/// sum, with weights that are not negative, of the legs from each point of
+/// its span's run to the next (for a polynomial spline its derivative is a
+/// spline on those legs; for a rational one with positive weights the
+/// derivative is a sum over pairs of control points `i < j` of `Pj − Pi`
+/// times `Ni Nj' − Ni' Nj`, which is not negative, the basis being totally
+/// positive: de Boor, *A Practical Guide to Splines*, ch. XIII; for a Bézier
+/// piece `Bi Bj' − Bi' Bj = Bi Bj (j − i) / (t (1 − t))`). The chart takes a
+/// direction `w` at a point to a direction of its own by a linear map there
+/// ([`Lay`]):
+///
+/// - a plane: `(w·x, w·y)`, the same everywhere;
+/// - about an axis, at the angle `φ`, the distance `ρ` and the height `h`:
+///   `u' = w·e(φ) / ρ` with `e` the unit vector round the axis there, and
+///   `v'` as [`Rise`] has it, from `w·z` and `w·r(φ)`, `r` the unit vector
+///   away from the axis. Over the stretch's `reach` each leg's image lies
+///   in a box of such directions (the ranges of `w·e` and `w·r` over the
+///   angles, the ends and a turning point between them; of `ρ` and `h`),
+///   whose four corners stand for it;
+///
+/// and the image of the edge runs one way where all of those lie in a fan
+/// narrower than a half turn ([`Fan`], [`ONE_WAY`]): its direction is then
+/// a sum of them, on one side of a line all along. A leg of no length says
+/// nothing and is passed over; a shorter one than [`LEG_CLEAR`] times its
+/// clearance has no direction that can be read, and the stretch is not
+/// shown. On a spline surface ([`Lay::Space`]) the legs are held to running
+/// forward along the chord from the first point to the last, in space. On a
+/// torus ([`Rise::Unshown`]) nothing is asked.
+fn one_way(
+    lay: &Lay,
+    points: &[Vec3],
+    runs: &[(usize, f64)],
+    reach: Option<&Reach>,
+) -> (bool, usize) {
+    // Each leg with the clearance of its run.
+    let mut starts = 0_usize;
+    let legs = runs.iter().flat_map(|&(end, clear)| {
+        let run = points.get(starts..end).unwrap_or(&[]);
+        starts = end;
+        run.windows(2).filter_map(move |pair| match pair {
+            [a, b] => Some((*b - *a, LEG_CLEAR * clear)),
+            _ => None,
+        })
+    });
+    let mut looked = 0_usize;
+    let nothing = |w: Vec3| w.x == 0.0 && w.y == 0.0 && w.z == 0.0;
+    let longer = |a: f64, b: f64| a.partial_cmp(&b) == Some(std::cmp::Ordering::Greater);
+    match lay {
+        Lay::Flat { x, y } => {
+            let mut fan = Fan::within(ONE_WAY);
+            for (w, clear) in legs {
+                looked += 1;
+                if nothing(w) {
+                    continue;
+                }
+                let t = (w.dot(*x), w.dot(*y));
+                if !(longer(t.0 * t.0 + t.1 * t.1, clear * clear) && fan.add(t)) {
+                    return (false, looked);
+                }
+            }
+            (true, looked)
+        }
+        Lay::About {
+            rise: Rise::Unshown,
+            ..
+        } => (true, 0),
+        Lay::About { z, rise, .. } => {
+            let Some(reach) = reach else {
+                return (false, 0);
+            };
+            let (near, far) = reach.off;
+            let (below, above) = reach.height;
+            if !(near > 0.0 && far.is_finite() && below.is_finite() && above.is_finite()) {
+                return (false, 0);
+            }
+            // A cone's `v` stops at the apex: the stretch must keep to the
+            // cone's own side of it, where `v` is the ruling's.
+            let norm = match rise {
+                Rise::Slant { slope, radius } => {
+                    let ruling = if *slope > 0.0 { below } else { above };
+                    if !longer((near * slope + ruling) * slope + radius, 0.0) {
+                        return (false, 0);
+                    }
+                    1.0 / (slope * slope + 1.0).sqrt()
+                }
+                Rise::Height | Rise::Latitude | Rise::Unshown => 1.0,
+            };
+            let (round_low, round_high) = (z.cross(reach.low), z.cross(reach.high));
+            let widest = far / near;
+            // The latitude's rate is over the square of the distance from
+            // the centre: between these.
+            let least = if below <= 0.0 && above >= 0.0 {
+                0.0
+            } else {
+                below.abs().min(above.abs())
+            };
+            let most = below.abs().max(above.abs());
+            let (inner, outer) = (near * near + least * least, far * far + most * most);
+            let mut fan = Fan::within(ONE_WAY);
+            for (w, clear) in legs {
+                looked += ABOUT_UNITS;
+                if nothing(w) {
+                    continue;
+                }
+                if !longer(w.length_squared(), clear * clear) {
+                    return (false, looked);
+                }
+                let (e0, e1) = (w.dot(round_low), w.dot(round_high));
+                let (r0, r1) = (w.dot(reach.low), w.dot(reach.high));
+                let along = w.dot(*z);
+                // Across the axis the leg is as long as this; `w·e` and
+                // `w·r` reach it, either way, where the other one changes
+                // its sign between the ends.
+                let across = (e0 * e0 + r0 * r0).sqrt();
+                let ranged = |a: f64, b: f64, turns: bool| {
+                    let (mut low, mut high) = (a.min(b), a.max(b));
+                    if turns {
+                        if a >= 0.0 || b >= 0.0 {
+                            high = high.max(across);
+                        }
+                        if a <= 0.0 || b <= 0.0 {
+                            low = low.min(-across);
+                        }
+                    }
+                    (low, high)
+                };
+                let round = ranged(e0, e1, r0 * r1 <= 0.0);
+                let away = ranged(r0, r1, e0 * e1 <= 0.0);
+                // `u'`, times the most distance from the axis: a length.
+                let u = (round.0.min(round.0 * widest), round.1.max(round.1 * widest));
+                // `v'`, as a length as well.
+                let v = match rise {
+                    Rise::Height | Rise::Unshown => (along, along),
+                    Rise::Slant { slope, .. } => {
+                        let (a, b) = (slope * away.0, slope * away.1);
+                        ((a.min(b) + along) * norm, (a.max(b) + along) * norm)
+                    }
+                    Rise::Latitude => {
+                        // `(ρ w·z − h w·r) / (ρ² + h²)`.
+                        let (a, b) = (near * along, far * along);
+                        let lifts = [
+                            below * away.0,
+                            below * away.1,
+                            above * away.0,
+                            above * away.1,
+                        ];
+                        let lift_low = lifts.iter().copied().fold(f64::INFINITY, f64::min);
+                        let lift_high = lifts.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                        let (low, high) = (a.min(b) - lift_high, a.max(b) - lift_low);
+                        let scale = outer.sqrt();
+                        (
+                            (low / inner).min(low / outer) * scale,
+                            (high / inner).max(high / outer) * scale,
+                        )
+                    }
+                };
+                for t in [(u.0, v.0), (u.0, v.1), (u.1, v.0), (u.1, v.1)] {
+                    if !fan.add(t) {
+                        return (false, looked);
+                    }
+                }
+            }
+            (true, looked)
+        }
+        Lay::Space => {
+            let (Some(first), Some(last)) = (points.first(), points.last()) else {
+                return (false, 0);
+            };
+            let chord = *last - *first;
+            let length = chord.length();
+            if !(length.is_finite() && length > 0.0) {
+                return (false, 0);
+            }
+            for (w, clear) in legs {
+                looked += 1;
+                if nothing(w) {
+                    continue;
+                }
+                if !longer(w.dot(chord), clear * length) {
+                    return (false, looked);
+                }
+            }
+            (true, looked)
+        }
+    }
+}
+
+/// What a leg looked at about an axis counts for against
+/// [`MOST_PROOF_WORK`] ([`one_way`]): its five components and the four
+/// corners of its box, about two points looked at.
+const ABOUT_UNITS: usize = 2;
 
 /// How many times the rounding of a curve's hull points the points of a
 /// hull must keep from the axis ([`Wedge`]): the angle of a point about
@@ -1159,8 +1630,8 @@ impl<'a> Pieces<'a> {
     }
 
     /// Hands `take` points whose convex hull holds the curve over `(a, b)`,
-    /// one by one until it refuses one, each with how much the rounding of
-    /// its piece has grown ([`growth`]; 1 inside the domain): the control
+    /// piece by piece until it refuses one, each piece's with how much its
+    /// rounding has grown ([`growth`]; 1 inside the domain): the control
     /// points of the Bézier piece of each span the stretch meets, cut to
     /// the stretch by de Casteljau's algorithm
     /// (`craft3d_geom::piece_points_over`), the first and the last piece of
@@ -1174,11 +1645,11 @@ impl<'a> Pieces<'a> {
     /// rational piece continued to where a weight is not positive, a
     /// stretch wholly past the domain's end. `None` when the face's work
     /// is spent.
-    fn each_point(
+    fn each_piece(
         &mut self,
         (a, b): (f64, f64),
         work: &mut usize,
-        mut take: impl FnMut(Vec3, f64) -> bool,
+        mut take: impl FnMut(&[Vec3], f64) -> bool,
     ) -> Option<bool> {
         let curve = self.curve;
         let (d0, d1) = curve.domain();
@@ -1224,11 +1695,9 @@ impl<'a> Pieces<'a> {
                 return Some(false);
             };
             spend(work, points.len())?;
-            for p in points {
-                any = true;
-                if !take(p, growth) {
-                    return Some(false);
-                }
+            any |= !points.is_empty();
+            if !take(&points, growth) {
+                return Some(false);
             }
         }
         Some(any)
@@ -1298,6 +1767,10 @@ struct Wedge {
     /// in that frame (not of unit length).
     low: (f64, f64),
     high: (f64, f64),
+    /// The squares of the least and the most distance of a point from the
+    /// axis, and the least and the most height along it from its origin.
+    off: (f64, f64),
+    height: (f64, f64),
 }
 
 impl Wedge {
@@ -1309,7 +1782,35 @@ impl Wedge {
             frame: None,
             low: (1.0, 0.0),
             high: (1.0, 0.0),
+            off: (f64::INFINITY, 0.0),
+            height: (f64::INFINITY, f64::NEG_INFINITY),
         }
+    }
+
+    /// What the hull of the points taken keeps within ([`Reach`]), for a
+    /// wedge that every point was taken into: the two ends of the wedge;
+    /// no nearer the axis than the nearest point reaches along the wedge's
+    /// middle, which is at least its distance times the cosine of half the
+    /// wedge (a point of a hull is at least as far from the axis as it
+    /// reaches along any one direction across it, and reaches at least as
+    /// far along it as the least of the hull's own points), and no further
+    /// than the furthest point (the distance from a line is largest at a
+    /// corner of a hull); between the lowest and the highest point along
+    /// the axis.
+    fn reach(&self) -> Option<Reach> {
+        let (x, y) = self.frame?;
+        let unit = |(c, s): (f64, f64)| {
+            let size = (c * c + s * s).sqrt();
+            (size.is_finite() && size > 0.0).then(|| x * (c / size) + y * (s / size))
+        };
+        let (low, high) = (unit(self.low)?, unit(self.high)?);
+        let half = (0.5 * (1.0 + low.dot(high).clamp(-1.0, 1.0))).sqrt();
+        Some(Reach {
+            low,
+            high,
+            off: (self.off.0.sqrt() * half, self.off.1.sqrt()),
+            height: self.height,
+        })
     }
 
     /// Takes `p`, which must keep more than `clear` from the axis: whether
@@ -1323,7 +1824,8 @@ impl Wedge {
     /// cosine of the most (by their squares: no root, no division).
     fn add(&mut self, p: Vec3, clear: f64) -> bool {
         let d = p - self.origin;
-        let q = d - self.z * d.dot(self.z);
+        let height = d.dot(self.z);
+        let q = d - self.z * height;
         let first = self.frame.is_none();
         let (x, y) = match self.frame {
             Some(frame) => frame,
@@ -1344,6 +1846,8 @@ impl Wedge {
         if !(off > 0.0 && off > clear * clear && off.is_finite()) {
             return false;
         }
+        self.off = (self.off.0.min(off), self.off.1.max(off));
+        self.height = (self.height.0.min(height), self.height.1.max(height));
         if first {
             self.low = (c, s);
             self.high = (c, s);
@@ -1663,6 +2167,16 @@ mod tests {
     use craft3d_math::Frame;
     use std::f64::consts::{FRAC_PI_2, TAU};
 
+    /// A chart of which only the angle about `axis` is shown, for the tests
+    /// of that proof alone.
+    fn turning((origin, z): (Vec3, Vec3)) -> Lay {
+        Lay::About {
+            origin,
+            z,
+            rise: Rise::Unshown,
+        }
+    }
+
     fn tilted() -> Frame {
         Frame::new(
             Vec3::new(3.0, -1.0, 2.0),
@@ -1765,7 +2279,8 @@ mod tests {
             for quarters in [1, 4, 5, 37, 400] {
                 let curve = winding(&f, scale, quarters, 0.7 * scale);
                 let range = curve.domain();
-                let steps = spline_steps(&curve, range, (f.origin(), f.z()), &mut 0).unwrap();
+                let steps =
+                    spline_steps(&curve, range, &turning((f.origin(), f.z())), &mut 0).unwrap();
                 if quarters <= 4 {
                     assert_eq!(steps, SPLINE_STEPS, "{quarters}");
                 }
@@ -1799,10 +2314,13 @@ mod tests {
         )
         .unwrap();
         let axis = (f.origin(), f.z());
-        assert_eq!(spline_steps(&curve, curve.domain(), axis, &mut 0), None);
+        assert_eq!(
+            spline_steps(&curve, curve.domain(), &turning(axis), &mut 0),
+            None
+        );
         // Its first fifth keeps clear of the axis: followed in eight steps.
         assert_eq!(
-            spline_steps(&curve, (0.0, 0.2), axis, &mut 0),
+            spline_steps(&curve, (0.0, 0.2), &turning(axis), &mut 0),
             Some(SPLINE_STEPS)
         );
         // A range past the curve's domain is the first and the last piece
@@ -1811,10 +2329,13 @@ mod tests {
         // 2026-11-14 such a range was followed in eight steps whatever the
         // curve did there, as every spline edge was before.)
         assert_eq!(
-            spline_steps(&curve, (-0.1, 0.2), axis, &mut 0),
+            spline_steps(&curve, (-0.1, 0.2), &turning(axis), &mut 0),
             Some(SPLINE_STEPS)
         );
-        assert_eq!(spline_steps(&curve, (-0.5, 1.0), axis, &mut 0), None);
+        assert_eq!(
+            spline_steps(&curve, (-0.5, 1.0), &turning(axis), &mut 0),
+            None
+        );
     }
 
     /// A cubic through a helix of `turns` turns of radius 1 and pitch 1
@@ -1849,7 +2370,7 @@ mod tests {
         for count in [1024, 4096, 16384] {
             let curve = fitted_helix(&f, 64.0, count);
             let mut work = 0;
-            let steps = spline_steps(&curve, curve.domain(), axis, &mut work).unwrap();
+            let steps = spline_steps(&curve, curve.domain(), &turning(axis), &mut work).unwrap();
             assert_eq!(steps, 256, "{count}");
             costs.push((count, work));
         }
@@ -1864,7 +2385,7 @@ mod tests {
         assert!(costs.iter().all(|(n, w)| *w <= 32 * n), "{costs:?}");
         let rational = winding(&f, 1.0, 256, 1.0);
         let mut work = 0;
-        let steps = spline_steps(&rational, rational.domain(), axis, &mut work).unwrap();
+        let steps = spline_steps(&rational, rational.domain(), &turning(axis), &mut work).unwrap();
         assert!((256..=1024).contains(&steps), "{steps}");
         println!("rational {work} {steps}");
         assert!(work <= 64 * 513, "{work}");
@@ -1881,7 +2402,7 @@ mod tests {
         let (spent, cut) = step_proofs();
         let mut work = 0;
         assert_eq!(
-            spline_steps(&curve, curve.domain(), axis, &mut work),
+            spline_steps(&curve, curve.domain(), &turning(axis), &mut work),
             Some(256)
         );
         let (now, still) = step_proofs();
@@ -1889,7 +2410,10 @@ mod tests {
         assert_eq!(still, cut);
         // The same edge with less left than it took.
         let mut left = MOST_PROOF_WORK - work / 2;
-        assert_eq!(spline_steps(&curve, curve.domain(), axis, &mut left), None);
+        assert_eq!(
+            spline_steps(&curve, curve.domain(), &turning(axis), &mut left),
+            None
+        );
         assert!(left > MOST_PROOF_WORK);
         assert_eq!(step_proofs().1, cut + 1);
     }
@@ -1925,19 +2449,28 @@ mod tests {
         let end = cut.last().copied().unwrap();
         assert!(there.distance(end) > 0.2, "{there:?} {end:?}");
         // So no stretch past that end is shown, however short.
-        assert_eq!(spline_steps(&open, (0.1, 1.1), axis, &mut 0), None);
-        assert_eq!(spline_steps(&open, (0.1, 1.0 + 1e-9), axis, &mut 0), None);
         assert_eq!(
-            spline_steps(&open, (0.1, 1.0), axis, &mut 0),
+            spline_steps(&open, (0.1, 1.1), &turning(axis), &mut 0),
+            None
+        );
+        assert_eq!(
+            spline_steps(&open, (0.1, 1.0 + 1e-9), &turning(axis), &mut 0),
+            None
+        );
+        assert_eq!(
+            spline_steps(&open, (0.1, 1.0), &turning(axis), &mut 0),
             Some(SPLINE_STEPS)
         );
         assert_eq!(
-            spline_steps(&open, (-1e-9, 1.0), axis, &mut 0),
+            spline_steps(&open, (-1e-9, 1.0), &turning(axis), &mut 0),
             Some(SPLINE_STEPS)
         );
         // Counted as a face not followed for a bound.
         let cut = step_proofs().1;
-        assert_eq!(spline_steps(&open, (0.1, 1.1), axis, &mut 0), None);
+        assert_eq!(
+            spline_steps(&open, (0.1, 1.1), &turning(axis), &mut 0),
+            None
+        );
         assert_eq!(step_proofs().1, cut + 1);
     }
 
@@ -1962,18 +2495,24 @@ mod tests {
             NurbsCurve::polynomial(degree, knots, points).unwrap()
         };
         let high = arc(21);
-        assert_eq!(spline_steps(&high, (-1.0, 1.0), axis, &mut 0), None);
-        assert_eq!(spline_steps(&high, (0.0, 2.0), axis, &mut 0), None);
         assert_eq!(
-            spline_steps(&high, (-1e-9, 1.0 + 1e-9), axis, &mut 0),
+            spline_steps(&high, (-1.0, 1.0), &turning(axis), &mut 0),
+            None
+        );
+        assert_eq!(
+            spline_steps(&high, (0.0, 2.0), &turning(axis), &mut 0),
+            None
+        );
+        assert_eq!(
+            spline_steps(&high, (-1e-9, 1.0 + 1e-9), &turning(axis), &mut 0),
             Some(SPLINE_STEPS)
         );
         assert_eq!(
-            spline_steps(&high, (0.0, 1.0), axis, &mut 0),
+            spline_steps(&high, (0.0, 1.0), &turning(axis), &mut 0),
             Some(SPLINE_STEPS)
         );
         let low = arc(5);
-        assert!(spline_steps(&low, (-1.0, 1.0), axis, &mut 0).is_some());
+        assert!(spline_steps(&low, (-1.0, 1.0), &turning(axis), &mut 0).is_some());
         // The growth itself: none inside the span, the sum of the sizes of
         // a blend's two weights to the degree past it.
         assert_eq!(growth((0.0, 1.0), (0.25, 0.75), 21), 1.0);
@@ -2015,16 +2554,19 @@ mod tests {
         let rounding = hull_rounding(&even).unwrap();
         assert!(rounding > 0.0 && rounding < 1e-12 * size.max(1.0) * 64.0);
         assert_eq!(
-            spline_steps(&even, even.domain(), axis, &mut 0),
+            spline_steps(&even, even.domain(), &turning(axis), &mut 0),
             Some(SPLINE_STEPS)
         );
         let uneven = arc(1e-9, 1e6);
         let rounding = hull_rounding(&uneven).unwrap();
         assert!(rounding > 1e-3 && rounding < 1e-1, "{rounding}");
-        assert_eq!(spline_steps(&uneven, uneven.domain(), axis, &mut 0), None);
+        assert_eq!(
+            spline_steps(&uneven, uneven.domain(), &turning(axis), &mut 0),
+            None
+        );
         let clear = arc(4.0, 1e6);
         assert_eq!(
-            spline_steps(&clear, clear.domain(), axis, &mut 0),
+            spline_steps(&clear, clear.domain(), &turning(axis), &mut 0),
             Some(SPLINE_STEPS)
         );
         // The wedge itself.
@@ -2069,15 +2611,18 @@ mod tests {
         assert!(points.iter().all(|q| q.y == 0.0));
         let over = NurbsCurve::polynomial(3, knots, points).unwrap();
         let cut = step_proofs().1;
-        assert_eq!(spline_steps(&over, over.domain(), axis, &mut 0), None);
+        assert_eq!(
+            spline_steps(&over, over.domain(), &turning(axis), &mut 0),
+            None
+        );
         assert_eq!(step_proofs().1, cut + 1);
         // Either side of the pole it is shown as it was.
         assert_eq!(
-            spline_steps(&over, (0.0, 0.4), axis, &mut 0),
+            spline_steps(&over, (0.0, 0.4), &turning(axis), &mut 0),
             Some(SPLINE_STEPS)
         );
         assert_eq!(
-            spline_steps(&over, (0.6, 1.0), axis, &mut 0),
+            spline_steps(&over, (0.6, 1.0), &turning(axis), &mut 0),
             Some(SPLINE_STEPS)
         );
     }
@@ -2101,9 +2646,15 @@ mod tests {
         .unwrap();
         let cut = step_proofs().1;
         let mut work = 0;
-        assert_eq!(spline_steps(&curve, curve.domain(), axis, &mut work), None);
+        assert_eq!(
+            spline_steps(&curve, curve.domain(), &turning(axis), &mut work),
+            None
+        );
         assert_eq!(step_proofs().1, cut + 1);
-        assert_eq!(spline_steps(&curve, curve.domain(), axis, &mut work), None);
+        assert_eq!(
+            spline_steps(&curve, curve.domain(), &turning(axis), &mut work),
+            None
+        );
         assert_eq!(step_proofs().1, cut + 1);
     }
 
@@ -2139,5 +2690,460 @@ mod tests {
         )
         .unwrap();
         assert_eq!(speed_bound(&jumps), None);
+    }
+
+    fn turn(degrees: f64, length: f64) -> (f64, f64) {
+        let (s, c) = degrees.to_radians().psin_cos();
+        (length * c, length * s)
+    }
+
+    /// Whether the directions lie in a fan narrower than `most`, taken in
+    /// this order.
+    fn fanned(directions: &[(f64, f64)], most: f64) -> bool {
+        let mut fan = Fan::within(most);
+        directions.iter().all(|t| fan.add(*t))
+    }
+
+    /// A fan takes directions that keep within its most, in any order and
+    /// across the half turn where an angle's reading jumps, and none across
+    /// from it, of no length or that is not a number.
+    #[test]
+    fn directions_within_less_than_a_half_turn_are_a_fan() {
+        let at = |degrees: &[f64]| -> Vec<(f64, f64)> {
+            degrees
+                .iter()
+                .enumerate()
+                .map(|(k, d)| turn(*d, 1.0 + 3.0 * k as f64))
+                .collect()
+        };
+        assert!(fanned(&at(&[10.0, 100.0, 144.0, 60.0]), ONE_WAY));
+        assert!(fanned(&at(&[144.0, 10.0, 60.0, 100.0]), ONE_WAY));
+        assert!(fanned(&at(&[170.0, -170.0, -100.0, 175.0]), ONE_WAY));
+        assert!(!fanned(&at(&[10.0, 146.0]), ONE_WAY));
+        assert!(!fanned(&at(&[146.0, 10.0]), ONE_WAY));
+        assert!(!fanned(&at(&[0.0, 100.0, 200.0]), ONE_WAY));
+        assert!(!fanned(&at(&[0.0, 120.0, 240.0]), ONE_WAY));
+        // Straight against a fan of one direction, and against a fan's end.
+        assert!(!fanned(&[(1.0, 0.0), (-2.0, 0.0)], ONE_WAY));
+        assert!(!fanned(&[(1.0, 0.0), (3.0, 0.0), (-2.0, 0.0)], ONE_WAY));
+        assert!(!fanned(&at(&[0.0, 90.0, 180.0]), ONE_WAY));
+        assert!(fanned(&[(1.0, 0.0), (3.0, 0.0), (0.5, 0.0)], ONE_WAY));
+        // Up to just under a half turn where that is asked.
+        assert!(fanned(&at(&[0.0, 90.0, 179.0]), 0.999 * PI));
+        assert!(!fanned(&at(&[0.0, 90.0, 181.0]), 0.999 * PI));
+        assert!(!fanned(&[(1.0, 0.0), (0.0, 0.0)], ONE_WAY));
+        assert!(!fanned(&[(0.0, 0.0)], ONE_WAY));
+        assert!(!fanned(&[(1.0, 0.0), (f64::NAN, 1.0)], ONE_WAY));
+        assert!(!fanned(&[(f64::INFINITY, 1.0)], ONE_WAY));
+        // Every order of the same directions gives the same answer.
+        let mut seed = 7_u64;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1_u64 << 53) as f64
+        };
+        for _ in 0..2000 {
+            let width = 200.0 * next();
+            let start = 360.0 * next();
+            let mut directions: Vec<(f64, f64)> = (0..6)
+                .map(|k| {
+                    let share = if k == 0 {
+                        0.0
+                    } else if k == 1 {
+                        1.0
+                    } else {
+                        next()
+                    };
+                    turn(start + width * share, 0.1 + 10.0 * next())
+                })
+                .collect();
+            let want = width < 134.9;
+            if (width - 135.0).abs() < 0.1 {
+                continue;
+            }
+            for _ in 0..6 {
+                let k = (next() * 6.0) as usize % 6;
+                directions.swap(0, k);
+                assert_eq!(fanned(&directions, ONE_WAY), want, "{width} {directions:?}");
+            }
+        }
+    }
+
+    /// A deterministic spline for the tests: `count` control points that
+    /// wander, of `degree`, rational where asked (weights from a tenth to
+    /// ten), its knots clamped or not and some of them repeated.
+    fn wandering(seed: u64, degree: usize, count: usize, rational: bool) -> NurbsCurve {
+        let mut state = seed;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1_u64 << 53) as f64
+        };
+        let mut at = Vec3::new(0.0, 0.0, 0.0);
+        let mut heading = 6.0 * next();
+        let ctrl: Vec<Vec3> = (0..count)
+            .map(|_| {
+                heading += 1.6 * (next() - 0.5);
+                let (s, c) = heading.psin_cos();
+                at = at + Vec3::new(c, s, 0.3 * (next() - 0.5)) * (0.2 + next());
+                at
+            })
+            .collect();
+        let weights: Vec<f64> = (0..count)
+            .map(|_| {
+                if rational {
+                    (4.6 * (next() - 0.5)).pexp()
+                } else {
+                    1.0
+                }
+            })
+            .collect();
+        let clamped = next() < 0.5;
+        let mut knots = Vec::new();
+        let mut knot = 0.0;
+        for k in 0..count + degree + 1 {
+            let end = k <= degree || k >= count;
+            if !(end && clamped) && next() > 0.15 {
+                knot += 0.1 + next();
+            }
+            if k == count {
+                knot += 1.0;
+            }
+            knots.push(knot);
+        }
+        NurbsCurve::new(degree, knots, ctrl, weights).unwrap()
+    }
+
+    /// What the one-way rule rests on: over a stretch, the direction of a
+    /// spline with positive weights is a sum of the legs between the
+    /// control points of the spans the stretch meets, and between the
+    /// points of its Bézier pieces cut to it, with weights that are not
+    /// negative. So where those legs lie in a fan, the curve's direction,
+    /// sampled finely, lies in it too: on 600 splines of degrees 1 to 7,
+    /// rational and not, clamped and not, with repeated knots.
+    #[test]
+    fn a_splines_direction_lies_in_the_fan_of_its_legs() {
+        let (x, y) = (Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
+        let flat = |w: Vec3| (w.dot(x), w.dot(y));
+        let cross = |a: (f64, f64), b: (f64, f64)| a.0 * b.1 - a.1 * b.0;
+        let (mut fans, mut sampled) = (0, 0);
+        for seed in 0..600_u64 {
+            let degree = 1 + (seed % 7) as usize;
+            let curve = wandering(
+                seed,
+                degree,
+                degree + 2 + (seed % 9) as usize,
+                seed % 2 == 1,
+            );
+            let (d0, d1) = curve.domain();
+            let (knots, ctrl) = (curve.knots(), curve.control_points());
+            let span = |t: f64| {
+                knots
+                    .partition_point(|k| *k <= t)
+                    .saturating_sub(1)
+                    .clamp(degree, ctrl.len() - 1)
+            };
+            let mut pieces = Pieces::of(&curve);
+            for part in 0..16 {
+                let a = d0 + (d1 - d0) * part as f64 / 16.0;
+                let b = d0 + (d1 - d0) * (part + 1) as f64 / 16.0;
+                // The control points of the spans the stretch meets hold
+                // it whole; the Bézier piece of a span, cut to the stretch,
+                // holds the stretch's part in that span.
+                let mut held = vec![((a, b), ctrl[span(a) - degree..=span(b)].to_vec())];
+                for k in curve.span_at(a)..=curve.span_at(b) {
+                    let within = (a.max(knots[k]), b.min(knots[k + 1]));
+                    if within.1 > within.0 {
+                        let mut first = None;
+                        pieces.each_piece(within, &mut 0, |points, _| {
+                            first = Some(points.to_vec());
+                            false
+                        });
+                        held.extend(first.map(|points| (within, points)));
+                    }
+                }
+                for (within, run) in held {
+                    let mut fan = Fan::within(0.999 * PI);
+                    let legs: Vec<(f64, f64)> = run
+                        .windows(2)
+                        .map(|p| flat(p[1] - p[0]))
+                        .filter(|t| t.0 != 0.0 || t.1 != 0.0)
+                        .collect();
+                    if legs.is_empty() || !legs.iter().all(|t| fan.add(*t)) {
+                        continue;
+                    }
+                    let (low, high) = fan.ends.unwrap();
+                    fans += 1;
+                    for k in 0..64 {
+                        let t = within.0 + (within.1 - within.0) * (k as f64 + 0.5) / 64.0;
+                        let d = flat(curve.derivatives(t).1);
+                        let size = d.0.phypot(d.1);
+                        if size == 0.0 {
+                            continue;
+                        }
+                        sampled += 1;
+                        let slack = 1e-9 * size;
+                        assert!(
+                            cross(low, d) >= -slack * low.0.phypot(low.1)
+                                && cross(d, high) >= -slack * high.0.phypot(high.1),
+                            "seed {seed}, degree {degree}, stretch {part}: the direction {d:?} at {t} leaves the fan {low:?} to {high:?}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            fans > 1500 && sampled > 60_000,
+            "{fans} fans, {sampled} directions"
+        );
+    }
+
+    /// A cubic through `count` points of a spiral that goes `turns` times
+    /// round the point `(0, 0)` of a chart, from the radius 0.15 to 0.55,
+    /// `at` taking the chart's coordinates to space.
+    fn fitted_spiral(at: &dyn Fn(f64, f64) -> Vec3, turns: f64, count: usize) -> NurbsCurve {
+        let params: Vec<f64> = (0..count).map(|i| i as f64 / (count - 1) as f64).collect();
+        let values: Vec<Vec<f64>> = params
+            .iter()
+            .map(|s| {
+                let (sin, cos) = (TAU * turns * s).psin_cos();
+                let r = 0.15 + 0.4 * s;
+                let p = at(r * cos, r * sin);
+                vec![p.x, p.y, p.z]
+            })
+            .collect();
+        let (knots, ctrl) = craft3d_geom::refine::interpolate(&params, 3, &values).unwrap();
+        let points = ctrl.iter().map(|c| Vec3::new(c[0], c[1], c[2])).collect();
+        NurbsCurve::polynomial(3, knots, points).unwrap()
+    }
+
+    /// A plane, a cylinder, a cone and a sphere of size `k` in `frame`,
+    /// each with the map from a chart about `(0, 0)` to it, and the lengths
+    /// a unit of its `u` and of its `v` are on it there.
+    #[allow(clippy::type_complexity)]
+    fn charted(frame: Frame, k: f64) -> Vec<(Surface, Box<dyn Fn(f64, f64) -> Vec3>, (f64, f64))> {
+        use craft3d_geom::{Cone, Cylinder, Plane, Sphere};
+        let slope = 0.4_f64.ptan();
+        vec![
+            (
+                Surface::Plane(Plane::new(frame)),
+                Box::new(move |x, y| frame.point(3.0 * k * x, 3.0 * k * y, 0.0)),
+                (1.0, 1.0),
+            ),
+            (
+                Surface::Cylinder(Cylinder::new(frame, k).unwrap()),
+                Box::new(move |x, y| about(&frame, k, x, k * y)),
+                (k, 1.0),
+            ),
+            (
+                Surface::Cone(Cone::new(frame, 2.0 * k, 0.4).unwrap()),
+                Box::new(move |x, y| about(&frame, 2.0 * k + k * y * slope, x, k * y)),
+                (2.0 * k, 1.0),
+            ),
+            (
+                Surface::Sphere(Sphere::new(frame, 2.0 * k).unwrap()),
+                Box::new(move |x, y| {
+                    let (s, c) = y.psin_cos();
+                    about(&frame, 2.0 * k * c, x, 2.0 * k * s)
+                }),
+                (2.0 * k, 2.0 * k),
+            ),
+        ]
+    }
+
+    /// The directions an edge's image in the chart of `surface` takes over
+    /// `(a, b)`, from one of 64 points of it to the next (`u` unwrapped to
+    /// the point before), `u` and `v` as the lengths `scale` gives a unit
+    /// of each.
+    fn chart_directions(
+        surface: &Surface,
+        scale: (f64, f64),
+        curve: &NurbsCurve,
+        (a, b): (f64, f64),
+    ) -> Vec<(f64, f64)> {
+        let mut last: Option<(f64, f64)> = None;
+        let mut out = Vec::new();
+        for k in 0..=64 {
+            let (mut u, v) = surface
+                .project(curve.eval(a + (b - a) * k as f64 / 64.0))
+                .unwrap();
+            if let Some((lu, lv)) = last {
+                if let Some(period) = surface.period_u() {
+                    u += ((lu - u) / period).round() * period;
+                }
+                out.push(((u - lu) * scale.0, (v - lv) * scale.1));
+            }
+            last = Some((u, v));
+        }
+        out
+    }
+
+    /// A spline edge that spirals about a point of the chart, on a plane, a
+    /// cylinder, a cone and a sphere, turned and moved, at three scales, is
+    /// followed in steps over each half of which its image in the chart
+    /// runs one way (sampled finely, its directions lie in less than a half
+    /// turn), so no chord of the walk hides a turn: 16 turns in 32 steps or
+    /// more, where eight read it as a straight line. Up to four turns it
+    /// keeps the eight steps it always had.
+    #[test]
+    fn a_spline_that_spirals_in_the_chart_runs_one_way_each_half_step() {
+        for k in [1e-3, 1.0, 1e6] {
+            for (surface, at, scale) in charted(tilted(), k) {
+                let lay = Lay::of(&surface);
+                for turns in [0.25, 1.0, 4.0, 16.0, 40.0] {
+                    let count = ((64.0 * turns) as usize).max(16);
+                    let curve = fitted_spiral(at.as_ref(), turns, count);
+                    let range = curve.domain();
+                    let steps = spline_steps(&curve, range, &lay, &mut 0).unwrap();
+                    let kind = surface.kind();
+                    if turns <= 4.0 {
+                        assert_eq!(steps, SPLINE_STEPS, "{kind} at {k}, {turns} turns");
+                    } else {
+                        // A half step of three eighths of a turn at the
+                        // most, so more than four thirds of a step a turn.
+                        let least = (turns * 4.0 / 3.0) as usize;
+                        assert!(
+                            (least..=4 * least).contains(&steps),
+                            "{kind} at {k}, {turns} turns: {steps} steps"
+                        );
+                    }
+                    let halves = 2 * steps;
+                    for h in 0..halves {
+                        let end =
+                            |j: usize| range.0 + (range.1 - range.0) * (j as f64 / halves as f64);
+                        let directions =
+                            chart_directions(&surface, scale, &curve, (end(h), end(h + 1)));
+                        assert!(
+                            fanned(&directions, 0.999 * PI),
+                            "{kind} at {k}, {turns} turns: half step {h} of {halves} turns back"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Showing that an edge runs one way in the chart takes no more steps
+    /// of a helix than showing its angle about the axis does: a helix is a
+    /// straight line in a cylinder's chart. (The steps of the helices of
+    /// `showing_the_steps_of_a_spline_edge_costs_about_its_control_points`,
+    /// on a cylinder's own chart.)
+    #[test]
+    fn a_helix_keeps_the_steps_its_angle_needs() {
+        let f = tilted();
+        let axis = (f.origin(), f.z());
+        let cylinder = Lay::of(&Surface::Cylinder(
+            craft3d_geom::Cylinder::new(f, 1.0).unwrap(),
+        ));
+        let mut curves = vec![
+            fitted_helix(&f, 64.0, 1024),
+            fitted_helix(&f, 64.0, 4096),
+            fitted_helix(&f, 10.0, 400),
+            fitted_helix(&f, 1.0, 40),
+        ];
+        curves.extend([1, 4, 5, 37, 256].map(|quarters| winding(&f, 1.0, quarters, 0.7)));
+        for curve in &curves {
+            let range = curve.domain();
+            let (mut turned, mut charted) = (0, 0);
+            let about = spline_steps(curve, range, &turning(axis), &mut turned).unwrap();
+            let on = spline_steps(curve, range, &cylinder, &mut charted).unwrap();
+            assert_eq!(on, about, "{} control points", curve.control_points().len());
+            assert!(
+                charted <= 4 * turned + 64,
+                "{} control points: {charted} units against {turned}",
+                curve.control_points().len()
+            );
+        }
+    }
+
+    /// Nothing shows how the chart of a spline surface takes an edge, so
+    /// there an edge is only held to running forward in space over each
+    /// half of its eight steps: one that does is followed in them, one that
+    /// does not (a spiral of 16 turns) is not followed and is counted. An
+    /// edge that turns back at a point no halving reaches (a hairpin at a
+    /// knot) is not followed on a plane either; a corner of a third of a
+    /// turn is.
+    #[test]
+    fn an_edge_that_cannot_be_shown_to_run_one_way_is_not_followed() {
+        let f = tilted();
+        let flat = Lay::of(&Surface::Plane(craft3d_geom::Plane::new(f)));
+        let on_plane = |x: f64, y: f64| f.point(x, y, 0.0);
+        let gentle = fitted_spiral(&on_plane, 0.25, 16);
+        let wound = fitted_spiral(&on_plane, 16.0, 1024);
+        assert_eq!(
+            spline_steps(&gentle, gentle.domain(), &Lay::Space, &mut 0),
+            Some(SPLINE_STEPS)
+        );
+        let cut = step_proofs().1;
+        let mut work = 0;
+        assert_eq!(
+            spline_steps(&wound, wound.domain(), &Lay::Space, &mut work),
+            None
+        );
+        assert_eq!(step_proofs().1, cut + 1);
+        assert!(work > MOST_PROOF_WORK);
+        assert_eq!(
+            spline_steps(&wound, wound.domain(), &flat, &mut 0),
+            Some(32)
+        );
+        // Corners at a knot of a spline of degree 1.
+        let cornered = |degrees: f64| {
+            let (s, c) = degrees.to_radians().psin_cos();
+            NurbsCurve::polynomial(
+                1,
+                vec![0.0, 0.0, 0.37, 1.0, 1.0],
+                vec![
+                    on_plane(0.0, 0.0),
+                    on_plane(1.0, 0.0),
+                    on_plane(1.0 + 2.0 * c, 2.0 * s),
+                ],
+            )
+            .unwrap()
+        };
+        let corner = cornered(120.0);
+        assert_eq!(
+            spline_steps(&corner, corner.domain(), &flat, &mut 0),
+            Some(SPLINE_STEPS)
+        );
+        let hairpin = cornered(179.0);
+        let cut = step_proofs().1;
+        assert_eq!(
+            spline_steps(&hairpin, hairpin.domain(), &flat, &mut 0),
+            None
+        );
+        assert_eq!(step_proofs().1, cut + 1);
+        // Control points that lie on each other say nothing of a
+        // direction: passed over.
+        let doubled = NurbsCurve::polynomial(
+            2,
+            vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
+            vec![
+                on_plane(0.0, 0.0),
+                on_plane(1.0, 0.5),
+                on_plane(1.0, 0.5),
+                on_plane(2.0, 0.0),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            spline_steps(&doubled, doubled.domain(), &flat, &mut 0),
+            Some(SPLINE_STEPS)
+        );
+        // Numbers too large to multiply: not shown, no panic.
+        let huge = NurbsCurve::polynomial(
+            1,
+            vec![0.0, 0.0, 0.5, 1.0, 1.0],
+            vec![
+                Vec3::new(-1e200, 0.0, 0.0),
+                Vec3::new(1e200, 1e200, 0.0),
+                Vec3::new(1e200, -1e200, 1e200),
+            ],
+        )
+        .unwrap();
+        for lay in [flat, Lay::Space, turning((f.origin(), f.z()))] {
+            assert_eq!(spline_steps(&huge, huge.domain(), &lay, &mut 0), None);
+        }
     }
 }
