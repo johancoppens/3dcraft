@@ -166,6 +166,21 @@ name and never moves to another face.
 Closed loops (a four-bar linkage) are solved as a whole, and `assembly.solve` says which mates contradict
 each other, and by how much, when they cannot all be met.
 
+The parts move from where you placed them. A linkage placed at one crank angle and set to another is
+solved straight from where its parts are, and also carried there step by step from the angle it was placed
+at, with shorter steps near a pose where it could flip to its mirror image. When the two agree, that pose is
+the answer and nothing is said. When they differ, the carried pose is shown and `assembly.solve` says so in
+its `note`: that the carried pose is shown, where it rests elsewhere than the straight solve gives, or, when the
+parts were not placed where their mates meet, that the branch they were meant on is not certain. When the
+straight solve fails and the carry answers, the note says that too. A linkage very near the pose where its two branches meet
+can still be carried onto the other one: the note marks that the two methods disagreed, not which one is
+right. When the
+carry stops short (a crank set to an angle the linkage cannot reach without being taken apart, or a turn it
+could not follow) or runs out of steps, the straight solve is shown and the note says the branch is not
+checked. A joint that nothing sets and that moves on its own (a swivel, a hinge, a slider) keeps the value it
+was placed at; joints that move only together (a loop, a screw and its nut) are left where the solve puts
+them.
+
 **Couplings.** Gears, racks and screws couple two mates:
 `coupling.add {"kind": "gear", "mates": ["A", "B"], "value": 2}`. A screw may name one cylindrical mate
 twice, a thread whose slide follows its own turn: `{"kind": "screw", "mates": ["Thread", "Thread"],

@@ -2,10 +2,13 @@
 //! continuation on one branch.
 
 use crate::analysis::{
-    dependencies, diagnose_rest, driver_loop_mates, free_motions, moved_mates, rank_and_nulls,
-    redundancies,
+    ZERO_COMPONENT, dependencies, diagnose_rest, driver_loop_mates, free_motions, moved_mates,
+    rank_and_nulls, redundancies,
 };
-use crate::newton::{MAX_ITERATIONS, MAX_STEP, evaluate, gauss_newton, run};
+use crate::ldl::Budget;
+use crate::newton::{
+    FACTOR_BUDGET, MAX_ITERATIONS, MU_CARRY, MU_START, evaluate, gauss_newton, run,
+};
 use crate::system::{Rows, State, System};
 use crate::types::{DeadPoint, Diagnosis, Problem, Sequence, Solution};
 
@@ -27,29 +30,101 @@ const CONTINUITY: f64 = 0.5;
 
 /// The largest change of a drive in one sub-step when a rest solve is
 /// carried from where its parts are placed (dimensionless: radians, or
-/// the scale): the most one Newton step may move anything, so a drive far
-/// from the start walks there as a far start walks in, instead of leaping
-/// across branches in one prediction the continuity check is too loose to
-/// catch (its bound grows with the step).
-const REST_STEP: f64 = MAX_STEP;
+/// the scale). A branch can turn sharply where nothing is near singular:
+/// an offset slider-crank (crank 1, rod 1.52, offset 0.5) turns at a crank
+/// of 270° with its circuits 0.1 of the scale apart, and a sub-step of half
+/// a radian from 254° to 277° landed on the other circuit, the corrector
+/// converging fast and the prediction met (the third review). A tenth of a
+/// radian resolves such turns at the review's slider-cranks and at
+/// four-bars of coupler 3.0002 (circuits 0.044 apart at a crank of 180°);
+/// at coupler 3.00002 (circuits 1.4·10⁻³ of the scale apart) the carry
+/// still lands on the other circuit now and then with the corrector's light
+/// damping ([`crate::newton::MU_CARRY`]: 8 jumps on the fourth review's
+/// probe, none with a solve's), and at 3.0000002 often. Every such
+/// difference from the direct solve carries a note ([`Solver::rest_placed`]),
+/// which is what holds there. The rigid secant predicts a part turning
+/// about a fixed axis exactly, so a lead screw winds 40 turns in these
+/// steps with no Newton step but the last.
+const REST_STEP: f64 = 0.1;
 
 /// Newton iterations a rest solve's carry may spend, all sub-steps
-/// together: ten solves' worth, so a placement whose direct solve failed
-/// costs at most a few times a solve more. A carry that runs out is not
-/// used, and the direct solve's failure stands.
+/// together: ten solves' worth, so a placement costs at most a few times a
+/// solve more however far its drives are from where its parts are placed.
+/// A carry that runs out is not used, and the direct solve stands.
 const REST_ITERATIONS: usize = 10 * MAX_ITERATIONS;
 
 /// Newton iterations one sub-step of a rest carry may spend: a quarter of
-/// a solve's. A sub-step's corrector starts from a prediction at most half
-/// a radian away and converges in a few iterations on the branch (two on
-/// average over the 40 turns of a lead screw); one that does not is cut,
-/// so a limit position is found by halving (to ε of the drives' change, as
-/// a motion's) within the carry's budget: about 1000 iterations for the
-/// double-rocker of the tests, where a full solve's 200 per try spent
-/// 7000. Cutting only to √ε was tried and refused: a Jansen leg carried
+/// a solve's. A sub-step's corrector starts from a prediction at most a
+/// tenth of a radian away and converges in a few iterations on the branch (none
+/// over the 40 turns of a lead screw, which the rigid secant predicts); one
+/// that does not is cut, so a limit position is found by halving (to ε of
+/// the drives' change, as a motion's) within the carry's budget: about 1000
+/// iterations for the double-rocker of the tests, where a full solve's 200
+/// per try spent 7000. Cutting only to √ε was tried and refused: a Jansen leg carried
 /// from 250° to 80° passes a near-singular pose at 193° only in steps
 /// finer than that.
 const REST_STEP_ITERATIONS: usize = MAX_ITERATIONS / 4;
+
+/// A rest carry's first sub-step, as a fraction of [`REST_STEP`]: the
+/// carry knows nothing yet of how near a singular pose its start is (see
+/// [`REST_REACH`]), so it starts short and doubles from there. A four-bar
+/// near its change point placed ten degrees before the pose where its
+/// circuits pass closest crossed to the other circuit in a first
+/// half-radian sub-step.
+const REST_FIRST: f64 = 1.0 / 16.0;
+
+/// How far a rest carry's sub-step may move, as a fraction of `1/ω`: `ω`
+/// is how fast the corrector's Newton steps shrink (twice its second step
+/// over the square of its first, the constant of its quadratic
+/// convergence), and `1/ω` estimates how far the solution is from a
+/// singular pose, where another branch may come near. A sub-step moves at
+/// most a quarter of that from the last solution, and one that moved more
+/// than `1/ω` at the solution it reached is cut: so a carry nears a pose
+/// where two branches pass close (a four-bar near its change point, whose
+/// circuits come within a fraction of a degree) in steps that shrink with
+/// the distance, and follows its own branch round the sharp turn there,
+/// where a longer step lands on the other branch's straight continuation
+/// with nothing amiss at either end (the corrector converging fast, the
+/// prediction met). Far from a singular pose `ω` is small and the
+/// sub-steps stay [`REST_STEP`] long.
+const REST_REACH: f64 = 0.25;
+
+/// Sub-steps a rest carry may take beyond twice those its span needs at
+/// full length: the turns near singular poses. The published walker
+/// carried to a crank start of 180° takes 54 in all, at ±120° 37, at ±60°
+/// 20, at either end of its leg scale's range the same; the radial engine
+/// carried half a turn and more 98 (with an allowance of 574 for its
+/// span). A carry that needs more is out of work: the direct solve is
+/// shown, and the note says the branch is not checked. One that cannot
+/// fit what is left of the way in what is left of the allowance, even
+/// doubling every sub-step, stops at once ([`reachable`]).
+const REST_SUBSTEPS: usize = 384;
+
+/// The note of a placement whose parts do not meet their mates at the
+/// driven values they are placed at, where the carried and the direct
+/// solve disagree.
+const UNCERTAIN: &str = "its parts as placed do not meet their mates at the drive values they are placed at, so the branch they were put together in is not certain: carried from there to its drives it rests elsewhere than one solve straight from the placement puts it, and the carried pose is shown";
+
+/// The note of a placement whose parts meet their mates at the driven
+/// values they are placed at, where the carried and the direct solve
+/// disagree: the carried pose is shown. It says that the two disagree and
+/// which is shown, no more: near a change point the carry itself can land
+/// on the other branch.
+const CARRIED: &str = "carried from the placement, the assembly rests elsewhere than a solve straight from the placement gives; the carried pose is shown";
+
+/// The note of a placement whose parts meet their mates at the driven
+/// values they are placed at, solved by the carry alone (one solve straight
+/// from it failed).
+const FAILED_CARRIED: &str =
+    "the solve straight from the placement failed; the pose carried from the placement is shown";
+
+/// The note of a carry that ran out of its allowance of sub-steps: the
+/// direct solve is shown.
+const NOT_WITHIN: &str = "solved straight from the placement, not carried within its allowance: the branch is not checked";
+
+/// The note of such a placement solved by the carry alone (one solve
+/// straight from it failed).
+const UNCERTAIN_ONLY: &str = "its parts as placed do not meet their mates at the drive values they are placed at, so the branch they were put together in is not certain: it is solved there and carried to its drives";
 
 /// A solver for one problem. It keeps the last solution, so
 /// [`Solver::advance`] can follow the motion from it on the same branch.
@@ -76,40 +151,66 @@ enum Turns {
 }
 
 /// How a carry goes: a sub-step changes a drive by at most `largest`
-/// (dimensionless), its corrector spends at most `per_step` iterations,
-/// the whole carry at most `budget`, a sub-step is not cut below `finest`
-/// of the drives' change, and with `analyse` the state reached is analysed
-/// (rank, free motions) as [`Solver::last`].
+/// (dimensionless), the first by `first` of that, its corrector spends at
+/// most `per_step` iterations, the whole carry at most `budget`, a
+/// sub-step is not cut below `finest` of the drives' change, and with
+/// `analyse` the state reached is analysed (rank, free motions) as
+/// [`Solver::last`]. A rest carry (`rest`) also keeps its sub-steps within
+/// [`REST_REACH`] of a singular pose, keeps the length of a sub-step that
+/// succeeds after a cut one instead of doubling straight back, and moves
+/// each part by its rigid motion in the secant ([`System::extrapolate`]).
 #[derive(Clone, Copy)]
 struct Pace {
     largest: f64,
+    first: f64,
     budget: usize,
     per_step: usize,
     finest: f64,
     analyse: bool,
+    rest: bool,
 }
 
 impl Pace {
     /// A motion's ([`Solver::advance`]): the first sub-step the whole way.
     const MOTION: Pace = Pace {
         largest: f64::INFINITY,
+        first: 1.0,
         budget: MAX_ADVANCE_ITERATIONS,
         per_step: MAX_ITERATIONS,
         finest: 0.0,
         analyse: true,
+        rest: false,
     };
-    /// A rest solve's carry.
+    /// A rest solve's carry, and the carry that keeps its free joints.
     const REST: Pace = Pace {
         largest: REST_STEP,
+        first: REST_FIRST,
         budget: REST_ITERATIONS,
         per_step: REST_STEP_ITERATIONS,
         finest: 0.0,
         analyse: false,
+        rest: true,
     };
 
     fn with_finest(self, finest: f64) -> Pace {
         Pace { finest, ..self }
     }
+}
+
+/// Why a rest solve was not carried from where its parts are placed.
+enum NotCarried {
+    /// Stopped at these drive values, from a placement that meets its mates
+    /// at its own drive values: a limit position, or a turn of the branch
+    /// the sub-steps could not follow; which one is not proven, and the
+    /// note says only that the branch is not checked past them.
+    Reach(Vec<f64>),
+    /// Out of its allowance of sub-steps or iterations: the branch is not
+    /// checked, which the note says.
+    Exhausted,
+    /// Anything else (a placement that cannot be solved at its own drive
+    /// values, a carry stopped from one that does not meet its mates):
+    /// nothing is known of the branch, and nothing is said.
+    Other,
 }
 
 /// A solved state and how it was reached.
@@ -118,6 +219,32 @@ struct Corrected {
     iterations: usize,
     active: Vec<bool>,
     drives: Vec<f64>,
+    /// The lengths of the corrector's first two steps (0 for one not
+    /// taken), dimensionless.
+    steps: [f64; 2],
+}
+
+/// Whether a carry with `left` of the way still to go (a fraction), whose
+/// next sub-step is `step` long and none longer than `widest`, can get
+/// there in `budget` sub-steps. An accepted sub-step at most doubles the
+/// next one, so the fewest it can take are those doubling from `step` up to
+/// `widest` and then `widest` each. When even those do not fit, the carry
+/// would run out of its allowance whatever it meets, and it stops at once:
+/// the same outcome, without the work.
+fn reachable(left: f64, step: f64, widest: f64, budget: usize) -> bool {
+    let mut covered = 0.0f64;
+    let mut next = step;
+    let mut used = 0usize;
+    while next < widest && covered < left && used < budget {
+        covered += next;
+        next = (next * 2.0).min(widest);
+        used += 1;
+    }
+    if covered >= left {
+        return true;
+    }
+    let more = ((left - covered) / widest).ceil();
+    widest > 0.0 && more.is_finite() && used as f64 + more <= budget as f64
 }
 
 impl Solver {
@@ -204,13 +331,12 @@ impl Solver {
     }
 
     /// The solve from the start poses at `drives`, its angles' turns taken
-    /// from `near` as `turns` says: one solve straight from the start, as
-    /// always, whose answer stands whenever it has one. Only when it fails
-    /// (A-030: a shaft that only its coupling turns, many turns from the
-    /// start's (−π, π]), the placement is solved again from the turns its
-    /// couplings say, and else carried from the drive values it holds to
-    /// `drives` ([`Self::carry_rest`]): so a direct answer is never
-    /// replaced, and only a failure can turn into an answer.
+    /// from `near` as `turns` says. A moment of a motion and a joint held
+    /// by hand start from a solved state, which holds its own drives: one
+    /// solve straight from the start, whose answer stands whenever it has
+    /// one, and when it fails a moment's coupled angles at the turns they
+    /// had the moment before. A placement is solved as
+    /// [`Self::rest_placed`] says.
     fn rest(
         &mut self,
         drives: &[f64],
@@ -244,72 +370,185 @@ impl Solver {
         if let (Turns::Every, Some(near)) = (turns, near) {
             self.sys.keep_turns(&mut start, near);
         }
+        if turns == Turns::Measured {
+            return self.rest_placed(&start, drives);
+        }
         let direct = match self.correct(&start, drives) {
-            Ok(c) => return self.settle(c, drives),
+            Ok(c) => return self.settle(c, drives, None, None),
             Err(direct) => direct,
         };
-        let c = match turns {
-            // A moment whose coupled shafts had come many turns: started at
-            // the turns they had in the moment before.
-            Turns::Coupled => {
-                let Some(near) = near else {
-                    return Err(direct);
-                };
-                let mut carried = start.clone();
-                self.sys.keep_coupled_turns(&mut carried, near);
-                if carried == start {
-                    return Err(direct);
-                }
-                self.correct(&carried, drives).map_err(|_| direct)?
-            }
-            Turns::Every => return Err(direct),
-            Turns::Measured => self.solve_by_coupled_turns(&start, drives).ok_or(direct)?,
+        // A moment whose coupled shafts had come many turns: started at the
+        // turns they had in the moment before.
+        let Some(near) = near.filter(|_| turns == Turns::Coupled) else {
+            return Err(direct);
         };
-        self.settle(c, drives)
+        let mut carried = start.clone();
+        self.sys.keep_coupled_turns(&mut carried, near);
+        if carried == start {
+            return Err(direct);
+        }
+        let c = self.correct(&carried, drives).map_err(|_| direct)?;
+        self.settle(c, drives, None, None)
     }
 
-    /// A placement whose direct solve failed, solved from the turns its
-    /// couplings say (A-030), or `None` where they say nothing new: an
-    /// angle no drive sets that is a coupling's only such angle started at
-    /// the whole turns that meet the coupling best (a screw placed with its
-    /// nut 27 leads along); else, when a driven angle a coupling takes is
-    /// placed whole turns from where the turns nearest its drive put it (a
-    /// lead screw placed at 0 with its nut and driven 16.8 turns), carried
-    /// from the placement's turns to the drives with its nut. Nothing else
-    /// is tried: a failure that is not a coupling's turns stays the error
-    /// it was (a carry across a linkage's near-singular pose can change
-    /// circuits, which an error never does).
-    fn solve_by_coupled_turns(&mut self, start: &State, drives: &[f64]) -> Option<Corrected> {
+    /// A placement solved at `drives`. Where its parts hold other driven
+    /// values than `drives` (a mechanism put together at one crank angle
+    /// and solved at another), it is solved at the values it holds and
+    /// carried from there to `drives` along its branch, besides the one
+    /// solve straight from the start: that solve may land on another branch
+    /// (a mirrored loop, A-016). When both find one solution (within √ε,
+    /// up to the motions the mates leave free), the direct one is kept, bit
+    /// for bit as before. When they differ and the parts as placed meet
+    /// their mates at the values they hold, the branch they were put
+    /// together in is known and the carried pose is the answer; when they
+    /// do not meet them, which branch the closing solve lands on is not
+    /// known: the carried pose is the answer (on the review's legs and
+    /// four-bars it is the one put together where the direct one is not)
+    /// and the note says the branch is not certain. A start that meets its
+    /// mates but cannot be carried past a limit position leaves the direct
+    /// solve with a note; any other failure of the carry (a start that
+    /// cannot be closed, a carry out of work) leaves the direct solve as
+    /// before. Where the
+    /// direct solve fails, the turns the start's couplings say are tried
+    /// first, as before (A-030), then the carry. Free joints are then kept
+    /// at their start values ([`Self::keep_free`], A-036).
+    fn rest_placed(&mut self, start: &State, drives: &[f64]) -> Result<Solution, Diagnosis> {
+        let direct = self.correct(start, drives);
         let mut counted = start.clone();
         self.sys.coupled_start_turns(&mut counted);
-        if counted != *start
-            && let Ok(c) = self.correct(&counted, drives)
-        {
-            return Some(c);
-        }
         let held = self.sys.start_drives(&counted, true);
-        let nearest = self.sys.start_drives(&counted, false);
-        if !self.sys.drives_apart(&held, &nearest)
-            || !self.sys.drives_apart(&held, drives)
-            || self.check_drives(&held).is_err()
-        {
-            return None;
+        // Carried only from driven values the drives may take: a hinge
+        // placed outside its limits, or a drive out of reach, is solved
+        // directly, as before, and says nothing.
+        let apart = self.sys.drives_apart(&held, drives) && self.check_drives(&held).is_ok();
+        let mut note = None;
+        // The direct solution's own analysis, when it is kept and measured.
+        let mut kept_direct: Option<Solution> = None;
+        // The solution, and the start its free joints are kept at.
+        let (c, from) = match direct {
+            Ok(d) if !apart => (d, start.clone()),
+            Ok(d) => match self.carry_placed(&held, drives, start) {
+                Ok((c, holds)) => {
+                    // Both on one solution, up to the motions the mates
+                    // leave free there (which a gauge of the steps, not the
+                    // branch, decides): the direct one, bit for bit as
+                    // before.
+                    let sol = self.solution(&d)?;
+                    if self.sys.distance_fixed(&d.state, &c.state, &sol.free) <= self.sys.eps.sqrt()
+                    {
+                        kept_direct = Some(sol);
+                        (d, start.clone())
+                    } else {
+                        // Two methods disagree: say which answer is shown.
+                        note = Some(if holds { CARRIED } else { UNCERTAIN }.to_string());
+                        (c, counted)
+                    }
+                }
+                Err(NotCarried::Reach(at)) => {
+                    let at = at
+                        .iter()
+                        .map(|d| format!("{d:.6}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    note = Some(format!(
+                        "solved straight from the placement, not carried past the drive values [{at}] from where its parts are placed: the branch is not checked"
+                    ));
+                    (d, start.clone())
+                }
+                Err(NotCarried::Exhausted) => {
+                    note = Some(NOT_WITHIN.to_string());
+                    (d, start.clone())
+                }
+                Err(NotCarried::Other) => (d, start.clone()),
+            },
+            Err(direct) => {
+                // The turns the start's couplings say (A-030), else the
+                // carry. A coupled drive placed whole turns from the turns
+                // nearest its drive is carried round with its nut, which
+                // has no branch to doubt; any other carry says the direct
+                // solve failed, and from a start that does not meet its
+                // mates that its branch is not certain.
+                if counted != *start
+                    && let Ok(c) = self.correct(&counted, drives)
+                {
+                    (c, counted)
+                } else if apart {
+                    let nearest = self.sys.start_drives(&counted, false);
+                    let winds = self.sys.drives_apart(&held, &nearest);
+                    match self.carry_placed(&held, drives, start) {
+                        Ok((c, holds)) => {
+                            if !winds {
+                                note = Some(
+                                    if holds {
+                                        FAILED_CARRIED
+                                    } else {
+                                        UNCERTAIN_ONLY
+                                    }
+                                    .to_string(),
+                                );
+                            }
+                            (c, counted)
+                        }
+                        Err(_) => return Err(direct),
+                    }
+                } else {
+                    return Err(direct);
+                }
+            }
+        };
+        let mut sol = match kept_direct {
+            Some(sol) => sol,
+            None => self.solution(&c)?,
+        };
+        let mut c = c;
+        if let Some((kept, kept_note)) = self.keep_free(&c, &sol, &from) {
+            if let Some(k) = kept {
+                sol = self.solution(&k)?;
+                c = k;
+            }
+            note = match (note, kept_note) {
+                (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+                (a, b) => a.or(b),
+            };
         }
-        let mut from = self.sys.start_state(&held);
+        self.settle(c, drives, Some(sol), note)
+    }
+
+    /// The placement solved at the driven values `held` it holds (its
+    /// angles at the turns its couplings say) and carried to `drives`
+    /// ([`Self::carry_rest`]), with whether it met its mates at `held`.
+    fn carry_placed(
+        &mut self,
+        held: &[f64],
+        drives: &[f64],
+        start: &State,
+    ) -> Result<(Corrected, bool), NotCarried> {
+        let mut from = self.sys.start_state(held);
         self.sys.coupled_start_turns(&mut from);
-        let mut c = self.carry_rest(&from, &held, drives)?;
+        let (mut c, holds) = self.carry_rest(&from, held, drives)?;
         // A coupled drive carried whole turns turns the joints on it as
         // many; a solve from the placement does not count them where no
         // equation does.
-        if self.sys.winds(&held, drives) {
+        if self.sys.winds(held, drives) {
             self.sys.turns_nearest_start(&mut c.state, start);
         }
-        Some(c)
+        Ok((c, holds))
     }
 
-    /// The solution at `c`, kept as the solver's state at `drives`.
-    fn settle(&mut self, c: Corrected, drives: &[f64]) -> Result<Solution, Diagnosis> {
-        let sol = self.solution(&c)?;
+    /// The solution at `c` (`sol` when it is measured already), kept as
+    /// the solver's state at `drives`, with `note`.
+    fn settle(
+        &mut self,
+        c: Corrected,
+        drives: &[f64],
+        sol: Option<Solution>,
+        note: Option<String>,
+    ) -> Result<Solution, Diagnosis> {
+        let mut sol = match sol {
+            Some(sol) => sol,
+            None => self.solution(&c)?,
+        };
+        sol.note = note;
         self.state = Some(c.state);
         self.prev = None;
         self.drives = drives.to_vec();
@@ -317,20 +556,235 @@ impl Solver {
         Ok(sol)
     }
 
+    /// Keeps the joints that nothing fixes where the start has them: a free
+    /// revolute's angle, a free slider's distance. The solve's steps are
+    /// least-squares steps in all unknowns alike, so a misfit at the start
+    /// (a part placed turned against its mate) is closed partly by turning
+    /// a free joint too, and the free joint ends where nothing asked it to
+    /// be. A joint is kept when it alone carries a free motion: the free
+    /// motions of `sol` move it in a way no other joint they move does (its
+    /// row of rates is not in the span of the others'), as a free swivel
+    /// does. Joints that move only together (a free loop, a screw and its
+    /// nut) are left as the solve leaves them: which of them to keep is a
+    /// choice the document does not make. When a joint kept is no longer at
+    /// its start value, the joints kept are carried back to their start
+    /// values with the solution, along its branch, as drives of the moment.
+    /// The choice does not depend on the order of the mates or instances,
+    /// nor on the assembly's size beyond what the null vectors resolve (a
+    /// rate below 10⁻⁶ of a free motion's fastest counts as none). `None`
+    /// when there is nothing to keep; else the state moved back (`None`
+    /// when it could not be, with the reason).
+    fn keep_free(
+        &self,
+        c: &Corrected,
+        sol: &Solution,
+        start: &State,
+    ) -> Option<(Option<Corrected>, Option<String>)> {
+        let sys = &self.sys;
+        let k = sol.free.len();
+        if k == 0 {
+            return None;
+        }
+        let fixed: std::collections::BTreeSet<(usize, usize)> =
+            sys.slots.iter().chain(&sol.at_limit).copied().collect();
+        // The rate of each joint variable in each free motion (rates below
+        // ZERO_COMPONENT of a motion's largest are left out already).
+        let mut rows: std::collections::BTreeMap<(usize, usize), Vec<f64>> =
+            std::collections::BTreeMap::new();
+        for (j, f) in sol.free.iter().enumerate() {
+            for &(m, v, r) in &f.variables {
+                if fixed.contains(&(m, v)) {
+                    continue;
+                }
+                if let Some(x) = rows
+                    .entry((m, v))
+                    .or_insert_with(|| vec![0.0; k])
+                    .get_mut(j)
+                {
+                    *x = r / sys.unit(m, v);
+                }
+            }
+        }
+        let rows: Vec<((usize, usize), Vec<f64>)> = rows.into_iter().collect();
+        // The rank of a set of rows (Gram-Schmidt; a row within
+        // ZERO_COMPONENT of its own length of the span of those before it
+        // adds nothing), the arithmetic capped as a factorisation's is.
+        let mut budget = Budget::new(FACTOR_BUDGET);
+        let mut rank_without = |skip: Option<usize>| -> Option<usize> {
+            let mut basis: Vec<Vec<f64>> = Vec::new();
+            for (i, (_, row)) in rows.iter().enumerate() {
+                if Some(i) == skip {
+                    continue;
+                }
+                budget
+                    .spend(basis.len().saturating_add(1).saturating_mul(k))
+                    .ok()?;
+                let length = row.iter().map(|x| x * x).sum::<f64>().sqrt();
+                let mut rest = row.clone();
+                for b in &basis {
+                    let d: f64 = rest.iter().zip(b).map(|(x, y)| x * y).sum();
+                    for (x, y) in rest.iter_mut().zip(b) {
+                        *x -= d * y;
+                    }
+                }
+                let left = rest.iter().map(|x| x * x).sum::<f64>().sqrt();
+                if left.is_finite() && left > ZERO_COMPONENT * length {
+                    for x in &mut rest {
+                        *x /= left;
+                    }
+                    basis.push(rest);
+                }
+            }
+            Some(basis.len())
+        };
+        let too_many = || {
+            Some((
+                None,
+                Some(format!(
+                    "{} free joints are too many to keep at their start values",
+                    rows.len()
+                )),
+            ))
+        };
+        let Some(all) = rank_without(None) else {
+            return too_many();
+        };
+        let mut held: Vec<(usize, usize)> = Vec::new();
+        for (i, (mv, _)) in rows.iter().enumerate() {
+            match rank_without(Some(i)) {
+                Some(r) if r < all => held.push(*mv),
+                Some(_) => {}
+                None => return too_many(),
+            }
+        }
+        let value = |s: &State, (m, v): (usize, usize)| {
+            s.values
+                .get(m)
+                .and_then(|vals| vals.get(v))
+                .copied()
+                .unwrap_or(f64::NAN)
+        };
+        let moved = held.iter().any(|&mv| {
+            let d = (value(&c.state, mv) - value(start, mv)) / sys.unit(mv.0, mv.1);
+            d.is_nan() || d.abs() > sys.eps
+        });
+        if !moved {
+            return None;
+        }
+        let names = held
+            .iter()
+            .map(|&(m, _)| sys.problem.mate_name(m))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let fail = |why: String| {
+            Some((
+                None,
+                Some(format!(
+                    "the free motion of {names} moved from where the parts are placed and could not be carried back ({why})"
+                )),
+            ))
+        };
+        let mut problem = sys.problem.clone();
+        for &(m, v) in &held {
+            if let Some(slot) = problem.mates.get_mut(m).and_then(|s| s.driven.get_mut(v)) {
+                *slot = Some(value(start, (m, v)));
+            }
+        }
+        let mut hold = match Solver::new(&problem) {
+            Ok(s) => s,
+            Err(e) => return fail(e.message(&problem)),
+        };
+        let kept: std::collections::BTreeSet<(usize, usize)> = held.iter().copied().collect();
+        let driven: std::collections::BTreeMap<(usize, usize), f64> = sys
+            .slots
+            .iter()
+            .copied()
+            .zip(c.drives.iter().copied())
+            .collect();
+        let mut from = Vec::with_capacity(hold.sys.slots.len());
+        let mut to = Vec::with_capacity(hold.sys.slots.len());
+        for &mv in &hold.sys.slots {
+            if kept.contains(&mv) {
+                from.push(value(&c.state, mv));
+                to.push(value(start, mv));
+            } else {
+                let d = driven.get(&mv).copied().unwrap_or(f64::NAN);
+                from.push(d);
+                to.push(d);
+            }
+        }
+        if let Err(e) = hold.check_drives(&from).and(hold.check_drives(&to)) {
+            return fail(e.message(&problem));
+        }
+        hold.state = Some(c.state.clone());
+        hold.drives = from;
+        let (reached, outcome) = hold.carry(&to, Pace::REST.with_finest(hold.sys.eps));
+        if let Err(e) = outcome {
+            return fail(e.message(&problem));
+        }
+        let Some(back) = reached else {
+            return fail("nothing was solved".to_string());
+        };
+        // The limits held, as this problem's groups: its mates and
+        // couplings, its own drivers (all active), its limits.
+        let lead = sys.mates.len() + sys.linears.len();
+        let mut active = Vec::with_capacity(sys.groups.len());
+        active.extend(back.active.iter().take(lead).copied());
+        active.extend(std::iter::repeat_n(true, sys.slots.len()));
+        active.extend(
+            back.active
+                .iter()
+                .skip(lead + hold.sys.slots.len())
+                .copied(),
+        );
+        if active.len() != sys.groups.len() {
+            return fail("the limits do not match".to_string());
+        }
+        Some((
+            Some(Corrected {
+                state: back.state,
+                iterations: c.iterations.saturating_add(back.iterations),
+                active,
+                drives: c.drives.clone(),
+                steps: [0.0; 2],
+            }),
+            None,
+        ))
+    }
+
     /// Solves `start` at the driven values `held` and carries the solution
-    /// to `drives` along its branch; `None` when either cannot be done.
-    fn carry_rest(&mut self, start: &State, held: &[f64], drives: &[f64]) -> Option<Corrected> {
-        let c0 = self.correct(start, held).ok()?;
+    /// to `drives` along its branch, with whether the start already met its
+    /// mates there (the closing solve moved it by at most √ε: it was put
+    /// together at those values, so its branch is known).
+    fn carry_rest(
+        &mut self,
+        start: &State,
+        held: &[f64],
+        drives: &[f64],
+    ) -> Result<(Corrected, bool), NotCarried> {
+        let c0 = self.correct(start, held).map_err(|_| NotCarried::Other)?;
+        let holds = self.sys.distance(&c0.state, start) <= self.sys.eps.sqrt();
         let first = c0.iterations;
         self.state = Some(c0.state);
         self.prev = None;
         self.drives = held.to_vec();
         self.last = None;
         let (reached, outcome) = self.carry(drives, Pace::REST.with_finest(self.sys.eps));
-        outcome.ok()?;
-        let mut c = reached?;
+        match outcome {
+            Ok(()) => {}
+            // A limit position between, met from a placement that holds:
+            // the branch it was put together in does not reach the drives.
+            Err(Diagnosis::DeadPoint { drives, .. }) if holds => {
+                return Err(NotCarried::Reach(drives));
+            }
+            // Out of its allowance (the only way a rest carry ends with
+            // this diagnosis).
+            Err(Diagnosis::DidNotConverge { .. }) => return Err(NotCarried::Exhausted),
+            Err(_) => return Err(NotCarried::Other),
+        }
+        let mut c = reached.ok_or(NotCarried::Other)?;
         c.iterations = c.iterations.saturating_add(first);
-        Some(c)
+        Ok((c, holds))
     }
 
     /// Moves the drives to `drives` from the last solution, following the
@@ -387,17 +841,36 @@ impl Solver {
         } else {
             1.0
         };
+        // A rest carry may take the sub-steps its span needs at full length,
+        // twice over, and REST_SUBSTEPS more.
+        let max_substeps = if pace.rest && widest > 0.0 {
+            let full = (1.0 / widest).ceil();
+            if full.is_finite() && full < MAX_SUBSTEPS as f64 {
+                (2 * full as usize)
+                    .saturating_add(REST_SUBSTEPS)
+                    .min(MAX_SUBSTEPS)
+            } else {
+                MAX_SUBSTEPS
+            }
+        } else {
+            MAX_SUBSTEPS
+        };
         let base = self.base_active();
         let mut s = 0.0f64;
-        let mut step = widest;
+        let mut step = widest * pace.first;
         let mut reached: Option<Corrected> = None;
         let mut failure: Option<Diagnosis> = None;
         let mut substeps = 0usize;
         let mut iterations = 0usize;
         let mut exhausted = false;
+        // The last sub-step tried was cut.
+        let mut cut = false;
         while s < 1.0 {
             substeps += 1;
-            if substeps > MAX_SUBSTEPS || iterations > pace.budget {
+            if substeps > max_substeps
+                || iterations > pace.budget
+                || (pace.rest && !reachable(1.0 - s, step, widest, max_substeps - substeps + 1))
+            {
                 exhausted = true;
                 break;
             }
@@ -406,10 +879,11 @@ impl Solver {
             // Predict: along the secant of the last two solutions when the
             // drives keep their direction, else along the tangent.
             let predicted = self
-                .secant(&state, &d_try)
+                .secant(&state, &d_try, pace.rest)
                 .or_else(|| gauss_newton(&self.sys, &state, &d_try, &base))
                 .unwrap_or_else(|| state.clone());
-            let tried = self.correct_within(&predicted, &d_try, pace.per_step);
+            let mu = if pace.rest { MU_CARRY } else { MU_START };
+            let tried = self.correct_within(&predicted, &d_try, pace.per_step, mu);
             iterations += match &tried {
                 Ok(c) => c.iterations,
                 Err(Diagnosis::DidNotConverge { iterations, .. }) => *iterations,
@@ -418,31 +892,71 @@ impl Solver {
             let ok = match &tried {
                 Ok(c) => {
                     let motion = self.sys.distance(&state, &predicted);
-                    self.sys.distance(&c.state, &predicted) <= CONTINUITY * motion + floor
+                    // A rest carry's sub-step that moved further than the
+                    // solution it reached is from a singular pose.
+                    let near = match (pace.rest, self.omega(c)) {
+                        (true, Some(omega)) => self.sys.distance(&state, &c.state) * omega <= 1.0,
+                        _ => true,
+                    };
+                    near && self.sys.distance(&c.state, &predicted) <= CONTINUITY * motion + floor
                 }
                 Err(_) => false,
             };
             match tried {
                 Ok(c) if ok => {
+                    // The next sub-step of a rest carry moves at most
+                    // REST_REACH of the way to the nearest singular pose.
+                    let reach = match (pace.rest, self.omega(&c)) {
+                        (true, Some(omega)) => {
+                            let moved = self.sys.distance(&state, &c.state);
+                            (moved > 0.0).then(|| (s_try - s) * (REST_REACH / omega) / moved)
+                        }
+                        _ => None,
+                    };
                     self.prev = Some((state.clone(), self.drives.clone()));
                     state = c.state.clone();
                     s = s_try;
                     reached = Some(c);
                     self.drives = d_try;
-                    step = (step * 2.0).min(widest);
+                    if !(pace.rest && cut) {
+                        step = (step * 2.0).min(widest);
+                    }
+                    if let Some(reach) = reach {
+                        step = step.min(reach.max(min_step));
+                    }
+                    cut = false;
                 }
                 Ok(_) => {
                     failure = Some(Diagnosis::BranchLost { drives: d_try });
                     step *= 0.5;
+                    cut = true;
                 }
                 Err(e) => {
                     failure = Some(e);
                     step *= 0.5;
+                    cut = true;
                 }
             }
             if s < 1.0 && step < min_step {
                 break;
             }
+        }
+        // A rest carry takes a sub-step whose prediction meets the
+        // tolerance as it stands, without a Newton step (the rigid secant
+        // predicts a turning part exactly), so over many of them its
+        // solution may drift within the tolerance (a lead screw carried 40
+        // turns): one Gauss–Newton step at the end brings it to the
+        // accuracy a solve ends at.
+        if pace.rest
+            && s >= 1.0
+            && let Some(c) = reached.as_mut()
+            && let Some(next) = gauss_newton(&self.sys, &c.state, &self.drives, &c.active)
+            && let Ok(polished) = self.correct_within(&next, &self.drives, pace.per_step, MU_CARRY)
+            && self.sys.distance(&polished.state, &c.state) <= self.sys.eps.sqrt()
+        {
+            state = polished.state.clone();
+            c.state = polished.state;
+            c.active = polished.active;
         }
         if let Some(c) = &mut reached {
             // The analysis of the last state: for the caller, or for the
@@ -528,10 +1042,22 @@ impl Solver {
             })
     }
 
+    /// The constant of the corrector's quadratic convergence at `c`, twice
+    /// its second step over the square of its first (dimensionless):
+    /// `1/ω` estimates how far `c` is from a singular pose ([`REST_REACH`]).
+    /// `None` when the corrector took fewer than two steps, or a first one
+    /// too short to tell from the tolerance.
+    fn omega(&self, c: &Corrected) -> Option<f64> {
+        let [first, second] = c.steps;
+        let omega = 2.0 * second / (first * first);
+        (first > 1e3 * self.sys.eps && second > 0.0 && omega.is_finite()).then_some(omega)
+    }
+
     /// The secant predictor: the last solution moved on by the motion from
     /// the one before, in proportion to the drives, when the new drives go
-    /// on in the same direction (within 1e-6 of parallel).
-    fn secant(&self, state: &State, d_new: &[f64]) -> Option<State> {
+    /// on in the same direction (within 1e-6 of parallel). With `rigid`,
+    /// each part moved on by its rigid motion ([`System::extrapolate`]).
+    fn secant(&self, state: &State, d_new: &[f64], rigid: bool) -> Option<State> {
         let (prev_state, prev_drives) = self.prev.as_ref()?;
         let units: Vec<f64> = self
             .sys
@@ -559,6 +1085,9 @@ impl Solver {
             return None;
         }
         let ratio = ab / bb;
+        if rigid {
+            return self.sys.extrapolate(prev_state, state, ratio);
+        }
         let h: Vec<f64> = self
             .sys
             .difference(prev_state, state)?
@@ -682,15 +1211,17 @@ impl Solver {
 
     /// Newton from `start` at `drives`, the limits held as they are met.
     fn correct(&self, start: &State, drives: &[f64]) -> Result<Corrected, Diagnosis> {
-        self.correct_within(start, drives, MAX_ITERATIONS)
+        self.correct_within(start, drives, MAX_ITERATIONS, MU_START)
     }
 
-    /// [`Self::correct`] spending at most `cap` iterations.
+    /// [`Self::correct`] spending at most `cap` iterations, its damping
+    /// starting at `mu`.
     fn correct_within(
         &self,
         start: &State,
         drives: &[f64],
         cap: usize,
+        mu: f64,
     ) -> Result<Corrected, Diagnosis> {
         let sys = &self.sys;
         let mut active: Vec<bool> = sys
@@ -701,15 +1232,20 @@ impl Solver {
         let limits = active.iter().filter(|a| !**a).count();
         let mut state = start.clone();
         let mut used = 0usize;
+        let mut steps = None;
         for _pass in 0..=limits {
             let budget = cap.saturating_sub(used);
-            let Some(r) = run(sys, &state, drives, &active, budget) else {
+            let Some(r) = run(sys, &state, drives, &active, budget, mu) else {
                 return Err(Diagnosis::DidNotConverge {
                     iterations: used,
                     residual: f64::INFINITY,
                 });
             };
             used += r.iterations;
+            // The first pass's first two steps: how fast it contracted.
+            if steps.is_none() {
+                steps = Some(r.steps);
+            }
             if !r.converged {
                 return Err(if r.stalled {
                     diagnose_rest(sys, &r.state, drives, &active, used, r.residual)
@@ -752,6 +1288,7 @@ impl Solver {
                     iterations: used,
                     active,
                     drives: drives.to_vec(),
+                    steps: steps.unwrap_or([0.0; 2]),
                 });
             }
         }
@@ -802,6 +1339,7 @@ impl Solver {
             floating: !sys.grounded.iter().any(|g| *g),
             residual: residual * sys.scale,
             iterations: c.iterations,
+            note: None,
         })
     }
 }

@@ -340,31 +340,56 @@ fn a_parallelogram_stays_a_parallelogram_through_its_flat_position() {
 }
 
 /// A Grashof crank-rocker near its change point (ground 4, crank 1,
-/// coupler 3.02, rocker 2), placed exactly on its circuit −1 and solved at
-/// rest at a crank angle far from where it was placed: the direct solve
-/// does not converge, and that error is the answer, as it was before the
-/// A-030 fix (the second review measured a carry from the placement crossing
-/// to the other circuit near the near-singular pose at 180°, a silent
-/// mirrored pose where there had been an honest error). The fallback is for
-/// a coupling's turns only, and this linkage has no coupling.
+/// coupler 3.02, rocker 2), placed exactly on its circuit −1 at 110° and
+/// solved at rest at 275°, at three scales. One Newton solve from the
+/// placement does not converge there ("did not converge in 15 iterations",
+/// 0.1.2 and the A-030 fix alone, which kept that honest error rather than
+/// a carry that crossed to the other circuit near the pose at 180° where
+/// the circuits pass 0.44 apart). Carried from 110° (A-016), it rests
+/// where the closed form puts it on circuit −1, and the note says the
+/// solve straight from the placement failed and the carried pose is shown:
+/// a direct failure turned into an answer, which a carry near a change
+/// point could otherwise turn into a silent mirrored pose.
 #[test]
-fn a_crank_rocker_that_cannot_be_solved_at_rest_stays_an_error() {
+fn a_crank_rocker_solved_far_from_where_it_was_placed_stays_on_its_circuit() {
     let (g, a, b, c) = (4.0, 1.0, 3.02, 2.0);
-    // Placed at 110° on circuit −1, driven to 275°.
     let th0 = 110f64.to_radians();
-    let pa = v2(a * th0.pcos(), a * th0.psin());
-    let pd = v2(g, 0.0);
-    let pb = circ(pa, b, pd, c, -1.0).unwrap();
-    let mut p = planar(4, 1.0, 10.0);
-    let input = pin(&mut p, 0, 1, Vec3::ZERO, "input");
-    pin(&mut p, 1, 2, pa, "A");
-    pin(&mut p, 2, 3, pb, "B");
-    pin(&mut p, 0, 3, pd, "D");
-    p.mates[input].driven[0] = Some(165f64.to_radians());
-    let e = solve(&p).expect_err("an error, as before");
-    let message = e.message(&p);
-    assert!(
-        message.starts_with("did not converge in 15 iterations"),
-        "{message}"
-    );
+    let th1 = 275f64.to_radians();
+    for s in SCALES {
+        let pa = v2(a * th0.pcos(), a * th0.psin()) * s;
+        let pd = v2(g, 0.0) * s;
+        let pb = circ(pa, b * s, pd, c * s, -1.0).unwrap();
+        let mut p = planar(4, s, 10.0);
+        let input = pin(&mut p, 0, 1, Vec3::ZERO, "input");
+        pin(&mut p, 1, 2, pa, "A");
+        pin(&mut p, 2, 3, pb, "B");
+        pin(&mut p, 0, 3, pd, "D");
+        p.mates[input].driven[0] = Some(th1 - th0);
+        // The solve straight from the placement, alone, fails.
+        let mut direct = Solver::new(&p).unwrap();
+        let drives = direct.problem_drives();
+        let failed = direct
+            .solve_at_near(&drives, &[])
+            .expect_err("the direct solve fails");
+        assert!(
+            failed.message(&p).starts_with("did not converge"),
+            "scale {s}: {}",
+            failed.message(&p)
+        );
+        let sol = solve(&p).unwrap();
+        let tip = v2(a * th1.pcos(), a * th1.psin()) * s;
+        let want = circ(tip, b * s, pd, c * s, -1.0).unwrap();
+        let mirror = circ(tip, b * s, pd, c * s, 1.0).unwrap();
+        let got = sol.poses[2].point(pb);
+        assert!(
+            close(got, want, 1e-6 * p.scale),
+            "scale {s}: {got:?}: closed form {want:?}, the other circuit {mirror:?}"
+        );
+        let note = sol.note.as_deref().unwrap_or("");
+        assert!(
+            note.starts_with("the solve straight from the placement failed"),
+            "scale {s}: {note}"
+        );
+        assert_eq!(sol.dof, 0);
+    }
 }

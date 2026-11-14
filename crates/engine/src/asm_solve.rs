@@ -112,7 +112,9 @@ pub(crate) struct Solution {
     /// variables of the problem's mates.
     pub drives: Vec<f64>,
     /// Why a moment asked to be carried ([`advance`]) was solved plainly
-    /// instead.
+    /// instead, or what the solver says of its answer
+    /// ([`asm::Solution::note`]: a rest solve whose carried pose differs
+    /// from the solve straight from the placement, or that was not carried).
     pub note: Option<String>,
 }
 
@@ -137,6 +139,49 @@ fn pose_from_solver(p: &asm::Pose) -> Option<Transform> {
 
 pub(crate) fn solve(p: &Problem) -> Result<Solution, Diagnosis> {
     solve_from(p, None, None)
+}
+
+/// How many rest solves [`SolveMemo`] keeps.
+const MEMO_SOLVES: usize = 8;
+
+/// The last rest solves ([`solve`]), by the exact problem: an assembly
+/// placed again with nothing its solve reads changed (an edit to a part's
+/// colour, a variable set and set back, the same placement for another
+/// command) takes the answer it had, which the solver gives bit for bit
+/// anyway (the same problem gives the same solution). A rest solve carries
+/// a placement from the drive values it holds to its drives along its
+/// branch (`asm::Solver::solve_at`), which costs a few solves more; this
+/// spends it once per problem. The key is the SHA-256 of the problem's
+/// every field as `Debug` writes it (each number in the shortest digits
+/// that read back to it), so only an identical problem matches. It is the
+/// assembly's derived state's, and the placements of its subassemblies
+/// solve through it too: an assembly with more than eight subassemblies
+/// that solve may let an answer go before it is asked again, and then
+/// solves it again (the same answer, at the solve's cost).
+#[derive(Clone, Default)]
+pub(crate) struct SolveMemo {
+    kept: std::collections::VecDeque<([u8; 32], Result<Solution, Diagnosis>)>,
+}
+
+impl SolveMemo {
+    /// [`solve`], from the memo when `p` was solved last among the
+    /// [`MEMO_SOLVES`] kept.
+    pub(crate) fn solve(&mut self, p: &Problem) -> Result<Solution, Diagnosis> {
+        let key = craft3d_doc::blob::sha256(format!("{p:?}").as_bytes());
+        if let Some(at) = self.kept.iter().position(|(k, _)| *k == key)
+            && let Some(hit) = self.kept.remove(at)
+        {
+            let answer = hit.1.clone();
+            self.kept.push_back(hit);
+            return answer;
+        }
+        let answer = solve(p);
+        self.kept.push_back((key, answer.clone()));
+        while self.kept.len() > MEMO_SOLVES {
+            self.kept.pop_front();
+        }
+        answer
+    }
 }
 
 /// Solves `p` as a moment of a motion: from its start poses, which a
@@ -248,12 +293,18 @@ fn solve_from(
             let mut solver =
                 asm::Solver::new(&problem).map_err(|d| Diagnosis(d.message(&problem)))?;
             let to = solver.problem_drives();
+            // The note of the solve it starts from stays with the moment
+            // carried from it (the advance has none of its own).
             match near {
                 Some((near, Near::Every)) => solver.solve_at_near(from, near),
                 Some((near, Near::Coupled)) => solver.solve_at_near_coupled(from, near),
                 None => solver.solve_at(from),
             }
-            .and_then(|_| solver.advance(&to))
+            .and_then(|first| {
+                let mut moved = solver.advance(&to)?;
+                moved.note = moved.note.or(first.note);
+                Ok(moved)
+            })
             .map_err(|d| Diagnosis(d.message(&problem)))?
         }
         _ => asm::solve(&problem).map_err(|d| Diagnosis(d.message(&problem)))?,
@@ -274,7 +325,7 @@ fn solve_from(
         free: solution.free.iter().map(|f| f.describe(&problem)).collect(),
         main_free: main_moves(&problem, &solution.free),
         drives: solution.drives.clone(),
-        note,
+        note: note.or_else(|| solution.note.clone()),
     })
 }
 
@@ -366,5 +417,62 @@ mod tests {
         let top = s.poses[1].point(Vec3::new(5.0, 5.0, 10.0));
         assert!((top.z - 20.0).abs() < 1e-6, "{top:?}");
         assert_eq!(s.dof, 0);
+    }
+
+    /// The memo answers an identical problem as the solve does, keeps the
+    /// last eight problems, and tells problems apart by any number in
+    /// them (a start pose a ten-billionth of the scale away is another
+    /// problem).
+    #[test]
+    fn the_memo_answers_an_identical_problem_as_the_solve_does() {
+        let problem = |gap: f64| Problem {
+            instances: 2,
+            names: vec!["A".to_string(), "B".to_string()],
+            grounded: vec![0],
+            mates: vec![MateSpec {
+                name: "Stack".to_string(),
+                kind: MateKind::Fixed,
+                a: (0, frame(Vec3::new(5.0, 5.0, 10.0), Vec3::Z)),
+                b: (1, frame(Vec3::new(5.0, 5.0, 0.0), -Vec3::Z)),
+                offset: 0.0,
+                angle: 0.0,
+                flip: true,
+                limits: [None; VARIABLES],
+                driven: [None; VARIABLES],
+            }],
+            couplings: Vec::new(),
+            start: vec![
+                Transform::IDENTITY,
+                Transform::translation(Vec3::new(0.0, 0.0, gap)),
+            ],
+            tolerance: 1e-6,
+            scale: 10.0,
+        };
+        let poses = |s: &Solution| {
+            s.poses
+                .iter()
+                .map(|t| t.point(Vec3::new(1.0, 2.0, 3.0)))
+                .collect::<Vec<_>>()
+        };
+        let mut memo = SolveMemo::default();
+        for k in 0..10 {
+            let p = problem(k as f64);
+            assert_eq!(poses(&memo.solve(&p).unwrap()), poses(&solve(&p).unwrap()));
+        }
+        assert_eq!(memo.kept.len(), MEMO_SOLVES);
+        // The last eight are kept, the first two let go of.
+        let keys: Vec<[u8; 32]> = memo.kept.iter().map(|(k, _)| *k).collect();
+        for k in 0..10 {
+            let key = craft3d_doc::blob::sha256(format!("{:?}", problem(k as f64)).as_bytes());
+            assert_eq!(keys.contains(&key), k >= 2, "problem {k}");
+        }
+        // A hit answers bit for bit, and moves to the back.
+        let again = memo.solve(&problem(3.0)).unwrap();
+        assert_eq!(poses(&again), poses(&solve(&problem(3.0)).unwrap()));
+        assert_eq!(memo.kept.len(), MEMO_SOLVES);
+        let last = craft3d_doc::blob::sha256(format!("{:?}", problem(3.0)).as_bytes());
+        assert_eq!(memo.kept.back().map(|(k, _)| *k), Some(last));
+        let near = craft3d_doc::blob::sha256(format!("{:?}", problem(3.0 + 1e-9)).as_bytes());
+        assert_ne!(near, last);
     }
 }

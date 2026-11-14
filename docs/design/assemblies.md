@@ -56,28 +56,26 @@ is deterministic. Two consequences (2026-11-14, A-030):
   (`Solver::solve_at_near_coupled`); every other equation is periodic in an angle. Started in (−π, π], a screw that
   only its coupling turns was walked back half a radian an iteration at every moment, and a motion of two lead
   screws, one driven, stopped after 15.7 turns ("did not converge in 200 iterations").
-- A rest solve is one solve from the start, as always, and its answer stands whenever it has one. Only when it fails,
-  and only where a coupling's turns are the matter (`Solver::solve_by_coupled_turns`), the placement is solved again: from
-  the turns its couplings say (`System::coupled_start_turns`: an angle no drive sets that is the only such angle of a
-  coupling starts the whole turns that meet it best where the placement has the rest, so a screw placed with its nut
-  27 leads along starts at 27 turns), tried only when that moves a start; else, when a driven angle a coupling takes
-  is placed whole turns from where the turns nearest its drive put it, carried from the placement's turns to the
-  drives (sub-steps of at most half a radian or half the scale, 2000 iterations, 50 a sub-step;
-  `Solver::carry_rest`): a lead screw placed at 0 with its nut and driven 16.8 turns winds there with its nut. Any
-  other failure stays the error it was: a carry across a linkage's near-singular pose can change circuits (the second
-  review: a crank-rocker of coupler 3.02 placed exactly at 110° and solved at 275° came out on its other circuit
-  where the solve had said "did not converge"), which an error never does. When the carry turns a drive more than
-  half a turn, the angles no equation counts are taken back to the whole turns nearest their start (their equations
-  are periodic: no pose moves). So a joint no equation counts reads what the path to it gave: a nut's free turn on its
-  screw reads 9.42 rad after 1.5 turns, solved directly (as before), and within ±π after 3 turns, where the direct
-  solve fails and the carry is used. A direct answer is never replaced: only a failure can turn into an answer.
+- A rest solve takes a coupled angle's turns from its couplings where the placement says them. When the direct solve
+  fails, the placement is solved again from the turns its couplings say (`System::coupled_start_turns`: an angle no
+  drive sets that is the only such angle of a coupling starts the whole turns that meet it best where the placement
+  has the rest, so a screw placed with its nut 27 leads along starts at 27 turns), tried only when that moves a start.
+  A driven angle a coupling takes holds the whole turns that meet its couplings best (`System::start_drives`), and
+  the placement is carried from there to its drive (*The rest solve is carried too*, below): a lead screw placed at 0
+  with its nut and driven 16.8 turns winds there with its nut. When the carry turns a drive more than half a turn,
+  the angles no equation counts are taken back to the whole turns nearest their start (their equations are periodic:
+  no pose moves). So a joint no equation counts reads what the path to it gave: a nut's free turn on its screw reads
+  9.42 rad after 1.5 turns, where the direct solve converges and the carried one agrees with it (the direct one is
+  kept, as before), and within ±π after 3 turns, where the direct solve fails and the carried one is used.
 
 **Damped Newton (Levenberg–Marquardt).** The normal equations `(JᵀJ + μ D I) h = −Jᵀr` are assembled block-sparse.
 The blocks are an instance's six unknowns and a mate's variables. They are factored as `L D Lᵀ` in minimum-degree
 order, with the fill computed once per problem (`ldl.rs`). Each pivot block is eigen-decomposed by Jacobi rotations
 (`eigen.rs`), and the directions at or below the rank threshold are left out (`D⁺`). Directions the equations do not
-fix are not moved: a free part stays where it is, and the step is the least-squares step on the rest. A step longer
-than half the scale or half a radian is shortened to that. A step is accepted when the sum of squares drops: `μ` is
+fix get no step of their own: a free part that nothing touches stays where it is, and the step is the least-squares
+step on the rest. A step that closes a misfit can still move a free joint with the parts it closes; a rest solve then
+carries it back (*Free joints keep their start values*, below). A step longer than half the scale or half a radian
+is shortened to that. A step is accepted when the sum of squares drops: `μ` is
 then divided by 4, and otherwise multiplied by 8. The solve converges when every residual is within `ε = tolerance /
 L`. It comes to rest when no damping lowers the sum of squares, or when four steps in a row lower it by less than one
 part in 10⁹. It is capped at 200 iterations, and "did not converge" is an ordinary error.
@@ -157,6 +155,114 @@ is fixed there only to about `√ε`.
   sub-step shrinks to nothing, the result is a `DeadPoint`, and its cause is `BranchLost` or the solver's error.
 - Angles are not wrapped: they follow the motion continuously, and a full crank turn ends at 2π.
 
+**The rest solve is carried too** (`Solver::solve`, `solve_at`; A-016). A placement's poses hold driven values of their
+own (`System::start_drives`: each driven variable as the placement has it, a driven angle at the whole turns nearest
+its drive, or that meet its couplings best when a coupling takes it).
+- When they differ from the drives by more than the tolerance, and the drives may take them (`check_drives`: within
+  their limits and reach), the placement is also solved at its own values and carried from there to the drives along
+  its branch (`Solver::carry_rest`). One Newton solve from the placement at other drive values can land on the mirrored
+  loop and say nothing: a Jansen leg put together at 100° and solved at 260°, the walker's legs at a crank start of
+  180°, a near-change-point crank-rocker solved past the pose where its circuits pass closest.
+- **The rule** (the third review, the coordinator's decision): an answer without a note is the one solve straight from
+  the placement, bit for bit; wherever the carried and the direct solution differ, the answer says so. A step size can
+  always be beaten by a geometry nearer its change point; the note cannot. So nothing the direct solve (0.1.2) got
+  right comes out otherwise without a note. A note marks a disagreement between the two solves, not a guarantee: near
+  a change point the carry itself can land on the other branch (*How the carry steps*, below), and the pose it shows is
+  then the wrong one, with the note.
+  - The direct solve is made first, as before. When the carried solution is the same one (within √ε, over the
+    instances and mate variables the direct solution's free motions do not move, an angle no equation counts within a
+    turn: `System::distance_fixed`), the direct one is kept, bit for bit, without a note.
+  - When they differ and the parts as placed meet their mates at the values they hold (the closing solve moved them by
+    at most √ε), the carried solution is the answer, and the note says "carried from the placement, the assembly rests
+    elsewhere than a solve straight from the placement gives; the carried pose is shown". When the parts do not meet
+    their mates there (a leg placed
+    with its pin away from its crank's), which branch the closing solve lands on is not known: the carried solution is
+    the answer and the note says the branch is not certain. The Jansen legs and the walker at a crank start of 180°
+    that 0.1.2 put on their mirrored loop carry one of these notes too: two methods disagree, and the answer says which
+    was taken.
+  - When the carry stops short from a placement that meets its mates (at a limit position, or at a turn its sub-steps
+    cannot follow: which of the two is not proven), the direct solution is the answer and the note says it was not
+    carried past those drive values and the branch is not checked. When the carry runs out of its allowance, the note
+    says the direct solution is shown and the branch is not checked. Any other failure (a placement that cannot be
+    closed at its own values, a carry from one that does not meet its mates that stops) leaves the direct solution and
+    says nothing, as before: on the review's 95,000 probe solves a note there would have fallen on 634 right answers.
+  - Where the direct solve fails, the coupled turns above are tried first (as on main, without a note), then the
+    carry. Its answer says so: "the solve straight from the placement failed; the pose carried from the placement is
+    shown" from a placement that meets its mates (the crank-rocker of `linkages.rs`), that the branch is not certain
+    from one that does not; a coupled drive carried whole turns with its nut (A-030), which has no branch to doubt,
+    says nothing. Without the note a failed direct solve near a change point would become a silent pose the carry may
+    have put on the other branch.
+- When the placement holds the drives, it is one solve, as before, bit for bit. A moment of a motion and a joint held
+  by hand start from a solved state that holds its own drives, and are solved as before.
+- **How the carry steps** (`Pace::REST`). It is a motion's continuation with these differences, so that it follows its
+  branch where a motion's frames, close together, need not:
+  - A sub-step changes a drive by at most a tenth of a radian or of the scale (`REST_STEP`), the first by a sixteenth of
+    that, and it doubles from there. A branch can turn sharply where nothing is near singular: the third review's
+    offset slider-crank (crank 1, rod 1.52, offset 0.5) turns at a crank of 270° with its circuits 0.1 of the scale
+    apart, and a half-radian sub-step from 254° to 277° landed on the other circuit with the corrector converging fast
+    and the prediction met. A tenth resolves such turns at the review's slider-cranks and at four-bars of coupler
+    3.0002 (circuits 0.044 apart at a crank of 180°); at coupler 3.00002 (1.4·10⁻³ apart) the carry still lands on the
+    other circuit now and then (below), and at 3.0000002 (1.4·10⁻⁴ apart, where even a motion in 1° frames can) often:
+    the note on every difference is what holds there.
+  - The secant moves each part by its rigid motion scaled (`System::extrapolate`: `(P P_prevᵀ)^k P`, the screw motion
+    about the same axis), not its translation and turn apart, which cut the chord of a part turning about an axis far
+    from its origin: a prediction that does not depend on where a part's origin is, exact for a part turning about a
+    fixed axis (a lead screw carried 40 turns takes no Newton step but the last).
+  - **Its sub-steps keep away from singular poses** (`REST_REACH`). The corrector's first two Newton steps say how fast
+    it converges: `ω = 2 |h₂| / |h₁|²` is the constant of its quadratic convergence, and `1/ω` estimates how far the
+    solution is from a singular pose, where another branch may come near. The next sub-step moves at most a quarter
+    of `1/ω`, and a sub-step that moved more than `1/ω` from the solution it reached is cut. So the carry nears a pose
+    where two branches pass close in steps that shrink with the distance, and follows its own branch round the sharp
+    turn there: the second review's crank-rocker of coupler 3.02, whose circuits pass 0.44 apart at a crank of 180°,
+    crossed in half-radian sub-steps without it in 61 of 863 exact placements. `ω` grows only near a singular
+    Jacobian: a sharp turn at moderate conditioning (the slider-crank above) is left to the short step.
+  - The corrector starts from a damping of 10⁻¹² of the largest diagonal (`MU_CARRY`), a thousandth of a solve's. At
+    10⁻⁹ every direction whose eigenvalue is near 10⁻⁷ of the largest converges only linearly (a rate of 0.01 in the
+    published walker), and `ω` read from the steps then grows as the prediction gets better: the walker carried 60°
+    took 325 sub-steps, from 10⁻¹² 20.
+  - **A decision the developer can revisit: the lighter damping against jumps.** With 10⁻¹² the carry lands on the
+    other circuit more readily near a change point. Measured by the fourth review on four-bars of coupler 3.00002: 8
+    jumps with 10⁻¹², none with 10⁻⁹; among them 4 exact placements the direct solve had right (circuit −1 at 80° driven
+    to 187°, 217° and 247°; circuit +1 at 280° driven to 127°), each shown with the note; the probe took 45 s with
+    10⁻⁹ against 36 s. With 10⁻⁹ the published walker carried to 180° runs out of its allowance (and is shown straight
+    from the placement, on its mirrored loop, with the note that the branch is not checked); with 10⁻¹² it takes 54
+    sub-steps, fifty legs on one crankshaft 0.43–0.78 s instead of giving up after 1.9–3.1 s. Kept at 10⁻¹² (the
+    coordinator, 2026-11-14), since every jump carries a note by the rule.
+  - A sub-step that succeeds after a cut one keeps its length instead of doubling straight back.
+  - A sub-step whose prediction meets the tolerance takes no Newton step, so the solution may drift within the
+    tolerance over many of them; one Gauss–Newton step at the end brings it to the accuracy a solve ends at.
+- The carry spends at most 2000 Newton iterations (ten solves), a sub-step's corrector at most 50, and at most twice
+  the sub-steps its span needs at full length plus 384 (`REST_SUBSTEPS`): the published walker carried to a crank start
+  of 180° takes 54 in all, at ±120° 37, at ±60° 20, at either end of its leg scale's range the same; the radial engine
+  carried more than half a turn 98. A carry that cannot fit what is left of the way in what is left of its allowance,
+  even doubling every sub-step, stops at once (the same outcome, without the work; a stop that assumed no growth was
+  measured and refused: it gave up on carries that then grow, 298 slider-cranks among them). A limit position is
+  found by halving to ε of the drives' change (√ε was tried and refused: a Jansen leg carried from 250° to 80° passes a
+  near-singular pose at 193° in finer steps).
+- In the engine (`asm_solve::SolveMemo`), the last eight rest solves are kept by their exact problem, so an assembly
+  placed again with nothing its solve reads changed takes the answer it had, which the solver would give bit for bit.
+  The memo is the assembly's derived state's and its subassemblies solve through it too: one with more than eight
+  subassemblies that solve may let an answer go before it is asked again.
+
+**Free joints keep their start values** (`Solver::keep_free`; A-036). A Newton step is the least-squares step in all
+the unknowns alike: instance shifts and turns and joint values. A placement with a misfit (a part placed turned
+against its mate on a turret that nothing drives) is closed by every unknown that can close it, each a share: the free
+swivel, the turret and the part each turned a third of the misfit. So a free joint ended where nothing asked it to be
+(the task lamp's turret swivel 6.6° from its start, the solve ok).
+- After a rest solve from a placement, a joint is kept when it alone carries a free motion: the free motions move it in
+  a way no other joint they move does (its row of rates in the free motions is not in the span of the other joints'
+  rows, to 10⁻⁶ of its length, as a null vector's component below 10⁻⁶ of its largest counts as none). A free swivel,
+  a free hinge, a free slider are kept. Joints that move only together (a free loop's, a free screw and its nut) are
+  left as the solve leaves them: which of them to keep is a choice the document does not make. The choice depends
+  neither on the mates' order nor on the instances' nor on the assembly's size, down to the 10⁻⁶ the null vectors
+  resolve.
+- When a kept joint is more than the tolerance from its start value, the kept joints are carried back to their start
+  values together, with the solution, along its branch, as drives of a problem that holds them (the rest carry's
+  pace). When they cannot be, the solution is the solve's and its note says so, naming the mates. When nothing moved,
+  nothing is done: bit for bit as before.
+- A free motion that moves no joint variable (a ball's turns, a floating part) has no value to keep and stays as the
+  solve leaves it.
+
 **Determinism.** Fixed orders everywhere: blocks, groups, `BTreeSet` patterns and ties broken by index. No hash map
 and nothing random. The generic state of the diagnosis is a fixed sequence. Solving twice gives the same bits.
 
@@ -199,7 +305,10 @@ pub struct Solver;  // new(p), solve(), solve_at(drives), advance(drives), seque
   - `free` (a basis of the free motions);
   - `redundant` (equations that repeat others and hold);
   - `at_limit`, `drives` and `floating` (no instance is grounded);
-  - `residual` (model units) and `iterations`.
+  - `residual` (model units) and `iterations`;
+  - `note`: what a reader should know about the answer, in words (a rest solve whose carried pose differs from the
+    one solve straight from the placement, or that was not carried to its drives; a free joint not carried back to its
+    start value). A rest solve without a note is that one solve, bit for bit.
 - **`Diagnosis`** is one of `Invalid { reason }`, `OverConstrained { groups, gap }`,
   `Infeasible { blamed, loop_mates, gap }`, `OutOfLimits`, `DidNotConverge`, `BranchLost`, `TooLarge` or
   `DeadPoint { drives, loop_mates, cause }`.
@@ -220,13 +329,20 @@ pub struct Solver;  // new(p), solve(), solve_at(drives), advance(drives), seque
   - an undriven four-bar has one free motion over three instances, and its redundancy is reported;
   - a slider-crank `x = r cos θ + √(l² − r² sin² θ)` over a turn;
   - driven by its slider, it stops at top dead centre `l + r`;
-  - frame-by-frame `advance`, with wrong drive counts and NaN refused.
+  - frame-by-frame `advance`, with wrong drive counts and NaN refused;
+  - a crank-rocker of coupler 3.02 placed exactly on its circuit −1 at 110° and solved at rest at 275°, at three
+    scales: on circuit −1 by the closed form, with the note that the solve straight from the placement failed (it
+    does not converge there).
 - **`couplings.rs`:**
   - a gear pair at its ratio, with the pitch points rolling without slip;
   - a rack moving `r θ`;
   - a screw advancing `lead · θ / 2π` (three leads after three turns);
   - a planetary stage through two linear couplings against Willis' formula (scale 1);
-  - couplings naming a variable the mate does not have are refused.
+  - couplings naming a variable the mate does not have are refused;
+  - two lead screws on one bed, one driven: the other at the driven one's angle and the bed a lead a turn, at rest at
+    3 to 40 turns and moment by moment for 40 turns (A-030), the nuts' free turn on their screws read within half a
+    turn of where they were placed; the same saved with the bed 27 leads up: nothing turned round, every joint as
+    placed.
 - **`jansen.rs`:**
   - Jansen's leg (a = 38 … m = 15): the foot point against independent circle intersections (the `strandbeest-leg` Jig's
     branches) at 72 crank angles over a turn, with rank 52 and no DOF left;
@@ -243,6 +359,36 @@ pub struct Solver;  // new(p), solve(), solve_at(drives), advance(drives), seque
   - a flipped mate turns the part over from the identity;
   - thirteen malformed problems are refused with a reason;
   - determinism.
+- **`rest.rs`** (A-016, A-036):
+  - crank-rockers with couplers 3.5, 3.02, 3.002 and 3.0002 (the last three near the change point, their circuits
+    0.44, 0.14 and 0.044 apart at a crank of 180°), put together on either circuit at every 40°, exactly or with the
+    crank alone turned 90° on, solved at rest at every 60°, with the bodies' origins at the world's or at their pivots:
+    the coupler's far pin on the circuit it was put together in by the closed form, every one of 5,184, and a note
+    wherever the carried and the direct solve differ (the parent of the fix: 252 exact and 150 turned placements on the
+    other circuit);
+  - **the rule** (`keeps_the_rule`): an answer without a note is the direct solve's (`solve_at_near` with no turns to
+    take), bit for bit; one whose note says the solves disagree is not; one whose note says it was not carried is.
+    Kept, with every answer on its circuit by the closed form or noted, by the third review's offset slider-crank
+    (rods 1.52 and 1.502, three scales, exact and crank-turned), couplers 3.00002 (three scales), an RSSR spatial
+    four-bar on its two assembly modes, a five-bar driven by both cranks, 4, 8 and 12 Jansen legs on one crankshaft
+    (exact, and placed at a crank of their own), and four-bars placed off by 3·10⁻¹⁰ to 3·10⁻³ of the scale; at
+    coupler 3.0000002, where continuation cannot resolve the circuits, only the rule;
+  - a Jansen leg put together at 30°, 100°, 190° and 250° and solved at rest at every 10° of a turn: the foot against
+    the circle intersections on the Jig's branches (before, 260° and 270° from 100° were on the mirrored loop, which
+    the note now says the direct solve lands on); its crank alone turned to the drive, or by every 10° with the drive
+    where it was put together: the leg's pins closed on its branch (before, 27 of 432 on the mirrored loop);
+  - the same pose with the instances numbered the other way round;
+  - a Grashof double-rocker driven to its other circuit: solved, with a note that it was not carried past the drive
+    values where the carry stopped;
+  - a turret on a free swivel with a part on it placed turned (0.12, −0.3 and 2.5 rad, fixed and on a free revolute):
+    the swivel keeps 0, the part turns back onto its mate (before, the swivel took a third of the misfit); the same in
+    other instance orders; a driven arm on the turret: the swivel's value and turn bit for bit;
+  - the review's swivel and elbow: a free swivel and a free elbow, the arm and forearm placed turned: the swivel keeps
+    0 and the elbow its placed value (−0.7 of the misfit), the forearm's end where that puts it;
+  - a free double-rocker placed with its input out of reach: closed, without a note (its four joints move only
+    together, so none is kept);
+  - a free screw and its nut beside a kept swivel, in both mate orders and at two sizes: neither the screw nor the nut
+    is kept, the swivel is.
 - **`hostile.rs`:** 1500 random problems never panic.
 - **Unit tests:** the Jacobian against finite differences, the log map against exp, and the block factorisation.
 
@@ -533,7 +679,10 @@ where it is placed and the result says `floating`. A mate of the engine puts `b`
 (face to face), so it is handed to the solver with `flip` negated. The solution's poses place the instances, each
 mate's variables are its values (`assembly.solve` reports the main one), the degrees of freedom and the free motions
 in words are reported as they come; a `Diagnosis` fails the solve with its message (the mates, couplings, drivers and
-limits by name), and the instances then stay where they are placed.
+limits by name), and the instances then stay where they are placed. The solution's note (a rest solve whose carried
+pose differs from the solve straight from the placement or that was not carried, a free joint not kept) is
+`assembly.solve`'s `note`. The last eight rest solves are kept by their exact problem (`SolveMemo`, in the assembly's derived state):
+an assembly placed again with nothing its solve reads changed takes the answer it had.
 
 ### Regeneration elsewhere
 
@@ -567,8 +716,13 @@ rename; a mate on a hidden body; the shown scenes after the workspace narrows. `
 built here by a host that regenerates elsewhere, `recovery.rs` the unsaved assembly that asks, is autosaved and comes
 back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an assembly (`cargo xtask freecad`).
 `crates/engine/tests/panic_hunt.rs` runs every command with adversarial parameters. `crates/doc/src/assembly.rs` and
-`crates/engine/src/asm.rs` have the unit tests of the rules and the paths. The format: `crates/format/tests/versions.rs`
-(the fixture) and `crates/engine/tests/format_versions.rs` (its regeneration).
+`crates/engine/src/asm.rs` have the unit tests of the rules and the paths, `crates/engine/src/asm_solve.rs` the memo of
+rest solves. The format: `crates/format/tests/versions.rs` (the fixture) and `crates/engine/tests/format_versions.rs`
+(its regeneration). `crates/engine/tests/published_assemblies.rs` pins the published example assemblies (and the
+walker at six crank starts, and its leg opened alone at three leg scales) to goldens recorded on the parent of the
+assembly-trust fixes; what A-016 and A-036 change is declared there entry by entry and pinned to a second golden: the
+walker at 180° (two legs' boxes, three assertions that now pass, two measures over the motion, the note) and the leg
+alone at another leg scale (four parts' poses, two joints back at the values they were placed at).
 
 ### In the window (track C, phase 2)
 
@@ -706,6 +860,76 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
 
 ### Findings and history (track A)
 
+- 2026-11-14 (assembly-trust, A-016 and A-036, for 0.2):
+  - A-016: the rest solve was one Newton solve from the placement at the document's drives. A mechanism put together
+    at one drive value and solved at another could converge to the mirrored loop, the solve ok with no degree of
+    freedom left: the Jansen walker at a crank start of 180° (two legs on the mirror, three assertions failed at rest
+    and over the motion), a lone Jansen leg put together at 100° and solved at 260°, near-change-point crank-rockers
+    solved past the pose where their circuits pass closest (965 of 10,368 exact placements in `rest.rs`). Cause: the
+    placement is a solution at the drive values its poses hold, not at the document's; one damped Newton solve across
+    that difference is not a path. Rule: the rest solve is also carried from the values the placement holds, and the
+    carried answer replaces the direct one where they differ (the Method's *The rest solve is carried too*).
+  - A-036: the task lamp with its turret swivel left free rested with the swivel at 6.6° from 0 where it was placed,
+    and the solve said nothing. Cause: the Newton step is the least-squares step in all unknowns alike, so a misfit is
+    closed by everything that can turn about the swivel's axis, a third each. Rule: after a rest solve the free joints
+    that alone carry a free motion are carried back to their start values (*Free joints keep their start values*).
+  - The first review (on `release/0.1`): a carried answer from a placement whose mates do not hold is as blind as the
+    direct one, so it now says the branch is not certain; notes only on evidence; the choice of kept joints made
+    independent of the mates' order and the assembly's size; the published assemblies pinned to goldens of the parent.
+  - The second review's blocker, measured: the carry, in half-radian sub-steps checked against half their predicted
+    motion as a motion's are, crossed a crank-rocker's circuits near the pose where they pass closest and replaced a
+    right 0.1.2 answer by the mirrored circuit without a note (couplers 3.02 and 3.002: 61 of 863 and 67 of 864 exact
+    placements). Neither a tighter continuity check (a twentieth of the motion: right for these couplers, but by the
+    luck of a secant that cut the chord of parts turning far from their origins; with the rigid secant, 21 of 864 at
+    3.002 crossed) nor the corrector's contraction (fast on the other branch too) sees it: a long step lands on the other
+    branch's straight continuation, past the sharp turn of its own. What sees it is how near the solution is to a
+    singular pose, which the corrector's quadratic convergence gives (`1/ω`, *How the carry steps*): sub-steps bounded
+    by it, a sub-step that moved further than it at its end cut, and a first sub-step short (a placement ten degrees
+    before the pose crossed in its first). Measured: every one of 31,104 four-bars of the review's probe and 41,472 of
+    a wider one (coupler 3.0002 too, three scales, the bodies' origins at the world's or at their pivots) on its
+    circuit; every answer the parent got right the same line, iterations included (the direct solve kept); notes then
+    on placements whose mates do not hold. The review's other probes: the Jansen sweep 5,184 and the disturbed legs
+    432 all on their branch (the parent: 161 and 9 off), 76 lead-screw placements within 2.4·10⁻⁸ of the closed form
+    (47 failed on the parent), gear trains and the 72 moments of a geared motion and the 1,728 motion sequences bit
+    for bit.
+  - Moments of a motion and joints held by hand are not carried and keep no free joints: they start from a solved
+    state that holds its own drives, and are solved exactly as before.
+  - The first review's skip (no carry when the direct solve moved nothing further than one sub-step may) is gone: a
+    direct solve near a change point can cross to the other circuit in less than half a radian, and the second
+    review asked for a test, not a heuristic. The carry now runs wherever the placement holds other drive values.
+  - Cost, measured (release; rest solves of Jansen legs on one crankshaft placed at crank 0 and solved at 0.5 to 4.5
+    rad, medians of five, load 2 to 18): 74 instances 10–17 ms on main's base, 25–95 ms here (10 to 51 sub-steps);
+    302 instances 0.35–0.40 s against 1.9–3.1 s, the carry giving up at its allowance of sub-steps and the direct
+    solve standing (without the allowance 2.9–5.4 s, out of its 2000 iterations at 1,494 sub-steps); solved where
+    placed, the same. A sub-step that succeeds after a cut no longer doubles straight back, and the engine keeps the
+    last eight rest solves by their exact problem. In the engine (development build, six placements of the published
+    radial engine and walker at other drive values, two runs): 2.10–2.32 and 1.98–2.33 s a placement on main's base,
+    2.16–2.20 and 2.20–2.40 s here, within the noise of a loaded machine.
+  - The third review, off the earlier grids (some 63,000 new rest solves): answers 0.1.2 got right came out on the
+    other circuit without a note: an offset slider-crank (crank 1, rod 1.52 or 1.502, offset 0.5; 25 exact
+    placements), four-bars of coupler 3.00002 (23) and 3.0000002 (94). `ω` stayed small across the slider-crank's
+    sharp turn at 270° (it grows only near a singular Jacobian) and a half-radian sub-step stepped over it. Rules: the
+    step is a tenth of a radian (`REST_STEP`), and wherever the carried and the direct solution differ the answer says
+    so (*The rule*), since a step can always be beaten by a geometry nearer its change point. Found on the way: the
+    corrector's damping of 10⁻⁹ made the walker's Newton steps converge linearly, so `ω` grew as its predictions got
+    better and its sub-steps shrank without end (325 for 60°, out of the allowance at 180°); `MU_CARRY` (10⁻¹²) gives
+    20 and 54. A stopped carry no longer claims a dead point it did not prove ("not carried past … the branch is not
+    checked"), and one out of its allowance says so. Measured on the reviews' probes, 134,751 rest solves and the
+    1,728 motion sequences: no answer that differs from the direct solve's lacks a note (but the five free-joint cases,
+    where A-036 keeps joints as designed); an answer without a note that is not the closed form is the direct one, as
+    0.1.2's (399 four-bars: 341 at coupler 3.0000002, 58 non-Grashof ones placed with the crank turned, whose carry
+    stopped and so says nothing); notes on right
+    answers: 4,504 "carried" and 4,046 "not certain" (each where 0.1.2 was wrong), 148 "not carried past" (non-Grashof
+    four-bars and five-bars driven across a fold, where 0.1.2 was right and the carry stopped at the fold). Cost:
+    twelve legs on one crankshaft 27–100 ms against 10–16 ms; fifty legs 0.43–0.78 s against 0.34–0.39 s, the carry
+    now getting there.
+  - The fourth review (fingerprints of every pose and joint value over 78,355 rest solves): no answer that differs from
+    the direct one without a note but the five free-joint cases; the 399 wrong without a note bit for bit the parent's;
+    5,506 answers 0.1.2 had wrong right now, each with a note. Its three changes: a note where the direct solve failed
+    and the carry answered from a placement that meets its mates (5 on right answers in its probes, the crank-rocker
+    of `linkages.rs` among them); the "carried" note reworded to claim only the disagreement (in 93 exact placements
+    0.1.2 had right the carry itself jumped: 89 at coupler 3.0000002, 4 at 3.00002); the damping's trade-off written
+    down (*How the carry steps*).
 - 2026-11-14 (assembly-trust, A-030): two lead screws whose nuts ride one bed, screw A driven 24 turns over the
   motion, screw B turned by nothing but its screw coupling: `assembly.solve` was ok at `t = 0`, `motion.check`
   stopped at `t = 0.65` (15.7 turns, "did not converge in 200 iterations"), and the rest solve failed from 16.8 turns
@@ -723,7 +947,7 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
   tries the start it always had first, and only a coupling's turns are carried: every moment and rest solve that
   converged before gives the same bits (the published assemblies are pinned to goldens of the parent,
   `engine/tests/published_assemblies.rs`), and that crank-rocker is again the error it was
-  (`linkages.rs`).
+  (`linkages.rs`; for 0.2 A-016's carry, above, solves it on its own circuit).
 
 - 2026-10-30 (asm-gaps, the gaps the assemblies of three Jigs found): world references checked when a mate is
   made; linear couplings; the measures `jointAngle`, `jointDistance`, `position`, `rotation` and the commands

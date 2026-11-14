@@ -17,7 +17,23 @@ pub(crate) const MAX_STEP: f64 = 0.5;
 
 /// The damping `μ` starts here (relative to the largest diagonal of
 /// `JᵀJ`): nearly a pure Gauss–Newton step.
-const MU_START: f64 = 1e-9;
+pub(crate) const MU_START: f64 = 1e-9;
+/// The damping a rest carry's corrector starts from: a thousandth of
+/// [`MU_START`]. A sub-step's prediction is already close, and a damping
+/// of 10⁻⁹ of the largest diagonal slows each direction whose eigenvalue is
+/// near 10⁻⁷ of it to a linear convergence (a rate of 0.01 in the
+/// published walker): the corrector's quadratic constant read from its
+/// steps then grows as the prediction gets better, and the carry's steps
+/// near what it takes for a singular pose shrink without end (the walker
+/// carried 60° took 325 sub-steps; from 10⁻¹² of the diagonal, 20). The
+/// damping still grows on a step that does not lower the sum of squares.
+/// The price, measured by the fourth review: with the lighter damping the
+/// carry lands on the other circuit more readily near a change point (a
+/// four-bar of coupler 3.00002: 8 jumps against none, among them 4 exact
+/// placements the direct solve had right), each with the note every
+/// difference from the direct solve carries; a decision the developer can
+/// revisit (docs/design/assemblies.md, *How the carry steps*).
+pub(crate) const MU_CARRY: f64 = 1e-12;
 const MU_MIN: f64 = 1e-12;
 /// Beyond this the step is a gradient step too short to matter: the
 /// iteration is at rest.
@@ -109,6 +125,10 @@ pub(crate) struct Run {
     pub(crate) stalled: bool,
     pub(crate) iterations: usize,
     pub(crate) residual: f64,
+    /// The lengths (largest component, dimensionless) of the first two
+    /// steps taken, 0 for a step not taken: their ratio is how fast Newton
+    /// contracts from the start.
+    pub(crate) steps: [f64; 2],
 }
 
 /// The step `−(JᵀJ + μ D I)⁺ Jᵀr`, directions of `JᵀJ` at or below the
@@ -156,20 +176,23 @@ pub(crate) fn gauss_newton(
 }
 
 /// Runs damped Newton from `start` at `drives` over the `active` groups,
-/// spending at most `budget` iterations.
+/// spending at most `budget` iterations, its damping starting at
+/// `mu_start`.
 pub(crate) fn run(
     sys: &System,
     start: &State,
     drives: &[f64],
     active: &[bool],
     budget: usize,
+    mu_start: f64,
 ) -> Option<Run> {
     let mut state = start.clone();
     let mut evals = evaluate(sys, &state, drives, active)?;
     let mut res = max_residual(&evals);
     let mut c = cost(&evals);
-    let mut mu = MU_START;
+    let mut mu = mu_start;
     let mut slow = 0usize;
+    let mut steps = [0.0f64; 2];
     let tol = sys.eps;
     for it in 0..budget {
         if res <= tol {
@@ -179,6 +202,7 @@ pub(crate) fn run(
                 stalled: false,
                 iterations: it,
                 residual: res,
+                steps,
             });
         }
         let (a, g) = normal_equations(sys, &evals)?;
@@ -208,6 +232,9 @@ pub(crate) fn run(
                 } else {
                     slow = 0;
                 }
+                if let Some(slot) = steps.get_mut(it) {
+                    *slot = h.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+                }
                 state = next;
                 evals = ne;
                 res = max_residual(&evals);
@@ -229,6 +256,7 @@ pub(crate) fn run(
                 stalled: !converged,
                 iterations: it + 1,
                 residual: res,
+                steps,
             });
         }
     }
@@ -239,5 +267,6 @@ pub(crate) fn run(
         stalled: false,
         iterations: budget,
         residual: res,
+        steps,
     })
 }

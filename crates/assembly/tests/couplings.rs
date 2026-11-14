@@ -319,6 +319,7 @@ fn an_undriven_screw_follows_its_coupling_at_rest_over_many_turns() {
             );
             assert!((sol.poses[1].translation.z - rise).abs() < 1e-6 * p.scale);
             assert_eq!(sol.dof, 0);
+            assert_eq!(sol.note, None);
             // The nuts' turn on their screws, which no equation counts the
             // turns of, reads in the turns nearest where it was placed (0),
             // as a solve from the placement reads it: within half a turn.
@@ -350,6 +351,7 @@ fn a_screw_placed_many_turns_round_starts_at_its_couplings_turns() {
         p.start[i] = craft3d_assembly::Pose::new(craft3d_assembly::Mat3::IDENTITY, rise);
     }
     let sol = solve(&p).unwrap();
+    assert_eq!(sol.note, None);
     assert!(
         (sol.values[2][0] - theta).abs() < 1e-6,
         "B at {}",

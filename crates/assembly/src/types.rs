@@ -517,6 +517,15 @@ pub struct Solution {
     pub residual: f64,
     /// Newton iterations spent (all passes).
     pub iterations: usize,
+    /// What a reader should know about the answer, in words: a rest solve
+    /// whose carried pose is shown where the solve straight from the
+    /// placement lands elsewhere (carried along its branch, or with its
+    /// branch not certain), one shown straight from the placement because
+    /// the carry did not get there (the branch is not checked), a free joint
+    /// that could not be kept at its start value. `None` for a rest solve
+    /// means the answer is the one solve straight from the placement, bit
+    /// for bit (or the only answer there is, where that solve failed).
+    pub note: Option<String>,
 }
 
 impl Solution {

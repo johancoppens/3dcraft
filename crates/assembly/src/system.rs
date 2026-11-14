@@ -10,7 +10,8 @@
 
 use crate::ldl::{Budget, Ordering, Pattern};
 use crate::types::{
-    CouplingKind, Diagnosis, Frame, Group, Mat3, MateKind, MateSpec, Pose, Problem, VarKind,
+    CouplingKind, Diagnosis, Frame, FreeMotion, Group, Mat3, MateKind, MateSpec, Pose, Problem,
+    VarKind,
 };
 use craft3d_math::Portable;
 use craft3d_math::Vec3;
@@ -956,6 +957,104 @@ impl System {
         Some(h)
     }
 
+    /// `cur` moved on by `ratio` times the motion from `prev` to it, each
+    /// body by the same rigid motion scaled (the screw motion about the
+    /// same axis: `(P_cur P_prevᵀ)^ratio P_cur`), each mate variable along
+    /// its line. A part turning about an axis far from its origin is
+    /// followed on its arc, where moving translation and rotation apart
+    /// ([`Self::step`] of [`Self::difference`]) cuts the arc's chord, a
+    /// miss that grows with the distance of the part's origin from the
+    /// axis; this one does not depend on where a part's origin is.
+    pub(crate) fn extrapolate(&self, prev: &State, cur: &State, ratio: f64) -> Option<State> {
+        if !ratio.is_finite() {
+            return None;
+        }
+        let mut out = cur.clone();
+        for (pose, (pp, pc)) in out.poses.iter_mut().zip(prev.poses.iter().zip(&cur.poses)) {
+            let rx = pc.rotation.mul(&pp.rotation.transpose());
+            let phi = log_so3(&rx);
+            // The motion's translation in exponential coordinates.
+            let rho = apply33(&jl_inv(phi), pc.translation - rx.apply(pp.translation));
+            let scaled = phi * ratio;
+            let rr = Mat3::exp(scaled);
+            let r = rr.mul(&pc.rotation);
+            pose.rotation = r.orthonormalized(0.5).unwrap_or(r);
+            pose.translation = rr.apply(pc.translation) + apply33(&jl(scaled), rho * ratio);
+        }
+        for (vals, (vp, vc)) in out
+            .values
+            .iter_mut()
+            .zip(prev.values.iter().zip(&cur.values))
+        {
+            for (v, (p, c)) in vals.iter_mut().zip(vp.iter().zip(vc)) {
+                *v = c + (c - p) * ratio;
+            }
+        }
+        let finite = out.poses.iter().all(|p| {
+            p.rotation.is_finite()
+                && p.translation.x.is_finite()
+                && p.translation.y.is_finite()
+                && p.translation.z.is_finite()
+        }) && out.values.iter().flatten().all(|v| v.is_finite());
+        finite.then_some(out)
+    }
+
+    /// [`Self::distance`] over what the motions `free` leave fixed only:
+    /// the instances none of them moves and the mate variables none of
+    /// them changes. Two solutions that differ by a free motion (a shade on
+    /// a ball turned otherwise) are at 0; two branches of a loop are not.
+    pub(crate) fn distance_fixed(&self, a: &State, b: &State, free: &[FreeMotion]) -> f64 {
+        let moved: std::collections::BTreeSet<usize> = free
+            .iter()
+            .flat_map(|f| f.instances.iter().map(|m| m.instance))
+            .collect();
+        let changed: std::collections::BTreeSet<(usize, usize)> = free
+            .iter()
+            .flat_map(|f| f.variables.iter().map(|&(m, v, _)| (m, v)))
+            .collect();
+        let mut d = 0.0f64;
+        for owner in &self.block_owner {
+            match *owner {
+                BlockOwner::Body(i) => {
+                    if moved.contains(&i) {
+                        continue;
+                    }
+                    let (Some(pa), Some(pb)) = (a.poses.get(i), b.poses.get(i)) else {
+                        continue;
+                    };
+                    let t = (pb.translation - pa.translation) * (1.0 / self.scale);
+                    d = d.max(t.x.abs()).max(t.y.abs()).max(t.z.abs());
+                    d = d.max(rotation_angle(&pb.rotation.mul(&pa.rotation.transpose())));
+                }
+                BlockOwner::Vars(m) => {
+                    let (Some(va), Some(vb), Some(mate)) =
+                        (a.values.get(m), b.values.get(m), self.mates.get(m))
+                    else {
+                        continue;
+                    };
+                    for (v, ((x, y), kind)) in
+                        va.iter().zip(vb).zip(mate.kind.variables()).enumerate()
+                    {
+                        if changed.contains(&(m, v)) {
+                            continue;
+                        }
+                        let unit = if kind.is_angle() { 1.0 } else { self.scale };
+                        // An angle whose turns no equation counts is the
+                        // same a whole turn on: two paths to one pose may
+                        // have wound it differently.
+                        let gap = if kind.is_angle() && !self.counts_turns(m, v) {
+                            wrap(y - x)
+                        } else {
+                            y - x
+                        };
+                        d = d.max((gap / unit).abs());
+                    }
+                }
+            }
+        }
+        d
+    }
+
     /// How far apart two states are, dimensionless, largest over the
     /// unknowns (rotations by their angle).
     pub(crate) fn distance(&self, a: &State, b: &State) -> f64 {
@@ -1111,6 +1210,39 @@ pub(crate) fn jl_inv(phi: Vec3) -> [[f64; 3]; 3] {
         }
     }
     out
+}
+
+/// `J_l(φ)`, the left Jacobian of SO(3), the inverse of [`jl_inv`]: the
+/// rigid motion `exp` of `(ρ, φ)` translates by `J_l(φ) ρ`.
+fn jl(phi: Vec3) -> [[f64; 3]; 3] {
+    let theta = phi.length();
+    let k = skew(phi);
+    let k2 = mul33(&k, &k);
+    // (1 − cos θ)/θ² and (θ − sin θ)/θ³, by their series near 0.
+    let (a, b) = if theta < 1e-4 {
+        let t2 = theta * theta;
+        (0.5 - t2 / 24.0, 1.0 / 6.0 - t2 / 120.0)
+    } else {
+        let t2 = theta * theta;
+        (
+            (1.0 - theta.pcos()) / t2,
+            (theta - theta.psin()) / (t2 * theta),
+        )
+    };
+    let mut out = [[0.0; 3]; 3];
+    for (r, row) in out.iter_mut().enumerate() {
+        for (c, cell) in row.iter_mut().enumerate() {
+            let id = if r == c { 1.0 } else { 0.0 };
+            *cell = id + a * at(&k, r, c) + b * at(&k2, r, c);
+        }
+    }
+    out
+}
+
+/// A 3×3 array (rows) applied to a vector.
+fn apply33(m: &[[f64; 3]; 3], v: Vec3) -> Vec3 {
+    let row = |r: usize| at(m, r, 0) * v.x + at(m, r, 1) * v.y + at(m, r, 2) * v.z;
+    Vec3::new(row(0), row(1), row(2))
 }
 
 /// `[w]×`: `[w]× v = w × v`.
@@ -1435,5 +1567,73 @@ mod tests {
         // A half turn is π, not a false zero.
         let half = Mat3::from_cols(Vec3::X, -Vec3::Y, -Vec3::Z);
         assert!((log_so3(&half).length() - std::f64::consts::PI).abs() < 1e-12);
+    }
+
+    /// `J_l` and `J_l⁻¹` are inverses, near 0 (their series) and up to
+    /// near a half turn.
+    #[test]
+    fn the_left_jacobian_inverts_its_inverse() {
+        let mut g = Lcg(5);
+        for k in 0..100 {
+            let axis = g.vec().normalized().unwrap();
+            let angle = [0.0, 1e-9, 5e-5, 2e-4, 0.3, 1.0, 2.5, 3.1][k % 8];
+            let phi = axis * angle;
+            let product = mul33(&jl(phi), &jl_inv(phi));
+            for (r, row) in product.iter().enumerate() {
+                for (c, got) in row.iter().enumerate() {
+                    let want = if r == c { 1.0 } else { 0.0 };
+                    assert!((got - want).abs() < 1e-12, "{angle}: ({r}, {c}) {got}");
+                }
+            }
+        }
+    }
+
+    /// A part turning about a fixed axis far from its origin, and sliding
+    /// along it, is moved on exactly by the rigid secant (a screw motion
+    /// scaled is the same screw motion), where moving its translation and
+    /// turn apart cuts the chord of the arc its origin runs on.
+    #[test]
+    fn the_rigid_secant_follows_a_part_turning_far_from_its_origin() {
+        let mut p = Problem::new(2, 1e-9, 1.0);
+        p.grounded = vec![0];
+        let sys = System::new(&p).unwrap();
+        let axis = Vec3::new(1.0, 2.0, 2.0).normalized().unwrap();
+        let through = Vec3::new(300.0, -40.0, 7.0);
+        // The pose turned by `t` about the axis through `through`, and
+        // slid 0.8 t along it.
+        let at = |t: f64| {
+            let r = Mat3::exp(axis * t);
+            Pose::new(r, through - r.apply(through) + axis * (0.8 * t))
+        };
+        let state = |t: f64| State {
+            poses: vec![Pose::IDENTITY, at(t)],
+            values: vec![],
+        };
+        for (t0, t1, ratio) in [(0.1, 0.4, 1.0), (0.4, 0.5, 2.0), (-1.0, -0.2, 0.5)] {
+            let got = sys.extrapolate(&state(t0), &state(t1), ratio).unwrap();
+            let want = at(t1 + (t1 - t0) * ratio);
+            let pose = got.poses[1];
+            for q in [
+                Vec3::ZERO,
+                Vec3::new(10.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 10.0),
+            ] {
+                assert!(
+                    (pose.point(q) - want.point(q)).length() < 1e-9,
+                    "{t0} → {t1} × {ratio}: {:?} vs {:?}",
+                    pose.point(q),
+                    want.point(q)
+                );
+            }
+            // Its translation and turn moved apart miss by the chord.
+            let h: Vec<f64> = sys
+                .difference(&state(t0), &state(t1))
+                .unwrap()
+                .iter()
+                .map(|x| x * ratio)
+                .collect();
+            let apart = sys.step(&state(t1), &h).unwrap().poses[1];
+            assert!((apart.point(Vec3::ZERO) - want.point(Vec3::ZERO)).length() > 1.0);
+        }
     }
 }

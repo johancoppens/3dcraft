@@ -12,7 +12,7 @@ use craft3d_math::Vec3;
 
 /// A component of a null vector below this fraction of its largest counts
 /// as zero (null vectors are normalised to a largest component of 1).
-const ZERO_COMPONENT: f64 = 1e-6;
+pub(crate) const ZERO_COMPONENT: f64 = 1e-6;
 
 /// The rank of `J` and a basis of its null space (block order), from
 /// `JᵀJ` with the system's rank threshold.

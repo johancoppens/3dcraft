@@ -123,6 +123,8 @@ pub(crate) struct AsmState {
     /// every file, the read root's top otherwise): its sources are
     /// placed from there until it is saved, as they were read.
     pub unsaved_base: String,
+    /// The last rest solves, by their exact problem.
+    solves: solver::SolveMemo,
 }
 
 /// The bodies the last two placements placed (`build_shown`), by the
@@ -1077,6 +1079,7 @@ fn place_from(
         &extra,
         from,
         hold,
+        &mut state.solves,
     );
     // 5. Placed bodies.
     let mut placed = if bodies {
@@ -2193,7 +2196,9 @@ type Solved = (
     Option<String>,
 );
 
-/// The mates' frames and the solve; the poses go into `instances`.
+/// The mates' frames and the solve; the poses go into `instances`; the
+/// rest solve through `memo`.
+#[allow(clippy::too_many_arguments)]
 fn solve_mates(
     doc: &Document,
     assembly: &Assembly,
@@ -2202,6 +2207,7 @@ fn solve_mates(
     extra: &Flexed,
     from: Option<&Carried>,
     hold: Option<&Hold>,
+    memo: &mut solver::SolveMemo,
 ) -> Solved {
     let solvable = |i: &InstanceState| i.error.is_none() && !i.flexed;
     let index: BTreeMap<String, usize> = instances
@@ -2451,7 +2457,7 @@ fn solve_mates(
         (Some(drives), Some(from)) => solver::advance_near(&problem, &drives, &from.values),
         (Some(drives), None) => solver::advance(&problem, &drives),
         (None, Some(from)) => solver::advance_coupled(&problem, &from.drives, &from.values),
-        (None, None) => solver::solve(&problem),
+        (None, None) => memo.solve(&problem),
     };
     match solved_by {
         Ok(solution) => {
