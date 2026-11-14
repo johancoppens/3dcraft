@@ -48,7 +48,7 @@ use craft3d_kernel::chamfer::{ChamferEdge, ChamferFace, ChamferSize, chamfer};
 use craft3d_kernel::extrude::extrude;
 use craft3d_kernel::primitives;
 use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
-use craft3d_math::{Frame, Vec3};
+use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, EdgeId, FaceId, check};
 use std::f64::consts::PI;
 
@@ -1294,6 +1294,1034 @@ fn a_chamfer_that_runs_out_tangent_down_a_beads_far_slope_is_built_within_the_to
                     error.to_string().contains("pass through"),
                     "{d1} at {k}: {error}"
                 );
+            }
+        }
+    }
+}
+
+// A chamfer whose cut line runs past a smooth edge of its face onto the
+// face beyond (2026-11-14): a boss whose wall leaves the top as an arc and
+// goes on as its tangent plane.
+
+/// How far the boss's wall runs on as its tangent plane.
+const RUN: f64 = 10.0;
+
+/// The angle about C of the edge E, where the wall leaves the top.
+fn at_edge() -> f64 {
+    (E[1] - C[1]).patan2(E[0] - C[0])
+}
+
+/// Where the wall's arc ends (`phi` degrees about C) and the unit
+/// direction in which its tangent plane goes on from there.
+fn tangent_point(phi: f64) -> (P, P) {
+    let t = phi.to_radians();
+    (
+        [C[0] + R * t.pcos(), C[1] + R * t.psin()],
+        [-t.psin(), t.pcos()],
+    )
+}
+
+/// The section (y, z) of the plate (y from 0 to 40, z from 0 to 10) with
+/// the boss on its top: its wall leaves the top at E as the arc of the
+/// circle about C (the pipe's) counter-clockwise up to `phi` degrees, goes
+/// on as the arc's tangent plane for [`RUN`], over to y = 10 and down to
+/// the top. Its outline, closed, counter-clockwise; the arc from E (index
+/// 3) to the tangent point.
+fn boss_outline(phi: f64) -> Vec<P> {
+    let (t, dir) = tangent_point(phi);
+    let q = [t[0] + RUN * dir[0], t[1] + RUN * dir[1]];
+    vec![
+        [0.0, 0.0],
+        [40.0, 0.0],
+        [40.0, 10.0],
+        E,
+        t,
+        q,
+        [10.0, q[1]],
+        [10.0, 10.0],
+        [0.0, 10.0],
+    ]
+}
+
+/// The area of the polygon through `points` (counter-clockwise: positive).
+fn polygon_area(points: &[P]) -> f64 {
+    let n = points.len();
+    (0..n)
+        .map(|i| {
+            let (p, q) = (points[i], points[(i + 1) % n]);
+            0.5 * (p[0] * q[1] - q[0] * p[1])
+        })
+        .sum()
+}
+
+/// The boss's section: its area and the length round it (scale 1). The
+/// arc bulges out of the outline's polygon by its circular segment.
+fn boss_section(phi: f64) -> (f64, f64) {
+    let outline = boss_outline(phi);
+    let theta = phi.to_radians() - at_edge();
+    let n = outline.len();
+    let mut round = R * theta;
+    for i in (0..n).filter(|i| *i != 3) {
+        let (p, q) = (outline[i], outline[(i + 1) % n]);
+        round += (q[0] - p[0]).phypot(q[1] - p[1]);
+    }
+    (
+        polygon_area(&outline) + 0.5 * R * R * (theta - theta.psin()),
+        round,
+    )
+}
+
+/// The boss along x of `frame`, 40 long, at scale `k`.
+fn boss(frame: &Frame, k: f64, phi: f64, tol: &Tolerance) -> Body {
+    let outline = boss_outline(phi);
+    let n = outline.len();
+    let curves: Vec<SketchCurve> = (0..n)
+        .map(|i| {
+            let (p, q) = (outline[i], outline[(i + 1) % n]);
+            let (start, end) = ([p[0] * k, p[1] * k], [q[0] * k, q[1] * k]);
+            SketchCurve {
+                id: i as u64 + 1,
+                curve: if i == 3 {
+                    Curve2::Arc {
+                        center: [C[0] * k, C[1] * k],
+                        start,
+                        end,
+                    }
+                } else {
+                    Curve2::Line { start, end }
+                },
+            }
+        })
+        .collect();
+    let profiles = detect_profiles(&curves, tol).unwrap();
+    let along = Frame::new(frame.origin(), frame.x(), frame.y()).unwrap();
+    extrude(&profiles, &along, 0.0, 40.0 * k, tol).unwrap().body
+}
+
+/// A chamfer of the boss's edge E, `b` of arc along the wall and `a`
+/// along the top, worked out in the section (scale 1). The construction
+/// in place measures each cut line as the point of its face at the
+/// straight distance from the edge that the distance gives on that face
+/// (on the wall's circle the chord `2 R sin(b / 2R)`); where the arc ends
+/// short of that, the cut line is the point of the tangent plane at that
+/// straight distance, the arc goes whole, and the chamfer's line runs
+/// from there (docs/design/blends.md › *A cut line carried onto the face
+/// beyond*).
+struct Cut {
+    /// The foot on the wall, and how far along the tangent plane it lies
+    /// (zero on the arc).
+    foot: P,
+    run: f64,
+    /// What the chamfer adds per unit of length: the region between the
+    /// wall from E to the foot, the line to the top's foot and the top.
+    added: f64,
+    /// The length of the wall from E to the foot, and of the line.
+    wall: f64,
+    line: f64,
+    /// How far the arc reaches past the line, between the feet, found
+    /// among 40001 points of it (negative where it keeps clear); on the
+    /// tangent plane the wall runs on from the arc's end to the foot on
+    /// the line, a segment no further past it than the arc's end. And the
+    /// point of the arc where it reaches furthest.
+    past: f64,
+    deepest: P,
+}
+
+fn cut(phi: f64, b: f64, a: f64) -> Cut {
+    let theta = phi.to_radians() - at_edge();
+    let (t, dir) = tangent_point(phi);
+    let chord = 2.0 * R * (b / (2.0 * R)).psin();
+    let g = [E[0] + a, E[1]];
+    let (foot, run, arc) = if b <= R * theta {
+        (on_pipe(b, true), 0.0, b / R)
+    } else {
+        // |T - E + s dir| = chord.
+        let w = [t[0] - E[0], t[1] - E[1]];
+        let half = w[0] * dir[0] + w[1] * dir[1];
+        let s = -half + (half * half - (w[0] * w[0] + w[1] * w[1]) + chord * chord).sqrt();
+        ([t[0] + s * dir[0], t[1] + s * dir[1]], s, theta)
+    };
+    let mut outline = vec![E];
+    if run > 0.0 {
+        outline.push(t);
+    }
+    outline.push(foot);
+    outline.push(g);
+    // Clockwise (E up the wall, over to G and back): the arc bulges into
+    // the polygon by its segment.
+    let added = -polygon_area(&outline) - 0.5 * R * R * (arc - arc.psin());
+    let line = (g[0] - foot[0]).phypot(g[1] - foot[1]);
+    let w = [(g[0] - foot[0]) / line, (g[1] - foot[1]) / line];
+    let mut n = [-w[1], w[0]];
+    if (E[0] - foot[0]) * n[0] + (E[1] - foot[1]) * n[1] > 0.0 {
+        n = [w[1], -w[0]];
+    }
+    let (mut past, mut deepest) = (f64::NEG_INFINITY, E);
+    let start = at_edge();
+    let steps = 40_000;
+    for i in 0..=steps {
+        let angle = start + arc * f64::from(i) / f64::from(steps);
+        let p = [C[0] + R * angle.pcos(), C[1] + R * angle.psin()];
+        let along = (p[0] - foot[0]) * w[0] + (p[1] - foot[1]) * w[1];
+        let height = (p[0] - foot[0]) * n[0] + (p[1] - foot[1]) * n[1];
+        if (0.0..=line).contains(&along) && height > past {
+            (past, deepest) = (height, p);
+        }
+    }
+    Cut {
+        foot,
+        run,
+        added,
+        wall: R * arc + run,
+        line,
+        past,
+        deepest,
+    }
+}
+
+/// The edge E of the boss, its wall (the cylinder face) and its top.
+fn boss_edge(body: &Body, frame: &Frame, k: f64) -> (EdgeId, FaceId, FaceId) {
+    let edge = edge_near(body, frame.point(20.0 * k, E[0] * k, E[1] * k));
+    let faces = faces_of(body, edge);
+    let wall = *faces
+        .iter()
+        .find(|f| matches!(body.faces[f.0 as usize].surface, Surface::Cylinder(_)))
+        .unwrap();
+    let top = *faces.iter().find(|f| **f != wall).unwrap();
+    (edge, wall, top)
+}
+
+/// The chamfer of the boss's edge, `b` along the wall and `a` along the
+/// top (scale 1), with the wall or the top as the first face.
+#[allow(clippy::too_many_arguments)]
+fn boss_chamfer(
+    body: &Body,
+    frame: &Frame,
+    k: f64,
+    b: f64,
+    a: f64,
+    wall_first: bool,
+    tol: &Tolerance,
+) -> Result<craft3d_kernel::chamfer::ChamferResult, KernelError> {
+    let (edge, wall, top) = boss_edge(body, frame, k);
+    let (first, size) = if wall_first {
+        (
+            wall,
+            ChamferSize::Distances {
+                first: b * k,
+                second: a * k,
+            },
+        )
+    } else {
+        (
+            top,
+            ChamferSize::Distances {
+                first: a * k,
+                second: b * k,
+            },
+        )
+    };
+    chamfer(body, &[ChamferEdge { edge, first, size }], tol)
+}
+
+/// The chamfer built of the boss's edge, held to the section: valid, its
+/// volume and area, and its face the plane through both cut lines with its
+/// origin where the cut line on the first face starts.
+#[allow(clippy::too_many_arguments)]
+fn assert_boss_chamfer(
+    body: &Body,
+    frame: &Frame,
+    k: f64,
+    phi: f64,
+    b: f64,
+    a: f64,
+    wall_first: bool,
+    tol: &Tolerance,
+) {
+    let (section, round) = boss_section(phi);
+    let (v0, a0) = (40.0 * section, 40.0 * round + 2.0 * section);
+    let c = cut(phi, b, a);
+    let what = format!("{phi}° {b} and {a} at {k}, the wall first {wall_first}");
+    let made = boss_chamfer(body, frame, k, b, a, wall_first, tol)
+        .unwrap_or_else(|e| panic!("{what}: {e}"));
+    assert_eq!(check(&made.body, tol), [], "{what}");
+    let m = mass(&made.body);
+    assert_close(m.volume, (v0 + 40.0 * c.added) * k * k * k, &what);
+    let area = a0 + 40.0 * (c.line - a - c.wall) + 2.0 * c.added;
+    assert_close(m.area, area * k * k, &what);
+    let faces: Vec<usize> = made
+        .faces
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| matches!(f, ChamferFace::Chamfer(_)))
+        .map(|(i, _)| i)
+        .collect();
+    let [face] = faces[..] else {
+        panic!("{what}: {faces:?}")
+    };
+    let Surface::Plane(plane) = &made.body.faces[face].surface else {
+        panic!("{what}: not a plane")
+    };
+    let g = [E[0] + a, E[1]];
+    let point = |x: f64, p: P| frame.point(x * k, p[0] * k, p[1] * k);
+    let (origin, normal) = (plane.frame().origin(), plane.frame().z());
+    for x in [0.0, 40.0] {
+        for p in [c.foot, g] {
+            let off = (point(x, p) - origin).dot(normal);
+            assert!(off.abs() <= 1e-9 * k, "{what}: {off}");
+        }
+    }
+    let first = if wall_first { c.foot } else { g };
+    let from = point(0.0, first)
+        .distance(origin)
+        .min(point(40.0, first).distance(origin));
+    assert!(from <= 1e-9 * k, "{what}: the frame's origin {from} off");
+}
+
+#[test]
+fn a_chamfer_whose_cut_line_runs_past_the_end_of_an_arc_onto_its_tangent_plane_is_built() {
+    // Until 2026-11-14 the chamfer face was moved to pass through the
+    // plan's foot on the wall's circle, which lies off the tangent plane:
+    // with the tangent point at -15°, 4.2 along the wall and 1 along the
+    // top left the chamfer face's borders 7.24e-3 off it, an invalid body
+    // (in the released 0.1.0 and 0.1.1, where regeneration failed the
+    // feature as "not a valid body").
+    for k in SCALES {
+        let tol = tolerance(k);
+        for frame in frames(k) {
+            for (phi, sizes) in [(-15.0, [4.2, 4.6, 5.0, 5.5]), (-20.0, [3.5, 4.2, 6.0, 9.0])] {
+                let body = boss(&frame, k, phi, &tol);
+                let (section, _) = boss_section(phi);
+                assert_close(mass(&body).volume, 40.0 * section * k * k * k, "the boss");
+                for b in sizes {
+                    // On the tangent plane, the line between the feet clear
+                    // of the arc.
+                    let c = cut(phi, b, 1.0);
+                    assert!(c.run > 0.0 && c.run < RUN - 1.0, "{phi} {b}: {}", c.run);
+                    assert!(c.past < -1e-3, "{phi} {b}: {}", c.past);
+                    for wall_first in [true, false] {
+                        assert_boss_chamfer(&body, &frame, k, phi, b, 1.0, wall_first, &tol);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The size `a` along the top at which the line of the chamfer 5 along the
+/// wall (the tangent point at -15°, the foot on the tangent plane) reaches
+/// `target` past the arc (by bisection: the less along the top, the
+/// steeper the line and the further the arc reaches past it).
+fn along_top_at(target: f64) -> f64 {
+    let (mut lo, mut hi) = (0.5, 1.0);
+    assert!(cut(-15.0, 5.0, lo).past > target && cut(-15.0, 5.0, hi).past < target);
+    for _ in 0..60 {
+        let middle = 0.5 * (lo + hi);
+        if cut(-15.0, 5.0, middle).past > target {
+            lo = middle;
+        } else {
+            hi = middle;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+#[test]
+fn a_chamfer_carried_onto_the_tangent_plane_is_refused_where_its_line_cuts_the_arc() {
+    // With the tangent point at -10° the line from the foot on the tangent
+    // plane to the top's foot runs through the arc (5 along the wall: by
+    // 8.4e-3; 5.5: 1.65e-2): no chamfer of the size exists. Built invalid
+    // before 2026-11-14, as above; now too large for the wall, saying the
+    // size (both distances together) at which the line enters the wall's
+    // circle by the tolerance, the foot then on the arc, which builds.
+    // 4.6 (the foot on the arc, its line into the circle) was refused so
+    // before.
+    for k in SCALES {
+        let tol = tolerance(k);
+        for frame in frames(k) {
+            let body = boss(&frame, k, -10.0, &tol);
+            let (_, wall, _) = boss_edge(&body, &frame, k);
+            for b in [4.6, 5.0, 5.5] {
+                let c = cut(-10.0, b, 1.0);
+                assert!(
+                    c.past > 1e-3 || lens(1.0, b, true) > 1e-4,
+                    "{b}: {}",
+                    c.past
+                );
+                let what = format!("{b} at {k}");
+                let error = boss_chamfer(&body, &frame, k, b, 1.0, true, &tol).unwrap_err();
+                let KernelError::ChamferTooLarge {
+                    face,
+                    distance,
+                    largest,
+                    ..
+                } = error
+                else {
+                    panic!("{what}: {error}");
+                };
+                assert_eq!(face, wall, "{what}");
+                assert_close(distance, b * k, "the distance said");
+                let at = touching(1.0, b, true);
+                assert!(
+                    (largest - at * b * k).abs() <= 1e-4 * at * b * k,
+                    "{what}: {largest} for {}",
+                    at * b * k
+                );
+                let s = 0.99 * largest / (b * k);
+                assert_boss_chamfer(&body, &frame, k, -10.0, b * s, s, true, &tol);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_chamfer_carried_onto_the_tangent_plane_with_the_top_first_is_refused_where_its_line_cuts_the_arc()
+ {
+    // The same chamfers with the top as the first face. Until 2026-11-14
+    // the frame kept the plan's foot on the top, which lies on the plane
+    // built, so nothing moved and the body was valid, and wrong: the
+    // solid bounded by the top, the line and the tangent plane, whose
+    // volume grows by the length times the signed area of the region that
+    // crosses itself (measured on release/0.1: 1 along the top and 5 along
+    // the wall +50.679729, 40 x 1.2669932; 0.5 and 6 -6.535122, a chamfer
+    // of a concave edge that takes material away). Now too large for the
+    // wall, as with the wall first, with the size at which the line enters
+    // the wall's circle by the tolerance, which builds.
+    for (b, a) in [(5.0, 1.0), (6.0, 0.5)] {
+        let c = cut(-10.0, b, a);
+        assert!(c.run > 0.0 && c.past > 1e-3, "{b} {a}: {}", c.past);
+    }
+    assert!(cut(-10.0, 6.0, 0.5).added < 0.0);
+    for k in SCALES {
+        let tol = tolerance(k);
+        for frame in frames(k) {
+            let body = boss(&frame, k, -10.0, &tol);
+            let (_, wall, _) = boss_edge(&body, &frame, k);
+            for (b, a) in [(5.0, 1.0), (6.0, 0.5)] {
+                let what = format!("{a} along the top and {b} along the wall at {k}");
+                let error = boss_chamfer(&body, &frame, k, b, a, false, &tol).unwrap_err();
+                let KernelError::ChamferTooLarge {
+                    face,
+                    distance,
+                    largest,
+                    ..
+                } = error
+                else {
+                    panic!("{what}: {error}");
+                };
+                assert_eq!(face, wall, "{what}");
+                assert_close(distance, b * k, "the distance said");
+                let at = touching(a, b, true);
+                assert!(
+                    (largest - at * b * k).abs() <= 1e-4 * at * b * k,
+                    "{what}: {largest} for {}",
+                    at * b * k
+                );
+                let s = 0.99 * largest / (b * k);
+                assert_boss_chamfer(&body, &frame, k, -10.0, b * s, a * s, false, &tol);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_chamfer_carried_onto_the_tangent_plane_is_built_up_to_where_its_line_cuts_the_arc_by_the_tolerance()
+ {
+    // The tangent point at -15°, 5 along the wall: the line from the foot
+    // on the tangent plane clears the arc for `a` along the top from about
+    // 0.75 on. Just past that it is clear (by 5e-6) and within the
+    // tolerance (the arc 5e-7 past it): built, the section; 2e-6 past it,
+    // refused as too large for the wall, with a size that builds.
+    let (clear, within, over) = (along_top_at(-5e-6), along_top_at(5e-7), along_top_at(2e-6));
+    assert!(
+        clear > within && within > over && clear - over < 1e-4,
+        "{clear} {within} {over}"
+    );
+    for k in SCALES {
+        let tol = tolerance(k);
+        for frame in frames(k) {
+            let body = boss(&frame, k, -15.0, &tol);
+            let (_, wall, _) = boss_edge(&body, &frame, k);
+            for a in [clear, within] {
+                for wall_first in [true, false] {
+                    assert_boss_chamfer(&body, &frame, k, -15.0, 5.0, a, wall_first, &tol);
+                }
+            }
+            for wall_first in [true, false] {
+                let what = format!("{over} at {k}, the wall first {wall_first}");
+                let error =
+                    boss_chamfer(&body, &frame, k, 5.0, over, wall_first, &tol).unwrap_err();
+                let KernelError::ChamferTooLarge {
+                    face,
+                    distance,
+                    largest,
+                    ..
+                } = error
+                else {
+                    panic!("{what}: {error}");
+                };
+                // The distance along the wall, and the largest of it.
+                assert_eq!(face, wall, "{what}");
+                assert_close(distance, 5.0 * k, "the distance said");
+                let s = largest / distance;
+                assert!(s < 1.0, "{what}: {largest}");
+                assert_boss_chamfer(&body, &frame, k, -15.0, 5.0 * s, over * s, wall_first, &tol);
+            }
+        }
+    }
+}
+
+#[test]
+fn chamfers_of_bosses_whose_wall_goes_on_as_its_tangent_plane_are_built_where_their_line_is_clear()
+{
+    // A sweep for refusals of right chamfers and chamfers built wrong: the
+    // tangent point from -25° to -5°, from 2.5 to 16 along the wall (on the
+    // arc, on the tangent plane and past it) and 0.5 to 2 along the top. On
+    // the arc the chamfer is refused exactly where its line enters the
+    // wall's circle by a lens deeper than the tolerance; on the tangent
+    // plane where the arc reaches past its line by more than the tolerance;
+    // past the plane's sharp far edge always; every other one is built and
+    // is the section. Sizes within a factor of two of the tolerance from the
+    // limit, a foot within 0.05 of the end of the arc or 0.5 of the end of
+    // the tangent plane are left out. (2026-11-14: 232 built, 118 refused.)
+    let tol = tolerance(1.0);
+    let (mut built, mut refused) = (0, 0);
+    for frame in [Frame::WORLD, frames(1.0)[2]] {
+        for phi in [-25.0, -20.0, -15.0, -12.0, -11.0, -10.0, -5.0] {
+            let body = boss(&frame, 1.0, phi, &tol);
+            let theta = phi.to_radians() - at_edge();
+            let sizes = [2.5, 3.5, 4.5, 5.5, 6.5, 8.0, 10.0, 12.0, 14.0, 16.0];
+            for b in sizes {
+                let tops: &[f64] = if b > 12.0 { &[1.0] } else { &[0.5, 1.0, 2.0] };
+                for &a in tops {
+                    let c = cut(phi, b, a);
+                    if c.run > RUN + 0.5 {
+                        // Past the tangent plane's sharp far edge: no chamfer
+                        // that carries its cut line once.
+                        let made = boss_chamfer(&body, &frame, 1.0, b, a, true, &tol);
+                        assert!(made.is_err(), "{phi}° {b} and {a}: built past the plane");
+                        refused += 1;
+                        continue;
+                    }
+                    if (b - R * theta).abs() < 0.05 || c.run > RUN - 0.5 {
+                        continue;
+                    }
+                    let deep = if c.run == 0.0 {
+                        lens(a, b, true)
+                    } else {
+                        c.past
+                    };
+                    if deep > 0.5 * DEEP && deep < 2.0 * DEEP {
+                        continue;
+                    }
+                    let what = format!("{phi}° {b} and {a}");
+                    if deep > DEEP {
+                        let made = boss_chamfer(&body, &frame, 1.0, b, a, true, &tol);
+                        assert!(
+                            made.is_err(),
+                            "{what}: built, its line {deep} into the wall"
+                        );
+                        refused += 1;
+                    } else {
+                        assert_boss_chamfer(&body, &frame, 1.0, phi, b, a, true, &tol);
+                        built += 1;
+                    }
+                }
+            }
+        }
+    }
+    println!("{built} built, {refused} refused");
+    assert!(
+        built > 100 && refused > 40,
+        "{built} built, {refused} refused"
+    );
+}
+
+/// A plate whose top goes on into a round: the section (y, z) from y = 0 to
+/// 40 and z = 0 to 20 with a step down to the top z = 10 at y = 28 (the
+/// wall, from z = 10 up), the top running to y = 36 and on into a round of
+/// radius 4 about (36, 6) down to the side y = 40. Its outline, and the
+/// round's centre and radius.
+const ROUND: (P, f64) = ([36.0, 6.0], 4.0);
+
+fn rounded_outline() -> Vec<P> {
+    vec![
+        [0.0, 0.0],
+        [40.0, 0.0],
+        [40.0, 6.0],
+        [36.0, 10.0],
+        E,
+        [28.0, 20.0],
+        [0.0, 20.0],
+    ]
+}
+
+/// The rounded plate along x of `frame`, 40 long, at scale `k`; the round
+/// is the curve from index 2.
+fn rounded(frame: &Frame, k: f64, tol: &Tolerance) -> Body {
+    let outline = rounded_outline();
+    let n = outline.len();
+    let curves: Vec<SketchCurve> = (0..n)
+        .map(|i| {
+            let (p, q) = (outline[i], outline[(i + 1) % n]);
+            let (start, end) = ([p[0] * k, p[1] * k], [q[0] * k, q[1] * k]);
+            SketchCurve {
+                id: i as u64 + 1,
+                curve: if i == 2 {
+                    Curve2::Arc {
+                        center: [ROUND.0[0] * k, ROUND.0[1] * k],
+                        start,
+                        end,
+                    }
+                } else {
+                    Curve2::Line { start, end }
+                },
+            }
+        })
+        .collect();
+    let profiles = detect_profiles(&curves, tol).unwrap();
+    let along = Frame::new(frame.origin(), frame.x(), frame.y()).unwrap();
+    extrude(&profiles, &along, 0.0, 40.0 * k, tol).unwrap().body
+}
+
+/// The chamfer of the rounded plate's edge E, `d` along the top and `e` up
+/// the wall (scale 1), past the round's tangent line at y = 36: the foot
+/// on the round `d` (straight) from E, the region it fills (between the
+/// top, the round, the line to the wall's foot and the wall), the length
+/// of the top and round it covers and of its line, and how far the top and
+/// the round from E to the foot reach past the line between the feet
+/// (among 40001 points; negative where they keep clear).
+fn rounded_cut(d: f64, e: f64) -> (P, f64, f64, f64, f64) {
+    let ([kx, ky], r) = ROUND;
+    let s = [36.0, 10.0];
+    // |K + r u(φ) - E|² = d²: 8 cos φ - 4 sin φ = (d² - 96) / 8.
+    let amplitude = 80.0_f64.sqrt();
+    let phi = ((d * d - 96.0) / (8.0 * amplitude)).pacos() - 4.0_f64.patan2(8.0);
+    let foot = [kx + r * phi.pcos(), ky + r * phi.psin()];
+    let theta = PI / 2.0 - phi;
+    let g = [E[0], E[1] + e];
+    let added = polygon_area(&[E, s, foot, g]) - 0.5 * r * r * (theta - theta.psin());
+    let line = (g[0] - foot[0]).phypot(g[1] - foot[1]);
+    let w = [(g[0] - foot[0]) / line, (g[1] - foot[1]) / line];
+    let mut n = [-w[1], w[0]];
+    if (E[0] - foot[0]) * n[0] + (E[1] - foot[1]) * n[1] > 0.0 {
+        n = [w[1], -w[0]];
+    }
+    let mut past = f64::NEG_INFINITY;
+    for i in 0..=40_000 {
+        let u = f64::from(i) / 40_000.0;
+        let p = if u <= 0.5 {
+            [E[0] + 16.0 * u, E[1]]
+        } else {
+            let angle = PI / 2.0 - theta * (2.0 * u - 1.0);
+            [kx + r * angle.pcos(), ky + r * angle.psin()]
+        };
+        let along = (p[0] - foot[0]) * w[0] + (p[1] - foot[1]) * w[1];
+        if (1e-9..=line).contains(&along) {
+            past = past.max((p[0] - foot[0]) * n[0] + (p[1] - foot[1]) * n[1]);
+        }
+    }
+    (foot, added, 8.0 + r * theta, line, past)
+}
+
+#[test]
+fn a_chamfer_whose_cut_line_runs_past_a_tops_edge_onto_a_round_is_built_or_refused_by_its_line() {
+    // A straight edge between two planes, chamfered in place: past y = 36
+    // the cut line on the top is carried onto the round, at the straight
+    // distance from the edge. Built invalid before 2026-11-14 (the face
+    // moved to pass through the top's plane continued); now built, the
+    // section, where its line clears the top and the round, and refused as
+    // too large where it runs through the top (9 along the top and 1 up the
+    // wall: the line from the round to the wall's foot dips under the top)
+    // or through the round (11 and 9: it leaves the round inward at its
+    // foot and comes out 8.7e-3 above it further up).
+    let profile = polygon_area(&rounded_outline()) + 8.0 * (PI / 2.0 - 1.0);
+    let perimeter = 40.0 + 6.0 + 2.0 * PI + 8.0 + 10.0 + 28.0 + 20.0;
+    let (v0, a0) = (40.0 * profile, 40.0 * perimeter + 2.0 * profile);
+    for k in SCALES {
+        let tol = tolerance(k);
+        for frame in frames(k) {
+            let body = rounded(&frame, k, &tol);
+            assert_close(mass(&body).volume, v0 * k * k * k, "the rounded plate");
+            let edge = edge_near(&body, frame.point(20.0 * k, E[0] * k, E[1] * k));
+            let faces = faces_of(&body, edge);
+            let top = *faces
+                .iter()
+                .find(|f| {
+                    let Surface::Plane(p) = &body.faces[f.0 as usize].surface else {
+                        return false;
+                    };
+                    p.frame().z().dot(frame.z()).abs() > 0.5
+                })
+                .unwrap();
+            let wall = *faces.iter().find(|f| **f != top).unwrap();
+            let request = |d: f64, e: f64, top_first: bool| ChamferEdge {
+                edge,
+                first: if top_first { top } else { wall },
+                size: if top_first {
+                    ChamferSize::Distances {
+                        first: d * k,
+                        second: e * k,
+                    }
+                } else {
+                    ChamferSize::Distances {
+                        first: e * k,
+                        second: d * k,
+                    }
+                },
+            };
+            for (d, e) in [(9.0, 9.0), (10.0, 9.0), (9.5, 6.0)] {
+                let (_, added, covered, line, past) = rounded_cut(d, e);
+                assert!(past <= 0.0, "{d} {e}: {past}");
+                for top_first in [true, false] {
+                    let what = format!("{d} and {e} at {k}, the top first {top_first}");
+                    let made = chamfer(&body, &[request(d, e, top_first)], &tol)
+                        .unwrap_or_else(|error| panic!("{what}: {error}"));
+                    assert_eq!(check(&made.body, &tol), [], "{what}");
+                    let m = craft3d_topo::mass_properties(&made.body)
+                        .unwrap_or_else(|error| panic!("{what}: {error}"));
+                    assert_close(m.volume, (v0 + 40.0 * added) * k * k * k, &what);
+                    let area = a0 + 40.0 * (line - covered - e) + 2.0 * added;
+                    assert_close(m.area, area * k * k, &what);
+                }
+            }
+            for (d, e) in [(9.0, 1.0), (10.0, 3.0), (11.0, 9.0)] {
+                let (_, _, _, _, past) = rounded_cut(d, e);
+                assert!(past > 1e-3, "{d} {e}: {past}");
+                let what = format!("{d} and {e} at {k}");
+                let error = chamfer(&body, &[request(d, e, true)], &tol).unwrap_err();
+                assert!(
+                    matches!(error, KernelError::ChamferTooLarge { .. }),
+                    "{what}: {error}"
+                );
+            }
+        }
+    }
+}
+
+/// The plate and the pipe as one extruded section whose arc above the top
+/// is two arcs of the pipe's circle that meet at `split` degrees (a smooth
+/// edge between two faces of one cylinder), 40 long along x of `frame`.
+fn split_pipe(frame: &Frame, k: f64, split: f64, tol: &Tolerance) -> Body {
+    let t = split.to_radians();
+    let p1 = [C[0] + R * t.pcos(), C[1] + R * t.psin()];
+    let s = |p: P| [p[0] * k, p[1] * k];
+    let line = |id: u64, a: P, b: P| SketchCurve {
+        id,
+        curve: Curve2::Line {
+            start: s(a),
+            end: s(b),
+        },
+    };
+    let arc = |id: u64, a: P, b: P| SketchCurve {
+        id,
+        curve: Curve2::Arc {
+            center: s(C),
+            start: s(a),
+            end: s(b),
+        },
+    };
+    let curves = vec![
+        line(1, [0.0, 0.0], [40.0, 0.0]),
+        line(2, [40.0, 0.0], [40.0, 10.0]),
+        line(3, [40.0, 10.0], E),
+        arc(4, E, p1),
+        arc(5, p1, [12.0, 10.0]),
+        line(6, [12.0, 10.0], [0.0, 10.0]),
+        line(7, [0.0, 10.0], [0.0, 0.0]),
+    ];
+    let profiles = detect_profiles(&curves, tol).unwrap();
+    let along = Frame::new(frame.origin(), frame.x(), frame.y()).unwrap();
+    extrude(&profiles, &along, 0.0, 40.0 * k, tol).unwrap().body
+}
+
+#[test]
+fn a_chamfer_whose_cut_line_runs_onto_the_next_face_of_one_cylinder_is_the_pipes() {
+    // The pipe on the plate with its wall made of two faces of one
+    // cylinder, split 2.07 of arc above the edge: the cut line along the
+    // wall is carried onto the second face, on the same circle, and the
+    // chamfer is the pipe's (built as 0.1.0 built it up to where its line
+    // enters the pipe by the tolerance). Past that 0.1.0 built it wrong,
+    // as the pipe in one face was until 2026-11-13 (the plan's section,
+    // whose foot lies off the first face, stood down): now too large, with
+    // the size the pipe in one face is given.
+    let v0 = 40.0 * (400.0 + PI * R * R - dip());
+    for k in SCALES {
+        let tol = tolerance(k);
+        for frame in frames(k) {
+            let body = split_pipe(&frame, k, -25.0, &tol);
+            assert_close(mass(&body).volume, v0 * k * k * k, "the split pipe");
+            let edge = edge_near(&body, frame.point(20.0 * k, E[0] * k, E[1] * k));
+            let wall = faces_of(&body, edge)
+                .into_iter()
+                .find(|f| matches!(body.faces[f.0 as usize].surface, Surface::Cylinder(_)))
+                .unwrap();
+            let request = |b: f64, a: f64| ChamferEdge {
+                edge,
+                first: wall,
+                size: ChamferSize::Distances {
+                    first: b * k,
+                    second: a * k,
+                },
+            };
+            for b in [1.5, 3.0, 4.0, 4.467, 4.469] {
+                let what = format!("{b} at {k}");
+                let made = chamfer(&body, &[request(b, 1.0)], &tol)
+                    .unwrap_or_else(|e| panic!("{what}: {e}"));
+                assert_eq!(check(&made.body, &tol), [], "{what}");
+                let expected = (v0 + 40.0 * section_area(1.0, b, true)) * k * k * k;
+                assert_close(mass(&made.body).volume, expected, &what);
+            }
+            for b in [4.6, 8.0] {
+                let what = format!("{b} at {k}");
+                let error = chamfer(&body, &[request(b, 1.0)], &tol).unwrap_err();
+                let KernelError::ChamferTooLarge { largest, .. } = error else {
+                    panic!("{what}: {error}");
+                };
+                let at = touching(1.0, b, true);
+                assert!(
+                    (largest - at * b * k).abs() <= 1e-4 * at * b * k,
+                    "{what}: {largest} for {}",
+                    at * b * k
+                );
+            }
+        }
+    }
+}
+
+/// The boss whose wall leaves the top at E as the arc about C up to `phi`
+/// degrees and goes on tangentially as a cubic Bézier spline [`RUN`] long
+/// whose end lies `bend` to the left of the tangent (0: the tangent plane
+/// itself, as a spline face), 40 long along x of `frame`; and its control
+/// points.
+fn spline_boss(frame: &Frame, k: f64, phi: f64, bend: f64, tol: &Tolerance) -> (Body, [P; 4]) {
+    let (t, dir) = tangent_point(phi);
+    let side = [-dir[1], dir[0]];
+    let at = |s: f64, off: f64| {
+        [
+            t[0] + s * dir[0] + off * side[0],
+            t[1] + s * dir[1] + off * side[1],
+        ]
+    };
+    let control = [
+        t,
+        at(RUN / 3.0, 0.0),
+        at(2.0 * RUN / 3.0, bend / 3.0),
+        at(RUN, bend),
+    ];
+    let q = control[3];
+    let s = |p: P| [p[0] * k, p[1] * k];
+    let line = |id: u64, a: P, b: P| SketchCurve {
+        id,
+        curve: Curve2::Line {
+            start: s(a),
+            end: s(b),
+        },
+    };
+    let curves = vec![
+        line(1, [0.0, 0.0], [40.0, 0.0]),
+        line(2, [40.0, 0.0], [40.0, 10.0]),
+        line(3, [40.0, 10.0], E),
+        SketchCurve {
+            id: 4,
+            curve: Curve2::Arc {
+                center: s(C),
+                start: s(E),
+                end: s(t),
+            },
+        },
+        SketchCurve {
+            id: 5,
+            curve: Curve2::Spline(Spline2 {
+                degree: 3,
+                knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                control: control.iter().map(|p| s(*p)).collect(),
+            }),
+        },
+        line(6, q, [10.0, q[1]]),
+        line(7, [10.0, q[1]], [10.0, 10.0]),
+        line(8, [10.0, 10.0], [0.0, 10.0]),
+        line(9, [0.0, 10.0], [0.0, 0.0]),
+    ];
+    let profiles = detect_profiles(&curves, tol).unwrap();
+    let along = Frame::new(frame.origin(), frame.x(), frame.y()).unwrap();
+    (
+        extrude(&profiles, &along, 0.0, 40.0 * k, tol).unwrap().body,
+        control,
+    )
+}
+
+/// The plate and the pipe as one extruded section, 40 long along x of
+/// `frame`, with the top beside E made of two faces of one plane that meet
+/// at y = `split` (or of one face).
+fn split_top(frame: &Frame, k: f64, split: Option<f64>, tol: &Tolerance) -> Body {
+    let s = |p: P| [p[0] * k, p[1] * k];
+    let line = |id: u64, a: P, b: P| SketchCurve {
+        id,
+        curve: Curve2::Line {
+            start: s(a),
+            end: s(b),
+        },
+    };
+    let mut curves = vec![
+        line(1, [0.0, 0.0], [40.0, 0.0]),
+        line(2, [40.0, 0.0], [40.0, 10.0]),
+    ];
+    match split {
+        Some(y) => {
+            curves.push(line(3, [40.0, 10.0], [y, 10.0]));
+            curves.push(line(4, [y, 10.0], E));
+        }
+        None => curves.push(line(3, [40.0, 10.0], E)),
+    }
+    curves.push(SketchCurve {
+        id: 5,
+        curve: Curve2::Arc {
+            center: s(C),
+            start: s(E),
+            end: s([12.0, 10.0]),
+        },
+    });
+    curves.push(line(6, [12.0, 10.0], [0.0, 10.0]));
+    curves.push(line(7, [0.0, 10.0], [0.0, 0.0]));
+    let profiles = detect_profiles(&curves, tol).unwrap();
+    let along = Frame::new(frame.origin(), frame.x(), frame.y()).unwrap();
+    extrude(&profiles, &along, 0.0, 40.0 * k, tol).unwrap().body
+}
+
+#[test]
+fn a_chamfer_beside_a_pipe_whose_top_is_two_faces_of_one_plane_is_the_whole_tops() {
+    // The top beside the pipe made of two faces of one plane, 1.5 from the
+    // edge: a cut line on the top past 1.5 is carried onto the second face.
+    // Until 2026-11-14 the plan's section stood down there (its foot off
+    // the first face) and the chamfer was built where its line runs
+    // through the pipe (8 along the pipe and 2 or 3 along the top: built,
+    // 26914.246 for 2 at scale 1, where the top of one face is refused with
+    // 5.069 as what fits). Now every size is what the top of one face
+    // gives: the same volume, or the same refusal.
+    let mut refused = 0;
+    for (k, frame) in [(1.0, Frame::WORLD), (1e6, frames(1e6)[2])] {
+        let tol = tolerance(k);
+        let whole = split_top(&frame, k, None, &tol);
+        let split = split_top(&frame, k, Some(29.5), &tol);
+        for b in [2.0, 3.0, 4.0, 4.4, 4.5, 4.6, 5.0, 6.0, 8.0] {
+            for a in [1.0, 2.0, 3.0, 5.0] {
+                let what = format!("{b} along the pipe and {a} along the top at {k}");
+                let outcome = |body: &Body| {
+                    let edge = edge_near(body, frame.point(20.0 * k, E[0] * k, E[1] * k));
+                    let pipe = faces_of(body, edge)
+                        .into_iter()
+                        .find(|f| matches!(body.faces[f.0 as usize].surface, Surface::Cylinder(_)))
+                        .unwrap();
+                    let request = ChamferEdge {
+                        edge,
+                        first: pipe,
+                        size: ChamferSize::Distances {
+                            first: b * k,
+                            second: a * k,
+                        },
+                    };
+                    chamfer(body, &[request], &tol).map(|m| {
+                        assert_eq!(check(&m.body, &tol), [], "{what}");
+                        mass(&m.body).volume
+                    })
+                };
+                match (outcome(&whole), outcome(&split)) {
+                    (Ok(one), Ok(two)) => assert_close(two, one, &what),
+                    (
+                        Err(KernelError::ChamferTooLarge { largest: one, .. }),
+                        Err(KernelError::ChamferTooLarge { largest: two, .. }),
+                    ) => {
+                        assert!((two - one).abs() <= 1e-6 * one, "{what}: {two} for {one}");
+                        refused += 1;
+                    }
+                    (one, two) => panic!("{what}: one face {one:?}, two faces {two:?}"),
+                }
+            }
+        }
+    }
+    assert!(refused > 10, "{refused}");
+}
+
+/// Chamfers built wrong with 0.1.0 and still, owed: where the boss's wall
+/// goes on as a spline face tangent to the arc (even the tangent plane
+/// itself, made a spline), the cut line carried onto it is not held
+/// (`carried` holds a plane or a cylinder along the edge beyond; the
+/// in-place search stands down where a foot leaves its face:
+/// docs/design/blends.md › *A cut line carried onto the face beyond*,
+/// Open). Each is the tangent point (degrees), how far the spline's end
+/// bends off the tangent, the distance along the wall and along the top,
+/// and what the wrong body adds per unit of length (measured on
+/// release/0.1 and with 2026-11-14's fix alike). When a change refuses one
+/// of them or builds it right, this test fails: take it off the list.
+const KNOWN_WRONG: [(f64, f64, f64, f64, f64); 3] = [
+    (-10.0, 0.0, 5.0, 1.0, 1.266_993_236_2),
+    (-10.0, 0.0, 6.0, 0.5, -0.163_378_046_6),
+    (-10.0, 0.2, 6.0, 0.5, -0.171_677_234_3),
+];
+
+#[test]
+fn chamfers_carried_onto_a_spline_beyond_the_arc_are_built_wrong_still_known() {
+    // Why each is wrong: along the straight spline the section is the
+    // tangent plane's, whose line runs through the arc (8.4e-3 at 5 and
+    // 1, 0.184 at 6 and 0.5; on the tangent plane as a plane refused), and
+    // a point of the boss just inside the arc where it lies past the line
+    // is left outside the body; at 6 and 0.5 a chamfer of a concave edge
+    // takes material away.
+    for (k, frame) in [(1.0, Frame::WORLD), (1e6, frames(1e6)[2])] {
+        let tol = tolerance(k);
+        for (phi, bend, b, a, added) in KNOWN_WRONG {
+            let what = format!("{phi}° bend {bend}, {b} and {a} at {k}");
+            let (body, _) = spline_boss(&frame, k, phi, bend, &tol);
+            let v0 = mass(&body).volume;
+            let edge = edge_near(&body, frame.point(20.0 * k, E[0] * k, E[1] * k));
+            let wall = faces_of(&body, edge)
+                .into_iter()
+                .find(|f| matches!(body.faces[f.0 as usize].surface, Surface::Cylinder(_)))
+                .unwrap();
+            let request = ChamferEdge {
+                edge,
+                first: wall,
+                size: ChamferSize::Distances {
+                    first: b * k,
+                    second: a * k,
+                },
+            };
+            let made = chamfer(&body, &[request], &tol)
+                .unwrap_or_else(|e| panic!("{what}: refused now ({e}): take it off the list"));
+            assert_eq!(check(&made.body, &tol), [], "{what}");
+            let got = (mass(&made.body).volume - v0) / (40.0 * k * k * k);
+            assert!(
+                (got - added).abs() <= 1e-8 * added.abs(),
+                "{what}: adds {got} per unit of length, not the known wrong {added}: \
+                 take it off the list if it is right now"
+            );
+            if bend == 0.0 {
+                let c = cut(phi, b, a);
+                assert!(c.run > 0.0 && c.past > 1e-3, "{what}: {}", c.past);
+                let inward = [C[0] - c.deepest[0], C[1] - c.deepest[1]];
+                let reach = inward[0].phypot(inward[1]);
+                let q = [
+                    c.deepest[0] + inward[0] / reach * 0.5 * c.past,
+                    c.deepest[1] + inward[1] / reach * 0.5 * c.past,
+                ];
+                let points: Vec<Vec3> = [5.0, 20.0, 35.0]
+                    .iter()
+                    .map(|x| frame.point(x * k, q[0] * k, q[1] * k))
+                    .collect();
+                let before = classify_points(&body, &points, &tol).unwrap();
+                let after = classify_points(&made.body, &points, &tol).unwrap();
+                assert!(
+                    before.iter().all(|p| *p == Place::Inside),
+                    "{what}: {before:?}"
+                );
+                assert!(
+                    after.iter().all(|p| *p == Place::Outside),
+                    "{what}: {after:?}"
+                );
+            }
+            if added < 0.0 {
+                assert!(got < 0.0, "{what}");
             }
         }
     }

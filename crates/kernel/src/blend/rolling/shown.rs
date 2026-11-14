@@ -72,10 +72,13 @@
 //! the halving leaves undecided; a plane passed over because no section
 //! was found in it; a crossing inside a piece whose points looked at all
 //! lie past the face; a plane where a foot leaves its face (a cut line
-//! carried across a smooth edge). Fillets are not looked at here. Where
-//! every section is the same (a straight edge along faces a translation
-//! along it carries into themselves, a circle between faces turned about
-//! its axis), one plane stands for all and nothing lies between.
+//! carried across a smooth edge). Fillets are held in the same planes by
+//! [`ball`]. Where every section is the same (a straight edge along faces
+//! a translation along it carries into themselves, a circle between faces
+//! turned about its axis), one plane stands for all and nothing lies
+//! between.
+
+mod ball;
 
 use super::{Item, Section, Shape, Side, Solver, Spine, first_section, refuse, scale_of};
 use crate::blend::{BlendError, Reason, Size};
@@ -119,12 +122,16 @@ enum Held {
 /// `Ok` unless the chamfer of `item` (built in place) is shown, in one of
 /// the planes across its edge looked at, to have a face's trace on the
 /// other side of its line from the edge; then refused as passing through
-/// that face (see the module documentation). A fillet passes.
+/// that face (see the module documentation). A fillet is held by
+/// [`ball::shown_wrong`].
 pub(super) fn shown_wrong(
     body: &Body,
     item: &Item,
     tolerance: &Tolerance,
 ) -> Result<(), BlendError> {
+    if let Size::Radius(radius) = item.request.size {
+        return ball::shown_wrong(body, item, radius, tolerance);
+    }
     let Size::Chamfer(ChamferSize::Distances { first, second }) = item.request.size else {
         return Ok(());
     };
