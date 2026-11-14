@@ -337,3 +337,51 @@ fn the_v61_cap_is_the_sphere_cap_of_its_closed_form() {
         cap["area"]
     );
 }
+
+/// What pins v64's jogged plate besides its fixture (whose `bbox` is a
+/// tessellation's, set by the body's vertices: its largest y went from 40
+/// to 40 + 7.1e-15, one unit in the last place, on 2026-11-14, when the
+/// corners where the jog's first bend runs on into the plate's sides were
+/// taken from the rims' rows as every smooth corner is,
+/// docs/design/plates.md › *Findings and history*; its volume and area kept
+/// every bit). The part: a plate 80 × 40, 1 thick, a hole of radius 4 on
+/// the far side, jogged up 8 at x = 35 by two bends of 60 degrees and
+/// radius 2, and a flange 12 long bent 90 degrees at radius 1.5 on a side
+/// 40 long. Its volume is `T` times its flats (the near side 35 × 40, the
+/// web `w × 40` with `w = (h − (2R + T)(1 − cos α)) / sin α`, the far side
+/// 45 × 40 less the hole, the flange 12 × 40) plus each bend's
+/// `θ 40 T (R + T/2)`; across the plate it reaches from y = 0 to y = 40,
+/// to the rounding of its coordinates.
+#[test]
+fn the_v64_jogged_plate_is_its_closed_form() {
+    use craft3d_math::Portable;
+    use std::f64::consts::PI;
+    let dir = workdir("format-versions", "v64-jog");
+    std::fs::copy(fixtures().join("v64.3dcraft"), dir.join("v64.3dcraft")).unwrap();
+    let mut s = session_in(&dir);
+    run(&mut s, "file.open", json!({"path": "v64.3dcraft"}));
+    let inspect = run(&mut s, "document.inspect", json!({}));
+    let plate = inspect["bodies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["feature"] == "F2")
+        .unwrap_or_else(|| panic!("no F2 in {inspect}"));
+    let num = |v: &Value| v.as_f64().unwrap_or_else(|| panic!("not a number: {v}"));
+    let (t, h, alpha, jog_r, flange_r) = (1.0, 8.0, PI / 3.0, 2.0, 1.5);
+    let w = (h - (2.0 * jog_r + t) * (1.0 - alpha.pcos())) / alpha.psin();
+    let flats = 35.0 * 40.0 + w * 40.0 + 45.0 * 40.0 - PI * 16.0 + 12.0 * 40.0;
+    let volume = t * flats
+        + 2.0 * alpha * 40.0 * t * (jog_r + t / 2.0)
+        + PI / 2.0 * 40.0 * t * (flange_r + t / 2.0);
+    assert!(
+        (num(&plate["volume"]) - volume).abs() <= 1e-12 * volume,
+        "volume {} vs {volume}",
+        plate["volume"]
+    );
+    let rounding = 1e-12 * 100.0;
+    let chord = num(&plate["bboxTolerance"]);
+    let (lo, hi) = (num(&plate["bbox"][0][1]), num(&plate["bbox"][1][1]));
+    assert!(lo >= -rounding && lo <= chord, "{plate}");
+    assert!(hi <= 40.0 + rounding && hi >= 40.0 - chord, "{plate}");
+}

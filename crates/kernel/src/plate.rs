@@ -1829,10 +1829,29 @@ fn smooth_square(
     };
     match (away(a), away(b)) {
         // Running on: the two point away from the vertex in opposite
-        // directions.
-        (Some(da), Some(db)) => da.dot(db) <= -angular.pcos(),
+        // directions, so the boundary turns there by no more than the
+        // angular tolerance, read as an angle ([`turn`]). A joint whose dot
+        // rounds to −1 (a turn below about 1.05e-8, where the cosine is 1)
+        // runs on too, as it always did: the angle only adds the joints
+        // tangent to rounding whose dot rounded just above −1, so no
+        // corner taken from the rows before is solved on the rims now
+        // (2026-11-14).
+        (Some(da), Some(db)) => da.dot(db) <= -angular.pcos() || turn(da, db) <= angular,
         _ => false,
     }
+}
+
+/// The angle the boundary turns by at a vertex where one edge leaves it
+/// along the unit vector `da` and the other along `db`: the angle between
+/// `da` and `−db`, from 0 (running on) to π (running back), read from its
+/// sine and cosine together (`atan2(|da × db|, −da · db)`), so it is
+/// accurate to rounding near 0. The cosine alone is not: `cos θ` is
+/// `1 − θ²/2`, which is 1 in floating point for every `θ` below about
+/// 1e-8, so a comparison with the cosine of an angular tolerance of 1e-9
+/// asks whether the dot is −1 to the last bit (found 2026-11-14,
+/// docs/design/plates.md › *Corners*).
+fn turn(da: Vec3, db: Vec3) -> f64 {
+    da.cross(db).length().patan2(-da.dot(db))
 }
 
 /// Points an edge between two faces is looked at for a crease before the
@@ -2581,6 +2600,25 @@ fn corners(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The turn at a vertex is read to rounding near 0: two tangents a
+    /// thousandth of the angular tolerance apart, whose dot is one unit in
+    /// the last place above −1 (the cosine read the turn as a crease),
+    /// run on; a turn of twice the tolerance does not, nor a right angle
+    /// or running back.
+    #[test]
+    fn the_turn_at_a_vertex_is_read_to_rounding() {
+        let angular = Tolerance::default().angular;
+        let da = Vec3::new(1.0, 0.0, 0.0);
+        let db = Vec3::new(-(1.0 - 0.5 * f64::EPSILON), 1e-12, 0.0);
+        assert!(da.dot(db) > -angular.pcos(), "the cosine's reading");
+        assert!((turn(da, db) - 1e-12).abs() <= 1e-18);
+        assert!(turn(da, db) <= angular);
+        let wider = Vec3::new(-(2e-9_f64).pcos(), (2e-9_f64).psin(), 0.0);
+        assert!(turn(da, wider) > angular);
+        assert!((turn(da, Vec3::new(0.0, 1.0, 0.0)) - FRAC_PI_2).abs() <= 1e-15);
+        assert!((turn(da, da) - std::f64::consts::PI).abs() <= 1e-15);
+    }
 
     /// A curved panel `k` (100 by 60, a parabola 20 high along x) with a
     /// bevel of 30 degrees on its side at x = 100: the bevel's corners on
