@@ -91,8 +91,11 @@
 //! surface that closes within the tolerance but not to `closure`'s
 //! rounding (or on knots that are not clamped) is charted as one that does
 //! not close: its seam passes, but a loop across the seam is not followed
-//! right. A loop whose half step moves more than a quarter period (a long
-//! spline edge on a surface that closes, followed in eight steps) is not
+//! right. A spline edge on a surface that closes about an axis is followed
+//! in steps its control points show to move less than a quarter turn about
+//! it (`crate::region`), so a helix of many turns as one edge is read as it
+//! goes round; elsewhere (the angle about a torus's tube, a conic near a
+//! pole) a loop whose half step moves more than a quarter period is not
 //! held to 2 or 3 (a half step of more than three quarters of a period
 //! wraps unseen). A loop narrower than twice its margin has no point clear
 //! of it for 3. A spline overlap shorter than about a quarter of both

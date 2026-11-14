@@ -27,7 +27,11 @@
 //!
 //! **How.** Each edge is followed in a few steps (a line in one on a
 //! plane, else in two; a circle or an ellipse in steps of at most π/8; a
-//! spline in eight per edge), each point projected onto the surface
+//! spline in eight per edge, and on a surface that closes about an axis in
+//! as many more as its control points show it needs to move less than a
+//! quarter turn about the axis from each point to the next, [`spline_steps`],
+//! so that a helix of many turns as one edge is followed round every turn),
+//! each point projected onto the surface
 //! (from the one before on a freeform surface, checked against the point,
 //! else from nothing) and moved by whole periods to the one before it.
 //! The middle of every step is projected too: how far it is from the
@@ -48,8 +52,12 @@ use std::sync::{Mutex, PoisonError};
 
 /// Most points one face is followed at; a larger face is passed.
 pub const MOST_PER_FACE: usize = 1 << 18;
-/// Steps of a spline edge.
+/// Steps of a spline edge (at least: on a surface that closes about an
+/// axis, as many more as [`spline_steps`] needs).
 const SPLINE_STEPS: usize = 8;
+/// Most steps of a spline edge on a surface that closes about an axis; an
+/// edge that needs more is not followed.
+const MOST_SPLINE_STEPS: usize = 1 << 14;
 /// Steps of a line on a curved surface.
 const LINE_STEPS: usize = 2;
 /// Largest angle of a circle's or an ellipse's step.
@@ -73,10 +81,12 @@ pub(crate) struct Ring {
     /// Where each coedge's points begin in `points`, in the loop's order.
     pub(crate) starts: Vec<usize>,
     /// Whether a half step moved more than a quarter period: the step may
-    /// have gone round by more than the chart shows (a long spline edge on
-    /// a surface that closes, followed in few steps), so how often the
-    /// loop goes round, and where along it a point lies, are not to be
-    /// read off it (the region rule reads it as before).
+    /// have gone round by more than the chart shows, so how often the loop
+    /// goes round, and where along it a point lies, are not to be read off
+    /// it (the region rule reads it as before). A spline edge on a surface
+    /// that closes about an axis is followed in steps shown to move less
+    /// than that about it ([`spline_steps`]); what is left is the angle
+    /// about a torus's tube and a conic near a pole.
     pub(crate) aliased: bool,
 }
 
@@ -717,6 +727,7 @@ pub(crate) fn follow(
     bands: bool,
 ) -> Option<Ring> {
     let planar = matches!(chart.surface, Surface::Plane(_));
+    let axis = axis_of(chart.surface);
     let mut points = Vec::new();
     let mut starts = Vec::with_capacity(coedges.len());
     let mut aliased = false;
@@ -741,7 +752,10 @@ pub(crate) fn follow(
                     return None;
                 }
             }
-            Curve3::Nurbs(_) => SPLINE_STEPS,
+            Curve3::Nurbs(n) => match axis {
+                Some(axis) => spline_steps(n, (t0, t1), axis)?,
+                None => SPLINE_STEPS,
+            },
         };
         *total = total.saturating_add(2 * steps);
         if *total > MOST_PER_FACE {
@@ -810,6 +824,190 @@ pub(crate) fn follow(
         starts,
         aliased,
     })
+}
+
+/// The axis a surface closes about, as a point on it and its unit
+/// direction: where `u`, whose period is a turn, is the angle about the
+/// frame's z axis (a cylinder, a cone, a sphere, a torus), so the point of
+/// the surface nearest a point off it, which the chart takes, has the
+/// point's own angle about that axis. `None` for every other surface.
+fn axis_of(surface: &Surface) -> Option<(Vec3, Vec3)> {
+    let frame = match surface {
+        Surface::Cylinder(c) => c.frame(),
+        Surface::Cone(c) => c.frame(),
+        Surface::Sphere(s) => s.frame(),
+        Surface::Torus(t) => t.frame(),
+        Surface::Plane(_) | Surface::Bezier(_) | Surface::Nurbs(_) => return None,
+    };
+    Some((frame.origin(), frame.z()))
+}
+
+/// The steps a spline edge over `(t0, t1)` is followed in on a surface
+/// that closes about `axis` (`u` the angle about it, [`axis_of`]): the
+/// fewest `SPLINE_STEPS · 2^k` such that the curve's angle about the axis is
+/// shown to move by less than a quarter turn over each half step. Then the
+/// chart, which moves each point by whole periods to the one before,
+/// unwraps the loop as it goes round: a helix of many turns as one edge is
+/// followed round every turn, where eight steps of it read as a few turns
+/// the other way (`docs/design/topology.md` › *Loops that bound a region*).
+/// Shown by the first of: (1) the convex hull of the control points of the
+/// knot spans the half step meets in a wedge about the axis narrower than a
+/// quarter turn ([`narrow`]); (2) for a polynomial spline, its speed bound
+/// ([`speed_bound`]) times the half step's width, over the least distance
+/// from the axis the stretch can have (its middle's less half that length:
+/// the distance from a line changes no faster than the point moves), less
+/// than a quarter turn (one evaluation of the curve, counted against an
+/// operation's work, where (1) does not show it); (3) the hull of the
+/// curve's Bézier pieces cut to it (`craft3d_geom::hull_points_in`, made
+/// once, only where needed) in such a wedge. Each
+/// bounds the angle's movement over the whole stretch, so over any part of
+/// it: each of the sixteen half steps of eight is halved only until it is
+/// shown, and the deepest it needed sets the steps. `SPLINE_STEPS` where
+/// nothing of this can be read (a weight that is not positive and finite, a
+/// range past the curve's domain): followed as before. `None` where it
+/// cannot be shown within [`MOST_SPLINE_STEPS`] (a curve through or very
+/// near the axis, a helix of thousands of turns): the loop cannot be
+/// followed without doubt.
+fn spline_steps(
+    curve: &craft3d_geom::NurbsCurve,
+    (t0, t1): (f64, f64),
+    axis: (Vec3, Vec3),
+) -> Option<usize> {
+    let (d0, d1) = curve.domain();
+    let positive = curve.weights().iter().all(|w| w.is_finite() && *w > 0.0);
+    if !(positive && t0 >= d0 && t1 <= d1) {
+        return Some(SPLINE_STEPS);
+    }
+    let (origin, z) = axis;
+    // (1) The control points whose basis functions are not zero over
+    // `(a, b)`, found without inserting a knot.
+    let (knots, ctrl, degree) = (curve.knots(), curve.control_points(), curve.degree());
+    let span = |t: f64| {
+        knots
+            .partition_point(|k| *k <= t)
+            .saturating_sub(1)
+            .clamp(degree, ctrl.len().saturating_sub(1))
+    };
+    let spanned = |a: f64, b: f64| ctrl.get(span(a).saturating_sub(degree)..=span(b));
+    // (2) The angle moves at most at the speed over the distance from the
+    // axis.
+    let speed = speed_bound(curve);
+    let slow = |a: f64, b: f64| {
+        let Some(speed) = speed else {
+            return false;
+        };
+        let reach = (b - a) * speed;
+        let d = curve.eval(0.5 * (a + b)) - origin;
+        let low = (d - z * d.dot(z)).length() - 0.5 * reach;
+        low > 0.0 && reach < QUARTER_TURN * low
+    };
+    // (3) The Bézier pieces, made once where (1) and (2) do not show it.
+    let mut pieces = None;
+    let width = t1 - t0;
+    let halves = 2 * SPLINE_STEPS;
+    let deepest = (MOST_SPLINE_STEPS / SPLINE_STEPS).ilog2();
+    let mut level = 0_u32;
+    // Each half step of `SPLINE_STEPS` halved until it is shown: (the
+    // stretch's index at its level, the level).
+    let mut open: Vec<(usize, u32)> = (0..halves).map(|i| (i, 0)).collect();
+    while let Some((i, at)) = open.pop() {
+        let parts = halves.checked_shl(at)?;
+        let end = |k: usize| t0 + width * (k as f64 / parts as f64);
+        let (a, b) = (end(i), end(i + 1));
+        // The control points first: they cost no evaluation of the curve
+        // (each counted against an operation's work, `geom::allowance`).
+        let shown = spanned(a, b).is_some_and(|points| narrow(points, axis, QUARTER_TURN))
+            || slow(a, b)
+            || {
+                let pieces = pieces.get_or_insert_with(|| curve.bezier_pieces());
+                craft3d_geom::hull_points_in(pieces, (a, b))
+                    .is_some_and(|points| narrow(&points, axis, QUARTER_TURN))
+            };
+        if shown {
+            level = level.max(at);
+        } else if at < deepest {
+            open.push((2 * i + 1, at + 1));
+            open.push((2 * i, at + 1));
+        } else {
+            return None;
+        }
+    }
+    SPLINE_STEPS.checked_shl(level)
+}
+
+/// An upper bound on a polynomial spline's speed over its domain (its
+/// weights all alike): the longest of its derivative's control points
+/// `p (P[i+1] - P[i]) / (u[i+p+1] - u[i+1])` (*The NURBS Book* §3.3), whose
+/// hull holds the derivative. `None` for a rational spline, or where a
+/// derivative control point is not defined (`p + 1` equal knots inside: the
+/// curve may jump there).
+fn speed_bound(curve: &craft3d_geom::NurbsCurve) -> Option<f64> {
+    let weights = curve.weights();
+    let first = *weights.first()?;
+    if weights.iter().any(|w| *w != first) {
+        return None;
+    }
+    let (knots, ctrl, p) = (curve.knots(), curve.control_points(), curve.degree());
+    let mut most = 0.0_f64;
+    for (i, pair) in ctrl.windows(2).enumerate() {
+        let (Some(a), Some(b)) = (pair.first(), pair.get(1)) else {
+            continue;
+        };
+        let lo = *knots.get(i + 1)?;
+        let hi = *knots.get(i + p + 1)?;
+        let gap = hi - lo;
+        if !(gap.is_finite() && gap > 0.0) {
+            return None;
+        }
+        most = most.max(p as f64 * (*b - *a).length() / gap);
+    }
+    most.is_finite().then_some(most)
+}
+
+/// The angle about its axis the stretch of a spline edge over a half step
+/// stays within ([`spline_steps`]): a quarter of the period, which is what
+/// the walk reads as a half step that may have gone round unseen
+/// ([`Ring::aliased`]).
+const QUARTER_TURN: f64 = 0.5 * PI;
+
+/// Whether `points` lie in a wedge about `axis` narrower than `most`
+/// (radians, less than a half turn), none on the axis: their convex hull
+/// then keeps clear of the axis (every point lies in one open half plane
+/// through it) and every point of the hull lies within that wedge, so the
+/// angle about the axis moves by less than `most` along a curve in it.
+fn narrow(points: &[Vec3], (origin, z): (Vec3, Vec3), most: f64) -> bool {
+    let across = |p: Vec3| {
+        let d = p - origin;
+        d - z * d.dot(z)
+    };
+    let Some(first) = points.first().map(|p| across(*p)) else {
+        return false;
+    };
+    let length = first.length();
+    if !(length.is_finite() && length > 0.0) {
+        return false;
+    }
+    let x = first * (1.0 / length);
+    let y = z.cross(x);
+    let (mut low, mut high) = (0.0_f64, 0.0_f64);
+    for p in points {
+        let q = across(*p);
+        let (c, s) = (q.dot(x), q.dot(y));
+        let off = c.phypot(s);
+        if off.is_nan() || off <= 0.0 {
+            return false;
+        }
+        let angle = s.patan2(c);
+        if !angle.is_finite() {
+            return false;
+        }
+        low = low.min(angle);
+        high = high.max(angle);
+        if high - low >= most {
+            return false;
+        }
+    }
+    true
 }
 
 impl Ring {
@@ -1084,5 +1282,200 @@ impl Grid {
         self.cells
             .get(x * self.n + y)
             .map_or(self.all.as_slice(), Vec::as_slice)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+    use super::*;
+    use craft3d_geom::NurbsCurve;
+    use craft3d_math::Frame;
+    use std::f64::consts::{FRAC_PI_2, TAU};
+
+    fn tilted() -> Frame {
+        Frame::new(
+            Vec3::new(3.0, -1.0, 2.0),
+            Vec3::new(0.2, -0.5, 0.84),
+            Vec3::new(0.9, 0.3, 0.1),
+        )
+        .unwrap()
+    }
+
+    /// The point at `angle` about `frame`'s z axis, `radius` from it and
+    /// `height` along it.
+    fn about(frame: &Frame, radius: f64, angle: f64, height: f64) -> Vec3 {
+        let (s, c) = angle.psin_cos();
+        frame.origin() + frame.x() * (radius * c) + frame.y() * (radius * s) + frame.z() * height
+    }
+
+    /// A curve going `quarters` quarter turns about `frame`'s z axis at
+    /// `radius`, rising `rise` a turn: rational quadratic quarter arcs, so
+    /// it lies on the cylinder of that radius exactly.
+    fn winding(frame: &Frame, radius: f64, quarters: usize, rise: f64) -> NurbsCurve {
+        let mut ctrl = Vec::new();
+        let mut weights = Vec::new();
+        let mut knots = vec![0.0; 3];
+        let h = |a: f64| rise * a / TAU;
+        for k in 0..quarters {
+            let (a0, a1) = (k as f64 * FRAC_PI_2, (k + 1) as f64 * FRAC_PI_2);
+            if k == 0 {
+                ctrl.push(about(frame, radius, a0, h(a0)));
+                weights.push(1.0);
+            }
+            let middle = 0.5 * (a0 + a1);
+            ctrl.push(about(frame, radius * 2.0_f64.sqrt(), middle, h(middle)));
+            weights.push(0.5 * 2.0_f64.sqrt());
+            ctrl.push(about(frame, radius, a1, h(a1)));
+            weights.push(1.0);
+            let knot = (k + 1) as f64;
+            if k + 1 < quarters {
+                knots.extend([knot, knot]);
+            } else {
+                knots.extend([knot; 3]);
+            }
+        }
+        NurbsCurve::new(2, knots, ctrl, weights).unwrap()
+    }
+
+    /// The angle about `frame`'s z axis swept along the curve over `(a, b)`,
+    /// sampled finely and unwrapped step by step.
+    fn swept(curve: &NurbsCurve, frame: &Frame, (a, b): (f64, f64)) -> f64 {
+        let angle = |t: f64| {
+            let d = curve.eval(t) - frame.origin();
+            d.dot(frame.y()).patan2(d.dot(frame.x()))
+        };
+        let (mut low, mut high, mut at, mut last) = (0.0_f64, 0.0_f64, 0.0_f64, angle(a));
+        for k in 1..=256 {
+            let now = angle(a + (b - a) * k as f64 / 256.0);
+            at += (now - last + PI).rem_euclid(TAU) - PI;
+            last = now;
+            low = low.min(at);
+            high = high.max(at);
+        }
+        high - low
+    }
+
+    #[test]
+    fn points_in_a_wedge_about_the_axis_narrower_than_a_quarter_turn_are_narrow() {
+        let f = tilted();
+        let axis = (f.origin(), f.z());
+        let at = |degrees: &[f64]| -> Vec<Vec3> {
+            degrees
+                .iter()
+                .enumerate()
+                .map(|(k, d)| about(&f, 1.0 + k as f64, d.to_radians(), k as f64))
+                .collect()
+        };
+        assert!(narrow(&at(&[10.0, 50.0, 89.0]), axis, QUARTER_TURN));
+        // Across the half turn, where the angle's reading jumps.
+        assert!(narrow(&at(&[170.0, -170.0, 175.0]), axis, QUARTER_TURN));
+        assert!(!narrow(&at(&[0.0, 91.0]), axis, QUARTER_TURN));
+        assert!(!narrow(&at(&[0.0, 120.0, 240.0]), axis, QUARTER_TURN));
+        // A point on the axis, a point that is not a number, none.
+        let mut on = at(&[0.0, 10.0]);
+        on.push(f.origin() + f.z() * 5.0);
+        assert!(!narrow(&on, axis, QUARTER_TURN));
+        assert!(!narrow(
+            &[Vec3::new(f64::NAN, 0.0, 0.0), about(&f, 1.0, 0.1, 0.0)],
+            axis,
+            QUARTER_TURN
+        ));
+        assert!(!narrow(&[], axis, QUARTER_TURN));
+    }
+
+    /// The steps a spline edge going round an axis is followed in move less
+    /// than a quarter turn from each point followed to the next (each half
+    /// step's stretch sampled finely), in a frame turned and moved, at three
+    /// scales; one turn keeps the eight steps it always had.
+    #[test]
+    fn a_spline_going_round_is_followed_less_than_a_quarter_turn_a_step() {
+        let f = tilted();
+        for scale in [1e-3, 1.0, 1e6] {
+            for quarters in [1, 4, 5, 37, 400] {
+                let curve = winding(&f, scale, quarters, 0.7 * scale);
+                let range = curve.domain();
+                let steps = spline_steps(&curve, range, (f.origin(), f.z())).unwrap();
+                if quarters <= 4 {
+                    assert_eq!(steps, SPLINE_STEPS, "{quarters}");
+                }
+                let halves = 2 * steps;
+                for k in 0..halves {
+                    let end = |j: usize| range.0 + (range.1 - range.0) * (j as f64 / halves as f64);
+                    let sweep = swept(&curve, &f, (end(k), end(k + 1)));
+                    assert!(
+                        sweep < QUARTER_TURN,
+                        "{quarters} quarter turns at {scale}: half step {k} of {halves} sweeps {sweep}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A spline through the axis cannot be shown to move less than a
+    /// quarter turn a step however fine the steps: it is not followed. (It
+    /// crosses the axis at `√2 − 1`, where no halving of its range ends.)
+    #[test]
+    fn a_spline_through_the_axis_is_not_followed() {
+        let f = tilted();
+        let curve = NurbsCurve::polynomial(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![
+                about(&f, 1.0, 0.0, 0.0),
+                f.origin() + f.z() * 0.5,
+                about(&f, 2.0, PI, 1.0),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            spline_steps(&curve, curve.domain(), (f.origin(), f.z())),
+            None
+        );
+        // Its first fifth keeps clear of the axis: followed in eight steps.
+        assert_eq!(
+            spline_steps(&curve, (0.0, 0.2), (f.origin(), f.z())),
+            Some(SPLINE_STEPS)
+        );
+        // A range past the curve's domain has no hull of control points:
+        // followed in eight steps, as before.
+        assert_eq!(
+            spline_steps(&curve, (-0.5, 1.0), (f.origin(), f.z())),
+            Some(SPLINE_STEPS)
+        );
+    }
+
+    /// The speed bound of a polynomial spline is above its speed sampled
+    /// finely; a rational spline, or one that may jump at a knot, has none.
+    #[test]
+    fn a_polynomial_spline_moves_no_faster_than_its_speed_bound() {
+        let points = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 2.0, 0.5),
+            Vec3::new(3.0, -1.0, 2.0),
+            Vec3::new(4.0, 4.0, -1.0),
+            Vec3::new(6.0, 0.0, 0.0),
+            Vec3::new(7.0, 1.0, 3.0),
+        ];
+        let knots = vec![0.0, 0.0, 0.0, 0.0, 0.3, 0.45, 1.0, 1.0, 1.0, 1.0];
+        let curve = NurbsCurve::polynomial(3, knots, points.clone()).unwrap();
+        let bound = speed_bound(&curve).unwrap();
+        let fastest = (0..=4096)
+            .map(|k| curve.derivatives(k as f64 / 4096.0).1.length())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            fastest <= bound && bound < 4.0 * fastest,
+            "{fastest} {bound}"
+        );
+        let rational = winding(&tilted(), 1.0, 4, 1.0);
+        assert_eq!(speed_bound(&rational), None);
+        // Four equal knots inside a cubic: the curve may jump there.
+        let jumps = NurbsCurve::polynomial(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0],
+            [points.clone(), points[..2].to_vec()].concat(),
+        )
+        .unwrap();
+        assert_eq!(speed_bound(&jumps), None);
     }
 }

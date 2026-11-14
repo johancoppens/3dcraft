@@ -869,35 +869,59 @@ impl NurbsCurve {
         if r0 < d0 || r1 > d1 {
             return None;
         }
-        let mut points = Vec::new();
-        for ((a, b), piece) in self.bezier_pieces() {
-            if !(b >= r0 && a <= r1 && b > a) {
-                continue;
-            }
-            let mut row: Vec<H> = piece.iter().map(|&(p, w)| H { p: p * w, w }).collect();
-            // The right part from the range's start, then the left part of
-            // that to the range's end.
-            let from = r0.max(a);
-            if from > a {
-                row = split_row(&row, (from - a) / (b - a)).1;
-            }
-            let to = r1.min(b);
-            if to < b {
-                row = split_row(&row, (to - from) / (b - from)).0;
-            }
-            for h in row {
-                if !(h.w.is_finite() && h.w > 0.0) {
-                    return None;
-                }
-                let p = h.p * (1.0 / h.w);
-                if !p.is_finite() {
-                    return None;
-                }
-                points.push(p);
-            }
-        }
-        (!points.is_empty()).then_some(points)
+        hull_points_in(&self.bezier_pieces(), (r0, r1))
     }
+}
+
+/// Points whose convex hull holds a curve over `range` (its two parameters
+/// in either order), given as its Bézier pieces ([`NurbsCurve::bezier_pieces`],
+/// made once for the many ranges of one curve): the control points of each
+/// piece that meets the range, cut to it by de Casteljau's algorithm, as
+/// [`NurbsCurve::hull_points`] gives them over part of a curve's domain.
+/// `None` when the range is not finite, no piece meets it, or a weight of a
+/// cut piece is not positive and finite (no hull of control points is known
+/// to hold the curve). The pieces are in the order of their spans, as
+/// `bezier_pieces` gives them; a range past them is held only as far as
+/// they reach.
+pub fn hull_points_in(pieces: &[CurvePiece], range: (f64, f64)) -> Option<Vec<Vec3>> {
+    if !(range.0.is_finite() && range.1.is_finite()) {
+        return None;
+    }
+    let (r0, r1) = (range.0.min(range.1), range.0.max(range.1));
+    // The pieces before the range end before it (their spans in order).
+    let first = pieces.partition_point(|((_, b), _)| *b < r0);
+    let mut points = Vec::new();
+    for ((a, b), piece) in pieces.iter().skip(first) {
+        let (a, b) = (*a, *b);
+        if a > r1 {
+            break;
+        }
+        if !(b >= r0 && b > a) {
+            continue;
+        }
+        let mut row: Vec<H> = piece.iter().map(|&(p, w)| H { p: p * w, w }).collect();
+        // The right part from the range's start, then the left part of
+        // that to the range's end.
+        let from = r0.max(a);
+        if from > a {
+            row = split_row(&row, (from - a) / (b - a)).1;
+        }
+        let to = r1.min(b);
+        if to < b {
+            row = split_row(&row, (to - from) / (b - from)).0;
+        }
+        for h in row {
+            if !(h.w.is_finite() && h.w > 0.0) {
+                return None;
+            }
+            let p = h.p * (1.0 / h.w);
+            if !p.is_finite() {
+                return None;
+            }
+            points.push(p);
+        }
+    }
+    (!points.is_empty()).then_some(points)
 }
 
 /// One Bézier piece of a curve: its span of the curve's parameter, and its

@@ -25,7 +25,7 @@ pub mod trim;
 pub use curve::{Circle, Curve3, Ellipse, Line};
 pub use nurbs::{
     AtU, AtV, BezierSpan, CurvePiece, DerivativeBounds, DerivativeCache, MAX_CONTROL_POINTS,
-    NurbsCurve, NurbsSurface, RationalBezierPatch,
+    NurbsCurve, NurbsSurface, RationalBezierPatch, hull_points_in,
 };
 pub use surface::{
     Cone, Cylinder, Plane, Sphere, Surface, Torus, forget_projections, kept_projections,
