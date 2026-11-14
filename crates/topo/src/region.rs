@@ -19,27 +19,22 @@
 //! torus: any loop there bounds a region on one side or the other), a
 //! loop through or near a pole or an apex (a sphere's pole, a cone's
 //! apex, a freeform surface's collapsed border), a freeform surface that
-//! closes on itself both ways, a point that does not project back onto the
-//! surface, a loop whose area is not
+//! closes on itself (its seam is not a period of the parameters), a point
+//! that does not project back onto the surface, a loop whose area is not
 //! larger than its polyline's error allows to be told from nothing, a
-//! face with more than [`MOST_PER_FACE`] points, and a face with an edge
-//! whose steps are not shown not to go round unseen (below) within
-//! [`MOST_PROOF_WORK`]. On a sphere loops that
-//! all run clockwise are the sphere less some caps, which is a region. A
-//! freeform surface that closes one way on clamped knots is charted with
-//! its domain's width that way as a period ([`periods_of`]), as a cylinder
-//! is, where its cells ([`Cells`]) show the steps of every edge of the
-//! face.
+//! face with more than [`MOST_PER_FACE`] points, and a face with a spline
+//! edge whose steps are not shown not to go round unseen (below) within
+//! [`MOST_SPLINE_STEPS`] and [`MOST_PROOF_WORK`]. On a sphere loops that
+//! all run clockwise are the sphere less some caps, which is a region.
 //!
 //! **How.** Each edge is followed in a few steps (a line in one on a
 //! plane, else in two; a circle or an ellipse in steps of at most π/8; a
-//! spline in eight per edge; where a parameter closes, a spline edge about
-//! the axis of a cylinder, a cone, a sphere or a torus, and every edge on
-//! a spline surface that closes, in as many more as are shown to move less
-//! than a quarter of the period from each point to the next,
-//! [`spline_steps`] and [`Cells::steps`], so that a helix of many turns as
-//! one edge is followed round every turn: a step that is not shown is not
-//! taken, and the face passes), each point projected onto the surface
+//! spline in eight per edge, and about the axis of a cylinder, a cone, a
+//! sphere or a torus in as many more as are shown to move less than a
+//! quarter turn about it from each point to the next, [`spline_steps`], so
+//! that a helix of many turns as one edge is followed round every turn: a
+//! step that is not shown is not taken, and the face passes), each point
+//! projected onto the surface
 //! (from the one before on a freeform surface, checked against the point,
 //! else from nothing) and moved by whole periods to the one before it.
 //! The middle of every step is projected too: how far it is from the
@@ -52,47 +47,48 @@
 //! face of `n` steps costs about `n log n` and the pairs that overlap.
 
 use crate::{Body, Coedge, Face, FaceId, LoopId};
-use craft3d_geom::{BezierSpan, Curve3, CurvePiece, NurbsCurve, RationalBezierPatch, Surface};
-use craft3d_math::{Bbox3, Portable, Tolerance, Vec3};
+use craft3d_geom::{Curve3, CurvePiece, NurbsCurve, Surface};
+use craft3d_math::{Portable, Tolerance, Vec3};
 use std::cell::Cell;
 use std::collections::{BTreeMap, VecDeque};
 use std::f64::consts::PI;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Mutex, PoisonError};
 
 /// Most points one face is followed at; a larger face is passed.
 pub const MOST_PER_FACE: usize = 1 << 18;
 /// Steps of a spline edge (at least: on a surface that closes about an
 /// axis, as many more as [`spline_steps`] needs).
 const SPLINE_STEPS: usize = 8;
-/// Most steps of an edge whose steps are shown ([`steps_shown`]: a spline
-/// edge on a surface that closes about an axis, every edge on a spline
-/// surface that closes); an edge that needs more is not followed.
-const MOST_SPLINE_STEPS: usize = 1 << 14;
-/// Most work showing the steps of one face's edges may take, in points
-/// looked at ([`step_proofs`]): a face that needs more is not followed, so
-/// it passes. A spline edge of `n` control points costs at most some
-/// thirty a control point about an axis (three for a finely knotted one);
-/// a strip of 64 turns between two single edges takes 73 000 on a cylinder
-/// and 480 000 on a spline cylinder, a few milliseconds. A unit is some
-/// twenty nanoseconds, so no face's steps take more than a few hundredths
-/// of a second to show.
-pub const MOST_PROOF_WORK: usize = 1 << 21;
-/// How far a cell of a spline surface that closes is halved past its
-/// Bézier span ([`Cells`]).
-const MOST_CELL_DEPTH: u32 = 32;
-/// Most Bézier spans of a spline surface that closes for it to be charted.
-const MOST_CELL_SPANS: usize = 1 << 16;
+/// Most steps of a spline edge on a surface that closes about an axis
+/// ([`steps_shown`]); an edge that needs more is not followed.
+const MOST_SPLINE_STEPS: usize = 1 << 12;
+/// Most work that showing the steps of one face's spline edges, and
+/// following those that need more than eight, may take, in units
+/// ([`step_proofs`]): a point looked at is one, a Bézier piece made the
+/// square of its points, a step of an edge followed in more than eight
+/// [`WALK_UNITS`]. A face that needs more is not followed, so it passes,
+/// and is counted. Measured (2026-11-14, one thread of the workshop's
+/// build server) a unit is 15 to 50 ns, so the most a face's steps can add
+/// to its check is 2 to 7 ms; a strip of 64 turns between two single edges
+/// takes 89 000 units, one between edges of half a turn 160 an edge.
+pub const MOST_PROOF_WORK: usize = 1 << 17;
+/// What a step of an edge followed in more than eight steps counts for
+/// against [`MOST_PROOF_WORK`]: two points of the curve and their places
+/// on the surface, about a microsecond.
+const WALK_UNITS: usize = 32;
 
 thread_local! {
     /// The work showing steps has taken on this thread, and how many faces
-    /// were not followed because theirs passed [`MOST_PROOF_WORK`].
+    /// were not followed because theirs passed a bound.
     static STEP_PROOFS: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
 }
 
-/// What showing the steps of edges ([`MOST_PROOF_WORK`]) has cost on this
-/// thread since it started: the points looked at, and the faces that were
-/// not followed (and so passed) because showing their steps took more than
-/// the bound. For tests and reports: a count of work, never a clock.
+/// What showing the steps of spline edges has cost on this thread since it
+/// started: the units of work ([`MOST_PROOF_WORK`]), and the faces that
+/// were not followed (and so passed) because showing their steps passed a
+/// bound: the work of a face, or the steps of an edge (one that is not
+/// shown within the most steps an edge may take, a curve through the axis
+/// among them). For tests and reports: a count of work, never a clock.
 pub fn step_proofs() -> (u64, u64) {
     STEP_PROOFS.with(Cell::get)
 }
@@ -101,6 +97,9 @@ pub fn step_proofs() -> (u64, u64) {
 /// once the face has taken more than [`MOST_PROOF_WORK`] (counted once: the
 /// face is not followed further).
 fn spend(work: &mut usize, units: usize) -> Option<()> {
+    if *work > MOST_PROOF_WORK {
+        return None;
+    }
     *work = work.saturating_add(units);
     let over = *work > MOST_PROOF_WORK;
     STEP_PROOFS.with(|c| {
@@ -111,6 +110,19 @@ fn spend(work: &mut usize, units: usize) -> Option<()> {
         ));
     });
     (!over).then_some(())
+}
+
+/// The face is not followed because an edge of it cannot be shown within
+/// the steps an edge may take: counted, once a face (its work is put past
+/// its bound, so nothing more is counted for it).
+fn give_up(work: &mut usize) {
+    if *work <= MOST_PROOF_WORK {
+        *work = usize::MAX;
+        STEP_PROOFS.with(|c| {
+            let (spent, cut) = c.get();
+            c.set((spent, cut.saturating_add(1)));
+        });
+    }
 }
 /// Steps of a line on a curved surface.
 const LINE_STEPS: usize = 2;
@@ -140,8 +152,7 @@ pub(crate) struct Ring {
     /// along it a point lies, are not to be read off it (the region rule
     /// reads it as before). A spline edge on a surface that closes about
     /// an axis is followed in steps shown to move less than that about it
-    /// ([`spline_steps`]), every edge on a spline surface that closes in
-    /// steps its cells show ([`Cells`]); what is left is a conic near a
+    /// ([`spline_steps`]); what is left is a conic near a
     /// pole, read by this flag, and the angle about a torus's tube, which
     /// nothing shows for a spline edge (a curve going round the tube 13
     /// times in 16 half steps moves 292.5° a half step, which reads as
@@ -181,24 +192,19 @@ pub(crate) fn region_followed(
         return (None, None);
     }
     let surface = &face.surface;
-    let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
-    if freeform && !craft3d_geom::pole::poles(surface).is_empty() {
+    let periods = [surface.period_u(), surface.period_v()];
+    if periods.iter().all(Option::is_some) {
         return (None, None);
     }
-    let periods = periods_of(surface);
-    if periods.iter().all(Option::is_some) {
+    let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
+    if freeform
+        && (craft3d_geom::closure::closes(surface).iter().any(|c| *c)
+            || !craft3d_geom::pole::poles(surface).is_empty())
+    {
         return (None, None);
     }
     let near = 10.0 * body.working_tolerance(tol.linear);
     let mut chart = Chart::new(surface, periods, freeform, near);
-    if freeform && periods.iter().any(Option::is_some) {
-        // A spline surface that closes: its edges are followed only in
-        // steps its cells show ([`Cells`]); without them it is not charted.
-        match Cells::of(surface, periods) {
-            Some(cells) => chart.cells = Some(cells),
-            None => return (None, None),
-        }
-    }
     let mut rings = Vec::with_capacity(face.loops.len());
     let mut total = 0_usize;
     for id in &face.loops {
@@ -431,36 +437,11 @@ pub(crate) fn region_followed(
     }
 }
 
-/// The periods of a surface's parameters as the chart moves points by
-/// them: the analytic kinds' own (`Surface::period_u`), and for a spline
-/// surface that closes on itself on clamped knots (`craft3d_geom::closure::
-/// closes`: its control net ends on the row it starts with, the same curve)
-/// the width of its domain that way, across which it closes, as the
-/// measure takes it (`mass.rs`, `spline_closure`). A loop over the seam is
-/// then followed over it, and one that goes round is a band, as on a
-/// cylinder. A spline surface that closes only within the tolerance, or on
-/// knots that are not clamped, has none (charted as one that does not
-/// close).
-pub(crate) fn periods_of(surface: &Surface) -> [Option<f64>; 2] {
-    if !matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
-        return [surface.period_u(), surface.period_v()];
-    }
-    let [closes_u, closes_v] = craft3d_geom::closure::closes(surface);
-    let ((u0, u1), (v0, v1)) = surface.domain();
-    let width = |closes: bool, a: f64, b: f64| {
-        let w = b - a;
-        (closes && w.is_finite() && w > 0.0).then_some(w)
-    };
-    [width(closes_u, u0, u1), width(closes_v, v0, v1)]
-}
-
 /// Whether each of `points` (on the surface of `face`) lies on the face,
 /// by the parity of the loops' crossings of a ray from it in the
 /// surface's parameters (along v, or along u when v is the one that
 /// closes); `None` where the face cannot be charted without doubt, as for
-/// [`region_fault`], bands around a closed surface included, and on every
-/// freeform surface that closes (not charted with a period here: its ray's
-/// parity across the seam is owed).
+/// [`region_fault`], bands around a closed surface included.
 pub fn face_holds(body: &Body, face: &Face, tol: &Tolerance, points: &[Vec3]) -> Option<Vec<bool>> {
     if face.loops.is_empty() {
         return None;
@@ -749,9 +730,6 @@ pub(crate) struct Chart<'a> {
     /// The work showing the steps of the face's edges has taken
     /// ([`MOST_PROOF_WORK`]).
     pub(crate) work: usize,
-    /// The surface's cells, for a spline surface that closes one way: the
-    /// steps of every edge on it are shown by them.
-    pub(crate) cells: Option<Cells>,
 }
 
 impl<'a> Chart<'a> {
@@ -769,7 +747,6 @@ impl<'a> Chart<'a> {
             last: None,
             scale: f64::INFINITY,
             work: 0,
-            cells: None,
         }
     }
 }
@@ -860,16 +837,16 @@ pub(crate) fn follow(
             }
             Curve3::Nurbs(_) => SPLINE_STEPS,
         };
-        // Where a parameter closes, the steps are shown not to go round
-        // unseen, or the loop is not followed: a spline edge about an
-        // analytic surface's axis, every edge on a spline surface that
-        // closes.
-        let steps = match (&mut chart.cells, &edge.curve, axis) {
-            (Some(cells), curve, _) => {
-                cells.steps(curve, (t0, t1), steps, chart.near, &mut chart.work)?
-            }
-            (None, Curve3::Nurbs(n), Some(axis)) => {
-                spline_steps(n, (t0, t1), axis, &mut chart.work)?
+        // About an axis the steps of a spline edge are shown not to go
+        // round unseen, or the loop is not followed.
+        let steps = match (&edge.curve, axis) {
+            (Curve3::Nurbs(n), Some(axis)) => {
+                let shown = spline_steps(n, (t0, t1), axis, &mut chart.work)?;
+                if shown > steps {
+                    // Following it costs too: counted with the showing.
+                    spend(&mut chart.work, shown.saturating_mul(WALK_UNITS))?;
+                }
+                shown
             }
             _ => steps,
         };
@@ -1001,6 +978,7 @@ fn steps_shown(
             open.push((2 * i + 1, at + 1));
             open.push((2 * i, at + 1));
         } else {
+            give_up(work);
             return None;
         }
     }
@@ -1039,9 +1017,10 @@ fn spline_steps(
     work: &mut usize,
 ) -> Option<usize> {
     let (d0, d1) = curve.domain();
-    if !curve.weights().iter().all(|w| w.is_finite() && *w > 0.0) {
-        return None;
-    }
+    // How far rounding can put the curve outside the hull of points made
+    // for it, and so how far from the axis such points must keep
+    // ([`Wedge`]): none for a curve with a weight that is not positive.
+    let clear = HULL_CLEAR * hull_rounding(curve)?;
     let (origin, z) = axis;
     // (1) The control points whose basis functions are not zero over
     // `(a, b)`, found without inserting a knot.
@@ -1063,7 +1042,7 @@ fn spline_steps(
         let reach = (b - a) * speed;
         let d = curve.eval(0.5 * (a + b)) - origin;
         let low = (d - z * d.dot(z)).length() - 0.5 * reach;
-        low > 0.0 && reach < QUARTER_TURN * low
+        low > clear && reach < QUARTER_TURN * low
     };
     // (3) The Bézier pieces, each made once where (1) and (2) do not show
     // it.
@@ -1075,7 +1054,7 @@ fn spline_steps(
             // `geom::allowance`).
             if let Some(points) = spanned(a, b) {
                 let mut wedge = Wedge::about(axis, QUARTER_TURN);
-                let within = points.iter().take_while(|p| wedge.add(**p)).count();
+                let within = points.iter().take_while(|p| wedge.add(**p, clear)).count();
                 spend(work, within)?;
                 if within > 0 && within == points.len() {
                     return Some(true);
@@ -1092,8 +1071,66 @@ fn spline_steps(
             }
         }
         let mut wedge = Wedge::about(axis, QUARTER_TURN);
-        pieces.each_point((a, b), work, |p| wedge.add(p))
+        pieces.each_point((a, b), work, |p, growth| wedge.add(p, clear * growth))
     })
+}
+
+/// How many times the rounding of a curve's hull points the points of a
+/// hull must keep from the axis ([`Wedge`]): the angle of a point about
+/// the axis is then right to an eighth of a radian, 7°, and a wedge found
+/// narrower than a quarter turn is narrower than 105°, well under the half
+/// turn at which the chart would unwrap a step the wrong way.
+const HULL_CLEAR: f64 = 8.0;
+
+/// How much the rounding of a Bézier piece may grow where it is continued
+/// past its span ([`growth`]) for the cut to be read: 2²⁰, which leaves a
+/// millionth of a unit in the last place times the curve's size. Read off
+/// a measurement of 5,883 splines (review of 2026-11-14): continued two
+/// span widths past, a piece of degree 8 (a growth of 5⁸, 4e5) holds its
+/// curve to 7e-12 of the cut's reach, one of degree 13 (5¹³, 1e9) to 7e-9,
+/// of degree 21 to 1.5e-3, of degree 32 not at all.
+const MOST_GROWTH: f64 = 1_048_576.0;
+
+/// An upper bound on how far rounding can put a spline outside the convex
+/// hull of the points made for a stretch of it (its control points, or
+/// those of its Bézier pieces cut to the stretch inside their spans): 64
+/// units in the last place of its largest coordinate, times the ratio of
+/// its largest weight to its least (a rational spline is a quotient, and
+/// loses that many figures; measured to 5e-7 of the size for weights of
+/// 1e-6 to 1e6, where this gives 1e-2). `None` for a weight that is not
+/// positive and finite: no hull of control points holds such a curve.
+fn hull_rounding(curve: &NurbsCurve) -> Option<f64> {
+    let (mut least, mut most) = (f64::INFINITY, 0.0_f64);
+    for w in curve.weights() {
+        if !(w.is_finite() && *w > 0.0) {
+            return None;
+        }
+        least = least.min(*w);
+        most = most.max(*w);
+    }
+    let size = curve.control_points().iter().fold(0.0_f64, |m, p| {
+        m.max(p.x.abs()).max(p.y.abs()).max(p.z.abs())
+    });
+    let rounding = 64.0 * f64::EPSILON * (most / least) * size;
+    rounding.is_finite().then_some(rounding)
+}
+
+/// By how much the rounding of a Bézier piece of `degree` over `(lo, hi)`
+/// grows when it is cut to `(from, to)` by de Casteljau's algorithm: 1
+/// inside its span; past it, each of the `degree` rounds of blends by a
+/// factor outside `[0, 1]` multiplies an error by the sum of the sizes of
+/// its two weights, `1 + 2 s` for a cut `s` span widths before the span,
+/// `2 s − 1` for one ending at `s` times the rest of it.
+fn growth((lo, hi): (f64, f64), (from, to): (f64, f64), degree: usize) -> f64 {
+    let rounds = i32::try_from(degree).unwrap_or(i32::MAX);
+    let mut growth = 1.0_f64;
+    if from < lo {
+        growth *= (1.0 + 2.0 * (lo - from) / (hi - lo)).ppowi(rounds);
+    }
+    if to > hi {
+        growth *= (2.0 * (to - from) / (hi - from) - 1.0).ppowi(rounds);
+    }
+    growth
 }
 
 /// The Bézier pieces of a spline edge, each made when a stretch first meets
@@ -1114,24 +1151,40 @@ impl<'a> Pieces<'a> {
     }
 
     /// Hands `take` points whose convex hull holds the curve over `(a, b)`,
-    /// one by one until it refuses one: the control points of the Bézier
-    /// piece of each span the stretch meets, cut to the stretch by de
-    /// Casteljau's algorithm (`craft3d_geom::piece_points_over`), the first
-    /// and the last piece of the curve continued past its domain as far as
-    /// the stretch goes (as `NurbsCurve::eval` continues them). `Some(true)`
-    /// when `take` took them all, `Some(false)` when it refused one or no
-    /// such points are known (a rational piece continued to where a weight
-    /// is not positive, a stretch wholly past the domain's end), `None` when
-    /// the face's work is spent.
+    /// one by one until it refuses one, each with how much the rounding of
+    /// its piece has grown ([`growth`]; 1 inside the domain): the control
+    /// points of the Bézier piece of each span the stretch meets, cut to
+    /// the stretch by de Casteljau's algorithm
+    /// (`craft3d_geom::piece_points_over`), the first and the last piece of
+    /// the curve continued past its domain as far as the stretch goes (as
+    /// `NurbsCurve::eval` continues them). `Some(true)` when `take` took
+    /// them all, `Some(false)` when it refused one or no such points are
+    /// known: a stretch past the end of a domain that ends on a span of no
+    /// width (knots not clamped, the end knot repeated: `eval` continues
+    /// that empty span's polynomial there, not the last piece's), a piece
+    /// continued so far that its rounding grows past [`MOST_GROWTH`], a
+    /// rational piece continued to where a weight is not positive, a
+    /// stretch wholly past the domain's end. `None` when the face's work
+    /// is spent.
     fn each_point(
         &mut self,
         (a, b): (f64, f64),
         work: &mut usize,
-        mut take: impl FnMut(Vec3) -> bool,
+        mut take: impl FnMut(Vec3, f64) -> bool,
     ) -> Option<bool> {
         let curve = self.curve;
         let (d0, d1) = curve.domain();
         let (knots, degree) = (curve.knots(), curve.degree());
+        // Past the domain's end `eval` continues the span that ends
+        // there, which is the last piece only if that span has a width.
+        let count = curve.control_points().len();
+        let ends_wide = matches!(
+            (knots.get(count.wrapping_sub(1)), knots.get(count)),
+            (Some(x), Some(y)) if y > x
+        );
+        if b > d1 && !ends_wide {
+            return Some(false);
+        }
         let (first, last) = (curve.span_at(a), curve.span_at(b));
         let mut any = false;
         for k in first..=last {
@@ -1155,13 +1208,17 @@ impl<'a> Pieces<'a> {
             let Some(Some(piece)) = self.made.get(&k) else {
                 return Some(false);
             };
+            let growth = growth((lo, hi), (from, to), degree);
+            if growth.partial_cmp(&MOST_GROWTH) != Some(std::cmp::Ordering::Less) {
+                return Some(false);
+            }
             let Some(points) = craft3d_geom::piece_points_over(piece, (from, to)) else {
                 return Some(false);
             };
             spend(work, points.len())?;
             for p in points {
                 any = true;
-                if !take(p) {
+                if !take(p, growth) {
                     return Some(false);
                 }
             }
@@ -1176,480 +1233,6 @@ impl<'a> Pieces<'a> {
 /// spans at its two ends), and the pieces of every span of a long edge
 /// cost more than following it.
 const MANY_SPANS: usize = 16;
-
-/// A box that holds `curve` over `(a, b)` (its corners), for
-/// [`Cells::steps`]: a line's two ends; a circle's or an ellipse's middle
-/// by how far it can move over half the stretch (its largest radius times
-/// half the angle); a spline's hull points over the stretch (its spans'
-/// control points over more than [`MANY_SPANS`] spans inside its domain,
-/// else its Bézier pieces cut to it, [`Pieces`]). The inner `None` where no
-/// such box is known; the outer when the face's work is spent.
-fn stretch_box(
-    curve: &Curve3,
-    pieces: &mut Option<Pieces<'_>>,
-    (a, b): (f64, f64),
-    work: &mut usize,
-) -> Option<Option<(Vec3, Vec3)>> {
-    let mut held = Bbox3::EMPTY;
-    match curve {
-        Curve3::Line(_) => {
-            held.add(curve.eval(a));
-            held.add(curve.eval(b));
-        }
-        Curve3::Circle(_) | Curve3::Ellipse(_) => {
-            let fastest = match curve {
-                Curve3::Circle(c) => c.radius(),
-                Curve3::Ellipse(e) => {
-                    let (x, y) = e.semi_axes();
-                    x.max(y)
-                }
-                Curve3::Line(_) | Curve3::Nurbs(_) => return Some(None),
-            };
-            let reach = 0.5 * (b - a).abs() * fastest;
-            let middle = curve.eval(0.5 * (a + b));
-            let reach = Vec3::new(reach, reach, reach);
-            held.add(middle - reach);
-            held.add(middle + reach);
-        }
-        Curve3::Nurbs(n) => {
-            let Some(pieces) = pieces.as_mut() else {
-                return Some(None);
-            };
-            let (d0, d1) = n.domain();
-            let (first, last) = (n.span_at(a), n.span_at(b));
-            if a >= d0 && b <= d1 && last.saturating_sub(first) > MANY_SPANS {
-                let Some(points) = n
-                    .control_points()
-                    .get(first.saturating_sub(n.degree())..=last)
-                else {
-                    return Some(None);
-                };
-                spend(work, points.len())?;
-                for p in points {
-                    held.add(*p);
-                }
-            } else if !pieces.each_point((a, b), work, |p| {
-                held.add(p);
-                true
-            })? {
-                return Some(None);
-            }
-        }
-    }
-    Some(
-        held.corners()
-            .filter(|(lo, hi)| lo.is_finite() && hi.is_finite()),
-    )
-}
-
-/// A spline surface that closes one way, as cells with the box of each: by
-/// them the steps of an edge on it are shown not to go round unseen
-/// ([`Cells::steps`]), as [`spline_steps`] shows them about an analytic
-/// surface's axis.
-///
-/// **The argument.** The chart puts a point `p` of an edge at parameters
-/// `(u, v)` of the surface's domain whose point lies within `near` of `p`
-/// (`Chart::at` gives none otherwise). A stretch of the edge lies in a box
-/// `B` (the hull of its control points, [`stretch_box`]). A cell is a part
-/// `[u₀, u₁] × [v₀, v₁]` of one Bézier span of the surface, and the
-/// surface over it lies in the box of the cell's control points (weights
-/// positive). So `(u, v)` lies in a cell whose box meets `B` grown by
-/// `near`, and the parameter that closes is, for every point of the
-/// stretch, in the range of one of the cells that meet it. Where those
-/// ranges all lie in one arc of the period narrower than a quarter of it,
-/// the stretch moves by less than a quarter period however the chart found
-/// its points; cells halved further only take ranges away. Where they do
-/// not (the stretch is too long, or the surface comes near itself there, or
-/// goes round more than once within its period), the stretch is not shown.
-///
-/// The cells are the surface's Bézier spans in a tree of boxes, each span
-/// halved as stretches come to it: along the parameter that closes until
-/// its range is a 32nd of the period, then along the other until it is no
-/// longer than twice its width (a cell that twists round the surface has a
-/// box far wider than itself), [`MOST_CELL_DEPTH`] times at most.
-pub(crate) struct Cells {
-    spans: Option<Arc<Vec<BezierSpan>>>,
-    nodes: Vec<Node>,
-    root: usize,
-    /// The parameter that closes (0 for `u`), and its period.
-    way: usize,
-    period: f64,
-}
-
-/// What a node of [`Cells`] is made of.
-enum Patch {
-    /// Two nodes' boxes together.
-    Group,
-    /// The surface's Bézier span of this index.
-    Span(usize),
-    /// A part of a span.
-    Part(RationalBezierPatch),
-}
-
-struct Node {
-    lo: Vec3,
-    hi: Vec3,
-    /// Its ranges of `u` and `v`.
-    range: [(f64, f64); 2],
-    patch: Patch,
-    kids: Option<(usize, usize)>,
-    /// Halvings below its Bézier span.
-    depth: u32,
-    /// Longer across the parameter that closes than twice its length
-    /// along it.
-    slender: bool,
-}
-
-/// Most work making the Bézier spans of a spline surface that closes may
-/// take for it to be charted, as [`span_work`] reckons it.
-const MOST_SPAN_WORK: usize = 1 << 18;
-
-/// About how many blends of two points making the Bézier spans of a spline
-/// surface takes (`NurbsSurface::bezier_spans`, which inserts knot by knot
-/// into every row: the square of a direction's knots times the rows across
-/// it).
-fn span_work(surface: &Surface) -> usize {
-    match surface {
-        Surface::Nurbs(s) => {
-            let ((du, dv), (nu, nv)) = (s.degrees(), s.counts());
-            let (ku, kv) = (du.saturating_mul(nu), dv.saturating_mul(nv));
-            ku.saturating_mul(ku)
-                .saturating_mul(nv)
-                .saturating_add(kv.saturating_mul(kv).saturating_mul(ku))
-        }
-        _ => 0,
-    }
-}
-
-impl Cells {
-    /// The cells of a spline surface that closes one way, `periods` as
-    /// [`periods_of`] gives them. `None` for any other surface, one whose
-    /// Bézier spans would cost more than [`MOST_SPAN_WORK`] to make or
-    /// number more than [`MOST_CELL_SPANS`], or one without them.
-    fn of(surface: &Surface, periods: [Option<f64>; 2]) -> Option<Cells> {
-        let (way, period) = match periods {
-            [Some(p), None] => (0, p),
-            [None, Some(p)] => (1, p),
-            _ => return None,
-        };
-        if !(period.is_finite() && period > 0.0) || span_work(surface) > MOST_SPAN_WORK {
-            return None;
-        }
-        let mut cells = Cells {
-            spans: None,
-            nodes: Vec::new(),
-            root: 0,
-            way,
-            period,
-        };
-        match surface {
-            Surface::Nurbs(s) => {
-                let spans = s.bezier_spans_shared().ok()?;
-                if spans.len() > MOST_CELL_SPANS {
-                    return None;
-                }
-                // Row-major: every span of `v` for each span of `u`.
-                let first = spans.first()?.u;
-                let across = spans.iter().take_while(|span| span.u == first).count();
-                if across == 0 || spans.len() % across != 0 {
-                    return None;
-                }
-                let along = spans.len() / across;
-                cells.root = cells.group(&spans, (0, along), (0, across), across)?;
-                cells.spans = Some(spans);
-            }
-            Surface::Bezier(patch) => {
-                let (u, v) = surface.domain();
-                let part = RationalBezierPatch::from_bezier(patch);
-                cells.root = cells.push(Patch::Part(part), [u, v], 0)?;
-            }
-            _ => return None,
-        }
-        Some(cells)
-    }
-
-    /// The node of the spans `i.0..i.1` of `u` by `j.0..j.1` of `v`: a
-    /// span, or two halves of the longer side (so at most 32 deep).
-    fn group(
-        &mut self,
-        spans: &[BezierSpan],
-        i: (usize, usize),
-        j: (usize, usize),
-        across: usize,
-    ) -> Option<usize> {
-        let (ni, nj) = (i.1.checked_sub(i.0)?, j.1.checked_sub(j.0)?);
-        if ni == 0 || nj == 0 {
-            return None;
-        }
-        if ni == 1 && nj == 1 {
-            let index = i.0.checked_mul(across)?.checked_add(j.0)?;
-            let span = spans.get(index)?;
-            return self.push_patch(Patch::Span(index), &span.patch, [span.u, span.v], 0);
-        }
-        let (a, b) = if ni >= nj {
-            let middle = i.0 + ni / 2;
-            (
-                self.group(spans, (i.0, middle), j, across)?,
-                self.group(spans, (middle, i.1), j, across)?,
-            )
-        } else {
-            let middle = j.0 + nj / 2;
-            (
-                self.group(spans, i, (j.0, middle), across)?,
-                self.group(spans, i, (middle, j.1), across)?,
-            )
-        };
-        let (na, nb) = (self.nodes.get(a)?, self.nodes.get(b)?);
-        let both = |d: usize| -> Option<(f64, f64)> {
-            let (x, y) = (na.range.get(d)?, nb.range.get(d)?);
-            Some((x.0.min(y.0), x.1.max(y.1)))
-        };
-        let node = Node {
-            lo: na.lo.min(nb.lo),
-            hi: na.hi.max(nb.hi),
-            range: [both(0)?, both(1)?],
-            patch: Patch::Group,
-            kids: Some((a, b)),
-            depth: 0,
-            slender: false,
-        };
-        self.nodes.push(node);
-        Some(self.nodes.len() - 1)
-    }
-
-    /// A node of a part of a span, which it keeps.
-    fn push(&mut self, patch: Patch, range: [(f64, f64); 2], depth: u32) -> Option<usize> {
-        let Patch::Part(part) = &patch else {
-            return None;
-        };
-        let part = part.clone();
-        self.push_patch(patch, &part, range, depth)
-    }
-
-    /// A node of `patch`, the surface over `range`, with its box and
-    /// whether it is slender.
-    fn push_patch(
-        &mut self,
-        patch: Patch,
-        net: &RationalBezierPatch,
-        range: [(f64, f64); 2],
-        depth: u32,
-    ) -> Option<usize> {
-        let (lo, hi) = net.control_bbox().corners()?;
-        let (du, dv) = net.degrees();
-        let points = net.control_points();
-        let at = |i: usize, j: usize| points.get(i * (dv + 1) + j).copied();
-        // The longer of the net's two border polylines each way.
-        let length = |along_u: bool| -> f64 {
-            let (steps, rows) = if along_u {
-                (du, [0, dv])
-            } else {
-                (dv, [0, du])
-            };
-            rows.iter()
-                .map(|row| {
-                    (0..steps)
-                        .map(|k| {
-                            let (a, b) = if along_u {
-                                (at(k, *row), at(k + 1, *row))
-                            } else {
-                                (at(*row, k), at(*row, k + 1))
-                            };
-                            match (a, b) {
-                                (Some(a), Some(b)) => a.distance(b),
-                                _ => 0.0,
-                            }
-                        })
-                        .sum::<f64>()
-                })
-                .fold(0.0, f64::max)
-        };
-        let (round, across) = (length(self.way == 0), length(self.way != 0));
-        self.nodes.push(Node {
-            lo,
-            hi,
-            range,
-            patch,
-            kids: None,
-            depth,
-            slender: across > 2.0 * round,
-        });
-        Some(self.nodes.len() - 1)
-    }
-
-    /// Halves the cell `n` along `u` (`along == 0`) or `v`: its two halves,
-    /// which it keeps. The inner `None` for a node that is no cell; the
-    /// outer when the face's work is spent.
-    fn halve(
-        &mut self,
-        n: usize,
-        along: usize,
-        work: &mut usize,
-    ) -> Option<Option<(usize, usize)>> {
-        let Some(node) = self.nodes.get(n) else {
-            return Some(None);
-        };
-        let whole = match &node.patch {
-            Patch::Group => return Some(None),
-            Patch::Span(index) => match self.spans.as_ref().and_then(|spans| spans.get(*index)) {
-                Some(span) => span.patch.clone(),
-                None => return Some(None),
-            },
-            Patch::Part(part) => part.clone(),
-        };
-        let (du, dv) = whole.degrees();
-        spend(work, (du + 1).saturating_mul(dv + 1))?;
-        let (range, depth) = (node.range, node.depth);
-        let Some(&(a, b)) = range.get(along) else {
-            return Some(None);
-        };
-        let middle = 0.5 * (a + b);
-        let (first, second) = if along == 0 {
-            whole.split_u(0.5)
-        } else {
-            whole.split_v(0.5)
-        };
-        let part = |from: f64, to: f64| {
-            let mut range = range;
-            if let Some(r) = range.get_mut(along) {
-                *r = (from, to);
-            }
-            range
-        };
-        let (Some(x), Some(y)) = (
-            self.push(Patch::Part(first), part(a, middle), depth + 1),
-            self.push(Patch::Part(second), part(middle, b), depth + 1),
-        ) else {
-            return Some(None);
-        };
-        if let Some(node) = self.nodes.get_mut(n) {
-            node.kids = Some((x, y));
-        }
-        Some(Some((x, y)))
-    }
-
-    /// Whether the surface's points in the box `(lo, hi)` are shown to lie
-    /// within less than a quarter of the period of each other in the
-    /// parameter that closes (the argument is at [`Cells`]): the ranges of
-    /// the cells whose boxes meet the box lie in one arc of the period
-    /// narrower than a quarter of it. `None` when the face's work is spent.
-    fn narrow(&mut self, (lo, hi): (Vec3, Vec3), work: &mut usize) -> Option<bool> {
-        let fine = self.period / 32.0 * (1.0 + 1e-9);
-        let mut ranges: Vec<(f64, f64)> = Vec::new();
-        let mut look = 8_usize;
-        // Every node is looked at once, each counted against the work.
-        let mut open = vec![self.root];
-        while let Some(n) = open.pop() {
-            spend(work, 1)?;
-            let Some(node) = self.nodes.get(n) else {
-                return Some(false);
-            };
-            // Not `>=`: a box that is not a number meets everything.
-            let apart = node.lo.x > hi.x
-                || node.lo.y > hi.y
-                || node.lo.z > hi.z
-                || node.hi.x < lo.x
-                || node.hi.y < lo.y
-                || node.hi.z < lo.z;
-            if apart {
-                continue;
-            }
-            if let Some((a, b)) = node.kids {
-                open.push(a);
-                open.push(b);
-                continue;
-            }
-            let Some(&(from, to)) = node.range.get(self.way) else {
-                return Some(false);
-            };
-            let along = if node.depth >= MOST_CELL_DEPTH {
-                None
-            } else if to - from > fine {
-                Some(self.way)
-            } else if node.slender {
-                Some(1 - self.way.min(1))
-            } else {
-                None
-            };
-            if let Some(along) = along
-                && let Some((a, b)) = self.halve(n, along, work)?
-            {
-                open.push(a);
-                open.push(b);
-                continue;
-            }
-            ranges.push((from, to));
-            // Cells only add to the arc: once it is too wide (looked at
-            // each time the cells found have doubled) the rest need not be
-            // found.
-            if ranges.len() >= look {
-                look = look.saturating_mul(2);
-                if !self.in_a_quarter(&mut ranges) {
-                    return Some(false);
-                }
-            }
-        }
-        // With none, no point of the surface is near the stretch: the
-        // chart has no point of it either.
-        Some(self.in_a_quarter(&mut ranges))
-    }
-
-    /// Whether `ranges` of the parameter that closes all lie in one arc of
-    /// the period narrower than a quarter of it: the widest gap between
-    /// them round the period leaves less than that (sorts them).
-    fn in_a_quarter(&self, ranges: &mut [(f64, f64)]) -> bool {
-        ranges.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let Some(first) = ranges.first().map(|r| r.0) else {
-            return true;
-        };
-        let mut gap = 0.0_f64;
-        let mut reached = f64::NEG_INFINITY;
-        for (a, b) in ranges.iter() {
-            if reached.is_finite() {
-                gap = gap.max(a - reached);
-            }
-            reached = reached.max(*b);
-        }
-        gap = gap.max(first + self.period - reached);
-        self.period - gap < 0.25 * self.period
-    }
-
-    /// The steps an edge over `range` is followed in on the surface: the
-    /// fewest `base · 2^k` (`base` what its kind of curve always took) such
-    /// that each half step is shown to move by less than a quarter of the
-    /// period ([`steps_shown`], [`Cells::narrow`] of [`stretch_box`] grown
-    /// by `near`, the chart's reach). `None` where that cannot be shown:
-    /// the loop is not followed, and its face passes.
-    fn steps(
-        &mut self,
-        curve: &Curve3,
-        range: (f64, f64),
-        base: usize,
-        near: f64,
-        work: &mut usize,
-    ) -> Option<usize> {
-        let mut pieces = match curve {
-            Curve3::Nurbs(n) => {
-                if !n.weights().iter().all(|w| w.is_finite() && *w > 0.0) {
-                    return None;
-                }
-                Some(Pieces::of(n))
-            }
-            _ => None,
-        };
-        steps_shown(base, range, work, |a, b, work| {
-            let Some((lo, hi)) = stretch_box(curve, &mut pieces, (a, b), work)? else {
-                return Some(false);
-            };
-            // The chart's reach, and the rounding of the boxes' corners.
-            let size = lo.x.abs().max(lo.y.abs()).max(lo.z.abs());
-            let size = size.max(hi.x.abs()).max(hi.y.abs()).max(hi.z.abs());
-            let pad = near * (1.0 + 1e-6) + 1e-13 * size;
-            let pad = Vec3::new(pad, pad, pad);
-            self.narrow((lo - pad, hi + pad), work)
-        })
-    }
-}
 
 /// An upper bound on a polynomial spline's speed over its domain (its
 /// weights all alike): the longest of its derivative's control points
@@ -1691,7 +1274,10 @@ const QUARTER_TURN: f64 = 0.5 * PI;
 /// their convex hull then keeps clear of the axis (every point lies in one
 /// open half plane through it) and every point of the hull lies within that
 /// wedge, so the angle about the axis moves by less than `most` along a
-/// curve in it.
+/// curve in it. Each point is taken with how far it must keep from the
+/// axis: [`HULL_CLEAR`] times what rounding can have moved it, so that a
+/// curve a rounding outside the hull of the points as computed still turns
+/// about the axis as they say.
 struct Wedge {
     origin: Vec3,
     z: Vec3,
@@ -1714,8 +1300,9 @@ impl Wedge {
         }
     }
 
-    /// Takes `p`: whether the points so far lie in such a wedge.
-    fn add(&mut self, p: Vec3) -> bool {
+    /// Takes `p`, which must keep more than `clear` from the axis: whether
+    /// the points so far lie in such a wedge.
+    fn add(&mut self, p: Vec3, clear: f64) -> bool {
         let d = p - self.origin;
         let q = d - self.z * d.dot(self.z);
         let (x, y) = match self.frame {
@@ -1733,7 +1320,10 @@ impl Wedge {
         };
         let (c, s) = (q.dot(x), q.dot(y));
         let off = c.phypot(s);
-        if off.is_nan() || off <= 0.0 {
+        if off.is_nan()
+            || off <= 0.0
+            || off.partial_cmp(&clear) != Some(std::cmp::Ordering::Greater)
+        {
             return false;
         }
         let angle = s.patan2(c);
@@ -1751,7 +1341,7 @@ impl Wedge {
 #[cfg(test)]
 fn narrow(points: &[Vec3], axis: (Vec3, Vec3), most: f64) -> bool {
     let mut wedge = Wedge::about(axis, most);
-    !points.is_empty() && points.iter().all(|p| wedge.add(*p))
+    !points.is_empty() && points.iter().all(|p| wedge.add(*p, 0.0))
 }
 
 impl Ring {
@@ -2190,169 +1780,6 @@ mod tests {
         assert_eq!(spline_steps(&curve, (-0.5, 1.0), axis, &mut 0), None);
     }
 
-    /// The rational quadratic cylinder about `frame`'s z axis (a net of
-    /// 9 × 2, as a STEP file brings one), of `radius` from the height `low`
-    /// to `high`; `twist` turns its top ring by that angle (a closed ruled
-    /// surface that winds), `along_v` makes `v` the parameter that closes.
-    fn spline_cylinder(
-        frame: &Frame,
-        radius: f64,
-        (low, high): (f64, f64),
-        twist: f64,
-        along_v: bool,
-    ) -> Surface {
-        let weight = 0.5 * 2.0_f64.sqrt();
-        let ring = |height: f64, from: f64| -> Vec<(Vec3, f64)> {
-            (0..9)
-                .map(|k| {
-                    let angle = from + 0.25 * PI * k as f64;
-                    if k % 2 == 0 {
-                        (about(frame, radius, angle, height), 1.0)
-                    } else {
-                        (about(frame, radius / weight, angle, height), weight)
-                    }
-                })
-                .collect()
-        };
-        let rings = [ring(low, 0.0), ring(high, twist)];
-        let round = vec![
-            0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
-        ];
-        let up = vec![0.0, 0.0, 1.0, 1.0];
-        let (mut ctrl, mut weights) = (Vec::new(), Vec::new());
-        if along_v {
-            for ring in &rings {
-                for (p, w) in ring {
-                    ctrl.push(*p);
-                    weights.push(*w);
-                }
-            }
-            Surface::Nurbs(
-                craft3d_geom::NurbsSurface::new(1, 2, up, round, 2, 9, ctrl, weights).unwrap(),
-            )
-        } else {
-            for k in 0..9 {
-                for ring in &rings {
-                    ctrl.push(ring[k].0);
-                    weights.push(ring[k].1);
-                }
-            }
-            Surface::Nurbs(
-                craft3d_geom::NurbsSurface::new(2, 1, round, up, 9, 2, ctrl, weights).unwrap(),
-            )
-        }
-    }
-
-    /// How far the parameter `way` of `surface` moves along `curve` over
-    /// `(a, b)`: sampled finely, each point projected and moved by whole
-    /// `period`s to the one before.
-    fn moved(
-        curve: &Curve3,
-        surface: &Surface,
-        way: usize,
-        period: f64,
-        (a, b): (f64, f64),
-    ) -> f64 {
-        let at = |t: f64| {
-            let (u, v) = surface.project(curve.eval(t)).unwrap();
-            [u, v][way]
-        };
-        let (mut low, mut high, mut last) = (0.0_f64, 0.0_f64, at(a));
-        let mut sum = 0.0;
-        for k in 1..=64 {
-            let now = at(a + (b - a) * k as f64 / 64.0);
-            sum += (now - last + 0.5 * period).rem_euclid(period) - 0.5 * period;
-            last = now;
-            low = low.min(sum);
-            high = high.max(sum);
-        }
-        high - low
-    }
-
-    /// On a spline surface that closes, the steps an edge is followed in
-    /// move by less than a quarter of the period from each point followed
-    /// to the next (each half step sampled finely on the surface): a helix
-    /// of one to forty turns as one rational edge, on the rational
-    /// cylinder, on one whose top is turned against its bottom, closing
-    /// along `u` and along `v`, at three scales in a frame turned and
-    /// moved; and they are shown, not given up: a helix of ten turns is
-    /// followed in no more than four times the steps a quarter turn a half
-    /// step needs.
-    #[test]
-    fn an_edge_on_a_spline_surface_that_closes_is_followed_less_than_a_quarter_period_a_step() {
-        let f = tilted();
-        for scale in [1e-3, 1.0, 1e6] {
-            for (twist, along_v) in [(0.0, false), (0.0, true), (1.0, false), (1.0, true)] {
-                for quarters in [1, 4, 5, 40, 160] {
-                    let rise = 0.7 * scale;
-                    let top = rise * (0.25 * quarters as f64 + 1.0);
-                    let surface = spline_cylinder(&f, scale, (-rise, top), twist, along_v);
-                    let periods = periods_of(&surface);
-                    let way = usize::from(along_v);
-                    let period = periods[way].unwrap();
-                    assert_eq!(periods[1 - way], None);
-                    let mut cells = Cells::of(&surface, periods).unwrap();
-                    let curve = winding(&f, scale, quarters, rise);
-                    let range = curve.domain();
-                    let curve = Curve3::Nurbs(curve);
-                    let near = 1e-5 * scale;
-                    let mut work = 0;
-                    let steps = cells
-                        .steps(&curve, range, SPLINE_STEPS, near, &mut work)
-                        .unwrap_or_else(|| {
-                            panic!("{quarters} quarters at {scale}, twist {twist}: not shown")
-                        });
-                    assert!(
-                        steps <= (8 * quarters).max(SPLINE_STEPS),
-                        "{quarters} quarters at {scale}, twist {twist}: {steps} steps"
-                    );
-                    let halves = 2 * steps;
-                    for k in 0..halves {
-                        let end =
-                            |j: usize| range.0 + (range.1 - range.0) * (j as f64 / halves as f64);
-                        let went = moved(&curve, &surface, way, period, (end(k), end(k + 1)));
-                        assert!(
-                            went < 0.25 * period,
-                            "{quarters} quarters at {scale}, twist {twist}, along v {along_v}: half step {k} of {halves} moves {went} of {period}"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    /// A line and a circle on a spline surface that closes are shown too:
-    /// a ruling and a rim of the rational cylinder keep the steps they
-    /// always had.
-    #[test]
-    fn a_line_and_a_circle_on_a_spline_surface_that_closes_keep_their_steps() {
-        let f = tilted();
-        for scale in [1e-3, 1.0, 1e6] {
-            let surface = spline_cylinder(&f, scale, (0.0, scale), 0.0, false);
-            let mut cells = Cells::of(&surface, periods_of(&surface)).unwrap();
-            let near = 1e-5 * scale;
-            let ruling = Curve3::Line(
-                craft3d_geom::Line::through(
-                    about(&f, scale, 0.4, 0.0),
-                    about(&f, scale, 0.4, scale),
-                )
-                .unwrap(),
-            );
-            assert_eq!(
-                cells.steps(&ruling, (0.0, scale), LINE_STEPS, near, &mut 0),
-                Some(LINE_STEPS)
-            );
-            let rim = Curve3::Circle(
-                craft3d_geom::Circle::new(f.at(f.point(0.0, 0.0, 0.5 * scale)).unwrap(), scale)
-                    .unwrap(),
-            );
-            assert_eq!(
-                cells.steps(&rim, (0.0, 2.0 * PI), 16, near, &mut 0),
-                Some(16)
-            );
-        }
-    }
-
     /// A cubic through a helix of `turns` turns of radius 1 and pitch 1
     /// about `frame`'s z at `count` points evenly along it.
     fn fitted_helix(frame: &Frame, turns: f64, count: usize) -> NurbsCurve {
@@ -2398,26 +1825,6 @@ mod tests {
         }
         println!("costs {costs:?}");
         assert!(costs.iter().all(|(n, w)| *w <= 32 * n), "{costs:?}");
-        // One on a spline surface that closes: the same.
-        let surface = spline_cylinder(&f, 1.0, (-1.0, 65.0), 0.0, false);
-        let mut costs = Vec::new();
-        for count in [1024, 4096] {
-            let curve = Curve3::Nurbs(fitted_helix(&f, 16.0, count));
-            let mut cells = Cells::of(&surface, periods_of(&surface)).unwrap();
-            let mut work = 0;
-            let range = (0.0, 1.0);
-            let steps = cells
-                .steps(&curve, range, SPLINE_STEPS, 1e-5, &mut work)
-                .unwrap();
-            assert!((64..=256).contains(&steps), "{count}: {steps}");
-            costs.push((count, work));
-        }
-        println!("on cells {costs:?}");
-        let ((n0, w0), (n1, w1)) = (costs[0], costs[1]);
-        assert!(
-            w1 * n0 <= 2 * w0 * n1,
-            "{n0} points cost {w0}, {n1} cost {w1}"
-        );
         let rational = winding(&f, 1.0, 256, 1.0);
         let mut work = 0;
         let steps = spline_steps(&rational, rational.domain(), axis, &mut work).unwrap();
@@ -2447,6 +1854,170 @@ mod tests {
         let mut left = MOST_PROOF_WORK - work / 2;
         assert_eq!(spline_steps(&curve, curve.domain(), axis, &mut left), None);
         assert!(left > MOST_PROOF_WORK);
+        assert_eq!(step_proofs().1, cut + 1);
+    }
+
+    /// Past the end of a domain that ends on a span of no width (knots not
+    /// clamped, the end knot repeated: degree 2 on 0, 0, 0, 1, 1, 2, 3)
+    /// `eval` continues that empty span's polynomial, which is not the last
+    /// piece's: a tenth past the end the two are a quarter of a unit apart
+    /// on a curve three units long, and the curve is outside the box of the
+    /// last piece cut that far. A stretch past such an end is not shown, so
+    /// the edge is not followed; until 2026-11-14 (the second review) it
+    /// was shown by the last piece continued, in eight steps. Inside the
+    /// domain, and past its start (where `eval` does continue the first
+    /// piece), it keeps its eight steps.
+    #[test]
+    fn a_stretch_past_a_domain_that_ends_on_an_empty_span_is_not_shown() {
+        // Far from the curve, so that every stretch of it is narrow.
+        let axis = (Vec3::new(1.5, -30.0, 0.0), Vec3::new(0.0, 0.0, 1.0));
+        let points = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 2.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(3.0, 0.5, 4.0),
+        ];
+        let open =
+            NurbsCurve::polynomial(2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 3.0], points).unwrap();
+        assert_eq!(open.domain(), (0.0, 1.0));
+        // What `eval` gives past the end is not the last piece continued.
+        let last = open.bezier_piece(open.span_at(1.1)).unwrap();
+        assert_eq!(last.0, (0.0, 1.0));
+        let cut = craft3d_geom::piece_points_over(&last, (0.75, 1.1)).unwrap();
+        let there = open.eval(1.1);
+        let end = cut.last().copied().unwrap();
+        assert!(there.distance(end) > 0.2, "{there:?} {end:?}");
+        // So no stretch past that end is shown, however short.
+        assert_eq!(spline_steps(&open, (0.1, 1.1), axis, &mut 0), None);
+        assert_eq!(spline_steps(&open, (0.1, 1.0 + 1e-9), axis, &mut 0), None);
+        assert_eq!(
+            spline_steps(&open, (0.1, 1.0), axis, &mut 0),
+            Some(SPLINE_STEPS)
+        );
+        assert_eq!(
+            spline_steps(&open, (-1e-9, 1.0), axis, &mut 0),
+            Some(SPLINE_STEPS)
+        );
+        // Counted as a face not followed for a bound.
+        let cut = step_proofs().1;
+        assert_eq!(spline_steps(&open, (0.1, 1.1), axis, &mut 0), None);
+        assert_eq!(step_proofs().1, cut + 1);
+    }
+
+    /// A piece is continued past its curve's domain only as far as rounding
+    /// lets its cut be read ([`MOST_GROWTH`]): an edge of degree 21 that
+    /// runs one span width past its curve is not shown (each of the 21
+    /// rounds of the cut triples an error: 3²¹, 1e10), where until
+    /// 2026-11-14 (the second review) it was, by points that no longer
+    /// held the curve; a billionth past, or a whole width past at degree
+    /// 5, it is.
+    #[test]
+    fn a_piece_is_continued_past_its_domain_only_as_far_as_its_rounding_allows() {
+        let f = tilted();
+        let axis = (f.origin(), f.z());
+        // One span: points along a twentieth of a turn at radius 3.
+        let arc = |degree: usize| {
+            let points: Vec<Vec3> = (0..=degree)
+                .map(|k| about(&f, 3.0, 0.3 * k as f64 / degree as f64, 0.1 * k as f64))
+                .collect();
+            let mut knots = vec![0.0; degree + 1];
+            knots.extend(std::iter::repeat_n(1.0, degree + 1));
+            NurbsCurve::polynomial(degree, knots, points).unwrap()
+        };
+        let high = arc(21);
+        assert_eq!(spline_steps(&high, (-1.0, 1.0), axis, &mut 0), None);
+        assert_eq!(spline_steps(&high, (0.0, 2.0), axis, &mut 0), None);
+        assert_eq!(
+            spline_steps(&high, (-1e-9, 1.0 + 1e-9), axis, &mut 0),
+            Some(SPLINE_STEPS)
+        );
+        assert_eq!(
+            spline_steps(&high, (0.0, 1.0), axis, &mut 0),
+            Some(SPLINE_STEPS)
+        );
+        let low = arc(5);
+        assert!(spline_steps(&low, (-1.0, 1.0), axis, &mut 0).is_some());
+        // The growth itself: none inside the span, the sum of the sizes of
+        // a blend's two weights to the degree past it.
+        assert_eq!(growth((0.0, 1.0), (0.25, 0.75), 21), 1.0);
+        assert_eq!(growth((0.0, 1.0), (-1.0, 0.5), 2), 9.0);
+        assert_eq!(growth((2.0, 4.0), (3.0, 6.0), 3), 125.0);
+        assert!(growth((0.0, 1.0), (-1.0, 1.0), 21) > MOST_GROWTH);
+        assert!(growth((0.0, 1.0), (-1e-9, 1.0), 21) < 1.0 + 1e-6);
+    }
+
+    /// The points of a hull keep clear of the axis by what rounding can
+    /// have moved them ([`hull_rounding`], [`HULL_CLEAR`]): a rational edge
+    /// whose weights span twelve orders is shown only a hundredth of its
+    /// size and more from the axis, an even one as near as rounding goes.
+    #[test]
+    fn a_hull_keeps_clear_of_the_axis_by_its_rounding() {
+        let f = tilted();
+        let axis = (f.origin(), f.z());
+        let size = f
+            .origin()
+            .x
+            .abs()
+            .max(f.origin().y.abs())
+            .max(f.origin().z.abs());
+        // A short arc at `radius`, its middle weight `weight`.
+        let arc = |radius: f64, weight: f64| {
+            NurbsCurve::new(
+                2,
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                vec![
+                    about(&f, radius, 0.0, 0.0),
+                    about(&f, radius, 0.1, 0.0),
+                    about(&f, radius, 0.2, 0.0),
+                ],
+                vec![1e-6, weight, 1e-6],
+            )
+            .unwrap()
+        };
+        let even = arc(1e-9, 1e-6);
+        let rounding = hull_rounding(&even).unwrap();
+        assert!(rounding > 0.0 && rounding < 1e-12 * size.max(1.0) * 64.0);
+        assert_eq!(
+            spline_steps(&even, even.domain(), axis, &mut 0),
+            Some(SPLINE_STEPS)
+        );
+        let uneven = arc(1e-9, 1e6);
+        let rounding = hull_rounding(&uneven).unwrap();
+        assert!(rounding > 1e-3 && rounding < 1e-1, "{rounding}");
+        assert_eq!(spline_steps(&uneven, uneven.domain(), axis, &mut 0), None);
+        let clear = arc(4.0, 1e6);
+        assert_eq!(
+            spline_steps(&clear, clear.domain(), axis, &mut 0),
+            Some(SPLINE_STEPS)
+        );
+        // The wedge itself.
+        let mut wedge = Wedge::about(axis, QUARTER_TURN);
+        assert!(wedge.add(about(&f, 1.0, 0.0, 0.0), 0.5));
+        assert!(!wedge.add(about(&f, 0.4, 0.1, 0.0), 0.5));
+    }
+
+    /// An edge that is not shown within the most steps an edge may take is
+    /// counted as a face not followed for a bound ([`step_proofs`]), once a
+    /// face: here the spline through the axis, twice on one face's work.
+    #[test]
+    fn an_edge_not_shown_within_its_steps_is_counted_once_a_face() {
+        let f = tilted();
+        let axis = (f.origin(), f.z());
+        let curve = NurbsCurve::polynomial(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![
+                about(&f, 1.0, 0.0, 0.0),
+                f.origin() + f.z() * 0.5,
+                about(&f, 2.0, PI, 1.0),
+            ],
+        )
+        .unwrap();
+        let cut = step_proofs().1;
+        let mut work = 0;
+        assert_eq!(spline_steps(&curve, curve.domain(), axis, &mut work), None);
+        assert_eq!(step_proofs().1, cut + 1);
+        assert_eq!(spline_steps(&curve, curve.domain(), axis, &mut work), None);
         assert_eq!(step_proofs().1, cut + 1);
     }
 

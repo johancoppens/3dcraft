@@ -288,13 +288,17 @@ fn a_seam_of_a_spline_surface_not_known_to_close_is_a_seam() {
         }
         // A spur (one edge up and back) is not judged; two edges up and
         // back on each other are refused where the face can be charted,
-        // found at one place by the walk: on the surface `closes` finds
-        // closed too, since it is charted with its domain as its period
-        // (2026-11-14; before, it was not charted and not held there).
+        // found at one place by the walk (a surface that `closes` finds
+        // closed is not charted: not held there, a known miss, see
+        // `loops_on_a_closed_spline_surface_are_not_followed`).
         let spur = spline_wall_cylinder(&rational_cylinder(delta), false, Some(true));
         assert_eq!(not_simple(&spur), vec![], "{delta:e}");
         let spike = spline_wall_cylinder(&rational_cylinder(delta), false, Some(false));
-        assert_eq!(not_simple(&spike), vec![(0, 0)], "{delta:e}");
+        if delta > 0.0 {
+            assert_eq!(not_simple(&spike), vec![(0, 0)], "{delta:e}");
+        } else {
+            assert_eq!(not_simple(&spike), vec![], "known miss, {delta:e}");
+        }
     }
     let (surface, rim) = periodic_cylinder();
     assert_eq!(craft3d_geom::closure::closes(&surface), [false, false]);
@@ -1219,22 +1223,24 @@ fn patch_across_the_seam(surface: &Surface, r: f64, reversed: bool) -> Body {
 /// `closure::closes` finds closed (a rational NURBS cylinder of radius `r`
 /// and height `r` about z, as a STEP file brings one: the same points as
 /// the analytic cylinder's, other parameters; and the same with its
-/// parameters swapped, closed in v), are held as on the analytic cylinder:
-/// its domain's width is the chart's period (`region::periods_of`,
-/// `docs/design/topology.md` › *A spline surface that closes, charted*).
-/// Until 2026-11-14 such a face was not charted at all: a band whose two
-/// loops go round twice passed, a disc's wall did (its lid and floor, planes,
-/// were refused), and a patch across the seam turned the wrong way round
-/// passed; each is refused now, by the same rule as on the cylinder. Right
-/// faces pass: a band and a disc once round, the patch across the seam (no
-/// edge there), a wall with a seam edge used twice (as a STEP file's seam
-/// gives it). Its twin that closes within the tolerance but not to
-/// `closes`'s rounding (the seam's row moved by 1e-8) is charted as a
-/// surface that does not close and is still not held to them: the band
-/// gone round twice passes there (owed). Three scales, in the world and
+/// parameters swapped, closed in v), are not followed: such a surface is
+/// not charted (`docs/design/topology.md` › *A spline surface that closes,
+/// charted*: the charting is parked, having cost too much where it was
+/// safe). Every right face passes there: a band and a disc once round, a
+/// patch across the seam (no edge there), a wall with a seam edge used
+/// twice (as a STEP file's seam gives it); so it does on its twin that
+/// closes within the tolerance but not to `closes`'s rounding (the seam's
+/// row moved by 1e-8), which is charted as a surface that does not close.
+///
+/// **Known misses**, each refused on the analytic cylinder and passed on
+/// the spline surface, listed so that a fix takes them off: a band whose
+/// two loops go round twice; the wall of a disc so wound (its lid and
+/// floor, planes, are refused); a patch across the seam turned the wrong
+/// way round. A fix that catches one fails this test at its line: turn the
+/// expectation into the cylinder's then. Three scales, in the world and
 /// turned and moved.
 #[test]
-fn loops_on_a_closed_spline_surface_are_held_as_on_a_cylinder() {
+fn loops_on_a_closed_spline_surface_are_not_followed() {
     let once = degrees(&[0.0, 120.0, 240.0, 360.0]);
     let twice = degrees(&[0.0, 240.0, 480.0, 720.0]);
     let w = Frame::WORLD;
@@ -1261,15 +1267,15 @@ fn loops_on_a_closed_spline_surface_are_held_as_on_a_cylinder() {
         let patch_of = |(s, flip): (&Surface, bool), reversed: bool| {
             patch_across_the_seam(s, r, reversed ^ flip)
         };
-        let charted = [(&cylinder, false), (&closed, false), (&closed_v, true)];
+        let splines = [(&closed, false), (&closed_v, true)];
         for place in frames(r) {
             let moved = |body: Body| {
                 body.transformed(&craft3d_math::Transform::from_frame(&place))
                     .unwrap()
             };
-            let every = charted
-                .iter()
-                .copied()
+            let every = [(&cylinder, false)]
+                .into_iter()
+                .chain(splines)
                 .chain(near.as_ref().map(|s| (s, false)));
             for surface in every {
                 let kind = format!("{r}: {:?}", craft3d_geom::closure::closes(surface.0));
@@ -1285,31 +1291,55 @@ fn loops_on_a_closed_spline_surface_are_held_as_on_a_cylinder() {
                     assert_eq!(check(&moved(body), &tol()), vec![], "{kind}");
                 }
             }
-            for surface in charted {
-                let kind = format!("{r}: {:?}", craft3d_geom::closure::closes(surface.0));
+            // On the cylinder each wrong one is refused.
+            let on_cylinder = (&cylinder, false);
+            assert_eq!(
+                not_simple(&moved(band_of(on_cylinder, &twice))),
+                vec![(0, 0)]
+            );
+            assert_eq!(
+                not_simple(&moved(disc_of(on_cylinder, &twice))),
+                vec![(0, 0), (1, 2), (2, 3)]
+            );
+            let wrong = regionless(&moved(patch_of(on_cylinder, true)), &tol());
+            assert!(
+                wrong
+                    .iter()
+                    .any(|(_, why)| why.contains("every loop runs clockwise")),
+                "{r}: {wrong:?}"
+            );
+            // On the spline surface that closes: the known misses.
+            for surface in splines {
+                let kind = format!(
+                    "known miss, {r}: {:?}",
+                    craft3d_geom::closure::closes(surface.0)
+                );
+                // 1. A band whose two loops go round twice.
                 assert_eq!(
                     not_simple(&moved(band_of(surface, &twice))),
-                    vec![(0, 0)],
+                    vec![],
                     "{kind}"
                 );
+                // 2. The wall of a disc so wound (the planes are refused).
                 assert_eq!(
                     not_simple(&moved(disc_of(surface, &twice))),
-                    vec![(0, 0), (1, 2), (2, 3)],
+                    vec![(1, 2), (2, 3)],
                     "{kind}"
                 );
-                let wrong = regionless(&moved(patch_of(surface, true)), &tol());
-                assert!(
-                    wrong
-                        .iter()
-                        .any(|(_, why)| why.contains("every loop runs clockwise")),
-                    "{kind}: {wrong:?}"
+                // 3. A patch across the seam the wrong way round.
+                assert_eq!(
+                    regionless(&moved(patch_of(surface, true)), &tol()),
+                    vec![],
+                    "{kind}"
                 );
             }
-            // Not known to close: not held (a pass, never a refusal).
+            // Not known to close: charted as open, and the band gone round
+            // twice passes there too.
             if let Some(near) = &near {
                 assert_eq!(
                     check(&moved(band_of((near, false), &twice)), &tol()),
-                    vec![]
+                    vec![],
+                    "known miss, {r}"
                 );
             }
         }

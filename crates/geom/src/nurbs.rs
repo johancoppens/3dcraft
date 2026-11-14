@@ -947,7 +947,13 @@ impl NurbsCurve {
 /// is then of the piece's own polynomial (or rational function) continued,
 /// which is the curve only past the ends of its domain, where
 /// [`NurbsCurve::eval`] continues its first and its last span, so only
-/// there may the caller ask for it. `None` when the range is not finite or
+/// there may the caller ask for it; and not past the end of a domain that
+/// ends on a span of no width (knots not clamped, the end knot repeated),
+/// where `eval` continues that empty span's polynomial, not the last
+/// piece's. Each round of the cut past the span multiplies the rounding of
+/// the points (by `1 + 2 s`, `s` span widths before it): at a high degree a
+/// piece continued a span width is rounding alone, which the caller has to
+/// bound. `None` when the range is not finite or
 /// is empty, begins at or past the span's end, or a weight of the cut piece
 /// is not positive and finite (no hull of control points is known to hold
 /// the curve: a rational piece continued too far).

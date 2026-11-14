@@ -534,32 +534,27 @@ fn a_helical_strip_whose_edges_run_past_their_curves_is_read_the_way_it_goes_rou
 }
 
 /// A helical strip on a spline surface that closes (the cylinder as a
-/// rational spline surface, as a STEP file brings one) is read the way it
-/// goes round, as on the cylinder: the right way round it passes the whole
-/// check whatever its sides are made of, at every number of turns. Charted
-/// with its domain's width as the period but its spline edges still
-/// followed in eight steps, the right strip was refused at 10 and 12 turns
-/// with both sides single edges ("every loop runs clockwise about the
-/// outward normal", areas -5.538e-1 ...) and at 12 to 19, 31, 32, 47 and 64
-/// with one side single ("goes round the nurbs surface 16 times"): right
-/// faces refused that were passed while such a surface was not charted at
-/// all (review of 2026-11-14). Now every edge on such a surface is followed
-/// in steps the surface's cells show to move less than a quarter of the
-/// period, or its face is not followed.
+/// rational spline surface, as a STEP file brings one) passes the right
+/// way round, whatever its sides are made of and however many turns it
+/// has: such a surface is not charted, so nothing is read off a walk of it.
+/// While it was charted with its domain's width as the period and its
+/// spline edges were still followed in eight steps (2026-11-14, never on
+/// `main`), the right strip was refused at 10 and 12 turns with both sides
+/// single edges ("every loop runs clockwise about the outward normal") and
+/// at 12 to 19, 31, 32, 47 and 64 with one side single ("goes round the
+/// nurbs surface 16 times"). The charting, with a proof of the steps of
+/// every edge, is parked (`docs/design/topology.md` › *A spline surface
+/// that closes, charted*).
 ///
-/// The wrong way round (the face flipped) is refused where the strip's
-/// area in the surface's parameters can be told from its polyline's error,
-/// and by that area alone (the parameter round a rational cylinder does not
-/// run evenly with the angle, so a helix is no straight line in its
-/// parameters as it is on the analytic cylinder, and a strip this thin and
-/// long is passed past a few turns: a miss, as before the surface was
-/// charted). No face here costs more to show than a face is allowed.
+/// **Known miss**, listed so that a fix takes it off: the same strip the
+/// wrong way round (the face flipped: the whole surface outside the strip)
+/// passes as well, every one here, where on the analytic cylinder it is
+/// refused by its area (`a_helical_strip_is_read_the_way_it_goes_round`).
+/// A fix that catches one fails this test: turn the expectation round
+/// then.
 #[test]
-fn a_helical_strip_on_a_spline_cylinder_is_read_the_way_it_goes_round() {
-    use craft3d_topo::{forget_passed, step_proofs};
+fn a_helical_strip_on_a_spline_cylinder_passes_and_its_miss_is_known() {
     let mut wrong = Vec::new();
-    let mut caught = Vec::new();
-    let cut = step_proofs().1;
     for scale in [1e-3, 1.0, 1e6] {
         for place in places(scale) {
             for turns in [
@@ -570,7 +565,6 @@ fn a_helical_strip_on_a_spline_cylinder_is_read_the_way_it_goes_round() {
                 }
                 for sides in SIDES {
                     let what = format!("scale {scale}, {turns} turns, single {sides:?}");
-                    forget_passed();
                     let (right, tol) = helical_strip_on(true, scale, &place, turns, sides, false);
                     let found = check(&right, &tol);
                     if !found.is_empty() {
@@ -578,70 +572,66 @@ fn a_helical_strip_on_a_spline_cylinder_is_read_the_way_it_goes_round() {
                     }
                     let (flipped, tol) = helical_strip_on(true, scale, &place, turns, sides, true);
                     let found = check(&flipped, &tol);
-                    // In the surface's parameters: 4 round a turn, the
-                    // strip's width over the surface's height.
-                    let area = 4.0 * turns * 0.3 / (turns + 3.0);
-                    if refused_by_its_area(&found, area) {
-                        caught.push((turns, sides));
-                    } else if !found.is_empty() {
-                        wrong.push(format!("wrong way, {what}: {found:?}"));
+                    if !found.is_empty() {
+                        wrong.push(format!("known miss no longer missed, {what}: {found:?}"));
                     }
                 }
             }
         }
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
-    assert_eq!(step_proofs().1, cut, "faces not followed for their cost");
-    // Caught at every scale and place: sides in half turns (eight steps a
-    // half turn) at 1 and 3 turns, single sides at 8 and 16 (whose steps
-    // fall alike on every quarter of the surface).
-    for case in [
-        (1.0, (false, false)),
-        (3.0, (false, false)),
-        (8.0, (true, true)),
-        (16.0, (true, true)),
-    ] {
-        let times = caught.iter().filter(|c| **c == case).count();
-        assert_eq!(times, 6, "{case:?}: {caught:?}");
-    }
 }
 
-/// A face whose steps cost more to show than the check allows one face
-/// (`craft3d_topo::MOST_PROOF_WORK`) is not followed: it passes, either way
-/// round, and is counted (`craft3d_topo::step_proofs`), and the work stops
-/// at the bound. Here a strip of 400 turns between two single edges on the
-/// spline cylinder; counted in points looked at, never timed.
+/// A face whose spline edges cost more to show and to follow than the
+/// check allows one face (`craft3d_topo::MOST_PROOF_WORK`) is not followed:
+/// it passes, either way round, and is counted
+/// (`craft3d_topo::step_proofs`), and the work stops at the bound. Here a
+/// strip of 400 turns between two single edges on a cylinder; counted in
+/// units of work, never timed. The same strip of 20 and of 64 turns is
+/// followed within the bound: the right way round it passes, the wrong
+/// way round it is refused by its area.
 #[test]
 fn a_face_whose_steps_cost_too_much_to_show_passes_and_is_counted() {
     use craft3d_topo::{MOST_PROOF_WORK, forget_passed, step_proofs};
     let world = Transform::from_frame(&Frame::WORLD);
     for reversed in [false, true] {
-        let (body, tol) = helical_strip_on(true, 1.0, &world, 400.0, (true, true), reversed);
+        let (body, tol) = helical_strip(1.0, &world, 400.0, (true, true), reversed);
         forget_passed();
         let (work, cut) = step_proofs();
         assert_eq!(check(&body, &tol), vec![], "reversed {reversed}");
         let (work_now, cut_now) = step_proofs();
         assert_eq!(cut_now - cut, 1, "reversed {reversed}");
-        // Past the bound by no more than the last points looked at (one
-        // stretch's control points).
+        // Past the bound by no more than the last thing counted (the
+        // control points of one stretch, or the steps of one edge).
         let spent = work_now - work;
         assert!(
-            spent > MOST_PROOF_WORK as u64 && spent <= MOST_PROOF_WORK as u64 + (1 << 16),
+            spent > MOST_PROOF_WORK as u64 && spent <= 2 * MOST_PROOF_WORK as u64,
             "{spent}"
         );
     }
-    // The same strip of 20 turns is followed, for a twentieth of the bound.
-    let (body, tol) = helical_strip_on(true, 1.0, &world, 20.0, (true, true), false);
-    forget_passed();
-    let (work, cut) = step_proofs();
-    assert_eq!(check(&body, &tol), vec![]);
-    let (work_now, cut_now) = step_proofs();
-    assert_eq!(cut_now, cut);
-    assert!(
-        (1..=MOST_PROOF_WORK as u64 / 16).contains(&(work_now - work)),
-        "{}",
-        work_now - work
-    );
+    for (turns, most) in [(20.0, MOST_PROOF_WORK / 4), (64.0, MOST_PROOF_WORK)] {
+        for reversed in [false, true] {
+            let (body, tol) = helical_strip(1.0, &world, turns, (true, true), reversed);
+            forget_passed();
+            let (work, cut) = step_proofs();
+            let found = check(&body, &tol);
+            let (work_now, cut_now) = step_proofs();
+            assert_eq!(cut_now, cut, "{turns} turns");
+            assert!(
+                (1..=most as u64).contains(&(work_now - work)),
+                "{turns} turns: {}",
+                work_now - work
+            );
+            if reversed {
+                assert!(
+                    refused_by_its_area(&found, 0.3 * 2.0 * PI * turns),
+                    "{turns} turns: {found:?}"
+                );
+            } else {
+                assert_eq!(found, vec![], "{turns} turns");
+            }
+        }
+    }
 }
 
 /// A band of a torus between two curves that go round it 3 times about
@@ -654,7 +644,14 @@ fn a_face_whose_steps_cost_too_much_to_show_passes_and_is_counted() {
 /// 67.5° back, so the loop read as going round the tube 3 times and was
 /// refused ("goes round the torus 3 times about its axis and 3 times about
 /// its tube"), at every scale. Nothing is read off how often a loop with a
-/// spline edge goes round a torus any more.
+/// spline edge goes round a torus any more: how often it goes round the
+/// axis is shown, but says nothing without the other (a loop three times
+/// round the axis is simple with 13 turns about the tube and not with 3).
+///
+/// **Known miss**, listed so that a fix takes it off: a band between two
+/// curves that go round twice about the axis and twice about the tube (2
+/// and 2 have a common factor: each curve runs over itself) passes too,
+/// as every wrong band on spline edges does on a torus.
 #[test]
 fn a_band_of_a_torus_between_two_curves_that_wind_about_its_tube_is_a_face() {
     use craft3d_geom::{Curve3, Surface, Torus};
@@ -664,7 +661,7 @@ fn a_band_of_a_torus_between_two_curves_that_wind_about_its_tube_is_a_face() {
     let mut wrong = Vec::new();
     for scale in [1e-3, 1.0, 1e6] {
         let tol = Tolerance::new(Tolerance::default().linear * scale, 1e-9).unwrap();
-        for (p, q) in [(3.0, 13.0), (3.0, 29.0)] {
+        for (p, q) in [(3.0, 13.0), (3.0, 29.0), (2.0, 2.0)] {
             for (major, minor) in [(3.0 * scale, scale), (2.0 * scale, 0.5 * scale)] {
                 for reversed in [false, true] {
                     // The curve at the tube angle `q · s + shift` over the
@@ -703,6 +700,8 @@ fn a_band_of_a_torus_between_two_curves_that_wind_about_its_tube_is_a_face() {
                     let face = body.add_face(Surface::Torus(torus), reversed, loops);
                     body.add_shell(vec![face]);
                     let found = check(&body, &tol);
+                    // (2, 2) is the known miss: it passes like the right
+                    // ones.
                     if !found.is_empty() {
                         wrong.push(format!(
                             "scale {scale}, ({p}, {q}), radii {major} and {minor}, reversed {reversed}: {found:?}"
