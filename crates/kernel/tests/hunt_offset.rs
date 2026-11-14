@@ -1202,7 +1202,7 @@ fn a_cap_offset_past_the_cap_across_from_it_is_refused() {
                     println!("{what}: refused short of it: {error}");
                 }
                 Ok(Some(craft3d_kernel::KernelError::FaceOpTooFar { largest, .. }))
-                    if largest <= 20.0 + 8e-6 && largest >= 20.0 * (1.0 - 1e-5) =>
+                    if (20.0 * (1.0 - 1e-5)..=20.0 + 8e-6).contains(&largest) =>
                 {
                     println!("{what}: too far, what fits is below {largest}");
                 }

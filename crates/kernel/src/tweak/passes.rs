@@ -597,20 +597,18 @@ fn boxes_meet(a: &Bbox3, b: &Bbox3) -> bool {
     }
 }
 
-/// Where the faces of a body lie: the vertices of each and its box (none
-/// for a face that cannot be boxed), made once for [`swept`] and
-/// [`pierced`].
+/// Where the faces of a body lie: the box of each (none for a face that
+/// cannot be boxed), made once for [`swept`] and [`pierced`]. The
+/// vertices of a face are looked up only for a face whose box is in the
+/// way of something: on a plate of two thousand holes, sets of them for
+/// every face cost more than the checks.
 pub(super) struct Layout {
-    vertices: Vec<BTreeSet<VertexId>>,
     boxes: Vec<Option<Bbox3>>,
 }
 
 impl Layout {
     pub(super) fn of(made: &Body) -> Self {
         Layout {
-            vertices: (0..made.faces.len())
-                .map(|i| super::face_vertices(made, FaceId(super::index_u32(i))))
-                .collect(),
             boxes: (0..made.faces.len())
                 .map(|i| made.face_bbox(FaceId(super::index_u32(i))).ok())
                 .collect(),
@@ -671,18 +669,18 @@ pub(super) fn pierced(
         let own = uses.get(id.0 as usize).map_or(&[][..], Vec::as_slice);
         let mut cuts: Vec<f64> = Vec::new();
         let mut through = None;
-        for (index, (bounds, vertices)) in layout.boxes.iter().zip(&layout.vertices).enumerate() {
+        for (index, bounds) in layout.boxes.iter().enumerate() {
             let face = FaceId(super::index_u32(index));
-            if !bounds.as_ref().is_some_and(|b| boxes_meet(b, &around))
-                || own.contains(&face)
-                || vertices.contains(&edge.start)
-                || vertices.contains(&edge.end)
-            {
+            if !bounds.as_ref().is_some_and(|b| boxes_meet(b, &around)) || own.contains(&face) {
                 continue;
             }
             let Some(data) = made.face(face).filter(|f| analytic(&f.surface)) else {
                 continue;
             };
+            let vertices = super::face_vertices(made, face);
+            if vertices.contains(&edge.start) || vertices.contains(&edge.end) {
+                continue;
+            }
             craft3d_geom::allowance::charge(1);
             if craft3d_geom::allowance::exhausted() {
                 return Err(Spent);
@@ -780,16 +778,7 @@ pub(super) fn swept(
         near: false,
         first: true,
     };
-    let (vertices, boxes) = (&layout.vertices, &layout.boxes);
-    // The edges at every vertex.
-    let mut at: Vec<Vec<EdgeId>> = vec![Vec::new(); made.vertices.len()];
-    for (index, edge) in made.edges.iter().enumerate() {
-        for vertex in [edge.start, edge.end] {
-            if let Some(list) = at.get_mut(vertex.0 as usize) {
-                list.push(EdgeId(super::index_u32(index)));
-            }
-        }
-    }
+    let boxes = &layout.boxes;
     for face in surfaces.keys() {
         let (Some(was), Some(is)) = (body.face(*face), made.face(*face)) else {
             continue;
@@ -801,14 +790,12 @@ pub(super) fn swept(
             continue;
         };
         let way = Bbox3::from_corners(flo.min(tlo), fhi.max(thi));
-        let Some(own) = vertices.get(face.0 as usize) else {
-            continue;
-        };
+        let own = super::face_vertices(made, *face);
         if !found.near {
-            found.near = boxes.iter().zip(vertices).enumerate().any(|(i, (b, v))| {
+            found.near = boxes.iter().enumerate().any(|(i, b)| {
                 i != face.0 as usize
                     && b.as_ref().is_some_and(|b| boxes_meet(b, &way))
-                    && v.is_disjoint(own)
+                    && super::face_vertices(made, FaceId(super::index_u32(i))).is_disjoint(&own)
             });
         }
         // Where its vertices went is asked of a face on a plane, a
@@ -849,8 +836,14 @@ pub(super) fn swept(
             if !over {
                 continue;
             }
-            for edge in at.get(index).into_iter().flatten() {
-                found.edges.entry(*edge).or_insert(*face);
+            // The edges that end in it.
+            for (at, edge) in made.edges.iter().enumerate() {
+                if edge.start == vertex || edge.end == vertex {
+                    found
+                        .edges
+                        .entry(EdgeId(super::index_u32(at)))
+                        .or_insert(*face);
+                }
             }
             if nearest.is_none_or(|(least, _)| d0.abs() < least) {
                 nearest = Some((d0.abs(), d0.signum()));
@@ -893,14 +886,13 @@ fn first_met(
         return false;
     };
     let normal = plane.frame().z();
-    let Some(own) = layout.vertices.get(face.0 as usize) else {
-        return false;
-    };
-    for (index, (bounds, vertices)) in layout.boxes.iter().zip(&layout.vertices).enumerate() {
-        if index == face.0 as usize
-            || !bounds.as_ref().is_some_and(|b| boxes_meet(b, way))
-            || !vertices.is_disjoint(own)
-        {
+    let own = super::face_vertices(made, face);
+    for (index, bounds) in layout.boxes.iter().enumerate() {
+        if index == face.0 as usize || !bounds.as_ref().is_some_and(|b| boxes_meet(b, way)) {
+            continue;
+        }
+        let vertices = super::face_vertices(made, FaceId(super::index_u32(index)));
+        if !vertices.is_disjoint(&own) {
             continue;
         }
         let along = match made.faces.get(index).map(|f| &f.surface) {
@@ -911,7 +903,7 @@ fn first_met(
         if along.cross(normal).length() > super::SQUARE {
             return false;
         }
-        for vertex in vertices {
+        for vertex in &vertices {
             let Some(point) = made.vertex(*vertex).map(|v| v.point) else {
                 return false;
             };
