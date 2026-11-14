@@ -124,6 +124,10 @@ const FROZEN: &[(u32, usize, u64)] = &[
     // Two live splines with chord spacing: one through uneven points of a
     // line (which it is), one through points near an involute.
     (71, 10411, 0x2817_1d74_7408_006d),
+    // Two sheets through grids of points: one from a table of heights
+    // times a variable, cut into a wedge, one given point by point with
+    // chord spacing.
+    (72, 3790, 0xed44_7a0c_1472_916e),
 ];
 
 fn dir() -> PathBuf {

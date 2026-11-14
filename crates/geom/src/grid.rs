@@ -70,6 +70,9 @@
 //! to it by the tests, at scales from 1e-3 to 1e6 and in turned frames far
 //! from the origin.
 
+// The negated comparisons are meant: a NaN fails them, and is refused.
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
+
 use crate::refine::interpolate_on;
 use crate::{GeomError, NurbsSurface, RationalBezierPatch};
 use craft3d_math::{Portable, Vec3};
@@ -191,7 +194,7 @@ pub fn interpolate(
             "a grid has at most {MAX_GRID_SIDE} points a side; this one has {rows} rows of {columns}"
         ));
     }
-    let count = rows.checked_mul(columns).unwrap_or(usize::MAX);
+    let count = rows.saturating_mul(columns);
     if count > MAX_GRID_POINTS {
         return refused(format!(
             "a grid holds at most {MAX_GRID_POINTS} points; {rows} rows of {columns} are {count}"

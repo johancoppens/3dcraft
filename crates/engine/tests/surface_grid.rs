@@ -292,7 +292,7 @@ fn a_grid_read_from_a_table_follows_the_table_and_its_factor() {
     // interpolating cubic rises between its points.
     let top = |s: &mut Session| number(&body(s, "Relief")["bbox"][1][2]);
     let first = top(&mut s);
-    assert!(first >= 200.0 - 1e-3 && first < 210.0, "{first}");
+    assert!((200.0 - 1e-3..210.0).contains(&first), "{first}");
     // The sheet looks up (+z) whatever the steps' signs: the same heights
     // run the other way along y, cut from the same block, leave the same
     // solid under them.
