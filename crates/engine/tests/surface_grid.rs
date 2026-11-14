@@ -755,10 +755,108 @@ fn a_grid_too_far_from_the_origin_is_refused_with_what_precision_is_left() {
         json!({"table": "far", "step": ["1 mm", "1 mm"], "origin": ["1e12 mm", "-2e12 mm", "3e12 mm"]}),
     );
     assert!(
-        why.contains("from the origin") && why.contains("more than the tolerance"),
+        why.contains("from the origin") && why.contains("no model there holds the tolerance"),
         "{why}"
     );
     assert!(!why.contains("NaN") && !why.contains("inf"), "{why}");
+}
+
+/// The warnings of a grid surface in `document.check`.
+fn grid_warnings(s: &mut Session) -> Vec<String> {
+    let check = run(s, "document.check", json!({}));
+    // Listed only when there are any.
+    check["warnings"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter(|w| w["kind"] == "gridSurface")
+        .map(|w| w["warning"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn a_roof_and_a_site_far_from_the_origin_are_built_and_warned_of() {
+    let dir = workdir("surface-grid", "roof");
+    let mut s = session_in(&dir);
+    new_document(&mut s, 1.0);
+    // A 50 m roof 100 km from the origin and a 2 km site at national-grid
+    // coordinates, in millimetres at the default tolerance of 1e-6 mm:
+    // the proven bound is above the tolerance, the deviation found far
+    // within it; built, and warned of.
+    for (name, origin, step) in [("Roof", [1e8, 0.0], 1e4), ("Site", [5.3e8, 1.8e8], 2.5e5)] {
+        let points = rows(7, 7, |r, c| {
+            [
+                origin[0] + c as f64 * step,
+                origin[1] + r as f64 * step,
+                3000.0 * ((r + c) as f64 * 0.4).psin(),
+            ]
+        });
+        let made = built(
+            &mut s,
+            "feature.surface.grid",
+            json!({"points": points, "name": name}),
+        );
+        assert!(number(&made["grid"]["bound"]) > 1e-6, "{made}");
+        assert!(number(&made["grid"]["deviation"]) < 1e-6, "{made}");
+        assert!(
+            made["grid"]["warnings"]
+                .to_string()
+                .contains("from the origin"),
+            "{made}"
+        );
+    }
+    // What `document.check` says of every grid, and that the bodies there
+    // are measured.
+    let warned = grid_warnings(&mut s);
+    assert_eq!(warned.len(), 2, "{warned:?}");
+    assert!(number(&body(&mut s, "Roof")["area"]) > 0.0);
+}
+
+#[test]
+fn document_check_lists_a_grids_warnings_however_they_came_about() {
+    let dir = workdir("surface-grid", "check");
+    let mut s = session_in(&dir);
+    new_document(&mut s, 1.0);
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "scale", "expr": "1"}),
+    );
+    heights(&mut s, "land", 4, 5, |r, c| (r * c) as f64);
+    built(
+        &mut s,
+        "feature.surface.grid",
+        json!({"table": "land", "step": ["5 mm", "5 mm"], "factor": "scale", "name": "Land"}),
+    );
+    assert!(grid_warnings(&mut s).is_empty());
+    // A variable makes the heights far steeper than the steps.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "scale", "expr": "1e4"}),
+    );
+    let warned = grid_warnings(&mut s);
+    assert!(
+        warned.len() == 1 && warned[0].contains("is the factor right"),
+        "{warned:?}"
+    );
+    // So does a table, and the file keeps it so.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "scale", "expr": "1"}),
+    );
+    assert!(grid_warnings(&mut s).is_empty());
+    heights(&mut s, "land", 4, 5, |r, c| 1e4 * (r * c) as f64);
+    assert_eq!(grid_warnings(&mut s).len(), 1);
+    run(
+        &mut s,
+        "file.save",
+        json!({"path": "land.3dcraft", "overwrite": true}),
+    );
+    run(&mut s, "file.open", json!({"path": "land.3dcraft"}));
+    assert_eq!(grid_warnings(&mut s).len(), 1);
 }
 
 #[test]

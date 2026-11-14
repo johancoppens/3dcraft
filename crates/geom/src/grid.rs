@@ -121,12 +121,11 @@ pub const MAX_REGULAR_PIECES: usize = 1 << 20;
 
 /// The parameters at which the sheet takes its points, one set for each
 /// direction (all its rows, or all its columns).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Spacing {
     /// Uniform clamped knots, each point at the Greville abscissa of its
     /// control point (the mean of `degree` knots), as a live spline
     /// through points takes them by default.
-    #[default]
     Greville,
     /// The chord lengths along each row (each column), as a share of the
     /// row's length, averaged over all rows (columns) (*The NURBS Book*,
@@ -197,8 +196,26 @@ pub struct Grid {
     /// parameters.
     pub deviation: f64,
     /// What rounding may leave between a point and the surface (see the
-    /// module's *At the points*).
+    /// module's *At the points*). It may exceed the tolerance far from the
+    /// origin (between [`resolved`]'s limit and the bound's); the caller
+    /// warns then, the measured [`Grid::deviation`] being within it.
     pub bound: f64,
+    /// The largest coordinate of the points and the control points: how far
+    /// the grid reaches from the origin.
+    pub reach: f64,
+}
+
+/// How many units in the last place of its largest coordinate a model may
+/// take before it cannot hold its tolerance at all: positions there are
+/// stored no finer than about `ε` of their size, and every computation
+/// adds a few such units.
+pub const PLACES: f64 = 4.0;
+
+/// Whether a model reaching `size` from the origin can hold `tolerance`:
+/// `PLACES · ε · size` within it. Beyond, a grid is refused: there a
+/// curved face is not even measured or meshed in reasonable time.
+pub fn resolved(size: f64, tolerance: f64) -> bool {
+    PLACES * f64::EPSILON * size <= tolerance
 }
 
 /// `γ_k = k ε / (1 − k ε)` (Higham, §3.1).
@@ -240,13 +257,13 @@ fn rounding_bound(pu: usize, pv: usize, size: f64) -> f64 {
         * 3.0_f64.sqrt()
 }
 
-/// The refusal of a grid whose sheet rounding alone may take further from
-/// its points than the tolerance: too far from the origin for the
-/// precision a double holds there.
-fn too_far(size: f64, bound: f64, tolerance: f64) -> GridError {
+/// The refusal of a grid too far from the origin for the tolerance to be
+/// held there at all ([`resolved`]).
+fn too_far(size: f64, tolerance: f64) -> GridError {
     GridError::Refused(format!(
-        "the grid reaches {size:.3e} from the origin, where a number holds a position only to about {:.1e}: the sheet through its points is certain only to {bound:.1e} there, more than the tolerance {tolerance:.1e}; move the points nearer the origin (and the sheet back with feature.transform) or loosen the tolerance",
-        size * f64::EPSILON
+        "the grid reaches {size:.3e} from the origin, where a number holds a position only to about {:.1e}: no model there holds the tolerance {tolerance:.1e} (a grid is refused from {:.3e} at this tolerance); work nearer the origin (and move the sheet there with feature.transform afterwards) or in a larger unit",
+        size * f64::EPSILON,
+        tolerance / (PLACES * f64::EPSILON)
     ))
 }
 
@@ -315,14 +332,14 @@ pub fn interpolate_with(
         }
     }
     let (pu, pv) = ((columns - 1).min(3), (rows - 1).min(3));
-    // Rounding alone, at the points' own size, may already exceed the
-    // tolerance: refused before anything is computed there.
+    // Where the points' own size leaves no room for the tolerance, refused
+    // before anything is computed there.
     let reach = points
         .iter()
         .map(|p| p.x.abs().max(p.y.abs()).max(p.z.abs()))
         .fold(0.0, f64::max);
-    if !(rounding_bound(pu, pv, reach) <= tolerance) {
-        return Err(too_far(reach, rounding_bound(pu, pv, reach), tolerance));
+    if !resolved(reach, tolerance) {
+        return Err(too_far(reach, tolerance));
     }
     check_legs(&at, rows, columns, tolerance, angular)?;
     let (u, ku) = parameters(&at, rows, columns, pu, spacing, Direction::AlongRows)?;
@@ -382,8 +399,8 @@ pub fn interpolate_with(
     // Three coordinates: the length of a residual is at most √3 times its
     // largest coordinate's size.
     let bound = rounding_bound(pu, pv, size);
-    if !(bound <= tolerance) {
-        return Err(too_far(size, bound, tolerance));
+    if !resolved(size, tolerance) {
+        return Err(too_far(size, tolerance));
     }
     if !(deviation <= tolerance) {
         return refused(format!(
@@ -398,6 +415,7 @@ pub fn interpolate_with(
         v,
         deviation,
         bound,
+        reach: size,
     })
 }
 
@@ -859,7 +877,25 @@ impl Place<'_> {
         );
         // A witness that a row or a column runs back: the sheet's tangent
         // along it, at 5 × 5 places of the span, against the leg of the
-        // grid it lies beside.
+        // grid it lies beside, both in space and in the grid's mean plane
+        // (so a height that overshoots between two points is no run-back
+        // where the row goes on in plan).
+        let back = |tangent: Vec3, leg: Vec3| -> bool {
+            if !(tangent.dot(leg) < 0.0) {
+                return false;
+            }
+            let Some(n) = mean else {
+                return true;
+            };
+            let (t, l) = (tangent - n * tangent.dot(n), leg - n * leg.dot(n));
+            // Where the leg stands along the mean normal within rounding its
+            // plan says nothing: space decides.
+            let room = 64.0 * f64::EPSILON;
+            if !(l.length() > room * leg.length() && t.length() > room * tangent.length()) {
+                return true;
+            }
+            t.dot(l) < 0.0
+        };
         for i in 0..=4 {
             for j in 0..=4 {
                 let s = range_u.0 + (range_u.1 - range_u.0) * f64::from(i) / 4.0;
@@ -867,7 +903,7 @@ impl Place<'_> {
                 let (_, su, sv) = self.surface.derivatives(s, t);
                 let (ci, ri) = (Self::interval(self.u, s), Self::interval(self.v, t));
                 let (row, column) = (nearest(self.v, t), nearest(self.u, s));
-                if su.dot(self.leg((row, ci), (row, ci + 1))?) < 0.0 {
+                if back(su, self.leg((row, ci), (row, ci + 1))?) {
                     return Ok(format!(
                         "row {} runs back between points {} and {}: the sheet through it turns against the row there, so it folds near row {}, point {} (chord spacing follows unevenly spaced points, even spacing a regular grid's)",
                         row + 1,
@@ -877,7 +913,7 @@ impl Place<'_> {
                         ci + 1
                     ));
                 }
-                if sv.dot(self.leg((ri, column), (ri + 1, column))?) < 0.0 {
+                if back(sv, self.leg((ri, column), (ri + 1, column))?) {
                     return Ok(format!(
                         "the column of point {} runs back between rows {} and {}: the sheet through it turns against the column there, so it folds near row {}, point {} (chord spacing follows unevenly spaced points, even spacing a regular grid's)",
                         column + 1,
@@ -1523,15 +1559,47 @@ mod tests {
     #[test]
     fn a_grid_too_far_from_the_origin_for_the_tolerance_is_refused() {
         // At 1e12 from the origin a double holds a position to 1e-4: no
-        // sheet there is certain to 1e-6.
+        // model there holds 1e-6.
         let pts = grid(3, 3, |r, c| {
             Vec3::new(1e12 + c as f64, -2e12 + r as f64, 3e12)
         });
         let why = refusal(interpolate(&pts, 3, 3, Spacing::Greville, 1e-6, ANG));
         assert!(
-            why.contains("from the origin") && why.contains("more than the tolerance"),
+            why.contains("from the origin") && why.contains("no model there holds the tolerance"),
             "{why}"
         );
+        // The limit: 4 units in the last place of the largest coordinate
+        // within the tolerance, tolerance / (4 ε), 1.126e9 at 1e-6.
+        let limit = 1e-6 / (PLACES * f64::EPSILON);
+        for (k, built) in [(0.99, true), (1.01, false)] {
+            let pts = grid(3, 3, |r, c| {
+                Vec3::new(limit * k + c as f64, r as f64, (r * c) as f64)
+            });
+            let made = interpolate(&pts, 3, 3, Spacing::Even, 1e-6, ANG);
+            assert_eq!(made.is_ok(), built, "{k}: {made:?}");
+        }
+        // Between the bound's limit and that one (a 50 m roof 100 km away,
+        // a 2 km site at national-grid coordinates, both in millimetres):
+        // built, the proven bound above the tolerance, the deviation found
+        // within it.
+        for (origin, step) in [
+            (Vec3::new(1e8, 0.0, 0.0), 1e4),
+            (Vec3::new(5.3e8, 1.8e8, 0.0), 2.5e5),
+        ] {
+            let pts = grid(7, 7, |r, c| {
+                origin
+                    + Vec3::new(
+                        c as f64 * step,
+                        r as f64 * step,
+                        3000.0 * ((r + c) as f64 * 0.4).psin(),
+                    )
+            });
+            for spacing in [Spacing::Chord, Spacing::Even, Spacing::Greville] {
+                let made = interpolate(&pts, 7, 7, spacing, 1e-6, ANG).unwrap();
+                assert!(made.bound > 1e-6, "{origin:?}: {}", made.bound);
+                assert!(made.deviation < 1e-6, "{origin:?}: {}", made.deviation);
+            }
+        }
         // At 1e160, and with a tolerance that takes it, no refusal or
         // report prints a number that is not one.
         for (k, tol) in [(1e160, 1e-6), (1e300, 1e-6), (1e160, 1e300)] {
@@ -1547,6 +1615,24 @@ mod tests {
                     );
                 }
                 Ok(made) => assert!(made.deviation.is_finite() && made.bound.is_finite()),
+            }
+        }
+    }
+
+    #[test]
+    fn heights_that_overshoot_are_no_run_back() {
+        // An even table 6e5 steps high: x linear in u, so no row runs
+        // back in plan, though the heights overshoot between the points
+        // (the tangent opposes the leg in space). Built, or refused as not
+        // proven with the steepness said: never as a run-back.
+        for (spacing, h) in [(Spacing::Even, 6e5), (Spacing::Greville, 4e5)] {
+            let pts = field(7, 9, |r, c| if (r + c) % 2 == 0 { h } else { -h });
+            if let Err(e) = interpolate(&pts, 7, 9, spacing, 1e-6, ANG) {
+                let why = e.to_string();
+                assert!(
+                    !why.contains("runs back") && why.contains("scale"),
+                    "{spacing:?}: {why}"
+                );
             }
         }
     }

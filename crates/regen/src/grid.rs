@@ -265,11 +265,17 @@ pub(crate) fn build(
     )
     .map_err(|e| format!("points: {e}"))?;
     drop(pts);
-    let (deviation, bound) = (made.deviation, made.bound);
+    let (deviation, bound, reach) = (made.deviation, made.bound, made.reach);
     let (pu, pv) = made.surface.degrees();
     let spans = (columns - pu).saturating_mul(rows - pv);
     let most = craft3d_kernel::boolean::MAX_FREEFORM_SPANS;
     let mut warnings = Vec::new();
+    if bound > tol.linear {
+        warnings.push(format!(
+            "the grid reaches {reach:.3e} from the origin, where rounding may take the sheet up to {bound:.1e} from its points, more than the tolerance {:.1e} (found {deviation:.1e} at the points): work nearer the origin (and move the sheet there with feature.transform) or in a larger unit",
+            tol.linear
+        ));
+    }
     if steep > STEEP {
         warnings.push(format!(
             "the heights rise up to {steep:.0} times the step between neighbours: is the factor right (heights in metres over steps of millimetres want the map's scale)?"
