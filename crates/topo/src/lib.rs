@@ -46,7 +46,10 @@ pub use mass::{
     shell_volumes,
 };
 pub use query::{EdgeUse, Outward, edge_faces, edge_uses};
-pub use region::{MOST_PER_FACE, face_holds, loops_not_simple, region_fault, regionless};
+pub use region::{
+    MOST_PER_FACE, MOST_PROOF_WORK, face_holds, loops_not_simple, region_fault, regionless,
+    step_proofs,
+};
 pub use sew::{MAX_CANDIDATES, SAMPLES, SewError, Sewn, sew};
 pub use sew_split::{MAX_STATION_LOOKS, MAX_STATIONS};
 pub use shells::{Taken, boundary_loops, face_groups, shell_alone, shell_genera, shells_alone};

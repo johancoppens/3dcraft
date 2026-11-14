@@ -436,6 +436,7 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - The fuel tank hollow at the default tolerances: a quintic crown and sides, the G2 proof's expansion along the face through breaks where it is C¹, and a vertex where two tangent faces meet a third put on their seam (24.81 L) ([`design/face-operations.md`](design/face-operations.md) › *Hollow freeform bodies*) (2026-11-01)
 - A fillet or a chamfer takes one edge by its own name beside the pair of faces, so one of several edges between the same two faces can be picked, when every part of the name is proven to be identity, followed through the features that take its body (format 70) ([`design/names.md`](design/names.md) › *An edge by its own name*) (2026-11-13)
 - J-034: a live spline through points takes them at chord-length parameters on averaged knots (`spacing: "chord"`, format 71), the default unchanged; the default is open (D-open-23) ([`design/document.md`](design/document.md) › *Spacing*) (2026-11-14)
+- A sheet through a grid of points (`feature.surface.grid`, format 72): rows of points or a table's heights times a factor, bicubic interpolation at even (a table's default), chord (the points' default) or Greville parameters, proven free of folds, named by the grid's borders ([`design/surfacing.md`](design/surfacing.md) › *A sheet through a grid of points*) (2026-11-14)
 - Four of the kernel set's seven shell refusals build: a vertex of four or more faces the moved faces no longer meet in becomes, in a shell's hollow, the tree of vertices of three faces they make (H-01, H-06, H-07), and an edge lost while followed is tried again from a better guess (H-02) ([`design/face-operations.md`](design/face-operations.md) › *The kernel set's shell refusals*) (2026-11-14)
 
 #### Open
@@ -684,6 +685,7 @@ STEP files read into the document as bodies (an `Import` feature), a pinned publ
 - STEP import, first slice: `file.import`, one `import` feature per solid holding the file's bytes (shared between undo steps, stored once in the `.3dcraft` file, format 25), typed reading and sewing on topology only in `craft3d-stepread`, every edge proven on its faces and a gap recorded as the entity's tolerance up to the document's cap, beyond it refused naming the entity ([`design/step-import.md`](design/step-import.md)) (2026-10-21)
 - STEP import, second slice: assemblies (one feature per placement, moved, named by its path), colours per solid, swept surfaces of any curve as exact B-splines, offsets and implied-knot B-splines, every edge proven (poles and closed spline seams, in `geom::certify`) ([`design/step-import.md`](design/step-import.md) › *Second slice*) (2026-10-21)
 - Real-world STEP models: `cargo xtask abc` imports, checks, meshes, measures and cuts (three tools, the volume identities) every model of a chunk of the ABC dataset on the Strix, each in its own process, into a scorecard of ids and results ([`testing.md`](testing.md) › *Real-world models*, [`abc-scorecard.md`](abc-scorecard.md)) (2026-11-01)
+- Embed, first slice (experimental, for 0.2): the web build driven by the page it sits in through the control channel's envelope, in the embedded stand, as `full`, `view` or `form` ([`control-protocol.md`](control-protocol.md) › *The page as a transport*, [`decisions.md`](decisions.md) 2026-11-14) (2026-11-14)
 
 #### Open
 - [ ] Share large blobs between undo snapshots instead of copying them: done for imported files (2026-10-21, an `Arc` per file); open for anything else large a document may hold
@@ -749,6 +751,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-14 | minor | M10: Embed's first slice, a Done line |
 | 2026-11-13 | minor | After R1: the public `main` is the latest release, and 0.1.x fixes land on `release/0.1` and are merged forward into `main`: the stage and the current focus |
 | 2026-11-13 | minor | After R1: the freeze ended, `main` is the coming 0.2 and 0.1.x comes from `release/0.1`: the stage and the current focus |
 | 2026-11-12 | minor | R1: the Done line of 0.1.1 says what the tester saw (a start on a Windows without the runtime) and that the killed-window test ran |

@@ -939,6 +939,22 @@ pub struct Shell {
     drawer_button: Option<egui::Rect>,
     /// The narrow layout's ⋯ (File, Edit, View, Help), as last drawn.
     more_menu: Option<egui::Rect>,
+    /// The host lets `state.presentation` be other than `full`: the web
+    /// build, where the page that embeds it decides
+    /// ([`Self::allow_presentations`]). Off (the desktop), `ui.set`
+    /// refuses it: the menu, the status bar and its agents pill are the
+    /// person's.
+    presentations: bool,
+    /// Whether the sketches' lines were shown before the window left
+    /// `full`: what they are again when it comes back.
+    sketches_in_full: Option<bool>,
+    /// Draw a ring round the window while it has the keyboard (the web
+    /// build embedded in a page, whose canvas has no outline of its own).
+    focus_ring: bool,
+    focus_ring_shown: bool,
+    /// The feature list was drawn in the last frame: its menu and the
+    /// keys that walk it take an Escape (`Self::escape_has_work`).
+    features_drawn: bool,
     /// Two fingers were on the viewport: the finger left on it does not
     /// turn the camera until it is lifted.
     touch_gesture: bool,
@@ -1492,6 +1508,11 @@ impl Shell {
             last_tap: None,
             drawer_button: None,
             more_menu: None,
+            presentations: false,
+            sketches_in_full: None,
+            focus_ring: false,
+            focus_ring_shown: false,
+            features_drawn: false,
             touch_gesture: false,
             player_shown: false,
             player_hits: Vec::new(),
@@ -2886,12 +2907,123 @@ impl Shell {
         self.ui_with(ui, None);
     }
 
+    /// Lets the presentation be other than `full` (`ui.set`,
+    /// [`Self::set_presentation`]): the web build, where the page that
+    /// embeds it decides. Off by default, as on the desktop.
+    pub fn allow_presentations(&mut self, allow: bool) {
+        self.presentations = allow;
+    }
+
+    /// True when the presentation may be other than `full`.
+    pub fn presentations_allowed(&self) -> bool {
+        self.presentations
+    }
+
+    /// Shows the window as `presentation` (Embed: the page's option at the
+    /// start). Without the whole window the sketches' lines are off, so a
+    /// visitor sees the model; with it they are on, as by default.
+    /// `ui.set {"show": {"sketches": …}}` still switches them. Refused
+    /// (false) for a presentation other than `full` where the host does
+    /// not allow it ([`Self::allow_presentations`]).
+    pub fn set_presentation(&mut self, presentation: crate::state::Presentation) -> bool {
+        if !presentation.is_full() && !self.presentations {
+            return false;
+        }
+        let (was, sketches) = (self.state.presentation, self.state.show.sketches);
+        self.state.presentation = presentation;
+        self.sketches_follow(was, sketches, false);
+        true
+    }
+
+    /// The sketches' lines after the presentation went from `was` (with
+    /// the lines `sketches`) to what it is: off when the window leaves
+    /// `full`, what they were kept; as they were in `full` again when it
+    /// comes back. `said`: the same change set them itself (a `ui.set`
+    /// patch with `show.sketches`), which stays.
+    pub(crate) fn sketches_follow(
+        &mut self,
+        was: crate::state::Presentation,
+        sketches: bool,
+        said: bool,
+    ) {
+        let now = self.state.presentation;
+        if was.is_full() && !now.is_full() {
+            self.sketches_in_full = Some(sketches);
+            if !said {
+                self.state.show.sketches = false;
+            }
+        } else if !was.is_full() && now.is_full() {
+            let kept = self.sketches_in_full.take();
+            if !said {
+                self.state.show.sketches = kept.unwrap_or(true);
+            }
+        }
+    }
+
+    /// Draws a ring round the window while it has the keyboard: for the
+    /// web build embedded in a page, whose canvas shows nothing of its
+    /// focus (eframe sets `outline: none`); the colour and width are the
+    /// tokens' (`info_accent`, `highlight_width`).
+    pub fn set_focus_ring(&mut self, on: bool) {
+        self.focus_ring = on;
+    }
+
+    /// True when Escape has something of the window's to do now (as the
+    /// window was last drawn): a field has the keys; a menu, a list, a
+    /// popover, the narrow layout's drawer or a dialog is open (an egui
+    /// popup, the Studio or Analysis popover, or any area drawn over the
+    /// panels but those that stay, the shell's banner and `staying`); a
+    /// joint is held by hand; the pointer is over the view while something
+    /// is selected; the keys walk the feature list shown. A page that
+    /// embeds the web build lets an Escape leave the canvas only when
+    /// nothing of this is so. Only what an Escape does close counts (what
+    /// the state says open but is not drawn, such as a feature's menu
+    /// while the list is not shown, does not): an Escape always leaves in
+    /// the end.
+    pub fn escape_has_work(&self, ctx: &egui::Context, staying: &[egui::Id]) -> bool {
+        if ctx.memory(|m| m.focused().is_some()) || egui::Popup::is_any_open(ctx) {
+            return true;
+        }
+        let panels = &self.state.panels;
+        let popover = (self.narrow() && panels.drawer)
+            || (self.state.analysis.is_on() && panels.analysis_options)
+            || (self.state.look.is_studio() && !self.state.analysis.is_on() && panels.look_options);
+        let list_shown = self.features_drawn;
+        let walking = list_shown
+            && self.state.side_panel.hover.is_some()
+            && !self.side.hover_by_pointer
+            && self.state.side_panel.menu.is_none();
+        let selected_under_pointer = !self.select.view.items.is_empty()
+            && ctx
+                .pointer_hover_pos()
+                .zip(self.rect)
+                .is_some_and(|(at, view)| view.contains(at));
+        if popover
+            || walking
+            || selected_under_pointer
+            || self.joints.driven.is_some()
+            || self.select.menu.is_some()
+            || (list_shown && self.state.side_panel.menu.is_some())
+        {
+            return true;
+        }
+        let banner = egui::Id::new(params::TROUBLE_ID);
+        ctx.memory(|m| {
+            m.areas().visible_layer_ids().into_iter().any(|layer| {
+                layer.order == egui::Order::Foreground
+                    && layer.id != banner
+                    && !staying.contains(&layer.id)
+            })
+        })
+    }
+
     fn ui_with(&mut self, ui: &mut egui::Ui, mut session: Option<&mut Session>) {
         // Worked out again where the viewport is drawn this frame; a frame
         // without it (the start screen) leaves no stale light look.
         self.interacting = false;
-        // Set again where the drawer is drawn.
+        // Set again where the drawer is drawn, and the feature list.
         self.drawer_sliding = false;
+        self.features_drawn = false;
         // The viewport may show a provisional moment of a playing motion,
         // a picture that is recorded or captured may not.
         if let Some(session) = session.as_deref_mut() {
@@ -2943,29 +3075,43 @@ impl Shell {
             }
             None => (self.shown_scene.clone(), self.shown_status.clone()),
         };
-        self.file_shortcuts(ui, status.is_some());
-        self.edit_shortcuts(ui, status.as_ref());
-        self.tab_shortcuts(ui);
+        // Without the whole window (Embed's `view` and `form`, set by the
+        // page it sits in) the File, Edit, tab and Help keys are the
+        // page's business: the window keeps those of the view.
+        let full = self.state.presentation.is_full();
+        let form = self.state.presentation == crate::state::Presentation::Form;
+        if full {
+            self.file_shortcuts(ui, status.is_some());
+            self.edit_shortcuts(ui, status.as_ref());
+            self.tab_shortcuts(ui);
+        }
         self.view_shortcuts(ui);
-        self.help_keys(ui);
+        if full {
+            self.help_keys(ui);
+        }
         // The next step of the history player, when it is time.
         self.advance_player(ui.ctx());
         self.settle_work(ui.ctx());
         let tokens = self.tokens;
-        egui::Panel::top("craft3d-menu")
-            .resizable(false)
-            .show_separator_line(false)
-            .frame(chrome_frame(tokens.menu_fill))
-            .show(ui, |ui| {
-                ui.style_mut().visuals = tokens.chrome_visuals();
-                self.menu_bar(ui, status.as_ref());
-            });
+        if full {
+            egui::Panel::top("craft3d-menu")
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(chrome_frame(tokens.menu_fill))
+                .show(ui, |ui| {
+                    ui.style_mut().visuals = tokens.chrome_visuals();
+                    self.menu_bar(ui, status.as_ref());
+                });
+        } else {
+            self.drawer_button = None;
+            self.more_menu = None;
+        }
         if self.file_action.is_some() || self.doc_action.is_some() || !self.edit_actions.is_empty()
         {
             // The host does it between frames: have one come.
             ui.ctx().request_repaint();
         }
-        if self.state.panels.recovery && !self.recovery.found.is_empty() {
+        if full && self.state.panels.recovery && !self.recovery.found.is_empty() {
             let clicked = egui::Panel::top("craft3d-recovery")
                 .resizable(false)
                 .show_separator_line(false)
@@ -2991,7 +3137,11 @@ impl Shell {
             self.recovery_hits.clear();
             self.discard_armed = None;
         }
-        if self.narrow {
+        if !full {
+            // No tab row in `view` and `form`: the page shows what it
+            // opened.
+            self.tab_hits.clear();
+        } else if self.narrow {
             // The top bar names the document and lists the others (its
             // ▾), or 3DCraft on the start screen: no tab row on a phone or
             // a tablet (boards m1, m2, t1).
@@ -3013,7 +3163,7 @@ impl Shell {
                 )
                 .show(ui, |ui| self.tab_row(ui));
         }
-        if self.state.panels.status {
+        if full && self.state.panels.status {
             egui::Panel::bottom("craft3d-status")
                 .resizable(false)
                 .show_separator_line(false)
@@ -3031,12 +3181,23 @@ impl Shell {
         // Put away while the welcome shows (`start.rs`).
         // A Jig in use on a phone: its form is a half sheet under the model
         // (board m8); on a tablet the side panel docks beside it (t2).
+        // In `form` (Embed) the form is shown as a Jig in use shows it,
+        // also for a model with public parameters; in `view` never.
         let window = ui.ctx().content_rect().width();
-        let jig = self.jig_in_use() && !self.welcome();
-        let docked = self.narrow && jig && window >= tokens.docked_min_window;
-        let half_sheet = self.narrow && jig && !docked;
-        let drawer = self.narrow && !docked && self.state.panels.tree && !self.welcome();
-        if self.state.panels.tree && !self.welcome() && (!self.narrow || docked) {
+        let welcome = self.welcome();
+        let view = self.state.presentation == crate::state::Presentation::View;
+        let jig = self.jig_in_use() && !welcome;
+        let wants_form = !view && (jig || (form && !welcome));
+        let docked = self.narrow && wants_form && window >= tokens.docked_min_window;
+        let half_sheet = self.narrow && wants_form && !docked;
+        let drawer = full && self.narrow && !docked && self.state.panels.tree && !welcome;
+        let side = !welcome
+            && if form {
+                !self.narrow || docked
+            } else {
+                full && self.state.panels.tree && (!self.narrow || docked)
+            };
+        if side {
             // No margin on the right: the list's scroll bar lies against
             // the panel's edge, the split it is resized by.
             let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin {
@@ -3057,10 +3218,21 @@ impl Shell {
                 .resizable(false)
                 .exact_size(width)
                 .frame(frame)
-                .show(ui, |ui| self.side_panel(ui, status.is_some()));
+                .show(ui, |ui| {
+                    if form {
+                        self.form_panel(ui, status.is_some());
+                    } else {
+                        self.side_panel(ui, status.is_some());
+                    }
+                });
             self.tree_panel = Some(panel.response.rect);
         } else {
             self.tree_panel = None;
+            // No form drawn in `view` (or not yet, under a sheet): none of
+            // its fields are hit.
+            if !full {
+                self.parameters_hidden();
+            }
         }
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui, scene.as_ref()));
         // The status bar is laid out before the viewport draws: its
@@ -3077,7 +3249,7 @@ impl Shell {
         }
         // The side panel's split, over the viewport's edge: interacted
         // after it, so a drag there resizes the panel and does not orbit.
-        if let Some(panel) = self.tree_panel.filter(|_| !self.narrow) {
+        if let Some(panel) = self.tree_panel.filter(|_| full && !self.narrow) {
             self.tree_split(ui, panel);
         }
         // In the narrow layout the side panel is a drawer over the
@@ -3087,16 +3259,20 @@ impl Shell {
         } else if self.narrow && !docked {
             self.tree_panel = None;
         }
-        if half_sheet && !self.state.panels.drawer {
+        // In `form` the sheet is the form alone: no drawer opens over it.
+        if half_sheet && (form || !self.state.panels.drawer) {
             self.parameters_sheet(ui);
         } else {
             self.params_sheet_rect = None;
         }
-        if half_sheet && self.state.panels.drawer {
+        if half_sheet && !form && self.state.panels.drawer {
             self.drawer(ui, status.is_some());
         }
-        // A parameter's value that broke the model, and the way back.
-        self.trouble_banner(ui);
+        // A parameter's value that broke the model, and the way back: the
+        // form's, so not over the bare view.
+        if !view {
+            self.trouble_banner(ui);
+        }
         // Space, the arrows, Home and End over the viewport or the list.
         self.player_keys(ui.ctx());
         // A number typed into a field of the viewport, once Enter was
@@ -3148,6 +3324,29 @@ impl Shell {
         }
         self.closing_dialog(ui);
         self.help_windows(ui);
+        // The ring of a window embedded in a page while it has the keys.
+        if self.focus_ring && ui.input(|i| i.focused) {
+            let width = self.tokens.highlight_width;
+            let rect = ui.ctx().content_rect().shrink(width * 0.5);
+            ui.ctx()
+                .layer_painter(egui::LayerId::new(
+                    egui::Order::Tooltip,
+                    egui::Id::new("craft3d-focus-ring"),
+                ))
+                .rect_stroke(
+                    rect,
+                    egui::CornerRadius::ZERO,
+                    egui::Stroke::new(width, color(self.tokens.info_accent)),
+                    egui::StrokeKind::Middle,
+                );
+        }
+        self.focus_ring_shown = self.focus_ring && ui.input(|i| i.focused);
+    }
+
+    /// True when the last frame drew the ring of a window that has the
+    /// keys ([`Self::set_focus_ring`]).
+    pub fn focus_ring_shown(&self) -> bool {
+        self.focus_ring_shown
     }
 
     /// The File shortcuts, wherever the pointer is; not under a modal
@@ -4656,11 +4855,12 @@ impl Shell {
         }
         // Esc closes an open popover of the Studio or Analysis chip first,
         // wherever the pointer is, then lets go of a joint held by hand;
-        // then it clears the selection over the viewport.
+        // then it closes the "select other" list, wherever the pointer is,
+        // or clears the selection over the viewport.
         if !ui.ctx().egui_wants_keyboard_input() && ui.input(|i| i.key_pressed(help::CLEAR_KEY)) {
             if self.close_popover() || self.let_go_of_drive() {
                 ui.ctx().request_repaint();
-            } else if response.contains_pointer() {
+            } else if self.select.menu.is_some() || response.contains_pointer() {
                 self.escape_selection();
                 ui.ctx().request_repaint();
             }
@@ -4780,7 +4980,11 @@ impl Shell {
                 color(tokens.viewport_text),
             );
         };
-        let start = self.welcome();
+        let welcome = self.welcome();
+        // The start screen only in the whole window: in Embed's `view` and
+        // `form` the page decides what is opened, and the view stays empty
+        // until it does.
+        let start = welcome && self.state.presentation.is_full();
         // Nothing drawn yet while a file opens: what is opening, in the
         // middle, gone with the first body.
         let nothing_yet = scene.is_none_or(|scene| scene.bodies.is_empty());
@@ -4838,7 +5042,7 @@ impl Shell {
         self.paint_selecting(ui);
         // The view cube, the triad and the controls over the viewport;
         // the start screen instead while there is no document.
-        if start {
+        if welcome {
             self.controls_layout = None;
         } else {
             self.viewport_controls(ui, rect, scene);

@@ -10,6 +10,7 @@ pub mod closure;
 pub mod curvature;
 mod curve;
 mod extend;
+pub mod grid;
 pub mod intersect;
 pub mod network;
 mod nurbs;
@@ -26,7 +27,7 @@ pub mod trim;
 pub use curve::{Circle, Curve3, Ellipse, Line};
 pub use nurbs::{
     AtU, AtV, BezierSpan, CurvePiece, DerivativeBounds, DerivativeCache, MAX_CONTROL_POINTS,
-    NurbsCurve, NurbsSurface, RationalBezierPatch,
+    NurbsCurve, NurbsSurface, RationalBezierPatch, hull_points_in, piece_points_over,
 };
 pub use surface::{
     Cone, Cylinder, Plane, Sphere, Surface, Torus, forget_projections, kept_projections,

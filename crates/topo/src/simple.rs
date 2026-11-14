@@ -85,16 +85,29 @@
 //! (a loop through a sphere's pole or a cone's apex, every spline surface
 //! that `geom::closure` finds closed or collapsed), a loop whose area its
 //! polyline cannot tell from nothing, a face past its caps of points and
-//! work: such a face is held to rule 1 and to rule 4 between different
-//! loops only (so a loop gone round twice on a face of a revolved spline
-//! is caught only where a neighbouring face can be charted). A spline
-//! surface that closes within the tolerance but not to `closure`'s
-//! rounding (or on knots that are not clamped) is charted as one that does
-//! not close: its seam passes, but a loop across the seam is not followed
-//! right. A loop whose half step moves more than a quarter period (a long
-//! spline edge on a surface that closes, followed in eight steps) is not
-//! held to 2 or 3 (a half step of more than three quarters of a period
-//! wraps unseen). A loop narrower than twice its margin has no point clear
+//! work, a face with a spline edge whose steps about its surface's axis
+//! are not shown within the steps and the work a face is allowed
+//! (`crate::region`): such a face is held to rule 1 and to rule 4 between
+//! different loops only (so a loop gone round twice on a face of a
+//! revolved spline is caught only where a neighbouring face can be
+//! charted). A spline surface that closes within the tolerance but not to
+//! `closure`'s rounding (or on knots that are not clamped) is charted as
+//! one that does not close: its seam passes, but a loop across the seam is
+//! not followed right. A spline edge on a surface that closes about an
+//! axis is followed in steps its control points show to move less than a
+//! quarter turn about it (`crate::region`), so a helix of many turns as one
+//! edge is read as it goes round. A loop with a spline edge on a torus is
+//! not held to 2 or 3, nor to 4 between two of its own stretches: how far
+//! such an edge moves about the axis is shown, but nothing shows how far
+//! it moves about the tube from one point to the next, and how often a
+//! loop goes round the axis says nothing without the other (three times
+//! round the axis is a simple loop with 13 turns about the tube and not
+//! with 3). Elsewhere (a
+//! conic near a pole) a loop whose half step moves more than a quarter
+//! period is not held to 2 or 3 (a conic's half step, a sixteenth of a
+//! half turn of its own, cannot move the three quarters of a period that
+//! would wrap unseen unless the axis passes within the arc's own sagitta
+//! of it). A loop narrower than twice its margin has no point clear
 //! of it for 3. A spline overlap shorter than about a quarter of both
 //! edges, or one the samples or the Newton steps do not show (a spline
 //! that bends between its samples by more than an eighth of a step), and
@@ -292,14 +305,7 @@ fn turns_of(curve: &Curve3, (t0, t1): (f64, f64), near: f64) -> Option<f64> {
 fn walk(body: &Body, face: &Face, near: f64) -> Option<Followed> {
     let surface = &face.surface;
     let periods = [surface.period_u(), surface.period_v()];
-    let mut chart = Chart {
-        surface,
-        periods,
-        freeform: false,
-        near,
-        last: None,
-        scale: f64::INFINITY,
-    };
+    let mut chart = Chart::new(surface, periods, false, near);
     let mut total = 0_usize;
     let mut rings = Vec::with_capacity(face.loops.len());
     for id in &face.loops {

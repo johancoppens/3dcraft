@@ -67,9 +67,10 @@ pub(super) const POLE_SHAPE: Reason = "a freeform face that closes into a point 
 const TOO_MANY: Reason = "a freeform face with more pieces than booleans can index";
 
 /// How many times a Bézier span is quartered at most, and how many leaves
-/// a whole surface may have.
+/// a whole surface may have (so also the most Bézier spans of a freeform
+/// face a boolean takes: a grid surface warns past it).
 const MAX_DEPTH: usize = 5;
-const MAX_LEAVES: usize = 1 << 15;
+pub const MAX_LEAVES: usize = 1 << 15;
 /// A surface whose spans times `4^depth` (the most leaves quartering to
 /// the depth could make, not the leaves it makes: a piece stops when it
 /// is small) is more than this halves a piece that is short one way only
