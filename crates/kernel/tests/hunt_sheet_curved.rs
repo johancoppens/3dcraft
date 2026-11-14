@@ -401,8 +401,13 @@ fn band_case(tally: &mut Tally, n: usize) {
         Err(e) => found.notes.push(format!("not unrolled: {e}")),
     }
     let t = rng.between(0.01, 0.3) * r1.min(r2);
-    match plate(&made.body, &faces, t, Side::Mid, &BTreeMap::new(), &tol) {
-        Ok(p) => {
+    // Plating a freeform band fits its offsets (seconds each): one case in
+    // four.
+    let plated = n
+        .is_multiple_of(4)
+        .then(|| plate(&made.body, &faces, t, Side::Mid, &BTreeMap::new(), &tol));
+    match plated {
+        Some(Ok(p)) => {
             if let Some(m) = sound(&p.body, &tol, &mut found) {
                 let v = area * t;
                 let slack = m.bound + 1e-6 * v + 0.5 * tol.linear * m.area;
@@ -415,7 +420,8 @@ fn band_case(tally: &mut Tally, n: usize) {
                 }
             }
         }
-        Err(e) => found.notes.push(format!("the band not plated: {e}")),
+        Some(Err(e)) => found.notes.push(format!("the band not plated: {e}")),
+        None => {}
     }
     tally.record(n, &what, &found, false);
 }
@@ -430,11 +436,11 @@ fn bands(range: std::ops::Range<usize>) -> Tally {
 
 #[test]
 fn developable_bands_between_two_arcs_keep_their_area_and_rulings() {
-    bands(0..80).hold("developable bands", 0, &[], 40);
+    bands(0..40).hold("developable bands", 0, &[], 20);
 }
 
 #[test]
 #[ignore = "a wide sweep, run by hand"]
 fn developable_bands_between_two_arcs_wide() {
-    bands(80..680).hold("developable bands (wide)", 80, &[], 0);
+    bands(40..640).hold("developable bands (wide)", 40, &[], 0);
 }

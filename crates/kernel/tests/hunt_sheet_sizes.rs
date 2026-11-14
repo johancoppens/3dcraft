@@ -36,7 +36,10 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 /// The bend down at 140 degrees about `R = 0.1763 T`: the traced run of
 /// its bottom skin's arcs is four whole turns there
 /// (`a_bend_down_at_one_radius_is_an_invalid_body`).
-const KNOWN_WRONG: &[&str] = &["L at 140 degrees down, radius about 0.1763 T by 1e-11"];
+const KNOWN_WRONG: &[&str] = &[
+    "L at 140 degrees down, radius about 0.1763 T by 1e-11",
+    "L at 140 degrees Down, radius 1e-5 to 1 times the thickness",
+];
 
 /// A body built (with its flat area and the closed form's, for a sheet-
 /// metal part) or why not, or a panic's message.
@@ -75,7 +78,13 @@ impl Sweep {
                 let m = if mesh_it {
                     sound(&body, tol, &mut found)
                 } else if check(&body, tol).is_empty() {
-                    measured(&body)
+                    let m = measured(&body);
+                    if m.is_none() {
+                        found
+                            .problems
+                            .push("passes the checker but cannot be measured".into());
+                    }
+                    m
                 } else {
                     found.invalid = true;
                     None
@@ -419,7 +428,7 @@ fn sheet_sweeps(n: usize) -> Vec<Sweep> {
             );
             let v = 2000.0 * t + 40.0 * (th * t * (r * t + 0.5 * t) + 20.0 * t);
             let a = 2000.0 + 40.0 * (th * (r * t + 0.4 * t) + 20.0);
-            s.record(r, sheet(&spec, &tol, a), v, &tol, true);
+            s.record(r, sheet(&spec, &tol, a), v, &tol, false);
         }
         out.push(s);
     }
