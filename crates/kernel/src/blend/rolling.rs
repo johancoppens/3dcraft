@@ -112,7 +112,7 @@ const BEND: f64 = 1e-9;
 /// angle the linear tolerance makes over the size, whichever is more. The
 /// tangency of a fillet along its borders, across a joint and across a
 /// crossed smooth edge is measured to ten times it.
-fn bend(tolerance: &Tolerance, size: f64) -> f64 {
+pub(super) fn bend(tolerance: &Tolerance, size: f64) -> f64 {
     tolerance.angular.max(BEND).max(tolerance.linear / size)
 }
 

@@ -81,7 +81,7 @@ impl Trace {
     }
 
     /// The unit direction of the trace at `s`, away from the edge.
-    fn direction(&self, s: f64) -> Vec3 {
+    pub(super) fn direction(&self, s: f64) -> Vec3 {
         match *self {
             Trace::Line { into } => into,
             Trace::Circle {
@@ -506,23 +506,30 @@ pub(super) fn enters(
     convex: bool,
     tol: f64,
 ) -> Option<usize> {
+    (0..2).find(|side| enters_side(section, normals, convex, tol, *side))
+}
+
+/// [`enters`] for the face on side `side` alone.
+pub(super) fn enters_side(
+    section: &Section,
+    normals: [Vec3; 2],
+    convex: bool,
+    tol: f64,
+    side: usize,
+) -> bool {
     let [f1, f2] = section.feet;
-    for (side, (from, to)) in [(f1, f2), (f2, f1)].into_iter().enumerate() {
-        let (Some(trace), Some(normal)) = (section.traces.get(side), normals.get(side)) else {
-            return Some(side);
-        };
-        let Some(into) = (to - from).normalized() else {
-            return Some(side);
-        };
-        let sine = into.dot(trace.normal_at(*normal, from));
-        // The way `super::across` tells a convex edge from a concave one:
-        // positive where it turns back.
-        let wrong = if convex { sine } else { -sine };
-        if !(wrong <= super::SMOOTH_SINE) && !(lens(trace, (to - from).length(), wrong) <= tol) {
-            return Some(side);
-        }
-    }
-    None
+    let (from, to) = if side == 0 { (f1, f2) } else { (f2, f1) };
+    let (Some(trace), Some(normal)) = (section.traces.get(side), normals.get(side)) else {
+        return true;
+    };
+    let Some(into) = (to - from).normalized() else {
+        return true;
+    };
+    let sine = into.dot(trace.normal_at(*normal, from));
+    // The way `super::across` tells a convex edge from a concave one:
+    // positive where it turns back.
+    let wrong = if convex { sine } else { -sine };
+    !(wrong <= super::SMOOTH_SINE) && !(lens(trace, (to - from).length(), wrong) <= tol)
 }
 
 /// How deep a lens a chamfer's line cuts from a face whose trace is
