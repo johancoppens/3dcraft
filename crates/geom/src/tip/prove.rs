@@ -17,11 +17,13 @@
 //! and the same with each vector in turn taken as long as its points lie
 //! from the origin, which is what the last place of a point's
 //! coordinates is worth. The determinant must stand above [`ROUNDING`]
-//! times that. Both scale alike with the model's size, with every
-//! weight and with the fullness, so the floor depends on none of them: a
-//! tip is accepted when its faces are certainly seen from one side,
-//! however little. It does grow with the distance from the origin, as
-//! the coordinates' last place does. Reference: Farin, *Curves and
+//! times that. Both scale alike with the model's size and with every
+//! weight, so the floor depends on neither: a tip is accepted when its
+//! faces are certainly seen from one side, however little. It does
+//! depend on the fullness and on the tip's length against its rim (the
+//! determinant goes with ω²ℓ, the bound with ω³: toward fullness 1 and
+//! for a short tip less room is left between them), and it grows with
+//! the distance from the origin, as the coordinates' last place does. Reference: Farin, *Curves and
 //! Surfaces for CAGD*, 5th ed., ch. 5 (subdivision, the convex hull
 //! property) and ch. 6 (products of Bernstein forms).
 
@@ -34,8 +36,11 @@ const MAX_HALVINGS: u32 = 64;
 /// up.
 const MAX_PIECES: usize = 1 << 13;
 /// The share of the terms' sizes below which a determinant may be a zero
-/// that rounding moved: 1024 units in the last place, where the sums and
-/// halvings behind a coefficient lose a few hundred at most.
+/// that rounding moved: 1024 units in the last place. A worst-case count
+/// of what the sums and 64 halvings behind a coefficient lose is 100 to
+/// 450 units for degrees up to 5; for high degrees it is more (about
+/// 3000 at degree 32), and there the floor rests on what was measured
+/// (sound at the degrees 8, 16 and 28).
 pub(super) const ROUNDING: f64 = 1024.0 * f64::EPSILON;
 /// How often a span of the shoulder is halved for a bound on its sine.
 const SINE_HALVINGS: u32 = 6;

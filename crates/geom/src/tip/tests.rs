@@ -1428,6 +1428,7 @@ fn carried_shoulder_faces(sides: &[NurbsSurface], at: Vec3, normal: Vec3, omega:
         star: 0.0,
         smooth: Vec::new(),
         creases: Vec::new(),
+        off_sides: Vec::new(),
     }
 }
 
@@ -1451,10 +1452,13 @@ fn where_the_sides_are_not_level_the_general_net_keeps_all_three_tangencies() {
                     let ratio = pair[0] / pair[1];
                     assert!((9.0..11.0).contains(&ratio), "{name} at {k}: {angles:.3?}");
                 }
-                // Nothing beyond the tip's plane.
+                // No point of the faces beyond the tip's plane.
                 for face in &tip.faces {
-                    for p in face.control_points() {
-                        assert!(frame.z().dot(*p - at) <= 1e-12 * k);
+                    for i in 0..=24 {
+                        for j in 0..=24 {
+                            let p = face.eval(f64::from(i) / 24.0, f64::from(j) / 24.0);
+                            assert!(frame.z().dot(p - at) <= 1e-12 * k);
+                        }
                     }
                 }
                 // Across the rails at smooth vertices: exact, where the
@@ -1955,6 +1959,13 @@ fn sides_that_agree_within_the_tolerance_are_built_on_one_row() {
                     TipForm::General
                 }
             );
+            // The earlier face leaves its own side by the angle between
+            // the two steps about the rim's direction, and says so: half
+            // a tolerance over rows two apart.
+            assert_eq!(exact.off_sides, [0.0; 4]);
+            let off = near.off_sides[0];
+            assert!((off / (0.25 * tolerance) - 1.0).abs() < 0.2, "{off:e}");
+            assert_eq!(near.off_sides[1..], [0.0; 3]);
             // Built on the later side's row: the rail is that side's own.
             let (_, rows) = near.faces[1].counts();
             let (count, _) = near.faces[0].counts();
@@ -2132,5 +2143,192 @@ fn the_work_of_a_call_is_bounded() {
             .map(|l| format!("{l:?}"))
             .unwrap_or_else(|e| format!("{e:?}")),
         started.elapsed()
+    );
+}
+
+// ------------------------------------------ however the rim is cut
+
+fn side_of(rim: &TipRim) -> Side {
+    Side {
+        degree: rim.curve.degree(),
+        knots: rim.curve.knots().to_vec(),
+        points: rim.curve.control_points().to_vec(),
+        weights: rim.curve.weights().to_vec(),
+        cross: rim.cross.clone(),
+    }
+}
+
+fn rim_of(side: &Side) -> TipRim {
+    TipRim {
+        curve: NurbsCurve::new(
+            side.degree,
+            side.knots.clone(),
+            side.points.clone(),
+            side.weights.clone(),
+        )
+        .unwrap(),
+        cross: side.cross.clone(),
+    }
+}
+
+/// Every rim curve cut in two at the middle of its range: the same
+/// curves and the same sides, twice as many.
+fn cut(rims: &[TipRim]) -> Vec<TipRim> {
+    rims.iter()
+        .flat_map(|rim| cut_in_two(&side_of(rim)).unwrap())
+        .map(|side| rim_of(&side))
+        .collect()
+}
+
+/// Every rim curve with knots put in at three places: the same curves
+/// with more control points.
+fn refined(rims: &[TipRim]) -> Vec<TipRim> {
+    rims.iter()
+        .map(|rim| {
+            let side = side_of(rim);
+            let (a, b) = rim.curve.domain();
+            let mut knots = side.knots.clone();
+            let mut rows = vec![side.homogeneous().collect::<Vec<H>>(), side.cross.clone()];
+            for share in [0.3, 0.55, 0.8] {
+                insert_knot(&mut knots, side.degree, &mut rows, a + share * (b - a));
+            }
+            rim_of(&Side {
+                degree: side.degree,
+                knots,
+                points: rows[0]
+                    .iter()
+                    .map(|&h| h_xyz(h) * (1.0 / h_weight(h)))
+                    .collect(),
+                weights: rows[0].iter().map(|&h| h_weight(h)).collect(),
+                cross: rows[1].clone(),
+            })
+        })
+        .collect()
+}
+
+/// The rim curves joined two and two into one curve each (a knot as
+/// often as the degree where they met): the same curves, half as many.
+fn joined(rims: &[TipRim]) -> Vec<TipRim> {
+    rims.chunks(2)
+        .map(|pair| {
+            let (a, b) = (side_of(&pair[0]), side_of(&pair[1]));
+            let degree = a.degree;
+            let mut knots = vec![0.0; degree + 1];
+            knots.extend(std::iter::repeat_n(1.0, degree));
+            knots.extend(std::iter::repeat_n(2.0, degree + 1));
+            rim_of(&Side {
+                degree,
+                knots,
+                points: a.points.iter().chain(&b.points[1..]).copied().collect(),
+                weights: a.weights.iter().chain(&b.weights[1..]).copied().collect(),
+                cross: a.cross.iter().chain(&b.cross[1..]).copied().collect(),
+            })
+        })
+        .collect()
+}
+
+/// How far the faces of `fine` lie from those of `coarse` at the same
+/// places: `place` gives, for a face of `fine` and a parameter along it,
+/// the face of `coarse` and its parameter.
+fn apart(fine: &Tip, coarse: &Tip, place: impl Fn(usize, f64) -> (usize, f64)) -> f64 {
+    let mut worst = 0.0_f64;
+    for (index, face) in fine.faces.iter().enumerate() {
+        let ((u0, u1), _) = face.domain();
+        for i in 0..=12 {
+            let u = u0 + (u1 - u0) * f64::from(i) / 12.0;
+            let (other, at) = place(index, u);
+            for j in 0..=12 {
+                let v = f64::from(j) / 12.0;
+                worst = worst.max(face.eval(u, v).distance(coarse.faces[other].eval(at, v)));
+            }
+        }
+    }
+    worst
+}
+
+#[test]
+fn the_same_rim_cut_another_way_gives_the_same_tip() {
+    let mut worst = 0.0_f64;
+    for k in SCALES {
+        for frame in frames(k) {
+            for (name, section, foot, _) in sections() {
+                // Sides that are not level, and sides that are.
+                for (sides, form) in [
+                    (leaning_loft(&frame, k, &section), TipForm::General),
+                    (prism(&frame, k, &section), TipForm::Level),
+                ] {
+                    let rims = rims_of(&sides);
+                    let the_spec = spec(
+                        frame.point(foot[0] * k, foot[1] * k, 3.0 * k),
+                        frame.z(),
+                        0.6,
+                        k,
+                    );
+                    let whole = tip_nets(&rims, &the_spec).unwrap();
+                    assert_eq!(whole.form, form);
+                    let size = if name == "hull" { 30.0 * k } else { 12.0 * k };
+                    let mut hold = |what: &str, off: f64| {
+                        assert!(off < 1e-11 * size, "{name} {form:?} {what} at {k}: {off:e}");
+                        worst = worst.max(off / size);
+                    };
+                    // Cut in two, and in four.
+                    let halves = tip_nets(&cut(&rims), &the_spec).unwrap();
+                    hold("cut in two", apart(&halves, &whole, |f, u| (f / 2, u)));
+                    let quarters = tip_nets(&cut(&cut(&rims)), &the_spec).unwrap();
+                    hold("cut in four", apart(&quarters, &whole, |f, u| (f / 4, u)));
+                    // Knots put in.
+                    let fine = tip_nets(&refined(&rims), &the_spec).unwrap();
+                    hold("refined", apart(&fine, &whole, |f, u| (f, u)));
+                    // Joined two and two (where there are four curves; two
+                    // joined would be one closed curve, cut where it was).
+                    if rims.len() == 4 {
+                        let fewer = tip_nets(&joined(&rims), &the_spec).unwrap();
+                        assert_eq!(fewer.faces.len(), 2);
+                        hold(
+                            "joined",
+                            apart(&whole, &fewer, |f, u| (f / 2, u + (f % 2) as f64)),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    println!("the same rim cut another way: tips at most {worst:.1e} of the size apart");
+}
+
+#[test]
+fn the_least_quotient_is_of_the_functions_not_of_their_spans() {
+    // a(t) = 1 + (t − 0.3)², b(t) = 2 − t on [0, 1], as Bézier
+    // coefficients: the least of a / b is at t = 2 − √3.89.
+    let a = [1.09, 0.79, 1.49];
+    let b = [2.0, 1.5, 1.0];
+    let pairs = |a: &[f64], b: &[f64]| -> Vec<(f64, f64)> {
+        a.iter().copied().zip(b.iter().copied()).collect()
+    };
+    let at = 2.0 - 3.89_f64.sqrt();
+    let truth = (1.0 + (at - 0.3) * (at - 0.3)) / (2.0 - at);
+    let whole = least_quotient(vec![pairs(&a, &b)]).unwrap();
+    assert!(
+        (whole - truth).abs() < 2.0 * FACTOR_ACCURACY * truth,
+        "{whole} {truth}"
+    );
+    // The least over the coefficients is far below it.
+    assert!(0.79 / 1.5 < 0.99 * truth);
+    // The same functions cut at 0.5 (de Casteljau by hand).
+    let halves = |c: [f64; 3]| {
+        let (m0, m1) = (0.5 * (c[0] + c[1]), 0.5 * (c[1] + c[2]));
+        let m = 0.5 * (m0 + m1);
+        ([c[0], m0, m], [m, m1, c[2]])
+    };
+    let ((a0, a1), (b0, b1)) = (halves(a), halves(b));
+    let cut = least_quotient(vec![pairs(&a0, &b0), pairs(&a1, &b1)]).unwrap();
+    assert!((cut - whole).abs() < 2.0 * FACTOR_ACCURACY * truth);
+    // A constant quotient is itself.
+    let level = least_quotient(vec![pairs(&[2.0, 4.0, 6.0], &[1.0, 2.0, 3.0])]).unwrap();
+    assert_eq!(level, 2.0);
+    assert_eq!(least_quotient(vec![pairs(&[1.0, 2.0], &[1.0, 0.0])]), None);
+    assert_eq!(
+        least_quotient(vec![pairs(&[1.0, f64::NAN], &[1.0, 1.0])]),
+        None
     );
 }

@@ -62,6 +62,10 @@ const SMOOTH_SHARE: f64 = 0.25;
 /// The places along a rail at which the angle between its two faces is
 /// measured, the rim's end the first.
 const CREASE_PLACES: u32 = 64;
+/// How near the least carry factor of the loop is found, as a share of
+/// it: far below what moves a control point by a rounding of the model's
+/// size, so that it is the same number however the rim is cut.
+const FACTOR_ACCURACY: f64 = 1e-13;
 /// The least area a rim encloses, as a share of the square of its size:
 /// below it the rim is a line there and back, and runs neither way round.
 const LEAST_AREA: f64 = 1e-12;
@@ -70,8 +74,10 @@ pub const LENGTH_RESOLUTION: f64 = 1e-9;
 /// How often the length asked for is halved in the search for lengths
 /// that fit.
 const LENGTH_HALVINGS: u32 = 32;
-/// The work the proofs of one call may do, in coefficients written (a
-/// fraction of a second): a tip that needs more is told as not proven.
+/// The work the proofs of one call may do, in coefficients written: a
+/// tip that needs more is told as not proven. At the caps that is four
+/// to five seconds, and a rim of degree 32 with a thousand control
+/// points gets no tip (`docs/design/sweeps.md` has the table).
 const MAX_WORK: u64 = 1 << 29;
 
 /// Why a tip cannot be built. Every reason names what is wrong and where.
@@ -394,9 +400,11 @@ pub struct TipCrease {
 /// crosses the faces from the side the rim shows, by more than rounding
 /// could undo. From these: the faces are regular, cross neither
 /// themselves nor one another, and have one tangent plane at the tip.
-/// Each face is tangent to its side along the rim by construction.
-/// Whether two faces are tangent along their rail is told per rail
-/// (`smooth`, `creases`).
+/// Each face is tangent to its side along the rim by construction,
+/// exactly where neighbouring sides agree exactly and by the angle told
+/// in `off_sides` where they agree within the tolerance. Whether two
+/// faces are tangent along their rail is told per rail (`smooth`,
+/// `creases`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tip {
     pub form: TipForm,
@@ -445,6 +453,18 @@ pub struct Tip {
     /// tangent across their common edge behind the rim though the rim is
     /// smooth (`at_rim` nothing, `largest` not).
     pub creases: Vec<TipCrease>,
+    /// Per rim curve: the angle by which its face leaves its own side
+    /// along the rim. A face is tangent to its side exactly, except
+    /// toward the end of its rim curve where the side after it there
+    /// agrees with it within the tolerance and not exactly: the tip is
+    /// built on the later side's step, and the earlier face has its
+    /// tangent plane from that step and not from its own. This is the
+    /// angle between the two planes at the curve's end, where the change
+    /// is whole (it falls off along the curve as the last control
+    /// point's share does); nothing where the two steps are one. Half a
+    /// tolerance between rows a hundredth of a unit apart is 5e-6 rad:
+    /// a caller holds it to its angular tolerance.
+    pub off_sides: Vec<f64>,
 }
 
 /// One rim curve taken apart, with its cross row.
@@ -787,6 +807,73 @@ struct Shoulder {
     rows: Vec<Vec<Vec3>>,
     /// The least sine at which a side leaves the end.
     onward: f64,
+    /// Per side: the angle by which its face leaves it at the end of its
+    /// rim curve, where it took its neighbour's step.
+    off_sides: Vec<f64>,
+}
+
+/// The least of `a(u) / b(u)` over all the curves of the loop, `a` and
+/// `b` the positive rational functions with the Bernstein coefficients
+/// given per Bézier span: a value the quotient takes, within
+/// [`FACTOR_ACCURACY`] of its least as a share of it.
+///
+/// On a span the quotient is at least the least quotient of its
+/// coefficients (a quotient of sums with positive terms lies between the
+/// terms' quotients) and at an end of the span it is the end's own. So
+/// the least over the ends seen is at or above the least and the least
+/// over the coefficients at or below it; a span whose coefficients'
+/// least is not yet within the accuracy of the ends' least is halved,
+/// and the answer is the least over the ends (a quotient that is one
+/// number all along is that number, to the bit). It is a number of the
+/// two functions, not of how they are cut into spans.
+fn least_quotient(spans: Vec<Vec<(f64, f64)>>) -> Option<f64> {
+    let ratio = |&(a, b): &(f64, f64)| a / b;
+    let sound = |&(a, b): &(f64, f64)| a.is_finite() && b.is_finite() && a > 0.0 && b > 0.0;
+    if !spans.iter().all(|span| span.iter().all(sound)) {
+        return None;
+    }
+    let mut above = f64::INFINITY;
+    for span in &spans {
+        for end in [span.first()?, span.last()?] {
+            above = above.min(ratio(end));
+        }
+    }
+    let mut stack: Vec<(Vec<(f64, f64)>, u32)> = spans.into_iter().map(|span| (span, 0)).collect();
+    // What the spans given up on (halved as often as allowed) may hold.
+    let mut given_up = f64::INFINITY;
+    let mut looked_at = 0_usize;
+    while let Some((span, halvings)) = stack.pop() {
+        looked_at += 1;
+        let below = span.iter().map(ratio).fold(f64::INFINITY, f64::min);
+        if below >= above * (1.0 - FACTOR_ACCURACY) {
+            continue;
+        }
+        if halvings >= 64 || looked_at >= 1 << 16 {
+            given_up = given_up.min(below);
+            continue;
+        }
+        let mut work = span;
+        let mut left = Vec::with_capacity(work.len());
+        let mut right = Vec::with_capacity(work.len());
+        while let (Some(&first), Some(&last)) = (work.first(), work.last()) {
+            left.push(first);
+            right.push(last);
+            work = work
+                .windows(2)
+                .map(|pair| match pair {
+                    [(a0, b0), (a1, b1)] => (0.5 * (a0 + a1), 0.5 * (b0 + b1)),
+                    _ => (0.0, 0.0),
+                })
+                .collect();
+        }
+        right.reverse();
+        // The middle is an end of both halves.
+        above = above.min(ratio(left.last()?));
+        stack.push((left, halvings + 1));
+        stack.push((right, halvings + 1));
+    }
+    let least = above.min(given_up);
+    (least.is_finite() && least > 0.0).then_some(least)
 }
 
 /// The step of every side across the rim at every control point, as a
@@ -846,10 +933,17 @@ fn steps(sides: &[Side], tolerance: f64) -> Result<Vec<Vec<Vec3>>, TipError> {
 /// climb. A side is level when its factors are one number: `C + τ s` is
 /// then one row of the side's own kind, which is what keeps the tip
 /// tangent to the side along the rim and puts the row in the plane.
-/// Where the factors differ the row is carried by the least of them
-/// (nothing passes the plane) and dropped onto the plane along the
-/// normal: one map for every control point, so what holds between two
-/// neighbours' rows across their common edge holds between the tip's.
+/// Where the factors differ the row is carried by the least factor of
+/// the loop and dropped onto the plane along the normal: one map for
+/// every control point, so what holds between two neighbours' rows
+/// across their common edge holds between the tip's. The least factor is
+/// the least along the curves, not over their control points: the room
+/// of the rim's point before the plane over the climb of the side's step
+/// there, both rational functions of the rim's parameter
+/// ([`least_quotient`], to 1e-13 of itself). So it is the same number
+/// however the rim is cut into curves and knot spans, and the tip with
+/// it; and the carried row, as a curve, touches the plane and does not
+/// pass it (by more than that accuracy).
 ///
 /// Where two sides meet, their steps must agree within the tolerance: a
 /// step back along each, of the shorter's length, ends within it of the
@@ -918,6 +1012,7 @@ fn shoulder(
     });
     // One row where two sides meet.
     let count = sides.len();
+    let mut off_sides = vec![0.0; count];
     for rim in 0..count {
         let before = (rim + count - 1) % count;
         let (Some(&later), Some(&earlier)) = (
@@ -946,13 +1041,40 @@ fn shoulder(
         if let Some(last) = steps.get_mut(before).and_then(|row| row.last_mut()) {
             *last = agreed;
         }
-    }
-    let mut least = f64::INFINITY;
-    for (row, room_row) in steps.iter().zip(&rooms) {
-        for (step, &room) in row.iter().zip(room_row) {
-            least = least.min(factor(room, *step));
+        // By what angle the earlier face now leaves its own side there:
+        // between the planes of the rim's direction with the side's own
+        // step and with the step taken.
+        let along = sides.get(before).and_then(|side| {
+            let (last, second) = (side.points.last()?, side.points.iter().rev().nth(1)?);
+            Some(*last - *second)
+        });
+        if let (Some(along), Some(off)) = (along, off_sides.get_mut(before)) {
+            let angle = along.cross(earlier).angle_to(along.cross(agreed));
+            *off = if angle.is_finite() { angle } else { 0.0 };
         }
     }
+    // The least factor along the curves: the room over the climb, each a
+    // rational function with the rim's weights.
+    let mut spans_of_all = Vec::new();
+    for ((side, row), room_row) in sides.iter().zip(&steps).zip(&rooms) {
+        let both: Vec<H> = row
+            .iter()
+            .zip(room_row)
+            .zip(&side.weights)
+            .map(|((step, &room), &w)| [w * room, w * normal.dot(*step), 0.0, 0.0])
+            .collect();
+        for (k, _, _) in spans(side) {
+            let Some(span) = bezier_of_span(side.degree, &side.knots, k, &both) else {
+                return Err(TipError::Invalid(
+                    "a rim curve that cannot be cut into pieces",
+                ));
+            };
+            spans_of_all.push(span.into_iter().map(|[a, b, _, _]| (a, b)).collect());
+        }
+    }
+    let Some(least) = least_quotient(spans_of_all) else {
+        return Err(TipError::Invalid("a cross row is out of range"));
+    };
     let mut carried = Vec::with_capacity(count);
     let mut rows = Vec::with_capacity(count);
     for ((side, row), &middle) in sides.iter().zip(&steps).zip(&middles) {
@@ -981,6 +1103,7 @@ fn shoulder(
         carried,
         rows,
         onward,
+        off_sides,
     })
 }
 
@@ -1392,6 +1515,7 @@ struct Solved {
     counter_clockwise: bool,
     smooth: Vec<bool>,
     creases: Vec<TipCrease>,
+    off_sides: Vec<f64>,
 }
 
 /// The unit normal, the conic's weight and the tolerances of one tip.
@@ -1432,6 +1556,7 @@ fn solve(
         counter_clockwise,
         smooth,
         creases,
+        off_sides: shoulder.off_sides,
     })
 }
 
@@ -1496,6 +1621,7 @@ fn curves_and_surfaces(sides: &[Side], solved: Solved, tip: Vec3) -> Result<Tip,
         star: solved.star,
         smooth: solved.smooth,
         creases: solved.creases,
+        off_sides: solved.off_sides,
     })
 }
 
@@ -1582,7 +1708,9 @@ pub struct TipLength {
 /// one another, and where a longer length among those tried fits again
 /// `again` says so. Lengths between those tried are not looked at: a
 /// stretch of fitting lengths narrower than a factor of two can be
-/// missed, and so can a gap that narrow.
+/// missed, and so can a gap that narrow. Whether the sides are level
+/// goes with the length, so a search can end in `Unsupported` (sides
+/// not level whose steps differ in length) although short lengths fit.
 pub fn longest_tip_length(
     rims: &[TipRim],
     foot: Vec3,
