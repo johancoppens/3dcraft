@@ -30,6 +30,7 @@ mod region;
 mod sew;
 mod sew_split;
 mod shells;
+mod simple;
 mod tolerant;
 mod touch;
 mod transform;
@@ -45,10 +46,11 @@ pub use mass::{
     shell_volumes,
 };
 pub use query::{EdgeUse, Outward, edge_faces, edge_uses};
-pub use region::{MOST_PER_FACE, face_holds, region_fault, regionless};
+pub use region::{MOST_PER_FACE, face_holds, loops_not_simple, region_fault, regionless};
 pub use sew::{MAX_CANDIDATES, SAMPLES, SewError, Sewn, sew};
 pub use sew_split::{MAX_STATION_LOOKS, MAX_STATIONS};
 pub use shells::{Taken, boundary_loops, face_groups, shell_alone, shell_genera, shells_alone};
+pub use simple::{PLACES, SCANLINES};
 pub use tolerant::{
     DEFAULT_LOOSEST, PROOF_PIECES, RECORD_MARGIN, ToleranceError, Tolerances, default_loosest,
     measure_curve, measure_curve_tight, measure_edge, measure_vertex, nearest_foot, record_edge,

@@ -39,7 +39,7 @@
 //! cross nothing here. Steps are swept in order of their lowest `u`, so a
 //! face of `n` steps costs about `n log n` and the pairs that overlap.
 
-use crate::{Body, Coedge, Face, FaceId};
+use crate::{Body, Coedge, Face, FaceId, LoopId};
 use craft3d_geom::{Curve3, Surface};
 use craft3d_math::{Portable, Tolerance, Vec3};
 use std::collections::{BTreeMap, VecDeque};
@@ -61,34 +61,67 @@ const MOST_PAIRS: usize = 1 << 24;
 const MOST_CONIC_STEPS: usize = 64;
 
 /// One loop in the surface's parameters.
-struct Ring {
-    points: Vec<[f64; 2]>,
+pub(crate) struct Ring {
+    pub(crate) points: Vec<[f64; 2]>,
     /// Where the loop ends against where it starts, in whole periods (0
     /// for a loop that does not wind around a closed surface).
-    winds: [f64; 2],
+    pub(crate) winds: [f64; 2],
     /// How far the polyline may be from the curves, in parameters.
-    error: f64,
-    low: [f64; 2],
-    high: [f64; 2],
+    pub(crate) error: f64,
+    pub(crate) low: [f64; 2],
+    pub(crate) high: [f64; 2],
+    /// Where each coedge's points begin in `points`, in the loop's order.
+    pub(crate) starts: Vec<usize>,
+    /// Whether a half step moved more than a quarter period: the step may
+    /// have gone round by more than the chart shows (a long spline edge on
+    /// a surface that closes, followed in few steps), so how often the
+    /// loop goes round, and where along it a point lies, are not to be
+    /// read off it (the region rule reads it as before).
+    pub(crate) aliased: bool,
+}
+
+/// The loops of a face as the region rule followed them, handed to the
+/// rule of simple loops (`crate::simple`) so that a face is followed once
+/// for both.
+pub(crate) struct Followed {
+    /// In the order of the face's loops; holes moved by whole periods to
+    /// lie over the outer loop where the region rule went that far.
+    pub(crate) rings: Vec<Ring>,
+    pub(crate) periods: [Option<f64>; 2],
+    /// Ten tolerances read in parameters at the smallest scale of the
+    /// surface over the face: the reach of a margin.
+    pub(crate) reach: f64,
 }
 
 /// Why the loops of `face` do not bound a region of its surface, or `None`
 /// when they do or this test cannot tell (see the module).
 pub fn region_fault(body: &Body, face: &Face, tol: &Tolerance) -> Option<String> {
+    region_followed(body, face, tol).0
+}
+
+/// [`region_fault`], and the loops as it followed them: given when every
+/// loop was followed and the rule found nothing, either to its end or up
+/// to loops that wind around a period (bands, which it passes); `None`
+/// where it could not chart the face.
+pub(crate) fn region_followed(
+    body: &Body,
+    face: &Face,
+    tol: &Tolerance,
+) -> (Option<String>, Option<Followed>) {
     if face.loops.is_empty() {
-        return None;
+        return (None, None);
     }
     let surface = &face.surface;
     let periods = [surface.period_u(), surface.period_v()];
     if periods.iter().all(Option::is_some) {
-        return None;
+        return (None, None);
     }
     let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
     if freeform
         && (craft3d_geom::closure::closes(surface).iter().any(|c| *c)
             || !craft3d_geom::pole::poles(surface).is_empty())
     {
-        return None;
+        return (None, None);
     }
     let near = 10.0 * body.working_tolerance(tol.linear);
     let mut chart = Chart {
@@ -102,9 +135,26 @@ pub fn region_fault(body: &Body, face: &Face, tol: &Tolerance) -> Option<String>
     let mut rings = Vec::with_capacity(face.loops.len());
     let mut total = 0_usize;
     for id in &face.loops {
-        let lp = body.loop_(*id)?;
-        let ring = follow(body, &lp.coedges, &mut chart, &mut total, false)?;
+        let Some(lp) = body.loop_(*id) else {
+            return (None, None);
+        };
+        // Bands are followed to the end, for the number of times they go
+        // around (`crate::simple`); the region rule passes them.
+        let Some(ring) = follow(body, &lp.coedges, &mut chart, &mut total, true) else {
+            return (None, None);
+        };
         rings.push(ring);
+    }
+    if rings.iter().any(|r| r.winds.iter().any(|w| *w != 0.0)) {
+        let reach = near / chart.scale.max(f64::MIN_POSITIVE);
+        return (
+            None,
+            Some(Followed {
+                rings,
+                periods,
+                reach,
+            }),
+        );
     }
     // Areas with the face's sense: positive for a loop that runs
     // counter-clockwise about the outward normal.
@@ -114,39 +164,51 @@ pub fn region_fault(body: &Body, face: &Face, tol: &Tolerance) -> Option<String>
         let area = signed_area(&ring.points) * sense;
         let perimeter = perimeter(&ring.points);
         if !(area.is_finite() && area.abs() > 2.0 * perimeter * ring.error) {
-            return None;
+            return (None, None);
         }
         areas.push(area);
     }
     let outer: Vec<usize> = (0..areas.len())
         .filter(|i| areas.get(*i).is_some_and(|a| *a > 0.0))
         .collect();
-    let largest = areas
+    let Some(largest) = areas
         .iter()
         .enumerate()
         .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
-        .map(|(i, _)| i)?;
+        .map(|(i, _)| i)
+    else {
+        return (None, None);
+    };
     match outer.as_slice() {
         [] if matches!(surface, Surface::Sphere(_)) => {}
         [] => {
-            return Some(format!(
-                "every loop runs clockwise about the outward normal (areas {}): the face would be everything outside them",
-                list(&areas)
-            ));
+            return (
+                Some(format!(
+                    "every loop runs clockwise about the outward normal (areas {}): the face would be everything outside them",
+                    list(&areas)
+                )),
+                None,
+            );
         }
         [o] if *o == largest => {}
         [o] => {
-            return Some(format!(
-                "its counter-clockwise loop {o} encloses less than its hole {largest} (areas {})",
-                list(&areas)
-            ));
+            return (
+                Some(format!(
+                    "its counter-clockwise loop {o} encloses less than its hole {largest} (areas {})",
+                    list(&areas)
+                )),
+                None,
+            );
         }
         _ => {
-            return Some(format!(
-                "{} of its loops run counter-clockwise about the outward normal (areas {}): a face has one outer loop",
-                outer.len(),
-                list(&areas)
-            ));
+            return (
+                Some(format!(
+                    "{} of its loops run counter-clockwise about the outward normal (areas {}): a face has one outer loop",
+                    outer.len(),
+                    list(&areas)
+                )),
+                None,
+            );
         }
     }
     // Margin of a crossing, in parameters.
@@ -159,8 +221,12 @@ pub fn region_fault(body: &Body, face: &Face, tol: &Tolerance) -> Option<String>
     // Holes moved by whole periods to lie over the outer loop.
     if let [o] = outer.as_slice() {
         let o = *o;
-        let (lo, hi) = rings.get(o).map(|r| (r.low, r.high))?;
-        let outer_points = rings.get(o).map(|r| r.points.clone())?;
+        let (Some((lo, hi)), Some(outer_points)) = (
+            rings.get(o).map(|r| (r.low, r.high)),
+            rings.get(o).map(|r| r.points.clone()),
+        ) else {
+            return (None, None);
+        };
         for (k, ring) in rings.iter_mut().enumerate() {
             if k == o {
                 continue;
@@ -230,7 +296,7 @@ pub fn region_fault(body: &Body, face: &Face, tol: &Tolerance) -> Option<String>
                         }
                     });
                     if work > MOST_PAIRS {
-                        return None;
+                        return (None, None);
                     }
                     if !clear {
                         continue;
@@ -254,34 +320,48 @@ pub fn region_fault(body: &Body, face: &Face, tol: &Tolerance) -> Option<String>
                             .iter()
                             .map(|other| winding(*point, &other.points).to_string())
                             .collect();
-                        return Some(format!(
-                            "its hole, loop {k}, lies outside its outer loop {o} or inside another hole (wound {wound} times at ({:.6}, {:.6}) of the {}; by each loop {}; areas {}; boxes {})",
-                            point[0],
-                            point[1],
-                            surface.kind(),
-                            each.join(", "),
-                            list(&areas),
-                            rings
-                                .iter()
-                                .map(|r| format!(
-                                    "[{:.4}, {:.4}]x[{:.4}, {:.4}]",
-                                    r.low[0], r.high[0], r.low[1], r.high[1]
-                                ))
-                                .collect::<Vec<_>>()
-                                .join(" ")
-                        ));
+                        return (
+                            Some(format!(
+                                "its hole, loop {k}, lies outside its outer loop {o} or inside another hole (wound {wound} times at ({:.6}, {:.6}) of the {}; by each loop {}; areas {}; boxes {})",
+                                point[0],
+                                point[1],
+                                surface.kind(),
+                                each.join(", "),
+                                list(&areas),
+                                rings
+                                    .iter()
+                                    .map(|r| format!(
+                                        "[{:.4}, {:.4}]x[{:.4}, {:.4}]",
+                                        r.low[0], r.high[0], r.low[1], r.high[1]
+                                    ))
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            )),
+                            None,
+                        );
                     }
                 }
             }
         }
     }
-    crossing(&rings, &margin_of).map(|(i, j)| {
+    let crossed = crossing(&rings, &margin_of).map(|(i, j)| {
         if i == j {
             format!("its loop {i} crosses itself")
         } else {
             format!("its loops {i} and {j} cross")
         }
-    })
+    });
+    match crossed {
+        Some(why) => (Some(why), None),
+        None => (
+            None,
+            Some(Followed {
+                rings,
+                periods,
+                reach,
+            }),
+        ),
+    }
 }
 
 /// Whether each of `points` (on the surface of `face`) lies on the face,
@@ -378,19 +458,63 @@ pub fn face_holds(body: &Body, face: &Face, tol: &Tolerance, points: &[Vec3]) ->
     Some(out)
 }
 
+/// What is wrong with the loops of a face: they do not bound a region
+/// ([`region_fault`]), or one of them is not a simple closed curve
+/// (`crate::simple`, asked only of a face whose loops bound a region).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Fault {
+    Region(String),
+    Loop(LoopId, String),
+}
+
+/// Both rules on one face, the loops followed once for both.
+fn face_fault(body: &Body, face: &Face, tol: &Tolerance) -> Option<Fault> {
+    let (region, followed) = region_followed(body, face, tol);
+    if let Some(why) = region {
+        return Some(Fault::Region(why));
+    }
+    crate::simple::loop_fault(body, face, tol, followed.as_ref())
+        .map(|(loop_, why)| Fault::Loop(loop_, why))
+}
+
 /// Every face of `body` whose loops do not bound a region, with why.
 ///
 /// Faces that passed lately are remembered by everything
-/// [`region_fault`] reads of them (see [`face_key`]), so a face a boolean
-/// or a regeneration carries over unchanged from a body checked before is
-/// not followed again: in a row of operations most faces of each result
-/// are faces of its operands.
+/// [`region_fault`] and the rule of simple loops read of them (see
+/// [`face_key`]), so a face a boolean or a regeneration carries over
+/// unchanged from a body checked before is not followed again: in a row
+/// of operations most faces of each result are faces of its operands.
 pub fn regionless(body: &Body, tol: &Tolerance) -> Vec<(FaceId, String)> {
+    faults(body, tol)
+        .into_iter()
+        .filter_map(|(face, fault)| match fault {
+            Fault::Region(why) => Some((face, why)),
+            Fault::Loop(..) => None,
+        })
+        .collect()
+}
+
+/// Every face of `body` with a loop that is not a simple closed curve
+/// (`crate::simple`), with the loop and why; a face whose loops do not
+/// bound a region ([`regionless`]) is not asked.
+pub fn loops_not_simple(body: &Body, tol: &Tolerance) -> Vec<(FaceId, LoopId, String)> {
+    faults(body, tol)
+        .into_iter()
+        .filter_map(|(face, fault)| match fault {
+            Fault::Loop(loop_, why) => Some((face, loop_, why)),
+            Fault::Region(_) => None,
+        })
+        .collect()
+}
+
+/// [`regionless`] and [`loops_not_simple`] together, each face followed
+/// once.
+pub(crate) fn faults(body: &Body, tol: &Tolerance) -> Vec<(FaceId, Fault)> {
     let mut found = Vec::new();
     let near = 10.0 * body.working_tolerance(tol.linear);
     for (i, face) in body.faces.iter().enumerate() {
-        if let Some(why) = remembered_fault(body, face, tol, near) {
-            found.push((FaceId(u32::try_from(i).unwrap_or(u32::MAX)), why));
+        if let Some(fault) = remembered_fault(body, face, tol, near) {
+            found.push((FaceId(u32::try_from(i).unwrap_or(u32::MAX)), fault));
         }
     }
     found
@@ -422,18 +546,33 @@ pub(crate) fn forget_passed_faces() {
 /// How many words all remembered faces are at most (16 MB).
 const PASSED_FACE_WORDS: usize = 1 << 21;
 
-/// Everything [`region_fault`] reads of `face` in `body`, every bit of
-/// every number: the reach `near` (ten of the body's working tolerances),
-/// the surface and its sense, and each loop's coedges as their sense, the
-/// edge's curve and its range. `None` for a face that names a loop or an
-/// edge the body does not have (checked in full, never remembered).
-fn face_key(body: &Body, face: &Face, near: f64) -> Option<Vec<u64>> {
+/// Everything [`region_fault`] and the rule of simple loops read of `face`
+/// in `body`, every bit of every number (the verdict is a function of
+/// these alone, `docs/design/topology.md` › *Loops that are simple*): the
+/// reach `near` (ten of the body's working tolerances, which also sets how
+/// far the rule grows the boxes of edges), the angular tolerance (read by
+/// neither rule today; kept so that a rule that reads it cannot be served
+/// a verdict made at another), whether the body is a sheet, the surface and
+/// its sense, and each loop's coedges as their sense, the edge's curve and
+/// its range, the edge's own tolerance (the document's where it has none:
+/// two stretches are one curve within the tighter of their edges'), the
+/// points of its start and end vertices (which box it), and which earlier
+/// coedge of the face uses the same edge (a seam or a spur is one edge used
+/// twice, which two edges alike are not; the edges' own numbers are not
+/// read, so a face renumbered is the same face). `None` for a face that
+/// names a loop, an edge or a vertex the body does not have (checked in
+/// full, never remembered).
+fn face_key(body: &Body, face: &Face, near: f64, tol: &Tolerance) -> Option<Vec<u64>> {
     use craft3d_math::Bits;
     let mut key = Vec::new();
     near.push_bits(&mut key);
+    tol.angular.push_bits(&mut key);
+    // A sheet may have a cut, a solid may not (`crate::simple`).
+    (body.kind == crate::BodyKind::Sheet).push_bits(&mut key);
     face.surface.push_bits(&mut key);
     face.reversed.push_bits(&mut key);
     face.loops.len().push_bits(&mut key);
+    let mut first_use: BTreeMap<crate::EdgeId, usize> = BTreeMap::new();
     for id in &face.loops {
         let lp = body.loop_(*id)?;
         lp.coedges.len().push_bits(&mut key);
@@ -442,20 +581,27 @@ fn face_key(body: &Body, face: &Face, near: f64) -> Option<Vec<u64>> {
             coedge.reversed.push_bits(&mut key);
             edge.curve.push_bits(&mut key);
             edge.range.push_bits(&mut key);
+            body.edge_tolerance_at(coedge.edge, tol.linear)
+                .push_bits(&mut key);
+            body.vertex(edge.start)?.point.push_bits(&mut key);
+            body.vertex(edge.end)?.point.push_bits(&mut key);
+            let count = first_use.len();
+            let first = *first_use.entry(coedge.edge).or_insert(count);
+            first.push_bits(&mut key);
         }
     }
     Some(key)
 }
 
-/// [`region_fault`] of `face`, answered from [`PASSED_FACES`] when the
+/// [`face_fault`] of `face`, answered from [`PASSED_FACES`] when the
 /// face passed before. A hit charges the work the check took, so an
 /// operation counts the same whether the face was remembered or not; a
 /// face is remembered only when it passed while work was counted (not
 /// cut short by a bound).
-fn remembered_fault(body: &Body, face: &Face, tol: &Tolerance, near: f64) -> Option<String> {
+fn remembered_fault(body: &Body, face: &Face, tol: &Tolerance, near: f64) -> Option<Fault> {
     use craft3d_geom::allowance;
-    let Some(key) = face_key(body, face, near) else {
-        return region_fault(body, face, tol);
+    let Some(key) = face_key(body, face, near, tol) else {
+        return face_fault(body, face, tol);
     };
     let hash = key.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, w| {
         (h ^ w).wrapping_mul(0x0100_0000_01b3)
@@ -470,7 +616,7 @@ fn remembered_fault(body: &Body, face: &Face, tol: &Tolerance, near: f64) -> Opt
         }
     }
     let counting = allowance::counting();
-    let (fault, units) = allowance::cost_of(|| region_fault(body, face, tol));
+    let (fault, units) = allowance::cost_of(|| face_fault(body, face, tol));
     if fault.is_none() && counting && allowance::counting() && key.len() <= PASSED_FACE_WORDS {
         let mut passed = PASSED_FACES.lock().unwrap_or_else(PoisonError::into_inner);
         let words = key.len();
@@ -502,18 +648,18 @@ fn list(areas: &[f64]) -> String {
 
 /// Points of the surface to parameters, each moved by whole periods to the
 /// one before.
-struct Chart<'a> {
-    surface: &'a Surface,
-    periods: [Option<f64>; 2],
-    freeform: bool,
-    near: f64,
-    last: Option<[f64; 2]>,
+pub(crate) struct Chart<'a> {
+    pub(crate) surface: &'a Surface,
+    pub(crate) periods: [Option<f64>; 2],
+    pub(crate) freeform: bool,
+    pub(crate) near: f64,
+    pub(crate) last: Option<[f64; 2]>,
     /// The shortest of `∂u`, `∂v` at the points so far.
-    scale: f64,
+    pub(crate) scale: f64,
 }
 
 impl Chart<'_> {
-    fn at(&mut self, p: Vec3) -> Option<[f64; 2]> {
+    pub(crate) fn at(&mut self, p: Vec3) -> Option<[f64; 2]> {
         // On a freeform surface from the point before (a few steps) with
         // its derivatives, else from nothing; the derivatives give the
         // point the parameters land on and the chart's scale.
@@ -562,8 +708,8 @@ impl Chart<'_> {
 }
 
 /// A loop as a closed polyline in the chart; `None` where it cannot be
-/// followed or winds around a period.
-fn follow(
+/// followed, or winds around a period and `bands` is false.
+pub(crate) fn follow(
     body: &Body,
     coedges: &[Coedge],
     chart: &mut Chart<'_>,
@@ -572,10 +718,13 @@ fn follow(
 ) -> Option<Ring> {
     let planar = matches!(chart.surface, Surface::Plane(_));
     let mut points = Vec::new();
+    let mut starts = Vec::with_capacity(coedges.len());
+    let mut aliased = false;
     let mut error = 0.0_f64;
     chart.last = None;
     let mut start: Option<[f64; 2]> = None;
     for coedge in coedges {
+        starts.push(points.len());
         let edge = body.edge(coedge.edge)?;
         let (t0, t1) = edge.range;
         if !(t0.is_finite() && t1.is_finite() && t1 > t0) {
@@ -614,6 +763,14 @@ fn follow(
             points.push(before);
             let middle = chart.at(edge.curve.eval(at(k as f64 + 0.5)))?;
             let next = chart.at(edge.curve.eval(at(k as f64 + 1.0)))?;
+            for (d, period) in chart.periods.iter().enumerate() {
+                if let (Some(p), Some(b), Some(m), Some(n)) =
+                    (period, before.get(d), middle.get(d), next.get(d))
+                    && ((m - b).abs() > 0.25 * p || (n - m).abs() > 0.25 * p)
+                {
+                    aliased = true;
+                }
+            }
             let chord = [0.5 * (before[0] + next[0]), 0.5 * (before[1] + next[1])];
             error = error.max(2.0 * (chord[0] - middle[0]).phypot(chord[1] - middle[1]));
             before = next;
@@ -650,6 +807,8 @@ fn follow(
         error,
         low,
         high,
+        starts,
+        aliased,
     })
 }
 
@@ -674,7 +833,7 @@ impl Ring {
     }
 }
 
-fn signed_area(points: &[[f64; 2]]) -> f64 {
+pub(crate) fn signed_area(points: &[[f64; 2]]) -> f64 {
     let Some(o) = points.first() else { return 0.0 };
     let n = points.len();
     (0..n)
@@ -697,7 +856,7 @@ fn perimeter(points: &[[f64; 2]]) -> f64 {
 }
 
 /// The distance from `p` to the closed polyline `points`.
-fn distance(p: [f64; 2], points: &[[f64; 2]]) -> f64 {
+pub(crate) fn distance(p: [f64; 2], points: &[[f64; 2]]) -> f64 {
     let n = points.len();
     (0..n)
         .filter_map(|i| {

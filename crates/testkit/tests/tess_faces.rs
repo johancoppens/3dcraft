@@ -230,6 +230,14 @@ fn drill_tip(k: f64, turn: Option<Transform>) -> Body {
     };
     let body = boolean(&drill, &tip, BooleanOp::Union, &tol).unwrap().body;
     assert_eq!(check(&body, &tol), [], "scale {k}");
+    // The crescents' tips (2.6e-5 rad) are not a loop running over itself
+    // at any angular tolerance a document may set: the check reads no
+    // angle there (`topo` › `simple`; refused at 1e-4 by an earlier form of
+    // that rule, review of 2026-11-14).
+    for angular in [1e-9, 1e-6, 2.6e-5, 1e-4, 1e-3] {
+        let at = Tolerance::new(tol.linear, angular).unwrap();
+        assert_eq!(check(&body, &at), [], "scale {k}, angular {angular:e}");
+    }
     body
 }
 

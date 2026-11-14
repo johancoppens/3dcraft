@@ -89,6 +89,21 @@ pub enum Defect {
         face: FaceId,
         reason: String,
     },
+    /// A loop of a face is not a simple closed curve on its surface
+    /// (`crate::loops_not_simple`): it goes round what it encloses more
+    /// than once (a circle walked twice), goes round a surface that closes
+    /// more often than a simple loop can, has an edge that goes round its
+    /// curve more than once, or runs over itself or over another loop of
+    /// the face along a stretch (no width there). Such a face is measured
+    /// as twice its region, or as one with a seam of no width in it, and
+    /// passes every count. Held where the face's loops bound a region;
+    /// faces that cannot be charted without doubt are held to what needs
+    /// no chart.
+    LoopNotSimple {
+        face: FaceId,
+        loop_: LoopId,
+        reason: String,
+    },
     /// V − E + F − R, less 2 for every face that is a torus or a torus
     /// with holes in it, is not 2 (shells − genus) for any whole genus ≥ 0.
     Euler {
@@ -247,6 +262,15 @@ impl fmt::Display for Defect {
                 f,
                 "the loops of face {} do not bound a region: {reason}",
                 face.0
+            ),
+            Defect::LoopNotSimple {
+                face,
+                loop_,
+                reason,
+            } => write!(
+                f,
+                "loop {} of face {} is not a simple closed curve: {reason}",
+                loop_.0, face.0
             ),
             Defect::StrandedLoop { face, loop_ } => write!(
                 f,
@@ -561,7 +585,10 @@ pub fn check_remembered_capped(body: &Body, tolerance: &Tolerance, cap: f64) -> 
 /// other as a face's do, for faces on a plane (`stranded_loops`). Also that
 /// a face's loops bound a region in its parameters, on every surface
 /// (`region_fault`: one outer loop counter-clockwise, holes clockwise
-/// inside it, no crossings). Not checked yet: self-intersection, and that
+/// inside it, no crossings), and that each of them is a simple closed
+/// curve (`loops_not_simple`: it goes round what it encloses once, round a
+/// surface that closes at most once, and runs over neither itself nor
+/// another loop). Not checked yet: self-intersection, and that
 /// each face is bounded by its loops (`mass_properties` reports an unbounded face as an error).
 ///
 /// **Allowed: a skin that touches itself in a point.** A solid whose
@@ -776,8 +803,20 @@ pub fn check_capped(body: &Body, tol: &Tolerance, cap: f64) -> Vec<Defect> {
         for (face, loop_) in crate::stranded(body, &working) {
             defects.push(Defect::StrandedLoop { face, loop_ });
         }
-        for (face, reason) in crate::regionless(body, &working) {
-            defects.push(Defect::LoopsBoundNoRegion { face, reason });
+        // The face rules take the document's tolerance: they reach as far
+        // as the body's largest themselves (`body.working_tolerance`, the
+        // same at either), and the rule of simple loops holds each pair of
+        // edges to their own tolerances, which the document's stands for
+        // where an edge has none.
+        for (face, fault) in crate::region::faults(body, tol) {
+            defects.push(match fault {
+                crate::region::Fault::Region(reason) => Defect::LoopsBoundNoRegion { face, reason },
+                crate::region::Fault::Loop(loop_, reason) => Defect::LoopNotSimple {
+                    face,
+                    loop_,
+                    reason,
+                },
+            });
         }
     }
 
