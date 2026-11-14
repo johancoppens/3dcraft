@@ -165,3 +165,34 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# The crates that do the arithmetic of modelling and of the CPU renderer
+# at opt-level 3 (as release builds them), where the tests spend their time:
+# measured on the build server on 2026-11-14, the boolean corpus test ran 3
+# times faster and guide_examples 2.3 with the first seven, look_panel 2.2
+# and studio_look 1.9 with the renderer too, and a gate's tests took 504 s
+# instead of 962. The engine at 3 as well gained nothing and made its build
+# 17 s longer; ops, doc, expr, assembly, stepread, font and io gained
+# nothing beyond the noise; opt-level 2 the same as 3. Debug assertions and
+# overflow checks stay on: an override sets only what it names, and the dev
+# profile keeps cargo's defaults for them. The test profile inherits all of
+# this; release, web and packaging do not change. A one-line edit in
+# craft3d-geom rebuilds about 10 s longer, in the kernel about 7 s
+# (docs/development.md › Build and run, *Build profiles*, which also says how
+# to build one at opt-level 1 again for a debugger).
+[profile.dev.package.craft3d-math]
+opt-level = 3
+[profile.dev.package.craft3d-geom]
+opt-level = 3
+[profile.dev.package.craft3d-topo]
+opt-level = 3
+[profile.dev.package.craft3d-tess]
+opt-level = 3
+[profile.dev.package.craft3d-kernel]
+opt-level = 3
+[profile.dev.package.craft3d-solve]
+opt-level = 3
+[profile.dev.package.craft3d-regen]
+opt-level = 3
+[profile.dev.package.craft3d-render]
+opt-level = 3
