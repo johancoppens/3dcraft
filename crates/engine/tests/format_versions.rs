@@ -385,3 +385,48 @@ fn the_v64_jogged_plate_is_its_closed_form() {
     assert!(lo >= -rounding && lo <= chord, "{plate}");
     assert!(hi <= 40.0 + rounding && hi >= 40.0 - chord, "{plate}");
 }
+
+/// What pins v67's ring besides its fixture, whose centroid is the
+/// rounding of zero and was re-recorded on 2026-11-14 (the measure takes
+/// the feet's rates for samples off their face by more than rounding, and
+/// the ring's eight seam edges lie up to 1.1e-13 mm off their faces: its
+/// centroid moved from [6.798989834637259e-15, 7.487275225627571e-15,
+/// −3.599651550782486e-17] to [6.798989834636841e-15, 7.487275225627571e-15,
+/// −5.399477326173729e-17]). The ring (F5) is a circle of radius 2 swept
+/// round the z axis at radius 10 with the rail at 12: a torus, centred on
+/// the origin by its symmetry, of volume `2π² R r²`. Its centroid is held
+/// to zero within what the measure's own bound allows (the volume's bound
+/// over the volume, times the body's diagonal), its volume to the torus's.
+#[test]
+fn the_v67_ring_is_a_torus_centred_by_its_symmetry() {
+    let dir = workdir("format-versions", "v67-ring");
+    std::fs::copy(fixtures().join("v67.3dcraft"), dir.join("v67.3dcraft")).unwrap();
+    let mut s = session_in(&dir);
+    run(&mut s, "file.open", json!({"path": "v67.3dcraft"}));
+    let measured = run(
+        &mut s,
+        "document.measure",
+        json!({"feature": "F5", "bound": true, "inertia": false}),
+    );
+    let num = |v: &Value| v.as_f64().unwrap_or_else(|| panic!("not a number: {v}"));
+    let (volume, bound) = (num(&measured["volume"]), num(&measured["volumeBound"]));
+    let torus = 2.0 * std::f64::consts::PI * std::f64::consts::PI * 10.0 * 4.0;
+    assert!(
+        (volume - torus).abs() <= 1e-8 * torus,
+        "volume {volume} vs {torus}"
+    );
+    let diagonal = (24.0_f64 * 24.0 + 24.0 * 24.0 + 4.0 * 4.0).sqrt();
+    let allowed = bound / volume * diagonal;
+    assert!(
+        allowed > 0.0 && allowed < 1e-9,
+        "the measure's bound {bound}"
+    );
+    for axis in 0..3 {
+        let c = num(&measured["centroid"][axis]);
+        assert!(
+            c.abs() <= allowed,
+            "centroid {}: {c} against {allowed}",
+            measured["centroid"]
+        );
+    }
+}
