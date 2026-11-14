@@ -2631,6 +2631,7 @@ pub(crate) fn plate_thickness(
         normal,
         tol,
         cos_parallel: tolerance.angular.pcos(),
+        angular: tolerance.angular,
     };
     let mut range: Option<(f64, f64)> = None;
     // A grid of `level`² small triangles in each triangle, at their
@@ -2844,6 +2845,22 @@ struct PlateLine<'p, 'a> {
     normal: Vec3,
     tol: f64,
     cos_parallel: f64,
+    angular: f64,
+}
+
+/// Whether a flat face whose unit normal is `other` faces the other way
+/// from one whose unit normal is `normal`, parallel within the angular
+/// tolerance `angular` (`cos_parallel` its cosine): the angle between
+/// `normal` and `−other`, read from its sine and cosine together
+/// ([`Vec3::angle_to`]), is within it, or the dot says so as it always did.
+/// The cosine alone is 1 in floating point for every angle below about
+/// 1.05e-8, so at the default tolerance of 1e-9 it asked for normals
+/// opposite to the last bit, and two faces opposite only to rounding (a dot
+/// of −0.9999999999999999) had no thickness (2026-11-14,
+/// docs/design/plates.md › *Corners*); the dot is kept, so no face that was
+/// opposite before is not now.
+fn faces_away(normal: Vec3, other: Vec3, angular: f64, cos_parallel: f64) -> bool {
+    -other.dot(normal) >= cos_parallel || normal.angle_to(-other) <= angular
 }
 
 impl PlateLine<'_, '_> {
@@ -2890,7 +2907,7 @@ impl PlateLine<'_, '_> {
             else {
                 continue;
             };
-            if -other.dot(normal) >= self.cos_parallel {
+            if faces_away(normal, other, self.angular, self.cos_parallel) {
                 opposite = true;
                 break;
             }
@@ -3219,6 +3236,62 @@ mod settle_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two flat faces opposite only to rounding have a plate thickness
+    /// (2026-11-14). The test of facing away read the angle by its cosine
+    /// alone, which is 1 at the default angular tolerance of 1e-9: a pair
+    /// of normals whose dot is −0.9999999999999999 was not opposite. Here
+    /// the top and bottom of a block 10 by 8 by 3, in frames turned every
+    /// way, each normal worked out from the corners of its own face, so
+    /// that they are opposite to rounding (a dot of −1,
+    /// −0.9999999999999999 or −1.0000000000000002): both faces are 3 thick
+    /// in every frame, and some of the frames (at least one) give such a
+    /// pair. The test itself: those normals and two a thousandth of the
+    /// tolerance apart face away; two at a hundred times it do not.
+    #[test]
+    fn faces_opposite_only_to_rounding_have_a_plate_thickness() {
+        use craft3d_kernel::primitives::block;
+        use craft3d_math::{Frame, Tolerance};
+        let tolerance = Tolerance::default();
+        let (angular, cos_parallel) = (tolerance.angular, tolerance.angular.pcos());
+        let up = Vec3::new(0.0, 0.0, 1.0);
+        let down = Vec3::new(1e-12, 0.0, -(1.0 - 0.5 * f64::EPSILON));
+        assert!(-down.dot(up) < cos_parallel, "the cosine's reading");
+        assert!(faces_away(up, down, angular, cos_parallel));
+        // (Within about 1.05e-8 the dot is −1 and they face away as they
+        // always did.)
+        let wider = Vec3::new((1e-7_f64).psin(), 0.0, -(1e-7_f64).pcos());
+        assert!(!faces_away(up, wider, angular, cos_parallel));
+        assert!(faces_away(up, -up, angular, cos_parallel));
+
+        let mut rounded = 0;
+        for k in 0..48 {
+            let a = 0.37 * f64::from(k) + 0.1;
+            let z = Vec3::new(a.pcos(), a.psin(), 0.3 + 0.05 * f64::from(k));
+            let x = Vec3::new(-a.psin(), a.pcos(), 0.2);
+            let frame = Frame::new(Vec3::new(1.5, -2.0, 0.7) * f64::from(k), z, x).unwrap();
+            let body = block(&frame, 10.0, 8.0, 3.0).unwrap();
+            let part = Part::new(&body, None, &tolerance).unwrap();
+            let normal = |face: usize| {
+                let t = part.every.get(&face).unwrap().first().unwrap();
+                let centre = (t[0] + t[1] + t[2]) * (1.0 / 3.0);
+                part.probe.normal(face, centre).unwrap().unwrap()
+            };
+            // Faces 0 and 1 of a block: its bottom and its top.
+            let dot = normal(0).dot(normal(1));
+            if dot > -1.0 {
+                rounded += 1;
+            }
+            for face in [0, 1] {
+                let t = plate_thickness(&part, face, &tolerance).unwrap();
+                assert!(
+                    t.is_some_and(|t| (t - 3.0).abs() <= 1e-9),
+                    "frame {k}, face {face}: {t:?} (dot {dot:e})"
+                );
+            }
+        }
+        assert!(rounded > 0, "no pair of normals opposite only to rounding");
+    }
 
     /// A tube (a cylinder less a coaxial one) measured, then a body equal
     /// to it but made again (another copy, as each point of a Jig's

@@ -1849,9 +1849,12 @@ fn smooth_square(
 /// `1 − θ²/2`, which is 1 in floating point for every `θ` below about
 /// 1e-8, so a comparison with the cosine of an angular tolerance of 1e-9
 /// asks whether the dot is −1 to the last bit (found 2026-11-14,
-/// docs/design/plates.md › *Corners*).
+/// docs/design/plates.md › *Corners*). [`Vec3::angle_to`] of `da` and
+/// `−db`: negating `db` negates every product and sum exactly (rounding to
+/// nearest is symmetric), so it gives the bits of `atan2(|da × db|, −da ·
+/// db)` as written here before, for every pair of unit vectors.
 fn turn(da: Vec3, db: Vec3) -> f64 {
-    da.cross(db).length().patan2(-da.dot(db))
+    da.angle_to(-db)
 }
 
 /// Points an edge between two faces is looked at for a crease before the

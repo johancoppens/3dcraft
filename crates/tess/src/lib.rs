@@ -7,7 +7,6 @@
 //! handles B-rep bodies, edges first, so that the mesh of a valid solid is
 //! watertight (docs/design/tessellator.md); see `body.rs` for what it covers.
 
-use craft3d_math::Portable;
 mod body;
 mod cdt;
 mod edge;
@@ -162,12 +161,10 @@ pub(crate) fn turns_beyond(turn: f64, angle: f64) -> bool {
     turn > angle * (1.0 + 1e-6)
 }
 
-/// The angle between two vectors, in radians, or `None` when either has
-/// no direction.
+/// The angle between two vectors, in radians ([`Vec3::angle_to`]), or
+/// `None` when either has no direction.
 pub(crate) fn angle_between(a: Vec3, b: Vec3) -> Option<f64> {
-    let cross = a.cross(b).length();
-    let dot = a.dot(b);
-    let angle = cross.patan2(dot);
+    let angle = a.angle_to(b);
     (a.length_squared() > 0.0 && b.length_squared() > 0.0 && angle.is_finite()).then_some(angle)
 }
 

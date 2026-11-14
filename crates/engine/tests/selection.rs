@@ -957,3 +957,71 @@ fn a_bound_is_matched_as_eq_matches_it() {
         }
     }
 }
+
+/// `normal` and `axis` at `tol: 0` find what is parallel or square to the
+/// axis to rounding (2026-11-14). The filter compared the dot of the unit
+/// vectors with the tolerance's cosine, which is 1 in floating point below
+/// about 6e-7 degrees: at such a tolerance, and at 0, it asked for a dot
+/// of 1 (or 0) to the last bit, and dropped a face whose normal is its
+/// axis only to rounding (each worked out its own way: a block's face
+/// from its corners, the axis normalised from the numbers given). A block
+/// turned by 17 degrees and a cylinder along each of 24 skew axes: the
+/// block's top along the axis, its four sides square to it, the
+/// cylinder's wall about it (and its two circles), at `tol` 0, at 1e-9
+/// degrees and at the default half degree.
+#[test]
+fn a_tolerance_of_zero_finds_what_is_parallel_to_rounding() {
+    let mut seed = 7_u64;
+    let mut unit = || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+    };
+    for k in 0..24 {
+        let axis = [4.0 * unit(), 4.0 * unit(), 1.0 + unit()];
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": "B", "size": [10, 8, 3], "axis": axis, "angle": "17 deg"}),
+        );
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"name": "C", "radius": 2, "height": 5, "position": [40, 0, 0], "axis": axis}),
+        );
+        for tol in [json!(0), json!(1e-9), json!(null)] {
+            let what = format!("axis {k} {axis:?} at tol {tol}");
+            let mut found = |kind: &str, filter: Value| count(&mut s, kind, filter);
+            let along = json!({"along": axis, "tol": tol});
+            let square = json!({"perpendicular": axis, "tol": tol});
+            assert_eq!(
+                found("face", json!({"in": "B", "normal": along})),
+                1,
+                "{what}"
+            );
+            assert_eq!(
+                found("face", json!({"in": "B", "normal": square})),
+                4,
+                "{what}"
+            );
+            assert_eq!(
+                found("face", json!({"in": "C", "normal": square})),
+                1,
+                "{what}"
+            );
+            assert_eq!(
+                found("face", json!({"in": "C", "axis": along})),
+                1,
+                "{what}"
+            );
+            assert_eq!(
+                found("edge", json!({"in": "C", "axis": along})),
+                2,
+                "{what}"
+            );
+        }
+    }
+}

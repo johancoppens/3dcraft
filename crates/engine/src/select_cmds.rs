@@ -1264,8 +1264,8 @@ impl<'a> Context<'a> {
                 let Some((surface, reversed)) = surface_of(c) else {
                     return false;
                 };
-                let square = |v: Vec3, d: Vec3| v.dot(d).abs() <= tol.psin();
-                let parallel = |v: Vec3, d: Vec3| v.dot(d) >= tol.pcos();
+                let square = |v: Vec3, d: Vec3| square_within(v, d, *tol);
+                let parallel = |v: Vec3, d: Vec3| same_way(v, d, *tol);
                 match surface {
                     Surface::Plane(plane) => {
                         let z = plane.frame().z();
@@ -1290,7 +1290,8 @@ impl<'a> Context<'a> {
                     }),
                     _ => None,
                 };
-                a.is_some_and(|a| a.dot(*along).abs() >= tol.pcos())
+                // Either way round: the cosine's test as `|a · along|`.
+                a.is_some_and(|a| same_way(a, *along, *tol) || same_way(-a, *along, *tol))
             }
             Filter::Inside([lo, hi]) => self.bounds(c).is_some_and(|(a, b)| {
                 let slack = self.doc.tolerance.linear.abs();
@@ -1610,6 +1611,45 @@ fn surface_axis(surface: &Surface) -> Option<Vec3> {
         Surface::Torus(s) => Some(s.frame().z()),
         _ => None,
     }
+}
+
+/// Below this (a thousandth of a degree, in radians) the angle tolerance
+/// of a `normal` or `axis` filter is read as an angle as well as by its
+/// cosine ([`same_way`]). From it up the cosine reads the tolerance to
+/// about a millionth of itself and is the only test, as it always was, so
+/// that no selection at the default half degree, or at any tolerance a
+/// user is likely to give, changes.
+const FINE_ANGLE: f64 = 1e-3 * (std::f64::consts::PI / 180.0);
+
+/// What rounding alone can turn two unit vectors of one direction apart
+/// by, in radians: each part of each vector is within a unit or two in the
+/// last place of the exact one (a frame's axis, a normalised `[x, y, z]`),
+/// which turns it by less than 4 ε, and the angle between them is read to
+/// about as much again; 16 ε, about 3.6e-15 rad (2e-13 degrees), leaves
+/// room. A filter's tolerance is never taken as less, so that `tol: 0`
+/// still finds a face parallel or square to the axis to rounding.
+const ROUNDING_ANGLE: f64 = 16.0 * f64::EPSILON;
+
+/// Whether the unit vectors `v` and `d` point the same way within the
+/// angle `tol` (radians, 0 to π/2): their dot at least its cosine, as it
+/// always was, or, for a tolerance below [`FINE_ANGLE`], the angle between
+/// them read from its sine and cosine together ([`Vec3::angle_to`]) within
+/// `tol` and never less than [`ROUNDING_ANGLE`]. The cosine alone is 1 in
+/// floating point for every angle below about 1.05e-8 (6e-7 degrees), so
+/// at such a tolerance, and at 0, it asked for the vectors' dot to be 1 to
+/// the last bit and dropped faces parallel to the axis to rounding
+/// (2026-11-14, docs/design/plates.md › *Corners*).
+fn same_way(v: Vec3, d: Vec3, tol: f64) -> bool {
+    v.dot(d) >= tol.pcos() || (tol < FINE_ANGLE && v.angle_to(d) <= tol.max(ROUNDING_ANGLE))
+}
+
+/// Whether the unit vectors `v` and `d` are square within the angle `tol`
+/// (radians): their dot, the sine of the angle from square (accurate to
+/// rounding near 0, unlike a cosine near 1), within the sine of `tol`,
+/// never of less than [`ROUNDING_ANGLE`]. The same test as before for
+/// every tolerance from that up.
+fn square_within(v: Vec3, d: Vec3, tol: f64) -> bool {
+    v.dot(d).abs() <= tol.max(ROUNDING_ANGLE).psin()
 }
 
 /// The length of an edge: exact for a line and a circular arc, the
@@ -2633,5 +2673,66 @@ fn curve_json(edge: &craft3d_topo::Edge) -> Value {
         }),
         Curve3::Ellipse(_) => json!({"type": "ellipse", "length": length}),
         Curve3::Nurbs(_) => json!({"type": "freeform", "length": length}),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The angle tests of `normal` and `axis` (2026-11-14). At `tol` 0,
+    /// and at a tolerance whose cosine is 1 (1e-9 rad), unit vectors of
+    /// one direction to rounding (a dot one unit in the last place under
+    /// 1, which the cosine's test dropped) match, and so do vectors square
+    /// to rounding; vectors 1e-7 rad apart (a dot under 1), or square only
+    /// beyond the floor of rounding, do not, and a dot that rounds to 1
+    /// still matches, as it did. From a thousandth of a degree up the
+    /// test is the cosine's, bit for bit: around the default half degree,
+    /// at directions within a billionth of it either way, each matches
+    /// exactly when the cosine's test matched it.
+    #[test]
+    fn angle_tolerances_below_the_cosines_reach_are_read_as_angles() {
+        let d = Vec3::new(0.0, 0.0, 1.0);
+        let v = Vec3::new(1e-15, 0.0, 1.0 - 0.5 * f64::EPSILON);
+        assert!(v.dot(d) < 1.0, "a dot under 1");
+        assert!(
+            v.dot(d) < 0.0_f64.pcos() && v.dot(d) < 1e-9_f64.pcos(),
+            "the cosine's reading"
+        );
+        assert!(same_way(v, d, 0.0) && same_way(v, d, 1e-9));
+        assert!(!same_way(-v, d, 0.0));
+        let off = Vec3::new((1e-7_f64).psin(), 0.0, (1e-7_f64).pcos());
+        assert!(!same_way(off, d, 1e-9));
+        assert!(same_way(off, d, 2e-7));
+        assert!(!same_way(off, d, 0.0));
+        // A dot that rounds to 1 matches at any tolerance, as it always did.
+        assert!(same_way(Vec3::new(1e-9, 0.0, 1.0), d, 0.0));
+        let side = Vec3::new(1.0, 0.0, 1e-16);
+        assert!(
+            side.dot(d).abs() > 0.0_f64.psin(),
+            "the sine's reading at 0"
+        );
+        assert!(square_within(side, d, 0.0));
+        assert!(
+            !square_within(Vec3::new(1.0, 0.0, 1e-13), d, 0.0),
+            "beyond rounding"
+        );
+
+        let half = 0.5_f64.to_radians();
+        assert!(half >= FINE_ANGLE);
+        for i in -500..=500 {
+            let t = half * (1.0 + 2e-12 * f64::from(i));
+            for w in [
+                Vec3::new(t.psin(), 0.0, t.pcos()),
+                Vec3::new(0.0, t.pcos(), t.psin()),
+            ] {
+                assert_eq!(same_way(w, d, half), w.dot(d) >= half.pcos(), "{t}");
+                assert_eq!(
+                    square_within(w, d, half),
+                    w.dot(d).abs() <= half.psin(),
+                    "{t}"
+                );
+            }
+        }
     }
 }
