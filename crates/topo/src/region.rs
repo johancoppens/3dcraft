@@ -19,11 +19,14 @@
 //! torus: any loop there bounds a region on one side or the other), a
 //! loop through or near a pole or an apex (a sphere's pole, a cone's
 //! apex, a freeform surface's collapsed border), a freeform surface that
-//! closes on itself (its seam is not a period of the parameters), a point
-//! that does not project back onto the surface, a loop whose area is not
+//! closes on itself both ways, a point that does not project back onto the
+//! surface, a loop whose area is not
 //! larger than its polyline's error allows to be told from nothing, and a
 //! face with more than [`MOST_PER_FACE`] points. On a sphere loops that
-//! all run clockwise are the sphere less some caps, which is a region.
+//! all run clockwise are the sphere less some caps, which is a region. A
+//! freeform surface that closes one way on clamped knots is charted with
+//! its domain's width that way as a period ([`periods_of`]), as a cylinder
+//! is.
 //!
 //! **How.** Each edge is followed in a few steps (a line in one on a
 //! plane, else in two; a circle or an ellipse in steps of at most π/8; a
@@ -122,15 +125,12 @@ pub(crate) fn region_followed(
         return (None, None);
     }
     let surface = &face.surface;
-    let periods = [surface.period_u(), surface.period_v()];
-    if periods.iter().all(Option::is_some) {
+    let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
+    if freeform && !craft3d_geom::pole::poles(surface).is_empty() {
         return (None, None);
     }
-    let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
-    if freeform
-        && (craft3d_geom::closure::closes(surface).iter().any(|c| *c)
-            || !craft3d_geom::pole::poles(surface).is_empty())
-    {
+    let periods = periods_of(surface);
+    if periods.iter().all(Option::is_some) {
         return (None, None);
     }
     let near = 10.0 * body.working_tolerance(tol.linear);
@@ -374,11 +374,36 @@ pub(crate) fn region_followed(
     }
 }
 
+/// The periods of a surface's parameters as the chart moves points by
+/// them: the analytic kinds' own (`Surface::period_u`), and for a spline
+/// surface that closes on itself on clamped knots (`craft3d_geom::closure::
+/// closes`: its control net ends on the row it starts with, the same curve)
+/// the width of its domain that way, across which it closes, as the
+/// measure takes it (`mass.rs`, `spline_closure`). A loop over the seam is
+/// then followed over it, and one that goes round is a band, as on a
+/// cylinder. A spline surface that closes only within the tolerance, or on
+/// knots that are not clamped, has none (charted as one that does not
+/// close).
+pub(crate) fn periods_of(surface: &Surface) -> [Option<f64>; 2] {
+    if !matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
+        return [surface.period_u(), surface.period_v()];
+    }
+    let [closes_u, closes_v] = craft3d_geom::closure::closes(surface);
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let width = |closes: bool, a: f64, b: f64| {
+        let w = b - a;
+        (closes && w.is_finite() && w > 0.0).then_some(w)
+    };
+    [width(closes_u, u0, u1), width(closes_v, v0, v1)]
+}
+
 /// Whether each of `points` (on the surface of `face`) lies on the face,
 /// by the parity of the loops' crossings of a ray from it in the
 /// surface's parameters (along v, or along u when v is the one that
 /// closes); `None` where the face cannot be charted without doubt, as for
-/// [`region_fault`], bands around a closed surface included.
+/// [`region_fault`], bands around a closed surface included, and on every
+/// freeform surface that closes (not charted with a period here: its ray's
+/// parity across the seam is owed).
 pub fn face_holds(body: &Body, face: &Face, tol: &Tolerance, points: &[Vec3]) -> Option<Vec<bool>> {
     if face.loops.is_empty() {
         return None;

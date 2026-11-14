@@ -83,12 +83,15 @@
 //! **What is not held.** What the region rule passes without a word is not
 //! followed here either: a face on a surface it cannot chart without doubt
 //! (a loop through a sphere's pole or a cone's apex, every spline surface
-//! that `geom::closure` finds closed or collapsed), a loop whose area its
-//! polyline cannot tell from nothing, a face past its caps of points and
-//! work: such a face is held to rule 1 and to rule 4 between different
-//! loops only (so a loop gone round twice on a face of a revolved spline
-//! is caught only where a neighbouring face can be charted). A spline
-//! surface that closes within the tolerance but not to `closure`'s
+//! that `geom::closure` finds collapsed or closed both ways), a loop whose
+//! area its polyline cannot tell from nothing, a face past its caps of
+//! points and work: such a face is held to rule 1 and to rule 4 between
+//! different loops only (so a loop gone round twice on a face of a spline
+//! surface with a pole is caught only where a neighbouring face can be
+//! charted). A spline surface that `closure` finds closed one way is
+//! charted with its domain's width as a period (`crate::region`), and held
+//! as a cylinder is. A spline surface that closes within the tolerance but
+//! not to `closure`'s
 //! rounding (or on knots that are not clamped) is charted as one that does
 //! not close: its seam passes, but a loop across the seam is not followed
 //! right. A spline edge on a surface that closes about an axis is followed
