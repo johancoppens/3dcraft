@@ -100,8 +100,20 @@ fn planes_facing(body: &Body, n: Vec3) -> Vec<FaceId> {
 /// A random draft case.
 fn draft_case(rng: &mut Rng, n: usize, k: f64, tol: &Tolerance) -> Option<DraftCase> {
     let frame = frame(rng, k);
-    let angle = rng.between(0.5, 15.0).to_radians() * if rng.below(2) == 0 { 1.0 } else { -1.0 };
+    // Half the cases steep (up to 40 degrees, the neutral plane anywhere
+    // from half the height below the body to half above it), where faces
+    // drafted run into each other and the closed form stops holding.
+    let steep = rng.below(2) == 0;
+    let largest = if steep { 40.0 } else { 15.0 };
+    let angle = rng.between(0.5, largest).to_radians() * if rng.below(2) == 0 { 1.0 } else { -1.0 };
     let tan = angle.ptan();
+    let neutral = |rng: &mut Rng, c: f64| {
+        if steep {
+            rng.between(-0.5 * c, 1.5 * c)
+        } else {
+            rng.between(0.0, c)
+        }
+    };
     match n % 3 {
         0 => {
             // A block, some of its sides drafted.
@@ -110,7 +122,7 @@ fn draft_case(rng: &mut Rng, n: usize, k: f64, tol: &Tolerance) -> Option<DraftC
                 rng.between(10.0, 50.0),
                 rng.between(5.0, 30.0),
             );
-            let z0 = rng.between(0.0, c);
+            let z0 = neutral(rng, c);
             let body = primitives::block(&frame, a * k, b * k, c * k).ok()?;
             let sides = [frame.x(), -frame.x(), frame.y(), -frame.y()];
             let mut faces = Vec::new();
@@ -129,7 +141,13 @@ fn draft_case(rng: &mut Rng, n: usize, k: f64, tol: &Tolerance) -> Option<DraftC
             }
             let (s1, s2) = moments(c * k, z0 * k, tan);
             let (a, b, c2) = (a * k, b * k, c * k);
-            let expected = a * b * c2 - (a * ny + b * nx) * s1 + nx * ny * s2;
+            // The sides moved in at the bottom and at the top: the closed
+            // form holds while the rectangle keeps a width.
+            let widths = [0.0, c2].iter().all(|z| {
+                let s = (z - z0 * k) * tan;
+                a - nx * s > 0.0 && b - ny * s > 0.0
+            });
+            let expected = widths.then_some(a * b * c2 - (a * ny + b * nx) * s1 + nx * ny * s2);
             Some(DraftCase {
                 body,
                 what: format!(
@@ -141,7 +159,7 @@ fn draft_case(rng: &mut Rng, n: usize, k: f64, tol: &Tolerance) -> Option<DraftC
                 frame,
                 z0: z0 * k,
                 angle,
-                expected: Some(expected),
+                expected,
             })
         }
         1 => {
@@ -173,17 +191,15 @@ fn draft_case(rng: &mut Rng, n: usize, k: f64, tol: &Tolerance) -> Option<DraftC
                 ]
             };
             let c = rng.between(5.0, 25.0);
-            let z0 = rng.between(0.0, c);
-            // No side may shrink to nothing: the offset stays below a
-            // third of the shortest side.
+            let z0 = neutral(rng, c);
+            // No side may shrink to nothing: the closed form holds while
+            // the offset stays below a third of the shortest side.
             let shortest = points
                 .iter()
                 .zip(points.iter().cycle().skip(1))
                 .map(|(p, q)| (q[0] - p[0]).phypot(q[1] - p[1]))
                 .fold(f64::INFINITY, f64::min);
-            if c.max(1.0) * tan.abs() > shortest / 3.0 {
-                return None;
-            }
+            let holds = (c - z0).abs().max(z0.abs()) * tan.abs() <= shortest / 3.0;
             let curves: Vec<SketchCurve> = (0..points.len())
                 .map(|i| {
                     let (p, q) = (points[i], points[(i + 1) % points.len()]);
@@ -219,7 +235,7 @@ fn draft_case(rng: &mut Rng, n: usize, k: f64, tol: &Tolerance) -> Option<DraftC
                 })
                 .sum();
             let (s1, s2) = moments(c * k, z0 * k, tan);
-            let expected = area * k * k * c * k - perimeter * k * s1 + 4.0 * s2;
+            let expected = holds.then_some(area * k * k * c * k - perimeter * k * s1 + 4.0 * s2);
             Some(DraftCase {
                 body,
                 what: format!(
@@ -230,7 +246,7 @@ fn draft_case(rng: &mut Rng, n: usize, k: f64, tol: &Tolerance) -> Option<DraftC
                 frame,
                 z0: z0 * k,
                 angle,
-                expected: Some(expected),
+                expected,
             })
         }
         _ => {
@@ -255,7 +271,7 @@ fn draft_case(rng: &mut Rng, n: usize, k: f64, tol: &Tolerance) -> Option<DraftC
             if !check(&body, tol).is_empty() {
                 return None;
             }
-            let z0 = rng.between(0.0, if union { zb + 20.0 } else { 20.0 });
+            let z0 = neutral(rng, if union { zb + 20.0 } else { 20.0 });
             let mut faces: Vec<FaceId> = (0..body.faces.len() as u32)
                 .map(FaceId)
                 .filter(|f| matches!(body.face(*f).unwrap().surface, Surface::Cylinder(_)))
@@ -278,6 +294,28 @@ fn draft_case(rng: &mut Rng, n: usize, k: f64, tol: &Tolerance) -> Option<DraftC
                 delta -= 2.0 * 30.0 * k * s1;
             }
             let v0 = measured(&body)?.volume;
+            // The closed form holds while the cone keeps a radius at both
+            // ends of its wall and stays clear of the block's sides (moved
+            // in by their own draft).
+            let (low, high) = if union {
+                (20.0 * k, (zb + 20.0) * k)
+            } else {
+                (zb * k, 20.0 * k)
+            };
+            let side_move = if sides {
+                [0.0, 20.0 * k]
+                    .iter()
+                    .map(|z| ((z - z0k) * tan).abs())
+                    .fold(0.0, f64::max)
+            } else {
+                0.0
+            };
+            let clearance = x.min(40.0 - x).min(y).min(30.0 - y) * k - side_move;
+            let holds = [low, high].iter().all(|z| {
+                let s = (z - z0k) * tan;
+                let radius = if union { rk - s } else { rk + s };
+                radius > 0.0 && radius < clearance
+            });
             Some(DraftCase {
                 body,
                 what: format!(
@@ -289,7 +327,7 @@ fn draft_case(rng: &mut Rng, n: usize, k: f64, tol: &Tolerance) -> Option<DraftC
                 frame,
                 z0: z0k,
                 angle,
-                expected: Some(v0 + delta),
+                expected: holds.then_some(v0 + delta),
             })
         }
     }
@@ -415,7 +453,7 @@ fn draft_points(
     let point = case.frame.point(0.0, 0.0, case.z0);
     let pull = case.frame.z();
     let tan = case.angle.ptan().abs();
-    let reach = 1.2 * size * tan + 2.0 * chord;
+    let reach = 1.5 * size * tan + 2.0 * chord;
     let mut pts = points_near(rng, &mesh, &which, reach, 160);
     pts.extend(points_in_box(rng, before, 60));
     let (Some(was), Some(is)) = (classify(before, &pts, tol), classify(after, &pts, tol)) else {
@@ -440,7 +478,9 @@ fn draft_points(
             ));
             return;
         }
-        if away > h.abs() * tan * 1.2 + 2.0 * chord + 20.0 * tol.linear {
+        // A corner between two drafted faces moves along its diagonal, up
+        // to the square root of two times as far as the faces.
+        if away > h.abs() * tan * 1.5 + 2.0 * chord + 20.0 * tol.linear {
             found.problems.push(format!(
                 "a point {} from the drafted faces changed, {} over the neutral plane",
                 g(away),
@@ -912,8 +952,12 @@ fn random_draft_0_to_200_hold_their_oracles() {
 }
 
 /// What the draft hunt's gate cases did when it was written (outcome
-/// letters, `hunt_common::Tally`); empty: not pinned yet.
-const PINNED_DRAFT: &str = "";
+/// letters, `hunt_common::Tally`), recorded on 2026-11-14.
+const PINNED_DRAFT: &str = concat!(
+    "BBBBBBBRBBBBBBBBRBBRBBBBBBBBBRBBBBBBBBBBBBBBBBBBBBBBBBBRRBBBBRBBBRBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBRBBBBBBBBBBBBBBBBRRBBBBRBBBBBBBBBBBBBBRBBBRBRBBBBBBBBBRBBBBBBBBBBBRB",
+    "BBBBRBBBBBBBBBBBBBBBRBBBBBBBBBBBBBBBBBBB",
+);
 
 /// The wide hunt of delete: 1500 cases in 2 parts, run by hand
 /// (`-- --ignored`), not in the gate.
@@ -947,5 +991,9 @@ fn random_delete_0_to_200_hold_their_oracles() {
 }
 
 /// What the delete hunt's gate cases did when it was written (outcome
-/// letters, `hunt_common::Tally`); empty: not pinned yet.
-const PINNED_DELETE: &str = "";
+/// letters, `hunt_common::Tally`), recorded on 2026-11-14.
+const PINNED_DELETE: &str = concat!(
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBRNBBBBBBBBBBBBB",
+    "BBBBBRBBBBBBBBBBBRBBBBBBBRBBBRBBBRBBBBBBBRBBBBBBBBBBBBBBBRNBBRBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+);

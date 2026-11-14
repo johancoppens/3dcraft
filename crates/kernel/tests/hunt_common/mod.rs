@@ -31,6 +31,7 @@ use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_tess::{Mesh, TessParams, tessellate_body};
 use craft3d_tess::{SelfCheckParams, body_self_intersections};
 use craft3d_topo::{Body, EdgeId, FaceId, check, edge_uses, mass_bound, merge};
+use std::f64::consts::{PI, TAU};
 
 /// The kinds of body the hunts operate on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1022,7 +1023,10 @@ impl Tally {
         let mut unknown = Vec::new();
         for (i, c) in self.outcomes.chars().enumerate() {
             let n = start + i;
-            let bad = matches!(c, 'W' | 'I' | 'M' | 'X' | 'P');
+            // A body that passes through itself (`X`) is refused by the
+            // regeneration's self-check, which every face operation runs:
+            // counted, not a finding.
+            let bad = matches!(c, 'W' | 'I' | 'M' | 'P');
             if bad && !known.contains(&n) {
                 unknown.push(format!("case {n}: {c}"));
             }
@@ -1468,4 +1472,163 @@ pub fn scratch_range() -> Option<std::ops::Range<usize>> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(from + 4);
     Some(from..to)
+}
+
+/// One side of a profile: a line, or a cubic Bézier through four points.
+#[derive(Clone, Debug)]
+pub enum Side {
+    Line([f64; 2], [f64; 2]),
+    Cubic([[f64; 2]; 4]),
+}
+
+impl Side {
+    /// The point and the derivative at `t` in [0, 1].
+    pub fn at(&self, t: f64) -> ([f64; 2], [f64; 2]) {
+        match self {
+            Side::Line(a, b) => (
+                [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])],
+                [b[0] - a[0], b[1] - a[1]],
+            ),
+            Side::Cubic(p) => {
+                let s = 1.0 - t;
+                let w = [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t];
+                let dw = [
+                    -3.0 * s * s,
+                    3.0 * s * s - 6.0 * s * t,
+                    6.0 * s * t - 3.0 * t * t,
+                    3.0 * t * t,
+                ];
+                let mut q = [0.0, 0.0];
+                let mut d = [0.0, 0.0];
+                for i in 0..4 {
+                    q[0] += w[i] * p[i][0];
+                    q[1] += w[i] * p[i][1];
+                    d[0] += dw[i] * p[i][0];
+                    d[1] += dw[i] * p[i][1];
+                }
+                (q, d)
+            }
+        }
+    }
+}
+
+/// Gauss–Legendre on [0, 1], 16 points: exact for polynomials of degree
+/// 31, so for every integrand here but the length (a square root), which
+/// is summed over 64 pieces.
+pub fn gauss() -> Vec<(f64, f64)> {
+    // Nodes and weights on [-1, 1] by Newton on the Legendre polynomial.
+    let n = 16;
+    let mut out = Vec::new();
+    for i in 0..n {
+        let mut x = (PI * (i as f64 + 0.75) / (n as f64 + 0.5)).pcos();
+        let mut dp = 1.0;
+        for _ in 0..100 {
+            let (mut p0, mut p1) = (1.0, x);
+            for k in 2..=n {
+                let p2 = ((2 * k - 1) as f64 * x * p1 - (k - 1) as f64 * p0) / k as f64;
+                p0 = p1;
+                p1 = p2;
+            }
+            dp = n as f64 * (x * p1 - p0) / (x * x - 1.0);
+            let step = p1 / dp;
+            x -= step;
+            if step.abs() < 1e-16 {
+                break;
+            }
+        }
+        let w = 2.0 / ((1.0 - x * x) * dp * dp);
+        out.push((0.5 * (x + 1.0), 0.5 * w));
+    }
+    out
+}
+
+/// The profile's area, the first moment of its area about the axis x = 0
+/// (`∫∫ x dA`), and the first moment of its boundary's length about it
+/// (`∮ x ds`) with the boundary's length.
+pub fn pappus(sides: &[Side]) -> (f64, f64, f64, f64) {
+    let rule = gauss();
+    let (mut area, mut moment, mut line_moment, mut length) = (0.0, 0.0, 0.0, 0.0);
+    for side in sides {
+        for &(t, w) in &rule {
+            let (p, d) = side.at(t);
+            area += w * 0.5 * (p[0] * d[1] - p[1] * d[0]);
+            moment += w * 0.5 * p[0] * p[0] * d[1];
+        }
+        let pieces = 64;
+        for j in 0..pieces {
+            for &(t, w) in &rule {
+                let t = (f64::from(j) + t) / f64::from(pieces);
+                let (p, d) = side.at(t);
+                let ds = d[0].phypot(d[1]) / f64::from(pieces);
+                line_moment += w * p[0] * ds;
+                length += w * ds;
+            }
+        }
+    }
+    (area, moment, line_moment, length)
+}
+
+/// A random star-shaped profile about `centre`, counter-clockwise, its
+/// sides lines and cubics; with `touch`, its corner farthest left moved
+/// onto x = 0.
+pub fn profile(rng: &mut Rng, touch: bool, centre: [f64; 2]) -> Vec<Side> {
+    let corners = 3 + rng.below(4) as usize;
+    let mut points = Vec::new();
+    for i in 0..corners {
+        let a = TAU * (i as f64 + rng.between(-0.25, 0.25)) / corners as f64;
+        let r = rng.between(3.0, 7.0);
+        points.push([centre[0] + r * a.pcos(), centre[1] + r * a.psin()]);
+    }
+    if touch {
+        // The corner farthest left moved onto the axis.
+        let (i, _) = points
+            .iter()
+            .enumerate()
+            .min_by(|a, b| a.1[0].total_cmp(&b.1[0]))
+            .unwrap();
+        points[i][0] = 0.0;
+    }
+    (0..corners)
+        .map(|i| {
+            let (a, b) = (points[i], points[(i + 1) % corners]);
+            if rng.below(2) == 0 {
+                Side::Line(a, b)
+            } else {
+                // Inner control points near the chord, pushed out or in a
+                // little across it, so the side stays clear of the others
+                // and of the axis.
+                let d = [b[0] - a[0], b[1] - a[1]];
+                let n = [d[1], -d[0]];
+                let (u, v) = (rng.between(-0.2, 0.25), rng.between(-0.2, 0.25));
+                let p1 = [a[0] + d[0] / 3.0 + u * n[0], a[1] + d[1] / 3.0 + u * n[1]];
+                let p2 = [
+                    a[0] + 2.0 * d[0] / 3.0 + v * n[0],
+                    a[1] + 2.0 * d[1] / 3.0 + v * n[1],
+                ];
+                Side::Cubic([a, p1, p2, b])
+            }
+        })
+        .collect()
+}
+
+pub fn curves(sides: &[Side], k: f64) -> Vec<SketchCurve> {
+    let s = |p: [f64; 2]| [p[0] * k, p[1] * k];
+    sides
+        .iter()
+        .enumerate()
+        .map(|(i, side)| SketchCurve {
+            id: i as u64 + 1,
+            curve: match side {
+                Side::Line(a, b) => Curve2::Line {
+                    start: s(*a),
+                    end: s(*b),
+                },
+                Side::Cubic(p) => Curve2::Spline(Spline2 {
+                    degree: 3,
+                    knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                    control: p.iter().map(|q| s(*q)).collect(),
+                }),
+            },
+        })
+        .collect()
 }

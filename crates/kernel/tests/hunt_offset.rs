@@ -94,10 +94,55 @@ const SEED_OFFSET: u64 = 0x0FF5_E7F4_2026_1114;
 /// Seeded random offsets of one face, from small to well past what fits,
 /// outward and inward.
 fn offsets(cases: std::ops::Range<usize>) -> Tally {
+    offsets_from(SEED_OFFSET, false, cases)
+}
+
+/// The offsets at critical distances: where the moved face reaches a
+/// vertex of the body that is not on it (its plane through the vertex, its
+/// radius through it), exactly or a hundredth or a ten-thousandth either
+/// side: where an offset changes how the body hangs together.
+fn critical_offsets(cases: std::ops::Range<usize>) -> Tally {
+    offsets_from(SEED_CRITICAL, true, cases)
+}
+
+const SEED_CRITICAL: u64 = 0x0C41_7EC0_2026_1114;
+
+/// The signed distances (outward positive) at which `face` moved along its
+/// normal passes through a vertex of `body` that is not on it; empty for a
+/// face that is not a plane, a cylinder or a sphere.
+fn critical(body: &Body, face: FaceId, tol: f64) -> Vec<f64> {
+    let Some(found) = body.face(face) else {
+        return Vec::new();
+    };
+    let sense = if found.reversed { -1.0 } else { 1.0 };
+    let mut out = Vec::new();
+    for v in &body.vertices {
+        let p = v.point;
+        let c = match &found.surface {
+            Surface::Plane(plane) => sense * (p - plane.frame().origin()).dot(plane.frame().z()),
+            Surface::Cylinder(c) => {
+                let f = c.frame();
+                let off = p - f.origin();
+                let radial = off - f.z() * off.dot(f.z());
+                sense * (radial.length() - c.radius())
+            }
+            Surface::Sphere(sphere) => {
+                sense * (p.distance(sphere.frame().origin()) - sphere.radius())
+            }
+            _ => return Vec::new(),
+        };
+        if c.abs() > 100.0 * tol && !out.iter().any(|o: &f64| (o - c).abs() <= 100.0 * tol) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn offsets_from(seed: u64, at_critical: bool, cases: std::ops::Range<usize>) -> Tally {
     let mut tally = Tally::new();
     for n in cases {
         let clock = std::time::Instant::now();
-        let mut rng = Rng(case_seed(SEED_OFFSET, n));
+        let mut rng = Rng(case_seed(seed, n));
         let kind = KINDS[n % KINDS.len()];
         let k = SCALES[rng.below(SCALES.len() as u64) as usize];
         let tol = tolerance(k);
@@ -112,10 +157,20 @@ fn offsets(cases: std::ops::Range<usize>) -> Tally {
         };
         let face = FaceId(rng.below(body.faces.len() as u64) as u32);
         let sign = if rng.below(2) == 0 { 1.0 } else { -1.0 };
-        let d = sign * 0.2 * (1.5_f64).ppowi(rng.below(10) as i32) * k;
+        let mut d = sign * 0.2 * (1.5_f64).ppowi(rng.below(10) as i32) * k;
+        if at_critical {
+            let found = critical(body, face, tol.linear);
+            if found.is_empty() {
+                tally.outcomes.push('N');
+                continue;
+            }
+            let c = found[rng.below(found.len() as u64) as usize];
+            let e = [-1e-2, -1e-4, 0.0, 1e-4, 1e-2][rng.below(5) as usize];
+            d = c * (1.0 + e);
+        }
         // One face mostly; sometimes a face and a neighbour at distances of
         // their own, or every face by the same distance.
-        let mode = rng.below(6);
+        let mode = if at_critical { 0 } else { rng.below(6) };
         let mut moved = vec![FaceOffset { face, distance: d }];
         if mode == 4 {
             let next = neighbours(body, face);
@@ -556,8 +611,13 @@ fn moves(cases: std::ops::Range<usize>) -> Tally {
     tally
 }
 
-/// Offset cases seen wrong, owed (none known yet).
-const KNOWN_OFFSET: [usize; 0] = [];
+/// Offset cases seen wrong, owed. Case 822 (a block united with a
+/// cylinder lying along it that stands out of both end faces, scale 1e-3,
+/// the end cap offset inward past the end face): an invalid body that
+/// passes the checker, its cylinder face's loops crossing in its
+/// parameters (the tessellator cannot mesh it); the reduced form is
+/// `an_end_cap_offset_past_the_face_it_stands_out_of_is_refused_or_built_right`.
+const KNOWN_OFFSET: [usize; 1] = [822];
 
 /// Move face cases seen wrong, owed (none known yet).
 const KNOWN_MOVE: [usize; 0] = [];
@@ -822,8 +882,9 @@ fn random_offset_40_to_80_hold_their_oracles() {
 }
 
 /// What the offset hunt's gate cases did when it was written (outcome
-/// letters, `hunt_common::Tally`); empty: not pinned yet.
-const PINNED_OFFSET: &str = "";
+/// letters, `hunt_common::Tally`), recorded on 2026-11-14.
+const PINNED_OFFSET: &str =
+    "BBBBBRBRBBBBRRRBRRBBBBBBBBBBBBBRRRBRBBBBBBBBBBBBBBBBRBBRBBBBBBBBBBBBBBBBBRRBBBBB";
 
 /// The wide hunt of move: 1200 cases in 2 parts, run by hand
 /// (`-- --ignored`), not in the gate.
@@ -857,5 +918,92 @@ fn random_move_0_to_200_hold_their_oracles() {
 }
 
 /// What the move hunt's gate cases did when it was written (outcome
-/// letters, `hunt_common::Tally`); empty: not pinned yet.
-const PINNED_MOVE: &str = "";
+/// letters, `hunt_common::Tally`), recorded on 2026-11-14.
+const PINNED_MOVE: &str = concat!(
+    "BBRBRBRBBBBBBBBBBRRBRRBRRRBBBBBBRRRRRRBRBBRBBBBBRBBBRBBBRBRRBRBBBBBBRBRBBRRRBBRB",
+    "RRRBBBBRRBRRRBRBBRBRRBRBRBBBRBBRBRBBBBRBBBBBBBBBBRBRBBRBBRBBBBBBBBBBBBRRBRBBRBBB",
+    "BBBBBRBBRRRBBBBRBRBBBBBBRBBBRRBRRBRBBBBB",
+);
+
+/// The wide hunt of offsets at critical distances: 1200 cases in 8 parts,
+/// run by hand (`-- --ignored`), not in the gate.
+fn wide_critical(part: usize) {
+    let r = part * 150..(part + 1) * 150;
+    let start = r.start;
+    critical_offsets(r).hold("critical offset", start, &KNOWN_CRITICAL, 0);
+}
+
+#[test]
+#[ignore = "the wide hunt, run by hand"]
+fn wide_critical_0() {
+    wide_critical(0);
+}
+
+#[test]
+#[ignore = "the wide hunt, run by hand"]
+fn wide_critical_1() {
+    wide_critical(1);
+}
+
+#[test]
+#[ignore = "the wide hunt, run by hand"]
+fn wide_critical_2() {
+    wide_critical(2);
+}
+
+#[test]
+#[ignore = "the wide hunt, run by hand"]
+fn wide_critical_3() {
+    wide_critical(3);
+}
+
+#[test]
+#[ignore = "the wide hunt, run by hand"]
+fn wide_critical_4() {
+    wide_critical(4);
+}
+
+#[test]
+#[ignore = "the wide hunt, run by hand"]
+fn wide_critical_5() {
+    wide_critical(5);
+}
+
+#[test]
+#[ignore = "the wide hunt, run by hand"]
+fn wide_critical_6() {
+    wide_critical(6);
+}
+
+#[test]
+#[ignore = "the wide hunt, run by hand"]
+fn wide_critical_7() {
+    wide_critical(7);
+}
+
+#[test]
+fn random_offsets_at_critical_distances_0_to_60_hold_their_oracles() {
+    critical_offsets(0..60).hold_pinned(
+        "critical offset",
+        0,
+        &KNOWN_CRITICAL,
+        PINNED_CRITICAL.get(0..60).unwrap_or(""),
+        5,
+    );
+}
+
+#[test]
+fn hunt_critical_scratch() {
+    let Some(r) = hunt_common::scratch_range() else {
+        return;
+    };
+    let start = r.start;
+    critical_offsets(r).hold("critical offset", start, &KNOWN_CRITICAL, 0);
+}
+
+/// Offsets at critical distances seen wrong, owed (none known yet).
+const KNOWN_CRITICAL: [usize; 0] = [];
+
+/// What the critical offsets' gate cases did when the hunt was written;
+/// recorded on 2026-11-14.
+const PINNED_CRITICAL: &str = "RRRNNRRRRRRRRRRNNBNBRNNNRRRRBRRRRRRBNRRRRNNBRBBRBRRRRNNNNBBR";

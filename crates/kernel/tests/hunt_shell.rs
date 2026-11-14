@@ -44,7 +44,7 @@ use craft3d_math::{Portable, Tolerance, Transform, Vec3};
 use craft3d_topo::{Body, FaceId, face_areas};
 use hunt_common::{
     Cube, Found, KINDS, Kind, Made, Measured, SCALES, Tally, allowance, case_seed, classify,
-    distance_to, frames, g, guarded, identity, letter, make, measured, mesh, normal_at,
+    distance_to, frames, g, guarded, identity, letter, make, measured, mesh, neighbours, normal_at,
     points_in_box, points_near, prism_like, ribbon, size_of, sound, tolerance,
 };
 use std::f64::consts::PI;
@@ -450,7 +450,29 @@ fn layer_points(
             Side::Both => rng.between(-0.45, 0.45) * t,
         };
         let p = q + n * s;
-        if distance_to(&mesh, &others, p) > 1.5 * s.abs() + 2.0 * chord && s.abs() > 2.0 * chord {
+        // Outside the solid the layer ends where the faces next to the
+        // face, continued, cut it (a neighbour that leans over the face
+        // cuts it short): a point outside has to be behind every flat
+        // neighbour's plane, and far from a curved one.
+        let behind = s <= 0.0
+            || neighbours(before, face).iter().all(|other| {
+                let found = before.face(*other).unwrap();
+                match &found.surface {
+                    Surface::Plane(plane) => {
+                        let m = if found.reversed {
+                            -plane.frame().z()
+                        } else {
+                            plane.frame().z()
+                        };
+                        (p - plane.frame().origin()).dot(m) < -2.0 * chord
+                    }
+                    _ => distance_to(&mesh, &|f| f == other.0, p) > 4.0 * s.abs(),
+                }
+            });
+        if behind
+            && distance_to(&mesh, &others, p) > 1.5 * s.abs() + 2.0 * chord
+            && s.abs() > 2.0 * chord
+        {
             along.push(p);
         }
     }
@@ -782,8 +804,8 @@ fn random_shell_0_to_40_hold_their_oracles() {
 }
 
 /// What the shell hunt's gate cases did when it was written (outcome
-/// letters, `hunt_common::Tally`); empty: not pinned yet.
-const PINNED_SHELL: &str = "";
+/// letters, `hunt_common::Tally`), recorded on 2026-11-14.
+const PINNED_SHELL: &str = "RBBBRBRBRRBBBBRBRBBBBBBRRRRBBBBBBRBRRBBB";
 
 /// The wide hunt of thicken: 480 cases in 8 parts, run by hand
 /// (`-- --ignored`), not in the gate.
@@ -853,5 +875,5 @@ fn random_thicken_0_to_40_hold_their_oracles() {
 }
 
 /// What the thicken hunt's gate cases did when it was written (outcome
-/// letters, `hunt_common::Tally`); empty: not pinned yet.
-const PINNED_THICKEN: &str = "";
+/// letters, `hunt_common::Tally`), recorded on 2026-11-14.
+const PINNED_THICKEN: &str = "BBBBRBBBBRBBBRRBRRBBBBBBBBBBRBBRBRBBRBBB";
