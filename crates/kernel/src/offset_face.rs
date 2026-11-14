@@ -1105,6 +1105,38 @@ fn bounded_fitting(
         // halving's work: the reason the whole does not.
         return Err(refuse(operation, faces, edge, reason));
     }
+    // The lower bound: what was found to fit, said as a distance that
+    // fits and that more may.
+    let at_least = |faces: Vec<FaceId>| KernelError::FaceOpTooFar {
+        operation,
+        faces,
+        edge,
+        reason: tweak::EDGE_GONE_AT_LEAST,
+        value: largest,
+        largest: fits * largest,
+    };
+    // The whole fails for an edge that goes, and the smallest part that
+    // failed for something else (two edges that cross where a seam's end
+    // slid round the circle two halves of one turned surface meet a plane
+    // in: a fault of one distance, with distances that fit on either side
+    // of it): the search closed in on that, not on where the edge goes.
+    // One more try, half way from there to the whole, where the halving's
+    // work has room for it: where it fits, what was found is no limit,
+    // and is not said as one.
+    if reason == tweak::EDGE_GONE && stopped.1 != tweak::EDGE_GONE && folds.is_none() {
+        let above = 0.5 * (fails + 1.0);
+        let room = craft3d_geom::allowance::spent()
+            .saturating_sub(halving_from)
+            .saturating_add(dearest)
+            <= HALVING_WORK;
+        let fitted = room && above > fails && above < 1.0 && attempt(above).is_ok();
+        if craft3d_geom::allowance::exhausted() {
+            return Err(spent(faces, edge));
+        }
+        if fitted {
+            return Err(at_least(faces));
+        }
+    }
     // An edge that shrinks to nothing is nearly gone at the largest part
     // that fits. Where it is not (the parts tried between were stopped by
     // something else that says the same: a seam's end that slid round the
@@ -1125,6 +1157,14 @@ fn bounded_fitting(
         }
         if !goes_at(&built, going, fails, largest, tol) {
             return Err(refuse(operation, faces, edge, tweak::EDGE_GONE_UNSAID));
+        }
+        // The halving stopped at its work bound with room left between
+        // the largest part that fits and the smallest that failed: the
+        // edge is on its way to nothing somewhere in that room, and what
+        // is said to fit is short of how far the faces can go by up to
+        // as much. The refusal says that it is.
+        if (fails - fits) * largest > tol {
+            return Err(at_least(faces));
         }
     }
     Err(KernelError::FaceOpTooFar {

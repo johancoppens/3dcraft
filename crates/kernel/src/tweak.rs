@@ -84,6 +84,7 @@ impl From<KernelError> for TweakError {
 pub(crate) const EDGE_GONE: &str =
     "the edge shrinks to nothing or turns round: a face next to it would vanish";
 pub(crate) const EDGE_GONE_UNSAID: &str = "the edge shrinks to nothing or turns round: a face next to it would vanish (how far the faces can go before it does was not found: smaller distances fail while the edge is still there; try a smaller distance)";
+pub(crate) const EDGE_GONE_AT_LEAST: &str = "the edge shrinks to nothing or turns round: a face next to it would vanish (how far the faces can go before it does was not found: what is said to fit here does, and more may)";
 pub(crate) const NO_MEETING: &str =
     "the faces that meet in a vertex there no longer meet in one point";
 pub(crate) const OFF_SURFACE: &str = "the edge would no longer be a line or a circle on both its faces: continuing these two surfaces until they meet again is not built";

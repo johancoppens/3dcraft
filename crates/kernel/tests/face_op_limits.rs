@@ -510,6 +510,15 @@ fn vase_volume(z: f64) -> f64 {
 
 /// The vase on `frame` at scale `k`, and its top.
 fn vase(frame: &Frame, k: f64, tol: &Tolerance) -> (Body, FaceId) {
+    let side = [[8.0, 0.0], [11.0, 7.0], [9.0, 13.0], [12.0, 20.0]];
+    let body = turned(side, frame, k, tol);
+    let top = flat_face(&body, frame, k, [1.0, 1.0, 20.0], frame.z());
+    (body, top)
+}
+
+/// A cubic in (radius, height) from a foot at height 0, turned a whole
+/// turn about the z axis of `frame`, at scale `k`.
+fn turned(side: [[f64; 2]; 4], frame: &Frame, k: f64, tol: &Tolerance) -> Body {
     use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
     use craft3d_kernel::revolve::revolve;
     let s = |p: [f64; 2]| [p[0] * k, p[1] * k];
@@ -520,28 +529,24 @@ fn vase(frame: &Frame, k: f64, tol: &Tolerance) -> (Body, FaceId) {
             end: s(b),
         },
     };
+    let height = side[3][1];
     let curves = vec![
-        line(1, [0.0, 0.0], [8.0, 0.0]),
+        line(1, [0.0, 0.0], side[0]),
         SketchCurve {
             id: 2,
             curve: Curve2::Spline(Spline2 {
                 degree: 3,
                 knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
-                control: vec![
-                    s([8.0, 0.0]),
-                    s([11.0, 7.0]),
-                    s([9.0, 13.0]),
-                    s([12.0, 20.0]),
-                ],
+                control: side.iter().map(|p| s(*p)).collect(),
             }),
         },
-        line(3, [12.0, 20.0], [0.0, 20.0]),
-        line(4, [0.0, 20.0], [0.0, 0.0]),
+        line(3, side[3], [0.0, height]),
+        line(4, [0.0, height], [0.0, 0.0]),
     ];
     let profiles = detect_profiles(&curves, tol).unwrap();
     // The sketch plane: x the radius, y the height.
     let plane = Frame::new(frame.origin(), frame.y() * -1.0, frame.x()).unwrap();
-    let body = revolve(
+    revolve(
         &profiles,
         &plane,
         [0.0, 0.0],
@@ -551,9 +556,7 @@ fn vase(frame: &Frame, k: f64, tol: &Tolerance) -> (Body, FaceId) {
         tol,
     )
     .unwrap()
-    .body;
-    let top = flat_face(&body, frame, k, [1.0, 1.0, 20.0], frame.z());
-    (body, top)
+    .body
 }
 
 /// A vase (a cubic from radius 8 at its foot to 12 at its top, 20 high,
@@ -642,6 +645,81 @@ fn a_vases_top_moves_to_within_tolerances_of_its_foot() {
         said >= 9,
         "a limit is said where the search is not disturbed"
     );
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// A cap of a turned spline moved past the cap across from it: what is
+/// said to fit is the body's height, or it is said to be short of it.
+/// The largest distance that fits is found by trying smaller ones, and
+/// on these bodies one distance on the way can fail by itself, with
+/// distances that fit on either side of it (the cap's vertex on a seam
+/// slides round the circle the cap's plane meets the turned side in, an
+/// older fault, and two edges cross there); the search closes in on that
+/// distance. Until 2026-11-15 it was said as the largest that fits
+/// ("below 8.75" of a bowl 10 high, where 9.99 builds: the second review
+/// of 2026-11-14, 16 of 651 such limits more than a thousandth short).
+/// The search now tries once more, half way from there to the whole, and
+/// where that fits, or where its work bound stopped it with room left,
+/// what it found is said as a distance that fits and that more may.
+///
+/// A bowl 10 high, its foot moved up, and a bottle 30 high, its top moved
+/// down, each a hundredth past the other cap, at 1e-3, 1 and 1e6 on the
+/// world frame and a tilted one.
+#[test]
+fn a_limit_the_search_stopped_short_of_is_said_as_one_more_may_pass() {
+    let mut wrong = Vec::new();
+    let (mut short, mut said) = (0, 0);
+    for (name, side, of_top) in [
+        (
+            "bowl",
+            [[3.0, 0.0], [9.0, 1.0], [14.0, 4.0], [15.0, 10.0]],
+            false,
+        ),
+        (
+            "bottle",
+            [[10.0, 0.0], [12.0, 14.0], [2.0, 16.0], [3.0, 30.0]],
+            true,
+        ),
+    ] {
+        let height = side[3][1];
+        for k in [1e-3, 1.0, 1e6] {
+            let tol = tolerance(k);
+            for (index, frame) in review_frames(k).iter().enumerate().take(2) {
+                let body = turned(side, frame, k, &tol);
+                let at = if of_top { height } else { 0.0 };
+                let cap = flat_face(&body, frame, k, [0.5, 0.3, at], frame.z());
+                let past = 1e-2;
+                let what = format!("{name}, scale {k}, frame {index}, past by {past}");
+                match offset(&what, &body, cap, -(height + past) * k, &tol) {
+                    Did::Refused(KernelError::FaceOpTooFar {
+                        reason, largest, ..
+                    }) => {
+                        said += 1;
+                        let limit = height * k;
+                        if largest > limit * (1.0 + 1e-12) + 8.0 * tol.linear {
+                            wrong.push(format!("{what}: {largest} said to fit of {limit}"));
+                        }
+                        let at_least = reason.contains("more may");
+                        if largest < limit * (1.0 - 1e-5) {
+                            short += 1;
+                            if !at_least {
+                                wrong.push(format!(
+                                    "{what}: {largest} said as the largest that fits of {limit}"
+                                ));
+                            }
+                        }
+                    }
+                    Did::Refused(KernelError::FaceOp { reason, .. })
+                        if reason.contains("the edge shrinks to nothing or turns round")
+                            && reason.contains("was not found") => {}
+                    Did::Refused(error) => wrong.push(format!("{what}: {error}")),
+                    Did::Built(_) => wrong.push(format!("{what}: built past the cap")),
+                }
+            }
+        }
+    }
+    println!("turned caps past the cap across: a limit said in {said} of 12, {short} short");
+    assert!(short > 0, "no search stopped short: the test shows nothing");
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
