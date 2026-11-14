@@ -172,7 +172,8 @@ that error.
 status bar and the start screen; `form` puts a Jig's parameter form and its outputs beside the view (in a
 box narrower than about 700 points, a sheet over the lower part of the view, which then covers part of the
 model), without the menu and the tabs. In `view` and `form` the sketches' lines are off, as a visitor wants
-the model (`ui.set {"show": {"sketches": true}}` shows them). `ui.set {"presentation": "form"}` changes it
+the model (`ui.set {"show": {"sketches": true}}` shows them), and back in `full` they are as they were
+there. `ui.set {"presentation": "form"}` changes it
 while the page runs. Without the whole window a file dropped on the canvas is let be, and the File, Edit
 and tab keys are the page's. A document without public parameters shows, in `form`, only that it has none.
 
@@ -188,12 +189,20 @@ the canvas and on the document that act only while 3DCraft has the focus or the 
 and, while the canvas has the focus, every key but those below. Without the attribute, the page is the
 plain app's, exactly as above.
 
-**The keyboard and the wheel in the embedded stand.** eframe keeps Tab inside its canvas whatever its
-options say; 3DCraft lets the keyboard out where nothing of its window has the keys: in `view`, Tab and
-Shift+Tab move on to the page's next or previous element; in every presentation, Escape leaves the canvas
-(a field of the form gives the keys back on the first Escape, the canvas on the second), and the page's Tab
-order goes on from there. The wheel over the canvas zooms only while 3DCraft has the focus (after a click
-in it) or with Ctrl (⌘) held, a pinch on a touchpad; otherwise it scrolls the page.
+**The keyboard and the wheel in the embedded stand.** While 3DCraft has the keys, a ring in the theme's
+accent colour shows round the canvas (eframe takes the canvas's own outline away). eframe keeps Tab inside
+its canvas whatever its options say; 3DCraft lets the keyboard out where nothing of its window has the
+keys: in `view`, Tab and Shift+Tab move on to the page's next or previous element; in every presentation,
+Escape first does what it does in the window, one thing per press (closes a menu, a choice list, a popover
+or a dialog, gives a field's keys back, lets go of a joint held by hand, clears the selection while the
+pointer is over the view), and the Escape that has nothing left to do leaves the canvas, the same in
+Chrome and in Firefox. Every Escape pressed while 3DCraft has the keys is 3DCraft's, the one that leaves
+too: a page that wants to know that 3DCraft let go listens to the canvas's `blur`. Where Tab goes after it
+is the browser's: Chrome goes on from the canvas, Firefox from the start of the page (Tab to the page's first element, Shift+Tab to
+its last). The wheel over the canvas zooms only while 3DCraft has the focus (after a click in it) or with
+Ctrl (⌘) held, a pinch on a touchpad; otherwise it scrolls the page. A page that is all configurator and
+wants the wheel to zoom without a click first could later ask for it with an option of the attribute, such
+as `wheel=zoom`; not built (ask for it in an issue).
 
 **Trust.** The page that loads the module may send every command, with no token and no list of allowed
 commands (the developer, 2026-11-14): it runs in the same JavaScript realm as 3DCraft and could call into
@@ -203,6 +212,13 @@ trust 3DCraft. What a page cannot do through it: reach the person's disk (the fi
 Export go to the page as bytes or to the person as downloads or through their own file dialogs), reach
 another site's 3DCraft, or drive the desktop app. A list of allowed commands comes with the iframe's door,
 for a page that should not be trusted that far.
+
+**Many requests at once.** A page never holds 3DCraft's thread with its requests, nor has the bodies built
+on it: past 64 commands waiting for the worker, and past 8 ms of requests in one frame, the next waits its
+turn, in order; at most 1024 wait, and one more is refused with an error that begins `too many requests
+wait` (nothing of it was done; send it again once replies have come). A price that follows a slider sends
+each change at once and keeps one read outstanding: a read when none waits for its reply, and one more when
+that reply comes if the value changed since (`docs/control-protocol.md` › *The page as a transport*).
 
 **Files.** `embed.give` takes a document up to 256 MiB and a STEP file up to 128 MiB. `file.save {path}`
 gives the document's file and names the document after it, as Save As does (it counts as saved: with `warn`
