@@ -43,8 +43,8 @@ use boolean_common::Rng;
 use craft3d_kernel::profile::{Curve2, Profile, Shape as PShape, SketchCurve, detect_profiles};
 use craft3d_kernel::sheetmetal::curved::CurvedSpec;
 use craft3d_kernel::sheetmetal::{
-    Closing, Direction, FlangeSpec, JogSpec, LengthFrom, On, Part, Relief, ReliefKind, SheetFace,
-    Spec, build_with, developed_allowance, flat_area, outline,
+    Closing, Cutout, Direction, FlangeSpec, JogSpec, LengthFrom, On, Part, Relief, ReliefKind,
+    SheetFace, Spec, build_with, developed_allowance, flat_area, outline,
 };
 use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
@@ -98,9 +98,10 @@ struct Drawn {
     base_points: Vec<P2>,
     /// Whether a flange leans over the base's top (up) or bottom (down).
     over: [bool; 2],
-    /// Per straight flange, its flat's middle and a radius of the flat
-    /// about it, in the pattern (filled from the part).
+    /// The flanges as drawn.
     flanges: Vec<Fl>,
+    /// A hole across a bend: its centre and radius in the pattern.
+    across: Option<(P2, f64)>,
 }
 
 /// An angle: tiny, square, past square, near folded back or folded back.
@@ -427,6 +428,90 @@ fn flanged(rng: &mut Rng, k: f64, jog: bool) -> Drawn {
         ));
         jogged = true;
     }
+    // Bend reliefs at the ends of bends inside their edges (insets): a
+    // notch of `r²` (rect), `π r²/4` (round) or `r² + 3π r²/4` (tear)
+    // each.
+    let mut bend_relief = None;
+    let ends: usize = straight
+        .iter()
+        .map(|f| f.spec.inset.iter().filter(|i| **i > 0.0).count())
+        .sum();
+    if ends > 0 && rng.below(2) == 0 {
+        let kind = [ReliefKind::Rect, ReliefKind::Round, ReliefKind::Tear][rng.below(3) as usize];
+        let r = rng.between(0.3, 1.5) * t;
+        let notch = match kind {
+            ReliefKind::Rect => r * r,
+            ReliefKind::Round => 0.25 * PI * r * r,
+            ReliefKind::Tear => r * r + 0.75 * PI * r * r,
+        };
+        volume -= t * notch * ends as f64;
+        flat -= notch * ends as f64;
+        bend_relief = Some(Relief { kind, size: r });
+        what.push(format!("bend relief {} {r:e} at {ends} ends", kind.name()));
+    }
+    // A round hole across a bend (a cut-out in the pattern over the
+    // bend's strip): it takes `T` per area off the flats and
+    // `T (R + T/2) / (R + K T)` per area off the strip.
+    let mut cutouts = Vec::new();
+    let mut across = None;
+    if hole.is_none() && !jogged && rng.below(3) == 0 {
+        let pick = flanges
+            .iter()
+            .position(|f| f.edge.is_some() && f.spec.radius > 0.0 && f.flat > 2.0 * t);
+        if let Some(i) = pick {
+            let f = &flanges[i];
+            let e = f.edge.unwrap();
+            let ba = f.ba(t);
+            let len = edge_len(e);
+            let depth = if e % 2 == 1 { d } else { w };
+            let rho = rng.between(0.2, 0.45) * (0.4 * f.w).min(ba + f.flat).min(0.3 * depth);
+            let cs = rng.between(-0.6 * rho, ba + 0.6 * rho);
+            if cs + rho <= ba + 0.8 * f.flat && cs - rho > -0.5 * depth {
+                let (ux, uy) = match e {
+                    1 => (0.0, -1.0),
+                    2 => (1.0, 0.0),
+                    3 => (0.0, 1.0),
+                    _ => (-1.0, 0.0),
+                };
+                let (s0, s1) = (c[e - 1], c[e % 4]);
+                let dir = [(s1[0] - s0[0]) / len, (s1[1] - s0[1]) / len];
+                let along = f.spec.inset[0] + 0.5 * (len - f.spec.inset[0] - f.spec.inset[1]);
+                let centre = [
+                    s0[0] + along * dir[0] + cs * ux,
+                    s0[1] + along * dir[1] + cs * uy,
+                ];
+                let g = |x: f64| {
+                    let x = x.clamp(-rho, rho);
+                    x * (rho * rho - x * x).max(0.0).sqrt() + rho * rho * (x / rho).pasin()
+                };
+                let band = g(ba - cs) - g(-cs);
+                let disc = PI * rho * rho;
+                let r = f.spec.radius;
+                volume -= t * (disc - band) + band * t * (r + 0.5 * t) / (r + f.spec.k * t);
+                flat -= disc;
+                let profile = detect_profiles(
+                    &[SketchCurve {
+                        id: 100,
+                        curve: Curve2::Circle {
+                            center: centre,
+                            radius: rho,
+                        },
+                    }],
+                    &tolerance(k),
+                )
+                .unwrap()
+                .remove(0);
+                cutouts.push(Cutout {
+                    profile,
+                    from: "hole across a bend".into(),
+                });
+                across = Some((centre, rho));
+                what.push(format!(
+                    "hole r {rho:e} across flange {i}'s bend, its centre {cs:e} across (strip {ba:e}, band {band:e})"
+                ));
+            }
+        }
+    }
     // The box, for parts of base flanges alone.
     let bbox = (!has_tip && !jogged).then(|| {
         let mut lo = Vec3::new(0.0, 0.0, 0.0);
@@ -479,7 +564,7 @@ fn flanged(rng: &mut Rng, k: f64, jog: bool) -> Drawn {
             break;
         }
         let p = [rng.between(margin, xmax), rng.between(margin, d - margin)];
-        if let Some((hc, r)) = hole
+        if let Some((hc, r)) = hole.or(across)
             && (p[0] - hc[0]).phypot(p[1] - hc[1]) < 1.1 * r
         {
             continue;
@@ -494,10 +579,10 @@ fn flanged(rng: &mut Rng, k: f64, jog: bool) -> Drawn {
             thickness: t,
             flanges: flanges.iter().map(|f| f.spec.clone()).collect(),
             relief,
-            bend_relief: None,
+            bend_relief,
             corner: Closing::OPEN,
             corners: Vec::new(),
-            cutouts: Vec::new(),
+            cutouts,
             jogs,
             ids: Vec::new(),
         },
@@ -508,6 +593,7 @@ fn flanged(rng: &mut Rng, k: f64, jog: bool) -> Drawn {
         base_points,
         over,
         flanges,
+        across,
     }
 }
 
@@ -681,6 +767,7 @@ fn curved(rng: &mut Rng, k: f64) -> Drawn {
             dir == Direction::Down && th > FRAC_PI_2 - 1e-6,
         ],
         flanges: Vec::new(),
+        across: None,
     }
 }
 
@@ -813,6 +900,11 @@ fn hold(part: &Part, drawn: &Drawn, tol: &Tolerance, rng: &mut Rng, found: &mut 
                 0.5 * (s[0] + e[0]) + 0.5 * f.flat * b.across[0],
                 0.5 * (s[1] + e[1]) + 0.5 * f.flat * b.across[1],
             ];
+            if let Some((hc, r)) = drawn.across
+                && (m2[0] - hc[0]).phypot(m2[1] - hc[1]) < 1.1 * r
+            {
+                continue;
+            }
             let q = flat.transform.point(Vec3::new(m2[0], m2[1], 0.5 * t));
             pts.push((part.plane.point(q.x, q.y, q.z), true));
         }
@@ -901,12 +993,17 @@ fn hold(part: &Part, drawn: &Drawn, tol: &Tolerance, rng: &mut Rng, found: &mut 
                 let world = part.sheet.vertex(v).unwrap().point;
                 let (x, y, z) = part.plane.local(world);
                 let p = back.point(Vec3::new(x, y, z));
-                let on = flat
+                let mut on = flat
                     .outer
                     .iter()
                     .chain(flat.holes.iter().flatten())
                     .map(|s| (s.start[0] - p.x).phypot(s.start[1] - p.y))
                     .fold(f64::INFINITY, f64::min);
+                // A vertex where a hole across a bend crosses the flat's
+                // edge lies on the hole's circle.
+                if let Some((hc, r)) = drawn.across {
+                    on = on.min(((p.x - hc[0]).phypot(p.y - hc[1]) - r).abs());
+                }
                 if p.z.abs() > tol.linear || on > tol.linear {
                     found.problems.push(format!(
                         "fold then unfold: flat {i}'s vertex lands {on:e} from the pattern, {:e} off its plane",
@@ -949,22 +1046,22 @@ const KNOWN_SEEDED: &[usize] = &[];
 
 #[test]
 fn seeded_sheet_metal_parts_are_their_closed_forms() {
-    let tally = seeded(0..120);
-    tally.hold("seeded sheet metal", 0, KNOWN_SEEDED, 40);
+    let tally = seeded(0..400);
+    tally.hold("seeded sheet metal", 0, KNOWN_SEEDED, 120);
 }
 
-/// The wide sweep, by hand: `HUNT_FROM`, `HUNT_TO` (default 120..2120).
+/// The wide sweep, by hand: `HUNT_FROM`, `HUNT_TO` (default 400..3400).
 #[test]
 #[ignore = "a wide sweep, run by hand"]
 fn seeded_sheet_metal_wide() {
     let from = std::env::var("HUNT_FROM")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(120);
+        .unwrap_or(400);
     let to = std::env::var("HUNT_TO")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(2120);
+        .unwrap_or(3400);
     let tally = seeded(from..to);
     tally.hold("seeded sheet metal (wide)", from, KNOWN_SEEDED, 0);
 }

@@ -575,22 +575,22 @@ const KNOWN_SEEDED: &[usize] = &[];
 
 #[test]
 fn seeded_plates_are_their_closed_forms() {
-    let tally = seeded(0..160, 6);
-    tally.hold("seeded plates", 0, KNOWN_SEEDED, 100);
+    let tally = seeded(0..600, 6);
+    tally.hold("seeded plates", 0, KNOWN_SEEDED, 400);
 }
 
-/// The wide sweep, by hand: `HUNT_FROM`, `HUNT_TO` (default 160..3160).
+/// The wide sweep, by hand: `HUNT_FROM`, `HUNT_TO` (default 600..3600).
 #[test]
 #[ignore = "a wide sweep, run by hand"]
 fn seeded_plates_wide() {
     let from = std::env::var("HUNT_FROM")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(160);
+        .unwrap_or(600);
     let to = std::env::var("HUNT_TO")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(3160);
+        .unwrap_or(3600);
     let tally = seeded(from..to, 6);
     tally.hold("seeded plates (wide)", from, KNOWN_SEEDED, 0);
 }
@@ -653,8 +653,8 @@ fn split_disc_attitudes(turns: usize, seed: u64) -> Tally {
 
 #[test]
 fn split_discs_and_holes_in_many_attitudes_are_their_closed_forms() {
-    let tally = split_disc_attitudes(24, 0xD15C);
-    tally.hold("split discs in many attitudes", 0, &[], 300);
+    let tally = split_disc_attitudes(48, 0xD15C);
+    tally.hold("split discs in many attitudes", 0, &[], 600);
 }
 
 #[test]
@@ -740,8 +740,8 @@ fn fine_turns(steps: usize) -> Tally {
 
 #[test]
 fn outlines_turned_by_billionths_are_their_closed_forms() {
-    let tally = fine_turns(30);
-    tally.hold("outlines turned by 1e-9 rad", 0, &[], 300);
+    let tally = fine_turns(60);
+    tally.hold("outlines turned by 1e-9 rad", 0, &[], 600);
 }
 
 #[test]
@@ -818,8 +818,8 @@ fn creases(attitudes: usize) -> Tally {
 
 #[test]
 fn arcs_at_a_crease_of_a_tiny_angle_are_their_closed_forms() {
-    let tally = creases(2);
-    tally.hold("arcs at tiny creases", 0, &[], 500);
+    let tally = creases(4);
+    tally.hold("arcs at tiny creases", 0, &[], 1000);
 }
 
 #[test]
@@ -827,4 +827,188 @@ fn arcs_at_a_crease_of_a_tiny_angle_are_their_closed_forms() {
 fn arcs_at_a_crease_of_a_tiny_angle_wide() {
     let tally = creases(12);
     tally.hold("arcs at tiny creases (wide)", 0, &[], 0);
+}
+
+/// The joints of two plates (docs/design/plates.md › *Oracles*): a floor
+/// `a` deep and a wall `b` high sharing an edge `l` long, the wall at the
+/// angle `φ` from the floor (the corner's inside between them), both
+/// plated `t` thick into the corner (`Side::In`), drawn in a frame turned
+/// and moved off. The closed forms, with `c = t / tan(φ/2)` (where the
+/// skins facing each other meet, measured along each plate from the
+/// edge): a mitre `l (a t − t c / 2)` and `l (b t − t c / 2)`, the two
+/// together without overlap (their union is their sum); touch
+/// `l (a − c) t` and `l (b − c) t`; at a right angle over and under
+/// `l a t` and `l (b − t) t`, and the other way round, without overlap.
+fn joint_case(tally: &mut Tally, n: usize) {
+    use craft3d_kernel::boolean::{BooleanOp, boolean};
+    use craft3d_kernel::plate::{Joint, Neighbour};
+    use craft3d_kernel::profile::{Curve2, SketchCurve};
+    let mut rng = Rng(case_seed(0x0101_7E57, n));
+    let k = SCALES[rng.below(SCALES.len() as u64) as usize];
+    let tol = tolerance(k);
+    let kind = rng.below(4);
+    let phi = if kind >= 2 || rng.below(3) == 0 {
+        0.5 * PI
+    } else {
+        rng.between(30.0, 150.0).to_radians()
+    };
+    let t = rng.between(0.2, 3.0) * k;
+    let c = t / (0.5 * phi).ptan();
+    let a = c + rng.between(2.0, 40.0) * k;
+    let b = c + rng.between(2.0, 40.0) * k;
+    let l = rng.between(2.0, 40.0) * k;
+    let f = frame(&mut rng, k);
+    // The two sheets in the corner's own axes, then in `f`.
+    let local = |o: Vec3, z: Vec3, x: Vec3| {
+        Frame::new(
+            f.point(o.x, o.y, o.z),
+            f.vector(z.x, z.y, z.z),
+            f.vector(x.x, x.y, x.z),
+        )
+        .unwrap()
+    };
+    let (s, cs) = (phi.psin(), phi.pcos());
+    let floor_frame = local(Vec3::ZERO, -Vec3::Z, Vec3::X);
+    let wall_frame = local(Vec3::ZERO, Vec3::new(-s, 0.0, cs), Vec3::new(cs, 0.0, s));
+    let rect = |lo: P2, hi: P2, fr: &Frame| {
+        let p = [lo, [hi[0], lo[1]], hi, [lo[0], hi[1]]];
+        let curves: Vec<SketchCurve> = (0..4)
+            .map(|i| SketchCurve {
+                id: i as u64 + 1,
+                curve: Curve2::Line {
+                    start: p[i],
+                    end: p[(i + 1) % 4],
+                },
+            })
+            .collect();
+        fill(&detect_profiles(&curves, &tol).unwrap(), fr, &tol)
+            .unwrap()
+            .body
+    };
+    let floor = rect([0.0, -l], [a, 0.0], &floor_frame);
+    let wall = rect([0.0, 0.0], [b, l], &wall_frame);
+    let (e0, e1) = (f.point(0.0, 0.0, 0.0), f.point(0.0, l, 0.0));
+    let edge_of = |body: &craft3d_topo::Body| {
+        body.edges
+            .iter()
+            .enumerate()
+            .find(|(_, e)| {
+                let (p, q) = (e.curve.eval(e.range.0), e.curve.eval(e.range.1));
+                (p.distance(e0) < 10.0 * tol.linear && q.distance(e1) < 10.0 * tol.linear)
+                    || (p.distance(e1) < 10.0 * tol.linear && q.distance(e0) < 10.0 * tol.linear)
+            })
+            .map(|(i, _)| craft3d_topo::EdgeId(i as u32))
+            .unwrap()
+    };
+    let n_of = |body| Neighbour {
+        body,
+        face: FaceId(0),
+        thickness: t,
+        side: Side::In,
+    };
+    let (jf, jw, vf, vw, name) = match kind {
+        0 => (
+            Joint::Mitre(n_of(&wall)),
+            Joint::Mitre(n_of(&floor)),
+            l * (a * t - 0.5 * t * c),
+            l * (b * t - 0.5 * t * c),
+            "mitre",
+        ),
+        1 => (
+            Joint::Touch(n_of(&wall)),
+            Joint::Touch(n_of(&floor)),
+            l * (a - c) * t,
+            l * (b - c) * t,
+            "touch",
+        ),
+        2 => (
+            Joint::Over(n_of(&wall)),
+            Joint::Under(n_of(&floor)),
+            l * a * t,
+            l * (b - t) * t,
+            "floor over",
+        ),
+        _ => (
+            Joint::Under(n_of(&wall)),
+            Joint::Over(n_of(&floor)),
+            l * (a - t) * t,
+            l * b * t,
+            "floor under",
+        ),
+    };
+    let what = format!(
+        "{name} at {:.6} deg, a {a:e} b {b:e} l {l:e} t {t:e} at k {k} in {f:?}",
+        phi.to_degrees()
+    );
+    let jfloor = BTreeMap::from([(edge_of(&floor), jf)]);
+    let jwall = BTreeMap::from([(edge_of(&wall), jw)]);
+    let made = guarded(|| {
+        (
+            plate(&floor, &[FaceId(0)], t, Side::In, &jfloor, &tol),
+            plate(&wall, &[FaceId(0)], t, Side::In, &jwall, &tol),
+        )
+    });
+    let (pf, pw) = match made {
+        Err(p) => {
+            tally.wrong.push(format!("case {n} (P): {what}: {p}"));
+            tally.outcomes.push('P');
+            return;
+        }
+        Ok((Ok(pf), Ok(pw))) => (pf, pw),
+        Ok((Err(e), _)) | Ok((_, Err(e))) => {
+            tally.refused(&e.to_string());
+            tally.notes.push(format!("case {n} refused: {what}: {e}"));
+            return;
+        }
+    };
+    let mut found = Found::default();
+    let mut crosses = false;
+    for (body, want, which) in [(&pf.body, vf, "floor"), (&pw.body, vw, "wall")] {
+        if let Some(m) = sound(body, &tol, &mut found)
+            && (m.volume - want).abs() > m.bound + 1e-9 * want
+        {
+            found.problems.push(format!(
+                "the {which}'s volume {:.17e} against {want:.17e} ({:.3e} of it)",
+                m.volume,
+                m.volume / want - 1.0
+            ));
+        }
+        crosses |= crosses_itself(body, &tol);
+    }
+    if kind != 1 && found.problems.is_empty() {
+        match boolean(&pf.body, &pw.body, BooleanOp::Union, &tol) {
+            Ok(u) => {
+                if let Some(m) = measured(&u.body)
+                    && (m.volume - (vf + vw)).abs() > 1e-8 * (vf + vw)
+                {
+                    found.problems.push(format!(
+                        "the union {:e} against the two together {:e}: they overlap or part",
+                        m.volume,
+                        vf + vw
+                    ));
+                }
+            }
+            Err(e) => found.notes.push(format!("the union refused: {e}")),
+        }
+    }
+    tally.record(n, &what, &found, crosses);
+}
+
+fn joints(range: std::ops::Range<usize>) -> Tally {
+    let mut tally = Tally::new();
+    for n in range {
+        joint_case(&mut tally, n);
+    }
+    tally
+}
+
+#[test]
+fn joints_of_a_floor_and_a_wall_are_their_closed_forms() {
+    joints(0..300).hold("joints", 0, &[], 150);
+}
+
+#[test]
+#[ignore = "a wide sweep, run by hand"]
+fn joints_of_a_floor_and_a_wall_wide() {
+    joints(300..2300).hold("joints (wide)", 300, &[], 0);
 }

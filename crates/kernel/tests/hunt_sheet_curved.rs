@@ -176,13 +176,13 @@ fn plates(range: std::ops::Range<usize>) -> Tally {
 
 #[test]
 fn plates_of_cylinders_spheres_and_tori_are_their_shells() {
-    plates(0..60).hold("plates of curved faces", 0, &[], 15);
+    plates(0..150).hold("plates of curved faces", 0, &[], 40);
 }
 
 #[test]
 #[ignore = "a wide sweep, run by hand"]
 fn plates_of_cylinders_spheres_and_tori_wide() {
-    plates(60..1060).hold("plates of curved faces (wide)", 60, &[], 0);
+    plates(150..1150).hold("plates of curved faces (wide)", 150, &[], 0);
 }
 
 /// One unroll: the side of a cylinder or a cone, case `n`.
@@ -270,11 +270,11 @@ fn unrolls(range: std::ops::Range<usize>) -> Tally {
 
 #[test]
 fn unrolled_cylinders_and_cones_keep_their_area_and_lengths() {
-    unrolls(0..40).hold("unrolled cylinders and cones", 0, &[], 20);
+    unrolls(0..120).hold("unrolled cylinders and cones", 0, &[], 60);
 }
 
 #[test]
 #[ignore = "a wide sweep, run by hand"]
 fn unrolled_cylinders_and_cones_wide() {
-    unrolls(40..640).hold("unrolled cylinders and cones (wide)", 40, &[], 0);
+    unrolls(120..720).hold("unrolled cylinders and cones (wide)", 120, &[], 0);
 }

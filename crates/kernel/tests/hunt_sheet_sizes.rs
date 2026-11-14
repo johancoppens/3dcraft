@@ -263,7 +263,7 @@ fn plate_sweeps(n: usize) -> Vec<Sweep> {
 
 #[test]
 fn plates_stepped_by_billionths_change_only_at_real_limits() {
-    for s in plate_sweeps(120) {
+    for s in plate_sweeps(200) {
         // The rounded rectangle's and the slot's sides reach no length
         // within the tolerance: one change each is a real limit.
         s.hold(2);
@@ -484,7 +484,7 @@ fn sheet_sweeps(n: usize) -> Vec<Sweep> {
 
 #[test]
 fn sheet_metal_stepped_by_billionths_changes_only_at_real_limits() {
-    for s in sheet_sweeps(100) {
+    for s in sheet_sweeps(200) {
         s.hold(3);
     }
 }
