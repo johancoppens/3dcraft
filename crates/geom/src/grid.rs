@@ -19,39 +19,52 @@
 //!
 //! **What it reproduces exactly.** The interpolation is affine invariant
 //! (every row of a collocation matrix sums to one), so points on a plane
-//! give that plane, with either spacing. With [`Spacing::Greville`] the
-//! space of each direction holds every cubic polynomial, so a bicubic
-//! polynomial surface `F(u, v)` sampled at the Greville abscissae `(ξ_c,
-//! ξ_r)` is `F` itself. A bicubic height field `z = f(x, y)` over a regular
-//! grid is not reproduced by either spacing: its parameters do not follow
-//! `x` and `y` linearly (Greville is uneven near the ends, chord follows
-//! the heights too), so the height is `f` composed with a cubic map, and
-//! the error falls with the grid's step (about 4 times per halving with
-//! Greville, about 16 times with chord; *Findings* in
-//! docs/design/surfacing.md).
+//! give that plane, with any spacing. The space of each direction holds
+//! every cubic polynomial, so a bicubic polynomial surface `F(u, v)`
+//! sampled at the spacing's own parameters is `F` itself. With
+//! [`Spacing::Even`] over a regular grid `x` and `y` are linear in `u` and
+//! `v`, so a height field `z = f(x, y)` of degree three or less each way is
+//! reproduced, and the normal's `z` is the constant product of the steps:
+//! a height field never folds. Greville's parameters are uneven near the
+//! ends and chord's follow the heights too, so with them the height is `f`
+//! composed with a cubic map, and the error falls with the grid's step
+//! about 4 times per halving with Greville, about 16 times with chord or
+//! even (*Findings* in docs/design/surfacing.md).
 //!
 //! **What is refused, by name** (rows and points counted from 1): fewer
 //! than 2 × 2 points, more than [`MAX_GRID_POINTS`] or more than
-//! [`MAX_GRID_SIDE`] a side, a coordinate that is not a finite number, two
-//! neighbouring points within the tolerance (no derivative there), a row or
-//! column that doubles back on itself (two legs in a row within the
-//! angular tolerance of opposite), chord spacing whose parameters cannot be
-//! told apart, and a sheet whose normal is not proven non-zero everywhere
-//! (*Regular*, below): the sheet would fold there.
+//! [`MAX_GRID_SIDE`] a side, a coordinate that is not a finite number, a
+//! grid so far from the origin that the rounding bound (*At the points*)
+//! exceeds the tolerance (checked on the points before anything is
+//! computed, and on the result), two neighbouring points within the
+//! tolerance (no derivative there), a row or column that doubles back on
+//! itself (two legs in a row within the angular tolerance of opposite),
+//! chord spacing whose parameters cannot be told apart, and a sheet whose
+//! normal is not proven non-zero everywhere (*Regular*, below). No refusal
+//! prints a number that is not one.
 //!
 //! **Regular.** Every Bézier span of the result is proven to have a
 //! normal that does not vanish: the normal field `∂u × ∂v` of a
-//! polynomial patch is a Bernstein form of degrees `(2p − 1, 2q − 1)`
-//! (`RationalBezierPatch::normal_net`), so when every coefficient lies on
-//! one side of a plane through the origin, by more than its rounding, the
-//! normal is not zero anywhere on the span. A height field over a regular
-//! grid passes at once however steep (the coefficients' `z` are products
-//! of positive differences); a span not proven is halved each way, each
-//! quarter proven in turn, at most [`REGULAR_DEPTH`] times, with all the
-//! halving of one sheet bounded by [`MAX_REGULAR_PIECES`]. A span
-//! not proven is refused with the grid point nearest it. A surface regular
-//! everywhere and continuous in its normal (a cubic with simple knots is
-//! twice differentiable) does not turn over anywhere.
+//! polynomial patch is a Bernstein form of degrees `(2p − 1, 2q − 1)`, so
+//! when every coefficient lies on one side of a plane through the origin,
+//! by more than its rounding (bounded coefficient by coefficient), the
+//! normal is not zero anywhere on the span. The plane's normal is a
+//! direction the grid gives, not a guess: the caller's (a table's heights'
+//! axis), the mean of the grid's cell normals, the coordinate axes, then
+//! the span's own coefficients' sum and that of their directions, each
+//! improved by a perceptron's steps. A height field over a regular grid
+//! passes at once however steep: the coefficients' `z` are products of the
+//! parameters' positive speeds along x and y. A span not proven is
+//! quartered, each quarter proven in turn, at most [`REGULAR_DEPTH`] times
+//! and [`MAX_SPAN_PIECES`] pieces, a budget of its own, so a sheet's size
+//! does not decide whether a span is proven; all spans together stop at
+//! [`MAX_REGULAR_PIECES`]. A span not proven is refused with the grid point
+//! nearest it and what was seen there: a row or column the sheet runs back
+//! along (its tangent against the grid's leg beside it, at 5 × 5 places of
+//! the span), heights far steeper than the spacing (a scale left out), or
+//! neither. A surface regular everywhere and continuous in its normal (a
+//! cubic with simple knots is twice differentiable) does not turn over
+//! anywhere.
 //!
 //! **At the points.** The surface passes through every point in exact
 //! arithmetic; in floating point the two solves and the evaluation leave

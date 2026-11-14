@@ -659,12 +659,13 @@ fn the_weight_of_the_measuring_chapter_is_as_it_says() {
 
 /// The grid of the surfaces chapter (`surfaces.md` › *Surfaces through a
 /// grid of points*) builds as written and is what the text says: a sheet
-/// `F1:face(0)` through the table's heights, the block under it 12 567.2
-/// mm³, more when `lift` raises the hill, less when the table lowers it.
+/// `F1:face(0)` through the table's heights at its default spacing, even
+/// (kept with the feature), the block under it 12 450 mm³, more when
+/// `lift` raises the hill, less when the table lowers it.
 #[test]
 fn the_grid_of_the_surfaces_chapter_is_as_it_says() {
     let text = read_text(&docs().join("guide/surfaces.md"));
-    for said in ["12 567.2 mm³", "`F1:face(0)`"] {
+    for said in ["12 450 mm³", "`F1:face(0)`"] {
         assert!(text.contains(said), "the page says {said}");
     }
     let block = json_blocks(&text)
@@ -695,7 +696,16 @@ fn the_grid_of_the_surfaces_chapter_is_as_it_says() {
         "{solid}"
     );
     let volume = solid["volume"].as_f64().unwrap();
-    assert!((volume - 12_567.2).abs() < 0.05, "{volume}");
+    assert!((volume - 12_450.0).abs() < 1e-6, "{volume}");
+    let document = run(&mut s, "document.inspect", json!({}));
+    let hill = document["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "Hill")
+        .unwrap()
+        .clone();
+    assert_eq!(hill["params"]["spacing"], "even", "{hill}");
     run(&mut s, "variable.set", json!({"name": "lift", "expr": "3"}));
     let (_, higher) = base(&mut s);
     assert!(

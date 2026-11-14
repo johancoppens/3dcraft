@@ -229,25 +229,36 @@ The table's rows are the grid's rows, along y from `origin` in steps of the seco
 than the key are the grid's columns, along x in steps of the first. Each point stands at `origin.z` plus its
 cell times `factor`: here a hill on a floor 5 mm up, twice as high as the table says, because `factor` is the
 variable `lift`. Change `lift` or the table, and the sheet follows. A sheet read from a table looks up, so the
-block cut by it keeps the part below: a solid of 12 567.2 mm³.
+block cut by it keeps the part below: a solid of 12 450 mm³.
 
 - **Points given outright**: `"points": [[["0 mm", "0 mm", "1 mm"], ["10 mm", "0 mm", "1.5 mm"], ...], ...]`,
   every row as many points, each coordinate an expression, so `"1910 m * vertical_scale"` follows a variable
-  too. The sheet looks along a row turned towards the next row (the right-hand rule).
-- **Where it takes its points** (`spacing`, as a live spline's): `greville` (the default) or `chord`, which
-  follows how far apart the points are. Between the points `chord` keeps closer to the smooth surface they
-  came from: its error falls about 16 times each time the step halves, against about 4 times. Where the
-  points are spaced very unevenly, `greville` can even make the sheet fold back on itself, which is refused:
-  give `"spacing": "chord"` then.
-- **What it reports**: under `grid`, the rows and columns, and how far the sheet passes from its points
-  (`deviation`, rounding).
+  too. The sheet looks along a row turned towards the next row (the right-hand rule): the same points with the
+  rows reversed, or transposed, give the same sheet looking the other way, and a block cut by it then keeps
+  the other side.
+- **Where it takes its points** (`spacing`; the feature keeps the one it was made with): `even` (the default
+  for a table) spaces the parameters evenly, so over a table's regular grid the sheet is the textbook bicubic
+  spline of the heights: a surface of degree three or less each way comes back exactly, and a height field
+  never folds, however steep. `chord` (the default for points given) follows how far apart the points are.
+  `greville` is a live spline's default. Between the points `even` and `chord` keep closer to the smooth
+  surface the points came from than `greville`: their error falls about 16 times each time the step halves,
+  against about 4 times. Where the points are spaced very unevenly, `greville` can make the sheet run back
+  over itself, which is refused, naming the row.
+- **What it reports**: under `grid`, the rows and columns, how far the sheet passes from its points
+  (`deviation`, rounding), and `warnings`: a table whose heights rise more than a thousand times the step
+  (a `factor` left out), a sheet larger than a boolean takes.
 - **Names**: the face is `F1:face(0)`, its edges `edge(0)` to `edge(3)` along the first row, the last row, the
   first column and the last column, its corners `vertex(0)` to `vertex(3)` at the first row's first and last
   point and the last row's. Moving the points renames nothing.
 - **Refused**, naming the row and the point: rows of different lengths, fewer than 2 × 2 points, two
-  neighbouring points at one place, a row or column that runs back on itself, and a sheet that would fold.
-  A table holds at most 63 heights a row (64 columns with its key) and 10 000 rows; give a wider grid's points
-  outright (at most 262 144 points, 1 024 a side).
+  neighbouring points at one place, a row or column that runs back on itself, a sheet that would fold (the
+  refusal says whether a row runs back there or the proof could not decide), and a grid so far from the origin
+  that rounding alone could take the sheet further from its points than the tolerance.
+- **How large**: a table holds at most 63 heights a row (64 columns with its key) and 10 000 rows; give a
+  wider grid's points outright (at most 262 144 points, 1 024 a side). A solid under the sheet is made by a
+  boolean, which takes a sheet of at most 32 768 spans: a grid of 184 × 184 points (the result warns past
+  it). `feature.plate` gives a small sheet a thickness; on a large one (150 × 120 points) plate, thicken and
+  shell are refused. `feature.extrude` with `upTo` does not take a sheet's face.
 
 ## Trimmed faces and N-sided fills
 

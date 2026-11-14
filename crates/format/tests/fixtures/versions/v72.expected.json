@@ -1,7 +1,7 @@
 {
   "format_version": 72,
-  "written_by": "a1bae119f58870edc71c3b0b5cc84ca97e6fadac",
-  "how": "craft3d-cli of that commit (a debug build, on the developer's laptop): craft3d-cli run --new '{\"units\": \"mm\"}' --script v72.steps.json --out v72.3dcraft, then craft3d-cli run v72.3dcraft --cmd document.inspect for the features and bodies; two sheets through grids of points, format 72: one read from a table (3 x 3 heights in mm, 10 mm apart, times the variable lift, from 5 mm up), which lie on the plane z = 7 + 0.2 x + 0.2 y, so a 20 x 20 x 30 mm block cut by it is a wedge of 4400 mm3 (closed form); and one given point by point with chord spacing, its middle point an expression of lift",
+  "written_by": "7ff03a1a72998f6835c489bc0d71b374b9fa3447",
+  "how": "craft3d-cli of that commit (a debug build, on the developer's laptop): craft3d-cli run --new '{\"units\": \"mm\"}' --script v72.steps.json --out v72.3dcraft, then craft3d-cli run v72.3dcraft --cmd document.inspect for the features and bodies; two sheets through grids of points, format 72: one read from a table at its default spacing, even (3 x 3 heights in mm, 10 mm apart, times the variable lift, from 5 mm up), which lie on the plane z = 7 + 0.2 x + 0.2 y, so a 20 x 20 x 30 mm block cut by it is a wedge of 4400 mm3 (closed form); and one given point by point with chord spacing, its middle point an expression of lift",
   "rollback": null,
   "features": [
     {
@@ -23,6 +23,7 @@
           ],
           "table": "heights"
         },
+        "spacing": "even",
         "type": "surfaceGrid"
       },
       "status": "ok",

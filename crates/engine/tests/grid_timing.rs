@@ -93,6 +93,16 @@ fn a_large_grid_is_built_meshed_measured_and_saved() {
         let build = t.elapsed();
         assert_eq!(made["status"], "ok", "{made}");
         let after_build = peak_mib();
+        // A command that changes nothing the grid reads: what it costs a
+        // document with points given outright (each of their expressions
+        // evaluated again for the regeneration's cache).
+        let t = Instant::now();
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "unrelated", "expr": "1"}),
+        );
+        let unrelated = t.elapsed();
         let t = Instant::now();
         let mesh = run(&mut s, "file.export", json!({"path": "terrain.stl"}));
         let meshed = t.elapsed();
@@ -107,7 +117,7 @@ fn a_large_grid_is_built_meshed_measured_and_saved() {
             .unwrap()
             .len();
         println!(
-            "{columns} x {rows}: interpolation and proof {alone:?}; the feature {build:?}; mesh ({} triangles) {meshed:?}; measure (area {}) {measure:?}; save {save:?}, {bytes} bytes, {:.1} a point; peak {base:.0} MiB before, {after_build:.0} after the feature, {after_mesh:.0} after the mesh, {:.0} at the end",
+            "{columns} x {rows}: interpolation and proof {alone:?}; the feature {build:?}; an unrelated variable.set {unrelated:?}; mesh ({} triangles) {meshed:?}; measure (area {}) {measure:?}; save {save:?}, {bytes} bytes, {:.1} a point; peak {base:.0} MiB before, {after_build:.0} after the feature, {after_mesh:.0} after the mesh, {:.0} at the end",
             mesh["triangles"],
             measured["area"],
             bytes as f64 / (columns * rows) as f64,
