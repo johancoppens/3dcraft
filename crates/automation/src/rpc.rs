@@ -443,9 +443,10 @@ mod deferrable_tests {
     }
 
     /// A host that has the bodies elsewhere (the browser's worker): a
-    /// command that needs them answers that it runs there, under the
-    /// request's id; one that does not answers at once, as everywhere; the
-    /// plain dispatch runs both here.
+    /// command that needs them (a feature reports what fails, which takes
+    /// a regeneration) answers that it runs there, under the request's id;
+    /// one that does not answers at once, as everywhere; the plain
+    /// dispatch runs a command here.
     #[test]
     fn engine_execute_hands_a_command_that_needs_the_bodies_over() {
         let mut session = Session::new(Workspace::none());
@@ -460,28 +461,27 @@ mod deferrable_tests {
         };
         for line in [
             r#"{"id": 1, "method": "engine.execute", "params": {"command": "file.new", "params": {"units": "mm"}}}"#,
-            r#"{"id": 2, "method": "engine.execute", "params": {"command": "feature.block", "params": {"size": [10, 20, 30]}}}"#,
+            r#"{"id": 2, "method": "engine.execute", "params": {"command": "file.list"}}"#,
         ] {
             let done = reply(handle_line_deferrable(&mut session, line, &mut extension));
             assert_eq!(done["ok"], true, "{done}");
             assert!(done["result"].get("deferred").is_none(), "{done}");
         }
-        let measure =
-            r#"{"id": "m", "method": "engine.execute", "params": {"command": "document.measure"}}"#;
-        let handed = reply(handle_line_deferrable(
-            &mut session,
-            measure,
-            &mut extension,
-        ));
-        assert_eq!(handed["id"], "m");
+        let block = r#"{"id": "b", "method": "engine.execute", "params": {"command": "feature.block", "params": {"size": [10, 20, 30]}}}"#;
+        let handed = reply(handle_line_deferrable(&mut session, block, &mut extension));
+        assert_eq!(handed["id"], "b");
         assert_eq!(handed["ok"], true);
         assert_eq!(handed["result"]["deferred"], true, "{handed}");
         assert!(handed["result"]["job"].as_u64().is_some(), "{handed}");
         assert_eq!(session.command_jobs().len(), 1);
-        // The plain dispatch measures here.
+        assert!(session.edits_waiting());
+        // The plain dispatch runs here, at once.
+        let measure =
+            r#"{"id": "m", "method": "engine.execute", "params": {"command": "document.measure"}}"#;
         let here = reply(handle_line_with(&mut session, measure, &mut extension));
         assert_eq!(here["ok"], true, "{here}");
         assert!(here["result"].get("deferred").is_none(), "{here}");
+        assert_eq!(session.command_jobs().len(), 1);
     }
 }
 
