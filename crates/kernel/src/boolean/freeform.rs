@@ -4976,7 +4976,7 @@ mod tests {
                 let (surface, frame) = ruled_strip(length, width, swap);
                 let tree = PatchTree::new(&surface).unwrap();
                 let settled = SETTLED.get();
-                for (x, y) in [(0.3141, 0.2718), (0.0577, 0.6931), (0.9, 0.5), (0.5, 0.03)] {
+                for (x, y) in [(0.3147, 0.2713), (0.0577, 0.6913), (0.9, 0.5), (0.5, 0.03)] {
                     for height in [0.0, 1e-6, 0.5, 190.0, 1e4, -3e5, 1e6] {
                         let p = frame.point(x * length, y * width, height);
                         let near = tree.nearest(p).unwrap();
