@@ -684,6 +684,7 @@ STEP files read into the document as bodies (an `Import` feature), a pinned publ
 - STEP import, first slice: `file.import`, one `import` feature per solid holding the file's bytes (shared between undo steps, stored once in the `.3dcraft` file, format 25), typed reading and sewing on topology only in `craft3d-stepread`, every edge proven on its faces and a gap recorded as the entity's tolerance up to the document's cap, beyond it refused naming the entity ([`design/step-import.md`](design/step-import.md)) (2026-10-21)
 - STEP import, second slice: assemblies (one feature per placement, moved, named by its path), colours per solid, swept surfaces of any curve as exact B-splines, offsets and implied-knot B-splines, every edge proven (poles and closed spline seams, in `geom::certify`) ([`design/step-import.md`](design/step-import.md) › *Second slice*) (2026-10-21)
 - Real-world STEP models: `cargo xtask abc` imports, checks, meshes, measures and cuts (three tools, the volume identities) every model of a chunk of the ABC dataset on the Strix, each in its own process, into a scorecard of ids and results ([`testing.md`](testing.md) › *Real-world models*, [`abc-scorecard.md`](abc-scorecard.md)) (2026-11-01)
+- Embed, first slice (experimental, for 0.2): the web build driven by the page it sits in through the control channel's envelope, in the embedded stand, as `full`, `view` or `form` ([`control-protocol.md`](control-protocol.md) › *The page as a transport*, [`decisions.md`](decisions.md) 2026-11-14) (2026-11-14)
 
 #### Open
 - [ ] Share large blobs between undo snapshots instead of copying them: done for imported files (2026-10-21, an `Arc` per file); open for anything else large a document may hold
@@ -749,6 +750,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-14 | minor | M10: Embed's first slice, a Done line |
 | 2026-11-13 | minor | After R1: the public `main` is the latest release, and 0.1.x fixes land on `release/0.1` and are merged forward into `main`: the stage and the current focus |
 | 2026-11-13 | minor | After R1: the freeze ended, `main` is the coming 0.2 and 0.1.x comes from `release/0.1`: the stage and the current focus |
 | 2026-11-12 | minor | R1: the Done line of 0.1.1 says what the tester saw (a start on a Windows without the runtime) and that the killed-window test ran |

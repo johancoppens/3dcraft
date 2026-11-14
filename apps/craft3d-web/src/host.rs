@@ -438,6 +438,11 @@ pub struct WebHost {
     /// The published example chosen whose "Opening…" was shown: it is
     /// opened in the next pump, after a frame drawn with it.
     example_said: Option<&'static str>,
+    /// The commands run in the worker for requests of the page that
+    /// embeds 3DCraft, by number, and their answers that came
+    /// ([`Self::page_job`]).
+    page_jobs: BTreeSet<u64>,
+    page_answers: Vec<craft3d_engine::Answered>,
 }
 
 /// An example from the start screen being built a step at a time
@@ -520,6 +525,8 @@ impl WebHost {
             example_said: None,
             held_report: None,
             said: 0,
+            page_jobs: BTreeSet::new(),
+            page_answers: Vec::new(),
         }
     }
 
@@ -884,15 +891,7 @@ impl WebHost {
     /// [`Self::answered`]). The shell's own reads (what the export
     /// dialog offers) answer at once.
     fn run(&mut self, command: &str, params: &Value) -> Result<Value, String> {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.session.execute_deferrable(command, params)
-        }))
-        .unwrap_or_else(|_| {
-            Err(craft3d_engine::CommandError::new(
-                "internal error (a bug in 3DCraft, please report it); the document was kept",
-            ))
-        })
-        .map_err(|e| e.message().to_string())
+        run_in(&mut self.session, command, params)
     }
 
     /// Reports `outcome` under `label`, empties the memory and shows what
@@ -1006,45 +1005,7 @@ impl WebHost {
         bytes: Vec<u8>,
         wanted: Option<Ask>,
     ) -> Result<Value, String> {
-        let Some(name) = memory_name(name) else {
-            return Err(format!("`{name}` is not a file name"));
-        };
-        let kind = received_kind(&name).ok_or_else(|| {
-            format!("`{name}` is not a 3DCraft document (.3dcraft), a Jig (.3dcraftjig), a STEP file (.step, .stp) or a FreeCAD document (.FCStd)")
-        })?;
-        match (wanted, kind) {
-            (Some(Ask::Open), Received::Step) => {
-                return Err(format!(
-                    "`{name}` is a STEP file; import it (File, Import…) to add its solids to a document"
-                ));
-            }
-            (Some(Ask::Import), Received::Document) => {
-                return Err(format!(
-                    "`{name}` is a 3DCraft document; open it (File, Open…)"
-                ));
-            }
-            _ => {}
-        }
-        self.session
-            .put_file(&name, bytes)
-            .map_err(|e| e.message().to_string())?;
-        match kind {
-            Received::Document => self.run("file.open", &json!({ "path": name })),
-            Received::Step => {
-                let made = if self.session.document_status().is_none() {
-                    self.run("file.new", &json!({}))
-                        .map_err(|e| format!("file.new: {e}"))?;
-                    true
-                } else {
-                    false
-                };
-                let imported = self.run("file.import", &json!({ "path": name }));
-                if imported.is_err() && made {
-                    let _ = self.run("file.close", &json!({ "discard": true }));
-                }
-                imported
-            }
-        }
+        receive_into(&mut self.session, name, bytes, wanted)
     }
 
     /// Does what the File menu, its shortcuts and the tabs asked for since
@@ -1849,6 +1810,13 @@ impl WebHost {
     pub fn answered(&mut self, answered: Vec<craft3d_engine::Answered>) -> Outcome {
         let mut outcome = Outcome::default();
         for answer in answered {
+            // A request of the page that embeds 3DCraft: its answer is the
+            // page's (`crate::embed`), whichever way it came (the worker,
+            // a cancel, a worker that stopped).
+            if self.page_jobs.remove(&answer.token) {
+                self.page_answers.push(answer);
+                continue;
+            }
             // A step of the example being built, made in the worker: the
             // next steps run now (a failure ends the example).
             if let Some(run) = &mut self.example_run
@@ -2063,6 +2031,130 @@ impl WebHost {
                 Outcome::default()
             }
         }
+    }
+}
+
+/// Runs a command the person, an agent or the page asked for: one that
+/// needs the bodies the page does not have is handed to the worker that
+/// has them (`Session::execute_deferrable`); a panic is an error and the
+/// document is kept.
+fn run_in(session: &mut Session, command: &str, params: &Value) -> Result<Value, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        session.execute_deferrable(command, params)
+    }))
+    .unwrap_or_else(|_| {
+        Err(craft3d_engine::CommandError::new(
+            "internal error (a bug in 3DCraft, please report it); the document was kept",
+        ))
+    })
+    .map_err(|e| e.message().to_string())
+}
+
+/// The work of [`WebHost::receive`] on the session alone (also what a
+/// page that embeds 3DCraft gives it, `crate::embed`): a `.3dcraft`
+/// document is put into memory and opened, a STEP file imported into the
+/// active document (a new one when there is none, closed again when the
+/// file cannot be imported). `wanted` refuses a file of the other kind.
+pub fn receive_into(
+    session: &mut Session,
+    name: &str,
+    bytes: Vec<u8>,
+    wanted: Option<Ask>,
+) -> Result<Value, String> {
+    let Some(name) = memory_name(name) else {
+        return Err(format!("`{name}` is not a file name"));
+    };
+    let kind = received_kind(&name).ok_or_else(|| {
+        format!("`{name}` is not a 3DCraft document (.3dcraft), a Jig (.3dcraftjig), a STEP file (.step, .stp) or a FreeCAD document (.FCStd)")
+    })?;
+    match (wanted, kind) {
+        (Some(Ask::Open), Received::Step) => {
+            return Err(format!(
+                "`{name}` is a STEP file; import it (File, Import…) to add its solids to a document"
+            ));
+        }
+        (Some(Ask::Import), Received::Document) => {
+            return Err(format!(
+                "`{name}` is a 3DCraft document; open it (File, Open…)"
+            ));
+        }
+        _ => {}
+    }
+    session
+        .put_file(&name, bytes)
+        .map_err(|e| e.message().to_string())?;
+    match kind {
+        Received::Document => run_in(session, "file.open", &json!({ "path": name })),
+        Received::Step => {
+            let made = if session.document_status().is_none() {
+                run_in(session, "file.new", &json!({})).map_err(|e| format!("file.new: {e}"))?;
+                true
+            } else {
+                false
+            };
+            let imported = run_in(session, "file.import", &json!({ "path": name }));
+            if imported.is_err() && made {
+                let _ = run_in(session, "file.close", &json!({ "discard": true }));
+            }
+            imported
+        }
+    }
+}
+
+impl WebHost {
+    /// The command numbered `token` runs in the worker for a request of
+    /// the page that embeds 3DCraft (`crate::embed`): its answer is the
+    /// page's, kept for it ([`Self::take_page_answers`]) and not said as
+    /// the window's own.
+    pub fn page_job(&mut self, token: u64) {
+        self.page_jobs.insert(token);
+    }
+
+    /// The answers of the page's commands that came since the last call.
+    pub fn take_page_answers(&mut self) -> Vec<craft3d_engine::Answered> {
+        std::mem::take(&mut self.page_answers)
+    }
+
+    /// True while answers of the page's commands wait to be taken.
+    pub fn page_answers_waiting(&self) -> bool {
+        !self.page_answers.is_empty()
+    }
+
+    /// After a request of the page ran a command (`label`, with
+    /// `outcome`): said in the status bar as the desktop says a request of
+    /// its control channel (without the error dialog: the page says its
+    /// own errors), the window brought up to the state it left as after
+    /// any action, and the files it wrote taken out of memory, for the
+    /// page instead of a download.
+    pub fn page_did(
+        &mut self,
+        label: &str,
+        outcome: &Result<Value, String>,
+    ) -> Vec<(String, Vec<u8>)> {
+        let files = self
+            .forget_files()
+            .into_iter()
+            .map(|file| (file.name, file.bytes))
+            .collect();
+        self.said = self.said.wrapping_add(1);
+        self.last_answer = outcome.as_ref().ok().cloned();
+        let (ok, text) = match outcome {
+            Ok(result) => (true, craft3d_ui_egui::answer::summary(label, result)),
+            Err(error) => (false, error.clone()),
+        };
+        self.shell.last_command = Some(CommandReport {
+            label: label.chars().take(160).collect(),
+            ok,
+            text: text.chars().take(160).collect(),
+        });
+        // Not drawn from the session while its scene is not there: that
+        // would build it here, all at once ([`Self::finish`]).
+        if self.stepwise && !self.session.scene_ready(self.shell.scene_quality()) {
+            self.away = true;
+        } else {
+            self.shell.sync(&mut self.session);
+        }
+        files
     }
 }
 

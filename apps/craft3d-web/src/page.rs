@@ -11,6 +11,8 @@
 //! reported: nothing was asked of the page.
 
 use crate::checks::{Checks, Reply};
+use crate::door;
+use crate::embed::Embed;
 use crate::flags::{self, Flags};
 use crate::host::{
     Ask, Download, Pick, PickerType, WebHost, open_types, page_title, received_kind,
@@ -32,8 +34,12 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::FileSystemFileHandle;
 
 /// The canvas and the message element of `index.html`.
-const CANVAS_ID: &str = "craft3d_canvas";
+pub(crate) const CANVAS_ID: &str = "craft3d_canvas";
 const LOADING_ID: &str = "craft3d_loading";
+
+/// The canvas's attribute by which a page asks for the embedded stand,
+/// its value the options (Embed, experimental: `crate::embed`).
+const EMBED_ATTRIBUTE: &str = "data-craft3d-embed";
 
 /// The most bytes of a file handed to the page (a `.3dcraft` file or a
 /// STEP file is read whole into memory).
@@ -149,10 +155,6 @@ fn text_of(value: &JsValue) -> String {
 }
 
 async fn run() {
-    let search = window()
-        .and_then(|w| w.location().search().ok())
-        .unwrap_or_default();
-    let flags = flags::parse(&search);
     let Some(canvas) = document()
         .and_then(|d| d.get_element_by_id(CANVAS_ID))
         .and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok())
@@ -160,6 +162,21 @@ async fn run() {
         say("3DCraft cannot start: the page has no canvas.");
         return;
     };
+    // The embedded stand (Embed, experimental): a page that sets
+    // `data-craft3d-embed` on the canvas keeps what is page-wide: its
+    // title, its focus, its keys outside 3DCraft, its question before
+    // leaving, its storage and its address. The options come from the
+    // attribute, in the syntax of the address's flags
+    // (`presentation=view&webgl`), not from the page's address.
+    let embed_options = canvas.get_attribute(EMBED_ATTRIBUTE);
+    let embedded = embed_options.is_some();
+    let search = match embed_options {
+        Some(options) => options,
+        None => window()
+            .and_then(|w| w.location().search().ok())
+            .unwrap_or_default(),
+    };
+    let flags = flags::parse(&search);
     let mut options = eframe::WebOptions::default();
     if flags.webgl {
         let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
@@ -168,21 +185,32 @@ async fn run() {
     }
     let inbox: Inbox = Rc::new(RefCell::new(Vec::new()));
     let unsaved = Rc::new(Cell::new(false));
-    warn_before_leaving(Rc::clone(&unsaved));
-    keep_file_shortcuts();
+    if !embedded {
+        warn_before_leaving(Rc::clone(&unsaved), true);
+        if let Some(window) = window() {
+            keep_file_shortcuts(&[window.into()]);
+        }
+    } else if flags.warn {
+        warn_before_leaving(Rc::clone(&unsaved), false);
+    }
+    // Where the page had the focus before eframe's start takes it.
+    let focused = document().and_then(|d| d.active_element());
     let runner = eframe::WebRunner::new();
     let (for_app, for_unsaved) = (Rc::clone(&inbox), Rc::clone(&unsaved));
     let open = flags.open.clone();
-    let started = runner
-        .start(
-            canvas,
-            options,
-            Box::new(move |creation| {
-                let app = Page::new(creation, &flags, for_app, for_unsaved);
-                Ok(Box::new(app))
-            }),
-        )
-        .await;
+    let start = runner.start(
+        canvas.clone(),
+        options,
+        Box::new(move |creation| {
+            let app = Page::new(creation, &flags, for_app, for_unsaved, embedded);
+            Ok(Box::new(app))
+        }),
+    );
+    let started = if embedded {
+        start_leaving_focus(start, &canvas, focused).await
+    } else {
+        start.await
+    };
     match started {
         Ok(()) => {
             hide_loading();
@@ -191,10 +219,13 @@ async fn run() {
             }
         }
         Err(error) => {
+            let why = text_of(&error);
             say(&format!(
-                "3DCraft needs WebGPU or WebGL2, and this browser offers neither here ({}). \
-                 Try an up-to-date Chrome, Edge, Firefox or Safari, with hardware acceleration on.",
-                text_of(&error)
+                "3DCraft needs WebGPU or WebGL2, and this browser offers neither here ({why}). \
+                 Try an up-to-date Chrome, Edge, Firefox or Safari, with hardware acceleration on."
+            ));
+            door::failed(&format!(
+                "3DCraft needs WebGPU or WebGL2, and this browser offers neither here: {why}"
             ));
         }
     }
@@ -202,9 +233,60 @@ async fn run() {
     std::mem::forget(runner);
 }
 
+/// eframe's start in the embedded stand: it makes its hidden text field
+/// beside the canvas and gives it the focus before it first waits (for the
+/// graphics adapter), with no option to leave it be. The focus goes back
+/// to where the page had it (or nowhere) right after that first step, in
+/// the same task, so no key of the page's goes astray; and Undo, Redo and
+/// the File keys are kept from the browser only where 3DCraft has the
+/// focus (its canvas, its text field), not on the whole page.
+async fn start_leaving_focus(
+    start: impl std::future::Future<Output = Result<(), JsValue>>,
+    canvas: &web_sys::HtmlCanvasElement,
+    focused: Option<web_sys::Element>,
+) -> Result<(), JsValue> {
+    use std::task::Poll;
+    let mut start = std::pin::pin!(start);
+    let first = std::future::poll_fn(|cx| Poll::Ready(start.as_mut().poll(cx))).await;
+    // eframe puts its text field right after the canvas.
+    let agent = canvas
+        .next_element_sibling()
+        .filter(|e| e.dyn_ref::<web_sys::HtmlInputElement>().is_some());
+    let body = document()
+        .and_then(|d| d.body())
+        .map(web_sys::Element::from);
+    match focused
+        .filter(|e| Some(e) != body.as_ref())
+        .and_then(|e| e.dyn_into::<web_sys::HtmlElement>().ok())
+    {
+        Some(element) => {
+            let options = web_sys::FocusOptions::new();
+            options.set_prevent_scroll(true);
+            let _ = element.focus_with_options(&options);
+        }
+        None => {
+            if let Some(agent) = agent
+                .as_ref()
+                .and_then(|a| a.dyn_ref::<web_sys::HtmlElement>())
+            {
+                let _ = agent.blur();
+            }
+        }
+    }
+    let mut targets: Vec<web_sys::EventTarget> = vec![canvas.clone().into()];
+    targets.extend(agent.map(web_sys::EventTarget::from));
+    keep_file_shortcuts(&targets);
+    match first {
+        Poll::Ready(started) => started,
+        Poll::Pending => start.await,
+    }
+}
+
 /// The browser's question before the page is closed or reloaded while a
-/// document has unsaved changes. Kept for the page's lifetime.
-fn warn_before_leaving(unsaved: Rc<Cell<bool>>) {
+/// document has unsaved changes. Kept for the page's lifetime. The plain
+/// page's own (`assign`: `window.onbeforeunload`); in the embedded stand,
+/// asked for with `warn`, a listener beside the page's own handler.
+fn warn_before_leaving(unsaved: Rc<Cell<bool>>, assign: bool) {
     let Some(window) = window() else {
         return;
     };
@@ -216,7 +298,12 @@ fn warn_before_leaving(unsaved: Rc<Cell<bool>>) {
             }
         },
     );
-    window.set_onbeforeunload(Some(handler.as_ref().unchecked_ref()));
+    if assign {
+        window.set_onbeforeunload(Some(handler.as_ref().unchecked_ref()));
+    } else {
+        let _ = window
+            .add_event_listener_with_callback("beforeunload", handler.as_ref().unchecked_ref());
+    }
     handler.forget();
 }
 
@@ -227,11 +314,9 @@ fn warn_before_leaving(unsaved: Rc<Cell<bool>>) {
 /// Undo and Redo too: Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y, so the browser
 /// does not act on them as well (egui still gets them, and a text field
 /// in the page keeps its own undo). Which keys: [`crate::host::page_keeps_key`].
-/// Kept for the page's lifetime.
-fn keep_file_shortcuts() {
-    let Some(window) = window() else {
-        return;
-    };
+/// On `targets`: the window on the plain page, 3DCraft's canvas and text
+/// field in the embedded stand. Kept for the page's lifetime.
+fn keep_file_shortcuts(targets: &[web_sys::EventTarget]) {
     let handler =
         Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |event: web_sys::KeyboardEvent| {
             let command = event.ctrl_key() || event.meta_key();
@@ -240,7 +325,10 @@ fn keep_file_shortcuts() {
                 event.prevent_default();
             }
         });
-    let _ = window.add_event_listener_with_callback("keydown", handler.as_ref().unchecked_ref());
+    for target in targets {
+        let _ =
+            target.add_event_listener_with_callback("keydown", handler.as_ref().unchecked_ref());
+    }
     handler.forget();
 }
 
@@ -483,6 +571,12 @@ struct Page {
     scenes: Option<Scenes<WebWorker>>,
     /// What that worker answered, for the next frame.
     scene_replies: Replies,
+    /// The page asked for the embedded stand: its title and its storage
+    /// are left alone.
+    embedded: bool,
+    /// What the page that embeds 3DCraft asked through the door, and
+    /// what goes back (`crate::embed`).
+    embed: Embed,
 }
 
 impl Page {
@@ -491,7 +585,10 @@ impl Page {
         flags: &Flags,
         inbox: Inbox,
         unsaved: Rc<Cell<bool>>,
+        embedded: bool,
     ) -> Self {
+        // A message through the door asks for a frame.
+        door::set_context(creation.egui_ctx.clone());
         let choice = if flags.cpu {
             RendererChoice::Cpu
         } else {
@@ -569,9 +666,18 @@ impl Page {
         if let Some(url) = &flags.open {
             host.fetching(&flags::file_name(url));
         }
-        let prefs = load_prefs(Prefs::of(&host.shell.state, None));
+        // The embedded stand reads and writes nothing in the page's
+        // storage: it starts with the defaults and the page's options.
+        let prefs = if embedded {
+            Prefs::of(&host.shell.state, None)
+        } else {
+            load_prefs(Prefs::of(&host.shell.state, None))
+        };
         prefs.apply(&mut host.shell.state);
         let stored = prefs.to_json();
+        if embedded && let Some(presentation) = flags.presentation {
+            host.shell.state.presentation = presentation;
+        }
         // The system's file dialogs where the browser has them, unless the
         // address asks for downloads (`?download`).
         host.pickers = !flags.download && pickers::available();
@@ -603,6 +709,8 @@ impl Page {
             replies,
             scenes,
             scene_replies,
+            embedded,
+            embed: Embed::new(embedded, Box::new(now_ms)),
         }
     }
 
@@ -1045,8 +1153,14 @@ impl eframe::App for Page {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.fetch_environment(ctx);
         self.fetch_fonts(ctx);
-        // Files dropped on the page are read in the background.
-        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        // Files dropped on the page are read in the background; without
+        // the whole window (Embed's `view` and `form`) the page decides
+        // what is opened, and a file dropped on the canvas is let be.
+        let dropped = if self.host.shell.state.presentation.is_full() {
+            ctx.input(|i| i.raw.dropped_files.clone())
+        } else {
+            Vec::new()
+        };
         for file in dropped {
             let (inbox, ctx) = (Rc::clone(&self.inbox), ctx.clone());
             let name = file.path().to_string_lossy().into_owned();
@@ -1115,6 +1229,11 @@ impl eframe::App for Page {
             }
         }
         self.read_mail();
+        // What the page that embeds 3DCraft asked through the door, in
+        // order (answered now, or kept behind an edit made in the worker).
+        for message in door::take() {
+            self.embed.receive(&mut self.host, message);
+        }
         let failed = self
             .gpu_error
             .lock()
@@ -1201,6 +1320,19 @@ impl eframe::App for Page {
                 ctx.request_repaint_after(std::time::Duration::from_secs(30));
             }
         }
+        // The page's door: `ready` once a page listens, the replies of
+        // commands run in the worker, what waited, `regenerated`.
+        if door::connected() {
+            self.embed.greet(&self.host);
+        }
+        self.embed.frame(&mut self.host);
+        door::post(self.embed.take_out());
+        self.unsaved.set(self.host.has_unsaved());
+        // The page's title and its storage are its own in the embedded
+        // stand.
+        if self.embedded {
+            return;
+        }
         let title = page_title(
             self.host.session.document_status().as_ref(),
             &self.page_title,
@@ -1211,7 +1343,6 @@ impl eframe::App for Page {
             }
             self.title = title;
         }
-        self.unsaved.set(self.host.has_unsaved());
         let prefs = Prefs::of(
             &self.host.shell.state,
             Some(self.host.shell.state.export.format.extension()),
@@ -1254,6 +1385,11 @@ impl eframe::App for Page {
         }
         if let Some(file) = self.host.companion_ui(ui.ctx()) {
             self.save_companion(file);
+        }
+        // A command of the page's that a Cancel or a restart answered:
+        // its reply goes in the next frame.
+        if self.host.page_answers_waiting() {
+            ui.ctx().request_repaint();
         }
     }
 }

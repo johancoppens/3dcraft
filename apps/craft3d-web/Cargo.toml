@@ -16,6 +16,9 @@ workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+# The protocol's dispatch, which a page that embeds 3DCraft speaks
+# (`src/embed.rs`).
+craft3d-automation.workspace = true
 craft3d-engine.workspace = true
 craft3d-ui-egui.workspace = true
 egui.workspace = true
@@ -39,11 +42,13 @@ web-sys = { workspace = true, features = [
     "Element",
     "ErrorEvent",
     "Event",
+    "EventTarget",
     "File",
     "FileList",
     "FileSystemFileHandle",
     "FileSystemHandle",
     "FileSystemWritableFileStream",
+    "FocusOptions",
     "Headers",
     "HtmlAnchorElement",
     "HtmlCanvasElement",
@@ -51,7 +56,9 @@ web-sys = { workspace = true, features = [
     "HtmlInputElement",
     "KeyboardEvent",
     "Location",
+    "MessageChannel",
     "MessageEvent",
+    "MessagePort",
     "Node",
     "Performance",
     "ReadableStream",

@@ -1,12 +1,16 @@
 # Decisions
 
-> **Last updated:** 2026-11-13
+> **Last updated:** 2026-11-14
 
 This is the record of the decisions taken while 3DCraft was built, written at the time and kept as it was. "The developer" is the project's maintainer; "an agent" and "the coordinator" are the AI agents that built it (the coordinator plans the others' work and merges it). A decision made by an agent "for the developer to overturn" (some of them overnight, while nobody could be asked) stood unless it was overturned, and a later entry says so where it was; dates are when a decision was taken, ids of runs and commits are the workshop's evidence of the day. From outside the project, an open decision is raised in an issue.
 
 Decisions that shape the project, newest first, each with its reason. An agent that needs something listed under *Open decisions* asks the developer; it does not pick silently. When one is settled, move it up with the date.
 
 ## Taken
+
+### 2026-11-14: Embed: the web build driven by the page it sits in, in Rust in this repository; its JavaScript outside it; experimental in 0.2 (decided by the developer)
+
+The web build gets **Embed**: a page that loads its module drives it through the same commands, the same envelope and the same dispatch as the control channel (docs/control-protocol.md › *The page as a transport*), for what every embedding page needs: a product configurator, a published Jig as a widget, a parametric catalogue, lessons, viewers, later an AI agent in the page. They differ only in who draws (the whole window, the 3D view alone, a Jig's form with the view, later nobody), where the engine runs (in the page, later an iframe, a worker, a server) and who drives (page code, an agent, a person); they share the protocol. What is in this repository is that general part, in Rust (`apps/craft3d-web`: the embedded stand, the presentations as UI state, the message core tested without a browser, a door through a `MessagePort`), and **no JavaScript is added to it**: the page's helper file, a custom element, a WebMCP layer and the example pages live in a separate repository, `3dcraft-embed` (2026-10-28 stands: the JavaScript here stays the loader and the worker's bootstrap). It is new behaviour, so it is in 0.2 (the workshop's `main`), never in 0.1.x, and marked experimental: no promise yet that the names, the events or their fields stay. How a page asks for the embedded stand (an attribute on the canvas, `data-craft3d-embed`) and the names a page sees (`craft3d_connect`, `embed.give`, the events) were chosen by the agent that built the first slice, for the developer to overturn.
 
 ### 2026-11-13: On Windows a launcher starts the window (decided by the developer; settles D-open-20)
 

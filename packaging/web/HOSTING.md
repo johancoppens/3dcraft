@@ -114,6 +114,58 @@ http://localhost:8765/.
   cross-origin one falls back to downloads, which need `allow-downloads` when it is sandboxed.
 - Don't send `X-Frame-Options: DENY` or a `frame-ancestors` CSP that excludes the embedding page.
 
+## Embedding 3DCraft in a web page (experimental)
+
+*Experimental (2026-11-14): what a page writes may still change between versions.* Instead of an iframe, a
+page can load the module itself and drive 3DCraft through the same commands as the control channel: the
+page has the controls (sliders, a price, an order button), 3DCraft is the engine and the 3D view. The
+protocol, the events and the files are in `docs/control-protocol.md` › *The page as a transport* in the
+repository.
+
+**What the page must have.** The app's files beside the page (the module, its glue, the worker, `fonts/`
+and `environments/`, fetched relative to the page), and a canvas with the id `craft3d_canvas` that asks
+for the embedded stand with the attribute `data-craft3d-embed`. Its value holds the options, in the syntax
+of the address's flags: `presentation=full|view|form`, `webgl`, `cpu`, `download`, `pageregen`, `warn`.
+The canvas can name the worker too (`data-craft3d-worker`), so the page needs nothing in its head.
+
+```html
+<div style="position: relative; width: 800px; height: 500px">
+  <canvas id="craft3d_canvas" data-craft3d-embed="presentation=view"
+          data-craft3d-worker="./craft3d-worker-<hash>.js"
+          style="position: absolute; inset: 0; width: 100%; height: 100%"></canvas>
+</div>
+<script type="module">
+  import init, { craft3d_connect } from './craft3d-web-<hash>.js';
+  await init({ module_or_path: './craft3d-web-<hash>_bg.wasm' });
+  const port = craft3d_connect();
+  port.onmessage = (event) => console.log(event.data);      // replies and events, as objects
+  const bytes = await (await fetch('shelf.3dcraftjig')).arrayBuffer();
+  port.postMessage({ id: 1, method: 'embed.give', params: { name: 'shelf.3dcraftjig' }, bytes });
+  port.postMessage({ id: 2, method: 'engine.execute',
+                     params: { command: 'param.set', params: { values: { width: '900 mm' } } } });
+  port.postMessage({ id: 3, method: 'engine.execute',
+                     params: { command: 'file.export', params: { path: 'shelf.stl' } } });
+  // The reply to 3 carries files: [{ name: 'shelf.stl', bytes: Uint8Array }].
+</script>
+```
+
+**The presentations**, a setting rather than a build: `full` is the window as the plain page shows it;
+`view` is the 3D view with its view cube and controls, without the menu, the tabs, the side panel, the
+status bar and the start screen; `form` puts a Jig's parameter form and its outputs beside the view (under
+it in a narrow box), without the menu and the tabs. `ui.set {"presentation": "form"}` changes it while the
+page runs. Without the whole window a file dropped on the canvas is let be, and the File, Edit and tab keys
+are the page's.
+
+**What 3DCraft takes from the page, and what it leaves.** In the embedded stand it leaves the page's title,
+its focus (eframe's start takes it for a moment; 3DCraft gives it back before the page can see it gone),
+the keys outside its canvas (Ctrl+Z and its kin are kept from the browser only while 3DCraft has the
+focus), `window.onbeforeunload` (with `warn` it asks before leaving with unsaved changes through a listener
+beside the page's own), `localStorage` (no preferences are read or kept) and the page's address (the
+options come from the attribute). What any embed of the module keeps: the canvas's `tabindex` and `outline`,
+a hidden text field next to the canvas (eframe's, for typing), listeners on the canvas and on the document
+that act only while 3DCraft has the focus or the pointer is over the canvas, and, while the canvas has the
+focus, every key, Tab included. Without the attribute, the page is the plain app's, exactly as above.
+
 ## Renderer selection and fallback flags
 
 3DCraft renders with wgpu, with the same shaders as the desktop app. It uses **WebGPU** when the

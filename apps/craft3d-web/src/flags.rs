@@ -29,6 +29,15 @@ pub struct Flags {
     /// `?open=<url>`: a `.3dcraft`, `.3dcraftjig` or STEP file of the same site, opened
     /// at the start.
     pub open: Option<String>,
+    /// `presentation=full|view|form`: how much of the window is drawn at
+    /// the start. Read only in the embedded stand, from the canvas's
+    /// `data-craft3d-embed` (Embed, experimental; `crate::embed`); the
+    /// plain page's address leaves it alone.
+    pub presentation: Option<craft3d_ui_egui::state::Presentation>,
+    /// `warn`: the browser asks before the page is left while a document
+    /// has unsaved changes. The plain page always asks; in the embedded
+    /// stand only a page that says so.
+    pub warn: bool,
 }
 
 /// The longest `open` address taken.
@@ -50,6 +59,10 @@ pub fn parse(search: &str) -> Flags {
             "fullmove" => flags.full_move = true,
             "movescale" => flags.move_scale = value.parse::<u32>().ok().map(|n| n.clamp(1, 4)),
             "open" => flags.open = decode(value).filter(|url| same_site(url)),
+            "presentation" => {
+                flags.presentation = craft3d_ui_egui::state::Presentation::from_name(value);
+            }
+            "warn" => flags.warn = true,
             _ => {}
         }
     }
@@ -159,6 +172,33 @@ mod tests {
             assert_eq!(parse(bad).open, None, "{bad}");
         }
         assert_eq!(parse("?open=/m/a.step").open.as_deref(), Some("/m/a.step"));
+    }
+
+    /// The embedded stand's own options (Embed, 2026-11-14), in the same
+    /// syntax: a presentation by its name, anything else none; `warn`.
+    #[test]
+    fn the_embedded_options_are_read_in_the_same_syntax() {
+        use craft3d_ui_egui::state::Presentation;
+        let flags = parse("presentation=view&webgl&warn");
+        assert_eq!(flags.presentation, Some(Presentation::View));
+        assert!(flags.webgl && flags.warn);
+        assert_eq!(
+            parse("presentation=form").presentation,
+            Some(Presentation::Form)
+        );
+        assert_eq!(
+            parse("presentation=full").presentation,
+            Some(Presentation::Full)
+        );
+        for bad in [
+            "presentation=none",
+            "presentation=",
+            "presentation=VIEW",
+            "presentation",
+        ] {
+            assert_eq!(parse(bad).presentation, None, "{bad}");
+        }
+        assert!(!parse("webgl").warn);
     }
 
     #[test]
