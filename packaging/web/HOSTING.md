@@ -157,7 +157,8 @@ page runs. Without the whole window a file dropped on the canvas is let be, and 
 are the page's.
 
 **What 3DCraft takes from the page, and what it leaves.** In the embedded stand it leaves the page's title,
-its focus (eframe's start takes it for a moment; 3DCraft gives it back before the page can see it gone),
+its focus (eframe's start gives its own text field the focus before it first waits; 3DCraft gives it back
+in the same task, so no key goes astray, though the element that had it hears a `blur` and a `focus`),
 the keys outside its canvas (Ctrl+Z and its kin are kept from the browser only while 3DCraft has the
 focus), `window.onbeforeunload` (with `warn` it asks before leaving with unsaved changes through a listener
 beside the page's own), `localStorage` (no preferences are read or kept) and the page's address (the
