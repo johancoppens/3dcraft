@@ -318,4 +318,6 @@ The top of each plate offset by 1, in seconds on the build server (wall clock on
 
 The other operations timed there (a side moved, a hole's wall offset, a shell, a draft, on plates of 22 to 2 031 faces) take 0.5 to 400 ms and lie within what one run scatters against another.
 
+And counted, which no load changes: the work each of those five offsets counts against its bound (evaluations of freeform curves and surfaces, and what the checks charge), base and now: 6 824 420 and 6 838 973; 26 871 213 and 26 929 394; 48 711 354 and 48 841 910; 85 813 822 and 86 146 231; 5 574 868 and 5 574 888. The checks add 0.2 to 0.4 % on the spline plates and twenty units on the plate of holes.
+
 The share of the checks themselves, timed in place on the 20-edge plate: `crossed` 0.3 to 2.6 % of the operation, `swept` and `pierced` together under 0.3 %.
