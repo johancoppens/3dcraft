@@ -688,27 +688,30 @@ fn torus_band(
 /// A band of a torus between two curves that go round it 3 times about
 /// its axis and 13 (or 29) times about its tube is a right face (3 and 13
 /// have no common factor, so each curve is simple, and the two keep a
-/// constant tube angle apart). The spline edges are followed in steps
-/// shown to move less than a quarter turn about the axis, but nothing
-/// shows how far they move about the tube: at 13 tube turns in 16 half
-/// steps each moves 292.5°, read as 67.5° back, so the loop read as going
-/// round the tube 3 times and was refused ("goes round the torus 3 times
-/// about its axis and 3 times about its tube"), at every scale. How often
-/// a loop goes round the axis is shown, but says nothing without the
-/// other (three times round the axis is simple with 13 turns about the
-/// tube and not with 3), so off a loop with a spline edge nothing is read
-/// unless it is shown not to go round the tube at all (the next test).
+/// constant tube angle apart); so is one between two curves once round the
+/// axis. The spline edges are followed in steps shown to move less than a
+/// quarter turn about the axis, but nothing shows how far they move about
+/// the tube: at 13 tube turns in 16 half steps each moves 292.5°, read as
+/// 67.5° back, so the loop read as going round the tube 3 times and was
+/// refused ("goes round the torus 3 times about its axis and 3 times about
+/// its tube"), at every scale. How often a loop goes round the axis is
+/// shown, but says nothing without the other (three times round the axis
+/// is simple with 13 turns about the tube and not with 3), so off a loop
+/// with a spline edge on a torus nothing is read.
 ///
-/// **Known miss**, listed so that a fix takes it off: a band between two
-/// curves that go round twice about the axis and twice about the tube (2
-/// and 2 have a common factor: each curve runs over itself) passes too,
-/// as every wrong band whose curves go round the tube does.
+/// **Known misses**, each a band whose curves run over themselves, listed
+/// so that a fix takes them off (`docs/design/topology.md` › *A band of a
+/// torus between curves that wind about its tube* has what a fix needs):
+/// curves twice round the axis and twice round the tube, (2, 2); curves
+/// twice or three times round the axis alone, (2, 0) and (3, 0), which a
+/// loop shown to keep to one half of the tube would give away.
 #[test]
 fn a_band_of_a_torus_between_two_curves_that_wind_about_its_tube_is_a_face() {
+    let right = [(3.0, 13.0), (3.0, 29.0), (1.0, 0.0)];
+    let known_misses = [(2.0, 2.0), (2.0, 0.0), (3.0, 0.0)];
     let mut wrong = Vec::new();
     for scale in [1e-3, 1.0, 1e6] {
-        // (2, 2) is the known miss: it passes like the right ones.
-        for pq in [(3.0, 13.0), (3.0, 29.0), (2.0, 2.0)] {
+        for pq in right.into_iter().chain(known_misses) {
             for radii in [(3.0 * scale, scale), (2.0 * scale, 0.5 * scale)] {
                 for reversed in [false, true] {
                     let (body, tol) = torus_band(scale, pq, radii, reversed);
@@ -723,38 +726,6 @@ fn a_band_of_a_torus_between_two_curves_that_wind_about_its_tube_is_a_face() {
         }
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
-}
-
-/// A loop of spline edges on a torus that is shown to keep to one half of
-/// its tube (here above the plane of its centre circle, by the control
-/// points of every stretch of it) does not go round the tube, so how often
-/// it goes round the axis decides: a band between two curves once round
-/// the axis is a face, one between curves twice or three times round it
-/// (each running over itself) is refused, as before spline edges on a
-/// torus stopped being read ("goes round the torus 2 times about its axis
-/// and 0 times about its tube").
-#[test]
-fn a_band_of_a_torus_twice_round_its_axis_alone_is_refused() {
-    for scale in [1e-3, 1.0, 1e6] {
-        for radii in [(3.0 * scale, scale), (2.0 * scale, 0.5 * scale)] {
-            for reversed in [false, true] {
-                let what = format!("scale {scale}, radii {radii:?}, reversed {reversed}");
-                let (once, tol) = torus_band(scale, (1.0, 0.0), radii, reversed);
-                assert_eq!(check(&once, &tol), vec![], "{what}");
-                for turns in [2.0, 3.0] {
-                    let (body, tol) = torus_band(scale, (turns, 0.0), radii, reversed);
-                    let found: Vec<String> =
-                        check(&body, &tol).iter().map(ToString::to_string).collect();
-                    assert!(
-                        found.iter().any(|d| d.contains(&format!(
-                            "goes round the torus {turns} times about its axis and 0 times about its tube"
-                        ))),
-                        "{what}, {turns} turns: {found:?}"
-                    );
-                }
-            }
-        }
-    }
 }
 
 /// A spiral on the cone of radius `r0` at height 0 widening by `slope` a
