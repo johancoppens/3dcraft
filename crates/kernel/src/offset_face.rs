@@ -432,6 +432,10 @@ fn at(
     // The freeform faces continued, past which borders, and how far (a
     // step of REACHES): first those the vertices are seen to pass.
     let mut grow = borders_passed(body, &moving);
+    // The edges between faces that stay, along a border of one of them
+    // as it is before it is continued: that border is an iso-curve of the
+    // continued surface too.
+    let still = crate::offset_normal::still_iso_edges(body, &moving, tolerance);
     let mut level = 0;
     let mut last = None;
     for _ in 0..MOST_TRIES {
@@ -457,7 +461,7 @@ fn at(
             None => (0.0, [false; 4]),
         };
         let got = surfaced(
-            &wider, offsets, fillets, fraction, &reach_of, corners, operation, tolerance,
+            &wider, offsets, fillets, fraction, &reach_of, corners, &still, operation, tolerance,
         );
         match got {
             Err(error @ (TweakError::Unsupported { .. } | TweakError::Vanishes { .. }))
@@ -605,7 +609,10 @@ fn ends_on_freeform(error: &TweakError) -> bool {
     }
 }
 
-/// [`at`] with each freeform face that moves continued by `reach_of` it.
+/// [`at`] with each freeform face that moves continued by `reach_of` it;
+/// `still` are the edges between faces that do not move that lie along a
+/// border of one of them before `body` continued it
+/// ([`crate::offset_normal::still_iso_edges`]).
 #[allow(clippy::too_many_arguments)]
 fn surfaced(
     body: &Body,
@@ -614,6 +621,7 @@ fn surfaced(
     fraction: f64,
     reach_of: &dyn Fn(FaceId) -> (f64, Growth),
     corners: tweak::Corners,
+    still: &BTreeMap<EdgeId, tweak::Iso>,
     operation: &'static str,
     tolerance: &Tolerance,
 ) -> Result<Body, TweakError> {
@@ -710,7 +718,10 @@ fn surfaced(
                 reason,
             },
         })?;
-    let iso = crate::offset_normal::iso_edges(body, &moving, tolerance);
+    let mut iso = crate::offset_normal::iso_edges(body, &moving, tolerance);
+    for (edge, along) in still {
+        iso.entry(*edge).or_insert(*along);
+    }
     tweak::resurface_along(
         body, &surfaces, &iso, &rebuilt, corners, operation, tolerance,
     )
