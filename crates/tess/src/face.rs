@@ -636,6 +636,79 @@ fn follow_along_the_loop(param: &Param, points: &[(Vec3, Chord)], raw: &mut [Uv]
     }
 }
 
+/// Gives the points of a loop that the search did not find on their
+/// spline surface their place on a border of it, where that is less than
+/// half as far from them.
+///
+/// Only on a surface with a pole. Next to a pole whose meridians leave
+/// it unevenly (a face that closes an end in a point that stands near a
+/// corner of its rim, or over a thin section) the search in both
+/// parameters settles beside the foot of a point that lies on the
+/// surface, on another meridian a few hundred-thousandths of the
+/// surface's size away (`craft3d_geom::pole::BorderFeet`), and the walk
+/// from a neighbour does no better. The loop then zigzags across the
+/// meridians: "its boundary is not closed in parameter space: it jumps
+/// across the surface", or triangles on its chords that stand inside
+/// out whatever the refinement ("the surface turns away from the chords
+/// of edge …"). An edge that runs into a pole is very often a border of
+/// the surface, and along a border the place is a search in one
+/// parameter, in which the surface moves at its full speed.
+///
+/// A point found on the surface by the search (within 16 units in the
+/// last place of its coordinates and of the surface's size) is not
+/// looked at, so every loop whose points were found keeps them, bit for
+/// bit; and the nearer of two points of the surface is the better foot
+/// whatever else is true.
+///
+/// And a point found on the surface a few units in the last place beside
+/// a border, that lies on the border, is put on it exactly. Next to a
+/// pole the surface barely moves with the parameter along the pole's
+/// border, and the search leaves a point of a rail at `1 − 8e-16` where
+/// its neighbours are at `1`: three points of one border that are a
+/// triangle to the triangulation, a sliver that lies in the plane the
+/// border's curve bends in and so faces any way, which is cut and cut
+/// again until no point fits ("the surface turns away from the chords of
+/// edge …", on every tip that is long and pointed and many that stand
+/// off-centre, 2026-11-14). On the border they are on one line, and no
+/// triangle.
+///
+/// Gives, per point, whether it was put on a border here: such a point's
+/// parameters are known, and are not looked for again next to a pole.
+fn along_the_borders(param: &Param, points: &[(Vec3, Chord)], raw: &mut [Uv]) -> Vec<bool> {
+    let mut placed = vec![false; raw.len()];
+    if craft3d_geom::pole::poles(param.surface).is_empty() {
+        return placed;
+    }
+    let Some(mut borders) = craft3d_geom::pole::BorderFeet::new(param.surface) else {
+        return placed;
+    };
+    let rounding = borders.rounding();
+    for ((uv, &(point, _)), placed) in raw.iter_mut().zip(points).zip(placed.iter_mut()) {
+        let foot = param.eval(*uv);
+        let off = foot.distance(point);
+        let on = rounding + 16.0 * f64::EPSILON * point.length().max(foot.length());
+        // Only more than rounding: a NaN is left where it was found.
+        if off.partial_cmp(&on) != Some(std::cmp::Ordering::Greater) {
+            if let Some(found) = borders.beside(point, param.raw(*uv), on) {
+                *uv = param.order(found.u, found.v);
+                *placed = true;
+            }
+            continue;
+        }
+        let found = match borders.from_last(point, on) {
+            Some(found) => Some(found),
+            None => borders.nearest(point),
+        };
+        if let Some(found) = found
+            && found.off < 0.5 * off
+        {
+            *uv = param.order(found.u, found.v);
+            *placed = found.off <= on;
+        }
+    }
+    placed
+}
+
 /// Whether `ring` jumps across its surface between two neighbouring
 /// points of an edge: the surface at the middle of the two in parameters
 /// is further from their chord than the chord is long and than twice the
@@ -699,6 +772,11 @@ fn build_ring(
         }
         raw.push(uv);
     }
+    let on_border = if param.is_freeform() {
+        along_the_borders(param, points, &mut raw)
+    } else {
+        Vec::new()
+    };
     if let Some(tolerance) = walk.filter(|_| param.is_freeform()) {
         follow_along_the_loop(param, points, &mut raw, tolerance);
     }
@@ -775,7 +853,10 @@ fn build_ring(
             let [la, lb] = largest;
             free_at(i).is_none() && (sa <= NEAR_POLE * la || sb <= NEAR_POLE * lb)
         };
-        let mut walked = vec![false; n];
+        // (A point put on a border of the surface is known already.)
+        let mut walked: Vec<bool> = (0..n)
+            .map(|i| on_border.get(i).copied().unwrap_or(false))
+            .collect();
         let forwards = (0..n).map(|i| (i, (i + n - 1) % n));
         let backwards = (0..n).rev().map(|i| (i, (i + 1) % n));
         for (i, from) in forwards.chain(backwards) {

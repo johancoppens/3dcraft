@@ -653,15 +653,48 @@ struct Follow<'a> {
     /// whose projection is closed-form anyway).
     touch: f64,
     last: Option<(f64, f64)>,
+    /// On a freeform surface with a pole: its open borders, along which
+    /// a point is looked for whose foot was not found on it
+    /// ([`Follow::along_a_border`]). `None` on every other surface, and
+    /// once a point was found on none of them before any was on one (an
+    /// edge that is no border of its surface is not asked again).
+    borders: Option<craft3d_geom::pole::BorderFeet<'a>>,
+    /// With `borders`: the rounding of a point of the surface
+    /// (`BorderFeet::rounding`: a point of a surface that reaches a
+    /// thousand times further than the point is from the origin is known
+    /// no better than the surface is).
+    rounding: f64,
+    /// Whether a point of the run was found on a border.
+    bordered: bool,
+    /// The border the last point projected lies on, to rounding, when
+    /// its foot was found along one ([`Follow::along_a_border`]).
+    on_border: Option<craft3d_geom::pole::Border>,
+}
+
+/// How far a boundary point may be from its foot and lie on the surface:
+/// 16 units in the last place of the coordinates of the point or its foot
+/// (the threshold of [`foot_rates`]).
+fn on_the_surface(point: Vec3, foot: Vec3) -> f64 {
+    16.0 * f64::EPSILON * point.length().max(foot.length())
 }
 
 impl<'a> Follow<'a> {
     fn new(surface: &'a Surface, touch: f64) -> Self {
         let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
+        let borders = if freeform && !craft3d_geom::pole::poles(surface).is_empty() {
+            craft3d_geom::pole::BorderFeet::new(surface)
+        } else {
+            None
+        };
+        let rounding = borders.as_ref().map_or(0.0, |borders| borders.rounding());
         Follow {
             surface,
             touch: if freeform { touch } else { 0.0 },
             last: None,
+            borders,
+            rounding,
+            bordered: false,
+            on_border: None,
         }
     }
 
@@ -669,6 +702,83 @@ impl<'a> Follow<'a> {
     /// its tangents there.
     #[allow(clippy::type_complexity)]
     fn project(&mut self, p: Vec3) -> Result<((f64, f64), (Vec3, Vec3, Vec3)), GeomError> {
+        self.on_border = None;
+        // A run that was found on a border goes on along it: the next
+        // point is looked for there first, a few evaluations from the
+        // last, and is the foot beyond doubt where it is found.
+        if self.bordered
+            && let Some(borders) = &mut self.borders
+            && let Some(foot) = borders.from_last(p, self.rounding + on_the_surface(p, p))
+        {
+            self.last = Some((foot.u, foot.v));
+            self.on_border = Some(foot.border);
+            return Ok(((foot.u, foot.v), foot.at));
+        }
+        let found = self.search(p)?;
+        Ok(self.along_a_border(p, found))
+    }
+
+    /// `found`, the foot the search gave for `p`, or the point of a
+    /// border of the surface that is less than half as far from `p`.
+    ///
+    /// Only on a freeform surface with a pole, and only for a point whose
+    /// foot was found off it by more than rounding (every point that lies
+    /// on its surface where the search finds it keeps its foot, bit for
+    /// bit). Next to a pole whose meridians leave it unevenly the search
+    /// in both parameters settles beside the foot
+    /// (`craft3d_geom::pole::BorderFeet`): for a point of the rail of a
+    /// face that closes an end in a point 0.003 from a corner of a unit
+    /// triangle, 2.4e-5 from it at parameters 0.39 away, where the point
+    /// lies on the surface's border to rounding. Such feet were summed as
+    /// they came, with their distance counted as the boundary's rounding
+    /// ([`Outline::noise`]), so that the sums of the rail agreed at once
+    /// and the face came out 9.9e-7 of its area short (2026-11-14). The
+    /// point of a border that is nearer by half is the better foot
+    /// whatever else is true (the foot is the nearest point); one within
+    /// rounding of `p` is the foot beyond doubt, and the piece then runs
+    /// along that border there, where the rate of the parameter across it
+    /// is nothing ([`Follow::on_border`]).
+    #[allow(clippy::type_complexity)]
+    fn along_a_border(
+        &mut self,
+        p: Vec3,
+        found: ((f64, f64), (Vec3, Vec3, Vec3)),
+    ) -> ((f64, f64), (Vec3, Vec3, Vec3)) {
+        let Some(borders) = &mut self.borders else {
+            return found;
+        };
+        let off = p.distance(found.1.0);
+        let on = self.rounding + on_the_surface(p, found.1.0);
+        // Only more than rounding: a NaN is left as it was found.
+        if off.partial_cmp(&on) != Some(std::cmp::Ordering::Greater) {
+            return found;
+        }
+        let foot = match borders.from_last(p, on) {
+            Some(foot) => Some(foot),
+            None => borders.nearest(p),
+        };
+        match foot {
+            Some(foot) if foot.off < 0.5 * off => {
+                self.bordered = true;
+                self.last = Some((foot.u, foot.v));
+                if foot.off <= on {
+                    self.on_border = Some(foot.border);
+                }
+                ((foot.u, foot.v), foot.at)
+            }
+            _ => {
+                if !self.bordered {
+                    self.borders = None;
+                }
+                found
+            }
+        }
+    }
+
+    /// The foot the walk from the last point or the search over the
+    /// whole surface finds.
+    #[allow(clippy::type_complexity)]
+    fn search(&mut self, p: Vec3) -> Result<((f64, f64), (Vec3, Vec3, Vec3)), GeomError> {
         if self.touch > 0.0
             && let Some(start) = self.last
             && let Ok(((u, v), there)) = self.surface.project_from_with_derivatives(p, start)
@@ -2057,8 +2167,30 @@ fn sampled(
                     let ((u, v), (foot, su, sv)) = follow
                         .project(point)
                         .map_err(|error| MassError::Geometry { face: index, error })?;
-                    let (du, dv) = match foot_rates(curved, (u, v), (point, foot, su, sv), tangent)
-                    {
+                    // Where the piece runs along a border of the surface
+                    // (the point was found on one, to rounding): the
+                    // parameter across the border does not change, and
+                    // the other one at the border's own speed.
+                    let along_border = follow.on_border.map(|border| {
+                        use craft3d_geom::pole::Border;
+                        let rate = |along: Vec3| {
+                            let speed = along.length_squared();
+                            if speed > 0.0 {
+                                tangent.dot(along) / speed
+                            } else {
+                                0.0
+                            }
+                        };
+                        match border {
+                            Border::UStart | Border::UEnd => (0.0, rate(sv)),
+                            Border::VStart | Border::VEnd => (rate(su), 0.0),
+                        }
+                    });
+                    let rates = match along_border {
+                        Some(rates) => Some(rates),
+                        None => foot_rates(curved, (u, v), (point, foot, su, sv), tangent),
+                    };
+                    let (du, dv) = match rates {
                         Some(rates) => rates,
                         None => {
                             // Solve [Sᵤ Sᵥ] (du, dv) = tangent in the
