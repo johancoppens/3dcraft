@@ -157,13 +157,33 @@ pub(crate) fn advance_near(
     from: &[f64],
     near: &[Vec<f64>],
 ) -> Result<Solution, Diagnosis> {
-    solve_from(p, Some(from), Some(near))
+    solve_from(p, Some(from), Some((near, Near::Every)))
+}
+
+/// [`advance`] for a moment of a motion carried from the moment before
+/// (its values in `near`): the angles a coupling takes start the full
+/// turns nearest their values there ([`asm::Solver::solve_at_near_coupled`]),
+/// so a shaft that only its coupling turns follows it over any number of
+/// turns; the others are measured as from a placement.
+pub(crate) fn advance_coupled(
+    p: &Problem,
+    from: &[f64],
+    near: &[Vec<f64>],
+) -> Result<Solution, Diagnosis> {
+    solve_from(p, Some(from), Some((near, Near::Coupled)))
+}
+
+/// Which angles a solve carried from another takes the turns of.
+#[derive(Clone, Copy)]
+enum Near {
+    Every,
+    Coupled,
 }
 
 fn solve_from(
     p: &Problem,
     from: Option<&[f64]>,
-    near: Option<&[Vec<f64>]>,
+    near: Option<(&[Vec<f64>], Near)>,
 ) -> Result<Solution, Diagnosis> {
     if p.start.len() != p.instances {
         return Err(Diagnosis("a start pose is needed per instance".to_string()));
@@ -229,7 +249,8 @@ fn solve_from(
                 asm::Solver::new(&problem).map_err(|d| Diagnosis(d.message(&problem)))?;
             let to = solver.problem_drives();
             match near {
-                Some(near) => solver.solve_at_near(from, near),
+                Some((near, Near::Every)) => solver.solve_at_near(from, near),
+                Some((near, Near::Coupled)) => solver.solve_at_near_coupled(from, near),
                 None => solver.solve_at(from),
             }
             .and_then(|_| solver.advance(&to))

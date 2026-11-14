@@ -2387,7 +2387,9 @@ fn solve_mates(
     let floating = !touches_world && !solved.is_empty();
     // A moment of a motion starts where the one before it left the
     // instances (the same instances take part: else from the placements),
-    // and stays there when it cannot be solved.
+    // with the turns of the angles a coupling counts (A-030: a screw that
+    // only its coupling turns, many turns round), and stays there when it
+    // cannot be solved.
     let mut note = from.filter(|f| f.poses.len() != solved.len()).map(|f| {
         format!(
             "solved from the placements, not carried from the moment before: {} instances took part there, {} here",
@@ -2448,7 +2450,7 @@ fn solve_mates(
     let solved_by = match (held_from, from) {
         (Some(drives), Some(from)) => solver::advance_near(&problem, &drives, &from.values),
         (Some(drives), None) => solver::advance(&problem, &drives),
-        (None, Some(from)) => solver::advance(&problem, &from.drives),
+        (None, Some(from)) => solver::advance_coupled(&problem, &from.drives, &from.values),
         (None, None) => solver::solve(&problem),
     };
     match solved_by {

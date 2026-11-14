@@ -338,3 +338,33 @@ fn a_parallelogram_stays_a_parallelogram_through_its_flat_position() {
         }
     }
 }
+
+/// A Grashof crank-rocker near its change point (ground 4, crank 1,
+/// coupler 3.02, rocker 2), placed exactly on its circuit −1 and solved at
+/// rest at a crank angle far from where it was placed: the direct solve
+/// does not converge, and that error is the answer, as it was before the
+/// A-030 fix (the second review measured a carry from the placement crossing
+/// to the other circuit near the near-singular pose at 180°, a silent
+/// mirrored pose where there had been an honest error). The fallback is for
+/// a coupling's turns only, and this linkage has no coupling.
+#[test]
+fn a_crank_rocker_that_cannot_be_solved_at_rest_stays_an_error() {
+    let (g, a, b, c) = (4.0, 1.0, 3.02, 2.0);
+    // Placed at 110° on circuit −1, driven to 275°.
+    let th0 = 110f64.to_radians();
+    let pa = v2(a * th0.pcos(), a * th0.psin());
+    let pd = v2(g, 0.0);
+    let pb = circ(pa, b, pd, c, -1.0).unwrap();
+    let mut p = planar(4, 1.0, 10.0);
+    let input = pin(&mut p, 0, 1, Vec3::ZERO, "input");
+    pin(&mut p, 1, 2, pa, "A");
+    pin(&mut p, 2, 3, pb, "B");
+    pin(&mut p, 0, 3, pd, "D");
+    p.mates[input].driven[0] = Some(165f64.to_radians());
+    let e = solve(&p).expect_err("an error, as before");
+    let message = e.message(&p);
+    assert!(
+        message.starts_with("did not converge in 15 iterations"),
+        "{message}"
+    );
+}

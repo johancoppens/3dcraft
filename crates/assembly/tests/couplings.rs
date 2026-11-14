@@ -230,3 +230,169 @@ fn a_small_pinion_turns_many_times_for_one_rack_stroke() {
         );
     }
 }
+
+/// A-030's machine: two lead screws (lead 8) turn on the ground at
+/// x = ∓100; their nuts, on them by cylindrical mates, are fixed to one bed
+/// that slides along z. Screw A's angle is driven to `theta`, screw B is
+/// turned by nothing but its screw coupling. Put together at height 50 with
+/// every joint at 0. Instances: 0 ground, 1 bed, 2 and 3 the screws, 4 and
+/// 5 the nuts; mates 0 the bed's slider, 1 and 2 the screws, 3 and 4 the
+/// nuts on them, 5 and 6 the nuts on the bed.
+fn lead_screws(s: f64, theta: f64) -> Problem {
+    let mut p = planar(6, s, 300.0);
+    let at = |x: f64, z: f64| Frame::at(Vec3::new(x, 0.0, z) * s);
+    let mate =
+        |kind, a: (usize, Frame), b: (usize, Frame), name| MateSpec::new(kind, a, b).named(name);
+    p.mates = vec![
+        mate(
+            MateKind::Slider,
+            (0, at(-100.0, 50.0)),
+            (1, at(-100.0, 50.0)),
+            "bed",
+        ),
+        mate(
+            MateKind::Revolute,
+            (0, at(-100.0, 0.0)),
+            (2, at(-100.0, 0.0)),
+            "screw A",
+        ),
+        mate(
+            MateKind::Revolute,
+            (0, at(100.0, 0.0)),
+            (3, at(100.0, 0.0)),
+            "screw B",
+        ),
+        mate(
+            MateKind::Cylindrical,
+            (2, at(-100.0, 50.0)),
+            (4, at(-100.0, 50.0)),
+            "nut A",
+        ),
+        mate(
+            MateKind::Cylindrical,
+            (3, at(100.0, 50.0)),
+            (5, at(100.0, 50.0)),
+            "nut B",
+        ),
+        mate(
+            MateKind::Fixed,
+            (1, at(-100.0, 50.0)),
+            (4, at(-100.0, 50.0)),
+            "nut A on bed",
+        ),
+        mate(
+            MateKind::Fixed,
+            (1, at(100.0, 50.0)),
+            (5, at(100.0, 50.0)),
+            "nut B on bed",
+        ),
+    ];
+    p.couplings = vec![
+        coupling(CouplingKind::Screw, 3, 1, 8.0 * s),
+        coupling(CouplingKind::Screw, 4, 2, 8.0 * s),
+    ];
+    p.mates[1].driven[0] = Some(theta);
+    p
+}
+
+/// Screw B turns as A does and the bed rises a lead a turn: θ_B = θ and
+/// the bed at 8 θ / 2π, solved at rest from where it was put together, at
+/// 3 to 40 turns and three scales. Before, B started at 0 (its pose says
+/// nothing of turns) and the solve walked it half a radian an iteration:
+/// from about 16 turns on it did not converge in 200 iterations.
+#[test]
+fn an_undriven_screw_follows_its_coupling_at_rest_over_many_turns() {
+    for s in SCALES {
+        for turns in [3.0, 15.9, 16.8, 40.0] {
+            let theta = -2.0 * PI * turns;
+            let p = lead_screws(s, theta);
+            let sol = solve(&p).unwrap_or_else(|e| panic!("{turns} turns: {}", e.message(&p)));
+            let rise = 8.0 * s * theta / (2.0 * PI);
+            assert!(
+                (sol.values[2][0] - theta).abs() < 1e-6,
+                "{turns} turns, scale {s}: B at {}",
+                sol.values[2][0]
+            );
+            assert!(
+                (sol.values[0][0] - rise).abs() < 1e-6 * p.scale,
+                "{turns} turns, scale {s}"
+            );
+            assert!((sol.poses[1].translation.z - rise).abs() < 1e-6 * p.scale);
+            assert_eq!(sol.dof, 0);
+            // The nuts' turn on their screws, which no equation counts the
+            // turns of, reads in the turns nearest where it was placed (0),
+            // as a solve from the placement reads it: within half a turn.
+            for nut in [3, 4] {
+                let a = sol.values[nut][0];
+                assert!(a.abs() <= PI, "{turns} turns: nut {nut} at {a}");
+                let want = -theta - 2.0 * PI * (-theta / (2.0 * PI)).round();
+                assert!(
+                    (a - want).abs() < 1e-6,
+                    "{turns} turns: nut {nut} at {a}, not {want}"
+                );
+            }
+        }
+    }
+}
+
+/// A screw placed with its nut where many turns put it, as a jack is
+/// saved: the screw starts at the turns its coupling says (27), not 0, so
+/// nothing is turned round and every joint reads as placed.
+#[test]
+fn a_screw_placed_many_turns_round_starts_at_its_couplings_turns() {
+    let turns = 27.0;
+    let theta = -2.0 * PI * turns;
+    let lead = 8.0;
+    let mut p = lead_screws(1.0, theta);
+    // The bed and nuts placed where 27 turns put them: one lead a turn.
+    let rise = Vec3::new(0.0, 0.0, lead * theta / (2.0 * PI));
+    for i in [1, 4, 5] {
+        p.start[i] = craft3d_assembly::Pose::new(craft3d_assembly::Mat3::IDENTITY, rise);
+    }
+    let sol = solve(&p).unwrap();
+    assert!(
+        (sol.values[2][0] - theta).abs() < 1e-6,
+        "B at {}",
+        sol.values[2][0]
+    );
+    // Nothing turned: the nuts read 0 on their screws, the bed is where
+    // it was placed.
+    for nut in [3, 4] {
+        assert!(sol.values[nut][0].abs() < 1e-6, "{}", sol.values[nut][0]);
+    }
+    assert!((sol.poses[1].translation - rise).length() < 1e-6);
+}
+
+/// The same moment by moment, as a motion makes them: each moment's
+/// problem starts where the one before left the parts, carried with the
+/// turns its couplings count (`solve_at_near_coupled`), a third of a turn
+/// a moment for 40 turns. Screw B follows at every moment; before, a
+/// moment started B in (−π, π] and stopped converging after 15.7 turns.
+#[test]
+fn an_undriven_screw_follows_its_coupling_moment_by_moment() {
+    for s in SCALES {
+        let mut p = lead_screws(s, 0.0);
+        let mut last = solve(&p).unwrap();
+        for k in 1..=120 {
+            let theta = -2.0 * PI * k as f64 / 3.0;
+            p.start = last.poses.clone();
+            let mut solver = craft3d_assembly::Solver::new(&p).unwrap();
+            solver
+                .solve_at_near_coupled(&last.drives, &last.values)
+                .unwrap();
+            let sol = solver
+                .advance(&[theta])
+                .unwrap_or_else(|e| panic!("moment {k}: {}", e.message(&p)));
+            let rise = 8.0 * s * theta / (2.0 * PI);
+            assert!(
+                (sol.values[2][0] - theta).abs() < 1e-6,
+                "moment {k}, scale {s}"
+            );
+            assert!(
+                (sol.values[0][0] - rise).abs() < 1e-6 * p.scale,
+                "moment {k}"
+            );
+            last = sol;
+        }
+    }
+}

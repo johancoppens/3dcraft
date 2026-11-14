@@ -13,7 +13,7 @@ const MAX_RETRIES: usize = 40;
 /// The largest step one iteration may take, dimensionless: half the
 /// scale, half a radian. A longer Newton step is shortened to it, so a far
 /// start walks in instead of leaping across branches.
-const MAX_STEP: f64 = 0.5;
+pub(crate) const MAX_STEP: f64 = 0.5;
 
 /// The damping `μ` starts here (relative to the largest diagonal of
 /// `JᵀJ`): nearly a pure Gauss–Newton step.
