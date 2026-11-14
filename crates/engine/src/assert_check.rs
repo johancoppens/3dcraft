@@ -491,6 +491,10 @@ impl Session {
         let stepwise = self.stepwise;
         let measure_here = self.measure_here;
         let regen_elsewhere = self.regen_elsewhere();
+        // A host that refuses what needs the bodies (`set_refuse_bodies`)
+        // counts measuring every assertion here, on its one thread, as
+        // needing them.
+        let refusing = self.refusing_bodies();
         let elsewhere = regen_elsewhere && !matches!(wait, Wait::All);
         let open = self.document_mut()?;
         // Regenerated and measured elsewhere, a state at a time
@@ -728,6 +732,10 @@ impl Session {
             // pending, as one that does not wait.
             if stepwise {
                 match (&checks.job, wait) {
+                    (Some(_), Wait::All) if refusing && open.forbid_regen.is_some() => {
+                        open.forbid_regen = Some(true);
+                        return Ok((out, resolved));
+                    }
                     (Some(job), Wait::All) => {
                         run(job);
                         continue;

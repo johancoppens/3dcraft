@@ -736,6 +736,7 @@ dependencies = [
 name = "craft3d-web"
 version = "0.1.2"
 dependencies = [
+ "craft3d-automation",
  "craft3d-buildinfo",
  "craft3d-engine",
  "craft3d-kernel",

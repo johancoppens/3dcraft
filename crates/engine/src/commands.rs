@@ -3647,6 +3647,23 @@ fn history_rollback(session: &mut Session, params: &Value) -> Run {
 
 // --------------------------------------------------------------- document
 
+/// What `document.inspect` says of the open document `open` (at `index`)
+/// in this session rather than of its design: its place among the open
+/// documents, its file, its unsaved mark and its undo history. A copy run
+/// elsewhere (`commands_elsewhere.rs`) has none of them, so its answer
+/// takes these from the session that asked.
+pub(crate) fn session_fields(open: &crate::OpenDocument, index: usize) -> Value {
+    json!({
+        "document": index,
+        "path": open.path,
+        "dirty": open.dirty(),
+        "history": {
+            "undo": open.history.undo_labels().collect::<Vec<_>>(),
+            "redo": open.history.redo_labels().collect::<Vec<_>>(),
+        },
+    })
+}
+
 fn document_inspect(session: &mut Session, params: &Value) -> Run {
     let p = Params::new(
         "document.inspect",
@@ -3919,9 +3936,6 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         .collect();
     let lost_faces = crate::appearance_cmds::lost_faces_json(doc, &regen);
     let mut out = json!({
-        "document": index,
-        "path": open.path,
-        "dirty": open.dirty(),
         "units": { "length": unit, "angle": match doc.units.angle {
             craft3d_doc::AngleUnit::Degree => "deg",
             craft3d_doc::AngleUnit::Radian => "rad",
@@ -3937,14 +3951,15 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         "rollback": doc.rollback.map(|id| id.to_string()),
         "bodies": bodies,
         "ok": regen.is_ok(),
-        "history": {
-            "undo": open.history.undo_labels().collect::<Vec<_>>(),
-            "redo": open.history.redo_labels().collect::<Vec<_>>(),
-        },
     });
     // The colours given to single faces, and those whose face is gone:
     // only when there are any.
     if let Some(map) = out.as_object_mut() {
+        // What this session knows of the document (also put over the
+        // answer of a copy elsewhere, `commands_elsewhere.rs`).
+        if let Value::Object(fields) = session_fields(open, index) {
+            map.extend(fields);
+        }
         if !face_colors.is_empty() {
             map.insert("faceAppearances".into(), face_colors.into());
         }

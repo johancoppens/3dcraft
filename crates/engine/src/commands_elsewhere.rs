@@ -133,7 +133,20 @@ pub(crate) struct CommandJob {
     /// A trace (`view.trace`) made there: its name and serial here, under
     /// which it waits as pending ([`crate::OpenDocument::trace_came`]).
     trace: Option<(String, u64)>,
+    /// What a read says of the document in this session, put over what
+    /// the other side's copy says ([`SESSION_FIELDS`]).
+    session_fields: Option<Value>,
+    /// Answered on the state it was asked on, also after an edit came
+    /// behind it ([`Session::set_reads_on_their_state`]).
+    own_state: bool,
 }
+
+/// The reads handed over whose result says what this session knows of the
+/// document and the other side's copy does not: its place among the open
+/// documents, its file, its unsaved mark and its undo history
+/// (`document.inspect`'s `document`, `path`, `dirty`, `history`). The
+/// other reads handed over say nothing of them.
+const SESSION_FIELDS: [&str; 1] = ["document.inspect"];
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Commands {
@@ -158,6 +171,15 @@ pub(crate) struct Commands {
     /// The name a trace tried here takes (`view.trace` names it here,
     /// where the traces kept are, and it is made there under that name).
     trace_name: Option<String>,
+    /// While set ([`Session::set_refuse_bodies`]), a command that needs
+    /// the bodies is refused, with this way out, instead of being handed
+    /// over or run here: what would hold the host's one thread (a page's
+    /// batch, a `wait: true`).
+    refuse: Option<String>,
+    /// While set ([`Session::set_reads_on_their_state`]), a read handed
+    /// over is answered on the state it was asked on, also when an edit
+    /// came behind it (a page's measure per slider value).
+    own_state: bool,
 }
 
 impl Commands {
@@ -185,6 +207,10 @@ pub(crate) enum Trial {
     /// It needed them and changed the document as well: the session is
     /// as it was before it, and it runs again, here.
     RunHere,
+    /// It needed them while the host refuses that
+    /// ([`Session::set_refuse_bodies`]): the session is as it was before
+    /// it, and this is its error.
+    Refused(String),
 }
 
 impl Session {
@@ -196,6 +222,32 @@ impl Session {
         self.commands.enabled = elsewhere;
     }
 
+    /// While `hint` is set, a command that needs the bodies the host has
+    /// elsewhere (they are not here) is refused with an error that ends
+    /// in `hint`, instead of being handed over or regenerating here: for
+    /// what a host runs on its one thread to the end (a page's `batch`, a
+    /// command that waits for every assertion). Also a wait for every
+    /// assertion that would measure them here counts as needing them.
+    /// `None` again goes back to handing over.
+    pub fn set_refuse_bodies(&mut self, hint: Option<&str>) {
+        self.commands.refuse = hint.map(str::to_string);
+    }
+
+    /// True while [`Session::set_refuse_bodies`] is in effect.
+    pub(crate) fn refusing_bodies(&self) -> bool {
+        self.commands.refuse.is_some()
+    }
+
+    /// While on, a read handed over to be run where the bodies are is
+    /// answered on the state it was asked on, also when an edit came
+    /// behind it (its result and its files; not a selection it leaves):
+    /// what a page that embeds 3DCraft asks for when it measures after
+    /// each change of a slider. Off (the default), such an answer is an
+    /// error that says the document changed before it came.
+    pub fn set_reads_on_their_state(&mut self, on: bool) {
+        self.commands.own_state = on;
+    }
+
     /// Before a command runs: a copy of the session to go back to when the
     /// command turns out to need the bodies, with the active document
     /// told to note that. `None` when it runs here as always.
@@ -203,12 +255,15 @@ impl Session {
     /// is tried even when the state is regenerated here: it regenerates
     /// every sample, which the state regenerated here does not spare.
     pub(crate) fn try_without_bodies(&mut self, id: &str) -> Option<Session> {
+        // A host that refuses tries every command, also one on bodies
+        // regenerated here: it may still wait for every assertion.
+        let refusing = self.commands.refuse.is_some();
         if !self.commands.enabled
-            || !self.commands.deferrable
+            || !(self.commands.deferrable || refusing)
             || self.commands.busy
-            || self.commands.jobs.len() >= MAX_JOBS
+            || (!refusing && self.commands.jobs.len() >= MAX_JOBS)
             || !self.regen_elsewhere()
-            || (self.regenerated_here() && !sweeps(id))
+            || (!refusing && self.regenerated_here() && !sweeps(id))
         {
             return None;
         }
@@ -240,6 +295,14 @@ impl Session {
         }
         if !wanted {
             return Trial::Kept;
+        }
+        // The host refuses what needs the bodies now: nothing of the
+        // command stays, and it says why and what to do instead.
+        if let Some(hint) = self.commands.refuse.clone() {
+            self.restore(snapshot);
+            return Trial::Refused(format!(
+                "{id} needs the bodies, which this host builds elsewhere; {hint}"
+            ));
         }
         let edited = self.documents.len() != snapshot.documents.len()
             || self.active != snapshot.active
@@ -325,6 +388,17 @@ impl Session {
         let doc = Arc::clone(current);
         let selection = open.selection.to_wire();
         let jig_in_use = open.jig_in_use;
+        // What a read says of the document in this session (its place,
+        // file, unsaved mark and undo history), as it is now: the other
+        // side has a copy without them.
+        let session_fields = (kind == JobKind::Read && SESSION_FIELDS.contains(&id))
+            .then(|| crate::commands::session_fields(open, self.active));
+        // A page's read keeps its state; not a selection or a sample of
+        // the motion, which are this session's view state now.
+        let own_state = self.commands.own_state
+            && kind == JobKind::Read
+            && !id.starts_with("select.")
+            && !sweeps(id);
         let trace = match (&trace_name, self.documents.get_mut(self.active)) {
             (Some(name), Some(open)) => Some((name.clone(), open.trace_handed_over(name))),
             _ => None,
@@ -354,6 +428,8 @@ impl Session {
             sources,
             moment,
             trace,
+            session_fields,
+            own_state,
         });
         Trial::Deferred(result)
     }
@@ -409,6 +485,8 @@ impl Session {
             sources: open.sources(open.history.current()),
             moment: None,
             trace: None,
+            session_fields: None,
+            own_state: false,
         });
         Some(token)
     }
@@ -525,6 +603,15 @@ impl Session {
     /// True while a command handed over waits for its answer.
     pub fn commands_waiting(&self) -> bool {
         !self.commands.jobs.is_empty()
+    }
+
+    /// True while as many commands wait for their answers as may: the
+    /// next command that needs the bodies would run here
+    /// ([`Session::try_without_bodies`] hands over no more). A host that
+    /// must never build them here (a page that embeds 3DCraft) keeps its
+    /// next request until one is answered.
+    pub fn commands_full(&self) -> bool {
+        self.commands.jobs.len() >= MAX_JOBS
     }
 
     /// The command numbered `token`, written out for
@@ -707,6 +794,21 @@ impl Session {
         let Some(at) = self.documents.iter().position(|open| {
             open.id == job.doc_id && Arc::ptr_eq(open.history.current(), &job.doc)
         }) else {
+            // A read kept on its own state: its result and its files for
+            // the state it was asked on, while the document is open.
+            if job.own_state && self.documents.iter().any(|open| open.id == job.doc_id) {
+                if let Some(error) = reply.get("error") {
+                    return Err(error.as_str().unwrap_or("failed").to_string());
+                }
+                let mut files = Vec::new();
+                for (name, bytes) in answer.files {
+                    self.put_file(&name, bytes)
+                        .map_err(|e| format!("{id}: {}", e.message()))?;
+                    files.push(name);
+                }
+                let value = reply.get("ok").cloned().unwrap_or(Value::Null);
+                return Ok((with_session_fields(value, job), files));
+            }
             return Err(format!(
                 "{id}: the document changed before its answer came, so nothing of it was taken; run it again"
             ));
@@ -764,8 +866,20 @@ impl Session {
                 .map_err(|e| format!("{id}: {}", e.message()))?;
             files.push(name);
         }
-        Ok((reply.get("ok").cloned().unwrap_or(Value::Null), files))
+        let value = reply.get("ok").cloned().unwrap_or(Value::Null);
+        Ok((with_session_fields(value, job), files))
     }
+}
+
+/// A read's result with what this session says of the document put over
+/// what the other side's copy said (`CommandJob::session_fields`).
+fn with_session_fields(mut value: Value, job: &CommandJob) -> Value {
+    if let (Some(Value::Object(fields)), Some(map)) = (&job.session_fields, value.as_object_mut()) {
+        for (key, field) in fields {
+            map.insert(key.clone(), field.clone());
+        }
+    }
+    value
 }
 
 impl Session {
