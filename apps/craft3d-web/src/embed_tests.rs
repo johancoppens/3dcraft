@@ -27,6 +27,9 @@ enum Job {
     Command(u64, Vec<u8>, String),
 }
 
+/// The files of a reply, by name.
+type Files = Vec<(String, Vec<u8>)>;
+
 /// The regenerating worker: keeps what it is posted and answers all of it
 /// when the frame asks.
 #[derive(Clone, Default)]
@@ -181,7 +184,7 @@ impl Page {
 
     /// The replies and events since the last call, as JSON, with the
     /// files of each reply.
-    fn take(&mut self) -> Vec<(Value, Vec<(String, Vec<u8>)>)> {
+    fn take(&mut self) -> Vec<(Value, Files)> {
         self.out
             .drain(..)
             .map(|out| {

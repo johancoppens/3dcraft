@@ -225,12 +225,20 @@ fn read(data: &JsValue) -> Result<Message, (Value, String)> {
         }
         _ => data.clone(),
     };
-    let text = js_sys::JSON::stringify(&request).map_err(|_| {
+    // A message that cannot be written as JSON (a cycle, a BigInt) throws,
+    // which is caught; `undefined` gives no text at all.
+    let unread = || {
         (
             id.clone(),
             "the message cannot be read as JSON; post the request {id, method, params} as an object or as its JSON text".to_string(),
         )
-    })?;
+    };
+    let text: JsValue = js_sys::JSON::stringify(&request)
+        .map(JsValue::from)
+        .map_err(|_| unread())?;
+    let Some(text) = text.dyn_ref::<js_sys::JsString>() else {
+        return Err(unread());
+    };
     if text.length() as usize > MAX_REQUEST_BYTES {
         return Err((id, too_long()));
     }
