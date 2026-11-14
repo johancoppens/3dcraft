@@ -49,7 +49,28 @@ an angle is its measured angle in (−π, π], with three exceptions:
 - every other angle stays in (−π, π].
 
 A coupling's phase is therefore fixed by the representative in (−π, π] of each start. Exactly at π this is +π, and it
-is deterministic.
+is deterministic. Two consequences (2026-11-14, A-030):
+- A moment of a motion is solved from the poses of the moment before, which say nothing of turns: first as always,
+  every angle in (−π, π], so a moment that converged before converges to the same bits. Only when that fails are the
+  angles a coupling takes started at the whole turns nearest their values in the moment before
+  (`Solver::solve_at_near_coupled`); every other equation is periodic in an angle. Started in (−π, π], a screw that
+  only its coupling turns was walked back half a radian an iteration at every moment, and a motion of two lead
+  screws, one driven, stopped after 15.7 turns ("did not converge in 200 iterations").
+- A rest solve is one solve from the start, as always, and its answer stands whenever it has one. Only when it fails,
+  and only where a coupling's turns are the matter (`Solver::solve_by_coupled_turns`), the placement is solved again: from
+  the turns its couplings say (`System::coupled_start_turns`: an angle no drive sets that is the only such angle of a
+  coupling starts the whole turns that meet it best where the placement has the rest, so a screw placed with its nut
+  27 leads along starts at 27 turns), tried only when that moves a start; else, when a driven angle a coupling takes
+  is placed whole turns from where the turns nearest its drive put it, carried from the placement's turns to the
+  drives (sub-steps of at most half a radian or half the scale, 2000 iterations, 50 a sub-step;
+  `Solver::carry_rest`): a lead screw placed at 0 with its nut and driven 16.8 turns winds there with its nut. Any
+  other failure stays the error it was: a carry across a linkage's near-singular pose can change circuits (the second
+  review: a crank-rocker of coupler 3.02 placed exactly at 110° and solved at 275° came out on its other circuit
+  where the solve had said "did not converge"), which an error never does. When the carry turns a drive more than
+  half a turn, the angles no equation counts are taken back to the whole turns nearest their start (their equations
+  are periodic: no pose moves). So a joint no equation counts reads what the path to it gave: a nut's free turn on its
+  screw reads 9.42 rad after 1.5 turns, solved directly (as before), and within ±π after 3 turns, where the direct
+  solve fails and the carry is used. A direct answer is never replaced: only a failure can turn into an answer.
 
 **Damped Newton (Levenberg–Marquardt).** The normal equations `(JᵀJ + μ D I) h = −Jᵀr` are assembled block-sparse.
 The blocks are an instance's six unknowns and a mate's variables. They are factored as `L D Lᵀ` in minimum-degree
@@ -684,6 +705,25 @@ back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an asse
 - `.3dcraftasm` is among the extensions Open offers, on the desktop and the page.
 
 ### Findings and history (track A)
+
+- 2026-11-14 (assembly-trust, A-030): two lead screws whose nuts ride one bed, screw A driven 24 turns over the
+  motion, screw B turned by nothing but its screw coupling: `assembly.solve` was ok at `t = 0`, `motion.check`
+  stopped at `t = 0.65` (15.7 turns, "did not converge in 200 iterations"), and the rest solve failed from 16.8 turns
+  (`t = 0.7`). Cause: each moment is solved from the poses of the moment before, and a pose says an angle only within a
+  turn, so B started in (−π, π] with its coupling a whole number of leads unmet; the solve walked it back at most half a
+  radian an iteration, 100 rad in 200. The rest solve started A the turns nearest its drive and B at 0, the same
+  walk. The principle broken: an angle whose turns an equation counts (a coupling) was not carried with its turns.
+  Rule: a moment starts the angles a coupling takes at the turns they had; a rest solve that fails is solved again
+  from the turns the placement's couplings say, or carried (the Method's *Couplings*). The motion now runs its 73
+  samples, screw B within 2·10⁻⁴° of `−24 · 360° · t`, and the rest solves at 16.8 and 48 turns. Second review
+  (measured): a first version started every moment's coupled angles at their turns and so moved the numbers of any
+  geared motion once a shaft had turned more than half a turn (a gear train: 45 of 72 moments by up to 2·10⁻¹⁴; the
+  radial engine's least and greatest values by up to 3·10⁻⁷ through its clearance search), and it carried any failed
+  rest solve, so a crank-rocker that had failed with "did not converge" came out on its other circuit. Now a moment
+  tries the start it always had first, and only a coupling's turns are carried: every moment and rest solve that
+  converged before gives the same bits (the published assemblies are pinned to goldens of the parent,
+  `engine/tests/published_assemblies.rs`), and that crank-rocker is again the error it was
+  (`linkages.rs`).
 
 - 2026-10-30 (asm-gaps, the gaps the assemblies of three Jigs found): world references checked when a mate is
   made; linear couplings; the measures `jointAngle`, `jointDistance`, `position`, `rotation` and the commands

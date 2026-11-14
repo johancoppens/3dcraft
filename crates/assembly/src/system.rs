@@ -432,6 +432,233 @@ impl System {
         }
     }
 
+    /// [`Self::keep_turns`] for the angles a coupling takes only: a
+    /// coupling counts their turns, while every other equation is periodic
+    /// in an angle, so no other angle's turns need carrying (and a joint
+    /// that turns round with nothing counting it reads in (−π, π] as from a
+    /// placement). `near` must hold every mate, else nothing is carried.
+    pub(crate) fn keep_coupled_turns(&self, state: &mut State, near: &[Vec<f64>]) {
+        if near.len() != self.mates.len() {
+            return;
+        }
+        let masked: Vec<Vec<f64>> = near
+            .iter()
+            .enumerate()
+            .map(|(m, hints)| {
+                hints
+                    .iter()
+                    .enumerate()
+                    .map(|(v, &h)| if self.is_coupled(m, v) { h } else { f64::NAN })
+                    .collect()
+            })
+            .collect();
+        self.keep_turns(state, &masked);
+    }
+
+    /// Whether an equation counts the turns of mate `m`'s variable `v`: a
+    /// driver, a coupling or a limit (every other equation is periodic in
+    /// an angle).
+    pub(crate) fn counts_turns(&self, m: usize, v: usize) -> bool {
+        self.slots.contains(&(m, v))
+            || self.is_coupled(m, v)
+            || self
+                .problem
+                .mates
+                .get(m)
+                .is_some_and(|s| s.limits.get(v).copied().flatten().is_some())
+    }
+
+    /// Whether a coupling takes mate `m`'s variable `v`.
+    pub(crate) fn is_coupled(&self, m: usize, v: usize) -> bool {
+        self.linears
+            .iter()
+            .any(|l| l.terms.iter().any(|&(tm, tv, _)| tm == m && tv == v))
+    }
+
+    /// The driven values a start holds itself, in slot order: each driven
+    /// variable as `start` has it (a driven angle the whole turns nearest
+    /// its drive, as [`Self::start_state`] takes it). With
+    /// `couplings_measured` (a placement, whose poses alone say nothing of
+    /// turns), a driven angle a coupling takes is taken the whole turns that
+    /// meet its couplings best where the start has everything else
+    /// ([`Self::coupled_turns`]), not those nearest its drive: a lead screw
+    /// placed at 0 with its nut at 0 and driven 16 turns starts at 0 and is
+    /// carried the 16 turns with its nut, where the turns nearest its drive
+    /// would put it 16 leads from its own nut; a jack's screw placed with
+    /// its nut where 27 turns put it starts at 27 turns.
+    pub(crate) fn start_drives(&self, start: &State, couplings_measured: bool) -> Vec<f64> {
+        self.slots
+            .iter()
+            .map(|&(m, v)| {
+                let value = start
+                    .values
+                    .get(m)
+                    .and_then(|vals| vals.get(v))
+                    .copied()
+                    .unwrap_or(0.0);
+                let angle = self
+                    .mates
+                    .get(m)
+                    .and_then(|mt| mt.kind.variables().get(v))
+                    .is_some_and(|k| k.is_angle());
+                if couplings_measured && angle && self.is_coupled(m, v) {
+                    self.coupled_turns(start, m, v, value)
+                } else {
+                    value
+                }
+            })
+            .collect()
+    }
+
+    /// Takes each angle that no drive sets and that is the only such angle
+    /// of a coupling (a screw's turn against its nut's travel, a pinion's
+    /// against its rack's, a gear's against a driven one) the whole turns
+    /// that meet those couplings best where `state` has the rest. A
+    /// placement's poses say an angle only within a turn while its
+    /// coupling counts the turns: a screw placed with its nut 27 leads along
+    /// starts at 27 turns, where (−π, π] left the coupling 27 leads unmet
+    /// and the solve walking the screw half a radian an iteration. Its pose
+    /// does not change; an angle that shares a coupling with another free
+    /// angle (two gears nothing drives) keeps (−π, π], as the coupling's
+    /// phase is defined there. Limited angles keep the turns of their range.
+    pub(crate) fn coupled_start_turns(&self, state: &mut State) {
+        for (m, mate) in self.mates.iter().enumerate() {
+            for (v, kind) in mate.kind.variables().iter().enumerate() {
+                let limited = self
+                    .problem
+                    .mates
+                    .get(m)
+                    .is_some_and(|s| s.limits.get(v).copied().flatten().is_some());
+                if *kind != VarKind::Angle || self.slots.contains(&(m, v)) || limited {
+                    continue;
+                }
+                let free_angle = |tm: usize, tv: usize| {
+                    !self.slots.contains(&(tm, tv))
+                        && self
+                            .mates
+                            .get(tm)
+                            .and_then(|mt| mt.kind.variables().get(tv))
+                            .is_some_and(|k| *k == VarKind::Angle)
+                };
+                let alone = |lin: &Linear| {
+                    lin.terms
+                        .iter()
+                        .all(|&(tm, tv, _)| (tm, tv) == (m, v) || !free_angle(tm, tv))
+                };
+                let Some(value) = state.values.get(m).and_then(|vals| vals.get(v)).copied() else {
+                    continue;
+                };
+                let turned = self.best_turns(state, m, v, value, &alone);
+                if let Some(slot) = state.values.get_mut(m).and_then(|vals| vals.get_mut(v)) {
+                    *slot = turned;
+                }
+            }
+        }
+    }
+
+    /// Angle `v` of mate `m` at `value` (its start value elsewhere in
+    /// `start`), moved by the whole turns that bring its couplings nearest
+    /// to holding, in the least-squares sense of their residuals; `value`
+    /// itself when no turn helps or nothing is finite.
+    pub(crate) fn coupled_turns(&self, start: &State, m: usize, v: usize, value: f64) -> f64 {
+        self.best_turns(start, m, v, value, &|_| true)
+    }
+
+    /// [`Self::coupled_turns`] over the couplings `take` takes.
+    fn best_turns(
+        &self,
+        start: &State,
+        m: usize,
+        v: usize,
+        value: f64,
+        take: &dyn Fn(&Linear) -> bool,
+    ) -> f64 {
+        let mut num = 0.0;
+        let mut den = 0.0;
+        for lin in self.linears.iter().filter(|l| take(l)) {
+            let mut coef = 0.0;
+            let mut r = -lin.value;
+            for &(tm, tv, c) in &lin.terms {
+                let q = if (tm, tv) == (m, v) {
+                    coef += c;
+                    value
+                } else {
+                    start
+                        .values
+                        .get(tm)
+                        .and_then(|vals| vals.get(tv))
+                        .copied()
+                        .unwrap_or(0.0)
+                };
+                r += c * q;
+            }
+            if coef == 0.0 {
+                continue;
+            }
+            let w = 1.0 / (lin.norm * lin.norm);
+            num += coef * r * w;
+            den += coef * coef * w;
+        }
+        let shift = -num / den;
+        let turns = (shift / (2.0 * PI)).round();
+        if den > 0.0 && turns.is_finite() {
+            value + 2.0 * PI * turns
+        } else {
+            value
+        }
+    }
+
+    /// Takes each angle that no equation counts the turns of (not driven,
+    /// not coupled, not limited) the whole turns nearest its value in
+    /// `start`. Its equations are periodic in it, so no pose and no residual
+    /// changes; only the value reported does, as a solve from the start
+    /// reports it.
+    pub(crate) fn turns_nearest_start(&self, state: &mut State, start: &State) {
+        for (m, (mate, vals)) in self.mates.iter().zip(state.values.iter_mut()).enumerate() {
+            for (v, val) in vals.iter_mut().enumerate() {
+                let counted = mate.kind.variables().get(v).copied() != Some(VarKind::Angle)
+                    || self.counts_turns(m, v);
+                if counted {
+                    continue;
+                }
+                let Some(&was) = start.values.get(m).and_then(|s| s.get(v)) else {
+                    continue;
+                };
+                let turns = ((*val - was) / (2.0 * PI)).round();
+                if turns.is_finite() {
+                    *val -= 2.0 * PI * turns;
+                }
+            }
+        }
+    }
+
+    /// Whether some driven angle goes more than half a turn from `a` to
+    /// `b`: a start taken at a coupled drive's own turns, carried round.
+    pub(crate) fn winds(&self, a: &[f64], b: &[f64]) -> bool {
+        self.slots
+            .iter()
+            .zip(a.iter().zip(b))
+            .any(|(&(m, v), (x, y))| {
+                let angle = self
+                    .mates
+                    .get(m)
+                    .and_then(|mt| mt.kind.variables().get(v))
+                    .is_some_and(|k| k.is_angle());
+                angle && (y - x).abs() > PI
+            })
+    }
+
+    /// Whether two sets of driven values differ by more than the tolerance
+    /// in any slot (dimensionless).
+    pub(crate) fn drives_apart(&self, a: &[f64], b: &[f64]) -> bool {
+        a.len() != b.len()
+            || self
+                .slots
+                .iter()
+                .zip(a.iter().zip(b))
+                .any(|(&(m, v), (x, y))| ((y - x) / self.unit(m, v)).abs() > self.eps)
+    }
+
     /// A mate's variables measured from where its frames are.
     fn measure(&self, mate: &Mate, poses: &[Pose]) -> Vec<f64> {
         let (Some(pa), Some(pb)) = (poses.get(mate.a), poses.get(mate.b)) else {

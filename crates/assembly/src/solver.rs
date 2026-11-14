@@ -5,7 +5,7 @@ use crate::analysis::{
     dependencies, diagnose_rest, driver_loop_mates, free_motions, moved_mates, rank_and_nulls,
     redundancies,
 };
-use crate::newton::{MAX_ITERATIONS, evaluate, gauss_newton, run};
+use crate::newton::{MAX_ITERATIONS, MAX_STEP, evaluate, gauss_newton, run};
 use crate::system::{Rows, State, System};
 use crate::types::{DeadPoint, Diagnosis, Problem, Sequence, Solution};
 
@@ -25,6 +25,32 @@ const CONTINUITY_FLOOR: f64 = 100.0;
 /// that travels further has left the branch the prediction follows.
 const CONTINUITY: f64 = 0.5;
 
+/// The largest change of a drive in one sub-step when a rest solve is
+/// carried from where its parts are placed (dimensionless: radians, or
+/// the scale): the most one Newton step may move anything, so a drive far
+/// from the start walks there as a far start walks in, instead of leaping
+/// across branches in one prediction the continuity check is too loose to
+/// catch (its bound grows with the step).
+const REST_STEP: f64 = MAX_STEP;
+
+/// Newton iterations a rest solve's carry may spend, all sub-steps
+/// together: ten solves' worth, so a placement whose direct solve failed
+/// costs at most a few times a solve more. A carry that runs out is not
+/// used, and the direct solve's failure stands.
+const REST_ITERATIONS: usize = 10 * MAX_ITERATIONS;
+
+/// Newton iterations one sub-step of a rest carry may spend: a quarter of
+/// a solve's. A sub-step's corrector starts from a prediction at most half
+/// a radian away and converges in a few iterations on the branch (two on
+/// average over the 40 turns of a lead screw); one that does not is cut,
+/// so a limit position is found by halving (to ε of the drives' change, as
+/// a motion's) within the carry's budget: about 1000 iterations for the
+/// double-rocker of the tests, where a full solve's 200 per try spent
+/// 7000. Cutting only to √ε was tried and refused: a Jansen leg carried
+/// from 250° to 80° passes a near-singular pose at 193° only in steps
+/// finer than that.
+const REST_STEP_ITERATIONS: usize = MAX_ITERATIONS / 4;
+
 /// A solver for one problem. It keeps the last solution, so
 /// [`Solver::advance`] can follow the motion from it on the same branch.
 #[derive(Debug)]
@@ -35,6 +61,55 @@ pub struct Solver {
     last: Option<Solution>,
     /// The solution before the last and its drives, for the secant.
     prev: Option<(State, Vec<f64>)>,
+}
+
+/// Which angles of a start take their turns from an earlier solve.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Turns {
+    /// None: a placement, every angle as measured (a driven one the turns
+    /// nearest its drive, a limited one nearest its range).
+    Measured,
+    /// Every angle no drive sets (a joint held by hand, `view.drive`).
+    Every,
+    /// The angles a coupling takes (a moment of a motion).
+    Coupled,
+}
+
+/// How a carry goes: a sub-step changes a drive by at most `largest`
+/// (dimensionless), its corrector spends at most `per_step` iterations,
+/// the whole carry at most `budget`, a sub-step is not cut below `finest`
+/// of the drives' change, and with `analyse` the state reached is analysed
+/// (rank, free motions) as [`Solver::last`].
+#[derive(Clone, Copy)]
+struct Pace {
+    largest: f64,
+    budget: usize,
+    per_step: usize,
+    finest: f64,
+    analyse: bool,
+}
+
+impl Pace {
+    /// A motion's ([`Solver::advance`]): the first sub-step the whole way.
+    const MOTION: Pace = Pace {
+        largest: f64::INFINITY,
+        budget: MAX_ADVANCE_ITERATIONS,
+        per_step: MAX_ITERATIONS,
+        finest: 0.0,
+        analyse: true,
+    };
+    /// A rest solve's carry.
+    const REST: Pace = Pace {
+        largest: REST_STEP,
+        budget: REST_ITERATIONS,
+        per_step: REST_STEP_ITERATIONS,
+        finest: 0.0,
+        analyse: false,
+    };
+
+    fn with_finest(self, finest: f64) -> Pace {
+        Pace { finest, ..self }
+    }
 }
 
 /// A solved state and how it was reached.
@@ -91,16 +166,11 @@ impl Solver {
 
     /// Solves from the problem's start poses at `drives` (in
     /// [`Problem::driven_slots`] order), forgetting any earlier solution.
+    /// One solve straight from the start, as always; when it fails, from
+    /// the turns the start's couplings say (see [`Self::rest`]).
     pub fn solve_at(&mut self, drives: &[f64]) -> Result<Solution, Diagnosis> {
         self.check_drives(drives)?;
-        let start = self.sys.start_state(drives);
-        let c = self.correct(&start, drives)?;
-        let sol = self.solution(&c)?;
-        self.state = Some(c.state);
-        self.prev = None;
-        self.drives = drives.to_vec();
-        self.last = Some(sol.clone());
-        Ok(sol)
+        self.rest(drives, None, Turns::Measured)
     }
 
     /// [`Self::solve_at`], each angle no drive sets taken the full turns
@@ -113,15 +183,154 @@ impl Solver {
         near: &[Vec<f64>],
     ) -> Result<Solution, Diagnosis> {
         self.check_drives(drives)?;
+        self.rest(drives, Some(near), Turns::Every)
+    }
+
+    /// [`Self::solve_at_near`] for a moment of a motion carried from the
+    /// moment before (its poses, drives and values in `near`): only the
+    /// angles a coupling takes start the full turns nearest their values in
+    /// `near`, since a coupling counts their turns; every other equation is
+    /// periodic in an angle, and the other angles are measured in (−π, π]
+    /// as from a placement. A screw that nothing drives but its coupling,
+    /// many turns round, started in (−π, π] had its coupling a whole number
+    /// of leads unmet and was walked back half a radian an iteration.
+    pub fn solve_at_near_coupled(
+        &mut self,
+        drives: &[f64],
+        near: &[Vec<f64>],
+    ) -> Result<Solution, Diagnosis> {
+        self.check_drives(drives)?;
+        self.rest(drives, Some(near), Turns::Coupled)
+    }
+
+    /// The solve from the start poses at `drives`, its angles' turns taken
+    /// from `near` as `turns` says: one solve straight from the start, as
+    /// always, whose answer stands whenever it has one. Only when it fails
+    /// (A-030: a shaft that only its coupling turns, many turns from the
+    /// start's (−π, π]), the placement is solved again from the turns its
+    /// couplings say, and else carried from the drive values it holds to
+    /// `drives` ([`Self::carry_rest`]): so a direct answer is never
+    /// replaced, and only a failure can turn into an answer.
+    fn rest(
+        &mut self,
+        drives: &[f64],
+        near: Option<&[Vec<f64>]>,
+        turns: Turns,
+    ) -> Result<Solution, Diagnosis> {
+        // A failed solve leaves the solver as it was.
+        let before = (
+            self.state.clone(),
+            self.drives.clone(),
+            self.last.clone(),
+            self.prev.clone(),
+        );
+        let solved = self.rest_from_start(drives, near, turns);
+        if solved.is_err() {
+            (self.state, self.drives, self.last, self.prev) = before;
+        }
+        solved
+    }
+
+    fn rest_from_start(
+        &mut self,
+        drives: &[f64],
+        near: Option<&[Vec<f64>]>,
+        turns: Turns,
+    ) -> Result<Solution, Diagnosis> {
+        // The start as a solve has always taken it (a moment's coupled
+        // angles in (−π, π] too), so a solve that converged before
+        // converges to the same bits.
         let mut start = self.sys.start_state(drives);
-        self.sys.keep_turns(&mut start, near);
-        let c = self.correct(&start, drives)?;
+        if let (Turns::Every, Some(near)) = (turns, near) {
+            self.sys.keep_turns(&mut start, near);
+        }
+        let direct = match self.correct(&start, drives) {
+            Ok(c) => return self.settle(c, drives),
+            Err(direct) => direct,
+        };
+        let c = match turns {
+            // A moment whose coupled shafts had come many turns: started at
+            // the turns they had in the moment before.
+            Turns::Coupled => {
+                let Some(near) = near else {
+                    return Err(direct);
+                };
+                let mut carried = start.clone();
+                self.sys.keep_coupled_turns(&mut carried, near);
+                if carried == start {
+                    return Err(direct);
+                }
+                self.correct(&carried, drives).map_err(|_| direct)?
+            }
+            Turns::Every => return Err(direct),
+            Turns::Measured => self.solve_by_coupled_turns(&start, drives).ok_or(direct)?,
+        };
+        self.settle(c, drives)
+    }
+
+    /// A placement whose direct solve failed, solved from the turns its
+    /// couplings say (A-030), or `None` where they say nothing new: an
+    /// angle no drive sets that is a coupling's only such angle started at
+    /// the whole turns that meet the coupling best (a screw placed with its
+    /// nut 27 leads along); else, when a driven angle a coupling takes is
+    /// placed whole turns from where the turns nearest its drive put it (a
+    /// lead screw placed at 0 with its nut and driven 16.8 turns), carried
+    /// from the placement's turns to the drives with its nut. Nothing else
+    /// is tried: a failure that is not a coupling's turns stays the error
+    /// it was (a carry across a linkage's near-singular pose can change
+    /// circuits, which an error never does).
+    fn solve_by_coupled_turns(&mut self, start: &State, drives: &[f64]) -> Option<Corrected> {
+        let mut counted = start.clone();
+        self.sys.coupled_start_turns(&mut counted);
+        if counted != *start
+            && let Ok(c) = self.correct(&counted, drives)
+        {
+            return Some(c);
+        }
+        let held = self.sys.start_drives(&counted, true);
+        let nearest = self.sys.start_drives(&counted, false);
+        if !self.sys.drives_apart(&held, &nearest)
+            || !self.sys.drives_apart(&held, drives)
+            || self.check_drives(&held).is_err()
+        {
+            return None;
+        }
+        let mut from = self.sys.start_state(&held);
+        self.sys.coupled_start_turns(&mut from);
+        let mut c = self.carry_rest(&from, &held, drives)?;
+        // A coupled drive carried whole turns turns the joints on it as
+        // many; a solve from the placement does not count them where no
+        // equation does.
+        if self.sys.winds(&held, drives) {
+            self.sys.turns_nearest_start(&mut c.state, start);
+        }
+        Some(c)
+    }
+
+    /// The solution at `c`, kept as the solver's state at `drives`.
+    fn settle(&mut self, c: Corrected, drives: &[f64]) -> Result<Solution, Diagnosis> {
         let sol = self.solution(&c)?;
         self.state = Some(c.state);
         self.prev = None;
         self.drives = drives.to_vec();
         self.last = Some(sol.clone());
         Ok(sol)
+    }
+
+    /// Solves `start` at the driven values `held` and carries the solution
+    /// to `drives` along its branch; `None` when either cannot be done.
+    fn carry_rest(&mut self, start: &State, held: &[f64], drives: &[f64]) -> Option<Corrected> {
+        let c0 = self.correct(start, held).ok()?;
+        let first = c0.iterations;
+        self.state = Some(c0.state);
+        self.prev = None;
+        self.drives = held.to_vec();
+        self.last = None;
+        let (reached, outcome) = self.carry(drives, Pace::REST.with_finest(self.sys.eps));
+        outcome.ok()?;
+        let mut c = reached?;
+        c.iterations = c.iterations.saturating_add(first);
+        Some(c)
     }
 
     /// Moves the drives to `drives` from the last solution, following the
@@ -135,8 +344,31 @@ impl Solver {
         if self.state.is_none() {
             self.solve()?;
         }
-        let Some(mut state) = self.state.clone() else {
+        if self.state.is_none() {
             return self.solve_at(drives);
+        }
+        let finest = self.sys.eps;
+        let (_, outcome) = self.carry(drives, Pace::MOTION.with_finest(finest));
+        outcome?;
+        self.last.clone().ok_or(Diagnosis::DidNotConverge {
+            iterations: 0,
+            residual: f64::NAN,
+        })
+    }
+
+    /// [`Self::advance`] from the state kept: the last sub-step reached
+    /// (the solution there is [`Self::last`] when `pace.analyse`, or when
+    /// it stopped short), and whether the drives got all the way. The total
+    /// iterations are in the corrected state's.
+    fn carry(&mut self, drives: &[f64], pace: Pace) -> (Option<Corrected>, Result<(), Diagnosis>) {
+        let Some(mut state) = self.state.clone() else {
+            return (
+                None,
+                Err(Diagnosis::DidNotConverge {
+                    iterations: 0,
+                    residual: f64::NAN,
+                }),
+            );
         };
         let from = self.drives.clone();
         // The largest change of a drive, dimensionless.
@@ -148,10 +380,16 @@ impl Solver {
                 .collect()
         };
         let floor = CONTINUITY_FLOOR * self.sys.eps;
-        let min_step = if span > 0.0 { self.sys.eps / span } else { 1.0 };
+        let min_step = if span > 0.0 { pace.finest / span } else { 1.0 };
+        // The largest sub-step, as a fraction of the whole way.
+        let widest = if span > 0.0 && pace.largest.is_finite() {
+            (pace.largest / span).min(1.0)
+        } else {
+            1.0
+        };
         let base = self.base_active();
         let mut s = 0.0f64;
-        let mut step = 1.0f64;
+        let mut step = widest;
         let mut reached: Option<Corrected> = None;
         let mut failure: Option<Diagnosis> = None;
         let mut substeps = 0usize;
@@ -159,7 +397,7 @@ impl Solver {
         let mut exhausted = false;
         while s < 1.0 {
             substeps += 1;
-            if substeps > MAX_SUBSTEPS || iterations > MAX_ADVANCE_ITERATIONS {
+            if substeps > MAX_SUBSTEPS || iterations > pace.budget {
                 exhausted = true;
                 break;
             }
@@ -171,11 +409,11 @@ impl Solver {
                 .secant(&state, &d_try)
                 .or_else(|| gauss_newton(&self.sys, &state, &d_try, &base))
                 .unwrap_or_else(|| state.clone());
-            let tried = self.correct(&predicted, &d_try);
+            let tried = self.correct_within(&predicted, &d_try, pace.per_step);
             iterations += match &tried {
                 Ok(c) => c.iterations,
                 Err(Diagnosis::DidNotConverge { iterations, .. }) => *iterations,
-                Err(_) => MAX_ITERATIONS,
+                Err(_) => pace.per_step,
             };
             let ok = match &tried {
                 Ok(c) => {
@@ -191,7 +429,7 @@ impl Solver {
                     s = s_try;
                     reached = Some(c);
                     self.drives = d_try;
-                    step = (step * 2.0).min(1.0);
+                    step = (step * 2.0).min(widest);
                 }
                 Ok(_) => {
                     failure = Some(Diagnosis::BranchLost { drives: d_try });
@@ -206,25 +444,39 @@ impl Solver {
                 break;
             }
         }
-        if let Some(c) = &reached {
-            if let Ok(sol) = self.solution(c) {
+        if let Some(c) = &mut reached {
+            // The analysis of the last state: for the caller, or for the
+            // loop a dead point names.
+            if (pace.analyse || s < 1.0)
+                && let Ok(sol) = self.solution(c)
+            {
                 self.last = Some(sol);
             }
             self.state = Some(state.clone());
+            c.iterations = iterations;
         }
         if s >= 1.0 {
-            return self.last.clone().ok_or(Diagnosis::DidNotConverge {
-                iterations,
-                residual: f64::NAN,
-            });
+            if pace.analyse && self.last.is_none() {
+                return (
+                    reached,
+                    Err(Diagnosis::DidNotConverge {
+                        iterations,
+                        residual: f64::NAN,
+                    }),
+                );
+            }
+            return (reached, Ok(()));
         }
         if exhausted {
             // Out of work, not at a limit position: the motion asks for more
             // sub-steps than allowed (a step too large for one advance).
-            return Err(Diagnosis::DidNotConverge {
-                iterations,
-                residual: f64::NAN,
-            });
+            return (
+                reached,
+                Err(Diagnosis::DidNotConverge {
+                    iterations,
+                    residual: f64::NAN,
+                }),
+            );
         }
         let cause = failure.unwrap_or(Diagnosis::DidNotConverge {
             iterations,
@@ -234,11 +486,14 @@ impl Solver {
         // or jumped off the branch, the drive cannot go on from here (at a
         // fold the corrector converges, but beyond the motion predicted).
         let loop_mates = self.driver_loop();
-        Err(Diagnosis::DeadPoint {
-            drives: self.drives.clone(),
-            loop_mates,
-            cause: Box::new(cause),
-        })
+        (
+            reached,
+            Err(Diagnosis::DeadPoint {
+                drives: self.drives.clone(),
+                loop_mates,
+                cause: Box::new(cause),
+            }),
+        )
     }
 
     /// The mates the motions free at the last solution move: at a limit
@@ -427,6 +682,16 @@ impl Solver {
 
     /// Newton from `start` at `drives`, the limits held as they are met.
     fn correct(&self, start: &State, drives: &[f64]) -> Result<Corrected, Diagnosis> {
+        self.correct_within(start, drives, MAX_ITERATIONS)
+    }
+
+    /// [`Self::correct`] spending at most `cap` iterations.
+    fn correct_within(
+        &self,
+        start: &State,
+        drives: &[f64],
+        cap: usize,
+    ) -> Result<Corrected, Diagnosis> {
         let sys = &self.sys;
         let mut active: Vec<bool> = sys
             .groups
@@ -437,7 +702,7 @@ impl Solver {
         let mut state = start.clone();
         let mut used = 0usize;
         for _pass in 0..=limits {
-            let budget = MAX_ITERATIONS.saturating_sub(used);
+            let budget = cap.saturating_sub(used);
             let Some(r) = run(sys, &state, drives, &active, budget) else {
                 return Err(Diagnosis::DidNotConverge {
                     iterations: used,

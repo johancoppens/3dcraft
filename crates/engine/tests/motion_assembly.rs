@@ -537,3 +537,162 @@ fn motion_check_with_a_measure_after_param_set_measures_the_new_value() {
         "{check}"
     );
 }
+
+/// A-030: two lead screws (8 mm a turn) turn on a base, their nuts fixed
+/// to one bed that slides; screw A is driven 24 turns over the motion,
+/// screw B by nothing but its own screw coupling to its nut. B turns as A
+/// does and the bed goes a lead per turn: `θ_B = −24 · 360° · t` and the
+/// bed at `−192 mm · t`, at every sample and at rest at `t = 0.7` (16.8
+/// turns). Before, each moment started B's angle in (−180°, 180°] and its
+/// solve walked it back half a radian an iteration, so after some 15.7
+/// turns it ran out of iterations ("did not converge in 200 iterations"),
+/// and the rest solve failed from 16 turns on.
+#[test]
+fn an_undriven_screw_follows_its_coupling_over_many_turns() {
+    let dir = workdir("motion-asm", "lead-screws");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "feature.block",
+        json!({ "name": "Block", "size": ["20 mm", "20 mm", "20 mm"],
+                "position": ["-10 mm", "-10 mm", "-10 mm"] }),
+    );
+    run(
+        &mut s,
+        "datum.plane",
+        json!({ "name": "Seat", "through": [[0, 0, 0], [1, 0, 0], [0, 1, 0]] }),
+    );
+    run(&mut s, "file.save", json!({ "path": "block.3dcraft" }));
+    run(&mut s, "file.close", json!({}));
+    run(&mut s, "file.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "feature.block",
+        json!({ "name": "Plate", "size": ["260 mm", "40 mm", "10 mm"],
+                "position": ["-130 mm", "-20 mm", "-5 mm"] }),
+    );
+    for (name, x) in [("Seat A", -100), ("Seat B", 100)] {
+        run(
+            &mut s,
+            "datum.plane",
+            json!({ "name": name, "through": [[x, 0, 0], [x + 1, 0, 0], [x, 1, 0]] }),
+        );
+    }
+    run(&mut s, "file.save", json!({ "path": "plate.3dcraft" }));
+    run(&mut s, "file.close", json!({}));
+    run(&mut s, "assembly.new", json!({ "units": "mm" }));
+    run(&mut s, "variable.set", json!({ "name": "t", "expr": "0" }));
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "lead", "expr": "8 mm" }),
+    );
+    for (source, name, at) in [
+        ("plate.3dcraft", "Base", [0, 0, 0]),
+        ("plate.3dcraft", "Bed", [0, 0, 50]),
+        ("block.3dcraft", "Screw A", [-100, 0, 0]),
+        ("block.3dcraft", "Screw B", [100, 0, 0]),
+        ("block.3dcraft", "Nut A", [-100, 0, 50]),
+        ("block.3dcraft", "Nut B", [100, 0, 50]),
+    ] {
+        run(
+            &mut s,
+            "instance.add",
+            json!({ "source": source, "name": name, "position": at }),
+        );
+    }
+    for (kind, name, a, b, offset) in [
+        ("fixed", "Base_on_floor", "world/xy", "Base/Seat A", None),
+        (
+            "slider",
+            "Bed_slide",
+            "Base/Seat A",
+            "Bed/Seat A",
+            Some("50 mm"),
+        ),
+        ("revolute", "Screw_A", "Base/Seat A", "Screw A/Seat", None),
+        ("revolute", "Screw_B", "Base/Seat B", "Screw B/Seat", None),
+        (
+            "cylindrical",
+            "Nut_A_on_screw",
+            "Screw A/Seat",
+            "Nut A/Seat",
+            Some("50 mm"),
+        ),
+        (
+            "cylindrical",
+            "Nut_B_on_screw",
+            "Screw B/Seat",
+            "Nut B/Seat",
+            Some("50 mm"),
+        ),
+        ("fixed", "Nut_A_on_bed", "Bed/Seat A", "Nut A/Seat", None),
+        ("fixed", "Nut_B_on_bed", "Bed/Seat B", "Nut B/Seat", None),
+    ] {
+        let mut params = json!({ "kind": kind, "name": name, "a": a, "b": b, "flip": true });
+        if let Some(offset) = offset {
+            params["offset"] = json!(offset);
+        }
+        run(&mut s, "mate.add", params);
+    }
+    for (name, nut, screw) in [
+        ("Thread_A", "Nut_A_on_screw", "Screw_A"),
+        ("Thread_B", "Nut_B_on_screw", "Screw_B"),
+    ] {
+        run(
+            &mut s,
+            "coupling.add",
+            json!({ "kind": "screw", "name": name, "mates": [nut, screw], "value": "lead" }),
+        );
+    }
+    run(
+        &mut s,
+        "joint.set",
+        json!({ "mate": "Screw_A", "value": "-24 * 360 deg * t" }),
+    );
+    let samples = 73;
+    // Screw B's angle (degrees) and the bed's travel (mm) at t = 1, each
+    // to what the mates and the couplings hold: the document's tolerance
+    // of 1e-6 mm, a few times over along the chain, is 4.5e-5° of a turn
+    // of 8 mm.
+    for (measure, low, at_1, within) in [
+        ("jointAngle", "-9000 deg", -24.0 * 360.0, 1e-3),
+        ("jointDistance", "-200 mm", -24.0 * 8.0, 1e-4),
+    ] {
+        let mate = if measure == "jointAngle" {
+            "Screw_B"
+        } else {
+            "Bed_slide"
+        };
+        let out = run(
+            &mut s,
+            "motion.check",
+            json!({ "measure": { "measure": measure, "mate": mate, "min": low },
+                    "samples": samples, "details": true }),
+        );
+        let check = &out["assertions"][0];
+        assert_eq!(check["status"], "passed", "{out}");
+        let got = check["samples"].as_array().unwrap();
+        assert_eq!(got.len(), samples, "{check}");
+        for (k, sample) in got.iter().enumerate() {
+            let t = k as f64 / (samples - 1) as f64;
+            let value = sample["measured"].as_f64().unwrap();
+            assert!(
+                (value - at_1 * t).abs() < within,
+                "{measure} at t = {t}: {value}, closed form {}",
+                at_1 * t
+            );
+        }
+    }
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "t", "expr": "0.7" }),
+    );
+    let solved = run(&mut s, "assembly.solve", json!({}));
+    assert_eq!(solved["error"], Value::Null, "{solved}");
+    let joint = run(&mut s, "measure.joint", json!({ "mate": "Screw_B" }));
+    let angle = joint["values"]["angle"].as_f64().unwrap_or(f64::NAN);
+    assert!((angle + 24.0 * 360.0 * 0.7).abs() < 1e-3, "{joint}");
+}
