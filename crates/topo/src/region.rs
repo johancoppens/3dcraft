@@ -68,15 +68,16 @@ const SPLINE_STEPS: usize = 8;
 const MOST_SPLINE_STEPS: usize = 1 << 12;
 /// Most work that showing the steps of one face's spline edges, and
 /// following those that need more than eight, may take, in units
-/// ([`step_proofs`]): a point looked at is one, a Bézier piece made the
-/// square of its points, a step of an edge followed in more than eight
-/// [`WALK_UNITS`]. A face that needs more is not followed, so it passes,
-/// and is counted. Measured (2026-11-14, one thread of the workshop's
-/// build server) a unit is 10 to 35 ns, 27 over a body of a hundred faces
-/// just under the bound, so the most a face's steps can add to its check
-/// is 1.3 to 4.6 ms (3 ms a face in that body); a strip of 64 turns
-/// between two single edges takes 89 000 units, one between edges of half
-/// a turn 160 an edge.
+/// ([`step_proofs`]): a point looked at is one, a leg read one (on a
+/// plane), a half (round an axis) or two (its box of directions made, about
+/// an axis), a Bézier piece made the square of its points, a step of an
+/// edge followed in more than eight [`WALK_UNITS`]. A face that needs more
+/// is not followed, so it passes, and is counted. Measured (2026-11-14,
+/// one thread of the workshop's build server) a unit is 10 to 35 ns, 27
+/// over a body of a hundred faces just under the bound, so the most a
+/// face's steps can add to its check is 1.3 to 4.6 ms (3 ms a face in
+/// that body); a strip of 64 turns between two single edges takes 87 000
+/// units, one between edges of half a turn 52 an edge.
 pub const MOST_PROOF_WORK: usize = 1 << 17;
 /// What a step of an edge followed in more than eight steps counts for
 /// against [`MOST_PROOF_WORK`]: two points of the curve and their places
