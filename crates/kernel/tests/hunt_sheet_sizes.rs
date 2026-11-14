@@ -527,7 +527,9 @@ fn sheet_sweeps(n: usize) -> Vec<Sweep> {
         let mut f = flange(2, 10.0, th, Direction::Up, r, kk);
         f.inset = [inset, 0.0];
         let spec = rect(1.0, t, vec![f], Vec::new());
-        let w = 40.0 - inset;
+        // An inset within the tolerance of 0 is 0 (docs/design/sheetmetal.md
+        // › *Insets*).
+        let w = 40.0 - if inset <= tol.linear { 0.0 } else { inset };
         let v = 2000.0 * t + w * (th * t * (r + 0.5 * t) + 10.0 * t);
         let a = 2000.0 + w * (th * (r + kk * t) + 10.0);
         s.record(inset, sheet(&spec, &tol, a), v, &tol, false);
