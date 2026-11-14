@@ -656,19 +656,28 @@ struct Follow<'a> {
     /// On a freeform surface with a pole: its open borders, along which
     /// a point is looked for whose foot was not found on it
     /// ([`Follow::along_a_border`]). `None` on every other surface, and
-    /// once a point was found on none of them before any was on one (an
-    /// edge that is no border of its surface is not asked again).
+    /// once a point of the run was found further than `touch` from every
+    /// border before any was within it (an edge that runs along no
+    /// border of its surface is not asked again).
     borders: Option<craft3d_geom::pole::BorderFeet<'a>>,
     /// With `borders`: the rounding of a point of the surface
     /// (`BorderFeet::rounding`: a point of a surface that reaches a
     /// thousand times further than the point is from the origin is known
     /// no better than the surface is).
     rounding: f64,
-    /// Whether a point of the run was found on a border.
-    bordered: bool,
-    /// The border the last point projected lies on, to rounding, when
-    /// its foot was found along one ([`Follow::along_a_border`]).
-    on_border: Option<craft3d_geom::pole::Border>,
+    /// Whether a point of the run lay within `touch` of a border: the
+    /// run goes beside that border, within what an edge may be off its
+    /// face.
+    beside: bool,
+    /// The border the foot of the last point projected was taken on
+    /// ([`Follow::along_a_border`]), and how far that foot is from the
+    /// point where that is more than rounding (nothing where the point
+    /// lies on the border).
+    on_border: Option<(craft3d_geom::pole::Border, f64)>,
+    /// The evaluations of the surface that the looks along the borders
+    /// took and that the face's work has been charged
+    /// ([`Follow::charge`]).
+    looked: u64,
 }
 
 /// How far a boundary point may be from its foot and lie on the surface:
@@ -678,10 +687,21 @@ fn on_the_surface(point: Vec3, foot: Vec3) -> f64 {
     16.0 * f64::EPSILON * point.length().max(foot.length())
 }
 
+thread_local! {
+    /// For the face being measured on this thread: whether the feet of
+    /// its boundary may be looked for along its surface's borders, and
+    /// whether one was taken there ([`Follow::along_a_border`]). A face
+    /// whose sums do not settle with such feet is measured once more
+    /// without them, as it was before there were any ([`face_integrals`]):
+    /// no face is refused for a foot that was put right.
+    static BORDERS: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((true, false)) };
+}
+
 impl<'a> Follow<'a> {
     fn new(surface: &'a Surface, touch: f64) -> Self {
         let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
-        let borders = if freeform && !craft3d_geom::pole::poles(surface).is_empty() {
+        let allowed = BORDERS.with(|borders| borders.get().0);
+        let borders = if freeform && allowed && !craft3d_geom::pole::poles(surface).is_empty() {
             craft3d_geom::pole::BorderFeet::new(surface)
         } else {
             None
@@ -693,9 +713,22 @@ impl<'a> Follow<'a> {
             last: None,
             borders,
             rounding,
-            bordered: false,
+            beside: false,
             on_border: None,
+            looked: 0,
         }
+    }
+
+    /// The evaluations the looks along the borders took since the last
+    /// call: what the face's work is charged for them.
+    fn charge(&mut self) -> u64 {
+        let Some(borders) = &self.borders else {
+            return 0;
+        };
+        let all = borders.evaluations();
+        let more = all.saturating_sub(self.looked);
+        self.looked = all;
+        more
     }
 
     /// The parameters of the nearest point of `p`, and the surface and
@@ -703,15 +736,16 @@ impl<'a> Follow<'a> {
     #[allow(clippy::type_complexity)]
     fn project(&mut self, p: Vec3) -> Result<((f64, f64), (Vec3, Vec3, Vec3)), GeomError> {
         self.on_border = None;
-        // A run that was found on a border goes on along it: the next
-        // point is looked for there first, a few evaluations from the
-        // last, and is the foot beyond doubt where it is found.
-        if self.bordered
+        // A run beside a border goes on along it: the next point is
+        // looked for on the border first, a few evaluations from the
+        // last, and is the foot beyond doubt where it is found there.
+        if self.beside
             && let Some(borders) = &mut self.borders
             && let Some(foot) = borders.from_last(p, self.rounding + on_the_surface(p, p))
         {
             self.last = Some((foot.u, foot.v));
-            self.on_border = Some(foot.border);
+            self.on_border = Some((foot.border, 0.0));
+            BORDERS.with(|borders| borders.set((borders.get().0, true)));
             return Ok(((foot.u, foot.v), foot.at));
         }
         let found = self.search(p)?;
@@ -734,10 +768,19 @@ impl<'a> Follow<'a> {
     /// ([`Outline::noise`]), so that the sums of the rail agreed at once
     /// and the face came out 9.9e-7 of its area short (2026-11-14). The
     /// point of a border that is nearer by half is the better foot
-    /// whatever else is true (the foot is the nearest point); one within
-    /// rounding of `p` is the foot beyond doubt, and the piece then runs
-    /// along that border there, where the rate of the parameter across it
-    /// is nothing ([`Follow::on_border`]).
+    /// whatever else is true (the foot is the nearest point).
+    ///
+    /// A run is beside a border while its points lie within `touch` of it
+    /// ([`ON_SURFACE`] of the body's size: as far as an edge may be found
+    /// from its face): the rail of a face read from a file lies on its
+    /// border to the file's digits, not to the last bit. Near the rim the
+    /// search's foot is as near as the border's point and stands; near
+    /// the pole the border's point is the nearer one and is taken. The
+    /// first point of a run that is off the surface and further than
+    /// `touch` from every border ends the asking (an edge across the
+    /// face). Until 2026-11-15 the first point as near its foot as its
+    /// border ended it, which was every rail not on its border to
+    /// rounding.
     #[allow(clippy::type_complexity)]
     fn along_a_border(
         &mut self,
@@ -753,25 +796,32 @@ impl<'a> Follow<'a> {
         if off.partial_cmp(&on) != Some(std::cmp::Ordering::Greater) {
             return found;
         }
-        let foot = match borders.from_last(p, on) {
-            Some(foot) => Some(foot),
-            None => borders.nearest(p),
+        // Along the border the run is beside, then along every border.
+        let reach = self.touch.max(on);
+        let beside = if self.beside {
+            borders.beside_last(p).filter(|foot| foot.off <= reach)
+        } else {
+            None
         };
-        match foot {
-            Some(foot) if foot.off < 0.5 * off => {
-                self.bordered = true;
-                self.last = Some((foot.u, foot.v));
-                if foot.off <= on {
-                    self.on_border = Some(foot.border);
-                }
-                ((foot.u, foot.v), foot.at)
+        let foot = match beside {
+            Some(foot) => Some(foot),
+            None => borders.nearest(p).filter(|foot| foot.off <= reach),
+        };
+        let Some(foot) = foot else {
+            if !self.beside {
+                self.borders = None;
             }
-            _ => {
-                if !self.bordered {
-                    self.borders = None;
-                }
-                found
-            }
+            return found;
+        };
+        self.beside = true;
+        if foot.off < 0.5 * off {
+            self.last = Some((foot.u, foot.v));
+            let strip = if foot.off > on { foot.off } else { 0.0 };
+            self.on_border = Some((foot.border, strip));
+            BORDERS.with(|borders| borders.set((borders.get().0, true)));
+            ((foot.u, foot.v), foot.at)
+        } else {
+            found
         }
     }
 
@@ -1729,6 +1779,13 @@ fn a_shorter(su: Vec3, sv: Vec3) -> bool {
     su.length_squared() <= sv.length_squared()
 }
 
+/// How far from a border's own direction, as a share of its length, the
+/// tangent of an edge may point where its foot was taken on that border,
+/// for the edge to run along the border there ([`sampled`]). A rail that
+/// lies beside its border within what an edge may be off its face
+/// ([`ON_SURFACE`]) is a hundred times nearer to it than this.
+const ALONG_A_BORDER: f64 = 1e-3;
+
 /// The least ratio of the smaller to the larger singular value of the
 /// surface's tangents at an end of a piece for which [`stands_still`]
 /// takes the end as regular without probing it.
@@ -2074,6 +2131,13 @@ struct Sample {
     v: f64,
     du: f64,
     dv: f64,
+    /// Where its foot was taken on a border of the surface that it lies
+    /// beside, not on ([`Follow::along_a_border`]): what the strip between
+    /// the edge and the border adds to what the area and the volume of
+    /// the face's sums may be off by, twice how far the point is from the
+    /// border times its step along the edge (the boundary is summed along
+    /// the border there, and the face is the surface up to its edge).
+    strip: [f64; 2],
 }
 
 /// The boundary as quadrature samples, in the order the loops run, with
@@ -2167,25 +2231,39 @@ fn sampled(
                     let ((u, v), (foot, su, sv)) = follow
                         .project(point)
                         .map_err(|error| MassError::Geometry { face: index, error })?;
-                    // Where the piece runs along a border of the surface
-                    // (the point was found on one, to rounding): the
-                    // parameter across the border does not change, and
-                    // the other one at the border's own speed.
-                    let along_border = follow.on_border.map(|border| {
+                    // Where the foot was taken on a border of the surface
+                    // and the piece runs along it there (its tangent
+                    // within a thousandth of the border's): the parameter
+                    // across the border does not change, and the other
+                    // one at the border's own speed. (An edge that meets
+                    // a border at an angle takes the rates of its foot.)
+                    let along_border = follow.on_border.and_then(|(border, _)| {
                         use craft3d_geom::pole::Border;
-                        let rate = |along: Vec3| {
-                            let speed = along.length_squared();
-                            if speed > 0.0 {
-                                tangent.dot(along) / speed
-                            } else {
-                                0.0
-                            }
+                        let (along, across_v) = match border {
+                            Border::UStart | Border::UEnd => (sv, false),
+                            Border::VStart | Border::VEnd => (su, true),
                         };
-                        match border {
-                            Border::UStart | Border::UEnd => (0.0, rate(sv)),
-                            Border::VStart | Border::VEnd => (rate(su), 0.0),
+                        let speed = along.length_squared();
+                        if speed.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
+                            return None;
                         }
+                        let rate = tangent.dot(along) / speed;
+                        let aside = (tangent - along * rate).length();
+                        (aside <= ALONG_A_BORDER * tangent.length()).then_some(if across_v {
+                            (rate, 0.0)
+                        } else {
+                            (0.0, rate)
+                        })
                     });
+                    let strip = match (along_border, follow.on_border) {
+                        (Some(_), Some((_, off))) if off > 0.0 => {
+                            let area = 2.0 * off * tangent.length() * w.abs();
+                            let reach =
+                                (point - work.about).length() + POINT_ROUNDING * point.length();
+                            [area, area * reach / 3.0]
+                        }
+                        _ => [0.0; 2],
+                    };
                     let rates = match along_border {
                         Some(rates) => Some(rates),
                         None => foot_rates(curved, (u, v), (point, foot, su, sv), tangent),
@@ -2223,8 +2301,12 @@ fn sampled(
                         v,
                         du: du * w * direction,
                         dv: dv * w * direction,
+                        strip,
                     });
                 }
+                // What the looks along the borders took is the face's work
+                // like the projections' (2026-11-15).
+                work.add(follow.charge());
                 where_.push(Sampled {
                     loop_index,
                     piece: piece_index,
@@ -3343,13 +3425,39 @@ fn face_integrals(
     let surface = own.as_ref().unwrap_or(&face.surface);
     let mut work = Work::about(surface, middle, second);
     let mut first = None;
-    let all = integrals_in(
+    BORDERS.with(|borders| borders.set((true, false)));
+    let mut all = integrals_in(
         (body, face, surface, index),
         rule,
         size,
         &mut work,
         (sums == Wanted::Both).then_some(&mut first),
     );
+    // A face whose sums do not settle with feet taken along its surface's
+    // borders ([`Follow::along_a_border`]) is measured once more with the
+    // feet the search gives, as it was before 2026-11-14: what settled
+    // then settles now, to the bound it had then. The work of both is the
+    // face's.
+    let along_borders = BORDERS.with(|borders| borders.get().1);
+    if along_borders && all.as_ref().err() == Some(&unsettled(index)) {
+        BORDERS.with(|borders| borders.set((false, false)));
+        let mut again = Work::about(surface, middle, second);
+        let mut first_again = None;
+        let searched = integrals_in(
+            (body, face, surface, index),
+            rule,
+            size,
+            &mut again,
+            (sums == Wanted::Both).then_some(&mut first_again),
+        );
+        BORDERS.with(|borders| borders.set((true, false)));
+        WORK_SPENT.fetch_add(again.spent, Ordering::Relaxed);
+        if searched.is_ok() {
+            all = searched;
+            first = first_again;
+            work.held = again.held;
+        }
+    }
     counted(&work);
     // Without first-order sums that agreed, the sums without the second
     // moments ended where these did, with the same error.
@@ -3601,6 +3709,9 @@ fn together(
             ));
         }
         if exact || coarser.is_some_and(|coarser| coarser.agrees_with(&total, noise)) {
+            for (held, strip) in work.held.iter_mut().zip(strips(&samples)) {
+                *held += strip;
+            }
             work.hold(&total, noise);
             return settle(
                 surface,
@@ -3854,6 +3965,17 @@ struct Cell {
     inner_check: Option<Total>,
     /// How far its samples were found from their feet, at most.
     off: f64,
+    /// The strips between its samples and the borders their feet were
+    /// taken on, in area and in volume ([`Sample::strip`]).
+    strip: [f64; 2],
+}
+
+/// The strips of some samples together ([`Sample::strip`]).
+fn strips(samples: &[Sample]) -> [f64; 2] {
+    samples.iter().fold([0.0; 2], |[area, volume], s| {
+        let [a, v] = s.strip;
+        [area + a, volume + v]
+    })
 }
 
 /// An open cell and its finer cells, in one round of [`cell_by_cell`].
@@ -4002,6 +4124,7 @@ fn cells_of(
                 total,
                 inner_check,
                 off,
+                strip: strips(own),
             });
         }
     }
@@ -4077,6 +4200,7 @@ fn cell_by_cell(
             total,
             inner_check: None,
             off: own.iter().map(|s| s.off).fold(0.0, f64::max),
+            strip: strips(own),
         });
     }
     // The budget, from the face's first sums (see `part_by_part`).
@@ -4222,6 +4346,10 @@ fn cell_by_cell(
         let mut finer = Total::default();
         for cell in &group.finer {
             finer.add(cell.total, 1.0);
+            // Summed along a border it lies beside: the strip between.
+            for (held, strip) in work.held.iter_mut().zip(cell.strip) {
+                *held += strip;
+            }
         }
         work.hold(&finer, group.share);
     }

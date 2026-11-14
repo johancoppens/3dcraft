@@ -588,6 +588,8 @@ pub struct BorderFeet<'a> {
     surface: &'a Surface,
     open: Vec<Border>,
     last: Option<(Border, f64)>,
+    /// Evaluations of the surface so far ([`BorderFeet::evaluations`]).
+    evaluations: std::cell::Cell<u64>,
 }
 
 impl<'a> BorderFeet<'a> {
@@ -610,7 +612,14 @@ impl<'a> BorderFeet<'a> {
             surface,
             open,
             last: None,
+            evaluations: std::cell::Cell::new(0),
         })
+    }
+
+    /// How often the surface was evaluated for the feet asked so far: what
+    /// a caller that bounds its work counts them for.
+    pub fn evaluations(&self) -> u64 {
+        self.evaluations.get()
     }
 
     /// The rounding of a point of the surface: 16 units in the last
@@ -658,6 +667,8 @@ impl<'a> BorderFeet<'a> {
     /// own derivative there.
     fn look(&self, border: Border, along: f64, p: Vec3) -> (BorderFoot, Vec3) {
         let (u, v) = self.place(border, along);
+        self.evaluations
+            .set(self.evaluations.get().saturating_add(1));
         let at = self.surface.derivatives(u, v);
         let tangent = match border {
             Border::UStart | Border::UEnd => at.2,
@@ -728,6 +739,19 @@ impl<'a> BorderFeet<'a> {
             self.remember(&foot);
             foot
         })
+    }
+
+    /// The point of the border the last foot was found on that the walk
+    /// from that foot ends at, however far from `p`: for the next of a
+    /// run of points beside one border. `None` before any foot was found.
+    pub fn beside_last(&mut self, p: Vec3) -> Option<BorderFoot> {
+        let (border, along) = self.last?;
+        if !p.is_finite() {
+            return None;
+        }
+        let foot = self.walk(border, along, p);
+        self.remember(&foot);
+        Some(foot)
     }
 
     /// For a point `p` whose foot was found at `(u, v)`, beside an open
@@ -1060,6 +1084,11 @@ mod tests {
         let foot = feet.nearest(inside).unwrap();
         assert!(foot.off > 1e-3, "{:e}", foot.off);
         assert!(feet.from_last(inside, on).is_none());
+        // Beside the last border however far, and every look counted.
+        let looks = feet.evaluations();
+        let far = feet.beside_last(inside).unwrap();
+        assert!(far.off > 1e-3 && feet.evaluations() > looks);
+        assert!(feet.beside_last(Vec3::new(f64::NAN, 0.0, 0.0)).is_none());
         // Numbers that are not: no foot, no panic.
         assert!(feet.nearest(Vec3::new(f64::NAN, 0.0, 0.0)).is_none());
         assert!(

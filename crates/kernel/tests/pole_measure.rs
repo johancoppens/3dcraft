@@ -197,31 +197,114 @@ fn meshed(
 }
 
 #[test]
-fn rails_found_beside_their_border_are_meshed() {
+fn faces_refused_as_the_search_placed_them_are_meshed_along_their_borders() {
     // Blunt tips (fullness 0.95) a hundredth and a thousandth of the L's
     // size from a corner or an edge of its kernel: at the finer tolerance
     // each was refused, "its boundary is not closed in parameter space:
     // between two neighbouring points of edge … it jumps across the
     // surface" (two) and "the boundary crosses itself in parameter space"
-    // (one).
-    for k in SCALES {
-        for frame in frames(k) {
-            for foot in [[1.99, 1.99], [0.01, 0.01], [1.999, 1.0]] {
-                let what = format!("the L with a blunt tip over {foot:?} at {k}");
-                let (tip, body) = section_tip(&frame, k, &polygon(&L), foot, 0.5, 0.95)
-                    .unwrap_or_else(|e| panic!("{what}: {e}"));
-                let (mass, _) = mass_bound(&body).unwrap_or_else(|e| panic!("{what}: {e}"));
-                for chord in [2e-2, 2e-3] {
-                    meshed(
-                        &body,
-                        (mass.volume, mass.area),
-                        chord * 12.0 * k,
-                        (tip.tip, frame.z(), 12.0 * k),
-                        &what,
-                    )
-                    .unwrap_or_else(|e| panic!("{what}, at {chord}: {e}"));
-                }
-            }
+    // (one). The body is meshed as the search places its loops first, as
+    // ever; only where a face is refused that way is it tried with the
+    // loop placed along the borders (which costs the refusal first: the
+    // other scales and the turned frame for one of the three only).
+    let mut cases = vec![
+        (1.0, Frame::WORLD, [1.99, 1.99]),
+        (1.0, Frame::WORLD, [0.01, 0.01]),
+        (1.0, Frame::WORLD, [1.999, 1.0]),
+    ];
+    cases.push((1.0, frames(1.0)[1], [1.99, 1.99]));
+    for k in [1e-3, 1e6] {
+        cases.extend(frames(k).map(|frame| (k, frame, [1.99, 1.99])));
+    }
+    for (k, frame, foot) in cases {
+        let what = format!("the L with a blunt tip over {foot:?} at {k}");
+        let (tip, body) = section_tip(&frame, k, &polygon(&L), foot, 0.5, 0.95)
+            .unwrap_or_else(|e| panic!("{what}: {e}"));
+        let (mass, _) = mass_bound(&body).unwrap_or_else(|e| panic!("{what}: {e}"));
+        for chord in [2e-2, 2e-3] {
+            meshed(
+                &body,
+                (mass.volume, mass.area),
+                chord * 12.0 * k,
+                (tip.tip, frame.z(), 12.0 * k),
+                &what,
+            )
+            .unwrap_or_else(|e| panic!("{what}, at {chord}: {e}"));
+        }
+    }
+}
+
+#[test]
+fn the_normal_at_the_tip_of_a_very_pointed_end_is_known_to_be_off() {
+    // KNOWN, owed (docs/design/tessellator.md › *The rails of a squeezed
+    // pole*, found by the review of 2026-11-14 on the commit before as
+    // well): at a fullness of 0.001 the mesh is watertight and within its
+    // chord bound, and the normals it gives at the tip are not the tip
+    // plane's (0.858 against it on a blade 1e-3 thick with a tip 0.3
+    // long; down to 0.06 on thinner blades). The cause is not looked
+    // into (the face turns into the tip's plane within a thousandth of
+    // its length there, and the normal at a pole is read a little way
+    // off it). When this fails because the normal is right, the pin
+    // goes.
+    let frame = Frame::WORLD;
+    let (tip, body) =
+        section_tip(&frame, 1.0, &polygon(&blade(1e-3)), [0.0, 0.0], 0.3, 0.001).unwrap();
+    let params = TessParams {
+        chordal_tolerance: 0.02 * 0.5,
+        ..TessParams::default()
+    };
+    let mesh = tessellate_body(&body, &params).unwrap();
+    let least = mesh
+        .positions
+        .iter()
+        .zip(&mesh.normals)
+        .filter(|(position, n)| position.distance(tip.tip) <= 1e-9 && n.length() > 0.0)
+        .map(|(_, n)| n.normalized().unwrap().dot(frame.z()))
+        .fold(1.0_f64, f64::min);
+    println!("the least normal at a very pointed tip against its plane: {least:.4}");
+    assert!(mesh.weld().unwrap().is_closed());
+    assert!(least < 0.99, "{least}");
+}
+
+#[test]
+fn a_face_the_search_places_and_meshes_is_meshed_as_before() {
+    // The L with its tip 0.03 from the corner, 0.5 long, at 0.002 of its
+    // size: its rails' points near the pole are found on other meridians
+    // by the search, and the face meshes with them (the triangles at the
+    // pole happen to stand right). Placed along the borders it is one of
+    // the faces the tessellator cannot mesh yet (docs/design/tessellator.md
+    // › *The rails of a squeezed pole*): so a face that meshes as the
+    // search places it is left as the search places it. The triangle
+    // counts are those of the commit before the borders were looked at.
+    for ((fullness, _), triangles) in [(PARABOLA, 3074), (ROUND, 0)] {
+        let what = format!("the L with its tip 0.03 from the corner, fullness {fullness:.3}");
+        let (tip, body) = section_tip(
+            &Frame::WORLD,
+            1.0,
+            &polygon(&L),
+            [0.03, 0.03],
+            0.5,
+            fullness,
+        )
+        .unwrap_or_else(|e| panic!("{what}: {e}"));
+        let (mass, _) = mass_bound(&body).unwrap_or_else(|e| panic!("{what}: {e}"));
+        let chord = 0.002 * 6.0;
+        meshed(
+            &body,
+            (mass.volume, mass.area),
+            chord,
+            (tip.tip, Frame::WORLD.z(), 6.0),
+            &what,
+        )
+        .unwrap_or_else(|e| panic!("{what}: {e}"));
+        let params = TessParams {
+            chordal_tolerance: chord,
+            ..TessParams::default()
+        };
+        let made = tessellate_body(&body, &params).unwrap().triangles.len();
+        println!("{what}: {made} triangles");
+        if triangles > 0 {
+            assert_eq!(made, triangles, "{what}");
         }
     }
 }
@@ -366,4 +449,132 @@ fn a_seeded_sweep_of_tips_is_measured_within_its_bounds_and_meshed() {
             .all(|reason| !reason.contains("parameter space")),
         "{reasons:?}"
     );
+}
+
+/// A cubic profile `[distance from the axis, along the axis]` that
+/// starts on the axis, closed along the top and down the axis, turned
+/// about the axis by `sweep`: a body the revolve command builds, with
+/// one face on a spline surface whose border on the axis is a pole and
+/// two flat ends along its meridians.
+fn turned_spline(frame: &Frame, k: f64, control: [[f64; 2]; 4], sweep: f64) -> Body {
+    use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
+    let tolerance = Tolerance::new(1e-7 * 3.0 * k, 1e-9).unwrap();
+    let control: Vec<[f64; 2]> = control.iter().map(|p| [p[0] * k, p[1] * k]).collect();
+    let (first, last) = (control[0], control[3]);
+    let top = [0.0, last[1]];
+    let line = |id, start: [f64; 2], end: [f64; 2]| SketchCurve {
+        id,
+        curve: Curve2::Line { start, end },
+    };
+    let curves = vec![
+        SketchCurve {
+            id: 3,
+            curve: Curve2::Spline(Spline2 {
+                degree: 3,
+                knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                control,
+            }),
+        },
+        line(5, last, top),
+        line(7, top, first),
+    ];
+    let profiles = detect_profiles(&curves, &tolerance).unwrap();
+    craft3d_kernel::revolve::revolve(
+        &profiles,
+        frame,
+        [0.0, 0.0],
+        [0.0, 1.0],
+        0.0,
+        sweep,
+        &tolerance,
+    )
+    .unwrap()
+    .body
+}
+
+#[test]
+fn a_spline_turned_onto_its_axis_is_measured_to_a_bound_that_says_so() {
+    // Bodies a command builds, measured right before and after: what
+    // moved for them on 2026-11-14 is the feet of their meridians beside
+    // the pole, and with them the bound (docs/design/topology.md › *A
+    // rail beside its border*). The volume is half the sweep times the
+    // integral of the squared distance from the axis along it, a
+    // polynomial.
+    let shapes = [
+        ("a dome", [[0.0, 0.0], [1.0, 0.0], [2.0, 1.0], [2.0, 3.0]]),
+        ("a point", [[0.0, 0.0], [0.5, 1.0], [2.0, 1.5], [2.0, 3.0]]),
+        (
+            "a needle",
+            [[0.0, 0.0], [0.02, 1.0], [1.0, 2.0], [2.0, 3.0]],
+        ),
+    ];
+    let rule = craft3d_math::quadrature::Rule::new(16);
+    let (mut worst, mut widest, mut beside) = (0.0_f64, 0.0_f64, 0.0_f64);
+    for k in SCALES {
+        for frame in frames(k) {
+            for (name, control) in shapes {
+                for sweep in [1.0, PI] {
+                    let what = format!("{name} turned by {sweep:.3} at {k}");
+                    let body = turned_spline(&frame, k, control, sweep);
+                    // The profile's coordinate `c` and its rate at `t`.
+                    let bezier = |t: f64, c: usize| {
+                        let s = 1.0 - t;
+                        let [a, b, d, e] = control.map(|p| p[c]);
+                        (
+                            s * s * s * a
+                                + 3.0 * s * s * t * b
+                                + 3.0 * s * t * t * d
+                                + t * t * t * e,
+                            3.0 * (s * s * (b - a) + 2.0 * s * t * (d - b) + t * t * (e - d)),
+                        )
+                    };
+                    let integral: f64 = rule
+                        .points(0.0, 1.0)
+                        .map(|(t, w)| {
+                            let (r, _) = bezier(t, 0);
+                            let (_, dz) = bezier(t, 1);
+                            w * r * r * dz
+                        })
+                        .sum();
+                    let want = 0.5 * sweep * integral * k * k * k;
+                    let (off, bound) = measured(&body, k, want, 1e-9, &what);
+                    worst = worst.max(off);
+                    widest = widest.max(bound);
+                    // The meridians are borders of the spline face: every
+                    // point of them is found there to rounding, where the
+                    // search in both parameters may end beside it.
+                    for face in &body.faces {
+                        if craft3d_geom::pole::poles(&face.surface).is_empty() {
+                            continue;
+                        }
+                        let mut feet = craft3d_geom::pole::BorderFeet::new(&face.surface).unwrap();
+                        let on = feet.rounding();
+                        for edge in &body.edges {
+                            let (t0, t1) = edge.range;
+                            let middle = edge.curve.eval(0.5 * (t0 + t1));
+                            if !feet.nearest(middle).is_some_and(|foot| foot.off <= on) {
+                                continue;
+                            }
+                            for i in 1..64 {
+                                let p = edge.curve.eval(t0 + (t1 - t0) * f64::from(i) / 64.0);
+                                let foot = feet.nearest(p).unwrap();
+                                assert!(
+                                    foot.off <= on + 16.0 * f64::EPSILON * p.length(),
+                                    "{what}: {:e}",
+                                    foot.off
+                                );
+                                let (u, v) = face.surface.project(p).unwrap();
+                                let searched = face.surface.eval(u, v).distance(p);
+                                beside = beside.max(searched / (3.0 * k));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "splines turned onto their axis: within {worst:e} of the closed form, bounds up to {widest:e}; the search in both parameters ends up to {beside:e} of the size beside a point of a meridian"
+    );
+    assert!(worst <= 1e-12, "{worst:e}");
 }

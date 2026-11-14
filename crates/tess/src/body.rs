@@ -505,6 +505,60 @@ fn tessellate_some(
     mesh: bool,
     only: Option<&[bool]>,
 ) -> Result<(EdgeSamples, Vec<Option<FaceResult>>), TessError> {
+    let searched = tessellate_placed(body, params, threads, mesh, only, &[])?;
+    if !mesh {
+        return Ok(searched);
+    }
+    // A face on a spline surface with a pole that is refused as the
+    // search placed its loops, where the borders of its surface would
+    // place them elsewhere (`face::along_the_borders`): the body once
+    // more with those faces' loops placed along the borders. Taken only
+    // when every face is then made (and a solid's mesh closed): a body
+    // that was made is as it was, bit for bit, and one that is refused
+    // either way is refused as before.
+    let (edges, results) = &searched;
+    let borders: Vec<bool> = results
+        .iter()
+        .enumerate()
+        .map(|(index, result)| {
+            matches!(result, Some(Err(TessError::Face { .. })))
+                && body.faces.get(index).is_some_and(|face| {
+                    crate::face::borders_would_move(body, &edges.points, face, index)
+                })
+        })
+        .collect();
+    if !borders.contains(&true) {
+        return Ok(searched);
+    }
+    let Ok(placed) = tessellate_placed(body, params, threads, mesh, only, &borders) else {
+        return Ok(searched);
+    };
+    let made = placed
+        .1
+        .iter()
+        .all(|result| !matches!(result, Some(Err(_))));
+    let whole = only.is_none() && body.kind == craft3d_topo::BodyKind::Solid;
+    let closed = !whole
+        || assemble(placed.1.clone())
+            .ok()
+            .and_then(|mesh| mesh.weld().ok())
+            .is_some_and(|welded| welded.is_closed());
+    Ok(if made && closed { placed } else { searched })
+}
+
+/// [`tessellate_some`] with the loops of the faces `borders` marks placed
+/// along the borders of their surfaces where the search does not find
+/// their points on them (none marked: every loop as the search places
+/// it).
+fn tessellate_placed(
+    body: &Body,
+    params: &TessParams,
+    threads: usize,
+    mesh: bool,
+    only: Option<&[bool]>,
+    borders: &[bool],
+) -> Result<(EdgeSamples, Vec<Option<FaceResult>>), TessError> {
+    let along_borders = |index: usize| borders.get(index).copied().unwrap_or(false);
     let chosen = |index: usize| only.is_none_or(|only| only.get(index).copied().unwrap_or(false));
     let used = only.map(|_| {
         let mut used = vec![false; body.edges.len()];
@@ -558,7 +612,8 @@ fn tessellate_some(
             };
             // A face made before from the same surface, edges and points
             // (`remembered`): its mesh, which asked for no finer chords.
-            let key = mesh
+            // (Not one placed along its borders: it is kept under no key.)
+            let key = (mesh && !along_borders(index))
                 .then(|| crate::remembered::key(body, points, face, params, last))
                 .flatten();
             if let Some(found) = key.as_deref().and_then(crate::remembered::find) {
@@ -566,28 +621,30 @@ fn tessellate_some(
             }
             let before = craft3d_geom::allowance::spent();
             let mut starved = false;
-            let boundary = match face_boundary(body, points, face, index, params, &mut starved) {
-                Ok(boundary) => boundary,
-                Err(error) => {
-                    // Loops that enclose nothing as polygons: finer chords
-                    // may give them something to enclose. All the face's
-                    // curved chords are asked for; the error stands when
-                    // there are none, and in the last round.
-                    let wanted = if starved && !last {
-                        curved_chords(body, points, face)
-                    } else {
-                        Vec::new()
-                    };
-                    let result = wanted.is_empty().then_some(Err(error));
-                    return (
-                        Wishes {
-                            halve: wanted,
-                            ..Wishes::default()
-                        },
-                        result,
-                    );
-                }
-            };
+            let placed = along_borders(index);
+            let boundary =
+                match face_boundary(body, points, face, index, params, &mut starved, placed) {
+                    Ok(boundary) => boundary,
+                    Err(error) => {
+                        // Loops that enclose nothing as polygons: finer chords
+                        // may give them something to enclose. All the face's
+                        // curved chords are asked for; the error stands when
+                        // there are none, and in the last round.
+                        let wanted = if starved && !last {
+                            curved_chords(body, points, face)
+                        } else {
+                            Vec::new()
+                        };
+                        let result = wanted.is_empty().then_some(Err(error));
+                        return (
+                            Wishes {
+                                halve: wanted,
+                                ..Wishes::default()
+                            },
+                            result,
+                        );
+                    }
+                };
             let refine = boundary.chords_to_refine(body, params, aligning.is_some());
             let wanted = refine.halve;
             let asks = !wanted.is_empty() || !refine.across.is_empty();
@@ -744,7 +801,7 @@ fn tessellate_some(
         (edges, results) = before;
     }
     if mesh {
-        part_shared_rungs(body, params, &edges.points, &mut results)?;
+        part_shared_rungs(body, params, &edges.points, &mut results, borders)?;
     }
     Ok((edges, results))
 }
@@ -876,6 +933,7 @@ fn part_shared_rungs(
     params: &TessParams,
     points: &[Vec<Vec3>],
     results: &mut [Option<FaceResult>],
+    borders: &[bool],
 ) -> Result<(), TessError> {
     let curved = |index: usize| {
         body.faces
@@ -925,8 +983,9 @@ fn part_shared_rungs(
                 continue;
             };
             let mut starved = false;
-            let made = face_boundary(body, points, face, index, params, &mut starved).and_then(
-                |boundary| {
+            let placed = borders.get(index).copied().unwrap_or(false);
+            let made = face_boundary(body, points, face, index, params, &mut starved, placed)
+                .and_then(|boundary| {
                     let made = mesh_face(
                         &boundary,
                         face,
@@ -938,8 +997,7 @@ fn part_shared_rungs(
                     )?;
                     closes_along_edges(body, points, face, index, &made.border)?;
                     Ok(made)
-                },
-            );
+                });
             if let Some(slot) = results.get_mut(index) {
                 *slot = Some(made.map(|mut made| {
                     made.border = Vec::new();
