@@ -1096,7 +1096,11 @@ impl Session {
     /// document changed since it was last regenerated.
     pub fn failed_features(&mut self) -> Vec<Value> {
         let mut out = Value::Object(serde_json::Map::new());
+        // A host that refuses what needs the bodies it builds elsewhere
+        // (`set_refuse_bodies`) does not build them here for this either:
+        // none is said to fail.
         if !self.has_document()
+            || (self.refusing_bodies() && self.regen_elsewhere() && !self.regenerated_here())
             || commands::add_failed_waiting(self, &[], None, &mut out, true).is_err()
         {
             return Vec::new();
@@ -1217,6 +1221,10 @@ impl Session {
                 commands_elsewhere::Trial::Deferred(result) => {
                     self.new_when = None;
                     return Ok(result);
+                }
+                commands_elsewhere::Trial::Refused(why) => {
+                    self.new_when = None;
+                    return Err(CommandError::new(why));
                 }
                 commands_elsewhere::Trial::RunHere => {
                     outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
