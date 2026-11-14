@@ -634,77 +634,88 @@ fn a_face_whose_steps_cost_too_much_to_show_passes_and_is_counted() {
     }
 }
 
-/// A band of a torus between two curves that go round it 3 times about
-/// its axis and 13 (or 29) times about its tube, each one spline edge
-/// closed on itself: a right face (3 and 13 have no common factor, so each
-/// curve is simple, and the two keep a constant tube angle apart). The
-/// spline edges are followed in steps shown to move less than a quarter
-/// turn about the axis, but nothing shows how far they move about the
-/// tube: at 13 tube turns in 16 half steps each moves 292.5°, read as
-/// 67.5° back, so the loop read as going round the tube 3 times and was
-/// refused ("goes round the torus 3 times about its axis and 3 times about
-/// its tube"), at every scale. Nothing is read off how often a loop with a
-/// spline edge goes round a torus any more: how often it goes round the
-/// axis is shown, but says nothing without the other (a loop three times
-/// round the axis is simple with 13 turns about the tube and not with 3).
-///
-/// **Known miss**, listed so that a fix takes it off: a band between two
-/// curves that go round twice about the axis and twice about the tube (2
-/// and 2 have a common factor: each curve runs over itself) passes too,
-/// as every wrong band on spline edges does on a torus.
-#[test]
-fn a_band_of_a_torus_between_two_curves_that_wind_about_its_tube_is_a_face() {
+/// A band of the torus about the world's z (radii `major` and `minor`)
+/// between two curves that go round it `p` times about its axis and `q`
+/// times about its tube, each one spline edge closed on itself (a cubic
+/// through 64 points a turn), the second 0.8 radians further round the
+/// tube; `reversed` turns the face and its loops over (the band on the
+/// other side of the two curves). With the tolerance of a document at that
+/// scale.
+fn torus_band(
+    scale: f64,
+    (p, q): (f64, f64),
+    (major, minor): (f64, f64),
+    reversed: bool,
+) -> (Body, Tolerance) {
     use craft3d_geom::{Curve3, Surface, Torus};
     use craft3d_math::Vec3;
     use craft3d_topo::{BodyKind, Coedge};
     use std::f64::consts::TAU;
+    let tol = Tolerance::new(Tolerance::default().linear * scale, 1e-9).unwrap();
+    let knot = |shift: f64| {
+        let count = 64 * p.max(q) as usize + 1;
+        let params: Vec<f64> = (0..count).map(|i| i as f64 / (count - 1) as f64).collect();
+        let values: Vec<Vec<f64>> = params
+            .iter()
+            .map(|s| {
+                let (su, cu) = (TAU * p * s).psin_cos();
+                let (sv, cv) = (TAU * q * s + shift).psin_cos();
+                let r = major + minor * cv;
+                vec![r * cu, r * su, minor * sv]
+            })
+            .collect();
+        let (knots, ctrl) = craft3d_geom::refine::interpolate(&params, 3, &values).unwrap();
+        let points = ctrl.iter().map(|c| Vec3::new(c[0], c[1], c[2])).collect();
+        NurbsCurve::polynomial(3, knots, points).unwrap()
+    };
+    let mut body = Body::new(BodyKind::Sheet);
+    let mut closed = |c: NurbsCurve, back: bool| {
+        let r = c.domain();
+        let v = body.add_vertex(c.eval(r.0));
+        let edge = body.add_edge(Curve3::Nurbs(c), r, v, v);
+        body.add_loop(vec![Coedge {
+            edge,
+            reversed: back,
+        }])
+    };
+    let loops = vec![closed(knot(0.0), reversed), closed(knot(0.8), !reversed)];
+    let torus = Torus::new(Frame::WORLD, major, minor).unwrap();
+    let face = body.add_face(Surface::Torus(torus), reversed, loops);
+    body.add_shell(vec![face]);
+    (body, tol)
+}
+
+/// A band of a torus between two curves that go round it 3 times about
+/// its axis and 13 (or 29) times about its tube is a right face (3 and 13
+/// have no common factor, so each curve is simple, and the two keep a
+/// constant tube angle apart). The spline edges are followed in steps
+/// shown to move less than a quarter turn about the axis, but nothing
+/// shows how far they move about the tube: at 13 tube turns in 16 half
+/// steps each moves 292.5°, read as 67.5° back, so the loop read as going
+/// round the tube 3 times and was refused ("goes round the torus 3 times
+/// about its axis and 3 times about its tube"), at every scale. How often
+/// a loop goes round the axis is shown, but says nothing without the
+/// other (three times round the axis is simple with 13 turns about the
+/// tube and not with 3), so off a loop with a spline edge nothing is read
+/// unless it is shown not to go round the tube at all (the next test).
+///
+/// **Known miss**, listed so that a fix takes it off: a band between two
+/// curves that go round twice about the axis and twice about the tube (2
+/// and 2 have a common factor: each curve runs over itself) passes too,
+/// as every wrong band whose curves go round the tube does.
+#[test]
+fn a_band_of_a_torus_between_two_curves_that_wind_about_its_tube_is_a_face() {
     let mut wrong = Vec::new();
     for scale in [1e-3, 1.0, 1e6] {
-        let tol = Tolerance::new(Tolerance::default().linear * scale, 1e-9).unwrap();
-        for (p, q) in [(3.0, 13.0), (3.0, 29.0), (2.0, 2.0)] {
-            for (major, minor) in [(3.0 * scale, scale), (2.0 * scale, 0.5 * scale)] {
+        // (2, 2) is the known miss: it passes like the right ones.
+        for pq in [(3.0, 13.0), (3.0, 29.0), (2.0, 2.0)] {
+            for radii in [(3.0 * scale, scale), (2.0 * scale, 0.5 * scale)] {
                 for reversed in [false, true] {
-                    // The curve at the tube angle `q · s + shift` over the
-                    // axis angle `p · s`, a cubic through 64 points a tube
-                    // turn (within a twentieth of the tolerance).
-                    let knot = |shift: f64| {
-                        let count = 64 * q as usize + 1;
-                        let params: Vec<f64> =
-                            (0..count).map(|i| i as f64 / (count - 1) as f64).collect();
-                        let values: Vec<Vec<f64>> = params
-                            .iter()
-                            .map(|s| {
-                                let (su, cu) = (TAU * p * s).psin_cos();
-                                let (sv, cv) = (TAU * q * s + shift).psin_cos();
-                                let r = major + minor * cv;
-                                vec![r * cu, r * su, minor * sv]
-                            })
-                            .collect();
-                        let (knots, ctrl) =
-                            craft3d_geom::refine::interpolate(&params, 3, &values).unwrap();
-                        let points = ctrl.iter().map(|c| Vec3::new(c[0], c[1], c[2])).collect();
-                        NurbsCurve::polynomial(3, knots, points).unwrap()
-                    };
-                    let mut body = Body::new(BodyKind::Sheet);
-                    let mut closed = |c: NurbsCurve, back: bool| {
-                        let r = c.domain();
-                        let v = body.add_vertex(c.eval(r.0));
-                        let edge = body.add_edge(Curve3::Nurbs(c), r, v, v);
-                        body.add_loop(vec![Coedge {
-                            edge,
-                            reversed: back,
-                        }])
-                    };
-                    let loops = vec![closed(knot(0.0), reversed), closed(knot(0.8), !reversed)];
-                    let torus = Torus::new(Frame::WORLD, major, minor).unwrap();
-                    let face = body.add_face(Surface::Torus(torus), reversed, loops);
-                    body.add_shell(vec![face]);
+                    let (body, tol) = torus_band(scale, pq, radii, reversed);
                     let found = check(&body, &tol);
-                    // (2, 2) is the known miss: it passes like the right
-                    // ones.
                     if !found.is_empty() {
                         wrong.push(format!(
-                            "scale {scale}, ({p}, {q}), radii {major} and {minor}, reversed {reversed}: {found:?}"
+                            "scale {scale}, {pq:?}, radii {radii:?}, reversed {reversed}: {found:?}"
                         ));
                     }
                 }
@@ -712,6 +723,38 @@ fn a_band_of_a_torus_between_two_curves_that_wind_about_its_tube_is_a_face() {
         }
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// A loop of spline edges on a torus that is shown to keep to one half of
+/// its tube (here above the plane of its centre circle, by the control
+/// points of every stretch of it) does not go round the tube, so how often
+/// it goes round the axis decides: a band between two curves once round
+/// the axis is a face, one between curves twice or three times round it
+/// (each running over itself) is refused, as before spline edges on a
+/// torus stopped being read ("goes round the torus 2 times about its axis
+/// and 0 times about its tube").
+#[test]
+fn a_band_of_a_torus_twice_round_its_axis_alone_is_refused() {
+    for scale in [1e-3, 1.0, 1e6] {
+        for radii in [(3.0 * scale, scale), (2.0 * scale, 0.5 * scale)] {
+            for reversed in [false, true] {
+                let what = format!("scale {scale}, radii {radii:?}, reversed {reversed}");
+                let (once, tol) = torus_band(scale, (1.0, 0.0), radii, reversed);
+                assert_eq!(check(&once, &tol), vec![], "{what}");
+                for turns in [2.0, 3.0] {
+                    let (body, tol) = torus_band(scale, (turns, 0.0), radii, reversed);
+                    let found: Vec<String> =
+                        check(&body, &tol).iter().map(ToString::to_string).collect();
+                    assert!(
+                        found.iter().any(|d| d.contains(&format!(
+                            "goes round the torus {turns} times about its axis and 0 times about its tube"
+                        ))),
+                        "{what}, {turns} turns: {found:?}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// A spiral on the cone of radius `r0` at height 0 widening by `slope` a

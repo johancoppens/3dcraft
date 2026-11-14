@@ -147,16 +147,19 @@ pub(crate) struct Ring {
     /// Where each coedge's points begin in `points`, in the loop's order.
     pub(crate) starts: Vec<usize>,
     /// Whether a half step moved more than a quarter period, or the loop
-    /// has a spline edge on a torus: the step may have gone round by more
-    /// than the chart shows, so how often the loop goes round, and where
-    /// along it a point lies, are not to be read off it (the region rule
-    /// reads it as before). A spline edge on a surface that closes about
-    /// an axis is followed in steps shown to move less than that about it
-    /// ([`spline_steps`]); what is left is a conic near a
-    /// pole, read by this flag, and the angle about a torus's tube, which
-    /// nothing shows for a spline edge (a curve going round the tube 13
-    /// times in 16 half steps moves 292.5° a half step, which reads as
-    /// 67.5° back and raises no flag).
+    /// has a spline edge on a torus and is not shown to keep to one half
+    /// of its tube: the step may have gone round by more than the chart
+    /// shows, so how often the loop goes round, and where along it a point
+    /// lies, are not to be read off it (the region rule reads it as
+    /// before). A spline edge on a surface that closes about an axis is
+    /// followed in steps shown to move less than that about it
+    /// ([`spline_steps`]); what is left is a conic near a pole, read by
+    /// this flag, and the angle about a torus's tube, which nothing shows
+    /// for a spline edge (a curve going round the tube 13 times in 16 half
+    /// steps moves 292.5° a half step, which reads as 67.5° back and
+    /// raises no flag): a loop of spline edges is read there only where
+    /// every stretch of every edge is shown to lie in one half of the
+    /// tube ([`Wedge::halves`]), so that it does not go round it at all.
     pub(crate) aliased: bool,
 }
 
@@ -811,6 +814,15 @@ pub(crate) fn follow(
 ) -> Option<Ring> {
     let planar = matches!(chart.surface, Surface::Plane(_));
     let axis = axis_of(chart.surface);
+    // On a torus: its centre circle's radius, the halves of its tube the
+    // loop's spline edges all keep to, and how many edges are splines and
+    // how many are not.
+    let tube = match chart.surface {
+        Surface::Torus(torus) => Some(torus.radii().0),
+        _ => None,
+    };
+    let mut halves = EVERY_HALF;
+    let (mut splines, mut others) = (0_usize, 0_usize);
     let mut points = Vec::new();
     let mut starts = Vec::with_capacity(coedges.len());
     let mut aliased = false;
@@ -841,7 +853,8 @@ pub(crate) fn follow(
         // round unseen, or the loop is not followed.
         let steps = match (&edge.curve, axis) {
             (Curve3::Nurbs(n), Some(axis)) => {
-                let shown = spline_steps(n, (t0, t1), axis, &mut chart.work)?;
+                let (shown, keeps) = spline_steps(n, (t0, t1), axis, tube, &mut chart.work)?;
+                halves &= keeps;
                 if shown > steps {
                     // Following it costs too: counted with the showing.
                     spend(&mut chart.work, shown.saturating_mul(WALK_UNITS))?;
@@ -850,10 +863,9 @@ pub(crate) fn follow(
             }
             _ => steps,
         };
-        // The angle about a torus's tube is not shown for a spline edge:
-        // nothing is read off how often its loop goes round.
-        if matches!(chart.surface, Surface::Torus(_)) && matches!(edge.curve, Curve3::Nurbs(_)) {
-            aliased = true;
+        match edge.curve {
+            Curve3::Nurbs(_) => splines += 1,
+            _ => others += 1,
         }
         *total = total.saturating_add(2 * steps);
         if *total > MOST_PER_FACE {
@@ -887,6 +899,15 @@ pub(crate) fn follow(
             error = error.max(2.0 * (chord[0] - middle[0]).phypot(chord[1] - middle[1]));
             before = next;
         }
+    }
+    // How far a spline edge moves about a torus's tube from one point to
+    // the next is not shown. Off a loop with such an edge nothing is read,
+    // unless the loop is all of spline edges that keep, from end to end,
+    // to one half of the tube: then it does not go round the tube, its
+    // points lie within a half turn about it, and the chart has followed
+    // it right.
+    if tube.is_some() && splines > 0 && (others > 0 || halves == NO_HALF) {
+        aliased = true;
     }
     // Back at its start: a loop that went around a period is a band.
     let (Some(s), Some(end)) = (start, chart.last) else {
@@ -1010,12 +1031,19 @@ fn steps_shown(
 /// where it cannot be shown within [`MOST_SPLINE_STEPS`] (a curve through or
 /// very near the axis, a helix of thousands of turns) or within the face's
 /// work: the loop cannot be followed without doubt.
+///
+/// With them, for a torus whose centre circle has the radius `tube`, which
+/// halves of its tube the edge is shown to keep to from end to end
+/// ([`Wedge::halves`]: those every stretch shown by a hull keeps to; none
+/// where a stretch was shown by its speed alone); every half where no
+/// torus is asked for.
 fn spline_steps(
     curve: &NurbsCurve,
     range: (f64, f64),
     axis: (Vec3, Vec3),
+    tube: Option<f64>,
     work: &mut usize,
-) -> Option<usize> {
+) -> Option<(usize, u8)> {
     let (d0, d1) = curve.domain();
     // How far rounding can put the curve outside the hull of points made
     // for it, and so how far from the axis such points must keep
@@ -1047,7 +1075,9 @@ fn spline_steps(
     // (3) The Bézier pieces, each made once where (1) and (2) do not show
     // it.
     let mut pieces = Pieces::of(curve);
-    steps_shown(SPLINE_STEPS, range, work, |a, b, work| {
+    let mut halves = EVERY_HALF;
+    let kept = |wedge: &Wedge| tube.map_or(EVERY_HALF, |major| wedge.halves(major));
+    let steps = steps_shown(SPLINE_STEPS, range, work, |a, b, work| {
         if a >= d0 && b <= d1 {
             // The control points first: they cost no evaluation of the
             // curve (each counted against an operation's work,
@@ -1057,10 +1087,13 @@ fn spline_steps(
                 let within = points.iter().take_while(|p| wedge.add(**p, clear)).count();
                 spend(work, within)?;
                 if within > 0 && within == points.len() {
+                    halves &= kept(&wedge);
                     return Some(true);
                 }
             }
             if slow(a, b) {
+                // Shown by its speed: no hull says where about a tube.
+                halves = NO_HALF;
                 return Some(true);
             }
             // Over many spans the pieces say little more than the control
@@ -1071,8 +1104,13 @@ fn spline_steps(
             }
         }
         let mut wedge = Wedge::about(axis, QUARTER_TURN);
-        pieces.each_point((a, b), work, |p, growth| wedge.add(p, clear * growth))
-    })
+        let shown = pieces.each_point((a, b), work, |p, growth| wedge.add(p, clear * growth))?;
+        if shown {
+            halves &= kept(&wedge);
+        }
+        Some(shown)
+    })?;
+    Some((steps, halves))
 }
 
 /// How many times the rounding of a curve's hull points the points of a
@@ -1286,7 +1324,21 @@ struct Wedge {
     frame: Option<(Vec3, Vec3)>,
     low: f64,
     high: f64,
+    /// The least and the largest distance of a point from the axis, the
+    /// least and the largest height along it above the axis's point, and
+    /// the most a point had to keep clear ([`Wedge::halves`]).
+    near: f64,
+    far: f64,
+    below: f64,
+    above: f64,
+    clear: f64,
 }
+
+/// Halves of a torus's tube ([`Wedge::halves`]): outside its centre
+/// circle, inside it, above its plane, below it. In each the angle about
+/// the tube keeps within one open half turn.
+const NO_HALF: u8 = 0;
+const EVERY_HALF: u8 = 0b1111;
 
 impl Wedge {
     fn about((origin, z): (Vec3, Vec3), most: f64) -> Self {
@@ -1297,14 +1349,49 @@ impl Wedge {
             frame: None,
             low: 0.0,
             high: 0.0,
+            near: f64::INFINITY,
+            far: 0.0,
+            below: f64::INFINITY,
+            above: f64::NEG_INFINITY,
+            clear: 0.0,
         }
+    }
+
+    /// Which halves of the tube of a torus about this axis, its centre
+    /// circle of radius `major` in the plane through the axis's point,
+    /// hold the convex hull of the points taken (and so a curve in it, a
+    /// rounding outside included: each bound is kept clear by what the
+    /// points were): outside the centre circle (a point of the hull is at
+    /// least as far from the axis as it reaches along the middle of the
+    /// wedge, which is the least distance of the points times the cosine
+    /// of half the wedge), inside it (the distance from the axis is
+    /// largest at a point of the hull's own), above the circle's plane,
+    /// below it (the height is linear). Over such a half the angle about
+    /// the tube keeps within a half turn, so a curve that keeps to one of
+    /// them from end to end does not go round the tube.
+    fn halves(&self, major: f64) -> u8 {
+        let mut halves = NO_HALF;
+        if self.near * (0.5 * (self.high - self.low)).pcos() > major + self.clear {
+            halves |= 0b0001;
+        }
+        if self.far < major - self.clear {
+            halves |= 0b0010;
+        }
+        if self.below > self.clear {
+            halves |= 0b0100;
+        }
+        if self.above < -self.clear {
+            halves |= 0b1000;
+        }
+        halves
     }
 
     /// Takes `p`, which must keep more than `clear` from the axis: whether
     /// the points so far lie in such a wedge.
     fn add(&mut self, p: Vec3, clear: f64) -> bool {
         let d = p - self.origin;
-        let q = d - self.z * d.dot(self.z);
+        let height = d.dot(self.z);
+        let q = d - self.z * height;
         let (x, y) = match self.frame {
             Some(frame) => frame,
             None => {
@@ -1332,6 +1419,11 @@ impl Wedge {
         }
         self.low = self.low.min(angle);
         self.high = self.high.max(angle);
+        self.near = self.near.min(off);
+        self.far = self.far.max(off);
+        self.below = self.below.min(height);
+        self.above = self.above.max(height);
+        self.clear = self.clear.max(clear);
         self.high - self.low < self.most
     }
 }
@@ -1624,6 +1716,17 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
     use super::*;
     use craft3d_math::Frame;
+
+    /// The steps of [`spline_steps`] alone, about an axis that is no
+    /// torus's.
+    fn steps_about(
+        curve: &NurbsCurve,
+        range: (f64, f64),
+        axis: (Vec3, Vec3),
+        work: &mut usize,
+    ) -> Option<usize> {
+        super::spline_steps(curve, range, axis, None, work).map(|(steps, _)| steps)
+    }
     use std::f64::consts::{FRAC_PI_2, TAU};
 
     fn tilted() -> Frame {
@@ -1728,7 +1831,7 @@ mod tests {
             for quarters in [1, 4, 5, 37, 400] {
                 let curve = winding(&f, scale, quarters, 0.7 * scale);
                 let range = curve.domain();
-                let steps = spline_steps(&curve, range, (f.origin(), f.z()), &mut 0).unwrap();
+                let steps = steps_about(&curve, range, (f.origin(), f.z()), &mut 0).unwrap();
                 if quarters <= 4 {
                     assert_eq!(steps, SPLINE_STEPS, "{quarters}");
                 }
@@ -1762,10 +1865,10 @@ mod tests {
         )
         .unwrap();
         let axis = (f.origin(), f.z());
-        assert_eq!(spline_steps(&curve, curve.domain(), axis, &mut 0), None);
+        assert_eq!(steps_about(&curve, curve.domain(), axis, &mut 0), None);
         // Its first fifth keeps clear of the axis: followed in eight steps.
         assert_eq!(
-            spline_steps(&curve, (0.0, 0.2), axis, &mut 0),
+            steps_about(&curve, (0.0, 0.2), axis, &mut 0),
             Some(SPLINE_STEPS)
         );
         // A range past the curve's domain is the first and the last piece
@@ -1774,10 +1877,10 @@ mod tests {
         // 2026-11-14 such a range was followed in eight steps whatever the
         // curve did there, as every spline edge was before.)
         assert_eq!(
-            spline_steps(&curve, (-0.1, 0.2), axis, &mut 0),
+            steps_about(&curve, (-0.1, 0.2), axis, &mut 0),
             Some(SPLINE_STEPS)
         );
-        assert_eq!(spline_steps(&curve, (-0.5, 1.0), axis, &mut 0), None);
+        assert_eq!(steps_about(&curve, (-0.5, 1.0), axis, &mut 0), None);
     }
 
     /// A cubic through a helix of `turns` turns of radius 1 and pitch 1
@@ -1812,7 +1915,7 @@ mod tests {
         for count in [1024, 4096, 16384] {
             let curve = fitted_helix(&f, 64.0, count);
             let mut work = 0;
-            let steps = spline_steps(&curve, curve.domain(), axis, &mut work).unwrap();
+            let steps = steps_about(&curve, curve.domain(), axis, &mut work).unwrap();
             assert_eq!(steps, 256, "{count}");
             costs.push((count, work));
         }
@@ -1827,7 +1930,7 @@ mod tests {
         assert!(costs.iter().all(|(n, w)| *w <= 32 * n), "{costs:?}");
         let rational = winding(&f, 1.0, 256, 1.0);
         let mut work = 0;
-        let steps = spline_steps(&rational, rational.domain(), axis, &mut work).unwrap();
+        let steps = steps_about(&rational, rational.domain(), axis, &mut work).unwrap();
         assert!((256..=1024).contains(&steps), "{steps}");
         println!("rational {work} {steps}");
         assert!(work <= 64 * 513, "{work}");
@@ -1844,7 +1947,7 @@ mod tests {
         let (spent, cut) = step_proofs();
         let mut work = 0;
         assert_eq!(
-            spline_steps(&curve, curve.domain(), axis, &mut work),
+            steps_about(&curve, curve.domain(), axis, &mut work),
             Some(256)
         );
         let (now, still) = step_proofs();
@@ -1852,7 +1955,7 @@ mod tests {
         assert_eq!(still, cut);
         // The same edge with less left than it took.
         let mut left = MOST_PROOF_WORK - work / 2;
-        assert_eq!(spline_steps(&curve, curve.domain(), axis, &mut left), None);
+        assert_eq!(steps_about(&curve, curve.domain(), axis, &mut left), None);
         assert!(left > MOST_PROOF_WORK);
         assert_eq!(step_proofs().1, cut + 1);
     }
@@ -1888,19 +1991,19 @@ mod tests {
         let end = cut.last().copied().unwrap();
         assert!(there.distance(end) > 0.2, "{there:?} {end:?}");
         // So no stretch past that end is shown, however short.
-        assert_eq!(spline_steps(&open, (0.1, 1.1), axis, &mut 0), None);
-        assert_eq!(spline_steps(&open, (0.1, 1.0 + 1e-9), axis, &mut 0), None);
+        assert_eq!(steps_about(&open, (0.1, 1.1), axis, &mut 0), None);
+        assert_eq!(steps_about(&open, (0.1, 1.0 + 1e-9), axis, &mut 0), None);
         assert_eq!(
-            spline_steps(&open, (0.1, 1.0), axis, &mut 0),
+            steps_about(&open, (0.1, 1.0), axis, &mut 0),
             Some(SPLINE_STEPS)
         );
         assert_eq!(
-            spline_steps(&open, (-1e-9, 1.0), axis, &mut 0),
+            steps_about(&open, (-1e-9, 1.0), axis, &mut 0),
             Some(SPLINE_STEPS)
         );
         // Counted as a face not followed for a bound.
         let cut = step_proofs().1;
-        assert_eq!(spline_steps(&open, (0.1, 1.1), axis, &mut 0), None);
+        assert_eq!(steps_about(&open, (0.1, 1.1), axis, &mut 0), None);
         assert_eq!(step_proofs().1, cut + 1);
     }
 
@@ -1925,18 +2028,18 @@ mod tests {
             NurbsCurve::polynomial(degree, knots, points).unwrap()
         };
         let high = arc(21);
-        assert_eq!(spline_steps(&high, (-1.0, 1.0), axis, &mut 0), None);
-        assert_eq!(spline_steps(&high, (0.0, 2.0), axis, &mut 0), None);
+        assert_eq!(steps_about(&high, (-1.0, 1.0), axis, &mut 0), None);
+        assert_eq!(steps_about(&high, (0.0, 2.0), axis, &mut 0), None);
         assert_eq!(
-            spline_steps(&high, (-1e-9, 1.0 + 1e-9), axis, &mut 0),
+            steps_about(&high, (-1e-9, 1.0 + 1e-9), axis, &mut 0),
             Some(SPLINE_STEPS)
         );
         assert_eq!(
-            spline_steps(&high, (0.0, 1.0), axis, &mut 0),
+            steps_about(&high, (0.0, 1.0), axis, &mut 0),
             Some(SPLINE_STEPS)
         );
         let low = arc(5);
-        assert!(spline_steps(&low, (-1.0, 1.0), axis, &mut 0).is_some());
+        assert!(steps_about(&low, (-1.0, 1.0), axis, &mut 0).is_some());
         // The growth itself: none inside the span, the sum of the sizes of
         // a blend's two weights to the degree past it.
         assert_eq!(growth((0.0, 1.0), (0.25, 0.75), 21), 1.0);
@@ -1978,22 +2081,79 @@ mod tests {
         let rounding = hull_rounding(&even).unwrap();
         assert!(rounding > 0.0 && rounding < 1e-12 * size.max(1.0) * 64.0);
         assert_eq!(
-            spline_steps(&even, even.domain(), axis, &mut 0),
+            steps_about(&even, even.domain(), axis, &mut 0),
             Some(SPLINE_STEPS)
         );
         let uneven = arc(1e-9, 1e6);
         let rounding = hull_rounding(&uneven).unwrap();
         assert!(rounding > 1e-3 && rounding < 1e-1, "{rounding}");
-        assert_eq!(spline_steps(&uneven, uneven.domain(), axis, &mut 0), None);
+        assert_eq!(steps_about(&uneven, uneven.domain(), axis, &mut 0), None);
         let clear = arc(4.0, 1e6);
         assert_eq!(
-            spline_steps(&clear, clear.domain(), axis, &mut 0),
+            steps_about(&clear, clear.domain(), axis, &mut 0),
             Some(SPLINE_STEPS)
         );
         // The wedge itself.
         let mut wedge = Wedge::about(axis, QUARTER_TURN);
         assert!(wedge.add(about(&f, 1.0, 0.0, 0.0), 0.5));
         assert!(!wedge.add(about(&f, 0.4, 0.1, 0.0), 0.5));
+    }
+
+    /// The halves of a torus's tube a hull keeps to ([`Wedge::halves`]):
+    /// points above the plane of its centre circle, below it, outside the
+    /// circle, inside it, and across two halves (none); a curve round the
+    /// axis at one tube angle keeps to its half from end to end, one that
+    /// goes round the tube keeps to none.
+    #[test]
+    fn a_hull_keeps_to_a_half_of_a_toruss_tube_or_to_none() {
+        let f = tilted();
+        let axis = (f.origin(), f.z());
+        let major = 3.0;
+        let of = |points: &[(f64, f64, f64)]| {
+            let mut wedge = Wedge::about(axis, QUARTER_TURN);
+            for (radius, angle, height) in points {
+                assert!(wedge.add(about(&f, *radius, *angle, *height), 1e-9));
+            }
+            wedge.halves(major)
+        };
+        // Outside the centre circle and above its plane; outside and below.
+        assert_eq!(of(&[(3.5, 0.0, 0.2), (3.6, 0.3, 0.4)]), 0b0101);
+        assert_eq!(of(&[(3.5, 0.0, -0.2), (3.6, 0.3, -0.4)]), 0b1001);
+        // Inside it, across the plane.
+        assert_eq!(of(&[(2.5, 0.0, -0.2), (2.4, 0.3, 0.4)]), 0b0010);
+        // Across the centre circle and the plane: none.
+        assert_eq!(of(&[(2.9, 0.0, -0.2), (3.2, 0.3, 0.4)]), NO_HALF);
+        // Outside by less than the wedge's width gives away: not shown
+        // outside (3.1 · cos 0.6 < 3), above all the same.
+        assert_eq!(of(&[(3.1, 0.0, 0.2), (3.1, 1.2, 0.2)]), 0b0100);
+        // A curve twice round the axis at one tube angle (0.8 radians: up
+        // and out) keeps to the half above from end to end; one that goes
+        // round the tube as well keeps to none.
+        let on_torus = |p: f64, q: f64| {
+            let count = 257;
+            let params: Vec<f64> = (0..count).map(|i| i as f64 / (count - 1) as f64).collect();
+            let values: Vec<Vec<f64>> = params
+                .iter()
+                .map(|s| {
+                    let v = 0.8 + TAU * q * s;
+                    let point = about(&f, major + v.pcos(), TAU * p * s, v.psin());
+                    vec![point.x, point.y, point.z]
+                })
+                .collect();
+            let (knots, ctrl) = craft3d_geom::refine::interpolate(&params, 3, &values).unwrap();
+            let points = ctrl.iter().map(|c| Vec3::new(c[0], c[1], c[2])).collect();
+            NurbsCurve::polynomial(3, knots, points).unwrap()
+        };
+        let round = on_torus(2.0, 0.0);
+        let (steps, halves) =
+            spline_steps(&round, round.domain(), axis, Some(major), &mut 0).unwrap();
+        assert_eq!((steps, halves & 0b0100), (SPLINE_STEPS, 0b0100));
+        let knot = on_torus(2.0, 1.0);
+        let (_, halves) = spline_steps(&knot, knot.domain(), axis, Some(major), &mut 0).unwrap();
+        assert_eq!(halves, NO_HALF);
+        // No torus asked for: every half.
+        let (_, halves) = spline_steps(&knot, knot.domain(), axis, None, &mut 0).unwrap();
+        assert_eq!(halves, EVERY_HALF);
     }
 
     /// An edge that is not shown within the most steps an edge may take is
@@ -2015,9 +2175,9 @@ mod tests {
         .unwrap();
         let cut = step_proofs().1;
         let mut work = 0;
-        assert_eq!(spline_steps(&curve, curve.domain(), axis, &mut work), None);
+        assert_eq!(steps_about(&curve, curve.domain(), axis, &mut work), None);
         assert_eq!(step_proofs().1, cut + 1);
-        assert_eq!(spline_steps(&curve, curve.domain(), axis, &mut work), None);
+        assert_eq!(steps_about(&curve, curve.domain(), axis, &mut work), None);
         assert_eq!(step_proofs().1, cut + 1);
     }
 
