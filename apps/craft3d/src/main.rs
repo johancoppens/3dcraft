@@ -15,6 +15,18 @@ fn say(stream: &mut dyn Write, text: &str) {
 fn main() -> ExitCode {
     // The commit the build script embedded, for the bug report.
     craft3d_engine::set_build_commit(option_env!("CRAFT3D_GIT_COMMIT"));
+    // The release notes the build script took from CHANGELOG.md, for
+    // What's new and `session.whatsNew`. The build read them before, so
+    // they read here; a window without them still works.
+    if let Err(error) = craft3d_engine::set_release_notes(include_str!(concat!(
+        env!("OUT_DIR"),
+        "/release-notes.md"
+    ))) {
+        say(
+            &mut std::io::stderr(),
+            &format!("craft3d: the release notes do not read: {error}"),
+        );
+    }
     let mut arguments = Vec::new();
     for argument in std::env::args_os().skip(1) {
         match argument.into_string() {

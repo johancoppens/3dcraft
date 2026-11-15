@@ -122,6 +122,28 @@ const FINE_REACH: f64 = 4.0;
 const MAX_MEMO: usize = 1 << 14;
 /// Newton's iteration for the nearest point.
 const NEWTON_STEPS: usize = 40;
+/// The steps the iteration takes on, each parameter damped in units of
+/// its own tangent, where the first [`NEWTON_STEPS`] left the foot short
+/// ([`PatchTree::descend`]).
+const SETTLE_STEPS: usize = 40;
+/// The foot is short where sliding it along the surface would still
+/// bring it nearer by more than this fraction of the size of the
+/// coordinates: sixty-four of their last bits. The first steps end
+/// where no step brings the foot nearer by one last bit of the distance
+/// (which is no more than one of the coordinates), so a foot they
+/// settled on is never taken for short, and one short by less is short
+/// by what the coordinates cannot hold.
+const UNSETTLED: f64 = 64.0 * f64::EPSILON;
+
+#[cfg(test)]
+thread_local! {
+    /// How many searches of this thread went on past their first steps
+    /// ([`PatchTree::descend`]).
+    static SETTLED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The searches of this thread end with their first steps, as they
+    /// did before 2026-11-14: for a test to compare with.
+    static FIRST_STEPS_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 /// A Bézier piece of the surface: the part of the domain it covers, and the
 /// patch.
@@ -351,6 +373,50 @@ pub(super) struct Nearest {
     pub v: f64,
     pub point: Vec3,
     pub distance: f64,
+}
+
+/// What is left of the slope of half the squared distance where the steps
+/// of [`PatchTree::descend`] ended.
+#[derive(Clone, Copy, Debug)]
+struct Slope {
+    /// The residual against the two tangents.
+    gradient: (f64, f64),
+    /// The first fundamental form: `(∂u·∂u, ∂u·∂v, ∂v·∂v)`.
+    form: (f64, f64, f64),
+    /// The sides of the domain that hold the foot, in u and in v.
+    held: (bool, bool),
+}
+
+impl Slope {
+    /// By how much the foot's distance `distance` from the point would
+    /// still shrink if the foot slid along the surface (as the plane of
+    /// its tangents, within the sides that hold it) to where the residual
+    /// is square to it: with `τ` the residual's part along the tangents,
+    /// the distance without it is `√(d² − τ²)`. Zero at a foot.
+    ///
+    /// A tangent no longer than `least` (for u and for v: what rounding
+    /// alone gives a tangent that vanishes) is no direction to slide in:
+    /// at a pole the tangent along the border that is one point is
+    /// nothing but rounding, and so is the residual against it.
+    fn gain(&self, distance: f64, least: (f64, f64)) -> f64 {
+        let ((g1, g2), (a, b, c)) = (self.gradient, self.form);
+        let free = (
+            !self.held.0 && a > least.0 * least.0,
+            !self.held.1 && c > least.1 * least.1,
+        );
+        let along_squared = match free {
+            (false, false) => 0.0,
+            (false, true) => g2 * g2 / c,
+            (true, false) => g1 * g1 / a,
+            (true, true) => (c * g1 * g1 - 2.0 * b * g1 * g2 + a * g2 * g2) / (a * c - b * b),
+        };
+        if !(along_squared.is_finite() && along_squared > 0.0 && distance > 0.0) {
+            return 0.0;
+        }
+        // (No longer than the residual itself, whatever rounding says.)
+        let along_squared = along_squared.min(distance * distance);
+        along_squared / (distance + (distance * distance - along_squared).max(0.0).sqrt())
+    }
 }
 
 pub(super) fn is_freeform(surface: &Surface) -> bool {
@@ -3412,6 +3478,20 @@ impl PatchTree {
     /// The second derivatives come from differences of the first, so that
     /// the iteration converges quadratically also far from the surface,
     /// where Gauss–Newton alone crawls.
+    ///
+    /// The damping of the first [`NEWTON_STEPS`] is in units of the longer
+    /// of the two tangents. Where one tangent is a million times the other
+    /// (a rim ruled across a plate millions of units thick, one parameter
+    /// the length along it and the other from 0 to 1 across), the least
+    /// damping still holds the step along the shorter to a fortieth of
+    /// Newton's, and the steps end with the foot hundreds of lengths short
+    /// of where it belongs: a point half a tolerance from such a face was
+    /// reported 190 tolerances from it (2026-11-14). So where they end
+    /// short ([`UNSETTLED`]) the iteration goes on with each parameter
+    /// damped in units of its own tangent (Marquardt's scaling, which does
+    /// not depend on how the parameters are scaled). Where the first steps
+    /// settle nothing is added, and the foot is the one it always was,
+    /// bit for bit.
     fn descend(&self, p: Vec3, start: (f64, f64)) -> Nearest {
         let ((u0, u1), (v0, v1)) = self.surface.domain();
         // Each step evaluates the surface at three values of each parameter
@@ -3422,106 +3502,173 @@ impl PatchTree {
             Surface::Nurbs(s) => s.derivatives_cached(u, v, &mut cache.borrow_mut()),
             surface => surface.derivatives(u, v),
         };
-        let (mut u, mut v) = self.clamp(start.0, start.1);
-        let (mut point, _, _) = derivatives(u, v);
-        let mut distance = point.distance(p);
-        let mut damping = 1e-6;
-        let (hu, hv) = (1e-6 * (u1 - u0), 1e-6 * (v1 - v0));
-        // Whether the curvature terms are taken from the start of a step.
-        let mut curved = false;
-        for _ in 0..NEWTON_STEPS {
-            let (s, su, sv) = derivatives(u, v);
-            let r = s - p;
-            let (g1, g2) = (su.dot(r), sv.dot(r));
-            if !(g1.phypot(g2) > 0.0) {
-                break;
-            }
-            // Descent is held to the sides of the domain it stands on.
-            let held_u = (u <= u0 && g1 > 0.0) || (u >= u1 && g1 < 0.0);
-            let held_v = (v <= v0 && g2 > 0.0) || (v >= v1 && g2 < 0.0);
-            if held_u && held_v {
-                break;
-            }
-            // The Hessian of half the squared distance: first-order terms
-            // (Gauss–Newton, enough near the surface, where the residual
-            // and with it the curvature terms vanish) plus, when a step
-            // from those alone is refused or gains little, the curvature
-            // terms from differences of the first derivatives, which
-            // matter when `r` is long.
-            let gauss = (su.dot(su), su.dot(sv), sv.dot(sv));
-            let curvature = |full: &mut bool| {
-                *full = true;
-                let (_, su_up, sv_up) = derivatives((u + hu).min(u1), v);
-                let (_, su_down, sv_down) = derivatives((u - hu).max(u0), v);
-                let (_, _, sv_vup) = derivatives(u, (v + hv).min(v1));
-                let (_, _, sv_vdown) = derivatives(u, (v - hv).max(v0));
-                let suu = (su_up - su_down) * (0.5 / hu);
-                let suv = (sv_up - sv_down) * (0.5 / hu);
-                let svv = (sv_vup - sv_vdown) * (0.5 / hv);
-                (
-                    gauss.0 + suu.dot(r),
-                    gauss.1 + suv.dot(r),
-                    gauss.2 + svv.dot(r),
-                )
-            };
-            let mut full = curved;
-            let (mut a, mut b, mut c) = if full { curvature(&mut full) } else { gauss };
-            let scale = su.dot(su).max(sv.dot(sv)).max(f64::MIN_POSITIVE);
-            let mut moved = false;
-            for _ in 0..16 {
-                // Levenberg–Marquardt: the damping adds to the diagonal in
-                // units of the Jacobian's own size, so the step turns from
-                // Newton's towards steepest descent when Newton's fails.
-                let (aa, cc) = (a + damping * scale, c + damping * scale);
-                let (du, dv) = if held_u {
-                    (0.0, if cc > 0.0 { -g2 / cc } else { 0.0 })
-                } else if held_v {
-                    (if aa > 0.0 { -g1 / aa } else { 0.0 }, 0.0)
-                } else {
-                    let det = aa * cc - b * b;
-                    if !(det > 0.0 && aa > 0.0) {
-                        if !full {
-                            (a, b, c) = curvature(&mut full);
-                        } else {
-                            damping = (damping * 10.0).max(1e-9);
-                        }
-                        continue;
-                    }
-                    (-(cc * g1 - b * g2) / det, -(aa * g2 - b * g1) / det)
-                };
-                let (nu, nv) = self.clamp(u + du, v + dv);
-                let candidate = self.surface.eval(nu, nv);
-                let d = candidate.distance(p);
-                if d < distance || (d == distance && (nu != u || nv != v) && damping < 1e-3) {
-                    let step = (nu - u).phypot(nv - v);
-                    // A step from the first-order terms that gains little
-                    // is a far point converging slowly: the curvature
-                    // terms from the next step on.
-                    curved = full || d > 0.25 * distance;
-                    u = nu;
-                    v = nv;
-                    point = candidate;
-                    distance = d;
-                    damping = (damping * 0.3).max(1e-12);
-                    moved = step > 0.0;
-                    break;
-                }
-                if !full {
-                    (a, b, c) = curvature(&mut full);
-                } else {
-                    damping *= 10.0;
-                }
-            }
-            if !moved {
-                break;
-            }
-        }
-        Nearest {
+        let (u, v) = self.clamp(start.0, start.1);
+        let (point, _, _) = derivatives(u, v);
+        let mut foot = Nearest {
             u,
             v,
             point,
-            distance,
+            distance: point.distance(p),
+        };
+        let (hu, hv) = (1e-6 * (u1 - u0), 1e-6 * (v1 - v0));
+        // Which sides of the domain hold a foot whose slope is `(g1, g2)`.
+        let held = |u: f64, v: f64, (g1, g2): (f64, f64)| {
+            (
+                (u <= u0 && g1 > 0.0) || (u >= u1 && g1 < 0.0),
+                (v <= v0 && g2 > 0.0) || (v >= v1 && g2 < 0.0),
+            )
+        };
+        // At most `steps` steps from `foot`, each parameter damped in
+        // units of its own tangent when `own`, else both in units of the
+        // longer. What is left of the slope where they end; `None` where
+        // the steps were used up (the slope at the last foot is not
+        // looked at).
+        let walk = |foot: &mut Nearest, own: bool, steps: usize| -> Option<Slope> {
+            let Nearest {
+                mut u,
+                mut v,
+                mut point,
+                mut distance,
+            } = *foot;
+            let mut damping = 1e-6;
+            // Whether the curvature terms are taken from the start of a step.
+            let mut curved = false;
+            let mut ended = None;
+            for _ in 0..steps {
+                let (s, su, sv) = derivatives(u, v);
+                let r = s - p;
+                let (g1, g2) = (su.dot(r), sv.dot(r));
+                // The Hessian of half the squared distance: first-order terms
+                // (Gauss–Newton, enough near the surface, where the residual
+                // and with it the curvature terms vanish) plus, when a step
+                // from those alone is refused or gains little, the curvature
+                // terms from differences of the first derivatives, which
+                // matter when `r` is long.
+                let gauss = (su.dot(su), su.dot(sv), sv.dot(sv));
+                // Descent is held to the sides of the domain it stands on.
+                let (held_u, held_v) = held(u, v, (g1, g2));
+                let slope = Slope {
+                    gradient: (g1, g2),
+                    form: gauss,
+                    held: (held_u, held_v),
+                };
+                if !(g1.phypot(g2) > 0.0) || (held_u && held_v) {
+                    ended = Some(slope);
+                    break;
+                }
+                let curvature = |full: &mut bool| {
+                    *full = true;
+                    let (_, su_up, sv_up) = derivatives((u + hu).min(u1), v);
+                    let (_, su_down, sv_down) = derivatives((u - hu).max(u0), v);
+                    let (_, _, sv_vup) = derivatives(u, (v + hv).min(v1));
+                    let (_, _, sv_vdown) = derivatives(u, (v - hv).max(v0));
+                    let suu = (su_up - su_down) * (0.5 / hu);
+                    let suv = (sv_up - sv_down) * (0.5 / hu);
+                    let svv = (sv_vup - sv_vdown) * (0.5 / hv);
+                    (
+                        gauss.0 + suu.dot(r),
+                        gauss.1 + suv.dot(r),
+                        gauss.2 + svv.dot(r),
+                    )
+                };
+                let mut full = curved;
+                let (mut a, mut b, mut c) = if full { curvature(&mut full) } else { gauss };
+                let scale = su.dot(su).max(sv.dot(sv)).max(f64::MIN_POSITIVE);
+                let (scale_u, scale_v) = if own {
+                    (
+                        gauss.0.max(f64::MIN_POSITIVE),
+                        gauss.2.max(f64::MIN_POSITIVE),
+                    )
+                } else {
+                    (scale, scale)
+                };
+                let mut moved = false;
+                for _ in 0..16 {
+                    // Levenberg–Marquardt: the damping adds to the diagonal in
+                    // units of the Jacobian's own size, so the step turns from
+                    // Newton's towards steepest descent when Newton's fails.
+                    let (aa, cc) = (a + damping * scale_u, c + damping * scale_v);
+                    let (du, dv) = if held_u {
+                        (0.0, if cc > 0.0 { -g2 / cc } else { 0.0 })
+                    } else if held_v {
+                        (if aa > 0.0 { -g1 / aa } else { 0.0 }, 0.0)
+                    } else {
+                        let det = aa * cc - b * b;
+                        if !(det > 0.0 && aa > 0.0) {
+                            if !full {
+                                (a, b, c) = curvature(&mut full);
+                            } else {
+                                damping = (damping * 10.0).max(1e-9);
+                            }
+                            continue;
+                        }
+                        (-(cc * g1 - b * g2) / det, -(aa * g2 - b * g1) / det)
+                    };
+                    let (nu, nv) = self.clamp(u + du, v + dv);
+                    let candidate = self.surface.eval(nu, nv);
+                    let d = candidate.distance(p);
+                    if d < distance || (d == distance && (nu != u || nv != v) && damping < 1e-3) {
+                        let step = (nu - u).phypot(nv - v);
+                        // A step from the first-order terms that gains little
+                        // is a far point converging slowly: the curvature
+                        // terms from the next step on.
+                        curved = full || d > 0.25 * distance;
+                        u = nu;
+                        v = nv;
+                        point = candidate;
+                        distance = d;
+                        damping = (damping * 0.3).max(1e-12);
+                        moved = step > 0.0;
+                        break;
+                    }
+                    if !full {
+                        (a, b, c) = curvature(&mut full);
+                    } else {
+                        damping *= 10.0;
+                    }
+                }
+                if !moved {
+                    ended = Some(slope);
+                    break;
+                }
+            }
+            *foot = Nearest {
+                u,
+                v,
+                point,
+                distance,
+            };
+            ended
+        };
+        // The slope where the first steps ended, looked at now where they
+        // were used up.
+        let slope = walk(&mut foot, false, NEWTON_STEPS).unwrap_or_else(|| {
+            let (s, su, sv) = derivatives(foot.u, foot.v);
+            let r = s - p;
+            let gradient = (su.dot(r), sv.dot(r));
+            Slope {
+                gradient,
+                form: (su.dot(su), su.dot(sv), sv.dot(sv)),
+                held: held(foot.u, foot.v, gradient),
+            }
+        });
+        let size = [p.x, p.y, p.z, foot.point.x, foot.point.y, foot.point.z]
+            .into_iter()
+            .fold(0.0_f64, |most, c| most.max(c.abs()));
+        #[cfg(test)]
+        if FIRST_STEPS_ONLY.get() {
+            return foot;
         }
+        // What rounding gives a tangent that vanishes: the last bits of
+        // the coordinates over the parameter's reach.
+        let rounding = 64.0 * f64::EPSILON * size;
+        let least = (rounding / (u1 - u0), rounding / (v1 - v0));
+        if slope.gain(foot.distance, least) > UNSETTLED * size {
+            #[cfg(test)]
+            SETTLED.with(|n| n.set(n.get() + 1));
+            walk(&mut foot, true, SETTLE_STEPS);
+        }
+        foot
     }
 
     /// The point of the surface nearest to `p`, remembered.
@@ -4780,6 +4927,189 @@ mod tests {
         assert!((chord - 0.3).abs() <= 1e-9, "{chord}");
     }
 
+    /// A flat strip in a tilted frame: `u` its length along the strip
+    /// (`0` to `length`), `v` from 0 to 1 across its `width`; `swap`
+    /// exchanges the two. The parametrisation of a rim ruled between two
+    /// traced curves (`plate::ruled`): one tangent of length 1, the other
+    /// of the width.
+    fn ruled_strip(length: f64, width: f64, swap: bool) -> (Surface, Frame) {
+        let frame = Frame::new(
+            Vec3::new(0.3, -0.2, 0.1) * length,
+            Vec3::new(0.3, -0.4, 1.0),
+            Vec3::new(1.0, 0.2, 0.0),
+        )
+        .unwrap();
+        let corner = |x: f64, y: f64| frame.point(x * length, y * width, 0.0);
+        let (along, across) = (vec![0.0, 0.0, length, length], vec![0.0, 0.0, 1.0, 1.0]);
+        let surface = if swap {
+            let ctrl = vec![
+                corner(0.0, 0.0),
+                corner(1.0, 0.0),
+                corner(0.0, 1.0),
+                corner(1.0, 1.0),
+            ];
+            NurbsSurface::new(1, 1, across, along, 2, 2, ctrl, vec![1.0; 4])
+        } else {
+            let ctrl = vec![
+                corner(0.0, 0.0),
+                corner(0.0, 1.0),
+                corner(1.0, 0.0),
+                corner(1.0, 1.0),
+            ];
+            NurbsSurface::new(1, 1, along, across, 2, 2, ctrl, vec![1.0; 4])
+        };
+        (Surface::Nurbs(surface.unwrap()), frame)
+    }
+
+    /// The nearest point of a flat strip whose two tangents differ by up
+    /// to a billion times is the foot of the perpendicular, and the
+    /// distance the height: for points from a millionth of the length
+    /// above it to ten times the length, and beside it. The damping of the
+    /// iteration was in units of the longer tangent, which held the step
+    /// along the shorter to a fortieth of Newton's at a ratio of 6e6: the
+    /// forty steps ended short, and a point 0.5 above a strip 1e5 long
+    /// and 6e6 wide was reported hundreds from it (2026-11-14, the plate
+    /// of `hunt_sheet_plates` case 123: a rim ruled across a plate 6.3e6
+    /// thick, where a ray's crossing was dropped for it).
+    #[test]
+    fn the_nearest_point_of_a_strip_whose_tangents_differ_a_millionfold() {
+        let length = 1e5;
+        let mut worst = 0.0_f64;
+        for width in [1.0, 1e3, 1e5, 3e6, 6.3e6, 1e8, 1e9, 1e-3] {
+            for swap in [false, true] {
+                let (surface, frame) = ruled_strip(length, width, swap);
+                let tree = PatchTree::new(&surface).unwrap();
+                let settled = SETTLED.get();
+                for (x, y) in [(0.3147, 0.2713), (0.0577, 0.6913), (0.9, 0.5), (0.5, 0.03)] {
+                    for height in [0.0, 1e-6, 0.5, 190.0, 1e4, -3e5, 1e6] {
+                        let p = frame.point(x * length, y * width, height);
+                        let near = tree.nearest(p).unwrap();
+                        let off = (near.distance - height.abs()).abs();
+                        worst = worst.max(off);
+                        assert!(
+                            off <= 1e-9 * length,
+                            "width {width} swapped {swap} above ({x}, {y}) by {height}: \
+                             nearest at {} (parameters {}, {})",
+                            near.distance,
+                            near.u,
+                            near.v
+                        );
+                        // The normal `∂u × ∂v` is the frame's z, turned
+                        // over when the parameters are exchanged.
+                        let signed = tree.signed_distance(p).unwrap();
+                        let above = (height > 0.0) != swap;
+                        assert!(
+                            height.abs() < 0.5 || (signed > 0.0) == above,
+                            "width {width} swapped {swap}: {signed} at height {height}"
+                        );
+                    }
+                }
+                // Beside the strip, past its end along the short tangent:
+                // the nearest point is on that border.
+                let p = frame.point(-0.25 * length, 0.4 * width, 3.0);
+                let near = tree.nearest(p).unwrap();
+                let expected = (0.25 * length).phypot(3.0);
+                assert!(
+                    (near.distance - expected).abs() <= 1e-9 * length,
+                    "width {width} swapped {swap}: {} beside, for {expected}",
+                    near.distance
+                );
+                // The first steps settle while the tangents are within a
+                // hundred thousand times of one another, and nothing is
+                // added to them; from a few million on they end short
+                // and the search goes on. (The other tangent's length
+                // is 1.)
+                let ratio = width.max(1.0 / width);
+                if ratio <= 1e5 {
+                    assert_eq!(SETTLED.get(), settled, "width {width} swapped {swap}");
+                }
+                if ratio >= 3e6 {
+                    assert!(SETTLED.get() > settled, "width {width} swapped {swap}");
+                }
+            }
+        }
+        assert!(worst <= 1e-9 * length, "{worst}");
+    }
+
+    /// On the surfaces the other tests of this file use (the dome, the
+    /// teapot's patches, a rational cylinder, surfaces with poles), the
+    /// steps taken on where the first end short change nothing but for
+    /// the better: of 5280 searches (points on each surface, a little off
+    /// it and a size away) every one gives the first steps' own foot bit
+    /// for bit, or a nearer one, and the nearer ones are few. That is so
+    /// of these surfaces, not of every search: one descent can only end
+    /// nearer than its first steps, but [`PatchTree::search`] stops at the
+    /// first leaf whose box is no nearer than the best foot so far, so a
+    /// foot that came nearer can leave a later leaf undescended from which
+    /// the first steps would have ended nearer still (47 of 450 360
+    /// searches of the review of 2026-11-15 ended farther, 22 by less than
+    /// 0.03 tolerances, 25 on weighted sheets where both answers were
+    /// wrong; docs/design/booleans.md › *A crossing left out*). At a pole
+    /// itself the tangent along the border that is one point is rounding
+    /// alone and counts for no direction to go on in; beside a corner
+    /// pole, where the two tangents are nearly parallel, the first steps
+    /// left a point of a lune 9.2e-8 from the surface it lies on, which
+    /// the steps taken on find on it.
+    #[test]
+    fn the_steps_taken_on_change_a_search_only_for_the_nearer() {
+        let mut seed = 23_u64;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut surfaces = vec![dome(), rational_cylinder()];
+        surfaces.extend(
+            craft3d_testkit::teapot::teapot()
+                .unwrap()
+                .into_iter()
+                .map(Surface::Bezier),
+        );
+        surfaces.extend(with_poles(false).into_iter().map(|(_, s)| s));
+        let (mut searched, mut nearer, mut found_on) = (0, 0, 0);
+        for surface in &surfaces {
+            let Ok(tree) = PatchTree::new(surface) else {
+                continue;
+            };
+            let ((u0, u1), (v0, v1)) = surface.domain();
+            for _ in 0..40 {
+                let on = surface.eval(u0 + next() * (u1 - u0), v0 + next() * (v1 - v0));
+                // On the surface, a little off it, and a size away.
+                for off in [0.0, 1e-3, 3.0] {
+                    let p = on + Vec3::new(next() - 0.5, next() - 0.5, next() - 0.5) * off;
+                    let now = tree.search(p).unwrap();
+                    FIRST_STEPS_ONLY.set(true);
+                    let was = tree.search(p).unwrap();
+                    FIRST_STEPS_ONLY.set(false);
+                    searched += 1;
+                    if (now.u.to_bits(), now.v.to_bits(), now.distance.to_bits())
+                        == (was.u.to_bits(), was.v.to_bits(), was.distance.to_bits())
+                    {
+                        continue;
+                    }
+                    assert!(
+                        now.distance < was.distance,
+                        "{} at {p:?}: {:e} for {:e}",
+                        surface.kind(),
+                        now.distance,
+                        was.distance
+                    );
+                    nearer += 1;
+                    if off == 0.0 && was.distance > 1e-9 && now.distance < 1e-12 {
+                        found_on += 1;
+                    }
+                }
+            }
+        }
+        assert!(searched > 3000, "{searched}");
+        assert!(nearer <= searched / 1000, "{nearer} of {searched}");
+        assert!(
+            found_on >= 1,
+            "{nearer} nearer, {found_on} of them on the surface"
+        );
+    }
+
     /// The quarter of a surface of revolution about the frame's z axis
     /// that a rational quadratic profile (ρ, z, weight) sweeps: u around
     /// the axis, v along the profile; `flip` exchanges the two.
@@ -5504,5 +5834,153 @@ mod tests {
             std::mem::size_of::<Option<Kids>>(),
             std::mem::size_of::<Option<[usize; 4]>>()
         );
+    }
+
+    /// A flat bicubic sheet of six by six control points over `a` by `b`
+    /// in the xy plane of `frame`, whose weights run from 1e-3 to 1e3
+    /// (seeded by `seed`), the knots of `u` times `pu`: the plane, drawn
+    /// at speeds that change a millionfold over it.
+    fn weighted_sheet(a: f64, b: f64, pu: f64, frame: &Frame, seed: u64) -> Surface {
+        let mut state = 0xA11CE + seed * 7919;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 1.0, 1.0];
+        let mut ctrl = Vec::new();
+        let mut weights = Vec::new();
+        for i in 0..6 {
+            for j in 0..6 {
+                ctrl.push(frame.point(a * i as f64 / 5.0, b * j as f64 / 5.0, 0.0));
+                weights.push((6.0 * (next() - 0.5) * std::f64::consts::LN_10).pexp());
+            }
+        }
+        Surface::Nurbs(
+            NurbsSurface::new(
+                3,
+                3,
+                knots.iter().map(|t| t * pu).collect(),
+                knots,
+                6,
+                6,
+                ctrl,
+                weights,
+            )
+            .unwrap(),
+        )
+    }
+
+    /// A flat parallelogram in the xy plane of `frame`: one side `a` along
+    /// x, the other leaning `shear` times `a` along x for `a` along y; the
+    /// knots of `u` (along the first side) times `pu`.
+    fn sheared_sheet(a: f64, shear: f64, pu: f64, frame: &Frame) -> Surface {
+        let lean = shear * a;
+        Surface::Nurbs(
+            NurbsSurface::new(
+                1,
+                1,
+                vec![0.0, 0.0, pu, pu],
+                vec![0.0, 0.0, 1.0, 1.0],
+                2,
+                2,
+                vec![
+                    frame.point(0.0, 0.0, 0.0),
+                    frame.point(lean, a, 0.0),
+                    frame.point(a, 0.0, 0.0),
+                    frame.point(a + lean, a, 0.0),
+                ],
+                vec![1.0; 4],
+            )
+            .unwrap(),
+        )
+    }
+
+    /// Points of the surface on a grid of nine by nine (from 0.05 to 0.95
+    /// of each parameter's range): how many of them the nearest point
+    /// found is further than `tol` from, of how many, and the furthest.
+    fn missed_on(surface: &Surface, tol: f64) -> (usize, usize, f64) {
+        let tree = PatchTree::new(surface).unwrap();
+        let ((u0, u1), (v0, v1)) = surface.domain();
+        let (mut missed, mut asked, mut worst) = (0, 0, 0.0_f64);
+        for i in 0..9 {
+            for j in 0..9 {
+                let (s, t) = (0.05 + 0.1125 * i as f64, 0.05 + 0.1125 * j as f64);
+                let p = surface.eval(u0 + s * (u1 - u0), v0 + t * (v1 - v0));
+                let distance = tree.nearest(p).unwrap().distance;
+                asked += 1;
+                worst = worst.max(distance);
+                if distance > tol {
+                    missed += 1;
+                }
+            }
+        }
+        (missed, asked, worst)
+    }
+
+    /// **Owed** (the review of 2026-11-15): the nearest point of a long
+    /// sheet whose weights run from 1e-3 to 1e3 is still missed, by up to
+    /// millions of tolerances, also for points that lie on it, where the
+    /// speed of its parameters changes a millionfold over a span. The
+    /// review's sweep met it on sheets 30 to 1 and longer in space (7169
+    /// of 35 280 searches, worst 6e6 tolerances; 22 266 before the repair):
+    /// here a flat one 1000 to 1 on knots of `u` stretched a thousand
+    /// times (8 of 81 points on it missed, the furthest by 9377
+    /// tolerances) and one a million to 1 (all 81, by up to 6.1e5), in the
+    /// world's frame. The same sheet square is found everywhere. When the long ones are found, this
+    /// test fails: hold them to the tolerance and take off the pin.
+    #[test]
+    fn the_nearest_point_of_a_long_weighted_sheet_is_missed_owed() {
+        let tol = 1e-6;
+        let (missed, asked, worst) =
+            missed_on(&weighted_sheet(30.0, 30.0, 1.0, &Frame::WORLD, 1), tol);
+        assert_eq!(missed, 0, "square: {missed} of {asked}, worst {worst:e}");
+        for (aspect, pu) in [(1e3, 1e3), (1e6, 1.0)] {
+            let surface = weighted_sheet(30.0, 30.0 * aspect, pu, &Frame::WORLD, 1);
+            let (missed, asked, worst) = missed_on(&surface, tol);
+            assert!(
+                missed > 0 && worst > 1e3 * tol,
+                "{aspect:e} to 1, knots of u times {pu:e}: {missed} of {asked} missed, the furthest by {worst:e}: repaired? take off the pin"
+            );
+        }
+    }
+
+    /// **Owed** (the review of 2026-11-15): on a parallelogram whose sides
+    /// lean a millionfold, with the knots of its short side shrunk a
+    /// millionfold so that its two tangents are of one length and a
+    /// millionth of a radian apart, the nearest point of points on it is
+    /// still missed by tens of tolerances in a turned frame (37 of 81
+    /// points on it, the furthest by 28.5 tolerances; the review: 500 of
+    /// 2520 searches, as many before the repair); in the world's frame,
+    /// and with the knots as they were, it is found. When it is found in the turned frame, this test fails:
+    /// take off the pin.
+    #[test]
+    fn the_nearest_point_of_a_sheet_whose_tangents_are_a_millionth_apart_is_missed_owed() {
+        let tol = 1e-6;
+        let turned = Frame::new(
+            Vec3::ZERO,
+            Vec3::new(-0.5, 0.2, 0.84),
+            Vec3::new(0.2, 1.0, 0.1),
+        )
+        .unwrap();
+        for (frame, pu, owed) in [
+            (Frame::WORLD, 1e-6, false),
+            (turned, 1.0, false),
+            (turned, 1e-6, true),
+        ] {
+            let (missed, asked, worst) = missed_on(&sheared_sheet(30.0, 1e6, pu, &frame), tol);
+            if owed {
+                assert!(
+                    missed > 0 && worst > 5.0 * tol,
+                    "{missed} of {asked} missed, the furthest by {worst:e}: repaired? take off the pin"
+                );
+            } else {
+                assert_eq!(
+                    missed, 0,
+                    "knots times {pu:e}: {missed} of {asked}, worst {worst:e}"
+                );
+            }
+        }
     }
 }

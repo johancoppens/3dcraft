@@ -178,12 +178,13 @@ fn now_ms() -> u64 {
 /// window itself runs some of them after every request (`param.list` for
 /// its Parameters tab), which are no agent's doing. Checks an agent runs
 /// (`document.check`, `assert.check`) are logged.
-const NOT_LOGGED: [&str; 10] = [
+const NOT_LOGGED: [&str; 11] = [
     "agent.log",
     "document.inspect",
     "select.get",
     "file.list",
     "session.report",
+    "session.whatsNew",
     "param.list",
     "assert.list",
     "variable.list",

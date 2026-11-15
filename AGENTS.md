@@ -47,6 +47,7 @@ crates/
   brep                       L0 standalone format crate: Open CASCADE's text BRep format (the shapes in FreeCAD documents)
   drawing                    L0 standalone format crate: DXF and SVG of flat outlines, with its own 2D model
   buildinfo                  L0 for the programs' build scripts: the commit they are built from (bug report)
+  changelog                  L0 standalone: CHANGELOG.md read into versions and entries, the release notes the programs carry (What's new)
   font                       L0 standalone: font files read into exact outlines (ttf-parser), layout, the fill rule, the single-stroke font
   topo expr                  L1 B-rep topology (pure data + validity checks); units, variables, formulas
   doc                        L2 document model (variables, sketches, constraints, feature history: pure data)
@@ -69,7 +70,7 @@ xtask/                       cargo xtask layers | wasm | ci | test | stats | hea
 packaging/                   what the installers carry: icons, desktop entry and MIME type, Info.plist, WiX source, the web page and its hosting notes
 ```
 
-**Layering is enforced** by `cargo xtask layers`. A crate may depend only on lower layers (the few same-layer exceptions, such as `geom` → `math`, are listed in `xtask/src/layers.rs`). `testkit` may only be a dev-dependency. `step`, `brep`, `meshio`, `drawing`, `zipstore`, `buildinfo` and `font` depend on nothing in the workspace (except `meshio` on `zipstore`, for 3MF). Nothing below `ui-egui` may use egui, eframe, winit or rfd. A new crate must be registered in `xtask/src/layers.rs`.
+**Layering is enforced** by `cargo xtask layers`. A crate may depend only on lower layers (the few same-layer exceptions, such as `geom` → `math`, are listed in `xtask/src/layers.rs`). `testkit` may only be a dev-dependency. `step`, `brep`, `meshio`, `drawing`, `zipstore`, `buildinfo`, `changelog` and `font` depend on nothing in the workspace (except `meshio` on `zipstore`, for 3MF). Nothing below `ui-egui` may use egui, eframe, winit or rfd. A new crate must be registered in `xtask/src/layers.rs`.
 
 ## 3. Golden rules
 

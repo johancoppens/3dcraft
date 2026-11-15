@@ -14,6 +14,7 @@ pub const LAYERS: &[(&str, u32)] = &[
     ("drawing", 0),
     ("zipstore", 0),
     ("buildinfo", 0),
+    ("changelog", 0),
     ("font", 0),
     ("topo", 1),
     ("expr", 1),
@@ -92,6 +93,7 @@ const STANDALONE: &[&str] = &[
     "zipstore",
     "drawing",
     "buildinfo",
+    "changelog",
     "font",
 ];
 

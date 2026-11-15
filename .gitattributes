@@ -14,6 +14,11 @@ crates/*/tests/golden/** text eol=lf
 # text (a cut list's CSV, docs/guide/files.md); with CRLF on Windows the
 # fences were not found (CI, 2026-11-09).
 docs/guide/*.md text eol=lf
+# The changelog: the programs carry it (their build scripts embed its
+# sections, `crates/changelog`), and a test holds its reading to the
+# Release workflow's awk program, byte for byte (xtask/src/package.rs): LF
+# in every checkout, so a program built on Windows carries the same notes.
+CHANGELOG.md text eol=lf
 # The zip reader's test data: deflate streams and the text they inflate
 # to, compared byte for byte (`include_bytes!`, crates/zipstore/src/
 # tests.rs); git took two of them for text, which CRLF would change.

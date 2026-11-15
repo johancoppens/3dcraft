@@ -77,7 +77,7 @@ Command families (ids are settled when each is implemented, and are stable after
 | `select.*`, `set.*` | `select.get`, `select.set`, `select.query`; `set.define`, `set.edit`, `set.remove`, `set.list` ([`selection.md`](selection.md)) |
 | `param.*`, `jig.*` | `param.list`, `param.set`; `jig.export` (writes a `.3dcraftjig`), `jig.edit` (a new model from the Jig in use) |
 | `view.*` | `view.render` (PNG from a named or explicit camera, CPU), `view.pick`, `view.replay`, `view.scrub` (the model after one step of the history, the document unchanged) |
-| `session.*` | `session.report` (the bug report of the last failed command) |
+| `session.*` | `session.report` (the bug report of the last failed command), `session.whatsNew` (what changed since a version, from the release notes the program carries) |
 
 **Inspection is a first-class command.** `document.inspect` returns the feature tree with per-feature status, variables with values, sketches with their degrees of freedom, and bodies with face/edge counts, persistent names and mass properties. An agent must be able to verify what it did from JSON alone, and use `view.render` when it needs to look.
 

@@ -1024,6 +1024,45 @@ pub struct UiState {
     /// default, so the state reads as it did before it existed.
     #[serde(skip_serializing_if = "Presentation::is_full")]
     pub presentation: Presentation,
+    /// What's new (`shell/whats_new.rs`): the card *New in …* on the start
+    /// screen after an update, and the same notes in a window (Help ›
+    /// What's new while a document is open). `ui.set {"whatsNew":
+    /// {"window": true}}` opens them for a person an agent shows around.
+    /// Not written while nothing of it is open, so the state reads as it
+    /// did before it existed.
+    #[serde(skip_serializing_if = "WhatsNewView::is_closed")]
+    pub whats_new: WhatsNewView,
+}
+
+/// The release notes in the window ([`UiState::whats_new`]): where they
+/// are open, and whether the rest is unfolded. View state only: which
+/// version's notes a person has seen is the host's to remember, where its
+/// preferences live.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct WhatsNewView {
+    /// The card on the start screen: drawn while no document is open and
+    /// the whole window is shown, and waiting otherwise, so it is never
+    /// over a document.
+    pub card: bool,
+    /// The notes in a window over the document.
+    pub window: bool,
+    /// What else changed and what was fixed, unfolded (folded away
+    /// until asked for).
+    pub rest: bool,
+    /// The card unfolded in a window too low to show it and the first
+    /// row of examples whole: there it starts low (its title and one
+    /// line), and a click on that line sets this. Without meaning in a
+    /// window with the room; cleared when the person closes the notes.
+    pub expanded: bool,
+}
+
+impl WhatsNewView {
+    /// True when the notes are open nowhere and nothing is unfolded: the
+    /// default.
+    pub fn is_closed(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// How much of the window the shell draws ([`UiState::presentation`]):
@@ -1574,6 +1613,17 @@ impl UiState {
             };
             turned.camera.set_view(name)?;
         }
+        // What's new is set field by field; a list, which serde would read
+        // by position (an empty one as all defaults, closing the notes),
+        // is refused.
+        if let Some(value) = patch.get("whatsNew")
+            && !value.is_object()
+        {
+            return Err(
+                "`whatsNew` must be an object: {card, window, rest, expanded}, each true or false"
+                    .to_string(),
+            );
+        }
         if patch.contains_key("picked") {
             return Err(
                 "`picked` is what was clicked in the viewport and cannot be set; ui.pick with `select` makes a pick, ui.highlight (or `highlight` here) points at a face"
@@ -1938,6 +1988,9 @@ mod tests {
             // so this state's JSON is the one from before
             // (`a_presentation_other_than_full_is_written_and_read_back`).
             presentation: Presentation::Full,
+            // Added with What's new (2026-11-14): closed is not written
+            // either (`the_release_notes_are_written_only_while_open`).
+            whats_new: WhatsNewView::default(),
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -2002,6 +2055,73 @@ mod tests {
         let text = serde_json::to_string(&default).unwrap();
         assert_eq!(serde_json::from_str::<UiState>(&text).unwrap(), default);
         assert_eq!(serde_json::from_str::<UiState>("{}").unwrap(), default);
+    }
+
+    /// What's new (2026-11-14): closed is the default and is not written,
+    /// so a state reads as before; open or unfolded it is written, read
+    /// back and set by a patch, field by field; anything else is refused
+    /// with nothing changed.
+    #[test]
+    fn the_release_notes_are_written_only_while_open() {
+        let default = serde_json::to_value(UiState::default()).unwrap();
+        assert!(default.get("whatsNew").is_none(), "{default}");
+        assert!(WhatsNewView::default().is_closed());
+        let mut state = UiState::default();
+        state
+            .apply_patch(&json!({"whatsNew": {"card": true}}))
+            .unwrap();
+        assert!(state.whats_new.card && !state.whats_new.window && !state.whats_new.rest);
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(
+            json["whatsNew"],
+            json!({"card": true, "window": false, "rest": false, "expanded": false})
+        );
+        assert_eq!(serde_json::from_value::<UiState>(json).unwrap(), state);
+        // A patch changes the fields it names and leaves the others.
+        state
+            .apply_patch(&json!({"whatsNew": {"rest": true}}))
+            .unwrap();
+        assert!(state.whats_new.card && state.whats_new.rest);
+        state
+            .apply_patch(&json!({"whatsNew": {"card": false, "window": true}}))
+            .unwrap();
+        assert_eq!(
+            state.whats_new,
+            WhatsNewView {
+                card: false,
+                window: true,
+                rest: true,
+                expanded: false,
+            }
+        );
+        state
+            .apply_patch(&json!({"whatsNew": {"window": false, "rest": false}}))
+            .unwrap();
+        assert_eq!(state, UiState::default());
+        // A list is no object: `[]` closed the notes until 2026-11-15.
+        let mut open = UiState::default();
+        open.whats_new.card = true;
+        for list in [json!([]), json!([true]), json!([false, true, false, false])] {
+            let mut state = open.clone();
+            let error = state.apply_patch(&json!({ "whatsNew": list })).unwrap_err();
+            assert!(error.contains("whatsNew"), "{error}");
+            assert_eq!(state, open, "{list}");
+        }
+        for bad in [
+            json!({"bogus": true}),
+            json!({"card": 1}),
+            json!({"card": "yes"}),
+            json!(3),
+            json!("card"),
+            json!(null),
+        ] {
+            let mut state = UiState::default();
+            assert!(
+                state.apply_patch(&json!({ "whatsNew": bad })).is_err(),
+                "{bad}"
+            );
+            assert_eq!(state, UiState::default());
+        }
     }
 
     /// The presentation (Embed, 2026-11-14): `full` is the default and is

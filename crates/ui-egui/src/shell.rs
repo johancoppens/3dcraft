@@ -49,6 +49,7 @@ pub mod start;
 mod tabs;
 mod timeline;
 mod views;
+pub mod whats_new;
 
 pub use controls::ControlsLayout;
 pub use dialogs::{ErrorDialog, ExportAsk, ExportRequest, error_title, export_verb, hidden_hint};
@@ -71,6 +72,7 @@ pub use tabs::{
 };
 pub(crate) use views::FlyTo;
 pub use views::{FLY_SECONDS, MIN_FLY_CONTEXT, ZOOM_TOOLTIP, zoomable};
+pub use whats_new::WhatsNew;
 
 /// The viewport's size before the window has laid it out, in pixels: what
 /// `ui.screenshot` renders in a host without a window.
@@ -1100,6 +1102,9 @@ pub struct Shell {
     agents: agents::AgentsMemory,
     /// The Help menu, the recent files and the start screen.
     help: help::HelpMemory,
+    /// The release notes the host gave, and what the card remembers
+    /// between frames (`shell/whats_new.rs`).
+    news: whats_new::NewsMemory,
     recent: recent::RecentMemory,
     start: start::StartMemory,
 }
@@ -1575,6 +1580,7 @@ impl Shell {
             params: params::ParamForm::default(),
             agents: agents::AgentsMemory::default(),
             help: help::HelpMemory::default(),
+            news: whats_new::NewsMemory::default(),
             recent: recent::RecentMemory::default(),
             start: start::StartMemory::default(),
         }
@@ -3024,6 +3030,8 @@ impl Shell {
         // Set again where the drawer is drawn, and the feature list.
         self.drawer_sliding = false;
         self.features_drawn = false;
+        // And where the release notes are drawn (`whats_new.rs`).
+        self.whats_new_frame();
         // The viewport may show a provisional moment of a playing motion,
         // a picture that is recorded or captured may not.
         if let Some(session) = session.as_deref_mut() {
