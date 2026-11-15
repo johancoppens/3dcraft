@@ -43,6 +43,9 @@ const JOINT_MARGIN: f64 = 1e-3;
 pub(crate) const STAYS: &str = "a face this fillet rolls along does not move with it by the same distance (it stays, moves by another distance, or is left open): the offset of a fillet is the fillet with its radius changed by the distance, between the faces it rolls along moved as far, and it would not meet this face";
 pub(crate) const VANISHES: &str =
     "the fillet's radius would reach zero: the fillet would vanish into an edge";
+/// [`VANISHES`], said where the search for how far it can go stopped at
+/// its work bound short of it (`offset_face::bounded_fitting`).
+pub(crate) const VANISHES_AT_LEAST: &str = "the fillet's radius would reach zero: the fillet would vanish into an edge (how far it can go before it does was not found: what is said to fit here does, and more may)";
 pub(crate) const CIRCULAR: &str =
     "the fillets rest on each other in a circle: none can be rebuilt before another";
 
