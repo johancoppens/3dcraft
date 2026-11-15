@@ -53,11 +53,12 @@
 //! the legs from each point of its run to the next (a spline's with
 //! positive weights by the total positivity of its basis,
 //! [`super::one_way`]); a spline is held to being one curve over the
-//! stretch, its two ends included, by its knots, which is exact: none of
-//! the knots of the spans the stretch meets stands more often than the
-//! degree inside the domain ([`jumps`], asked of both readings and of no
-//! allowance: a jump is a jump however small beside the rounding of its
-//! points). The pieces of such a curve join; how far apart they are as
+//! stretch, its two ends included, by its knots and control points, which
+//! is exact: no knot of the spans the stretch meets stands more often
+//! than the degree inside the domain, unless the control point the curve
+//! runs up to there and the one it starts again at are one point, bit for
+//! bit ([`jumps`], asked of both readings and of no allowance: a jump is
+//! a jump however small beside the rounding of its points). The pieces of such a curve join; how far apart they are as
 //! computed is rounding, and is counted into the stretch's *slack* with
 //! the rounding of a point of the curve and of its place: the slack is
 //! counted with the gap at each of the stretch's joints (C3), so that at
@@ -331,27 +332,56 @@ fn chart_of(surface: &Surface) -> Option<(Lay, Option<f64>)> {
 }
 
 /// Whether a spline jumps over the knots `from..=to` (indices, cut to the
-/// knots there are): some knot value inside its domain stands there more
-/// often than its degree. At such a knot the curve jumps from one control
-/// point to the next, and it is not one curve: no hull holds what lies
-/// between, since nothing does.
+/// knots there are; a knot value that stands there is looked at with
+/// every knot of its value, also those before `from` and after `to`). A
+/// knot value inside the domain that stands more often than the degree
+/// cuts the curve in two: it runs up to one control point (the one before
+/// the first knot of that value) and starts again at another (the one
+/// that many knots, less the degree, further on), and where those two are
+/// not one point, bit for bit, it jumps, and is not one curve: no hull
+/// holds what lies between, since nothing does. Exact: no allowance is
+/// asked (two points a rounding apart are two points). A knot value that
+/// stands more than twice the degree and two times is taken for a jump
+/// without a look (no curve of use has one).
 fn jumps(curve: &NurbsCurve, from: usize, to: usize) -> bool {
     let (d0, d1) = curve.domain();
     let degree = curve.degree();
     let knots = curve.knots();
-    let to = to.min(knots.len().saturating_sub(1));
-    let mut run = 0_usize;
-    let mut before = f64::NAN;
-    for k in knots.get(from..=to).unwrap_or(&[]) {
-        if *k == before {
-            run += 1;
-        } else {
-            run = 1;
-            before = *k;
-        }
-        if run > degree && *k > d0 && *k < d1 {
+    let ctrl = curve.control_points();
+    let last = knots.len().saturating_sub(1);
+    let most = 2 * (degree + 1);
+    // Back to the first knot of the value `from` stands at.
+    let mut first = from.min(last);
+    let mut back = 0_usize;
+    while first > 0 && knots.get(first - 1) == knots.get(first) {
+        first -= 1;
+        back += 1;
+        if back > most {
             return true;
         }
+    }
+    let to = to.min(last);
+    while first <= to {
+        let Some(k) = knots.get(first) else {
+            return false;
+        };
+        // On to the last knot of this value.
+        let mut end = first;
+        while end < last && knots.get(end + 1) == Some(k) {
+            end += 1;
+            if end - first > most {
+                return true;
+            }
+        }
+        if end - first + 1 > degree && *k > d0 && *k < d1 {
+            let before = first.checked_sub(1).and_then(|i| ctrl.get(i));
+            let after = end.checked_sub(degree).and_then(|i| ctrl.get(i));
+            match (before, after) {
+                (Some(p), Some(q)) if p == q => {}
+                _ => return true,
+            }
+        }
+        first = end + 1;
     }
     false
 }
