@@ -1475,6 +1475,9 @@ fn a_sketch_on_a_face_is_written_like_this_and_round_trips() {
                     &PersistentName::new(FeatureId(6), NameRole::Edge, vec![3]),
                     face.clone(),
                 )
+            } else if role == NameRole::Tip {
+                // A tip's face, after the side it continues.
+                PersistentName::tip(FeatureId(6), face.clone())
             } else if role.is_derived() {
                 PersistentName::copy(FeatureId(6), 3, face.clone())
             } else if role.is_numbered() {

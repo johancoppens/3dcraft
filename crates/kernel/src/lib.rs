@@ -46,6 +46,7 @@ pub mod sweep;
 pub mod sweep2;
 pub mod thicken;
 pub mod thread;
+pub mod tip;
 mod tweak;
 pub mod unfold;
 pub mod work;
@@ -375,6 +376,14 @@ pub enum KernelError {
     /// [`MAX_REPORTED`]), `largest` the largest distance of the same sign
     /// at which the offset still has every loop it had, when one was
     /// found.
+    /// A tip cannot close this face ([`tip`]): `faces` are the end face
+    /// and, where it is about one, the side behind an edge of its loop;
+    /// `edge` that edge, when there is one.
+    Tip {
+        faces: Vec<craft3d_topo::FaceId>,
+        edge: Option<craft3d_topo::EdgeId>,
+        reason: String,
+    },
     /// A plate cannot be made of these faces with these joints
     /// ([`plate`]): `edge` is the edge of the faces it is about, when
     /// there is one.
@@ -748,6 +757,15 @@ impl fmt::Display for KernelError {
             }
             KernelError::FaceOpBoolean { operation, error } => {
                 write!(f, "{operation}: {error}")
+            }
+            KernelError::Tip {
+                faces,
+                edge,
+                reason,
+            } => {
+                write!(f, "tip")?;
+                face_op_entities(f, faces, *edge)?;
+                write!(f, ": {reason}")
             }
             KernelError::Loft { reason, .. }
             | KernelError::Sweep { reason, .. }

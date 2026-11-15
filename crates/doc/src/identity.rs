@@ -201,6 +201,7 @@ fn lump_chosen_unproven(doc: &Document, kind: &FeatureKind) -> bool {
         | FeatureKind::Shell(_)
         | FeatureKind::DeleteFace(_)
         | FeatureKind::Thread(_)
+        | FeatureKind::Tip(_)
         | FeatureKind::OffsetProfile(_)
         | FeatureKind::Fill(_) => false,
     }
@@ -244,6 +245,11 @@ fn link_proven(doc: &Document, link: &PersistentName) -> bool {
         | NameRole::Fillet
         | NameRole::FilletCorner
         | NameRole::Rim => false,
+        // A tip's face, after the side face it continues: one face per
+        // side, so its number is always 0; the side after `/` is looked
+        // at in turn. Not decided yet whether it is proven (the developer's
+        // word on stable names): refused until then.
+        NameRole::Tip => false,
     }
 }
 
@@ -312,6 +318,7 @@ fn entity_numbered_by_origin(kind: &FeatureKind, link: &PersistentName) -> bool 
         | FeatureKind::Shell(_)
         | FeatureKind::DeleteFace(_)
         | FeatureKind::Thread(_)
+        | FeatureKind::Tip(_)
         | FeatureKind::OffsetProfile(_)
         | FeatureKind::Fill(_)
         | FeatureKind::Split(_) => false,
@@ -380,6 +387,7 @@ fn swept_by_curves(kind: &FeatureKind, link: &PersistentName) -> bool {
         | FeatureKind::Shell(_)
         | FeatureKind::DeleteFace(_)
         | FeatureKind::Thread(_)
+        | FeatureKind::Tip(_)
         | FeatureKind::OffsetProfile(_)
         | FeatureKind::Split(_) => false,
     }
@@ -410,6 +418,9 @@ fn unproven_kind(doc: &Document, part: &PersistentName) -> &'static str {
             "a plate's rim, named by a hash of the name of the sheet's edge, which may be numbered by place and cannot be read back"
         }
         NameRole::Piece => "a piece numbered by its place among the pieces of one curve",
+        NameRole::Tip => {
+            "a face of a tip, named after the side it continues: not yet among the names proven to be identity"
+        }
         NameRole::Face | NameRole::Edge | NameRole::Vertex => {
             "an entity the feature that made it numbers by place (a developable's faces, the pieces of a sheet-metal part, a trimmed face's edges)"
         }

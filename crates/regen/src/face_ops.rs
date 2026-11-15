@@ -241,14 +241,51 @@ pub(crate) fn explain(
             edge,
             reason,
             ..
-        } => match about(source.body, source.names, &faces, edge) {
-            Some(at) => format!("faces: {reason} ({at})"),
-            None => format!("faces: {reason}"),
-        },
+        } => {
+            let note = tip_note(
+                faces
+                    .iter()
+                    .filter_map(|face| source.names.faces.get(face.0 as usize)),
+            );
+            match about(source.body, source.names, &faces, edge) {
+                Some(at) => format!("faces: {reason} ({at}){note}"),
+                None => format!("faces: {reason}{note}"),
+            }
+        }
         KernelError::FaceOpBoolean { error, .. } => {
             format!("the boolean that makes this refused it: {error}")
         }
         other => other.to_string(),
+    }
+}
+
+/// Whether `name` is the name of a face of a tip (`F9:tip(0)/…`), or a
+/// copy of one.
+pub(crate) fn of_a_tip(name: &PersistentName) -> bool {
+    let mut link = name;
+    // A name's chain is bounded (`craft3d_doc` caps its depth); bounded
+    // here all the same.
+    for _ in 0..256 {
+        if link.role == craft3d_doc::NameRole::Tip {
+            return true;
+        }
+        match link.of.as_deref() {
+            Some(next) => link = next,
+            None => return false,
+        }
+    }
+    false
+}
+
+/// What is said after a refusal about faces among which there is a face
+/// of a tip: such a face closes in a point, where no offset is defined,
+/// and the operations that offset faces do not take it yet (slice 5 of
+/// the tip, docs/design/sweeps.md › *A tip on a body*). Empty otherwise.
+pub(crate) fn tip_note<'a>(mut names: impl Iterator<Item = &'a PersistentName>) -> &'static str {
+    if names.any(of_a_tip) {
+        "; it is a face of a tip, which closes in a point: a tipped body cannot be hollowed, offset, thickened or plated yet"
+    } else {
+        ""
     }
 }
 

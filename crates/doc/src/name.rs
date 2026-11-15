@@ -911,10 +911,17 @@ pub enum NameRole {
     /// of an edge may: `between[…]`). It is a face because the name after
     /// `/` is one.
     Rim,
+    /// A face of a tip (`feature.tip`): the face that continues the side
+    /// face named after `/` over the end it closed,
+    /// `F9:tip(0)/F2:copy(0)/F1:side(e7)` (the side's name in the body the
+    /// tip was made from). Its one source is a plain number, 0: a side
+    /// face is continued by one face of the tip. It is a face because the
+    /// name after `/` is one.
+    Tip,
 }
 
 impl NameRole {
-    pub const ALL: [NameRole; 21] = [
+    pub const ALL: [NameRole; 22] = [
         NameRole::StartCap,
         NameRole::EndCap,
         NameRole::Side,
@@ -936,6 +943,7 @@ impl NameRole {
         NameRole::FilletCorner,
         NameRole::Thread,
         NameRole::Rim,
+        NameRole::Tip,
     ];
 
     pub fn name(self) -> &'static str {
@@ -961,6 +969,7 @@ impl NameRole {
             NameRole::FilletCorner => "filletCorner",
             NameRole::Thread => "thread",
             NameRole::Rim => "rim",
+            NameRole::Tip => "tip",
         }
     }
 
@@ -1016,7 +1025,10 @@ impl NameRole {
     /// True for a role whose name continues after `/` with the name of the
     /// entity it was made from.
     pub fn is_derived(self) -> bool {
-        matches!(self, NameRole::Copy | NameRole::Piece | NameRole::Rim)
+        matches!(
+            self,
+            NameRole::Copy | NameRole::Piece | NameRole::Rim | NameRole::Tip
+        )
     }
 
     /// True for a role whose sources are plain numbers, one or more,
@@ -1045,6 +1057,7 @@ impl NameRole {
                 | NameRole::Vertex
                 | NameRole::Thread
                 | NameRole::Rim
+                | NameRole::Tip
         )
     }
 }
@@ -1226,6 +1239,19 @@ impl PersistentName {
             role: NameRole::Rim,
             sources: vec![edge.hash48()],
             of: Some(Arc::new(face)),
+            by: None,
+        }
+    }
+
+    /// The face of a tip made by `feature` that continues the side face
+    /// `side` (its name in the body the tip was made from; see
+    /// [`NameRole::Tip`]): `F9:tip(0)/F2:side(e7)`.
+    pub fn tip(feature: FeatureId, side: PersistentName) -> Self {
+        Self {
+            feature,
+            role: NameRole::Tip,
+            sources: vec![0],
+            of: Some(Arc::new(side)),
             by: None,
         }
     }
