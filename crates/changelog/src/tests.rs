@@ -744,6 +744,13 @@ fn hostile_markup_reads_in_time_in_proportion_to_its_length() {
         ("[ then ] far off", format!("{}]", "[".repeat(800_000))),
         ("[a][", "[a][".repeat(200_000)),
         ("[a](", "[a](".repeat(200_000)),
+        // Every `[` has a `]` within a link's length, so each is looked
+        // into, as far as a link's words reach (the reviewer's "same shape
+        // in every other arm", 2026-11-15).
+        (
+            "nested [ within reach",
+            format!("{}]", "[".repeat(1000)).repeat(800),
+        ),
         ("falling runs of backticks", falling),
         ("` alone", "` ".repeat(400_000)),
         ("&", "&".repeat(800_000)),
@@ -759,10 +766,14 @@ fn hostile_markup_reads_in_time_in_proportion_to_its_length() {
             "{name}: {} bytes took {took:?}",
             text.len()
         );
+        println!("{name}: {} bytes in {took:?}", text.len());
         // Nothing of it was markup: it is all still there, but for the
         // white space.
         let kept = |text: &str| text.chars().filter(|c| !c.is_whitespace()).count();
-        if !matches!(*name, "<a<>" | "[a][" | "` alone" | "\\" | "*") {
+        if !matches!(
+            *name,
+            "<a<>" | "[a][" | "nested [ within reach" | "` alone" | "\\" | "*"
+        ) {
             assert_eq!(kept(&read), kept(text), "{name}");
         }
         // And as an entry of a changelog, read whole.
