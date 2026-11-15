@@ -99,6 +99,9 @@ pub(crate) enum NoOffset {
 const OFFSET_SHARE: f64 = 0.25;
 
 pub(crate) const FOLDS: &str = "the offset of the freeform face would fold over: the distance reaches a radius of curvature of the face on the side it moves to (or comes so near one that it cannot be shown not to)";
+/// [`FOLDS`], said where the search for how far it can go stopped at its
+/// work bound short of the fold (`bounded_fitting`).
+pub(crate) const FOLDS_AT_LEAST: &str = "the offset of the freeform face would fold over: the distance reaches a radius of curvature of the face on the side it moves to (or comes so near one that it cannot be shown not to; how far it can go before it does was not found: what is said to fit here does, and more may)";
 pub(crate) const NO_NORMAL: &str = "the freeform face has a pole or a border or corner drawn into a point, where its normal and so its offset are not defined";
 /// The work every face operation may do ([`craft3d_geom::allowance`]
 /// units, about half a microsecond each in release), its tries at the
@@ -1176,16 +1179,18 @@ fn bounded_fitting(
     // says so (a straight edge out through a wall of 400 spans, seen from
     // the world's axes, where each try is dear: *below 5.09* said of a
     // floor that fits to 6.79; the review of 2026-11-15).
-    if cut_short && (fails - fits) * largest > tol {
-        let reason = match reason {
-            tweak::EDGE_GONE => tweak::EDGE_GONE_AT_LEAST,
-            tweak::THROUGH => tweak::THROUGH_AT_LEAST,
-            tweak::CROSSED => tweak::CROSSED_AT_LEAST,
-            tweak::OUTLINE => tweak::OUTLINE_AT_LEAST,
-            tweak::RIMS => tweak::RIMS_AT_LEAST,
-            tweak::TURNED => tweak::TURNED_AT_LEAST,
-            _ => tweak::TOO_FAR_AT_LEAST,
-        };
+    let at_least_reason = match reason {
+        tweak::EDGE_GONE => Some(tweak::EDGE_GONE_AT_LEAST),
+        tweak::THROUGH => Some(tweak::THROUGH_AT_LEAST),
+        tweak::CROSSED => Some(tweak::CROSSED_AT_LEAST),
+        tweak::OUTLINE => Some(tweak::OUTLINE_AT_LEAST),
+        tweak::RIMS => Some(tweak::RIMS_AT_LEAST),
+        tweak::TURNED => Some(tweak::TURNED_AT_LEAST),
+        FOLDS => Some(FOLDS_AT_LEAST),
+        // The rarer reasons are said as before (owed).
+        _ => None,
+    };
+    if let Some(reason) = at_least_reason.filter(|_| cut_short && (fails - fits) * largest > tol) {
         return Err(KernelError::FaceOpTooFar {
             operation,
             faces,

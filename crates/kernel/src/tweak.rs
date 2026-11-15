@@ -105,7 +105,6 @@ pub(crate) const CROSSED_AT_LEAST: &str = "two edges of one face would cross or 
 pub(crate) const OUTLINE_AT_LEAST: &str = "the outline of the face would cross itself, or a hole in it would leave it (how far the faces can go before it does was not found: what is said to fit here does, and more may)";
 pub(crate) const RIMS_AT_LEAST: &str = "the two rims of the face would change places: the face would vanish (how far the faces can go before it does was not found: what is said to fit here does, and more may)";
 pub(crate) const TURNED_AT_LEAST: &str = "the face would be turned inside out: it would vanish (how far the faces can go before it does was not found: what is said to fit here does, and more may)";
-pub(crate) const TOO_FAR_AT_LEAST: &str = "the faces cannot go that far (how far they can go was not found: what is said to fit here does, and more may)";
 pub(crate) const CROSSED: &str = "two edges of one face would cross or touch: a face that moves would reach or pass the face that ends its neighbour there";
 pub(crate) const INSIDE_OUT: &str = "the body would be turned inside out: a face that moves would pass right through the rest of it (how far it can go before it first does was not found: try a smaller distance)";
 
