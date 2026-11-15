@@ -4746,12 +4746,16 @@ fn cell_by_cell(
                 *held += strip;
             }
         }
-        let share = if unproven {
-            group.share.max(unproven_share(outline, &finer))
-        } else {
-            group.share
-        };
-        work.hold(&finer, share);
+        work.hold(&finer, group.share);
+        if unproven {
+            // The area only: its integrand, `|Sᵤ × Sᵥ|`, is the root a
+            // thin face drives near nothing across a narrow band, where the
+            // plateau stands; the volume's and the moments' are polynomial
+            // (rational on weights) in the surface's points and
+            // derivatives, and their inner integrals converge as sums do.
+            let wide = unproven_share(outline, &finer).max(group.share);
+            work.held[0] += (wide - group.share) * finer.size.area;
+        }
     }
     settle(
         surface,
@@ -4771,10 +4775,10 @@ fn cell_by_cell(
 /// was shown on have one.
 const PROOF_SPANS: usize = 8;
 
-/// The share of rounding a part of a face is held with where feet along
-/// its surface's borders are among its sums and its inner integrals are
-/// not proven ([`PROOF_SPANS`]): that of a boundary off its face by as
-/// much as an edge may be ([`Outline::noise`] with `touch`). Before such
+/// The share of rounding the area of a part of a face is held with where
+/// feet along its surface's borders were taken for it and its inner
+/// integrals are not proven ([`PROOF_SPANS`]): that of a boundary off its
+/// face by as much as an edge may be ([`Outline::noise`] with `touch`). Before such
 /// feet, the search's feet next to the pole were off their points, and
 /// what they were off (up to `touch`) was counted so: the bound is no
 /// narrower than the one such a face had then. Two sums that agree do not
