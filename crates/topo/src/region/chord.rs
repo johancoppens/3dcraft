@@ -213,6 +213,9 @@ struct Walked<'a> {
     scale: f64,
     loops: Vec<(Vec<Coedge>, Vec<Stretch>)>,
     pieces: BTreeMap<EdgeId, Pieces<'a>>,
+    /// What rounding can have moved a spline edge's hull points
+    /// ([`hull_rounding`]), found once an edge.
+    roundings: BTreeMap<EdgeId, Option<f64>>,
     work: usize,
 }
 
@@ -252,6 +255,7 @@ impl<'a> Walked<'a> {
             scale: f64::INFINITY,
             loops: Vec::with_capacity(face.loops.len()),
             pieces: BTreeMap::new(),
+            roundings: BTreeMap::new(),
             work: 0,
         };
         let planar = matches!(surface, Surface::Plane(_));
@@ -465,7 +469,19 @@ impl<'a> Walked<'a> {
                 self.hull_bound(&held, a, b, chord)
             }
             Curve3::Nurbs(n) => {
-                let Some(rounding) = hull_rounding(n) else {
+                let rounding = match self.roundings.get(&edge_id) {
+                    Some(r) => *r,
+                    None => {
+                        // A look at each control point and weight, once an
+                        // edge, not counted (as in the walk, which looks
+                        // once a step): the work counted is what it was
+                        // when it was looked at each stretch.
+                        let r = hull_rounding(n);
+                        self.roundings.insert(edge_id, r);
+                        r
+                    }
+                };
+                let Some(rounding) = rounding else {
                     return Some(Bound::Not);
                 };
                 let clear = super::HULL_CLEAR * rounding;
@@ -552,7 +568,7 @@ impl<'a> Walked<'a> {
                     return Some(Bound::Not);
                 };
                 let mut fan = Fan::within(ONE_WAY);
-                let mut turned = 0.0_f64;
+                let mut widest = 0.0_f64;
                 let mut slack = 0.0_f64;
                 let mut starts = 0_usize;
                 let mut fits = true;
@@ -570,8 +586,8 @@ impl<'a> Walked<'a> {
                         let [p, q] = pair else { continue };
                         let w = *q - *p;
                         let t = (w.dot(x), w.dot(y));
-                        let length = t.0.phypot(t.1);
-                        if length == 0.0 {
+                        let size = t.0 * t.0 + t.1 * t.1;
+                        if size == 0.0 {
                             // A leg of no length among others is none where
                             // the points are exact; else it may point
                             // anywhere.
@@ -580,14 +596,17 @@ impl<'a> Walked<'a> {
                             }
                             continue;
                         }
-                        let share = 2.0 * clear / length;
-                        if share.partial_cmp(&0.2) != Some(std::cmp::Ordering::Less) || !fan.add(t)
+                        // The square of twice `clear` over the leg's
+                        // length: under a twenty-fifth, a fifth of a radian.
+                        let share = 4.0 * clear * clear / size;
+                        if share.partial_cmp(&0.04) != Some(std::cmp::Ordering::Less) || !fan.add(t)
                         {
                             fits = false;
                         }
-                        turned = turned.max(share.min(1.0).pasin());
+                        widest = widest.max(share);
                     }
                 }
+                let turned = widest.sqrt().min(1.0).pasin();
                 let cone = match (fits, fan.ends) {
                     (true, Some((low, high))) => Some(Aim {
                         cone: widened((low, high), turned + WIDEN),
