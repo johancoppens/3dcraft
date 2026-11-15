@@ -856,3 +856,136 @@ fn wrong_faces_the_walk_passes_are_not_walked_again_and_the_misses_are_known() {
         "a known miss now refused (take it off the list)"
     );
 }
+
+/// Faults within two neighbouring stretches of the walk again (the review
+/// of 2026-11-15, round 2 of the verification): a plane face of five lines
+/// and one cubic of two Bézier halves whose second half bulges across the
+/// line after it, so that the loop crosses itself between an edge's last
+/// stretch and the next edge's first. The walk refuses it ("its loop 0
+/// crosses itself"); the bounds must not drop that, since neighbouring
+/// stretches are shown apart only by their cones
+/// (`docs/design/topology.md` › *What lies between an edge and its chord*).
+/// At three scales, the chart turned and not.
+#[test]
+fn a_bulge_across_the_next_edge_is_refused() {
+    use craft3d_geom::{Curve3, Line, NurbsCurve, Plane, Surface};
+    use craft3d_math::{Frame, Portable, Vec3};
+    use craft3d_topo::{BodyKind, Coedge};
+    let cubic = [
+        (0.0123, 0.0148),
+        (0.0249, 0.0167),
+        (0.0317, 0.0174),
+        (0.0411, 0.0140),
+        (0.0506, 0.0106),
+        (0.0515, -0.0016),
+        (0.0474, -0.0096),
+    ];
+    let corners = [
+        (-0.0066, 0.3),
+        (-0.0663, 0.2896),
+        (0.0366, -0.3),
+        (0.0663, -0.2948),
+    ];
+    for k in [1e-3, 1.0, 1e6] {
+        for turn in [0.0_f64, 0.7] {
+            let (s, c) = turn.psin_cos();
+            let at = |(x, y): (f64, f64)| {
+                Vec3::new(3.0 * k * (c * x - s * y), 3.0 * k * (s * x + c * y), 0.0)
+            };
+            let mut body = Body::new(BodyKind::Sheet);
+            let mut ends: Vec<(f64, f64)> = corners.to_vec();
+            ends.push(cubic[0]);
+            ends.push(cubic[6]);
+            let v: Vec<_> = ends.iter().map(|p| body.add_vertex(at(*p))).collect();
+            let line = |body: &mut Body, i: usize, j: usize| {
+                let (a, b) = (at(ends[i]), at(ends[j]));
+                body.add_edge(
+                    Curve3::Line(Line::through(a, b).unwrap()),
+                    (0.0, a.distance(b)),
+                    v[i],
+                    v[j],
+                )
+            };
+            let mut edges = vec![
+                line(&mut body, 0, 1),
+                line(&mut body, 1, 2),
+                line(&mut body, 2, 3),
+                line(&mut body, 3, 4),
+            ];
+            let knots = vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0];
+            let spline =
+                NurbsCurve::polynomial(3, knots, cubic.iter().map(|p| at(*p)).collect()).unwrap();
+            edges.push(body.add_edge(Curve3::Nurbs(spline), (0.0, 1.0), v[4], v[5]));
+            edges.push(line(&mut body, 5, 0));
+            let lp = body.add_loop(
+                edges
+                    .iter()
+                    .map(|edge| Coedge {
+                        edge: *edge,
+                        reversed: false,
+                    })
+                    .collect(),
+            );
+            let face = body.add_face(Surface::Plane(Plane::new(Frame::WORLD)), false, vec![lp]);
+            body.add_shell(vec![face]);
+            assert!(
+                sampled_loop_crosses_itself(&body),
+                "at {k}, turned {turn}: the face is wrong"
+            );
+            let found = loop_defects(&body, k);
+            assert!(
+                matches!(found.as_slice(), [one] if one.contains("its loop 0 crosses itself")),
+                "at {k}, turned {turn}: {found:?}"
+            );
+        }
+    }
+}
+
+/// A loop that goes round its region twice, every edge used once (each
+/// side of a wavy ribbon and a copy of it): wrong, as the region is
+/// counted twice. The walk refuses it by its region rule (the wavy side's
+/// chords cross the other side, the misreading that the bounds clear for
+/// the ribbon gone round once), and the bounds must not clear it: they
+/// clear a fault only where every two pieces of the boundary are apart,
+/// which the copies are not, and with the region rule's fault dropped the
+/// rule of simple loops would not ask where it winds twice (rule 3) nor,
+/// on a cylinder, whether two of its stretches lie on each other (rule 4
+/// within one loop). On a plane and a cylinder.
+#[test]
+fn a_loop_round_twice_is_not_cleared_by_the_bounds() {
+    use craft3d_geom::{Cylinder, Plane, Surface};
+    use craft3d_math::{Frame, Portable, Vec3};
+    let plane = Surface::Plane(Plane::new(Frame::WORLD));
+    let cylinder = Surface::Cylinder(Cylinder::new(Frame::WORLD, 1.3).unwrap());
+    let flat = |x: f64, y: f64| Vec3::new(2.0 * x, 2.0 * y, 0.0);
+    let round = |x: f64, y: f64| {
+        let (s, c) = x.psin_cos();
+        Vec3::new(1.3 * c, 1.3 * s, 1.3 * y)
+    };
+    type Chart<'a> = (&'a str, &'a Surface, &'a dyn Fn(f64, f64) -> Vec3);
+    let charts: [Chart; 2] = [("plane", &plane, &flat), ("cylinder", &cylinder, &round)];
+    for (name, surface, at) in charts {
+        let (once, _) = wave_ribbon(surface, at, 8.0, 1.0, 32, false, 1e-6);
+        assert_eq!(
+            loop_defects(&once, 1.0),
+            Vec::<String>::new(),
+            "{name}: the ribbon gone round once is right and passes"
+        );
+        let mut twice = once.clone();
+        let lp = twice.faces[0].loops[0];
+        let coedges = twice.loop_(lp).unwrap().coedges.clone();
+        let mut all = coedges.clone();
+        for co in &coedges {
+            let edge = twice.edge(co.edge).unwrap().clone();
+            let copy = twice.add_edge(edge.curve, edge.range, edge.start, edge.end);
+            all.push(craft3d_topo::Coedge {
+                edge: copy,
+                reversed: co.reversed,
+            });
+        }
+        twice.loops[lp.0 as usize].coedges = all;
+        let found = loop_defects(&twice, 1.0);
+        assert!(!found.is_empty(), "{name}: the loop round twice passes");
+        println!("{name}: {found:?}");
+    }
+}

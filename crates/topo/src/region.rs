@@ -114,10 +114,12 @@ pub fn step_proofs() -> (u64, u64) {
 
 /// What walking faces again before refusing them has cost on this thread
 /// since it started, counted apart from [`step_proofs`]: the units of work
-/// (within [`MOST_PROOF_WORK`] a face, as the walk's own), and the faces
-/// whose walk again passed that bound (their fault kept). A face the walk
-/// passes adds nothing here. For tests and reports: a count of work, never
-/// a clock.
+/// (within [`MOST_PROOF_WORK`] for the whole of a face's walk again, its
+/// region rule and every loop its rule of simple loops asks about
+/// together, passed by the last charge at the most), and the faces whose
+/// walk again passed that bound (their faults kept), each counted once. A
+/// face the walk passes adds nothing here. For tests and reports: a count
+/// of work, never a clock.
 pub fn chord_proofs() -> (u64, u64) {
     CHORD_PROOFS.with(Cell::get)
 }
@@ -595,11 +597,24 @@ pub(crate) enum Fault {
 /// shown leaves the face as one the region rule cannot tell: the rule of
 /// simple loops is asked without the walk.
 fn face_fault(body: &Body, face: &Face, tol: &Tolerance) -> Option<Fault> {
-    let verified = |k: usize| chord::winding_shown(body, face, tol, k);
+    // One second walk for the face, made only when a fault is to be
+    // verified, and kept for every later one.
+    let verifier = std::cell::RefCell::new(chord::Verifier::new(body, face, tol));
+    let verified = |k: usize| verifier.borrow_mut().winding_shown(k);
     let (region, followed) = region_followed(body, face, tol);
     if let Some(why) = region {
-        return match chord::region_shown(body, face, tol, &why) {
+        let shown = verifier.borrow_mut().region_shown(&why);
+        return match shown {
             Some(why) => Some(Fault::Region(why)),
+            // Dropped: the bounds show each loop is a simple closed curve
+            // that goes round no period, no two pieces of the boundary
+            // meeting beyond ten tolerances of a vertex
+            // (`chord::judge_region`'s clear). Without the walk the rule of
+            // simple loops asks rule 1 and rule 4 between loops (and, on a
+            // plane, within one); what it does not ask, rule 2 (a loop round
+            // a period too often), rule 3 (a loop wound about a point other
+            // than once) and rule 4 within a loop on a curved surface (two
+            // of its stretches on each other), cannot hold of such loops.
             None => crate::simple::loop_fault(body, face, tol, None, &verified)
                 .map(|(loop_, why)| Fault::Loop(loop_, why)),
         };
@@ -2338,9 +2353,12 @@ fn crossing(rings: &[Ring], margin_of: &dyn Fn(usize, usize) -> f64) -> Option<(
         .map(|i| margin_of(i, i))
         .fold(0.0, f64::max)
         * 2.0;
-    match pairs_of_steps(rings, largest_margin, &mut |(r, _), a, b, (s, _), c, d| {
-        cross(a, b, c, d, margin_of(r, s))
-    }) {
+    match pairs_of_steps(
+        rings,
+        largest_margin,
+        false,
+        &mut |(r, _), a, b, (s, _), c, d| cross(a, b, c, d, margin_of(r, s)),
+    ) {
         Sweep::Found(r, _, s, _) => Some((s.min(r), s.max(r))),
         Sweep::Done | Sweep::Cut => None,
     }
@@ -2366,11 +2384,14 @@ enum Sweep {
 /// v, each step in every band it reaches (with the growth), each band
 /// swept along u: steps far apart in v are never paired, so a face of many
 /// holes in rows and columns (a perforated tube) costs about its steps,
-/// not their square.
+/// not their square. With `few_bands`, no more bands than the growth goes
+/// into the height (wide growths would put every step in every band and
+/// pair each two in each).
 #[allow(clippy::type_complexity)]
 fn pairs_of_steps(
     rings: &[Ring],
     grow: f64,
+    few_bands: bool,
     visit: &mut dyn FnMut(
         (usize, usize),
         [f64; 2],
@@ -2409,7 +2430,13 @@ fn pairs_of_steps(
         .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), s| {
             (l.min(s.2), h.max(s.3))
         });
-    let count = ((steps.len() as f64).sqrt().ceil() as usize).clamp(1, 512);
+    let mut count = ((steps.len() as f64).sqrt().ceil() as usize).clamp(1, 512);
+    if few_bands {
+        let fit = (v_high - v_low) / grow;
+        if fit.is_finite() && fit >= 0.0 {
+            count = count.min((fit as usize).max(1));
+        }
+    }
     let height = (v_high - v_low) / count as f64;
     let band_of = |v: f64| {
         let f = (v - v_low) / height;
