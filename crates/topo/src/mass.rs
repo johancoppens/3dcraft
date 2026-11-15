@@ -4696,6 +4696,10 @@ fn cell_by_cell(
         // borders or lines, the inner integrals of what was taken are
         // shown to have converged (2026-11-15).
         if parts == FIRST_SUMS && BORDERS.with(|borders| borders.get().2) {
+            // Its sums are work of their own, as much again as the face
+            // may take: a face that settled within its budget is not
+            // given up for showing that it did.
+            work.limit = work.limit.saturating_mul(2);
             inner_proven(at, (rule, coarse), (sense, plan), &mut taken, work)?;
         }
         if parts == FIRST_SUMS
@@ -4746,10 +4750,11 @@ const INNER_ROUNDING: f64 = 32.0 * f64::EPSILON;
 /// agree ([`CONVERGED`]) and no more than half what they changed by the
 /// doubling before. Where the first doubling changes them by rounding the
 /// cells are kept as they were, bit for bit; else the cells of the last
-/// sums take their place. Inner panels that cannot double further before
-/// that leave the face unsettled (and so measured with the search's
-/// feet, [`face_integrals`]); cells with as many as an inner integral
-/// takes are as they were.
+/// sums take their place. Where the inner panels cannot double further
+/// before that, the cells stay as they were and the bound also holds the
+/// furthest the doublings moved the sums, and their last step again: no
+/// narrower than what was seen. Cells with as many inner panels as an
+/// inner integral takes are as they were.
 ///
 /// Why, and only here. Two sums in a row that agree are taken to show
 /// that the second is right to what they were allowed to differ by: true
@@ -4772,7 +4777,6 @@ fn inner_proven(
     taken: &mut [Group],
     work: &mut Work,
 ) -> Result<(), MassError> {
-    let index = at.3;
     let total_of = |cells: &[Cell]| {
         let mut total = Total::default();
         for cell in cells {
@@ -4806,21 +4810,35 @@ fn inner_proven(
         return Ok(());
     }
     let mut before = groups(&cells);
+    let first = before.clone();
+    // Per group, in area and in volume: the furthest the sums went from
+    // the first ones, and what the last doubling changed.
+    let mut spread = vec![[0.0_f64; 2]; counts.len()];
     let mut moved: Option<Vec<[f64; SUMS]>> = None;
     let mut coarser = cells.clone();
     for _ in 0..=MAX_DOUBLINGS {
+        // The cells that can take more inner panels, summed again; the
+        // others are as they were.
         let wanted: Vec<((usize, usize), Panel, u32, u32)> = cells
             .iter()
-            .map(|cell| {
-                (
-                    cell.key,
-                    cell.panel,
-                    cell.level,
-                    (cell.inner + 1).min(MAX_DOUBLINGS),
-                )
-            })
+            .filter(|cell| cell.inner < MAX_DOUBLINGS)
+            .map(|cell| (cell.key, cell.panel, cell.level, cell.inner + 1))
             .collect();
-        let finer = cells_of(at, rules, (sense, plan), &wanted, work)?;
+        // On a copy that is never given up, so that a pass past the
+        // face's work ends the proof below rather than the face.
+        let mut pass = work.clone();
+        pass.limit = u64::MAX;
+        pass.checks = None;
+        let mut again = cells_of(at, rules, (sense, plan), &wanted, &mut pass)?.into_iter();
+        work.spent = pass.spent;
+        let mut finer = Vec::with_capacity(cells.len());
+        for cell in &cells {
+            if cell.inner < MAX_DOUBLINGS {
+                finer.push(again.next().ok_or(MassError::Invalid { face: at.3 })?);
+            } else {
+                finer.push(*cell);
+            }
+        }
         let after = groups(&finer);
         let (mut rounding, mut settled) = (true, true);
         let mut changes = Vec::with_capacity(after.len());
@@ -4850,12 +4868,33 @@ fn inner_proven(
         if rounding && moved.is_none() {
             return Ok(());
         }
+        for (((far, at_first), now), change) in
+            spread.iter_mut().zip(&first).zip(&after).zip(&changes)
+        {
+            let (a, b) = (at_first.sum.parts(), now.sum.parts());
+            for (k, slot) in far.iter_mut().enumerate() {
+                let (Some(x), Some(y), Some(c)) = (a.get(k), b.get(k), change.get(k)) else {
+                    continue;
+                };
+                // The furthest, and that much again for the last step.
+                *slot = slot.max((x - y).abs() + c);
+            }
+        }
         coarser = std::mem::replace(&mut cells, finer);
         if settled {
             break;
         }
-        if cells.iter().all(|cell| cell.inner >= MAX_DOUBLINGS) {
-            return Err(unsettled(index));
+        if cells.iter().all(|cell| cell.inner >= MAX_DOUBLINGS) || work.spent > work.limit {
+            // As many inner panels as an inner integral takes, or as much
+            // work as the face may take, and their sums still not shown
+            // to converge: the cells stay as they were, and what the
+            // doublings moved them by is held too, so that the bound is
+            // no narrower than what was seen.
+            for far in &spread {
+                work.held[0] += far[0];
+                work.held[1] += far[1];
+            }
+            return Ok(());
         }
         moved = Some(changes);
         before = after;

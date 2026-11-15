@@ -1033,3 +1033,55 @@ fn a_face_refused_as_the_search_places_it_is_not_tried_again_under_a_bound() {
         "meshed under a bound now: say so in tessellator.md and take the pin off"
     );
 }
+
+#[test]
+fn a_face_whose_inner_integrals_are_not_shown_to_converge_keeps_its_sums() {
+    // Where the inner panels run out before the sums of a face with feet
+    // along its borders are shown to converge (`mass::inner_proven`), the
+    // face keeps the sums it settled with, and its bound holds the
+    // furthest the doublings moved them: measured right, within a bound
+    // no narrower than what was seen. Both were refused (the dome, on the
+    // commit before the feet as well) or measured with the search's feet
+    // (the notch, 5.97e-8 of its area off) when such a face was given up
+    // (the review of 2026-11-15, the third round's first try).
+    let notched = [
+        [5.0, -5.0],
+        [5.0, -1e-3],
+        [1.0, 0.0],
+        [5.0, 1e-3],
+        [5.0, 5.0],
+        [-5.0, 5.0],
+        [-5.0, -5.0],
+    ];
+    let (_, body) = section_tip(
+        &Frame::WORLD,
+        1.0,
+        &polygon(&notched),
+        [0.0, 0.0],
+        3.0,
+        PARABOLA.0,
+    )
+    .unwrap();
+    let want = PARABOLA.1 * polygon_area(&notched) * 3.0;
+    let (off, bound) = measured(&body, 1.0, want, 1e-10, "the notched section's tip");
+    println!("the notched section's tip: {off:e} of its volume off, bound {bound:e}");
+    assert!(off <= 1e-12, "{off:e}");
+    // A dome 1 × 0.001 across a seam, its tip over the centre, at 1e6 in
+    // a turned frame six sizes away.
+    let k = 1e6;
+    let frame = Frame::new(
+        Vec3::new(3.0 * k, -2.0 * k, 5.0 * k),
+        Vec3::new(2.0, -3.0, 6.0),
+        Vec3::new(1.0, 0.3, 0.0),
+    )
+    .unwrap();
+    for flip in [false, true] {
+        let body = seamed_dome(&frame, (k, 1e-3 * k), flip, [0.0, 0.0], 0.5 * k);
+        let want = 11.0 / 15.0 * PI * k * 1e-3 * k * 0.5 * k;
+        let (off, bound) = measured(&body, k, want, 1e-8, "the dome 1 x 0.001 at 1e6");
+        println!(
+            "the dome 1 x 0.001 at 1e6, its seam flipped {flip}: {off:e} of its volume off, bound {bound:e}"
+        );
+        assert!(off <= 1e-12, "{off:e}");
+    }
+}
