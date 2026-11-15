@@ -68,8 +68,9 @@ fn flange(on: u64, angle: f64, dir: Direction, r: f64, kk: f64, l: f64) -> Flang
     }
 }
 
-// The rays' finding (case 123 of the seeded plates) is pinned in
-// `hunt_sheet_plates.rs`, where the case is built bit for bit.
+// The rays' finding (case 123 of the seeded plates) was repaired on
+// 2026-11-14 and is held in `hunt_sheet_plates.rs`, where the case is
+// built bit for bit, and in `classify_far.rs`.
 
 /// REFUSED, owed (the plate's trace): a bend **down** whose inner radius
 /// is below about a fiftieth of the thickness. The bend's arcs on the

@@ -647,6 +647,16 @@ pub struct Tokens {
     pub dialog_wide_width: f32,
     pub export_dialog_width: f32,
     pub shortcuts_width: f32,
+    /// What's new: the width of its window, the most of the start
+    /// screen's height the card's list takes before it scrolls in itself
+    /// (so the card never pushes New, Open and the first examples out of
+    /// a low window), and the least height that list keeps, in points.
+    pub whats_new_width: f32,
+    pub whats_new_share: f32,
+    pub whats_new_least: f32,
+    /// The most of the window's height the list of the notes' window
+    /// takes before it scrolls.
+    pub whats_new_window_share: f32,
     pub details_width: f32,
     pub details_height: f32,
     /// The menu bar's menus' widths: File, Edit, View, Help (board s4).
@@ -1128,6 +1138,10 @@ impl Tokens {
             dialog_wide_width: 460.0,
             export_dialog_width: 500.0,
             shortcuts_width: 720.0,
+            whats_new_width: 640.0,
+            whats_new_share: 0.36,
+            whats_new_least: 96.0,
+            whats_new_window_share: 0.6,
             details_width: 560.0,
             details_height: 320.0,
             menu_widths: [250.0, 250.0, 230.0, 240.0],

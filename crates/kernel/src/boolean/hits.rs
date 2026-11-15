@@ -26,6 +26,8 @@ const FREEFORM: &str = craft3d_math::bug_text!(
     "a freeform (Bézier or NURBS) surface that was not indexed for booleans"
 );
 const ALONG: &str = "a curve that runs along a surface within the tolerance without lying on it (at the edge of tolerance)";
+/// See [`hits_of_runs`]: the reason a hit is neither given nor left out.
+pub(super) const MISSED: &str = "the nearest point of a freeform surface was not found where a curve passes within the tolerance of it: whether the curve meets the surface there is not known";
 
 /// The most evaluations one curve and surface may cost.
 const MAX_EVALUATIONS: usize = 200_000;
@@ -582,7 +584,7 @@ fn numeric(
     if let [(_, _, Kind::Near)] = runs.as_slice() {
         return Ok(CurveIntersection::OnSurface);
     }
-    let hits = hits_of_runs(curve, &runs, &windowed, &f, bounded, tol, None);
+    let hits = hits_of_runs(curve, &runs, &windowed, &f, bounded, tol, None, lower)?;
     if failed.get() {
         return Err(GeomError::Unsupported(FREEFORM));
     }
@@ -596,6 +598,20 @@ fn numeric(
 /// piece a crossing only when it crosses on the way. `bounded`: the
 /// surface ends, and a long near run is the curve lying on it and cut
 /// where it leaves (see [`Probe::bounded`]).
+///
+/// A near run is a place no bound could clear; whether it is a hit is
+/// read from the distance at one point of it, and a point further than
+/// the tolerance from the surface is none (a curve that passes a patch
+/// just beyond its rim). Against a freeform surface that distance is as
+/// near as a search for the nearest point got, so before a hit is left
+/// out on its word it is held against `lower`, the bound below the
+/// distance ([`Probe::lower`]): where a piece of the surface is shown
+/// nearer than the search found, by more than the bound's own resolution,
+/// the search missed, and the answer is [`MISSED`], not "no hit". (Until
+/// 2026-11-14 the hit was left out: a ray's crossing of a face went
+/// uncounted, and a point 6600 tolerances outside a plate was placed
+/// inside it.)
+#[allow(clippy::too_many_arguments)]
 fn hits_of_runs(
     curve: &Curve3,
     runs: &[(f64, f64, Kind)],
@@ -604,7 +620,8 @@ fn hits_of_runs(
     bounded: bool,
     tol: f64,
     level: Option<&Level<'_>>,
-) -> Vec<CurveHit> {
+    lower: Option<&dyn Fn(Vec3, f64) -> f64>,
+) -> Result<Vec<CurveHit>, GeomError> {
     // Where the distance is zero on a stretch it crosses zero on: in
     // closed form where there is one, else by bisection.
     let root = |f: &dyn Fn(f64) -> f64, lo: f64, hi: f64| {
@@ -710,7 +727,16 @@ fn hits_of_runs(
             // No crossing seen: as far as this piece shows, a touch.
             _ => (closest(&f, lo, hi), true),
         };
-        if f(t).abs() > tol {
+        let off = f(t).abs();
+        if off > tol {
+            // The bound is asked whether the surface is as far as the
+            // search says, less half a tolerance: its pieces are boxes a
+            // quarter of the tolerance across, so one of them nearer than
+            // that holds a point of the surface nearer than the search's.
+            let asked = off - 0.5 * tol;
+            if lower.is_some_and(|bound| bound(curve.eval(t), asked) < asked) {
+                return Err(GeomError::NoConvergence(MISSED));
+            }
             continue;
         }
         let point = curve.eval(t);
@@ -718,7 +744,7 @@ fn hits_of_runs(
             hits.push(CurveHit { t, point, tangent });
         }
     }
-    hits
+    Ok(hits)
 }
 
 /// Where the piece of `curve` over `range` meets `surface`.
@@ -1341,15 +1367,10 @@ fn monotone(
     {
         return None;
     }
-    Some(CurveIntersection::Hits(hits_of_runs(
-        curve,
-        &runs,
-        &[],
-        &f,
-        false,
-        tol,
-        Some(checked_ref),
-    )))
+    // (An analytic surface: its distance is a formula, not a search.)
+    hits_of_runs(curve, &runs, &[], &f, false, tol, Some(checked_ref), None)
+        .ok()
+        .map(CurveIntersection::Hits)
 }
 
 /// A circle about the axis of a cone, a sphere or a torus is at one
@@ -1913,6 +1934,131 @@ mod tests {
         assert_eq!(hits.len(), 1, "{hits:?}");
         assert!(!hits[0].tangent);
         assert!((hits[0].t - 1.5).abs() < 1e-3, "{}", hits[0].t);
+    }
+
+    /// A line through a flat strip ruled across millions of units (`u`
+    /// its length along the strip, `v` from 0 to 1 across its width, as a
+    /// plate's rim is ruled between two traced curves) crosses it once,
+    /// whatever the width, wherever it passes and in a tilted frame far
+    /// from the origin. The search for the nearest point ended hundreds
+    /// of lengths short on such a strip (`freeform.rs` › `descend`), the
+    /// distance at the crossing was read as more than the tolerance, and
+    /// the crossing was left out: a ray from a point 6600 tolerances
+    /// outside a plate counted one face too few (2026-11-14).
+    #[test]
+    fn a_line_through_a_strip_ruled_across_millions_crosses_it_once() {
+        use super::super::freeform::PatchTree;
+        use craft3d_geom::NurbsSurface;
+        use std::sync::Arc;
+        let tol = Tolerance::new(1.0, 1e-9).unwrap();
+        let length = 9e3;
+        let mut crossings = 0;
+        for width in [6.3e6, 1e3, 1e5, 2.5e6, 1e8] {
+            for far in [0.0, 2.6e8] {
+                let frame = Frame::new(
+                    Vec3::new(-0.2, -0.7, -0.7) * far,
+                    Vec3::new(0.3, -0.4, 1.0),
+                    Vec3::new(1.0, 0.2, 0.0),
+                )
+                .unwrap();
+                let corner = |x: f64, y: f64| frame.point(x * length, y * width, 0.0);
+                let surface = Surface::Nurbs(
+                    NurbsSurface::new(
+                        1,
+                        1,
+                        vec![0.0, 0.0, length, length],
+                        vec![0.0, 0.0, 1.0, 1.0],
+                        2,
+                        2,
+                        vec![
+                            corner(0.0, 0.0),
+                            corner(0.0, 1.0),
+                            corner(1.0, 0.0),
+                            corner(1.0, 1.0),
+                        ],
+                        vec![1.0; 4],
+                    )
+                    .unwrap(),
+                );
+                let tree = Arc::new(PatchTree::new(&surface).unwrap());
+                let sheet = Sheet {
+                    surface: &surface,
+                    tree: Some(&tree),
+                };
+                for (x, y) in [(0.31, 0.27), (0.06, 0.69), (0.9, 0.5), (0.5, 0.03)] {
+                    let through = frame.point(x * length, y * width, 0.0);
+                    let direction = frame.vector(0.577, 0.211, 0.789);
+                    let line = Line::new(through, direction).unwrap();
+                    // From 8433 before the strip to as far beyond it.
+                    let start = line.origin() - line.direction() * 8433.0;
+                    let ray = Curve3::Line(Line::new(start, direction).unwrap());
+                    let found = curve_hits(&ray, (-2.0, 16866.0), sheet, &tol).unwrap();
+                    let CurveIntersection::Hits(hits) = found else {
+                        panic!("width {width} far {far} at ({x}, {y}): on the surface");
+                    };
+                    assert_eq!(
+                        hits.len(),
+                        1,
+                        "width {width} far {far} at ({x}, {y}): {hits:?}"
+                    );
+                    assert!(!hits[0].tangent, "width {width} far {far} at ({x}, {y})");
+                    assert!(
+                        (hits[0].t - 8433.0).abs() <= 2.0 * tol.linear,
+                        "width {width} far {far} at ({x}, {y}): at {}",
+                        hits[0].t
+                    );
+                    crossings += 1;
+                }
+            }
+        }
+        assert_eq!(crossings, 40);
+    }
+
+    /// A near run between a clear run on either side of the surface,
+    /// where the distance read at the crossing is more than the
+    /// tolerance: left out when the bound below the distance agrees that
+    /// the surface is that far (the curve passes a patch beyond its rim),
+    /// and neither a hit nor none when the bound shows the surface nearer
+    /// than the search for its nearest point found.
+    #[test]
+    fn a_hit_is_not_left_out_on_the_word_of_a_search_the_bound_contradicts() {
+        let line = Curve3::Line(Line::new(Vec3::ZERO, Vec3::X).unwrap());
+        let tol = 1e-3;
+        let runs = [
+            (0.0, 1.0, Kind::Clear { positive: false }),
+            (1.0, 1.001, Kind::Near),
+            (1.001, 2.0, Kind::Clear { positive: true }),
+        ];
+        let windowed = [(None, None); 3];
+        // The search reports the surface five tolerances off at the
+        // crossing, on either side of it.
+        let f = |t: f64| if t < 1.0005 { -5.0 * tol } else { 5.0 * tol };
+        // A bound that shows the nearest piece of the surface `tolerances`
+        // away (capped at what it is asked, as the tree's is).
+        let bound = |tolerances: f64| move |_: Vec3, asked: f64| asked.min(tolerances * tol);
+        let with = |tolerances: f64| {
+            let bound = bound(tolerances);
+            hits_of_runs(&line, &runs, &windowed, &f, true, tol, None, Some(&bound))
+        };
+        // The bound agrees with the search: left out, as a curve that
+        // passes a patch beyond its rim is. Half a tolerance short of
+        // what the search says is no contradiction either: the bound's
+        // own pieces are a quarter of the tolerance across.
+        assert_eq!(with(5.0).unwrap(), Vec::new());
+        assert_eq!(with(4.5).unwrap(), Vec::new());
+        // The bound shows a piece of the surface nearer than that: the
+        // search missed it.
+        for nearer in [4.4, 1.0, 0.25, 0.0] {
+            let missed = with(nearer);
+            assert!(
+                matches!(missed, Err(GeomError::NoConvergence(reason)) if reason == MISSED),
+                "{nearer}: {missed:?}"
+            );
+        }
+        // Without a bound (an analytic surface, whose distance is a
+        // formula) the distance is taken at its word.
+        let plain = hits_of_runs(&line, &runs, &windowed, &f, false, tol, None, None);
+        assert_eq!(plain.unwrap(), Vec::new());
     }
 
     #[test]

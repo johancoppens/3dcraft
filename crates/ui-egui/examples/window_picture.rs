@@ -40,6 +40,13 @@
 //! `AgentsStatus` as `ui.get` gives it under `agents`, with `home` for
 //! the `~`), so the pill, its popover and the questions show; the
 //! agents' clock is then the clients' latest command plus half a second.
+//! `--whats-new FILE,VERSION,SEEN` gives the window release notes, as a
+//! program of VERSION that carries the changelog FILE has them for a
+//! person of whom SEEN is known (a version, `earlier` for a 3DCraft that
+//! kept no note of its version, or `never` for a first start): after an
+//! update the start screen shows the card *New in VERSION* (`none` as the
+//! document), and `--set {"whatsNew": {"window": true}}` opens the notes
+//! over a document.
 //! `--dialog export:NAME` opens the export dialog as File › Export… does
 //! (with what is selected, after `--set {"selectedFeature": …}`), in the
 //! format of NAME's extension when that holds what it chose, `--dialog
@@ -56,7 +63,29 @@ use serde_json::json;
 
 const DEFAULT_SIZE: [u32; 2] = [1280, 800];
 
-const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--dialog export:NAME|error:TEXT] [--recent FILE] [--subject NAME] [--run FILE] [--actor NAME] [--agents FILE] FILE.3dcraft [FILE.3dcraft | untitled | none ...] OUT.png";
+const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--dialog export:NAME|error:TEXT] [--recent FILE] [--subject NAME] [--run FILE] [--actor NAME] [--agents FILE] [--whats-new FILE,VERSION,SEEN] FILE.3dcraft [FILE.3dcraft | untitled | none ...] OUT.png";
+
+/// The release notes of `--whats-new FILE,VERSION,SEEN`.
+fn whats_new(spec: &str) -> Result<Option<craft3d_ui_egui::shell::WhatsNew>, String> {
+    use craft3d_engine::changelog::{Changelog, Seen, Version};
+    let usage = || format!("--whats-new takes FILE,VERSION,SEEN; {USAGE}");
+    let mut parts = spec.rsplitn(3, ',');
+    let (seen, version, file) = match (parts.next(), parts.next(), parts.next()) {
+        (Some(seen), Some(version), Some(file)) => (seen, version, file),
+        _ => return Err(usage()),
+    };
+    let text = std::fs::read_to_string(file).map_err(|e| format!("--whats-new {file}: {e}"))?;
+    let notes = Changelog::parse(&text).map_err(|e| format!("--whats-new {file}: {e}"))?;
+    let running = Version::parse(version).map_err(|e| format!("--whats-new: {e}"))?;
+    let seen = match seen {
+        "never" => Seen::Never,
+        "earlier" => Seen::Earlier,
+        version => Seen::Version(Version::parse(version).map_err(|e| format!("--whats-new: {e}"))?),
+    };
+    Ok(craft3d_ui_egui::shell::WhatsNew::for_start(
+        &notes, running, seen,
+    ))
+}
 
 fn main() -> Result<(), String> {
     let mut idle = false;
@@ -77,6 +106,7 @@ fn main() -> Result<(), String> {
     let mut run: Option<String> = None;
     let mut agents: Option<craft3d_ui_egui::AgentsStatus> = None;
     let mut actor: Option<String> = None;
+    let mut notes: Option<craft3d_ui_egui::shell::WhatsNew> = None;
     let mut paths = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -171,6 +201,12 @@ fn main() -> Result<(), String> {
                     .map(str::to_string);
                 agents = Some(status);
             }
+            "--whats-new" => {
+                let spec = args
+                    .next()
+                    .ok_or(format!("--whats-new takes FILE,VERSION,SEEN; {USAGE}"))?;
+                notes = whats_new(&spec)?;
+            }
             "--subject" => {
                 subject = Some(
                     args.next()
@@ -263,6 +299,9 @@ fn main() -> Result<(), String> {
     shell.attach_gpu(&state)?;
     if let Some(recent) = recent {
         shell.set_recent_files(recent);
+    }
+    if notes.is_some() {
+        shell.set_whats_new(notes);
     }
     let asks = agents.as_ref().is_some_and(|a| !a.prompts.is_empty());
     if let Some(status) = agents {

@@ -48,6 +48,10 @@ pub struct Host {
     /// The recent files as last read from or written to that file: what
     /// another window added since is what is new there.
     pub(crate) recent_baseline: craft3d_ui_egui::shell::RecentFiles,
+    /// Where the newest version whose release notes were seen is kept
+    /// between runs; `None` keeps nothing, and then nothing is offered
+    /// (`notes.rs`).
+    pub(crate) seen_file: Option<std::path::PathBuf>,
     /// The whole answer of the last file action the person started, which
     /// the status bar says in words (`answer::summary`).
     pub(crate) last_answer: Option<Value>,
@@ -423,6 +427,7 @@ impl Host {
             export_folder: None,
             recent_file: None,
             recent_baseline: craft3d_ui_egui::shell::RecentFiles::default(),
+            seen_file: None,
             last_answer: None,
         }
     }

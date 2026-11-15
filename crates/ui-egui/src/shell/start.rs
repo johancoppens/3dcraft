@@ -601,6 +601,15 @@ pub(crate) struct StartMemory {
     pictures: Option<Pictures>,
     /// The layout of the last frame.
     layout: Option<StartLayout>,
+    /// The height the window gives the start screen, in points: the card
+    /// *New in …* takes a share of it at most (`whats_new.rs`).
+    room: f32,
+    /// How much of the content is in sight when it is not scrolled, and
+    /// how far it is from the top of the examples' heading to the bottom
+    /// of their first row, as the last frame laid them out: by these the
+    /// card knows whether it and that row are wholly in sight.
+    sight: f32,
+    examples_span: Option<f32>,
 }
 
 /// How the start screen is laid out for the room the window gives it
@@ -875,6 +884,9 @@ impl Shell {
         };
         let layout = StartLayout::for_room(inner.size() - egui::vec2(2.0 * gutter, 0.0));
         self.start.layout = Some(layout);
+        self.start.room = inner.height();
+        self.start.sight =
+            (inner.bottom() - (inner.top() + tokens.inset * layout.spacing)).max(0.0);
         let width = layout.width;
         let top = inner.top() + tokens.inset * layout.spacing;
         let area = egui::Rect::from_min_max(egui::pos2(inner.left(), top), inner.max);
@@ -981,12 +993,42 @@ impl Shell {
                 self.request_file_action(FileAction::Open);
             }
         });
-        ui.add_space(space * 1.6);
+        // After an update, once: what is new and which results may
+        // differ, until it is closed (`whats_new.rs`). Nothing otherwise.
+        if self.state.whats_new.card && self.whats_new().is_some() {
+            ui.add_space(space);
+            let after = space * 0.8;
+            let place = super::whats_new::CardPlace {
+                room: self.start.room,
+                top,
+                sight: self.start.sight,
+                below: self.start.examples_span.map(|span| after + span),
+            };
+            self.whats_new_card(ui, &kit, width, place);
+            ui.add_space(after);
+        } else {
+            ui.add_space(space * 1.6);
+        }
+        let examples_top = ui.cursor().top();
         self.section_row(ui, &kit, width);
         ui.add_space(space * 0.3);
         self.section_hint(ui, &kit, width);
         ui.add_space(space * 0.4);
         self.example_grid(ui, &kit, width);
+        // From the examples' heading to the bottom of their first row.
+        let cards = || {
+            self.start
+                .hits
+                .iter()
+                .filter(|(name, _)| name.starts_with("example:"))
+                .map(|(_, rect)| *rect)
+        };
+        let first = cards().map(|rect| rect.top()).fold(f32::INFINITY, f32::min);
+        let bottom = cards()
+            .filter(|rect| rect.top() < first + 1.0)
+            .map(|rect| rect.bottom())
+            .fold(f32::NEG_INFINITY, f32::max);
+        self.start.examples_span = bottom.is_finite().then(|| (bottom - examples_top).max(0.0));
         ui.add_space(space * 1.2);
         kit.divider(ui);
         ui.add_space(space * 0.8);

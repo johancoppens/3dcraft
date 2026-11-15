@@ -579,6 +579,17 @@ pub(crate) fn session(workspace: Workspace) -> Session {
 fn main() -> ExitCode {
     // The commit the build script embedded, for the bug report.
     craft3d_engine::set_build_commit(option_env!("CRAFT3D_GIT_COMMIT"));
+    // The release notes the build script took from CHANGELOG.md, for
+    // `session.whatsNew`. The build read them before, so they read here.
+    if let Err(error) = craft3d_engine::set_release_notes(include_str!(concat!(
+        env!("OUT_DIR"),
+        "/release-notes.md"
+    ))) {
+        let _ = writeln!(
+            std::io::stderr(),
+            "craft3d-cli: the release notes do not read: {error}"
+        );
+    }
     let outcome = Args::from_os(std::env::args_os().skip(1)).and_then(run);
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
