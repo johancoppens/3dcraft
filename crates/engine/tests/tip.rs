@@ -408,6 +408,38 @@ fn what_cannot_be_tipped_is_refused_with_the_reason() {
     let reason = failed(&mut s, "feature.tip", json!({"face": "Box:face(1)"}));
     assert!(reason.contains("plane"), "{reason}");
     run(&mut s, "edit.undo", json!({}));
+    // A ring: a closed spline round a circle, extruded; its end has a hole.
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "xy", "offset": 100, "name": "Ring"}),
+    );
+    run(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "Ring", "closed": true,
+               "control": [[10, 0], [7, 7], [0, 10], [-7, 7], [-10, 0], [-7, -7], [0, -10], [7, -7]]}),
+    );
+    run(
+        &mut s,
+        "sketch.circle",
+        json!({"sketch": "Ring", "center": [0, 0], "radius": 3}),
+    );
+    let made = run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Ring", "distance": 10, "name": "Collar"}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+    let end = body(&mut s, "Collar")["faceNames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_str().unwrap().to_string())
+        .find(|n| n.contains("endCap"))
+        .unwrap();
+    let reason = failed(&mut s, "feature.tip", json!({"face": end}));
+    assert!(reason.contains("hole"), "{reason}");
 }
 
 #[test]

@@ -261,6 +261,12 @@ fn a_tip_on_a_rod_as_long_as_its_radius_is_the_half_ball() {
                     }
                 }
                 behind_unchanged(&rod, &made, &what);
+                // What the nets prove and report: the sides go on toward
+                // the tip, the shoulder is seen from the tip, and every
+                // rail of the circle is smooth.
+                assert!(made.onward >= craft3d_geom::tip::ONWARD_MARGIN, "{what}");
+                assert!(made.star > 0.0, "{what}");
+                assert!(made.crease <= 1e-12, "{what}: crease {:e}", made.crease);
                 tangent(&made, frame.z(), &what);
             }
         }
@@ -298,6 +304,7 @@ fn a_tip_on_an_elliptic_prism_is_the_half_ellipsoid() {
             }
             behind_unchanged(&prism, &made, &what);
             tangent(&made, frame.z(), &what);
+            assert!(made.crease <= 1e-12, "{what}: crease {:e}", made.crease);
         }
     }
 }
@@ -400,6 +407,13 @@ fn over_any_prism_the_tip_is_two_thirds_of_base_times_length_or_eleven_fifteenth
                     assert_near(volume - before, share * base * l * k * k * k, 1e-12, &what);
                     behind_unchanged(&prism, &made, &what);
                     tangent(&made, frame.z(), &what);
+                    // A section with corners creases its rails as its
+                    // sides crease; the oval's are smooth.
+                    if name == "oval" {
+                        assert!(made.crease <= 1e-12, "{what}: crease {:e}", made.crease);
+                    } else {
+                        assert!(made.crease > 0.1, "{what}: crease {:e}", made.crease);
+                    }
                 }
             }
         }
