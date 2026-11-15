@@ -561,11 +561,14 @@ fn discs_of_arcs_plated_by_command_are_their_closed_form() {
 }
 
 /// The kernel's finding by command (crates/kernel/tests/hunt_sheet_repro.rs
-/// › `a_bend_down_at_one_radius_is_an_invalid_body`): a base 50 × 40, 1
+/// › `a_bend_down_at_one_radius_is_its_closed_form`): a base 50 × 40, 1
 /// thick, with a flange 20 long bent down 140 degrees about the inner
 /// radius 0.1762914118095948 (K 0.4). What the user gets there, and a
 /// thousandth either side: each built part held to the
-/// closed form `2000 + 40 (θ (R + ½) + 20)`, each failure printed.
+/// closed form `2000 + 40 (θ (R + ½) + 20)`, each failure printed. Until
+/// 2026-11-15 the value itself failed the feature (the regeneration's own
+/// check meshed the part and found the face it could not, an edge round
+/// its circle 2.4 times), never a wrong body.
 #[test]
 fn a_bend_down_at_one_radius_by_command() {
     let mut seen = Vec::new();
@@ -611,10 +614,64 @@ fn a_bend_down_at_one_radius_by_command() {
             seen.push((false, false));
         }
     }
-    // Pinned as found: the neighbours build right; the value itself is
-    // refused (the regeneration's own check meshes the part and finds
-    // the face it cannot), never a wrong body.
-    assert_eq!(seen[0], (true, true), "{seen:?}");
-    assert_eq!(seen[2], (true, true), "{seen:?}");
-    assert_eq!(seen[1], (false, false), "known refused: {seen:?}");
+    assert_eq!(seen, vec![(true, true); 3], "{seen:?}");
+}
+
+/// KNOWN, owed (the measure; docs/design/sheetmetal.md › *Limits*): a
+/// round hole of radius 2 across a bend of 90 degrees whose inner radius
+/// is 1e-4 of the thickness (a base 50 × 40, 1 thick, a flange 20 long on
+/// its right edge, the hole a cut-out sketch over the bend's strip), by
+/// command, up or down: the feature is ok and the body valid, but its
+/// volume is not reported (the measure does not settle on the hole's rim
+/// at the bend's inner skin, whose two sides lie about `R √2` apart
+/// there). Bent up it was so before 2026-11-15; bent down the feature
+/// failed ("the rim could not be traced … in 4096 points") until the run
+/// on a circle was kept within a turn. When it is fixed this test fails:
+/// take it off.
+#[test]
+fn a_hole_across_a_tight_bend_by_command_has_no_volume() {
+    let (r, rho, kk) = (1e-4, 2.0, 0.44);
+    let ba = std::f64::consts::FRAC_PI_2 * (r + kk);
+    for dir in ["down", "up"] {
+        let dir_ = workdir("hunt-sheet", &format!("hole-across-{dir}"));
+        let mut s = session_in(&dir_);
+        new_document(&mut s, 1.0);
+        run(
+            &mut s,
+            "sketch.create",
+            json!({"plane": "xy", "name": "Base"}),
+        );
+        let made = run(
+            &mut s,
+            "sketch.rect",
+            json!({"sketch": "Base", "from": [0.0, 0.0], "to": [50.0, 40.0]}),
+        );
+        let right = made["lines"][1].as_str().unwrap().to_string();
+        run(
+            &mut s,
+            "sketch.create",
+            json!({"plane": "xy", "name": "Holes"}),
+        );
+        run(
+            &mut s,
+            "sketch.circle",
+            json!({"sketch": "Holes", "center": [50.0 + 0.5 * ba, 20.0], "radius": rho}),
+        );
+        let result = run(
+            &mut s,
+            "feature.sheetMetal",
+            json!({"sketch": "Base", "name": "Part", "thickness": "1 mm",
+                   "radius": format!("{r:?} mm"), "kFactor": kk, "cutouts": ["Holes"],
+                   "flanges": [{"edge": right, "length": "20 mm", "angle": "90 deg",
+                                "direction": dir}]}),
+        );
+        assert_eq!(result["status"], "ok", "{dir}: {result}");
+        let b = body(&mut s, "Part");
+        assert_eq!(b["valid"], true, "{dir}: {b}");
+        assert!(
+            b["volume"].as_f64().is_none(),
+            "{dir}: known: no volume is reported, now {}: take this off",
+            b["volume"]
+        );
+    }
 }
