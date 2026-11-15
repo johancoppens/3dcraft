@@ -99,6 +99,15 @@ pub(crate) enum NoOffset {
 const OFFSET_SHARE: f64 = 0.25;
 
 pub(crate) const FOLDS: &str = "the offset of the freeform face would fold over: the distance reaches a radius of curvature of the face on the side it moves to (or comes so near one that it cannot be shown not to)";
+/// [`FOLDS`], said where the search for how far it can go stopped at its
+/// work bound short of the fold (`bounded_fitting`).
+pub(crate) const FOLDS_AT_LEAST: &str = "the offset of the freeform face would fold over: the distance reaches a radius of curvature of the face on the side it moves to (or comes so near one that it cannot be shown not to; how far it can go before it does was not found: what is said to fit here does, and more may)";
+pub(crate) const RADIUS_ZERO: &str =
+    "the radius of the face would reach zero: the face would vanish";
+pub(crate) const RADIUS_ZERO_AT_LEAST: &str = "the radius of the face would reach zero: the face would vanish (how far it can go before it does was not found: what is said to fit here does, and more may)";
+/// [`TURN_TOO_FAR`], said where the search stopped at its work bound
+/// short of it.
+pub(crate) const TURN_TOO_FAR_AT_LEAST: &str = "the faces are tangent here only to within an angle that, at this distance, parts their offsets by more than a quarter of the tolerance: they do not meet as tangent faces within it (how far they can go before they do not was not found: what is said to fit here does, and more may)";
 pub(crate) const NO_NORMAL: &str = "the freeform face has a pole or a border or corner drawn into a point, where its normal and so its offset are not defined";
 /// The work every face operation may do ([`craft3d_geom::allowance`]
 /// units, about half a microsecond each in release), its tries at the
@@ -670,7 +679,7 @@ fn surfaced(
                 NoOffset::Gone => TweakError::Vanishes {
                     faces,
                     edge: None,
-                    reason: "the radius of the face would reach zero: the face would vanish",
+                    reason: RADIUS_ZERO,
                 },
                 // Nearer, the face bends less far than the distance.
                 NoOffset::Folds => TweakError::Vanishes {
@@ -1063,9 +1072,12 @@ fn bounded_fitting(
     let mut built: Vec<(f64, Body)> = Vec::new();
     let mut stopped = (edge, reason);
     let halving_from = craft3d_geom::allowance::spent();
+    // Whether the halving stopped at its work bound.
+    let mut cut_short = false;
     for _ in 0..HALVINGS {
         let spent_halving = craft3d_geom::allowance::spent().saturating_sub(halving_from);
         if spent_halving.saturating_add(dearest) > HALVING_WORK {
+            cut_short = true;
             break;
         }
         let middle = 0.5 * (fits + fails);
@@ -1166,6 +1178,41 @@ fn bounded_fitting(
         if (fails - fits) * largest > tol {
             return Err(at_least(faces));
         }
+    }
+    // Any other reason: where the halving stopped at its work bound with
+    // room left between the largest part that fits and the smallest that
+    // failed, what is said to fit does and is no limit, and the refusal
+    // says so (a straight edge out through a wall of 400 spans, seen from
+    // the world's axes, where each try is dear: *below 5.09* said of a
+    // floor that fits to 6.79; the review of 2026-11-15).
+    let at_least_reason = match reason {
+        tweak::EDGE_GONE => Some(tweak::EDGE_GONE_AT_LEAST),
+        tweak::THROUGH => Some(tweak::THROUGH_AT_LEAST),
+        tweak::CROSSED => Some(tweak::CROSSED_AT_LEAST),
+        tweak::OUTLINE => Some(tweak::OUTLINE_AT_LEAST),
+        tweak::RIMS => Some(tweak::RIMS_AT_LEAST),
+        tweak::TURNED => Some(tweak::TURNED_AT_LEAST),
+        FOLDS => Some(FOLDS_AT_LEAST),
+        RADIUS_ZERO => Some(RADIUS_ZERO_AT_LEAST),
+        TURN_TOO_FAR => Some(TURN_TOO_FAR_AT_LEAST),
+        tweak::NO_MEETING => Some(tweak::NO_MEETING_AT_LEAST),
+        tweak::OFF_SURFACE => Some(tweak::OFF_SURFACE_AT_LEAST),
+        tweak::LOST => Some(tweak::LOST_AT_LEAST),
+        tweak::FREEFORM => Some(tweak::FREEFORM_AT_LEAST),
+        crate::offset_blend::VANISHES => Some(crate::offset_blend::VANISHES_AT_LEAST),
+        // Any other reason (one that does not stop a search for a size
+        // that fits) is said as before.
+        _ => None,
+    };
+    if let Some(reason) = at_least_reason.filter(|_| cut_short && (fails - fits) * largest > tol) {
+        return Err(KernelError::FaceOpTooFar {
+            operation,
+            faces,
+            edge,
+            reason,
+            value: largest,
+            largest: fits * largest,
+        });
     }
     Err(KernelError::FaceOpTooFar {
         operation,
