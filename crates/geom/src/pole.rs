@@ -561,6 +561,18 @@ pub struct BorderFoot {
     pub off: f64,
 }
 
+/// A point of a line of constant parameter of a freeform surface: the
+/// nearest found to a point `p` ([`BorderFeet::along_line`]).
+#[derive(Clone, Copy, Debug)]
+pub struct LineFoot {
+    pub u: f64,
+    pub v: f64,
+    /// The surface there and its derivatives ([`Surface::derivatives`]).
+    pub at: (Vec3, Vec3, Vec3),
+    /// How far it is from `p`.
+    pub off: f64,
+}
+
 /// The feet of points on the borders of a Bézier or NURBS surface that
 /// are not one point: its open borders, the curves a face on the whole
 /// surface is bounded by.
@@ -643,8 +655,7 @@ impl<'a> BorderFeet<'a> {
         }
     }
 
-    /// The range of the parameter along `border`, and the parameters of
-    /// its place at `along`.
+    /// The range of the parameter along `border`.
     fn range(&self, border: Border) -> (f64, f64) {
         let (u, v) = self.surface.domain();
         match border {
@@ -653,44 +664,48 @@ impl<'a> BorderFeet<'a> {
         }
     }
 
-    fn place(&self, border: Border, along: f64) -> (f64, f64) {
+    /// The line of constant parameter a border is: whether `u` stays
+    /// along it, and at what value the parameter that stays is.
+    fn line(&self, border: Border) -> (bool, f64) {
         let ((u0, u1), (v0, v1)) = self.surface.domain();
         match border {
-            Border::UStart => (u0, along),
-            Border::UEnd => (u1, along),
-            Border::VStart => (along, v0),
-            Border::VEnd => (along, v1),
+            Border::UStart => (true, u0),
+            Border::UEnd => (true, u1),
+            Border::VStart => (false, v0),
+            Border::VEnd => (false, v1),
         }
     }
 
-    /// The border's point at `along` as a foot of `p`, and the border's
-    /// own derivative there.
-    fn look(&self, border: Border, along: f64, p: Vec3) -> (BorderFoot, Vec3) {
-        let (u, v) = self.place(border, along);
+    /// The point at `along` of the line on which `u` (`u_stays`) or `v`
+    /// is `at`, as a foot of `p`, and the line's own derivative there.
+    fn look_at(&self, (u_stays, at): (bool, f64), along: f64, p: Vec3) -> (LineFoot, Vec3) {
+        let (u, v) = if u_stays { (at, along) } else { (along, at) };
         self.evaluations
             .set(self.evaluations.get().saturating_add(1));
-        let at = self.surface.derivatives(u, v);
-        let tangent = match border {
-            Border::UStart | Border::UEnd => at.2,
-            Border::VStart | Border::VEnd => at.1,
-        };
-        let foot = BorderFoot {
-            border,
+        let there = self.surface.derivatives(u, v);
+        let tangent = if u_stays { there.2 } else { there.1 };
+        let foot = LineFoot {
             u,
             v,
-            at,
-            off: p.distance(at.0),
+            at: there,
+            off: p.distance(there.0),
         };
         (foot, tangent)
     }
 
-    /// Down the distance to `p` along `border` from `start`: Gauss–Newton
-    /// in the one parameter, a step halved while it leads further off,
-    /// held within the border's range.
-    fn walk(&self, border: Border, start: f64, p: Vec3) -> BorderFoot {
-        let (low, high) = self.range(border);
+    /// The border's point at `along` as a foot of `p`.
+    fn look(&self, border: Border, along: f64, p: Vec3) -> LineFoot {
+        self.look_at(self.line(border), along, p).0
+    }
+
+    /// Down the distance to `p` along a line of constant parameter from
+    /// `start`: Gauss–Newton in the one parameter, a step halved while it
+    /// leads further off, held within the line's range.
+    fn walk_line(&self, line: (bool, f64), start: f64, p: Vec3) -> LineFoot {
+        let (u, v) = self.surface.domain();
+        let (low, high) = if line.0 { v } else { u };
         let mut along = start.clamp(low, high);
-        let (mut here, mut tangent) = self.look(border, along, p);
+        let (mut here, mut tangent) = self.look_at(line, along, p);
         let mut steps = 0;
         while steps < BORDER_STEPS {
             steps += 1;
@@ -707,7 +722,7 @@ impl<'a> BorderFeet<'a> {
                 if next == along || !next.is_finite() {
                     break;
                 }
-                let (there, there_tangent) = self.look(border, next, p);
+                let (there, there_tangent) = self.look_at(line, next, p);
                 if there.off < here.off {
                     (along, here, tangent) = (next, there, there_tangent);
                     moved = true;
@@ -721,6 +736,38 @@ impl<'a> BorderFeet<'a> {
             }
         }
         here
+    }
+
+    /// [`Self::walk_line`] along `border`.
+    fn walk(&self, border: Border, start: f64, p: Vec3) -> BorderFoot {
+        let LineFoot { u, v, at, off } = self.walk_line(self.line(border), start, p);
+        BorderFoot {
+            border,
+            u,
+            v,
+            at,
+            off,
+        }
+    }
+
+    /// The point nearest to `p` that the walk from `start` finds on the
+    /// line of the surface on which `u` (`u_stays`) or `v` is `at`: any
+    /// line of constant parameter, a border or not. An edge that is such
+    /// a line (a meridian a face is cut along; the rail of a face on a
+    /// surface that runs on past it, as other modellers trim) has its
+    /// feet there as a border's edge has them on the border. `None` for
+    /// numbers that are not finite.
+    pub fn along_line(&mut self, u_stays: bool, at: f64, start: f64, p: Vec3) -> Option<LineFoot> {
+        if !(p.is_finite() && at.is_finite() && start.is_finite()) {
+            return None;
+        }
+        let ((u0, u1), (v0, v1)) = self.surface.domain();
+        let inside = if u_stays {
+            (u0..=u1).contains(&at)
+        } else {
+            (v0..=v1).contains(&at)
+        };
+        inside.then(|| self.walk_line((u_stays, at), start, p))
     }
 
     /// The point of the border the last foot was found on that the walk
@@ -813,7 +860,7 @@ impl<'a> BorderFeet<'a> {
             let mut start = (f64::INFINITY, low);
             for k in 0..=looks {
                 let along = low + (high - low) * k as f64 / looks as f64;
-                let (foot, _) = self.look(border, along, p);
+                let foot = self.look(border, along, p);
                 if foot.off < start.0 {
                     start = (foot.off, along);
                 }
@@ -1089,6 +1136,21 @@ mod tests {
         let far = feet.beside_last(inside).unwrap();
         assert!(far.off > 1e-3 && feet.evaluations() > looks);
         assert!(feet.beside_last(Vec3::new(f64::NAN, 0.0, 0.0)).is_none());
+        // A meridian inside the surface, a line of constant `u`, into the
+        // pole: its points are found along it, from anywhere on it.
+        for t in [0.3, 0.9955, 0.99997] {
+            let foot = feet
+                .along_line(true, 0.7, 0.5, surface.eval(0.7, t))
+                .unwrap();
+            assert_eq!(foot.u, 0.7);
+            assert!((foot.v - t).abs() <= 1e-12 && foot.off <= on, "{t}");
+        }
+        // And along a line of constant `v`; a line outside the surface is
+        // none, as is a number that is not one.
+        let foot = feet.along_line(false, 0.5, 0.9, inside).unwrap();
+        assert!((foot.u - 0.5).abs() <= 1e-12 && foot.off <= on);
+        assert!(feet.along_line(true, 1.5, 0.5, inside).is_none());
+        assert!(feet.along_line(true, f64::NAN, 0.5, inside).is_none());
         // Numbers that are not: no foot, no panic.
         assert!(feet.nearest(Vec3::new(f64::NAN, 0.0, 0.0)).is_none());
         assert!(

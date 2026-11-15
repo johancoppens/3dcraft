@@ -18,11 +18,12 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Plane, Surface};
 use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_tess::{TessParams, tessellate_body};
 use craft3d_testkit::tips::{PARABOLA, Piece, ROUND, ellipse, polygon, polygon_area, section_tip};
-use craft3d_topo::{Body, check, mass_bound};
+use craft3d_topo::{Body, BodyKind, Coedge, Defect, check, mass_bound};
 use std::f64::consts::PI;
 
 const SCALES: [f64; 3] = [1e-3, 1.0, 1e6];
@@ -157,6 +158,119 @@ fn a_tip_over_a_thin_blade_measures_as_its_closed_form() {
     assert!(worst <= 1e-8, "{worst:e}");
 }
 
+/// A tip's name, its section's corners, the foot of its tip, its length
+/// and its fullness with the share of base times length it fills.
+type Continued = (&'static str, Vec<[f64; 2]>, [f64; 2], f64, (f64, f64));
+
+/// The tip over `corners` with every face's surface continued past its
+/// rails by the shares `by` of its range in `u` (the rails are then lines
+/// of constant `u` inside their surfaces, as another modeller's trimmed
+/// faces are), and the body's closed-form volume.
+fn on_continued_surfaces(
+    frame: &Frame,
+    k: f64,
+    corners: &[[f64; 2]],
+    (foot, length, (fullness, share)): ([f64; 2], f64, (f64, f64)),
+    by: (f64, f64),
+) -> (Body, f64) {
+    let (tip, mut body) = section_tip(frame, k, &polygon(corners), foot, length, fullness).unwrap();
+    for (face, net) in body.faces.iter_mut().zip(&tip.faces) {
+        let ((u0, u1), v) = net.domain();
+        let grown = net
+            .extended((u0 - by.0 * (u1 - u0), u1 + by.1 * (u1 - u0)), v, 1e-9 * k)
+            .unwrap();
+        face.surface = Surface::Nurbs(grown);
+    }
+    (body, share * polygon_area(corners) * length * k * k * k)
+}
+
+#[test]
+fn a_tip_on_surfaces_that_run_on_past_its_rails_measures_as_its_closed_form() {
+    // The rails are no borders: until 2026-11-15 the feet of their points
+    // next to the pole were the search's, on other meridians, and a blade
+    // 1e-3 thick with a tip 1e-3 long came out 2.4e-4 to 4.9e-4 of its
+    // volume off, inside its bound (docs/design/topology.md › *A rail
+    // beside its border*). Now such a rail is found to run along a line
+    // of constant parameter, and its points are looked for along it.
+    let shapes: [Continued; 3] = [
+        (
+            "the L, tip 0.01 from the corner",
+            L.to_vec(),
+            [0.01, 0.01],
+            0.5,
+            PARABOLA,
+        ),
+        (
+            "the triangle, tip 0.003 from the corner",
+            TRIANGLE.to_vec(),
+            [0.003, 0.003],
+            0.5,
+            PARABOLA,
+        ),
+        (
+            "a blade 1e-3 thick",
+            blade(1e-3).to_vec(),
+            [0.0, 0.0],
+            1e-3,
+            ROUND,
+        ),
+    ];
+    let mut cases: Vec<(f64, Frame)> = SCALES.iter().map(|&k| (k, Frame::WORLD)).collect();
+    cases.push((1.0, frames(1.0)[1]));
+    let (mut worst, mut widest) = (0.0_f64, 0.0_f64);
+    for (k, frame) in cases {
+        for (name, corners, foot, length, fullness) in &shapes {
+            for by in [(0.2, 0.2), (1e-3, 1e-3), (0.0, 0.3)] {
+                let what = format!("{name}, its surfaces continued by {by:?}, at {k}");
+                let (body, want) =
+                    on_continued_surfaces(&frame, k, corners, (*foot, *length, *fullness), by);
+                let (mass, bound) = mass_bound(&body).unwrap_or_else(|e| panic!("{what}: {e}"));
+                let off = (mass.volume - want).abs();
+                assert!(
+                    off <= bound.volume + 1e-13 * want,
+                    "{what}: the volume is {:e} of itself off, outside its bound of {:e}",
+                    off / want,
+                    bound.volume / want
+                );
+                worst = worst.max(off / want);
+                widest = widest.max(bound.volume / want);
+            }
+        }
+    }
+    println!(
+        "tips on continued surfaces: within {worst:e} of the closed forms, bounds up to {widest:e}"
+    );
+    assert!(worst <= 1e-9, "{worst:e}");
+}
+
+#[test]
+fn the_check_is_known_to_find_a_blade_on_continued_surfaces_off_its_faces() {
+    // KNOWN, owed (docs/design/topology.md › *A rail beside its border*,
+    // found by the review of 2026-11-14, on the commit before as well):
+    // `topo::check` finds the edges of a blade 1e-3 thick whose faces
+    // run on past its rails 3.4e-5 to 2.4e-4 of the size off their faces
+    // (`EdgeOffSurface`), and so calls 36 valid bodies of the review
+    // invalid (these, and faces cut along a meridian). The body measures
+    // as its closed form (above), so it is the check's own search for the
+    // edges' feet that settles on another meridian, the measure's old
+    // fault. When this fails because the check passes, the pin goes.
+    let (body, _) = on_continued_surfaces(
+        &Frame::WORLD,
+        1.0,
+        &blade(1e-3),
+        ([0.0, 0.0], 1e-3, ROUND),
+        (0.2, 0.2),
+    );
+    let defects = check(&body, &Tolerance::new(1e-7, 1e-9).unwrap());
+    println!("the check of a blade on continued surfaces: {defects:?}");
+    assert!(
+        defects
+            .iter()
+            .any(|defect| matches!(defect, Defect::EdgeOffSurface { .. })),
+        "the check passes now: take the pin off ({defects:?})"
+    );
+}
+
 /// Meshed at a chordal tolerance of `chord`: watertight, with the
 /// volume within the chord bound (area times tolerance) of `volume`, and
 /// at the tip the normal of the tip's plane (the faces close tangent to
@@ -246,24 +360,149 @@ fn the_normal_at_the_tip_of_a_very_pointed_end_is_known_to_be_off() {
     // its length there, and the normal at a pole is read a little way
     // off it). When this fails because the normal is right, the pin
     // goes.
+    // And at a fullness of 0.01 on a blade 1e-4 thick (0.860).
     let frame = Frame::WORLD;
-    let (tip, body) =
-        section_tip(&frame, 1.0, &polygon(&blade(1e-3)), [0.0, 0.0], 0.3, 0.001).unwrap();
-    let params = TessParams {
-        chordal_tolerance: 0.02 * 0.5,
-        ..TessParams::default()
-    };
-    let mesh = tessellate_body(&body, &params).unwrap();
-    let least = mesh
-        .positions
-        .iter()
-        .zip(&mesh.normals)
-        .filter(|(position, n)| position.distance(tip.tip) <= 1e-9 && n.length() > 0.0)
-        .map(|(_, n)| n.normalized().unwrap().dot(frame.z()))
-        .fold(1.0_f64, f64::min);
-    println!("the least normal at a very pointed tip against its plane: {least:.4}");
-    assert!(mesh.weld().unwrap().is_closed());
-    assert!(least < 0.99, "{least}");
+    for (thickness, fullness) in [(1e-3, 0.001), (1e-4, 0.01)] {
+        let (tip, body) = section_tip(
+            &frame,
+            1.0,
+            &polygon(&blade(thickness)),
+            [0.0, 0.0],
+            0.3,
+            fullness,
+        )
+        .unwrap();
+        let params = TessParams {
+            chordal_tolerance: 0.02 * 0.5,
+            ..TessParams::default()
+        };
+        let mesh = tessellate_body(&body, &params).unwrap();
+        let least = mesh
+            .positions
+            .iter()
+            .zip(&mesh.normals)
+            .filter(|(position, n)| position.distance(tip.tip) <= 1e-9 && n.length() > 0.0)
+            .map(|(_, n)| n.normalized().unwrap().dot(frame.z()))
+            .fold(1.0_f64, f64::min);
+        println!(
+            "the least normal at the tip of a blade {thickness:e} thick at fullness {fullness} against its plane: {least:.4}"
+        );
+        assert!(mesh.weld().unwrap().is_closed());
+        assert!(least < 0.99, "right now, take the pin off: {least}");
+    }
+}
+
+/// A dome over the ellipse with the half axes `a` and `b`, closed across
+/// a seam (on `+x`, or `−x` with `flip`) in a tip `length` over `foot`:
+/// one rational face of degree 2 × 2 whose border `v = 1` is the tip, the
+/// seam an edge used twice, and a flat base.
+fn seamed_dome(frame: &Frame, (a, b): (f64, f64), flip: bool, foot: [f64; 2], length: f64) -> Body {
+    let s = if flip { -1.0 } else { 1.0 };
+    let ring = [
+        (1.0, 0.0),
+        (1.0, 1.0),
+        (0.0, 1.0),
+        (-1.0, 1.0),
+        (-1.0, 0.0),
+        (-1.0, -1.0),
+        (0.0, -1.0),
+        (1.0, -1.0),
+        (1.0, 0.0),
+    ];
+    let top = frame.point(foot[0], foot[1], length);
+    let (mut net, mut weights, mut rim, mut rim_weights) = (vec![], vec![], vec![], vec![]);
+    for (i, &(x, y)) in ring.iter().enumerate() {
+        let w = if i % 2 == 1 {
+            std::f64::consts::FRAC_1_SQRT_2
+        } else {
+            1.0
+        };
+        let low = frame.point(s * a * x, s * b * y, 0.0);
+        net.extend([low, frame.point(s * a * x, s * b * y, length), top]);
+        weights.extend([w; 3]);
+        rim.push(low);
+        rim_weights.push(w);
+    }
+    let knots = vec![
+        0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+    ];
+    let ends = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+    let surface = NurbsSurface::new(
+        2,
+        2,
+        knots.clone(),
+        ends.clone(),
+        9,
+        3,
+        net.clone(),
+        weights,
+    )
+    .unwrap();
+    let rim = NurbsCurve::new(2, knots, rim, rim_weights).unwrap();
+    let seam = NurbsCurve::new(2, ends, net[..3].to_vec(), vec![1.0; 3]).unwrap();
+    let (forward, backward) = (
+        |edge| Coedge {
+            edge,
+            reversed: false,
+        },
+        |edge| Coedge {
+            edge,
+            reversed: true,
+        },
+    );
+    let mut body = Body::new(BodyKind::Solid);
+    let (start, apex) = (body.add_vertex(net[0]), body.add_vertex(top));
+    let rim = body.add_edge(Curve3::Nurbs(rim), (0.0, 1.0), start, start);
+    let seam = body.add_edge(Curve3::Nurbs(seam), (0.0, 1.0), start, apex);
+    let outline = body.add_loop(vec![forward(rim), forward(seam), backward(seam)]);
+    let dome = body.add_face(Surface::Nurbs(surface), false, vec![outline]);
+    let down = frame.reversed_at(frame.origin()).unwrap();
+    let outline = body.add_loop(vec![backward(rim)]);
+    let base = body.add_face(Surface::Plane(Plane::new(down)), false, vec![outline]);
+    body.add_shell(vec![dome, base]);
+    body
+}
+
+#[test]
+fn a_dome_closed_across_a_seam_is_known_to_mesh_with_a_crack() {
+    // KNOWN, owed (docs/design/tessellator.md › *The rails of a squeezed
+    // pole*, found by the review of 2026-11-14, on the commit before as
+    // well): a dome a hundred times as long as wide, closed across a seam
+    // in a tip near one end, is meshed without an error and the mesh is
+    // not closed. The body is valid and measures as its closed form,
+    // eleven fifteenths of its base times its length. When this fails
+    // because the mesh is closed or refused, the pin goes.
+    let frame = Frame::new(
+        Vec3::new(3.0, -2.0, 5.0),
+        Vec3::new(2.0, -3.0, 6.0),
+        Vec3::new(1.0, 0.3, 0.0),
+    )
+    .unwrap();
+    for (flip, chord) in [(false, 0.002), (true, 0.02)] {
+        let what = format!(
+            "the dome 1 x 0.01, its seam on {}x, at {chord}",
+            if flip { "-" } else { "+" }
+        );
+        let body = seamed_dome(&frame, (1.0, 0.01), flip, [0.9, 0.0], 0.5);
+        let tolerance = Tolerance::new(1e-7, 1e-9).unwrap();
+        assert_eq!(check(&body, &tolerance), [], "{what}");
+        let want = 11.0 / 15.0 * PI * 0.01 * 0.5;
+        let (mass, bound) = mass_bound(&body).unwrap_or_else(|e| panic!("{what}: {e}"));
+        assert!(
+            (mass.volume - want).abs() <= bound.volume + 1e-13 * want,
+            "{what}"
+        );
+        let params = TessParams {
+            chordal_tolerance: chord,
+            ..TessParams::default()
+        };
+        let made = tessellate_body(&body, &params).map(|mesh| mesh.weld().map(|w| w.is_closed()));
+        println!("{what}: {made:?}");
+        assert!(
+            matches!(made, Ok(Ok(false) | Err(_))),
+            "{what}: closed or refused now, take the pin off: {made:?}"
+        );
+    }
 }
 
 #[test]

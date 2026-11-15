@@ -669,15 +669,38 @@ struct Follow<'a> {
     /// run goes beside that border, within what an edge may be off its
     /// face.
     beside: bool,
-    /// The border the foot of the last point projected was taken on
-    /// ([`Follow::along_a_border`]), and how far that foot is from the
-    /// point where that is more than rounding (nothing where the point
-    /// lies on the border).
-    on_border: Option<(craft3d_geom::pole::Border, f64)>,
+    /// The line of constant parameter the foot of the last point
+    /// projected was taken on, a border or the piece's own line
+    /// ([`Follow::along_a_border`]): whether it is `u` that stays along
+    /// it, and how far that foot is from the point where that is more
+    /// than rounding (nothing where the point lies on the line).
+    on_border: Option<(bool, f64)>,
+    /// The stretch of an edge the run follows, from the lower parameter
+    /// to the upper (none for points that are not one piece's): what
+    /// [`iso_line`] is asked of.
+    piece: Option<(&'a Curve3, (f64, f64))>,
+    /// The line of constant parameter the piece runs along, when it is
+    /// one ([`iso_line`]): whether `u` stays, and at what value. Asked
+    /// once, when the first point of the run whose foot the search does
+    /// not find on the surface is looked for along it (`None` until
+    /// then): a run whose feet the search finds pays nothing for it.
+    line: Option<Option<(bool, f64)>>,
+    /// Whether a foot of the run was taken on `line`: the next point is
+    /// then looked for there first.
+    lined: bool,
     /// The evaluations of the surface that the looks along the borders
     /// took and that the face's work has been charged
     /// ([`Follow::charge`]).
     looked: u64,
+    /// The work the face is still to be charged ([`Follow::charge`]):
+    /// [`iso_line`]'s projections, and the looks of borders let go.
+    owed: u64,
+}
+
+/// Whether `u` is the parameter that stays along `border`.
+fn u_stays(border: craft3d_geom::pole::Border) -> bool {
+    use craft3d_geom::pole::Border;
+    matches!(border, Border::UStart | Border::UEnd)
 }
 
 /// How far a boundary point may be from its foot and lie on the surface:
@@ -698,9 +721,23 @@ thread_local! {
 }
 
 impl<'a> Follow<'a> {
+    /// Feet looked for along the borders and lines of the surface where
+    /// the face's measure allows it ([`BORDERS`], on the thread that
+    /// measures the face).
     fn new(surface: &'a Surface, touch: f64) -> Self {
+        Self::with(surface, touch, BORDERS.with(|borders| borders.get().0))
+    }
+
+    /// Feet as the search gives them, and nothing else: for work that
+    /// may run on another thread than the face's ([`divide_crossings`],
+    /// within [`boundary_integrals`]), so that what it finds does not
+    /// depend on where it runs.
+    fn searched(surface: &'a Surface, touch: f64) -> Self {
+        Self::with(surface, touch, false)
+    }
+
+    fn with(surface: &'a Surface, touch: f64, allowed: bool) -> Self {
         let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
-        let allowed = BORDERS.with(|borders| borders.get().0);
         let borders = if freeform && allowed && !craft3d_geom::pole::poles(surface).is_empty() {
             craft3d_geom::pole::BorderFeet::new(surface)
         } else {
@@ -715,13 +752,74 @@ impl<'a> Follow<'a> {
             rounding,
             beside: false,
             on_border: None,
+            piece: None,
+            line: None,
+            lined: false,
             looked: 0,
+            owed: 0,
         }
     }
 
-    /// The evaluations the looks along the borders took since the last
-    /// call: what the face's work is charged for them.
+    /// The piece's own line of constant parameter ([`iso_line`]), asked
+    /// the first time it is wanted.
+    fn its_line(&mut self) -> Option<(bool, f64)> {
+        if let Some(line) = self.line {
+            return line;
+        }
+        let (curve, range) = self.piece?;
+        let surface = self.surface;
+        let borders = self.borders.as_mut()?;
+        let (line, projections) = iso_line(surface, borders, curve, range);
+        self.owed = self
+            .owed
+            .saturating_add(projections.saturating_mul(PROJECTION));
+        self.line = Some(line);
+        line
+    }
+
+    /// No more looks along the borders for this run: what they took so
+    /// far is still the face's work.
+    fn let_go(&mut self) {
+        let more = self.uncharged();
+        self.owed = self.owed.saturating_add(more);
+        self.borders = None;
+    }
+
+    /// The point of the piece's own line of constant parameter nearest
+    /// to `p`, when it is within rounding of `p`: its foot beyond doubt.
+    #[allow(clippy::type_complexity)]
+    fn on_its_line(&mut self, p: Vec3) -> Option<((f64, f64), (Vec3, Vec3, Vec3))> {
+        let (u_stays, at) = self.its_line()?;
+        let borders = self.borders.as_mut()?;
+        // From where the last foot was along the line, or its middle.
+        let ((u0, u1), (v0, v1)) = self.surface.domain();
+        let start = match (self.last, u_stays) {
+            (Some((_, v)), true) => v,
+            (Some((u, _)), false) => u,
+            (None, true) => 0.5 * (v0 + v1),
+            (None, false) => 0.5 * (u0 + u1),
+        };
+        let foot = borders.along_line(u_stays, at, start, p)?;
+        (foot.off <= self.rounding + on_the_surface(p, foot.at.0)).then(|| {
+            self.last = Some((foot.u, foot.v));
+            self.on_border = Some((u_stays, 0.0));
+            self.lined = true;
+            BORDERS.with(|borders| borders.set((borders.get().0, true)));
+            ((foot.u, foot.v), foot.at)
+        })
+    }
+
+    /// The evaluations the looks along the borders and lines took since
+    /// the last call, and the projections [`iso_line`] made: what the
+    /// face's work is charged for them.
     fn charge(&mut self) -> u64 {
+        let more = self.uncharged();
+        more.saturating_add(std::mem::take(&mut self.owed))
+    }
+
+    /// The evaluations of the looks along the borders since they were
+    /// last counted, counted now.
+    fn uncharged(&mut self) -> u64 {
         let Some(borders) = &self.borders else {
             return 0;
         };
@@ -744,9 +842,16 @@ impl<'a> Follow<'a> {
             && let Some(foot) = borders.from_last(p, self.rounding + on_the_surface(p, p))
         {
             self.last = Some((foot.u, foot.v));
-            self.on_border = Some((foot.border, 0.0));
+            self.on_border = Some((u_stays(foot.border), 0.0));
             BORDERS.with(|borders| borders.set((borders.get().0, true)));
             return Ok(((foot.u, foot.v), foot.at));
+        }
+        // And a run whose feet were taken on its own line of constant
+        // parameter likewise.
+        if self.lined
+            && let Some(found) = self.on_its_line(p)
+        {
+            return Ok(found);
         }
         let found = self.search(p)?;
         Ok(self.along_a_border(p, found))
@@ -787,15 +892,24 @@ impl<'a> Follow<'a> {
         p: Vec3,
         found: ((f64, f64), (Vec3, Vec3, Vec3)),
     ) -> ((f64, f64), (Vec3, Vec3, Vec3)) {
-        let Some(borders) = &mut self.borders else {
+        if self.borders.is_none() {
             return found;
-        };
+        }
         let off = p.distance(found.1.0);
         let on = self.rounding + on_the_surface(p, found.1.0);
         // Only more than rounding: a NaN is left as it was found.
         if off.partial_cmp(&on) != Some(std::cmp::Ordering::Greater) {
             return found;
         }
+        // The piece's own line of constant parameter first: a meridian a
+        // face is cut along, the rail of a face on a surface that runs on
+        // past it (2026-11-15).
+        if let Some(found) = self.on_its_line(p) {
+            return found;
+        }
+        let Some(borders) = &mut self.borders else {
+            return found;
+        };
         // Along the border the run is beside, then along every border.
         let reach = self.touch.max(on);
         let beside = if self.beside {
@@ -809,7 +923,7 @@ impl<'a> Follow<'a> {
         };
         let Some(foot) = foot else {
             if !self.beside {
-                self.borders = None;
+                self.let_go();
             }
             return found;
         };
@@ -817,7 +931,7 @@ impl<'a> Follow<'a> {
         if foot.off < 0.5 * off {
             self.last = Some((foot.u, foot.v));
             let strip = if foot.off > on { foot.off } else { 0.0 };
-            self.on_border = Some((foot.border, strip));
+            self.on_border = Some((u_stays(foot.border), strip));
             BORDERS.with(|borders| borders.set((borders.get().0, true)));
             ((foot.u, foot.v), foot.at)
         } else {
@@ -1774,6 +1888,108 @@ fn stands_still(
     })
 }
 
+/// Parts a piece is divided into for the places, its ends among them, at
+/// which it is asked whether it runs along a line of constant parameter
+/// ([`iso_line`]).
+const ISO_PROBES: u32 = 8;
+
+/// The line of constant parameter of `surface` that the stretch of
+/// `curve` from `start` to `end` runs along, when it is one: whether it is
+/// `u` that stays, and at what value; and how many projections that took
+/// (the face's work, [`Follow::charge`]). Asked of a piece of a face on a
+/// freeform surface with a pole when the first of its points is found
+/// off the surface by the search ([`Follow::its_line`]), where the search
+/// in both parameters cannot be trusted next to the pole
+/// ([`Follow::along_a_border`]) and a search along the line can: a rail
+/// on a border, a meridian a face is cut along, the rail of a face whose
+/// surface runs on past it (as other modellers trim: the rails are then
+/// lines inside the surface, and no border is near).
+///
+/// Nine places along the stretch, its ends among them. Where the search
+/// finds one on the surface (within rounding of its point: such a foot
+/// is the point's, beyond doubt), its parameters name two lines through
+/// it; the value of the parameter that stays is read from the foot where
+/// the surface moves fastest with it (next to a pole, and on a narrow
+/// face, a parameter is known no better than the surface moves with
+/// it). One such foot is enough (on a face that is all but its pole, a
+/// blade's, the search is right at the rim alone). The stretch runs along
+/// a line when every one of the nine places is found on it by the search
+/// along the line (`feet`), each from where the last was, within the
+/// rounding of the two, and not along the other line as well. Being
+/// wrong about it costs nothing: a point is taken on the line only where
+/// the line passes through it.
+fn iso_line(
+    surface: &Surface,
+    feet: &mut craft3d_geom::pole::BorderFeet,
+    curve: &Curve3,
+    (start, end): (f64, f64),
+) -> (Option<(bool, f64)>, u64) {
+    let rounding = feet.rounding();
+    let places: Vec<Vec3> = (0..=ISO_PROBES)
+        .map(|k| curve.eval(start + (end - start) * f64::from(k) / f64::from(ISO_PROBES)))
+        .collect();
+    let projections = places.len() as u64;
+    // The feet found on the surface: the place's number, the rounding
+    // there, the parameters, and how fast the surface moves with each.
+    let mut found = Vec::new();
+    for (k, &p) in places.iter().enumerate() {
+        let Ok((u, v)) = surface.project(p) else {
+            continue;
+        };
+        let (foot, su, sv) = surface.derivatives(u, v);
+        let on = rounding + on_the_surface(p, foot);
+        if p.distance(foot) <= on {
+            found.push((k, on, (u, v), (su.length(), sv.length())));
+        }
+    }
+    let fastest = |speed: fn(&(f64, f64)) -> f64| {
+        found
+            .iter()
+            .max_by(|a, b| speed(&a.3).total_cmp(&speed(&b.3)))
+            .copied()
+    };
+    // Whether every place lies on the line through the foot `from` on
+    // which `u` (`u_stays`) or `v` stays: outward from that foot, each
+    // place from where the one before it was found.
+    let mut on_line = |u_stays: bool, from: (usize, f64, (f64, f64))| -> bool {
+        let (at, on_from, (u, v)) = from;
+        let (value, along) = if u_stays { (u, v) } else { (v, u) };
+        let mut holds = |order: &mut dyn Iterator<Item = usize>| {
+            let mut last = along;
+            for k in order {
+                let Some(&p) = places.get(k) else {
+                    return false;
+                };
+                let Some(foot) = feet.along_line(u_stays, value, last, p) else {
+                    return false;
+                };
+                let on = rounding + on_the_surface(p, foot.at.0);
+                // Not `>`: a NaN is on no line.
+                if foot.off.partial_cmp(&(2.0 * (on + on_from)))
+                    == Some(std::cmp::Ordering::Greater)
+                    || foot.off.is_nan()
+                {
+                    return false;
+                }
+                last = if u_stays { foot.v } else { foot.u };
+            }
+            true
+        };
+        holds(&mut (at + 1..places.len())) && holds(&mut (0..at).rev())
+    };
+    let (Some(by_u), Some(by_v)) = (fastest(|speeds| speeds.0), fastest(|speeds| speeds.1)) else {
+        return (None, projections);
+    };
+    let u_stays = on_line(true, (by_u.0, by_u.1, by_u.2));
+    let v_stays = on_line(false, (by_v.0, by_v.1, by_v.2));
+    let line = match (u_stays, v_stays) {
+        (true, false) => Some((true, by_u.2.0)),
+        (false, true) => Some((false, by_v.2.1)),
+        _ => None,
+    };
+    (line, projections)
+}
+
 /// Whether the tangent along u is the shorter of the two.
 fn a_shorter(su: Vec3, sv: Vec3) -> bool {
     su.length_squared() <= sv.length_squared()
@@ -2218,6 +2434,10 @@ fn sampled(
             let first_panel = where_.len();
             // Each node from the one before it along the piece.
             let mut follow = Follow::new(surface, outline.touch);
+            follow.piece = Some((
+                piece.curve,
+                (piece.start.min(piece.end), piece.start.max(piece.end)),
+            ));
             for panel in panels {
                 let rule = if panel.coarse { rules.1 } else { rules.0 };
                 work.add(PROJECTION * NODES as u64);
@@ -2237,12 +2457,8 @@ fn sampled(
                     // across the border does not change, and the other
                     // one at the border's own speed. (An edge that meets
                     // a border at an angle takes the rates of its foot.)
-                    let along_border = follow.on_border.and_then(|(border, _)| {
-                        use craft3d_geom::pole::Border;
-                        let (along, across_v) = match border {
-                            Border::UStart | Border::UEnd => (sv, false),
-                            Border::VStart | Border::VEnd => (su, true),
-                        };
+                    let along_border = follow.on_border.and_then(|(u_stays, _)| {
+                        let (along, across_v) = if u_stays { (sv, false) } else { (su, true) };
                         let speed = along.length_squared();
                         if speed.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
                             return None;
@@ -3124,7 +3340,10 @@ fn divide_crossings(
     poled: &Poled,
 ) -> Result<Vec<(f64, bool)>, GeomError> {
     let mut crossings = Vec::new();
-    let mut follow = Follow::new(surface, outline.touch);
+    // As the search gives the feet: this runs on whichever thread sums
+    // the run ([`boundary_integrals`]), where the face's own say on feet
+    // along the borders ([`BORDERS`]) is not known (2026-11-15).
+    let mut follow = Follow::searched(surface, outline.touch);
     let mut across = |curve: &Curve3, t: f64| -> Result<(f64, f64), GeomError> {
         let ((u, v), _) = follow.project(curve.eval(t))?;
         Ok(match poled.along {
