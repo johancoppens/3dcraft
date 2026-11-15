@@ -22,6 +22,8 @@
 //!   keeps drawing.
 //! - [`places`]: the recent files on disk, and the pages and folders the
 //!   Help menu opens with the platform's opener.
+//! - [`notes`]: which version's release notes the person has seen, and
+//!   so whether the start screen offers *New in …* (What's new).
 //! - [`refine`]: the display scene built on a thread of its own while the
 //!   window shows the quick first picture.
 //! - [`app`]: the eframe window.
@@ -37,6 +39,7 @@ pub mod control;
 pub mod desktop_theme;
 pub mod files;
 pub mod host;
+pub mod notes;
 pub mod places;
 pub mod recording;
 pub mod refine;

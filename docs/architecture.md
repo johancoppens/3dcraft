@@ -40,7 +40,7 @@ These are the invariants. Every part is built so that they hold by construction,
  L3  algorithms    kernel (operations on bodies), tess (meshes), solve (sketch solver), assembly (assembly solver), ops (undo history), stepread (STEP -> bodies), fcstdread (FreeCAD documents -> bodies)
  L2  document      doc (pure data: the recipe)
  L1  model data    topo (B-rep, checks, measures), expr (units, formulas)
- L0  foundation    math, geom (curves, surfaces, intersections); step, brep, meshio, drawing, zipstore (standalone formats); buildinfo (the programs' build scripts); font (font files, layout, the single-stroke font)
+ L0  foundation    math, geom (curves, surfaces, intersections); step, brep, meshio, drawing, zipstore (standalone formats); buildinfo (the programs' build scripts); changelog (the release notes the programs carry); font (font files, layout, the single-stroke font)
 ```
 
 `cargo xtask layers` enforces this from `xtask/src/layers.rs`: a crate depends only on lower layers, except the same-layer pairs listed there (`geom` → `math`; `gpu` → `render`, whose camera and frame it shares so the two compare pixel by pixel; `fcstdread` → `stepread`, whose sewing, proofs and checks it shares; `kernel`'s and `fcstdread`'s tests mesh with `tess`); the standalone format crates depend on no workspace crate (except `meshio` → `zipstore`, for 3MF); nothing below L7 uses egui, eframe, winit or rfd; `testkit` is a dev-dependency only; every crate opts into the workspace lints. L0 to L7 and the web app `apps/craft3d-web` build for `wasm32-unknown-unknown` (`cargo xtask wasm`).
@@ -56,6 +56,7 @@ These are the invariants. Every part is built so that they hold by construction,
 | `zipstore` | L0 | a stored (uncompressed) ZIP container with a hardened reader, and reading of deflated entries | depends on a workspace crate |
 | `brep` | L0 | Open CASCADE's text BRep format read into its own records | depends on a workspace crate |
 | `buildinfo` | L0 | for the programs' build scripts: the commit they are built from, embedded in the program and handed to the engine at start (`set_build_commit`) | is a dependency of a library (a value that changes with every commit would rebuild everything above it) |
+| `changelog` | L0 | `CHANGELOG.md` read into versions, sections and entries by kind, as text without markup, with the Release workflow's reading of a version's notes; read by the programs' build scripts, which embed the notes, and by the engine at run time (`set_release_notes`, `session.whatsNew`) | depends on a workspace crate, or decides what a window shows |
 | `topo` | L1 | the B-rep (`Body`), `check`, genus, rigid transforms, boxes, mass properties and inertia by boundary integrals | builds geometry by a modelling operation |
 | `expr` | L1 | dimensions and units, the formula parser and evaluator, `VariableTable` | knows features |
 | `doc` | L2 | the document as pure data: variables, features (sketches, datums, solids, operations), persistent names as data, appearance and material | runs a geometry algorithm |

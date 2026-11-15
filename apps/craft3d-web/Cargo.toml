@@ -82,6 +82,8 @@ craft3d-regen.workspace = true
 craft3d-tess.workspace = true
 craft3d-topo.workspace = true
 
-# The commit the program is built from, for the bug report (build.rs).
+# The commit the program is built from, for the bug report, and the
+# release notes it carries, from CHANGELOG.md (build.rs).
 [build-dependencies]
 craft3d-buildinfo.workspace = true
+craft3d-changelog.workspace = true

@@ -475,7 +475,9 @@ fn command_list_returns_the_registry_and_filters() {
             "recovery.list",
             "recovery.open",
             "recovery.discard",
-            "session.report"
+            "session.report",
+            // Reads the release notes the program carries (`doc: false`).
+            "session.whatsNew"
         ],
         "the fixture of this test"
     );

@@ -296,7 +296,8 @@ impl Host {
                 }
             }
         }
-        did
+        // The release notes the person closed: seen, from now on.
+        self.pump_notes() || did
     }
 }
 
