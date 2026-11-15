@@ -5414,6 +5414,7 @@ pub(crate) fn face_boundary<'a>(
                         .max(1)
                 };
                 let cells = param.order(count(&along_u), count(&along_v));
+                GRADED_GRIDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 graded = Some(param.order(along_u, along_v));
                 cells
             }
@@ -6255,6 +6256,18 @@ pub fn fold_work() -> u64 {
 }
 
 static FOLD_WORK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many times, since the process started, a face's boundary was given
+/// a grid graded to its shape (`graded.rs`) because its even grid was
+/// refused as too fine: once for every round of a body's tessellation
+/// that places such a face. Nought for every body whose faces all have
+/// their even grids, which is how a test holds that a change to the
+/// graded grid cannot have moved a mesh that was made without it.
+pub fn graded_grids() -> u64 {
+    GRADED_GRIDS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static GRADED_GRIDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The bits each of a cell's two coordinates keeps in a key of
 /// [`fold_search`] (above the [`Z_BITS`] and the point's index, in the 32
