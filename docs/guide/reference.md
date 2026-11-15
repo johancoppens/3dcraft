@@ -236,7 +236,8 @@ dark share of each stripe) and `offset` (slides them along). Curvature takes `cu
   while the motion plays. `file.export {"path": "path.svg", "trace": "Trace 1"}` exports it.
 - In the window a trace is worked out in the background, so the motion keeps playing: the answer says
   `"pending": true`. `view.trace {"name": "Trace 1", "wait": true}` gives the points once they are there,
-  or why they could not be made; it waits at most 2 s in the window, so ask again. `ui.get` lists every
+  or why they could not be made; it waits at most 2 s in the window and not at all in the browser, so ask
+  again. `ui.get` lists every
   trace under `traces`, with `pending` or `error`. `"background": false` works it out in the command.
 - `motion.check` checks the checks over the motion
   ([Engineering checks › Over a motion](engineering-checks.md#over-a-motion)), and
