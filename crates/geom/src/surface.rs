@@ -4,7 +4,7 @@
 //! `∂u × ∂v` points away from the axis or centre (outward).
 
 use crate::curve::wrap_angle;
-use crate::{BezierPatch, GeomError, NurbsSurface};
+use crate::{BezierPatch, GeomError, NurbsSurface, RationalBezierPatch};
 use craft3d_math::Portable;
 use craft3d_math::{Bits, Frame, Vec3};
 use std::f64::consts::{FRAC_PI_2, TAU};
@@ -16,6 +16,14 @@ const PROJECT_GRID: usize = 16;
 const PROJECT_STARTS: usize = 6;
 /// Steps of one descent of a numeric projection, at most.
 const PROJECT_STEPS: usize = 80;
+/// Bézier pieces the search for a foot that a descent ended short of
+/// looks at, at most ([`Surface::nearest_by_pieces`]).
+const PIECE_LOOKS: usize = 1024;
+/// Walks that search takes inside pieces, at most, and the steps of each.
+const PIECE_WALKS: usize = 64;
+const PIECE_STEPS: usize = 16;
+/// How many times that search splits a piece, at most.
+const PIECE_DEPTH: usize = 48;
 
 /// The samples of a Bézier or NURBS surface a numeric projection starts
 /// from ([`Surface::project_grid`]), and what they tell about the surface:
@@ -737,6 +745,12 @@ impl Surface {
     /// and one past a collapsed border at it, where the walk is held by
     /// the border and `p − S` is not square to the surface.
     ///
+    /// This walk does not go on where it ends short, as
+    /// [`Surface::project`] does: its callers read a walk that did not
+    /// settle as an error and fall back on `project`, or check what they
+    /// got against what they need, and they were built on its answers as
+    /// they are.
+    ///
     /// A walk that does not settle within its steps, or meets a number
     /// that is not one, is [`GeomError::NoConvergence`]. A `start` outside
     /// the domain begins at its border; one that is not finite is
@@ -811,6 +825,21 @@ impl Surface {
     /// - **Borders.** At a border of an open surface the iteration drops
     ///   the direction that points out of the domain and goes on along
     ///   the border.
+    ///
+    /// **Where the walks end short.** The answer is looked at once more:
+    /// where its foot could still come nearer to `p`, by sliding along the
+    /// tangent plane, by more than the coordinates resolve there
+    /// ([`Surface::slides`]: a spline whose weights make its
+    /// parametrisation race, or whose tangents are nearly parallel, where
+    /// the damped steps crawl and run out), a second walk goes on from it
+    /// ([`Surface::settle`]), and where that does not settle either, a
+    /// search over the surface's Bézier pieces
+    /// ([`Surface::nearest_by_pieces`]). What they find replaces the answer
+    /// only where it is nearer by more than that resolution, or as near
+    /// and settled where the answer was not. Where the answer is not short
+    /// so, or the surface has a pole or a border squeezed nearly into one
+    /// ([`Surface::goes_on`]), nothing of this is done: the answer is
+    /// what the walks found, bit for bit.
     ///
     /// **What is promised.** The result is a local nearest point (the
     /// distance does not decrease in any direction within the domain), to
@@ -947,12 +976,16 @@ impl Surface {
         // at once, and then there is nothing nearer to look for: the
         // common case, of points that are on the surface to begin with.
         let mut best: Option<(f64, f64, f64)> = None;
+        // The surface and its tangents at the best foot (the walk's last).
+        let mut best_at = None;
         if let Some(&(_, _, i, j)) = starts.first() {
-            let (found, u, v, _, _) = self.descend(p, at(i, j), (closed_u, closed_v), collapsed);
+            let (found, u, v, _, there) =
+                self.descend(p, at(i, j), (closed_u, closed_v), collapsed);
             if found <= 16.0 * f64::EPSILON * (p.length() + extent) {
                 return Ok((u, v));
             }
             best = Some((found, u, v));
+            best_at = Some(there);
         }
         // Around it the surface is then looked at four times as closely:
         // two nearest points a cell apart (the end of a tube and its side
@@ -1029,7 +1062,7 @@ impl Surface {
             if best.is_some_and(|(found, _, _)| d - reach > found) {
                 continue;
             }
-            let (found, u, v, _, _) = self.descend(
+            let (found, u, v, _, there) = self.descend(
                 p,
                 (
                     if closed_u {
@@ -1048,15 +1081,35 @@ impl Surface {
             );
             if best.is_none_or(|(least, _, _)| found < least) {
                 best = Some((found, u, v));
+                best_at = Some(there);
             }
         }
         // Never further than the nearest sample (a pole, when nothing
         // was started from; a start that could not improve).
         let (d, i, j) = nearest_sample;
-        Ok(match best {
-            Some((found, u, v)) if found <= d => (u, v),
-            _ => at(i, j),
-        })
+        let (Some((found, u, v)), Some(there)) = (best, best_at) else {
+            return Ok(at(i, j));
+        };
+        if !at_most(found, d) {
+            return Ok(at(i, j));
+        }
+        // Where the walks ended short, the foot found by going on (not
+        // beside a pole: see `goes_on`).
+        let domain = ((u0, u1), (v0, v1));
+        if self.slides(p, (u, v), there, (closed_u, closed_v), domain) && self.goes_on() {
+            #[cfg(test)]
+            FINISHED.with(|n| n.set(n.get() + 1));
+            let short = Foot {
+                distance: found,
+                u,
+                v,
+                at: there,
+                settled: false,
+            };
+            let foot = self.finish(p, short, (closed_u, closed_v), collapsed);
+            return Ok((foot.u, foot.v));
+        }
+        Ok((u, v))
     }
 
     /// The samples [`Surface::project_numeric`] starts from, of a Bézier
@@ -1378,6 +1431,722 @@ impl Surface {
         }
         (here.0.length(), u, v, settled, here.5)
     }
+
+    /// How far the foot at `(u, v)` of `p` (where the surface and its
+    /// tangents are `at`) would still slide towards `p` along the tangent
+    /// plane, within the directions `domain` leaves free: the length of
+    /// what `p − S` has along the tangent plane (along the free tangent
+    /// alone where a border holds the other; nothing at a corner that
+    /// holds both). Zero at a nearest point, to rounding.
+    ///
+    /// The tangent plane's share is what is left of `p − S` off the unit
+    /// normal from the cross product of the tangents, which keeps its
+    /// direction where the tangents are nearly parallel (where the normal
+    /// equations, which square the angle between them, lose it); where
+    /// the tangents give no normal, the longer of the shares along each.
+    fn sliding(
+        &self,
+        p: Vec3,
+        (u, v): (f64, f64),
+        (s, su, sv): (Vec3, Vec3, Vec3),
+        closed: (bool, bool),
+        ((u0, u1), (v0, v1)): ((f64, f64), (f64, f64)),
+    ) -> f64 {
+        let r = p - s;
+        let (a, c) = (su.dot(su), sv.dot(sv));
+        let (ru, rv) = (r.dot(su), r.dot(sv));
+        let held = |x: f64, (low, high): (f64, f64), pull: f64, closed: bool| {
+            !closed && ((x <= low && pull < 0.0) || (x >= high && pull > 0.0))
+        };
+        let hold_u = held(u, (u0, u1), ru, closed.0) || !above_zero(a);
+        let hold_v = held(v, (v0, v1), rv, closed.1) || !above_zero(c);
+        let along = |pull: f64, square: f64| (pull * pull / square).sqrt();
+        match (hold_u, hold_v) {
+            (true, true) => 0.0,
+            (true, false) => along(rv, c),
+            (false, true) => along(ru, a),
+            (false, false) => {
+                let single = along(ru, a).max(along(rv, c));
+                match su.cross(sv).normalized() {
+                    Some(n) => (r - n * r.dot(n)).length().max(single),
+                    None => single,
+                }
+            }
+        }
+    }
+
+    /// What the coordinates can tell apart at the foot `(u, v)` of `p`
+    /// (where the surface and its tangents are `at`): 64 units in the last
+    /// place of the largest coordinate of `p` and the foot, and how far
+    /// the surface moves for four units in the last place of the
+    /// parameters there (of the larger of a parameter and its domain's
+    /// ends). Where a spline races (a light weight between heavy ones),
+    /// the next parameter that can be written is a visible way off, and
+    /// no foot is nearer than that.
+    fn resolution(&self, p: Vec3, (u, v): (f64, f64), (s, su, sv): (Vec3, Vec3, Vec3)) -> f64 {
+        let size = [p.x, p.y, p.z, s.x, s.y, s.z]
+            .into_iter()
+            .fold(0.0_f64, |most, c| most.max(c.abs()));
+        let ((u0, u1), (v0, v1)) = self.domain();
+        let reach = |x: f64, low: f64, high: f64| x.abs().max(low.abs()).max(high.abs());
+        64.0 * f64::EPSILON * size
+            + 4.0 * f64::EPSILON * (su.length() * reach(u, u0, u1) + sv.length() * reach(v, v0, v1))
+    }
+
+    /// Whether the foot at `(u, v)` still slides by more than the
+    /// coordinates resolve there: a walk that stopped there ended short.
+    /// Not a number slides.
+    fn slides(
+        &self,
+        p: Vec3,
+        (u, v): (f64, f64),
+        at: (Vec3, Vec3, Vec3),
+        closed: (bool, bool),
+        domain: ((f64, f64), (f64, f64)),
+    ) -> bool {
+        !at_most(
+            self.sliding(p, (u, v), at, closed, domain),
+            self.resolution(p, (u, v), at),
+        )
+    }
+
+    /// Whether the foot could come nearer to `p`, by sliding along the
+    /// tangent plane, by more than the coordinates resolve at it: sliding
+    /// by `s` brings a foot `d` from `p` nearer by `d − √(d² − s²)` at most
+    /// (`s²/2d` where `s` is small). A foot far from its point whose slide
+    /// is the rounding of a wild sheet's own evaluation cannot; nor one
+    /// placed a little off along the plane, which a walk sets right
+    /// ([`Surface::settle`]) where a search over the whole surface
+    /// ([`Surface::nearest_by_pieces`]) has nothing to find. Not a number
+    /// can.
+    fn could_come_nearer(&self, p: Vec3, foot: &Foot, closed: (bool, bool)) -> bool {
+        let slide = self.sliding(p, (foot.u, foot.v), foot.at, closed, self.domain());
+        !at_most(
+            Self::gain(foot.distance, slide),
+            self.resolution(p, (foot.u, foot.v), foot.at),
+        )
+    }
+
+    /// How much nearer a foot `distance` from its point can come by
+    /// sliding `slide` along the tangent plane: `d − √(d² − s²)`, written
+    /// `s² / (d + √(d² − s²))` so that a small slide does not cancel.
+    fn gain(distance: f64, slide: f64) -> f64 {
+        // On the point, or square to the tangent plane: nothing to gain.
+        if slide == 0.0 {
+            return 0.0;
+        }
+        let square = (distance * distance - slide * slide).max(0.0);
+        slide * slide / (distance + square.sqrt())
+    }
+
+    /// Whether a search that ended short on this surface goes on: not on a
+    /// surface with a pole or a border squeezed nearly into one
+    /// ([`crate::pole::squeezed`]: a border row of control points that
+    /// reaches less than a ten-thousandth as far as the row next to it,
+    /// where [`crate::pole::poles`] takes a billionth of the net). Beside such a border
+    /// the descent finds the points of the rails on other meridians, and
+    /// the measure and the tessellator read those feet as they are, or mend
+    /// them along the borders where the surface has a pole
+    /// (`pole::BorderFeet`); the tessellator cannot yet mesh a face whose
+    /// rails' feet are found on the border at its pole (the fan at a pole
+    /// is owed). Going on there moved what was built right: at true poles
+    /// the meshes and measures of `pole_measure`'s tips and blades (the
+    /// trial Gate of 2026-11-15), at poles squeezed open by 2e-8 and 1e-7
+    /// of the scale mesh triangle counts and the reasons measures are
+    /// refused (the review of 2026-11-15).
+    fn goes_on(&self) -> bool {
+        !crate::pole::squeezed(self)
+    }
+
+    /// Of two feet of `p`, whether `a` is the better: nearer by more than
+    /// the coordinates resolve at `b`, or as near as that and settled
+    /// where `b` is not (far from the origin a foot that still slides can
+    /// read as near as the true one, the distance being flat at a foot).
+    fn better(&self, p: Vec3, a: &Foot, b: &Foot) -> bool {
+        let margin = self.resolution(p, (b.u, b.v), b.at);
+        a.distance < b.distance - margin
+            || (a.settled && !b.settled && a.distance <= b.distance + margin)
+    }
+
+    /// The foot of `p` where the walks of [`Surface::project_numeric`]
+    /// ended `short` (its foot still slides): a second walk from there
+    /// ([`Surface::settle`]), and where that does not settle, a search
+    /// over the Bézier pieces of the surface
+    /// ([`Surface::nearest_by_pieces`]). The better of what they find and
+    /// `short` itself ([`Surface::better`]).
+    fn finish(&self, p: Vec3, short: Foot, closed: (bool, bool), collapsed: [bool; 4]) -> Foot {
+        let mut best = short;
+        let walk = self.settle(
+            p,
+            (short.u, short.v),
+            closed,
+            collapsed,
+            self.domain(),
+            PROJECT_STEPS,
+        );
+        if self.better(p, &walk, &best) {
+            best = walk;
+        }
+        if !best.settled && self.could_come_nearer(p, &best, closed) {
+            let found = self.nearest_by_pieces(p, best, closed, collapsed);
+            if self.better(p, &found, &best) {
+                best = found;
+            }
+        }
+        best
+    }
+
+    /// A walk from `start` to a foot of `p` within `domain` that does not
+    /// slide: where [`Surface::descend`] ended short.
+    ///
+    /// Each step is the one of Gauss–Newton, solved in the tangent plane's
+    /// own axes (`J = Q R`, `e1` along `∂u`, `e2 = n × e1` with the unit
+    /// normal from the cross product), so that where the tangents are
+    /// nearly parallel the step across them is kept: the normal equations
+    /// of [`Surface::descend`] square the sine between the tangents, and
+    /// with it the step across them, away (a sheet sheared a millionfold
+    /// leaves it a millionth of a millionth of what it is, and its damping,
+    /// however light, leaves it less). Where a step does not help, the
+    /// next is shorter along the same direction, which is downhill (the
+    /// Gauss–Newton direction is, wherever the tangents span a plane);
+    /// where a border holds one parameter, or the tangents give no
+    /// normal, the step is the one of [`Surface::descend`]'s equations,
+    /// damped. A step helps as it does there: nearer by more than
+    /// rounding, or as near with less slope.
+    ///
+    /// Settled as soon as sliding on could not bring the foot nearer by
+    /// more than the coordinates resolve ([`Surface::slides`]): a stopping
+    /// rule in the units of the model, where `descend`'s is in those of
+    /// the parameters, and one that a slide which is the rounding of the
+    /// surface's own evaluation, far from its point, meets at once. Not
+    /// settled where no step helps however short, the steps run out or a
+    /// number is not one.
+    fn settle(
+        &self,
+        p: Vec3,
+        start: (f64, f64),
+        closed: (bool, bool),
+        collapsed: [bool; 4],
+        ((u0, u1), (v0, v1)): ((f64, f64), (f64, f64)),
+        steps: usize,
+    ) -> Foot {
+        let domain = ((u0, u1), (v0, v1));
+        let cache = std::cell::RefCell::new(crate::DerivativeCache::default());
+        let eval = |u: f64, v: f64| match self {
+            Surface::Nurbs(s) => s.derivatives_cached(u, v, &mut cache.borrow_mut()),
+            _ => self.derivatives(u, v),
+        };
+        let place = |x: f64, (low, high): (f64, f64), closed: bool| {
+            if closed {
+                let wrapped = low + (x - low).rem_euclid(high - low);
+                if wrapped.is_finite() { wrapped } else { low }
+            } else {
+                x.clamp(low, high)
+            }
+        };
+        let held = |x: f64, (low, high): (f64, f64), pull: f64, closed: bool| {
+            !closed && ((x <= low && pull < 0.0) || (x >= high && pull > 0.0))
+        };
+        // The slope is how far the foot slides: along the tangent plane,
+        // not along each tangent, which where they are nearly parallel
+        // both stand nearly square to what is left to slide.
+        let look = |u: f64, v: f64| {
+            let at = eval(u, v);
+            let (s, su, sv) = at;
+            let r = p - s;
+            let (ru, rv) = (r.dot(su), r.dot(sv));
+            let hold = (
+                held(u, (u0, u1), ru, closed.0),
+                held(v, (v0, v1), rv, closed.1),
+            );
+            let slope = self.sliding(p, (u, v), at, closed, domain);
+            (r, (ru, rv), hold, slope, at)
+        };
+        let (mut u, mut v) = start;
+        let mut here = look(u, v);
+        let mut lambda = 1e-3;
+        let mut settled = false;
+        let mut stalled = 0_u32;
+        for _ in 0..steps {
+            let (r, (ru, rv), (hold_u, hold_v), slope, at) = here;
+            let (_, su, sv) = at;
+            let distance = r.length();
+            if distance.is_nan() {
+                break;
+            }
+            if distance <= 0.0
+                || (hold_u && hold_v)
+                || at_most(slope, self.resolution(p, (u, v), at))
+            {
+                settled = true;
+                break;
+            }
+            if lambda > 1e12 {
+                break;
+            }
+            let (a, b, c) = (su.dot(su), su.dot(sv), sv.dot(sv));
+            let (hold_u, hold_v) = (hold_u || !above_zero(a), hold_v || !above_zero(c));
+            // Gauss–Newton in the tangent plane's axes, shortened by the
+            // damping; `None` where it does not apply.
+            let across = (|| {
+                if hold_u || hold_v {
+                    return None;
+                }
+                let n = su.cross(sv).normalized()?;
+                let e1 = su.normalized()?;
+                let e2 = n.cross(e1);
+                let (r11, r12, r22) = (su.length(), sv.dot(e1), sv.dot(e2));
+                let dv = r.dot(e2) / r22;
+                let du = (r.dot(e1) - r12 * dv) / r11;
+                let shorter = 1.0 + lambda;
+                (du.is_finite() && dv.is_finite()).then_some((du / shorter, dv / shorter))
+            })();
+            let (a, c) = (a * (1.0 + lambda), c * (1.0 + lambda));
+            let (mut du, mut dv) = match across {
+                Some(step) => step,
+                None if hold_u && hold_v => {
+                    settled = true;
+                    break;
+                }
+                None if hold_u => (0.0, rv / c),
+                None if hold_v => (ru / a, 0.0),
+                None => {
+                    let det = a * c - b * b;
+                    ((c * ru - b * rv) / det, (a * rv - b * ru) / det)
+                }
+            };
+            // A step that would leave the domain stops at the border (half
+            // way to one that is a pole), as in `descend`.
+            let stop = |x: f64, step: f64, (low, high): (f64, f64), poles: (bool, bool)| {
+                let (border, pole) = if step < 0.0 {
+                    (low, poles.0)
+                } else {
+                    (high, poles.1)
+                };
+                if pole { 0.5 * (border - x) } else { border - x }
+            };
+            let [pole_u0, pole_u1, pole_v0, pole_v1] = collapsed;
+            let leaves_u = !closed.0
+                && !hold_u
+                && (!(u0..=u1).contains(&(u + du))
+                    || (pole_u0 && u + du <= u0)
+                    || (pole_u1 && u + du >= u1));
+            if leaves_u {
+                du = stop(u, du, (u0, u1), (pole_u0, pole_u1));
+                if !hold_v {
+                    dv = (rv - b * du) / c;
+                }
+            }
+            let leaves_v = !closed.1
+                && !hold_v
+                && (!(v0..=v1).contains(&(v + dv))
+                    || (pole_v0 && v + dv <= v0)
+                    || (pole_v1 && v + dv >= v1));
+            if leaves_v {
+                dv = stop(v, dv, (v0, v1), (pole_v0, pole_v1));
+                if !hold_u && !leaves_u && (u0..=u1).contains(&(u + (ru - b * dv) / a)) {
+                    du = (ru - b * dv) / a;
+                }
+            }
+            if !(du.is_finite() && dv.is_finite()) {
+                break;
+            }
+            let next = (
+                place(u + du, (u0, u1), closed.0),
+                place(v + dv, (v0, v1), closed.1),
+            );
+            let there = look(next.0, next.1);
+            let reached = there.0.length();
+            let rounding = 16.0 * f64::EPSILON * (p.length() + distance);
+            let level = reached <= distance + rounding;
+            if reached < distance - rounding || (level && there.3 < slope) {
+                // A step of Gauss–Newton takes the slide at least to half
+                // where the plane is a model of the surface; two in a row
+                // that do not are walking in the rounding of the surface's
+                // own evaluation (a slide that is noise, far from its
+                // point), which no step can lessen: the walk ends there.
+                stalled = if there.3 > 0.5 * slope {
+                    stalled + 1
+                } else {
+                    0
+                };
+                (u, v, here) = (next.0, next.1, there);
+                lambda = (lambda / 8.0).max(1e-14);
+                if stalled >= 2 {
+                    break;
+                }
+            } else {
+                lambda *= 8.0;
+            }
+        }
+        Foot {
+            distance: here.0.length(),
+            u,
+            v,
+            at: here.4,
+            settled,
+        }
+    }
+
+    /// The foot of `p` by a search over the Bézier pieces of a freeform
+    /// surface, for where the walks from the grid ended short: best first
+    /// by how near a piece can come (the distance to a box round its
+    /// control points in the axes of its own corners, which the piece lies
+    /// in for positive weights), splitting a piece until it is even enough
+    /// to walk on (its weights within a factor of four, its net within a
+    /// quarter of its size of the bilinear map of its corners), then
+    /// walking inside it ([`Surface::settle`], held to the piece). A piece
+    /// whose walk does not settle is split further. A piece of a spline
+    /// is split where its weights balance (for end weights `w₀`, `wₙ` along
+    /// a direction, the parameter `β / (1 + β)` with `β = (w₀ / wₙ)^(1/n)`,
+    /// the middle of the Möbius reparametrisation that evens them, *The
+    /// NURBS Book* §6.1): where a weight is light, the middle of the
+    /// parameter is far from the middle of the piece in space, and
+    /// halving the parameter left pieces as large in space as before.
+    ///
+    /// Ends at the first walk that settles inside its piece with a foot
+    /// better than `best` ([`Surface::better`]), when no piece left can
+    /// come nearer than the best foot by more than the coordinates
+    /// resolve, or when [`PIECE_LOOKS`] pieces or [`PIECE_WALKS`] walks are
+    /// spent. Gives the best foot found, `best` where none is better.
+    fn nearest_by_pieces(
+        &self,
+        p: Vec3,
+        mut best: Foot,
+        closed: (bool, bool),
+        collapsed: [bool; 4],
+    ) -> Foot {
+        // The spans as the surface keeps them (`bezier_spans_shared`),
+        // looked at in place: only the pieces split from them are made.
+        let shared;
+        let whole;
+        let pieces: Vec<Span<'_>> = match self {
+            Surface::Nurbs(s) => match s.bezier_spans_shared() {
+                Ok(spans) => {
+                    shared = spans;
+                    shared
+                        .iter()
+                        .map(|span| (&span.patch, span.u, span.v))
+                        .collect()
+                }
+                Err(_) => return best,
+            },
+            Surface::Bezier(b) => {
+                whole = RationalBezierPatch::from_bezier(b);
+                vec![(&whole, (0.0, 1.0), (0.0, 1.0))]
+            }
+            _ => return best,
+        };
+        let full = self.domain();
+        let ((du0, du1), (dv0, dv1)) = full;
+        let mut heap = std::collections::BinaryHeap::new();
+        let mut made = 0_usize;
+        for (patch, u, v) in pieces {
+            // A pass over its control net (`crate::allowance`).
+            crate::allowance::charge(1);
+            let (gap, size) = piece_bound(patch, p);
+            heap.push(Piece {
+                gap,
+                made,
+                patch: std::borrow::Cow::Borrowed(patch),
+                u,
+                v,
+                depth: 0,
+                size,
+            });
+            made += 1;
+        }
+        // The nearest corner of a piece seen (corners are points of the
+        // surface, at parameters known): what no piece left may beat.
+        let mut corner: Option<(f64, f64, f64)> = None;
+        let (mut looks, mut walks) = (0_usize, 0_usize);
+        while let Some(piece) = heap.pop() {
+            let margin = self.resolution(p, (best.u, best.v), best.at);
+            let least = corner.map_or(best.distance, |(d, _, _)| d.min(best.distance));
+            if !below(piece.gap, least - margin) || looks >= PIECE_LOOKS {
+                break;
+            }
+            looks += 1;
+            // A look is counted (`crate::allowance`), and a bound in force
+            // that is reached ends the search with what it has.
+            if crate::allowance::pass() {
+                break;
+            }
+            let (m, n) = piece.patch.degrees();
+            for (i, j, u, v) in [
+                (0, 0, piece.u.0, piece.v.0),
+                (m, 0, piece.u.1, piece.v.0),
+                (0, n, piece.u.0, piece.v.1),
+                (m, n, piece.u.1, piece.v.1),
+            ] {
+                if let Some(q) = piece.patch.control_point(i * (n + 1) + j) {
+                    let d = q.distance(p);
+                    if corner.is_none_or(|(least, _, _)| d < least) {
+                        corner = Some((d, u, v));
+                    }
+                }
+            }
+            if walks < PIECE_WALKS && piece_is_even(&piece.patch, piece.size) {
+                walks += 1;
+                let start = (0.5 * (piece.u.0 + piece.u.1), 0.5 * (piece.v.0 + piece.v.1));
+                // The domain's poles where the piece reaches them; no
+                // seam inside a piece.
+                let [c0, c1, c2, c3] = collapsed;
+                let poles = [
+                    c0 && piece.u.0 <= du0,
+                    c1 && piece.u.1 >= du1,
+                    c2 && piece.v.0 <= dv0,
+                    c3 && piece.v.1 >= dv1,
+                ];
+                let mut walk = self.settle(
+                    p,
+                    start,
+                    (false, false),
+                    poles,
+                    (piece.u, piece.v),
+                    PIECE_STEPS,
+                );
+                // Held at a side of the piece inside the domain is not
+                // settled on the surface.
+                walk.settled =
+                    walk.settled && !self.slides(p, (walk.u, walk.v), walk.at, closed, full);
+                if self.better(p, &walk, &best) {
+                    best = walk;
+                    if walk.settled {
+                        break;
+                    }
+                }
+            }
+            if piece.depth >= PIECE_DEPTH {
+                continue;
+            }
+            let (su, sv) = (
+                piece_balance(&piece.patch, true),
+                piece_balance(&piece.patch, false),
+            );
+            let um = piece.u.0 + su * (piece.u.1 - piece.u.0);
+            let vm = piece.v.0 + sv * (piece.v.1 - piece.v.0);
+            let (left, right) = piece.patch.split_u(su);
+            for (half, u) in [(left, (piece.u.0, um)), (right, (um, piece.u.1))] {
+                let (low, high) = half.split_v(sv);
+                for (quarter, v) in [(low, (piece.v.0, vm)), (high, (vm, piece.v.1))] {
+                    crate::allowance::charge(1);
+                    let (gap, size) = piece_bound(&quarter, p);
+                    heap.push(Piece {
+                        gap,
+                        made,
+                        patch: std::borrow::Cow::Owned(quarter),
+                        u,
+                        v,
+                        depth: piece.depth + 1,
+                        size,
+                    });
+                    made += 1;
+                }
+            }
+        }
+        // A corner nearer than every walk's foot.
+        if let Some((d, u, v)) = corner {
+            let at = self.derivatives(u, v);
+            let foot = Foot {
+                distance: d,
+                u,
+                v,
+                at,
+                settled: false,
+            };
+            if self.better(p, &foot, &best) {
+                best = foot;
+            }
+        }
+        best
+    }
+}
+
+/// A Bézier piece of a freeform surface, with its parameters there.
+type Span<'a> = (&'a RationalBezierPatch, (f64, f64), (f64, f64));
+
+/// `x <= bound`: false where either is not a number.
+fn at_most(x: f64, bound: f64) -> bool {
+    x <= bound
+}
+
+/// `x < bound`: false where either is not a number.
+fn below(x: f64, bound: f64) -> bool {
+    x < bound
+}
+
+/// `x > 0`: false for a number that is not one.
+fn above_zero(x: f64) -> bool {
+    x > 0.0
+}
+
+/// A foot of a point on a freeform surface: its distance, its parameters,
+/// the surface and its tangents there, and whether it no longer slides
+/// ([`Surface::slides`]).
+#[derive(Clone, Copy, Debug)]
+struct Foot {
+    distance: f64,
+    u: f64,
+    v: f64,
+    at: (Vec3, Vec3, Vec3),
+    settled: bool,
+}
+
+/// A piece of [`Surface::nearest_by_pieces`]: how near it can come to the
+/// point, the order it was made in (the tie-break), the patch, its
+/// parameters on the surface, how often it was split and its size.
+struct Piece<'a> {
+    gap: f64,
+    made: usize,
+    /// A span of the surface as it keeps them, or a piece split from one.
+    patch: std::borrow::Cow<'a, RationalBezierPatch>,
+    u: (f64, f64),
+    v: (f64, f64),
+    depth: usize,
+    size: f64,
+}
+
+impl PartialEq for Piece<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Piece<'_> {}
+
+impl PartialOrd for Piece<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Piece<'_> {
+    /// The nearest first (a max-heap pops the greatest), then the first
+    /// made.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .gap
+            .total_cmp(&self.gap)
+            .then(other.made.cmp(&self.made))
+    }
+}
+
+/// A distance from `p` no larger than that of any point of `patch`, and
+/// the size of the box it is read from: the box round the control points
+/// along the axes of the patch's corners (`e1` along the sides of `u`,
+/// `e2` the sides of `v` square to it, `e3` across), which holds the patch
+/// where its weights are positive (a convex hull), and lies close round a
+/// piece that is nearly flat whichever way it is turned. The world's axes
+/// where the corners give none.
+fn piece_bound(patch: &RationalBezierPatch, p: Vec3) -> (f64, f64) {
+    let (m, n) = patch.degrees();
+    let at = |i: usize, j: usize| patch.control_point(i * (n + 1) + j);
+    let (Some(c00), Some(c10), Some(c01), Some(c11)) = (at(0, 0), at(m, 0), at(0, n), at(m, n))
+    else {
+        return (0.0, f64::INFINITY);
+    };
+    let axes = (|| {
+        let e1 = ((c10 - c00) + (c11 - c01)).normalized()?;
+        let side = (c01 - c00) + (c11 - c10);
+        let e2 = (side - e1 * side.dot(e1)).normalized()?;
+        Some([e1, e2, e1.cross(e2)])
+    })()
+    .unwrap_or([
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+    ]);
+    let mut low = [f64::INFINITY; 3];
+    let mut high = [f64::NEG_INFINITY; 3];
+    for q in patch.points() {
+        let d = q - c00;
+        for ((axis, lo), hi) in axes.iter().zip(&mut low).zip(&mut high) {
+            let x = d.dot(*axis);
+            *lo = lo.min(x);
+            *hi = hi.max(x);
+        }
+    }
+    let d = p - c00;
+    let (mut gap, mut size) = (0.0, 0.0);
+    for ((axis, lo), hi) in axes.iter().zip(low).zip(high) {
+        let x = d.dot(*axis);
+        let outside = (lo - x).max(x - hi).max(0.0);
+        gap += outside * outside;
+        size += (hi - lo) * (hi - lo);
+    }
+    // Not a number reads as near, so the piece is looked at.
+    let gap = gap.sqrt();
+    (if gap.is_nan() { 0.0 } else { gap }, size.sqrt())
+}
+
+/// Whether a piece is even enough to walk on: its weights within a factor
+/// of four of each other, and its control points within a quarter of
+/// `size` of the bilinear map of its corners.
+fn piece_is_even(patch: &RationalBezierPatch, size: f64) -> bool {
+    let Some((light, heavy)) = patch.weight_range() else {
+        return false;
+    };
+    if !at_most(heavy, 4.0 * light) {
+        return false;
+    }
+    let (m, n) = patch.degrees();
+    let at = |i: usize, j: usize| patch.control_point(i * (n + 1) + j);
+    let (Some(c00), Some(c10), Some(c01), Some(c11)) = (at(0, 0), at(m, 0), at(0, n), at(m, n))
+    else {
+        return false;
+    };
+    for i in 0..=m {
+        for j in 0..=n {
+            let (s, t) = (i as f64 / m.max(1) as f64, j as f64 / n.max(1) as f64);
+            let bilinear = c00 * ((1.0 - s) * (1.0 - t))
+                + c10 * (s * (1.0 - t))
+                + c01 * ((1.0 - s) * t)
+                + c11 * (s * t);
+            if !at(i, j).is_some_and(|q| q.distance(bilinear) <= 0.25 * size) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Where to split a piece along u (or v): where its weights balance, the
+/// parameter `β / (1 + β)` with `β = (w₀ / wₙ)^(1/n)` from the geometric
+/// mean over its rows of the ratio of the weights at the two ends (see
+/// [`Surface::nearest_by_pieces`]); the middle for even weights, and never
+/// nearer an end than a sixteenth.
+fn piece_balance(patch: &RationalBezierPatch, along_u: bool) -> f64 {
+    let weights = patch.weights();
+    let (m, n) = patch.degrees();
+    let (rows, degree) = if along_u { (n + 1, m) } else { (m + 1, n) };
+    let mut log_ratio = 0.0;
+    for k in 0..rows {
+        let (first, last) = if along_u {
+            (weights.get(k), weights.get(m * (n + 1) + k))
+        } else {
+            (weights.get(k * (n + 1)), weights.get(k * (n + 1) + n))
+        };
+        let (Some(&a), Some(&b)) = (first, last) else {
+            return 0.5;
+        };
+        log_ratio += (a / b).pln();
+    }
+    let beta = (log_ratio / (rows as f64 * degree.max(1) as f64)).pexp();
+    let t = beta / (1.0 + beta);
+    if t.is_finite() {
+        t.clamp(1.0 / 16.0, 15.0 / 16.0)
+    } else {
+        0.5
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many searches of this thread ended short and went on
+    /// ([`Surface::finish`] and the second walk of `project_from`): the
+    /// tests that hold the old path to its bits count it.
+    pub(crate) static FINISHED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl Bits for Plane {
@@ -1463,6 +2232,12 @@ impl Bits for Surface {
         }
     }
 }
+
+#[cfg(test)]
+mod project_sweep;
+
+#[cfg(test)]
+mod project_short;
 
 #[cfg(test)]
 mod tests {

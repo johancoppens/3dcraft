@@ -96,6 +96,68 @@ pub fn poles(surface: &Surface) -> Vec<Pole> {
     poles
 }
 
+/// How much shorter than the row next to it a border row of control points
+/// may reach and the border still be squeezed into a point ([`squeezed`]).
+const SQUEEZED: f64 = 1e-4;
+
+/// Whether a Bézier or NURBS surface has a border squeezed into a point,
+/// or nearly: a border whose row of control points reaches less than
+/// [`SQUEEZED`] as far as the row next to it (the reach of a row: its
+/// farthest point from its first). Every pole ([`poles`]) is one; so is a
+/// pole a model or a file squeezes open by less than its tolerance (the
+/// point of a tip drawn as a border a hair long), which [`poles`], at a
+/// billionth of the net, does not tell. The rows next to such a border fan
+/// out from it; the border of a long strip reaches as far as the row next
+/// to it however short it is against the strip. What reads such a surface
+/// through its parameters beside that border meets what it meets beside a
+/// pole: the search in both parameters settles on another meridian
+/// ([`crate::Surface::project`] leaves such feet as they are, for the
+/// measure and the tessellator).
+pub fn squeezed(surface: &Surface) -> bool {
+    let (points, count_v): (&[Vec3], usize) = match surface {
+        Surface::Bezier(patch) => (patch.control_points(), patch.degree_v() + 1),
+        Surface::Nurbs(s) => (s.control_points(), s.counts().1),
+        _ => return false,
+    };
+    if count_v < 2 || !points.len().is_multiple_of(count_v) || points.len() < 2 * count_v {
+        return false;
+    }
+    let count_u = points.len() / count_v;
+    // The reach of the row of `count` points at `index(0..count)`; `None`
+    // where a point is missing or not finite.
+    let reach = |count: usize, index: &dyn Fn(usize) -> usize| -> Option<f64> {
+        let first = *points.get(index(0))?;
+        let mut most = 0.0_f64;
+        for k in 0..count {
+            let far = points.get(index(k))?.distance(first);
+            if !far.is_finite() {
+                return None;
+            }
+            most = most.max(far);
+        }
+        Some(most)
+    };
+    let squeezed = |border: Option<f64>, next: Option<f64>| match (border, next) {
+        (Some(border), Some(next)) => border <= SQUEEZED * next,
+        _ => false,
+    };
+    let last_u = count_u - 1;
+    let last_v = count_v - 1;
+    squeezed(reach(count_v, &|j| j), reach(count_v, &|j| count_v + j))
+        || squeezed(
+            reach(count_v, &|j| last_u * count_v + j),
+            reach(count_v, &|j| (last_u - 1) * count_v + j),
+        )
+        || squeezed(
+            reach(count_u, &|i| i * count_v),
+            reach(count_u, &|i| i * count_v + 1),
+        )
+        || squeezed(
+            reach(count_u, &|i| i * count_v + last_v),
+            reach(count_u, &|i| i * count_v + last_v - 1),
+        )
+}
+
 impl Pole {
     /// Whether the border is one of constant v (the surface does not move
     /// with u along it).
@@ -1130,6 +1192,98 @@ mod tests {
                 2,
                 3,
                 net,
+                vec![1.0; 6],
+            )
+            .unwrap(),
+        )
+    }
+
+    /// A pole is squeezed, and so is one spread open by 2e-8 or 1e-7 of
+    /// the size (which `poles` does not tell), at three scales; a strip a
+    /// million times longer than wide, a square and a sheet narrowing to a
+    /// thousandth at one end are not.
+    #[test]
+    fn a_pole_spread_open_by_a_hair_is_squeezed_and_a_long_strip_is_not() {
+        let sheet = |ends: [Vec3; 4], k: f64| {
+            Surface::Nurbs(
+                NurbsSurface::new(
+                    1,
+                    1,
+                    vec![0.0, 0.0, 1.0, 1.0],
+                    vec![0.0, 0.0, 1.0, 1.0],
+                    2,
+                    2,
+                    ends.iter().map(|p| *p * k).collect(),
+                    vec![1.0; 4],
+                )
+                .unwrap(),
+            )
+        };
+        for k in [1e-3, 1.0, 1e6] {
+            assert!(super::squeezed(&sheet_pole(k, 0.0)));
+            for spread in [2e-8, 1e-7] {
+                let open = sheet_pole(k, spread);
+                assert!(poles(&open).is_empty());
+                assert!(super::squeezed(&open), "{spread} at {k}");
+            }
+            let o = Vec3::ZERO;
+            for (ends, what) in [
+                (
+                    [
+                        o,
+                        Vec3::new(0.0, 1.0, 0.0),
+                        Vec3::new(1e6, 0.0, 0.0),
+                        Vec3::new(1e6, 1.0, 0.0),
+                    ],
+                    "strip",
+                ),
+                (
+                    [
+                        o,
+                        Vec3::new(0.0, 1.0, 0.0),
+                        Vec3::new(1.0, 0.0, 0.0),
+                        Vec3::new(1.0, 1.0, 0.0),
+                    ],
+                    "square",
+                ),
+                (
+                    [
+                        o,
+                        Vec3::new(0.0, 1e-3, 0.0),
+                        Vec3::new(1.0, -0.5, 0.0),
+                        Vec3::new(1.0, 0.5, 0.0),
+                    ],
+                    "narrowing",
+                ),
+            ] {
+                assert!(!super::squeezed(&sheet(ends, k)), "{what} at {k}");
+            }
+        }
+        assert!(super::squeezed(&squeezed()));
+        assert!(super::squeezed(&quarter_cone(0.4)));
+    }
+
+    /// A tip over a segment of length 1 (scaled by `k`), its point spread
+    /// along the segment by `spread` of `k`.
+    fn sheet_pole(k: f64, spread: f64) -> Surface {
+        let tip = Vec3::new(0.3, 0.2, 0.5);
+        let net = vec![
+            Vec3::ZERO,
+            Vec3::new(0.0, 0.0, 0.5),
+            tip - Vec3::new(0.5 * spread, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.5),
+            tip + Vec3::new(0.5 * spread, 0.0, 0.0),
+        ];
+        Surface::Nurbs(
+            NurbsSurface::new(
+                1,
+                2,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                2,
+                3,
+                net.into_iter().map(|p| p * k).collect(),
                 vec![1.0; 6],
             )
             .unwrap(),

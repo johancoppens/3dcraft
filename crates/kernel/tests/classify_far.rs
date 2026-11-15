@@ -1917,42 +1917,90 @@ fn block_with_weighted_sides(size: Vec3, seed: u64) -> Body {
     body
 }
 
-/// **Owed** (the review of 2026-11-15): a block 30 by 900 by 20 whose
-/// sides facing +x, +y and +z are the planes drawn as weighted NURBS
-/// (weights from 1e-3 to 1e3) is valid, but the checker reads an edge of
-/// it as 1.65 from the face it bounds, so a boolean with it is refused
-/// ("the first operand of a boolean produced an invalid body"): the edge
-/// is a side of the face's rectangle, which the face's border runs along
-/// (its control points lie on it), and the projection the checker asks
-/// (`Surface::project`, not the boolean's patch tree) ends short on such
-/// a face, as the boolean's nearest point did on a face whose tangents
-/// differ millions of times. The block 30 by 30 passes. Booleans of
-/// blocks whose weighted sides pass the checker (30 by 30 and 30 by 90,
-/// eight seeds, a block over a corner) were built with the faces and the
-/// vertices of the plain blocks' booleans or refused ("a freeform face
-/// whose parametrisation stalls or folds"), none wrong as far as can be
-/// told; their volumes are not measured (the mass integration takes
-/// weights at most 1e4 apart within a span). When the long block passes
-/// the checker, this test fails: hold its booleans to their closed forms.
+/// A block 30 by 900 by 20 whose sides facing +x, +y and +z are the
+/// planes drawn as weighted NURBS (weights from 1e-3 to 1e3) is valid, and
+/// the checker says so; so are its booleans with a block 27 by 765 by 16
+/// that crosses three of those sides, each held to its closed form: the
+/// faces, edges and vertices of the same boolean of the plain blocks
+/// (whose vertices are the corners and crossings of the boxes), every
+/// vertex within the tolerance of one of those, the intersection's eight
+/// at the corners of `[12, 30] × [315, 900] × [9, 20]`, and the volume of
+/// the closed form where the mass integration takes the faces.
+///
+/// Until 2026-11-15 the checker read an edge of the long block as 1.65
+/// from the face it bounds, so every boolean with it was refused at the
+/// operand ("the first operand of a boolean produced an invalid body"):
+/// `Surface::project` (geom), which the checker asks for the foot of each
+/// point of an edge, ended short on such a face, where the weights make
+/// the parametrisation race and shear, and its damped steps crawled and
+/// ran out (`docs/design/geometry.md` › *A foot that ends short*).
 #[test]
-fn a_block_whose_long_side_is_a_weighted_sheet_is_read_as_invalid_owed() {
+fn a_block_whose_long_side_is_a_weighted_sheet_is_valid_and_its_booleans_are_built() {
     let tol = tolerance(1.0);
     let square = block_with_weighted_sides(Vec3::new(30.0, 30.0, 20.0), 1);
     assert!(check(&square, &tol).is_empty());
     let long = block_with_weighted_sides(Vec3::new(30.0, 900.0, 20.0), 1);
     let defects = check(&long, &tol);
-    assert!(
-        defects
-            .iter()
-            .any(|d| d.to_string().contains("away from the surface of face")),
-        "the long block passes the checker now: {defects:?}; hold its booleans to their closed forms"
-    );
+    assert!(defects.is_empty(), "{defects:?}");
     let at = Frame::WORLD.at(Vec3::new(12.0, 315.0, 9.0)).unwrap();
     let tool = primitives::block(&at, 27.0, 765.0, 16.0).unwrap();
-    let refused = boolean(&long, &tool, BooleanOp::Intersect, &tol);
-    assert!(
-        refused.is_err(),
-        "{:?}",
-        refused.map(|r| r.body.faces.len())
-    );
+    let plain = primitives::block(&Frame::WORLD, 30.0, 900.0, 20.0).unwrap();
+    let shared = 18.0 * 585.0 * 11.0;
+    for (op, volume) in [
+        (BooleanOp::Intersect, shared),
+        (
+            BooleanOp::Union,
+            30.0 * 900.0 * 20.0 + 27.0 * 765.0 * 16.0 - shared,
+        ),
+        (BooleanOp::Subtract, 30.0 * 900.0 * 20.0 - shared),
+    ] {
+        let made = boolean(&long, &tool, op, &tol)
+            .unwrap_or_else(|e| panic!("{op:?}: {e}"))
+            .body;
+        let defects = check(&made, &tol);
+        assert!(defects.is_empty(), "{op:?}: {defects:?}");
+        let twin = boolean(&plain, &tool, op, &tol).unwrap().body;
+        assert_eq!(
+            (made.faces.len(), made.edges.len(), made.vertices.len()),
+            (twin.faces.len(), twin.edges.len(), twin.vertices.len()),
+            "{op:?}"
+        );
+        for vertex in &made.vertices {
+            let near = twin
+                .vertices
+                .iter()
+                .map(|w| w.point.distance(vertex.point))
+                .fold(f64::INFINITY, f64::min);
+            assert!(
+                near <= tol.linear,
+                "{op:?}: a vertex {near:e} from the closed form"
+            );
+        }
+        if op == BooleanOp::Intersect {
+            for x in [12.0, 30.0] {
+                for y in [315.0, 900.0] {
+                    for z in [9.0, 20.0] {
+                        let corner = Vec3::new(x, y, z);
+                        assert!(
+                            made.vertices
+                                .iter()
+                                .any(|w| w.point.distance(corner) <= tol.linear),
+                            "{corner:?}"
+                        );
+                    }
+                }
+            }
+        }
+        match mass_bound(&made) {
+            Ok((m, bound)) => assert!(
+                (m.volume - volume).abs() <= bound.volume + 1e-9 * volume,
+                "{op:?}: volume {} for {volume} (bound {})",
+                m.volume,
+                bound.volume
+            ),
+            // The mass integration takes weights at most 1e4 apart within
+            // a span (topology.md); the vertices above hold the solid.
+            Err(e) => println!("{op:?}: not measured: {e}"),
+        }
+    }
 }
