@@ -6052,8 +6052,8 @@ fn mesh_face_in(
 /// triangulation added inside the face's region (`positions` after the
 /// first `boundary` ones) that lies on another point of the face's mesh,
 /// or nearer to one than the rounding of their coordinates
-/// (`ROUNDED_AWAY` times the largest coordinate of the face: about four
-/// thousand units in the last place).
+/// (`ROUNDED_AWAY` times the largest of the two points' coordinates:
+/// about four thousand units in the last place).
 ///
 /// The sides inside a region are each shared by two triangles in the
 /// parameter plane, by the making of the triangulation, and the sides on
@@ -6114,7 +6114,16 @@ fn folded_at(positions: &[Vec3], boundary: usize) -> Option<Vec3> {
                 m = run_end.get(k).copied().unwrap_or(order.len()).max(m + 1);
                 continue;
             }
-            if (a >= boundary || b >= boundary) && p.distance(q) <= near {
+            // Within the rounding of the two points' own coordinates, not
+            // of the face's: by the point of a cusp at the origin, on a
+            // face millions across, distinct points of the mesh lie some
+            // millionths apart, within the rounding of the face's largest
+            // coordinates (`boolean_poles.rs` › `a_cusp_cut_along_its_axis
+            // _is_what_its_profile_says`, at 1e6).
+            let own = [p.x, p.y, p.z, q.x, q.y, q.z]
+                .iter()
+                .fold(0.0_f64, |m, x| m.max(x.abs()));
+            if (a >= boundary || b >= boundary) && p.distance(q) <= ROUNDED_AWAY * own {
                 return Some(p);
             }
             m += 1;
