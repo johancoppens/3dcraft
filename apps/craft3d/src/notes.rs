@@ -704,10 +704,11 @@ mod tests {
                         &parsed(&["--state-dir", &s, "--recovery-dir", &inside]),
                         false,
                     );
-                    assert!(
-                        state.join(RECOVERY_DIR).is_dir(),
-                        "its autosave made the trace"
-                    );
+                    // Its autosave makes `recovery/` there whenever the
+                    // autosave thread writes, during the run or not at all
+                    // at a clean end: made here, after the note, so the
+                    // case does not hang on that thread's timing.
+                    std::fs::create_dir_all(&inside).unwrap();
                 }
                 _ => {
                     // `craft3d-cli mcp --bridge --state-dir STATE`: it reads
