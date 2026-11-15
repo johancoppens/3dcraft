@@ -43,7 +43,7 @@ pub use mass::{
     Inertia, MassBound, MassError, MassProperties, ShellVolume, face_areas, gap_bound, inertia,
     mass_and_inertia, mass_bound, mass_properties, mass_properties_each,
     mass_properties_each_while, mass_with_shells, mass_with_shells_each_while, mass_work,
-    shell_volumes,
+    measured_again, shell_volumes,
 };
 pub use query::{EdgeUse, Outward, edge_faces, edge_uses};
 pub use region::{
