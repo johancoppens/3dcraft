@@ -99,6 +99,24 @@ const WIDEN: f64 = 1e-9;
 /// it may be off: the curve's point and its place on the surface.
 const PLACE_ROUNDING: f64 = 64.0 * f64::EPSILON;
 
+/// While it lives, this thread's work of showing goes to
+/// [`super::chord_proofs`], not to [`super::step_proofs`]: the walk again
+/// is counted apart from the walk.
+struct Verifying(bool);
+
+impl Verifying {
+    fn begin() -> Verifying {
+        Verifying(super::VERIFYING.with(|v| v.replace(true)))
+    }
+}
+
+impl Drop for Verifying {
+    fn drop(&mut self) {
+        let before = self.0;
+        super::VERIFYING.with(|v| v.set(before));
+    }
+}
+
 /// The surfaces whose chart takes a direction by a map that is known
 /// ([`Lay`]): a plane, a cylinder, a cone, a sphere.
 fn asked(surface: &Surface) -> bool {
@@ -1093,6 +1111,7 @@ pub(super) fn region_shown(
     tol: &Tolerance,
     original: &str,
 ) -> Option<String> {
+    let _counted = Verifying::begin();
     let kept = Some(original.to_string());
     if !asked(&face.surface) {
         return kept;
@@ -1136,6 +1155,7 @@ pub(crate) fn winding_shown(body: &Body, face: &Face, tol: &Tolerance, k: usize)
     if !asked(&face.surface) {
         return true;
     }
+    let _counted = Verifying::begin();
     let Some(mut walked) = Walked::new(body, face, tol) else {
         return true;
     };

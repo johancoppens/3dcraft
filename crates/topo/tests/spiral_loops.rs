@@ -613,16 +613,17 @@ fn a_step_whose_halves_each_run_one_way_can_go_round_a_point_unseen() {
     );
 }
 
-/// What verifying a fault costs, counted (`topo::step_proofs`, units of
-/// proof work, never a clock): a face the walk refuses is walked again in
-/// stretches within `MOST_PROOF_WORK` units, on top of the walk's own (also
-/// within it), whether the fault is then shown, dropped or kept. A face the
-/// walk passes costs what it did: it is not walked again.
+/// What verifying a fault costs, counted (`topo::chord_proofs`, units of
+/// proof work, never a clock, apart from the walk's own in
+/// `topo::step_proofs`): a face the walk refuses is walked again in
+/// stretches within `MOST_PROOF_WORK` units, whether the fault is then
+/// shown, dropped or kept. A face the walk passes is not walked again:
+/// nothing is counted for it there.
 #[test]
 fn verifying_a_refused_face_costs_at_most_the_work_of_a_face() {
     use craft3d_geom::{Plane, Surface};
     use craft3d_math::{Frame, Vec3};
-    use craft3d_topo::{MOST_PROOF_WORK, step_proofs};
+    use craft3d_topo::{MOST_PROOF_WORK, chord_proofs, step_proofs};
     let plane = Surface::Plane(Plane::new(Frame::WORLD));
     let at = |x: f64, y: f64| Vec3::new(2.0 * x, 2.0 * y, 0.0);
     let mut most = 0_u64;
@@ -652,14 +653,14 @@ fn verifying_a_refused_face_costs_at_most_the_work_of_a_face() {
         (turned_over, "shown", true),
     ] {
         forget_passed();
-        let (before, _) = step_proofs();
+        let ((walk0, _), (again0, _)) = (step_proofs(), chord_proofs());
         let found = check(&body, &tolerance(1.0));
-        let (after, _) = step_proofs();
-        let spent = after - before;
-        println!("{said}: {spent} units, {found:?}");
+        let ((walk1, _), (again1, _)) = (step_proofs(), chord_proofs());
+        let (walked, spent) = (walk1 - walk0, again1 - again0);
+        println!("{said}: the walk {walked} units, the walk again {spent}, {found:?}");
         assert_eq!(!found.is_empty(), refused, "{said}: {found:?}");
         assert!(
-            spent <= 2 * MOST_PROOF_WORK as u64 + 64,
+            spent <= MOST_PROOF_WORK as u64 + 64,
             "{said}: {spent} units"
         );
         most = most.max(spent);
@@ -667,13 +668,12 @@ fn verifying_a_refused_face_costs_at_most_the_work_of_a_face() {
     // A right strip the walk passes: no work past the walk's.
     let strip = spiral_strip(&ground, on_ground.as_ref(), &Strip::of(2.0), 1e-6).unwrap();
     forget_passed();
-    let (before, _) = step_proofs();
+    let again = chord_proofs();
     assert!(check(&strip, &tolerance(1.0)).is_empty());
-    let (after, _) = step_proofs();
-    assert!(
-        after - before < MOST_PROOF_WORK as u64,
-        "{}",
-        after - before
+    assert_eq!(
+        chord_proofs(),
+        again,
+        "a face the walk passes is not walked again"
     );
     println!("the most a refused face cost: {most} units");
 }

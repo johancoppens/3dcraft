@@ -94,6 +94,12 @@ thread_local! {
     /// The work showing steps has taken on this thread, and how many faces
     /// were not followed because theirs passed a bound.
     static STEP_PROOFS: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
+    /// The same of the walks again of faces about to be refused
+    /// ([`chord`]), counted apart.
+    static CHORD_PROOFS: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
+    /// Whether this thread is walking a face again ([`chord`]): its work
+    /// goes to [`CHORD_PROOFS`].
+    static VERIFYING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// What showing the steps of spline edges has cost on this thread since it
@@ -106,6 +112,26 @@ pub fn step_proofs() -> (u64, u64) {
     STEP_PROOFS.with(Cell::get)
 }
 
+/// What walking faces again before refusing them has cost on this thread
+/// since it started, counted apart from [`step_proofs`]: the units of work
+/// (within [`MOST_PROOF_WORK`] a face, as the walk's own), and the faces
+/// whose walk again passed that bound (their fault kept). A face the walk
+/// passes adds nothing here. For tests and reports: a count of work, never
+/// a clock.
+pub fn chord_proofs() -> (u64, u64) {
+    CHORD_PROOFS.with(Cell::get)
+}
+
+/// The counter work goes to: [`CHORD_PROOFS`] while a face is walked
+/// again, else [`STEP_PROOFS`].
+fn proofs() -> &'static std::thread::LocalKey<Cell<(u64, u64)>> {
+    if VERIFYING.with(Cell::get) {
+        &CHORD_PROOFS
+    } else {
+        &STEP_PROOFS
+    }
+}
+
 /// Counts `units` of work showing steps against the face's `work`; `None`
 /// once the face has taken more than [`MOST_PROOF_WORK`] (counted once: the
 /// face is not followed further).
@@ -115,7 +141,7 @@ fn spend(work: &mut usize, units: usize) -> Option<()> {
     }
     *work = work.saturating_add(units);
     let over = *work > MOST_PROOF_WORK;
-    STEP_PROOFS.with(|c| {
+    proofs().with(|c| {
         let (spent, cut) = c.get();
         c.set((
             spent.saturating_add(units as u64),
@@ -131,7 +157,7 @@ fn spend(work: &mut usize, units: usize) -> Option<()> {
 fn give_up(work: &mut usize) {
     if *work <= MOST_PROOF_WORK {
         *work = usize::MAX;
-        STEP_PROOFS.with(|c| {
+        proofs().with(|c| {
             let (spent, cut) = c.get();
             c.set((spent, cut.saturating_add(1)));
         });
