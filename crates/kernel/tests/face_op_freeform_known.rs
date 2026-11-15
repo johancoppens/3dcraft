@@ -509,6 +509,139 @@ fn a_slots_straight_edges_raised_out_through_a_spline_wall_are_refused() {
     assert!(unexpected.is_empty(), "{unexpected:#?}");
 }
 
+/// The control points of a wall of 400 spans over x from 25 to 5 (a
+/// clamped uniform cubic), rippling about 20 by 1.4 and finely by 0.05.
+fn fine_wall() -> Vec<[f64; 2]> {
+    (0..403)
+        .map(|i| {
+            let a = f64::from(i) / 402.0;
+            let y = if i == 0 || i == 402 {
+                20.0
+            } else {
+                20.0 + 1.4 * (PI * 3.0 * a + 0.4).psin() + 0.05 * (PI * 80.0 * a).psin()
+            };
+            [25.0 - 20.0 * a, y]
+        })
+        .collect()
+}
+
+/// The clamped uniform knots of `count` control points of a cubic.
+fn uniform_knots(count: usize) -> Vec<f64> {
+    let spans = count - 3;
+    let mut knots = vec![0.0; 4];
+    knots.extend((1..spans).map(|i| i as f64 / spans as f64));
+    knots.extend([1.0; 4]);
+    knots
+}
+
+/// The clamped uniform cubic of `ctrl` at `t` in [0, 1] (de Boor).
+fn de_boor(ctrl: &[[f64; 2]], t: f64) -> [f64; 2] {
+    let n = ctrl.len();
+    let knots = uniform_knots(n);
+    let mut span = 3;
+    while span + 1 < n && knots[span + 1] <= t {
+        span += 1;
+    }
+    let mut d: Vec<[f64; 2]> = (0..=3).map(|j| ctrl[j + span - 3]).collect();
+    for r in 1..=3 {
+        for j in (r..=3).rev() {
+            let i = j + span - 3;
+            let den = knots[i + 4 - r] - knots[i];
+            let a = if den == 0.0 {
+                0.0
+            } else {
+                (t - knots[i]) / den
+            };
+            d[j] = [
+                (1.0 - a) * d[j - 1][0] + a * d[j][0],
+                (1.0 - a) * d[j - 1][1] + a * d[j][1],
+            ];
+        }
+    }
+    d[3]
+}
+
+/// The lowest the wall of [`fine_wall`] comes over x from `a` to `b`: the
+/// least of 40 000 places along it, made fine by thirds about the best.
+fn fine_lowest(a: f64, b: f64) -> f64 {
+    let ctrl = fine_wall();
+    let height = |t: f64| {
+        let [x, y] = de_boor(&ctrl, t);
+        if (a..=b).contains(&x) {
+            y
+        } else {
+            f64::INFINITY
+        }
+    };
+    let steps = 40_000;
+    let best = (0..=steps)
+        .map(|i| f64::from(i) / f64::from(steps))
+        .min_by(|p, q| height(*p).total_cmp(&height(*q)))
+        .unwrap();
+    let h = 1.0 / f64::from(steps);
+    let (mut lo, mut hi) = ((best - h).max(0.0), (best + h).min(1.0));
+    for _ in 0..200 {
+        let (p, q) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
+        if height(p) < height(q) {
+            hi = q;
+        } else {
+            lo = p;
+        }
+    }
+    height(0.5 * (lo + hi))
+}
+
+/// The slot of [`slot_through_wall`] under a wall of 400 spans, its floor
+/// raised 0.02 past the wall's lowest point over it, in the world's frame,
+/// where each try of the search for how far it can go is dear (the rays
+/// the body is asked by run along the axes the slot's faces lie square
+/// to): the search stops at its work bound short of the limit. Refused,
+/// and what is said to fit does: said as a limit, it is one; said as a
+/// distance short of how far the floor can go, the refusal says so.
+/// Until 2026-11-15 (the review of the freeform faces asked again) the
+/// refusal said the largest that fits was below 5.96, of a floor that fits
+/// to 6.79.
+#[test]
+fn a_limit_the_search_was_cut_short_of_is_said_as_one_more_may_pass() {
+    let k = 1.0;
+    let tol = tolerance(k);
+    let wall = fine_wall();
+    let solid = prism(
+        vec![
+            line([0.0, 0.0], [30.0, 0.0]),
+            line([30.0, 0.0], [30.0, 20.0]),
+            line([30.0, 20.0], [25.0, 20.0]),
+            Curve2::Spline(Spline2 {
+                degree: 3,
+                knots: uniform_knots(wall.len()),
+                control: wall,
+            }),
+            line([5.0, 20.0], [0.0, 20.0]),
+            line([0.0, 20.0], [0.0, 0.0]),
+        ],
+        40.0,
+        k,
+        &tol,
+    );
+    let slot = |height: f64| boxed([17.0, -5.0, 1.0], [7.0, height + 5.0, 38.0], k);
+    let body = cut(&solid, &slot(12.0), &tol);
+    let floor = flat(&body, 1, 12.0, k);
+    let limit = fine_lowest(17.0, 24.0) - 12.0;
+    match offset(&body, floor, -(limit + 0.02), &tol) {
+        Err(KernelError::FaceOpTooFar {
+            largest, reason, ..
+        }) => {
+            println!("refused at {largest} of {limit}: {reason}");
+            assert!(largest <= limit + 8.0 * tol.linear, "{largest} of {limit}");
+            assert!(
+                largest >= limit * (1.0 - 1e-5) || reason.contains("more may"),
+                "{largest} of {limit}: {reason}"
+            );
+        }
+        other => panic!("{:?}", other.map(|b| b.faces.len())),
+    }
+}
+
 /// The height at which the vase is 9 wide (scale 1).
 fn vase_nine() -> f64 {
     let (mut lo, mut hi) = (0.0_f64, 10.0_f64);

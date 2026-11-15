@@ -97,6 +97,15 @@ pub(crate) const THROUGH: &str =
     "the face would pass through another part of the body, or lie in another face of it";
 pub(crate) const THROUGH_UNSAID: &str = "the face would pass through another part of the body, or lie in another face of it (how far it can go before it first does was not found: a face that is not flat towards it lies in its way; try a smaller distance)";
 pub(crate) const TURNED: &str = "the face would be turned inside out: it would vanish";
+/// The reasons above, said where the search for how far the faces can go
+/// stopped at its work bound with room left (`offset_face::bounded_fitting`):
+/// what is said to fit does, and is no limit.
+pub(crate) const THROUGH_AT_LEAST: &str = "the face would pass through another part of the body, or lie in another face of it (how far it can go before it first does was not found: what is said to fit here does, and more may)";
+pub(crate) const CROSSED_AT_LEAST: &str = "two edges of one face would cross or touch: a face that moves would reach or pass the face that ends its neighbour there (how far it can go before they do was not found: what is said to fit here does, and more may)";
+pub(crate) const OUTLINE_AT_LEAST: &str = "the outline of the face would cross itself, or a hole in it would leave it (how far the faces can go before it does was not found: what is said to fit here does, and more may)";
+pub(crate) const RIMS_AT_LEAST: &str = "the two rims of the face would change places: the face would vanish (how far the faces can go before it does was not found: what is said to fit here does, and more may)";
+pub(crate) const TURNED_AT_LEAST: &str = "the face would be turned inside out: it would vanish (how far the faces can go before it does was not found: what is said to fit here does, and more may)";
+pub(crate) const TOO_FAR_AT_LEAST: &str = "the faces cannot go that far (how far they can go was not found: what is said to fit here does, and more may)";
 pub(crate) const CROSSED: &str = "two edges of one face would cross or touch: a face that moves would reach or pass the face that ends its neighbour there";
 pub(crate) const INSIDE_OUT: &str = "the body would be turned inside out: a face that moves would pass right through the rest of it (how far it can go before it first does was not found: try a smaller distance)";
 

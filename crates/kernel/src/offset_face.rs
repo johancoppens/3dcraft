@@ -1063,9 +1063,12 @@ fn bounded_fitting(
     let mut built: Vec<(f64, Body)> = Vec::new();
     let mut stopped = (edge, reason);
     let halving_from = craft3d_geom::allowance::spent();
+    // Whether the halving stopped at its work bound.
+    let mut cut_short = false;
     for _ in 0..HALVINGS {
         let spent_halving = craft3d_geom::allowance::spent().saturating_sub(halving_from);
         if spent_halving.saturating_add(dearest) > HALVING_WORK {
+            cut_short = true;
             break;
         }
         let middle = 0.5 * (fits + fails);
@@ -1166,6 +1169,31 @@ fn bounded_fitting(
         if (fails - fits) * largest > tol {
             return Err(at_least(faces));
         }
+    }
+    // Any other reason: where the halving stopped at its work bound with
+    // room left between the largest part that fits and the smallest that
+    // failed, what is said to fit does and is no limit, and the refusal
+    // says so (a straight edge out through a wall of 400 spans, seen from
+    // the world's axes, where each try is dear: *below 5.09* said of a
+    // floor that fits to 6.79; the review of 2026-11-15).
+    if cut_short && (fails - fits) * largest > tol {
+        let reason = match reason {
+            tweak::EDGE_GONE => tweak::EDGE_GONE_AT_LEAST,
+            tweak::THROUGH => tweak::THROUGH_AT_LEAST,
+            tweak::CROSSED => tweak::CROSSED_AT_LEAST,
+            tweak::OUTLINE => tweak::OUTLINE_AT_LEAST,
+            tweak::RIMS => tweak::RIMS_AT_LEAST,
+            tweak::TURNED => tweak::TURNED_AT_LEAST,
+            _ => tweak::TOO_FAR_AT_LEAST,
+        };
+        return Err(KernelError::FaceOpTooFar {
+            operation,
+            faces,
+            edge,
+            reason,
+            value: largest,
+            largest: fits * largest,
+        });
     }
     Err(KernelError::FaceOpTooFar {
         operation,
