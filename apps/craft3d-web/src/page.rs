@@ -645,24 +645,23 @@ fn storage() -> Option<web_sys::Storage> {
     window()?.local_storage().ok().flatten()
 }
 
-/// The preferences as stored, when there are any.
-fn stored_prefs() -> Option<String> {
-    storage().and_then(|s| s.get_item(prefs::KEY).ok().flatten())
-}
-
-fn load_prefs(stored: Option<&str>, defaults: Prefs) -> Prefs {
-    match stored {
-        Some(text) => Prefs::from_json(text, defaults),
+fn load_prefs(defaults: Prefs) -> Prefs {
+    match storage().and_then(|s| s.get_item(prefs::KEY).ok().flatten()) {
+        Some(text) => Prefs::from_json(&text, defaults),
         None => defaults,
     }
 }
 
-/// True when the stored preferences can be written back as they are: the
-/// page then can remember that release notes were closed.
-fn prefs_writable(stored: Option<&str>) -> bool {
-    match (storage(), stored) {
-        (Some(storage), Some(text)) => storage.set_item(prefs::KEY, text).is_ok(),
-        _ => false,
+/// The browser's storage as What's new uses it (`seen.rs`).
+impl crate::seen::Store for web_sys::Storage {
+    fn get(&mut self, key: &str) -> Option<String> {
+        self.get_item(key).ok().flatten()
+    }
+    fn set(&mut self, key: &str, value: &str) -> bool {
+        self.set_item(key, value).is_ok()
+    }
+    fn remove(&mut self, key: &str) {
+        let _ = self.remove_item(key);
     }
 }
 
@@ -707,9 +706,6 @@ struct Page {
     /// open ([`page_title`]).
     page_title: String,
     stored: String,
-    /// The newest version whose release notes were seen in this browser,
-    /// as the preferences keep it (`prefs::notes_at_start`).
-    seen_version: Option<String>,
     /// The assertions and outputs, measured in the checking worker
     /// (`checks.rs`); `None` on a page that names no worker, which
     /// measures them itself a piece per frame.
@@ -827,22 +823,24 @@ impl Page {
         }
         // The embedded stand reads and writes nothing in the page's
         // storage: it starts with the defaults and the page's options.
-        let text = if embedded { None } else { stored_prefs() };
-        let prefs = load_prefs(text.as_deref(), Prefs::of(&host.shell.state, None));
+        let prefs = if embedded {
+            Prefs::of(&host.shell.state, None)
+        } else {
+            load_prefs(Prefs::of(&host.shell.state, None))
+        };
         prefs.apply(&mut host.shell.state);
         let stored = prefs.to_json();
         // What's new: after the page was served in a newer version, the
-        // start screen offers once what changed, where the browser keeps
-        // what was seen. The embedded stand offers nothing and remembers
-        // nothing; its Help menu, where the whole window is shown, has
-        // this version's notes as everywhere.
+        // start screen offers once what changed, where the browser can
+        // remember what was seen (`seen.rs`). The embedded stand offers
+        // nothing and remembers nothing; its Help menu, where the whole
+        // window is shown, has this version's notes as everywhere.
         let running = craft3d_engine::running_version();
-        let (seen, seen_version) = match running {
-            Some(running) if !embedded => {
-                let writable = prefs_writable(text.as_deref());
-                prefs::notes_at_start(text.as_deref(), writable, running)
+        let seen = match (running, storage()) {
+            (Some(running), Some(mut storage)) if !embedded => {
+                crate::seen::at_start(&mut storage, running)
             }
-            _ => (craft3d_engine::changelog::Seen::Never, None),
+            _ => craft3d_engine::changelog::Seen::Never,
         };
         if let (Some(notes), Some(running)) = (craft3d_engine::release_notes(), running) {
             host.shell
@@ -886,7 +884,6 @@ impl Page {
             title: String::new(),
             page_title: document().map(|d| d.title()).unwrap_or_default(),
             stored,
-            seen_version,
             checks,
             replies,
             scenes,
@@ -1573,29 +1570,16 @@ impl eframe::App for Page {
         }
         // The release notes the person closed are seen from now on.
         if self.host.shell.take_whats_new_closed()
-            && let Some(running) = craft3d_engine::running_version()
+            && let (Some(running), Some(mut storage)) =
+                (craft3d_engine::running_version(), storage())
         {
-            self.seen_version = Some(prefs::seen_after_closing(
-                self.seen_version.as_deref(),
-                running,
-            ));
+            crate::seen::at_close(&mut storage, running);
         }
         let prefs = Prefs::of(
             &self.host.shell.state,
             Some(self.host.shell.state.export.format.extension()),
-        )
-        .with_seen(self.seen_version.clone());
-        let mut text = prefs.to_json();
-        if text != self.stored {
-            // Another tab may have closed the notes since this one read
-            // them: the newer version of the two is the one written.
-            let newest =
-                prefs::newest_seen(self.seen_version.as_deref(), stored_prefs().as_deref());
-            if newest != self.seen_version {
-                self.seen_version = newest;
-                text = prefs.with_seen(self.seen_version.clone()).to_json();
-            }
-        }
+        );
+        let text = prefs.to_json();
         if text != self.stored {
             store_prefs(&text);
             self.stored = text;

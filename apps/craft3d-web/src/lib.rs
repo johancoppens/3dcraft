@@ -77,5 +77,6 @@ mod page;
 mod pickers;
 pub mod prefs;
 pub mod scenes;
+pub mod seen;
 #[cfg(target_arch = "wasm32")]
 mod worker;

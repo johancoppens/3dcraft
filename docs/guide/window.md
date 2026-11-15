@@ -103,7 +103,8 @@ holds them all, the newest first, and each line says which version it is of.
 
 In a low window the card starts as its title and one line, such as *14 results may differ from before,
 6 new, 20 changed and fixed*, so that the first row of examples stays in sight. A click on that line
-(**Show**) unfolds the card.
+(**Show**) unfolds the card. A card shown whole stays whole while it is shown, also when you make the
+window lower.
 
 The **×** closes the card, and 3DCraft remembers that you have seen this version. Until you close it,
 the card comes back with the start screen. **Esc** does not close the card; it closes the window that

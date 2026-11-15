@@ -2409,9 +2409,11 @@ pub fn waker(
 pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
     // Which release notes the person has seen, read before anything is
     // written into the state folder: what an earlier 3DCraft left there
-    // tells an update from a first start (`notes.rs`).
+    // tells an update from a first start; a window that keeps no note
+    // marks a fresh folder as seen before it writes its token
+    // (`notes.rs`).
     let notes = craft3d_engine::running_version()
-        .map(|running| crate::notes::seen_at_start(options.seen_file.as_deref(), running))
+        .map(|running| crate::notes::seen_at_window_start(options, running))
         .and_then(crate::notes::at_start);
     let mut session = session(options)?;
     let event_loop = EventLoop::<UserEvent>::with_user_event()

@@ -21,24 +21,39 @@
 //! **Who keeps the note** ([`seen_file_for`]). A window keeps it exactly
 //! when it keeps its autosaves or its recent files in the state folder:
 //! the person's own window. One that keeps both elsewhere or not at all
-//! (a test's, an agent's: `--recovery-dir DIR` or `none`) has no such
-//! file: it offers nothing and writes nothing. That is also true of a
-//! person who starts 3DCraft with a recovery directory of their own: the
-//! card never comes up by itself there, and Help › What's new has the
-//! notes.
+//! (a test's, an agent's: `--recovery-dir DIR` or `none`) offers nothing.
+//! That is also true of a person who starts 3DCraft with a recovery
+//! directory of their own: the card never comes up by itself there, and
+//! Help › What's new has the notes.
 //!
 //! **What tells an update from a first start** ([`EARLIER_TRACES`]). The
 //! 0.1 releases kept no note; what they left in the state folder is the
-//! autosaves' directory and the recent files. Only those two count, and
-//! they are the two things by which a window keeps the note: so a window
-//! that keeps no note cannot leave a trace, and the person's first own
-//! window after an agent's or a test's is a first start. The control
-//! token, the remembered switch for agents and the discovery entries are
-//! no traces: a window that keeps no note writes them too (until
-//! 2026-11-15 the token counted, and a person's first window after an
-//! agent's showed *New in …* with nothing old). A 0.1 user who never
-//! opened or saved a file and never had an autosave left neither, and
-//! gets no card: the safe side.
+//! recent files, the remembered switch for agents (`agents.json`), the
+//! control token and the autosaves' directory. Each counts: a 0.1 user
+//! who only let agents open and check files left the switch and the token
+//! alone (an agent's file is not noted as recent, and an autosave comes
+//! only 30 s after an unsaved change), and is one whose proofs may have
+//! changed. A 0.1 user who left nothing gets no card: the safe side.
+//!
+//! **A window that keeps no note on a fresh folder** ([`note_a_fresh_folder`]).
+//! Such a window still writes its token, the switch and its discovery
+//! entry into the state folder. So that these are never taken for a 0.1
+//! user's, it writes this version as seen there first, before anything
+//! else, where the folder holds neither a note nor a trace; a folder that
+//! holds either is not written (the person's own folder keeps what it has).
+//! The person's first own window after it is a first start. (Until
+//! 2026-11-15 the token alone made it "an update"; the first fix took the
+//! token and the switch out of the traces, which lost the 0.1 user above.)
+//!
+//! **Two windows at once on a fresh folder.** A window that keeps no note
+//! writes the note before its token, each through a rename. A window that
+//! keeps the note reads the note, then looks for traces, and where it
+//! finds one reads the note once more ([`read_seen`]): a trace it sees
+//! that such a window wrote comes after that window's note, so the second
+//! reading finds the note. Two windows that keep no note write the same
+//! version, the later rename over the earlier. A window that keeps the
+//! note and finds nothing writes this version, which is what the other
+//! writes too.
 //!
 //! At a start the note is read and, before anything is offered, written
 //! back as it was read. A close in another window between the two (a few
@@ -56,10 +71,14 @@ pub const SEEN_FILE: &str = "whats-new.json";
 pub const RECOVERY_DIR: &str = "recovery";
 /// Most bytes of it read.
 const MAX_SEEN_BYTES: u64 = 4096;
-/// What an earlier 3DCraft left in its state folder, and what only a
-/// window that keeps the note writes there ([`seen_file_for`]): the
-/// recent files and the autosaves.
-pub const EARLIER_TRACES: [&str; 2] = [crate::places::RECENT_FILE, RECOVERY_DIR];
+/// What an earlier 3DCraft left in its state folder: the recent files,
+/// the remembered switch for agents, the control token, the autosaves.
+pub const EARLIER_TRACES: [&str; 4] = [
+    crate::places::RECENT_FILE,
+    "agents.json",
+    "control.token",
+    RECOVERY_DIR,
+];
 
 /// `path` as one place, however it is written: absolute, without `.` and
 /// `..`, and through links where the file, or the folder it would be made
@@ -85,10 +104,10 @@ fn place(path: &Path) -> PathBuf {
     }
 }
 
-/// True when `options` make a window write one of the [`EARLIER_TRACES`]
-/// into its state folder: its autosaves go to `recovery` there, or its
-/// recent files to `recent-files.json` there, by default or by name.
-pub fn leaves_traces(options: &Options) -> bool {
+/// True when `options` make a window keep its autosaves (`recovery`) or
+/// its recent files (`recent-files.json`) in its state folder, by default
+/// or by name: the person's own window.
+pub fn keeps_its_files_here(options: &Options) -> bool {
     let Some(state) = &options.state_dir else {
         return false;
     };
@@ -101,24 +120,46 @@ pub fn leaves_traces(options: &Options) -> bool {
 
 /// Where a window started with `options` keeps the newest version whose
 /// release notes were seen: `whats-new.json` in its state folder when it
-/// keeps its autosaves or its recent files there ([`leaves_traces`]),
+/// keeps its autosaves or its recent files there ([`keeps_its_files_here`]),
 /// else nowhere.
 pub fn seen_file_for(options: &Options) -> Option<PathBuf> {
     let state = options.state_dir.as_ref()?;
-    leaves_traces(options).then(|| state.join(SEEN_FILE))
+    keeps_its_files_here(options).then(|| state.join(SEEN_FILE))
+}
+
+/// True when `folder` holds one of the [`EARLIER_TRACES`].
+fn has_traces(folder: &Path) -> bool {
+    EARLIER_TRACES
+        .iter()
+        .any(|name| std::fs::symlink_metadata(folder.join(name)).is_ok())
 }
 
 /// What the file at `path` says of the notes seen; without a file, what
 /// its folder says: [`Seen::Earlier`] when an earlier 3DCraft left
 /// something there, else [`Seen::Never`]. A file that does not read is a
-/// first start.
+/// first start. Where a trace is found the file is looked for once more:
+/// a window that keeps no note writes the note before its token, so a
+/// token that came while the folder was looked at comes with its note.
 pub fn read_seen(path: &Path) -> Seen {
+    if let Some(seen) = read_note(path) {
+        return seen;
+    }
+    if !path.parent().is_some_and(has_traces) {
+        return Seen::Never;
+    }
+    read_note(path).unwrap_or(Seen::Earlier)
+}
+
+/// What the file at `path` says, or `None` where there is no file.
+fn read_note(path: &Path) -> Option<Seen> {
     let Ok(metadata) = std::fs::metadata(path) else {
-        let earlier = path
-            .parent()
-            .is_some_and(|folder| EARLIER_TRACES.iter().any(|name| folder.join(name).exists()));
-        return if earlier { Seen::Earlier } else { Seen::Never };
+        return None;
     };
+    Some(read_note_there(path, &metadata))
+}
+
+/// What the file at `path`, which is there, says.
+fn read_note_there(path: &Path, metadata: &std::fs::Metadata) -> Seen {
     if !metadata.is_file() || metadata.len() > MAX_SEEN_BYTES {
         return Seen::Never;
     }
@@ -191,6 +232,37 @@ pub fn seen_at_start(path: Option<&Path>, running: Version) -> Seen {
         Seen::Version(_) => Ok(()),
     };
     if kept.is_err() { Seen::Never } else { seen }
+}
+
+/// For a window that keeps no note, started on `state`: where that folder
+/// holds neither a note nor one of the [`EARLIER_TRACES`], writes
+/// `running` there as seen, so that what the window writes next (its
+/// token, the switch for agents, its discovery entry) is never taken for
+/// an earlier 3DCraft's. A folder that holds a note or a trace is not
+/// written. True when the note was written.
+///
+/// Call it before the window writes anything into the state folder.
+pub fn note_a_fresh_folder(state: &Path, running: Version) -> bool {
+    let file = state.join(SEEN_FILE);
+    if std::fs::symlink_metadata(&file).is_ok() || has_traces(state) {
+        return false;
+    }
+    store_seen(&file, Some(running)).is_ok()
+}
+
+/// What a window started with `options` knows of the notes seen as it
+/// starts: [`seen_at_start`] for a window that keeps the note; for one
+/// that keeps none, [`Seen::Never`], after [`note_a_fresh_folder`]. The
+/// first thing the window does with its state folder.
+pub fn seen_at_window_start(options: &Options, running: Version) -> Seen {
+    match (&options.seen_file, &options.state_dir) {
+        (Some(file), _) => seen_at_start(Some(file), running),
+        (None, Some(state)) => {
+            note_a_fresh_folder(state, running);
+            Seen::Never
+        }
+        (None, None) => Seen::Never,
+    }
 }
 
 /// The notes the window shows at this start: what is new since `seen`,
@@ -290,24 +362,157 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// What a window that keeps no note can write into the state folder
-    /// is no trace of an earlier 3DCraft: the control token (which counted
-    /// until 2026-11-15, so a person's first window after an agent's
-    /// showed the card with nothing old), the remembered switch for
-    /// agents, the discovery entries.
-    #[test]
-    fn what_a_window_without_a_note_writes_is_no_trace() {
-        for name in ["control.token", "agents.json", "windows"] {
-            assert!(!EARLIER_TRACES.contains(&name), "{name}");
-            let dir = workdir("no-trace");
-            if name == "windows" {
-                std::fs::create_dir_all(dir.join(name).join("1234")).unwrap();
-            } else {
-                std::fs::write(dir.join(name), "{}").unwrap();
+    /// Whether the card is offered at a start that knows `seen`.
+    fn offered(seen: Seen) -> bool {
+        let running = craft3d_engine::running_version().unwrap();
+        WhatsNew::for_start(&changelog(), running, seen).is_some_and(|notes| notes.offered)
+    }
+
+    /// Every file and folder under `dir`, with what a file holds and when
+    /// it was changed: to see that nothing there was touched.
+    fn snapshot(dir: &Path) -> Vec<(PathBuf, Option<Vec<u8>>, std::time::SystemTime)> {
+        let mut all = Vec::new();
+        let mut open = vec![dir.to_path_buf()];
+        while let Some(at) = open.pop() {
+            for entry in std::fs::read_dir(&at).unwrap() {
+                let path = entry.unwrap().path();
+                let meta = std::fs::symlink_metadata(&path).unwrap();
+                let bytes = meta.is_file().then(|| std::fs::read(&path).unwrap());
+                if meta.is_dir() {
+                    open.push(path.clone());
+                }
+                all.push((path, bytes, meta.modified().unwrap()));
             }
-            let file = dir.join(SEEN_FILE);
-            assert_eq!(read_seen(&file), Seen::Never, "{name}");
-            assert_eq!(seen_at_start(Some(&file), v("0.2.0")), Seen::Never);
+        }
+        all.sort();
+        all
+    }
+
+    /// Makes `name` in `dir` as a 0.1 release left it.
+    fn leave(dir: &Path, name: &str) {
+        match name {
+            "recovery" | "windows" => {
+                std::fs::create_dir_all(dir.join(name)).unwrap();
+                std::fs::write(dir.join(name).join("1234.json"), "{}").unwrap();
+            }
+            "agents.json" => std::fs::write(dir.join(name), r#"{"allowAgents": true}"#).unwrap(),
+            "control.token" => {
+                // Private, as a window writes it.
+                let path = dir.join(name);
+                std::fs::write(&path, "0".repeat(64)).unwrap();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                        .unwrap();
+                }
+            }
+            _ => std::fs::write(dir.join(name), r#"{"recent": []}"#).unwrap(),
+        }
+    }
+
+    /// Each thing a 0.1 release left in the person's state folder, alone,
+    /// gives the card once: offered at the first start, and not again once
+    /// it was closed. The discovery entries alone are no trace.
+    #[test]
+    fn each_trace_of_0_1_alone_gives_the_card_once() {
+        let running = craft3d_engine::running_version().unwrap();
+        for trace in EARLIER_TRACES.into_iter().chain(["windows"]) {
+            let dir = workdir("alone");
+            leave(&dir, trace);
+            let s = dir.to_str().unwrap().to_string();
+            let person = parsed(&["--state-dir", &s]);
+            let seen = seen_at_window_start(&person, running);
+            let is_trace = trace != "windows";
+            assert_eq!(seen == Seen::Earlier, is_trace, "{trace}: {seen:?}");
+            assert_eq!(offered(seen), is_trace, "{trace}");
+            // The person closes it (as `pump_notes` writes it).
+            store_seen(person.seen_file.as_deref().unwrap(), Some(running)).unwrap();
+            let again = seen_at_window_start(&person, running);
+            assert_eq!(again, Seen::Version(running), "{trace}");
+            assert!(!offered(again), "{trace}: once");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// The finding of round 2's review (review-whats-new-r2), turned to
+    /// what is right: a 0.1 user who only let agents open and check files
+    /// left the switch and the token alone (0.1 notes no agent's file as
+    /// recent, and an autosave waits 30 s after an unsaved change), and
+    /// gets the card. Round 2 counted neither, and gave none.
+    #[test]
+    fn a_01_user_who_only_let_agents_check_files_gets_the_card() {
+        let dir = workdir("agent-only");
+        leave(&dir, "agents.json");
+        leave(&dir, "control.token");
+        let file = dir.join(SEEN_FILE);
+        assert_eq!(read_seen(&file), Seen::Earlier);
+        assert_eq!(seen_at_start(Some(&file), v("0.2.0")), Seen::Earlier);
+        assert!(offered(Seen::Earlier));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A window that keeps no note writes one only into a folder that holds
+    /// neither a note nor a trace. A folder shaped as the developer's own
+    /// (the switch, the token, recent files, autosaves, discovery entries),
+    /// with a note or without, with a note that does not read, or with one
+    /// trace alone, is left exactly as it was, byte for byte and time for
+    /// time; a fresh folder, or one with only discovery entries, gets this
+    /// version as seen.
+    #[test]
+    fn a_window_without_a_note_never_writes_a_folder_with_a_note_or_a_trace() {
+        let running = craft3d_engine::running_version().unwrap();
+        let notes: [Option<&str>; 5] = [
+            None,
+            Some(r#"{"seen":"0.1.2"}"#),
+            Some(r#"{"seen":null}"#),
+            Some("not a note"),
+            Some(""),
+        ];
+        for note in notes {
+            let dir = workdir("persons");
+            for trace in EARLIER_TRACES.into_iter().chain(["windows"]) {
+                leave(&dir, trace);
+            }
+            if let Some(note) = note {
+                std::fs::write(dir.join(SEEN_FILE), note).unwrap();
+            }
+            let before = snapshot(&dir);
+            assert!(!note_a_fresh_folder(&dir, running), "{note:?}");
+            let s = dir.to_str().unwrap().to_string();
+            for extra in [
+                &["--recovery-dir", "none"][..],
+                &["--recovery-dir", "none", "--control", "0"],
+            ] {
+                let mut list = vec!["--state-dir", s.as_str()];
+                list.extend(extra);
+                assert_eq!(seen_at_window_start(&parsed(&list), running), Seen::Never);
+            }
+            assert_eq!(snapshot(&dir), before, "{note:?}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        for trace in EARLIER_TRACES {
+            let dir = workdir("one-trace");
+            leave(&dir, trace);
+            let before = snapshot(&dir);
+            assert!(!note_a_fresh_folder(&dir, running), "{trace}");
+            assert_eq!(snapshot(&dir), before, "{trace}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        // Fresh: no folder yet, an empty one, one with discovery entries.
+        for fresh in ["missing", "empty", "windows"] {
+            let dir = workdir("fresh");
+            let state = dir.join("state");
+            if fresh != "missing" {
+                std::fs::create_dir_all(&state).unwrap();
+            }
+            if fresh == "windows" {
+                leave(&state, "windows");
+            }
+            assert!(note_a_fresh_folder(&state, running), "{fresh}");
+            assert_eq!(read_seen(&state.join(SEEN_FILE)), Seen::Version(running));
+            // Written once: the next window finds a note and leaves it.
+            assert!(!note_a_fresh_folder(&state, running), "{fresh}");
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
@@ -320,12 +525,11 @@ mod tests {
         }
     }
 
-    /// The traces are exactly what only a window that keeps the note
-    /// writes: however a window is started, it keeps the note when, and
-    /// only when, its autosaves or its recent files go into the state
-    /// folder, by default or by a path that names the same place.
+    /// However a window is started, it keeps the note when, and only when,
+    /// its autosaves or its recent files go into the state folder, by
+    /// default or by a path that names the same place.
     #[test]
-    fn a_window_keeps_the_note_exactly_when_it_can_leave_a_trace() {
+    fn a_window_keeps_the_note_exactly_when_it_keeps_its_files_in_the_state_folder() {
         let dir = workdir("who");
         let state = dir.join("state");
         std::fs::create_dir_all(&state).unwrap();
@@ -368,15 +572,15 @@ mod tests {
             let mut list = vec!["--state-dir", s.as_str()];
             list.extend(extra.iter().copied());
             let options = parsed(&list);
-            assert_eq!(leaves_traces(&options), *keeps, "{extra:?}");
+            assert_eq!(keeps_its_files_here(&options), *keeps, "{extra:?}");
             assert_eq!(
                 options.seen_file,
                 keeps.then(|| state.join(SEEN_FILE)),
                 "{extra:?}"
             );
             assert_eq!(seen_file_for(&options), options.seen_file, "{extra:?}");
-            // Without the note, neither place a trace lies in is one the
-            // window writes to.
+            // Without the note, it keeps neither its autosaves nor its
+            // recent files in the state folder.
             if !keeps {
                 for (given, trace) in [
                     (options.recovery_dir.as_deref(), &recovery),
@@ -396,7 +600,7 @@ mod tests {
             std::os::unix::fs::symlink(&state, &link).unwrap();
             let through = link.join(RECOVERY_DIR).to_str().unwrap().to_string();
             let options = parsed(&["--state-dir", &s, "--recovery-dir", &through]);
-            assert!(leaves_traces(&options));
+            assert!(keeps_its_files_here(&options));
         }
         // No state folder at all: no note, whatever else is given.
         let options = parsed(&["--recovery-dir", &elsewhere]);
@@ -404,80 +608,219 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The reviewer's finding, the whole way: an agent's (or a test's)
-    /// window runs first in a fresh state folder and keeps no note, with
-    /// its control port open, a file noted as recent, an autosave, and the
-    /// person turning the agents' switch in it. It leaves its token, its
-    /// discovery entry and the remembered switch, and no trace. The
-    /// person's own first window after it is a first start: nothing is
-    /// offered, and this version is written as seen. Before the fix the
-    /// token alone made it "an earlier 3DCraft", and the card came up.
-    #[test]
-    fn a_persons_first_window_after_an_agents_window_is_a_first_start() {
+    /// How a window that keeps no note runs on `state`, as `app::run`
+    /// starts it: the note first, then its control port (`--control`), its
+    /// autosaves and recent files, a document modelled and autosaved, the
+    /// person turning the agents' switch in it; `crash` ends it without
+    /// stopping its listener.
+    fn run_a_window_without_a_note(options: &Options, crash: bool) {
         use craft3d_engine::{Session, Workspace};
         let running = craft3d_engine::running_version().unwrap();
-        for own in ["none", "elsewhere"] {
-            let dir = workdir("after-agent");
+        assert_eq!(options.seen_file, None);
+        assert_eq!(seen_at_window_start(options, running), Seen::Never);
+        let wake: crate::control::Wake = std::sync::Arc::new(|| {});
+        let env = |_: &str| None;
+        let (agents, _requests) =
+            crate::app::control(options, std::sync::Arc::clone(&wake), &env).unwrap();
+        let mut session = Session::new(Workspace::memory());
+        if let Some(recovery) = crate::app::recovery(options, wake).unwrap() {
+            session.enable_recovery(recovery);
+        }
+        session.execute("file.new", &serde_json::json!({})).unwrap();
+        session
+            .execute("feature.block", &serde_json::json!({"size": [1, 2, 3]}))
+            .unwrap();
+        session.autosave_now();
+        let mut host = Host::new(session);
+        host.recent_file.clone_from(&options.recent_file);
+        host.seen_file.clone_from(&options.seen_file);
+        host.shell.clear_recent_files();
+        host.pump_places();
+        if let Some(state) = &options.state_dir {
+            craft3d_automation::discovery::write_preference(state, true).unwrap();
+        }
+        if crash {
+            std::mem::forget(agents);
+        } else {
+            drop(agents);
+        }
+    }
+
+    /// A person's first own window after one that keeps no note ran first
+    /// on a fresh state folder: an agent's (its control port open, with
+    /// autosaves of its own or none), a test's (no port), one that crashed,
+    /// one whose autosaves go inside the state folder's `recovery` (the
+    /// reviewer's contrived hole, turned), and the CLI's bridge looking for
+    /// a window there. Each left its token, the switch or its autosaves
+    /// only after the note, or nothing at all; the person's first window
+    /// offers nothing. (Until 2026-11-15 the token alone gave the card.)
+    #[test]
+    fn a_persons_first_window_after_an_agents_a_tests_a_crashed_one_or_the_cli_is_a_first_start() {
+        let running = craft3d_engine::running_version().unwrap();
+        for case in [
+            "agent",
+            "agent-own-autosaves",
+            "test",
+            "crashed",
+            "inside",
+            "cli",
+        ] {
+            let dir = workdir("after");
             let state = dir.join("state");
             let s = state.to_str().unwrap().to_string();
-            let autosaves = dir.join("agent-recovery");
-            let recovery_dir = if own == "none" {
-                "none".to_string()
-            } else {
-                autosaves.to_str().unwrap().to_string()
-            };
-            let options = parsed(&[
+            let own = dir.join("agent-recovery").to_str().unwrap().to_string();
+            let inside = state
+                .join(RECOVERY_DIR)
+                .join("agent")
+                .to_str()
+                .unwrap()
+                .to_string();
+            match case {
+                "agent" => run_a_window_without_a_note(
+                    &parsed(&[
+                        "--state-dir",
+                        &s,
+                        "--recovery-dir",
+                        "none",
+                        "--control",
+                        "0",
+                    ]),
+                    false,
+                ),
+                "agent-own-autosaves" => run_a_window_without_a_note(
+                    &parsed(&["--state-dir", &s, "--recovery-dir", &own, "--control", "0"]),
+                    false,
+                ),
+                "test" => run_a_window_without_a_note(
+                    &parsed(&["--state-dir", &s, "--recovery-dir", "none"]),
+                    false,
+                ),
+                "crashed" => run_a_window_without_a_note(
+                    &parsed(&["--state-dir", &s, "--recovery-dir", &own, "--control", "0"]),
+                    true,
+                ),
+                "inside" => {
+                    run_a_window_without_a_note(
+                        &parsed(&["--state-dir", &s, "--recovery-dir", &inside]),
+                        false,
+                    );
+                    assert!(
+                        state.join(RECOVERY_DIR).is_dir(),
+                        "its autosave made the trace"
+                    );
+                }
+                _ => {
+                    // `craft3d-cli mcp --bridge --state-dir STATE`: it reads
+                    // the folder and writes nothing there.
+                    let initialize = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                                   "clientInfo": {"name": "test", "version": "1"}}});
+                    let call = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                        "params": {"name": "command_run", "arguments": {"id": "session.whatsNew", "params": {}}}});
+                    std::fs::create_dir_all(&state).unwrap();
+                    let mut output = Vec::new();
+                    craft3d_automation::bridge::serve(
+                        &craft3d_automation::bridge::BridgeConfig::discover(state.clone(), None),
+                        format!("{initialize}\n{call}\n").as_bytes(),
+                        &mut output,
+                    )
+                    .unwrap();
+                    assert!(!output.is_empty());
+                    assert_eq!(snapshot(&state), Vec::new(), "the CLI wrote nothing");
+                }
+            }
+            // The person's own first window.
+            let person = parsed(&["--state-dir", &s]);
+            let seen = seen_at_window_start(&person, running);
+            assert!(
+                matches!(seen, Seen::Never) || seen == Seen::Version(running),
+                "{case}: {seen:?}"
+            );
+            assert!(!offered(seen), "{case}");
+            assert_eq!(
+                read_seen(person.seen_file.as_deref().unwrap()),
+                Seen::Version(running),
+                "{case}"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// A 0.1 user who only let agents check files left the switch and the
+    /// token; then a 0.2 agent's window ran first there, then the person's
+    /// own: the agent's window does not note a folder with traces, so the
+    /// person gets the card.
+    #[test]
+    fn a_01_folder_then_an_agents_window_then_the_persons_gives_the_card() {
+        let running = craft3d_engine::running_version().unwrap();
+        let dir = workdir("01-then-agent");
+        leave(&dir, "agents.json");
+        leave(&dir, "control.token");
+        let s = dir.to_str().unwrap().to_string();
+        run_a_window_without_a_note(
+            &parsed(&[
                 "--state-dir",
                 &s,
                 "--recovery-dir",
-                &recovery_dir,
+                "none",
                 "--control",
                 "0",
-            ]);
-            assert_eq!(options.seen_file, None, "{own}");
-            assert_eq!(
-                seen_at_start(options.seen_file.as_deref(), running),
-                Seen::Never
-            );
-            // The window's own writers, as `app::run` starts them.
-            let wake: crate::control::Wake = std::sync::Arc::new(|| {});
-            let env = |_: &str| None;
-            let (agents, _requests) =
-                crate::app::control(&options, std::sync::Arc::clone(&wake), &env).unwrap();
-            assert!(agents.address().is_some(), "{own}: it listens");
-            let mut session = Session::new(Workspace::memory());
-            if let Some(recovery) = crate::app::recovery(&options, wake).unwrap() {
-                session.enable_recovery(recovery);
-            }
-            session.execute("file.new", &serde_json::json!({})).unwrap();
-            session
-                .execute("feature.block", &serde_json::json!({"size": [1, 2, 3]}))
-                .unwrap();
-            session.autosave_now();
-            let mut host = Host::new(session);
-            host.recent_file.clone_from(&options.recent_file);
-            host.seen_file.clone_from(&options.seen_file);
-            // Its list of recent files changes: kept for the run only.
-            host.shell.clear_recent_files();
-            host.pump_places();
-            // The person turns the agents' switch in that window.
-            craft3d_automation::discovery::write_preference(&state, true).unwrap();
-            drop(agents);
-            // What it left: its token and the switch, and no trace.
-            assert!(state.join("control.token").is_file(), "{own}");
-            assert!(state.join("agents.json").is_file(), "{own}");
-            for trace in EARLIER_TRACES {
-                assert!(!state.join(trace).exists(), "{own}: it left {trace}");
-            }
-            assert!(!state.join(SEEN_FILE).exists(), "{own}: and no note");
-            // The person's own first window.
-            let person = parsed(&["--state-dir", &s]);
-            let file = person.seen_file.clone().unwrap();
-            assert_eq!(read_seen(&file), Seen::Never, "{own}");
-            assert_eq!(seen_at_start(Some(&file), running), Seen::Never, "{own}");
-            let notes = WhatsNew::for_start(&changelog(), running, Seen::Never).unwrap();
-            assert!(!notes.offered, "{own}");
-            assert_eq!(read_seen(&file), Seen::Version(running), "{own}");
+            ]),
+            false,
+        );
+        assert!(
+            !dir.join(SEEN_FILE).exists(),
+            "no note in a folder with traces"
+        );
+        let person = parsed(&["--state-dir", &s]);
+        let seen = seen_at_window_start(&person, running);
+        assert_eq!(seen, Seen::Earlier);
+        assert!(offered(seen));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two windows starting at once on a fresh state folder, many times
+    /// over: one that keeps no note (it notes the folder, then writes its
+    /// token) beside the person's (it reads the note, looks for traces,
+    /// and reads the note again where it finds one); and two that keep no
+    /// note. The person's window never takes the other's token for an
+    /// earlier 3DCraft, and the folder ends with this version as seen.
+    #[test]
+    fn two_windows_starting_at_once_on_a_fresh_folder() {
+        let running = craft3d_engine::running_version().unwrap();
+        for round in 0..200 {
+            let dir = workdir("at-once");
+            let state = dir.join("state");
+            std::fs::create_dir_all(&state).unwrap();
+            let file = state.join(SEEN_FILE);
+            let two_without_a_note = round % 2 == 1;
+            let gate = std::sync::Barrier::new(2);
+            let (seen, _) = std::thread::scope(|scope| {
+                let agent = scope.spawn(|| {
+                    gate.wait();
+                    note_a_fresh_folder(&state, running);
+                    std::fs::write(state.join("control.token"), "0".repeat(64)).unwrap();
+                });
+                let other = scope.spawn(|| {
+                    gate.wait();
+                    if two_without_a_note {
+                        note_a_fresh_folder(&state, running);
+                        std::fs::write(state.join("agents.json"), "{}").unwrap();
+                        Seen::Never
+                    } else {
+                        seen_at_start(Some(&file), running)
+                    }
+                });
+                (other.join().unwrap(), agent.join().unwrap())
+            });
+            assert_ne!(seen, Seen::Earlier, "round {round}");
+            assert_eq!(read_seen(&file), Seen::Version(running), "round {round}");
+            let left: Vec<_> = std::fs::read_dir(&state)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .filter(|name| name.to_string_lossy().ends_with(".tmp"))
+                .collect();
+            assert!(left.is_empty(), "round {round}: {left:?}");
             let _ = std::fs::remove_dir_all(&dir);
         }
     }

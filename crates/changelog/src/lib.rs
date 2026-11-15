@@ -373,6 +373,33 @@ fn raw_sections(text: &str) -> Vec<Raw<'_>> {
     sections
 }
 
+/// The first line that a link definition inside a section hides: the
+/// Release workflow's reading ends a section at a link definition, so a
+/// line after it, before the next `## [`, would be left out of the
+/// release notes and of the window's without a word. `None` when link
+/// definitions stand only where nothing but link definitions and blank
+/// lines follow them before the next section, as at the end of the file.
+fn hidden_by_a_link_definition(text: &str) -> Option<(usize, usize)> {
+    let mut in_section = false;
+    let mut definition: Option<usize> = None;
+    for (index, line) in records(text).enumerate() {
+        let at = index.saturating_add(1);
+        if line.starts_with("## [") {
+            in_section = true;
+            definition = None;
+        } else if is_link_definition(line) {
+            if in_section {
+                definition = Some(at);
+            }
+        } else if let Some(definition) = definition
+            && !line.trim().is_empty()
+        {
+            return Some((definition, at));
+        }
+    }
+    None
+}
+
 /// The notes of `version` exactly as the Release workflow puts them on a
 /// draft release: the lines under the first heading that starts with
 /// `## [<version>]`, each ended by a line feed. `None` when the file has
@@ -456,11 +483,17 @@ fn title_and_text(source: &str) -> (String, String) {
 impl Changelog {
     /// Reads a changelog. An error names the line and what is expected
     /// there: a heading that is not a version, versions that are not in
-    /// descending order, a version twice, *Unreleased* anywhere but first.
+    /// descending order, a version twice, *Unreleased* anywhere but first,
+    /// a line that a link definition before it would hide.
     pub fn parse(text: &str) -> Result<Self, Error> {
         if text.len() > MAX_BYTES {
             return Err(Error::new(format!(
                 "the changelog is larger than {MAX_BYTES} bytes"
+            )));
+        }
+        if let Some((definition, line)) = hidden_by_a_link_definition(text) {
+            return Err(Error::new(format!(
+                "line {line}: this is left out of the release notes: the link definition on line {definition} ends the section for the Release workflow's reading, and for 3DCraft's; link definitions go at the end of the file, below the last version"
             )));
         }
         let mut sections: Vec<Section> = Vec::new();

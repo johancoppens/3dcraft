@@ -479,9 +479,11 @@ fn hostile_text_is_read_or_refused_and_never_panics() {
     let crlf = Changelog::parse(&texts[6]).unwrap();
     assert_eq!(crlf.sections()[0].entries[0].title, "Carriage returns.");
     assert_eq!(crlf.sections()[0].entries[0].text, "Too.");
-    // What follows the link definitions belongs to no section.
-    let after = Changelog::parse(&texts[7]).unwrap();
-    assert_eq!(after.sections().len(), 2);
+    // A line that a link definition inside a section would hide is
+    // refused, naming it (until 2026-11-15 it was left out without a
+    // word: `a_line_a_link_definition_would_hide_is_refused`).
+    let after = Changelog::parse(&texts[7]).unwrap_err();
+    assert!(after.message().contains("line 5"), "{after}");
     // Too large a file is refused before it is read.
     let large = "x".repeat(MAX_BYTES + 1);
     assert!(Changelog::parse(&large).is_err());
@@ -797,4 +799,55 @@ fn hostile_markup_reads_in_time_in_proportion_to_its_length() {
     assert_eq!(plain(&span), span);
     let short = format!("`{}`", "c".repeat(4000));
     assert_eq!(plain(&short), "c".repeat(4000));
+}
+
+/// The Release workflow's reading ends a section at a link definition
+/// (`[g]: https://…`), and so does 3DCraft's: a line after one inside a
+/// section, before the next `## [`, would be left out of the release notes
+/// and of the window's without a word (round 2's review, (c)). It is an
+/// error naming the line and the definition, so the programs' build refuses
+/// such a changelog. Link definitions at the end of the file, or followed by
+/// nothing but definitions and blank lines up to the next section, are as
+/// before; the workflow's reading is unchanged.
+#[test]
+fn a_line_a_link_definition_would_hide_is_refused() {
+    for (text, line, definition) in [
+        ("## [1.0.0]\n- a\n\n[g]: https://x\n- b\n", 5, 4),
+        (
+            "## [1.0.0]\n\n### Fixed\n\n- a\n[g]: https://x\n\n### Results that changed\n\n- b\n",
+            8,
+            6,
+        ),
+        (
+            "## [1.0.0]\n- a\n[g]: https://x\n[h]: https://y\n\nA paragraph.\n## [0.9.0]\n",
+            6,
+            4,
+        ),
+    ] {
+        let error = Changelog::parse(text).unwrap_err();
+        let said = error.message();
+        assert!(said.contains(&format!("line {line}:")), "{text:?}: {said}");
+        assert!(
+            said.contains(&format!("line {definition} ")),
+            "{text:?}: {said}"
+        );
+        assert!(embedded(text, "1.0.0").is_err(), "{text:?}");
+        // The workflow's reading is what it was.
+        assert!(release_section(text, "1.0.0").is_some());
+    }
+    for text in [
+        // At the end of the file.
+        "## [1.0.0]\n- a\n\n[1.0.0]: https://x\n[0.9.0]: https://y\n\n",
+        // Between two sections, nothing after it but blank lines.
+        "## [1.0.0]\n- a\n[g]: https://x\n\n## [0.9.0]\n### Fixed\n- b\n",
+        // In the preamble, which belongs to no section.
+        "# Changelog\n[k]: https://k\nAbout this file.\n## [1.0.0]\n- a\n",
+    ] {
+        let read = Changelog::parse(text).unwrap();
+        assert!(!read.sections().is_empty(), "{text:?}");
+    }
+    let between =
+        Changelog::parse("## [1.0.0]\n- a\n[g]: https://x\n\n## [0.9.0]\n### Fixed\n- b\n")
+            .unwrap();
+    assert_eq!(between.sections()[1].entries.len(), 1);
 }

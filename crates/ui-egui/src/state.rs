@@ -1613,6 +1613,17 @@ impl UiState {
             };
             turned.camera.set_view(name)?;
         }
+        // What's new is set field by field; a list, which serde would read
+        // by position (an empty one as all defaults, closing the notes),
+        // is refused.
+        if let Some(value) = patch.get("whatsNew")
+            && !value.is_object()
+        {
+            return Err(
+                "`whatsNew` must be an object: {card, window, rest, expanded}, each true or false"
+                    .to_string(),
+            );
+        }
         if patch.contains_key("picked") {
             return Err(
                 "`picked` is what was clicked in the viewport and cannot be set; ui.pick with `select` makes a pick, ui.highlight (or `highlight` here) points at a face"
@@ -2087,6 +2098,15 @@ mod tests {
             .apply_patch(&json!({"whatsNew": {"window": false, "rest": false}}))
             .unwrap();
         assert_eq!(state, UiState::default());
+        // A list is no object: `[]` closed the notes until 2026-11-15.
+        let mut open = UiState::default();
+        open.whats_new.card = true;
+        for list in [json!([]), json!([true]), json!([false, true, false, false])] {
+            let mut state = open.clone();
+            let error = state.apply_patch(&json!({ "whatsNew": list })).unwrap_err();
+            assert!(error.contains("whatsNew"), "{error}");
+            assert_eq!(state, open, "{list}");
+        }
         for bad in [
             json!({"bogus": true}),
             json!({"card": 1}),
