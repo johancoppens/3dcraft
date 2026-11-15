@@ -37,7 +37,7 @@ mod boolean_common;
 mod hunt_sheet_common;
 
 use boolean_common::Rng;
-use craft3d_geom::Curve3;
+use craft3d_geom::{Curve3, Surface};
 use craft3d_kernel::extrude::fill;
 use craft3d_kernel::plate::{Joint, Side, plate};
 use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
@@ -45,7 +45,7 @@ use craft3d_kernel::sheetmetal::{
     Closing, Cutout, Direction, FlangeSpec, LengthFrom, On, Spec, build,
 };
 use craft3d_math::Portable;
-use craft3d_math::{Frame, Tolerance};
+use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, EdgeId, FaceId, check};
 use hunt_sheet_common::*;
 use std::collections::BTreeMap;
@@ -324,7 +324,18 @@ fn plate_case(tally: &mut Tally, n: usize, c: &PlateCase) {
         }
     }
     let levels = c.side.levels(t);
-    let want = volume_of(c, &shape, (levels.0 / k, levels.1 / k)) * k * k * k;
+    let normal = face_normal(&sheet);
+    let want = Want {
+        volume: volume_of(c, &shape, (levels.0 / k, levels.1 / k)) * k * k * k,
+        feature: shape.feature * k,
+        vertices: Some(expected_vertices(c, &placing, &sheet, normal, levels)),
+        // A segment's bevelled rims meet at its corners along a conic
+        // (a cone against a plane), not a line.
+        lines_across: match (c.rims, c.outline) {
+            (Rims::Bevel(_), Outline::Segment { .. }) => None,
+            _ => Some(normal),
+        },
+    };
     let made = guarded(|| plate(&sheet, &[FaceId(0)], t, c.side, &joints, &tol));
     match made {
         Err(p) => {
@@ -335,26 +346,147 @@ fn plate_case(tally: &mut Tally, n: usize, c: &PlateCase) {
             tally.refused(&e.to_string());
             tally.notes.push(format!("case {n}: {what}: refused: {e}"));
         }
-        Ok(Ok(made)) => judge(tally, n, &what, &made.body, want, shape.feature * k, &tol),
+        Ok(Ok(made)) => judge(tally, n, &what, &made.body, &want, &tol),
     }
 }
 
-/// Holds a built body to `want` (its closed-form volume) by two means,
-/// the measure and the mesh (at a thousandth of its size, or a quarter
-/// of its narrowest width `feature` where that is less), after the
-/// checker, and where both hold whether it passes through itself: `I`
-/// invalid, `M` checked but not meshed, `W` measured or meshed off the
-/// closed form (or not measured), `X` through itself, `B` right.
-#[allow(clippy::too_many_arguments)]
-fn judge(
-    tally: &mut Tally,
-    n: usize,
-    what: &str,
-    body: &Body,
-    want: f64,
+/// Where a plate of `sheet` with square ends has its vertices: each
+/// vertex `v` of the sheet at each level `h` along the outward normal
+/// `n(v)` of a face it bounds (the faces of a folded sheet are tangent
+/// where they meet), `v + h n(v)`.
+fn square_vertices(sheet: &Body, (lo, hi): (f64, f64)) -> Vec<Vec3> {
+    let mut out = Vec::new();
+    for (i, v) in sheet.vertices.iter().enumerate() {
+        let face = sheet
+            .faces
+            .iter()
+            .find(|f| {
+                f.loops.iter().filter_map(|l| sheet.loop_(*l)).any(|l| {
+                    l.coedges
+                        .iter()
+                        .filter_map(|c| sheet.edge(c.edge))
+                        .any(|e| e.start.0 as usize == i || e.end.0 as usize == i)
+                })
+            })
+            .expect("a vertex of a face");
+        let (u, w) = face.surface.project(v.point).unwrap();
+        let n = face.surface.normal(u, w).unwrap() * if face.reversed { -1.0 } else { 1.0 };
+        out.push(v.point + n * lo);
+        out.push(v.point + n * hi);
+    }
+    out
+}
+
+/// The outward normal of the flat sheet's one face.
+fn face_normal(sheet: &Body) -> Vec3 {
+    let face = &sheet.faces[0];
+    let Surface::Plane(p) = &face.surface else {
+        panic!("a flat sheet");
+    };
+    p.frame().z() * if face.reversed { -1.0 } else { 1.0 }
+}
+
+/// Where the plate's vertices lie, worked out apart from the kernel: each
+/// vertex `v` of the sheet at each level `h` along the face's outward
+/// normal `n`, `v + h n` at a square end; on a bevelled arc of one circle
+/// (a hole's, a disc's) moved along its radius out of the material by
+/// `h tan α` (so on the circle `r ∓ h tan α`); at a segment's corner
+/// (both its edges bevelled) where the circle `r + h tan α` meets the
+/// chord moved out by `h tan α`.
+fn expected_vertices(
+    c: &PlateCase,
+    placing: &Placing,
+    sheet: &Body,
+    normal: Vec3,
+    (lo, hi): (f64, f64),
+) -> Vec<Vec3> {
+    let k = c.k;
+    let world = |p: P2| c.frame.point(p[0], p[1], 0.0);
+    let centre = world(placing.point([0.0, 0.0]));
+    let r = c.r * k;
+    let along = |d: P2| {
+        let q = placing.vector(d);
+        c.frame.vector(q[0], q[1], 0.0)
+    };
+    let mut out = Vec::new();
+    for v in &sheet.vertices {
+        let p = v.point;
+        for h in [lo, hi] {
+            let q = match (c.rims, c.outline) {
+                (Rims::Bevel(alpha), Outline::Hole { .. } | Outline::Disc { .. })
+                    if ((p - centre).length() - r).abs() <= 1e-9 * r.max(1.0) + 16.0 * 1e-6 * k =>
+                {
+                    let d = h * alpha.ptan();
+                    let grown = match c.outline {
+                        Outline::Hole { .. } => r - d,
+                        _ => r + d,
+                    };
+                    centre + (p - centre) * (grown / r)
+                }
+                (Rims::Bevel(alpha), Outline::Segment { s }) => {
+                    let d = h * alpha.ptan();
+                    let x0 = r * (0.5 * s).pcos() - d;
+                    let big = r + d;
+                    let y = (big * big - x0 * x0).max(0.0).sqrt();
+                    let (e, f) = (along([1.0, 0.0]), along([0.0, 1.0]));
+                    let side = if (p - centre).dot(f) >= 0.0 {
+                        1.0
+                    } else {
+                        -1.0
+                    };
+                    centre + e * x0 + f * (side * y)
+                }
+                _ => p,
+            };
+            out.push(q + normal * h);
+        }
+    }
+    out
+}
+
+/// What a body is held to: its closed-form volume, its narrowest width
+/// (the mesh's chord is at most a quarter of it), its vertices each at
+/// its station's closed form (where known), and the plates' normal, along
+/// which every edge across the plate (from one level to the other) at a
+/// smooth or square corner is a line (where asked).
+struct Want {
+    volume: f64,
     feature: f64,
-    tol: &Tolerance,
-) {
+    vertices: Option<Vec<Vec3>>,
+    lines_across: Option<Vec3>,
+}
+
+/// How far each vertex of `body` lies from the nearest of `want`, and the
+/// other way round: the larger of the two worst, or infinity when the
+/// counts differ.
+fn vertices_off(body: &Body, want: &[Vec3]) -> f64 {
+    if body.vertices.len() != want.len() {
+        return f64::INFINITY;
+    }
+    let nearest = |p: Vec3, among: &mut dyn Iterator<Item = Vec3>| {
+        among.map(|q| q.distance(p)).fold(f64::INFINITY, f64::min)
+    };
+    let got: Vec<Vec3> = body.vertices.iter().map(|v| v.point).collect();
+    let a = got
+        .iter()
+        .map(|p| nearest(*p, &mut want.iter().copied()))
+        .fold(0.0, f64::max);
+    let b = want
+        .iter()
+        .map(|p| nearest(*p, &mut got.iter().copied()))
+        .fold(0.0, f64::max);
+    a.max(b)
+}
+
+/// Holds a built body to `want` by two means, the measure and the mesh
+/// (at a thousandth of its size, or a quarter of its narrowest width
+/// where that is less), after the checker; to its vertices' closed forms
+/// (each within 16 tolerances) and its edges across the plate at smooth
+/// or square corners being lines; and where all that holds, whether it
+/// passes through itself: `I` invalid, `M` checked but not meshed, `W`
+/// measured or meshed off the closed form, a vertex off, a corner's edge
+/// curved (or not measured), `X` through itself, `B` right.
+fn judge(tally: &mut Tally, n: usize, what: &str, body: &Body, want: &Want, tol: &Tolerance) {
     let mut found = Found::default();
     let defects = check(body, tol);
     if let Some(first) = defects.first() {
@@ -363,6 +495,34 @@ fn judge(
         tally.record(n, what, &found, false);
         return;
     }
+    if let Some(vs) = &want.vertices {
+        let off = vertices_off(body, vs);
+        if !(off <= 16.0 * tol.linear) {
+            found.problems.push(format!(
+                "vertices: {} for {}, the worst {:.3e} tolerances from its closed form",
+                body.vertices.len(),
+                vs.len(),
+                off / tol.linear
+            ));
+        }
+    }
+    if let Some(normal) = want.lines_across {
+        for (i, e) in body.edges.iter().enumerate() {
+            let (Some(a), Some(b)) = (body.vertex(e.start), body.vertex(e.end)) else {
+                continue;
+            };
+            let rise = (b.point - a.point).dot(normal).abs();
+            if rise > 10.0 * tol.linear && !matches!(e.curve, Curve3::Line(_)) {
+                found.problems.push(format!(
+                    "edge {i} across the plate is a {}, not a line",
+                    e.curve.kind()
+                ));
+                break;
+            }
+        }
+    }
+    let feature = want.feature;
+    let want = want.volume;
     let chord = (1e-3 * size_of(body)).min(0.25 * feature);
     let measure = measured(body);
     let mesh = mesh_volume(body, chord);
@@ -613,7 +773,15 @@ fn bend_case(tally: &mut Tally, n: usize, c: &BendCase) {
             tally.refused(&e.to_string());
             tally.notes.push(format!("case {n}: {what}: refused: {e}"));
         }
-        Ok(Ok(part)) => judge(tally, n, &what, &part.solid.body, want, f64::INFINITY, &tol),
+        Ok(Ok(part)) => {
+            let want = Want {
+                volume: want,
+                feature: f64::INFINITY,
+                vertices: Some(square_vertices(&part.sheet, (0.0, t))),
+                lines_across: None,
+            };
+            judge(tally, n, &what, &part.solid.body, &want, &tol)
+        }
     }
 }
 
@@ -782,8 +950,8 @@ fn holes_across_tight_bends_are_their_closed_forms() {
 /// A square with an elliptic hole of two half ellipses of semi-axes `a`
 /// and `b`, built as a sheet by hand (a sketch has no ellipse), the
 /// hole's loop clockwise.
-fn elliptic_sheet(frame: &Frame, half: f64, a: f64, b: f64) -> Body {
-    use craft3d_geom::{Ellipse, Line, Plane, Surface};
+fn elliptic_sheet(frame: &Frame, half: f64, a: f64, b: f64, rational: bool) -> Body {
+    use craft3d_geom::{Ellipse, Line, NurbsCurve, Plane, Surface};
     use craft3d_topo::{BodyKind, Coedge};
     let mut body = Body::new(BodyKind::Sheet);
     let corners = [(-half, -half), (half, -half), (half, half), (-half, half)];
@@ -807,11 +975,30 @@ fn elliptic_sheet(frame: &Frame, half: f64, a: f64, b: f64) -> Body {
             reversed: false,
         });
     }
-    let ellipse = Curve3::Ellipse(Ellipse::new(*frame, a, b).unwrap());
+    // The analytic ellipse over `0..π..2π`, or the rational quadratic
+    // spline of the circle's net (four spans, as a file gives it) scaled
+    // to the ellipse, over `0..½..1`.
+    let (ellipse, half_way, whole) = if rational {
+        let circle = NurbsCurve::circle(&Frame::WORLD, 1.0).unwrap();
+        let ctrl = circle
+            .control_points()
+            .iter()
+            .map(|p| frame.point(a * p.x, b * p.y, 0.0))
+            .collect();
+        let net =
+            NurbsCurve::new(2, circle.knots().to_vec(), ctrl, circle.weights().to_vec()).unwrap();
+        (Curve3::Nurbs(net), 0.5, 1.0)
+    } else {
+        (
+            Curve3::Ellipse(Ellipse::new(*frame, a, b).unwrap()),
+            PI,
+            TAU,
+        )
+    };
     let va = body.add_vertex(ellipse.eval(0.0));
-    let vb = body.add_vertex(ellipse.eval(PI));
-    let top = body.add_edge(ellipse.clone(), (0.0, PI), va, vb);
-    let bottom = body.add_edge(ellipse, (PI, TAU), vb, va);
+    let vb = body.add_vertex(ellipse.eval(half_way));
+    let top = body.add_edge(ellipse.clone(), (0.0, half_way), va, vb);
+    let bottom = body.add_edge(ellipse, (half_way, whole), vb, va);
     let hole = vec![
         Coedge {
             edge: bottom,
@@ -855,7 +1042,7 @@ fn elliptic_holes_at_whole_turns_are_their_closed_forms() {
         let frame = frame(&mut rng, k);
         let tol = tolerance(k);
         let (a, half) = (1.7 * b, (5.1 * b).max(10.0));
-        let sheet = elliptic_sheet(&frame, half * k, a * k, b * k);
+        let sheet = elliptic_sheet(&frame, half * k, a * k, b * k, false);
         assert!(check(&sheet, &tol).is_empty(), "{n}: the sheet");
         let want = (4.0 * half * half - PI * a * b) * k * k * k;
         let what = format!("ellipse b/t {b:e}, {side:?}, k {k}, frame {frame:?}");
@@ -868,10 +1055,258 @@ fn elliptic_holes_at_whole_turns_are_their_closed_forms() {
                 tally.refused(&e.to_string());
                 tally.notes.push(format!("case {n}: {what}: refused: {e}"));
             }
-            Ok(Ok(made)) => judge(&mut tally, n, &what, &made.body, want, b * k, &tol),
+            Ok(Ok(made)) => {
+                let want = Want {
+                    volume: want,
+                    feature: b * k,
+                    vertices: Some(square_vertices(&sheet, side.levels(k))),
+                    lines_across: Some(face_normal(&sheet)),
+                };
+                judge(&mut tally, n, &what, &made.body, &want, &tol)
+            }
         }
     }
     held(&tally, "elliptic holes", &[], &[]);
+}
+
+/// Holes and discs of two or three arcs of one circle (half circles,
+/// thirds, and an arc of 0.02 rad with the rest of the turn), every arc
+/// bevelled by ±0.3 rad, on every side, at r/t 0.5 to 5: the rims of two
+/// arcs are one cone, so at each vertex the corner is where the rows
+/// reach it (`plate::runs_on`). Held to the vertices' closed forms (on
+/// the circle `r ∓ h tan α` at each cut), the edges across the corners
+/// being the cone's rulings (lines), the volume and the mesh. Before
+/// 2026-11-15 (round 2) the corners were solved on the two coinciding
+/// cones and slid round the circle.
+#[test]
+fn bevelled_arcs_of_one_circle_have_their_corners_at_their_stations() {
+    let mut tally = Tally::new();
+    let mut n = 0;
+    for outline in [
+        Outline::Hole { s: PI, n: 2 },
+        Outline::Hole { s: TAU / 3.0, n: 3 },
+        Outline::Hole { s: 0.02, n: 2 },
+        Outline::Disc { s: PI },
+        Outline::Disc { s: 0.02 },
+    ] {
+        for r in [0.5, 1.0, 2.0, 5.0] {
+            for alpha in [0.3, -0.3] {
+                for side in [Side::Out, Side::In, Side::Mid] {
+                    let mut rng = Rng(case_seed(0x9A7E_0006, n));
+                    let k = SCALES[rng.below(3) as usize];
+                    let c = PlateCase {
+                        outline,
+                        r,
+                        side,
+                        rims: Rims::Bevel(alpha),
+                        k,
+                        frame: frame(&mut rng, k),
+                        turn: rng.between(0.0, TAU),
+                    };
+                    plate_case(&mut tally, n, &c);
+                    n += 1;
+                }
+            }
+        }
+    }
+    held(&tally, "bevelled arcs of one circle", &[], &[]);
+}
+
+/// The refusal of a corner that a run kept within a turn does not reach:
+/// a segment of an ellipse (semi-axes 1.2 and 1) of 355° and its chord,
+/// 100 thick, both edges bevelled by atan 6.23 (81°), so that at the
+/// front the rims have moved out by 623 and meet about 0.1° from the
+/// chord's middle: the corners past the arc's two ends leave less than an
+/// eighth of the 5° between them, more than the run may cover, and an
+/// ellipse's rows are splines, cut where the corners lie on them. (On a
+/// circle the same corners are built: its rows are the circle, which
+/// holds every angle, `plate_rim_turns` › the segments.)
+#[test]
+fn a_corner_further_round_than_a_kept_run_is_refused_saying_so() {
+    use craft3d_geom::{Ellipse, Line, Plane};
+    use craft3d_topo::{BodyKind, Coedge};
+    let tol = tolerance(1.0);
+    let s = 355f64.to_radians();
+    let ellipse = Curve3::Ellipse(Ellipse::new(Frame::WORLD, 1.2, 1.0).unwrap());
+    let mut sheet = Body::new(BodyKind::Sheet);
+    let (p, q) = (ellipse.eval(-0.5 * s), ellipse.eval(0.5 * s));
+    let (vp, vq) = (sheet.add_vertex(p), sheet.add_vertex(q));
+    let arc = sheet.add_edge(ellipse, (-0.5 * s, 0.5 * s), vp, vq);
+    let chord = sheet.add_edge(
+        Curve3::Line(Line::through(q, p).unwrap()),
+        (0.0, q.distance(p)),
+        vq,
+        vp,
+    );
+    let lp = sheet.add_loop(vec![
+        Coedge {
+            edge: arc,
+            reversed: false,
+        },
+        Coedge {
+            edge: chord,
+            reversed: false,
+        },
+    ]);
+    let face = sheet.add_face(Surface::Plane(Plane::new(Frame::WORLD)), false, vec![lp]);
+    sheet.add_shell(vec![face]);
+    assert!(check(&sheet, &tol).is_empty(), "the sheet");
+    let bevel = Joint::Bevel(6.23f64.patan());
+    let joints: BTreeMap<EdgeId, Joint<'_>> = [(arc, bevel), (chord, bevel)].into_iter().collect();
+    let e = plate(&sheet, &[FaceId(0)], 100.0, Side::Out, &joints, &tol).expect_err("refused");
+    assert!(
+        e.to_string()
+            .contains("seven eighths of what is left of its turn"),
+        "another reason: {e}"
+    );
+}
+
+/// Rims that end differently where the boundary runs on smoothly are
+/// refused, saying so: a slot whose half circles are bevelled by ±0.3 rad
+/// and whose straight sides end square, on every side, at three scales.
+/// At a level where the bevel has grown the circle past the sides' lines
+/// the rims meet past the vertex along a side (where the circle crosses
+/// the line), elsewhere nowhere; the plate does not trace that, and before
+/// (round 2) it said "the rims … do not meet in one point", which was not
+/// true where they do. The same slot with every edge square, or every
+/// edge bevelled alike, is built (`bevelled_arcs_of_one_circle…`, the
+/// outlines' slots).
+#[test]
+fn rims_that_end_differently_at_a_smooth_corner_are_refused_saying_so() {
+    for (n, (alpha, side, k)) in [
+        (0.3, Side::Out, 1.0),
+        (-0.3, Side::Out, 1e-3),
+        (0.3, Side::In, 1e6),
+        (-0.3, Side::Mid, 1.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let tol = tolerance(k);
+        let c = PlateCase {
+            outline: Outline::Slot { split: 1 },
+            r: 1.0,
+            side,
+            rims: Rims::Square,
+            k,
+            frame: Frame::WORLD,
+            turn: 0.3,
+        };
+        let shape = shape_of(&c);
+        let placing = Placing {
+            turn: c.turn,
+            k,
+            at: [0.0, 0.0],
+            flip_lines: false,
+        };
+        let profiles = detect_profiles(&sketch(&shape, &placing, 1), &tol).unwrap();
+        let sheet = fill(&profiles, &Frame::WORLD, &tol).unwrap().body;
+        let joints: BTreeMap<EdgeId, Joint<'_>> = (0..sheet.edges.len())
+            .filter(|i| matches!(sheet.edges[*i].curve, Curve3::Circle(_)))
+            .map(|i| (EdgeId(i as u32), Joint::Bevel(alpha)))
+            .collect();
+        assert_eq!(joints.len(), 2, "{n}: the slot's two arcs");
+        let e = plate(&sheet, &[FaceId(0)], k, side, &joints, &tol).expect_err("refused");
+        assert!(
+            e.to_string().contains(
+                "the boundary runs on smoothly, but the rims of its two edges (one bevelled by"
+            ),
+            "{n}: another reason: {e}"
+        );
+        // Every edge of the slot bevelled alike: its hole at the level `h`
+        // is the slot of radius `r − h tan α` about the same centres, its
+        // vertices `(±l, ±(r − h tan α))`, its area `4 l ρ + π ρ²`.
+        let (r, l) = (k, 2.0 * k);
+        let joints: BTreeMap<EdgeId, Joint<'_>> = (0..sheet.edges.len())
+            .filter(|i| {
+                let e = &sheet.edges[*i];
+                e.curve.eval(0.5 * (e.range.0 + e.range.1)).length() < 4.0 * k
+            })
+            .map(|i| (EdgeId(i as u32), Joint::Bevel(alpha)))
+            .collect();
+        assert_eq!(joints.len(), 4, "{n}: the slot's four edges");
+        let made = plate(&sheet, &[FaceId(0)], k, side, &joints, &tol)
+            .unwrap_or_else(|e| panic!("{n}: {e}"));
+        let (lo, hi) = side.levels(k);
+        let tau = alpha.ptan();
+        let rho = |h: f64| r - h * tau;
+        let half = 10.0 * k;
+        let normal = face_normal(&sheet);
+        let mut vs: Vec<Vec3> = square_vertices(&sheet, (lo, hi))
+            .into_iter()
+            .filter(|p| p.x.abs() > 5.0 * k)
+            .collect();
+        let (sn, cs) = c.turn.psin_cos();
+        for h in [lo, hi] {
+            for (x, y) in [(l, rho(h)), (-l, rho(h)), (l, -rho(h)), (-l, -rho(h))] {
+                vs.push(Vec3::new(cs * x - sn * y, sn * x + cs * y, 0.0) + normal * h);
+            }
+        }
+        let want = Want {
+            volume: 4.0 * half * half * k
+                - integral(lo, hi, |h| 4.0 * l * rho(h) + PI * rho(h) * rho(h)),
+            feature: r,
+            vertices: Some(vs),
+            lines_across: Some(normal),
+        };
+        let mut tally = Tally::new();
+        judge(
+            &mut tally,
+            n,
+            "a slot bevelled alike",
+            &made.body,
+            &want,
+            &tol,
+        );
+        assert_eq!(tally.outcomes, "B", "{n}: {:?}", tally.wrong);
+    }
+}
+
+/// KNOWN, owed (docs/design/plates.md › *Limits*, *Runs that come back
+/// round*): an elliptic hole drawn as two halves of a rational spline
+/// ellipse (the circle's net of four quadratic spans scaled, as a file
+/// gives an ellipse), b/a 0.5 or 0.1, `b` from 0.05 to 1 of the plate's
+/// thickness, is refused (for reasons that are not the cause) or not
+/// meshed, the same before and after a
+/// run on a circle or an ellipse was kept within a turn. A spline edge has
+/// no period, so its run is not kept: each half is traced past its ends
+/// round the rest of its closed curve and on along the end span's rational
+/// continuation, which goes on round the ellipse (read, not shown to be
+/// the cause). The same ellipse as an ellipse is built
+/// (`elliptic_holes_at_whole_turns_are_their_closed_forms`). When it is
+/// fixed this test fails: take it off.
+#[test]
+fn a_rational_spline_ellipse_hole_is_refused_or_not_meshed() {
+    for (n, (ratio, b)) in [(0.5, 0.05), (0.1, 0.18), (0.1, 1.0)]
+        .into_iter()
+        .enumerate()
+    {
+        let tol = tolerance(1.0);
+        let sheet = elliptic_sheet(&Frame::WORLD, 10.0, b / ratio, b, true);
+        assert!(check(&sheet, &tol).is_empty(), "{n}: the sheet");
+        let got = match plate(&sheet, &[FaceId(0)], 1.0, Side::Out, &BTreeMap::new(), &tol) {
+            Err(_) => 'R',
+            Ok(made) => {
+                if mesh_volume(&made.body, 1e-3 * size_of(&made.body)).is_err()
+                    || measured(&made.body).is_none()
+                {
+                    'M'
+                } else {
+                    let want = 400.0 - PI * b * b / ratio;
+                    let m = measured(&made.body).unwrap();
+                    if (m.volume / want - 1.0).abs() < 1e-6 {
+                        'B'
+                    } else {
+                        'W'
+                    }
+                }
+            }
+        };
+        assert!(
+            got == 'R' || got == 'M',
+            "{n} (b/a {ratio}, b/t {b}): known refused or not meshed, now {got}: take this off"
+        );
+    }
 }
 
 /// Hostile numbers about a tight arc: a thickness that is not a number,

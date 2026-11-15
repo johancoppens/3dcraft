@@ -1381,15 +1381,20 @@ fn build(
             ));
         }
         // Where the boundary runs on smoothly through the vertex between two
-        // square rims, both rims hold the normal there and are tangent to
-        // each other along it (on one cylinder, for two arcs of one
+        // rims that end square or bevelled ([`runs_on`]), both rims hold the
+        // line of the vertex's station (the normal, or the normal turned by
+        // the bevel's angle) where they end alike, and are tangent to each
+        // other along it (one cylinder or one cone, for two arcs of one
         // circle): where they meet is no point but that line, and a solve
-        // for one drifts along it (found 2026-11-03: a hole of a quarter,
-        // a half and a quarter circle left its edges round the wrong side
-        // of the circle, a valid body of the wrong volume). There the
-        // corner is where the rims' own rows reach the vertex, put on the
-        // skins alone.
-        let smooth = smooth_square(body, *vertex, &at_rims, joints, tolerance.angular);
+        // for one drifts along it (found 2026-11-03 for square rims: a hole
+        // of a quarter, a half and a quarter circle left its edges round
+        // the wrong side of the circle, a valid body of the wrong volume;
+        // 2026-11-15 for bevelled ones: a bevelled disc's corners slid up
+        // to several thicknesses round its circle). There the corner is
+        // where the rims' own rows reach the vertex, put on the skins
+        // alone.
+        let runs = runs_on(body, *vertex, &at_rims, joints, tolerance.angular);
+        let smooth = runs.is_some();
         for level in 0..2 {
             let mut surfaces: Vec<&Surface> = Vec::new();
             for f in around {
@@ -1422,6 +1427,27 @@ fn build(
             // within twice that of each other): a local proof; otherwise
             // it is solved against the rims as at any other corner.
             let agree = matches!(starts.as_slice(), [a, b] if a.distance(*b) <= 2.0 * SHARE * tol);
+            // Where the rows part at a vertex the boundary runs on through,
+            // the rims end differently there (a bevel against a square end,
+            // or two bevels unlike): they leave the vertex apart and meet,
+            // if at all, past it along one of the edges (a cone crosses the
+            // plane tangent to its circle where the circle has grown past
+            // it) or nowhere (two cones through one circle), which the rims'
+            // solve here cannot find: refused, saying so. Square rims whose
+            // rows part are solved as they always were.
+            if let (Some(Ends::Unlike(how)) | Some(Ends::Bevelled(how)), false) = (&runs, agree)
+                && let [a, b] = starts.as_slice()
+            {
+                return Err(refuse(
+                    at_rims.first().copied(),
+                    format!(
+                        "at the corner {} the boundary runs on smoothly, but the rims of its two edges ({how}) part there by {} at the {} skin: they leave the corner apart and meet, if at all, past it along one of the edges, which the plate does not trace; give both edges the same end there",
+                        at(v.point),
+                        short(a.distance(*b)),
+                        if level == 0 { "back" } else { "front" },
+                    ),
+                ));
+            }
             if !(smooth && agree) {
                 surfaces.extend(at_rim_surfaces);
             }
@@ -1441,12 +1467,23 @@ fn build(
             // exact surface, so two that are tangent there are within
             // twice that of each other: a corner on both is held to that.
             let point = meet(&surfaces, start, 2.0 * SHARE * tol).ok_or_else(|| {
+                // A rim whose run was kept within a turn ends short of a
+                // turn round its curve, so a corner further round than that
+                // lies off it.
+                let kept = at_rims
+                    .iter()
+                    .any(|e| traced.get(e).is_some_and(|t| t.kept));
                 refuse(
                     at_rims.first().copied(),
                     format!(
-                        "the {} skin and the rims at the corner {} do not meet in one point",
+                        "the {} skin and the rims at the corner {} do not meet in one point{}",
                         if level == 0 { "back" } else { "front" },
-                        at(v.point)
+                        at(v.point),
+                        if kept {
+                            ": an edge there lies on a curve that closes, traced past its ends by at most seven eighths of what is left of its turn, and the corner lies further round it than that (the corners past the edge's two ends leave less than an eighth of the turn between them, or its joint turns the rim further round than the tangent planes put it); a larger radius against the thickness, or square ends there, leave the corners room"
+                        } else {
+                            ""
+                        }
                     ),
                 )
             })?;
@@ -1472,13 +1509,11 @@ fn build(
             .edge(*edge_id)
             .ok_or_else(|| refuse(Some(*edge_id), "the edge is missing"))?;
         let closed = edge.start == edge.end;
-        let mut kept = false;
         let rows: [(Curve3, Vec<Vec3>); 2] = match kind {
             Use::Boundary(..) => {
                 let t = traced
                     .get(edge_id)
                     .ok_or_else(|| refuse(Some(*edge_id), "an edge was not traced"))?;
-                kept = t.kept;
                 let [lo, hi] = &t.fitted;
                 let [rlo, rhi] = &t.rows;
                 [
@@ -1504,15 +1539,10 @@ fn build(
                 return Err(refuse(Some(*edge_id), "a vertex of the plate is missing"));
             };
             let range = range_between(&curve, ps.point, pe.point, closed, tol).ok_or_else(|| {
-                let why = if kept {
-                    "the edge lies on a curve that closes, which is traced less than a turn (past its ends by at most seven eighths of what is left of the turn), and a corner lies further round it than that: the plate's corners past the two ends of the edge leave less than an eighth of the turn between them, or the joints turn the rims further round than their tangent planes put them; a larger radius against the thickness, or square ends at that edge, leave the corners room"
-                } else {
-                    "the corner lies further past the edge's end than its tangent planes put it, by more than the margin the edge is traced beyond"
-                };
                 refuse(
                     Some(*edge_id),
                     format!(
-                        "the {} edge along the edge from {} does not reach the corners of the plate: {why}",
+                        "the {} edge along the edge from {} does not reach the corners of the plate: the corner lies further past the edge's end than its tangent planes put it, by more than the margin the edge is traced beyond",
                         if level == 0 { "back" } else { "front" },
                         at(edge.curve.eval(edge.range.0))
                     ),
@@ -1804,24 +1834,63 @@ fn connected(layered: &[Layered<'_>], kinds: &BTreeMap<EdgeId, Use>) -> Result<(
     Ok(())
 }
 
-/// Whether the two boundary edges at `vertex` both end square (no joint
-/// given, or [`Joint::Square`]) and run on smoothly through it: their
-/// tangents there parallel, the same way round the boundary, within the
-/// angular tolerance.
-fn smooth_square(
+/// How the two rims at a vertex the boundary runs on through end
+/// ([`runs_on`]).
+#[derive(Clone, Debug, PartialEq)]
+enum Ends {
+    /// Both square.
+    Square,
+    /// Both bevelled by one angle (said in words).
+    Bevelled(String),
+    /// Square against bevelled, or bevelled by two angles (said in words).
+    Unlike(String),
+}
+
+/// How the two boundary edges at `vertex` end, where each ends square (no
+/// joint given, or [`Joint::Square`]) or bevelled ([`Joint::Bevel`]) and
+/// they run on smoothly through it: their tangents there parallel, the
+/// same way round the boundary, within the angular tolerance; `None`
+/// otherwise (a crease, another joint, an edge that closes on itself).
+/// Two such rims hold one line of the vertex's station each, the normal
+/// turned by their bevel's angle about the common tangent (square: by 0),
+/// so they continue each other along that line where they end alike: two
+/// square rims or two bevels of one angle (bit for bit, as one joint given
+/// to both); bevels whose angles differ part there by the levels times
+/// the difference of their tangents, which the rows show.
+fn runs_on(
     body: &Body,
     vertex: VertexId,
     at_rims: &[EdgeId],
     joints: &BTreeMap<EdgeId, Joint<'_>>,
     angular: f64,
-) -> bool {
-    let [a, b] = at_rims else { return false };
-    if [a, b]
-        .iter()
-        .any(|e| !matches!(joints.get(e), None | Some(Joint::Square)))
-    {
-        return false;
-    }
+) -> Option<Ends> {
+    let [a, b] = at_rims else { return None };
+    // Each end's bevel: 0 for square, `None` for any other joint.
+    let bevel = |e: &EdgeId| match joints.get(e) {
+        None | Some(Joint::Square) => Some(None),
+        Some(Joint::Bevel(angle)) => Some(Some(*angle)),
+        Some(_) => None,
+    };
+    let ends = match (bevel(a)?, bevel(b)?) {
+        (None, None) => Ends::Square,
+        (Some(p), Some(q)) if p.to_bits() == q.to_bits() => {
+            Ends::Bevelled(format!("both bevelled by {}°", short(p.to_degrees())))
+        }
+        (Some(p), Some(q)) => Ends::Unlike(format!(
+            "bevelled by {}° and by {}°",
+            short(p.to_degrees()),
+            short(q.to_degrees())
+        )),
+        (Some(p), None) | (None, Some(p)) => Ends::Unlike(format!(
+            "one bevelled by {}°, the other square",
+            short(p.to_degrees())
+        )),
+    };
+    smooth_at(body, vertex, [a, b], angular).then_some(ends)
+}
+
+/// Whether the edges `a` and `b` run on smoothly through `vertex`.
+fn smooth_at(body: &Body, vertex: VertexId, [a, b]: [&EdgeId; 2], angular: f64) -> bool {
     // Each edge's tangent at the vertex, pointing away from it.
     let away = |e: &EdgeId| -> Option<Vec3> {
         let edge = body.edge(*e)?;

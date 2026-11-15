@@ -537,21 +537,14 @@ fn flanged(rng: &mut Rng, k: f64, jog: bool) -> Drawn {
         }
         (lo, hi)
     });
-    // A jog bent past square leans its web back over (up) or under (down)
-    // the base's near side, where the points are, as a flange does: a jog
-    // of 179.7 degrees down puts its web about 2R under the base's bottom
-    // skin (seeded case 295, refused until 2026-11-15 by the plate's trace
-    // and then built right, its points below the base inside the web: the
-    // rays and the mesh both said inside).
-    let leans = |dir: Direction| {
+    let over = [
         flanges
             .iter()
-            .any(|f| f.spec.direction == dir && f.spec.angle > FRAC_PI_2 - 1e-6)
-            || jogs
-                .iter()
-                .any(|j| j.direction == dir && j.angle > FRAC_PI_2 - 1e-6)
-    };
-    let over = [leans(Direction::Up), leans(Direction::Down)];
+            .any(|f| f.spec.direction == Direction::Up && f.spec.angle > FRAC_PI_2 - 1e-6),
+        flanges
+            .iter()
+            .any(|f| f.spec.direction == Direction::Down && f.spec.angle > FRAC_PI_2 - 1e-6),
+    ];
     // Points in the base, away from its edges by the largest R + T and
     // the reliefs, and off the hole.
     let margin = flanges
@@ -857,6 +850,47 @@ fn run_case(tally: &mut Tally, n: usize, rng: &mut Rng, drawn: &mut Drawn, plane
     tally.record(n, &what, &found, crosses);
 }
 
+/// Whether the point `(x, z)` of the base's section square to a jog's
+/// line lies within `m` of the jog's material past its first bend: its
+/// web, its second bend or its far side. `x` is across the line, the
+/// base's near side below the line's `x` (the first bend's tangent line),
+/// and `z` the height from the bottom skin for a jog that bends down; a
+/// jog that bends up is the same seen from the top skin (`z` read as
+/// `T − z`). Worked out from the jog's spec alone (docs/design/
+/// sheetmetal.md › *Jogs across a flat*): the first bend about the axis
+/// `R` below the tangent line, its inside the bottom skin; the web from
+/// its end along `(cos α, −sin α)`, `(h − (2R + T)(1 − cos α)) / sin α`
+/// long; the second bend about the axis `R` beyond the web's top skin at
+/// its end, back by `α`; the far side level from its end on.
+fn in_jog(j: &JogSpec, t: f64, x: f64, z: f64, m: f64) -> bool {
+    let (sa, ca) = j.angle.psin_cos();
+    let (r, xj) = (j.radius, j.line[0][0]);
+    let web = (j.offset - (2.0 * r + t) * (1.0 - ca)) / sa;
+    let (n, u) = ([sa, ca], [ca, -sa]);
+    let dot = |a: [f64; 2], b: [f64; 2]| a[0] * b[0] + a[1] * b[1];
+    // The web: from its inside point at the first bend's end.
+    let inside = [xj + r * sa, -r + r * ca];
+    let d = [x - inside[0], z - inside[1]];
+    let (s, across) = (dot(d, u), dot(d, n));
+    if s >= -m && s <= web + m && across >= -m && across <= t + m {
+        return true;
+    }
+    // The second bend, about its axis beyond the web's top skin.
+    let axis = [
+        inside[0] + (t + r) * n[0] + web * u[0],
+        inside[1] + (t + r) * n[1] + web * u[1],
+    ];
+    let q = [x - axis[0], z - axis[1]];
+    let rho = q[0].phypot(q[1]);
+    let angle = |a: [f64; 2], b: [f64; 2]| (a[0] * b[1] - a[1] * b[0]).abs().patan2(dot(a, b));
+    let swept = angle(q, [-n[0], -n[1]]) + angle(q, [0.0, -1.0]) <= j.angle + 1e-9;
+    if rho >= r - m && rho <= r + t + m && swept {
+        return true;
+    }
+    // The far side, level, from the second bend's end on.
+    x >= axis[0] - m && z >= axis[1] - r - t - m && z <= axis[1] - r + m
+}
+
 fn hold(part: &Part, drawn: &Drawn, tol: &Tolerance, rng: &mut Rng, found: &mut Found) {
     let body = &part.solid.body;
     let t = part.thickness;
@@ -886,10 +920,24 @@ fn hold(part: &Part, drawn: &Drawn, tol: &Tolerance, rng: &mut Rng, found: &mut 
                 part.plane.point(q.x, q.y, q.z)
             };
             pts.push((at(0.5 * t), true));
-            if !drawn.over[0] {
+            // A point past a skin is outside unless a jog's web, second
+            // bend or far side lies there (a jog bent past square runs
+            // back under or over the near side: seeded case 295, a jog of
+            // 179.7 degrees down whose web lies about 2R under the base's
+            // bottom skin, refused until 2026-11-15 by the plate's trace,
+            // then built right with these points inside its web, which the
+            // rays and the mesh both said).
+            let covered = |dir: Direction| {
+                drawn
+                    .spec
+                    .jogs
+                    .iter()
+                    .any(|j| j.direction == dir && in_jog(j, t, p[0], -0.1 * t, 0.05 * t))
+            };
+            if !drawn.over[0] && !covered(Direction::Up) {
                 pts.push((at(1.1 * t), false));
             }
-            if !drawn.over[1] {
+            if !drawn.over[1] && !covered(Direction::Down) {
                 pts.push((at(-0.1 * t), false));
             }
         }

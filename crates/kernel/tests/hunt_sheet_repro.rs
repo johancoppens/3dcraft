@@ -476,3 +476,39 @@ fn a_bend_of_a_tiny_angle_has_a_freeform_rim() {
     assert!(slo.z > -716.0 && slo.z < -714.0, "{slo:?}");
     assert!(lo.z < -4.5e6, "known: the box reaches {lo:?}");
 }
+
+/// KNOWN, owed (docs/design/sheetmetal.md › *Limits*): a bend of
+/// 0.00115 degrees down about the inner radius 0.004, 2.26 thick (the
+/// metal hunt's seeded case 55, its other flanges left out): the bend's
+/// inner arc `θ R` is 8e-8, shorter than the tolerance, so its inner skin
+/// has no width, and the plate's own check refuses the part with "loop …
+/// runs over itself", a true reason that names no bend. Until 2026-11-15
+/// the plate's trace of the arcs refused it earlier ("could not be traced
+/// … in 4096 points"). Owed: a refusal of such a bend by name. When it is
+/// fixed this test fails: take it off.
+#[test]
+fn a_bend_whose_inner_arc_is_shorter_than_the_tolerance_is_refused_unnamed() {
+    let tol = tolerance(1.0);
+    let made = build(
+        &rect_spec(
+            27.839120860428434,
+            54.6251641612266,
+            2.257940608326146,
+            1.0,
+            vec![flange(
+                3,
+                0.001151984499f64.to_radians(),
+                Direction::Down,
+                3.961547451586655e-3,
+                1.0,
+                27.38840619926645,
+            )],
+        ),
+        &tol,
+    );
+    let e = made.expect_err("known refused");
+    assert!(
+        e.to_string().contains("runs over itself"),
+        "known: the plate's own check; now: {e}"
+    );
+}
