@@ -608,12 +608,17 @@ fn plates_of_whole_spheres_and_tori_are_hollows() {
 fn plates_of_closed_sheets_of_several_faces_are_hollows() {
     let tally = whole(&["capsule", "rounded ring"]);
     assert!(tally.wrong.is_empty(), "{:?}", tally.wrong);
+    assert_eq!(
+        (tally.right, tally.refused_past, tally.slivers.len()),
+        (248, 135, 31)
+    );
 }
 
 #[test]
 fn a_plate_of_a_ring_turned_from_a_closed_spline_is_a_hollow() {
     let tally = whole(&["spline ring"]);
     assert!(tally.wrong.is_empty(), "{:?}", tally.wrong);
+    assert_eq!(tally.right, 54);
 }
 
 #[test]
@@ -757,12 +762,17 @@ fn sampled(body: &Body) -> (Vec3, Vec3) {
 /// length times `k`: built right (valid, its volume `w d T + d (θ T (R +
 /// T/2) + L T)`, meshed), and its `Body::bbox` the box of its edges (within
 /// what 1024 points along an arc can miss and the tolerance), or within a
-/// thousandth of the part's size; else counted wild.
+/// thousandth of the part's size; else counted wild. Before 2026-11-15, 60
+/// of the 2,080 were wild (bends of 1e-5 to 0.0032 degrees, each with one
+/// freeform side whose net spanned most of the bend's circle).
 #[test]
 fn bends_of_any_angle_have_the_box_of_their_edges() {
     let bent = bends();
-    println!("{} right, {} refused", bent.right, bent.refused.len());
     assert!(bent.wild.is_empty() && bent.wrong.is_empty());
+    // The refused: bends of 1e-6 to 1e-3 degrees whose strip or inner arc
+    // is about the tolerance or shorter (docs/design/sheetmetal.md ›
+    // *Limits*), the same parts and words as before 2026-11-15.
+    assert_eq!((bent.right, bent.refused.len()), (1720, 360));
 }
 
 struct Bends {
@@ -880,4 +890,76 @@ fn bends() -> Bends {
         refused,
         wrong,
     }
+}
+
+/// Does another feature write a turn of a tiny angle with a far control
+/// point? A cubic spline profile turned about an axis beside it by 1e-6 to
+/// 179 degrees (a rational surface of revolution: per quarter turn or less
+/// a quadratic arc, its middle control point `r / cos(θ/2)` from the axis,
+/// beside the arc for a small `θ`), at three scales: `Body::bbox` (the
+/// spline faces' whole nets) is the box of the edges sampled within a
+/// thousandth of the size, or within the arc's own bulge past its chord.
+#[test]
+fn a_spline_turned_by_any_angle_has_a_net_beside_it() {
+    let mut wild = Vec::new();
+    let mut count = 0;
+    for k in SCALES {
+        let tol = tolerance(k);
+        let control = [
+            [20.0 * k, 0.0],
+            [26.0 * k, 3.0 * k],
+            [22.0 * k, 7.0 * k],
+            [27.0 * k, 10.0 * k],
+        ];
+        let curves = [
+            SketchCurve {
+                id: 1,
+                curve: Curve2::Spline(Spline2 {
+                    degree: 3,
+                    knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                    control: control.to_vec(),
+                }),
+            },
+            line(2, [27.0 * k, 10.0 * k], [20.0 * k, 10.0 * k]),
+            line(3, [20.0 * k, 10.0 * k], [20.0 * k, 0.0]),
+        ];
+        let profiles = detect_profiles(&curves, &tol).unwrap();
+        for degrees in [1e-6, 1e-4, 1e-2, 1.0, 45.0, 90.0, 179.0] {
+            let th = f64::to_radians(degrees);
+            let body = match revolve(
+                &profiles,
+                &Frame::WORLD,
+                [0.0, 0.0],
+                [0.0, 1.0],
+                0.0,
+                th,
+                &tol,
+            ) {
+                Ok(made) => made.body,
+                Err(e) => {
+                    println!("{k} {degrees}°: refused: {e}");
+                    continue;
+                }
+            };
+            count += 1;
+            let (slo, shi) = sampled(&body);
+            let size = (shi - slo).length();
+            let (lo, hi) = body.bbox().unwrap().corners().unwrap();
+            let over = (slo - lo).max(hi - shi);
+            let most = over.x.max(over.y).max(over.z);
+            // The arc's middle control point past the arc: `r (sec(φ/2) −
+            // 1)` for pieces of `φ`, a quarter turn or less, at the largest
+            // radius.
+            let pieces = (degrees / 90.0).ceil();
+            let bulge = 27.0 * k * (1.0 / (0.5 * th / pieces).pcos() - 1.0);
+            if most > bulge + 1e-3 * size {
+                wild.push(format!("{k} {degrees}°: {:.3e} of the size", most / size));
+            }
+        }
+    }
+    println!("turned splines: {count}, wild {}", wild.len());
+    // The smallest turn is refused: it moves the profile by less than the
+    // tolerance.
+    assert_eq!(count, 18);
+    assert!(wild.is_empty(), "{wild:?}");
 }
