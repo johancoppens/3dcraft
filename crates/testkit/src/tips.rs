@@ -229,26 +229,34 @@ pub fn pod(tip: &Tip, frame: &Frame) -> Result<Body, String> {
 /// end. The end's plane is `frame`'s xy plane, its outward normal
 /// `frame`'s z.
 pub fn spline_prism(frame: &Frame, k: f64, section: &[Piece], depth: f64) -> Result<Body, String> {
-    spline_frustum(frame, k, section, depth, 1.0)
+    spline_frustum(frame, k, section, depth, 1.0, 0.0)
 }
 
 /// [`spline_prism`] with the section at the end scaled by `scale` about
 /// the frame's origin (the base keeps it as it is): below 1 the sides
 /// lean in and would meet `depth · scale / (1 − scale)` beyond the end.
+/// The base is tilted by `lean` (it lies at `z = −depth + lean · x`): the
+/// sides' steps across the end are then of different lengths, and they
+/// reach a plane beyond it each at its own factor (the tip's general
+/// form).
 pub fn spline_frustum(
     frame: &Frame,
     k: f64,
     section: &[Piece],
     depth: f64,
     scale: f64,
+    lean: f64,
 ) -> Result<Body, String> {
     let count = section.len();
     if count < 2 {
         return Err("a prism needs two pieces at least".to_string());
     }
     let at = |[x, y]: [f64; 2], z: f64| {
-        let s = if z == 0.0 { scale } else { 1.0 };
-        frame.point(x * k * s, y * k * s, z * k)
+        if z == 0.0 {
+            frame.point(x * k * scale, y * k * scale, 0.0)
+        } else {
+            frame.point(x * k, y * k, (z + lean * x) * k)
+        }
     };
     let clamped = |degree: usize| {
         let mut knots = vec![0.0; degree + 1];
@@ -342,9 +350,12 @@ pub fn spline_frustum(
         base.push(backward(pick(&bottoms, index)?));
     }
     let outline = body.add_loop(base);
-    let down = frame
-        .reversed_at(frame.point(0.0, 0.0, -depth * k))
-        .ok_or("a frame that cannot be turned over")?;
+    let down = Frame::new(
+        frame.point(0.0, 0.0, -depth * k),
+        frame.vector(lean, 0.0, -1.0),
+        frame.x(),
+    )
+    .ok_or("a base that cannot be tilted so")?;
     faces.push(body.add_face(Surface::Plane(Plane::new(down)), false, vec![outline]));
     let mut end = Vec::with_capacity(count);
     for index in 0..count {

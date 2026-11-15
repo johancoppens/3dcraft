@@ -91,6 +91,7 @@ fn sound(body: &Body, k: f64, size: f64, what: &str) -> f64 {
 
 #[track_caller]
 fn assert_near(got: f64, want: f64, relative: f64, what: &str) {
+    println!("{what}: {:e} of itself off", ((got - want) / want).abs());
     assert!(
         (got - want).abs() <= relative * want.abs(),
         "{what}: got {got:e}, want {want:e} (off by {:e})",
@@ -176,6 +177,8 @@ fn behind_unchanged(before: &Body, made: &Tipped, what: &str) {
 /// from it.
 #[track_caller]
 fn tangent(made: &Tipped, normal: Vec3, what: &str) {
+    let mut rim = 0.0_f64;
+    let mut near_tip = [0.0_f64; 3];
     for (face, side) in tip_faces(made) {
         let surface = nurbs(&made.body, face);
         let ((u0, u1), _) = surface.domain();
@@ -192,9 +195,10 @@ fn tangent(made: &Tipped, normal: Vec3, what: &str) {
             );
             let angle = outward(&made.body, face, u, 0.0).angle_to(side_normal);
             assert!(angle <= 1e-12, "{what}: {angle:e} rad across the rim");
+            rim = rim.max(angle);
         }
         let mut last = f64::INFINITY;
-        for eps in [1e-2, 1e-3, 1e-4] {
+        for (slot, eps) in near_tip.iter_mut().zip([1e-2, 1e-3, 1e-4]) {
             let largest = (0..=8)
                 .map(|i| {
                     let u = u0 + (u1 - u0) * f64::from(i) / 8.0;
@@ -206,8 +210,13 @@ fn tangent(made: &Tipped, normal: Vec3, what: &str) {
                 "{what}: {largest:e} rad off the end's normal at {eps:e} from the tip"
             );
             last = largest;
+            *slot = slot.max(largest);
         }
     }
+    println!(
+        "{what}: across the rim at most {rim:e} rad; off the end's normal at 1e-2, 1e-3, 1e-4 of the way from the tip {:e}, {:e}, {:e} rad; star {:e}",
+        near_tip[0], near_tip[1], near_tip[2], made.star
+    );
 }
 
 #[test]
@@ -471,7 +480,7 @@ fn a_frustum_takes_a_tip_up_to_where_its_sides_close_in() {
     // Sides that lean in to meet 2 · ½ / ½ = 2 beyond the end.
     let frame = frames(1.0)[1];
     let section = ellipse(2.0, 2.0);
-    let frustum = spline_frustum(&frame, 1.0, &section, DEPTH, 0.5).unwrap();
+    let frustum = spline_frustum(&frame, 1.0, &section, DEPTH, 0.5, 0.0).unwrap();
     let end = end_of(&frustum);
     let made = tip(
         &frustum,
@@ -505,6 +514,42 @@ fn a_frustum_takes_a_tip_up_to_where_its_sides_close_in() {
         matches!(error, KernelError::Tip { .. }) && text.contains("shorter"),
         "{text}"
     );
+}
+
+/// Sides whose steps across the end differ in length (the base tilted):
+/// the tip's general form, four rows, through the splice. No closed form;
+/// held to the kernel's checks, the mesh, the tangency at the rim and the
+/// tip, and the faces behind the end.
+#[test]
+fn sides_that_reach_the_tip_s_plane_unevenly_take_the_general_form() {
+    use craft3d_geom::tip::TipForm;
+    for k in SCALES {
+        for frame in frames(k) {
+            for (name, section, _) in sections() {
+                let what = format!("{name}, k {k:e}, {frame:?}");
+                let leaning = spline_frustum(&frame, k, &section, DEPTH, 1.0, 0.2).unwrap();
+                let at = if name == "L" {
+                    Some([0.5 * k, 0.5 * k])
+                } else {
+                    None
+                };
+                let made = tip(
+                    &leaning,
+                    &TipAsk {
+                        at,
+                        ..ask(end_of(&leaning), Some(1.0 * k), ROUND_FULLNESS)
+                    },
+                    &tolerance(k),
+                    None,
+                )
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
+                assert_eq!(made.form, TipForm::General, "{what}");
+                sound(&made.body, k, 4.0, &what);
+                behind_unchanged(&leaning, &made, &what);
+                tangent(&made, frame.z(), &what);
+            }
+        }
+    }
 }
 
 #[test]
