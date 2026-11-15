@@ -189,5 +189,10 @@ says so.
 - **`session.report`** gives a bug report of the last failed command: the version, the commit it was
   built from, the platform, and the command with its parameters and error
   ([Troubleshooting › Reporting a problem](troubleshooting.md#reporting-a-problem)).
+- **`session.whatsNew`** says what changed since a version, from the release notes the program
+  carries (nothing is fetched): `{"since": "0.1.1"}` gives every version after it, newest first, each
+  with its entries by kind. An entry with `changesAnswer: true` says that a result 3DCraft gave before
+  can differ now (a measure, a proof, a check, a body that was built wrong): what you checked with the
+  version before is worth checking again ([The window › What's new](window.md#whats-new)).
 
 **Next:** [Troubleshooting](troubleshooting.md).

@@ -405,6 +405,7 @@ version = "0.1.2"
 dependencies = [
  "craft3d-automation",
  "craft3d-buildinfo",
+ "craft3d-changelog",
  "craft3d-engine",
  "craft3d-math",
  "craft3d-regen",
@@ -445,11 +446,16 @@ name = "craft3d-buildinfo"
 version = "0.1.2"
 
 [[package]]
+name = "craft3d-changelog"
+version = "0.1.2"
+
+[[package]]
 name = "craft3d-cli"
 version = "0.1.2"
 dependencies = [
  "craft3d-automation",
  "craft3d-buildinfo",
+ "craft3d-changelog",
  "craft3d-engine",
  "craft3d-gpu",
  "craft3d-math",
@@ -479,6 +485,7 @@ name = "craft3d-engine"
 version = "0.1.2"
 dependencies = [
  "craft3d-assembly",
+ "craft3d-changelog",
  "craft3d-doc",
  "craft3d-drawing",
  "craft3d-expr",
@@ -738,6 +745,7 @@ version = "0.1.2"
 dependencies = [
  "craft3d-automation",
  "craft3d-buildinfo",
+ "craft3d-changelog",
  "craft3d-engine",
  "craft3d-kernel",
  "craft3d-math",
@@ -3761,6 +3769,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 name = "xtask"
 version = "0.1.2"
 dependencies = [
+ "craft3d-changelog",
  "craft3d-doc",
  "craft3d-font",
  "craft3d-format",

@@ -691,8 +691,10 @@ impl Shell {
     /// feature panel and no text field has the keyboard.
     pub(crate) fn player_keys(&mut self, ctx: &egui::Context) {
         // Not under a dialog: the closing question or a Help window.
-        let modal =
-            self.closing.is_some() || self.state.dialogs.about || self.state.dialogs.shortcuts;
+        let modal = self.closing.is_some()
+            || self.state.dialogs.about
+            || self.state.dialogs.shortcuts
+            || self.state.whats_new.window;
         if self.timeline.steps == 0 || modal || ctx.egui_wants_keyboard_input() {
             return;
         }

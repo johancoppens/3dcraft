@@ -1,7 +1,7 @@
 //! Where the regions of one solid's faces are with respect to the other
 //! solid, and which of them the operation keeps.
 
-use super::hits::{curve_hits, signed_distance};
+use super::hits::{MISSED, curve_hits, signed_distance};
 use super::outline::{
     Outline, SLIVER, Side, boxes_meet, line_in_box, nearest, onto, outward_normal, surface_distance,
 };
@@ -13,7 +13,7 @@ use super::{
 };
 use super::{face_id, geometry};
 use craft3d_geom::intersect::CurveIntersection;
-use craft3d_geom::{Curve3, Line, Surface};
+use craft3d_geom::{Curve3, GeomError, Line, Surface};
 use craft3d_math::{Tolerance, Vec3};
 use craft3d_topo::Coedge;
 use std::collections::{BTreeMap, BTreeSet};
@@ -50,7 +50,10 @@ const TRIES: usize = 4;
 
 /// True when `p`, which is not on its boundary, is inside `solid`: a ray
 /// from it crosses the boundary an odd number of times. A ray that meets
-/// an edge, a vertex, or a face tangentially is abandoned for the next.
+/// an edge, a vertex, or a face tangentially is abandoned for the next,
+/// and so is one whose meeting with a face could not be told
+/// (`hits::MISSED`): a crossing is counted or the ray is not used, never
+/// left out.
 pub(super) fn inside(solid: &Solid, p: Vec3, tolerance: &Tolerance) -> Result<bool, Stop> {
     let tol = tolerance.linear;
     // A point within reach of a face of the solid is neither inside nor
@@ -120,11 +123,13 @@ pub(super) fn inside(solid: &Solid, p: Vec3, tolerance: &Tolerance) -> Result<bo
             let outline = solid.outline(face)?;
             let named = [solid.name(face)];
             let side = |q: Vec3| outline.side(q, tol).map_err(|r| Stop::of(r).at(&named));
-            let hits = match curve_hits(&ray, (from, leave), outline.sheet(), tolerance)
-                .map_err(|e| geometry(e, &named))?
-            {
-                CurveIntersection::OnSurface => continue 'rays,
-                CurveIntersection::Hits(hits) => hits,
+            let hits = match curve_hits(&ray, (from, leave), outline.sheet(), tolerance) {
+                // Whether the ray meets this face could not be told
+                // (`hits::MISSED`): no ray to count by.
+                Err(GeomError::NoConvergence(reason)) if reason == MISSED => continue 'rays,
+                Err(error) => return Err(geometry(error, &named)),
+                Ok(CurveIntersection::OnSurface) => continue 'rays,
+                Ok(CurveIntersection::Hits(hits)) => hits,
             };
             for hit in hits {
                 if hit.t.abs() <= tol {

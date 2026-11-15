@@ -47,9 +47,15 @@ Options:
                               Documents/3DCraft for both.
   --state-dir DIR             3DCraft's own folder: the control token, the
                               entries the bridge finds windows by, the
-                              remembered switch, and the default recovery
-                              directory and recent files. Default: 3dcraft
-                              in your state directory (see --recovery-dir).
+                              remembered switch, the default recovery
+                              directory and recent files, and the version
+                              whose release notes you have seen (What's
+                              new; kept only by a window that keeps its
+                              autosaves or its recent files there, so with
+                              --recovery-dir given the start screen never
+                              offers what is new by itself; Help has it).
+                              Default: 3dcraft in your state directory
+                              (see --recovery-dir).
   --renderer auto|cpu         What shades the model in the viewport: auto
                               (the GPU when there is one, else the CPU; the
                               default) or cpu (the reference renderer, to
@@ -119,6 +125,13 @@ pub struct Options {
     /// (`CRAFT3D_AGENT_PORT`; 7878 when not given): a test's or an agent's
     /// window keeps off the person's port with it. 0 takes any free port.
     pub agent_port: Option<u16>,
+    /// Where the newest version whose release notes were seen is kept
+    /// (`notes.rs`): `whats-new.json` in the state folder, for a window
+    /// that keeps its autosaves or its recent files there; `None` for
+    /// one that keeps both elsewhere or not at all (a test's, an
+    /// agent's: `--recovery-dir DIR` or `none`), which then offers no
+    /// notes and writes nothing.
+    pub seen_file: Option<PathBuf>,
 }
 
 /// What the command line asked for. Made once per start and taken apart
@@ -324,6 +337,10 @@ pub fn parse(
             .and_then(crate::places::recent_file_beside),
         None => None,
     };
+    // What's new: remembered only by a window that is the person's own,
+    // one that keeps its autosaves or its recent files in the state
+    // folder (`notes.rs`, *Who keeps the note*).
+    options.seen_file = crate::notes::seen_file_for(&options);
     if options.control.is_some() && options.token_file.is_none() && options.state_dir.is_none() {
         return Err(
             "`--control` needs `--control-token-file FILE` here: there is no state folder for the default one (give `--state-dir DIR`), and the token is never given on the command line"
@@ -411,6 +428,7 @@ mod tests {
                 window_size: None,
                 state_dir: None,
                 agent_port: None,
+                seen_file: None,
             }
         );
         // Port 0 asks for a free one.
@@ -637,11 +655,23 @@ mod tests {
         let at = PathBuf::from("/t/state");
         assert_eq!(given.recovery_dir, Some(at.join("recovery")));
         assert_eq!(given.recent_file, Some(at.join("recent-files.json")));
+        // The version whose release notes were seen is kept there too,
+        // in the person's own folder as in one given.
+        assert_eq!(given.seen_file, Some(at.join("whats-new.json")));
+        assert_eq!(default.seen_file, Some(state.join("whats-new.json")));
         let none = with(
             &home,
             &["--state-dir", "/t/state", "--recovery-dir", "none"],
         );
         assert_eq!((none.recovery_dir, none.recent_file), (None, None));
+        // A window with a recovery directory of its own, or none (a
+        // test's, an agent's), keeps no such note: it offers no release
+        // notes and writes nothing into the person's folder.
+        assert_eq!(none.seen_file, None);
+        let own = with(&home, &["--recovery-dir", "/t/recovery"]);
+        assert_eq!(own.seen_file, None);
+        let nowhere = with(&|_| None, &[]);
+        assert_eq!((nowhere.state_dir, nowhere.seen_file), (None, None));
         let env = |name: &str| (name == "CRAFT3D_STATE_DIR").then(|| "/v/state".to_string());
         assert_eq!(with(&env, &[]).state_dir, Some(PathBuf::from("/v/state")));
         let env = |name: &str| (name == "CRAFT3D_AGENT_PORT").then(|| "7990".to_string());
