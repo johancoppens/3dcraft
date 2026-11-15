@@ -506,17 +506,19 @@ impl<'a> Reader<'a> {
             ))
         })?;
         let (unit, against) = self.parameter_unit(basis, 0)?;
-        if against {
-            // The basis is read turned round, its parameter no longer the
-            // file's.
-            return self.bad(
-                id,
-                &format!(
-                    "{what} is a parameter value on a trimmed curve that runs against its own basis, which is not read (a trim by point reads)"
-                ),
-            );
-        }
         let ours = t * unit;
+        // A trimmed curve that runs against its own basis is read as the
+        // basis turned round ([`bounded::reversed`]), whose parameter is
+        // the basis's mirrored: `−t` for a line, a circle or an ellipse,
+        // `a + b − t` over the domain `[a, b]` of a B-spline.
+        let ours = match curve {
+            _ if !against => ours,
+            Curve3::Nurbs(n) => {
+                let (a, b) = n.domain();
+                a + b - ours
+            }
+            _ => -ours,
+        };
         if ours.is_finite() {
             Ok(ours)
         } else {

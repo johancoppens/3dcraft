@@ -241,7 +241,7 @@ pub fn revolution(curve: &Curve3, at: Vec3, axis: Vec3) -> Result<Swept, String>
             let Some(nurbs) = as_nurbs(curve) else {
                 return Err(format!("a revolution of a {} is not read", curve.kind()));
             };
-            if !crossings(&nurbs, at, axis).1.is_empty() {
+            if !crossings(&nurbs, at, axis).cuts.is_empty() {
                 // Its parts on either side of the axis: the faces choose.
                 return Ok(Swept::Turned {
                     curve: nurbs,
@@ -669,18 +669,27 @@ pub fn conic_surface(
 }
 
 /// Where a profile turned about the axis through `at` along `axis` (a
-/// unit vector) crosses it inside its domain: the profile's direction
-/// from the axis in its plane (`across`, the radial direction of its
-/// control point farthest from the axis), and the parameters at which the
-/// signed distance along it changes sign, each found by bisection to
-/// rounding. None for a profile that is not in one plane with the axis
-/// (its control points off that plane by more than rounding) or that
-/// does not cross it; a profile that only starts or ends on the axis (a
-/// pole) does not cross it. A Bézier piece whose signed distances of its
-/// control points (times their weights, which are positive) all have one
-/// sign has no crossing (the convex hull); the others are looked at in 64
-/// steps, a sign change between two steps bisected.
-pub(crate) fn crossings(curve: &NurbsCurve, at: Vec3, axis: Vec3) -> (Vec3, Vec<f64>) {
+/// unit vector) goes across it inside its domain, as seen in the plane
+/// through the axis and the radial direction of its control point
+/// farthest from the axis (`across`): the parameters at which the signed
+/// distance along `across` changes sign, each found by bisection to
+/// rounding, and how far the profile lies out of that plane (`off`, the
+/// largest distance of a control point from it; the curve lies in the
+/// hull of its control points). Whether such a sign change is a crossing
+/// of the axis is for [`turned_part`] to say, against the file's
+/// uncertainty: for a profile within it of the plane it is; for one
+/// farther out the profile may pass the axis anywhere. A profile that only
+/// starts or ends on the axis (a pole) has none. A Bézier piece whose
+/// signed distances of its control points (times their weights, which are
+/// positive) all have one sign has none (the convex hull); the others are
+/// looked at in 64 steps, a sign change between two steps bisected.
+pub(crate) struct Crossings {
+    pub across: Vec3,
+    pub cuts: Vec<f64>,
+    pub off: f64,
+}
+
+pub(crate) fn crossings(curve: &NurbsCurve, at: Vec3, axis: Vec3) -> Crossings {
     let radial = |p: Vec3| {
         let off = p - at;
         off - axis * off.dot(axis)
@@ -694,17 +703,22 @@ pub(crate) fn crossings(curve: &NurbsCurve, at: Vec3, axis: Vec3) -> (Vec3, Vec<
         .iter()
         .map(|&p| radial(p))
         .max_by(|a, b| a.length().total_cmp(&b.length()));
-    let Some(across) = widest.and_then(Vec3::normalized) else {
-        return (Vec3::ZERO, Vec::new());
+    let none = |across: Vec3| Crossings {
+        across,
+        cuts: Vec::new(),
+        off: 0.0,
     };
-    let normal = axis.cross(across);
-    if !(size.is_finite() && size > 0.0)
-        || points
-            .iter()
-            .any(|&p| !((p - at).dot(normal).abs() <= 1e-12 * size))
-    {
-        return (across, Vec::new());
+    let Some(across) = widest.and_then(Vec3::normalized) else {
+        return none(Vec3::ZERO);
+    };
+    if !(size.is_finite() && size > 0.0) {
+        return none(across);
     }
+    let normal = axis.cross(across);
+    let off = points
+        .iter()
+        .map(|&p| (p - at).dot(normal).abs())
+        .fold(0.0_f64, f64::max);
     let small = 1e-14 * size;
     let side = |t: f64| {
         let s = (curve.eval(t) - at).dot(across);
@@ -771,28 +785,264 @@ pub(crate) fn crossings(curve: &NurbsCurve, at: Vec3, axis: Vec3) -> (Vec3, Vec<
     }
     let width = d1 - d0;
     out.retain(|&t| t > d0 + 1e-12 * width && t < d1 - 1e-12 * width);
-    (across, out)
+    Crossings {
+        across,
+        cuts: out,
+        off,
+    }
 }
 
-/// The part of the profile of a [`Swept::Turned`] a face lies on, turned
-/// (the exact rational B-spline surface of that part, its normal the
-/// file's): the profile is cut where it crosses its axis (each cut end put
-/// on the axis exactly, a move of rounding), and the face's edges (33
-/// points each), each turned into the profile's plane on the side of the
-/// part, are held to every part. The part they lie nearest to is the
-/// face's when no other part is within four times as near and `merge`
-/// more; where two are (parts that mirror each other sweep the same
-/// surface twice, with opposite normals), which the face is on is in its
-/// parameter-space curves, which are not read, and it is refused.
+/// A profile's meridian trace: what a turn about the axis keeps of each of
+/// its points, the height along the axis and the distance from it, at 64
+/// steps per Bézier piece.
+struct Trace<'a> {
+    curve: &'a NurbsCurve,
+    at: Vec3,
+    axis: Vec3,
+    steps: Vec<(f64, f64, f64)>,
+}
+
+impl<'a> Trace<'a> {
+    fn new(curve: &'a NurbsCurve, at: Vec3, axis: Vec3) -> Self {
+        let mut trace = Trace {
+            curve,
+            at,
+            axis,
+            steps: Vec::new(),
+        };
+        let mut ts = Vec::new();
+        for ((lo, hi), _) in curve.bezier_pieces() {
+            for k in 0..64 {
+                ts.push(lo + (hi - lo) * f64::from(k) / 64.0);
+            }
+        }
+        ts.push(curve.domain().1);
+        trace.steps = ts
+            .into_iter()
+            .map(|t| {
+                let (z, r) = trace.meridian(curve.eval(t));
+                (t, z, r)
+            })
+            .collect();
+        trace
+    }
+
+    /// Height along the axis and distance from it.
+    fn meridian(&self, p: Vec3) -> (f64, f64) {
+        let off = p - self.at;
+        let z = off.dot(self.axis);
+        (z, (off - self.axis * z).length())
+    }
+
+    /// The parameter in `[lo, hi]` whose meridian point is nearest to that
+    /// of `p`, and how near: the nearest step, refined by golden-section
+    /// search between its neighbours.
+    fn nearest(&self, p: Vec3, (lo, hi): (f64, f64)) -> (f64, f64) {
+        let (zp, rp) = self.meridian(p);
+        let gap = |t: f64| {
+            let (z, r) = self.meridian(self.curve.eval(t));
+            (z - zp).hypot(r - rp)
+        };
+        let mut best: Option<(usize, f64)> = None;
+        for (k, &(t, z, r)) in self.steps.iter().enumerate() {
+            if t < lo || t > hi {
+                continue;
+            }
+            let d = (z - zp).hypot(r - rp);
+            if best.is_none_or(|(_, b)| d < b) {
+                best = Some((k, d));
+            }
+        }
+        let Some((k, _)) = best else {
+            return (lo, f64::INFINITY);
+        };
+        let step = |j: usize| self.steps.get(j).map(|s| s.0);
+        let mut a = k.checked_sub(1).and_then(step).unwrap_or(lo).max(lo);
+        let mut b = step(k + 1).unwrap_or(hi).min(hi);
+        let g = 0.5 * (5.0f64.sqrt() - 1.0);
+        for _ in 0..60 {
+            let (c, d) = (b - g * (b - a), a + g * (b - a));
+            if gap(c) < gap(d) {
+                b = d;
+            } else {
+                a = c;
+            }
+        }
+        let t = 0.5 * (a + b);
+        let at_step = step(k).unwrap_or(t);
+        if gap(at_step) < gap(t) {
+            (at_step, gap(at_step))
+        } else {
+            (t, gap(t))
+        }
+    }
+}
+
+/// For a profile that goes across the plane through its axis and lies out
+/// of it by more than the file's uncertainty (so it cannot be cut on the
+/// axis without moving it by more than that), whether a face on its whole
+/// turn is a face the file can mean, else why not:
+///
+/// - its edges must not lie on two of the profile's sides at once
+///   (the sides between the places it goes across the plane, `cuts`):
+///   where they do, the sides sweep the same surface twice, as mirror
+///   images, and which one the face is on is not in what is read;
+/// - its region on the surface must not reach an end of the profile that
+///   is not on the axis (a turn there is no pole: the face would not be
+///   closed). The region is told by the loops that go round the axis: a
+///   face lies on the left of each, seen from its normal (`∂u × ∂v`, `u`
+///   round the axis counter-clockwise from its tip, `v` along the
+///   profile, turned over where the face is `reversed`), so a loop that
+///   goes round in the sense of `u` has the face towards larger `v`, the
+///   other way smaller; the face reaches the profile's start where its
+///   lowest such loop has it towards smaller `v`, its end where its
+///   highest has it towards larger. A face without such a loop is a patch
+///   its loops close.
+fn whole_turn_holds(
+    body: &Body,
+    trace: &Trace<'_>,
+    loops: &[LoopId],
+    reversed: bool,
+    merge: f64,
+    cuts: &[f64],
+) -> Result<(), String> {
+    let (d0, d1) = trace.curve.domain();
+    let mut ends = vec![d0];
+    ends.extend(cuts.iter().copied());
+    ends.push(d1);
+    let points = edge_points(body, loops, 32);
+    let on_two = points.iter().all(|&p| {
+        ends.windows(2)
+            .filter(|w| match **w {
+                [lo, hi] => trace.nearest(p, (lo, hi)).1 <= merge,
+                _ => false,
+            })
+            .count()
+            >= 2
+    });
+    if !points.is_empty() && on_two {
+        return Err(
+            "its profile goes across the axis it is turned about, and its sides sweep the same surface twice, as mirror images; the face's edges lie on both, and which side it is on is in its parameter-space curves, which are not read: not read"
+                .to_string(),
+        );
+    }
+    // The loops that go round the axis: where along the profile, and the
+    // way the face lies from them.
+    let mut around: Vec<(f64, f64)> = Vec::new();
+    for l in loops {
+        let Some(l) = body.loop_(*l) else {
+            continue;
+        };
+        let mut pts = Vec::new();
+        for c in &l.coedges {
+            let Some(edge) = body.edge(c.edge) else {
+                continue;
+            };
+            let (t0, t1) = edge.range;
+            let mut run: Vec<Vec3> = (0..=32)
+                .map(|k| edge.curve.eval(t0 + (t1 - t0) * f64::from(k) / 32.0))
+                .collect();
+            if c.reversed {
+                run.reverse();
+            }
+            pts.extend(run);
+        }
+        let radial = |p: Vec3| {
+            let off = p - trace.at;
+            off - trace.axis * off.dot(trace.axis)
+        };
+        let mut turn = 0.0;
+        for (k, &p) in pts.iter().enumerate() {
+            let Some(&q) = pts.get(k + 1).or_else(|| pts.first()) else {
+                continue;
+            };
+            let (a, b) = (radial(p), radial(q));
+            if a.length() <= merge || b.length() <= merge {
+                continue;
+            }
+            turn += trace.axis.dot(a.cross(b)).patan2(a.dot(b));
+        }
+        let winding = (turn / std::f64::consts::TAU).round();
+        if winding == 0.0 || !winding.is_finite() {
+            continue;
+        }
+        let mut ts: Vec<f64> = pts.iter().map(|&p| trace.nearest(p, (d0, d1)).0).collect();
+        ts.sort_by(f64::total_cmp);
+        let Some(&middle) = ts.get(ts.len() / 2) else {
+            continue;
+        };
+        let towards = winding.signum() * if reversed { -1.0 } else { 1.0 };
+        around.push((middle, towards));
+    }
+    around.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let pole = |t: f64| trace.meridian(trace.curve.eval(t)).1 <= merge;
+    if let Some(&(_, towards)) = around.first()
+        && towards < 0.0
+        && !pole(d0)
+    {
+        return Err(
+            "its profile goes across the axis it is turned about out of a plane through the axis by more than the file's uncertainty, and the face on it reaches the profile's start, which is not on the axis: the face is not closed there; not read"
+                .to_string(),
+        );
+    }
+    if let Some(&(_, towards)) = around.last()
+        && towards > 0.0
+        && !pole(d1)
+    {
+        return Err(
+            "its profile goes across the axis it is turned about out of a plane through the axis by more than the file's uncertainty, and the face on it reaches the profile's end, which is not on the axis: the face is not closed there; not read"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// The surface of a [`Swept::Turned`] a face lies on: the profile goes
+/// across the plane through its axis inside its domain ([`crossings`]).
+///
+/// *Within the file's uncertainty `merge` of that plane*, it crosses the
+/// axis there (a point whose signed distance along the plane is zero lies
+/// as far from the axis as from the plane): the profile is cut there and
+/// each cut end put on the axis, a move of at most its distance from the
+/// plane, so within `merge`, as two vertices of the file within it are
+/// one; the rest of each part is the file's curve as it is, not moved
+/// into the plane. The face's edges (33 points each), each turned into the
+/// plane on the side of a part, are held to every part; the part they lie
+/// nearest to is the face's when no other part is within four times as
+/// near and `merge` more (the parts lie within `merge` of the plane, so
+/// this holds them to it), and it is turned: the exact rational B-spline
+/// surface, its normal the file's. Where two parts are that near (parts
+/// that mirror each other sweep the same surface twice, with opposite
+/// normals), which the face is on is in its parameter-space curves, which
+/// are not read, and it is refused.
+///
+/// *Farther from the plane* the profile cannot be cut on the axis without
+/// moving it by more than `merge`, so it is turned whole, as a profile that
+/// does not go across is; the face is then held to what such a turn can
+/// carry ([`whole_turn_holds`]): its edges not on two mirrored sides at
+/// once, and its region not reaching an end of the profile off the axis
+/// (a profile across its axis but out of its plane passes it at a neck,
+/// and a cup on one side runs through it onto the other). Either fails,
+/// the face is refused, saying which. So for every distance from the plane
+/// a face is read on a turn it is closed on, or refused (`reversed`: the
+/// face turned over against the surface's normal).
 pub fn turned_part(
     body: &Body,
     curve: &NurbsCurve,
     at: Vec3,
     axis: Vec3,
     loops: &[LoopId],
+    reversed: bool,
     merge: f64,
 ) -> Result<(Surface, bool), String> {
-    let (across, cuts) = crossings(curve, at, axis);
+    let Crossings { across, cuts, off } = crossings(curve, at, axis);
+    if !(off <= merge) || cuts.is_empty() {
+        let trace = Trace::new(curve, at, axis);
+        whole_turn_holds(body, &trace, loops, reversed, merge, &cuts)?;
+        return revolved(curve, at, axis)
+            .map(|s| (Surface::Nurbs(s), false))
+            .map_err(|e| e.to_string());
+    }
     let points = edge_points(body, loops, 32);
     if points.is_empty() {
         return Err(

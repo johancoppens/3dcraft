@@ -663,7 +663,7 @@ fn every_form_of_the_conic_edge_reads_the_same_body() {
 /// trimmed curve, or as the B-spline of it a writer may give), is turned
 /// about the parabola's own axis, closed by a lid: from `u_lo` < 0 the
 /// profile crosses the axis it is turned about.
-fn cup(frame: Frame, scale: f64, u_lo: f64, spline: bool) -> (String, f64) {
+fn cup(frame: Frame, scale: f64, u_lo: f64, spline: bool, off: f64, zigzag: bool) -> (String, f64) {
     let (focal, u1): (f64, f64) = (0.3, 2.5);
     let (rho, h) = (2.0 * focal * u1, focal * u1 * u1);
     let mut s = Step::new(frame, scale);
@@ -677,14 +677,22 @@ fn cup(frame: Frame, scale: f64, u_lo: f64, spline: bool) -> (String, f64) {
         // quadratic B-spline, knots in u.
         let pieces = (u1 - u_lo).ceil() as usize;
         let step = (u1 - u_lo) / pieces as f64;
-        let mut ids = vec![s.point(on(u_lo))];
+        // Out of the plane of x and z by `off` (every second control
+        // point the other way when `zigzag`).
+        let mut n = 0;
+        let mut out = |p: Vec3| {
+            let sign = if zigzag && n % 2 == 1 { -1.0 } else { 1.0 };
+            n += 1;
+            p + Vec3::Y * (off * sign)
+        };
+        let mut ids = vec![s.point(out(on(u_lo)))];
         let mut knots = vec![real(u_lo)];
         let mut mults = vec!["3".to_string()];
         for k in 0..pieces {
             let lo = u_lo + step * k as f64;
             let hi = if k + 1 == pieces { u1 } else { lo + step };
-            ids.push(s.point(Vec3::new(focal * (lo + hi), 0.0, focal * lo * hi)));
-            ids.push(s.point(on(hi)));
+            ids.push(s.point(out(Vec3::new(focal * (lo + hi), 0.0, focal * lo * hi))));
+            ids.push(s.point(out(on(hi))));
             knots.push(real(hi));
             mults.push(if k + 1 == pieces { "3" } else { "2" }.to_string());
         }
@@ -696,7 +704,7 @@ fn cup(frame: Frame, scale: f64, u_lo: f64, spline: bool) -> (String, f64) {
             knots.join(",")
         ))
     } else {
-        let place = s.placement(Vec3::ZERO, Vec3::Y, Vec3::Z);
+        let place = s.placement(Vec3::Y * off, Vec3::Y, Vec3::Z);
         let f = s.length(focal);
         let parabola = s.add(&format!("PARABOLA('',#{place},{f})"));
         s.add(&format!(
@@ -734,7 +742,7 @@ fn a_profile_across_its_axis_reads_where_the_face_tells_and_is_refused_where_not
             for spline in [false, true] {
                 for u_lo in [0.0, -1.0, -2.5] {
                     let what = format!("from {u_lo} spline {spline} {name} @ {scale}");
-                    let (text, volume) = cup(frame, scale, u_lo, spline);
+                    let (text, volume) = cup(frame, scale, u_lo, spline, 0.0, false);
                     if u_lo < -2.0 {
                         let e = read(&text, scale).unwrap_err();
                         assert!(
@@ -1010,6 +1018,112 @@ fn turned_hyperbolas_and_parabolas_read_with_their_closed_forms() {
                 "{e}"
             );
         }
+    }
+}
+
+/// The review's round-2 fix: a profile across its axis was taken as lying
+/// in the axis's plane only within 1e-12 of its size; out by more (a
+/// writer's rounding, a turned placement, a far frame) it was turned
+/// whole, read with status ok, and could be neither measured nor meshed.
+/// Now the plane is held to the file's uncertainty (`merge`): within it,
+/// read on its parts; farther out, refused where it passes within the cap
+/// of its axis, else turned whole. A ladder of distances from the plane
+/// (the profile moved out of it, or every second control point moved each
+/// way), for the trimmed parabola and its B-spline, at three scales and
+/// in the world, a tilted and a far frame: every case is a body right to
+/// the cup's closed form, that measures and meshes closed, or a refusal
+/// that names an entity; within half of `merge` it is a body.
+#[test]
+fn a_profile_out_of_its_axis_plane_reads_right_or_is_refused_at_every_distance() {
+    let mut table = Vec::new();
+    for scale in [1e-3, 1.0, 1e6] {
+        let merge = tolerance(scale).linear;
+        let mut all = frames(scale);
+        if scale <= 1.0 {
+            // 3e4 sizes from the origin: rounding alone moves a profile
+            // out of its plane there by more than 1e-12 of its size.
+            all.push((
+                "far",
+                Frame::new(
+                    Vec3::new(1.0, -2.0, 0.5).normalized().unwrap() * (1e5 * scale),
+                    Vec3::new(0.3, -0.4, 1.0),
+                    Vec3::new(1.0, 0.2, 0.0),
+                )
+                .unwrap(),
+            ));
+        }
+        // The profile's size is about 3; distances in its own units.
+        let size = 3.0;
+        let mut ladder: Vec<f64> = [0.0, 1e-13, 1e-12, 1e-11, 1e-9, 1e-6]
+            .iter()
+            .map(|r| r * size)
+            .collect();
+        ladder.extend([0.1, 1.0, 10.0].iter().map(|m| m * merge / scale));
+        ladder.push(1e-3 * size);
+        for (name, frame) in all {
+            for (kind, spline, zigzag) in [
+                ("trimmed", false, false),
+                ("spline", true, false),
+                ("zigzag", true, true),
+            ] {
+                for &off in &ladder {
+                    let what = format!("{kind} off {:.1e} {name} @ {scale}", off / size);
+                    let (text, volume) = cup(frame, scale, -1.0, spline, off, zigzag);
+                    let expected = volume * scale.ppowi(3);
+                    match read(&text, scale) {
+                        Ok(imported) => {
+                            let body = &imported.body;
+                            let m = craft3d_topo::mass_properties(body)
+                                .unwrap_or_else(|e| panic!("{what}: read, not measured: {e:?}"));
+                            let d = relative(m.volume, expected);
+                            assert!(d <= 1e-9 + 4.0 * off / 1.5, "{what}: volume off by {d:e}");
+                            assert!(
+                                craft3d_topo::check(body, &tolerance(scale)).is_empty(),
+                                "{what}"
+                            );
+                            let chord = 1e-3 * scale;
+                            let mesh = tessellate_body(
+                                body,
+                                &TessParams {
+                                    chordal_tolerance: chord,
+                                    ..TessParams::default()
+                                },
+                            )
+                            .unwrap_or_else(|e| panic!("{what}: read, not meshed: {e:?}"));
+                            let welded = mesh.weld().unwrap();
+                            assert!(welded.is_closed(), "{what}: the mesh is not closed");
+                            // Far from the origin the mesh's volume is some
+                            // 1 % off where the measure holds to 1e-12, the
+                            // same in the plane (seen by the review, round
+                            // 2; not this reader's): held in the near frames.
+                            assert!(
+                                name == "far"
+                                    || (welded.volume() - m.volume).abs() <= m.area * chord,
+                                "{what}: mesh volume {} / {}",
+                                welded.volume(),
+                                m.volume
+                            );
+                            table.push(format!("{what}: right, {d:.1e}"));
+                        }
+                        Err(e) => {
+                            let named = e
+                                .split('#')
+                                .skip(1)
+                                .any(|r| r.chars().next().is_some_and(|c| c.is_ascii_digit()));
+                            assert!(named, "{what}: refused without naming an entity: {e}");
+                            assert!(
+                                off * scale > 0.5 * merge,
+                                "{what}: within half the file's uncertainty of the plane, refused: {e}"
+                            );
+                            table.push(format!("{what}: refused: {}", &e[..e.len().min(120)]));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for line in &table {
+        println!("{line}");
     }
 }
 

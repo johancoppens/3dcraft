@@ -340,7 +340,10 @@ fn a_cone_offset_towards_its_axis_moves_its_apex() {
 /// A trimmed curve's parameter is its basis's: a trim on a trimmed
 /// circle in a file in degrees is in degrees (it was taken as radians,
 /// review of 2026-11-15); a parameter trim on a trimmed curve that runs
-/// against its basis is refused, saying a trim by point reads.
+/// against its basis is the basis's parameter too (refused in round 2 of
+/// the review, read since): here the half circle from 180 down to 0
+/// degrees, trimmed against it from 0 to 90 degrees, the quarter from
+/// (1, 0) to (0, 1).
 #[test]
 fn trims_on_a_trimmed_curve_have_its_basis_parameter() {
     let p = parsed(
@@ -349,7 +352,7 @@ fn trims_on_a_trimmed_curve_have_its_basis_parameter() {
          #32=TRIMMED_CURVE('',#31,(PARAMETER_VALUE(0.)),(PARAMETER_VALUE(90.)),.T.,.PARAMETER.);\n\
          #33=COMPOSITE_CURVE_SEGMENT(.CONTINUOUS.,.T.,#32);\n#34=COMPOSITE_CURVE('',(#33),.F.);\n\
          #35=TRIMMED_CURVE('',#30,(PARAMETER_VALUE(180.)),(PARAMETER_VALUE(0.)),.F.,.PARAMETER.);\n\
-         #36=TRIMMED_CURVE('',#35,(PARAMETER_VALUE(0.)),(PARAMETER_VALUE(90.)),.T.,.PARAMETER.);\n\
+         #36=TRIMMED_CURVE('',#35,(PARAMETER_VALUE(0.)),(PARAMETER_VALUE(90.)),.F.,.PARAMETER.);\n\
          #37=COMPOSITE_CURVE_SEGMENT(.CONTINUOUS.,.T.,#36);\n#38=COMPOSITE_CURVE('',(#37),.F.);\n",
     );
     let reader = Reader::new(&p, 1.0, std::f64::consts::PI / 180.0, 1e-9);
@@ -359,11 +362,14 @@ fn trims_on_a_trimmed_curve_have_its_basis_parameter() {
     let (a, b) = quarter.domain();
     assert!(quarter.eval(a).distance(Vec3::X) < 1e-15);
     assert!(quarter.eval(b).distance(Vec3::Y) < 1e-15);
-    let e = reader.curve(38).unwrap_err().to_string();
-    assert!(
-        e.contains("#36 TRIMMED_CURVE") && e.contains("runs against its own basis"),
-        "{e}"
-    );
+    let CurveRead::Curve(Curve3::Nurbs(again)) = reader.curve(38).unwrap() else {
+        panic!("not one spline")
+    };
+    let (a, b) = again.domain();
+    assert!(again.eval(a).distance(Vec3::X) < 1e-15);
+    assert!(again.eval(b).distance(Vec3::Y) < 1e-15);
+    let middle = again.eval(0.5 * (a + b));
+    assert!((middle.length() - 1.0).abs() < 1e-15 && middle.x > 0.5 && middle.y > 0.5);
 }
 
 /// A line turned about an axis it meets, running from a point of the

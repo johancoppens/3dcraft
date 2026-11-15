@@ -1006,10 +1006,16 @@ impl<'a> Builder<'a> {
             ),
             Read::Spindle(spindle) => swept::spindle_part(&self.body, &spindle, &loops, self.merge)
                 .map_err(|e| ImportError(format!("face {}: {e}", f.number)))?,
-            Read::Turned { curve, at, axis } => {
-                swept::turned_part(&self.body, &curve, at, axis, &loops, self.merge)
-                    .map_err(|e| ImportError(format!("face {}: {e}", f.number)))?
-            }
+            Read::Turned { curve, at, axis } => swept::turned_part(
+                &self.body,
+                &curve,
+                at,
+                axis,
+                &loops,
+                face_reversed,
+                self.merge,
+            )
+            .map_err(|e| ImportError(format!("face {}: {e}", f.number)))?,
         };
         let closed = match &surface {
             Surface::Sphere(_) | Surface::Torus(_) => true,

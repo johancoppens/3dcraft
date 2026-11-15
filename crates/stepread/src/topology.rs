@@ -438,8 +438,16 @@ impl Builder<'_, '_> {
                 curve,
                 at,
                 axis,
-            } => crate::swept::turned_part(&self.body, &curve, at, axis, &loops, self.merge)
-                .or_else(|e| self.bad(swept, &e))?,
+            } => crate::swept::turned_part(
+                &self.body,
+                &curve,
+                at,
+                axis,
+                &loops,
+                !same_sense ^ turned,
+                self.merge,
+            )
+            .or_else(|e| self.bad(swept, &e))?,
             Read::Conic {
                 id: swept,
                 conic,
