@@ -535,7 +535,8 @@ pub(crate) fn finish_described(
                         let gap = dense_gap(&finisher.body, edge);
                         if gap.is_finite() && gap <= cap {
                             format!(
-                                "could not be proven within the cap of its faces' surfaces, though at 1025 places it lies at most {gap:.3e} off them (a document tolerance of at least that, `document.setTolerance`, accepts it on those places, counted as unproven)"
+                                "could not be proven within the cap of its faces' surfaces, though at 1025 places it lies at most {gap:.3e} off them (the document's own linear tolerance, now {tolerance:e}, set to at least that, {:.1} times as large, with `document.setTolerance`, accepts it on those places, counted as unproven)",
+                                gap / tolerance
                             )
                         } else {
                             "could not be proven within the cap of its faces' surfaces".to_string()

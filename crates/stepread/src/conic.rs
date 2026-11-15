@@ -45,7 +45,7 @@
 //! point is `(a (1 + τ²), 2bτ) / (1 − τ²)` with `τ = tanh(d / 2) σ`, which
 //! is `(a cosh u, b sinh u)` for `tanh(u / 2) = τ`: every point lies on
 //! the branch, and `s ↦ u` runs monotonically from `−d` to `d`
-//! ([`Conic::arc_parameter`]). Held by the tests below to rounding.
+//! (the tests' `arc_parameter`). Held by the tests below to rounding.
 
 // `!(x > 0.0)` is deliberate: unlike `x <= 0.0` it is also true for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
@@ -245,7 +245,9 @@ impl Conic {
     /// conic's point `λ(u)`, for `u` in `[u0, u1]`: `u` itself on a
     /// parabola; on a hyperbola, within the piece `[k, k']` of half width
     /// `d` about `m`, `k + (k' − k) (1 + tanh((u − m) / 2) / tanh(d / 2)) / 2`.
-    pub fn arc_parameter(&self, u0: f64, u1: f64, u: f64) -> f64 {
+    /// For the tests, which hold the arcs to the standard's points by it.
+    #[cfg(test)]
+    fn arc_parameter(&self, u0: f64, u1: f64, u: f64) -> f64 {
         match self {
             Conic::Parabola { .. } => u,
             Conic::Hyperbola { .. } => {

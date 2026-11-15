@@ -505,7 +505,18 @@ impl<'a> Reader<'a> {
                 self.describe(id)
             ))
         })?;
-        let ours = t * self.parameter_unit(basis, 0)?;
+        let (unit, against) = self.parameter_unit(basis, 0)?;
+        if against {
+            // The basis is read turned round, its parameter no longer the
+            // file's.
+            return self.bad(
+                id,
+                &format!(
+                    "{what} is a parameter value on a trimmed curve that runs against its own basis, which is not read (a trim by point reads)"
+                ),
+            );
+        }
+        let ours = t * unit;
         if ours.is_finite() {
             Ok(ours)
         } else {
@@ -517,19 +528,25 @@ impl<'a> Reader<'a> {
     /// line's (`pnt + u dir`, `dir` a vector with a magnitude) a length,
     /// a circle's or an ellipse's an angle in the file's unit, any other
     /// curve's its own.
-    fn parameter_unit(&self, id: u64, depth: usize) -> Result<f64, ImportError> {
+    /// And whether the curve is read turned round against the file's
+    /// parameter (through a trimmed curve whose `sense_agreement` is `.F.`).
+    /// A trimmed curve's parameter is its basis's (ISO 10303-42), so the
+    /// unit is looked for through it, as through a surface curve.
+    fn parameter_unit(&self, id: u64, depth: usize) -> Result<(f64, bool), ImportError> {
         if depth > MAX_CURVE_DEPTH {
             return self.bad(id, "a curve defined through too many others");
         }
         let entity = &self.parsed.instance(id)?.entity;
         if entity.is("LINE") {
             let record = self.named(id, "LINE", 2)?;
-            return Ok(self
-                .vector(self.reference(id, record.params.get(2), "dir")?)?
-                .length());
+            return Ok((
+                self.vector(self.reference(id, record.params.get(2), "dir")?)?
+                    .length(),
+                false,
+            ));
         }
         if entity.is("CIRCLE") || entity.is("ELLIPSE") {
-            return Ok(self.radians);
+            return Ok((self.radians, false));
         }
         for keyword in ["SURFACE_CURVE", "SEAM_CURVE", "INTERSECTION_CURVE"] {
             if entity.is(keyword) {
@@ -538,7 +555,14 @@ impl<'a> Reader<'a> {
                 return self.parameter_unit(curve, depth + 1);
             }
         }
-        Ok(1.0)
+        if entity.is("TRIMMED_CURVE") {
+            let record = self.named(id, "TRIMMED_CURVE", 5)?;
+            let basis = self.reference(id, record.params.get(1), "basis_curve")?;
+            let sense = self.flag(id, record.params.get(4), "sense_agreement")?;
+            let (unit, against) = self.parameter_unit(basis, depth + 1)?;
+            return Ok((unit, against != !sense));
+        }
+        Ok((1.0, false))
     }
 
     /// A bounded curve as one exact B-spline, for a segment of a composite
@@ -615,9 +639,12 @@ impl<'a> Reader<'a> {
                 &format!("a composite curve needs from 1 to {MAX_SEGMENTS} segments"),
             );
         }
-        let mut curves = Vec::with_capacity(segments.len());
+        let mut curves: Vec<NurbsCurve> = Vec::with_capacity(segments.len());
         for segment in segments {
             let segment = self.reference(id, Some(segment), "segments")?;
+            let before = curves
+                .last()
+                .and_then(|c| c.control_points().last().copied());
             let entity = &self.parsed.instance(segment)?.entity;
             let keyword = if entity.is("REPARAMETRISED_COMPOSITE_CURVE_SEGMENT") {
                 "REPARAMETRISED_COMPOSITE_CURVE_SEGMENT"
@@ -628,11 +655,26 @@ impl<'a> Reader<'a> {
             let same = self.flag(segment, record.params.get(1), "same_sense")?;
             let parent = self.reference(segment, record.params.get(2), "parent_curve")?;
             let curve = self.bounded_at(parent, depth + 1)?;
-            curves.push(if same {
+            let curve = if same {
                 curve
             } else {
                 bounded::reversed_nurbs(&curve).or_else(|e| self.bad(segment, &e))?
-            });
+            };
+            // Where the segment before ends, this one must start.
+            if let (Some(end), Some(&start)) = (before, curve.control_points().first()) {
+                let gap = end.distance(start);
+                if !(gap <= self.near) {
+                    return self.bad(
+                        segment,
+                        &format!(
+                            "a segment of {} starts {gap:e} from where the segment before it ends, more than the file's uncertainty {:e}",
+                            self.describe(id),
+                            self.near
+                        ),
+                    );
+                }
+            }
+            curves.push(curve);
         }
         bounded::join(&curves, self.near).or_else(|e| self.bad(id, &e))
     }
@@ -1140,6 +1182,12 @@ impl<'a> Reader<'a> {
             Swept::Done(surface, opposite) => Read::Done(surface, opposite),
             Swept::Unbounded { curve, along } => Read::Extrusion { id, curve, along },
             Swept::Spindle(spindle) => Read::Spindle(spindle),
+            Swept::Turned { curve, at, axis } => Read::Turned {
+                id,
+                curve,
+                at,
+                axis,
+            },
         }
     }
 
@@ -1185,6 +1233,12 @@ impl<'a> Reader<'a> {
                     .map(|s| self.read_of(id, s))
                     .or_else(|e| self.bad(id, &e));
             }
+            Read::Turned { .. } => {
+                return self.bad(
+                    id,
+                    "an offset of a B-spline surface is not read (no exact surface of that kind)",
+                );
+            }
             Read::Extrusion { .. } => {
                 return self.bad(
                     id,
@@ -1223,6 +1277,14 @@ pub(crate) enum Read {
     /// A horn or spindle torus: which of its parts a face is on, its edges
     /// tell ([`Spindle::sheet_of`]).
     Spindle(Spindle),
+    /// A profile turned about an axis it crosses: the part of it a face is
+    /// on, its edges tell ([`swept::turned_part`]).
+    Turned {
+        id: u64,
+        curve: NurbsCurve,
+        at: Vec3,
+        axis: Vec3,
+    },
     /// An untrimmed hyperbola or parabola extruded or turned (neither
     /// ends): the exact B-spline surface of as much of it as the faces on
     /// it reach ([`swept::conic_surface`]).

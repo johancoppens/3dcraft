@@ -646,13 +646,119 @@ fn every_form_of_the_conic_edge_reads_the_same_body() {
             scale,
             Form::OtherBranch,
         );
+        // Refused for what it is: the edge's vertices off that branch.
         let e = read(&text, scale).unwrap_err();
         assert!(
-            e.contains("`cut`") && (e.contains("vertex #") || e.contains("edge #")),
+            e.contains("EDGE_CURVE")
+                && e.contains("HYPERBOLA")
+                && e.contains("vertex #")
+                && e.contains("other branch"),
             "{e}"
         );
     }
     println!("worst relative difference {worst:?}");
+}
+
+/// A paraboloid cup whose profile, a parabola from `u_lo` to 2.5 (as a
+/// trimmed curve, or as the B-spline of it a writer may give), is turned
+/// about the parabola's own axis, closed by a lid: from `u_lo` < 0 the
+/// profile crosses the axis it is turned about.
+fn cup(frame: Frame, scale: f64, u_lo: f64, spline: bool) -> (String, f64) {
+    let (focal, u1): (f64, f64) = (0.3, 2.5);
+    let (rho, h) = (2.0 * focal * u1, focal * u1 * u1);
+    let mut s = Step::new(frame, scale);
+    let axis_at = s.point(Vec3::ZERO);
+    let axis_dir = s.direction(Vec3::Z);
+    let axis = s.add(&format!("AXIS1_PLACEMENT('',#{axis_at},#{axis_dir})"));
+    // Radius 2Fu along x, height Fu² along z.
+    let on = |u: f64| Vec3::new(2.0 * focal * u, 0.0, focal * u * u);
+    let profile = if spline {
+        // Pieces of a unit of u, each its polar form: a polynomial
+        // quadratic B-spline, knots in u.
+        let pieces = (u1 - u_lo).ceil() as usize;
+        let step = (u1 - u_lo) / pieces as f64;
+        let mut ids = vec![s.point(on(u_lo))];
+        let mut knots = vec![real(u_lo)];
+        let mut mults = vec!["3".to_string()];
+        for k in 0..pieces {
+            let lo = u_lo + step * k as f64;
+            let hi = if k + 1 == pieces { u1 } else { lo + step };
+            ids.push(s.point(Vec3::new(focal * (lo + hi), 0.0, focal * lo * hi)));
+            ids.push(s.point(on(hi)));
+            knots.push(real(hi));
+            mults.push(if k + 1 == pieces { "3" } else { "2" }.to_string());
+        }
+        let ids: Vec<String> = ids.iter().map(|i| format!("#{i}")).collect();
+        s.add(&format!(
+            "B_SPLINE_CURVE_WITH_KNOTS('',2,({}),.UNSPECIFIED.,.F.,.F.,({}),({}),.UNSPECIFIED.)",
+            ids.join(","),
+            mults.join(","),
+            knots.join(",")
+        ))
+    } else {
+        let place = s.placement(Vec3::ZERO, Vec3::Y, Vec3::Z);
+        let f = s.length(focal);
+        let parabola = s.add(&format!("PARABOLA('',#{place},{f})"));
+        s.add(&format!(
+            "TRIMMED_CURVE('',#{parabola},(PARAMETER_VALUE({})),(PARAMETER_VALUE({})),.T.,.PARAMETER.)",
+            real(u_lo),
+            real(u1)
+        ))
+    };
+    let (vr, _) = s.vertex(Vec3::new(rho, 0.0, h));
+    let rim_at = s.placement(Vec3::new(0.0, 0.0, h), Vec3::Z, Vec3::X);
+    let rim_curve = s.add(&format!("CIRCLE('',#{rim_at},{})", s.length(rho)));
+    let rim = s.edge(vr, vr, rim_curve, true);
+    let side = s.add(&format!("SURFACE_OF_REVOLUTION('',#{profile},#{axis})"));
+    let lid_at = s.placement(Vec3::new(0.0, 0.0, h), Vec3::Z, Vec3::X);
+    let lid = s.add(&format!("PLANE('',#{lid_at})"));
+    let faces = vec![
+        s.face(side, true, &[(rim, false)]),
+        s.face(lid, true, &[(rim, true)]),
+    ];
+    (s.solid(&faces), PI * rho * rho * h / 2.0)
+}
+
+/// The review's blocker: a profile turned about an axis it crosses (a
+/// trimmed parabola, or a B-spline, from u = −2.5 to 2.5) was read with
+/// status ok as a surface swept twice, which the measure could not
+/// integrate. Now the profile is cut where it crosses the axis and each
+/// face takes the part its edges lie on: from −1 the rim lies on the long
+/// part alone, which is read, the cup's closed form; from −2.5 the two
+/// parts mirror each other, the rim lies on both, and the file is refused
+/// saying why. From 0 (no crossing) it reads as it did.
+#[test]
+fn a_profile_across_its_axis_reads_where_the_face_tells_and_is_refused_where_not() {
+    for scale in [1e-3, 1.0, 1e6] {
+        for (name, frame) in frames(scale) {
+            for spline in [false, true] {
+                for u_lo in [0.0, -1.0, -2.5] {
+                    let what = format!("from {u_lo} spline {spline} {name} @ {scale}");
+                    let (text, volume) = cup(frame, scale, u_lo, spline);
+                    if u_lo < -2.0 {
+                        let e = read(&text, scale).unwrap_err();
+                        assert!(
+                            e.contains("SURFACE_OF_REVOLUTION")
+                                && e.contains("crosses the axis it is turned about"),
+                            "{what}: {e}"
+                        );
+                        continue;
+                    }
+                    let imported = read(&text, scale).unwrap_or_else(|e| panic!("{what}: {e}"));
+                    let r = &imported.report;
+                    assert_eq!(
+                        r.unproven_edges + r.loose_edges + r.loose_vertices + r.turned_shells,
+                        0,
+                        "{what}: {r:?}"
+                    );
+                    let (v, _) = measures(&imported.body);
+                    let ev = volume * scale.ppowi(3);
+                    assert!(relative(v, ev) < 1e-9, "{what}: {v} / {ev}");
+                    assert!(craft3d_topo::check(&imported.body, &tolerance(scale)).is_empty());
+                }
+            }
+        }
+    }
 }
 
 /// A trough under a parabola or a hyperbola: the curve extruded (as the
@@ -1002,7 +1108,9 @@ fn an_edge_the_prover_gives_out_on_is_refused_saying_what_reads() {
     let lifted = cut_cone(Cut::Parabola, 2.0, h, c, frame, 1.0, Form::Spline(1, 1e-5));
     let e = read(&lifted, 1.0).unwrap_err();
     assert!(
-        e.contains("could not be proven within the cap") && e.contains("document.setTolerance"),
+        e.contains("could not be proven within the cap")
+            && e.contains("document's own linear tolerance, now 1e-6")
+            && e.contains("document.setTolerance"),
         "{e}"
     );
     let gap: f64 = e

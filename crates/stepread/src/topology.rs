@@ -37,6 +37,8 @@ struct Builder<'a, 'r> {
     merge: f64,
     /// The document's linear tolerance.
     tolerance: f64,
+    /// The document's cap on an entity's own tolerance.
+    cap: f64,
     vertices: BTreeMap<u64, VertexId>,
     /// Vertices by cell of a grid `2 merge` wide.
     grid: BTreeMap<(i64, i64, i64), Vec<VertexId>>,
@@ -201,7 +203,9 @@ impl Builder<'_, '_> {
     /// the exact B-spline of the arc between the feet of its vertices
     /// (`conic::Conic::arc`), with that arc's whole domain as its range.
     /// A vertex off the conic is where the file puts it; how far it lies
-    /// from the arc's end is measured with every other vertex.
+    /// from the arc's end is measured with every other vertex. One farther
+    /// than the cap from the conic is refused here, naming it: on a
+    /// hyperbola, typically one on the other branch.
     fn conic_arc(
         &self,
         id: u64,
@@ -232,6 +236,29 @@ impl Builder<'_, '_> {
                 })
         };
         let (ua, ub) = (foot(a)?, foot(b)?);
+        for (v, u) in [(a, ua), (b, ub)] {
+            let off = self
+                .body
+                .vertex(v)
+                .map_or(f64::INFINITY, |p| p.point.distance(conic.point(u)));
+            if off.is_nan() || off > self.cap {
+                let step = self.vertex_ids.get(v.0 as usize).copied().unwrap_or(0);
+                let branch = match conic {
+                    Conic::Hyperbola { .. } => {
+                        " (a hyperbola is the one branch on the side its placement's x axis points to; the other branch is a placement turned half round)"
+                    }
+                    Conic::Parabola { .. } => "",
+                };
+                return self.bad(
+                    id,
+                    &format!(
+                        "vertex #{step} lies {off:e} off {}, more than the cap {:e}{branch}",
+                        self.describe(geometry),
+                        self.cap
+                    ),
+                );
+            }
+        }
         if ua.partial_cmp(&ub) != Some(std::cmp::Ordering::Less) {
             return self.bad(
                 id,
@@ -406,6 +433,13 @@ impl Builder<'_, '_> {
                 crate::swept::spindle_part(&self.body, &spindle, &loops, self.tolerance)
                     .or_else(|e| self.bad(surface_id, &e))?
             }
+            Read::Turned {
+                id: swept,
+                curve,
+                at,
+                axis,
+            } => crate::swept::turned_part(&self.body, &curve, at, axis, &loops, self.merge)
+                .or_else(|e| self.bad(swept, &e))?,
             Read::Conic {
                 id: swept,
                 conic,
@@ -563,6 +597,7 @@ pub(crate) fn build(
         body: Body::new(kind),
         merge,
         tolerance,
+        cap: options.loosest,
         vertices: BTreeMap::new(),
         grid: BTreeMap::new(),
         edges: BTreeMap::new(),

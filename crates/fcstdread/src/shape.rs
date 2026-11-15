@@ -770,6 +770,11 @@ fn surface(s: &brep::Surface, place: &Place, depth: usize) -> Result<Read, Impor
             Read::Unbounded { .. } => {
                 return err("an offset of an extruded curve is not read");
             }
+            Read::Turned { .. } => {
+                return err(
+                    "an offset of a B-spline surface is not read (no exact surface of that kind)",
+                );
+            }
         },
     })
 }
@@ -1001,6 +1006,10 @@ impl<'a> Builder<'a> {
             ),
             Read::Spindle(spindle) => swept::spindle_part(&self.body, &spindle, &loops, self.merge)
                 .map_err(|e| ImportError(format!("face {}: {e}", f.number)))?,
+            Read::Turned { curve, at, axis } => {
+                swept::turned_part(&self.body, &curve, at, axis, &loops, self.merge)
+                    .map_err(|e| ImportError(format!("face {}: {e}", f.number)))?
+            }
         };
         let closed = match &surface {
             Surface::Sphere(_) | Surface::Torus(_) => true,
@@ -1234,5 +1243,6 @@ pub(crate) fn tests_surface_kind(s: &brep::Surface) -> Result<&'static str, Impo
         Read::Done(s, _) => s.kind(),
         Read::Unbounded { .. } => "extrusion",
         Read::Spindle(_) => "spindle",
+        Read::Turned { .. } => "revolution across its axis",
     })
 }

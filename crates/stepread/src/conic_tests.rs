@@ -228,10 +228,13 @@ fn composite_curves_are_joined_into_one_exact_spline() {
         let q = at(2.0 + s);
         assert!((q.x * q.x - q.y * q.y - 1.0).abs() < 1e-13, "the hyperbola");
     }
-    // A gap between the line's end and the hyperbola's vertex.
+    // A gap between the line's end and the hyperbola's vertex: named by
+    // the segment that does not start where the one before ends.
     let e = reader.curve(61).unwrap_err().to_string();
     assert!(
-        e.contains("#61 COMPOSITE_CURVE") && e.contains("piece 1 starts"),
+        e.contains("#52 COMPOSITE_CURVE_SEGMENT")
+            && e.contains("#61 COMPOSITE_CURVE")
+            && e.contains("starts 1.4142"),
         "{e}"
     );
     let e = reader.curve(63).unwrap_err().to_string();
@@ -332,6 +335,63 @@ fn a_cone_offset_towards_its_axis_moves_its_apex() {
         e.contains("#38 OFFSET_SURFACE") && e.contains("axis") && e.contains("reads"),
         "{e}"
     );
+}
+
+/// A trimmed curve's parameter is its basis's: a trim on a trimmed
+/// circle in a file in degrees is in degrees (it was taken as radians,
+/// review of 2026-11-15); a parameter trim on a trimmed curve that runs
+/// against its basis is refused, saying a trim by point reads.
+#[test]
+fn trims_on_a_trimmed_curve_have_its_basis_parameter() {
+    let p = parsed(
+        "#30=CIRCLE('',#21,1.);\n\
+         #31=TRIMMED_CURVE('',#30,(PARAMETER_VALUE(0.)),(PARAMETER_VALUE(180.)),.T.,.PARAMETER.);\n\
+         #32=TRIMMED_CURVE('',#31,(PARAMETER_VALUE(0.)),(PARAMETER_VALUE(90.)),.T.,.PARAMETER.);\n\
+         #33=COMPOSITE_CURVE_SEGMENT(.CONTINUOUS.,.T.,#32);\n#34=COMPOSITE_CURVE('',(#33),.F.);\n\
+         #35=TRIMMED_CURVE('',#30,(PARAMETER_VALUE(180.)),(PARAMETER_VALUE(0.)),.F.,.PARAMETER.);\n\
+         #36=TRIMMED_CURVE('',#35,(PARAMETER_VALUE(0.)),(PARAMETER_VALUE(90.)),.T.,.PARAMETER.);\n\
+         #37=COMPOSITE_CURVE_SEGMENT(.CONTINUOUS.,.T.,#36);\n#38=COMPOSITE_CURVE('',(#37),.F.);\n",
+    );
+    let reader = Reader::new(&p, 1.0, std::f64::consts::PI / 180.0, 1e-9);
+    let CurveRead::Curve(Curve3::Nurbs(quarter)) = reader.curve(34).unwrap() else {
+        panic!("not one spline")
+    };
+    let (a, b) = quarter.domain();
+    assert!(quarter.eval(a).distance(Vec3::X) < 1e-15);
+    assert!(quarter.eval(b).distance(Vec3::Y) < 1e-15);
+    let e = reader.curve(38).unwrap_err().to_string();
+    assert!(
+        e.contains("#36 TRIMMED_CURVE") && e.contains("runs against its own basis"),
+        "{e}"
+    );
+}
+
+/// A line turned about an axis it meets, running from a point of the
+/// cone up towards its apex: the file's normal is measured between the
+/// apex and the point (at fixed parameters of the line it was measured
+/// past the apex at a small scale, and refused, review of 2026-11-15).
+#[test]
+fn a_line_towards_its_apex_turns_into_a_cone_at_every_scale() {
+    for scale in [1e-3, 1.0, 1e3] {
+        let n = |x: f64| format!("{:.16E}", x * scale);
+        let text = format!(
+            "#30=CARTESIAN_POINT('',({},0.,{}));\n#31=DIRECTION('',(-0.6,0.,0.8));\n#32=VECTOR('',#31,{});\n#33=LINE('',#30,#32);\n#34=SURFACE_OF_REVOLUTION('',#33,#26);\n",
+            n(3.0),
+            n(-1.0),
+            n(1.0)
+        );
+        let p = parsed(&text);
+        let reader = Reader::new(&p, 1.0, 1.0, 1e-9 * scale);
+        match reader.surface(34) {
+            // ∂u × ∂v = (0.8x, 0, 0.6x): out from the axis and up, the
+            // cone's own normal (it opens downwards from its apex).
+            Ok(Read::Done(Surface::Cone(cone), false)) => {
+                let apex = cone.frame().point(0.0, 0.0, cone.apex_v());
+                assert!(apex.distance(Vec3::new(0.0, 0.0, 3.0 * scale)) < 1e-12 * scale);
+            }
+            other => panic!("@ {scale}: {other:?}"),
+        }
+    }
 }
 
 /// Hostile numbers and references in conics: never a panic, an error
