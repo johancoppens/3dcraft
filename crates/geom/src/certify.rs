@@ -1431,6 +1431,14 @@ impl<'a> SurfaceBound<'a> {
     /// a sphere at the same point named past the pole.
     fn careful_foot(&self, p: Vec3, start: (f64, f64), also: (f64, f64)) -> (f64, f64) {
         let followed = self.foot(p, start);
+        // On the surface to rounding and within its range: none nearer
+        // (and a spline's projection, a search, is dear).
+        if self.inside(followed)
+            && self.surface.eval(followed.0, followed.1).distance(p)
+                <= 8.0 * self.rounding(followed)
+        {
+            return followed;
+        }
         let mut candidates = vec![followed];
         if also != start {
             candidates.push(self.foot(p, also));
