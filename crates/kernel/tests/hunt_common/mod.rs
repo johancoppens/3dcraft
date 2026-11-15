@@ -1174,9 +1174,23 @@ pub fn crosses_itself(body: &Body, tol: &Tolerance) -> bool {
     body_self_intersections(body, &SelfCheckParams::new(tol.linear)).is_ok_and(|c| !c.is_clean())
 }
 
+/// A digest of a body, every bit of it (FNV-1a over its debug text, in
+/// which each number is written so that it reads back as itself).
+pub fn digest(body: &Body) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in format!("{body:?}").bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
 /// The checks every result gets: valid, measurable, its mesh closed and of
 /// the volume measured. The measure, where there is one.
 pub fn sound(after: &Body, tol: &Tolerance, found: &mut Found) -> Option<Measured> {
+    // What was built, bit for bit: two programs run on the same cases are
+    // compared by it (a change that must leave every body as it was).
+    found.notes.push(format!("body {:016x}", digest(after)));
     let defects = check(after, tol);
     if !defects.is_empty() {
         found.invalid = true;
