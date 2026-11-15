@@ -18,7 +18,9 @@
 //! - mass properties (`craft3d_topo::mass_work`): faces integrated and the
 //!   evaluations of the integrand that took;
 //! - the tessellator (`craft3d_tess::tess_work`): bodies meshed, their
-//!   faces, triangles.
+//!   faces, triangles; and (`craft3d_tess::fold_work`) the comparisons
+//!   of its look for points of a face on one another, a sort's counted
+//!   as `n` times the bits of `n`.
 //!
 //! Each count may not exceed its baseline in `bench_models/baseline.txt`
 //! by more than [`MARGIN`]. A count that grows past it is a slowdown (or
@@ -105,6 +107,7 @@ fn snapshot() -> Counts {
         ("meshes", meshes),
         ("mesh_faces", faces_meshed),
         ("triangles", triangles),
+        ("fold_checks", craft3d_tess::fold_work()),
     ]
     .into_iter()
     .map(|(name, value)| (name.to_string(), value))

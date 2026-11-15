@@ -125,6 +125,104 @@ pub fn to_object(mesh: &Mesh, name: &str) -> Result<Object, IoError> {
     })
 }
 
+/// What an object's mesh is once its coordinates are rounded to single
+/// precision, as a binary STL file holds them ([`in_single_precision`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SinglePrecision {
+    /// Points that fall on another point of the object once rounded.
+    pub merged: usize,
+    /// Triangles with two corners on one point once rounded: a line.
+    pub folded: usize,
+    /// Whether the rounded triangles are still a closed surface: every
+    /// side used once each way, the triangles round every corner one fan,
+    /// none folded.
+    pub closed: bool,
+}
+
+/// The object's mesh as a program reads it from a file in single
+/// precision (binary STL): its points rounded to `f32` and those that
+/// round to one place taken for one, as such a program welds them. A
+/// mesh closed in double precision (`ObjectKind::Solid`) can have points
+/// closer than single precision tells apart (a part far from the origin,
+/// or a surface that turns more sharply than the angle of the mesh can
+/// follow with points as far apart as that): its file is then no closed
+/// surface, which this says.
+pub fn in_single_precision(object: &Object) -> SinglePrecision {
+    let rounded: Vec<[u32; 3]> = object
+        .positions
+        .iter()
+        // −0 as 0, as a reader compares the numbers.
+        .map(|p| p.map(|c| ((c as f32) + 0.0).to_bits()))
+        .collect();
+    let mut order: Vec<([u32; 3], usize)> = rounded.iter().copied().zip(0..).collect();
+    order.sort_unstable();
+    let mut index = vec![0_usize; rounded.len()];
+    let mut distinct = 0;
+    for (k, &(place, i)) in order.iter().enumerate() {
+        let new = k == 0 || order.get(k - 1).is_none_or(|&(before, _)| before != place);
+        if new {
+            distinct += 1;
+        }
+        if let Some(slot) = index.get_mut(i) {
+            *slot = distinct - 1;
+        }
+    }
+    let merged = rounded.len() - distinct;
+    let closed_before = object.kind == ObjectKind::Solid;
+    if merged == 0 {
+        return SinglePrecision {
+            merged,
+            folded: 0,
+            closed: closed_before,
+        };
+    }
+    let corner = |k: u32| index.get(k as usize).copied().unwrap_or(usize::MAX);
+    let mut folded = 0;
+    let mut sides: std::collections::BTreeMap<(usize, usize), u32> = Default::default();
+    let mut round: std::collections::BTreeMap<(usize, usize), usize> = Default::default();
+    for t in &object.triangles {
+        let [a, b, c] = t.map(corner);
+        if a == b || b == c || c == a {
+            folded += 1;
+            continue;
+        }
+        for (from, to, other) in [(a, b, c), (b, c, a), (c, a, b)] {
+            *sides.entry((from, to)).or_insert(0) += 1;
+            round.insert((from, to), other);
+        }
+    }
+    let once = sides
+        .iter()
+        .all(|(&(a, b), &n)| n == 1 && sides.get(&(b, a)) == Some(&1));
+    // Round each corner: from one neighbour to the next, as many steps as
+    // it has triangles, back where it started.
+    let mut fans: std::collections::BTreeMap<usize, Vec<(usize, usize)>> = Default::default();
+    for (&(corner, from), &to) in &round {
+        fans.entry(corner).or_default().push((from, to));
+    }
+    let one_fan = |steps: &Vec<(usize, usize)>| {
+        let next: std::collections::BTreeMap<usize, usize> = steps.iter().copied().collect();
+        let Some(&(start, _)) = steps.first() else {
+            return true;
+        };
+        let (mut here, mut count) = (start, 0);
+        while let Some(&to) = next.get(&here) {
+            here = to;
+            count += 1;
+            if here == start || count > steps.len() {
+                break;
+            }
+        }
+        count == steps.len() && here == start
+    };
+    let closed = closed_before && folded == 0 && once && fans.values().all(one_fan);
+    SinglePrecision {
+        merged,
+        folded,
+        closed,
+    }
+}
+
 /// [`to_object`] with a material per triangle: `face_material` says what
 /// the face of each triangle (`Mesh::face_ids`) is made of, an index into
 /// the model's materials, or `None` for the object's own
@@ -224,6 +322,59 @@ mod tests {
                     / 6.0
             })
             .sum()
+    }
+
+    #[test]
+    fn a_closed_mesh_with_points_single_precision_cannot_tell_apart_is_open_in_a_file() {
+        // The cube a thousand units from the origin, closed both ways.
+        let mut far = cube(2.0);
+        for p in &mut far.positions {
+            *p += Vec3::new(1000.0, 0.0, 0.0);
+        }
+        let object = to_object(&far, "cube").unwrap();
+        assert_eq!(object.kind, ObjectKind::Solid);
+        assert_eq!(
+            in_single_precision(&object),
+            SinglePrecision {
+                merged: 0,
+                folded: 0,
+                closed: true
+            }
+        );
+        // Its top made a fan round a point just inside one corner:
+        // closed in double precision; in single precision, where a unit in
+        // the last place is 6e-5 in x and 2e-7 in y there, that point is
+        // the corner, and the two triangles of the fan on it are lines.
+        let mut cut = object.clone();
+        cut.triangles
+            .retain(|t| !t.iter().all(|&k| cut.positions[k as usize][2] == 2.0));
+        assert_eq!(cut.triangles.len(), 10);
+        let corner = |x: f64, y: f64| {
+            cut.positions
+                .iter()
+                .position(|&p| p == [x, y, 2.0])
+                .unwrap() as u32
+        };
+        let square = [
+            corner(1000.0, 0.0),
+            corner(1002.0, 0.0),
+            corner(1002.0, 2.0),
+            corner(1000.0, 2.0),
+        ];
+        let middle = cut.positions.len() as u32;
+        cut.positions.push([1002.0 - 1e-6, 2.0 - 1e-8, 2.0]);
+        for i in 0..4 {
+            cut.triangles.push([square[i], square[(i + 1) % 4], middle]);
+        }
+        let welded = craft3d_tess::Welded {
+            positions: cut.positions.clone(),
+            triangles: cut.triangles.clone(),
+        };
+        assert!(welded.is_closed(), "the fan in double precision");
+        let single = in_single_precision(&cut);
+        assert_eq!(single.merged, 1, "{single:?}");
+        assert_eq!(single.folded, 2, "{single:?}");
+        assert!(!single.closed, "{single:?}");
     }
 
     #[test]

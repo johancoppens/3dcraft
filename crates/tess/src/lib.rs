@@ -24,6 +24,7 @@ pub use body::{
     MeshAndEdges, WithinBudget, tess_work, tessellate_body, tessellate_body_and_edges,
     tessellate_body_with_threads, tessellate_edges, tessellate_within_budget,
 };
+pub use face::fold_work;
 pub use intersections::{
     Crossing, CrossingKind, SelfIntersections, self_intersection_report, self_intersections,
 };

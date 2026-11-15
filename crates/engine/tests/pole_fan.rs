@@ -344,18 +344,69 @@ fn a_dome_s_export_with_the_angle_in_a_turned_frame_is_known_to_fold_in_single_p
     // the five turned domes of the test above at `coarse`, `normal` and
     // `fine` (2026-11-15): before, 14 so and 1 a closed surface; now 10
     // so, 1 a closed surface and 4 refused ("the surface turns away from
-    // the chords …"), each of the four one that folded before. When this
-    // fails because the file is a closed surface (or the export is
-    // refused with a reason), the pin goes.
+    // the chords …"), each of the four one that folded before. The export
+    // says so since 2026-11-15 (`closed` counted as the file holds the
+    // mesh, `mergedPoints` and a warning): before, it counted the mesh
+    // closed and said nothing. When this fails because the file is a
+    // closed surface (or the export is refused with a reason), the pin
+    // goes.
     let dir = workdir("pole-fan", "angle");
     let what = "the dome 1 x 0.01 with its tip over 0.9, its seam on -x, turned";
     let mut s = imported(&dir, 0, (&turned(), (1.0, 0.01), true, 0.9), what);
-    let (triangles, _) = exported(&mut s, &dir, "dome.stl", json!({"quality": "normal"}))
-        .unwrap_or_else(|e| panic!("{what}: refused now, take the pin off: {e}"));
+    let mut params = json!({"quality": "normal", "path": "dome.stl"});
+    let result = s
+        .execute("file.export", &params)
+        .unwrap_or_else(|e| panic!("{what}: refused now, take the pin off: {}", e.message()));
+    let triangles = stl_triangles(&std::fs::read(dir.join("dome.stl")).unwrap());
     let fault = not_closed(&triangles);
-    println!("{what}: {} triangles, {fault:?}", triangles.len());
+    println!("{what}: {} triangles, {fault:?}, {result}", triangles.len());
     assert!(
         fault.is_some(),
         "{what}: a closed surface now, take the pin off"
+    );
+    // What the export says of it: not closed, and why.
+    assert_eq!(result["closed"], 0, "{result}");
+    assert!(
+        result["mergedPoints"].as_u64().is_some_and(|n| n > 0),
+        "{result}"
+    );
+    let said = result["warnings"][0].as_str().unwrap_or_default();
+    assert!(
+        said.contains("single precision") && said.contains("no closed surface"),
+        "{result}"
+    );
+    // The same mesh written in full (ASCII STL): every point as it is,
+    // the file a closed surface, counted so, nothing to say.
+    params["path"] = json!("dome-ascii.stl");
+    params["format"] = json!("stl-ascii");
+    let result = s.execute("file.export", &params).unwrap();
+    assert_eq!(result["closed"], 1, "{result}");
+    assert!(result.get("warnings").is_none(), "{result}");
+}
+
+#[test]
+fn a_dome_s_export_with_the_angle_in_a_turned_frame_is_known_to_be_refused() {
+    // KNOWN, owed (docs/design/tessellator.md › *Sideways at a seam*):
+    // the same dome with its seam on +x, at the `normal` quality, is
+    // refused with the reason, where 0.1.x wrote a file that folds in
+    // single precision (its mesh had points within the rounding of their
+    // coordinates as well: those are meshed again, and that mesh cannot
+    // be made). When this fails because the export is made, a closed
+    // surface in its file, the pin goes.
+    let dir = workdir("pole-fan", "refused");
+    let what = "the dome 1 x 0.01 with its tip over 0.9, its seam on +x, turned";
+    let mut s = imported(&dir, 0, (&turned(), (1.0, 0.01), false, 0.9), what);
+    let error = match exported(&mut s, &dir, "dome.stl", json!({"quality": "normal"})) {
+        Err(error) => error,
+        Ok((triangles, closed)) => panic!(
+            "{what}: made now ({} triangles, closed {closed}, {:?}): take the pin off",
+            triangles.len(),
+            not_closed(&triangles)
+        ),
+    };
+    println!("{what}: {error}");
+    assert!(
+        error.contains("face 0") && error.contains("turns away from the chords"),
+        "{error}"
     );
 }

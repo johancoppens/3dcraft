@@ -5414,10 +5414,12 @@ pub(crate) fn mesh_face(
         Some(at) => fail(
             index,
             format!(
-                "its mesh is no manifold: a point it added inside the face lies at ({}, {}, {}), \
-                 on another point of its mesh or within the rounding of its coordinates of one \
-                 (the surface comes back onto itself there, across a seam or into a pole, and \
-                 the triangles round both points would meet there)",
+                "two points of its mesh lie closer together at ({}, {}, {}) than its \
+                 coordinates can tell apart there (one it added inside the face, on another or \
+                 within some thousands of units in the last place of one): its triangles would \
+                 meet there as no surface's do, or fold to a line in a file; the surface turns \
+                 there more sharply than this tolerance or angle can follow (a coarser quality \
+                 or tolerance, or the part nearer the origin, may mesh)",
                 at.x, at.y, at.z
             ),
         ),
@@ -6069,67 +6071,236 @@ fn mesh_face_in(
 /// vertices to the triangulation and one to the body: the triangles round
 /// both meet there, and four of them on one side where two points do; a
 /// few units in the last place apart they are one place to every program
-/// that reads the mesh, in the single precision of an STL file first.
+/// that reads the mesh.
 ///
-/// The cost is that of sorting the face's points.
+/// Its work is charged (`craft3d_geom::allowance`) and counted
+/// ([`fold_work`]): that of sorting the face's points, whatever their
+/// layout ([`fold_search`]).
 fn folded_at(positions: &[Vec3], boundary: usize) -> Option<Vec3> {
+    let (found, steps) = fold_search(positions, boundary);
+    FOLD_WORK.fetch_add(steps, std::sync::atomic::Ordering::Relaxed);
+    craft3d_geom::allowance::charge(steps.div_ceil(craft3d_geom::allowance::ARITHMETIC_PER_UNIT));
+    found
+}
+
+/// The comparisons [`folded_at`] has made since the process started (a
+/// sort of `n` points counted as `n` times the bits of `n`): a function
+/// of the faces meshed, for a benchmark to hold the check to.
+pub fn fold_work() -> u64 {
+    FOLD_WORK.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static FOLD_WORK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The bits each of a cell's two coordinates keeps in a key of
+/// [`fold_search`] (above the point's index, in the 32 below): a cell is
+/// `2 ROUNDED_AWAY` times the face's largest coordinate, so no coordinate
+/// lies more than `0.5e12 < 2³⁹` cells from the origin.
+const CELL_BITS: u32 = 40;
+
+/// [`folded_at`]'s search, and the comparisons it made.
+///
+/// Two points nearer than `ROUNDED_AWAY` times their largest coordinate
+/// are nearer than half a cell (`2 ROUNDED_AWAY` times the face's largest
+/// coordinate) in each coordinate, so their cells in `x` and in `y` are
+/// the same or neighbours: a pair that straddles a cell's edge lies in
+/// two neighbouring cells, and both are looked in (the quotient by the
+/// cell is rounded by a few units in the last place of numbers below
+/// `2³⁹`, far less than the half cell to spare). The points are sorted by
+/// their cell in `x`, then in `y` (one key of 128 bits each, with the
+/// point's index), and a column of more than one point (one cell in `x`
+/// and one in `y`) by `z` as well. Each point is held against the points
+/// after it in its own column up to a cell further in `z`, then, by
+/// binary search, against those of the next column in `y` and of the
+/// three columns beside it in the next cell in `x`, where those cells
+/// hold points at all: every pair that can be near once, nothing more
+/// than a cell away. So the work is the sort's and a few comparisons a
+/// point, however the points lie: a face turned a quarter, whose points
+/// stand in rows that agree in `x` to a few units in the last place,
+/// costs what any face does (the sweep in `x` alone that came first
+/// compared every pair of such a row: a torus of two million triangles
+/// turned so took three times as long to mesh, 2026-11-15).
+fn fold_search(positions: &[Vec3], boundary: usize) -> (Option<Vec3>, u64) {
     if positions.len() <= boundary {
-        return None;
+        return (None, 0);
     }
     // (−0 as 0; a point that is not finite is the triangles' to refuse.)
-    let mut order: Vec<(Vec3, usize)> = positions
+    let points: Vec<Vec3> = positions
         .iter()
-        .enumerate()
-        .map(|(i, p)| (Vec3::new(p.x + 0.0, p.y + 0.0, p.z + 0.0), i))
-        .filter(|(p, _)| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
+        .map(|p| Vec3::new(p.x + 0.0, p.y + 0.0, p.z + 0.0))
         .collect();
-    let reach = order.iter().fold(0.0_f64, |m, (p, _)| {
+    let finite = |p: &Vec3| p.x.is_finite() && p.y.is_finite() && p.z.is_finite();
+    let reach = points.iter().filter(|p| finite(p)).fold(0.0_f64, |m, p| {
         m.max(p.x.abs()).max(p.y.abs()).max(p.z.abs())
     });
-    let near = ROUNDED_AWAY * reach;
-    order.sort_unstable_by(|(p, i), (q, j)| {
-        p.x.total_cmp(&q.x)
-            .then(p.y.total_cmp(&q.y))
-            .then(p.z.total_cmp(&q.z))
-            .then(i.cmp(j))
-    });
-    // Where each run of one `x` ends: within it the points go up in `y`.
-    let mut run_end = vec![order.len(); order.len()];
-    for k in (0..order.len().saturating_sub(1)).rev() {
-        if let (Some(&(p, _)), Some(&(q, _)), Some(&after)) =
-            (order.get(k), order.get(k + 1), run_end.get(k + 1))
-            && let Some(slot) = run_end.get_mut(k)
+    if !positive(reach) {
+        // Every finite point on the origin: one place.
+        let at_origin = || {
+            points
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| finite(p))
+                .map(|(i, _)| i)
+        };
+        let fold = at_origin().nth(1).is_some() && at_origin().any(|i| i >= boundary);
+        return (fold.then_some(Vec3::ZERO), points.len() as u64);
+    }
+    let cell = 2.0 * ROUNDED_AWAY * reach;
+    let half = 1_i64 << (CELL_BITS - 1);
+    let quantize = |c: f64| -> u128 {
+        // Within ±2³⁹ by the size of a cell; clamped all the same.
+        let q = (c / cell)
+            .floor()
+            .clamp(-(half as f64) + 1.0, half as f64 - 1.0) as i64;
+        u128::from((q + half).unsigned_abs())
+    };
+    let mut keys: Vec<u128> = points
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| finite(p))
+        .filter_map(|(i, p)| {
+            let i = u32::try_from(i).ok()?;
+            Some((quantize(p.x) << 72) | (quantize(p.y) << 32) | u128::from(i))
+        })
+        .collect();
+    // The bits of `m`: a sort's comparisons per point, a search's steps.
+    let bits = |m: usize| u64::from(usize::BITS - m.leading_zeros());
+    let n = keys.len();
+    keys.sort_unstable();
+    let mut steps = (n as u64).saturating_mul(bits(n));
+    let column = |k: u128| k >> 32;
+    let slab = |k: u128| k >> 72;
+    let at = |k: u128| -> (usize, Vec3) {
+        // The low 32 bits are the index (`u32` above).
+        let i = (k & 0xffff_ffff) as usize;
+        (i, points.get(i).copied().unwrap_or(Vec3::ZERO))
+    };
+    // A column of more than one point, by `z` (then by key: one order).
+    let mut first = 0;
+    while first < n {
+        let Some(&head) = keys.get(first) else { break };
+        let length = keys.get(first..).map_or(0, |rest| {
+            rest.iter()
+                .take_while(|&&k| column(k) == column(head))
+                .count()
+        });
+        if length > 1
+            && let Some(run) = keys.get_mut(first..first + length)
         {
-            *slot = if p.x == q.x { after } else { k + 1 };
+            run.sort_unstable_by(|&a, &b| at(a).1.z.total_cmp(&at(b).1.z).then(a.cmp(&b)));
+            steps = steps.saturating_add((length as u64).saturating_mul(bits(length)));
+        }
+        first += length.max(1);
+    }
+    // Where each point's column and slab (one cell in `x`) end.
+    let mut column_end = vec![n; n];
+    let mut slab_end = vec![n; n];
+    for k in (0..n.saturating_sub(1)).rev() {
+        let (Some(&a), Some(&b)) = (keys.get(k), keys.get(k + 1)) else {
+            continue;
+        };
+        let (next_column, next_slab) = (
+            column_end.get(k + 1).copied().unwrap_or(n),
+            slab_end.get(k + 1).copied().unwrap_or(n),
+        );
+        if let Some(slot) = column_end.get_mut(k) {
+            *slot = if column(a) == column(b) {
+                next_column
+            } else {
+                k + 1
+            };
+        }
+        if let Some(slot) = slab_end.get_mut(k) {
+            *slot = if slab(a) == slab(b) { next_slab } else { k + 1 };
         }
     }
-    for (k, &(p, a)) in order.iter().enumerate() {
-        let mut m = k + 1;
-        while let Some(&(q, b)) = order.get(m) {
-            if q.x - p.x > near {
+    let one_place = |(a, p): (usize, Vec3), (b, q): (usize, Vec3)| {
+        // Within the rounding of the two points' own coordinates, not of
+        // the face's: by the point of a cusp at the origin, on a face
+        // millions across, distinct points of the mesh lie some millionths
+        // apart, within the rounding of the face's largest coordinates
+        // (`boolean_poles.rs` › `a_cusp_cut_along_its_axis_is_what_its
+        // _profile_says`, at 1e6).
+        let own = [p.x, p.y, p.z, q.x, q.y, q.z]
+            .iter()
+            .fold(0.0_f64, |m, x| m.max(x.abs()));
+        (a >= boundary || b >= boundary) && p.distance(q) <= ROUNDED_AWAY * own
+    };
+    // The points of the column `from..to` within a cell of `p` in `z`,
+    // held against it.
+    let in_column = |from: usize, to: usize, p: (usize, Vec3), steps: &mut u64| -> bool {
+        let Some(run) = keys.get(from..to) else {
+            return false;
+        };
+        let low = p.1.z - cell;
+        let start = run.partition_point(|&k| at(k).1.z < low);
+        *steps = steps.saturating_add(bits(run.len()));
+        for &k in run.iter().skip(start) {
+            *steps = steps.saturating_add(1);
+            let q = at(k);
+            if q.1.z - p.1.z > cell {
                 break;
             }
-            if q.x == p.x && q.y - p.y > near {
-                // The rest of this run of one `x` is further still.
-                m = run_end.get(k).copied().unwrap_or(order.len()).max(m + 1);
+            if one_place(p, q) {
+                return true;
+            }
+        }
+        false
+    };
+    for k in 0..n {
+        let (Some(&key), Some(&own_end), Some(&own_slab_end)) =
+            (keys.get(k), column_end.get(k), slab_end.get(k))
+        else {
+            continue;
+        };
+        let p = at(key);
+        // The rest of its own column.
+        for m in k + 1..own_end {
+            steps = steps.saturating_add(1);
+            let Some(&other) = keys.get(m) else { break };
+            let q = at(other);
+            if q.1.z - p.1.z > cell {
+                break;
+            }
+            if one_place(p, q) {
+                return (Some(p.1), steps);
+            }
+        }
+        // The next column in `y`, in its slab.
+        if own_end < own_slab_end
+            && keys
+                .get(own_end)
+                .is_some_and(|&next| column(next) == column(key) + 1)
+        {
+            let to = column_end.get(own_end).copied().unwrap_or(n);
+            if in_column(own_end, to, p, &mut steps) {
+                return (Some(p.1), steps);
+            }
+        }
+        // The three columns beside it in the next slab in `x`.
+        if keys
+            .get(own_slab_end)
+            .is_some_and(|&next| slab(next) == slab(key) + 1)
+        {
+            let to = slab_end.get(own_slab_end).copied().unwrap_or(n);
+            let Some(run) = keys.get(own_slab_end..to) else {
                 continue;
+            };
+            let y = column(key) & ((1 << CELL_BITS) - 1);
+            for dy in [y.saturating_sub(1), y, y + 1] {
+                let wanted = ((slab(key) + 1) << CELL_BITS) | dy;
+                let from = own_slab_end + run.partition_point(|&k| column(k) < wanted);
+                steps = steps.saturating_add(bits(run.len()));
+                if keys.get(from).is_some_and(|&k| column(k) == wanted) {
+                    let end = column_end.get(from).copied().unwrap_or(n);
+                    if in_column(from, end, p, &mut steps) {
+                        return (Some(p.1), steps);
+                    }
+                }
             }
-            // Within the rounding of the two points' own coordinates, not
-            // of the face's: by the point of a cusp at the origin, on a
-            // face millions across, distinct points of the mesh lie some
-            // millionths apart, within the rounding of the face's largest
-            // coordinates (`boolean_poles.rs` › `a_cusp_cut_along_its_axis
-            // _is_what_its_profile_says`, at 1e6).
-            let own = [p.x, p.y, p.z, q.x, q.y, q.z]
-                .iter()
-                .fold(0.0_f64, |m, x| m.max(x.abs()));
-            if (a >= boundary || b >= boundary) && p.distance(q) <= ROUNDED_AWAY * own {
-                return Some(p);
-            }
-            m += 1;
         }
     }
-    None
+    (None, steps)
 }
 
 #[cfg(test)]
@@ -6176,7 +6347,12 @@ mod tests {
             (vec![p(0.0), p(1.0), Vec3::new(-0.0, 0.25, -3.0)], 2, p(0.0)),
             (vec![p(0.0), p(1.0), p(2.0), beside], 3, p(1.0)),
         ] {
-            assert_eq!(folded_at(&points, boundary), Some(at), "{points:?}");
+            // (Either point of the pair is the place.)
+            let found = folded_at(&points, boundary);
+            assert!(
+                found.is_some_and(|q| q.distance(at) <= 1e-11),
+                "{points:?}: {found:?}"
+            );
         }
         // Points a millionth apart are two places, and so are points of
         // one x far apart in y, however many, also when the last of them
@@ -6192,6 +6368,76 @@ mod tests {
         assert_eq!(folded_at(&[], 0), None);
         assert_eq!(folded_at(&[p(0.0), p(0.0)], 2), None);
         assert_eq!(folded_at(&[p(0.0), Vec3::new(f64::NAN, 0.0, 0.0)], 1), None);
+    }
+
+    /// The bits of `n`, as [`fold_search`] counts a sort's comparisons.
+    fn bits(n: usize) -> u64 {
+        u64::from(usize::BITS - n.leading_zeros())
+    }
+
+    #[test]
+    fn rows_that_agree_in_x_to_rounding_cost_what_a_sort_does() {
+        // A face turned a quarter: 30 rows of 10,000 points whose x agree
+        // to a few units in the last place, along y; and columns of one x
+        // and one y, along z. A sweep in x alone compares every pair of a
+        // row (about 1.5e9 comparisons here, counted as this counts them).
+        let mut rows = Vec::new();
+        for r in 0..30_u32 {
+            let x = 1.0 + f64::from(r) * 0.01;
+            for k in 0..10_000_u32 {
+                let x = f64::from_bits(x.to_bits() + u64::from(k % 4));
+                rows.push(Vec3::new(x, f64::from(k) * 1e-3, 0.5));
+            }
+        }
+        for r in 0..30_u32 {
+            for k in 0..1_000_u32 {
+                rows.push(Vec3::new(-2.0, f64::from(r) * 0.1, f64::from(k) * 1e-3));
+            }
+        }
+        let n = rows.len();
+        let (found, steps) = fold_search(&rows, 0);
+        assert_eq!(found, None);
+        // The sort's share and a few comparisons a point.
+        let most = 3 * (n as u64) * bits(n);
+        assert!(
+            steps <= most,
+            "{steps} comparisons for {n} points, at most {most}"
+        );
+        // The same with a point a unit in the last place beside one of
+        // each kind: found, for no more.
+        for at in [123_456, 300_500] {
+            let mut beside = rows.clone();
+            let p = beside[at];
+            beside.push(Vec3::new(p.x, f64::from_bits(p.y.to_bits() + 1), p.z));
+            let (found, steps) = fold_search(&beside, n);
+            assert!(
+                found.is_some_and(|q| q.distance(p) <= 1e-12),
+                "{at}: {found:?}"
+            );
+            assert!(steps <= most, "{steps}");
+        }
+    }
+
+    #[test]
+    fn a_pair_across_the_edge_of_a_cell_is_found() {
+        // With the largest coordinate 1, a cell is 2e-12 across, and 0.5
+        // and 0.25 are edges of cells in x and y: two points a few
+        // hundredths of a cell either side of both, and of one in z, are
+        // within the rounding of their coordinates.
+        let far = Vec3::new(1.0, 0.0, 0.0);
+        for (dx, dy, dz) in [
+            (1e-13, 1e-13, 1e-13),
+            (-1e-13, 1e-13, -1e-13),
+            (1e-13, -1e-13, 1e-13),
+        ] {
+            let p = Vec3::new(0.5 - 0.5 * dx, 0.25 - 0.5 * dy, 0.125 - 0.5 * dz);
+            let q = Vec3::new(0.5 + 0.5 * dx, 0.25 + 0.5 * dy, 0.125 + 0.5 * dz);
+            let (found, _) = fold_search(&[far, p, q], 1);
+            assert!(found.is_some(), "{p:?} {q:?}");
+            // Two hundred thousandths of the face apart: two places.
+            let q = Vec3::new(0.5 + 1e-5, 0.25, 0.125);
+            assert_eq!(fold_search(&[far, p, q], 1).0, None);
+        }
     }
 
     #[test]
