@@ -1505,7 +1505,7 @@ fn build(
             };
             let range = range_between(&curve, ps.point, pe.point, closed, tol).ok_or_else(|| {
                 let why = if kept {
-                    "the edge lies on a curve that closes, which is traced less than a turn (past its ends by at most seven eighths of what is left of the turn), and a corner lies further round it than that: the plate's corners past the two ends of the edge leave less than an eighth of the turn between them, or the joints turn the rims further round than their tangent planes put them"
+                    "the edge lies on a curve that closes, which is traced less than a turn (past its ends by at most seven eighths of what is left of the turn), and a corner lies further round it than that: the plate's corners past the two ends of the edge leave less than an eighth of the turn between them, or the joints turn the rims further round than their tangent planes put them; a larger radius against the thickness, or square ends at that edge, leave the corners room"
                 } else {
                     "the corner lies further past the edge's end than its tangent planes put it, by more than the margin the edge is traced beyond"
                 };

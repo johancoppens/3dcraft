@@ -762,3 +762,98 @@ fn holes_across_tight_bends_are_their_closed_forms() {
         &[0],
     );
 }
+
+/// A square with an elliptic hole of two half ellipses of semi-axes `a`
+/// and `b`, built as a sheet by hand (a sketch has no ellipse), the
+/// hole's loop clockwise.
+fn elliptic_sheet(frame: &Frame, half: f64, a: f64, b: f64) -> Body {
+    use craft3d_geom::{Ellipse, Line, Plane, Surface};
+    use craft3d_topo::{BodyKind, Coedge};
+    let mut body = Body::new(BodyKind::Sheet);
+    let corners = [(-half, -half), (half, -half), (half, half), (-half, half)];
+    let vs: Vec<_> = corners
+        .iter()
+        .map(|(x, y)| body.add_vertex(frame.point(*x, *y, 0.0)))
+        .collect();
+    let mut outer = Vec::new();
+    for i in 0..4 {
+        let (p, q) = (corners[i], corners[(i + 1) % 4]);
+        let (p, q) = (frame.point(p.0, p.1, 0.0), frame.point(q.0, q.1, 0.0));
+        let line = Line::through(p, q).unwrap();
+        let e = body.add_edge(
+            Curve3::Line(line),
+            (0.0, p.distance(q)),
+            vs[i],
+            vs[(i + 1) % 4],
+        );
+        outer.push(Coedge {
+            edge: e,
+            reversed: false,
+        });
+    }
+    let ellipse = Curve3::Ellipse(Ellipse::new(*frame, a, b).unwrap());
+    let va = body.add_vertex(ellipse.eval(0.0));
+    let vb = body.add_vertex(ellipse.eval(PI));
+    let top = body.add_edge(ellipse.clone(), (0.0, PI), va, vb);
+    let bottom = body.add_edge(ellipse, (PI, TAU), vb, va);
+    let hole = vec![
+        Coedge {
+            edge: bottom,
+            reversed: true,
+        },
+        Coedge {
+            edge: top,
+            reversed: true,
+        },
+    ];
+    let loops = vec![body.add_loop(outer), body.add_loop(hole)];
+    let face = body.add_face(Surface::Plane(Plane::new(*frame)), false, loops);
+    body.add_shell(vec![face]);
+    body
+}
+
+/// An elliptic hole (`a = 1.7 b`) whose half ellipses were traced over a
+/// whole number of turns (`π + 4t/b`, their speed at their ends being
+/// `b`) and a hair beside, and at three other sizes: its rows are
+/// ellipses, which are never taken for circles, so before a run was kept
+/// within a turn its edges were cut from splines wound round the
+/// ellipse. The closed form `(4 h² − π a b) t`; a side, a scale and a
+/// frame from the case's seed.
+#[test]
+fn elliptic_holes_at_whole_turns_are_their_closed_forms() {
+    let mut tally = Tally::new();
+    let mut bs = Vec::new();
+    for n in [1u32, 2, 3, 4, 5, 6, 8, 16, 64] {
+        let b = 4.0 / (TAU * f64::from(n) - PI);
+        bs.extend([b, b * (1.0 - 1e-9), b * (1.0 + 1e-9)]);
+    }
+    bs.extend([1e-2, 0.1, 1.0]);
+    for (n, b) in bs.into_iter().enumerate() {
+        let mut rng = Rng(case_seed(0x9A7E_0005, n));
+        let side = match rng.below(3) {
+            0 => Side::Out,
+            1 => Side::In,
+            _ => Side::Mid,
+        };
+        let k = SCALES[rng.below(3) as usize];
+        let frame = frame(&mut rng, k);
+        let tol = tolerance(k);
+        let (a, half) = (1.7 * b, (5.1 * b).max(10.0));
+        let sheet = elliptic_sheet(&frame, half * k, a * k, b * k);
+        assert!(check(&sheet, &tol).is_empty(), "{n}: the sheet");
+        let want = (4.0 * half * half - PI * a * b) * k * k * k;
+        let what = format!("ellipse b/t {b:e}, {side:?}, k {k}, frame {frame:?}");
+        match guarded(|| plate(&sheet, &[FaceId(0)], k, side, &BTreeMap::new(), &tol)) {
+            Err(p) => {
+                tally.wrong.push(format!("case {n} (P): {what}: {p}"));
+                tally.outcomes.push('P');
+            }
+            Ok(Err(e)) => {
+                tally.refused(&e.to_string());
+                tally.notes.push(format!("case {n}: {what}: refused: {e}"));
+            }
+            Ok(Ok(made)) => judge(&mut tally, n, &what, &made.body, want, b * k, &tol),
+        }
+    }
+    held(&tally, "elliptic holes", &[], &[]);
+}
