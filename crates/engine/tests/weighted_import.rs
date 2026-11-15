@@ -209,13 +209,22 @@ fn through_the_commands(
     facts: &mut Facts,
 ) -> Session {
     let (mut s, made) = imported(dir, name);
+    let read = made["status"] == "ok";
     facts.hold(
         format!("{name}, file.import"),
-        format!("status {}", made["status"]),
-        made["status"] == "ok",
+        if read {
+            format!("status {}", made["status"])
+        } else {
+            brief(&format!("status {}: {}", made["status"], made["error"]))
+        },
+        read,
     );
     let bodies = inspected(&mut s);
-    let found = &bodies[0];
+    let Some(found) = bodies.first() else {
+        // Read, and its feature made no body: nothing to draw or export.
+        facts.hold(format!("{name}, document.inspect"), "no body".into(), false);
+        return s;
+    };
     let counts = |v: &Value| {
         (
             v["faces"].as_u64(),
@@ -368,10 +377,10 @@ fn bodies_drawn_unevenly_are_read_drawn_exported_and_cut() {
     // for passing through itself on a mesh, which could not be made
     // before; held to the same cut of the analytic rod, measured.
     tried(&mut with_rod, "feature.block", tool_params).unwrap();
-    let target = inspected(&mut with_rod)[0]["name"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let target = inspected(&mut with_rod)
+        .first()
+        .and_then(|body| body["name"].as_str().map(str::to_string))
+        .unwrap_or_default();
     let what = "milder, feature.boolean subtract".to_string();
     match tried(
         &mut with_rod,

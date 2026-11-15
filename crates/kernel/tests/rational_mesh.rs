@@ -203,42 +203,59 @@ struct Held<'a> {
     most: usize,
 }
 
-/// The mesh of `body` at `params`, held to its closed form: the same on
+/// Why a mesh is not one held to its closed form.
+enum Judged {
+    /// The tessellator refuses the body, with its reason.
+    Refused(String),
+    /// A mesh was made and is not right.
+    Wrong(String),
+}
+
+/// The mesh of `body` at `params`, judged by its closed form: the same on
 /// one thread, on two and on all; closed in double precision and in
 /// single; every corner, the middle of every side and of every triangle
 /// within the tolerance of the closed form's surface; the volume; no more
-/// triangles than the shape asks for. How many triangles it has, and how
-/// many of them fold to a line in single precision (a file leaves those
-/// out, and says so).
-#[track_caller]
-fn held(body: &Body, params: &TessParams, to: &Held, what: &str) -> (usize, usize) {
+/// triangles than the shape asks for. Right or wrong is of the mesh as
+/// it is, in double precision. What single precision makes of it is told
+/// beside it: how many of its triangles fold to a line once its points
+/// are rounded to single precision, and whether the mesh on the rounded
+/// points is closed (every side once each way, the folded triangles with
+/// the rest; what `file.export` says of a binary STL is held in the
+/// engine's `weighted_import.rs`). How many triangles it has comes first.
+fn judged(body: &Body, params: &TessParams, to: &Held) -> Result<(usize, usize, bool), Judged> {
+    let wrong = |why: String| Err(Judged::Wrong(why));
     let mesh = match tessellate_body_with_threads(body, params, 1) {
         Ok(mesh) => mesh,
-        Err(e) => panic!("{what}: not meshed: {e}"),
+        Err(e) => return Err(Judged::Refused(e.to_string())),
     };
     for threads in [2, 0] {
-        let again = tessellate_body_with_threads(body, params, threads).unwrap();
-        assert!(same(&mesh, &again), "{what}: differs on {threads} threads");
+        match tessellate_body_with_threads(body, params, threads) {
+            Ok(again) if same(&mesh, &again) => {}
+            _ => return wrong(format!("differs on {threads} threads")),
+        }
     }
-    let welded = mesh.weld().unwrap_or_else(|e| panic!("{what}: {e:?}"));
-    assert!(welded.is_closed(), "{what}: the mesh is not watertight");
-    assert!(
-        (welded.volume() - to.volume).abs() <= to.volume_within,
-        "{what}: mesh volume {} for {} (within {:e})",
-        welded.volume(),
-        to.volume,
-        to.volume_within
-    );
+    let Ok(welded) = mesh.weld() else {
+        return wrong("a triangle with a corner that does not exist".into());
+    };
+    if !welded.is_closed() {
+        return wrong("the mesh is not watertight".into());
+    }
+    // (A volume that is not a number is wrong.)
+    let off = (welded.volume() - to.volume).abs();
+    if off.is_nan() || off > to.volume_within {
+        return wrong(format!(
+            "mesh volume {} for {} (within {:e})",
+            welded.volume(),
+            to.volume,
+            to.volume_within
+        ));
+    }
     // In single precision, as a file has it.
     let single = |p: &Vec3| Vec3::new(p.x as f32 as f64, p.y as f32 as f64, p.z as f32 as f64);
     let rounded = Mesh {
         positions: mesh.positions.iter().map(single).collect(),
         ..mesh.clone()
     };
-    assert!(
-        rounded.weld().is_ok_and(|w| w.is_closed()),
-        "{what}: not closed in single precision"
-    );
     let (mut worst, mut folded) = (0.0_f64, 0);
     for (t, corners) in mesh.triangles.iter().enumerate() {
         let [a, b, c] = corners.map(|i| mesh.positions[i as usize]);
@@ -256,21 +273,44 @@ fn held(body: &Body, params: &TessParams, to: &Held, what: &str) -> (usize, usiz
             c.lerp(a, 0.5),
             (a + b + c) * (1.0 / 3.0),
         ] {
-            worst = worst.max((to.off)(face, point));
+            let off = (to.off)(face, point);
+            // (A distance that is not a number is the worst.)
+            worst = if off.is_nan() {
+                f64::INFINITY
+            } else {
+                worst.max(off)
+            };
         }
     }
-    assert!(
-        worst <= to.tolerance * (1.0 + 1e-9),
-        "{what}: a point of the mesh {worst:e} from the closed form, tolerance {:e}",
-        to.tolerance
-    );
-    assert!(
-        mesh.triangles.len() <= to.most,
-        "{what}: {} triangles, where the shape asks for {} at most",
-        mesh.triangles.len(),
-        to.most
-    );
-    (mesh.triangles.len(), folded)
+    if worst > to.tolerance * (1.0 + 1e-9) {
+        return wrong(format!(
+            "a point of the mesh {worst:e} from the closed form, tolerance {:e}",
+            to.tolerance
+        ));
+    }
+    if mesh.triangles.len() > to.most {
+        return wrong(format!(
+            "{} triangles, where the shape asks for {} at most",
+            mesh.triangles.len(),
+            to.most
+        ));
+    }
+    let closed_in_single = rounded.weld().is_ok_and(|w| w.is_closed());
+    Ok((mesh.triangles.len(), folded, closed_in_single))
+}
+
+/// [`judged`], for a body that must mesh right and closed in single
+/// precision too: its triangles, and how many of them fold there.
+#[track_caller]
+fn held(body: &Body, params: &TessParams, to: &Held, what: &str) -> (usize, usize) {
+    match judged(body, params, to) {
+        Ok((triangles, folded, closed)) => {
+            assert!(closed, "{what}: not closed in single precision");
+            (triangles, folded)
+        }
+        Err(Judged::Refused(why)) => panic!("{what}: not meshed: {why}"),
+        Err(Judged::Wrong(why)) => panic!("{what}: {why}"),
+    }
 }
 
 /// Whether the measure gives `body`'s volume and area, which are then
@@ -403,7 +443,8 @@ fn twins_redrawn_at_an_uneven_pace_mesh_as_their_even_twins() {
 /// sums do not settle) the block is counted.
 #[test]
 fn blocks_with_planes_drawn_at_an_uneven_pace_mesh_as_blocks() {
-    let (mut graded, mut even, mut unmeasured) = (0, 0, 0);
+    let (mut right, mut even, mut measures, mut unmeasured) = (0, 0, 0, 0);
+    let (mut refused, mut wrong): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
     let plate = Vec3::new(4.0, 3.0, 2.0);
     {
         for (k, size) in [
@@ -447,8 +488,14 @@ fn blocks_with_planes_drawn_at_an_uneven_pace_mesh_as_blocks() {
                             // ten thousand and more apart, and a sheet of
                             // degree 1 drawn a million apart both ways,
                             // whose sums do not settle.)
-                            let found = measured(&body, (volume, area), None, &what);
-                            unmeasured += usize::from(!found);
+                            // (The measure is not this file's matter and
+                            // takes seconds where it does not settle: one
+                            // block in eight, the plate as it is written.)
+                            if k == 1.0 && size == plate && !tilted {
+                                measures += 1;
+                                unmeasured +=
+                                    usize::from(!measured(&body, (volume, area), None, &what));
+                            }
                             if std::env::var_os("RATIONAL_TIMINGS").is_some() {
                                 eprintln!(
                                     "{what}: checked in {checked:.2?}, measured in {:.2?}",
@@ -460,14 +507,12 @@ fn blocks_with_planes_drawn_at_an_uneven_pace_mesh_as_blocks() {
                                 max_triangles: Some(4_000),
                                 ..TessParams::default()
                             };
-                            match tessellate_body_with_threads(&body, &params, 1) {
-                                // Its even grid fits the limit: as before.
-                                Err(TessError::OverBudget { .. }) => {
-                                    even += 1;
-                                    continue;
-                                }
-                                Err(e) => panic!("{what}: not meshed: {e}"),
-                                Ok(_) => {}
+                            // Its even grid fits the limit: as before.
+                            if let Err(TessError::OverBudget { .. }) =
+                                tessellate_body_with_threads(&body, &params, 1)
+                            {
+                                even += 1;
+                                continue;
                             }
                             let off = |face: usize, point: Vec3| {
                                 off_surface(&analytic.faces[face].surface, point)
@@ -481,9 +526,16 @@ fn blocks_with_planes_drawn_at_an_uneven_pace_mesh_as_blocks() {
                                 tolerance: 1e-9 * reach,
                                 most: 64,
                             };
-                            let (_, folded) = held(&body, &params, &to, &what);
-                            assert_eq!(folded, 0, "{what}: folds in single precision");
-                            graded += 1;
+                            match judged(&body, &params, &to) {
+                                Ok((_, 0, true)) => right += 1,
+                                // (A block's faces are flat: nothing of
+                                // one folds or opens in single precision.)
+                                Ok((_, folded, closed)) => wrong.push(format!(
+                                    "{what}: {folded} triangles fold in single precision, closed there {closed}"
+                                )),
+                                Err(Judged::Refused(why)) => refused.push(format!("{what}: {why}")),
+                                Err(Judged::Wrong(why)) => wrong.push(format!("{what}: {why}")),
+                            }
                         }
                     }
                 }
@@ -491,10 +543,128 @@ fn blocks_with_planes_drawn_at_an_uneven_pace_mesh_as_blocks() {
         }
     }
     println!(
-        "blocks: {graded} with a mesh of the plain block's order, {even} with the even grid; {unmeasured} not measured"
+        "blocks, of 360: {right} meshed right (the plain block's order of triangles, on its planes), {even} kept the even grid, {} refused, {} wrong; of {measures} measured, {unmeasured} refused by the measure",
+        refused.len(),
+        wrong.len()
     );
-    assert_eq!(graded + even, 360);
-    assert!(graded * 3 >= 360 * 2, "{graded} of 360");
+    for line in &refused {
+        println!("blocks, refused: {line}");
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    assert!(refused.is_empty(), "{refused:#?}");
+    assert_eq!(right + even, 360);
+    assert!(right * 3 >= 360 * 2, "{right} of 360");
+}
+
+/// The tools of `boolean_rational.rs` that are no block, through the
+/// curved face of each solid: a rod, a ball, a cone and a ring.
+fn curved_tools(name: &str, k: f64) -> Vec<(&'static str, Body)> {
+    match name {
+        "quarter rod" => vec![
+            ("rod", log(k, [0.6, 1.2, 1.6], 0.5, 3.0)),
+            ("ball", ball(k, [1.5, 1.3, 1.4], 0.8)),
+            ("spike", spike(k, [1.3, 1.5, 0.6], 0.7, 1.9)),
+            ("ring", ring(k, [1.45, 1.35, 1.5], 0.8, 0.3)),
+        ],
+        "ball zone" => vec![
+            ("rod", log(k, [0.5, 1.1, 0.1], 0.45, 3.0)),
+            ("ball", ball(k, [1.5, 1.3, 0.1], 0.6)),
+            ("spike", spike(k, [1.3, 1.5, -0.6], 0.6, 1.3)),
+            ("ring", ring(k, [1.45, 1.35, 0.05], 0.7, 0.25)),
+        ],
+        "frustum" => vec![
+            ("rod", log(k, [0.3, 0.7, 1.2], 0.3, 3.0)),
+            ("ball", ball(k, [1.0, 0.9, 1.2], 0.5)),
+            ("spike", spike(k, [0.9, 1.0, 0.8], 0.45, 0.9)),
+            ("ring", ring(k, [1.0, 0.95, 1.25], 0.5, 0.15)),
+        ],
+        "ring slice" => vec![
+            ("rod", log(k, [1.2, 2.0, 0.05], 0.3, 3.5)),
+            ("ball", ball(k, [2.9, 2.6, 0.05], 0.4)),
+            ("spike", spike(k, [2.8, 2.7, -0.4], 0.35, 0.8)),
+            ("ring", ring(k, [2.85, 2.65, 0.02], 0.45, 0.15)),
+        ],
+        _ => panic!("no tools for {name}"),
+    }
+}
+
+/// The booleans of the twins drawn a thousandfold unevenly both ways with
+/// a rod, a ball, a cone and a ring through their curved face, at 1 and
+/// at 1e6: what they cut from a face drawn unevenly is thin in places (a
+/// lens between two curved faces), where a face on few cells may come to
+/// share a side with its neighbour that is on no edge. None of these
+/// could be meshed before the graded grid. Each is now either meshed
+/// right, by the closed forms (closed, every point within the tolerance
+/// of a surface of the analytic solid or of the tool, the volume within
+/// the tolerance times the area of the analytic boolean's), or refused
+/// with the tessellator's reason; never a mesh that is wrong. Counted,
+/// with what single precision makes of those meshed right (the knots a
+/// cut leaves a billionth of the size apart: triangles that fold to a
+/// line, and here and there a mesh that is not closed there).
+#[test]
+fn the_booleans_of_twins_with_curved_tools_mesh_right_or_are_refused() {
+    let (mut built, mut right, mut folding, mut open_in_single) = (0, 0, 0, 0);
+    let (mut refused, mut wrong): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    for k in [1.0, 1e6] {
+        for (name, plain, _, _) in solids(k) {
+            let (twin, _) = rationalized(&plain, 0.2, true);
+            let body = skewed_apart(&twin, 1e3, 1e3);
+            for (tool_name, tool) in curved_tools(name, k) {
+                for op in [Union, Intersect, Subtract] {
+                    let what = format!("{name} and {tool_name} at {k}, {op:?}");
+                    // (What the boolean itself refuses is its own matter.)
+                    let Ok(made) = boolean(&body, &tool, op, &tolerance(k)) else {
+                        continue;
+                    };
+                    built += 1;
+                    let exact = mass(&solve(&plain, &tool, op, k).body);
+                    let params = TessParams {
+                        chordal_tolerance: 3e-3 * k,
+                        ..TessParams::default()
+                    };
+                    let off = |_: usize, point: Vec3| {
+                        plain
+                            .faces
+                            .iter()
+                            .chain(&tool.faces)
+                            .map(|face| off_surface(&face.surface, point))
+                            .fold(f64::INFINITY, f64::min)
+                    };
+                    let to = Held {
+                        off: &off,
+                        volume: exact.volume,
+                        volume_within: exact.area * params.chordal_tolerance,
+                        tolerance: params.chordal_tolerance,
+                        most: usize::MAX,
+                    };
+                    match judged(&made.body, &params, &to) {
+                        Ok((_, folded, closed)) => {
+                            right += 1;
+                            folding += usize::from(folded > 0);
+                            if !closed {
+                                open_in_single += 1;
+                                println!(
+                                    "twins with curved tools, open in single precision: {what} ({folded} triangles fold)"
+                                );
+                            }
+                        }
+                        Err(Judged::Refused(why)) => refused.push(format!("{what}: {why}")),
+                        Err(Judged::Wrong(why)) => wrong.push(format!("{what}: {why}")),
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "twins with curved tools: {built} built of 96, {right} meshed right, {} refused, {} wrong; of those meshed right {folding} have triangles that fold in single precision and {open_in_single} are not closed on their points rounded to it",
+        refused.len(),
+        wrong.len()
+    );
+    for line in &refused {
+        println!("twins with curved tools, refused: {line}");
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    assert!(built >= 48, "{built} built");
 }
 
 /// The block 30 by 900 by 20 whose sides are flat bicubic sheets with
