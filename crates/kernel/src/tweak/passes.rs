@@ -35,10 +35,17 @@
 //!    which is where it was asked before, can lie on the right side).
 //!
 //!    2 and 3 ask how far a point is from a face's surface, of every
-//!    vertex and every step of an edge near it, and so only of faces
-//!    where that is a closed form ([`analytic`]): a freeform face that
-//!    moves through a vertex, and an edge that runs out through a freeform
-//!    face, are not looked for.
+//!    vertex and every step of an edge near it. On a plane, a cylinder, a
+//!    cone, a sphere and a torus that is a closed form ([`analytic`]). On
+//!    a freeform surface it is a search, and a search over the whole
+//!    surface for every point cost more than the operation; so a freeform
+//!    face is asked only where something is near one of its spans (the
+//!    box of the control points that bear on the span holds the surface
+//!    there: [`spans_of`]), and by a walk from that span's middle or from
+//!    the foot of the point asked about before ([`walked`]: a few
+//!    evaluations). A walk that does not end square to the surface says
+//!    nothing, and nothing is concluded from it: a miss there is a body
+//!    built as before these checks, never a refusal.
 //! 4. **A body turned inside out** ([`inside_out`]). A shell that enclosed
 //!    a volume and is measured to enclose a negative one. Measured only
 //!    where a face that does not touch a moved face lies in the box the
@@ -58,19 +65,23 @@
 //! What these do not find: a moved face that passes a face far from it
 //! where no vertex lies in its way, no edge made again goes through it
 //! and the volume stays positive (the bottom of a block moved up into a
-//! groove of its top, a dimple, the point of a drilled hole). That needs
+//! groove of its top, a dimple, the point of a drilled hole; a spline
+//! face moved straight up into an arm that hangs over it). That needs
 //! the faces' intersection. The mesh the regeneration looks for
 //! self-intersections on finds it only from some depth on: a few
 //! thousandths of a millimetre into a smooth face it is still built
 //! wrong, also through the commands (owed; pinned as known in
-//! `crates/kernel/tests/hunt_offset.rs`).
+//! `crates/kernel/tests/hunt_offset.rs` and
+//! `crates/kernel/tests/face_op_freeform_known.rs`).
 
 use super::distance;
 use craft3d_geom::{Curve3, Surface};
 use craft3d_math::{Bbox3, Tolerance, Vec3};
 use craft3d_topo::{Body, Edge, EdgeId, FaceId, VertexId};
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
+use std::rc::Rc;
 
 /// Steps a circle or an ellipse is followed in at most (a whole turn), and
 /// a spline per span of its knots and in all.
@@ -604,6 +615,10 @@ fn boxes_meet(a: &Bbox3, b: &Bbox3) -> bool {
 /// every face cost more than the checks.
 pub(super) struct Layout {
     boxes: Vec<Option<Bbox3>>,
+    /// The spans of the freeform faces asked about so far ([`spans_of`],
+    /// those that reach the face's box), made when a face is first asked
+    /// about; `None` for a face that has none to ask.
+    spans: RefCell<BTreeMap<u32, Option<Rc<Vec<Span>>>>>,
 }
 
 impl Layout {
@@ -612,8 +627,304 @@ impl Layout {
             boxes: (0..made.faces.len())
                 .map(|i| made.face_bbox(FaceId(super::index_u32(i))).ok())
                 .collect(),
+            spans: RefCell::new(BTreeMap::new()),
         }
     }
+
+    /// The spans of the freeform face `face` of `made` whose boxes reach
+    /// the box of the face (a span of its surface that the face is cut
+    /// clear of holds nothing of it). Made once per face and counted
+    /// against the operation's work bound, a unit per sixteen spans.
+    fn spans(&self, made: &Body, face: FaceId) -> Option<Rc<Vec<Span>>> {
+        if let Some(known) = self.spans.borrow().get(&face.0) {
+            return known.clone();
+        }
+        let found = made.face(face).and_then(|data| {
+            let bounds = self.boxes.get(face.0 as usize)?.as_ref()?;
+            let (lo, hi) = bounds.corners()?;
+            let all = spans_of(&data.surface)?;
+            craft3d_geom::allowance::charge((all.len() / 16) as u64 + 1);
+            let kept: Vec<Span> = all.into_iter().filter(|s| s.reaches(lo, hi)).collect();
+            (!kept.is_empty()).then(|| Rc::new(kept))
+        });
+        self.spans.borrow_mut().insert(face.0, found.clone());
+        found
+    }
+}
+
+/// One span of a freeform surface: the part of its parameters it covers,
+/// and a box that holds the surface there: the box of the control points
+/// that bear on the span, in whose hull the surface lies (its weights are
+/// positive).
+#[derive(Clone, Copy, Debug)]
+struct Span {
+    u: (f64, f64),
+    v: (f64, f64),
+    lo: Vec3,
+    hi: Vec3,
+}
+
+impl Span {
+    fn middle(&self) -> (f64, f64) {
+        (0.5 * (self.u.0 + self.u.1), 0.5 * (self.v.0 + self.v.1))
+    }
+
+    /// Whether the span's box shares a point with the box `lo`, `hi`.
+    fn reaches(&self, lo: Vec3, hi: Vec3) -> bool {
+        self.lo.x <= hi.x
+            && lo.x <= self.hi.x
+            && self.lo.y <= hi.y
+            && lo.y <= self.hi.y
+            && self.lo.z <= hi.z
+            && lo.z <= self.hi.z
+    }
+
+    /// How far `point` is from the span's box, by the largest of its
+    /// three coordinates' distances (nothing inside it; infinitely far for
+    /// a point that is no point, which `f64::max` would place inside).
+    fn off(&self, point: Vec3) -> f64 {
+        if !point.is_finite() {
+            return f64::INFINITY;
+        }
+        let out = |x: f64, lo: f64, hi: f64| (lo - x).max(x - hi).max(0.0);
+        out(point.x, self.lo.x, self.hi.x)
+            .max(out(point.y, self.lo.y, self.hi.y))
+            .max(out(point.z, self.lo.z, self.hi.z))
+    }
+
+    /// How near `point` is to the span, to choose where a walk starts:
+    /// [`Span::off`], and among spans whose boxes hold it alike (the boxes
+    /// of neighbouring spans overlap) the square of its distance from the
+    /// box's middle, so that the walk starts in the span most likely to
+    /// hold its foot.
+    fn rank(&self, point: Vec3) -> (f64, f64) {
+        let centre = (self.lo + self.hi) * 0.5;
+        (self.off(point), (point - centre).length_squared())
+    }
+}
+
+/// Whether the rank `a` ([`Span::rank`]) is nearer than `b`.
+fn nearer(a: (f64, f64), b: (f64, f64)) -> bool {
+    a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)).is_lt()
+}
+
+/// Most spans of one freeform surface that are boxed: a surface with more
+/// is not asked ([`swept`], [`pierced`]).
+const MOST_SPANS: usize = 1 << 18;
+
+/// The spans of a Bézier or NURBS surface, each with the box of the
+/// control points that bear on it (for a NURBS surface of degrees p and q,
+/// the p + 1 by q + 1 control points of the span: no knot is inserted).
+/// `None` for the other kinds of surface, for a surface with a weight that
+/// is not positive or a number that is not finite (its hull holds nothing
+/// to go by), and for one of more than [`MOST_SPANS`] spans.
+fn spans_of(surface: &Surface) -> Option<Vec<Span>> {
+    match surface {
+        Surface::Bezier(patch) => {
+            let (lo, hi) = patch.control_bbox().corners()?;
+            (lo.is_finite() && hi.is_finite()).then(|| {
+                vec![Span {
+                    u: (0.0, 1.0),
+                    v: (0.0, 1.0),
+                    lo,
+                    hi,
+                }]
+            })
+        }
+        Surface::Nurbs(spline) => {
+            let (p, q) = spline.degrees();
+            let (count_u, count_v) = spline.counts();
+            let points = spline.control_points();
+            if !spline.weights().iter().all(|w| w.is_finite() && *w > 0.0)
+                || !points.iter().all(|c| c.is_finite())
+            {
+                return None;
+            }
+            // The knot spans of one direction inside its domain: the index
+            // of the last control point that bears on each, and its range.
+            let ranges = |knots: &[f64], degree: usize, count: usize| -> Vec<(usize, (f64, f64))> {
+                (degree..count)
+                    .filter_map(|k| {
+                        let (lo, hi) = (*knots.get(k)?, *knots.get(k.checked_add(1)?)?);
+                        (lo.is_finite() && hi.is_finite() && hi > lo).then_some((k, (lo, hi)))
+                    })
+                    .collect()
+            };
+            let along_u = ranges(spline.knots_u(), p, count_u);
+            let along_v = ranges(spline.knots_v(), q, count_v);
+            if along_u.len().checked_mul(along_v.len())? > MOST_SPANS {
+                return None;
+            }
+            let mut found = Vec::with_capacity(along_u.len() * along_v.len());
+            for (i, u) in &along_u {
+                for (j, v) in &along_v {
+                    let mut ends: Option<(Vec3, Vec3)> = None;
+                    for row in i.checked_sub(p)?..=*i {
+                        for column in j.checked_sub(q)?..=*j {
+                            let c = *points.get(row.checked_mul(count_v)?.checked_add(column)?)?;
+                            ends = Some(match ends {
+                                Some((lo, hi)) => (lo.min(c), hi.max(c)),
+                                None => (c, c),
+                            });
+                        }
+                    }
+                    let (lo, hi) = ends?;
+                    found.push(Span {
+                        u: *u,
+                        v: *v,
+                        lo,
+                        hi,
+                    });
+                }
+            }
+            (!found.is_empty()).then_some(found)
+        }
+        _ => None,
+    }
+}
+
+/// Where a freeform face that moved lay and lies: the spans of its surface
+/// before and after, for the vertices it may have gone past ([`swept`]).
+struct Sweep {
+    was: Vec<Span>,
+    is: Vec<Span>,
+    /// Whether the two surfaces have the same spans, each over the same
+    /// parameters (a face moved as it is, or offset knot for knot): a
+    /// point of the face then went from a span's box before to the same
+    /// span's box after.
+    paired: bool,
+    tol: f64,
+}
+
+impl Sweep {
+    /// `None` where either surface has no spans to go by ([`spans_of`]).
+    /// Counted against the operation's work bound, a unit per sixteen
+    /// spans.
+    fn of(was: &Surface, is: &Surface, tol: f64) -> Option<Self> {
+        let (was, is) = (spans_of(was)?, spans_of(is)?);
+        craft3d_geom::allowance::charge((was.len().saturating_add(is.len()) / 16) as u64 + 1);
+        let paired =
+            was.len() == is.len() && was.iter().zip(&is).all(|(a, b)| a.u == b.u && a.v == b.v);
+        Some(Sweep {
+            was,
+            is,
+            paired,
+            tol,
+        })
+    }
+
+    /// Where the walks of a vertex that lay at `old` and lies at `new`
+    /// start, on the surface before and on the surface after: the middle
+    /// of the span that went past it. `None` for a vertex no span went
+    /// past. Counted, a unit per 64 spans looked at.
+    ///
+    /// Where the spans are paired, a span went past the vertex if the box
+    /// of its two boxes holds it, grown by a quarter of how far the box
+    /// moved (a point that turns about an axis leaves the line between
+    /// its two places by less than that, up to a turn of 100 degrees) and
+    /// by the tolerance; of those, the one whose boxes are nearest the
+    /// vertex ([`Span::rank`]). Where they are not, every vertex is asked,
+    /// from the span nearest it on each surface.
+    fn starts(&self, old: Vec3, new: Vec3) -> Option<((f64, f64), (f64, f64))> {
+        craft3d_geom::allowance::charge(
+            (self.was.len().saturating_add(self.is.len()) / 64) as u64 + 1,
+        );
+        let nearest = |spans: &[Span], point: Vec3| {
+            let mut best: Option<((f64, f64), &Span)> = None;
+            for span in spans {
+                let rank = span.rank(point);
+                if rank.0.is_finite() && best.is_none_or(|(least, _)| nearer(rank, least)) {
+                    best = Some((rank, span));
+                }
+            }
+            best.map(|(_, s)| s.middle())
+        };
+        if !self.paired {
+            return Some((nearest(&self.was, old)?, nearest(&self.is, new)?));
+        }
+        let mut best: Option<((f64, f64), (f64, f64))> = None;
+        for (a, b) in self.was.iter().zip(&self.is) {
+            let moved = ((b.lo + b.hi) - (a.lo + a.hi)).length() * 0.5;
+            let reach = 0.25 * moved + self.tol;
+            let way = Span {
+                lo: a.lo.min(b.lo),
+                hi: a.hi.max(b.hi),
+                ..*a
+            };
+            if !(way.off(old) <= reach || way.off(new) <= reach) {
+                continue;
+            }
+            let (ra, rb) = (a.rank(old), b.rank(new));
+            let rank = (ra.0 + rb.0, ra.1 + rb.1);
+            if rank.0.is_finite() && best.is_none_or(|(least, _)| nearer(rank, least)) {
+                best = Some((rank, a.middle()));
+            }
+        }
+        best.map(|(_, middle)| (middle, middle))
+    }
+}
+
+/// For each step of an edge followed as `followed`, where a walk onto a
+/// freeform face may start: the middle of the span, among the face's
+/// `spans` whose boxes come within `reach` of the stretch before or after
+/// the step (the box of its two ends: the curve between them lies within
+/// `reach` of it), whose box is nearest the step ([`Span::rank`]). `None` for a step near
+/// no span, and for an edge near none at all: between two steps near no
+/// span the edge cannot cross the face. Counted against the operation's
+/// work bound, a unit per 64 boxes held against each other.
+fn starts(spans: &[Span], followed: &Path, reach: f64) -> Option<Vec<Option<(f64, f64)>>> {
+    let grow = Vec3::new(reach, reach, reach);
+    let near: Vec<&Span> = spans
+        .iter()
+        .filter(|s| s.reaches(followed.lo - grow, followed.hi + grow))
+        .collect();
+    let steps = followed.points.len();
+    let held = spans.len().saturating_add(near.len().saturating_mul(steps));
+    craft3d_geom::allowance::charge((held / 64) as u64 + 1);
+    if near.is_empty() {
+        return None;
+    }
+    // Per step: how near the nearest span found so far is ([`Span::rank`]),
+    // and its middle.
+    let mut found: Vec<Option<((f64, f64), (f64, f64))>> = vec![None; steps];
+    for (k, ends) in followed.points.windows(2).enumerate() {
+        let [a, b] = ends else {
+            continue;
+        };
+        let (lo, hi) = (a.min(*b) - grow, a.max(*b) + grow);
+        for span in near.iter().filter(|s| s.reaches(lo, hi)) {
+            for (at, point) in [(k, a), (k + 1, b)] {
+                let rank = span.rank(*point);
+                if let Some(slot) = found.get_mut(at)
+                    && slot.is_none_or(|(least, _)| nearer(rank, least))
+                {
+                    *slot = Some((rank, span.middle()));
+                }
+            }
+        }
+    }
+    found
+        .iter()
+        .any(Option::is_some)
+        .then(|| found.iter().map(|f| f.map(|(_, middle)| middle)).collect())
+}
+
+/// The signed distance from `point` to the freeform `surface` (along its
+/// normal, as [`distance`] gives it) by one walk from the parameters
+/// `start` ([`Surface::project_from`]: a few evaluations, where the search
+/// over the whole surface takes hundreds), with the parameters of the
+/// foot and the foot. `None` unless the walk settled square to the
+/// surface ([`super::SQUARE`]): one held at a border of the surface, one
+/// that did not settle, and one that met a number that is none say
+/// nothing.
+fn walked(surface: &Surface, point: Vec3, start: (f64, f64)) -> Option<(f64, (f64, f64), Vec3)> {
+    let ((u, v), (foot, du, dv)) = surface.project_from_with_derivatives(point, start).ok()?;
+    let normal = du.cross(dv).normalized()?;
+    let offset = point - foot;
+    let along = offset.dot(normal);
+    let aside = (offset - normal * along).length();
+    let square = aside <= super::SQUARE * offset.length() + 1e-15 * (1.0 + point.length());
+    (square && along.is_finite() && foot.is_finite()).then_some((along, (u, v), foot))
 }
 
 /// Halvings of the search for where an edge crosses a surface.
@@ -623,11 +934,10 @@ const CUT_STEPS: usize = 48;
 /// plane, a cylinder, a cone, a sphere, a torus). [`swept`] and [`pierced`]
 /// ask it of every vertex and every step of an edge near a face, which a
 /// freeform face answers by a search each time: on a plate with 240 wavy
-/// slots, `pierced` alone, asked of the slots' freeform walls too, took
-/// longer than the whole offset of the plate's top had (the review of
-/// 2026-11-14). So a freeform face is not asked: an edge that runs out
-/// through one, and a vertex one moves through, are left to the mesh the
-/// regeneration looks at, as before these checks.
+/// slots, `pierced` alone, asked of the slots' freeform walls by a search
+/// over the whole surface, took longer than the whole offset of the
+/// plate's top had (the review of 2026-11-14). So a freeform face is
+/// asked by walks, and only near its spans ([`starts`], [`Sweep`]).
 fn analytic(surface: &Surface) -> bool {
     match surface {
         Surface::Plane(_)
@@ -640,13 +950,16 @@ fn analytic(surface: &Surface) -> bool {
 }
 
 /// The edges of `remade` that cross the surface of a face of `made` that
-/// shares no vertex with them and lies on a surface with a closed form
-/// ([`analytic`]), on that face (or where that cannot be told): per edge,
-/// the middles of the stretches the crossings cut it into, and the first
-/// face it goes through (the module documentation). Found from the edge
-/// followed in steps: a stretch that goes in and out again between two
-/// steps is not seen. Every pair of an edge and a face near it is counted
-/// against the operation's work bound; reaching it is [`Spent`].
+/// shares no vertex with them, on that face (or where that cannot be
+/// told): per edge, the middles of the stretches the crossings cut it
+/// into, and the first face it goes through (the module documentation).
+/// Found from the edge followed in steps: a stretch that goes in and out
+/// again between two steps is not seen. Of a freeform face only the steps
+/// near one of its spans are asked, by walks ([`starts`], [`walked`]), and
+/// a crossing counts only where the edge is found on the surface. Every
+/// pair of an edge and a face near it is counted against the operation's
+/// work bound, as are the spans looked at and every evaluation of a walk;
+/// reaching it is [`Spent`].
 pub(super) fn pierced(
     made: &Body,
     layout: &Layout,
@@ -674,26 +987,74 @@ pub(super) fn pierced(
             if !bounds.as_ref().is_some_and(|b| boxes_meet(b, &around)) || own.contains(&face) {
                 continue;
             }
-            let Some(data) = made.face(face).filter(|f| analytic(&f.surface)) else {
+            let Some(data) = made.face(face) else {
                 continue;
             };
             let vertices = super::face_vertices(made, face);
             if vertices.contains(&edge.start) || vertices.contains(&edge.end) {
                 continue;
             }
+            // Of a freeform face: where each step of the edge may start
+            // its walk, for the steps that come near a span of the face.
+            let starts = if analytic(&data.surface) {
+                None
+            } else {
+                let Some(spans) = layout.spans(made, face) else {
+                    continue;
+                };
+                let near = starts(&spans, &followed, reach);
+                if craft3d_geom::allowance::exhausted() {
+                    return Err(Spent);
+                }
+                match near {
+                    Some(starts) => Some(starts),
+                    None => continue,
+                }
+            };
             craft3d_geom::allowance::charge(1);
             if craft3d_geom::allowance::exhausted() {
                 return Err(Spent);
             }
-            let off = |t: f64| distance(&data.surface, edge.curve.eval(t)).map(|(d, _)| d);
-            let sides: Vec<Option<f64>> = followed.params.iter().map(|t| off(*t)).collect();
+            // The edge's distance from the surface at `t`. From a freeform
+            // surface by a walk, from the foot of the point asked about
+            // before or else from `start` (the middle of a span the edge
+            // is near there); a walk that does not end square to the
+            // surface says nothing, and where the edge is near no span
+            // nothing is asked.
+            let foot: Cell<Option<(f64, f64)>> = Cell::new(None);
+            let off = |t: f64, start: Option<(f64, f64)>| -> Option<f64> {
+                let point = edge.curve.eval(t);
+                if starts.is_none() {
+                    return distance(&data.surface, point).map(|(d, _)| d);
+                }
+                let Some(start) = start else {
+                    foot.set(None);
+                    return None;
+                };
+                let found = foot
+                    .get()
+                    .and_then(|from| walked(&data.surface, point, from))
+                    .or_else(|| walked(&data.surface, point, start));
+                foot.set(found.map(|(_, at, _)| at));
+                found.map(|(d, _, _)| d)
+            };
+            let start_of = |k: usize| starts.as_ref().and_then(|s| s.get(k).copied().flatten());
+            let mut sides: Vec<Option<f64>> = Vec::with_capacity(followed.params.len());
+            let mut feet: Vec<Option<(f64, f64)>> = Vec::with_capacity(followed.params.len());
+            for (k, t) in followed.params.iter().enumerate() {
+                sides.push(off(*t, start_of(k)));
+                feet.push(foot.get());
+            }
+            if starts.is_some() && craft3d_geom::allowance::exhausted() {
+                return Err(Spent);
+            }
             // Where the edge crosses the surface between two parameters on
             // either side of it, by halving.
-            let crossing = |from: f64, to: f64, below: bool| {
+            let crossing = |from: f64, to: f64, below: bool, start: Option<(f64, f64)>| {
                 let (mut lo, mut hi) = (from, to);
                 for _ in 0..CUT_STEPS {
                     let middle = 0.5 * (lo + hi);
-                    match off(middle) {
+                    match off(middle, start) {
                         Some(d) if (d < 0.0) == below => lo = middle,
                         Some(_) => hi = middle,
                         None => break,
@@ -702,19 +1063,24 @@ pub(super) fn pierced(
                 0.5 * (lo + hi)
             };
             let mut places: Vec<f64> = Vec::new();
-            for (ts, ds) in followed.params.windows(2).zip(sides.windows(2)) {
+            for (k, (ts, ds)) in followed.params.windows(2).zip(sides.windows(2)).enumerate() {
                 let ([t0, t1], [Some(d0), Some(d1)]) = (ts, ds) else {
                     continue;
                 };
+                // The walks between these two steps start where the first
+                // of them ended.
+                let start = start_of(k).or(start_of(k + 1));
+                foot.set(feet.get(k).copied().flatten());
+                let mut cuts: Vec<f64> = Vec::new();
                 if (*d0 < 0.0 && *d1 > 0.0) || (*d0 > 0.0 && *d1 < 0.0) {
-                    places.push(crossing(*t0, *t1, *d0 < 0.0));
+                    cuts.push(crossing(*t0, *t1, *d0 < 0.0, start));
                 } else if followed.slack > 0.0 && *d0 != 0.0 && d0.abs().min(d1.abs()) <= reach {
                     // Both steps on one side and near the surface: a bend
                     // between them may dip through it and come back. Where
                     // it comes nearest (or goes farthest through), by
                     // thirds.
                     let side = d0.signum();
-                    let depth = |t: f64| off(t).map(|d| side * d);
+                    let depth = |t: f64| off(t, start).map(|d| side * d);
                     let (mut lo, mut hi) = (*t0, *t1);
                     for _ in 0..CUT_STEPS {
                         let (a, b) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
@@ -726,10 +1092,21 @@ pub(super) fn pierced(
                     }
                     let dip = 0.5 * (lo + hi);
                     if depth(dip).is_some_and(|d| d < 0.0) {
-                        places.push(crossing(*t0, dip, *d0 < 0.0));
-                        places.push(crossing(dip, *t1, *d0 > 0.0));
+                        cuts.push(crossing(*t0, dip, *d0 < 0.0, start));
+                        cuts.push(crossing(dip, *t1, *d0 > 0.0, start));
                     }
                 }
+                // On a freeform surface a place counts only where the edge
+                // is found on the surface there: two walks that settled on
+                // different folds of it differ in sign with nothing
+                // between them.
+                if starts.is_some() {
+                    cuts.retain(|at| off(*at, start).is_some_and(|d| d.abs() <= tol));
+                    if craft3d_geom::allowance::exhausted() {
+                        return Err(Spent);
+                    }
+                }
+                places.extend(cuts);
             }
             for at in places {
                 let on = craft3d_topo::face_holds(made, data, tolerance, &[edge.curve.eval(at)])
@@ -799,10 +1176,24 @@ pub(super) fn swept(
             });
         }
         // Where its vertices went is asked of a face on a plane, a
-        // cylinder, a cone, a sphere or a torus only ([`analytic`]).
-        if !(analytic(&was.surface) && analytic(&is.surface)) {
-            continue;
-        }
+        // cylinder, a cone, a sphere or a torus in closed form
+        // ([`analytic`]), and of a freeform face by walks from the spans
+        // the vertex is near ([`Sweep`]); a face that changed from the one
+        // kind to the other is not asked.
+        let sweep = match (analytic(&was.surface), analytic(&is.surface)) {
+            (true, true) => None,
+            (false, false) => {
+                let sweep = Sweep::of(&was.surface, &is.surface, tol);
+                if craft3d_geom::allowance::exhausted() {
+                    return Err(Spent);
+                }
+                match sweep {
+                    Some(sweep) => Some(sweep),
+                    None => continue,
+                }
+            }
+            _ => continue,
+        };
         // The nearest of the vertices passed, as it lay before the face
         // (its distance, and which side of the face that was).
         let mut nearest: Option<(f64, f64)> = None;
@@ -817,11 +1208,34 @@ pub(super) fn swept(
             if craft3d_geom::allowance::exhausted() {
                 return Err(Spent);
             }
-            let (Some((d0, _)), Some((d1, out))) = (
-                distance(&was.surface, old.point),
-                distance(&is.surface, new.point),
-            ) else {
-                continue;
+            let (d0, d1, foot) = match &sweep {
+                None => {
+                    let (Some((d0, _)), Some((d1, out))) = (
+                        distance(&was.surface, old.point),
+                        distance(&is.surface, new.point),
+                    ) else {
+                        continue;
+                    };
+                    (d0, d1, new.point - out * d1)
+                }
+                Some(sweep) => {
+                    // Where the vertex lay from the face before and where
+                    // it lies now, each by a walk from the span it is
+                    // near; a vertex near no span, and a walk that does
+                    // not end square to the surface, say nothing.
+                    let asked = sweep.starts(old.point, new.point).and_then(|(from, to)| {
+                        let (d0, _, _) = walked(&was.surface, old.point, from)?;
+                        let (d1, _, foot) = walked(&is.surface, new.point, to)?;
+                        Some((d0, d1, foot))
+                    });
+                    if craft3d_geom::allowance::exhausted() {
+                        return Err(Spent);
+                    }
+                    let Some(asked) = asked else {
+                        continue;
+                    };
+                    asked
+                }
             };
             let passed = (d0 > tol && d1 <= tol) || (d0 < -tol && d1 >= -tol);
             if !passed {
@@ -829,7 +1243,6 @@ pub(super) fn swept(
             }
             // Its foot on the face as it is now: on the face, or not to
             // be told (the question beside its edges decides either way).
-            let foot = new.point - out * d1;
             let over = craft3d_topo::face_holds(made, is, tolerance, &[foot])
                 .and_then(|held| held.first().copied())
                 .unwrap_or(true);
@@ -1069,5 +1482,243 @@ mod tests {
         assert!(!meets(&a, &over, tol));
         assert!(meets(&a, &on, tol));
         assert!(!meets(&a, &next, tol), "a corner is a vertex they share");
+    }
+}
+
+#[cfg(test)]
+mod freeform_tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use super::*;
+    use craft3d_geom::{Line, NurbsSurface};
+
+    /// A bumpy cubic sheet of `across` by `along` spans over the square
+    /// from the origin to (`across`, `along`), lifted by `lift`; with
+    /// weights that are not all one if `rational`.
+    fn sheet(across: usize, along: usize, lift: f64, rational: bool) -> Surface {
+        let knots = |spans: usize| {
+            let mut knots = vec![0.0; 4];
+            knots.extend((1..spans).map(|i| i as f64));
+            knots.extend([spans as f64; 4]);
+            knots
+        };
+        let (count_u, count_v) = (across + 3, along + 3);
+        let mut ctrl = Vec::with_capacity(count_u * count_v);
+        let mut weights = Vec::with_capacity(count_u * count_v);
+        for i in 0..count_u {
+            for j in 0..count_v {
+                let (x, y) = (
+                    across as f64 * i as f64 / (count_u - 1) as f64,
+                    along as f64 * j as f64 / (count_v - 1) as f64,
+                );
+                ctrl.push(Vec3::new(x, y, lift + 0.3 * ((i * 7 + j * 3) % 5) as f64));
+                weights.push(if rational {
+                    1.0 + 0.5 * ((i + j) % 3) as f64
+                } else {
+                    1.0
+                });
+            }
+        }
+        Surface::Nurbs(
+            NurbsSurface::new(
+                3,
+                3,
+                knots(across),
+                knots(along),
+                count_u,
+                count_v,
+                ctrl,
+                weights,
+            )
+            .unwrap(),
+        )
+    }
+
+    /// The surface over a span lies in the box of the control points that
+    /// bear on the span, with weights that are one and with others.
+    #[test]
+    fn every_span_lies_in_the_box_of_its_control_points() {
+        for rational in [false, true] {
+            let surface = sheet(6, 4, 0.0, rational);
+            let spans = spans_of(&surface).unwrap();
+            assert_eq!(spans.len(), 24);
+            for span in &spans {
+                for a in 0..=4 {
+                    for b in 0..=4 {
+                        let u = span.u.0 + (span.u.1 - span.u.0) * f64::from(a) / 4.0;
+                        let v = span.v.0 + (span.v.1 - span.v.0) * f64::from(b) / 4.0;
+                        let off = span.off(surface.eval(u, v));
+                        assert!(off <= 1e-12, "{span:?} at {u}, {v}: {off}");
+                    }
+                }
+            }
+        }
+        // The other kinds have none.
+        let plane = Surface::Plane(craft3d_geom::Plane::new(craft3d_math::Frame::WORLD));
+        assert!(spans_of(&plane).is_none());
+    }
+
+    /// A surface of ten thousand spans is boxed span by span; one of more
+    /// than [`MOST_SPANS`] is not asked at all.
+    #[test]
+    fn a_surface_of_many_spans_is_boxed_and_one_of_too_many_is_not() {
+        let spans = spans_of(&sheet(100, 100, 0.0, false)).unwrap();
+        assert_eq!(spans.len(), 10_000);
+        assert!(spans_of(&sheet(600, 500, 0.0, false)).is_none());
+    }
+
+    /// Knots of a multiplicity that leaves spans of no width: those are
+    /// not boxed, the others are and hold the surface; a row of control
+    /// points drawn into one point (a pole, where the surface has no
+    /// normal): a walk to it says nothing or how far, and never fails.
+    #[test]
+    fn spans_of_no_width_are_left_out_and_a_pole_says_nothing_or_how_far() {
+        let (count_u, count_v) = (7, 4);
+        let mut ctrl = Vec::new();
+        for i in 0..count_u {
+            for j in 0..count_v {
+                let pole = i == 0;
+                let (x, y) = if pole {
+                    (0.0, 0.0)
+                } else {
+                    (i as f64, j as f64 - 1.5)
+                };
+                ctrl.push(Vec3::new(x, y, 0.2 * ((i + j) % 3) as f64));
+            }
+        }
+        let surface = Surface::Nurbs(
+            NurbsSurface::new(
+                3,
+                3,
+                vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0],
+                vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                count_u,
+                count_v,
+                ctrl,
+                vec![1.0; count_u * count_v],
+            )
+            .unwrap(),
+        );
+        let spans = spans_of(&surface).unwrap();
+        assert_eq!(spans.len(), 2, "{spans:?}");
+        for span in &spans {
+            for a in 0..=4 {
+                for b in 0..=4 {
+                    let u = span.u.0 + (span.u.1 - span.u.0) * f64::from(a) / 4.0;
+                    let v = span.v.0 + (span.v.1 - span.v.0) * f64::from(b) / 4.0;
+                    assert!(
+                        span.off(surface.eval(u, v)) <= 1e-12,
+                        "{span:?} at {u}, {v}"
+                    );
+                }
+            }
+        }
+        for point in [
+            Vec3::new(0.0, 0.0, 0.5),
+            Vec3::new(1e-9, 0.0, -0.5),
+            Vec3::new(-2.0, 0.0, 0.0),
+        ] {
+            if let Some((d, _, foot)) = walked(&surface, point, spans[0].middle()) {
+                assert!(d.is_finite() && foot.is_finite(), "{point:?}: {d}");
+            }
+        }
+    }
+
+    /// A walk onto the sheet from a span's middle ends square under a
+    /// point over the sheet, with the distance along the normal; under a
+    /// point beside the sheet it is held at the border and says nothing,
+    /// and so does one for a point that is no point.
+    #[test]
+    fn a_walk_says_how_far_a_point_over_the_surface_is_and_nothing_beside_it() {
+        let surface = sheet(6, 4, 0.0, false);
+        let spans = spans_of(&surface).unwrap();
+        let start = spans[9].middle();
+        let (u, v) = (2.3, 1.7);
+        let (foot, du, dv) = surface.derivatives(u, v);
+        let normal = du.cross(dv).normalized().unwrap();
+        for height in [0.4, -0.25, 1e-7] {
+            let (d, at, found) = walked(&surface, foot + normal * height, start).unwrap();
+            assert!((d - height).abs() < 1e-9, "{d} for {height}");
+            assert!((at.0 - u).abs() < 1e-6 && (at.1 - v).abs() < 1e-6, "{at:?}");
+            assert!(found.distance(foot) < 1e-6);
+        }
+        assert!(walked(&surface, Vec3::new(-3.0, 2.0, 0.5), start).is_none());
+        assert!(walked(&surface, Vec3::new(f64::NAN, 2.0, 0.5), start).is_none());
+        assert!(walked(&surface, Vec3::new(2.0, 2.0, 0.5), (f64::NAN, 0.0)).is_none());
+    }
+
+    fn straight(a: Vec3, b: Vec3) -> Path {
+        path(&Edge {
+            curve: Curve3::Line(Line::through(a, b).unwrap()),
+            range: (0.0, a.distance(b)),
+            start: VertexId(0),
+            end: VertexId(1),
+        })
+        .unwrap()
+    }
+
+    /// An edge is asked about a freeform face only where it comes near a
+    /// span of it: an edge through the sheet starts its walks from the
+    /// span it goes through, an edge clear of every span's box is not
+    /// asked at all.
+    #[test]
+    fn the_steps_of_an_edge_start_from_the_spans_they_are_near() {
+        let surface = sheet(6, 4, 0.0, false);
+        let spans = spans_of(&surface).unwrap();
+        let through = straight(Vec3::new(2.5, 1.5, -3.0), Vec3::new(2.5, 1.5, 3.0));
+        let found = starts(&spans, &through, 1e-6).unwrap();
+        assert_eq!(found.len(), 2);
+        // The boxes of the spans round where the edge meets the sheet hold
+        // that place too (their control points overlap); the walk from the
+        // one chosen ends where the search over the whole sheet does, under
+        // and over the sheet.
+        for (start, point) in found.into_iter().zip(&through.points) {
+            let (d, _, foot) = walked(&surface, *point, start.unwrap()).unwrap();
+            let (searched, _) = distance(&surface, *point).unwrap();
+            assert!((d - searched).abs() < 1e-9, "{d} for {searched}");
+            assert_eq!(d.signum(), point.z.signum(), "{d} at {point:?}");
+            assert!(
+                (foot.x - 2.5).abs() < 1.0 && (foot.y - 1.5).abs() < 1.0,
+                "{foot:?}"
+            );
+        }
+        let over = straight(Vec3::new(-1.0, 1.5, 5.0), Vec3::new(7.0, 1.5, 5.0));
+        assert!(starts(&spans, &over, 1e-6).is_none());
+        let beside = straight(Vec3::new(7.5, 1.5, -3.0), Vec3::new(7.5, 1.5, 3.0));
+        assert!(starts(&spans, &beside, 1e-6).is_none());
+    }
+
+    /// A vertex is asked about a freeform face that moved where a span of
+    /// it went past the vertex: between the sheet and the sheet lifted by
+    /// 2, not beside them, not above them; where the two surfaces do not
+    /// have the same spans, every vertex is asked, from the nearest span
+    /// of each; and a vertex that is no point is not.
+    #[test]
+    fn a_vertex_is_asked_where_a_span_went_past_it() {
+        let (was, is) = (sheet(6, 4, 0.0, false), sheet(6, 4, 2.0, false));
+        let sweep = Sweep::of(&was, &is, 1e-6).unwrap();
+        assert!(sweep.paired);
+        let between = Vec3::new(2.5, 1.5, 1.6);
+        let (from, to) = sweep.starts(between, between).unwrap();
+        assert_eq!(from, to);
+        assert!(
+            (1.0..=4.0).contains(&from.0) && (0.0..=3.0).contains(&from.1),
+            "{from:?}"
+        );
+        let (below, _, _) = walked(&was, between, from).unwrap();
+        let (under, _, _) = walked(&is, between, to).unwrap();
+        assert!(below > 0.0 && under < 0.0, "{below}, {under}");
+        let beside = Vec3::new(9.0, 1.5, 1.6);
+        assert!(sweep.starts(beside, beside).is_none());
+        let above = Vec3::new(2.5, 1.5, 6.0);
+        assert!(sweep.starts(above, above).is_none());
+        let nowhere = Vec3::new(f64::NAN, 1.5, 1.6);
+        assert!(sweep.starts(nowhere, nowhere).is_none());
+
+        let finer = Sweep::of(&was, &sheet(12, 4, 2.0, false), 1e-6).unwrap();
+        assert!(!finer.paired);
+        assert!(finer.starts(between, between).is_some());
+        assert!(finer.starts(beside, beside).is_some());
+        assert!(finer.starts(nowhere, nowhere).is_none());
     }
 }
