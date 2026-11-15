@@ -1,5 +1,6 @@
 //! The gate: `cargo xtask ci` is fmt, clippy, the tests, the layer check
-//! and the wasm check, in that order.
+//! and the wasm check (`cargo check`, then clippy, for wasm32), in that
+//! order.
 //!
 //! The tests are built once (`cargo test --workspace --no-run`) and their
 //! binaries are then run side by side, slowest first, so that one long
