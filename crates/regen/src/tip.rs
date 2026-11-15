@@ -127,25 +127,26 @@ pub(crate) fn build(
         &made.body,
         &source,
     )?;
-    if let Some(names) = &names {
-        // The faces of the tip are proven not to cross one another; they
-        // are looked at against what is near them, which they might run
-        // into (another part of the body beyond the end).
-        let roles: Vec<FaceRole> = made
-            .faces
-            .iter()
-            .map(|origin| match origin {
-                TipOrigin::Kept(_) => FaceRole::Known(0),
-                TipOrigin::Tip { .. } => FaceRole::New,
-            })
-            .collect();
-        use crate::selfcheck::crossing_near;
-        crossing_near(&made.body, &names.faces, source.tolerance.linear, &roles).refused(
-            "length",
-            "tipped body",
-            "make the tip shorter, or move what it runs into",
-        )?;
-    }
+    // The faces of the tip are proven not to cross one another; they are
+    // looked at against what is near them, which they might run into
+    // (another part of the body beyond the end). Also where the body is
+    // not named: the check is of the body, the names only say where.
+    let roles: Vec<FaceRole> = made
+        .faces
+        .iter()
+        .map(|origin| match origin {
+            TipOrigin::Kept(_) => FaceRole::Known(0),
+            TipOrigin::Tip { .. } => FaceRole::New,
+        })
+        .collect();
+    let named = names
+        .as_ref()
+        .map_or(&[][..], |names| names.faces.as_slice());
+    crate::selfcheck::crossing_near(&made.body, named, source.tolerance.linear, &roles).refused(
+        "length",
+        "tipped body",
+        "make the tip shorter, or move what it runs into",
+    )?;
     Ok((made.body, names))
 }
 
