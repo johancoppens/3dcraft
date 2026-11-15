@@ -650,8 +650,12 @@ fn a_spline_that_jumps_is_not_one_curve() {
     )
     .unwrap();
     assert!(all(&jump));
-    // Over the knots before the jump and after it, none.
-    assert!(!jumps(&jump, 0, 2) && !jumps(&jump, 3, 5));
+    // Over the knots before the jump and after it, none; a knot of the
+    // jump's value is looked at with every knot of that value, so a window
+    // that holds one of the two sees the jump (round 4: the count was of
+    // the window's own knots, and a window that cut the run saw none).
+    assert!(!jumps(&jump, 0, 1) && !jumps(&jump, 4, 5));
+    assert!(jumps(&jump, 0, 2) && jumps(&jump, 3, 5));
     let cubic = NurbsCurve::polynomial(
         3,
         vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0],
@@ -946,6 +950,92 @@ fn a_jump_within_the_rounding_of_its_hull_is_not_cleared() {
     assert_eq!(verdict(&whole, 1.0), Some(Judged::Clear));
     let jumping = plate_with_a_spline_side((nearer, (0.0, 0.0)), 1.0, 2, 50.0, 15e-6, false, 0.0);
     assert_eq!(verdict(&jumping, 1.0), None);
+}
+
+/// A knot that stands more often than the degree is a jump only where
+/// the curve starts again at another point than it ran up to: the plate's
+/// spline side with its middle knot standing once more than the degree
+/// and its middle point twice, and with that knot standing twice more and
+/// a stray point between that the curve never touches, is one curve
+/// (read either side of the knot it is at one place) and is cleared, at
+/// every degree; the same with the second of those points a unit in the
+/// last place off is not.
+#[test]
+fn a_knot_past_the_degree_between_one_point_and_itself_is_no_jump() {
+    let nearer = Frame::new(
+        Vec3::new(1.3, -2.1, 0.7) * 1e3,
+        Vec3::new(-0.3, 0.8, 0.52),
+        Vec3::new(0.6, 0.1, 0.4),
+    )
+    .unwrap();
+    for frame in [Frame::WORLD, nearer] {
+        for degree in [2_usize, 3, 5, 9] {
+            for ratio in [1.0, 50.0] {
+                let body = plate_with_a_spline_side(
+                    (frame, (0.0, 0.0)),
+                    1.0,
+                    degree,
+                    ratio,
+                    0.0,
+                    false,
+                    0.0,
+                );
+                assert_eq!(verdict(&body, 1.0), Some(Judged::Clear));
+                let Curve3::Nurbs(side) = body.edges[2].curve.clone() else {
+                    panic!("a spline side");
+                };
+                let middle = side.control_points()[degree];
+                for extra in [1_usize, 2] {
+                    for off in [false, true] {
+                        // The middle knot `extra` times more; the middle
+                        // point again after `extra - 1` stray points.
+                        let mut knots = side.knots().to_vec();
+                        let mut ctrl = side.control_points().to_vec();
+                        let mut weights = side.weights().to_vec();
+                        for _ in 0..extra {
+                            knots.insert(degree + 1, 0.3);
+                        }
+                        let again = if off {
+                            Vec3::new(middle.x, middle.y, f64::from_bits(middle.z.to_bits() + 1))
+                        } else {
+                            middle
+                        };
+                        ctrl.insert(degree + 1, again);
+                        weights.insert(degree + 1, 1.0);
+                        for _ in 1..extra {
+                            ctrl.insert(degree + 1, middle + Vec3::new(0.3, 0.2, 0.1));
+                            weights.insert(degree + 1, 1.0);
+                        }
+                        let curve = NurbsCurve::new(degree, knots, ctrl, weights).unwrap();
+                        let said = format!(
+                            "degree {degree}, weights {ratio} apart, the knot {extra} more, off {off}"
+                        );
+                        assert_eq!(jumps(&curve, 0, usize::MAX), off, "{said}");
+                        if !off {
+                            let gap = curve.eval(0.3).distance(curve.eval(0.3 - 1e-13));
+                            assert!(
+                                gap < 1e-9,
+                                "{said}: one place either side of the knot, {gap:e}"
+                            );
+                        }
+                        let mut body = body.clone();
+                        body.edges[2].curve = Curve3::Nurbs(curve);
+                        let judged = verdict(&body, 1.0);
+                        if off {
+                            assert_eq!(judged, None, "{said}: never shown");
+                        } else if extra == 1 {
+                            assert_eq!(judged, Some(Judged::Clear), "{said}");
+                        } else {
+                            assert!(
+                                !matches!(judged, Some(Judged::Shown(..))),
+                                "{said}: {judged:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// C5 and C6 of the module on polygons, in the world and turned, at three
