@@ -151,12 +151,16 @@ const ROUNDING: f64 = 64.0 * f64::EPSILON;
 /// The first loop of `face` that is not a simple closed curve, with why;
 /// `None` when every loop is one or this test cannot tell. `followed` is
 /// what the region rule followed of the face (`crate::region`), so the face
-/// is followed once for both.
+/// is followed once for both. `verified(k)` says whether a fault rule 3
+/// finds in the loop `k` stands: not where the face, on a plane, a
+/// cylinder, a cone or a sphere, is walked again and cleared
+/// (`crate::region`'s `chord`: verify before refusing).
 pub(crate) fn loop_fault(
     body: &Body,
     face: &Face,
     tol: &Tolerance,
     followed: Option<&Followed>,
+    verified: &dyn Fn(usize) -> bool,
 ) -> Option<(LoopId, String)> {
     // Ten working tolerances: the least length of a stretch and the reach
     // of a margin, as in the region rule. Which curves are one is the
@@ -204,7 +208,9 @@ pub(crate) fn loop_fault(
                 continue;
             }
             let margin = 2.0 * ring.error + f.reach;
-            if let Some((at, wound)) = wound_wrongly(ring, margin) {
+            if let Some((at, wound)) = wound_wrongly(ring, margin)
+                && verified(k)
+            {
                 return Some((
                     loop_at(k)?,
                     format!(

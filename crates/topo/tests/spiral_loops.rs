@@ -413,15 +413,16 @@ fn wave_ribbon(
 /// further from its chords than the ribbon is wide.
 ///
 /// - Right, its sides' slopes up to 1.9 in the chart, the upper side in
-///   four edges a wave: **a known false alarm** on a plane (three scales),
-///   a cylinder and a sphere, refused as on `main` and in 0.1.x ("its loop
-///   0 crosses itself": the lower side's chords cross the upper side),
-///   while it measures its closed form. The halves of the lower side's
-///   steps are shown to run one way, so it is followed in its eight steps;
-///   that what lies between a step and its chord is measured only at the
-///   middle is what misreads it (`docs/design/topology.md` › *A strip that
-///   spirals about a point of the chart*, Owed). Listed so that a fix
-///   turns them round.
+///   four edges a wave, measuring its closed form: refused by the walk
+///   ("its loop 0 crosses itself": the lower side's chords cross the upper
+///   side), as on `main` and in 0.1.x, on a plane (three scales), a
+///   cylinder and a sphere. Since 2026-11-15 such a fault on a plane, a
+///   cylinder, a cone or a sphere is verified with a bound on what lies
+///   between each edge and its chord (`docs/design/topology.md` › *What
+///   lies between an edge and its chord*): of 8 waves the face is cleared
+///   and passes; of 16 waves clearing it takes more than the work of a
+///   face, and the walk's fault is kept: **a known false alarm**, listed so
+///   that a fix turns it round.
 /// - Right, slopes up to 5.7, on a plane: passes (the lower side's halves
 ///   are not one way at eight steps, so it is followed in more).
 /// - Wrong, slopes up to 5.7, both sides single edges, turned over:
@@ -474,7 +475,8 @@ fn wavy_ribbons_whose_steps_end_on_their_middle_line() {
         }
         for (name, (surface, at, scale)) in &charts {
             for waves in [8.0, 16.0] {
-                let mut cases = vec![(1.0, 4, false, "refused")];
+                let gentle = if waves == 8.0 { "passes" } else { "refused" };
+                let mut cases = vec![(1.0, 4, false, gentle)];
                 if *name == "plane" {
                     cases.push((3.0, 4, false, "passes"));
                     cases.push((3.0, 1, true, "passes"));
@@ -609,4 +611,773 @@ fn a_step_whose_halves_each_run_one_way_can_go_round_a_point_unseen() {
         Vec::<String>::new(),
         "a known miss now refused (take it off the list)"
     );
+}
+
+/// What verifying a fault costs, counted (`topo::chord_proofs`, units of
+/// proof work, never a clock, apart from the walk's own in
+/// `topo::step_proofs`): a face the walk refuses is walked again in
+/// stretches within `MOST_PROOF_WORK` units, whether the fault is then
+/// shown, dropped or kept. A face the walk passes is not walked again:
+/// nothing is counted for it there.
+#[test]
+fn verifying_a_refused_face_costs_at_most_the_work_of_a_face() {
+    use craft3d_geom::{Plane, Surface};
+    use craft3d_math::{Frame, Vec3};
+    use craft3d_topo::{MOST_PROOF_WORK, chord_proofs, step_proofs};
+    let plane = Surface::Plane(Plane::new(Frame::WORLD));
+    let at = |x: f64, y: f64| Vec3::new(2.0 * x, 2.0 * y, 0.0);
+    let mut most = 0_u64;
+    let (_, ground, on_ground, _) = grounds(1.0).swap_remove(0);
+    let turned_over = spiral_strip(
+        &ground,
+        on_ground.as_ref(),
+        &Strip {
+            cut: (4, 4),
+            flipped: true,
+            ..Strip::of(2.0)
+        },
+        1e-6,
+    )
+    .unwrap();
+    for (body, said, refused) in [
+        (
+            wave_ribbon(&plane, &at, 8.0, 1.0, 32, false, 1e-6).0,
+            "dropped",
+            false,
+        ),
+        (
+            wave_ribbon(&plane, &at, 16.0, 1.0, 64, false, 1e-6).0,
+            "kept",
+            true,
+        ),
+        (turned_over, "shown", true),
+    ] {
+        forget_passed();
+        let ((walk0, _), (again0, _)) = (step_proofs(), chord_proofs());
+        let found = check(&body, &tolerance(1.0));
+        let ((walk1, _), (again1, _)) = (step_proofs(), chord_proofs());
+        let (walked, spent) = (walk1 - walk0, again1 - again0);
+        println!("{said}: the walk {walked} units, the walk again {spent}, {found:?}");
+        assert_eq!(!found.is_empty(), refused, "{said}: {found:?}");
+        assert!(
+            spent <= MOST_PROOF_WORK as u64 + 64,
+            "{said}: {spent} units"
+        );
+        most = most.max(spent);
+    }
+    // A right strip the walk passes: no work past the walk's.
+    let strip = spiral_strip(&ground, on_ground.as_ref(), &Strip::of(2.0), 1e-6).unwrap();
+    forget_passed();
+    let again = chord_proofs();
+    assert!(check(&strip, &tolerance(1.0)).is_empty());
+    assert_eq!(
+        chord_proofs(),
+        again,
+        "a face the walk passes is not walked again"
+    );
+    println!("the most a refused face cost: {most} units");
+}
+
+/// A one-face sheet on the plane (the chart scaled by two) between
+/// `y = low(x)` and `y = low(x) + lift(x)` over `x` from −0.6 to 0.6: each
+/// side one cubic through 64 points a unit of `count`, the upper one cut
+/// into `pieces` edges over equal parts of its range, short cubics across.
+fn ribbon_between(
+    low: &dyn Fn(f64) -> f64,
+    lift: &dyn Fn(f64) -> f64,
+    count: usize,
+    pieces: usize,
+) -> Body {
+    use craft3d_geom::{Curve3, Plane, Surface};
+    use craft3d_math::{Frame, Vec3};
+    use craft3d_topo::{BodyKind, Coedge};
+    let at = |x: f64, y: f64| Vec3::new(2.0 * x, 2.0 * y, 0.0);
+    let side = |up: bool| {
+        let f = |s: f64| {
+            let x = -0.6 + 1.2 * s;
+            at(x, low(x) + if up { lift(x) } else { 0.0 })
+        };
+        spirals::fitted(&f, (0.0, 1.0), count, 3, false, 0.05e-6).unwrap()
+    };
+    let (lower, upper) = (side(false), side(true));
+    let across = |x: f64, rising: bool| {
+        let f = |s: f64| at(x, low(x) + lift(x) * if rising { s } else { 1.0 - s });
+        spirals::fitted(&f, (0.0, 1.0), 8, 3, false, 0.05e-6).unwrap()
+    };
+    let mut body = Body::new(BodyKind::Sheet);
+    let (al, bl) = (
+        body.add_vertex(lower.eval(0.0)),
+        body.add_vertex(lower.eval(1.0)),
+    );
+    let ups: Vec<_> = (0..=pieces)
+        .map(|i| body.add_vertex(upper.eval(i as f64 / pieces as f64)))
+        .collect();
+    let bottom = body.add_edge(Curve3::Nurbs(lower), (0.0, 1.0), al, bl);
+    let right = body.add_edge(
+        Curve3::Nurbs(across(0.6, true)),
+        (0.0, 1.0),
+        bl,
+        ups[pieces],
+    );
+    let tops: Vec<_> = (0..pieces)
+        .map(|i| {
+            let range = (i as f64 / pieces as f64, (i + 1) as f64 / pieces as f64);
+            body.add_edge(Curve3::Nurbs(upper.clone()), range, ups[i], ups[i + 1])
+        })
+        .collect();
+    let left = body.add_edge(Curve3::Nurbs(across(-0.6, false)), (0.0, 1.0), ups[0], al);
+    let co = |edge, reversed| Coedge { edge, reversed };
+    let mut coedges = vec![co(bottom, false), co(right, false)];
+    coedges.extend(tops.iter().rev().map(|e| co(*e, true)));
+    coedges.push(co(left, false));
+    let lp = body.add_loop(coedges);
+    let face = body.add_face(Surface::Plane(Plane::new(Frame::WORLD)), false, vec![lp]);
+    body.add_shell(vec![face]);
+    body
+}
+
+/// Whether the loop of a plane sheet's one face, its edges sampled 512
+/// times each, crosses itself (two segments that are not neighbours
+/// crossing properly).
+fn sampled_loop_crosses_itself(body: &Body) -> bool {
+    let lp = body.loop_(body.faces[0].loops[0]).unwrap();
+    let mut ring: Vec<(f64, f64)> = Vec::new();
+    for co in &lp.coedges {
+        let e = body.edge(co.edge).unwrap();
+        let (t0, t1) = e.range;
+        for i in 0..512 {
+            let f = i as f64 / 512.0;
+            let t = if co.reversed {
+                t1 - (t1 - t0) * f
+            } else {
+                t0 + (t1 - t0) * f
+            };
+            let p = e.curve.eval(t);
+            ring.push((p.x, p.y));
+        }
+    }
+    let n = ring.len();
+    let side = |a: (f64, f64), b: (f64, f64), c: (f64, f64)| {
+        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+    };
+    for i in 0..n {
+        let (p, q) = (ring[i], ring[(i + 1) % n]);
+        for j in i + 2..n {
+            if (j + 1) % n == i {
+                continue;
+            }
+            let (s, t) = (ring[j], ring[(j + 1) % n]);
+            if side(s, t, p) * side(s, t, q) < 0.0 && side(p, q, s) * side(p, q, t) < 0.0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// **Known misses the verification does not reach**: wrong faces the walk
+/// passes, so they are not walked again, as on `main` (2026-11-15, the
+/// sweep aimed at the bound: 448 such ribbons dipped through themselves,
+/// 18 horseshoes whose arms pass through each other, on a plane, a
+/// cylinder, a cone or a sphere, all passed on `main` as on this head).
+/// A ribbon whose upper side dips through the lower one by twice their gap
+/// near `x = 0.1`; a horseshoe whose arms pass through each other by 30
+/// tolerances (a crossing shallower than ten tolerances and the walk's
+/// errors is not claimed: the Method). Each crosses itself, sampled; each
+/// passes.
+#[test]
+fn wrong_faces_the_walk_passes_are_not_walked_again_and_the_misses_are_known() {
+    use craft3d_math::Portable;
+    let rate = std::f64::consts::TAU * 8.0 / 1.2;
+    let a = (2.0 / rate).min(0.05);
+    let gap = 0.5 * a;
+    let low = move |x: f64| {
+        let phi = rate * (x + 0.6);
+        a * (phi.psin() + 0.5 * (2.0 * phi).psin())
+    };
+    let dip = move |x: f64| gap - 3.0 * gap * (-((x - 0.1) / 0.03).ppowi(2)).pexp();
+    let dipped = ribbon_between(&low, &dip, 512, 32);
+    assert!(
+        sampled_loop_crosses_itself(&dipped),
+        "the dipped ribbon is wrong"
+    );
+    assert_eq!(
+        loop_defects(&dipped, 1.0),
+        Vec::<String>::new(),
+        "a known miss now refused (take it off the list)"
+    );
+    // The horseshoe: a wavy band round the point (0, 0.1) of the chart from
+    // the angle a quarter turn on by half the overlap round to the same
+    // less it, its arms passing through each other by 30 tolerances, lines
+    // across its ends.
+    use craft3d_geom::{Curve3, NurbsCurve, Plane, Surface};
+    use craft3d_math::{Frame, Vec3};
+    use craft3d_topo::{BodyKind, Coedge};
+    let (r0, overlap) = (0.35, -30.0 * 1e-6 / 2.0);
+    let half = 0.5 * overlap / r0;
+    let arc = |off: f64| {
+        let f = move |s: f64| {
+            let t = 0.5 * std::f64::consts::PI + half + (std::f64::consts::TAU - 2.0 * half) * s;
+            let r = r0 + off + 0.01 * (5.0 * t).psin();
+            let (sn, cs) = t.psin_cos();
+            Vec3::new(2.0 * r * cs, 2.0 * (0.1 + r * sn), 0.0)
+        };
+        spirals::fitted(&f, (0.0, 1.0), 256, 3, false, 0.05e-6).unwrap()
+    };
+    let (outer, inner) = (arc(0.02), arc(-0.02));
+    let mut body = Body::new(BodyKind::Sheet);
+    let v = [
+        outer.eval(0.0),
+        outer.eval(1.0),
+        inner.eval(1.0),
+        inner.eval(0.0),
+    ];
+    let vs: Vec<_> = v.iter().map(|p| body.add_vertex(*p)).collect();
+    let line = |p: Vec3, q: Vec3| {
+        Curve3::Nurbs(NurbsCurve::polynomial(1, vec![0.0, 0.0, 1.0, 1.0], vec![p, q]).unwrap())
+    };
+    let e0 = body.add_edge(Curve3::Nurbs(outer), (0.0, 1.0), vs[0], vs[1]);
+    let e1 = body.add_edge(line(v[1], v[2]), (0.0, 1.0), vs[1], vs[2]);
+    let e2 = body.add_edge(Curve3::Nurbs(inner), (0.0, 1.0), vs[3], vs[2]);
+    let e3 = body.add_edge(line(v[3], v[0]), (0.0, 1.0), vs[3], vs[0]);
+    let co = |edge, reversed| Coedge { edge, reversed };
+    let lp = body.add_loop(vec![
+        co(e0, false),
+        co(e1, false),
+        co(e2, true),
+        co(e3, false),
+    ]);
+    let face = body.add_face(Surface::Plane(Plane::new(Frame::WORLD)), false, vec![lp]);
+    body.add_shell(vec![face]);
+    assert!(sampled_loop_crosses_itself(&body), "the horseshoe is wrong");
+    assert_eq!(
+        loop_defects(&body, 1.0),
+        Vec::<String>::new(),
+        "a known miss now refused (take it off the list)"
+    );
+}
+
+/// Faults within two neighbouring stretches of the walk again (the review
+/// of 2026-11-15, round 2 of the verification): a plane face of five lines
+/// and one cubic of two Bézier halves whose second half bulges across the
+/// line after it, so that the loop crosses itself between an edge's last
+/// stretch and the next edge's first. The walk refuses it ("its loop 0
+/// crosses itself"); the bounds must not drop that, since neighbouring
+/// stretches are shown apart only by their cones
+/// (`docs/design/topology.md` › *What lies between an edge and its chord*).
+/// At three scales, the chart turned and not.
+#[test]
+fn a_bulge_across_the_next_edge_is_refused() {
+    use craft3d_geom::{Curve3, Line, NurbsCurve, Plane, Surface};
+    use craft3d_math::{Frame, Portable, Vec3};
+    use craft3d_topo::{BodyKind, Coedge};
+    let cubic = [
+        (0.0123, 0.0148),
+        (0.0249, 0.0167),
+        (0.0317, 0.0174),
+        (0.0411, 0.0140),
+        (0.0506, 0.0106),
+        (0.0515, -0.0016),
+        (0.0474, -0.0096),
+    ];
+    let corners = [
+        (-0.0066, 0.3),
+        (-0.0663, 0.2896),
+        (0.0366, -0.3),
+        (0.0663, -0.2948),
+    ];
+    for k in [1e-3, 1.0, 1e6] {
+        for turn in [0.0_f64, 0.7] {
+            let (s, c) = turn.psin_cos();
+            let at = |(x, y): (f64, f64)| {
+                Vec3::new(3.0 * k * (c * x - s * y), 3.0 * k * (s * x + c * y), 0.0)
+            };
+            let mut body = Body::new(BodyKind::Sheet);
+            let mut ends: Vec<(f64, f64)> = corners.to_vec();
+            ends.push(cubic[0]);
+            ends.push(cubic[6]);
+            let v: Vec<_> = ends.iter().map(|p| body.add_vertex(at(*p))).collect();
+            let line = |body: &mut Body, i: usize, j: usize| {
+                let (a, b) = (at(ends[i]), at(ends[j]));
+                body.add_edge(
+                    Curve3::Line(Line::through(a, b).unwrap()),
+                    (0.0, a.distance(b)),
+                    v[i],
+                    v[j],
+                )
+            };
+            let mut edges = vec![
+                line(&mut body, 0, 1),
+                line(&mut body, 1, 2),
+                line(&mut body, 2, 3),
+                line(&mut body, 3, 4),
+            ];
+            let knots = vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0];
+            let spline =
+                NurbsCurve::polynomial(3, knots, cubic.iter().map(|p| at(*p)).collect()).unwrap();
+            edges.push(body.add_edge(Curve3::Nurbs(spline), (0.0, 1.0), v[4], v[5]));
+            edges.push(line(&mut body, 5, 0));
+            let lp = body.add_loop(
+                edges
+                    .iter()
+                    .map(|edge| Coedge {
+                        edge: *edge,
+                        reversed: false,
+                    })
+                    .collect(),
+            );
+            let face = body.add_face(Surface::Plane(Plane::new(Frame::WORLD)), false, vec![lp]);
+            body.add_shell(vec![face]);
+            assert!(
+                sampled_loop_crosses_itself(&body),
+                "at {k}, turned {turn}: the face is wrong"
+            );
+            let found = loop_defects(&body, k);
+            assert!(
+                matches!(found.as_slice(), [one] if one.contains("its loop 0 crosses itself")),
+                "at {k}, turned {turn}: {found:?}"
+            );
+        }
+    }
+}
+
+/// A loop that goes round its region twice, every edge used once (each
+/// side of a wavy ribbon and a copy of it): wrong, as the region is
+/// counted twice. The walk refuses it by its region rule (the wavy side's
+/// chords cross the other side, the misreading that is cleared for the
+/// ribbon gone round once), and it must not be cleared: a face is cleared
+/// only where every two pieces of its boundary are apart, which the copies
+/// are not, and with the region rule's fault dropped the rule of simple
+/// loops would not ask where it winds twice (rule 3) nor, on a cylinder,
+/// whether two of its stretches lie on each other (rule 4 within one
+/// loop). On a plane and a cylinder.
+#[test]
+fn a_loop_round_twice_is_not_cleared_by_the_bounds() {
+    use craft3d_geom::{Cylinder, Plane, Surface};
+    use craft3d_math::{Frame, Portable, Vec3};
+    let plane = Surface::Plane(Plane::new(Frame::WORLD));
+    let cylinder = Surface::Cylinder(Cylinder::new(Frame::WORLD, 1.3).unwrap());
+    let flat = |x: f64, y: f64| Vec3::new(2.0 * x, 2.0 * y, 0.0);
+    let round = |x: f64, y: f64| {
+        let (s, c) = x.psin_cos();
+        Vec3::new(1.3 * c, 1.3 * s, 1.3 * y)
+    };
+    type Chart<'a> = (&'a str, &'a Surface, &'a dyn Fn(f64, f64) -> Vec3);
+    let charts: [Chart; 2] = [("plane", &plane, &flat), ("cylinder", &cylinder, &round)];
+    for (name, surface, at) in charts {
+        let (once, _) = wave_ribbon(surface, at, 8.0, 1.0, 32, false, 1e-6);
+        assert_eq!(
+            loop_defects(&once, 1.0),
+            Vec::<String>::new(),
+            "{name}: the ribbon gone round once is right and passes"
+        );
+        let mut twice = once.clone();
+        let lp = twice.faces[0].loops[0];
+        let coedges = twice.loop_(lp).unwrap().coedges.clone();
+        let mut all = coedges.clone();
+        for co in &coedges {
+            let edge = twice.edge(co.edge).unwrap().clone();
+            let copy = twice.add_edge(edge.curve, edge.range, edge.start, edge.end);
+            all.push(craft3d_topo::Coedge {
+                edge: copy,
+                reversed: co.reversed,
+            });
+        }
+        twice.loops[lp.0 as usize].coedges = all;
+        let found = loop_defects(&twice, 1.0);
+        assert!(!found.is_empty(), "{name}: the loop round twice passes");
+        println!("{name}: {found:?}");
+    }
+}
+
+/// Whether a face's fault was dropped: the check finds no fault of its
+/// loops, and the face was walked again (which is done only where the walk,
+/// `main`'s rule, found one).
+fn dropped(body: &Body, k: f64) -> (Vec<String>, bool) {
+    let before = craft3d_topo::chord_proofs().0;
+    let found = loop_defects(body, k);
+    (found, craft3d_topo::chord_proofs().0 > before)
+}
+
+/// The area a plane sheet's first loop bounds in the world's `x`, `y`, its
+/// edges sampled 4096 times each: positive where it runs counter-clockwise
+/// seen from `+z`.
+fn sampled_area(body: &Body) -> f64 {
+    let lp = body.loop_(body.faces[0].loops[0]).unwrap();
+    let mut ring: Vec<(f64, f64)> = Vec::new();
+    for co in &lp.coedges {
+        let e = body.edge(co.edge).unwrap();
+        let (t0, t1) = e.range;
+        for i in 0..4096 {
+            let f = f64::from(i) / 4096.0;
+            let t = if co.reversed {
+                t1 - (t1 - t0) * f
+            } else {
+                t0 + (t1 - t0) * f
+            };
+            let p = e.curve.eval(t);
+            ring.push((p.x, p.y));
+        }
+    }
+    let n = ring.len();
+    (0..n)
+        .map(|i| {
+            let (a, b) = (ring[i], ring[(i + 1) % n]);
+            a.0 * b.1 - b.0 * a.1
+        })
+        .sum::<f64>()
+        * 0.5
+}
+
+/// A ribbon on the world's plane (the chart times `2 k`) between a lower
+/// side that dips `depth` below the line `y = 0` in sixteen bumps
+/// (`−depth sin⁴(16 π s)`), one cubic whose eight steps' ends and middles
+/// all lie on `y = 0`, and the same lifted by `width`, cut where it crosses
+/// `y = 0` and each such piece into `sub` edges. The loop runs
+/// counter-clockwise in the chart; `flipped` turns the face over, its loop
+/// kept: then the loop runs clockwise about the face's normal, and the face
+/// would be everything outside it.
+fn one_sided_ribbon(k: f64, depth: f64, width: f64, sub: usize, flipped: bool) -> Body {
+    use craft3d_geom::{Curve3, Plane, Surface};
+    use craft3d_math::{Frame, Portable, Vec3};
+    use craft3d_topo::{BodyKind, Coedge};
+    use std::f64::consts::PI;
+    let at = |x: f64, y: f64| Vec3::new(2.0 * k * x, 2.0 * k * y, 0.0);
+    let tol = 1e-6 * k;
+    let low = move |s: f64| -depth * (16.0 * PI * s).psin().ppowi(4);
+    let side = |lift: f64| {
+        let f = |s: f64| at(-0.6 + 1.2 * s, low(s) + lift);
+        spirals::fitted(&f, (0.0, 1.0), 1024, 3, false, 0.05 * tol).unwrap()
+    };
+    let (lower, upper) = (side(0.0), side(width));
+    let across = |s: f64, up: bool| {
+        let f = |t: f64| {
+            at(
+                -0.6 + 1.2 * s,
+                low(s) + width * if up { t } else { 1.0 - t },
+            )
+        };
+        spirals::fitted(&f, (0.0, 1.0), 8, 3, false, 0.05 * tol).unwrap()
+    };
+    // Where the upper side crosses y = 0: sin⁴ = width / depth.
+    let root = (width / depth).sqrt().sqrt().pasin() / PI;
+    let mut cuts = vec![0.0];
+    let mut cut_to = |c: f64| {
+        let last = cuts[cuts.len() - 1];
+        for i in 1..=sub {
+            cuts.push(last + (c - last) * i as f64 / sub as f64);
+        }
+    };
+    for b in 0..16 {
+        cut_to((f64::from(b) + root) / 16.0);
+        cut_to((f64::from(b) + 1.0 - root) / 16.0);
+    }
+    cut_to(1.0);
+    let mut body = Body::new(BodyKind::Sheet);
+    let (al, bl) = (
+        body.add_vertex(lower.eval(0.0)),
+        body.add_vertex(lower.eval(1.0)),
+    );
+    let ups: Vec<_> = cuts
+        .iter()
+        .map(|c| body.add_vertex(upper.eval(*c)))
+        .collect();
+    let pieces = cuts.len() - 1;
+    let bottom = body.add_edge(Curve3::Nurbs(lower), (0.0, 1.0), al, bl);
+    let right = body.add_edge(
+        Curve3::Nurbs(across(1.0, true)),
+        (0.0, 1.0),
+        bl,
+        ups[pieces],
+    );
+    let tops: Vec<_> = (0..pieces)
+        .map(|i| {
+            body.add_edge(
+                Curve3::Nurbs(upper.clone()),
+                (cuts[i], cuts[i + 1]),
+                ups[i],
+                ups[i + 1],
+            )
+        })
+        .collect();
+    let left = body.add_edge(Curve3::Nurbs(across(0.0, false)), (0.0, 1.0), ups[0], al);
+    let co = |edge, reversed| Coedge { edge, reversed };
+    let mut coedges = vec![co(bottom, false), co(right, false)];
+    coedges.extend(tops.iter().rev().map(|e| co(*e, true)));
+    coedges.push(co(left, false));
+    let lp = body.add_loop(coedges);
+    let face = body.add_face(Surface::Plane(Plane::new(Frame::WORLD)), flipped, vec![lp]);
+    body.add_shell(vec![face]);
+    body
+}
+
+/// A fault is dropped only where the whole face is cleared, its senses
+/// among the rest (round 3 of the verification, 2026-11-15, found by
+/// trying its theorem's hypotheses one by one: until then a fault of the
+/// rule of simple loops was dropped where the one loop it was found in was
+/// shown to be a simple closed curve, whichever way it ran). A ribbon whose
+/// lower side dips below `y = 0` in sixteen bumps and reads as straight,
+/// its upper side cut where it crosses `y = 0`, the face turned over: its
+/// one loop runs clockwise about the face's normal, so the face would be
+/// everything outside it. The walk misreads the loop's area as
+/// counter-clockwise (the bumps hold more than the ribbon does), finds no
+/// crossing (the misread polyline meets itself only at its own points), so
+/// its region rule passes; its rule of simple loops then finds a point
+/// wound the wrong way and refuses, as on `main`. The loop itself is a
+/// simple closed curve: the second build dropped the fault for that and
+/// passed the face. Wrong by its sampled area; its twin not turned over is
+/// right, refused by the walk ("every loop runs clockwise"), and cleared.
+#[test]
+fn a_clockwise_loop_the_walk_misreads_is_refused() {
+    for k in [1e-3, 1.0, 1e6] {
+        for (depth, width, sub) in [(0.015, 0.00506, 2), (0.025, 0.00844, 4)] {
+            let wrong = one_sided_ribbon(k, depth, width, sub, true);
+            let area = sampled_area(&wrong);
+            let want = 4.0 * k * k * 1.2 * width;
+            assert!(
+                (area / want - 1.0).abs() < 1e-3,
+                "at {k}, depth {depth}: the loop bounds {area}, counter-clockwise seen from +z, of {want}"
+            );
+            assert!(wrong.faces[0].reversed, "and its face looks down −z");
+            let (found, _) = dropped(&wrong, k);
+            assert!(
+                matches!(found.as_slice(), [one] if one.contains("it winds 1 times about the point")),
+                "at {k}, depth {depth}, width {width}: a loop that runs clockwise about its face's normal: {found:?}"
+            );
+            let right = one_sided_ribbon(k, depth, width, sub, false);
+            let got = mass_properties(&right).unwrap().area;
+            assert!(
+                (got / want - 1.0).abs() < 1e-6,
+                "at {k}, depth {depth}: area {got} against {want}"
+            );
+            let (found, again) = dropped(&right, k);
+            assert!(
+                found.is_empty() && again,
+                "at {k}, depth {depth}, width {width}: the right twin is cleared: {found:?}, walked again {again}"
+            );
+        }
+    }
+}
+
+/// An edge that is not one curve leaves its face's fault standing (round 3
+/// of the verification, 2026-11-15, found by trying its theorem's
+/// hypotheses: the bounds are of each Bézier piece of a spline, and said
+/// nothing of a jump from one piece to the next). The ribbon of eight
+/// waves that the walk misreads and the bounds clear, its right end a
+/// spline of degree 1 whose knot in the middle stands twice: it stops at
+/// 0.45 of the way up and starts again at 0.55, so the boundary is open by
+/// a tenth of the ribbon's width, hundreds of tolerances. The walk refuses
+/// it by its misreading, as on `main`; the second build cleared it, and no
+/// other rule of the check sees it. With the end in one piece the face is
+/// cleared.
+#[test]
+fn an_edge_that_jumps_is_not_cleared() {
+    use craft3d_geom::{Curve3, NurbsCurve};
+    for k in [1e-3, 1.0, 1e6] {
+        for jump in [false, true] {
+            let plane =
+                craft3d_geom::Surface::Plane(craft3d_geom::Plane::new(craft3d_math::Frame::WORLD));
+            let at = |x: f64, y: f64| craft3d_math::Vec3::new(2.0 * k * x, 2.0 * k * y, 0.0);
+            let (mut body, _) = wave_ribbon(&plane, &at, 8.0, 1.0, 32, false, 1e-6 * k);
+            // The right end is the loop's second coedge.
+            let lp = body.faces[0].loops[0];
+            let right = body.loop_(lp).unwrap().coedges[1].edge;
+            let edge = body.edge(right).unwrap().clone();
+            let (p0, p3) = (edge.curve.eval(edge.range.0), edge.curve.eval(edge.range.1));
+            let mix = |t: f64| p0 + (p3 - p0) * t;
+            let (stop, start) = if jump { (0.45, 0.55) } else { (0.5, 0.5) };
+            let (knots, ctrl) = if jump {
+                (
+                    vec![0.0, 0.0, 0.5, 0.5, 1.0, 1.0],
+                    vec![p0, mix(stop), mix(start), p3],
+                )
+            } else {
+                (vec![0.0, 0.0, 0.5, 1.0, 1.0], vec![p0, mix(stop), p3])
+            };
+            body.edges[right.0 as usize].curve =
+                Curve3::Nurbs(NurbsCurve::polynomial(1, knots, ctrl).unwrap());
+            body.edges[right.0 as usize].range = (0.0, 1.0);
+            let (found, again) = dropped(&body, k);
+            if jump {
+                assert!(
+                    matches!(found.as_slice(), [one] if one.contains("its loop 0 crosses itself")),
+                    "at {k}: a boundary open by a tenth of the ribbon's width: {found:?}"
+                );
+            } else {
+                assert!(
+                    found.is_empty() && again,
+                    "at {k}: the ribbon with its end in one piece is cleared: {found:?}, walked again {again}"
+                );
+            }
+        }
+    }
+}
+
+/// A hole must lie inside its outer loop also where the walk's fault is
+/// dropped (round 3 of the verification, 2026-11-15: on a plane the region
+/// rule leaves where a hole lies to `stranded_loops`, which reads the loops
+/// its own way, so a cleared face is held to it by the bounds as well). The
+/// ribbon of eight waves that the walk misreads and the bounds clear, with
+/// a small square hole: inside the ribbon the face is right and is
+/// cleared; beside it the face is wrong and the fault shown.
+#[test]
+fn a_hole_outside_a_cleared_outer_loop_is_refused() {
+    use craft3d_geom::{Curve3, Line};
+    use craft3d_topo::Coedge;
+    for k in [1e-3, 1.0, 1e6] {
+        for inside in [true, false] {
+            let plane =
+                craft3d_geom::Surface::Plane(craft3d_geom::Plane::new(craft3d_math::Frame::WORLD));
+            let at = |x: f64, y: f64| craft3d_math::Vec3::new(2.0 * k * x, 2.0 * k * y, 0.0);
+            let (mut body, gap) = wave_ribbon(&plane, &at, 8.0, 1.0, 32, false, 1e-6 * k);
+            // Just right of the left end, where the lower side has risen
+            // from y = 0 to 0.56 of the gap and, a fifth of the gap on, to
+            // 0.9 of it: a square a fifth of the gap wide between the sides
+            // there, or above both.
+            let side = 0.2 * gap;
+            let (x0, y0) = (-0.6 + 0.3 * gap, if inside { 1.1 * gap } else { 3.0 * gap });
+            // Clockwise in the chart.
+            let corners = [
+                at(x0, y0),
+                at(x0, y0 + side),
+                at(x0 + side, y0 + side),
+                at(x0 + side, y0),
+            ];
+            let vs: Vec<_> = corners.iter().map(|p| body.add_vertex(*p)).collect();
+            let coedges = (0..4)
+                .map(|i| {
+                    let (a, b) = (corners[i], corners[(i + 1) % 4]);
+                    let edge = body.add_edge(
+                        Curve3::Line(Line::through(a, b).unwrap()),
+                        (0.0, a.distance(b)),
+                        vs[i],
+                        vs[(i + 1) % 4],
+                    );
+                    Coedge {
+                        edge,
+                        reversed: false,
+                    }
+                })
+                .collect();
+            let hole = body.add_loop(coedges);
+            body.faces[0].loops.push(hole);
+            let (found, again) = dropped(&body, k);
+            if inside {
+                assert!(
+                    found.is_empty() && again,
+                    "at {k}: a hole inside the ribbon: {found:?}, walked again {again}"
+                );
+            } else {
+                assert!(
+                    matches!(found.as_slice(), [one] if one.contains("its hole, loop 1, lies outside its outer loop 0")),
+                    "at {k}: a hole beside the ribbon: {found:?}"
+                );
+            }
+        }
+    }
+}
+
+/// Whether the loop of a one-face sheet on a cylinder about the world's
+/// `z` axis, lifted to the cylinder's chart (the angle about the axis, each
+/// sample moved by whole turns to the one before, and the height) and
+/// sampled 2048 times a side, crosses its own copy a whole turn on.
+fn lifted_loop_crosses_its_copy(body: &Body) -> bool {
+    use craft3d_math::Portable;
+    use std::f64::consts::TAU;
+    let lp = body.loop_(body.faces[0].loops[0]).unwrap();
+    let per = 2048 * 2 / lp.coedges.len().max(2) + 16;
+    let mut ring: Vec<(f64, f64)> = Vec::new();
+    for (i, co) in lp.coedges.iter().enumerate() {
+        let e = body.edge(co.edge).unwrap();
+        let (t0, t1) = e.range;
+        // The lower side, the loop's first edge, is as long as all the
+        // others together.
+        let n = if i == 0 { 2048 } else { per };
+        for j in 0..n {
+            let f = j as f64 / n as f64;
+            let t = if co.reversed {
+                t1 - (t1 - t0) * f
+            } else {
+                t0 + (t1 - t0) * f
+            };
+            let p = e.curve.eval(t);
+            let mut u = p.y.patan2(p.x);
+            if let Some(last) = ring.last() {
+                u += ((last.0 - u) / TAU).round() * TAU;
+            }
+            ring.push((u, p.z));
+        }
+    }
+    let n = ring.len();
+    let side = |a: (f64, f64), b: (f64, f64), c: (f64, f64)| {
+        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+    };
+    for i in 0..n {
+        let (p, q) = (ring[i], ring[(i + 1) % n]);
+        for j in 0..n {
+            let (s, t) = (ring[j], ring[(j + 1) % n]);
+            let (s, t) = ((s.0 + TAU, s.1), (t.0 + TAU, t.1));
+            if p.0.max(q.0) < s.0.min(t.0) || s.0.max(t.0) < p.0.min(q.0) {
+                continue;
+            }
+            if side(s, t, p) * side(s, t, q) < 0.0 && side(p, q, s) * side(p, q, t) < 0.0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Pieces a period apart in the chart lie on one place of a closed surface
+/// (the second review of the verification, 2026-11-15: the second build
+/// held pieces to each other only in the chart unwrapped along each loop).
+/// The ribbon of eight waves on a cylinder of radius 1.3, made a turn and
+/// half a percent long: its two ends lie over each other across the seam,
+/// so its loop crosses its own copy a turn on, and the face is wrong. The
+/// walk refuses it by misreading its waves ("its loop 0 crosses itself"),
+/// as on `main`; it must not be cleared. A turn less two percent long, its
+/// ends 0.13 apart, the ribbon is right, and is cleared; and so is one a
+/// turn and two percent long, whose end, the wave being lower there, lies
+/// under its start without touching it.
+#[test]
+fn a_ribbon_round_a_turn_and_a_bit_is_refused() {
+    use craft3d_geom::{Cylinder, Surface};
+    use craft3d_math::{Frame, Portable, Vec3};
+    use std::f64::consts::TAU;
+    let cylinder = Surface::Cylinder(Cylinder::new(Frame::WORLD, 1.3).unwrap());
+    // Gentle waves, a quarter as steep as they are long, so that showing
+    // the right ribbons fits the work of a face.
+    const SLOPE: f64 = 0.25;
+    for (turns, wrong) in [(1.005, true), (0.98, false), (1.02, false)] {
+        // The chart of `wave_ribbon`, 1.2 long, stretched to `turns` turns
+        // (and as much across, so that the waves keep their shape).
+        let stretch = turns * TAU / 1.2;
+        let round = move |x: f64, y: f64| {
+            let (s, c) = ((x + 0.6) * stretch).psin_cos();
+            Vec3::new(1.3 * c, 1.3 * s, 1.3 * stretch * y)
+        };
+        let (body, _) = wave_ribbon(&cylinder, &round, 8.0, SLOPE, 32, false, 1e-6);
+        assert_eq!(
+            lifted_loop_crosses_its_copy(&body),
+            wrong,
+            "{turns} turns: the ends over each other"
+        );
+        let before = craft3d_topo::chord_proofs().0;
+        let (found, again) = dropped(&body, 1.0);
+        println!(
+            "{turns} turns: the walk again {} units",
+            craft3d_topo::chord_proofs().0 - before
+        );
+        if wrong {
+            assert!(
+                matches!(found.as_slice(), [one] if one.contains("its loop 0 crosses itself")),
+                "{turns} turns: {found:?}"
+            );
+        } else {
+            assert!(
+                found.is_empty() && again,
+                "{turns} turns: a right ribbon the walk refuses is cleared: {found:?}, walked again {again}"
+            );
+        }
+    }
 }

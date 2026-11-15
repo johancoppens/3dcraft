@@ -54,6 +54,8 @@
 //! cross nothing here. Steps are swept in order of their lowest `u`, so a
 //! face of `n` steps costs about `n log n` and the pairs that overlap.
 
+mod chord;
+
 use crate::{Body, Coedge, Face, FaceId, LoopId};
 use craft3d_geom::{Curve3, CurvePiece, NurbsCurve, Surface};
 use craft3d_math::{Portable, Tolerance, Vec3};
@@ -92,6 +94,12 @@ thread_local! {
     /// The work showing steps has taken on this thread, and how many faces
     /// were not followed because theirs passed a bound.
     static STEP_PROOFS: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
+    /// The same of the walks again of faces about to be refused
+    /// ([`chord`]), counted apart.
+    static CHORD_PROOFS: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
+    /// Whether this thread is walking a face again ([`chord`]): its work
+    /// goes to [`CHORD_PROOFS`].
+    static VERIFYING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// What showing the steps of spline edges has cost on this thread since it
@@ -104,6 +112,28 @@ pub fn step_proofs() -> (u64, u64) {
     STEP_PROOFS.with(Cell::get)
 }
 
+/// What walking faces again before refusing them has cost on this thread
+/// since it started, counted apart from [`step_proofs`]: the units of work
+/// (within [`MOST_PROOF_WORK`] for the whole of a face's walk again, its
+/// region rule and every loop its rule of simple loops asks about
+/// together, passed by the last charge at the most), and the faces whose
+/// walk again passed that bound (their faults kept), each counted once. A
+/// face the walk passes adds nothing here. For tests and reports: a count
+/// of work, never a clock.
+pub fn chord_proofs() -> (u64, u64) {
+    CHORD_PROOFS.with(Cell::get)
+}
+
+/// The counter work goes to: [`CHORD_PROOFS`] while a face is walked
+/// again, else [`STEP_PROOFS`].
+fn proofs() -> &'static std::thread::LocalKey<Cell<(u64, u64)>> {
+    if VERIFYING.with(Cell::get) {
+        &CHORD_PROOFS
+    } else {
+        &STEP_PROOFS
+    }
+}
+
 /// Counts `units` of work showing steps against the face's `work`; `None`
 /// once the face has taken more than [`MOST_PROOF_WORK`] (counted once: the
 /// face is not followed further).
@@ -113,7 +143,7 @@ fn spend(work: &mut usize, units: usize) -> Option<()> {
     }
     *work = work.saturating_add(units);
     let over = *work > MOST_PROOF_WORK;
-    STEP_PROOFS.with(|c| {
+    proofs().with(|c| {
         let (spent, cut) = c.get();
         c.set((
             spent.saturating_add(units as u64),
@@ -129,7 +159,7 @@ fn spend(work: &mut usize, units: usize) -> Option<()> {
 fn give_up(work: &mut usize) {
     if *work <= MOST_PROOF_WORK {
         *work = usize::MAX;
-        STEP_PROOFS.with(|c| {
+        proofs().with(|c| {
             let (spent, cut) = c.get();
             c.set((spent, cut.saturating_add(1)));
         });
@@ -305,46 +335,8 @@ pub(crate) fn region_followed(
     // Holes moved by whole periods to lie over the outer loop.
     if let [o] = outer.as_slice() {
         let o = *o;
-        let (Some((lo, hi)), Some(outer_points)) = (
-            rings.get(o).map(|r| (r.low, r.high)),
-            rings.get(o).map(|r| r.points.clone()),
-        ) else {
+        if shift_holes(&mut rings, o, periods).is_none() {
             return (None, None);
-        };
-        for (k, ring) in rings.iter_mut().enumerate() {
-            if k == o {
-                continue;
-            }
-            for (d, period) in periods.iter().enumerate() {
-                let Some(p) = period else { continue };
-                let (Some(l), Some(h), Some(rl), Some(rh)) =
-                    (lo.get(d), hi.get(d), ring.low.get(d), ring.high.get(d))
-                else {
-                    continue;
-                };
-                // The whole periods that bring its middle nearest the
-                // outer loop's, or one either side of that when the outer
-                // loop winds around its point only there (an outer loop
-                // that spans nearly a period).
-                let nearest = ((0.5 * (l + h) - 0.5 * (rl + rh)) / p).round();
-                let point = ring.points.first().copied();
-                let wound_at = |turns: f64| {
-                    point.map_or(0, |q| {
-                        let mut q = q;
-                        if let Some(x) = q.get_mut(d) {
-                            *x += turns * p;
-                        }
-                        winding(q, &outer_points)
-                    })
-                };
-                let turns = [nearest, nearest - 1.0, nearest + 1.0]
-                    .into_iter()
-                    .find(|t| wound_at(*t) != 0)
-                    .unwrap_or(nearest);
-                if turns != 0.0 {
-                    ring.shift(d, turns * p);
-                }
-            }
         }
         // Each hole wound once by the outer loop, by no other hole.
         let mut work = 0_usize;
@@ -448,6 +440,54 @@ pub(crate) fn region_followed(
     }
 }
 
+/// Moves each hole of `rings` by the whole periods that bring it over the
+/// outer loop `o` ([`region_followed`]); `None` where the outer loop is
+/// not there.
+fn shift_holes(rings: &mut [Ring], o: usize, periods: [Option<f64>; 2]) -> Option<()> {
+    let (Some((lo, hi)), Some(outer_points)) = (
+        rings.get(o).map(|r| (r.low, r.high)),
+        rings.get(o).map(|r| r.points.clone()),
+    ) else {
+        return None;
+    };
+    for (k, ring) in rings.iter_mut().enumerate() {
+        if k == o {
+            continue;
+        }
+        for (d, period) in periods.iter().enumerate() {
+            let Some(p) = period else { continue };
+            let (Some(l), Some(h), Some(rl), Some(rh)) =
+                (lo.get(d), hi.get(d), ring.low.get(d), ring.high.get(d))
+            else {
+                continue;
+            };
+            // The whole periods that bring its middle nearest the
+            // outer loop's, or one either side of that when the outer
+            // loop winds around its point only there (an outer loop
+            // that spans nearly a period).
+            let nearest = ((0.5 * (l + h) - 0.5 * (rl + rh)) / p).round();
+            let point = ring.points.first().copied();
+            let wound_at = |turns: f64| {
+                point.map_or(0, |q| {
+                    let mut q = q;
+                    if let Some(x) = q.get_mut(d) {
+                        *x += turns * p;
+                    }
+                    winding(q, &outer_points)
+                })
+            };
+            let turns = [nearest, nearest - 1.0, nearest + 1.0]
+                .into_iter()
+                .find(|t| wound_at(*t) != 0)
+                .unwrap_or(nearest);
+            if turns != 0.0 {
+                ring.shift(d, turns * p);
+            }
+        }
+    }
+    Some(())
+}
+
 /// Whether each of `points` (on the surface of `face`) lies on the face,
 /// by the parity of the loops' crossings of a ray from it in the
 /// surface's parameters (along v, or along u when v is the one that
@@ -549,13 +589,44 @@ pub(crate) enum Fault {
     Loop(LoopId, String),
 }
 
-/// Both rules on one face, the loops followed once for both.
+/// Both rules on one face, the loops followed once for both. A fault the
+/// walk finds on a plane, a cylinder, a cone or a sphere is dropped only
+/// where the face is walked again with a bound on how far each edge lies
+/// from its chord and is cleared by it ([`chord`]: verify before refusing,
+/// with the theorems that a cleared face's loops bound a region); a face the
+/// walk finds nothing wrong with is not walked again, so its verdict and
+/// its cost are the walk's alone, and on a torus or a spline surface the
+/// walk's fault stands as it is. A region fault that is dropped leaves the
+/// face as one the region rule cannot tell: the rule of simple loops is
+/// asked without the walk.
 fn face_fault(body: &Body, face: &Face, tol: &Tolerance) -> Option<Fault> {
+    // One second walk for the face, made only when a fault is to be
+    // verified, its verdict kept for every later one: a verdict of the
+    // whole face, whichever loop the fault was found in.
+    let verifier = std::cell::RefCell::new(chord::Verifier::new(body, face, tol));
+    let verified = |_loop: usize| verifier.borrow_mut().winding_shown();
     let (region, followed) = region_followed(body, face, tol);
     if let Some(why) = region {
-        return Some(Fault::Region(why));
+        let shown = verifier.borrow_mut().region_shown(&why);
+        return match shown {
+            Some(why) => Some(Fault::Region(why)),
+            // Dropped: the face is cleared (`chord::judge`): each loop a
+            // simple closed curve but, at the most, within five tolerances
+            // of a vertex where two edges' ends miss each other, going
+            // round no period, no two loops meeting, also not a period
+            // apart, one counter-clockwise loop that holds every other (or,
+            // on a sphere, every loop clockwise and none in another's
+            // disc). Without the walk the rule of simple loops asks rule 1
+            // and rule 4 between loops (and, on a plane, within one); what
+            // it does not ask, rule 2 (a loop round a period too often),
+            // rule 3 (a loop wound about a point other than once) and rule
+            // 4 within a loop on a curved surface (two of its stretches on
+            // each other), cannot hold of such loops.
+            None => crate::simple::loop_fault(body, face, tol, None, &verified)
+                .map(|(loop_, why)| Fault::Loop(loop_, why)),
+        };
     }
-    crate::simple::loop_fault(body, face, tol, followed.as_ref())
+    crate::simple::loop_fault(body, face, tol, followed.as_ref(), &verified)
         .map(|(loop_, why)| Fault::Loop(loop_, why))
 }
 
@@ -1552,24 +1623,9 @@ fn one_way(
             let Some(reach) = reach else {
                 return (false, 0);
             };
-            let (near, far) = reach.off;
-            let (below, above) = reach.height;
-            if !(near > 0.0 && far.is_finite() && below.is_finite() && above.is_finite()) {
+            let Some(map) = AboutMap::new(*z, *rise, reach) else {
                 return (false, 0);
-            }
-            // A cone's `v` stops at the apex: the stretch must keep to the
-            // cone's own side of it, where `v` is the ruling's.
-            let norm = match rise {
-                Rise::Slant { slope, radius } => {
-                    let ruling = if *slope > 0.0 { below } else { above };
-                    if !longer((near * slope + ruling) * slope + radius, 0.0) {
-                        return (false, 0);
-                    }
-                    1.0 / (slope * slope + 1.0).sqrt()
-                }
-                Rise::Height | Rise::Latitude | Rise::Unshown => 1.0,
             };
-            let (round_low, round_high) = (z.cross(reach.low), z.cross(reach.high));
             // First the angle about the axis alone, which is what a helix
             // or any edge that goes round takes: where every leg runs
             // round the axis the same way at both ends of the reach, it
@@ -1584,7 +1640,7 @@ fn one_way(
                 if nothing(w) {
                     continue;
                 }
-                let (e0, e1) = (w.dot(round_low), w.dot(round_high));
+                let (e0, e1) = (w.dot(map.round_low), w.dot(map.round_high));
                 let now = if longer(e0, clear) && longer(e1, clear) {
                     1
                 } else if longer(-e0, clear) && longer(-e1, clear) {
@@ -1602,16 +1658,6 @@ fn one_way(
             if round {
                 return (true, looked);
             }
-            let widest = far / near;
-            // The latitude's rate is over the square of the distance from
-            // the centre: between these.
-            let least = if below <= 0.0 && above >= 0.0 {
-                0.0
-            } else {
-                below.abs().min(above.abs())
-            };
-            let most = below.abs().max(above.abs());
-            let (inner, outer) = (near * near + least * least, far * far + most * most);
             let mut fan = Fan::within(ONE_WAY);
             for (w, clear) in legs() {
                 looked += ABOUT_UNITS;
@@ -1621,55 +1667,7 @@ fn one_way(
                 if !longer(w.length_squared(), clear * clear) {
                     return (false, looked);
                 }
-                let (e0, e1) = (w.dot(round_low), w.dot(round_high));
-                let (r0, r1) = (w.dot(reach.low), w.dot(reach.high));
-                let along = w.dot(*z);
-                // Across the axis the leg is as long as this; `w·e` and
-                // `w·r` reach it, either way, where the other one changes
-                // its sign between the ends.
-                let across = (e0 * e0 + r0 * r0).sqrt();
-                let ranged = |a: f64, b: f64, turns: bool| {
-                    let (mut low, mut high) = (a.min(b), a.max(b));
-                    if turns {
-                        if a >= 0.0 || b >= 0.0 {
-                            high = high.max(across);
-                        }
-                        if a <= 0.0 || b <= 0.0 {
-                            low = low.min(-across);
-                        }
-                    }
-                    (low, high)
-                };
-                let round = ranged(e0, e1, r0 * r1 <= 0.0);
-                let away = ranged(r0, r1, e0 * e1 <= 0.0);
-                // `u'`, times the most distance from the axis: a length.
-                let u = (round.0.min(round.0 * widest), round.1.max(round.1 * widest));
-                // `v'`, as a length as well.
-                let v = match rise {
-                    Rise::Height | Rise::Unshown => (along, along),
-                    Rise::Slant { slope, .. } => {
-                        let (a, b) = (slope * away.0, slope * away.1);
-                        ((a.min(b) + along) * norm, (a.max(b) + along) * norm)
-                    }
-                    Rise::Latitude => {
-                        // `(ρ w·z − h w·r) / (ρ² + h²)`.
-                        let (a, b) = (near * along, far * along);
-                        let lifts = [
-                            below * away.0,
-                            below * away.1,
-                            above * away.0,
-                            above * away.1,
-                        ];
-                        let lift_low = lifts.iter().copied().fold(f64::INFINITY, f64::min);
-                        let lift_high = lifts.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-                        let (low, high) = (a.min(b) - lift_high, a.max(b) - lift_low);
-                        let scale = outer.sqrt();
-                        (
-                            (low / inner).min(low / outer) * scale,
-                            (high / inner).max(high / outer) * scale,
-                        )
-                    }
-                };
+                let (u, v) = map.ranges(w);
                 for t in [(u.0, v.0), (u.0, v.1), (u.1, v.0), (u.1, v.1)] {
                     if !fan.add(t) {
                         return (false, looked);
@@ -1698,6 +1696,173 @@ fn one_way(
             }
             (true, looked)
         }
+    }
+}
+
+/// How the chart of a surface about an axis ([`Lay::About`]) takes the
+/// direction of a leg over a stretch's [`Reach`] ([`one_way`]): `u' = w·e /
+/// ρ` and `v'` as [`Rise`] has it, each over every place the stretch can
+/// be, as ranges in lengths: `u'` times the most distance from the axis,
+/// `v'` times [`AboutMap::scale`]'s second factor.
+struct AboutMap {
+    z: Vec3,
+    rise: Rise,
+    /// The ends of the reach's wedge, and the unit vectors round the axis
+    /// there.
+    low: Vec3,
+    high: Vec3,
+    round_low: Vec3,
+    round_high: Vec3,
+    near: f64,
+    far: f64,
+    below: f64,
+    above: f64,
+    /// A cone's `1 / √(slope² + 1)`; 1 elsewhere.
+    norm: f64,
+    widest: f64,
+    /// The least and the most square of the distance from the sphere's
+    /// centre over the reach.
+    inner: f64,
+    outer: f64,
+}
+
+impl AboutMap {
+    /// `None` where the reach says nothing that can be read (a distance
+    /// from the axis that is not positive, a number that is none) or a
+    /// cone's stretch does not keep to the cone's own side of its apex,
+    /// where `v` is the ruling's.
+    fn new(z: Vec3, rise: Rise, reach: &Reach) -> Option<AboutMap> {
+        let longer = |a: f64, b: f64| a.partial_cmp(&b) == Some(std::cmp::Ordering::Greater);
+        let (near, far) = reach.off;
+        let (below, above) = reach.height;
+        if !(near > 0.0 && far.is_finite() && below.is_finite() && above.is_finite()) {
+            return None;
+        }
+        // A cone's `v` stops at the apex: the stretch must keep to the
+        // cone's own side of it, where `v` is the ruling's.
+        let norm = match rise {
+            Rise::Slant { slope, radius } => {
+                let ruling = if slope > 0.0 { below } else { above };
+                if !longer((near * slope + ruling) * slope + radius, 0.0) {
+                    return None;
+                }
+                1.0 / (slope * slope + 1.0).sqrt()
+            }
+            Rise::Height | Rise::Latitude | Rise::Unshown => 1.0,
+        };
+        let widest = far / near;
+        // The latitude's rate is over the square of the distance from
+        // the centre: between these.
+        let least = if below <= 0.0 && above >= 0.0 {
+            0.0
+        } else {
+            below.abs().min(above.abs())
+        };
+        let most = below.abs().max(above.abs());
+        let (inner, outer) = (near * near + least * least, far * far + most * most);
+        Some(AboutMap {
+            z,
+            rise,
+            low: reach.low,
+            high: reach.high,
+            round_low: z.cross(reach.low),
+            round_high: z.cross(reach.high),
+            near,
+            far,
+            below,
+            above,
+            norm,
+            widest,
+            inner,
+            outer,
+        })
+    }
+
+    /// The ranges the leg `w` is taken to over the reach: `u'` and `v'`,
+    /// each times its factor of [`AboutMap::scale`].
+    fn ranges(&self, w: Vec3) -> ((f64, f64), (f64, f64)) {
+        let (near, far, below, above) = (self.near, self.far, self.below, self.above);
+        let (e0, e1) = (w.dot(self.round_low), w.dot(self.round_high));
+        let (r0, r1) = (w.dot(self.low), w.dot(self.high));
+        let along = w.dot(self.z);
+        // Across the axis the leg is as long as this; `w·e` and
+        // `w·r` reach it, either way, where the other one changes
+        // its sign between the ends.
+        let across = (e0 * e0 + r0 * r0).sqrt();
+        let ranged = |a: f64, b: f64, turns: bool| {
+            let (mut low, mut high) = (a.min(b), a.max(b));
+            if turns {
+                if a >= 0.0 || b >= 0.0 {
+                    high = high.max(across);
+                }
+                if a <= 0.0 || b <= 0.0 {
+                    low = low.min(-across);
+                }
+            }
+            (low, high)
+        };
+        let round = ranged(e0, e1, r0 * r1 <= 0.0);
+        let away = ranged(r0, r1, e0 * e1 <= 0.0);
+        let widest = self.widest;
+        // `u'`, times the most distance from the axis: a length.
+        let u = (round.0.min(round.0 * widest), round.1.max(round.1 * widest));
+        // `v'`, as a length as well.
+        let v = match self.rise {
+            Rise::Height | Rise::Unshown => (along, along),
+            Rise::Slant { slope, .. } => {
+                let norm = self.norm;
+                let (a, b) = (slope * away.0, slope * away.1);
+                ((a.min(b) + along) * norm, (a.max(b) + along) * norm)
+            }
+            Rise::Latitude => {
+                let (inner, outer) = (self.inner, self.outer);
+                // `(ρ w·z − h w·r) / (ρ² + h²)`.
+                let (a, b) = (near * along, far * along);
+                let lifts = [
+                    below * away.0,
+                    below * away.1,
+                    above * away.0,
+                    above * away.1,
+                ];
+                let lift_low = lifts.iter().copied().fold(f64::INFINITY, f64::min);
+                let lift_high = lifts.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                let (low, high) = (a.min(b) - lift_high, a.max(b) - lift_low);
+                let scale = outer.sqrt();
+                (
+                    (low / inner).min(low / outer) * scale,
+                    (high / inner).max(high / outer) * scale,
+                )
+            }
+        };
+        (u, v)
+    }
+
+    /// The factors [`AboutMap::ranges`] gives `u'` and `v'` in: the most
+    /// distance from the axis, and 1 (a cylinder's height), `√(slope² +
+    /// 1)` (a cone's ruling) or the most distance from the sphere's centre
+    /// (a latitude).
+    fn scale(&self) -> (f64, f64) {
+        let v = match self.rise {
+            Rise::Height | Rise::Unshown => 1.0,
+            Rise::Slant { .. } => 1.0 / self.norm,
+            Rise::Latitude => self.outer.sqrt(),
+        };
+        (self.far, v)
+    }
+
+    /// How far each range of [`AboutMap::ranges`] can move for a leg moved
+    /// by a unit: every product of the leg is with a unit vector, `u'`'s
+    /// times up to the ratio of the most to the least distance from the
+    /// axis, `v'`'s as its form has it.
+    fn rate(&self) -> (f64, f64) {
+        let most = self.below.abs().max(self.above.abs());
+        let v = match self.rise {
+            Rise::Height | Rise::Unshown => 1.0,
+            Rise::Slant { slope, .. } => (slope.abs() + 1.0) * self.norm,
+            Rise::Latitude => (self.far + most) / self.inner * self.outer.sqrt(),
+        };
+        // `across` moves no more than the leg does: within the same.
+        (self.widest, v)
     }
 }
 
@@ -2191,6 +2356,58 @@ fn cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2], margin: f64) -> boo
 
 /// The first pair of loops (or a loop and itself) whose steps cross.
 fn crossing(rings: &[Ring], margin_of: &dyn Fn(usize, usize) -> f64) -> Option<(usize, usize)> {
+    let largest_margin = (0..rings.len())
+        .map(|i| margin_of(i, i))
+        .fold(0.0, f64::max)
+        * 2.0;
+    match pairs_of_steps(
+        rings,
+        largest_margin,
+        false,
+        &mut |(r, _), a, b, (s, _), c, d| cross(a, b, c, d, margin_of(r, s)),
+    ) {
+        Sweep::Found(r, _, s, _) => Some((s.min(r), s.max(r))),
+        Sweep::Done | Sweep::Cut => None,
+    }
+}
+
+/// How a sweep of pairs of steps ended ([`pairs_of_steps`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Sweep {
+    /// The visit held of the steps `i` of loop `r` and `j` of loop `s`.
+    Found(usize, usize, usize, usize),
+    /// Every pair whose boxes come within the growth was visited.
+    Done,
+    /// Past [`MOST_PAIRS`] pairs, or a step not found: not every pair was
+    /// visited.
+    Cut,
+}
+
+/// The pairs of steps of `rings` whose boxes, grown by `grow`, meet (steps
+/// that meet at a point of their loop left out), each handed to `visit`
+/// with its loops and places and its ends (`visit((r, i), a, b, (s, j), c,
+/// d)`: the step `i`, `a b`, of loop `r` and the step `j`, `c d`, of loop
+/// `s`) until it holds of one. Bands across
+/// v, each step in every band it reaches (with the growth), each band
+/// swept along u: steps far apart in v are never paired, so a face of many
+/// holes in rows and columns (a perforated tube) costs about its steps,
+/// not their square. With `few_bands`, no more bands than the growth goes
+/// into the height (wide growths would put every step in every band and
+/// pair each two in each).
+#[allow(clippy::type_complexity)]
+fn pairs_of_steps(
+    rings: &[Ring],
+    grow: f64,
+    few_bands: bool,
+    visit: &mut dyn FnMut(
+        (usize, usize),
+        [f64; 2],
+        [f64; 2],
+        (usize, usize),
+        [f64; 2],
+        [f64; 2],
+    ) -> bool,
+) -> Sweep {
     // Every step: (lowest u, highest u, lowest v, highest v, ring, index).
     let mut steps: Vec<(f64, f64, f64, f64, usize, usize)> = Vec::new();
     for (r, ring) in rings.iter().enumerate() {
@@ -2209,25 +2426,24 @@ fn crossing(rings: &[Ring], margin_of: &dyn Fn(usize, usize) -> f64) -> Option<(
             ));
         }
     }
-    let largest_margin = (0..rings.len())
-        .map(|i| margin_of(i, i))
-        .fold(0.0, f64::max)
-        * 2.0;
+    let largest_margin = grow;
     let point = |r: usize, i: usize| -> Option<([f64; 2], [f64; 2])> {
         let ring = rings.get(r)?;
         let n = ring.points.len();
         Some((*ring.points.get(i)?, *ring.points.get((i + 1) % n)?))
     };
-    // Bands across v, each step in every band it reaches (with the
-    // margin), each band swept along u: steps far apart in v are never
-    // paired, so a face of many holes in rows and columns (a perforated
-    // tube) costs about its steps, not their square.
     let (v_low, v_high) = steps
         .iter()
         .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), s| {
             (l.min(s.2), h.max(s.3))
         });
-    let count = ((steps.len() as f64).sqrt().ceil() as usize).clamp(1, 512);
+    let mut count = ((steps.len() as f64).sqrt().ceil() as usize).clamp(1, 512);
+    if few_bands {
+        let fit = (v_high - v_low) / grow;
+        if fit.is_finite() && fit >= 0.0 {
+            count = count.min((fit as usize).max(1));
+        }
+    }
     let height = (v_high - v_low) / count as f64;
     let band_of = |v: f64| {
         let f = (v - v_low) / height;
@@ -2259,10 +2475,12 @@ fn crossing(rings: &[Ring], margin_of: &dyn Fn(usize, usize) -> f64) -> Option<(
                 continue;
             };
             active.retain(|(h, _, _)| *h + largest_margin >= low);
-            let (a, b) = point(r, i)?;
+            let Some((a, b)) = point(r, i) else {
+                return Sweep::Cut;
+            };
             work = work.saturating_add(active.len().saturating_add(1));
             if work > MOST_PAIRS {
-                return None;
+                return Sweep::Cut;
             }
             for &(_, s, j) in &active {
                 if s == r {
@@ -2272,15 +2490,17 @@ fn crossing(rings: &[Ring], margin_of: &dyn Fn(usize, usize) -> f64) -> Option<(
                         continue;
                     }
                 }
-                let (c, d) = point(s, j)?;
-                if cross(a, b, c, d, margin_of(r, s)) {
-                    return Some((s.min(r), s.max(r)));
+                let Some((c, d)) = point(s, j) else {
+                    return Sweep::Cut;
+                };
+                if visit((r, i), a, b, (s, j), c, d) {
+                    return Sweep::Found(r, i, s, j);
                 }
             }
             active.push((high, r, i));
         }
     }
-    None
+    Sweep::Done
 }
 
 /// The loops by the cells of a grid over their boxes (grown by a margin):
