@@ -1248,7 +1248,8 @@ fn freecad_cones(freecad: &str, dir: &Path, stage: &str, file: &str) -> Value {
 /// with `HYPERBOLA` and `PARABOLA` edges (refused before 2026-11-15):
 /// each must read here with FreeCAD's volume and area to 1e-6, and the
 /// file 3DCraft exports of what it read (its conic edges as rational
-/// B-splines) must read in FreeCAD as a valid solid of the same volume.
+/// B-splines) must read in FreeCAD as one valid solid of the same volume,
+/// within what FreeCAD's own parameter-space curves move it (1e-4).
 #[test]
 #[ignore = "needs FreeCAD (CRAFT3D_FREECAD): cargo xtask freecad"]
 fn freecad_cone_sections_read_and_go_back() {
@@ -1324,13 +1325,22 @@ fn freecad_cone_sections_read_and_go_back() {
     )
     .unwrap();
     let back = freecad_cones(&freecad, &dir, "back", "back.json");
+    // Going back, the conic edge on the cone is not a line in the cone's
+    // parameter plane, and a STEP file as 3DCraft writes it has no
+    // parameter-space curves: FreeCAD interpolates its own on import, which
+    // moves its measures by some 1e-6 to 1e-5 whatever the file declares
+    // (`crates/io/tests/common/step_harness.rs` › `APPROXIMATED`, the same
+    // bound; measured on these three on the Strix, 2026-11-15: 9e-7 to
+    // 7.4e-6 of the volume, while ours read back is the body to 4e-16,
+    // `crates/io/tests/step_conics.rs`).
+    const APPROXIMATED: f64 = 1e-4;
     for (name, volume) in &ours {
         let case = &back[name.as_str()];
         println!("{name}-ours.step in FreeCAD: {case}");
         if case.get("error").is_some()
             || case["valid"] != true
             || case["solids"] != 1
-            || (case["volume"].as_f64().unwrap_or(0.0) - volume).abs() > 1e-6 * volume
+            || (case["volume"].as_f64().unwrap_or(0.0) - volume).abs() > APPROXIMATED * volume
         {
             wrong.push(format!("{name}: FreeCAD reads ours as {case}"));
         }
