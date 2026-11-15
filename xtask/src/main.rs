@@ -39,18 +39,31 @@ fn cargo(args: &[&str]) -> Result<(), String> {
 }
 
 /// Every library crate must build for the web (AGENTS.md rule 11), and
-/// so must the web app itself.
+/// so must the web app itself; then clippy must pass for the web as it
+/// does natively, over the same packages: the native clippy does not see
+/// what is compiled for `wasm32` alone (a loop whose only `continue` was
+/// native went unseen until 2026-11-15).
 fn wasm() -> Result<(), String> {
-    let mut args = vec!["check", "--target", "wasm32-unknown-unknown"];
+    const WASM: &str = "wasm32-unknown-unknown";
     let packages: Vec<String> = layers::LAYERS
         .iter()
         .filter(|(name, layer)| *layer != layers::APP_LAYER || *name == "web")
         .map(|(name, _)| format!("craft3d-{name}"))
         .collect();
+    let mut check = vec!["check", "--target", WASM];
+    let mut clippy = vec!["clippy", "--target", WASM];
     for p in &packages {
-        args.extend(["-p", p.as_str()]);
+        check.extend(["-p", p.as_str()]);
+        clippy.extend(["-p", p.as_str()]);
     }
-    cargo(&args)
+    clippy.extend(["--", "-D", "warnings"]);
+    cargo(&check)?;
+    cargo(&clippy).map_err(|e| {
+        format!(
+            "{e}\nclippy for the web build: rerun it for the crate it names with \
+             `cargo clippy -p <crate> --target {WASM} -- -D warnings`, or all of it with `cargo xtask wasm`"
+        )
+    })
 }
 
 /// Runs the opt-in tests that let FreeCAD read our exports (docs/testing.md,

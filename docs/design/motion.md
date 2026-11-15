@@ -109,7 +109,7 @@ when asked, and the 32-trace limit counts pending ones. A reset of the builder (
 `view.motion {t: null}`, a new sweep, a motion that cannot be shown, an edit: `check_trace_base`) fails the pending
 traces with `let go of: …`. `view.trace {name, wait?}` reads one (its full answer, the error, or pending; `wait`
 waits up to 2 s in a window, whose engine thread it holds, 600 s elsewhere, and not at all in a browser, which has
-no clock in `std` and works nothing out in the background: `cargo xtask layers` refuses a clock of `std` where the
+no clock in `std` and gets a trace's points from the page's worker only after the command returned: `cargo xtask layers` refuses a clock of `std` where the
 browser build gets, 2026-11-02), `ui.get` lists them (`traces: [{name, pending, error, length, closed}]`), and the window says a
 failed one in the timeline's problem line. Worked out in the command, a trace uses the motion's own sweep when it
 runs over the state the view shows below the motion (the scrubbed one), else a sweep of its own, never replacing the
