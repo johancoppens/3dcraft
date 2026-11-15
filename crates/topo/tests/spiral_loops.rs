@@ -413,15 +413,16 @@ fn wave_ribbon(
 /// further from its chords than the ribbon is wide.
 ///
 /// - Right, its sides' slopes up to 1.9 in the chart, the upper side in
-///   four edges a wave: **a known false alarm** on a plane (three scales),
-///   a cylinder and a sphere, refused as on `main` and in 0.1.x ("its loop
-///   0 crosses itself": the lower side's chords cross the upper side),
-///   while it measures its closed form. The halves of the lower side's
-///   steps are shown to run one way, so it is followed in its eight steps;
-///   that what lies between a step and its chord is measured only at the
-///   middle is what misreads it (`docs/design/topology.md` › *A strip that
-///   spirals about a point of the chart*, Owed). Listed so that a fix
-///   turns them round.
+///   four edges a wave, measuring its closed form: refused by the walk
+///   ("its loop 0 crosses itself": the lower side's chords cross the upper
+///   side), as on `main` and in 0.1.x, on a plane (three scales), a
+///   cylinder and a sphere. Since 2026-11-15 the fault is verified with a
+///   bound on what lies between each edge and its chord
+///   (`docs/design/topology.md` › *What lies between an edge and its
+///   chord*): of 8 waves the bounds show the loop bounds a region and the
+///   face passes; of 16 waves showing that takes more than the work of a
+///   face, and the walk's fault is kept: **a known false alarm**, listed
+///   so that a fix turns it round.
 /// - Right, slopes up to 5.7, on a plane: passes (the lower side's halves
 ///   are not one way at eight steps, so it is followed in more).
 /// - Wrong, slopes up to 5.7, both sides single edges, turned over:
@@ -474,7 +475,8 @@ fn wavy_ribbons_whose_steps_end_on_their_middle_line() {
         }
         for (name, (surface, at, scale)) in &charts {
             for waves in [8.0, 16.0] {
-                let mut cases = vec![(1.0, 4, false, "refused")];
+                let gentle = if waves == 8.0 { "passes" } else { "refused" };
+                let mut cases = vec![(1.0, 4, false, gentle)];
                 if *name == "plane" {
                     cases.push((3.0, 4, false, "passes"));
                     cases.push((3.0, 1, true, "passes"));

@@ -157,6 +157,7 @@ pub(crate) fn loop_fault(
     face: &Face,
     tol: &Tolerance,
     followed: Option<&Followed>,
+    verified: &dyn Fn(usize) -> bool,
 ) -> Option<(LoopId, String)> {
     // Ten working tolerances: the least length of a stretch and the reach
     // of a margin, as in the region rule. Which curves are one is the
@@ -204,7 +205,9 @@ pub(crate) fn loop_fault(
                 continue;
             }
             let margin = 2.0 * ring.error + f.reach;
-            if let Some((at, wound)) = wound_wrongly(ring, margin) {
+            if let Some((at, wound)) = wound_wrongly(ring, margin)
+                && verified(k)
+            {
                 return Some((
                     loop_at(k)?,
                     format!(
@@ -376,7 +379,7 @@ fn wound_wrongly(ring: &Ring, margin: f64) -> Option<([f64; 2], i64)> {
 }
 
 /// [`wound_wrongly`] within `most` points looked at.
-fn wound_within(ring: &Ring, margin: f64, most: usize) -> Option<([f64; 2], i64)> {
+pub(crate) fn wound_within(ring: &Ring, margin: f64, most: usize) -> Option<([f64; 2], i64)> {
     let points = &ring.points;
     let n = points.len();
     let area = signed_area(points);
