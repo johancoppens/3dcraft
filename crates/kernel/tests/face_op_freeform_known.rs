@@ -59,7 +59,7 @@ use craft3d_kernel::offset_face::{FaceOffset, offset_faces};
 use craft3d_kernel::primitives;
 use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
 use craft3d_kernel::revolve::revolve;
-use craft3d_math::{Frame, Portable, Tolerance, Vec3};
+use craft3d_math::{Frame, Portable, Tolerance, Transform, Vec3};
 use craft3d_topo::{Body, FaceId, check};
 use hunt_common::{crosses_itself, edge_near, measured, tolerance};
 use std::f64::consts::PI;
@@ -458,12 +458,13 @@ fn boxed(lo: [f64; 3], size: [f64; 3], k: f64) -> Body {
 /// over the slot (18.38, at x 20.41). The two edges along x leave through
 /// the wall between their ends, which stay under it. With what the floor
 /// did, how far it goes to reach the wall (scale 1).
-fn slot_through_wall(k: f64, past: f64) -> (Result<(Did, String), String>, f64) {
+fn slot_through_wall(k: f64, place: &Transform, past: f64) -> (Result<(Did, String), String>, f64) {
     let tol = tolerance(k);
     let solid = walled(40.0, k, &tol);
     let slot = |height: f64| boxed([17.0, -5.0, 1.0], [7.0, height + 5.0, 38.0], k);
     let body = cut(&solid, &slot(12.0), &tol);
     let floor = flat(&body, 1, 12.0, k);
+    let body = body.transformed(place).unwrap();
     let (x, low) = wall_lowest(17.0, 24.0);
     let to = low + past;
     let direct = boolean(&solid, &slot(to), BooleanOp::Subtract, &tol)
@@ -471,7 +472,7 @@ fn slot_through_wall(k: f64, past: f64) -> (Result<(Did, String), String>, f64) 
         .and_then(|made| volume(&made.body));
     // Half way between the wall and the raised floor over the wall's
     // lowest point, half way along the slot: air over the wall.
-    let outside = (to > low + 0.01).then(|| Vec3::new(x, 0.5 * (low + to), 20.0) * k);
+    let outside = (to > low + 0.01).then(|| place.point(Vec3::new(x, 0.5 * (low + to), 20.0) * k));
     (
         judged(
             offset(&body, floor, -(to - 12.0) * k, &tol),
@@ -483,11 +484,37 @@ fn slot_through_wall(k: f64, past: f64) -> (Result<(Did, String), String>, f64) 
     )
 }
 
+/// Where the bodies of the straight-edge cases are placed: as built, turned
+/// (a frame at a slant to the world's axes), and turned another way and
+/// carried more than a thousand sizes from the origin.
+fn placings(k: f64) -> [(&'static str, Transform); 3] {
+    let at = |origin: [f64; 3], z: [f64; 3], x: [f64; 3]| {
+        let v = |a: [f64; 3]| Vec3::new(a[0], a[1], a[2]);
+        Transform::from_frame(&Frame::new(v(origin) * k, v(z), v(x)).unwrap())
+    };
+    [
+        ("world", Transform::translation(Vec3::new(0.0, 0.0, 0.0))),
+        (
+            "turned",
+            at([5.0, 9.0, -4.0], [-1.0, 2.0, 2.5], [0.4, 1.0, 0.1]),
+        ),
+        (
+            "far",
+            at(
+                [-27000.0, 41000.0, 13000.0],
+                [2.0, 1.0, -3.0],
+                [1.0, -0.5, 0.4],
+            ),
+        ),
+    ]
+}
+
 /// Until 2026-11-15 (the review of the freeform faces asked again) the
 /// floor 0.0005 and 0.002 over the wall's lowest point was built, and from
 /// 0.02 refused with a largest distance that fits up to where the middle
 /// of its straight edges reaches the wall (6.3838 of 6.3802): a straight
-/// edge was followed in one step and not looked at between its ends.
+/// edge was followed in one step and not looked at between its ends. In
+/// each of three frames: the answer is the body's, not the frame's.
 #[test]
 fn a_slots_straight_edges_raised_out_through_a_spline_wall_are_refused() {
     let mut unexpected = Vec::new();
@@ -495,15 +522,158 @@ fn a_slots_straight_edges_raised_out_through_a_spline_wall_are_refused() {
         let tol = tolerance(k);
         let (_, low) = wall_lowest(17.0, 24.0);
         let limit = low - 12.0;
-        for past in [-0.3, -1e-4 * limit, 1e-4 * limit, 0.0005, 0.002, 0.02, 0.3] {
-            let (found, limit) = slot_through_wall(k, past);
-            hold(
-                format!("scale {k}, the slot's floor {past} over the wall's lowest"),
-                expected(past, limit * k),
-                found,
-                &tol,
-                &mut unexpected,
-            );
+        for (name, place) in placings(k) {
+            for past in [-0.3, -1e-4 * limit, 1e-4 * limit, 0.0005, 0.002, 0.02, 0.3] {
+                let (found, limit) = slot_through_wall(k, &place, past);
+                hold(
+                    format!("scale {k}, {name}, the slot's floor {past} over the wall's lowest"),
+                    expected(past, limit * k),
+                    found,
+                    &tol,
+                    &mut unexpected,
+                );
+            }
+        }
+    }
+    assert!(unexpected.is_empty(), "{unexpected:#?}");
+}
+
+/// The pieces of a top made of spline faces in a row, over x from 36 to 0
+/// (scale 1): three cubics, the middle one of two spans, meeting at x 24
+/// and x 12 (the review's two faces in a row, and a third beside them).
+fn row_pieces() -> [Vec<[f64; 2]>; 3] {
+    [
+        vec![[36.0, 20.0], [32.0, 21.0], [27.0, 17.5], [24.0, 20.0]],
+        vec![
+            [24.0, 20.0],
+            [21.0, 22.5],
+            [18.0, 17.0],
+            [15.0, 21.0],
+            [12.0, 20.0],
+        ],
+        vec![[12.0, 20.0], [8.0, 18.0], [4.0, 22.0], [0.0, 20.0]],
+    ]
+}
+
+/// The lowest the pieces of [`row_pieces`] come over x from `a` to `b`,
+/// and where: the least of 40 000 places along each, made fine by thirds.
+fn row_lowest(a: f64, b: f64) -> (f64, f64) {
+    let mut best = (f64::INFINITY, 0.0);
+    for ctrl in row_pieces() {
+        let height = |t: f64| {
+            let [x, y] = de_boor(&ctrl, t);
+            if (a..=b).contains(&x) {
+                y
+            } else {
+                f64::INFINITY
+            }
+        };
+        let steps = 40_000;
+        let at = (0..=steps)
+            .map(|i| f64::from(i) / f64::from(steps))
+            .min_by(|p, q| height(*p).total_cmp(&height(*q)))
+            .unwrap();
+        let h = 1.0 / f64::from(steps);
+        let (mut lo, mut hi) = ((at - h).max(0.0), (at + h).min(1.0));
+        for _ in 0..200 {
+            let (p, q) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
+            if height(p) < height(q) {
+                hi = q;
+            } else {
+                lo = p;
+            }
+        }
+        let t = 0.5 * (lo + hi);
+        if height(t) < best.0 {
+            best = (height(t), de_boor(&ctrl, t)[0]);
+        }
+    }
+    best
+}
+
+/// A block 36 wide and 30 long whose top is the three spline faces of
+/// [`row_pieces`], with a slot from its bottom up to y 12 under the faces
+/// from `xa` to `xb` (z from 6 to 24): its floor's straight edges along x
+/// run under two faces (17 to 30) or three (8 to 30). The floor raised to
+/// `past` over the lowest the faces come over the slot.
+fn slot_under_a_row(
+    k: f64,
+    place: &Transform,
+    (xa, xb): (f64, f64),
+    past: f64,
+) -> (Result<(Did, String), String>, f64) {
+    let tol = tolerance(k);
+    let pieces = row_pieces().map(|control| {
+        Curve2::Spline(Spline2 {
+            degree: 3,
+            knots: uniform_knots(control.len()),
+            control,
+        })
+    });
+    let [a, b, c] = pieces;
+    let solid = prism(
+        vec![
+            line([0.0, 0.0], [36.0, 0.0]),
+            line([36.0, 0.0], [36.0, 20.0]),
+            a,
+            b,
+            c,
+            line([0.0, 20.0], [0.0, 0.0]),
+        ],
+        30.0,
+        k,
+        &tol,
+    );
+    let slot = |height: f64| boxed([xa, -5.0, 6.0], [xb - xa, height + 5.0, 18.0], k);
+    let body = cut(&solid, &slot(12.0), &tol);
+    let floor = flat(&body, 1, 12.0, k);
+    let body = body.transformed(place).unwrap();
+    let (low, x) = row_lowest(xa, xb);
+    let to = low + past;
+    let direct = boolean(&solid, &slot(to), BooleanOp::Subtract, &tol)
+        .ok()
+        .and_then(|made| volume(&made.body));
+    let outside = (to > low + 0.01).then(|| place.point(Vec3::new(x, 0.5 * (low + to), 15.0) * k));
+    (
+        judged(
+            offset(&body, floor, -(to - 12.0) * k, &tol),
+            direct,
+            outside,
+            &tol,
+        ),
+        low - 12.0,
+    )
+}
+
+/// Until 2026-11-15 (the review's round 3) the floor of a slot under two
+/// spline faces in a row was refused with the true limit as built, and on
+/// a turned frame and a far one built through the faces at 0.0005 and
+/// 0.02 past and refused at 0.3 past saying 7.32751 of 7.08037: the boxes
+/// of the faces' spans along the world's axes, loose in a turned frame,
+/// spread the edge's few steps along it past the dip. Two and three faces
+/// in a row, three frames, three scales.
+#[test]
+fn a_slots_straight_edges_out_through_spline_faces_in_a_row_are_refused() {
+    let mut unexpected = Vec::new();
+    for (row, under) in [("two", (17.0, 30.0)), ("three", (8.0, 30.0))] {
+        let (low, _) = row_lowest(under.0, under.1);
+        let limit = low - 12.0;
+        for k in SCALES {
+            let tol = tolerance(k);
+            for (name, place) in placings(k) {
+                for past in [-0.3, -1e-4 * limit, 1e-4 * limit, 0.0005, 0.02, 0.3] {
+                    let (found, limit) = slot_under_a_row(k, &place, under, past);
+                    hold(
+                        format!(
+                            "{row} faces, scale {k}, {name}, the floor {past} over their lowest"
+                        ),
+                        expected(past, limit * k),
+                        found,
+                        &tol,
+                        &mut unexpected,
+                    );
+                }
+            }
         }
     }
     assert!(unexpected.is_empty(), "{unexpected:#?}");
@@ -600,7 +770,7 @@ fn fine_lowest(a: f64, b: f64) -> f64 {
 /// distance short of how far the floor can go, the refusal says so.
 /// Until 2026-11-15 (the review of the freeform faces asked again) the
 /// refusal said the largest that fits was below 5.96, of a floor that fits
-/// to 6.79.
+/// to 6.79. In each of three frames.
 #[test]
 fn a_limit_the_search_was_cut_short_of_is_said_as_one_more_may_pass() {
     let k = 1.0;
@@ -627,18 +797,26 @@ fn a_limit_the_search_was_cut_short_of_is_said_as_one_more_may_pass() {
     let body = cut(&solid, &slot(12.0), &tol);
     let floor = flat(&body, 1, 12.0, k);
     let limit = fine_lowest(17.0, 24.0) - 12.0;
-    match offset(&body, floor, -(limit + 0.02), &tol) {
-        Err(KernelError::FaceOpTooFar {
-            largest, reason, ..
-        }) => {
-            println!("refused at {largest} of {limit}: {reason}");
-            assert!(largest <= limit + 8.0 * tol.linear, "{largest} of {limit}");
-            assert!(
-                largest >= limit * (1.0 - 1e-5) || reason.contains("more may"),
-                "{largest} of {limit}: {reason}"
-            );
+    // On the turned and the far frame too: there each try is cheaper and
+    // the search can close in on the limit, which is then said as one.
+    for (name, place) in placings(k) {
+        let body = body.transformed(&place).unwrap();
+        match offset(&body, floor, -(limit + 0.02), &tol) {
+            Err(KernelError::FaceOpTooFar {
+                largest, reason, ..
+            }) => {
+                println!("{name}: refused at {largest} of {limit}: {reason}");
+                assert!(
+                    largest <= limit + 8.0 * tol.linear,
+                    "{name}: {largest} of {limit}"
+                );
+                assert!(
+                    largest >= limit * (1.0 - 1e-5) || reason.contains("more may"),
+                    "{name}: {largest} of {limit}: {reason}"
+                );
+            }
+            other => panic!("{name}: {:?}", other.map(|b| b.faces.len())),
         }
-        other => panic!("{:?}", other.map(|b| b.faces.len())),
     }
 }
 

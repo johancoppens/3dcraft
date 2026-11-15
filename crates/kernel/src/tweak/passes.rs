@@ -678,6 +678,102 @@ struct Span {
     v: (f64, f64),
     lo: Vec3,
     hi: Vec3,
+    /// The box of the same control points about the directions they run
+    /// in ([`Turned`]): the same box, moved, whatever frame the body lies
+    /// in, where `lo` and `hi` hold the control points along the world's
+    /// axes and grow loose when the body is turned against them.
+    turned: Option<Turned>,
+}
+
+/// A box about three directions of its own: its middle, the directions
+/// (orthonormal), and its half widths along them.
+#[derive(Clone, Copy, Debug)]
+struct Turned {
+    centre: Vec3,
+    axes: [Vec3; 3],
+    half: [f64; 3],
+}
+
+impl Turned {
+    /// The box of the control points `net` (rows along u, each along v)
+    /// about the directions the net runs in: from its first row to its
+    /// last, and from its first column to its last, made square to the
+    /// first. `None` for a net with no direction (all its points one) or
+    /// a number that is not finite.
+    fn of(net: &[Vec<Vec3>]) -> Option<Turned> {
+        let (first, last) = (net.first()?, net.last()?);
+        let mut along_u = Vec3::ZERO;
+        for (a, b) in first.iter().zip(last) {
+            along_u += *b - *a;
+        }
+        let mut along_v = Vec3::ZERO;
+        for row in net {
+            along_v += *row.last()? - *row.first()?;
+        }
+        let one = along_u.normalized().or_else(|| along_v.normalized())?;
+        let square = |v: Vec3| v - one * v.dot(one);
+        // A second direction: the net's other one, or, where that runs
+        // with the first, the world's axis least along the first (the
+        // only place a frame shows: a net drawn into a line).
+        let two = square(along_v).normalized().or_else(|| {
+            [
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+            ]
+            .into_iter()
+            .min_by(|a, b| a.dot(one).abs().total_cmp(&b.dot(one).abs()))
+            .and_then(|axis| square(axis).normalized())
+        })?;
+        let three = one.cross(two).normalized()?;
+        let axes = [one, two, three];
+        let origin = *first.first()?;
+        let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+        for p in net.iter().flatten() {
+            for (k, axis) in axes.iter().enumerate() {
+                let at = (*p - origin).dot(*axis);
+                if let (Some(l), Some(h)) = (lo.get_mut(k), hi.get_mut(k)) {
+                    *l = l.min(at);
+                    *h = h.max(at);
+                }
+            }
+        }
+        let mut centre = origin;
+        let mut half = [0.0; 3];
+        for k in 0..3 {
+            let (l, h) = (*lo.get(k)?, *hi.get(k)?);
+            if !(l.is_finite() && h.is_finite()) {
+                return None;
+            }
+            centre += *axes.get(k)? * (0.5 * (l + h));
+            *half.get_mut(k)? = 0.5 * (h - l);
+        }
+        centre.is_finite().then_some(Turned { centre, axes, half })
+    }
+
+    /// The part of [0, 1] along `from` + s `along` inside the box grown by
+    /// `reach`.
+    fn clip(&self, from: Vec3, along: Vec3, reach: f64) -> Option<(f64, f64)> {
+        let at = from - self.centre;
+        let (mut a, mut b) = (0.0_f64, 1.0_f64);
+        for (axis, half) in self.axes.iter().zip(self.half) {
+            let (o, d, h) = (at.dot(*axis), along.dot(*axis), half + reach);
+            if d == 0.0 {
+                if o.abs() > h {
+                    return None;
+                }
+                continue;
+            }
+            let (s0, s1) = ((-h - o) / d, (h - o) / d);
+            let (s0, s1) = if s0 <= s1 { (s0, s1) } else { (s1, s0) };
+            a = a.max(s0);
+            b = b.min(s1);
+            if a > b || a.is_nan() || b.is_nan() {
+                return None;
+            }
+        }
+        Some((a, b))
+    }
 }
 
 impl Span {
@@ -748,11 +844,19 @@ fn spans_of(surface: &Surface) -> Option<Vec<Span>> {
         Surface::Bezier(patch) => {
             let (lo, hi) = patch.control_bbox().corners()?;
             (lo.is_finite() && hi.is_finite()).then(|| {
+                let net: Vec<Vec<Vec3>> = (0..=patch.degree_u())
+                    .map(|i| {
+                        (0..=patch.degree_v())
+                            .filter_map(|j| patch.control_point(i, j))
+                            .collect()
+                    })
+                    .collect();
                 vec![Span {
                     u: (0.0, 1.0),
                     v: (0.0, 1.0),
                     lo,
                     hi,
+                    turned: Turned::of(&net),
                 }]
             })
         }
@@ -784,14 +888,18 @@ fn spans_of(surface: &Surface) -> Option<Vec<Span>> {
             for (i, u) in &along_u {
                 for (j, v) in &along_v {
                     let mut ends: Option<(Vec3, Vec3)> = None;
+                    let mut net: Vec<Vec<Vec3>> = Vec::with_capacity(p + 1);
                     for row in i.checked_sub(p)?..=*i {
+                        let mut line = Vec::with_capacity(q + 1);
                         for column in j.checked_sub(q)?..=*j {
                             let c = *points.get(row.checked_mul(count_v)?.checked_add(column)?)?;
                             ends = Some(match ends {
                                 Some((lo, hi)) => (lo.min(c), hi.max(c)),
                                 None => (c, c),
                             });
+                            line.push(c);
                         }
+                        net.push(line);
                     }
                     let (lo, hi) = ends?;
                     found.push(Span {
@@ -799,6 +907,7 @@ fn spans_of(surface: &Surface) -> Option<Vec<Span>> {
                         v: *v,
                         lo,
                         hi,
+                        turned: Turned::of(&net),
                     });
                 }
             }
@@ -997,7 +1106,17 @@ fn line_stretches(edge: &Edge, spans: &[Span], reach: f64) -> Vec<Path> {
         }
         Some((from, to))
     };
-    let mut held: Vec<(f64, f64)> = spans.iter().filter_map(|s| clip(s.lo, s.hi)).collect();
+    // By the span's turned box where it has one: the stretches, and so
+    // the steps, are then those of the body, not of the frame it lies in
+    // (in a turned frame the world's boxes of a long span reach far along
+    // the edge, and the steps spread over it missed the dip of a face).
+    let mut held: Vec<(f64, f64)> = spans
+        .iter()
+        .filter_map(|s| match &s.turned {
+            Some(turned) => turned.clip(p, along, reach),
+            None => clip(s.lo, s.hi),
+        })
+        .collect();
     held.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.total_cmp(&y.1)));
     // Merged, with how many spans' boxes each holds.
     let mut merged: Vec<(f64, f64, usize)> = Vec::new();
@@ -1355,7 +1474,15 @@ pub(super) fn pierced(
                                 break;
                             }
                             let least = vp.min(vq);
-                            let tight = b - a <= 1e-12 * (hi_t - lo_t) || (b - a).is_nan();
+                            // Tight: the bracket is the rounding of the
+                            // parameter, or the distance changes across it by
+                            // less than an eighth of the tolerance, so that no
+                            // place in it is further through than a sixteenth
+                            // of the tolerance below the least found (a smooth
+                            // least by the parabola through the three).
+                            let tight = b - a <= 1e-12 * (hi_t - lo_t)
+                                || (b - a).is_nan()
+                                || fa.max(fb) - least < 0.125 * tol;
                             if least > fa.max(fb) - least + tol || tight {
                                 break;
                             }
@@ -2009,15 +2136,20 @@ mod freeform_tests {
         let stretch = &found[0];
         let held = spans
             .iter()
-            .filter(|s| s.reaches(Vec3::new(-2.0, 1.5, 0.5), Vec3::new(8.0, 1.5, 0.5)))
+            .filter(|s| {
+                s.turned
+                    .unwrap()
+                    .clip(Vec3::new(-2.0, 1.5, 0.5), Vec3::new(10.0, 0.0, 0.0), 1e-6)
+                    .is_some()
+            })
             .count();
         assert!(held >= 6, "{held}");
         assert_eq!(stretch.params.len(), (2 * held).clamp(2, LINE_STEPS) + 1);
+        // The spans' turned boxes hold the sheet over x from 0 to 6, and
+        // lean with its control net a little past that.
         let (first, last) = (stretch.points[0], *stretch.points.last().unwrap());
-        assert!(
-            (first.x - 0.0).abs() < 1e-5 && (last.x - 6.0).abs() < 1e-5,
-            "{first:?} {last:?}"
-        );
+        assert!(first.x <= 1e-5 && first.x > -0.5, "{first:?}");
+        assert!(last.x >= 6.0 - 1e-5 && last.x < 6.5, "{last:?}");
         // The walks from those steps find the sheet under them.
         let starts = starts(&spans, stretch, 1e-6).unwrap();
         assert!(starts.iter().all(Option::is_some));
@@ -2042,6 +2174,74 @@ mod freeform_tests {
             ..across.clone()
         };
         assert!(line_stretches(&nowhere, &spans, 1e-6).is_empty());
+    }
+
+    /// A span's turned box is the body's, not the frame's: the sheet turned
+    /// and carried far from the origin has boxes of the same half widths
+    /// about the turned centres, and a line turned with it is held in the
+    /// same stretch of them; where the world's boxes of the turned sheet
+    /// are looser than its own.
+    #[test]
+    fn a_spans_turned_box_turns_with_the_body() {
+        let surface = sheet(6, 4, 0.0, false);
+        let Surface::Nurbs(spline) = &surface else {
+            panic!("a spline sheet");
+        };
+        let place = craft3d_math::Transform::from_frame(
+            &craft3d_math::Frame::new(
+                Vec3::new(-27000.0, 41000.0, 13000.0),
+                Vec3::new(2.0, 1.0, -3.0),
+                Vec3::new(1.0, -0.5, 0.4),
+            )
+            .unwrap(),
+        );
+        let moved = Surface::Nurbs(
+            NurbsSurface::new(
+                3,
+                3,
+                spline.knots_u().to_vec(),
+                spline.knots_v().to_vec(),
+                spline.counts().0,
+                spline.counts().1,
+                spline
+                    .control_points()
+                    .iter()
+                    .map(|p| place.point(*p))
+                    .collect(),
+                spline.weights().to_vec(),
+            )
+            .unwrap(),
+        );
+        let (here, there) = (spans_of(&surface).unwrap(), spans_of(&moved).unwrap());
+        let (a, b) = (Vec3::new(-2.0, 1.5, 0.5), Vec3::new(8.0, 1.5, 0.5));
+        let (pa, pb) = (place.point(a), place.point(b));
+        let mut looser = 0;
+        for (one, other) in here.iter().zip(&there) {
+            let (t0, t1) = (one.turned.unwrap(), other.turned.unwrap());
+            for k in 0..3 {
+                assert!((t0.half[k] - t1.half[k]).abs() < 1e-9, "{t0:?} {t1:?}");
+            }
+            assert!(place.point(t0.centre).distance(t1.centre) < 1e-9);
+            let (c0, c1) = (t0.clip(a, b - a, 1e-6), t1.clip(pa, pb - pa, 1e-6));
+            match (c0, c1) {
+                (Some((x0, y0)), Some((x1, y1))) => {
+                    assert!(
+                        (x0 - x1).abs() < 1e-9 && (y0 - y1).abs() < 1e-9,
+                        "{c0:?} {c1:?}"
+                    );
+                }
+                (None, None) => {}
+                _ => panic!("{c0:?} {c1:?}"),
+            }
+            let volume = |s: &Span| (s.hi.x - s.lo.x) * (s.hi.y - s.lo.y) * (s.hi.z - s.lo.z);
+            if volume(other) > 1.5 * volume(one) {
+                looser += 1;
+            }
+        }
+        assert!(
+            looser > 0,
+            "the world's boxes of the turned sheet are looser"
+        );
     }
 
     /// A vertex is asked about a freeform face that moved where a span of
