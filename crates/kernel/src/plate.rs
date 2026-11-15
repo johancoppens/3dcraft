@@ -90,7 +90,7 @@ use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, Edge, EdgeId, Face, FaceId, VertexId, check};
 use std::collections::{BTreeMap, BTreeSet};
-use std::f64::consts::FRAC_PI_2;
+use std::f64::consts::{FRAC_PI_2, PI};
 
 const OPERATION: &str = "plate";
 
@@ -1467,23 +1467,13 @@ fn build(
             // exact surface, so two that are tangent there are within
             // twice that of each other: a corner on both is held to that.
             let point = meet(&surfaces, start, 2.0 * SHARE * tol).ok_or_else(|| {
-                // A rim whose run was kept within a turn ends short of a
-                // turn round its curve, so a corner further round than that
-                // lies off it.
-                let kept = at_rims
-                    .iter()
-                    .any(|e| traced.get(e).is_some_and(|t| t.kept));
                 refuse(
                     at_rims.first().copied(),
                     format!(
                         "the {} skin and the rims at the corner {} do not meet in one point{}",
                         if level == 0 { "back" } else { "front" },
                         at(v.point),
-                        if kept {
-                            ": an edge there lies on a curve that closes, traced past its ends by at most seven eighths of what is left of its turn, and the corner lies further round it than that (the corners past the edge's two ends leave less than an eighth of the turn between them, or its joint turns the rim further round than the tangent planes put it); a larger radius against the thickness, or square ends there, leave the corners room"
-                        } else {
-                            ""
-                        }
+                        no_corner(&at_rims, &boundaries, &traced, &rims, level, tol)
                     ),
                 )
             })?;
@@ -1939,6 +1929,117 @@ fn turn(da: Vec3, db: Vec3) -> f64 {
     da.angle_to(-db)
 }
 
+/// Why a corner past a run kept within a turn is not reached ([`no_corner`]).
+const KEPT_SHORT: &str = ": an edge there lies on a curve that closes, traced past its ends by at most seven eighths of what is left of its turn, and the corner lies further round it than that (the corners past the edge's two ends leave less than an eighth of the turn between them, or its joint turns the rim further round than the tangent planes put it); a larger radius against the thickness, or square ends there, leave the corners room";
+
+/// What can be said of why the rims at a corner (`at_rims`) do not meet
+/// the skin at `level` there (the tail of that refusal, empty where
+/// nothing is known). Where both rims end square or bevelled and their
+/// rows at that level are circles, or a circle and a line, in one plane
+/// (a flat plate's arcs and lines: each row is then the whole curve moved
+/// out of the material), and those neither cross nor touch, that they do
+/// not meet there, by how much ([`apart`]): what they bound has no area
+/// about the corner at that level (a lens that vanishes between the
+/// skins). Else, where a rim's run was kept within a turn
+/// ([`within_a_turn`]) and the rim is the ruled spline fitted to that run,
+/// which ends short of a turn round its curve, that the corner lies
+/// further round than the run (a circle's rows and its rim, a cylinder or
+/// a cone, hold every angle, so the run never keeps such a corner off).
+fn no_corner(
+    at_rims: &[EdgeId],
+    boundaries: &[Boundary<'_, '_>],
+    traced: &BTreeMap<EdgeId, Traced>,
+    rims: &BTreeMap<EdgeId, (Surface, bool)>,
+    level: usize,
+    tol: f64,
+) -> String {
+    let joint = |e: &EdgeId| {
+        boundaries
+            .iter()
+            .find(|b| b.edge_id == *e)
+            .map(|b| &b.joint)
+    };
+    let rows: Vec<Curve3> = at_rims
+        .iter()
+        .filter(|e| matches!(joint(e), Some(Joint::Square | Joint::Bevel(_))))
+        .filter_map(|e| {
+            let t = traced.get(e)?;
+            Some(simplest(t.rows.get(level)?, t.fitted.get(level)?, tol))
+        })
+        .collect();
+    if let ([_, _], [a, b]) = (at_rims, rows.as_slice())
+        && let Some((gap, what)) = apart(a, b, tol)
+        && gap > tol
+    {
+        return format!(
+            ": the rims of its two edges do not meet at that skin: there they are {what}, parting by {}, so what they bound has no area about the corner at that level (the plate has no body there, or a hole closes); a smaller bevel, a thinner plate or a wider outline",
+            short(gap)
+        );
+    }
+    let cut = at_rims.iter().any(|e| {
+        traced.get(e).is_some_and(|t| t.kept)
+            && matches!(rims.get(e), Some((Surface::Nurbs(_), _)))
+            && matches!(
+                joint(e),
+                Some(Joint::Square | Joint::Bevel(_) | Joint::Mitre(_) | Joint::Touch(_))
+            )
+    });
+    if cut {
+        KEPT_SHORT.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// How far apart two curves of one level of a plate are where they
+/// neither cross nor touch, and what they are, for circles and lines in
+/// one plane (within `tol` over their extent): two circles of radii `r`
+/// and `s` whose centres lie `d` apart by `d − r − s` when each lies
+/// outside the other and `|r − s| − d` when one lies inside the other; a
+/// circle and a line by the line's distance from the centre less the
+/// radius; 0 where they cross or touch. `None` for other curves, curves
+/// not in one plane and two lines.
+fn apart(a: &Curve3, b: &Curve3, tol: f64) -> Option<(f64, String)> {
+    match (a, b) {
+        (Curve3::Circle(p), Curve3::Circle(q)) => {
+            let n = p.frame().z();
+            let d = q.frame().origin() - p.frame().origin();
+            let (r, s) = (p.radius(), q.radius());
+            if !(n.cross(q.frame().z()).length() * s <= tol && d.dot(n).abs() <= tol) {
+                return None;
+            }
+            let d = d.length();
+            Some((
+                (d - r - s).max((r - s).abs() - d).max(0.0),
+                format!(
+                    "circles of radius {} and {} whose centres lie {} apart",
+                    short(r),
+                    short(s),
+                    short(d)
+                ),
+            ))
+        }
+        (Curve3::Circle(c), Curve3::Line(l)) | (Curve3::Line(l), Curve3::Circle(c)) => {
+            let (n, o, r) = (c.frame().z(), c.frame().origin(), c.radius());
+            let w = o - l.origin();
+            let foot = l.origin() + l.direction() * w.dot(l.direction());
+            if !(l.direction().dot(n).abs() * r <= tol && (foot - o).dot(n).abs() <= tol) {
+                return None;
+            }
+            let off = (o - foot).length();
+            Some((
+                (off - r).max(0.0),
+                format!(
+                    "a circle of radius {} and a line {} from its centre",
+                    short(r),
+                    short(off)
+                ),
+            ))
+        }
+        _ => None,
+    }
+}
+
 /// Points an edge between two faces is looked at for a crease before the
 /// plate is traced.
 const CREASE_SAMPLES: usize = 8;
@@ -2148,6 +2249,65 @@ fn curve_at<'c>(own: &'c Curve3, longer: Option<&'c Curve3>, t: f64) -> &'c Curv
     }
 }
 
+/// The least radius of curvature of an edge's curve over its range, the
+/// unit direction toward its centres of curvature at a station, and the
+/// point where it is least (`None` on a circle: everywhere).
+struct Curvature {
+    radius: f64,
+    toward: Vec3,
+    at: Option<Vec3>,
+}
+
+/// Where a bevel can fold an edge's rim on a flat face ([`trace_boundary`]):
+/// the least radius of curvature of `curve` over `(t0, t1)` and the
+/// direction toward its centres of curvature at `st`, for a curve whose
+/// centres of curvature all lie on one side of it: a circle (its radius)
+/// and an ellipse, whose radius of curvature `(a² sin² t + b² cos² t)^{3/2}
+/// / (a b)` is least, `minor² / major`, at the ends of its major axis and
+/// grows from them to the ends of the minor axis, so over the range it is
+/// least at such an end where the range holds one, else at the end of the
+/// range nearer one. `None` for a line, a spline (not bounded here) and
+/// numbers that are not.
+fn least_curvature(curve: &Curve3, (t0, t1): (f64, f64), st: &Station) -> Option<Curvature> {
+    match curve {
+        Curve3::Circle(circle) => Some(Curvature {
+            radius: circle.radius(),
+            toward: (circle.frame().origin() - st.point).normalized()?,
+            at: None,
+        }),
+        Curve3::Ellipse(ellipse) => {
+            let (a, b) = ellipse.semi_axes();
+            if !(t0.is_finite() && t1.is_finite() && t0 <= t1) {
+                return None;
+            }
+            let rho = |t: f64| {
+                let (s, c) = t.psin_cos();
+                let q = a * a * s * s + b * b * c * c;
+                q * q.sqrt() / (a * b)
+            };
+            // The ends of the major axis: kπ (a ≥ b) or π/2 + kπ.
+            let first = if a >= b { 0.0 } else { FRAC_PI_2 };
+            let end = first + ((t0 - first) / PI).ceil() * PI;
+            let (radius, t) = if end <= t1 {
+                (a.min(b) * a.min(b) / a.max(b), end)
+            } else if rho(t0) <= rho(t1) {
+                (rho(t0), t0)
+            } else {
+                (rho(t1), t1)
+            };
+            // Toward the ellipse's centre, square to the tangent: the side
+            // all its centres of curvature lie on.
+            let v = ellipse.frame().origin() - st.point;
+            Some(Curvature {
+                radius,
+                toward: (v - st.tangent * v.dot(st.tangent)).normalized()?,
+                at: Some(curve.eval(t)),
+            })
+        }
+        Curve3::Line(_) | Curve3::Nurbs(_) => None,
+    }
+}
+
 /// The corners of a boundary edge traced over its range and its reach,
 /// and its rim with whether the rim's outward normal is against its
 /// surface's.
@@ -2213,27 +2373,48 @@ fn trace_boundary(
     let middle = station(edge, 0.5 * (a + b), boundary.along, face)
         .ok_or_else(|| refuse(Some(edge_id), "the face has no normal along the edge"))?;
     // A bevel moves the rim at the level `h` across the face by `h tan α`,
-    // out of the material; along an arc of a flat face that is toward its
-    // centre on the one side (a hole's at the front for a positive angle,
-    // a disc's at the back), and where it reaches the centre the rim's cone
-    // passes through its apex between the skins: the hole closes there, or
-    // the disc turns inside out, and no plate is left to build.
-    if let (Joint::Bevel(angle), Curve3::Circle(circle), Surface::Plane(_)) =
-        (&boundary.joint, &edge.curve, &face.face.surface)
-        && let Some(to_centre) = (circle.frame().origin() - middle.point).normalized()
+    // out of the material; along a curve of a flat face that is toward its
+    // centres of curvature on the one side (a hole's at the front for a
+    // positive angle, a disc's at the back), and where it reaches the
+    // radius of curvature at a point of the edge the rim folds there
+    // between the skins (its row, the curve moved by that much, turns
+    // back: [`least_curvature`]). On an arc that is its centre, where the
+    // rim's cone passes through its apex: the hole closes there, or the
+    // disc turns inside out; on an ellipse the ends of its major axis,
+    // where the rim folds back on itself. No plate is left to build.
+    if let (Joint::Bevel(angle), Surface::Plane(_)) = (&boundary.joint, &face.face.surface)
+        && let Some(least) = least_curvature(&edge.curve, edge.range, &middle)
     {
-        let toward = -middle.inward.dot(to_centre);
+        let toward = -middle.inward.dot(least.toward);
         for (level, skin) in [(face.levels[0], "back"), (face.levels[1], "front")] {
             let shift = level * angle.ptan() * toward;
-            if !(shift < circle.radius() - tol) {
+            if !(shift < least.radius - tol) {
+                let degrees = short(angle.to_degrees());
                 return Err(refuse(
                     Some(edge_id),
-                    format!(
-                        "the bevel of {}° moves the rim along the arc of radius {} by {} toward its centre at the {skin} skin: the rim reaches the arc's centre there, so the hole closes (or the disc turns inside out) inside the plate; a smaller bevel, a thinner plate or a larger radius",
-                        short(angle.to_degrees()),
-                        short(circle.radius()),
-                        short(shift)
-                    ),
+                    match (&edge.curve, least.at) {
+                        (Curve3::Ellipse(ellipse), Some(p)) => {
+                            let (a, b) = ellipse.semi_axes();
+                            format!(
+                                "the bevel of {degrees}° moves the rim along the ellipse of semi-axes {} and {} by {} toward its centres of curvature at the {skin} skin, as far as its least radius of curvature on the edge, {} at {}{}: the rim folds back on itself there inside the plate; a smaller bevel, a thinner plate or a rounder ellipse",
+                                short(a),
+                                short(b),
+                                short(shift),
+                                short(least.radius),
+                                at(p),
+                                if shift > least.radius {
+                                    format!(", and {} beyond", short(shift - least.radius))
+                                } else {
+                                    String::new()
+                                }
+                            )
+                        }
+                        _ => format!(
+                            "the bevel of {degrees}° moves the rim along the arc of radius {} by {} toward its centre at the {skin} skin: the rim reaches the arc's centre there, so the hole closes (or the disc turns inside out) inside the plate; a smaller bevel, a thinner plate or a larger radius",
+                            short(least.radius),
+                            short(shift)
+                        ),
+                    },
                 ));
             }
         }
@@ -2799,6 +2980,95 @@ mod tests {
         assert!(turn(da, wider) > angular);
         assert!((turn(da, Vec3::new(0.0, 1.0, 0.0)) - FRAC_PI_2).abs() <= 1e-15);
         assert!((turn(da, da) - std::f64::consts::PI).abs() <= 1e-15);
+    }
+
+    /// An ellipse's least radius of curvature over a range: `b²/a` where
+    /// the range holds an end of its major axis (along x for `a > b`,
+    /// along y for `a < b`), else at the end of the range nearer one, and
+    /// the direction toward its centres of curvature square to the
+    /// tangent; a circle's radius; nothing for a line, a spline or a range
+    /// that is not a number.
+    #[test]
+    fn the_least_radius_of_curvature_is_at_the_major_axis_ends() {
+        use craft3d_geom::Ellipse;
+        let rho = |a: f64, b: f64, t: f64| {
+            let (s, c) = t.psin_cos();
+            (a * a * s * s + b * b * c * c).ppowf(1.5) / (a * b)
+        };
+        let ellipse = |a: f64, b: f64| Curve3::Ellipse(Ellipse::new(Frame::WORLD, a, b).unwrap());
+        let station = |curve: &Curve3, t: f64| {
+            let (point, d) = curve.derivatives(t);
+            let tangent = d.normalized().unwrap();
+            Station {
+                point,
+                tangent,
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                inward: Vec3::new(0.0, 0.0, 1.0).cross(tangent),
+            }
+        };
+        for (a, b, range, want, at) in [
+            (2.0, 1.0, (-0.5, 0.5), 0.5, Some(0.0)),
+            (2.0, 1.0, (0.5, 4.0), 0.5, Some(std::f64::consts::PI)),
+            (2.0, 1.0, (0.1, 1.0), rho(2.0, 1.0, 0.1), Some(0.1)),
+            (2.0, 1.0, (2.0, 3.0), rho(2.0, 1.0, 3.0), Some(3.0)),
+            (1.0, 2.0, (0.0, 1.0), rho(1.0, 2.0, 1.0), Some(1.0)),
+            (1.0, 2.0, (1.0, 2.0), 0.5, Some(FRAC_PI_2)),
+            // Equal axes: every point (which end is rounding).
+            (3.0, 3.0, (0.2, 0.3), 3.0, None),
+        ] {
+            let curve = ellipse(a, b);
+            let mid = 0.5 * (range.0 + range.1);
+            let st = station(&curve, mid);
+            let least = least_curvature(&curve, range, &st).unwrap();
+            assert!(
+                (least.radius - want).abs() <= 1e-12,
+                "{a} {b} {range:?}: {}",
+                least.radius
+            );
+            if let Some(at) = at {
+                let p = curve.eval(at);
+                assert!(least.at.unwrap().distance(p) <= 1e-12, "{a} {b} {range:?}");
+            }
+            // Toward the inside, square to the tangent: along `inward` for
+            // a loop running counter-clockwise round the ellipse.
+            assert!((least.toward.dot(st.inward) - 1.0).abs() <= 1e-12);
+        }
+        let curve = ellipse(2.0, 1.0);
+        let st = station(&curve, 0.0);
+        for range in [(f64::NAN, 1.0), (0.0, f64::INFINITY), (1.0, 0.0)] {
+            assert!(least_curvature(&curve, range, &st).is_none(), "{range:?}");
+        }
+        let circle = Curve3::Circle(Circle::new(Frame::WORLD, 0.7).unwrap());
+        let st = station(&circle, 1.0);
+        let least = least_curvature(&circle, (0.5, 1.5), &st).unwrap();
+        assert!(least.radius == 0.7 && least.at.is_none());
+        assert!((least.toward + circle.eval(1.0) * (1.0 / 0.7)).length() <= 1e-15);
+        let line = Curve3::Line(Line::new(Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0)).unwrap());
+        assert!(least_curvature(&line, (0.0, 1.0), &station(&line, 0.5)).is_none());
+    }
+
+    /// How far apart two curves of one level are: circles crossing (0),
+    /// apart (`d − r − s`), one inside the other (`|r − s| − d`), a circle
+    /// and a line; nothing for curves not in one plane or two lines.
+    #[test]
+    fn curves_of_one_level_apart_by_their_closed_forms() {
+        let circle = |x: f64, r: f64, z: Vec3| {
+            let f = Frame::new(Vec3::new(x, 0.0, 0.0), z, Vec3::new(1.0, 0.0, 0.0)).unwrap();
+            Curve3::Circle(Circle::new(f, r).unwrap())
+        };
+        let up = Vec3::new(0.0, 0.0, 1.0);
+        let gap = |a: &Curve3, b: &Curve3| apart(a, b, 1e-6).map(|g| g.0);
+        assert_eq!(gap(&circle(0.0, 1.0, up), &circle(1.5, 1.0, up)), Some(0.0));
+        assert!((gap(&circle(0.0, 1.0, up), &circle(3.0, 0.5, up)).unwrap() - 1.5).abs() <= 1e-15);
+        assert!((gap(&circle(0.0, 2.0, up), &circle(0.5, 0.5, up)).unwrap() - 1.0).abs() <= 1e-15);
+        let tilted = Vec3::new(0.0, 0.1, 1.0);
+        assert_eq!(gap(&circle(0.0, 1.0, up), &circle(3.0, 0.5, tilted)), None);
+        let line = |y: f64| {
+            Curve3::Line(Line::new(Vec3::new(5.0, y, 0.0), Vec3::new(1.0, 0.0, 0.0)).unwrap())
+        };
+        assert!((gap(&circle(0.0, 1.0, up), &line(3.0)).unwrap() - 2.0).abs() <= 1e-15);
+        assert_eq!(gap(&line(0.5), &circle(0.0, 1.0, up)), Some(0.0));
+        assert_eq!(gap(&line(0.5), &line(3.0)), None);
     }
 
     /// A curved panel `k` (100 by 60, a parabola 20 high along x) with a

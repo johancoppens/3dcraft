@@ -8,11 +8,22 @@
 //! whether its normal (`∂u × ∂v` of the swept surface's own
 //! parametrisation) is the elementary surface's or the opposite is
 //! measured at a point of it.
+//!
+//! A hyperbola or a parabola (`conic`) has no kind in `craft3d-geom` and
+//! no ends of its own: it is read as a [`Conic`] and becomes the exact
+//! B-spline of the part an edge's vertices, a trimmed curve's trims or the
+//! faces of a swept surface bound ([`CurveRead::Conic`]). A trimmed curve
+//! of any other curve is its basis curve, turned round when its
+//! `sense_agreement` is `.F.` (an edge is the part of its curve between
+//! its vertices); a composite curve is its segments joined into one
+//! B-spline (`bounded`).
 
 // `!(x > 0.0)` is deliberate: unlike `x <= 0.0` it is also true for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
+use crate::bounded;
+use crate::conic::Conic;
 use crate::spindle::{Normal, Spindle};
-use crate::swept::{self, Swept};
+use crate::swept::{self, ConicSweep, Swept};
 use crate::{ImportError, Parsed, err, keywords, real};
 use craft3d_geom::{
     Circle, Cone, Curve3, Cylinder, Ellipse, Line, NurbsCurve, NurbsSurface, Plane, Sphere,
@@ -28,6 +39,8 @@ const MAX_CURVE_DEPTH: usize = 4;
 const MAX_DEGREE: i64 = 32;
 /// Most control points of one B-spline curve or surface.
 const MAX_CONTROL_POINTS: usize = 4_000_000;
+/// Most segments of one composite curve.
+const MAX_SEGMENTS: usize = 100_000;
 
 pub(crate) struct Reader<'a> {
     pub parsed: &'a Parsed,
@@ -35,6 +48,37 @@ pub(crate) struct Reader<'a> {
     pub scale: f64,
     /// Radians per angle unit of the file.
     pub radians: f64,
+    /// The distance within which two points of the file are one (its
+    /// uncertainty, within the tolerance and the cap): how far a trim
+    /// given as a point may lie off its curve, and the ends of two
+    /// segments of a composite curve apart.
+    pub near: f64,
+}
+
+/// A curve as read: a curve of `craft3d-geom`, or a hyperbola or a
+/// parabola with the part of it a trimmed curve keeps, if it is trimmed
+/// (in its own parameter, the start below the end).
+#[derive(Clone, Debug)]
+pub(crate) enum CurveRead {
+    Curve(Curve3),
+    Conic(Conic, Option<(f64, f64)>),
+}
+
+/// One end of a trimmed curve as the file gives it: a point (in the
+/// caller's unit), a parameter (the file's), or both.
+#[derive(Clone, Copy, Debug, Default)]
+struct Trim {
+    point: Option<Vec3>,
+    parameter: Option<f64>,
+}
+
+/// Which of a trim's two forms the file prefers
+/// (`master_representation`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Master {
+    Point,
+    Parameter,
+    Either,
 }
 
 fn finite(v: Vec3) -> bool {
@@ -63,11 +107,12 @@ impl<'a> Attrs<'a> {
 }
 
 impl<'a> Reader<'a> {
-    pub fn new(parsed: &'a Parsed, scale: f64, radians: f64) -> Self {
+    pub fn new(parsed: &'a Parsed, scale: f64, radians: f64, near: f64) -> Self {
         Self {
             parsed,
             scale,
             radians,
+            near,
         }
     }
 
@@ -92,6 +137,12 @@ impl<'a> Reader<'a> {
         param
             .and_then(Param::as_ref)
             .map_or_else(|| self.bad(id, &format!("{what} is not a reference")), Ok)
+    }
+
+    fn flag(&self, id: u64, param: Option<&Param>, what: &str) -> Result<bool, ImportError> {
+        param
+            .and_then(crate::boolean)
+            .map_or_else(|| self.bad(id, &format!("{what} is not .T. or .F.")), Ok)
     }
 
     fn number(&self, id: u64, param: Option<&Param>, what: &str) -> Result<f64, ImportError> {
@@ -183,12 +234,12 @@ impl<'a> Reader<'a> {
         Ok(direction * magnitude)
     }
 
-    /// The curve an edge lies on.
-    pub fn curve(&self, id: u64) -> Result<Curve3, ImportError> {
+    /// The curve an edge lies on, or a swept surface sweeps.
+    pub fn curve(&self, id: u64) -> Result<CurveRead, ImportError> {
         self.curve_at(id, 0)
     }
 
-    fn curve_at(&self, id: u64, depth: usize) -> Result<Curve3, ImportError> {
+    fn curve_at(&self, id: u64, depth: usize) -> Result<CurveRead, ImportError> {
         if depth > MAX_CURVE_DEPTH {
             return self.bad(
                 id,
@@ -197,24 +248,42 @@ impl<'a> Reader<'a> {
         }
         let entity = &self.parsed.instance(id)?.entity;
         let geom = |e: craft3d_geom::GeomError| ImportError(format!("{}: {e}", self.describe(id)));
+        let done = |curve: Curve3| Ok(CurveRead::Curve(curve));
         if entity.is("LINE") {
             let record = self.named(id, "LINE", 2)?;
             let origin = self.point(self.reference(id, record.params.get(1), "pnt")?)?;
             let along = self.vector(self.reference(id, record.params.get(2), "dir")?)?;
-            return Ok(Curve3::Line(Line::new(origin, along).map_err(geom)?));
+            return done(Curve3::Line(Line::new(origin, along).map_err(geom)?));
         }
         if entity.is("CIRCLE") {
             let record = self.named(id, "CIRCLE", 2)?;
             let frame = self.placement(self.reference(id, record.params.get(1), "position")?)?;
             let radius = self.length(id, record.params.get(2), "radius")?;
-            return Ok(Curve3::Circle(Circle::new(frame, radius).map_err(geom)?));
+            return done(Curve3::Circle(Circle::new(frame, radius).map_err(geom)?));
         }
         if entity.is("ELLIPSE") {
             let record = self.named(id, "ELLIPSE", 3)?;
             let frame = self.placement(self.reference(id, record.params.get(1), "position")?)?;
             let a = self.length(id, record.params.get(2), "semi_axis_1")?;
             let b = self.length(id, record.params.get(3), "semi_axis_2")?;
-            return Ok(Curve3::Ellipse(Ellipse::new(frame, a, b).map_err(geom)?));
+            return done(Curve3::Ellipse(Ellipse::new(frame, a, b).map_err(geom)?));
+        }
+        if entity.is("HYPERBOLA") {
+            let record = self.named(id, "HYPERBOLA", 3)?;
+            let frame = self.placement(self.reference(id, record.params.get(1), "position")?)?;
+            let a = self.length(id, record.params.get(2), "semi_axis")?;
+            let b = self.length(id, record.params.get(3), "semi_imag_axis")?;
+            return Conic::hyperbola(frame, a, b)
+                .map(|c| CurveRead::Conic(c, None))
+                .or_else(|e| self.bad(id, &e));
+        }
+        if entity.is("PARABOLA") {
+            let record = self.named(id, "PARABOLA", 2)?;
+            let frame = self.placement(self.reference(id, record.params.get(1), "position")?)?;
+            let focal = self.length(id, record.params.get(2), "focal_dist")?;
+            return Conic::parabola(frame, focal)
+                .map(|c| CurveRead::Conic(c, None))
+                .or_else(|e| self.bad(id, &e));
         }
         for keyword in ["SURFACE_CURVE", "SEAM_CURVE", "INTERSECTION_CURVE"] {
             if entity.is(keyword) {
@@ -222,6 +291,12 @@ impl<'a> Reader<'a> {
                 let curve = self.reference(id, record.params.get(1), "curve_3d")?;
                 return self.curve_at(curve, depth + 1);
             }
+        }
+        if entity.is("TRIMMED_CURVE") {
+            return self.trimmed(id, depth);
+        }
+        if entity.is("COMPOSITE_CURVE") {
+            return done(Curve3::Nurbs(self.composite(id, depth)?));
         }
         if entity.is("POLYLINE") {
             let record = self.named(id, "POLYLINE", 1)?;
@@ -238,17 +313,372 @@ impl<'a> Reader<'a> {
             let mut knots = vec![0.0];
             knots.extend((0..points.len()).map(|i| i as f64));
             knots.push(last);
-            return Ok(Curve3::Nurbs(
+            return done(Curve3::Nurbs(
                 NurbsCurve::polynomial(1, knots, points).map_err(geom)?,
             ));
         }
         if entity.is("B_SPLINE_CURVE_WITH_KNOTS") {
-            return self.bspline_curve(id, entity);
+            return self.bspline_curve(id, entity).map(CurveRead::Curve);
         }
         if let Some(form) = Implicit::of_curve(entity) {
-            return self.implicit_curve(id, entity, form);
+            return self.implicit_curve(id, entity, form).map(CurveRead::Curve);
         }
         self.bad(id, "this kind of curve is not read")
+    }
+
+    /// `TRIMMED_CURVE(name, basis_curve, trim_1, trim_2, sense_agreement,
+    /// master_representation)`: the part of the basis from `trim_1` to
+    /// `trim_2`, running with the basis when `sense_agreement` is `.T.`
+    /// and against it when `.F.` (ISO 10303-42; on a curve that does not
+    /// close, the trims' order must agree with it). A trimmed hyperbola or
+    /// parabola keeps its trims, which bound it where nothing else does (a
+    /// swept surface's profile); any other basis is read whole, turned
+    /// round for `.F.`, since an edge is the part of its curve between its
+    /// vertices and a swept surface's faces bound it. Its trims are read
+    /// all the same, so a malformed one is refused.
+    fn trimmed(&self, id: u64, depth: usize) -> Result<CurveRead, ImportError> {
+        let (basis_id, trims, sense, master) = self.trims(id)?;
+        match self.curve_at(basis_id, depth + 1)? {
+            CurveRead::Conic(_, Some(_)) => {
+                self.bad(id, "a trimmed curve of a trimmed curve is not read")
+            }
+            CurveRead::Conic(conic, None) => {
+                let (u1, u2) = self.conic_trims(id, &conic, &trims, master)?;
+                bounded::order(u1, u2, sense).or_else(|e| self.bad(id, &e))?;
+                Ok(if sense {
+                    CurveRead::Conic(conic, Some((u1, u2)))
+                } else {
+                    CurveRead::Conic(conic.reversed(), Some((-u1, -u2)))
+                })
+            }
+            CurveRead::Curve(curve) if sense => Ok(CurveRead::Curve(curve)),
+            CurveRead::Curve(curve) => bounded::reversed(&curve)
+                .map(CurveRead::Curve)
+                .or_else(|e| self.bad(id, &e)),
+        }
+    }
+
+    /// The attributes of a trimmed curve: its basis, its two trims, its
+    /// sense and which form of a trim it prefers.
+    fn trims(&self, id: u64) -> Result<(u64, [Trim; 2], bool, Master), ImportError> {
+        let record = self.named(id, "TRIMMED_CURVE", 5)?;
+        let basis = self.reference(id, record.params.get(1), "basis_curve")?;
+        let first = self.trim(id, record.params.get(2), "trim_1")?;
+        let second = self.trim(id, record.params.get(3), "trim_2")?;
+        let sense = self.flag(id, record.params.get(4), "sense_agreement")?;
+        let master = match record.params.get(5).and_then(Param::as_enum) {
+            Some("CARTESIAN") => Master::Point,
+            Some("PARAMETER") => Master::Parameter,
+            _ => Master::Either,
+        };
+        Ok((basis, [first, second], sense, master))
+    }
+
+    /// One end of a trimmed curve: a set of a `CARTESIAN_POINT`, a
+    /// `PARAMETER_VALUE`, or one of each.
+    fn trim(&self, id: u64, param: Option<&Param>, what: &str) -> Result<Trim, ImportError> {
+        let list = param.and_then(Param::as_list).unwrap_or(&[]);
+        if list.is_empty() || list.len() > 2 {
+            return self.bad(
+                id,
+                &format!("{what} is not a set of a point, a parameter value or one of each"),
+            );
+        }
+        let mut trim = Trim::default();
+        for item in list {
+            match item {
+                Param::Ref(point) if trim.point.is_none() => {
+                    trim.point = Some(self.point(*point)?);
+                }
+                Param::Typed(keyword, inner)
+                    if keyword == "PARAMETER_VALUE" && trim.parameter.is_none() =>
+                {
+                    trim.parameter = Some(self.number(id, Some(inner), what)?);
+                }
+                Param::Real(_) | Param::Integer(_) if trim.parameter.is_none() => {
+                    trim.parameter = Some(self.number(id, Some(item), what)?);
+                }
+                _ => {
+                    return self.bad(
+                        id,
+                        &format!(
+                            "{what} holds something other than one point and one parameter value"
+                        ),
+                    );
+                }
+            }
+        }
+        Ok(trim)
+    }
+
+    /// Whether a trim is taken by its point: when the file prefers it, or
+    /// prefers neither and gives one (a point needs no unit).
+    fn by_point(trim: &Trim, master: Master) -> bool {
+        match master {
+            Master::Parameter => trim.parameter.is_none(),
+            Master::Point | Master::Either => trim.point.is_some(),
+        }
+    }
+
+    /// The trims of a hyperbola or a parabola in its own parameter (which
+    /// has no unit): a point is taken by its foot, and must lie on the
+    /// conic within the file's uncertainty.
+    fn conic_trims(
+        &self,
+        id: u64,
+        conic: &Conic,
+        trims: &[Trim; 2],
+        master: Master,
+    ) -> Result<(f64, f64), ImportError> {
+        let mut out = [0.0; 2];
+        for (slot, (trim, what)) in out.iter_mut().zip(trims.iter().zip(["trim_1", "trim_2"])) {
+            *slot = if Self::by_point(trim, master) {
+                let point = trim.point.ok_or_else(|| {
+                    ImportError(format!("{}: {what} has no point", self.describe(id)))
+                })?;
+                let foot = conic.parameter(point).ok_or_else(|| {
+                    ImportError(format!(
+                        "{}: {what} has no foot on its {}",
+                        self.describe(id),
+                        conic.kind()
+                    ))
+                })?;
+                let off = conic.point(foot).distance(point);
+                if !(off <= self.near) {
+                    return self.bad(
+                        id,
+                        &format!(
+                            "{what} lies {off:e} off its {}, more than the file's uncertainty {:e}: it trims no part of the curve",
+                            conic.kind(),
+                            self.near
+                        ),
+                    );
+                }
+                foot
+            } else {
+                trim.parameter.ok_or_else(|| {
+                    ImportError(format!(
+                        "{}: {what} has no parameter value",
+                        self.describe(id)
+                    ))
+                })?
+            };
+        }
+        Ok((out[0], out[1]))
+    }
+
+    /// A trim on a basis of another kind, in that curve's own parameter
+    /// here: a point by its foot (within the file's uncertainty), a
+    /// parameter value of the file converted (a line's to a length along
+    /// it, a circle's or an ellipse's from the file's angle unit).
+    fn curve_trim(
+        &self,
+        id: u64,
+        basis: u64,
+        curve: &Curve3,
+        trim: &Trim,
+        master: Master,
+        what: &str,
+    ) -> Result<f64, ImportError> {
+        if Self::by_point(trim, master) {
+            let point = trim.point.ok_or_else(|| {
+                ImportError(format!("{}: {what} has no point", self.describe(id)))
+            })?;
+            let at = curve
+                .project(point)
+                .map_err(|e| ImportError(format!("{}: {what}: {e}", self.describe(id))))?;
+            let off = curve.eval(at).distance(point);
+            if !(off <= self.near) {
+                return self.bad(
+                    id,
+                    &format!(
+                        "{what} lies {off:e} off its basis curve, more than the file's uncertainty {:e}",
+                        self.near
+                    ),
+                );
+            }
+            return Ok(at);
+        }
+        let t = trim.parameter.ok_or_else(|| {
+            ImportError(format!(
+                "{}: {what} has no parameter value",
+                self.describe(id)
+            ))
+        })?;
+        let (unit, against) = self.parameter_unit(basis, 0)?;
+        let ours = t * unit;
+        // A trimmed curve that runs against its own basis is read as the
+        // basis turned round ([`bounded::reversed`]), whose parameter is
+        // the basis's mirrored: `−t` for a line, a circle or an ellipse,
+        // `a + b − t` over the domain `[a, b]` of a B-spline.
+        let ours = match curve {
+            _ if !against => ours,
+            Curve3::Nurbs(n) => {
+                let (a, b) = n.domain();
+                a + b - ours
+            }
+            _ => -ours,
+        };
+        if ours.is_finite() {
+            Ok(ours)
+        } else {
+            self.bad(id, &format!("{what} is too large"))
+        }
+    }
+
+    /// What one unit of the file's parameter of curve `id` is in ours: a
+    /// line's (`pnt + u dir`, `dir` a vector with a magnitude) a length,
+    /// a circle's or an ellipse's an angle in the file's unit, any other
+    /// curve's its own.
+    /// And whether the curve is read turned round against the file's
+    /// parameter (through a trimmed curve whose `sense_agreement` is `.F.`).
+    /// A trimmed curve's parameter is its basis's (ISO 10303-42), so the
+    /// unit is looked for through it, as through a surface curve.
+    fn parameter_unit(&self, id: u64, depth: usize) -> Result<(f64, bool), ImportError> {
+        if depth > MAX_CURVE_DEPTH {
+            return self.bad(id, "a curve defined through too many others");
+        }
+        let entity = &self.parsed.instance(id)?.entity;
+        if entity.is("LINE") {
+            let record = self.named(id, "LINE", 2)?;
+            return Ok((
+                self.vector(self.reference(id, record.params.get(2), "dir")?)?
+                    .length(),
+                false,
+            ));
+        }
+        if entity.is("CIRCLE") || entity.is("ELLIPSE") {
+            return Ok((self.radians, false));
+        }
+        for keyword in ["SURFACE_CURVE", "SEAM_CURVE", "INTERSECTION_CURVE"] {
+            if entity.is(keyword) {
+                let record = self.named(id, keyword, 1)?;
+                let curve = self.reference(id, record.params.get(1), "curve_3d")?;
+                return self.parameter_unit(curve, depth + 1);
+            }
+        }
+        if entity.is("TRIMMED_CURVE") {
+            let record = self.named(id, "TRIMMED_CURVE", 5)?;
+            let basis = self.reference(id, record.params.get(1), "basis_curve")?;
+            let sense = self.flag(id, record.params.get(4), "sense_agreement")?;
+            let (unit, against) = self.parameter_unit(basis, depth + 1)?;
+            return Ok((unit, against != !sense));
+        }
+        Ok((1.0, false))
+    }
+
+    /// A bounded curve as one exact B-spline, for a segment of a composite
+    /// curve: a trimmed curve as the part between its trims, a B-spline or
+    /// a polyline as itself, a circle or an ellipse whole, a composite
+    /// curve joined; a line or an untrimmed hyperbola or parabola does not
+    /// end and is refused.
+    fn bounded_at(&self, id: u64, depth: usize) -> Result<NurbsCurve, ImportError> {
+        if depth > MAX_CURVE_DEPTH {
+            return self.bad(
+                id,
+                &format!("a curve defined through more than {MAX_CURVE_DEPTH} others"),
+            );
+        }
+        let entity = &self.parsed.instance(id)?.entity;
+        if entity.is("TRIMMED_CURVE") {
+            let (basis_id, trims, sense, master) = self.trims(id)?;
+            let [first, second] = trims;
+            return match self.curve_at(basis_id, depth + 1)? {
+                CurveRead::Conic(_, Some(_)) => {
+                    self.bad(id, "a trimmed curve of a trimmed curve is not read")
+                }
+                CurveRead::Conic(conic, None) => {
+                    let (u1, u2) = self.conic_trims(id, &conic, &trims, master)?;
+                    bounded::order(u1, u2, sense).or_else(|e| self.bad(id, &e))?;
+                    let arc = if sense {
+                        conic.arc(u1, u2)
+                    } else {
+                        conic.reversed().arc(-u1, -u2)
+                    };
+                    arc.or_else(|e| self.bad(id, &e))
+                }
+                CurveRead::Curve(curve) => {
+                    let from = self.curve_trim(id, basis_id, &curve, &first, master, "trim_1")?;
+                    let to = self.curve_trim(id, basis_id, &curve, &second, master, "trim_2")?;
+                    bounded::part(&curve, from, to, sense).or_else(|e| self.bad(id, &e))
+                }
+            };
+        }
+        if entity.is("COMPOSITE_CURVE") {
+            return self.composite(id, depth);
+        }
+        match self.curve_at(id, depth)? {
+            CurveRead::Curve(Curve3::Line(_)) | CurveRead::Conic(_, None) => self.bad(
+                id,
+                "a segment of a composite curve must end (a trimmed curve, a B-spline or a polyline)",
+            ),
+            CurveRead::Conic(conic, Some((u0, u1))) => {
+                conic.arc(u0, u1).or_else(|e| self.bad(id, &e))
+            }
+            CurveRead::Curve(curve) => as_nurbs(&curve).ok_or_else(|| {
+                ImportError(format!("{}: not a bounded curve", self.describe(id)))
+            }),
+        }
+    }
+
+    /// `COMPOSITE_CURVE(name, segments, self_intersect)`, each segment a
+    /// `COMPOSITE_CURVE_SEGMENT(transition, same_sense, parent_curve)`:
+    /// the segments' curves, each turned round where `same_sense` is
+    /// `.F.`, joined end to end into one exact B-spline
+    /// ([`bounded::join`]).
+    fn composite(&self, id: u64, depth: usize) -> Result<NurbsCurve, ImportError> {
+        if depth > MAX_CURVE_DEPTH {
+            return self.bad(
+                id,
+                &format!("a curve defined through more than {MAX_CURVE_DEPTH} others"),
+            );
+        }
+        let record = self.named(id, "COMPOSITE_CURVE", 1)?;
+        let segments = record.params.get(1).and_then(Param::as_list).unwrap_or(&[]);
+        if segments.is_empty() || segments.len() > MAX_SEGMENTS {
+            return self.bad(
+                id,
+                &format!("a composite curve needs from 1 to {MAX_SEGMENTS} segments"),
+            );
+        }
+        let mut curves: Vec<NurbsCurve> = Vec::with_capacity(segments.len());
+        for segment in segments {
+            let segment = self.reference(id, Some(segment), "segments")?;
+            let before = curves
+                .last()
+                .and_then(|c| c.control_points().last().copied());
+            let entity = &self.parsed.instance(segment)?.entity;
+            let keyword = if entity.is("REPARAMETRISED_COMPOSITE_CURVE_SEGMENT") {
+                "REPARAMETRISED_COMPOSITE_CURVE_SEGMENT"
+            } else {
+                "COMPOSITE_CURVE_SEGMENT"
+            };
+            let record = self.parsed.record(segment, keyword)?;
+            let same = self.flag(segment, record.params.get(1), "same_sense")?;
+            let parent = self.reference(segment, record.params.get(2), "parent_curve")?;
+            let curve = self.bounded_at(parent, depth + 1)?;
+            let curve = if same {
+                curve
+            } else {
+                bounded::reversed_nurbs(&curve).or_else(|e| self.bad(segment, &e))?
+            };
+            // Where the segment before ends, this one must start.
+            if let (Some(end), Some(&start)) = (before, curve.control_points().first()) {
+                let gap = end.distance(start);
+                if !(gap <= self.near) {
+                    return self.bad(
+                        segment,
+                        &format!(
+                            "a segment of {} starts {gap:e} from where the segment before it ends, more than the file's uncertainty {:e}",
+                            self.describe(id),
+                            self.near
+                        ),
+                    );
+                }
+            }
+            curves.push(curve);
+        }
+        bounded::join(&curves, self.near).or_else(|e| self.bad(id, &e))
     }
 
     /// The attributes of `B_SPLINE_CURVE` (degree, control points, form,
@@ -717,11 +1147,34 @@ impl<'a> Reader<'a> {
     /// how far it reaches ([`Read::Extrusion`], [`extruded`]).
     fn extrusion(&self, id: u64) -> Result<Read, ImportError> {
         let record = self.named(id, "SURFACE_OF_LINEAR_EXTRUSION", 2)?;
-        let curve = self.curve_at(self.reference(id, record.params.get(1), "swept_curve")?, 1)?;
+        let swept_curve = self.reference(id, record.params.get(1), "swept_curve")?;
+        let curve = self.curve_at(swept_curve, 1)?;
         let along = self.vector(self.reference(id, record.params.get(2), "extrusion_axis")?)?;
+        let curve = match self.profile(swept_curve, curve)? {
+            Profile::Curve(curve) => curve,
+            Profile::Conic(conic) => {
+                let sweep = ConicSweep::Extrusion(along);
+                swept::conic_sweep_check(&conic, &sweep).or_else(|e| self.bad(id, &e))?;
+                return Ok(Read::Conic { id, conic, sweep });
+            }
+        };
         swept::extrusion(&curve, along)
             .map(|s| self.read_of(id, s))
             .or_else(|e| self.bad(id, &e))
+    }
+
+    /// A swept surface's profile: a curve, a trimmed hyperbola or
+    /// parabola as the exact B-spline between its trims, or an untrimmed
+    /// one, which the faces on the surface will bound.
+    fn profile(&self, id: u64, curve: CurveRead) -> Result<Profile, ImportError> {
+        match curve {
+            CurveRead::Curve(curve) => Ok(Profile::Curve(curve)),
+            CurveRead::Conic(conic, Some((u0, u1))) => conic
+                .arc(u0, u1)
+                .map(|arc| Profile::Curve(Curve3::Nurbs(arc)))
+                .or_else(|e| self.bad(id, &e)),
+            CurveRead::Conic(conic, None) => Ok(Profile::Conic(conic)),
+        }
     }
 
     /// A swept read as this reader's [`Read`]: an unbounded extrusion
@@ -731,6 +1184,12 @@ impl<'a> Reader<'a> {
             Swept::Done(surface, opposite) => Read::Done(surface, opposite),
             Swept::Unbounded { curve, along } => Read::Extrusion { id, curve, along },
             Swept::Spindle(spindle) => Read::Spindle(spindle),
+            Swept::Turned { curve, at, axis } => Read::Turned {
+                id,
+                curve,
+                at,
+                axis,
+            },
         }
     }
 
@@ -739,9 +1198,18 @@ impl<'a> Reader<'a> {
     /// spindle or horn torus, [`Spindle`]).
     fn revolution(&self, id: u64) -> Result<Read, ImportError> {
         let record = self.named(id, "SURFACE_OF_REVOLUTION", 2)?;
-        let curve = self.curve_at(self.reference(id, record.params.get(1), "swept_curve")?, 1)?;
+        let swept_curve = self.reference(id, record.params.get(1), "swept_curve")?;
+        let curve = self.curve_at(swept_curve, 1)?;
         let (at, axis) =
             self.axis1(self.reference(id, record.params.get(2), "axis_position")?)?;
+        let curve = match self.profile(swept_curve, curve)? {
+            Profile::Curve(curve) => curve,
+            Profile::Conic(conic) => {
+                let sweep = ConicSweep::Revolution { at, axis };
+                swept::conic_sweep_check(&conic, &sweep).or_else(|e| self.bad(id, &e))?;
+                return Ok(Read::Conic { id, conic, sweep });
+            }
+        };
         swept::revolution(&curve, at, axis)
             .map(|s| self.read_of(id, s))
             .or_else(|e| self.bad(id, &e))
@@ -767,10 +1235,25 @@ impl<'a> Reader<'a> {
                     .map(|s| self.read_of(id, s))
                     .or_else(|e| self.bad(id, &e));
             }
+            Read::Turned { .. } => {
+                return self.bad(
+                    id,
+                    "an offset of a B-spline surface is not read (no exact surface of that kind)",
+                );
+            }
             Read::Extrusion { .. } => {
                 return self.bad(
                     id,
                     "an offset of an extruded curve is not read (no surface of that kind)",
+                );
+            }
+            Read::Conic { conic, .. } => {
+                return self.bad(
+                    id,
+                    &format!(
+                        "an offset of a swept {} is not read (no exact surface of that kind)",
+                        conic.kind()
+                    ),
                 );
             }
         };
@@ -796,6 +1279,28 @@ pub(crate) enum Read {
     /// A horn or spindle torus: which of its parts a face is on, its edges
     /// tell ([`Spindle::sheet_of`]).
     Spindle(Spindle),
+    /// A profile turned about an axis it crosses: the part of it a face is
+    /// on, its edges tell ([`swept::turned_part`]).
+    Turned {
+        id: u64,
+        curve: NurbsCurve,
+        at: Vec3,
+        axis: Vec3,
+    },
+    /// An untrimmed hyperbola or parabola extruded or turned (neither
+    /// ends): the exact B-spline surface of as much of it as the faces on
+    /// it reach ([`swept::conic_surface`]).
+    Conic {
+        id: u64,
+        conic: Conic,
+        sweep: ConicSweep,
+    },
+}
+
+/// A swept surface's profile, as [`Reader::profile`] reads it.
+enum Profile {
+    Curve(Curve3),
+    Conic(Conic),
 }
 
 /// The B-spline types whose knots are implied by their type
