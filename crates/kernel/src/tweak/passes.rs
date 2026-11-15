@@ -697,14 +697,20 @@ impl Span {
     /// of neighbouring spans overlap) the square of its distance from the
     /// box's middle, so that the walk starts in the span most likely to
     /// hold its foot.
-    fn rank(&self, point: Vec3) -> (f64, f64) {
+    fn rank(&self, point: Vec3) -> Rank {
         let centre = (self.lo + self.hi) * 0.5;
         (self.off(point), (point - centre).length_squared())
     }
 }
 
-/// Whether the rank `a` ([`Span::rank`]) is nearer than `b`.
-fn nearer(a: (f64, f64), b: (f64, f64)) -> bool {
+/// How near a point is to a span ([`Span::rank`]).
+type Rank = (f64, f64);
+
+/// Parameters on a surface: where a walk starts.
+type Params = (f64, f64);
+
+/// Whether the rank `a` is nearer than `b`.
+fn nearer(a: Rank, b: Rank) -> bool {
     a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)).is_lt()
 }
 
@@ -830,7 +836,7 @@ impl Sweep {
             (self.was.len().saturating_add(self.is.len()) / 64) as u64 + 1,
         );
         let nearest = |spans: &[Span], point: Vec3| {
-            let mut best: Option<((f64, f64), &Span)> = None;
+            let mut best: Option<(Rank, &Span)> = None;
             for span in spans {
                 let rank = span.rank(point);
                 if rank.0.is_finite() && best.is_none_or(|(least, _)| nearer(rank, least)) {
@@ -842,7 +848,7 @@ impl Sweep {
         if !self.paired {
             return Some((nearest(&self.was, old)?, nearest(&self.is, new)?));
         }
-        let mut best: Option<((f64, f64), (f64, f64))> = None;
+        let mut best: Option<(Rank, Params)> = None;
         for (a, b) in self.was.iter().zip(&self.is) {
             let moved = ((b.lo + b.hi) - (a.lo + a.hi)).length() * 0.5;
             let reach = 0.25 * moved + self.tol;
@@ -886,7 +892,7 @@ fn starts(spans: &[Span], followed: &Path, reach: f64) -> Option<Vec<Option<(f64
     }
     // Per step: how near the nearest span found so far is ([`Span::rank`]),
     // and its middle.
-    let mut found: Vec<Option<((f64, f64), (f64, f64))>> = vec![None; steps];
+    let mut found: Vec<Option<(Rank, Params)>> = vec![None; steps];
     for (k, ends) in followed.points.windows(2).enumerate() {
         let [a, b] = ends else {
             continue;
