@@ -97,7 +97,7 @@ People trust 3DCraft with their designs, and a crash loses them. A malformed fil
 8. **Two renderers, one oracle.** The CPU renderer (`render`) is the reference; the wgpu renderer (`gpu`) must match it within the documented tolerance. Kernel and tessellator have no GPU path at all.
 9. **The UI is thin and data-driven.** UI state lives in `ui-egui/src/state.rs` (serde), so the control channel can read and drive it. Colours and radii come from `theme::Tokens`, never hard-coded.
 10. **Let the developer watch.** The developer follows development and automated testing live. Anything visual is verified by looking at a picture: render offscreen, or launch with `--control` and take `ui.screenshot`, then actually read the PNG. Leave evidence where the developer can see it (`docs/development.md` › Watching along) and say in Dutch what you are about to do before a long run.
-11. **Never break wasm.** L0–L7 must `cargo check --target wasm32-unknown-unknown` (run `cargo xtask wasm`). File-system code is `cfg(not(target_arch = "wasm32"))` or goes through the platform services.
+11. **Never break wasm.** L0–L7 must `cargo check --target wasm32-unknown-unknown` and pass clippy there with `-D warnings` (run `cargo xtask wasm`: the check, then clippy over the same packages, since the native clippy does not see code compiled for wasm32 alone). File-system code is `cfg(not(target_arch = "wasm32"))` or goes through the platform services.
 12. **Performance is a feature.** Benchmark heavy operations in release on a model of realistic size (thousands of faces, a million triangles). Regenerate only the features downstream of an edit, tessellate faces in parallel (`std::thread::scope`, merged in face order), cache per feature revision, and record before/after timings in the dev log.
 13. **Never panic on input** (see *Never crash* above). A command's `run` closure and anything it calls must return `Err`, never panic, for *any* params or document state. The `panic_hunt` integration test (`crates/engine/tests/panic_hunt.rs`) runs every command of the registry with adversarial params in five document states (the fifth an assembly) and must stay green; a new command is picked up automatically from its `params` string.
 14. **Platform, not applications.** 3DCraft is the platform and must become complete; applications built on it (a gear or pulley generator, a laser-box maker, an agent that reverse-engineers scans) are separate projects that use 3DCraft through its commands, MCP or the engine crate. When in doubt ask: *Does it work on any shape, for anyone who designs with 3DCraft, or does it make one kind of product?* Any shape: it belongs here, in its general form. One kind of product, or one way of working on top of the commands: a separate project (`docs/decisions.md`, 2026-10-14).
@@ -120,12 +120,12 @@ cargo test -p <crate> --test <file>          # each test file you touched or add
 cargo test -p <crate> --lib <module::path>   # the unit tests of each source file you touched (a small crate: cargo test -p <crate>, whole)
 cargo clippy -p <crates> --all-targets -- -D warnings
 cargo xtask layers
-cargo xtask wasm            # if you touched L0–L7
+cargo xtask wasm            # if you touched L0–L7: cargo check, then cargo clippy -- -D warnings, for wasm32-unknown-unknown
 cargo xtask freecad         # if you touched tess, meshio, step, drawing, io or file.export: FreeCAD reads our mesh, STEP, DXF and SVG exports (needs CRAFT3D_FREECAD)
 cargo test -p craft3d-engine --test panic_hunt                # if you added/changed commands (seconds; also part of the full test run)
 ```
 
-`cargo xtask ci` runs fmt, clippy, tests, layers and wasm in one go; the tests include the performance benchmark, which counts work against `crates/engine/tests/bench_models/baseline.txt` (updating it is an expectation change, `docs/testing.md` › Performance tests). It is the gate: CI on GitHub (which adds macOS and Windows) runs only in the public repository, weekly and on demand (`gh workflow run CI -R johancoppens/3dcraft`), so a commit is never checked there automatically.
+`cargo xtask ci` runs fmt, clippy, tests, layers and wasm (its check and its clippy) in one go; the tests include the performance benchmark, which counts work against `crates/engine/tests/bench_models/baseline.txt` (updating it is an expectation change, `docs/testing.md` › Performance tests). It is the gate: CI on GitHub (which adds macOS and Windows) runs only in the public repository, weekly and on demand (`gh workflow run CI -R johancoppens/3dcraft`), so a commit is never checked there automatically.
 
 **Two steps, so the gate is not paid for every commit** (the developer, 2026-10-13):
 
