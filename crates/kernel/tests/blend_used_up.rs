@@ -594,6 +594,111 @@ fn two_chamfers_that_meet_along_the_middle_of_a_face_use_it_up() {
 }
 
 #[test]
+fn a_chamfer_that_takes_a_whole_wall_measures_the_same_on_every_frame() {
+    // A step: the outline (0, 0), (40, 0), (40, 10), (28, 10), (28, 20),
+    // (0, 20), 40 tall. The inside edge at (28, 10), between the lower top
+    // and the wall 10 high, chamfered `d` along the lower top and 10 up
+    // the wall: the chamfer fills the triangle of legs `d` and 10 and takes
+    // the whole wall, so it meets the upper top along the wall's top edge.
+    // Before `used_up` (2026-11-13) the wall stayed as a face of no area:
+    // the checker passed it and the measure took it on the world frame and
+    // refused it on tilted ones ("face 3 is not bounded by its loops": the
+    // sign of an area that is rounding; found by a review on 2026-11-14 on
+    // the released line, with 1 and 5 along the top at scales 1 and 1e6).
+    // The section is the step's 680 and the triangle; its perimeter is the
+    // step's 120 less `d` of the lower top and the wall's 10, plus the
+    // hypotenuse.
+    use common::line;
+    let outline = [
+        line(1, [0.0, 0.0], [40.0, 0.0]),
+        line(2, [40.0, 0.0], [40.0, 10.0]),
+        line(3, [40.0, 10.0], [28.0, 10.0]),
+        line(4, [28.0, 10.0], [28.0, 20.0]),
+        line(5, [28.0, 20.0], [0.0, 20.0]),
+        line(6, [0.0, 20.0], [0.0, 0.0]),
+    ];
+    for k in SCALES {
+        for (index, frame) in frames(k).iter().enumerate() {
+            let body = prism(frame, k, &outline, 40.0);
+            let inside = edge_at(&body, frame, k, [28.0, 10.0, 20.0]);
+            let above = edge_at(&body, frame, k, [28.0, 20.0, 20.0]);
+            let wall = shared(&body, inside, above);
+            let lower = *faces_of(&body, inside)
+                .iter()
+                .find(|f| **f != wall)
+                .unwrap();
+            for d in [1.0, 5.0] {
+                let section = 680.0 + 5.0 * d;
+                let perimeter = 110.0 - d + d.phypot(10.0);
+                for first_on_wall in [false, true] {
+                    let what = format!(
+                        "scale {k}, frame {index}, {d} along the top, the wall first {first_on_wall}"
+                    );
+                    let (first, size) = if first_on_wall {
+                        (
+                            wall,
+                            ChamferSize::Distances {
+                                first: 10.0 * k,
+                                second: d * k,
+                            },
+                        )
+                    } else {
+                        (
+                            lower,
+                            ChamferSize::Distances {
+                                first: d * k,
+                                second: 10.0 * k,
+                            },
+                        )
+                    };
+                    let edges = [ChamferEdge {
+                        edge: inside,
+                        first,
+                        size,
+                    }];
+                    let made = chamfer(&body, &edges, &tolerance(k))
+                        .unwrap_or_else(|e| panic!("{what}: {e}"));
+                    sound(&made.body, k, &what);
+                    assert_mass(
+                        &made.body,
+                        40.0 * section,
+                        2.0 * section + 40.0 * perimeter,
+                        k,
+                        &what,
+                    );
+                    // The step's eight faces less the wall, and the chamfer.
+                    assert_eq!(made.body.faces.len(), 8, "{what}");
+                    for face in &made.faces {
+                        if let ChamferFace::Kept(from) = face {
+                            assert!(!from.contains(&wall), "{what}: the wall is left");
+                        }
+                    }
+                    // A chamfer a little short of the wall's top leaves the
+                    // wall, as a strip.
+                    let short = [ChamferEdge {
+                        edge: inside,
+                        first: lower,
+                        size: ChamferSize::Distances {
+                            first: d * k,
+                            second: 9.999 * k,
+                        },
+                    }];
+                    let made = chamfer(&body, &short, &tolerance(k))
+                        .unwrap_or_else(|e| panic!("{what}, short: {e}"));
+                    sound(&made.body, k, &format!("{what}, short"));
+                    assert_eq!(made.body.faces.len(), 9, "{what}, short");
+                    assert_close(
+                        mass(&made.body).volume,
+                        40.0 * (680.0 + 0.5 * d * 9.999) * k * k * k,
+                        &format!("{what}, short: volume"),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn a_round_as_long_as_both_faces_it_runs_along_uses_them_up() {
     // An L: a foot 40 × 20 × 5 and an upright 5 × 20 × 40, 20 deep, joined
     // (V0 = 4000 + 4000 − 500 = 7500). The inside faces run 35 from the
