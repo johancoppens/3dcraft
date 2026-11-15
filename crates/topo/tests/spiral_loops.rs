@@ -430,11 +430,18 @@ fn wave_ribbon(
 ///   2026-11-14 they were refused by their area, rightly.
 #[test]
 fn wavy_ribbons_whose_steps_end_on_their_middle_line() {
+    /// A surface, the map from the chart to it, and the factor from the
+    /// chart's area to the surface's where that is a constant.
+    type WaveChart = (
+        craft3d_geom::Surface,
+        Box<dyn Fn(f64, f64) -> craft3d_math::Vec3>,
+        Option<f64>,
+    );
     use craft3d_geom::{Cylinder, Plane, Sphere, Surface};
     use craft3d_math::{Frame, Portable, Vec3};
     let mut wrong = Vec::new();
     for k in [1e-3, 1.0, 1e6] {
-        let plane: (Surface, Box<dyn Fn(f64, f64) -> Vec3>, Option<f64>) = (
+        let plane: WaveChart = (
             Surface::Plane(Plane::new(Frame::WORLD)),
             Box::new(move |x, y| Vec3::new(2.0 * k * x, 2.0 * k * y, 0.0)),
             Some(4.0 * k * k),
