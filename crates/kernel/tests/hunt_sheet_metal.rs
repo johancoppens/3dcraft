@@ -537,14 +537,21 @@ fn flanged(rng: &mut Rng, k: f64, jog: bool) -> Drawn {
         }
         (lo, hi)
     });
-    let over = [
+    // A jog bent past square leans its web back over (up) or under (down)
+    // the base's near side, where the points are, as a flange does: a jog
+    // of 179.7 degrees down puts its web about 2R under the base's bottom
+    // skin (seeded case 295, refused until 2026-11-15 by the plate's trace
+    // and then built right, its points below the base inside the web: the
+    // rays and the mesh both said inside).
+    let leans = |dir: Direction| {
         flanges
             .iter()
-            .any(|f| f.spec.direction == Direction::Up && f.spec.angle > FRAC_PI_2 - 1e-6),
-        flanges
-            .iter()
-            .any(|f| f.spec.direction == Direction::Down && f.spec.angle > FRAC_PI_2 - 1e-6),
-    ];
+            .any(|f| f.spec.direction == dir && f.spec.angle > FRAC_PI_2 - 1e-6)
+            || jogs
+                .iter()
+                .any(|j| j.direction == dir && j.angle > FRAC_PI_2 - 1e-6)
+    };
+    let over = [leans(Direction::Up), leans(Direction::Down)];
     // Points in the base, away from its edges by the largest R + T and
     // the reliefs, and off the hole.
     let margin = flanges
