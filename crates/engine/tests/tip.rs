@@ -146,6 +146,13 @@ fn a_rod_tipped_as_long_as_its_radius_ends_in_a_half_ball() {
                 let measured = run(&mut s, "document.measure", json!({"bound": true}));
                 let got = measured["volume"].as_f64().unwrap();
                 near(got, want, 1e-11, &what);
+                // The measure's own bound holds the closed form, a pole
+                // and all.
+                let bound = measured["volumeBound"].as_f64().unwrap();
+                assert!(
+                    (got - want).abs() <= bound + 1e-13 * want,
+                    "{what}: {got} against {want}, bound {bound}"
+                );
                 near(volume(&mut s, "Nose"), want, 1e-11, &what);
                 deep(&mut s);
                 let tipped = body_of(&s, "Nose");
