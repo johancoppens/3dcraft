@@ -3504,23 +3504,39 @@ fn trace_job(mut run: TraceRun) -> crate::motion_build::GridJob {
 /// out (`wait`: waiting for it, at most [`TRACE_WAIT`]), or why it failed.
 fn read_trace(session: &mut Session, name: &str, wait: bool) -> Run {
     const ID: &str = "view.trace";
-    // How long to wait: in a window (a session that bakes in the
-    // background) briefly, as assertions do, since the engine thread
-    // waiting holds the play and every other client up; elsewhere longer.
-    // In a browser there is no clock and nothing is worked out in the
-    // background, so nothing is waited for.
+    // `wait_more()`: true when it waited a moment for a trace still being
+    // worked out (ask again), false once the time is up. How long to wait:
+    // in a window (a session that bakes in the background) briefly, as
+    // assertions do, since the engine thread waiting holds the play and
+    // every other client up; elsewhere longer.
     #[cfg(not(target_arch = "wasm32"))]
-    let deadline = wait.then(|| {
-        let patience = if session.bake_in_background {
-            TRACE_WAIT_WINDOW
-        } else {
-            TRACE_WAIT
-        };
-        // native clock: cfg(not(target_arch = "wasm32")).
-        std::time::Instant::now() + patience
-    });
+    let wait_more = {
+        let deadline = wait.then(|| {
+            let patience = if session.bake_in_background {
+                TRACE_WAIT_WINDOW
+            } else {
+                TRACE_WAIT
+            };
+            // native clock: cfg(not(target_arch = "wasm32")).
+            std::time::Instant::now() + patience
+        });
+        move || {
+            // native clock: cfg(not(target_arch = "wasm32")).
+            let waiting = deadline.is_some_and(|d| std::time::Instant::now() < d);
+            if waiting {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            waiting
+        }
+    };
+    // In a browser there is no clock, and a trace pending there is worked
+    // out by the page's worker, whose answer comes in only after this
+    // command returned (`Session::command_answered`): nothing is waited for.
     #[cfg(target_arch = "wasm32")]
-    let _ = wait;
+    let wait_more = {
+        let _ = wait;
+        || false
+    };
     loop {
         let open = session.document_mut()?;
         open.poll_motion();
@@ -3529,13 +3545,8 @@ fn read_trace(session: &mut Session, name: &str, wait: bool) -> Run {
             if let Some(why) = &job.error {
                 return fail(format!("{ID}: trace `{name}`: {why}"));
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                // native clock: cfg(not(target_arch = "wasm32")).
-                if deadline.is_some_and(|d| std::time::Instant::now() < d) {
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                    continue;
-                }
+            if wait_more() {
+                continue;
             }
             return Ok(json!({"name": name, "pending": true}));
         }
