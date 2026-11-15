@@ -194,12 +194,20 @@
 //!   the surface at the least, whichever way it runs, at the heights the
 //!   face has); a joint is allowed `R_near = R / s_max` (C3, (L5): ten at
 //!   the most).
+//!   `R_far` is a length of the chart, not a distance in space (across the
+//!   axis, or along a great circle, two pieces that far apart in the chart
+//!   can be nearer in space): the theorem needs the lifts' pieces apart in
+//!   the cover and no more. Both reaches are one number a face, in a chart
+//!   scaled at the first point placed, so on a cone and a sphere what is
+//!   cleared goes with how far the face reaches from the axis (only right
+//!   faces are kept refused by it).
 //! - *A stretch shown* ([`Walked::about_bound`]): its points keep in a
 //!   wedge about the axis narrower than a quarter turn and clear of it, so
 //!   its lift moves less than a quarter period and the chord of its lift is
 //!   its placed end moved by whole periods to the nearest of its start;
 //!   each leg is taken to its box of chart directions over the wedge's
-//!   reach ([`AboutMap`]); the aim (S2) is the fan of those, and the bound
+//!   reach ([`AboutMap`]), widened first by what rounding can have moved
+//!   the points; the aim (S2) is the fan of those, and the bound
 //!   (S1) the farther corner of the parallelogram `(A + K) ∩ (B − K)` from
 //!   the chord ([`parallelogram`]), and what the ends as placed can be
 //!   off more ([`spread`]: the parallelogram is of the chord as placed).
@@ -1045,9 +1053,24 @@ impl<'a> Walked<'a> {
             starts = end;
         }
         spend(&mut self.work, held.points.len())?;
-        let Some(reach) = wedge.reach() else {
+        let Some(mut reach) = wedge.reach() else {
             return Some(Bound::Not);
         };
+        // The reach is of the points as computed; the curve's own may be
+        // `widest_clear` off: nearer the axis and further from it, lower
+        // and higher by that, and further round by the angle that is at
+        // the least distance, `asin(clear / ρ)`, under twice `clear / ρ`
+        // while the clear is under half of it (else not shown). The
+        // distances go into the reach before the legs' boxes are made; the
+        // angle moves a leg's products with the unit vectors round and
+        // away from the axis by the leg's length times it at the most,
+        // which widens each box below as the leg's own rounding does.
+        let further = 2.0 * widest_clear / reach.off.0;
+        if further.partial_cmp(&1.0) != Some(std::cmp::Ordering::Less) {
+            return Some(Bound::Not);
+        }
+        reach.off = (reach.off.0 - widest_clear, reach.off.1 + widest_clear);
+        reach.height = (reach.height.0 - widest_clear, reach.height.1 + widest_clear);
         let Some(map) = AboutMap::new(axis.1, rise, &reach) else {
             return Some(Bound::Not);
         };
@@ -1078,12 +1101,15 @@ impl<'a> Walked<'a> {
                     aimless |= clear > 0.0;
                     continue;
                 }
-                // Each end may be `clear` off: the leg twice that.
-                let moved = 2.0 * clear;
-                if w.length().partial_cmp(&moved) != Some(std::cmp::Ordering::Greater) {
+                // Each end may be `clear` off: the leg twice that; and the
+                // reach's angle `further` round (above): the leg's length
+                // times that.
+                let length = w.length();
+                if length.partial_cmp(&(2.0 * clear)) != Some(std::cmp::Ordering::Greater) {
                     fits = false;
                     break 'runs;
                 }
+                let moved = 2.0 * clear + length * further;
                 let (u, v) = map.ranges(w);
                 let (du, dv) = (moved * rate_u, moved * rate_v);
                 let (u, v) = ((u.0 - du, u.1 + du), (v.0 - dv, v.1 + dv));
