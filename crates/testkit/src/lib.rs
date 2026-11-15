@@ -8,4 +8,5 @@ pub mod readers;
 pub mod rings;
 pub mod solids;
 pub mod teapot;
+pub mod tips;
 pub mod trimmed;
