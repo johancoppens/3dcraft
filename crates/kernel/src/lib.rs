@@ -58,6 +58,20 @@ use std::fmt;
 /// The most curve ids, or defects, an error lists; the rest are left out.
 pub const MAX_REPORTED: usize = 8;
 
+/// Why a fillet's section runs to nothing at a place inside its edge
+/// ([`KernelError::FilletPinched`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum FilletPinch {
+    /// The two faces are tangent there (the sine of the angle between
+    /// them at most a millionth) and make an angle on both sides of the
+    /// place.
+    Tangent,
+    /// The edge is convex on one side of the place and concave on the
+    /// other; the two faces are tangent there.
+    Flips,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum KernelError {
     /// A size that must be positive and finite is not.
@@ -299,6 +313,17 @@ pub enum KernelError {
         edge: Option<craft3d_topo::EdgeId>,
         face: Option<craft3d_topo::FaceId>,
         reason: &'static str,
+    },
+    /// A fillet of `edge` whose section would run to nothing at `at`, a
+    /// place strictly inside the edge (not at an end of it): `why` says
+    /// what the two faces do there, `places` how many such places the
+    /// edge has (`at` is the first along it). The fillet face would be
+    /// pinched to a point there, which is not a face.
+    FilletPinched {
+        edge: craft3d_topo::EdgeId,
+        at: craft3d_math::Vec3,
+        why: FilletPinch,
+        places: usize,
     },
     /// The boolean refused the tool of a filleted edge; `smaller_fails`
     /// when smaller radii were tried and fail the same way.
@@ -673,6 +698,17 @@ impl fmt::Display for KernelError {
                 }
                 write!(f, ": {reason}")
             }
+            KernelError::FilletPinched {
+                edge,
+                at,
+                why,
+                places,
+            } => write!(
+                f,
+                "fillet of edge {}: {}",
+                edge.0,
+                fillet_pinched_text(*at, *why, *places, "")
+            ),
             KernelError::FilletBoolean {
                 edge,
                 error,
@@ -827,6 +863,63 @@ pub fn spindle_text(radius: f64, below: f64, own: f64, unit: &str) -> String {
         below = fits_number(below),
         own = short(own)
     )
+}
+
+/// A place as a message says it: its three coordinates to six
+/// significant digits of the largest of them (a place is known to about
+/// the tolerance, and a coordinate that is rounding noise beside the
+/// others reads 0), followed by `unit`.
+fn place_text(at: craft3d_math::Vec3, unit: &str) -> String {
+    let largest = at.x.abs().max(at.y.abs()).max(at.z.abs());
+    let magnitude = if largest.is_finite() && largest > 0.0 {
+        largest.plog10().floor()
+    } else {
+        0.0
+    };
+    // Bounded by the clamp: 0 to 15 decimals.
+    let decimals = (5.0 - magnitude).clamp(0.0, 15.0) as usize;
+    let one = |value: f64| {
+        let text = format!("{value:.decimals$}");
+        let text = if text.contains('.') {
+            text.trim_end_matches('0').trim_end_matches('.').to_string()
+        } else {
+            text
+        };
+        if text == "-0" { "0".to_string() } else { text }
+    };
+    format!("({}, {}, {}){unit}", one(at.x), one(at.y), one(at.z))
+}
+
+/// What [`KernelError::FilletPinched`] says, its place followed by `unit`
+/// (" mm"; empty for numbers alone): for the kernel's own text and for the
+/// document's, which names the unit (as [`spindle_text`] is).
+pub fn fillet_pinched_text(
+    at: craft3d_math::Vec3,
+    why: FilletPinch,
+    places: usize,
+    unit: &str,
+) -> String {
+    let place = place_text(at, unit);
+    let more = if places > 1 {
+        format!(" (the first of {places} such places along the edge)")
+    } else {
+        String::new()
+    };
+    let not_built = "a fillet that ends before such a place and goes on after it is not built yet";
+    match why {
+        FilletPinch::Tangent => format!(
+            "the two faces become tangent at {place}, a place inside the edge, and make an \
+             angle on both sides of it{more}: the rolling ball has no corner to round there \
+             and the fillet face would be pinched to a point; {not_built}, so this edge cannot \
+             be rounded as it is"
+        ),
+        FilletPinch::Flips => format!(
+            "the edge is convex on one side of {place} and concave on the other, and its two \
+             faces are tangent there, a place inside the edge{more}: the fillet would have no \
+             width there (it rounds the edge off on one side and fills it on the other), \
+             whatever the radius; {not_built}, so this edge cannot be rounded as it is"
+        ),
+    }
 }
 
 impl From<GeomError> for KernelError {
