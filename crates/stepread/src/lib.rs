@@ -8,7 +8,7 @@
 //! documentation lists every convention and how sure it is). The file is
 //! hostile input: every reference, count and number is checked, nothing
 //! recurses without a bound, and anything this crate does not read is an
-//! error that names the entity (`#12 HYPERBOLA`), never a panic and never
+//! error that names the entity (`#12 OFFSET_CURVE_3D`), never a panic and never
 //! a body that silently lacks a face.
 //!
 //! # What is read
@@ -35,12 +35,19 @@
 //!   `SURFACE_OF_REVOLUTION` of a line (a cylinder, a cone or a plane) or
 //!   of a circle in a plane through the axis (a sphere or a ring torus),
 //!   and of any other curve read as the exact B-spline surface it is
-//!   (2026-10-21, slice 2); `OFFSET_SURFACE` of a plane, cylinder, cone,
-//!   sphere or torus (the same kind again).
-//! - **Curves**: `LINE`, `CIRCLE`, `ELLIPSE`, `POLYLINE`,
+//!   (2026-10-21, slice 2; a hyperbola or parabola that is not trimmed
+//!   over as much of it as the faces on it reach, 2026-11-15);
+//!   `OFFSET_SURFACE` of a plane, cylinder, cone, sphere or torus (the
+//!   same kind again; a cone offset past its apex is the cone with its
+//!   apex moved, 2026-11-15).
+//! - **Curves**: `LINE`, `CIRCLE`, `ELLIPSE`, `HYPERBOLA`, `PARABOLA`
+//!   (`conic`: the exact rational quadratic B-spline of the part an edge's
+//!   vertices or a trimmed curve's trims bound, 2026-11-15), `POLYLINE`,
 //!   `B_SPLINE_CURVE_WITH_KNOTS` (polynomial or rational), `UNIFORM_CURVE`,
-//!   `QUASI_UNIFORM_CURVE`, `BEZIER_CURVE`, and `SURFACE_CURVE`,
-//!   `SEAM_CURVE`, `INTERSECTION_CURVE` by their 3D curve.
+//!   `QUASI_UNIFORM_CURVE`, `BEZIER_CURVE`, `SURFACE_CURVE`, `SEAM_CURVE`,
+//!   `INTERSECTION_CURVE` by their 3D curve, `TRIMMED_CURVE` (by
+//!   parameter or point, either sense) and `COMPOSITE_CURVE` (its
+//!   segments joined into one exact B-spline, `bounded`).
 //! - **Assemblies** (`assembly`): every placement of a solid by
 //!   `NEXT_ASSEMBLY_USAGE_OCCURRENCE` with `CONTEXT_DEPENDENT_SHAPE_
 //!   REPRESENTATION` and a representation relationship with an
@@ -84,7 +91,9 @@
 //! absurd numbers.
 
 mod assembly;
+pub mod bounded;
 mod budget;
+pub mod conic;
 mod diagnose;
 pub mod finish;
 pub mod geometry;
@@ -109,7 +118,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 pub const MAX_IMPORT_BYTES: usize = 128 * 1024 * 1024;
 
 /// Why a file, or one solid of it, could not be read. The message names
-/// the entity (`#12 HYPERBOLA`) wherever there is one.
+/// the entity (`#12 OFFSET_CURVE_3D`) wherever there is one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImportError(pub String);
 
@@ -677,7 +686,8 @@ impl Parsed {
                 .map(|m| m / options.metres_per_unit),
             ..Report::default()
         };
-        let reader = geometry::Reader::new(self, scale, units.radians_per_angle);
+        let near = topology::merge_distance(report.uncertainty, options);
+        let reader = geometry::Reader::new(self, scale, units.radians_per_angle, near);
         // Bounded work (`craft3d_geom::allowance`, counted, so the same
         // file gives the same answer on every machine): a body whose
         // proofs would take minutes is refused naming where the work went.
@@ -719,6 +729,8 @@ impl Parsed {
     }
 }
 
+#[cfg(test)]
+mod conic_tests;
 #[cfg(test)]
 mod spindle_tests;
 #[cfg(test)]
