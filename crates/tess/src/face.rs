@@ -5364,6 +5364,10 @@ pub(crate) fn face_boundary<'a>(
             // even grid is made keeps it, and its mesh.
             Err(too_fine @ TessError::TooFine { .. }) => {
                 let lines = match &face.surface {
+                    // (Not on a surface with a pole or a border squeezed
+                    // nearly into one: the fan of triangles at a pole is
+                    // its own matter, and such a face is as it was.)
+                    Surface::Nurbs(_) if craft3d_geom::pole::squeezed(&face.surface) => None,
                     Surface::Nurbs(spline) => crate::graded::lines(
                         spline,
                         param.closure.wrap.iter().any(Option::is_some),

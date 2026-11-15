@@ -1,5 +1,4 @@
-//! Faces on rational surfaces whose weights are far apart, meshed and
-//! measured.
+//! Faces on rational surfaces whose weights are far apart, meshed.
 //!
 //! A rational surface with uneven weights is drawn at an uneven pace: a
 //! mesh laid evenly in its parameters is wasteful where it is slow and
@@ -7,9 +6,10 @@
 //! tessellator's even grid, sized by a bound on the second derivatives in
 //! the parameters, asked such faces for thousands to billions of cells a
 //! side and refused them; since 2026-11-15 a face whose even grid is
-//! refused gets a grid graded to its shape (`tess/src/graded.rs`), and a
-//! flat spline face whose own parameters the measure refuses is measured
-//! in its plane (`topo/src/mass.rs`, `own_plane`).
+//! refused gets a grid graded to its shape (`tess/src/graded.rs`). The
+//! measure is held to the closed forms wherever it gives one; a flat face
+//! whose weights have no product form and are ten thousand and more apart
+//! it still refuses, and those are counted.
 //!
 //! The oracle is apart from the tessellator and from the measure: every
 //! body here is a shape with a closed form, drawn unevenly. The twins are
@@ -34,7 +34,7 @@ use craft3d_kernel::boolean::boolean;
 use craft3d_kernel::primitives;
 use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_tess::{Mesh, TessError, TessParams, tessellate_body_with_threads};
-use craft3d_topo::{Body, check, mass_properties};
+use craft3d_topo::{Body, MassError, check, mass_properties};
 use rational_common::{rationalized, skewed_apart};
 use std::f64::consts::PI;
 
@@ -97,14 +97,18 @@ fn tilt(k: f64) -> Transform {
 /// `cu^(i/d) cv^(j/d) corner^(i j / d²)`. Whatever the weights, it is the
 /// plane, and its borders are the rectangle's sides. `cu` and `cv` are a
 /// Möbius map of each parameter (a product form, the end weights of a
-/// span that far apart); `corner` is what no reparametrisation removes
-/// (for degree 1 the plate with the corners 1, 1, 1, h).
+/// span that far apart); `corner` and `ridge` are what no
+/// reparametrisation removes: a heavy corner (for degree 1 the plate with
+/// the weights 1, 1, 1, h) and, times `ridge^(|i − j| / d)`, two heavy
+/// corners across each other (for degree 1 the plate 1, h, h, 1 of the
+/// boolean checklist, whose end weights agree on average along either
+/// parameter).
 fn sheet(
     frame: &Frame,
     (a, b): (f64, f64),
     degree: usize,
     (cu, cv): (f64, f64),
-    corner: f64,
+    (corner, ridge): (f64, f64),
 ) -> NurbsSurface {
     let n = degree + 1;
     let d = degree as f64;
@@ -117,7 +121,8 @@ fn sheet(
             weights.push(
                 cu.ppowf(i as f64 / d)
                     * cv.ppowf(j as f64 / d)
-                    * corner.ppowf((i * j) as f64 / (d * d)),
+                    * corner.ppowf((i * j) as f64 / (d * d))
+                    * ridge.ppowf(i.abs_diff(j) as f64 / d),
             );
         }
     }
@@ -268,6 +273,40 @@ fn held(body: &Body, params: &TessParams, to: &Held, what: &str) -> (usize, usiz
     (mesh.triangles.len(), folded)
 }
 
+/// Whether the measure gives `body`'s volume and area, which are then
+/// held to the closed form's within 1e-9 (and its centroid, where one is
+/// given, within 1e-9 of `size`). Not where it refuses the body for
+/// weights its own parameters do not measure (further apart within a
+/// span than it takes, or sums that do not settle): any other refusal is
+/// a failure.
+#[track_caller]
+fn measured(
+    body: &Body,
+    (volume, area): (f64, f64),
+    centre: Option<(Vec3, f64)>,
+    what: &str,
+) -> bool {
+    match mass_properties(body) {
+        Ok(found) => {
+            assert!(
+                (found.volume - volume).abs() <= 1e-9 * volume
+                    && (found.area - area).abs() <= 1e-9 * area,
+                "{what}: measured {found:?} for {volume} and {area}"
+            );
+            if let Some((centre, size)) = centre {
+                assert!(
+                    found.centroid.unwrap().distance(centre) <= 1e-9 * size,
+                    "{what}: centroid"
+                );
+            }
+            true
+        }
+        Err(MassError::UnevenWeights { .. }) => false,
+        Err(MassError::Unsupported { what: why, .. }) if why.contains("does not settle") => false,
+        Err(e) => panic!("{what}: {e}"),
+    }
+}
+
 /// How far `point` is from an analytic surface, in closed form.
 fn off_surface(surface: &Surface, point: Vec3) -> f64 {
     let (u, v) = surface.project(point).unwrap();
@@ -331,11 +370,10 @@ fn twins_redrawn_at_an_uneven_pace_mesh_as_their_even_twins() {
                     assert_eq!(check(&body, &tolerance(k)), [], "{what}");
                     let (_, folded) = held(&body, &params, &to, &what);
                     assert_eq!(folded, 0, "{what}: folds in single precision");
-                    let measured = mass_properties(&body).unwrap_or_else(|e| panic!("{what}: {e}"));
+                    // (A reparametrisation evens these weights out: measured.)
                     assert!(
-                        (measured.volume - exact.volume).abs() <= 1e-9 * exact.volume
-                            && (measured.area - exact.area).abs() <= 1e-9 * exact.area,
-                        "{what}: measured {measured:?} for {exact:?}"
+                        measured(&body, (exact.volume, exact.area), None, &what),
+                        "{what}: not measured"
                     );
                     meshed += 1;
                 }
@@ -347,7 +385,8 @@ fn twins_redrawn_at_an_uneven_pace_mesh_as_their_even_twins() {
 
 /// Blocks whose three outer sides are planes drawn with weights a
 /// thousand to a million apart: by a Möbius map of one parameter or of
-/// both, and with a corner weight that no reparametrisation removes;
+/// both, and with one heavy corner or two across each other, which no
+/// reparametrisation removes (the second the plate of the checklist);
 /// degrees 1 to 3; a plate 4 by 3 by 2 at three scales and a block 30 by
 /// 900 by 20, whose sheets run unevenly the short way and the long way;
 /// straight and tilted. A plane is a plane however it is drawn: where the
@@ -358,12 +397,13 @@ fn twins_redrawn_at_an_uneven_pace_mesh_as_their_even_twins() {
 /// enough for the even grid to fit its limit, the face still has that
 /// grid, with hundreds of thousands of triangles (owed: it is every
 /// evenly gridded mesh that would change); those are counted here, under
-/// a budget, not made. And each block measures as the block: a flat
-/// sheet that its own parameters do not measure (a corner weight ten
-/// thousand and more apart) is measured in its plane.
+/// a budget, not made. And each block measures as the block wherever the
+/// measure gives one: every one whose weights a reparametrisation evens
+/// out; those with heavy corners ten thousand and more apart it refuses
+/// (counted).
 #[test]
-fn blocks_with_planes_drawn_at_an_uneven_pace_mesh_and_measure_as_blocks() {
-    let (mut graded, mut even) = (0, 0);
+fn blocks_with_planes_drawn_at_an_uneven_pace_mesh_as_blocks() {
+    let (mut graded, mut even, mut unmeasured) = (0, 0, 0);
     let plate = Vec3::new(4.0, 3.0, 2.0);
     {
         for (k, size) in [
@@ -379,18 +419,19 @@ fn blocks_with_planes_drawn_at_an_uneven_pace_mesh_and_measure_as_blocks() {
             let reach = size.x.max(size.y).max(size.z);
             for degree in 1..=3 {
                 for ratio in [1e3, 1e4, 1e6] {
-                    for (cu, cv, corner, how) in [
-                        (ratio, 1.0, 1.0, "along u"),
-                        (1.0, ratio, 1.0, "along v"),
-                        (ratio, 1.0 / ratio, 1.0, "both"),
-                        (1.0, 1.0, ratio, "at a corner"),
+                    for (cu, cv, corner, ridge, how) in [
+                        (ratio, 1.0, 1.0, 1.0, "along u"),
+                        (1.0, ratio, 1.0, 1.0, "along v"),
+                        (ratio, 1.0 / ratio, 1.0, 1.0, "both"),
+                        (1.0, 1.0, ratio, 1.0, "at a corner"),
+                        (1.0, 1.0, 1.0, ratio, "at two corners across"),
                     ] {
                         for tilted in [false, true] {
                             let what = format!(
                                 "block {size:?} degree {degree}, weights {ratio} apart {how}, tilted {tilted}"
                             );
                             let mut body = block_with(size, &mut |f, sides| {
-                                sheet(f, sides, degree, (cu, cv), corner)
+                                sheet(f, sides, degree, (cu, cv), (corner, ridge))
                             });
                             let mut analytic = plain.clone();
                             if tilted {
@@ -401,19 +442,15 @@ fn blocks_with_planes_drawn_at_an_uneven_pace_mesh_and_measure_as_blocks() {
                             let started = std::time::Instant::now();
                             assert_eq!(check(&body, &tol), [], "{what}");
                             let checked = started.elapsed();
-                            let measured =
-                                mass_properties(&body).unwrap_or_else(|e| panic!("{what}: {e}"));
+                            let found = measured(&body, (volume, area), None, &what);
+                            assert!(found || corner > 1.0 || ridge > 1.0, "{what}: not measured");
+                            unmeasured += usize::from(!found);
                             if std::env::var_os("RATIONAL_TIMINGS").is_some() {
                                 eprintln!(
                                     "{what}: checked in {checked:.2?}, measured in {:.2?}",
                                     started.elapsed() - checked
                                 );
                             }
-                            assert!(
-                                (measured.volume - volume).abs() <= 1e-9 * volume
-                                    && (measured.area - area).abs() <= 1e-9 * area,
-                                "{what}: measured {measured:?} for {volume} and {area}"
-                            );
                             let params = TessParams {
                                 chordal_tolerance: 1e-3 * reach,
                                 max_triangles: Some(4_000),
@@ -449,20 +486,24 @@ fn blocks_with_planes_drawn_at_an_uneven_pace_mesh_and_measure_as_blocks() {
             }
         }
     }
-    println!("blocks: {graded} with a mesh of the plain block's order, {even} with the even grid");
-    assert_eq!(graded + even, 288);
-    assert!(graded * 3 >= 288 * 2, "{graded} of 288");
+    println!(
+        "blocks: {graded} with a mesh of the plain block's order, {even} with the even grid; {unmeasured} not measured"
+    );
+    assert_eq!(graded + even, 360);
+    assert!(graded * 3 >= 360 * 2, "{graded} of 360");
 }
 
 /// The block 30 by 900 by 20 whose sides are flat bicubic sheets with
 /// seeded weights from 1e-3 to 1e3 (`classify_far.rs`; no product form,
 /// up to two million apart within a span after evening), and the same 30
 /// by 30 by 20, five seeds each. Until 2026-11-15 no such block could be
-/// meshed (0.07 to 4.4 million cells a side) or measured (weights further
-/// apart than the measure's own parameters take). Each now meshes as the
-/// block it is (36 to 40 triangles; held to 64) and measures as it.
+/// meshed (0.07 to 4.4 million cells a side). Each now meshes as the
+/// block it is (36 to 40 triangles; held to 64). None is measured yet:
+/// its weights are further apart than the measure's own parameters take
+/// (counted, and held to the block wherever one is).
 #[test]
-fn blocks_with_seeded_weights_mesh_and_measure_as_blocks() {
+fn blocks_with_seeded_weights_mesh_as_blocks() {
+    let mut unmeasured = 0;
     for seed in 1..=5 {
         for size in [Vec3::new(30.0, 30.0, 20.0), Vec3::new(30.0, 900.0, 20.0)] {
             for tilted in [false, true] {
@@ -476,21 +517,17 @@ fn blocks_with_seeded_weights_mesh_and_measure_as_blocks() {
                 }
                 let volume = size.x * size.y * size.z;
                 let area = 2.0 * (size.x * size.y + size.y * size.z + size.z * size.x);
-                let measured = mass_properties(&body).unwrap_or_else(|e| panic!("{what}: {e}"));
-                assert!(
-                    (measured.volume - volume).abs() <= 1e-9 * volume
-                        && (measured.area - area).abs() <= 1e-9 * area,
-                    "{what}: measured {measured:?} for {volume} and {area}"
-                );
                 let centre = if tilted {
                     tilt(1.0).point(size * 0.5)
                 } else {
                     size * 0.5
                 };
-                assert!(
-                    measured.centroid.unwrap().distance(centre) <= 1e-9 * size.y,
-                    "{what}: centroid"
-                );
+                unmeasured += usize::from(!measured(
+                    &body,
+                    (volume, area),
+                    Some((centre, size.y)),
+                    &what,
+                ));
                 let off =
                     |face: usize, point: Vec3| off_surface(&analytic.faces[face].surface, point);
                 for chord in [1e-2, 1e-3, 1e-5] {
@@ -511,6 +548,7 @@ fn blocks_with_seeded_weights_mesh_and_measure_as_blocks() {
             }
         }
     }
+    println!("seeded blocks: {unmeasured} of 20 not measured");
 }
 
 /// Signed distance to the box from `lo` to `hi` (negative inside).
@@ -527,13 +565,13 @@ fn box_distance(p: Vec3, lo: Vec3, hi: Vec3) -> f64 {
 
 /// The booleans of the long block with seeded weights and a block
 /// through three of its weighted sides (`classify_far.rs` holds that
-/// they are built) can be shown and measured: each meshes closed, every
-/// point of its mesh on the boundary of the closed form (the signed
-/// distance of the two boxes' union, intersection or difference, apart
-/// from the kernel), its volume the closed form's to rounding, the same
-/// on any number of threads; and each measures as the closed form.
+/// they are built) can be shown: each meshes closed, every point of its
+/// mesh on the boundary of the closed form (the signed distance of the
+/// two boxes' union, intersection or difference, apart from the kernel),
+/// its volume the closed form's to rounding, the same on any number of
+/// threads. (Not measured yet, as the block itself is not.)
 #[test]
-fn the_booleans_of_a_block_with_seeded_weights_mesh_and_measure() {
+fn the_booleans_of_a_block_with_seeded_weights_mesh() {
     let tol = tolerance(1.0);
     let long = seeded_block(Vec3::new(30.0, 900.0, 20.0), 1);
     let (lo, hi) = (Vec3::new(12.0, 315.0, 9.0), Vec3::new(39.0, 1080.0, 25.0));
@@ -573,12 +611,6 @@ fn the_booleans_of_a_block_with_seeded_weights_mesh_and_measure() {
         // between two of those points may fold in single precision.)
         let (triangles, folded) = held(&made, &params, &to, &format!("{op:?}"));
         println!("{op:?}: {triangles} triangles, {folded} that fold in single precision");
-        let measured = mass_properties(&made).unwrap_or_else(|e| panic!("{op:?}: {e}"));
-        assert!(
-            (measured.volume - volume).abs() <= 1e-9 * volume,
-            "{op:?}: measured {} for {volume}",
-            measured.volume
-        );
     }
 }
 

@@ -13,8 +13,10 @@
 //! with weights a thousand apart is a plane; its even grid wants millions
 //! of cells a side.
 //!
-//! Here the box of the face is cut into pieces, a tensor grid of them, and
-//! each piece is taken as what it is in space:
+//! Here, for a face on a surface drawn unevenly (the weights within one
+//! of its spans more than four apart, [`EVEN_ENOUGH`]) whose even grid is
+//! refused, the box of the face is cut into pieces, a tensor grid of them,
+//! and each piece is taken as what it is in space:
 //!
 //! - **Drawn evenly.** A piece is a rational Bézier patch, and the same
 //!   patch drawn through a Möbius map of each parameter is the same set of
@@ -59,6 +61,7 @@
 //! derivatives, not of its homogeneous net, is the one to take.
 
 use crate::face::{patch_second_bounds, spline_counts};
+use craft3d_geom::closure::clamped;
 use craft3d_geom::{NurbsSurface, RationalBezierPatch};
 use craft3d_math::Portable;
 
@@ -77,6 +80,16 @@ const MOST_CUTS: usize = 1 << 10;
 /// How many pieces are bounded at most, those of the cuts tried among
 /// them: each costs the bounds of some sixty nets (`patch_second_bounds`).
 const MOST_BOUNDED: usize = 1 << 13;
+
+/// How far apart the weights within one knot span of a surface may be
+/// for the surface to be drawn evenly enough: its even grid is then its
+/// grid, and where that is refused the face is, as before. The same
+/// measure of even enough as the search for the nearest point of a
+/// surface takes for a piece it walks in (`geom`, `nearest_by_pieces`).
+/// The arcs a turned or a rounded surface is made of are within it (the
+/// weights 1, cos, 1 of an arc of a quarter turn are 1.41 apart, of a
+/// third of a turn 2, and of two such arcs across each other 4).
+const EVEN_ENOUGH: f64 = 4.0;
 
 /// The most lines of the grid along one parameter (a square grid at the
 /// usual limit of 1024 a side has as many cells as one of this many by
@@ -225,12 +238,13 @@ fn covered(spans: &[(f64, f64)], low: f64, high: f64) -> Vec<Part> {
 /// parameters, along u and along v, graded to the surface's shape (see
 /// the module documentation): each from `low` to `high`, increasing, with
 /// at most `limit²` cells between them. `None` where no such grid is
-/// found: a surface that is drawn evenly (`NurbsSurface::evened` finds
-/// nothing to even: its even grid is the one it has, and where that is
-/// refused the face is, as before), a surface that closes on itself
-/// (`closed`: its box may reach across the seam, which is not followed
-/// here), spans that cannot be had, a piece without a bound, more cells
-/// than the limit, or more pieces than are looked at.
+/// found: a surface that is drawn evenly enough (no span with weights
+/// more than [`EVEN_ENOUGH`] apart: its even grid is the one it has, and
+/// where that is refused the face is, as before), a surface that closes
+/// on itself (`closed`: its box may reach across the seam, which is not
+/// followed here) or whose knots are not clamped (it may close without
+/// showing it), spans that cannot be had, a piece without a bound, more
+/// cells than the limit, or more pieces than are looked at.
 pub(crate) fn lines(
     surface: &NurbsSurface,
     closed: bool,
@@ -246,8 +260,19 @@ pub(crate) fn lines(
     {
         return None;
     }
-    surface.evened()?;
+    let (degree_u, degree_v) = surface.degrees();
+    if !(clamped(surface.knots_u(), degree_u) && clamped(surface.knots_v(), degree_v)) {
+        return None;
+    }
     let spans = surface.bezier_spans_shared().ok()?;
+    let uneven = |span: &craft3d_geom::BezierSpan| {
+        span.patch
+            .weight_range()
+            .is_some_and(|(lightest, heaviest)| heaviest > EVEN_ENOUGH * lightest)
+    };
+    if !spans.iter().any(uneven) {
+        return None;
+    }
     // The spans are a tensor grid of knot intervals.
     let intervals = |of: fn(&craft3d_geom::BezierSpan) -> (f64, f64)| {
         let mut all: Vec<(f64, f64)> = spans.iter().map(of).collect();
@@ -548,11 +573,13 @@ mod tests {
     #[test]
     fn a_sheet_redrawn_by_moebius_maps_has_the_cells_of_the_even_one() {
         let even = sheet(3, (1.0, 1.0), 1.0, 0.8);
-        // A sheet drawn evenly has no graded grid: its even grid is its
-        // grid. The one it would have is that of the sheet redrawn by a
-        // map that is all but none.
+        // A sheet drawn evenly enough has no graded grid: its even grid
+        // is its grid. The one it would have is that of the sheet redrawn
+        // by a map that just counts.
         assert!(lines(&even, false, (0.0, 0.0), (1.0, 1.0), 1e-3, 1024.0).is_none());
-        let barely = sheet(3, (1.0 + 1e-9, 1.0), 1.0, 0.8);
+        let mild = sheet(3, (EVEN_ENOUGH, 1.0), 1.0, 0.8);
+        assert!(lines(&mild, false, (0.0, 0.0), (1.0, 1.0), 1e-3, 1024.0).is_none());
+        let barely = sheet(3, (EVEN_ENOUGH * 1.001, 1.0), 1.0, 0.8);
         let plain = lines(&barely, false, (0.0, 0.0), (1.0, 1.0), 1e-3, 1024.0).unwrap();
         assert!(plain[0].len() > 3 && plain[1].len() > 3, "{plain:?}");
         for ratio in [30.0, 1e3, 1e6] {
@@ -576,6 +603,21 @@ mod tests {
 
     #[test]
     fn hostile_boxes_and_surfaces_that_close_give_no_grid() {
+        // Knots that are not clamped: no grid.
+        let open = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 1.0, 2.0, 3.0, 4.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            3,
+            2,
+            (0..6)
+                .map(|k| Vec3::new((k / 2) as f64, (k % 2) as f64, 0.0))
+                .collect(),
+            vec![1.0, 30.0, 1.0, 30.0, 1.0, 30.0],
+        )
+        .unwrap();
+        assert!(lines(&open, false, (1.0, 0.0), (3.0, 1.0), 1e-3, 1024.0).is_none());
         let surface = sheet(2, (30.0, 1.0), 1.0, 0.5);
         let grid = |low: (f64, f64), high: (f64, f64), tolerance: f64| {
             lines(&surface, false, low, high, tolerance, 1024.0)
