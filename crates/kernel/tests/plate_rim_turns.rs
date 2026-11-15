@@ -1358,6 +1358,429 @@ fn a_bevel_past_an_arcs_centre_is_refused_saying_so() {
     }
 }
 
+/// A disc of two half ellipses of semi-axes `a` (along the frame's x) and
+/// `b`, split at the ends of the x axis, built by hand (a sketch has no
+/// ellipse), its loop counter-clockwise.
+fn elliptic_disc(frame: &Frame, a: f64, b: f64) -> Body {
+    use craft3d_geom::{Ellipse, Plane};
+    use craft3d_topo::{BodyKind, Coedge};
+    let mut body = Body::new(BodyKind::Sheet);
+    let ellipse = Curve3::Ellipse(Ellipse::new(*frame, a, b).unwrap());
+    let va = body.add_vertex(ellipse.eval(0.0));
+    let vb = body.add_vertex(ellipse.eval(PI));
+    let top = body.add_edge(ellipse.clone(), (0.0, PI), va, vb);
+    let bottom = body.add_edge(ellipse, (PI, TAU), vb, va);
+    let lp = body.add_loop(vec![
+        Coedge {
+            edge: top,
+            reversed: false,
+        },
+        Coedge {
+            edge: bottom,
+            reversed: false,
+        },
+    ]);
+    let face = body.add_face(Surface::Plane(Plane::new(*frame)), false, vec![lp]);
+    body.add_shell(vec![face]);
+    body
+}
+
+/// A bevel that moves an ellipse's rim toward its centres of curvature as
+/// far as its least radius of curvature `ρ = minor²/major` (at the ends of
+/// its major axis) between the skins folds the rim there: its row at that
+/// level, the ellipse moved by that much, turns back on itself. Refused,
+/// saying so; a bevel that stops two tolerances short of it or more is
+/// built, and is its closed form. Discs and holes of two half ellipses
+/// (b/a 0.5 and 0.1, the major axis along the frame's x or y, so split at
+/// the ends of the major or the minor axis), on every side, at three
+/// scales, in the world and in turned frames, bevelled so that at the
+/// level where the rim moves toward the centres the most it stops `g`
+/// short of `ρ`: past it (a tenth of it, two tolerances), on it, half a
+/// tolerance short (refused); 2 and 10 tolerances, a thousandth and a
+/// tenth of `ρ` short (built; 14 of them, the fold at the back skin, not
+/// measured: below). Closed form (Steiner, while the region's
+/// outline moves out by `d > −ρ`): the area `π a b + P d + π d²` at each
+/// level, `P` the ellipse's perimeter; the vertices on the axis the
+/// ellipse is split at, moved along it by `d`. Before (2026-11-15, when
+/// such a bevel was refused on arcs alone) such plates were built as
+/// bodies the checker passes that cannot be measured or meshed, or that
+/// pass through themselves.
+#[test]
+fn a_bevel_that_folds_an_elliptic_rim_is_refused_and_one_short_of_it_is_built() {
+    // Known (owed, the measure, docs/design/plates.md › *Limits*): the
+    // plates on side `In` (the fold's level the back skin, the rim's second
+    // row) up to a thousandth of `ρ` short of it are not measured (the
+    // rim's parametrisation nearly collapses along that row: "a boundary
+    // integral that does not settle"); they are valid, their vertices at
+    // their stations and their meshes their closed forms. The same with
+    // the fold at the front are measured.
+    const UNMEASURED_NEAR_A_FOLD: &[usize] =
+        &[12, 13, 36, 37, 38, 61, 62, 84, 86, 108, 109, 110, 132, 134];
+    let mut tally = Tally::new();
+    let mut fails: Vec<String> = Vec::new();
+    let mut unmeasured: Vec<usize> = Vec::new();
+    let mut n = 0;
+    for (ratio, major_x) in [(0.5, true), (0.1, true), (0.5, false)] {
+        for hole in [false, true] {
+            for side in [Side::Out, Side::In, Side::Mid] {
+                // How far short of `ρ`, in tolerances or as a share of it.
+                for (gap, in_tolerances) in [
+                    (-0.1, false),
+                    (-2.0, true),
+                    (0.0, true),
+                    (0.5, true),
+                    (2.0, true),
+                    (10.0, true),
+                    (1e-3, false),
+                    (0.1, false),
+                ] {
+                    let mut rng = Rng(case_seed(0x9A7E_0007, n));
+                    let k = SCALES[n % 3];
+                    let frame = frame(&mut rng, k);
+                    let tol = tolerance(k);
+                    let t = k;
+                    let (lo, hi) = side.levels(t);
+                    let (minor, major) = (0.3 * k, 0.3 * k / ratio);
+                    let (ax, by) = if major_x {
+                        (major, minor)
+                    } else {
+                        (minor, major)
+                    };
+                    let rho = minor * minor / major;
+                    let g = if in_tolerances {
+                        gap * tol.linear
+                    } else {
+                        gap * rho
+                    };
+                    // The region's outline moves out by `s h tan α` (a
+                    // disc's outward, a hole's into it); toward the centres
+                    // of curvature by `−s h tan α`, most at the far level.
+                    let s = if hole { -1.0 } else { 1.0 };
+                    let far = if side == Side::In { lo } else { hi };
+                    let tau = ((rho - g) / (-s * far)).patan().ptan();
+                    let half = (3.0 * major).max(10.0 * k);
+                    let sheet = if hole {
+                        elliptic_sheet(&frame, half, ax, by, false)
+                    } else {
+                        elliptic_disc(&frame, ax, by)
+                    };
+                    assert!(check(&sheet, &tol).is_empty(), "{n}: the sheet");
+                    let joints: BTreeMap<EdgeId, Joint<'_>> = (0..sheet.edges.len())
+                        .filter(|i| matches!(sheet.edges[*i].curve, Curve3::Ellipse(_)))
+                        .map(|i| (EdgeId(i as u32), Joint::Bevel(tau.patan())))
+                        .collect();
+                    let what = format!(
+                        "case {n}: b/a {ratio}, major along x {major_x}, hole {hole}, {side:?}, {g:e} short, k {k}, frame {frame:?}"
+                    );
+                    let made = guarded(|| plate(&sheet, &[FaceId(0)], t, side, &joints, &tol));
+                    let shift = -s * far * tau;
+                    if !(shift < rho - tol.linear) {
+                        match made {
+                            Ok(Err(e))
+                                if e.to_string().contains("the rim folds back on itself") =>
+                            {
+                                tally.refused(&e.to_string());
+                            }
+                            other => {
+                                fails.push(format!("{what}: not refused saying so: {other:?}"))
+                            }
+                        }
+                    } else if g >= 2.0 * tol.linear {
+                        let made = match made {
+                            Ok(Ok(made)) => made,
+                            other => {
+                                fails.push(format!("{what}: not built: {other:?}"));
+                                n += 1;
+                                continue;
+                            }
+                        };
+                        let perimeter = integral(0.0, TAU, |u| {
+                            let (sn, cs) = u.psin_cos();
+                            (ax * sn).phypot(by * cs)
+                        });
+                        let disc = PI * ax * by * t
+                            + perimeter * s * tau * (hi * hi - lo * lo) / 2.0
+                            + PI * tau * tau * (cube(hi) - cube(lo)) / 3.0;
+                        let mut vs = Vec::new();
+                        if hole {
+                            for (x, y) in
+                                [(-half, -half), (half, -half), (half, half), (-half, half)]
+                            {
+                                vs.extend([frame.point(x, y, lo), frame.point(x, y, hi)]);
+                            }
+                        }
+                        for sx in [1.0, -1.0] {
+                            for h in [lo, hi] {
+                                vs.push(frame.point(sx * (ax + s * h * tau), 0.0, h));
+                            }
+                        }
+                        let want = Want {
+                            volume: if hole {
+                                4.0 * half * half * t - disc
+                            } else {
+                                disc
+                            },
+                            feature: minor,
+                            vertices: Some(vs),
+                            lines_across: Some(frame.z()),
+                        };
+                        if measured(&made.body).is_none() {
+                            // Known (owed, the measure): held to the
+                            // checker, its vertices and its mesh alone.
+                            unmeasured.push(n);
+                            let body = &made.body;
+                            let chord = (1e-3 * size_of(body)).min(0.25 * minor);
+                            let off = vertices_off(body, want.vertices.as_deref().unwrap());
+                            let area = if hole {
+                                8.0 * half * half + 8.0 * half * t
+                            } else {
+                                2.0 * PI * ax * by
+                            } + 2.0 * perimeter * t;
+                            match mesh_volume(body, chord) {
+                                Ok(v)
+                                    if check(body, &tol).is_empty()
+                                        && off <= 16.0 * tol.linear
+                                        && (v - want.volume).abs() <= 4.0 * chord * area =>
+                                {
+                                    tally.outcomes.push('B');
+                                }
+                                other => fails.push(format!(
+                                    "{what}: not measured, and its mesh {other:?} or its vertices ({:.3e} tolerances off) are wrong",
+                                    off / tol.linear
+                                )),
+                            }
+                        } else {
+                            let before = tally.outcomes.len();
+                            judge(&mut tally, n, &what, &made.body, &want, &tol);
+                            if tally.outcomes.get(before..) != Some("B") {
+                                fails
+                                    .push(format!("{what}: built wrong: {:?}", tally.wrong.last()));
+                            }
+                        }
+                    }
+                    n += 1;
+                }
+            }
+        }
+    }
+    println!("{}", tally.summary("bevelled ellipses to their fold"));
+    for (why, count) in &tally.refusals {
+        println!("  refused {count}x: {why}");
+    }
+    assert!(fails.is_empty(), "{fails:#?}");
+    assert_eq!(
+        unmeasured, UNMEASURED_NEAR_A_FOLD,
+        "the plates not measured"
+    );
+    assert_eq!(tally.count('R'), 72, "the refusals");
+    assert_eq!(tally.count('B'), 72, "the plates built");
+}
+
+/// A lens (the region inside two circles) built by hand: circles of radii
+/// `r1` and `r2` about `(∓d/2, 0)` in `frame`, as the plate's outline or as
+/// a hole in a square of half-side `half`.
+fn lens_sheet(frame: &Frame, r1: f64, r2: f64, d: f64, hole: Option<f64>) -> Body {
+    use craft3d_geom::{Circle, Line, Plane};
+    use craft3d_topo::{BodyKind, Coedge};
+    let mut body = Body::new(BodyKind::Sheet);
+    let mut loops = Vec::new();
+    if let Some(half) = hole {
+        let corners = [(-half, -half), (half, -half), (half, half), (-half, half)];
+        let vs: Vec<_> = corners
+            .iter()
+            .map(|(x, y)| body.add_vertex(frame.point(*x, *y, 0.0)))
+            .collect();
+        let mut outer = Vec::new();
+        for i in 0..4 {
+            let (p, q) = (corners[i], corners[(i + 1) % 4]);
+            let (p, q) = (frame.point(p.0, p.1, 0.0), frame.point(q.0, q.1, 0.0));
+            let e = body.add_edge(
+                Curve3::Line(Line::through(p, q).unwrap()),
+                (0.0, p.distance(q)),
+                vs[i],
+                vs[(i + 1) % 4],
+            );
+            outer.push(Coedge {
+                edge: e,
+                reversed: false,
+            });
+        }
+        loops.push(body.add_loop(outer));
+    }
+    let x = (d * d + r1 * r1 - r2 * r2) / (2.0 * d);
+    let y = (r1 * r1 - x * x).max(0.0).sqrt();
+    let (a1, a2) = (y.patan2(x), y.patan2(d - x));
+    let circle = |cx: f64, r: f64| {
+        let f = Frame::new(frame.point(cx, 0.0, 0.0), frame.z(), frame.x()).unwrap();
+        Curve3::Circle(Circle::new(f, r).unwrap())
+    };
+    let (first, second) = (circle(-0.5 * d, r1), circle(0.5 * d, r2));
+    let (q, p) = (first.eval(-a1), first.eval(a1));
+    let (vq, vp) = (body.add_vertex(q), body.add_vertex(p));
+    // Counter-clockwise: up the first circle's arc facing the second, down
+    // the second's facing the first.
+    let e1 = body.add_edge(first, (-a1, a1), vq, vp);
+    let e2 = body.add_edge(second, (PI - a2, PI + a2), vp, vq);
+    let lens = if hole.is_some() {
+        vec![
+            Coedge {
+                edge: e2,
+                reversed: true,
+            },
+            Coedge {
+                edge: e1,
+                reversed: true,
+            },
+        ]
+    } else {
+        vec![
+            Coedge {
+                edge: e1,
+                reversed: false,
+            },
+            Coedge {
+                edge: e2,
+                reversed: false,
+            },
+        ]
+    };
+    loops.push(body.add_loop(lens));
+    let face = body.add_face(Surface::Plane(Plane::new(*frame)), false, loops);
+    body.add_shell(vec![face]);
+    body
+}
+
+/// A lens whose bevelled rims part between the skins (each level's lens is
+/// the two circles moved out of the material by `h tan α`, and at the far
+/// level they neither cross nor touch: the plate has no body there, or the
+/// hole closes) is refused saying that its rims do not meet at that skin,
+/// how far apart, naming the corner; never that the corner lies further
+/// round than a run kept within a turn, which before (2026-11-15) was said
+/// of 13 of the review's lenses, whose arcs are short against the
+/// thickness and so kept within a turn, although a circle's rows and its
+/// cone hold every angle. Sharp to blunt lenses, of equal and unequal
+/// circles, plates and holes, at three scales, in the world and in a
+/// turned frame. (A corner a run kept within a turn does keep off is
+/// refused saying so: `a_corner_further_round_than_a_kept_run_…`.)
+#[test]
+fn a_lens_whose_rims_part_at_a_level_is_refused_saying_so() {
+    let mut fails = Vec::new();
+    for (n, (r, ratio, overlap, hole, alpha, side)) in [
+        (0.3, 1.0, 0.999, false, 0.25, Side::Mid),
+        (0.3, 1.0, 0.999, false, -0.25, Side::Mid),
+        (0.3, 1.0, 0.999, true, 0.25, Side::Mid),
+        (0.3, 1.0, 0.98, false, -0.25, Side::Out),
+        (0.3, 1.0, 0.5, false, -0.25, Side::Out),
+        (0.3, 1.0, 0.5, true, 0.25, Side::Out),
+        (1.0, 1.0, 0.98, false, 0.25, Side::In),
+        (1.0, 0.3, 0.9, false, 0.25, Side::Mid),
+        (4.0, 1.0, 0.98, false, 0.25, Side::Mid),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for (j, k) in SCALES.into_iter().enumerate() {
+            for turned in [false, true] {
+                let tol = tolerance(k);
+                let frame = if turned {
+                    Frame::new(
+                        Vec3::new(130.0, -70.0, 45.0) * k,
+                        Vec3::new(0.3, -0.5, 0.8),
+                        Vec3::new(1.0, 0.2, 0.1),
+                    )
+                    .unwrap()
+                } else {
+                    Frame::WORLD
+                };
+                let (r1, r2) = (r * k, r * ratio * k);
+                let least = (r1 - r2).abs();
+                let d = least + (r1 + r2 - least) * overlap;
+                let half = (4.0 * (r1 + r2 + d)).max(10.0 * k);
+                let sheet = lens_sheet(&frame, r1, r2, d, hole.then_some(half));
+                assert!(check(&sheet, &tol).is_empty(), "{n}: the sheet");
+                let joints: BTreeMap<EdgeId, Joint<'_>> = (0..sheet.edges.len())
+                    .filter(|i| matches!(sheet.edges[*i].curve, Curve3::Circle(_)))
+                    .map(|i| (EdgeId(i as u32), Joint::Bevel(alpha)))
+                    .collect();
+                let what = format!(
+                    "{n}.{j}.{turned}: r {r} ratio {ratio} overlap {overlap} hole {hole} bevel {alpha} {side:?} k {k}"
+                );
+                match guarded(|| plate(&sheet, &[FaceId(0)], k, side, &joints, &tol)) {
+                    Ok(Err(e)) => {
+                        let e = e.to_string();
+                        if j == 1 && !turned {
+                            println!("{what}: {e}");
+                        }
+                        if !(e.contains("rims at the corner (")
+                            && e.contains("the rims of its two edges do not meet at that skin")
+                            && !e.contains("seven eighths"))
+                        {
+                            fails.push(format!("{what}: another reason: {e}"));
+                        }
+                    }
+                    other => fails.push(format!("{what}: not refused: {other:?}")),
+                }
+            }
+        }
+    }
+    assert!(fails.is_empty(), "{fails:#?}");
+}
+
+/// Hostile numbers about a bevelled ellipse: bevels near square either
+/// way, thicknesses of 1e300 and of a hundred million times the ellipse,
+/// an ellipse a billion times longer than wide, semi-axes of 1e-300 and
+/// 1e150 (the square about a hole of 1e300 has no direction: its length
+/// overflows), and an elliptic edge whose range is not a number or runs round
+/// many times: built or refused, never a panic.
+#[test]
+fn hostile_numbers_about_a_bevelled_ellipse_are_refused_or_built_never_a_panic() {
+    use craft3d_geom::Ellipse;
+    let tol = tolerance(1.0);
+    let bevels = [FRAC_PI_2 - 1e-4, 1e-4 - FRAC_PI_2, 0.3];
+    for (a, b) in [
+        (1.0_f64, 0.5),
+        (1.0, 1e-9),
+        (1e-300, 5e-301),
+        (1e150, 5e149),
+    ] {
+        for hole in [false, true] {
+            let sheet = if hole {
+                elliptic_sheet(&Frame::WORLD, (3.0 * a).max(10.0), a, b, false)
+            } else {
+                elliptic_disc(&Frame::WORLD, a, b)
+            };
+            for (t, alpha) in bevels
+                .iter()
+                .map(|alpha| (1.0, *alpha))
+                .chain([(1e300, 0.3), (1e8 * a, -0.3)])
+            {
+                let joints: BTreeMap<EdgeId, Joint<'_>> = (0..sheet.edges.len())
+                    .filter(|i| matches!(sheet.edges[*i].curve, Curve3::Ellipse(_)))
+                    .map(|i| (EdgeId(i as u32), Joint::Bevel(alpha)))
+                    .collect();
+                for side in [Side::Out, Side::Mid] {
+                    let made = guarded(|| plate(&sheet, &[FaceId(0)], t, side, &joints, &tol));
+                    assert!(
+                        made.is_ok(),
+                        "{a} {b} {hole} {t} {alpha}: a panic: {made:?}"
+                    );
+                }
+            }
+        }
+    }
+    // An elliptic edge whose range is not a number, or many turns long.
+    for range in [(f64::NAN, PI), (0.0, f64::NAN), (0.0, 1e300), (-1e18, 1e18)] {
+        let mut sheet = elliptic_disc(&Frame::WORLD, 1.0, 0.5);
+        if let Some(e) = sheet.edges.first_mut() {
+            e.curve = Curve3::Ellipse(Ellipse::new(Frame::WORLD, 1.0, 0.5).unwrap());
+            e.range = range;
+        }
+        let joints: BTreeMap<EdgeId, Joint<'_>> = [(EdgeId(0), Joint::Bevel(0.3))].into();
+        let made = guarded(|| plate(&sheet, &[FaceId(0)], 1.0, Side::In, &joints, &tol));
+        assert!(made.is_ok(), "{range:?}: a panic: {made:?}");
+    }
+}
+
 /// Hostile numbers about a tight arc: a thickness that is not a number,
 /// zero, negative, infinite or within the tolerance is refused; a
 /// thickness of 1e300 or a hundred million times the hole's radius, and a

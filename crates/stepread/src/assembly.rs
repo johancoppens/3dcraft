@@ -528,7 +528,9 @@ impl Parsed {
                 self.describe(frame.id)
             ));
         }
-        let reader = crate::geometry::Reader::new(self, scale, units.radians_per_angle);
+        // Placements read no curves: no distance within which points are
+        // one is needed.
+        let reader = crate::geometry::Reader::new(self, scale, units.radians_per_angle, 0.0);
         let entity = &self.instance(frame.id)?.entity;
         if entity.is("AXIS2_PLACEMENT_3D") {
             return reader.placement(frame.id);
