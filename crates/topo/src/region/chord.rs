@@ -172,9 +172,10 @@
 //!   on a cone or a sphere the surface's lengths are the chart's times a
 //!   ratio between `s_min` and `s_max`, read over each stretch's reach
 //!   ([`Walked::reaches`]). Pieces must be apart by `R_far = R / s_min`
-//!   (C2: ten tolerances on the surface at the least, whichever way they
-//!   lie); a joint is allowed `R_near = R / s_max` (C3, (L5): ten at the
-//!   most).
+//!   (C2: a straight line of the chart that long is ten tolerances long on
+//!   the surface at the least, whichever way it runs, at the heights the
+//!   face has); a joint is allowed `R_near = R / s_max` (C3, (L5): ten at
+//!   the most).
 //! - *A stretch shown* ([`Walked::about_bound`]): its points keep in a
 //!   wedge about the axis narrower than a quarter turn and clear of it, so
 //!   its lift moves less than a quarter period and the chord of its lift is
