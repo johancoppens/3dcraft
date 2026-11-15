@@ -300,6 +300,7 @@ fn lip_fits(body: &Body, face: FaceId, open: &[FaceId]) -> Result<(), KernelErro
     Ok(())
 }
 
+const LIP_ROUND_GONE: &str = "an open face with a blend along it has to be flat to be opened, and this one is a round whose radius the thickness reaches: the hollow has a sharp edge behind it and no face to come out through; leave the faces it joins open with it, or open a flat face";
 const LIP_CURVES: &str = "an open face with a blend along it is opened by the prism on the hollow's face behind it, whose edges have to be lines and circles: this one has another curve";
 
 /// The prism on the flat face `face` of `hollow`, along its outward
@@ -660,7 +661,18 @@ fn shell_at(
             .filter_map(|(i, _)| u32::try_from(i).ok().map(FaceId))
             .collect();
         if behind.is_empty() {
-            return Err(refuse(OPERATION, vec![*open_face], None, LOST));
+            // Collapsed with the blends the thickness reaches (`vanishing`
+            // counts an open face with a blend along it as one that keeps
+            // a wall): the open face is itself such a blend, and the
+            // hollow has an edge where its face would be. Thinner, the
+            // prism refuses it for not being flat; this is the same
+            // refusal, said of what is left of it.
+            let reason = if gone.contains(open_face) {
+                LIP_ROUND_GONE
+            } else {
+                LOST
+            };
+            return Err(refuse(OPERATION, vec![*open_face], None, reason));
         }
         for face in behind {
             openings.push((

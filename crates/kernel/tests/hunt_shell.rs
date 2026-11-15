@@ -703,57 +703,112 @@ fn hunt_thicken_scratch() {
 
 /// The reduced form of the shell hunt's first finding (2026-11-14): a
 /// block 40 x 30 x 20 with its top front edge filleted, made hollow open
-/// at the fillet face (alone or with any face that is not tangent to it),
-/// is refused at thicknesses below the radius with a reason ("an open face
-/// with a blend along it has to be flat to be opened"), and from the
-/// radius on with an internal error that calls itself a bug ("the shell
-/// lost track of a face of the hollow"). A refusal, not a wrong body; owed
-/// all the same: the thicknesses in [`OPEN_ROUND_KNOWN`] (times the radius)
-/// give it now, and a fix has to take them off.
+/// at the fillet face alone. An open face that a face keeping a wall is
+/// tangent to is opened square to itself by a prism on the hollow's face
+/// behind it, which a round has none of that is flat: at every thickness
+/// the shell is refused, naming the round, because an open face with a
+/// blend along it has to be flat to be opened. From the radius on the
+/// round is collapsed in the hollow (its radius less the thickness is
+/// none), so there is not even a face behind it, and the refusal says
+/// that too.
+///
+/// Until 2026-11-14 the refusal from the radius on was an internal error
+/// that called itself a bug ("the shell lost track of a face of the
+/// hollow"), at 1.25, 2 and 3 times the radius at every scale. The words
+/// are held here on the world frame and two tilted ones, either side of
+/// the radius by a millionth of it too (where the refusal may be the
+/// offset's, of a round a few tolerances in radius); that the round left
+/// open with the two faces it joins is a shell, which is what the refusal
+/// advises, is `shell.rs` › `a_round_left_open_with_the_faces_it_joins_
+/// goes_outward_with_them`, and is held past the radius here.
 #[test]
-fn a_shell_open_at_a_fillet_thicker_than_its_radius_is_refused_with_a_reason() {
+fn a_shell_open_at_a_fillet_is_refused_with_a_reason_at_every_thickness() {
+    use craft3d_kernel::KernelError;
     use craft3d_kernel::fillet::{FilletEdge, FilletFace, fillet};
     use craft3d_kernel::primitives;
     use craft3d_math::Frame;
     let mut unexpected = Vec::new();
     for k in [1e-3, 1.0, 1e3] {
         let tol = tolerance(k);
-        let block = primitives::block(&Frame::WORLD, 40.0 * k, 30.0 * k, 20.0 * k).unwrap();
-        let edge = hunt_common::edge_near(&block, Vec3::new(20.0 * k, 0.0, 20.0 * k));
-        for r in [2.0, 2.868] {
-            let made = fillet(
-                &block,
-                &[FilletEdge {
-                    edge,
-                    radius: r * k,
-                }],
-                &tol,
+        let frames = [
+            Frame::WORLD,
+            Frame::new(
+                Vec3::new(3.0 * k, -2.0 * k, 5.0 * k),
+                Vec3::new(1.0, 2.0, 3.0),
+                Vec3::new(1.0, 0.0, 0.2),
             )
-            .unwrap();
-            let round = made
-                .faces
-                .iter()
-                .position(|f| matches!(f, FilletFace::Fillet(_)))
-                .unwrap() as u32;
-            for times in [0.5, 1.25, 2.0, 3.0] {
-                let t = times * r * k;
-                let known = OPEN_ROUND_KNOWN.contains(&times);
-                match shell(&made.body, t, &[FaceId(round)], &tol) {
-                    Ok(_) => unexpected.push(format!(
-                        "scale {k}, radius {r}, thickness {times} times it: built (not looked at here)"
-                    )),
-                    Err(e) => {
-                        let bug = e.to_string().contains("internal error");
-                        if bug && !known {
+            .unwrap(),
+            Frame::new(
+                Vec3::new(4000.0 * k, -3000.0 * k, 2500.0 * k),
+                Vec3::new(-2.0, 1.0, 2.0),
+                Vec3::new(0.0, 1.0, -0.5),
+            )
+            .unwrap(),
+        ];
+        for (index, frame) in frames.iter().enumerate() {
+            let block = primitives::block(frame, 40.0 * k, 30.0 * k, 20.0 * k).unwrap();
+            let edge = hunt_common::edge_near(&block, frame.point(20.0 * k, 0.0, 20.0 * k));
+            for r in [2.0, 2.868] {
+                let made = fillet(
+                    &block,
+                    &[FilletEdge {
+                        edge,
+                        radius: r * k,
+                    }],
+                    &tol,
+                )
+                .unwrap();
+                let round = FaceId(
+                    made.faces
+                        .iter()
+                        .position(|f| matches!(f, FilletFace::Fillet(_)))
+                        .unwrap() as u32,
+                );
+                for times in [0.5, 1.0 - 1e-6, 1.0 + 1e-6, 1.25, 2.0, 3.0] {
+                    let what =
+                        format!("scale {k}, frame {index}, radius {r}, thickness {times} times it");
+                    let t = times * r * k;
+                    match shell(&made.body, t, &[round], &tol) {
+                        Ok(_) => unexpected.push(format!("{what}: built")),
+                        Err(e) if e.to_string().contains("internal error") => {
+                            unexpected.push(format!("{what}: {e}"));
+                        }
+                        Err(KernelError::FaceOp { faces, reason, .. })
+                            if faces == [round]
+                                && reason.contains("has to be flat to be opened")
+                                && (times < 1.0) != reason.contains("no face to come out") =>
+                        {
+                            println!("{what}: {reason}");
+                        }
+                        // Within a few tolerances of the radius the offset
+                        // of the round may speak first.
+                        Err(e) if (times - 1.0).abs() < 1e-3 => println!("{what}: {e}"),
+                        Err(e) => unexpected.push(format!("{what}: {e}")),
+                    }
+                }
+                // What the refusal advises: the round left open with the
+                // two faces it joins is a shell, past the radius too.
+                if index == 0 && r == 2.0 {
+                    let joined: Vec<FaceId> = (0..made.body.faces.len() as u32)
+                        .map(FaceId)
+                        .filter(|f| {
+                            *f != round
+                                && hunt_common::neighbours(&made.body, round).contains(f)
+                                && hunt_common::normal_at(
+                                    &made.body,
+                                    *f,
+                                    frame.point(20.0 * k, 15.0 * k, 10.0 * k),
+                                )
+                                .is_some_and(|n| n.dot(frame.x()).abs() < 0.5)
+                        })
+                        .collect();
+                    assert_eq!(joined.len(), 2, "the top and the front");
+                    for times in [0.5, 2.0] {
+                        let open = [round, joined[0], joined[1]];
+                        if let Err(e) = shell(&made.body, times * r * k, &open, &tol) {
                             unexpected.push(format!(
-                                "scale {k}, radius {r}, thickness {times} times it: {e}"
+                                "scale {k}: open at the round and the faces it joins, {times} times the radius: {e}"
                             ));
-                        } else if !bug && known {
-                            unexpected.push(format!(
-                                "scale {k}, radius {r}, thickness {times} times it: refused with a reason now ({e}): take it off OPEN_ROUND_KNOWN"
-                            ));
-                        } else {
-                            println!("scale {k}, radius {r}, thickness {times} times it: {e}");
                         }
                     }
                 }
@@ -762,10 +817,6 @@ fn a_shell_open_at_a_fillet_thicker_than_its_radius_is_refused_with_a_reason() {
     }
     assert!(unexpected.is_empty(), "{unexpected:#?}");
 }
-
-/// The thicknesses (times the fillet's radius) at which the shell open at
-/// the fillet is refused with an internal error.
-const OPEN_ROUND_KNOWN: [f64; 3] = [1.25, 2.0, 3.0];
 
 /// The wide hunt of shell: 480 cases in 8 parts, run by hand
 /// (`-- --ignored`), not in the gate.

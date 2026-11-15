@@ -1057,6 +1057,11 @@ fn bounded_fitting(
         _ => None,
     };
     let (mut fits, mut fails) = (0.0_f64, 1.0_f64);
+    // The two largest parts built, and what stopped the smallest part
+    // that failed (the whole, until a smaller part fails by an edge or a
+    // face that vanishes): for the limit's own check, below.
+    let mut built: Vec<(f64, Body)> = Vec::new();
+    let mut stopped = (edge, reason);
     let halving_from = craft3d_geom::allowance::spent();
     for _ in 0..HALVINGS {
         let spent_halving = craft3d_geom::allowance::spent().saturating_sub(halving_from);
@@ -1070,7 +1075,20 @@ fn bounded_fitting(
         let before = craft3d_geom::allowance::spent();
         let holds = match folds {
             Some(proven) => proven(middle),
-            None => attempt(middle).is_ok(),
+            None => match attempt(middle) {
+                Ok(made) => {
+                    if built.len() == 2 {
+                        built.remove(0);
+                    }
+                    built.push((middle, made));
+                    true
+                }
+                Err(TweakError::Vanishes { edge, reason, .. }) => {
+                    stopped = (edge, reason);
+                    false
+                }
+                Err(_) => false,
+            },
         };
         dearest = dearest.max(craft3d_geom::allowance::spent().saturating_sub(before));
         if craft3d_geom::allowance::exhausted() {
@@ -1087,6 +1105,68 @@ fn bounded_fitting(
         // halving's work: the reason the whole does not.
         return Err(refuse(operation, faces, edge, reason));
     }
+    // The lower bound: what was found to fit, said as a distance that
+    // fits and that more may.
+    let at_least = |faces: Vec<FaceId>| KernelError::FaceOpTooFar {
+        operation,
+        faces,
+        edge,
+        reason: tweak::EDGE_GONE_AT_LEAST,
+        value: largest,
+        largest: fits * largest,
+    };
+    // The whole fails for an edge that goes, and the smallest part that
+    // failed for something else (two edges that cross where a seam's end
+    // slid round the circle two halves of one turned surface meet a plane
+    // in: a fault of one distance, with distances that fit on either side
+    // of it): the search closed in on that, not on where the edge goes.
+    // One more try, half way from there to the whole, where the halving's
+    // work has room for it: where it fits, what was found is no limit,
+    // and is not said as one.
+    if reason == tweak::EDGE_GONE && stopped.1 != tweak::EDGE_GONE && folds.is_none() {
+        let above = 0.5 * (fails + 1.0);
+        let room = craft3d_geom::allowance::spent()
+            .saturating_sub(halving_from)
+            .saturating_add(dearest)
+            <= HALVING_WORK;
+        let fitted = room && above > fails && above < 1.0 && attempt(above).is_ok();
+        if craft3d_geom::allowance::exhausted() {
+            return Err(spent(faces, edge));
+        }
+        if fitted {
+            return Err(at_least(faces));
+        }
+    }
+    // An edge that shrinks to nothing is nearly gone at the largest part
+    // that fits. Where it is not (the parts tried between were stopped by
+    // something else that says the same: a seam's end that slid round the
+    // circle two halves of one turned surface meet a plane in), what was
+    // found is no limit, and none is said.
+    if reason == tweak::EDGE_GONE
+        && let (Some(going), tweak::EDGE_GONE) = stopped
+        && folds.is_none()
+    {
+        if built.len() == 1 {
+            // One part built: a second, to see how fast the edge goes.
+            if let Ok(made) = attempt(0.5 * fits) {
+                built.insert(0, (0.5 * fits, made));
+            }
+            if craft3d_geom::allowance::exhausted() {
+                return Err(spent(faces, edge));
+            }
+        }
+        if !goes_at(&built, going, fails, largest, tol) {
+            return Err(refuse(operation, faces, edge, tweak::EDGE_GONE_UNSAID));
+        }
+        // The halving stopped at its work bound with room left between
+        // the largest part that fits and the smallest that failed: the
+        // edge is on its way to nothing somewhere in that room, and what
+        // is said to fit is short of how far the faces can go by up to
+        // as much. The refusal says that it is.
+        if (fails - fits) * largest > tol {
+            return Err(at_least(faces));
+        }
+    }
     Err(KernelError::FaceOpTooFar {
         operation,
         faces,
@@ -1095,6 +1175,40 @@ fn bounded_fitting(
         value: largest,
         largest: fits * largest,
     })
+}
+
+/// Whether the edge `going` is on its way to nothing at `fails`, the
+/// smallest part of an operation that failed for want of it, by the two
+/// largest parts `built`: its length there, carried on in a line, reaches
+/// nothing no later than `fails` and the room the search left (three
+/// times the gap to the larger part, for an edge that goes as a root of
+/// what is left of its way, as an arc cut by a plane coming up to its
+/// tangent does; and four tolerances of `largest`, the operation's size).
+/// `false` where there are no two parts to tell by, or the edge does not
+/// shorten.
+fn goes_at(built: &[(f64, Body)], going: EdgeId, fails: f64, largest: f64, tol: f64) -> bool {
+    let [(f1, smaller), (f2, larger)] = built else {
+        return false;
+    };
+    let (Some(l1), Some(l2)) = (edge_length(smaller, going), edge_length(larger, going)) else {
+        return false;
+    };
+    if !(f2 > f1 && l1 > l2 && largest > 0.0) {
+        return false;
+    }
+    let gone = f2 + l2 * (f2 - f1) / (l1 - l2);
+    gone <= fails + 3.0 * (fails - f2) + 4.0 * tol / largest
+}
+
+/// The length of an edge, along sixteen chords of its curve.
+fn edge_length(body: &Body, edge: EdgeId) -> Option<f64> {
+    let edge = body.edge(edge)?;
+    let at = |k: u32| {
+        edge.curve
+            .eval(edge.range.0 + (edge.range.1 - edge.range.0) * f64::from(k) / 16.0)
+    };
+    let length: f64 = (0..16).map(|k| at(k).distance(at(k + 1))).sum();
+    length.is_finite().then_some(length)
 }
 
 /// `body` with the faces of `offsets` moved along their outward normals

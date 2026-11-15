@@ -35,8 +35,12 @@
 //! that shrinks to nothing or turns round (which is how a neighbour that
 //! vanishes shows), a flat face whose outline crosses itself or whose
 //! hole leaves it, and a round face whose rims change places are each an
-//! error that names the entity. What such a local check cannot see, two
-//! faces far apart running into each other, is left to the caller's
+//! error that names the entity; so are two edges of any face that come
+//! to meet where they did not, a vertex a moved face went through and an
+//! edge made again that goes through a face not its own ([`passes`]:
+//! faces moved up to or past what ends their neighbours, 2026-11-14).
+//! What these cannot see, a moved face running into a smooth face far
+//! from it with no vertex and no edge in the way, is left to the caller's
 //! check on the whole body (regeneration meshes the result and looks for
 //! places where it passes through itself).
 
@@ -44,6 +48,7 @@ use crate::KernelError;
 use crate::profile::{Curve2, SketchCurve, detect_profiles};
 use crate::shared::{curve_through, index_u32};
 
+mod passes;
 mod split;
 use craft3d_geom::{Circle, Curve3, Line, NurbsCurve, Plane, Surface};
 use craft3d_math::{Frame, Tolerance, Transform, Vec3};
@@ -78,6 +83,8 @@ impl From<KernelError> for TweakError {
 
 pub(crate) const EDGE_GONE: &str =
     "the edge shrinks to nothing or turns round: a face next to it would vanish";
+pub(crate) const EDGE_GONE_UNSAID: &str = "the edge shrinks to nothing or turns round: a face next to it would vanish (how far the faces can go before it does was not found: smaller distances fail while the edge is still there; try a smaller distance)";
+pub(crate) const EDGE_GONE_AT_LEAST: &str = "the edge shrinks to nothing or turns round: a face next to it would vanish (how far the faces can go before it does was not found: what is said to fit here does, and more may)";
 pub(crate) const NO_MEETING: &str =
     "the faces that meet in a vertex there no longer meet in one point";
 pub(crate) const OFF_SURFACE: &str = "the edge would no longer be a line or a circle on both its faces: continuing these two surfaces until they meet again is not built";
@@ -88,7 +95,10 @@ pub(crate) const OUTLINE: &str =
 pub(crate) const RIMS: &str = "the two rims of the face would change places: the face would vanish";
 pub(crate) const THROUGH: &str =
     "the face would pass through another part of the body, or lie in another face of it";
+pub(crate) const THROUGH_UNSAID: &str = "the face would pass through another part of the body, or lie in another face of it (how far it can go before it first does was not found: a face that is not flat towards it lies in its way; try a smaller distance)";
 pub(crate) const TURNED: &str = "the face would be turned inside out: it would vanish";
+pub(crate) const CROSSED: &str = "two edges of one face would cross or touch: a face that moves would reach or pass the face that ends its neighbour there";
+pub(crate) const INSIDE_OUT: &str = "the body would be turned inside out: a face that moves would pass right through the rest of it (how far it can go before it first does was not found: try a smaller distance)";
 
 /// The signed distance from `point` to `surface` and the direction it
 /// grows in. `None` where the surface has no nearest point with a normal
@@ -1614,6 +1624,54 @@ fn iso_curve(
     (holds && more(to, from)).then_some((curve, (from, to)))
 }
 
+/// Whether an open edge that ran along the border `along` of `surface`
+/// (its curve `old` over `range`) would run along it the other way from
+/// `start` to `end`: its ends have changed places along the border, which
+/// is an edge turned round ([`EDGE_GONE`]), not the same edge
+/// ([`iso_curve`] alone would give the border between the new ends,
+/// whichever way it runs: the seam of a vase whose cap went past the cap
+/// across from it came out so, 2026-11-14). Not told, and so not said, for
+/// a border that closes on itself, where a parameter says nothing of an
+/// order, or where one of the four ends does not lie on the border within
+/// the tolerance: a vertex found where a plane meets two halves of one
+/// turned surface is free round their circle and can come to lie far from
+/// the seam (13 off it, 196 degrees round, on a vase whose top was moved to
+/// 20 tolerances from its foot); its nearest point on the border says
+/// nothing of where the edge ends, and taking it for the end refused right
+/// offsets (the review of 2026-11-14). Such an edge is left to the steps
+/// that follow, as before.
+fn iso_turned(
+    surface: &craft3d_geom::NurbsSurface,
+    along: &Iso,
+    old: &Curve3,
+    range: (f64, f64),
+    start: Vec3,
+    end: Vec3,
+    tol: f64,
+) -> bool {
+    let Some((curve, (a, b))) = whole_iso(surface, along) else {
+        return false;
+    };
+    if curve.eval(a).distance(curve.eval(b)) <= tol {
+        return false;
+    }
+    let at = |p: Vec3| {
+        curve
+            .project(p)
+            .ok()
+            .filter(|t| t.is_finite() && curve.eval(*t).distance(p) <= tol)
+    };
+    let (Some(from_was), Some(to_was), Some(from), Some(to)) = (
+        at(old.eval(range.0)),
+        at(old.eval(range.1)),
+        at(start),
+        at(end),
+    ) else {
+        return false;
+    };
+    (to_was - from_was) * (to - from) < 0.0
+}
+
 /// [`resurface`], with the vertices of `also` found again too, although
 /// none of their faces has a new surface: the vertices a change of
 /// topology put where they do not lie yet (delete face merges the two
@@ -2005,6 +2063,13 @@ fn resurface_with(
                 }
             }
         };
+        // An edge along a border of a face that keeps its surface, whose
+        // ends have changed places along that border, has turned round.
+        // (Along a border of a face with a new surface its old ends do not
+        // lie on the new border, and nothing is said.)
+        let turned = |along: &Iso, surface: &craft3d_geom::NurbsSurface| {
+            !closed && iso_turned(surface, along, &edge.curve, edge.range, start, end, tol)
+        };
         // Along a border of a face with a new surface: that border of it.
         if let Some(along) = iso.get(&id).filter(|a| surfaces.contains_key(&a.face))
             && let Some(Surface::Nurbs(new)) = surfaces.get(&along.face)
@@ -2038,13 +2103,17 @@ fn resurface_with(
                 .get(&id)
                 .filter(|a| !surfaces.contains_key(&a.face))
                 .and_then(|along| match iso_surface(along.face) {
+                    Some(Surface::Nurbs(new)) if turned(along, new) => Some(None),
                     Some(Surface::Nurbs(new)) => {
                         iso_curve(new, along, start, end, closed, EDGE_SHARE * tol)
                             .filter(|(curve, range)| lies_on(curve, *range, &on, EDGE_SHARE * tol))
+                            .map(Some)
                     }
                     _ => None,
                 }) {
-                Some((curve, range)) => Remade::Edge(curve, range),
+                Some(Some((curve, range))) => Remade::Edge(curve, range),
+                // Its ends changed places along the border it runs along.
+                Some(None) => Remade::Gone,
                 None => fitted(
                     &edge.curve,
                     edge.range,
@@ -2161,6 +2230,29 @@ fn resurface_with(
         }
     }
 
+    // Two edges of one face that meet where they did not: a face that
+    // moved reached or passed the face that ends a neighbour of it. Before
+    // the checker: where the edges lie on each other it would refuse the
+    // body as invalid, with nothing to say of how far the face can go.
+    let Ok(crossed) = passes::crossed(body, &made, &uses_made, &remade, tolerance) else {
+        return Err(spent());
+    };
+    if let Some((face, edge, other)) = crossed {
+        let mut faces = vec![face];
+        for id in [edge, other] {
+            for next in uses_made.get(id.0 as usize).into_iter().flatten() {
+                if !faces.contains(next) {
+                    faces.push(*next);
+                }
+            }
+        }
+        return Err(TweakError::Vanishes {
+            faces,
+            edge: Some(edge),
+            reason: CROSSED,
+        });
+    }
+
     let defects = craft3d_topo::check_remembered(&made, tolerance);
     if !defects.is_empty() {
         return Err(TweakError::Kernel(KernelError::InvalidBody {
@@ -2171,12 +2263,80 @@ fn resurface_with(
     if craft3d_geom::allowance::pass() {
         return Err(spent());
     }
-    if let Some(face) = buried(&made, &uses_made, &remade, tolerance) {
+    if let Some((face, _)) = buried(&made, &uses_made, &remade, tolerance) {
         return Err(TweakError::Vanishes {
             faces: vec![face],
             edge: None,
             reason: THROUGH,
         });
+    }
+    // What the faces that moved went through on their way (`passes`): the
+    // same question beside the edges at a vertex one of them passed, and
+    // beside every stretch of an edge made again that goes through a face
+    // not its own; and where a face far from them lay in their way,
+    // whether the body still encloses what it did. Counted against the
+    // operation's work bound, as `crossed` is: a check that cannot end
+    // within it refuses the operation as needing too much work, and never
+    // stops without a word.
+    if !surfaces.is_empty() {
+        let layout = passes::Layout::of(&made);
+        let (Ok(swept), Ok(pierced)) = (
+            passes::swept(body, &made, &layout, surfaces, tolerance),
+            passes::pierced(&made, &layout, &uses_made, &remade, tolerance),
+        ) else {
+            return Err(spent());
+        };
+        // Where to ask, and the face that was passed or gone through.
+        let mut ask: BTreeMap<EdgeId, Vec<f64>> = BTreeMap::new();
+        let mut by: BTreeMap<EdgeId, FaceId> = BTreeMap::new();
+        for (id, face) in &swept.edges {
+            if remade.contains(id) {
+                continue;
+            }
+            if let Some(edge) = made.edge(*id) {
+                ask.insert(*id, vec![0.5 * (edge.range.0 + edge.range.1)]);
+                by.insert(*id, *face);
+            }
+        }
+        for (id, (middles, face)) in pierced {
+            ask.insert(id, middles);
+            by.insert(id, face);
+        }
+        if !ask.is_empty() {
+            if craft3d_geom::allowance::pass() {
+                return Err(spent());
+            }
+            if let Some((face, edge)) = buried_at(&made, &uses_made, &ask, tolerance) {
+                let mut faces: Vec<FaceId> = by.get(&edge).copied().into_iter().collect();
+                if !faces.contains(&face) {
+                    faces.push(face);
+                }
+                // Found beside a vertex a face passed that may not be the
+                // first thing in that face's way (a cone's point has no
+                // vertex): a smaller move that passes these checks can
+                // still be through it, so the largest that fits is not
+                // looked for, and none is said.
+                if swept.edges.contains_key(&edge) && !swept.first {
+                    return Err(TweakError::Unsupported {
+                        faces,
+                        edge: None,
+                        reason: THROUGH_UNSAID,
+                    });
+                }
+                return Err(TweakError::Vanishes {
+                    faces,
+                    edge: None,
+                    reason: THROUGH,
+                });
+            }
+        }
+        if swept.near && passes::inside_out(body, &made, tolerance) {
+            return Err(TweakError::Unsupported {
+                faces: surfaces.keys().copied().take(crate::MAX_REPORTED).collect(),
+                edge: None,
+                reason: INSIDE_OUT,
+            });
+        }
     }
     Ok(made)
 }
@@ -2194,23 +2354,86 @@ fn spent() -> TweakError {
 /// points lie that are asked about, in tolerances.
 const INSIDE_FACE: f64 = 8.0;
 const OFF_FACE: f64 = 4.0;
+/// How far from a face a point has to lie for the classification to place
+/// it, in tolerances (`crate::boolean::contains_points` says nothing of a
+/// point within twice the tolerance of the boundary), and the furthest
+/// from an edge a point is asked about.
+const CLEAR_OF_FACE: f64 = 2.0;
+const MOST_INSIDE_FACE: f64 = 1024.0;
+
+/// How far from an edge, along a face, the point just outside the face
+/// and the point just inside it are asked about ([`buried`]), in
+/// tolerances, given the outward normal of the face across the edge there
+/// as its parts `along` the first face (into it, away from the edge) and
+/// `off` it (along its outward normal).
+///
+/// At [`INSIDE_FACE`] and [`OFF_FACE`] the point inside lies behind the
+/// face across a convex edge only where the two meet at more than about
+/// 27 degrees, and the classification places it only above about 41; below
+/// about 13.6 degrees it lies beyond that face by more than the
+/// classification's band, in the open, and was found outside: every
+/// operation at such an edge was refused as passing through the body (the
+/// groove of a cylinder that leaves a face at 8.5 degrees, a face moved
+/// within its own plane beside it: the move hunt's case 676, 2026-11-14).
+/// Where a point lies that clearly on the wrong side of the face across
+/// the edge (the one inside at a convex edge, the one outside at a concave
+/// one), it is asked about further from the edge instead, where it is as
+/// far behind (or before) that face as it is off its own; where it does
+/// not, both points lie where they always did. `None` for a point that
+/// would lie further than [`MOST_INSIDE_FACE`] from the edge: not asked.
+fn sharp_places(along: f64, off: f64) -> (Option<f64>, Option<f64>) {
+    // Convex: the face across the edge looks away from this one.
+    let inside = if along < 0.0 && INSIDE_FACE * along - OFF_FACE * off >= CLEAR_OF_FACE {
+        Some(OFF_FACE * (off - 1.0) / along)
+    } else {
+        Some(INSIDE_FACE)
+    };
+    // Concave: it looks across this one.
+    let outside = if along > 0.0 && INSIDE_FACE * along + OFF_FACE * off <= -CLEAR_OF_FACE {
+        Some(OFF_FACE * (1.0 - off) / along)
+    } else {
+        Some(INSIDE_FACE)
+    };
+    let kept = |at: Option<f64>| at.filter(|a| a.is_finite() && *a <= MOST_INSIDE_FACE);
+    (kept(outside), kept(inside))
+}
 
 /// A face next to an edge of `remade` that is not skin of `made` any
 /// more: just outside it there is material, or just inside it there is
 /// none, which is what a body that passes through itself looks like next
 /// to the faces that moved. The question is put to the classification of
 /// the booleans (a ray from the point), at a point beside the middle of
-/// every such edge; a point it cannot tell for says nothing.
+/// every such edge; a point it cannot tell for says nothing. The face,
+/// and the edge it was asked beside.
 fn buried(
     made: &Body,
     uses: &[Vec<FaceId>],
     remade: &BTreeSet<EdgeId>,
     tolerance: &Tolerance,
-) -> Option<FaceId> {
+) -> Option<(FaceId, EdgeId)> {
+    let middles: BTreeMap<EdgeId, Vec<f64>> = remade
+        .iter()
+        .filter_map(|id| {
+            let edge = made.edge(*id)?;
+            Some((*id, vec![0.5 * (edge.range.0 + edge.range.1)]))
+        })
+        .collect();
+    buried_at(made, uses, &middles, tolerance)
+}
+
+/// [`buried`], asked beside each edge of `places` at the parameters given
+/// with it.
+fn buried_at(
+    made: &Body,
+    uses: &[Vec<FaceId>],
+    places: &BTreeMap<EdgeId, Vec<f64>>,
+    tolerance: &Tolerance,
+) -> Option<(FaceId, EdgeId)> {
     let tol = tolerance.linear;
-    let mut asked: Vec<(FaceId, bool)> = Vec::new();
+    let mut asked: Vec<(FaceId, EdgeId, bool)> = Vec::new();
     let mut points: Vec<Vec3> = Vec::new();
-    for id in faces_with(uses, remade) {
+    let edges: BTreeSet<EdgeId> = places.keys().copied().collect();
+    for id in faces_with(uses, &edges) {
         let Some(face) = made.face(id) else {
             continue;
         };
@@ -2224,36 +2447,61 @@ fn buried(
             .filter_map(|l| made.loop_(*l))
             .flat_map(|l| &l.coedges)
         {
-            if !remade.contains(&coedge.edge) {
+            let Some(at) = places.get(&coedge.edge) else {
                 continue;
-            }
+            };
             let Some(edge) = made.edge(coedge.edge) else {
                 continue;
             };
-            let (middle, along) = edge.curve.derivatives(0.5 * (edge.range.0 + edge.range.1));
-            let along = if coedge.reversed { -along } else { along };
-            let Some((_, normal)) = outward(middle) else {
-                continue;
-            };
-            // The face lies to the left of its edges, seen from outside.
-            let Some(into) = normal.cross(along).normalized() else {
-                continue;
-            };
-            let Some((foot, normal)) = outward(middle + into * (INSIDE_FACE * tol)) else {
-                continue;
-            };
-            points.push(foot + normal * (OFF_FACE * tol));
-            asked.push((id, false));
-            points.push(foot - normal * (OFF_FACE * tol));
-            asked.push((id, true));
+            for t in at {
+                let (middle, along) = edge.curve.derivatives(*t);
+                let along = if coedge.reversed { -along } else { along };
+                let Some((_, normal)) = outward(middle) else {
+                    continue;
+                };
+                // The face lies to the left of its edges, seen from outside.
+                let Some(into) = normal.cross(along).normalized() else {
+                    continue;
+                };
+                // How far from the edge each of the two points lies: at
+                // an edge sharper than the usual place allows, further.
+                let beyond = uses
+                    .get(coedge.edge.0 as usize)
+                    .and_then(|faces| match faces.as_slice() {
+                        [a, b] if *a == id && *b != id => Some(*b),
+                        [a, b] if *b == id && *a != id => Some(*a),
+                        _ => None,
+                    })
+                    .and_then(|other| made.face(other))
+                    .and_then(|other| other.outward(middle));
+                let (out_at, in_at) = match beyond {
+                    Some(other) => sharp_places(other.dot(into), other.dot(normal)),
+                    None => (Some(INSIDE_FACE), Some(INSIDE_FACE)),
+                };
+                let beside = |at: Option<f64>| outward(middle + into * (at? * tol));
+                let outside = beside(out_at);
+                let inside = if in_at == out_at {
+                    outside
+                } else {
+                    beside(in_at)
+                };
+                if let Some((foot, normal)) = outside {
+                    points.push(foot + normal * (OFF_FACE * tol));
+                    asked.push((id, coedge.edge, false));
+                }
+                if let Some((foot, normal)) = inside {
+                    points.push(foot - normal * (OFF_FACE * tol));
+                    asked.push((id, coedge.edge, true));
+                }
+            }
         }
     }
     let found = crate::boolean::contains_points(made, &points, tolerance).ok()?;
     asked
         .iter()
         .zip(found)
-        .find(|((_, expected), inside)| inside.is_some_and(|inside| inside != *expected))
-        .map(|((face, _), _)| *face)
+        .find(|((_, _, expected), inside)| inside.is_some_and(|inside| inside != *expected))
+        .map(|((face, edge, _), _)| (*face, *edge))
 }
 
 /// The vertices on the loops of `face`, ascending, each once.
@@ -2266,6 +2514,73 @@ pub(crate) fn face_vertices(body: &Body, face: FaceId) -> BTreeSet<VertexId> {
         .filter_map(|c| body.edge(c.edge))
         .flat_map(|e| [e.start, e.end])
         .collect()
+}
+
+#[cfg(test)]
+mod sharp_tests {
+    use super::*;
+    use craft3d_math::Portable;
+
+    /// The two faces of an edge that meet at `degrees` inside the material
+    /// (convex below 180): the outward normal of the face across the edge,
+    /// as its parts along the first face and off it.
+    fn across(degrees: f64) -> (f64, f64) {
+        let (sine, cosine) = degrees.to_radians().psin_cos();
+        (-sine, -cosine)
+    }
+
+    /// Where the point just inside a face and the point just outside it
+    /// lie from the edge, by the angle the faces meet at: the usual 8
+    /// tolerances wherever the point is not clearly on the wrong side of
+    /// the face across the edge (from about 13.7 degrees on, either way
+    /// round), further where it is, and there four tolerances clear of
+    /// that face; not asked where that is past the cap.
+    #[test]
+    fn points_beside_a_sharp_edge_are_asked_about_where_the_wedge_holds_them() {
+        for degrees in [
+            14.0, 27.0, 41.0, 90.0, 135.0, 179.0, 181.0, 270.0, 330.0, 346.0,
+        ] {
+            let (along, off) = across(degrees);
+            assert_eq!(
+                sharp_places(along, off),
+                (Some(INSIDE_FACE), Some(INSIDE_FACE)),
+                "{degrees} degrees"
+            );
+        }
+        // Convex and sharp: the point inside moves out, the one outside
+        // stays.
+        for degrees in [1.0_f64, 5.0, 8.5, 12.0, 13.5] {
+            let (along, off) = across(degrees);
+            let (outside, inside) = sharp_places(along, off);
+            assert_eq!(outside, Some(INSIDE_FACE), "{degrees} degrees");
+            let at = inside.unwrap();
+            assert!(at > INSIDE_FACE, "{degrees} degrees: {at}");
+            // Behind the face across the edge by as much as it is under
+            // its own.
+            let behind = at * along - OFF_FACE * off;
+            assert!(
+                (behind + OFF_FACE).abs() < 1e-9,
+                "{degrees} degrees: {behind}"
+            );
+        }
+        // Concave and sharp (the faces fold back to within 13.6 degrees of
+        // each other, air between them): the point outside moves out.
+        for degrees in [346.5_f64, 352.0, 359.0] {
+            let (along, off) = across(degrees);
+            let (outside, inside) = sharp_places(along, off);
+            assert_eq!(inside, Some(INSIDE_FACE), "{degrees} degrees");
+            let at = outside.unwrap();
+            assert!(at > INSIDE_FACE, "{degrees} degrees: {at}");
+            let before = at * along + OFF_FACE * off;
+            assert!(
+                (before - OFF_FACE).abs() < 1e-9,
+                "{degrees} degrees: {before}"
+            );
+        }
+        // Past the cap: not asked.
+        let (along, off) = across(0.1);
+        assert_eq!(sharp_places(along, off), (Some(INSIDE_FACE), None));
+    }
 }
 
 #[cfg(test)]
