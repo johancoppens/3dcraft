@@ -86,9 +86,11 @@ const MOST_BOUNDED: usize = 1 << 13;
 /// grid, and where that is refused the face is, as before. The same
 /// measure of even enough as the search for the nearest point of a
 /// surface takes for a piece it walks in (`geom`, `nearest_by_pieces`).
-/// The arcs a turned or a rounded surface is made of are within it (the
-/// weights 1, cos, 1 of an arc of a quarter turn are 1.41 apart, of a
-/// third of a turn 2, and of two such arcs across each other 4).
+/// The arcs a turned, swept or lofted surface is made of are within it
+/// (a quarter turn at most: the weights 1, cos, 1 are 1.41 apart, and of
+/// two such arcs across each other 2); the one arc of a rolled fillet
+/// that turns more than 151 degrees is not (the cosine of its half below
+/// a quarter).
 const EVEN_ENOUGH: f64 = 4.0;
 
 /// The most lines of the grid along one parameter (a square grid at the
