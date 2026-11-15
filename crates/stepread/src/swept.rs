@@ -841,14 +841,14 @@ impl<'a> Trace<'a> {
         let (zp, rp) = self.meridian(p);
         let gap = |t: f64| {
             let (z, r) = self.meridian(self.curve.eval(t));
-            (z - zp).hypot(r - rp)
+            (z - zp).phypot(r - rp)
         };
         let mut best: Option<(usize, f64)> = None;
         for (k, &(t, z, r)) in self.steps.iter().enumerate() {
             if t < lo || t > hi {
                 continue;
             }
-            let d = (z - zp).hypot(r - rp);
+            let d = (z - zp).phypot(r - rp);
             if best.is_none_or(|(_, b)| d < b) {
                 best = Some((k, d));
             }
@@ -1051,8 +1051,33 @@ pub fn turned_part(
         );
     }
     let (d0, d1) = curve.domain();
+    // Near the axis the signed distance is rounding, so a crossing found
+    // by its sign lies within rounding of the true one; where a joint of
+    // the profile's pieces (a composite's segments meeting on the axis)
+    // is that near and on the axis within `merge`, the cut is the joint,
+    // so no part begins with a sliver of the piece before it.
+    let joints: Vec<f64> = curve
+        .bezier_pieces()
+        .iter()
+        .skip(1)
+        .map(|((lo, _), _)| *lo)
+        .collect();
+    let distance = |t: f64| {
+        let off = curve.eval(t) - at;
+        (off - axis * off.dot(axis)).length()
+    };
     let mut ends = vec![d0];
-    ends.extend(cuts.iter().copied());
+    for &cut in &cuts {
+        let near = joints
+            .iter()
+            .copied()
+            .filter(|j| (j - cut).abs() <= 1e-6 * (d1 - d0) && distance(*j) <= merge)
+            .min_by(|a, b| (a - cut).abs().total_cmp(&(b - cut).abs()));
+        let cut = near.unwrap_or(cut);
+        if ends.last().is_none_or(|&e| cut > e) && cut < d1 {
+            ends.push(cut);
+        }
+    }
     ends.push(d1);
     let foot = |p: Vec3| at + axis * (p - at).dot(axis);
     let mut parts: Vec<(f64, NurbsCurve)> = Vec::new();
