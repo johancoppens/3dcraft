@@ -60,7 +60,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "view.trace",
         "Trace Point",
         r#"{"point": vertex name or {sketch, entity}, "feature": id or name = the body that has the vertex, "t": [number, number] = [0, 1], "samples": integer = 65, "name": string = "Trace <n>", "grow": boolean = false, "clear": boolean or trace name, "background": boolean = true in a window, else false, "wait": boolean = false} or {"name": string, "wait": boolean = false}"#,
-        "Traces the path of a point over the motion: the point is a vertex by its persistent name (document.edges lists them; feature says which body when several have it) or a point of a sketch ({sketch, entity}); its place is taken at samples values of t evenly from t[0] to t[1] (both included), each state made as view.motion makes it. The trace is view state of the document (not saved, not undone, let go of at the next edit): the viewport draws it as a line, and file.export {path: *.svg or *.dxf, trace: name} writes it in its plane. With grow: true the viewport draws the trace only up to the t it shows while it shows a moment of the motion (the player draws it as it goes), whole otherwise. A trace with the name of one kept replaces it; at most 32 are kept. clear: true removes every trace, clear: name one of them (nothing is traced then). The document needs a timeline (view.motion). A point that is gone at some t fails the trace, naming that t. Returns name, point, t, samples, grow, points ([x, y, z] in the document's unit), length (along the polyline), closed (more than 2 points and it ends where it began, within the tolerance), box and plane ({point, normal} when the path lies in one plane within the tolerance and within a millionth of its size, else null). In an assembly the point is named through an instance as a mate names it (Coupler/End2, Foot/F1:vertex(2)), without feature. With background: true (a window's default) the points are worked out by the motion's background builder, so a window goes on playing meanwhile: the result says pending: true and leaves out the points and what is measured of them, and the trace is drawn once it is done (view.trace with background: false works it out in the command and returns them). view.trace {name} without point reads a trace asked for before: its full answer once it is there, the error that stopped it (a wrong point is an error at once; work let go of, by motion.bake {cancel: true}, view.motion {t: null} or an edit, says let go of), or pending: true; wait: true waits for it, in a window at most 2 s (it holds the window's engine thread: an agent asks again, or follows ui.get traces), elsewhere at most 600 s. Where the bodies are beside the host (the browser's worker), the trace is worked out there: the result says deferred: true and pending: true with its name, the trace is pending until its answer came (then drawn, or its error said), and the answer is what view.trace with background: false answers.",
+        "Traces the path of a point over the motion: the point is a vertex by its persistent name (document.edges lists them; feature says which body when several have it) or a point of a sketch ({sketch, entity}); its place is taken at samples values of t evenly from t[0] to t[1] (both included), each state made as view.motion makes it. The trace is view state of the document (not saved, not undone, let go of at the next edit): the viewport draws it as a line, and file.export {path: *.svg or *.dxf, trace: name} writes it in its plane. With grow: true the viewport draws the trace only up to the t it shows while it shows a moment of the motion (the player draws it as it goes), whole otherwise. A trace with the name of one kept replaces it; at most 32 are kept. clear: true removes every trace, clear: name one of them (nothing is traced then). The document needs a timeline (view.motion). A point that is gone at some t fails the trace, naming that t. Returns name, point, t, samples, grow, points ([x, y, z] in the document's unit), length (along the polyline), closed (more than 2 points and it ends where it began, within the tolerance), box and plane ({point, normal} when the path lies in one plane within the tolerance and within a millionth of its size, else null). In an assembly the point is named through an instance as a mate names it (Coupler/End2, Foot/F1:vertex(2)), without feature. With background: true (a window's default) the points are worked out by the motion's background builder, so a window goes on playing meanwhile: the result says pending: true and leaves out the points and what is measured of them, and the trace is drawn once it is done (view.trace with background: false works it out in the command and returns them). view.trace {name} without point reads a trace asked for before: its full answer once it is there, the error that stopped it (a wrong point is an error at once; work let go of, by motion.bake {cancel: true}, view.motion {t: null} or an edit, says let go of), or pending: true; wait: true waits for it, in a window at most 2 s (it holds the window's engine thread: an agent asks again, or follows ui.get traces), in a browser not at all (the worker's answer comes in only after the command), elsewhere at most 600 s. Where the bodies are beside the host (the browser's worker), the trace is worked out there: the result says deferred: true and pending: true with its name, the trace is pending until its answer came (then drawn, or its error said), and the answer is what view.trace with background: false answers.",
         doc: true,
         names: ["point"],
         view_trace
@@ -3504,23 +3504,39 @@ fn trace_job(mut run: TraceRun) -> crate::motion_build::GridJob {
 /// out (`wait`: waiting for it, at most [`TRACE_WAIT`]), or why it failed.
 fn read_trace(session: &mut Session, name: &str, wait: bool) -> Run {
     const ID: &str = "view.trace";
-    // How long to wait: in a window (a session that bakes in the
-    // background) briefly, as assertions do, since the engine thread
-    // waiting holds the play and every other client up; elsewhere longer.
-    // In a browser there is no clock and nothing is worked out in the
-    // background, so nothing is waited for.
+    // `wait_more()`: true when it waited a moment for a trace still being
+    // worked out (ask again), false once the time is up. How long to wait:
+    // in a window (a session that bakes in the background) briefly, as
+    // assertions do, since the engine thread waiting holds the play and
+    // every other client up; elsewhere longer.
     #[cfg(not(target_arch = "wasm32"))]
-    let deadline = wait.then(|| {
-        let patience = if session.bake_in_background {
-            TRACE_WAIT_WINDOW
-        } else {
-            TRACE_WAIT
-        };
-        // native clock: cfg(not(target_arch = "wasm32")).
-        std::time::Instant::now() + patience
-    });
+    let wait_more = {
+        let deadline = wait.then(|| {
+            let patience = if session.bake_in_background {
+                TRACE_WAIT_WINDOW
+            } else {
+                TRACE_WAIT
+            };
+            // native clock: cfg(not(target_arch = "wasm32")).
+            std::time::Instant::now() + patience
+        });
+        move || {
+            // native clock: cfg(not(target_arch = "wasm32")).
+            let waiting = deadline.is_some_and(|d| std::time::Instant::now() < d);
+            if waiting {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            waiting
+        }
+    };
+    // In a browser there is no clock, and a trace pending there is worked
+    // out by the page's worker, whose answer comes in only after this
+    // command returned (`Session::command_answered`): nothing is waited for.
     #[cfg(target_arch = "wasm32")]
-    let _ = wait;
+    let wait_more = {
+        let _ = wait;
+        || false
+    };
     loop {
         let open = session.document_mut()?;
         open.poll_motion();
@@ -3529,13 +3545,8 @@ fn read_trace(session: &mut Session, name: &str, wait: bool) -> Run {
             if let Some(why) = &job.error {
                 return fail(format!("{ID}: trace `{name}`: {why}"));
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                // native clock: cfg(not(target_arch = "wasm32")).
-                if deadline.is_some_and(|d| std::time::Instant::now() < d) {
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                    continue;
-                }
+            if wait_more() {
+                continue;
             }
             return Ok(json!({"name": name, "pending": true}));
         }

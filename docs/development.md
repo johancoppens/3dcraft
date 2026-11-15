@@ -11,6 +11,7 @@ cargo test --workspace                          # over five thousand tests (2026
 cargo xtask ci                                  # fmt --check + clippy -D warnings + tests (binaries side by side) + doctests + layers + wasm: the full gate (the workshop runs it on the Strix, below)
 cargo xtask test -p craft3d-engine --test guide_examples --test panic_hunt   # some test files' binaries side by side, slowest first (without --test, a crate's every binary)
 cargo xtask layers                              # dependency layering, that every crate opts in to the never-crash lints, and no std clock where the browser gets
+cargo xtask wasm                                # L0–L7 and the web app for wasm32-unknown-unknown: cargo check, then cargo clippy -- -D warnings over the same packages (AGENTS.md rule 11)
 cargo xtask stats                               # lines and tests per crate
 CRAFT3D_FREECAD=/path/to/FreeCAD.AppImage cargo xtask freecad   # FreeCAD reads our exports back
 cargo xtask fonts             # fetches the built-in fonts (pinned, never committed) into assets/fonts or $CRAFT3D_FONTS; the text tests need them

@@ -15,7 +15,7 @@ This page holds the rules for the code and the checklists. How to report a probl
 - **Layering:** `cargo xtask layers` must pass. Register new crates in `xtask/src/layers.rs`. It also refuses a clock of `std` (`Instant::now`, `SystemTime::now`, which panic in the browser) in a crate the browser build compiles, unless it is in a native-only module, a test module, a file that takes `Instant` from `web_time`, or says why the browser never gets there with a `// native clock: …` comment.
 - **Tests:** required for every change, written to the oracles in [`testing.md`](testing.md). Geometry is tested with analytic and freeform inputs, at several scales, and with degenerate inputs.
 - **Determinism:** no result may depend on thread count, hash order, time or unseeded randomness.
-- **Style:** `cargo fmt`, and `cargo clippy -- -D warnings`. Match surrounding code. Comments explain *why*, and name the tolerance and the reference for numeric code.
+- **Style:** `cargo fmt`, and `cargo clippy -- -D warnings`, for the web too: `cargo xtask wasm` runs clippy for `wasm32-unknown-unknown` after its check, since code compiled for the browser alone is not seen by the native clippy. Match surrounding code. Comments explain *why*, and name the tolerance and the reference for numeric code.
 - **UI:** use `theme::Tokens`. Verify visually (offscreen snapshot or the control channel) and look at the picture.
 - **Commits:** small, focused, with a clear subject line. An agent commits or pushes only when the person it works for asks. A change from outside the workshop starts with an issue and comes as a pull request ([`CONTRIBUTING.md`](../CONTRIBUTING.md)).
 
