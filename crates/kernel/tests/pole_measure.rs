@@ -1085,3 +1085,181 @@ fn a_face_whose_inner_integrals_are_not_shown_to_converge_keeps_its_sums() {
         assert!(off <= 1e-12, "{off:e}");
     }
 }
+
+/// Boehm's insertion of the knot `t` once into a homogeneous control
+/// polygon of degree `p` (the review of 2026-11-15, round 3).
+fn insert_knot(knots: &[f64], p: usize, points: &[[f64; 4]], t: f64) -> (Vec<f64>, Vec<[f64; 4]>) {
+    let n = points.len();
+    let mut k = p;
+    while k + 1 < n && knots[k + 1] <= t {
+        k += 1;
+    }
+    let mut out = Vec::with_capacity(n + 1);
+    for i in 0..=n {
+        if i + p <= k {
+            out.push(points[i]);
+        } else if i > k {
+            out.push(points[i - 1]);
+        } else {
+            let a = (t - knots[i]) / (knots[i + p] - knots[i]);
+            let (x, y) = (points[i], points[i - 1]);
+            out.push([0, 1, 2, 3].map(|c| a * x[c] + (1.0 - a) * y[c]));
+        }
+    }
+    let mut knots = knots.to_vec();
+    knots.insert(k + 1, t);
+    (knots, out)
+}
+
+/// `s` with `extra` knots put evenly into each of its spans in `u`
+/// (`along_u`) or in `v`: the same surface, written with more spans.
+fn more_spans(s: &NurbsSurface, along_u: bool, extra: usize) -> NurbsSurface {
+    let ((du, dv), (cu, cv)) = (s.degrees(), s.counts());
+    let (mut ku, mut kv) = (s.knots_u().to_vec(), s.knots_v().to_vec());
+    let mut grid: Vec<Vec<[f64; 4]>> = (0..cu)
+        .map(|i| {
+            (0..cv)
+                .map(|j| {
+                    let (p, w) = (s.control_points()[i * cv + j], s.weights()[i * cv + j]);
+                    [p.x * w, p.y * w, p.z * w, w]
+                })
+                .collect()
+        })
+        .collect();
+    let knots = if along_u { &ku } else { &kv };
+    let spans: Vec<(f64, f64)> = knots
+        .windows(2)
+        .filter(|w| w[1] > w[0])
+        .map(|w| (w[0], w[1]))
+        .collect();
+    for (a, b) in spans {
+        for m in 1..=extra {
+            let t = a + (b - a) * m as f64 / (extra + 1) as f64;
+            if along_u {
+                let mut columns = Vec::new();
+                let mut knots = ku.clone();
+                for j in 0..grid[0].len() {
+                    let column: Vec<[f64; 4]> = grid.iter().map(|row| row[j]).collect();
+                    let (more, column) = insert_knot(&ku, du, &column, t);
+                    knots = more;
+                    columns.push(column);
+                }
+                ku = knots;
+                grid = (0..columns[0].len())
+                    .map(|i| columns.iter().map(|c| c[i]).collect())
+                    .collect();
+            } else {
+                let mut knots = kv.clone();
+                for row in grid.iter_mut() {
+                    let (more, longer) = insert_knot(&kv, dv, row, t);
+                    knots = more;
+                    *row = longer;
+                }
+                kv = knots;
+            }
+        }
+    }
+    let (cu, cv) = (grid.len(), grid[0].len());
+    let (mut net, mut weights) = (Vec::new(), Vec::new());
+    for row in &grid {
+        for h in row {
+            net.push(Vec3::new(h[0] / h[3], h[1] / h[3], h[2] / h[3]));
+            weights.push(h[3]);
+        }
+    }
+    NurbsSurface::new(du, dv, ku, kv, cu, cv, net, weights).unwrap()
+}
+
+#[test]
+fn the_area_of_a_thin_blade_s_tip_on_many_spans_is_within_its_bound() {
+    // The review of 2026-11-15, round 3: the blade 1e-4 thick with a tip
+    // 0.3 long (quarter ellipses), its tip faces written with 9 or 10
+    // spans along v (the same surfaces), was 1.19e-12 and 1.11e-12 of its
+    // area off within a stated 1.0e-12, and a blade 3e-4 thick with a tip
+    // 1 long with 16 spans along u 1.37e-12: past eight spans along the
+    // inner integrals their proof is not made (`mass::PROOF_SPANS`), and
+    // the plateau stood (docs/design/topology.md › *A rail beside its
+    // border*). Held to the tanh–sinh rule on the faces as built.
+    let cases: [(f64, f64, bool, usize, &[f64]); 3] = [
+        (1e-4, 0.3, false, 8, &SCALES),
+        (1e-4, 0.3, false, 9, &[1.0]),
+        (3e-4, 1.0, true, 15, &[1.0]),
+    ];
+    for (thickness, length, along_u, extra, scales) in cases {
+        for &k in scales {
+            let what = format!(
+                "the blade {thickness:e} with a tip {length}, {} spans in {}, at {k}",
+                extra + 1,
+                if along_u { "u" } else { "v" }
+            );
+            let (_, body) = section_tip(
+                &Frame::WORLD,
+                k,
+                &polygon(&blade(thickness)),
+                [0.0, 0.0],
+                length,
+                ROUND.0,
+            )
+            .unwrap();
+            let truth: f64 = body
+                .faces
+                .iter()
+                .map(|face| match &face.surface {
+                    Surface::Plane(_) => polygon_area(&blade(thickness)) * k * k,
+                    surface => area_by_tanh_sinh(surface, 6),
+                })
+                .sum();
+            let mut more = body.clone();
+            for face in &mut more.faces {
+                if let Surface::Nurbs(s) = &face.surface {
+                    face.surface = Surface::Nurbs(more_spans(s, along_u, extra));
+                }
+            }
+            let (mass, bound) = mass_bound(&more).unwrap_or_else(|e| panic!("{what}: {e}"));
+            let off = (mass.area - truth).abs();
+            println!(
+                "{what}: the area {:e} of itself off, bound {:e}",
+                off / truth,
+                bound.area / truth
+            );
+            assert!(
+                off <= bound.area + 1e-14 * truth,
+                "{what}: {:e} of the area off, outside its bound of {:e}",
+                off / truth,
+                bound.area / truth
+            );
+        }
+    }
+}
+
+#[test]
+fn a_tip_measured_again_with_the_search_s_feet_gives_one_answer_from_both_functions() {
+    // Faces whose sums do not settle with feet along their surface's
+    // borders are measured once more with the search's feet
+    // (`face_integrals`), and `mass_properties` and `mass_and_inertia`
+    // give the same answer for the body still (the review of 2026-11-15,
+    // round 3: the test above shows none of its tips going through that).
+    // These do: blunt tips at fullness 0.99 in a turned frame, retried,
+    // and refused by both alike. (Of 68 tips tried, at fullness 0.8 to
+    // 0.99 in two frames, none was found whose sums without the second
+    // moments settle with feet along its borders while its second moments
+    // do not: the case where the first try's sums are kept is not shown.)
+    let turned = Frame::new(
+        Vec3::new(3.0, -2.0, 5.0),
+        Vec3::new(2.0, -3.0, 6.0),
+        Vec3::new(1.0, 0.3, 0.0),
+    )
+    .unwrap();
+    for (corners, foot) in [(&L[..], [1.99, 1.99]), (&SQUARE[..], [0.003, 0.003])] {
+        let (_, body) = section_tip(&turned, 1.0, &polygon(corners), foot, 0.5, 0.99).unwrap();
+        let before = craft3d_topo::measured_again();
+        let both = craft3d_topo::mass_and_inertia(&body)
+            .0
+            .map(|m| m.volume.to_bits());
+        let again = craft3d_topo::measured_again() - before;
+        let alone = craft3d_topo::mass_properties(&body).map(|m| m.volume.to_bits());
+        println!("tip over {foot:?} at fullness 0.99: {again} faces measured again; {both:?}");
+        assert!(again > 0, "{foot:?}: no face measured again now");
+        assert_eq!(both, alone, "{foot:?}");
+    }
+}

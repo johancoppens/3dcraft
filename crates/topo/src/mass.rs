@@ -3804,6 +3804,7 @@ fn face_integrals(
         );
         BORDERS.with(|borders| borders.set((false, false, false)));
         WORK_SPENT.fetch_add(again.spent, Ordering::Relaxed);
+        MEASURED_AGAIN.fetch_add(1, Ordering::Relaxed);
         // The sums without the second moments are those `Wanted::First`
         // gives (`mass_properties` and `mass_and_inertia` the same
         // volume): where they settled with the feet along the borders,
@@ -3898,6 +3899,15 @@ fn uneven_weights(surface: &Surface) -> Option<f64> {
 /// summed the same whatever the threads.
 static FACES_INTEGRATED: AtomicU64 = AtomicU64::new(0);
 static WORK_SPENT: AtomicU64 = AtomicU64::new(0);
+static MEASURED_AGAIN: AtomicU64 = AtomicU64::new(0);
+
+/// How many faces were measured once more with the search's feet since
+/// the process started, their sums not settling with feet along their
+/// surface's borders ([`face_integrals`]): for the tests that hold what
+/// such a face gives.
+pub fn measured_again() -> u64 {
+    MEASURED_AGAIN.load(Ordering::Relaxed)
+}
 
 /// How many faces [`mass_properties`], [`inertia`] and
 /// [`mass_and_inertia`] have integrated since the process started, and
@@ -4581,6 +4591,10 @@ fn cell_by_cell(
         *widest.entry(cell.key).or_insert(0) += 1 << MAX_DOUBLINGS;
     }
     let mut taken: Vec<Group> = Vec::new();
+    // Feet along borders taken for the face on a surface of many spans
+    // ([`PROOF_SPANS`]), and its inner integrals not proven: the bound is
+    // held as it was before such feet ([`unproven_share`]).
+    let mut unproven = false;
     for parts in [FIRST_SUMS, SUMS] {
         if parts == SUMS {
             // Opened again where the second moments do not agree.
@@ -4695,15 +4709,17 @@ fn cell_by_cell(
         // On a face with a sample whose foot was taken along its surface's
         // borders or lines, the inner integrals of what was taken are
         // shown to have converged (2026-11-15).
-        if parts == FIRST_SUMS
-            && BORDERS.with(|borders| borders.get().2)
-            && inner_spans(surface, plan) <= PROOF_SPANS
-        {
+        let (_, took, summed) = BORDERS.with(|borders| borders.get());
+        if parts == FIRST_SUMS && summed && inner_spans(surface, plan) <= PROOF_SPANS {
             // Its sums are work of their own, as much again as the face
             // may take: a face that settled within its budget is not
             // given up for showing that it did.
             work.limit = work.limit.saturating_mul(2);
             inner_proven(at, (rule, coarse), (sense, plan), &mut taken, work)?;
+        } else if parts == FIRST_SUMS && took && most_spans(surface) > PROOF_SPANS {
+            // Feet along borders among its sums, or where its panels were
+            // placed, on a surface of many spans, without the proof.
+            unproven = true;
         }
         if parts == FIRST_SUMS
             && let Some(slot) = first_sums.as_deref_mut()
@@ -4730,7 +4746,12 @@ fn cell_by_cell(
                 *held += strip;
             }
         }
-        work.hold(&finer, group.share);
+        let share = if unproven {
+            group.share.max(unproven_share(outline, &finer))
+        } else {
+            group.share
+        };
+        work.hold(&finer, share);
     }
     settle(
         surface,
@@ -4749,6 +4770,27 @@ fn cell_by_cell(
 /// is too short a stretch for the plateau the proof is for; the faces it
 /// was shown on have one.
 const PROOF_SPANS: usize = 8;
+
+/// The share of rounding a part of a face is held with where feet along
+/// its surface's borders are among its sums and its inner integrals are
+/// not proven ([`PROOF_SPANS`]): that of a boundary off its face by as
+/// much as an edge may be ([`Outline::noise`] with `touch`). Before such
+/// feet, the search's feet next to the pole were off their points, and
+/// what they were off (up to `touch`) was counted so: the bound is no
+/// narrower than the one such a face had then. Two sums that agree do not
+/// show the inner integrals' plateau (the blade 1e-4 thick with a tip 0.3
+/// long, its faces written with 9 spans along v: 1.19e-12 of its area off
+/// with the parts held to 1e-12, the review of 2026-11-15, round 3); the
+/// sums stay as they settled, only what they are held to widens.
+fn unproven_share(outline: &Outline, finer: &Total) -> f64 {
+    outline.noise(finer.size.area, outline.touch)
+}
+
+/// The knot spans of `surface` along the parameter that has more of them.
+fn most_spans(surface: &Surface) -> usize {
+    let (lines_u, lines_v) = knot_lines(surface);
+    lines_u.len().max(lines_v.len()) + 1
+}
 
 /// The knot spans of `surface` along the direction its inner integrals
 /// run in by `plan`; for a plan without one direction, the more of the
