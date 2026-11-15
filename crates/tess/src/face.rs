@@ -4028,10 +4028,32 @@ impl Work<'_> {
         let agreement = facing.dot(reference);
         let clear = !flat && agreement > 0.5 * facing.length() * reference.length();
         if !clear {
+            // A triangle that stands square to the surface faces neither
+            // way: where the facing's part along the surface's unit normal
+            // is within the rounding of the facing itself, its sign is the
+            // rounding's, and it is taken for none. Such triangles stand
+            // on a chord of an edge along which the surface turns round
+            // far more tightly than the tolerance (the nose of a blade,
+            // where a seam runs: the chord lies inside it, and every point
+            // of the face near the seam lies in the plane of the chord and
+            // its curve). Kept whenever the rounding happened to come out
+            // positive, the cuts towards the chord ended there, on both
+            // sides of the seam alike, and points of the two sides came
+            // to lie on one place in space: a mesh that is no manifold
+            // (2026-11-15). Cut, they end where no point fits, and the
+            // chord is asked for (`mesh_face_in`'s `along_chords`).
+            let square = ROUNDED_AWAY * reach * longest;
             let exact = if flat {
                 Some(0.0)
             } else if self.param.is_freeform() {
-                (reference.length() > 0.0).then_some(agreement)
+                let length = reference.length();
+                (length > 0.0).then(|| {
+                    if (agreement / length).abs() <= square {
+                        0.0
+                    } else {
+                        agreement
+                    }
+                })
             } else {
                 self.param
                     .surface
@@ -4039,6 +4061,7 @@ impl Work<'_> {
                     .ok()
                     .and_then(|(u, v)| self.param.surface.normal(u, v))
                     .map(|n| facing.dot(n) * self.param.handedness())
+                    .map(|x| if x.abs() <= square { 0.0 } else { x })
             };
             if exact.is_some_and(|x| !positive(x)) {
                 // The longest free edge, in the scaled parameter plane.
@@ -5966,7 +5989,59 @@ fn mesh_face_in(
             "its loops do not bound a region: they enclose no area on the surface",
         );
     }
+    one_place_each(&work.pos, boundary_vertices, index)?;
     Ok(mesh)
+}
+
+/// Holds a face's mesh to being a surface without a fold or a pinch: every
+/// point its triangulation added inside the face's region (`positions`
+/// after the first `boundary` ones) is a place of its own in space, which
+/// no other point of the face's mesh shares bit for bit.
+///
+/// The sides inside a region are each shared by two triangles in the
+/// parameter plane, by the making of the triangulation, and the sides on
+/// its boundary are held to the edges' chords (`body.rs`,
+/// `closes_along_edges`). That makes the mesh a closed manifold in space
+/// as long as the map from the plane into space is one to one, which a
+/// surface's parameters are not everywhere: the two sides of a seam are
+/// one curve, and a pole is one point however long its border. Points
+/// that the topology makes one there are points of the boundary (an
+/// edge's, a seam's, a pole's), and share their place by construction. A
+/// point added inside that lands on another (cut after cut towards a seam
+/// from both sides of it, or onto a pole or a chord's end) is two
+/// vertices to the triangulation and one to the body: the triangles round
+/// both meet there, and four of them on one side where two points do. An
+/// error names the face and the place, never a mesh.
+///
+/// The cost is that of sorting the face's points.
+fn one_place_each(positions: &[Vec3], boundary: usize, face: usize) -> Result<(), TessError> {
+    let place = |p: Vec3| [p.x + 0.0, p.y + 0.0, p.z + 0.0].map(f64::to_bits);
+    let mut places: Vec<([u64; 3], usize)> = positions
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| (place(p), i))
+        .collect();
+    places.sort_unstable();
+    for same in places.chunk_by(|x, y| x.0 == y.0) {
+        if same.len() > 1 && same.iter().any(|&(_, i)| i >= boundary) {
+            let at = same
+                .first()
+                .and_then(|&(_, i)| positions.get(i))
+                .copied()
+                .unwrap_or(Vec3::ZERO);
+            return fail(
+                face,
+                format!(
+                    "its mesh is no manifold: a point it added inside the face lies at ({}, {}, \
+                     {}), where another point of its mesh lies too (the surface comes back onto \
+                     itself there, across a seam or into a pole, and the triangles round both \
+                     points would meet there)",
+                    at.x, at.y, at.z
+                ),
+            );
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -5992,6 +6067,30 @@ mod tests {
             ],
             winding: [0, 0],
         }
+    }
+
+    #[test]
+    fn a_point_added_inside_where_another_lies_is_no_manifold() {
+        let p = |x: f64| Vec3::new(x, 0.25, -3.0);
+        // Points of the boundary may share a place: the two sides of a
+        // seam, the stretch of a pole.
+        assert!(one_place_each(&[p(0.0), p(1.0), p(0.0), p(1.0), p(2.0)], 4, 7).is_ok());
+        // A point added inside may not, on a point of the boundary or on
+        // another added inside; −0 and 0 are one place.
+        for (points, boundary) in [
+            (vec![p(0.0), p(1.0), p(2.0), p(1.0)], 3),
+            (vec![p(0.0), p(1.0), p(2.0), p(5.0), p(5.0)], 3),
+            (vec![p(0.0), p(1.0), Vec3::new(-0.0, 0.25, -3.0)], 2),
+        ] {
+            let error = one_place_each(&points, boundary, 7).unwrap_err();
+            assert!(
+                matches!(&error, TessError::Face { face: 7, reason } if reason.contains("no manifold")),
+                "{error}"
+            );
+        }
+        // Nothing to hold, or nothing inside.
+        assert!(one_place_each(&[], 0, 0).is_ok());
+        assert!(one_place_each(&[p(0.0), p(0.0)], 2, 0).is_ok());
     }
 
     #[test]

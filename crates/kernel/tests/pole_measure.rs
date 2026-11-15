@@ -355,11 +355,15 @@ fn the_normal_at_the_tip_of_a_very_pointed_end_is_known_to_be_off() {
     // well): at a fullness of 0.001 the mesh is watertight and within its
     // chord bound, and the normals it gives at the tip are not the tip
     // plane's (0.858 against it on a blade 1e-3 thick with a tip 0.3
-    // long; down to 0.06 on thinner blades). The cause is not looked
-    // into (the face turns into the tip's plane within a thousandth of
-    // its length there, and the normal at a pole is read a little way
-    // off it). When this fails because the normal is right, the pin
-    // goes.
+    // long; down to 0.06 on thinner blades). The cause (measured
+    // 2026-11-15): the normal at a pole is the surface's own read a
+    // millionth of the range off it (`geom::pole::Pole::normal_along`),
+    // and along the long faces of such a blade the surface turns into the
+    // tip's plane only nearer than that: its normal is 0.17 against the
+    // plane at 1e-5 off, 0.858 at 1e-6, 0.998 at 1e-7, 0.99998 at 1e-8.
+    // The limit itself is the plane's (`∂uv × ∂v` at the pole). Not the
+    // mesh's triangles: the fan round the tip is one vertex. When this
+    // fails because the normal is right, the pin goes.
     // And at a fullness of 0.01 on a blade 1e-4 thick (0.860).
     let frame = Frame::WORLD;
     for (thickness, fullness) in [(1e-3, 0.001), (1e-4, 0.01)] {
@@ -464,21 +468,18 @@ fn seamed_dome(frame: &Frame, (a, b): (f64, f64), flip: bool, foot: [f64; 2], le
 }
 
 #[test]
-fn a_dome_closed_across_a_seam_is_known_to_mesh_as_no_manifold() {
-    // KNOWN, owed (docs/design/tessellator.md › *The rails of a squeezed
-    // pole*; found by the review of 2026-11-14, its shape by the review
-    // of 2026-11-15; on the commit before as well, so on 0.1.x): a dome a
-    // hundred times as long as wide, closed across a seam in a tip near
-    // one end, is meshed without an error, and the mesh is no manifold.
-    // Not a gap: every directed edge has its reverse. At 0.002 three
-    // vertices within 1e-14 of each other by the tip have edges used
-    // twice each way; at 0.02 one edge 0.3 to 0.45 from the tip is shared
-    // by four triangles. A user reaches it today: such a dome in a STEP
-    // file is read by `file.import`, measures right, and `file.export` to
-    // STL writes the mesh without a word. The body is valid and measures
-    // as its closed form, eleven fifteenths of its base times its length.
-    // When this fails because the mesh is a closed manifold or refused,
-    // the pin goes.
+fn a_dome_closed_across_a_seam_meshes_as_a_closed_manifold() {
+    // Until 2026-11-15 (docs/design/tessellator.md › *Sideways at a
+    // seam*; on 0.1.x as well) a dome a hundred times as long as wide,
+    // closed across a seam in a tip near one end, was meshed without an
+    // error as no manifold: at 0.002 three vertices within 1e-14 of each
+    // other 4e-3 from the tip had edges used twice each way (12,004
+    // triangles); at 0.02 one edge 0.3 to 0.45 from the tip was shared by
+    // four triangles (1,378). Such a dome in a STEP file was read by
+    // `file.import`, measured right, and `file.export` to STL wrote the
+    // mesh without a word. The body is valid and measures as its closed
+    // form, eleven fifteenths of its base times its length. Now a closed
+    // manifold within its chord bound (`pole_fan.rs` holds the families).
     let frame = Frame::new(
         Vec3::new(3.0, -2.0, 5.0),
         Vec3::new(2.0, -3.0, 6.0),
@@ -504,7 +505,7 @@ fn a_dome_closed_across_a_seam_is_known_to_mesh_as_no_manifold() {
             ..TessParams::default()
         };
         let welded = tessellate_body(&body, &params)
-            .unwrap_or_else(|e| panic!("{what}: refused now, take the pin off: {e}"))
+            .unwrap_or_else(|e| panic!("{what}: {e}"))
             .weld()
             .unwrap();
         // Each directed edge, and how many triangles use it.
@@ -514,16 +515,16 @@ fn a_dome_closed_across_a_seam_is_known_to_mesh_as_no_manifold() {
                 *uses.entry(edge).or_insert(0) += 1;
             }
         }
-        let twins = uses.keys().all(|&(a, b)| uses.contains_key(&(b, a)));
         let shared = uses.values().filter(|&&n| n > 1).count();
         println!(
-            "{what}: {} triangles, {shared} directed edges used more than once, every edge with its twin: {twins}",
+            "{what}: {} triangles, {shared} directed edges used more than once",
             welded.triangles.len()
         );
-        assert!(twins, "{what}: a gap now");
+        assert!(shared == 0 && welded.is_closed(), "{what}");
         assert!(
-            shared > 0 && !welded.is_closed(),
-            "{what}: a closed manifold now, take the pin off"
+            (welded.volume() - want).abs() <= mass.area * chord,
+            "{what}: the mesh's volume {} against {want}",
+            welded.volume()
         );
     }
 }
