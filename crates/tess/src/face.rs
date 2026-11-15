@@ -3865,6 +3865,10 @@ struct Work<'a> {
     angle_floor: f64,
     /// Per vertex, the surface's normal there, with the angle criterion.
     normals: Vec<Option<Vec3>>,
+    /// A triangle square to the surface, to rounding, faces neither way
+    /// (see [`Work::assess`]); only where the face's mesh made without
+    /// it put a point on another ([`mesh_face`]).
+    strict: bool,
 }
 
 impl Work<'_> {
@@ -4041,8 +4045,14 @@ impl Work<'_> {
             // sides of the seam alike, and points of the two sides came
             // to lie on one place in space: a mesh that is no manifold
             // (2026-11-15). Cut, they end where no point fits, and the
-            // chord is asked for (`mesh_face_in`'s `along_chords`).
-            let square = ROUNDED_AWAY * reach * longest;
+            // chord is asked for (`mesh_face_in`'s `along_chords`). Only
+            // when the face is meshed again for that (`strict`): a face
+            // whose mesh was made right is made as before, bit for bit.
+            let square = if self.strict {
+                ROUNDED_AWAY * reach * longest
+            } else {
+                0.0
+            };
             let exact = if flat {
                 Some(0.0)
             } else if self.param.is_freeform() {
@@ -5377,6 +5387,14 @@ pub(crate) fn face_boundary<'a>(
 /// `retry`: the caller cuts such chords and calls again (not in its last
 /// round), so a face with a warp ([`angle_warp`]) asks for them rather
 /// than fall back to the plane of its scales.
+///
+/// A mesh in which a point the triangulation added inside the face lies
+/// on another point of the face, or within the rounding of its
+/// coordinates of one ([`folded_at`]), is no manifold: the face is meshed
+/// once more with a triangle that stands square to the surface taken for
+/// one that faces neither way (`strict`, [`Work::assess`]), and if that
+/// mesh has such a point too, the face is an error that says where. A
+/// face whose mesh has none is made as before, bit for bit.
 pub(crate) fn mesh_face(
     boundary: &Boundary,
     face: &Face,
@@ -5386,8 +5404,42 @@ pub(crate) fn mesh_face(
     ask: &mut Vec<Chord>,
     retry: bool,
 ) -> Result<FaceMesh, TessError> {
+    let (mesh, fold) = mesh_face_planes(boundary, face, index, params, splits, ask, retry, false)?;
+    if fold.is_none() {
+        return Ok(mesh);
+    }
+    let (mesh, fold) = mesh_face_planes(boundary, face, index, params, splits, ask, retry, true)?;
+    match fold {
+        None => Ok(mesh),
+        Some(at) => fail(
+            index,
+            format!(
+                "its mesh is no manifold: a point it added inside the face lies at ({}, {}, {}), \
+                 on another point of its mesh or within the rounding of its coordinates of one \
+                 (the surface comes back onto itself there, across a seam or into a pole, and \
+                 the triangles round both points would meet there)",
+                at.x, at.y, at.z
+            ),
+        ),
+    }
+}
+
+/// [`mesh_face`] in the plane of the warp, if any, and else (or where that
+/// fails) of the scales, `strict` or not; with the place where its mesh
+/// folds, if it does.
+#[allow(clippy::too_many_arguments)]
+fn mesh_face_planes(
+    boundary: &Boundary,
+    face: &Face,
+    index: usize,
+    params: &TessParams,
+    splits: &[(Vec3, Vec3)],
+    ask: &mut Vec<Chord>,
+    retry: bool,
+    strict: bool,
+) -> Result<(FaceMesh, Option<Vec3>), TessError> {
     if boundary.warp.is_none() {
-        return mesh_face_in(boundary, face, index, params, splits, ask, false);
+        return mesh_face_in(boundary, face, index, params, splits, ask, false, strict);
     }
     // The plane of the warp first. Where it fails for chords of the edges
     // that its triangles cannot follow (along a nose that turns within a
@@ -5397,19 +5449,20 @@ pub(crate) fn mesh_face(
     // anything else), the plane of the scales, as without the warp. A
     // budget exceeded is the face's, in either plane.
     let before = ask.len();
-    match mesh_face_in(boundary, face, index, params, splits, ask, true) {
+    match mesh_face_in(boundary, face, index, params, splits, ask, true, strict) {
         Err(error)
             if !matches!(error, TessError::OverBudget { .. }) && !(retry && ask.len() > before) =>
         {
             ask.truncate(before);
-            mesh_face_in(boundary, face, index, params, splits, ask, false)
+            mesh_face_in(boundary, face, index, params, splits, ask, false, strict)
         }
         done => done,
     }
 }
 
 /// [`mesh_face`] in the plane of the boundary's warp (`warped`), or of
-/// its scales.
+/// its scales; with the place where the mesh folds ([`folded_at`]).
+#[allow(clippy::too_many_arguments)]
 fn mesh_face_in(
     boundary: &Boundary,
     face: &Face,
@@ -5418,7 +5471,8 @@ fn mesh_face_in(
     splits: &[(Vec3, Vec3)],
     ask: &mut Vec<Chord>,
     warped: bool,
-) -> Result<FaceMesh, TessError> {
+    strict: bool,
+) -> Result<(FaceMesh, Option<Vec3>), TessError> {
     let (param, region) = (boundary.param, &boundary.region);
     let warp = boundary.warp.as_ref().filter(|_| warped);
     if let Some(doubt) = &region.doubt {
@@ -5525,6 +5579,7 @@ fn mesh_face_in(
         angle: params.max_angle.filter(|_| !param.is_plane()),
         angle_floor: crate::ANGLE_FLOOR * tolerance,
         normals: Vec::new(),
+        strict,
     };
     // With a triangle budget, the face stops as soon as it is certain to
     // have more triangles than that on its own. The count it gives is
@@ -5989,14 +6044,16 @@ fn mesh_face_in(
             "its loops do not bound a region: they enclose no area on the surface",
         );
     }
-    one_place_each(&work.pos, boundary_vertices, index)?;
-    Ok(mesh)
+    let fold = folded_at(&work.pos, boundary_vertices);
+    Ok((mesh, fold))
 }
 
-/// Holds a face's mesh to being a surface without a fold or a pinch: every
-/// point its triangulation added inside the face's region (`positions`
-/// after the first `boundary` ones) is a place of its own in space, which
-/// no other point of the face's mesh shares bit for bit.
+/// Where a face's mesh folds onto itself, if it does: a point its
+/// triangulation added inside the face's region (`positions` after the
+/// first `boundary` ones) that lies on another point of the face's mesh,
+/// or nearer to one than the rounding of their coordinates
+/// (`ROUNDED_AWAY` times the largest coordinate of the face: about four
+/// thousand units in the last place).
 ///
 /// The sides inside a region are each shared by two triangles in the
 /// parameter plane, by the making of the triangulation, and the sides on
@@ -6010,38 +6067,60 @@ fn mesh_face_in(
 /// point added inside that lands on another (cut after cut towards a seam
 /// from both sides of it, or onto a pole or a chord's end) is two
 /// vertices to the triangulation and one to the body: the triangles round
-/// both meet there, and four of them on one side where two points do. An
-/// error names the face and the place, never a mesh.
+/// both meet there, and four of them on one side where two points do; a
+/// few units in the last place apart they are one place to every program
+/// that reads the mesh, in the single precision of an STL file first.
 ///
 /// The cost is that of sorting the face's points.
-fn one_place_each(positions: &[Vec3], boundary: usize, face: usize) -> Result<(), TessError> {
-    let place = |p: Vec3| [p.x + 0.0, p.y + 0.0, p.z + 0.0].map(f64::to_bits);
-    let mut places: Vec<([u64; 3], usize)> = positions
+fn folded_at(positions: &[Vec3], boundary: usize) -> Option<Vec3> {
+    if positions.len() <= boundary {
+        return None;
+    }
+    // (−0 as 0; a point that is not finite is the triangles' to refuse.)
+    let mut order: Vec<(Vec3, usize)> = positions
         .iter()
         .enumerate()
-        .map(|(i, &p)| (place(p), i))
+        .map(|(i, p)| (Vec3::new(p.x + 0.0, p.y + 0.0, p.z + 0.0), i))
+        .filter(|(p, _)| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
         .collect();
-    places.sort_unstable();
-    for same in places.chunk_by(|x, y| x.0 == y.0) {
-        if same.len() > 1 && same.iter().any(|&(_, i)| i >= boundary) {
-            let at = same
-                .first()
-                .and_then(|&(_, i)| positions.get(i))
-                .copied()
-                .unwrap_or(Vec3::ZERO);
-            return fail(
-                face,
-                format!(
-                    "its mesh is no manifold: a point it added inside the face lies at ({}, {}, \
-                     {}), where another point of its mesh lies too (the surface comes back onto \
-                     itself there, across a seam or into a pole, and the triangles round both \
-                     points would meet there)",
-                    at.x, at.y, at.z
-                ),
-            );
+    let reach = order.iter().fold(0.0_f64, |m, (p, _)| {
+        m.max(p.x.abs()).max(p.y.abs()).max(p.z.abs())
+    });
+    let near = ROUNDED_AWAY * reach;
+    order.sort_unstable_by(|(p, i), (q, j)| {
+        p.x.total_cmp(&q.x)
+            .then(p.y.total_cmp(&q.y))
+            .then(p.z.total_cmp(&q.z))
+            .then(i.cmp(j))
+    });
+    // Where each run of one `x` ends: within it the points go up in `y`.
+    let mut run_end = vec![order.len(); order.len()];
+    for k in (0..order.len().saturating_sub(1)).rev() {
+        if let (Some(&(p, _)), Some(&(q, _)), Some(&after)) =
+            (order.get(k), order.get(k + 1), run_end.get(k + 1))
+            && let Some(slot) = run_end.get_mut(k)
+        {
+            *slot = if p.x == q.x { after } else { k + 1 };
         }
     }
-    Ok(())
+    for (k, &(p, a)) in order.iter().enumerate() {
+        let mut m = k + 1;
+        while let Some(&(q, b)) = order.get(m) {
+            if q.x - p.x > near {
+                break;
+            }
+            if q.x == p.x && q.y - p.y > near {
+                // The rest of this run of one `x` is further still.
+                m = run_end.get(k).copied().unwrap_or(order.len()).max(m + 1);
+                continue;
+            }
+            if (a >= boundary || b >= boundary) && p.distance(q) <= near {
+                return Some(p);
+            }
+            m += 1;
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -6070,27 +6149,40 @@ mod tests {
     }
 
     #[test]
-    fn a_point_added_inside_where_another_lies_is_no_manifold() {
+    fn a_point_added_inside_on_another_or_within_rounding_of_one_is_a_fold() {
         let p = |x: f64| Vec3::new(x, 0.25, -3.0);
         // Points of the boundary may share a place: the two sides of a
         // seam, the stretch of a pole.
-        assert!(one_place_each(&[p(0.0), p(1.0), p(0.0), p(1.0), p(2.0)], 4, 7).is_ok());
+        assert_eq!(
+            folded_at(&[p(0.0), p(1.0), p(0.0), p(1.0), p(2.0)], 4),
+            None
+        );
         // A point added inside may not, on a point of the boundary or on
-        // another added inside; −0 and 0 are one place.
-        for (points, boundary) in [
-            (vec![p(0.0), p(1.0), p(2.0), p(1.0)], 3),
-            (vec![p(0.0), p(1.0), p(2.0), p(5.0), p(5.0)], 3),
-            (vec![p(0.0), p(1.0), Vec3::new(-0.0, 0.25, -3.0)], 2),
+        // another added inside, nor a few units in the last place from
+        // one; −0 and 0 are one place.
+        let beside = Vec3::new(1.0 + 4.0 * f64::EPSILON, 0.25, -3.0 - 8.0 * f64::EPSILON);
+        for (points, boundary, at) in [
+            (vec![p(0.0), p(1.0), p(2.0), p(1.0)], 3, p(1.0)),
+            (vec![p(0.0), p(1.0), p(2.0), p(5.0), p(5.0)], 3, p(5.0)),
+            (vec![p(0.0), p(1.0), Vec3::new(-0.0, 0.25, -3.0)], 2, p(0.0)),
+            (vec![p(0.0), p(1.0), p(2.0), beside], 3, p(1.0)),
         ] {
-            let error = one_place_each(&points, boundary, 7).unwrap_err();
-            assert!(
-                matches!(&error, TessError::Face { face: 7, reason } if reason.contains("no manifold")),
-                "{error}"
-            );
+            assert_eq!(folded_at(&points, boundary), Some(at), "{points:?}");
         }
-        // Nothing to hold, or nothing inside.
-        assert!(one_place_each(&[], 0, 0).is_ok());
-        assert!(one_place_each(&[p(0.0), p(0.0)], 2, 0).is_ok());
+        // Points a millionth apart are two places, and so are points of
+        // one x far apart in y, however many, also when the last of them
+        // is near a point of another x.
+        let mut row: Vec<Vec3> = (0..200)
+            .map(|k| Vec3::new(1.0, f64::from(k), 0.0))
+            .collect();
+        row.push(Vec3::new(1.0 + 1e-6, 0.0, 0.0));
+        assert_eq!(folded_at(&row, 100), None);
+        row.push(Vec3::new(1.0, 199.0 + 1e-15, 0.0));
+        assert_eq!(folded_at(&row, 100), Some(Vec3::new(1.0, 199.0, 0.0)));
+        // Nothing inside; a point that is not finite is not this check's.
+        assert_eq!(folded_at(&[], 0), None);
+        assert_eq!(folded_at(&[p(0.0), p(0.0)], 2), None);
+        assert_eq!(folded_at(&[p(0.0), Vec3::new(f64::NAN, 0.0, 0.0)], 1), None);
     }
 
     #[test]

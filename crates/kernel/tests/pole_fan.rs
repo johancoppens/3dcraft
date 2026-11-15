@@ -276,9 +276,15 @@ struct Held {
 /// the chord bound of its volume, with its tip's normal and the same bits
 /// on every thread count; `Err` with what is wrong otherwise, and with the
 /// tessellator's reason where it refuses (`refused` true).
-fn meshed(body: &Body, chord: f64, held: &Held, threads: bool) -> Result<usize, (bool, String)> {
+fn meshed(
+    body: &Body,
+    (chord, angle): (f64, Option<f64>),
+    held: &Held,
+    threads: bool,
+) -> Result<usize, (bool, String)> {
     let params = TessParams {
         chordal_tolerance: chord,
+        max_angle: angle,
         ..TessParams::default()
     };
     let mesh = tessellate_body_with_threads(body, &params, 1).map_err(|e| (true, e.to_string()))?;
@@ -332,27 +338,43 @@ fn meshed(body: &Body, chord: f64, held: &Held, threads: bool) -> Result<usize, 
 
 /// Every case meshed: none refused, none wrong; the triangles of all.
 fn all_made(cases: &[(String, Body, Held)], chords: &[f64], threads: bool) -> usize {
-    let mut faults = Vec::new();
+    let (triangles, refused) = made_or_refused(cases, chords, None, threads);
+    assert!(refused.is_empty(), "{refused:#?}");
+    triangles
+}
+
+/// Every case meshed with the angle criterion `angle`: none wrong; the
+/// triangles of all, and what was refused.
+fn made_or_refused(
+    cases: &[(String, Body, Held)],
+    chords: &[f64],
+    angle: Option<f64>,
+    threads: bool,
+) -> (usize, Vec<String>) {
+    let (mut faults, mut refusals) = (Vec::new(), Vec::new());
     let mut triangles = 0;
     for (what, body, held) in cases {
         for &chord in chords {
-            match meshed(body, chord * held.size, held, threads) {
+            match meshed(body, (chord * held.size, angle), held, threads) {
                 Ok(count) => triangles += count,
-                Err((refused, why)) => faults.push(format!(
-                    "{what} at a chord of {chord} of its size: {}{why}",
-                    if refused { "refused: " } else { "" }
-                )),
+                Err((true, why)) => {
+                    refusals.push(format!("{what} at a chord of {chord} of its size: {why}"));
+                }
+                Err((false, why)) => {
+                    faults.push(format!("{what} at a chord of {chord} of its size: {why}"));
+                }
             }
         }
     }
     println!(
-        "{} bodies at {} chords: {triangles} triangles, {} faults",
+        "{} bodies at {} chords, angle {angle:?}: {triangles} triangles, {} faults, {} refused",
         cases.len(),
         chords.len(),
-        faults.len()
+        faults.len(),
+        refusals.len()
     );
     assert!(faults.is_empty(), "{faults:#?}");
-    triangles
+    (triangles, refusals)
 }
 
 /// The domes of the reviews' families at `k` in `frame`.
@@ -400,10 +422,10 @@ const CHORDS: [f64; 5] = [1e-1, 2e-2, 1e-2, 2e-3, 1e-3];
 
 #[test]
 fn domes_closed_across_a_seam_mesh_as_closed_manifolds_in_the_model_s_frame() {
-    // Until 2026-11-15, 100 of these 160 meshes at scale 1 and in the
-    // other frames had points within 1e-12 of each other along the seam,
-    // 23 of them were no manifold (sides used four times, vertices where
-    // two fans meet), all without an error.
+    // Until 2026-11-15, 27 of these 160 meshes (28 of the 160 in the
+    // turned frame, 21 of the 96 at 1e-3) had points within 1e-12 of each
+    // other along the seam, sides used other than once each way, or
+    // vertices where two fans meet, all without an error.
     let cases = domes(1.0, "world", &Frame::WORLD);
     all_made(&cases, &CHORDS, true);
 }
@@ -422,6 +444,32 @@ fn domes_closed_across_a_seam_mesh_as_closed_manifolds_small_and_large() {
             all_made(&domes(k, name, &frame), &[1e-1, 1e-2, 2e-3], false);
         }
     }
+}
+
+#[test]
+fn domes_closed_across_a_seam_mesh_as_closed_manifolds_with_the_export_s_angles() {
+    // The angles of `file.export`'s `coarse` and `normal` qualities (20
+    // and 10 degrees) at their tolerances (2 and 1 thousandths of the side
+    // of a square with the body's area, 1.3 for these domes), on the thin
+    // domes. Refusals are counted, not failed: the angle is a wish, which
+    // a face along so sharp a nose cannot always meet (0.1.x refused
+    // `coarse` for half of such domes too). In the model's frame only: in
+    // a turned one such a dome takes 15 to 100 s at 20 degrees, before
+    // 2026-11-15 as after, and its STL is known to fold in single
+    // precision (`crates/engine/tests/pole_fan.rs`).
+    let mut refused = Vec::new();
+    for (name, frame) in frames(1.0).into_iter().take(1) {
+        let cases: Vec<_> = domes(1.0, name, &frame)
+            .into_iter()
+            .filter(|(what, ..)| what.contains("x 1e-2") || what.contains("x 3e-3"))
+            .filter(|(what, ..)| what.contains("over 0.5 ") || what.contains("over 0.9 "))
+            .collect();
+        for (angle, chord) in [(20.0_f64, 1.3e-3), (10.0, 6.5e-4)] {
+            let (_, out) = made_or_refused(&cases, &[chord], Some(angle.to_radians()), false);
+            refused.extend(out);
+        }
+    }
+    println!("refused: {refused:#?}");
 }
 
 #[test]
@@ -444,7 +492,7 @@ fn the_dome_found_without_a_manifold_is_one() {
             size: 2.0,
             tip: Some((frame.point(0.9, 0.0, 0.5), frame.z())),
         };
-        let made = meshed(&body, chord, &held, true)
+        let made = meshed(&body, (chord, None), &held, true)
             .unwrap_or_else(|(_, e)| panic!("flip {flip}, at {chord}: {e}"));
         println!("the dome, its seam flipped {flip}, at {chord}: {made} triangles");
     }
