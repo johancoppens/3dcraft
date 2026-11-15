@@ -223,6 +223,16 @@ pub(crate) enum Reason {
     FreeGoesOn,
     FreeRollOver,
     TakenWhole,
+    /// The faces are tangent at the edge's middle, though not all along
+    /// it: where a chamfer's side is read ([`along::tangent_at_middle`];
+    /// a fillet of such an edge is refused with the place).
+    MiddleTangent,
+    /// The faces are too close to tangent at the edge's middle, where the
+    /// construction in place starts its ball, for a ball to be started
+    /// (`1 + b1·b2` at most 1e-9 for the directions `b1`, `b2` into the
+    /// faces: within 4.5e-5 rad of opposite), though not tangent there by
+    /// the kernel's measure ([`SMOOTH_SINE`]).
+    FreeNearlySmooth,
 }
 
 impl Reason {
@@ -337,6 +347,12 @@ impl Reason {
             }
             Reason::FreeRunsOver => {
                 "the chamfer's border runs off a face beside the edge across one of its other edges along the way: the distance is too large for that face, or the chamfer would have to carry on onto the next face, which is not built yet"
+            }
+            Reason::MiddleTangent => {
+                "the two faces are tangent at the middle of this edge, though not all along it: whether a chamfer cuts the edge away or fills it is read at its middle, where this edge has no corner; a chamfer of such an edge is not built yet"
+            }
+            Reason::FreeNearlySmooth => {
+                "the two faces are within 0.003° of tangent at the middle of this edge: too flat a corner there for a chamfer to be started"
             }
             Reason::Lost => craft3d_math::bug_text!("the chamfer lost track of an entity"),
         }
@@ -454,6 +470,12 @@ impl Reason {
             Reason::FreeRunsOver => {
                 "the fillet's border runs off a face beside the edge across one of its other edges along the way (where the ball would roll on over a smooth edge onto the next face, or the face is too narrow for the radius); a fillet that carries on onto the next face in the middle of an edge is not built yet: give a smaller radius"
             }
+            Reason::MiddleTangent => {
+                "the two faces are tangent at the middle of this edge, though not all along it: the rolling ball has no corner to round there"
+            }
+            Reason::FreeNearlySmooth => {
+                "the two faces are within 0.003° of tangent at the middle of this edge, where the rolling ball is started: too flat a corner there for the ball to be found, at any radius"
+            }
             Reason::Lost => craft3d_math::bug_text!("the fillet lost track of an entity"),
         }
     }
@@ -495,10 +517,10 @@ pub(crate) enum BlendError {
         /// Smaller sizes, tried, fail the same way.
         smaller_fails: bool,
     },
-    /// The two faces of `edge` are tangent at a place strictly inside it
-    /// (or too close to it for the radius), though not all along it: a
-    /// fillet's section runs to nothing there ([`along`]); for a chamfer,
-    /// the place is the edge's middle, where its side is read.
+    /// The two faces of `edge` are tangent at a place strictly inside it,
+    /// though not all along it: a fillet's section runs to nothing there
+    /// ([`along`]); for a chamfer, the place is the edge's middle, where
+    /// its side is read.
     Pinched { edge: EdgeId, pinch: along::Pinch },
 }
 

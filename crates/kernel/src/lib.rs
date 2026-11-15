@@ -61,17 +61,15 @@ pub const MAX_REPORTED: usize = 8;
 /// Why a fillet's section runs to nothing at a place inside its edge
 /// ([`KernelError::FilletPinched`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum FilletPinch {
-    /// The two faces are tangent there and make an angle on both sides
-    /// of the place.
+    /// The two faces are tangent there (the sine of the angle between
+    /// them at most a millionth) and make an angle on both sides of the
+    /// place.
     Tangent,
     /// The edge is convex on one side of the place and concave on the
     /// other; the two faces are tangent there.
     Flips,
-    /// The two faces come so close to tangent there that the fillet
-    /// would be no wider than the linear tolerance: its `width` between
-    /// the tangent planes of the faces, and the `tolerance`.
-    Narrow { width: f64, tolerance: f64 },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -326,13 +324,6 @@ pub enum KernelError {
         at: craft3d_math::Vec3,
         why: FilletPinch,
         places: usize,
-    },
-    /// A chamfer of `edge` whose two faces are tangent at its middle,
-    /// `at`, though not all along it: which side of the edge a chamfer is
-    /// on (cut away or filled) is read there, where there is no corner.
-    ChamferTangentMiddle {
-        edge: craft3d_topo::EdgeId,
-        at: craft3d_math::Vec3,
     },
     /// The boolean refused the tool of a filleted edge; `smaller_fails`
     /// when smaller radii were tried and fail the same way.
@@ -718,12 +709,6 @@ impl fmt::Display for KernelError {
                 edge.0,
                 fillet_pinched_text(*at, *why, *places, "")
             ),
-            KernelError::ChamferTangentMiddle { edge, at } => write!(
-                f,
-                "chamfer of edge {}: {}",
-                edge.0,
-                chamfer_tangent_middle_text(*at, "")
-            ),
             KernelError::FilletBoolean {
                 edge,
                 error,
@@ -905,8 +890,9 @@ fn place_text(at: craft3d_math::Vec3, unit: &str) -> String {
     format!("({}, {}, {}){unit}", one(at.x), one(at.y), one(at.z))
 }
 
-/// What [`KernelError::FilletPinched`] says, its place and sizes followed
-/// by `unit` (" mm"; empty for numbers alone).
+/// What [`KernelError::FilletPinched`] says, its place followed by `unit`
+/// (" mm"; empty for numbers alone): for the kernel's own text and for the
+/// document's, which names the unit (as [`spindle_text`] is).
 pub fn fillet_pinched_text(
     at: craft3d_math::Vec3,
     why: FilletPinch,
@@ -923,9 +909,9 @@ pub fn fillet_pinched_text(
     match why {
         FilletPinch::Tangent => format!(
             "the two faces become tangent at {place}, a place inside the edge, and make an \
-             angle on both sides of it{more}: the fillet would have no width there (its face \
-             pinched to a point), whatever the radius; {not_built}, so this edge cannot be \
-             rounded as it is"
+             angle on both sides of it{more}: the rolling ball has no corner to round there \
+             and the fillet face would be pinched to a point; {not_built}, so this edge cannot \
+             be rounded as it is"
         ),
         FilletPinch::Flips => format!(
             "the edge is convex on one side of {place} and concave on the other, and its two \
@@ -933,26 +919,7 @@ pub fn fillet_pinched_text(
              width there (it rounds the edge off on one side and fills it on the other), \
              whatever the radius; {not_built}, so this edge cannot be rounded as it is"
         ),
-        FilletPinch::Narrow { width, tolerance } => format!(
-            "the two faces come so close to tangent at {place}, a place inside the edge with \
-             a larger angle on both sides of it{more}, that the fillet would be no wider there \
-             than the tolerance ({}{unit} against {}{unit}): its two borders would be one \
-             line there; a larger radius is wider there, and {not_built}",
-            short(width),
-            short(tolerance)
-        ),
     }
-}
-
-/// What [`KernelError::ChamferTangentMiddle`] says, its place followed by
-/// `unit`.
-pub fn chamfer_tangent_middle_text(at: craft3d_math::Vec3, unit: &str) -> String {
-    format!(
-        "the two faces are tangent at the middle of the edge, at {}, though not all along it: \
-         whether a chamfer cuts the edge away or fills it is read at its middle, where this \
-         edge has no corner; a chamfer of such an edge is not built yet",
-        place_text(at, unit)
-    )
 }
 
 impl From<GeomError> for KernelError {

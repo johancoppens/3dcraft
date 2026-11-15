@@ -51,7 +51,7 @@ use craft3d_kernel::fillet::{FilletEdge, FilletFace, FilletResult, fillet};
 use craft3d_kernel::loft::{Options, Section, loft};
 use craft3d_kernel::profile::detect_profiles;
 use craft3d_kernel::{FilletPinch, KernelError};
-use craft3d_math::{Frame, Portable, Vec3};
+use craft3d_math::{Frame, Portable, Tolerance, Vec3};
 use craft3d_topo::{Body, EdgeId, FaceId, check, mass_properties};
 
 /// Half the width of the house and the height of its eaves.
@@ -75,7 +75,18 @@ fn frames(k: f64) -> Vec<Frame> {
 /// The loft through house sections `step` apart along the frame's z, the
 /// ridge `heights[i]` above the eaves at section `i`.
 fn ridge(frame: &Frame, k: f64, heights: &[f64], step: f64, ruled: bool) -> Body {
-    let tol = tolerance(k);
+    ridge_at(frame, k, heights, step, ruled, &tolerance(k))
+}
+
+/// [`ridge`] at a tolerance of its own.
+fn ridge_at(
+    frame: &Frame,
+    k: f64,
+    heights: &[f64],
+    step: f64,
+    ruled: bool,
+    tol: &Tolerance,
+) -> Body {
     let sections: Vec<Section> = heights
         .iter()
         .enumerate()
@@ -85,7 +96,7 @@ fn ridge(frame: &Frame, k: f64, heights: &[f64], step: f64, ruled: bool) -> Body
                 .map(|p| [p[0] * k, p[1] * k])
                 .collect();
             let curves = common::polygon(1, 1, &points);
-            let profiles = detect_profiles(&curves, &tol).unwrap();
+            let profiles = detect_profiles(&curves, tol).unwrap();
             Section {
                 plane: frame
                     .at(frame.point(0.0, 0.0, i as f64 * step * k))
@@ -99,8 +110,8 @@ fn ridge(frame: &Frame, k: f64, heights: &[f64], step: f64, ruled: bool) -> Body
         ruled,
         closed: false,
     };
-    let body = loft(&sections, &options, &tol).unwrap().body;
-    assert_eq!(check(&body, &tol), []);
+    let body = loft(&sections, &options, tol).unwrap().body;
+    assert_eq!(check(&body, tol), []);
     body
 }
 
@@ -437,6 +448,13 @@ fn within(roof: &Roof, wide: f64) -> f64 {
     0.25 * tolerance(roof.k).linear * roof.length * wide
 }
 
+/// Whether a chamfer is refused as one of an edge tangent at its middle
+/// only.
+fn tangent_at_its_middle_only(result: &Result<Body, KernelError>) -> bool {
+    matches!(result, Err(KernelError::Chamfer { reason, .. })
+        if reason.contains("tangent at the middle of this edge, though not all along it"))
+}
+
 /// The place a refusal names and why, for a fillet refused as pinched.
 fn pinched(result: Result<FilletResult, KernelError>, what: &str) -> (Vec3, FilletPinch, usize) {
     match result {
@@ -499,14 +517,14 @@ fn the_ridges_whose_faces_become_tangent_inside_are_refused_with_the_place() {
                 assert_eq!(why, FilletPinch::Tangent);
                 assert_eq!(places, 1);
             }
-            // A chamfer's side is read at the edge's middle: said so, with
-            // the place, not as an edge tangent all along.
-            match bevel(&body, edge, k, k) {
-                Err(KernelError::ChamferTangentMiddle { at, .. }) => {
-                    near(at, roof.point(25.0 * k), "the chamfer of ridge 6 0 6");
-                }
-                other => panic!("the chamfer of ridge 6 0 6: {other:?}"),
-            }
+            // A chamfer's side is read at the edge's middle: said so, not
+            // as an edge tangent all along.
+            let bevelled = bevel(&body, edge, k, k);
+            assert!(
+                tangent_at_its_middle_only(&bevelled),
+                "the chamfer of ridge 6 0 6: {:?}",
+                bevelled.err()
+            );
             // 6, 0, −6: from convex to concave at the middle.
             let body = ridge(&frame, k, &[6.0, 0.0, -6.0], 25.0, false);
             let edge = ridge_edges(&body, &frame, k)[0];
@@ -517,10 +535,7 @@ fn the_ridges_whose_faces_become_tangent_inside_are_refused_with_the_place() {
                 assert_eq!(why, FilletPinch::Flips);
                 assert_eq!(places, 1);
             }
-            assert!(matches!(
-                bevel(&body, edge, k, k),
-                Err(KernelError::ChamferTangentMiddle { .. })
-            ));
+            assert!(tangent_at_its_middle_only(&bevel(&body, edge, k, k)));
             // 6, 3, −3: convex at the middle, concave near the far end.
             let body = ridge(&frame, k, &[6.0, 3.0, -3.0], 25.0, false);
             let edge = ridge_edges(&body, &frame, k)[0];
@@ -558,10 +573,16 @@ fn the_refusals_name_the_place_and_say_what_is_true() {
         said.contains("become tangent at (0, 8, 25), a place inside the edge"),
         "{said}"
     );
+    assert!(
+        said.contains("so this edge cannot be rounded as it is"),
+        "{said}"
+    );
     assert!(!said.contains("tangent along"), "{said}");
+    // "Whatever the radius" is said only where the edge changes side.
+    assert!(!said.contains("whatever the radius"), "{said}");
     let said = bevel(&body, edge, 1.0, k).unwrap_err().to_string();
     assert!(
-        said.contains("tangent at the middle of the edge, at (0, 8, 25), though not all along it"),
+        said.contains("tangent at the middle of this edge, though not all along it"),
         "{said}"
     );
     // An edge that is tangent all along is still said to be.
@@ -597,53 +618,113 @@ fn waisted(frame: &Frame, k: f64, waist: f64) -> (Body, EdgeId, Roof, f64) {
 }
 
 /// A ridge that comes down to the eaves and up again without passing
-/// below them: tangent in one place, convex on both sides. Where the
-/// section between the tangent planes is no wider than the tolerance, or
-/// the faces are tangent by the kernel's measure, the fillet is refused
-/// with the place and the reason; with a waist a little higher it is not
-/// refused as pinched.
+/// below them: tangent in one place, convex on both sides. Where the faces
+/// are tangent by the kernel's measure (the sine of the angle between them
+/// at most a millionth) the fillet is refused with the place, at every
+/// radius; where they keep more of an angle it is not refused as pinched,
+/// however narrow the fillet would be there.
 #[test]
-fn a_ridge_that_touches_the_eaves_inside_is_refused_where_the_fillet_has_no_width() {
+fn a_ridge_that_touches_the_eaves_inside_is_refused_where_its_faces_are_tangent() {
     for k in SCALES {
         for frame in frames(k) {
-            let tol = tolerance(k).linear;
-            // Tangent: every radius.
-            let (body, edge, roof, at) = waisted(&frame, k, 0.0);
-            for r in [0.3, 1.0, 3.0] {
-                let (place, why, places) = pinched(round(&body, edge, r * k, k), "a waist of 0");
-                assert_eq!(why, FilletPinch::Tangent);
-                assert_eq!(places, 1);
-                // The bottom of a parabola is flat: the place to a
-                // hundredth of the loft's unit.
-                let off = place.distance(roof.point(at));
-                assert!(off <= 1e-2 * k, "the place is {off} off");
-            }
-            // 1e-5 high: the faces turn by 2e-6 there. A fillet of 0.3 is
-            // 6e-7 wide, under the tolerance of 1e-6; one of 3 is 6e-6
-            // wide and its faces are not tangent by the kernel's measure
-            // (a sine of 1e-6).
-            let (body, edge, roof, at) = waisted(&frame, k, 1e-5);
-            let wide = |r: f64| 2.0 * r * k * roof.half_tan(at);
-            assert!(wide(0.3) < 0.7 * tol && wide(3.0) > 5.0 * tol);
-            let (place, why, _) = pinched(round(&body, edge, 0.3 * k, k), "a waist of 1e-5");
-            match why {
-                FilletPinch::Narrow { width, tolerance } => {
-                    assert!((width - wide(0.3)).abs() <= 1e-3 * width, "{width}");
-                    assert_eq!(tolerance, tol);
+            // Tangent, and 2e-6 high (a sine of 4e-7): every radius.
+            for waist in [0.0, 2e-6] {
+                let (body, edge, roof, at) = waisted(&frame, k, waist);
+                for r in [0.3, 1.0, 3.0] {
+                    let (place, why, places) =
+                        pinched(round(&body, edge, r * k, k), "a waist of 0 or of 2e-6");
+                    assert_eq!(why, FilletPinch::Tangent);
+                    assert_eq!(places, 1);
+                    // The bottom of a parabola is flat: the place to a
+                    // hundredth of the loft's unit.
+                    let off = place.distance(roof.point(at));
+                    assert!(off <= 1e-2 * k, "the place is {off} off");
                 }
-                other => panic!("{other:?}"),
             }
-            assert!(place.distance(roof.point(at)) <= 1e-2 * k);
-            let said = round(&body, edge, 0.3 * k, k).unwrap_err().to_string();
-            assert!(said.contains("no wider there than the tolerance"), "{said}");
-            assert!(said.contains("a larger radius is wider there"), "{said}");
-            assert!(
-                !matches!(
-                    round(&body, edge, 3.0 * k, k),
-                    Err(KernelError::FilletPinched { .. })
-                ),
-                "a fillet six tolerances wide at its waist is not pinched"
-            );
+            // 1e-5 high: a sine of 2e-6. A fillet of 0.3 would be 6e-7
+            // wide there, under the tolerance of 1e-6, and is still not
+            // this check's to refuse: the construction builds it or
+            // refuses it, as before.
+            let (body, edge, roof, at) = waisted(&frame, k, 1e-5);
+            assert!(2.0 * 0.3 * k * roof.half_tan(at) < 0.7 * tolerance(k).linear);
+            for r in [0.3, 3.0] {
+                assert!(
+                    !matches!(
+                        round(&body, edge, r * k, k),
+                        Err(KernelError::FilletPinched { .. })
+                    ),
+                    "the faces keep an angle: not pinched, radius {r}"
+                );
+            }
+        }
+    }
+}
+
+/// In a document with a loose tolerance a fillet is narrower than the
+/// tolerance where the faces of its edge come near tangent, and is a
+/// fillet still: 0.1.2 builds it, and so does this (a test on the width
+/// between the tangent planes refused it, 2026-11-15). The ridge 6, 0.1, 6
+/// (its faces 1.15° apart at the middle) at a tolerance of 0.01: a fillet
+/// of 0.3 is 0.006 wide at the middle and one of 0.45 is 0.009. Each is
+/// built, valid and measured, takes what the oracle says, and its borders
+/// stay apart by the section's width.
+#[test]
+fn a_fillet_narrower_than_a_loose_tolerance_where_the_faces_keep_an_angle_is_built() {
+    let (k, frame) = (1.0, Frame::WORLD);
+    let tol = Tolerance::new(0.01 * k, 1e-9).unwrap();
+    let body = ridge_at(&frame, k, &[6.0, 0.1, 6.0], 25.0, false, &tol);
+    let edge = ridge_edges(&body, &frame, k)[0];
+    let roof = Roof::of(&body, edge, &frame, k);
+    for r in [0.3, 0.45] {
+        let wide = 2.0 * r * k * roof.half_tan(25.0 * k);
+        assert!(wide < tol.linear, "{wide} wide at the middle");
+        let edges = [FilletEdge {
+            edge,
+            radius: r * k,
+        }];
+        let made = match fillet(&body, &edges, &tol) {
+            Ok(made) => made,
+            Err(error) => panic!("radius {r}: {error}"),
+        };
+        assert_eq!(check(&made.body, &tol), []);
+        let removed = mass(&body).volume - mass(&made.body).volume;
+        let oracle = fillet_removed(&roof, r * k);
+        // The face is fitted to a quarter of the loose tolerance: 6e-5 and
+        // 9e-5 of the volume taken, measured.
+        assert!(
+            (removed - oracle).abs() <= 1e-3 * oracle,
+            "radius {r}: {removed} against {oracle}"
+        );
+        let (least, apart) = borders(&made, &roof);
+        assert!(apart, "the borders cross");
+        assert!(
+            (least - wide).abs() <= 0.05 * wide,
+            "{least} against {wide}"
+        );
+    }
+}
+
+/// A dip that stops 0.0011° short of tangent at the edge's middle (a sine
+/// of 2e-5): the faces are not tangent by the kernel's measure, and the
+/// construction cannot start its ball there. It says that; 0.1.2 said
+/// "the two faces are tangent along this edge", which they are not.
+#[test]
+fn a_dip_nearly_tangent_at_the_middle_is_not_called_tangent_along_the_edge() {
+    let (k, frame) = (1.0, Frame::WORLD);
+    let body = ridge(&frame, k, &[6.0, 1e-4, 6.0], 25.0, false);
+    let edge = ridge_edges(&body, &frame, k)[0];
+    let roof = Roof::of(&body, edge, &frame, k);
+    assert!((roof.half_tan(25.0 * k) - 1e-5).abs() <= 1e-9);
+    for r in [0.3, 3.0] {
+        match round(&body, edge, r * k, k) {
+            Err(KernelError::Fillet { reason, .. }) => {
+                assert!(
+                    reason.contains("within 0.003° of tangent at the middle of this edge"),
+                    "{reason}"
+                );
+                assert!(!reason.contains("tangent along"), "{reason}");
+            }
+            other => panic!("radius {r}: {:?}", other.map(|_| "built")),
         }
     }
 }
@@ -852,9 +933,8 @@ fn seeded_ridges_are_refused_exactly_where_they_are_pinched() {
             let middle = roof.half_tan(0.5 * roof.length);
             let sign = if middle < 0.0 { -1.0 } else { 1.0 };
             let turn: Vec<f64> = (0..=n).map(|i| sign * roof.half_tan(at(i))).collect();
-            // The bound as a tangent of half the turn: the section as wide
-            // as the tolerance, or a sine of 1e-6.
-            let bound = (0.5 * tol / (r * k)).max(0.5e-6);
+            // The bound as a tangent of half the turn: a sine of 1e-6.
+            let bound = 0.5e-6;
             let lowest = (1..n).min_by(|a, b| turn[*a].total_cmp(&turn[*b])).unwrap();
             // The stretch of stations under the bound about the lowest:
             // one that reaches an end of the edge is that end's.

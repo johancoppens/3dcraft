@@ -18,14 +18,17 @@
 //! with its borders crossed between two such places).
 //!
 //! **The rule.** The sine of the turn across the edge is read along it
-//! ([`super::across_at`]: negative where the edge is convex), at
-//! [`PER_SPAN`] stations per span of the edge's curve and at least
-//! [`LEAST_STATIONS`], evenly in its parameter. A station is *tangent*
-//! where the section between the tangent planes there is no wider than
-//! the linear tolerance (two points that close are one point) or the sine
-//! is no more than [`SMOOTH_SINE`], below which two faces are tangent
-//! across an edge wherever the kernel asks; it is *opposite* where the
-//! edge turns the other way than at its middle by more than that. Then:
+//! ([`super::across_at`]: negative where the edge is convex), at stations
+//! evenly apart in the edge's parameter: [`PER_SPAN`] times the spans of
+//! its curve, [`LEAST_STATIONS`] at least. A station is *tangent* where
+//! the sine is no more than [`SMOOTH_SINE`], below which two faces are
+//! tangent across an edge wherever the kernel asks (as it asked at the
+//! middle); it is *opposite* where the edge turns the other way than at
+//! its middle by more than that. The radius has no part in it: a fillet
+//! that is narrower than the tolerance where the faces are still at an
+//! angle is left to the construction, which built such fillets right
+//! before (a test on the width between the tangent planes refused 130 of
+//! them, and was taken out, 2026-11-15). Then:
 //!
 //! - a stretch of stations that are not turned like the middle and one of
 //!   which is opposite: the edge is convex on one side and concave on the
@@ -34,8 +37,7 @@
 //!   bisection; a place on each side of the stretch that has one);
 //! - a stretch of tangent stations with stations turned like the middle
 //!   on both sides of it: the place where the turn is least (the faces
-//!   become tangent and part again, or come too close to it for the
-//!   radius);
+//!   become tangent and part again);
 //! - a station turned like the middle that is lower than both its
 //!   neighbours, and so near the bound that the turn between the stations
 //!   could reach it, is looked at between them (a golden-section search
@@ -48,10 +50,13 @@
 //!   end vertex.
 //!
 //! A fillet of an edge with such a place is refused, with the place. What
-//! is not seen: a dip between two stations that leaves no station lower
-//! than its neighbours (narrower than an eighth of a span of the curve and
-//! on a slope). Nothing else of a blend reads this: an edge without such a
-//! place is built exactly as it was.
+//! is not seen, and is left to the construction as before: a dip between
+//! two stations that leaves no station lower than both its neighbours; a
+//! tangent place within a station's step of an end of the edge (the
+//! lowest station is then the end station, which is the edge's end); a
+//! change of side so near an end that the sine at the end station is
+//! still within [`SMOOTH_SINE`]. Nothing else of a blend reads this: an
+//! edge without such a place is built exactly as it was.
 
 use super::{SMOOTH_SINE, Use, across_at};
 use crate::FilletPinch;
@@ -170,35 +175,21 @@ fn least(g: &impl Fn(f64) -> Option<f64>, a: f64, b: f64) -> Option<(f64, f64)> 
     Some(if gc < gd { (c, gc) } else { (d, gd) })
 }
 
-/// The sine of the turn at which a fillet of `radius` is as wide as `tol`
-/// between the tangent planes (`2r·tan(φ/2) = tol`), [`SMOOTH_SINE`] at
-/// least.
-fn narrow_sine(radius: f64, tol: f64) -> f64 {
-    let half_tan = 0.5 * tol / radius;
-    let sine = 2.0 * half_tan / (1.0 + half_tan * half_tan);
-    if sine.is_finite() {
-        sine.max(SMOOTH_SINE)
-    } else {
-        SMOOTH_SINE
-    }
-}
-
-/// The places strictly inside `edge` where the section of a fillet of
-/// `radius` runs to nothing (see the module documentation): the first
-/// along the edge and how many there are. `convex` is what the edge is at
-/// its middle. `None` for an edge without one, and for one that cannot be
-/// read.
+/// The places strictly inside `edge` where the section of a fillet runs
+/// to nothing (see the module documentation): the first along the edge
+/// and how many there are. `convex` is what the edge is at its middle;
+/// `tol` is the linear tolerance, within which a place is an end vertex.
+/// `None` for an edge without one, and for one that cannot be read.
 pub(super) fn pinched(
     body: &Body,
     uses: &[Vec<Use>],
     edge: EdgeId,
     convex: bool,
-    radius: f64,
     tol: f64,
 ) -> Option<Pinch> {
     let data = body.edge(edge)?;
     let (t0, t1) = data.range;
-    if !(t0.is_finite() && t1.is_finite() && t1 > t0 && radius > 0.0 && tol > 0.0) {
+    if !(t0.is_finite() && t1.is_finite() && t1 > t0 && tol > 0.0) {
         return None;
     }
     let closed = data.start == data.end;
@@ -212,7 +203,7 @@ pub(super) fn pinched(
         sign: if convex { -1.0 } else { 1.0 },
     };
     let g = |t: f64| reader.at(t);
-    let bound = narrow_sine(radius, tol);
+    let bound = SMOOTH_SINE;
     let count = stations(&data.curve, data.range);
     let step = (t1 - t0) / count as f64;
     // The stations that can be read, in order. A closed edge is read from
@@ -245,22 +236,10 @@ pub(super) fn pinched(
     }
     let last = read.len().checked_sub(1)?;
     let turned = |value: f64| value > bound;
-    let why = |value: f64| {
-        if value <= SMOOTH_SINE {
-            FilletPinch::Tangent
-        } else {
-            // Between the tangent planes, at the angle of this sine.
-            let cosine = (1.0 - value * value).max(0.0).sqrt();
-            FilletPinch::Narrow {
-                width: 2.0 * radius * value / (1.0 + cosine),
-                tolerance: tol,
-            }
-        }
-    };
     // The places of a dip between `before` and `after` (where the edge is
     // turned like its middle) whose bottom is `lowest`, at `bottom`: where
     // the turn passes through zero on the way down and on the way up when
-    // it goes below it, else the bottom when that is under the bound.
+    // it goes below it, else the bottom when the faces are tangent there.
     let dip = |before: f64, bottom: f64, lowest: f64, after: f64| -> Vec<(f64, FilletPinch)> {
         if lowest < -SMOOTH_SINE {
             vec![
@@ -270,7 +249,7 @@ pub(super) fn pinched(
         } else if turned(lowest) {
             Vec::new()
         } else {
-            vec![(bottom, why(lowest))]
+            vec![(bottom, FilletPinch::Tangent)]
         }
     };
     let mut places: Vec<(f64, FilletPinch)> = Vec::new();
@@ -324,7 +303,7 @@ pub(super) fn pinched(
                 places.push((zero(&g, after.0, final_one.0), FilletPinch::Flips));
             }
         } else if from > 0 && to < last {
-            // Tangent, or nearly, with an angle on both sides: where the
+            // Tangent, with an angle on both sides: where the
             // turn is least.
             let (mut bottom, mut lowest) =
                 stretch.iter().copied().min_by(|a, b| a.1.total_cmp(&b.1))?;

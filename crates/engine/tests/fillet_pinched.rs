@@ -29,7 +29,23 @@ const H: f64 = 8.0;
 /// `heights[i]` above the eaves at section `i`; the names of the two roof
 /// faces, which the ridge edge lies between.
 fn ridge(s: &mut Session, k: f64, heights: &[f64], step: f64, ruled: bool) -> Value {
-    run(s, "file.new", json!({"units": "mm", "tolerance": 1e-6 * k}));
+    ridge_at(s, k, 1e-6 * k, heights, step, ruled)
+}
+
+/// [`ridge`] in a document with the tolerance `tolerance`.
+fn ridge_at(
+    s: &mut Session,
+    k: f64,
+    tolerance: f64,
+    heights: &[f64],
+    step: f64,
+    ruled: bool,
+) -> Value {
+    run(
+        s,
+        "file.new",
+        json!({"units": "mm", "tolerance": tolerance}),
+    );
     let mut names = Vec::new();
     for (i, a) in heights.iter().enumerate() {
         let name = format!("S{i}");
@@ -148,7 +164,7 @@ fn an_edge_tangent_at_its_middle_only_is_not_called_tangent_along_itself() {
     let said = failure(&mut s, "Bevel");
     assert!(
         said.contains(
-            "the two faces are tangent at the middle of the edge, at (25, 0, 8) mm, though not all along it"
+            "the two faces are tangent at the middle of this edge, though not all along it"
         ),
         "{said}"
     );
@@ -179,6 +195,29 @@ fn an_edge_tangent_at_its_middle_only_is_not_called_tangent_along_itself() {
         "{said}"
     );
     assert!(!said.contains("internal error"), "{said}");
+}
+
+/// A document with a tolerance of 0.01 mm: the ridge 6, 0.1, 6 (its roof
+/// faces 1.15° apart at the middle) filleted at 0.3 mm. The fillet is
+/// 0.006 mm wide at the middle, under the tolerance, and is a fillet
+/// still: 0.1.2 builds it, and so does this (a test on that width refused
+/// it, 2026-11-15). The volume is the one FreeCAD reads from the STEP
+/// export of 0.1.2's body (9033.296879424; the review's measure).
+#[test]
+fn a_fillet_narrower_than_a_loose_tolerance_is_built_as_before() {
+    let mut s = session();
+    let roofs = ridge_at(&mut s, 1.0, 0.01, &[6.0, 0.1, 6.0], 25.0, false);
+    built(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [roofs], "radius": 0.3, "name": "Round"}),
+    );
+    let rounded = body(&mut s, "Round");
+    assert_eq!(rounded["valid"], true, "{rounded}");
+    let volume = rounded["volume"].as_f64().unwrap();
+    assert!((volume - 9_033.296_879_424).abs() <= 1e-6, "{volume}");
+    let check = run(&mut s, "document.check", json!({"deep": true}));
+    assert_eq!(check["ok"], true, "{check}");
 }
 
 /// A ridge that stops short of the eaves at its far end: the fillet

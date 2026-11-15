@@ -101,9 +101,11 @@ pub(crate) fn said(error: BlendError) -> KernelError {
             smaller_fails,
         },
         // A chamfer meets it only for the middle of its edge.
-        BlendError::Pinched { edge, pinch } => {
-            KernelError::ChamferTangentMiddle { edge, at: pinch.at }
-        }
+        BlendError::Pinched { edge, .. } => KernelError::Chamfer {
+            edge: Some(edge),
+            face: None,
+            reason: crate::blend::Reason::MiddleTangent.text(Kind::Chamfer),
+        },
     }
 }
 

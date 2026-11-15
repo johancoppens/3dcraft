@@ -70,11 +70,6 @@ fn explain(
                 None => format!("{at}: {reason}"),
             }
         }
-        KernelError::ChamferTangentMiddle { edge, at } => format!(
-            "{}: {}",
-            role(edge),
-            craft3d_kernel::chamfer_tangent_middle_text(at, &format!(" {unit}"))
-        ),
         KernelError::ChamferBoolean {
             edge,
             error,

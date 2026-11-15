@@ -1717,7 +1717,10 @@ fn flat_seed(
                         * half_cos.signum(),
             )
         }
-        Shape::Ball { .. } => return Err(refused(edge, Reason::Smooth)),
+        // Too close to tangent here for a ball to be started: said as
+        // that, not as an edge tangent all along (which `oriented` has
+        // ruled out at this middle, or said).
+        Shape::Ball { .. } => return Err(refused(edge, Reason::FreeNearlySmooth)),
         Shape::Cut { .. } => None,
     };
     Ok(Section {
@@ -3305,13 +3308,14 @@ pub(super) fn blend(
     // concave) is not a face there: refused with the place, before
     // anything is built ([`super::along`]).
     for item in &items {
+        // A radius that is not one is the construction's to refuse.
         if let Size::Radius(radius) = item.request.size
+            && radius > 0.0
             && let Some(pinch) = super::along::pinched(
                 body,
                 &uses,
                 item.request.edge,
                 item.convex,
-                radius,
                 tolerance.linear,
             )
         {
