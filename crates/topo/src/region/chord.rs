@@ -31,7 +31,10 @@
 //! loop's *curve* `Γ` is its stretches' images in order, each joined to the
 //! next by the straight segment across its gap; its *polyline* `Π` is `A₀
 //! A₁ … Aₙ₋₁`, its segment `Sᵢ = Aᵢ Aᵢ₊₁`; the *piece* `πᵢ` is the image
-//! of stretch `i` with the segment across its gap.
+//! of stretch `i` with the segment across its gap. (`Aᵢ` and `Bᵢ` are the
+//! ends as computed; the curve's own lie within `eᵢ` of them, the largest
+//! clear and the rounding of a placed point, and `Γ` runs through the
+//! placed points: the design document has how each lemma takes that.)
 //!
 //! **What is shown of a stretch** ([`Walked::bound_of`],
 //! [`Walked::hull_bound`]). Points in runs are made for it (a line's two
@@ -47,17 +50,25 @@
 //! the legs from each point of its run to the next (a spline's with
 //! positive weights by the total positivity of its basis,
 //! [`super::one_way`]); a spline is held to being one curve over the
-//! stretch, its two ends included: each of its pieces starting where the
-//! one before ends ([`Walked::hull_bound`]) and, where the spans' control
-//! points are read, no knot of theirs inside the domain repeated more often
-//! than the degree ([`jumps`]).
+//! stretch, its two ends included, by its knots, which is exact: none of
+//! the knots of the spans the stretch meets stands more often than the
+//! degree inside the domain ([`jumps`], asked of both readings and of no
+//! allowance: a jump is a jump however small beside the rounding of its
+//! points). The pieces of such a curve join; how far apart they are as
+//! computed is rounding, and is counted into the stretch's *slack* with
+//! the rounding of a point of the curve and of its place: the slack is
+//! counted with the gap at each of the stretch's joints (C3), so that at
+//! a joint every allowance that grows with the coordinates is held under
+//! a quarter of the reach, or the face is not cleared; in a margin (S1)
+//! an allowance only widens what must be exceeded (C2, C4).
 //! The chart being affine, the image lies in the hulls of the points'
 //! images and its direction is such a sum of the legs' images. Then:
 //!
 //! - (S1) *the bound* `bᵢ`: the farthest of the points' images from the
-//!   chord `Aᵢ Bᵢ`, with the clears and the rounding of the two placed
-//!   ends added: the image lies within `bᵢ` of its chord (a hull lies no
-//!   farther from a segment than its farthest corner).
+//!   chord `Aᵢ Bᵢ`, with the clears and the rounding of the placed points
+//!   added (`eᵢ` twice over, beside the hull's own): the image lies within
+//!   `bᵢ` of its chord (a hull lies no farther from a segment than its
+//!   farthest corner).
 //! - (S2) *the aim*: a cone `Kᵢ` narrower than a half turn that holds every
 //!   leg's image, each widened by the angle rounding can have turned it
 //!   (`asin(2 clear / |leg|)`, a leg shorter than ten clears giving none):
@@ -87,9 +98,11 @@
 //!   farther apart than `R` (L1).
 //! - (L5) two stretches of which the second starts where the first ends
 //!   but for the gap `g` (and slacks), whose cones both fit in a fan
-//!   narrower than a half turn by `2 asin(2 g / R)`, meet only within `R /
-//!   2` of the first's end, and only at that point where `g` is nothing
-//!   ([`neighbours_apart`], with its proof).
+//!   narrower than a half turn by `2 asin(2 g / R)` (by a millionth of a
+//!   radian at the least), meet only within `R / 2` of the first's end,
+//!   and only at that point where the true gap is nothing, as between two
+//!   stretches of one edge ([`neighbours_apart`], with its proof; the `g`
+//!   it is asked with is the gap as placed and both slacks).
 //!
 //! **Cleared** ([`judge`]) is all of:
 //!
@@ -111,11 +124,15 @@
 //! - (C6) a point `A₀` of every other loop is wound once by that loop's
 //!   polyline and by no other hole's.
 //!
-//! **Theorem.** If a face on a plane is cleared, then (i) every stretch is
+//! **Theorem** (of the edges' images through the chart; that an edge lies
+//! on the plane between its ends is `EdgeOffSurface`'s to hold, which
+//! `check` asks of every coedge). If a face on a plane is cleared, then (i)
+//! every stretch is
 //! a simple arc (S2); (ii) two pieces that do not follow each other in one
 //! loop, and any two pieces of two loops, lie more than `R` apart (C2,
 //! L4); (iii) two stretches that follow each other meet only within `R /
-//! 2` of their joint, and only at the joint where it has no gap (C3, L5):
+//! 2` of their joint, and only at the joint where they are stretches of
+//! one edge (C3, L5):
 //! so no two loops meet, and each loop's curve is a closed curve that
 //! meets itself nowhere but, at the most, within `R / 2` of a vertex where
 //! two edges' ends miss each other (by less than `R / 4`); with every
@@ -178,6 +195,12 @@ const POINT_UNITS: usize = 16;
 /// rounding can have turned its legs, so that a cross product rounded on a
 /// direction of the cone cannot leave it outside.
 const WIDEN: f64 = 1e-9;
+/// How much narrower than a half turn, at the least, the fan of two
+/// neighbouring stretches' cones must be ([`neighbours_apart`]), in
+/// radians: the cosine of a half turn less this is told from −1 by four
+/// thousand units in its last place (5e-13), where the cosine of one less
+/// a billionth of a radian is −1 as rounded.
+const JOINT: f64 = 1e-6;
 /// Pairs looked at between two charges of their work, so that the work of
 /// a face is passed by no more than a charge.
 const CHARGE: usize = 64;
@@ -257,9 +280,14 @@ fn jumps(curve: &NurbsCurve, from: usize, to: usize) -> bool {
 type Cone = ((f64, f64), (f64, f64));
 
 /// Where a stretch heads in the chart: every move along it, from one of
-/// its points to a later one, is a direction of `cone` but for `slack`
-/// (the moves over runs of control points that rounding has made one
-/// point, each within twice their `clear` of nothing in space).
+/// its points to a later one, is a direction of `cone` but for `slack`:
+/// what its two ends as placed and its runs as computed can be off (the
+/// rounding of a point of the curve and of its place; how far apart two
+/// runs that follow each other are as computed; and the moves over runs
+/// of control points that rounding has made one point, each within twice
+/// their `clear` of nothing in space). Never nothing: far from the origin
+/// it grows with the coordinates, and past a share of the reach the
+/// stretch is not shown apart from its neighbours.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Aim {
     cone: Cone,
@@ -528,9 +556,13 @@ impl<'a> Walked<'a> {
         };
         let mut held = Held::default();
         match &edge.curve {
-            Curve3::Line(_) => {
+            Curve3::Line(line) => {
                 let ends = [edge.curve.eval(lo), edge.curve.eval(hi)];
-                held.take(&ends, rounding_of(&ends));
+                // The terms the ends are sums of: the line's own origin
+                // and how far along it they lie, which may both be far
+                // larger than the ends (a line whose origin is far off).
+                let terms = [line.origin(), Vec3::new(lo, hi, 0.0)];
+                held.take(&ends, rounding_of(&ends).max(rounding_of(&terms)));
                 self.hull_bound(&held, a, b)
             }
             Curve3::Circle(_) | Curve3::Ellipse(_) => {
@@ -555,7 +587,16 @@ impl<'a> Walked<'a> {
                     frame.point(ra * cm * lift, rb * sm * lift, 0.0),
                     edge.curve.eval(hi),
                 ];
-                held.take(&points, rounding_of(&points));
+                // The terms the three points are sums of: the centre and
+                // the semi-axes lifted (a short arc about a centre far
+                // off; an arc whose radius is far larger than its points'
+                // coordinates), and the angles the sines are taken of (an
+                // arc many turns off its angle nothing: a sine's argument
+                // is rounded to its own last place, and moves the point by
+                // that much of the radius).
+                let reach = ra.abs().max(rb.abs()) * lift * (1.0 + lo.abs().max(hi.abs()));
+                let terms = [frame.origin(), Vec3::new(reach, 0.0, 0.0)];
+                held.take(&points, rounding_of(&points).max(rounding_of(&terms)));
                 self.hull_bound(&held, a, b)
             }
             Curve3::Nurbs(n) => {
@@ -588,18 +629,25 @@ impl<'a> Walked<'a> {
                         .saturating_sub(1)
                         .clamp(degree, ctrl.len().saturating_sub(1))
                 };
+                // One curve over the stretch, its two ends included, by its
+                // knots, which is exact: none of the knots of the spans it
+                // meets stands more often than the degree inside the domain
+                // (past the domain the curve is its first or its last piece
+                // continued, which has no knot). Asked of both readings
+                // below, and of no allowance: a jump is a jump however
+                // small beside the rounding of its points. (The knots
+                // looked at are as many as the points of those spans, and
+                // are counted with them.)
+                let knots_from = span(lo.max(d0)).saturating_sub(degree);
+                let knots_to = span(hi.min(d1)).saturating_add(degree + 1);
+                if jumps(n, knots_from, knots_to) {
+                    return Some(Bound::Not);
+                }
                 if lo >= d0 && hi <= d1 && span(hi).saturating_sub(span(lo)) > super::MANY_SPANS {
                     let first = span(lo).saturating_sub(degree);
                     let Some(points) = ctrl.get(first..=span(hi)) else {
                         return Some(Bound::Not);
                     };
-                    // One curve over those spans: no knot of theirs, the
-                    // stretch's two ends included, at which it jumps (the
-                    // knots are as many as the points looked at, and are
-                    // counted with them).
-                    if jumps(n, first, span(hi).saturating_add(degree + 1)) {
-                        return Some(Bound::Not);
-                    }
                     held.take(points, clear);
                     return self.hull_bound(&held, a, b);
                 }
@@ -625,9 +673,11 @@ impl<'a> Walked<'a> {
         let Lay::Flat { x, y } = self.lay else {
             return Some(Bound::Not);
         };
-        // One curve: each run starts where the one before ends, to their
-        // clears (the Bézier pieces of a spline at a knot; a spline that
-        // jumps there is not shown).
+        // The runs of one curve (its knots say it is one: `bound_of`) start
+        // where the one before ends but for their rounding: how far apart
+        // they are as computed is counted into the aim's slack below, and
+        // a break past the two clears is no rounding (not shown).
+        let mut breaks = 0.0_f64;
         let mut starts = 0_usize;
         let mut before: Option<(Vec3, f64)> = None;
         for &(end, clear) in &held.runs {
@@ -637,11 +687,13 @@ impl<'a> Walked<'a> {
                 continue;
             };
             if let Some((point, cleared)) = before
-                && point.distance(*first).partial_cmp(&(clear + cleared))
-                    != Some(std::cmp::Ordering::Less)
                 && point != *first
             {
-                return Some(Bound::Not);
+                let apart = point.distance(*first);
+                if apart.partial_cmp(&(clear + cleared)) != Some(std::cmp::Ordering::Less) {
+                    return Some(Bound::Not);
+                }
+                breaks += apart;
             }
             before = Some((*last, clear));
         }
@@ -671,14 +723,25 @@ impl<'a> Walked<'a> {
             starts = end;
         }
         spend(&mut self.work, held.points.len())?;
-        let bound = far + 2.0 * widest_clear + rounded;
+        // The hull's distance as placed (`rounded` once), and what the
+        // stretch's own ends can lie from the placed ones, the largest
+        // clear and `rounded`, twice over: once for the chord, once to
+        // spare, which the area of (L3) takes.
+        let bound = far + 2.0 * widest_clear + 3.0 * rounded;
         // (S2). The cone of the legs' directions along the plane (the
         // chart's), each widened by the angle by which rounding can have
         // turned it: its ends may each be `clear` off, the leg twice that,
         // a turn of at most `asin(2 clear / |leg|)`.
+        // The slack: what the stretch's two ends, as placed, and its runs,
+        // as computed, can be off: the rounding of a point of the curve
+        // (its run's clear) and of its place, and the breaks between its
+        // runs; with the pieces of no width below. It is counted with the
+        // gap at each of the stretch's joints (C3), so that every
+        // allowance that grows with the coordinates is held under a
+        // quarter of the reach there, or the stretch is not shown apart.
         let mut fan = Fan::within(ONE_WAY);
         let mut widest = 0.0_f64;
-        let mut slack = 0.0_f64;
+        let mut slack = breaks + widest_clear + rounded;
         let mut starts = 0_usize;
         let mut fits = true;
         for &(end, clear) in &held.runs {
@@ -1001,9 +1064,11 @@ fn crossing(rings: &[Margined], reach: f64, work: &mut usize) -> Option<Crossing
 /// and `|e|` within its slack, and one of the second `P + b + f` alike, `P`
 /// its start; where they meet, `n·(E − P) − n·(e + f) = n·a + n·b ≥
 /// sin(θ/2) (|a| + |b|)`, so `|a| + |b| ≤ g / sin(θ/2) = reach / 2`, and
-/// `x` lies within half the reach (and the slack) of `E`. With no gap and
-/// no slack the fan is still narrower than a half turn (by 1e-9), `|a| +
-/// |b| ≤ 0`, and they meet only at the point they share. Not shown
+/// `x` lies within half the reach (and the slack) of `E`. Whatever `g`,
+/// the fan is asked narrower than a half turn by [`JOINT`] at the least;
+/// so where the true gap is nothing (two stretches of one edge, whose
+/// slack is of the computing alone) `|a| + |b| ≤ 0`, and they meet only
+/// at the point they share. Not shown
 /// (false): a stretch with no aim, `g` of a quarter of the reach or more,
 /// cones that do not fit, a number that is none.
 fn neighbours_apart(a: Option<Aim>, b: Option<Aim>, gap: f64, reach: f64) -> bool {
@@ -1015,7 +1080,7 @@ fn neighbours_apart(a: Option<Aim>, b: Option<Aim>, gap: f64, reach: f64) -> boo
         return false;
     }
     let theta = 2.0 * (2.0 * g / reach).pasin();
-    let mut fan = Fan::within(PI - theta.max(WIDEN));
+    let mut fan = Fan::within(PI - theta.max(JOINT));
     let (ca, cb) = (a.cone, b.cone);
     [ca.0, ca.1, cb.0, cb.1].into_iter().all(|t| fan.add(t))
 }
