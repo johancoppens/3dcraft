@@ -749,9 +749,9 @@ impl Surface {
     /// the foot still slides along the tangent plane by more than the
     /// coordinates resolve there: a spline whose parametrisation races or
     /// shears, [`Surface::settle`]) it goes on with a second walk, and
-    /// what comes back is where that one settles. Where the first walk
-    /// settles, nothing else is done, and the answer is the one it always
-    /// was, bit for bit.
+    /// what comes back is where that one settles; not on a surface with a
+    /// pole ([`Surface::goes_on`]). Where the first walk settles, nothing
+    /// else is done, and the answer is the one it always was, bit for bit.
     ///
     /// A walk that does not settle within its steps, or meets a number
     /// that is not one, is [`GeomError::NoConvergence`]. A `start` outside
@@ -799,8 +799,14 @@ impl Surface {
             return Err(unsettled);
         }
         let domain = ((u0, u1), (v0, v1));
-        if settled && !self.slides(p, (u, v), at, (false, false), domain) {
-            return Ok(((u, v), at));
+        let short = !settled || self.slides(p, (u, v), at, (false, false), domain);
+        // Not on a surface with a pole: see `goes_on`.
+        if !short || !self.goes_on() {
+            return if settled {
+                Ok(((u, v), at))
+            } else {
+                Err(unsettled)
+            };
         }
         // Ended short: a second walk from there, taken where it settles.
         // Where the first one settled by its own rule and the second does
@@ -854,8 +860,8 @@ impl Surface {
     /// ([`Surface::nearest_by_pieces`]). What they find replaces the answer
     /// only where it is nearer by more than that resolution, or as near
     /// and settled where the answer was not. Where the answer does not
-    /// slide, nothing of this is done and it is the one it always was,
-    /// bit for bit.
+    /// slide, or the surface has a pole ([`Surface::goes_on`]), nothing of
+    /// this is done and it is the one it always was, bit for bit.
     ///
     /// **What is promised.** The result is a local nearest point (the
     /// distance does not decrease in any direction within the domain), to
@@ -1109,9 +1115,10 @@ impl Surface {
         if !at_most(found, d) {
             return Ok(at(i, j));
         }
-        // Where the walks ended short, the foot found by going on.
+        // Where the walks ended short, the foot found by going on (not on
+        // a surface with a pole: see `goes_on`).
         let domain = ((u0, u1), (v0, v1));
-        if self.slides(p, (u, v), there, (closed_u, closed_v), domain) {
+        if self.slides(p, (u, v), there, (closed_u, closed_v), domain) && self.goes_on() {
             #[cfg(test)]
             FINISHED.with(|n| n.set(n.get() + 1));
             let short = Foot {
@@ -1523,6 +1530,20 @@ impl Surface {
             self.sliding(p, (u, v), at, closed, domain),
             self.resolution(p, (u, v), at),
         )
+    }
+
+    /// Whether a search that ended short on this surface goes on: not on a
+    /// surface with a pole (a border that is one point,
+    /// [`crate::pole::poles`]). There the feet of points beside the pole
+    /// that the descent finds on another meridian are what the measure and
+    /// the tessellator read and mend themselves, along the borders
+    /// (`pole::BorderFeet`),
+    /// and the tessellator cannot yet mesh a face whose rails' feet are
+    /// found on the border at its pole (the fan at a pole is owed): going
+    /// on there moved the bits, and the meshes and measures, of tips and
+    /// blades built right (the trial Gate of 2026-11-15, `pole_measure`).
+    fn goes_on(&self) -> bool {
+        crate::pole::poles(self).is_empty()
     }
 
     /// Of two feet of `p`, whether `a` is the better: nearer by more than
