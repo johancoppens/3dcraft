@@ -336,16 +336,20 @@ fn an_imported_dome_closed_across_a_seam_is_written_as_a_closed_surface() {
 #[test]
 fn a_dome_s_export_with_the_angle_in_a_turned_frame_is_known_to_fold_in_single_precision() {
     // KNOWN, owed (docs/design/tessellator.md › *Sideways at a seam*, on
-    // 0.1.x as well): with the angle of the `normal` quality the mesh is
-    // a closed manifold, but along a nose far sharper than the tolerance
-    // the angle asks for points within about 1e-7 of the seam, which an
-    // STL file's single precision puts on one place: triangles with two
-    // corners at one point, as a slicer reads the file. When this fails
-    // because the file is a closed surface (or the export is refused with
-    // a reason), the pin goes.
+    // 0.1.x as well): with the angles of the export's qualities, along a
+    // nose far sharper than the tolerance, the angle asks for points about
+    // 1e-7 from the seam: two places to the mesh (a closed manifold), one
+    // to an STL file's single precision, which a slicer reads as
+    // triangles with two corners at one point. Of the fifteen exports of
+    // the five turned domes of the test above at `coarse`, `normal` and
+    // `fine` (2026-11-15): before, 14 so and 1 a closed surface; now 10
+    // so, 1 a closed surface and 4 refused ("the surface turns away from
+    // the chords …"), each of the four one that folded before. When this
+    // fails because the file is a closed surface (or the export is
+    // refused with a reason), the pin goes.
     let dir = workdir("pole-fan", "angle");
-    let what = "the dome 1 x 0.01 with its tip over 0.9, its seam on +x, turned";
-    let mut s = imported(&dir, 0, (&turned(), (1.0, 0.01), false, 0.9), what);
+    let what = "the dome 1 x 0.01 with its tip over 0.9, its seam on -x, turned";
+    let mut s = imported(&dir, 0, (&turned(), (1.0, 0.01), true, 0.9), what);
     let (triangles, _) = exported(&mut s, &dir, "dome.stl", json!({"quality": "normal"}))
         .unwrap_or_else(|e| panic!("{what}: refused now, take the pin off: {e}"));
     let fault = not_closed(&triangles);
