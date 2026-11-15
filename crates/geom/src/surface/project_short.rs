@@ -1,8 +1,8 @@
-//! The searches for a nearest point that end short ([`Surface::finish`],
-//! the second walk of [`Surface::project_from`]) against the closed forms
-//! of [`super::project_sweep`], and the searches that do not end short
-//! against the old path: these never go on ([`super::FINISHED`]), so their
-//! answer is the one the descent always gave, bit for bit.
+//! The searches of [`Surface::project`] that end short (they go on,
+//! [`Surface::finish`]) against the closed forms of
+//! [`super::project_sweep`], and those that do not end short against the
+//! old path: these never go on ([`super::FINISHED`]), so their answer is
+//! the one the descent always gave, bit for bit.
 
 use super::project_sweep::*;
 use crate::allowance;
@@ -19,14 +19,11 @@ fn finished() -> usize {
 /// the world, turned, and turned a thousand and a million sizes from the
 /// origin: no search over the whole surface ends short, so every one takes
 /// the old path, and every foot is the closed form's to what the
-/// coordinates and the parameters resolve. A walk from next to the foot
-/// finds it within the tolerance (a millionth of the sheet's smaller
-/// size) or nearer; where it ended short before (far out on sheets a
-/// million to one) the second walk settles it.
+/// coordinates and the parameters resolve.
 #[test]
 fn searches_on_evenly_drawn_sheets_take_the_old_path() {
     let mut random = Random(0x0E1D);
-    let (mut whole, mut from) = (Tally::default(), Tally::default());
+    let mut whole = Tally::default();
     let before = finished();
     for (kind, how, _, sheet) in sheets("plane,cylinder,sphere", &[1e-3, 1.0, 1e6], &mut random) {
         if kind.starts_with("plane") && kind.contains("weighted") {
@@ -41,19 +38,7 @@ fn searches_on_evenly_drawn_sheets_take_the_old_path() {
         before,
         "a search over the whole surface went on"
     );
-    // (Not on the spheres: a walk takes the domain as having no pole, and
-    // beside one it may settle on another meridian.)
-    for (kind, how, _, sheet) in sheets("plane,cylinder", &[1e-3, 1.0, 1e6], &mut random) {
-        if kind.starts_with("plane") && kind.contains("weighted") {
-            continue;
-        }
-        let tally = feet(&sheet, 4, Search::From(1e-3), &mut random);
-        assert_eq!(tally.beyond + tally.errors, 0, "{kind} {how}");
-        from.add(tally);
-    }
     println!("{}", whole.row("project"));
-    println!("{}", from.row("project_from"));
-    println!("walks from a start that went on: {}", finished() - before);
 }
 
 /// On the sheets of the long block of `classify_far.rs` (bicubic, six by

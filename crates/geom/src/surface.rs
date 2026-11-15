@@ -745,13 +745,11 @@ impl Surface {
     /// and one past a collapsed border at it, where the walk is held by
     /// the border and `p − S` is not square to the surface.
     ///
-    /// Where the walk ends short (it ran out of steps, or stopped where
-    /// the foot still slides along the tangent plane by more than the
-    /// coordinates resolve there: a spline whose parametrisation races or
-    /// shears, [`Surface::settle`]) it goes on with a second walk, and
-    /// what comes back is where that one settles; not on a surface with a
-    /// pole ([`Surface::goes_on`]). Where the first walk settles, nothing
-    /// else is done, and the answer is the one it always was, bit for bit.
+    /// This walk does not go on where it ends short, as
+    /// [`Surface::project`] does: its callers read a walk that did not
+    /// settle as an error and fall back on `project`, or check what they
+    /// got against what they need, and they were built on its answers as
+    /// they are.
     ///
     /// A walk that does not settle within its steps, or meets a number
     /// that is not one, is [`GeomError::NoConvergence`]. A `start` outside
@@ -793,34 +791,12 @@ impl Surface {
         }
         let start = (start.0.clamp(u0, u1), start.1.clamp(v0, v1));
         let (_, u, v, settled, at) = self.descend(p, start, (false, false), [false; 4]);
-        let unsettled =
-            GeomError::NoConvergence("the walk from the start of a projection did not settle");
-        if !(u.is_finite() && v.is_finite()) {
-            return Err(unsettled);
+        if !(settled && u.is_finite() && v.is_finite()) {
+            return Err(GeomError::NoConvergence(
+                "the walk from the start of a projection did not settle",
+            ));
         }
-        let domain = ((u0, u1), (v0, v1));
-        let short = !settled || self.slides(p, (u, v), at, (false, false), domain);
-        // Not on a surface with a pole: see `goes_on`.
-        if !short || !self.goes_on() {
-            return if settled {
-                Ok(((u, v), at))
-            } else {
-                Err(unsettled)
-            };
-        }
-        // Ended short: a second walk from there, taken where it settles.
-        // Where the first one settled by its own rule and the second does
-        // not, the first stands, as it did.
-        #[cfg(test)]
-        FINISHED.with(|n| n.set(n.get() + 1));
-        let second = self.settle(p, (u, v), (false, false), [false; 4], domain, PROJECT_STEPS);
-        if second.settled {
-            return Ok(((second.u, second.v), second.at));
-        }
-        if settled {
-            return Ok(((u, v), at));
-        }
-        Err(unsettled)
+        Ok(((u, v), at))
     }
 
     /// The nearest point of a Bézier or NURBS surface, numerically.
@@ -851,17 +827,19 @@ impl Surface {
     ///   the border.
     ///
     /// **Where the walks end short.** The answer is looked at once more:
-    /// where its foot would still slide along the tangent plane towards
-    /// `p` by more than the coordinates resolve there (a spline whose
-    /// weights make its parametrisation race, or whose tangents are
-    /// nearly parallel, where the damped steps crawl and run out), a
-    /// second walk goes on from it ([`Surface::settle`]), and where that
-    /// does not settle either, a search over the surface's Bézier pieces
+    /// where its foot could still come nearer to `p`, by sliding along the
+    /// tangent plane, by more than the coordinates resolve there
+    /// ([`Surface::slides`]: a spline whose weights make its
+    /// parametrisation race, or whose tangents are nearly parallel, where
+    /// the damped steps crawl and run out), a second walk goes on from it
+    /// ([`Surface::settle`]), and where that does not settle either, a
+    /// search over the surface's Bézier pieces
     /// ([`Surface::nearest_by_pieces`]). What they find replaces the answer
     /// only where it is nearer by more than that resolution, or as near
-    /// and settled where the answer was not. Where the answer does not
-    /// slide, or the surface has a pole ([`Surface::goes_on`]), nothing of
-    /// this is done and it is the one it always was, bit for bit.
+    /// and settled where the answer was not. Where the answer is not short
+    /// so, or the surface has a pole or a border squeezed nearly into one
+    /// ([`Surface::goes_on`]), nothing of this is done: the answer is
+    /// what the walks found, bit for bit.
     ///
     /// **What is promised.** The result is a local nearest point (the
     /// distance does not decrease in any direction within the domain), to
@@ -1115,8 +1093,8 @@ impl Surface {
         if !at_most(found, d) {
             return Ok(at(i, j));
         }
-        // Where the walks ended short, the foot found by going on (not on
-        // a surface with a pole: see `goes_on`).
+        // Where the walks ended short, the foot found by going on (not
+        // beside a pole: see `goes_on`).
         let domain = ((u0, u1), (v0, v1));
         if self.slides(p, (u, v), there, (closed_u, closed_v), domain) && self.goes_on() {
             #[cfg(test)]
@@ -1532,18 +1510,52 @@ impl Surface {
         )
     }
 
+    /// Whether the foot could come nearer to `p`, by sliding along the
+    /// tangent plane, by more than the coordinates resolve at it: sliding
+    /// by `s` brings a foot `d` from `p` nearer by `d − √(d² − s²)` at most
+    /// (`s²/2d` where `s` is small). A foot far from its point whose slide
+    /// is the rounding of a wild sheet's own evaluation cannot; nor one
+    /// placed a little off along the plane, which a walk sets right
+    /// ([`Surface::settle`]) where a search over the whole surface
+    /// ([`Surface::nearest_by_pieces`]) has nothing to find. Not a number
+    /// can.
+    fn could_come_nearer(&self, p: Vec3, foot: &Foot, closed: (bool, bool)) -> bool {
+        let slide = self.sliding(p, (foot.u, foot.v), foot.at, closed, self.domain());
+        !at_most(
+            Self::gain(foot.distance, slide),
+            self.resolution(p, (foot.u, foot.v), foot.at),
+        )
+    }
+
+    /// How much nearer a foot `distance` from its point can come by
+    /// sliding `slide` along the tangent plane: `d − √(d² − s²)`, written
+    /// `s² / (d + √(d² − s²))` so that a small slide does not cancel.
+    fn gain(distance: f64, slide: f64) -> f64 {
+        // On the point, or square to the tangent plane: nothing to gain.
+        if slide == 0.0 {
+            return 0.0;
+        }
+        let square = (distance * distance - slide * slide).max(0.0);
+        slide * slide / (distance + square.sqrt())
+    }
+
     /// Whether a search that ended short on this surface goes on: not on a
-    /// surface with a pole (a border that is one point,
-    /// [`crate::pole::poles`]). There the feet of points beside the pole
-    /// that the descent finds on another meridian are what the measure and
-    /// the tessellator read and mend themselves, along the borders
-    /// (`pole::BorderFeet`),
-    /// and the tessellator cannot yet mesh a face whose rails' feet are
-    /// found on the border at its pole (the fan at a pole is owed): going
-    /// on there moved the bits, and the meshes and measures, of tips and
-    /// blades built right (the trial Gate of 2026-11-15, `pole_measure`).
+    /// surface with a pole or a border squeezed nearly into one
+    /// ([`crate::pole::squeezed`]: a border row of control points that
+    /// reaches less than a ten-thousandth as far as the row next to it,
+    /// where [`crate::pole::poles`] takes a billionth of the net). Beside such a border
+    /// the descent finds the points of the rails on other meridians, and
+    /// the measure and the tessellator read those feet as they are, or mend
+    /// them along the borders where the surface has a pole
+    /// (`pole::BorderFeet`); the tessellator cannot yet mesh a face whose
+    /// rails' feet are found on the border at its pole (the fan at a pole
+    /// is owed). Going on there moved what was built right: at true poles
+    /// the meshes and measures of `pole_measure`'s tips and blades (the
+    /// trial Gate of 2026-11-15), at poles squeezed open by 2e-8 and 1e-7
+    /// of the scale mesh triangle counts and the reasons measures are
+    /// refused (the review of 2026-11-15).
     fn goes_on(&self) -> bool {
-        crate::pole::poles(self).is_empty()
+        !crate::pole::squeezed(self)
     }
 
     /// Of two feet of `p`, whether `a` is the better: nearer by more than
@@ -1575,7 +1587,7 @@ impl Surface {
         if self.better(p, &walk, &best) {
             best = walk;
         }
-        if !best.settled {
+        if !best.settled && self.could_come_nearer(p, &best, closed) {
             let found = self.nearest_by_pieces(p, best, closed, collapsed);
             if self.better(p, &found, &best) {
                 best = found;
@@ -1602,11 +1614,13 @@ impl Surface {
     /// damped. A step helps as it does there: nearer by more than
     /// rounding, or as near with less slope.
     ///
-    /// Settled where the foot no longer slides by more than the
-    /// coordinates resolve ([`Surface::slides`]): a stopping rule in the
-    /// units of the model, where `descend`'s is in those of the
-    /// parameters. Not settled where no step helps however short, the
-    /// steps run out or a number is not one.
+    /// Settled as soon as sliding on could not bring the foot nearer by
+    /// more than the coordinates resolve ([`Surface::slides`]): a stopping
+    /// rule in the units of the model, where `descend`'s is in those of
+    /// the parameters, and one that a slide which is the rounding of the
+    /// surface's own evaluation, far from its point, meets at once. Not
+    /// settled where no step helps however short, the steps run out or a
+    /// number is not one.
     fn settle(
         &self,
         p: Vec3,
@@ -1652,6 +1666,7 @@ impl Surface {
         let mut here = look(u, v);
         let mut lambda = 1e-3;
         let mut settled = false;
+        let mut stalled = 0_u32;
         for _ in 0..steps {
             let (r, (ru, rv), (hold_u, hold_v), slope, at) = here;
             let (_, su, sv) = at;
@@ -1659,7 +1674,10 @@ impl Surface {
             if distance.is_nan() {
                 break;
             }
-            if distance <= 0.0 || (hold_u && hold_v) || slope <= self.resolution(p, (u, v), at) {
+            if distance <= 0.0
+                || (hold_u && hold_v)
+                || at_most(slope, self.resolution(p, (u, v), at))
+            {
                 settled = true;
                 break;
             }
@@ -1742,8 +1760,21 @@ impl Surface {
             let rounding = 16.0 * f64::EPSILON * (p.length() + distance);
             let level = reached <= distance + rounding;
             if reached < distance - rounding || (level && there.3 < slope) {
+                // A step of Gauss–Newton takes the slide at least to half
+                // where the plane is a model of the surface; two in a row
+                // that do not are walking in the rounding of the surface's
+                // own evaluation (a slide that is noise, far from its
+                // point), which no step can lessen: the walk ends there.
+                stalled = if there.3 > 0.5 * slope {
+                    stalled + 1
+                } else {
+                    0
+                };
                 (u, v, here) = (next.0, next.1, there);
                 lambda = (lambda / 8.0).max(1e-14);
+                if stalled >= 2 {
+                    break;
+                }
             } else {
                 lambda *= 8.0;
             }
@@ -1785,16 +1816,24 @@ impl Surface {
         closed: (bool, bool),
         collapsed: [bool; 4],
     ) -> Foot {
-        let pieces: Vec<Span> = match self {
+        // The spans as the surface keeps them (`bezier_spans_shared`),
+        // looked at in place: only the pieces split from them are made.
+        let shared;
+        let whole;
+        let pieces: Vec<Span<'_>> = match self {
             Surface::Nurbs(s) => match s.bezier_spans_shared() {
-                Ok(spans) => spans
-                    .iter()
-                    .map(|span| (span.patch.clone(), span.u, span.v))
-                    .collect(),
+                Ok(spans) => {
+                    shared = spans;
+                    shared
+                        .iter()
+                        .map(|span| (&span.patch, span.u, span.v))
+                        .collect()
+                }
                 Err(_) => return best,
             },
             Surface::Bezier(b) => {
-                vec![(RationalBezierPatch::from_bezier(b), (0.0, 1.0), (0.0, 1.0))]
+                whole = RationalBezierPatch::from_bezier(b);
+                vec![(&whole, (0.0, 1.0), (0.0, 1.0))]
             }
             _ => return best,
         };
@@ -1803,11 +1842,13 @@ impl Surface {
         let mut heap = std::collections::BinaryHeap::new();
         let mut made = 0_usize;
         for (patch, u, v) in pieces {
-            let (gap, size) = piece_bound(&patch, p);
+            // A pass over its control net (`crate::allowance`).
+            crate::allowance::charge(1);
+            let (gap, size) = piece_bound(patch, p);
             heap.push(Piece {
                 gap,
                 made,
-                patch,
+                patch: std::borrow::Cow::Borrowed(patch),
                 u,
                 v,
                 depth: 0,
@@ -1826,6 +1867,11 @@ impl Surface {
                 break;
             }
             looks += 1;
+            // A look is counted (`crate::allowance`), and a bound in force
+            // that is reached ends the search with what it has.
+            if crate::allowance::pass() {
+                break;
+            }
             let (m, n) = piece.patch.degrees();
             for (i, j, u, v) in [
                 (0, 0, piece.u.0, piece.v.0),
@@ -1884,11 +1930,12 @@ impl Surface {
             for (half, u) in [(left, (piece.u.0, um)), (right, (um, piece.u.1))] {
                 let (low, high) = half.split_v(sv);
                 for (quarter, v) in [(low, (piece.v.0, vm)), (high, (vm, piece.v.1))] {
+                    crate::allowance::charge(1);
                     let (gap, size) = piece_bound(&quarter, p);
                     heap.push(Piece {
                         gap,
                         made,
-                        patch: quarter,
+                        patch: std::borrow::Cow::Owned(quarter),
                         u,
                         v,
                         depth: piece.depth + 1,
@@ -1916,6 +1963,9 @@ impl Surface {
     }
 }
 
+/// A Bézier piece of a freeform surface, with its parameters there.
+type Span<'a> = (&'a RationalBezierPatch, (f64, f64), (f64, f64));
+
 /// `x <= bound`: false where either is not a number.
 fn at_most(x: f64, bound: f64) -> bool {
     x <= bound
@@ -1930,9 +1980,6 @@ fn below(x: f64, bound: f64) -> bool {
 fn above_zero(x: f64) -> bool {
     x > 0.0
 }
-
-/// A Bézier piece of a freeform surface, with its parameters there.
-type Span = (RationalBezierPatch, (f64, f64), (f64, f64));
 
 /// A foot of a point on a freeform surface: its distance, its parameters,
 /// the surface and its tangents there, and whether it no longer slides
@@ -1949,31 +1996,32 @@ struct Foot {
 /// A piece of [`Surface::nearest_by_pieces`]: how near it can come to the
 /// point, the order it was made in (the tie-break), the patch, its
 /// parameters on the surface, how often it was split and its size.
-struct Piece {
+struct Piece<'a> {
     gap: f64,
     made: usize,
-    patch: RationalBezierPatch,
+    /// A span of the surface as it keeps them, or a piece split from one.
+    patch: std::borrow::Cow<'a, RationalBezierPatch>,
     u: (f64, f64),
     v: (f64, f64),
     depth: usize,
     size: f64,
 }
 
-impl PartialEq for Piece {
+impl PartialEq for Piece<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == std::cmp::Ordering::Equal
     }
 }
 
-impl Eq for Piece {}
+impl Eq for Piece<'_> {}
 
-impl PartialOrd for Piece {
+impl PartialOrd for Piece<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for Piece {
+impl Ord for Piece<'_> {
     /// The nearest first (a max-heap pops the greatest), then the first
     /// made.
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
