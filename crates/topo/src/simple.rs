@@ -152,8 +152,9 @@ const ROUNDING: f64 = 64.0 * f64::EPSILON;
 /// `None` when every loop is one or this test cannot tell. `followed` is
 /// what the region rule followed of the face (`crate::region`), so the face
 /// is followed once for both. `verified(k)` says whether a fault rule 3
-/// finds in the loop `k` stands: not where the face, on a plane, is walked
-/// again and cleared (`crate::region`'s `chord`: verify before refusing).
+/// finds in the loop `k` stands: not where the face, on a plane, a
+/// cylinder, a cone or a sphere, is walked again and cleared
+/// (`crate::region`'s `chord`: verify before refusing).
 pub(crate) fn loop_fault(
     body: &Body,
     face: &Face,

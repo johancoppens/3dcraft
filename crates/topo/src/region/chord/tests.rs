@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::{BodyKind, Coedge};
-use craft3d_geom::{Cylinder, Line, NurbsCurve, Plane};
+use craft3d_geom::{Circle, Cone, Cylinder, Line, NurbsCurve, Plane, Sphere, Torus};
 use craft3d_math::Frame;
 use std::f64::consts::TAU;
 
@@ -352,17 +352,13 @@ fn segments_are_near_where_they_meet_or_come_within_the_margin() {
     );
 }
 
-/// A face that is not on a plane is not walked again at all: the walk's
-/// fault stands, whatever it says, and nothing is counted. A band of a
-/// cylinder between two circles.
-#[test]
-fn a_face_off_a_plane_is_not_walked_again() {
-    let frame = Frame::WORLD;
-    let cylinder = Surface::Cylinder(Cylinder::new(frame, 2.0).unwrap());
+/// The two circles of a band about the world's axis at the radius 2, the
+/// heights 0 and 3, as the two loops of a face on `surface`.
+fn band(surface: Surface) -> Body {
     let mut body = Body::new(BodyKind::Sheet);
     let mut loops = Vec::new();
     for (z, reversed) in [(0.0, false), (3.0, true)] {
-        let circle = craft3d_geom::Circle::new(
+        let circle = Circle::new(
             Frame::new(Vec3::new(0.0, 0.0, z), Vec3::Z, Vec3::X).unwrap(),
             2.0,
         )
@@ -371,12 +367,20 @@ fn a_face_off_a_plane_is_not_walked_again() {
         let edge = body.add_edge(Curve3::Circle(circle), (0.0, TAU), v, v);
         loops.push(body.add_loop(vec![Coedge { edge, reversed }]));
     }
-    let face = body.add_face(cylinder, false, loops);
+    let face = body.add_face(surface, false, loops);
     body.add_shell(vec![face]);
+    body
+}
+
+/// A face on a torus or a spline surface is not walked again at all: the
+/// walk's fault stands, whatever it says, and nothing is counted.
+#[test]
+fn a_face_on_a_torus_is_not_walked_again() {
+    let body = band(Surface::Torus(Torus::new(Frame::WORLD, 5.0, 3.0).unwrap()));
     let tol = tolerance(1.0);
     let face = &body.faces[0];
     assert!(!asked(&face.surface));
-    assert!(flat(&face.surface).is_none());
+    assert!(chart_of(&face.surface).is_none());
     assert!(Walked::new(&body, face, &tol).is_none());
     let before = crate::region::chord_proofs();
     let original = "its loops 0 and 1 cross";
@@ -384,6 +388,478 @@ fn a_face_off_a_plane_is_not_walked_again() {
     assert_eq!(verifier.region_shown(original).as_deref(), Some(original));
     assert!(verifier.winding_shown());
     assert_eq!(crate::region::chord_proofs(), before, "nothing counted");
+}
+
+/// A band of a cylinder (two circles round it) is not judged by the
+/// bounds: its loops' lifts do not close, and a fault of its region rule
+/// stands, whatever it says.
+#[test]
+fn a_band_is_never_cleared() {
+    let body = band(Surface::Cylinder(Cylinder::new(Frame::WORLD, 2.0).unwrap()));
+    let tol = tolerance(1.0);
+    let face = &body.faces[0];
+    let mut walked = Walked::new(&body, face, &tol).unwrap();
+    walked.show_all().unwrap();
+    assert!(matches!(walked.rings(), Some((_, false))), "read as a band");
+    assert_eq!(judge(&mut walked, false), Some(Judged::Unsure(Vec::new())));
+    let original = "its loops 0 and 1 cross";
+    let mut verifier = Verifier::new(&body, face, &tol);
+    assert_eq!(verifier.region_shown(original).as_deref(), Some(original));
+    assert!(verifier.winding_shown());
+}
+
+fn about(frame: &Frame, rho: f64, angle: f64, h: f64) -> Vec3 {
+    let (s, c) = angle.psin_cos();
+    frame.point(rho * c, rho * s, h)
+}
+
+/// A plane, a cylinder, a cone and a sphere of size `k` in `frame`,
+/// each with the map from its chart to it.
+#[allow(clippy::type_complexity)]
+fn grounds(frame: Frame, k: f64) -> Vec<(Surface, Box<dyn Fn(f64, f64) -> Vec3>)> {
+    let slope = 0.4_f64.ptan();
+    vec![
+        (
+            Surface::Plane(Plane::new(frame)),
+            Box::new(move |x, y| frame.point(k * x, k * y, 0.0)),
+        ),
+        (
+            Surface::Cylinder(Cylinder::new(frame, k).unwrap()),
+            Box::new(move |x, y| about(&frame, k, x, k * y)),
+        ),
+        (
+            Surface::Cone(Cone::new(frame, 2.0 * k, 0.4).unwrap()),
+            Box::new(move |x, y| about(&frame, 2.0 * k + k * y * slope, x, k * y)),
+        ),
+        (
+            Surface::Sphere(Sphere::new(frame, 2.0 * k).unwrap()),
+            Box::new(move |x, y| {
+                let (s, c) = y.psin_cos();
+                about(&frame, 2.0 * k * c, x, 2.0 * k * s)
+            }),
+        ),
+    ]
+}
+
+/// The loop of the chart rectangle `[u0, u1] × [v0, v1]` of `surface` (a
+/// cylinder, a cone or a sphere in `frame`), added to `body`: two parallels
+/// (circles about the axis) and two rulings (lines) or, on a sphere,
+/// meridians (circles through the poles). Counter-clockwise in the chart;
+/// clockwise where `hole`. `short` shortens the right side at its upper
+/// end by that length.
+fn chart_rectangle(
+    body: &mut Body,
+    surface: &Surface,
+    frame: &Frame,
+    (u0, u1, v0, v1): (f64, f64, f64, f64),
+    hole: bool,
+    short: f64,
+) -> crate::LoopId {
+    let parallel = |v: f64| {
+        let (x, y, h) = frame.local(surface.eval(0.0, v));
+        let at = frame.at(frame.point(0.0, 0.0, h)).unwrap();
+        Curve3::Circle(Circle::new(at, x.phypot(y)).unwrap())
+    };
+    let side = |u: f64| -> (Curve3, (f64, f64)) {
+        let (a, b) = (surface.eval(u, v0), surface.eval(u, v1));
+        match surface {
+            Surface::Sphere(s) => {
+                let (sn, cs) = u.psin_cos();
+                let out = frame.vector(cs, sn, 0.0);
+                let meridian = Frame::new(frame.origin(), out.cross(frame.z()), out).unwrap();
+                (
+                    Curve3::Circle(Circle::new(meridian, s.radius()).unwrap()),
+                    (v0, v1 - short / s.radius()),
+                )
+            }
+            _ => (
+                Curve3::Line(Line::through(a, b).unwrap()),
+                (0.0, a.distance(b) - short),
+            ),
+        }
+    };
+    let corners = [
+        surface.eval(u0, v0),
+        surface.eval(u1, v0),
+        surface.eval(u1, v1),
+        surface.eval(u0, v1),
+    ];
+    let vs: Vec<_> = corners.iter().map(|p| body.add_vertex(*p)).collect();
+    let (right, right_range) = side(u1);
+    let (left, left_range) = side(u0);
+    let left_range = if short > 0.0 {
+        // Only the right side is shortened.
+        match surface {
+            Surface::Sphere(_) => (v0, v1),
+            _ => (left_range.0, left_range.1 + short),
+        }
+    } else {
+        left_range
+    };
+    let edges = [
+        body.add_edge(parallel(v0), (u0, u1), vs[0], vs[1]),
+        body.add_edge(right, right_range, vs[1], vs[2]),
+        body.add_edge(parallel(v1), (u0, u1), vs[3], vs[2]),
+        body.add_edge(left, left_range, vs[0], vs[3]),
+    ];
+    let mut coedges: Vec<Coedge> = edges
+        .iter()
+        .zip([false, false, true, true])
+        .map(|(edge, reversed)| Coedge {
+            edge: *edge,
+            reversed,
+        })
+        .collect();
+    if hole {
+        coedges.reverse();
+        for co in &mut coedges {
+            co.reversed = !co.reversed;
+        }
+    }
+    body.add_loop(coedges)
+}
+
+/// A chart rectangle: its angles `(u0, u1)` and the shares of the height
+/// it lies between.
+type Rectangle = ((f64, f64), (f64, f64));
+
+/// A cylinder, a cone and a sphere of size `k` in `frame`, each with the
+/// heights (latitudes, on the sphere) its test rectangles lie between.
+fn about_grounds(frame: Frame, k: f64) -> Vec<(Surface, (f64, f64))> {
+    vec![
+        (
+            Surface::Cylinder(Cylinder::new(frame, 1.3 * k).unwrap()),
+            (0.2 * k, 1.1 * k),
+        ),
+        (
+            Surface::Cone(Cone::new(frame, 2.0 * k, 0.4).unwrap()),
+            (0.1 * k, 1.0 * k),
+        ),
+        (
+            Surface::Sphere(Sphere::new(frame, 1.7 * k).unwrap()),
+            (0.1, 0.8),
+        ),
+    ]
+}
+
+/// A one-face sheet on `surface` whose loops are chart rectangles: the
+/// first counter-clockwise, the others clockwise (holes), each `(u0, u1)`
+/// with the shares of the height it lies between.
+fn rectangles(
+    surface: &Surface,
+    frame: &Frame,
+    (low, high): (f64, f64),
+    loops: &[Rectangle],
+    short: f64,
+) -> Body {
+    let mut body = Body::new(BodyKind::Sheet);
+    let ids = loops
+        .iter()
+        .enumerate()
+        .map(|(i, ((u0, u1), (a, b)))| {
+            let at = |share: f64| low + (high - low) * share;
+            chart_rectangle(
+                &mut body,
+                surface,
+                frame,
+                (*u0, *u1, at(*a), at(*b)),
+                i > 0,
+                if i == 0 { short } else { 0.0 },
+            )
+        })
+        .collect();
+    let face = body.add_face(surface.clone(), false, ids);
+    body.add_shell(vec![face]);
+    body
+}
+
+/// Pieces a period apart in the chart lie on one place of the surface, and
+/// are held to each other (C2′ and C6′ of the module; the second review's
+/// fault): a chart rectangle of a cylinder, a cone and a sphere less than
+/// once round is cleared, almost all the way round too; once round and a
+/// bit, exactly once round, within half a reach of once round, twice round
+/// and a half, and further than the copies reach, it is not. A hole is
+/// inside its outer loop whichever of its lifts the chart gives.
+#[test]
+fn pieces_a_period_apart_are_held_to_each_other() {
+    let whole = (0.0, 1.0);
+    for k in [1e-3, 1.0, 1e6] {
+        for frame in [Frame::WORLD, tilted(k)] {
+            for (surface, heights) in about_grounds(frame, k) {
+                let kind = surface.kind();
+                let of = |loops: &[Rectangle]| {
+                    verdict(&rectangles(&surface, &frame, heights, loops, 0.0), k)
+                };
+                let cleared = |judged: &Option<Judged>| *judged == Some(Judged::Clear);
+                // The reach as an angle: ten tolerances over the least
+                // distance from the axis the rectangles have.
+                let least = [heights.0, heights.1]
+                    .iter()
+                    .map(|v| {
+                        let (x, y, _) = frame.local(surface.eval(0.0, *v));
+                        x.phypot(y)
+                    })
+                    .fold(f64::INFINITY, f64::min);
+                let reach = 1e-5 * k / least;
+                for (extent, clears) in [
+                    (1.0, true),
+                    (4.0, true),
+                    (0.99 * TAU, true),
+                    (TAU - 30.0 * reach, true),
+                    (TAU - 0.5 * reach, false),
+                    (TAU, false),
+                    (TAU + 0.5 * reach, false),
+                    (TAU + 0.03, false),
+                    (1.3 * TAU, false),
+                    (2.5 * TAU, false),
+                    (3.5 * TAU, false),
+                    (40.0 * TAU, false),
+                ] {
+                    for start in [0.3, -2.9, 5.0] {
+                        let judged = of(&[((start, start + extent), whole)]);
+                        assert_eq!(
+                            cleared(&judged),
+                            clears,
+                            "{kind} at {k}: a rectangle from {start} {extent} round: {judged:?}"
+                        );
+                    }
+                }
+                // A hole in the middle, as the chart gives it and a period
+                // or two away; beside the rectangle; inside another hole.
+                let outer = ((0.3, 2.3), whole);
+                for shift in [0.0, TAU, -2.0 * TAU] {
+                    let hole = ((1.0 + shift, 1.5 + shift), (0.3, 0.6));
+                    assert!(
+                        cleared(&of(&[outer, hole])),
+                        "{kind} at {k}: a hole {shift} on"
+                    );
+                    let beside = ((2.6 + shift, 3.0 + shift), (0.3, 0.6));
+                    assert!(
+                        matches!(of(&[outer, beside]), Some(Judged::Shown(Kind::Hole, _))),
+                        "{kind} at {k}: a hole beside, {shift} on"
+                    );
+                    let nested = ((1.1 + shift, 1.4 + shift), (0.4, 0.5));
+                    assert!(
+                        matches!(
+                            of(&[outer, ((1.0, 1.5), (0.3, 0.6)), nested]),
+                            Some(Judged::Shown(Kind::Hole, _))
+                        ),
+                        "{kind} at {k}: a hole in a hole, {shift} on"
+                    );
+                    // A hole across the outer loop's side, seen a period on.
+                    let astride = ((2.1 + shift, 2.6 + shift), (0.3, 0.6));
+                    assert!(
+                        !cleared(&of(&[outer, astride])),
+                        "{kind} at {k}: a hole astride, {shift} on"
+                    );
+                }
+                // A hole of an outer loop that goes almost all the way
+                // round, lying across the chart's seam.
+                let wide = ((0.5, 0.5 + 0.9 * TAU), whole);
+                assert!(
+                    !cleared(&of(&[wide, ((-0.3, 0.2), (0.3, 0.6))])),
+                    "{kind} at {k}: a hole in the gap of a wide loop"
+                );
+                assert!(
+                    cleared(&of(&[wide, ((3.0, 3.6), (0.3, 0.6))])),
+                    "{kind} at {k}: a hole of a wide loop"
+                );
+            }
+        }
+    }
+}
+
+/// On a sphere every loop may run clockwise, the face being the sphere less
+/// the discs they bound (C5″, C6″ of the module): cleared where the discs
+/// lie apart, shown where one holds another, a period on or not.
+#[test]
+fn a_sphere_less_discs_is_held_to_discs_apart() {
+    for k in [1e-3, 1.0, 1e6] {
+        for frame in [Frame::WORLD, tilted(k)] {
+            let surface = Surface::Sphere(Sphere::new(frame, 1.7 * k).unwrap());
+            let heights = (0.1, 0.8);
+            let discs = |loops: &[Rectangle]| {
+                let mut body = Body::new(BodyKind::Sheet);
+                let ids = loops
+                    .iter()
+                    .map(|((u0, u1), (a, b))| {
+                        let at = |share: f64| heights.0 + (heights.1 - heights.0) * share;
+                        chart_rectangle(
+                            &mut body,
+                            &surface,
+                            &frame,
+                            (*u0, *u1, at(*a), at(*b)),
+                            true,
+                            0.0,
+                        )
+                    })
+                    .collect();
+                let face = body.add_face(surface.clone(), false, ids);
+                body.add_shell(vec![face]);
+                verdict(&body, k)
+            };
+            let whole = (0.0, 1.0);
+            assert_eq!(
+                discs(&[((0.3, 2.3), whole)]),
+                Some(Judged::Clear),
+                "one disc"
+            );
+            assert_eq!(
+                discs(&[((0.3, 1.3), whole), ((2.0, 3.0), whole)]),
+                Some(Judged::Clear),
+                "two apart"
+            );
+            for shift in [0.0, TAU, -TAU] {
+                assert!(
+                    matches!(
+                        discs(&[
+                            ((0.3, 2.3), whole),
+                            ((1.0 + shift, 1.5 + shift), (0.3, 0.6))
+                        ]),
+                        Some(Judged::Shown(Kind::Hole, _))
+                    ),
+                    "one in another, {shift} on"
+                );
+                assert_ne!(
+                    discs(&[((0.3, 2.3), whole), ((2.0 + shift, 3.0 + shift), whole)]),
+                    Some(Judged::Clear),
+                    "two across each other, {shift} on"
+                );
+            }
+            // A cylinder's loops may not all run clockwise.
+            let cylinder = Surface::Cylinder(Cylinder::new(frame, 1.3 * k).unwrap());
+            let mut body = Body::new(BodyKind::Sheet);
+            let lp = chart_rectangle(
+                &mut body,
+                &cylinder,
+                &frame,
+                (0.3, 2.3, 0.2 * k, 1.1 * k),
+                true,
+                0.0,
+            );
+            let face = body.add_face(cylinder, false, vec![lp]);
+            body.add_shell(vec![face]);
+            assert!(matches!(
+                verdict(&body, k),
+                Some(Judged::Shown(Kind::Clockwise, _))
+            ));
+        }
+    }
+}
+
+/// What is allowed at a joint is ten tolerances on the surface whichever
+/// way it runs (the second review's reading: ten tolerances in the chart of
+/// a cylinder of radius a thousandth were ten thousand along its axis). A
+/// rectangle of a thin cylinder, a cone and a sphere whose right side stops
+/// short of its upper corner: cleared under a quarter of ten tolerances,
+/// not from a quarter on.
+#[test]
+fn a_gap_is_held_to_tolerances_on_the_surface() {
+    for k in [1e-3, 1.0, 1e6] {
+        let frame = Frame::WORLD;
+        let mut all = about_grounds(frame, k);
+        // A cylinder a thousand times thinner than it is long.
+        all.push((
+            Surface::Cylinder(Cylinder::new(frame, 1e-3 * k).unwrap()),
+            (0.2 * k, 1.1 * k),
+        ));
+        for (surface, heights) in all {
+            for (share, clears) in [
+                (0.0, true),
+                (0.05, true),
+                (0.15, true),
+                (0.3, false),
+                (1.0, false),
+                (30.0, false),
+                (2500.0, false),
+            ] {
+                let body = rectangles(
+                    &surface,
+                    &frame,
+                    heights,
+                    &[((0.3, 2.3), (0.0, 1.0))],
+                    share * 1e-5 * k,
+                );
+                let judged = verdict(&body, k);
+                assert_eq!(
+                    judged == Some(Judged::Clear),
+                    clears,
+                    "{} at {k}, a gap of {share} of ten tolerances: {judged:?}",
+                    surface.kind()
+                );
+            }
+        }
+    }
+}
+
+/// A loop near a pole of a sphere or the apex of a cone is never cleared: a
+/// point within ten tolerances of one is not placed, and a stretch that
+/// goes round the axis there is not shown.
+#[test]
+fn a_loop_beside_a_pole_or_the_apex_is_never_cleared() {
+    let frame = Frame::WORLD;
+    let k = 1.0;
+    let sphere = Surface::Sphere(Sphere::new(frame, 1.7).unwrap());
+    let top = std::f64::consts::FRAC_PI_2;
+    for (to, clears) in [(top - 0.3, true), (top - 1e-7, false), (top, false)] {
+        let judged = verdict(
+            &rectangles(&sphere, &frame, (0.1, to), &[((0.3, 2.3), (0.0, 1.0))], 0.0),
+            k,
+        );
+        assert_eq!(
+            judged == Some(Judged::Clear),
+            clears,
+            "sphere to {to}: {judged:?}"
+        );
+    }
+    let Surface::Cone(cone) = Surface::Cone(Cone::new(frame, 2.0, 0.4).unwrap()) else {
+        panic!("a cone");
+    };
+    let apex = cone.apex_v();
+    let surface = Surface::Cone(cone);
+    // The apex lies below the cone's frame: rectangles from beside it up.
+    assert!(apex < 0.0);
+    for (from, clears) in [
+        (apex * 0.5, true),
+        (apex * (1.0 - 1e-8), false),
+        (apex, false),
+    ] {
+        let judged = verdict(
+            &rectangles(
+                &surface,
+                &frame,
+                (from, 0.1),
+                &[((0.3, 2.3), (0.0, 1.0))],
+                0.0,
+            ),
+            k,
+        );
+        assert_eq!(
+            judged == Some(Judged::Clear),
+            clears,
+            "cone from {from}: {judged:?}"
+        );
+    }
+}
+
+/// The parallelogram's corners against a curve's points: a quarter circle
+/// from (1, 0) to (0, 1) keeps its direction between (0, 1) and (-1, 0),
+/// and the bound is the corner (1, 1)'s distance from the chord, `1 / √2`,
+/// which the circle's own, `1 − 1 / √2`, is within.
+#[test]
+fn a_parallelogram_holds_a_quarter_circle() {
+    let off = parallelogram((0.0, 1.0), (-1.0, 0.0), (-1.0, 1.0)).unwrap();
+    assert!((off - 0.5_f64.sqrt()).abs() < 1e-15, "{off}");
+    // A cone nearly a half turn wide: the corners lie far past the
+    // chord's ends, and are measured from the segment, not its line.
+    let off = parallelogram((1.0, 0.01), (-1.0, 0.01), (0.0, 0.02)).unwrap();
+    assert!((off - 1.0).abs() < 1e-12, "{off}");
+    // A chord outside the cone: no bound.
+    assert_eq!(parallelogram((0.0, 1.0), (-1.0, 0.0), (1.0, 1.0)), None);
+    // A cone of no width, a cone over a half turn: none.
+    assert_eq!(parallelogram((1.0, 0.0), (1.0, 0.0), (1.0, 0.0)), None);
+    assert_eq!(parallelogram((1.0, 0.0), (0.0, -1.0), (1.0, -1.0)), None);
+    assert_eq!(parallelogram((1.0, 0.0), (0.0, 1.0), (0.0, 0.0)), Some(0.0));
 }
 
 /// A closed curve of degree `degree` through `count + 1` points of the
@@ -429,161 +905,189 @@ fn ring_curve(
 }
 
 /// Every stretch shown holds what it says ((S1), (S2) and (L3) of the
-/// module), against 64 points of its image placed on the plane: within its
-/// bound of its chord, every secant in its cone, running one way; and the
-/// area the sampled loop bounds is its polyline's within the error claimed.
-/// Closed wavy splines of degrees 1 to 7, through many points or as few as
-/// one span (bulging far from their chords), rational and not, on a plane
-/// in the world and turned and moved, at three scales, as walked and halved
-/// three times over (so that both the spans' control points and the cut
-/// Bézier pieces are read).
+/// module), against 64 points of its image placed on the surface and taken
+/// to the scaled chart: within its bound of its chord, every move from a
+/// place to a later one in its cone, running one way; and the area the
+/// sampled loop bounds is its polyline's within the error claimed. Closed
+/// wavy splines of degrees 1 to 7, through many points or as few as one
+/// span (bulging far from their chords), rational and not, on a plane, a
+/// cylinder, a cone and a sphere, in the world and turned and moved, at
+/// three scales, as walked and halved three times over (so that both the
+/// spans' control points and the cut Bézier pieces are read).
 #[test]
 fn a_stretch_shown_lies_within_its_bound_and_runs_one_way() {
     let (mut shown, mut walked_faces, mut stretches) = (0, 0, 0_usize);
     let mut coned = 0_usize;
     for k in [1e-3, 1.0, 1e6] {
         for frame in [Frame::WORLD, tilted(k)] {
-            let surface = Surface::Plane(Plane::new(frame));
-            let at = move |x: f64, y: f64| frame.point(k * x, k * y, 0.0);
-            for (degree, count, waves, a, rational) in [
-                (3, 96, 7.0, 0.08, false),
-                (5, 64, 5.0, 0.12, true),
-                (7, 7, 3.0, 0.15, false),
-                (7, 7, 2.0, 0.2, true),
-                (2, 40, 9.0, 0.05, false),
-                (4, 12, 3.0, 0.25, false),
-                (3, 200, 11.0, 0.05, false),
-                (3, 24, 4.0, 0.2, true),
-                (6, 30, 6.0, 0.1, false),
-                (2, 12, 2.0, 0.3, true),
-                (5, 16, 3.0, 0.3, false),
-                (1, 60, 5.0, 0.1, false),
-                (1, 9, 2.0, 0.2, false),
-            ] {
-                // A rational fit through few points can have a weight that
-                // is not positive: no such curve.
-                let Some(curve) = ring_curve(&at, waves, a, count, degree, rational) else {
-                    assert!(rational, "degree {degree}");
-                    continue;
-                };
-                let mut body = Body::new(BodyKind::Sheet);
-                let v = body.add_vertex(curve.eval(0.0));
-                let edge = body.add_edge(Curve3::Nurbs(curve.clone()), (0.0, 1.0), v, v);
-                let lp = body.add_loop(vec![Coedge {
-                    edge,
-                    reversed: false,
-                }]);
-                let face = body.add_face(surface.clone(), false, vec![lp]);
-                body.add_shell(vec![face]);
-                let tol = tolerance(k);
-                let face = &body.faces[0];
-                let mut walked = Walked::new(&body, face, &tol).unwrap();
-                walked_faces += 1;
-                if walked.show_all().is_none() {
-                    eprintln!(
-                        "not shown: at {k}, degree {degree} through {count}, rational {rational}, work {}",
-                        walked.work
-                    );
-                    continue;
-                }
-                shown += 1;
-                // As walked, and halved three times over.
-                for level in 0..4 {
-                    if level > 0 {
-                        let every: Vec<(usize, usize)> =
-                            (0..walked.loops[0].1.len()).map(|k| (0, k)).collect();
-                        if walked.halve(&every).is_none() || walked.show_all().is_none() {
-                            break;
-                        }
-                    }
-                    let all = walked.loops[0].1.clone();
-                    let mut sampled: Vec<[f64; 2]> = Vec::new();
-                    for st in &all {
-                        let Bound::Shown(bound, aim) = st.bound else {
-                            panic!("a stretch not shown after show_all");
-                        };
-                        stretches += 1;
-                        let (start, end) = (st.start, st.end);
-                        let mut before = start;
-                        let mut far = 0.0_f64;
-                        let mut turned: Vec<f64> = Vec::new();
-                        let mut places: Vec<[f64; 2]> = Vec::new();
-                        for i in 0..=64 {
-                            let t = st.s + (st.e - st.s) * i as f64 / 64.0;
-                            let (u, v) = surface.project(curve.eval(t)).unwrap();
-                            let q = [u, v];
-                            far = far.max(to_segment(q, start, end));
-                            let d = (q[0] - before[0], q[1] - before[1]);
-                            if i > 0 && (d.0 != 0.0 || d.1 != 0.0) {
-                                let mut angle = d.1.patan2(d.0);
-                                if let Some(first) = turned.first() {
-                                    angle += ((first - angle) / TAU).round() * TAU;
-                                }
-                                turned.push(angle);
-                            }
-                            places.push(q);
-                            before = q;
-                        }
-                        sampled.extend(places.iter().take(64).copied());
-                        let size = start[0].abs().max(start[1].abs()).max(k);
+            for (surface, at) in grounds(frame, k) {
+                let kind = surface.kind();
+                for (degree, count, waves, a, rational) in [
+                    (3, 96, 7.0, 0.08, false),
+                    (5, 64, 5.0, 0.12, true),
+                    (7, 7, 3.0, 0.15, false),
+                    (7, 7, 2.0, 0.2, true),
+                    (2, 40, 9.0, 0.05, false),
+                    (4, 12, 3.0, 0.25, false),
+                    (3, 200, 11.0, 0.05, false),
+                    (3, 24, 4.0, 0.2, true),
+                    (6, 30, 6.0, 0.1, false),
+                    (2, 12, 2.0, 0.3, true),
+                    (5, 16, 3.0, 0.3, false),
+                    (1, 60, 5.0, 0.1, false),
+                    (1, 9, 2.0, 0.2, false),
+                ] {
+                    // A rational fit through few points can have a weight
+                    // that is not positive: no such curve.
+                    let Some(curve) = ring_curve(at.as_ref(), waves, a, count, degree, rational)
+                    else {
+                        assert!(rational, "{kind} degree {degree}");
+                        continue;
+                    };
+                    let mut body = Body::new(BodyKind::Sheet);
+                    let v = body.add_vertex(curve.eval(0.0));
+                    let edge = body.add_edge(Curve3::Nurbs(curve.clone()), (0.0, 1.0), v, v);
+                    let lp = body.add_loop(vec![Coedge {
+                        edge,
+                        reversed: false,
+                    }]);
+                    let face = body.add_face(surface.clone(), false, vec![lp]);
+                    body.add_shell(vec![face]);
+                    // A loose tolerance, so that a curve through few points
+                    // of a curved surface is placed between them too (the
+                    // bounds are of the curve's image, on the surface or
+                    // not).
+                    let tol = Tolerance::new(1e-3 * k, 1e-9).unwrap();
+                    let face = &body.faces[0];
+                    let Some(mut walked) = Walked::new(&body, face, &tol) else {
                         assert!(
-                            far <= bound + 1e-12 * size,
-                            "at {k}, degree {degree} through {count}: {far} off its chord, bound {bound}"
+                            !matches!(surface, Surface::Plane(_)),
+                            "not walked on a plane"
                         );
-                        // Every move from a point to a later one lies in
-                        // the cone (to the rounding of its ends).
-                        if let Some(Aim {
-                            cone: (c0, c1),
-                            slack,
-                        }) = aim
-                        {
-                            coned += 1;
-                            let unit = |c: (f64, f64)| {
-                                let n = c.0.phypot(c.1);
-                                (c.0 / n, c.1 / n)
+                        continue;
+                    };
+                    let shown_all = walked.show_all();
+                    // A point of a curve through few points of a curved
+                    // surface may lie off it by more than the tolerance
+                    // where a stretch is halved: not walked.
+                    if shown_all.is_none() && walked.loops[0].1.is_empty() {
+                        continue;
+                    }
+                    walked_faces += 1;
+                    if shown_all.is_none() {
+                        eprintln!(
+                            "not shown: {kind} at {k}, degree {degree} through {count}, rational {rational}, work {}",
+                            walked.work
+                        );
+                        continue;
+                    }
+                    shown += 1;
+                    let unit = walked.unit.unwrap();
+                    // As walked, and halved three times over.
+                    for level in 0..4 {
+                        if level > 0 {
+                            let every: Vec<(usize, usize)> =
+                                (0..walked.loops[0].1.len()).map(|k| (0, k)).collect();
+                            if walked.halve(&every).is_none() || walked.show_all().is_none() {
+                                break;
+                            }
+                        }
+                        let all = walked.loops[0].1.clone();
+                        let (rings, closed) = walked.rings().unwrap();
+                        assert!(closed, "{kind}: the loop goes round no axis");
+                        let ring = &rings[0];
+                        let mut sampled: Vec<[f64; 2]> = Vec::new();
+                        for (place, st) in all.iter().enumerate() {
+                            let Bound::Shown(bound, aim, _) = st.bound else {
+                                panic!("{kind}: a stretch not shown after show_all");
                             };
-                            let (c0, c1) = (unit(c0), unit(c1));
-                            assert!(
-                                c0.0 * c1.1 - c0.1 * c1.0 > -1e-12
-                                    && (c0.0 * c1.1 - c0.1 * c1.0 > 1e-12
-                                        || c0.0 * c1.0 + c0.1 * c1.1 > 0.0),
-                                "a cone of a half turn or more"
-                            );
-                            for i in 0..places.len() {
-                                for j in [i + 1, i + 7, i + 23, 64] {
-                                    let (Some(p), Some(q)) = (places.get(i), places.get(j)) else {
-                                        continue;
-                                    };
-                                    if j <= i {
-                                        continue;
+                            stretches += 1;
+                            // The stretch's lift, from its start as the
+                            // loop's polyline has it.
+                            let start = ring.ring.points[place];
+                            let end = walked.unwrapped(st.end, Some(start));
+                            let mut before = start;
+                            let mut far = 0.0_f64;
+                            let mut turned: Vec<f64> = Vec::new();
+                            let mut places: Vec<[f64; 2]> = Vec::new();
+                            for i in 0..=64 {
+                                let t = st.s + (st.e - st.s) * i as f64 / 64.0;
+                                let (u, v) = surface.project(curve.eval(t)).unwrap();
+                                let q = walked.unwrapped([u * unit.0, v * unit.1], Some(before));
+                                far = far.max(to_segment(q, start, end));
+                                let d = (q[0] - before[0], q[1] - before[1]);
+                                if i > 0 && (d.0 != 0.0 || d.1 != 0.0) {
+                                    let mut angle = d.1.patan2(d.0);
+                                    if let Some(first) = turned.first() {
+                                        angle += ((first - angle) / TAU).round() * TAU;
                                     }
-                                    let d = (q[0] - p[0], q[1] - p[1]);
-                                    let slack = 1e-9 * d.0.phypot(d.1) + 1e-12 * size + slack;
-                                    assert!(
-                                        c0.0 * d.1 - c0.1 * d.0 >= -slack
-                                            && d.0 * c1.1 - d.1 * c1.0 >= -slack,
-                                        "at {k}, degree {degree} through {count}: the move {d:?} outside the cone {c0:?} to {c1:?}"
-                                    );
+                                    turned.push(angle);
+                                }
+                                places.push(q);
+                                before = q;
+                            }
+                            sampled.extend(places.iter().take(64).copied());
+                            let size = start[0].abs().max(start[1].abs()).max(k);
+                            assert!(
+                                far <= bound + 1e-12 * size,
+                                "{kind} at {k}, degree {degree} through {count}: {far} off its chord, bound {bound}"
+                            );
+                            // Every move from a point to a later one lies in
+                            // the cone (to the rounding of its ends).
+                            if let Some(Aim {
+                                cone: (c0, c1),
+                                slack,
+                            }) = aim
+                            {
+                                coned += 1;
+                                let unit = |c: (f64, f64)| {
+                                    let n = c.0.phypot(c.1);
+                                    (c.0 / n, c.1 / n)
+                                };
+                                let (c0, c1) = (unit(c0), unit(c1));
+                                assert!(
+                                    c0.0 * c1.1 - c0.1 * c1.0 > -1e-12
+                                        && (c0.0 * c1.1 - c0.1 * c1.0 > 1e-12
+                                            || c0.0 * c1.0 + c0.1 * c1.1 > 0.0),
+                                    "{kind}: a cone of a half turn or more"
+                                );
+                                for i in 0..places.len() {
+                                    for j in [i + 1, i + 7, i + 23, 64] {
+                                        let (Some(p), Some(q)) = (places.get(i), places.get(j))
+                                        else {
+                                            continue;
+                                        };
+                                        if j <= i {
+                                            continue;
+                                        }
+                                        let d = (q[0] - p[0], q[1] - p[1]);
+                                        let slack = 1e-9 * d.0.phypot(d.1) + 1e-12 * size + slack;
+                                        assert!(
+                                            c0.0 * d.1 - c0.1 * d.0 >= -slack
+                                                && d.0 * c1.1 - d.1 * c1.0 >= -slack,
+                                            "{kind} at {k}, degree {degree} through {count}: the move {d:?} outside the cone {c0:?} to {c1:?}"
+                                        );
+                                    }
                                 }
                             }
+                            let low = turned.iter().copied().fold(f64::INFINITY, f64::min);
+                            let high = turned.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                            assert!(
+                                turned.is_empty() || high - low < PI,
+                                "{kind} at {k}, degree {degree} through {count}: turns {}",
+                                high - low
+                            );
                         }
-                        let low = turned.iter().copied().fold(f64::INFINITY, f64::min);
-                        let high = turned.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                        // (L3): the sampled loop's area against the
+                        // polyline's.
+                        let error = area_error(&ring.ring.points, &ring.margins);
+                        let (dense, coarse) =
+                            (signed_area(&sampled), signed_area(&ring.ring.points));
                         assert!(
-                            turned.is_empty() || high - low < PI,
-                            "at {k}, degree {degree} through {count}: turns {}",
-                            high - low
+                            (dense - coarse).abs() <= error * (1.0 + 1e-3) + 1e-12 * k * k,
+                            "{kind} at {k}, degree {degree} through {count}, level {level}: the loop bounds {dense}, its polyline {coarse}, error {error}"
                         );
                     }
-                    // (L3): the sampled loop's area against the polyline's.
-                    let rings = walked.rings().unwrap();
-                    let ring = &rings[0];
-                    let error = area_error(&ring.ring.points, &ring.margins);
-                    let (dense, coarse) = (signed_area(&sampled), signed_area(&ring.ring.points));
-                    assert!(
-                        (dense - coarse).abs() <= error * (1.0 + 1e-3) + 1e-12 * k * k,
-                        "at {k}, degree {degree} through {count}, level {level}: the loop bounds {dense}, its polyline {coarse}, error {error}"
-                    );
                 }
             }
         }
@@ -592,8 +1096,8 @@ fn a_stretch_shown_lies_within_its_bound_and_runs_one_way() {
     // included.
     assert_eq!(shown, walked_faces, "of {walked_faces}");
     eprintln!("{walked_faces} faces walked, {stretches} stretches, {coned} with a cone");
-    assert!(walked_faces >= 60, "{walked_faces} faces walked");
-    assert!(stretches > 10_000, "{stretches} stretches");
+    assert!(walked_faces >= 200, "{walked_faces} faces walked");
+    assert!(stretches > 30_000, "{stretches} stretches");
     assert!(
         coned * 10 > stretches * 9,
         "{coned} of {stretches} with a cone"
