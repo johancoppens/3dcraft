@@ -157,7 +157,7 @@ The test is simple: **adding a surface kind, a feature type, or a file format sh
 3. **`step`, `meshio` and `drawing` depend on no workspace crate.** The mapping between their models and ours lives in `io`. This keeps them publishable and fuzzable in isolation.
 4. **`doc` contains no geometry algorithms.** It may use `topo` and `expr` *types* (names, expressions), nothing from L3.
 5. **`kernel` and `tess` never depend on `gpu` or `render`.** Geometry has one implementation.
-6. **wasm gate:** every crate in L0–L7 must build for `wasm32-unknown-unknown` (`cargo xtask wasm`).
+6. **wasm gate:** every crate in L0–L7 must build for `wasm32-unknown-unknown` and pass clippy there with `-D warnings` (`cargo xtask wasm`; the clippy since 2026-11-15).
 7. `gpu` is optional for `engine`: the headless CLI and CI tests run `cpu-only`.
 
 ---
