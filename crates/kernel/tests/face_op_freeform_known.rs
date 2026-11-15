@@ -24,7 +24,7 @@
 //! ten-thousandth of the distance short: built, and the body the booleans
 //! cut) and past it (a ten-thousandth, and the review's distances:
 //! refused, the largest distance that fits said within a hundred-thousandth
-//! below the closed form and not eight tolerances above it), with the
+//! below the closed form and not eight tolerances above it), each with the
 //! pocket's seam turned three ways: its vertex where the rim comes out,
 //! away from it, and so that the rim comes out half way between two of
 //! the steps the rim is followed in.
@@ -358,15 +358,15 @@ fn expected(past: f64, limit: f64) -> Expect {
 }
 
 /// The probes of a rim: with the seam towards where it comes out, well
-/// clear (`clear`, negative), a ten-thousandth of `limit` short and past,
-/// and the review's distances `far`; with the seam turned the other two
-/// ways, the two nearest.
+/// clear (`clear`, negative); with the seam turned each of the three ways,
+/// a ten-thousandth of `limit` short and past, and the review's distances
+/// `far`.
 fn probes(limit: f64, clear: f64, far: &[f64]) -> Vec<(usize, f64)> {
     let near = 1e-4 * limit;
-    let mut found = vec![(0, clear), (0, -near), (0, near)];
-    found.extend(far.iter().map(|past| (0, *past)));
-    for seam in [1, 2] {
+    let mut found = vec![(0, clear)];
+    for seam in [0, 1, 2] {
         found.extend([(seam, -near), (seam, near)]);
+        found.extend(far.iter().map(|past| (seam, *past)));
     }
     found
 }

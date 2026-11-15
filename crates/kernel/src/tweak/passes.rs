@@ -1070,7 +1070,7 @@ pub(super) fn pierced(
             };
             let mut places: Vec<f64> = Vec::new();
             for (k, (ts, ds)) in followed.params.windows(2).zip(sides.windows(2)).enumerate() {
-                let ([t0, t1], [Some(d0), Some(d1)]) = (ts, ds) else {
+                let ([t0, t1], [first, second]) = (ts, ds) else {
                     continue;
                 };
                 // The walks between these two steps start where the first
@@ -1078,6 +1078,48 @@ pub(super) fn pierced(
                 let start = start_of(k).or(start_of(k + 1));
                 foot.set(feet.get(k).copied().flatten());
                 let mut cuts: Vec<f64> = Vec::new();
+                let (d0, d1) = match (first, second) {
+                    (Some(d0), Some(d1)) => (d0, d1),
+                    // On a freeform surface a walk says nothing where the
+                    // foot it looks for lies past the surface's border (a
+                    // point beside a round, beyond where it meets the face
+                    // it runs into); between such a step and one that has
+                    // a distance the surface can still lie. Looked for
+                    // from the step that has one: the last place towards
+                    // the other whose walk ends square (by halving), and
+                    // the crossing between the two where their sides
+                    // differ.
+                    (Some(d), None) | (None, Some(d)) if starts.is_some() && *d != 0.0 => {
+                        let (known, unknown) = if first.is_some() {
+                            (*t0, *t1)
+                        } else {
+                            (*t1, *t0)
+                        };
+                        let (mut lo, mut hi) = (known, unknown);
+                        let mut last = None;
+                        for _ in 0..CUT_STEPS {
+                            let middle = 0.5 * (lo + hi);
+                            match off(middle, start) {
+                                Some(at) => {
+                                    lo = middle;
+                                    last = Some(at);
+                                }
+                                None => hi = middle,
+                            }
+                        }
+                        if last.is_some_and(|at| at != 0.0 && (at < 0.0) != (*d < 0.0)) {
+                            foot.set(feet.get(k).copied().flatten());
+                            cuts.push(crossing(known, lo, *d < 0.0, start));
+                            cuts.retain(|at| off(*at, start).is_some_and(|d| d.abs() <= tol));
+                        }
+                        if craft3d_geom::allowance::exhausted() {
+                            return Err(Spent);
+                        }
+                        places.extend(cuts);
+                        continue;
+                    }
+                    _ => continue,
+                };
                 if (*d0 < 0.0 && *d1 > 0.0) || (*d0 > 0.0 && *d1 < 0.0) {
                     cuts.push(crossing(*t0, *t1, *d0 < 0.0, start));
                 } else if followed.slack > 0.0 && *d0 != 0.0 && d0.abs().min(d1.abs()) <= reach {
