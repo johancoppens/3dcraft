@@ -2407,6 +2407,14 @@ pub fn waker(
 /// Opens the window and runs until it is closed. `announce` is told where
 /// the control channel listens, once it does.
 pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
+    // Which release notes the person has seen, read before anything is
+    // written into the state folder: what an earlier 3DCraft left there
+    // tells an update from a first start; a window that keeps no note
+    // marks a fresh folder as seen before it writes its token
+    // (`notes.rs`).
+    let notes = craft3d_engine::running_version()
+        .map(|running| crate::notes::seen_at_window_start(options, running))
+        .and_then(crate::notes::at_start);
     let mut session = session(options)?;
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
@@ -2458,6 +2466,7 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
     }
     let mut host = Host::new(session);
     host.recent_file.clone_from(&options.recent_file);
+    host.seen_file.clone_from(&options.seen_file);
     // What the start screen and the Help menu show of this window.
     let recent = options
         .recent_file
@@ -2499,6 +2508,9 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
             let mut shell = Shell::threaded_with_gpu(renderer, creation.wgpu_render_state.as_ref());
             shell.set_recent_files(recent);
             shell.set_data_folder(data_folder);
+            // After an update the start screen offers what is new; the
+            // Help menu has it always.
+            shell.set_whats_new(notes);
             shell.set_agent_setup(agent);
             announce(&format!(
                 "viewport renderer: {}",

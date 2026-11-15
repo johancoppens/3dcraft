@@ -1,7 +1,9 @@
 //! The Help menu: About 3DCraft, the user guide, the keyboard shortcuts
-//! (also F1) and, on the desktop, the folder 3DCraft keeps its data in and
-//! Check for updates…, which opens the website's page for this version
-//! ([`UPDATE_URL`]) in the browser: 3DCraft itself connects nowhere.
+//! (also F1), What's new (the release notes the program carries,
+//! `whats_new.rs`) and, on the desktop, the folder 3DCraft keeps its data
+//! in and Check for updates…, which opens the website's page for this
+//! version ([`UPDATE_URL`]) in the browser: 3DCraft itself connects
+//! nowhere.
 //!
 //! The shortcuts window is made from one table, [`shortcuts`]. Its keys
 //! are the values the key handling itself uses (the File menu's
@@ -353,6 +355,19 @@ impl Shell {
                 }
             }
             kit.menu_separator(ui);
+            // What this version changed, from the notes the program
+            // carries: there while the host gave some.
+            if self.whats_new().is_some() {
+                let item = self
+                    .item(kit, ui, MenuItem::new(super::whats_new::MENU_ITEM))
+                    .on_hover_text(
+                        "What is new in this version, and which results may differ from before",
+                    );
+                if item.clicked() {
+                    self.open_whats_new();
+                    ui.close();
+                }
+            }
             // Beside About, where the version is: the website says whether
             // there is a newer one (not in the browser, always the latest).
             if let Some(url) = update_url(cfg!(target_arch = "wasm32")) {
@@ -389,6 +404,7 @@ impl Shell {
         if self.state.dialogs.shortcuts {
             self.shortcuts_window(ui.ctx());
         }
+        self.whats_new_window(ui.ctx());
         self.agents_popover(ui.ctx());
         self.agent_prompt(ui.ctx());
     }

@@ -52,6 +52,11 @@
 //! changes is closed. Building the site: `cargo xtask package --formats
 //! web` (docs/development.md, Web build).
 
+/// The release notes this build carries: the workspace's `CHANGELOG.md`
+/// as the build script took it (`build.rs`, `craft3d-changelog`). Nothing
+/// is fetched for them.
+pub const RELEASE_NOTES: &str = include_str!(concat!(env!("OUT_DIR"), "/release-notes.md"));
+
 #[cfg(test)]
 mod beside_tests;
 pub mod checks;
@@ -72,5 +77,6 @@ mod page;
 mod pickers;
 pub mod prefs;
 pub mod scenes;
+pub mod seen;
 #[cfg(target_arch = "wasm32")]
 mod worker;

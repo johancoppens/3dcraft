@@ -105,6 +105,11 @@ type Mailbox = Rc<RefCell<Vec<Mail>>>;
 /// Starts the page once the module is loaded.
 #[wasm_bindgen(start)]
 pub fn start() {
+    // The release notes the build script took from CHANGELOG.md, for
+    // What's new and `session.whatsNew`, in the page and in its workers
+    // (a command may run in either). The build read them before, so they
+    // read here.
+    let _ = craft3d_engine::set_release_notes(crate::RELEASE_NOTES);
     // The same module runs the checking worker (`worker.rs`), where there
     // is no window and no page to start.
     if web_sys::window().is_none() {
@@ -647,6 +652,19 @@ fn load_prefs(defaults: Prefs) -> Prefs {
     }
 }
 
+/// The browser's storage as What's new uses it (`seen.rs`).
+impl crate::seen::Store for web_sys::Storage {
+    fn get(&mut self, key: &str) -> Option<String> {
+        self.get_item(key).ok().flatten()
+    }
+    fn set(&mut self, key: &str, value: &str) -> bool {
+        self.set_item(key, value).is_ok()
+    }
+    fn remove(&mut self, key: &str) {
+        let _ = self.remove_item(key);
+    }
+}
+
 fn store_prefs(text: &str) {
     if let Some(storage) = storage() {
         // Full or blocked storage keeps nothing; that is all.
@@ -812,6 +830,24 @@ impl Page {
         };
         prefs.apply(&mut host.shell.state);
         let stored = prefs.to_json();
+        // What's new: after the page was served in a newer version, the
+        // start screen offers once what changed, where the browser can
+        // remember what was seen (`seen.rs`). The embedded stand offers
+        // nothing and remembers nothing; its Help menu, where the whole
+        // window is shown, has this version's notes as everywhere.
+        let running = craft3d_engine::running_version();
+        let seen = match (running, storage()) {
+            (Some(running), Some(mut storage)) if !embedded => {
+                crate::seen::at_start(&mut storage, running)
+            }
+            _ => craft3d_engine::changelog::Seen::Never,
+        };
+        if let (Some(notes), Some(running)) = (craft3d_engine::release_notes(), running) {
+            host.shell
+                .set_whats_new(craft3d_ui_egui::shell::WhatsNew::for_start(
+                    notes, running, seen,
+                ));
+        }
         // In the browser the page decides how much of the window is drawn
         // (`ui.set`), and in the embedded stand its option says it first.
         host.shell.allow_presentations(true);
@@ -1531,6 +1567,13 @@ impl eframe::App for Page {
                 document.set_title(&title);
             }
             self.title = title;
+        }
+        // The release notes the person closed are seen from now on.
+        if self.host.shell.take_whats_new_closed()
+            && let (Some(running), Some(mut storage)) =
+                (craft3d_engine::running_version(), storage())
+        {
+            crate::seen::at_close(&mut storage, running);
         }
         let prefs = Prefs::of(
             &self.host.shell.state,
