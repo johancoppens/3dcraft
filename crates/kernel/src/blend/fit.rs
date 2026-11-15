@@ -76,7 +76,9 @@ fn sized(error: &BlendError) -> bool {
         BlendError::Boolean { .. } => true,
         BlendError::Kernel(KernelError::InvalidBody { .. } | KernelError::InvalidSize { .. })
         | BlendError::TooLarge { .. }
-        | BlendError::Spindle { .. } => false,
+        | BlendError::Spindle { .. }
+        // Tangent faces leave no width at any size.
+        | BlendError::Pinched { .. } => false,
         BlendError::Kernel(_) => true,
         BlendError::Refused { reason, .. } => matches!(
             reason,
