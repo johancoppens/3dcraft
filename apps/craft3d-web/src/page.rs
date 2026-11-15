@@ -1585,7 +1585,17 @@ impl eframe::App for Page {
             Some(self.host.shell.state.export.format.extension()),
         )
         .with_seen(self.seen_version.clone());
-        let text = prefs.to_json();
+        let mut text = prefs.to_json();
+        if text != self.stored {
+            // Another tab may have closed the notes since this one read
+            // them: the newer version of the two is the one written.
+            let newest =
+                prefs::newest_seen(self.seen_version.as_deref(), stored_prefs().as_deref());
+            if newest != self.seen_version {
+                self.seen_version = newest;
+                text = prefs.with_seen(self.seen_version.clone()).to_json();
+            }
+        }
         if text != self.stored {
             store_prefs(&text);
             self.stored = text;

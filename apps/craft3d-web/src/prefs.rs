@@ -35,9 +35,12 @@ pub struct Prefs {
 /// What the stored preferences say of the release notes seen in this
 /// browser. Nothing stored (a first visit, or storage that is missing or
 /// blocked, which looks the same) is [`Seen::Never`]: nothing is old, and
-/// nothing can be remembered. Preferences without a version are an
-/// earlier 3DCraft's ([`Seen::Earlier`]); what does not read as
-/// preferences at all is nothing stored.
+/// nothing can be remembered. Preferences without a version (none, or
+/// `null`, which a page writes while its card is still open) are an
+/// earlier 3DCraft's ([`Seen::Earlier`]). A version that is not one (a
+/// number, a word) is read as the desktop reads a note that does not
+/// read: nothing is offered, and this version is written as seen. What
+/// does not read as preferences at all is nothing stored.
 pub fn seen(stored: Option<&str>) -> Seen {
     let Some(text) = stored.filter(|text| text.len() <= MAX_STORED) else {
         return Seen::Never;
@@ -46,10 +49,28 @@ pub fn seen(stored: Option<&str>) -> Seen {
         return Seen::Never;
     };
     match map.get("seenVersion") {
-        Some(Value::String(version)) => {
-            Version::parse(version).map_or(Seen::Earlier, Seen::Version)
-        }
-        _ => Seen::Earlier,
+        None | Some(Value::Null) => Seen::Earlier,
+        Some(Value::String(version)) => Version::parse(version).map_or(Seen::Never, Seen::Version),
+        Some(_) => Seen::Never,
+    }
+}
+
+/// The version to write with the preferences: the newer of the one this
+/// page holds (`held`) and the one stored now (`stored`, the preferences
+/// as they are in the browser's storage at this moment). Another tab may
+/// have closed the notes since this one read them: its newer version is
+/// kept, where writing this page's own would bring the card back at the
+/// next visit (two tabs, 2026-11-15).
+pub fn newest_seen(held: Option<&str>, stored: Option<&str>) -> Option<String> {
+    let version = |text: Option<&str>| text.and_then(|text| Version::parse(text).ok());
+    let there = match seen(stored) {
+        Seen::Version(version) => Some(version),
+        Seen::Never | Seen::Earlier => None,
+    };
+    match (version(held), there) {
+        (Some(ours), Some(theirs)) if theirs > ours => Some(theirs.to_string()),
+        (None, Some(theirs)) => Some(theirs.to_string()),
+        _ => held.map(str::to_string),
     }
 }
 
@@ -288,7 +309,31 @@ mod tests {
         assert_eq!(seen(Some(EARLIER)), Seen::Earlier);
         assert_eq!(seen(Some("{}")), Seen::Earlier);
         assert_eq!(seen(Some("{\"seenVersion\": null}")), Seen::Earlier);
-        assert_eq!(seen(Some("{\"seenVersion\": \"soon\"}")), Seen::Earlier);
+        // A version that is not one: as the desktop reads a note that
+        // does not read, a first start; nothing is offered and this
+        // version is written (until 2026-11-15 the card came up with
+        // everything).
+        let running = v("0.2.0");
+        for junk in [
+            "{\"seenVersion\": \"soon\"}",
+            "{\"seenVersion\": \"banana\"}",
+            "{\"seenVersion\": 7}",
+            "{\"seenVersion\": 12345678901234567890}",
+            "{\"seenVersion\": \"12345678901234567890.0.0\"}",
+            "{\"seenVersion\": [\"0.1.0\"]}",
+            "{\"seenVersion\": {\"v\": 1}}",
+            "{\"seenVersion\": true}",
+            "{\"seenVersion\": \"\"}",
+        ] {
+            assert_eq!(seen(Some(junk)), Seen::Never, "{junk}");
+            for writable in [true, false] {
+                assert_eq!(
+                    notes_at_start(Some(junk), writable, running),
+                    (Seen::Never, Some("0.2.0".to_string())),
+                    "{junk}"
+                );
+            }
+        }
         assert_eq!(
             seen(Some("{\"seenVersion\": \"0.1.2\"}")),
             Seen::Version(v("0.1.2"))
@@ -330,6 +375,64 @@ mod tests {
         assert_eq!(seen_after_closing(Some("0.1.1"), running), "0.2.0");
         assert_eq!(seen_after_closing(Some("0.3.0"), running), "0.3.0");
         assert_eq!(seen_after_closing(Some("junk"), running), "0.2.0");
+    }
+
+    /// Two tabs at once. Both load with 0.1.1 seen and show the card. The
+    /// person closes it in tab A, which stores this version. Tab B, still
+    /// open, then changes a preference: it writes the newer version that
+    /// is stored, not its own stale one, so A's next visit has no card.
+    #[test]
+    fn a_tab_that_writes_later_keeps_the_newer_version_another_tab_stored() {
+        let running = v("0.2.0");
+        let stored = defaults().with_seen(Some("0.1.1".to_string())).to_json();
+        let (seen_a, mut held_a) = notes_at_start(Some(&stored), true, running);
+        let (seen_b, mut held_b) = notes_at_start(Some(&stored), true, running);
+        assert_eq!(seen_a, Seen::Version(v("0.1.1")));
+        assert_eq!(seen_b, Seen::Version(v("0.1.1")));
+        // What a tab writes: its preferences with the newer of what it
+        // holds and what is stored, as the page does before every write.
+        let write = |held: &mut Option<String>, storage: &str, appearance: Appearance| {
+            *held = newest_seen(held.as_deref(), Some(storage));
+            let mut prefs = defaults().with_seen(held.clone());
+            prefs.appearance = appearance;
+            prefs.to_json()
+        };
+        // A closes the card.
+        held_a = Some(seen_after_closing(held_a.as_deref(), running));
+        let storage = write(&mut held_a, &stored, Appearance::System);
+        assert_eq!(seen(Some(&storage)), Seen::Version(running));
+        // B changes a preference.
+        let storage = write(&mut held_b, &storage, Appearance::Dark);
+        assert_eq!(
+            seen(Some(&storage)),
+            Seen::Version(running),
+            "not B's 0.1.1"
+        );
+        assert_eq!(held_b.as_deref(), Some("0.2.0"));
+        // A's next visit: nothing offered.
+        assert_eq!(
+            notes_at_start(Some(&storage), true, running),
+            (Seen::Version(running), Some("0.2.0".to_string()))
+        );
+        // The newer of the two, whichever holds it; what does not read
+        // counts for nothing.
+        assert_eq!(newest_seen(None, None), None);
+        assert_eq!(newest_seen(Some("0.2.0"), None).as_deref(), Some("0.2.0"));
+        let earlier = "{\"panels\": {}}";
+        assert_eq!(newest_seen(None, Some(earlier)), None);
+        assert_eq!(
+            newest_seen(Some("0.3.0"), Some(&storage)).as_deref(),
+            Some("0.3.0")
+        );
+        assert_eq!(newest_seen(None, Some(&storage)).as_deref(), Some("0.2.0"));
+        assert_eq!(
+            newest_seen(Some("0.1.1"), Some("{\"seenVersion\": \"banana\"}")).as_deref(),
+            Some("0.1.1")
+        );
+        assert_eq!(
+            newest_seen(Some("0.1.1"), Some("{{{{")).as_deref(),
+            Some("0.1.1")
+        );
     }
 
     /// The notes this build carries read, and name this version: what the

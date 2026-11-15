@@ -43,6 +43,26 @@ pub const RESULTS_HINT: &str = "A measure, a proof or a check that an earlier ve
 pub const NEW_TITLE: &str = "New";
 /// The folded rest.
 pub const REST_TITLE: &str = "Also changed and fixed";
+/// What unfolds the card while it is low.
+pub const LOW_SHOW: &str = "Show";
+
+/// Where the card stands on the start screen, for it to know whether it
+/// and the first row of examples under it are wholly in sight.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct CardPlace {
+    /// The height the window gives the start screen: the notes' list
+    /// takes a share of it at most.
+    pub room: f32,
+    /// The top of the start screen's content, where the card's own top
+    /// is measured from (it moves with the scrolling).
+    pub top: f32,
+    /// How much of the content is in sight below that top when it is not
+    /// scrolled.
+    pub sight: f32,
+    /// From the card's bottom to the bottom of the first row of examples,
+    /// as the last frame laid them out; `None` before the first.
+    pub below: Option<f32>,
+}
 
 /// The notes the window can show: what is new to the person at this
 /// start, or the running version's own.
@@ -142,12 +162,61 @@ impl WhatsNew {
         self.lines(|kind| !matches!(kind, Kind::Results | Kind::Added))
     }
 
-    /// `ui.get`'s `whatsNew`.
-    pub fn json(&self, shown: Option<&'static str>) -> serde_json::Value {
+    /// What the groups of the kinds `wanted` say of themselves in the
+    /// changelog (the text under a group's heading that is not an entry):
+    /// (the group's heading, the text), kind by kind, newest version
+    /// first, each text once.
+    pub fn said(&self, wanted: impl Fn(Kind) -> bool) -> Vec<(&str, &str)> {
+        let mut said: Vec<(&str, &str)> = Vec::new();
+        for kind in Kind::ALL {
+            if !wanted(kind) {
+                continue;
+            }
+            for section in &self.sections {
+                for note in section.notes_of(kind) {
+                    let one = (note.heading.as_str(), note.text.as_str());
+                    if !said.contains(&one) {
+                        said.push(one);
+                    }
+                }
+            }
+        }
+        said
+    }
+
+    /// The one line of the card while it is low: how many results may
+    /// differ (empty when none does), and how much else there is.
+    pub fn low_line(&self) -> (String, String) {
+        let lead = match self.results().len() {
+            0 => String::new(),
+            1 => "1 result may differ from before".to_string(),
+            n => format!("{n} results may differ from before"),
+        };
+        let mut others = Vec::new();
+        match self.added().len() {
+            0 => {}
+            n => others.push(format!("{n} new")),
+        }
+        match self.rest().len() {
+            0 => {}
+            n => others.push(format!("{n} changed and fixed")),
+        }
+        let tail = match (lead.is_empty(), others.is_empty()) {
+            (_, true) => String::new(),
+            (true, false) => others.join(", "),
+            (false, false) => format!(", {}", others.join(", ")),
+        };
+        (lead, tail)
+    }
+
+    /// `ui.get`'s `whatsNew`: `low` is true while the card is drawn low
+    /// (its title and one line), in a window too low for the whole of it.
+    pub fn json(&self, shown: Option<&'static str>, low: bool) -> serde_json::Value {
         serde_json::json!({
             "version": self.version,
             "offered": self.offered,
             "shown": shown,
+            "low": low,
             "versions": self.sections.iter().map(|section| match section.version {
                 Some(version) => version.to_string(),
                 None => "unreleased".to_string(),
@@ -173,6 +242,11 @@ pub(crate) struct NewsMemory {
     hits: Vec<(String, egui::Rect)>,
     /// Which of the two the last frame drew.
     shown: Option<&'static str>,
+    /// The card was drawn whole in this frame, and in the one before:
+    /// once whole it stays whole while it is shown, whatever is unfolded
+    /// in it.
+    whole: bool,
+    whole_last: bool,
 }
 
 impl Shell {
@@ -222,12 +296,23 @@ impl Shell {
         self.news.shown
     }
 
+    /// True when the last frame drew the card low: its title and the one
+    /// line that unfolds it.
+    pub fn whats_new_low(&self) -> bool {
+        self.news.shown == Some("card") && !self.news.whole
+    }
+
     /// `ui.get`'s `whatsNew`: null without notes.
     pub(crate) fn whats_new_json(&self) -> serde_json::Value {
         self.news
             .notes
             .as_ref()
-            .map_or(serde_json::Value::Null, |notes| notes.json(self.news.shown))
+            .map_or(serde_json::Value::Null, |notes| {
+                notes.json(
+                    self.news.shown,
+                    self.news.shown == Some("card") && !self.news.whole,
+                )
+            })
     }
 
     /// Before the frame draws: nothing drawn yet, and without notes
@@ -235,6 +320,7 @@ impl Shell {
     pub(super) fn whats_new_frame(&mut self) {
         self.news.hits.clear();
         self.news.shown = None;
+        self.news.whole_last = std::mem::take(&mut self.news.whole);
         if self.news.notes.is_none() && !self.state.whats_new.is_closed() {
             self.state.whats_new = crate::state::WhatsNewView::default();
         }
@@ -257,19 +343,29 @@ impl Shell {
     fn close_whats_new(&mut self) {
         self.state.whats_new.card = false;
         self.state.whats_new.window = false;
+        self.state.whats_new.expanded = false;
         self.news.closed = true;
     }
 
     /// The card on the start screen, `width` wide, when it is open: the
     /// title with its ×, then the notes, which scroll in themselves past
-    /// a share of `room` (the start screen's height). Returns whether it
-    /// was drawn.
+    /// a share of the start screen's height. Returns whether it was drawn.
+    ///
+    /// **Low in a low window** (the coordinator's ruling, 2026-11-15).
+    /// Where the window cannot show the card with its notes and the first
+    /// row of examples whole (1024 × 700 with a release's notes), the
+    /// card starts low: its title, one line that says how many results
+    /// may differ, and a click on that line unfolds it
+    /// (`state.whatsNew.expanded`). So the examples a person came for
+    /// stay in sight. In a window with the room it is the whole card at
+    /// once. Once shown whole it stays whole while it is shown, whatever
+    /// is unfolded in it.
     pub(super) fn whats_new_card(
         &mut self,
         ui: &mut egui::Ui,
         kit: &Kit,
         width: f32,
-        room: f32,
+        place: CardPlace,
     ) -> bool {
         if !self.state.whats_new.card || !self.state.presentation.is_full() {
             return false;
@@ -282,12 +378,15 @@ impl Shell {
         let t = self.tokens;
         let s = kit.skin;
         let pad = t.inset + 2.0;
-        let most = if room.is_finite() {
-            (room * t.whats_new_share).max(t.whats_new_least)
+        let most = if place.room.is_finite() {
+            (place.room * t.whats_new_share).max(t.whats_new_least)
         } else {
             t.whats_new_least
         };
+        let bottom = pad * 0.6;
         let mut close = false;
+        let mut unfold = false;
+        let mut whole = false;
         let mut hits: Vec<(String, egui::Rect)> = Vec::new();
         let shown = egui::Frame::new()
             .fill(color(s.info_fill))
@@ -296,7 +395,7 @@ impl Shell {
                 left: (pad + t.info_bar_width).clamp(0.0, 64.0) as i8,
                 right: (pad * 0.5).clamp(0.0, 64.0) as i8,
                 top: (pad * 0.5).clamp(0.0, 64.0) as i8,
-                bottom: (pad * 0.6).clamp(0.0, 64.0) as i8,
+                bottom: bottom.clamp(0.0, 64.0) as i8,
             })
             .show(ui, |ui| {
                 let inner = (width - 1.5 * pad - t.info_bar_width).max(0.0);
@@ -322,6 +421,53 @@ impl Shell {
                     });
                 });
                 let subtitle = notes.subtitle();
+                let list_width = (ui.available_width() - pad * 0.5).max(0.0);
+                // Whole, or low: whether the notes and the first row of
+                // examples under them are wholly in sight.
+                whole = self.state.whats_new.expanded || self.news.whole_last || {
+                    let said = if subtitle.is_empty() {
+                        0.0
+                    } else {
+                        let job = egui::text::LayoutJob::simple(
+                            subtitle.clone(),
+                            kit.font(),
+                            color(s.text_dim),
+                            ui.available_width(),
+                        );
+                        ui.painter().layout_job(job).size().y + ui.spacing().item_spacing.y
+                    };
+                    match place.below {
+                        // Not measured yet (the first frame): low.
+                        None => false,
+                        Some(below) => {
+                            let from = ui.cursor().top() - place.top;
+                            let free = place.sight - from - bottom - below - said;
+                            // The notes' own height only where the share
+                            // of the height does not fit: they may be
+                            // short. Laid out unseen, in a child that is
+                            // neither painted nor clicked.
+                            free >= most || {
+                                let mut probe = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .id_salt("craft3d-whats-new-probe")
+                                        .max_rect(ui.available_rect_before_wrap())
+                                        .invisible(),
+                                );
+                                probe.spacing_mut().item_spacing.y = t.nav_spacing;
+                                probe.set_width(list_width);
+                                let mut unseen = Vec::new();
+                                self.whats_new_notes(&mut probe, kit, &notes, &mut unseen);
+                                free >= probe.min_rect().height().min(most)
+                            }
+                        }
+                    }
+                };
+                if !whole {
+                    let line = self.whats_new_low_line(ui, kit, &notes);
+                    hits.push(("summary".to_string(), line.rect));
+                    unfold = line.clicked();
+                    return;
+                }
                 if !subtitle.is_empty() {
                     kit.paragraph(ui, &subtitle, true);
                 }
@@ -330,11 +476,16 @@ impl Shell {
                     .max_height(most)
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
-                        ui.set_width((ui.available_width() - pad * 0.5).max(0.0));
+                        ui.set_width(list_width);
                         self.whats_new_notes(ui, kit, &notes, &mut hits);
                     });
                 hits.push(("list".to_string(), list.inner_rect));
             });
+        self.news.whole = whole;
+        if unfold {
+            self.state.whats_new.expanded = true;
+            ui.ctx().request_repaint();
+        }
         let rect = shown.response.rect;
         let r = t.notice_radius;
         ui.painter().rect_filled(
@@ -376,7 +527,7 @@ impl Shell {
         let t = self.tokens;
         let kit = Kit::panel(&t);
         let title = notes.title();
-        let most = (ctx.content_rect().height() * 0.6).max(t.whats_new_least);
+        let most = (ctx.content_rect().height() * t.whats_new_window_share).max(t.whats_new_least);
         let mut close = false;
         let mut hits: Vec<(String, egui::Rect)> = Vec::new();
         let dialog = Dialog::new(egui::Id::new("craft3d-whats-new"), &title)
@@ -430,8 +581,16 @@ impl Shell {
         let s = kit.skin;
         // Several versions: each line says which one it is of.
         let tagged = notes.sections.len() > 1;
+        // What a group says of itself in the changelog stands under its
+        // heading here: nothing under a group is dropped.
+        let said = |ui: &mut egui::Ui, texts: &[&str]| {
+            for text in texts {
+                kit.paragraph(ui, text, true);
+            }
+        };
         let results = notes.results();
-        if !results.is_empty() {
+        let results_said = notes.said(|kind| kind == Kind::Results);
+        if !results.is_empty() || !results_said.is_empty() {
             let top = ui.cursor().top();
             heading(
                 ui,
@@ -440,7 +599,14 @@ impl Shell {
                 RESULTS_TITLE,
                 results.len(),
             );
-            kit.paragraph(ui, RESULTS_HINT, true);
+            // The changelog's own words for what such an entry means, or
+            // ours where it has none.
+            if results_said.is_empty() {
+                kit.paragraph(ui, RESULTS_HINT, true);
+            } else {
+                let texts: Vec<&str> = results_said.iter().map(|(_, text)| *text).collect();
+                said(ui, &texts);
+            }
             for line in &results {
                 self.whats_new_line(ui, kit, line, tagged, hits);
             }
@@ -448,9 +614,12 @@ impl Shell {
             ui.add_space(t.nav_spacing * 2.0);
         }
         let added = notes.added();
-        if !added.is_empty() {
+        let added_said = notes.said(|kind| kind == Kind::Added);
+        if !added.is_empty() || !added_said.is_empty() {
             let top = ui.cursor().top();
             heading(ui, kit, None, NEW_TITLE, added.len());
+            let texts: Vec<&str> = added_said.iter().map(|(_, text)| *text).collect();
+            said(ui, &texts);
             for line in &added {
                 self.whats_new_line(ui, kit, line, tagged, hits);
             }
@@ -458,24 +627,124 @@ impl Shell {
             ui.add_space(t.nav_spacing * 2.0);
         }
         let rest = notes.rest();
-        if !rest.is_empty() {
+        let rest_said = notes.said(|kind| !matches!(kind, Kind::Results | Kind::Added));
+        if !rest.is_empty() || !rest_said.is_empty() {
             let top = ui.cursor().top();
             let mut open = self.state.whats_new.rest;
             kit.fold_header(ui, &mut open, REST_TITLE, Some(rest.len()), None);
             self.state.whats_new.rest = open;
             if open {
-                let mut group: Option<&str> = None;
+                let of = |heading: &str| -> Vec<&str> {
+                    rest_said
+                        .iter()
+                        .filter(|(group, _)| *group == heading)
+                        .map(|(_, text)| *text)
+                        .collect()
+                };
+                let mut shown: Vec<&str> = Vec::new();
                 for line in &rest {
                     let (_, _, entry) = line;
-                    if group != Some(entry.heading.as_str()) {
-                        group = Some(entry.heading.as_str());
+                    if shown.last() != Some(&entry.heading.as_str()) {
+                        shown.push(entry.heading.as_str());
                         kit.caption(ui, &entry.heading);
+                        said(ui, &of(&entry.heading));
                     }
                     self.whats_new_line(ui, kit, line, tagged, hits);
+                }
+                // A group that only says something, without an entry.
+                let mut alone: Vec<&str> = Vec::new();
+                for (group, text) in &rest_said {
+                    if !shown.contains(group) {
+                        if alone.last() != Some(group) {
+                            alone.push(group);
+                            kit.caption(ui, group);
+                        }
+                        said(ui, &[*text]);
+                    }
                 }
             }
             hits.push(("rest".to_string(), block(ui, top)));
         }
+    }
+
+    /// The card's one line while it is low: how many results may differ,
+    /// and how much else there is; a click on it unfolds the card.
+    fn whats_new_low_line(&self, ui: &mut egui::Ui, kit: &Kit, notes: &WhatsNew) -> egui::Response {
+        let t = self.tokens;
+        let s = kit.skin;
+        let (lead, tail) = notes.low_line();
+        let width = ui.available_width();
+        let (rect, response) = ui.allocate_exact_size(
+            sane(egui::vec2(width, kit.hit(t.row_height))),
+            egui::Sense::click(),
+        );
+        if ui.is_rect_visible(rect) {
+            let painter = ui.painter();
+            if response.hovered() {
+                painter.rect_filled(rect, kit.radius(), color(s.hover));
+            }
+            let side = t.nav_icon_size * 0.85;
+            let mut x = rect.left() + 2.0;
+            if !lead.is_empty() {
+                glyphs::paint(
+                    painter,
+                    Glyph::Warning,
+                    centred_left(
+                        egui::Rect::from_min_max(egui::pos2(x, rect.top()), rect.max),
+                        egui::vec2(side, side),
+                    ),
+                    color(s.attention),
+                    &t,
+                );
+                x += side + t.nav_icon_gap;
+            }
+            // At the right: Show, with the chevron that unfolds.
+            let show = kit.galley(ui, LOW_SHOW, kit.font(), s.info_ink);
+            let chevron = t.nav_icon_size * 0.75;
+            let right = rect.right() - t.nav_icon_gap;
+            glyphs::paint(
+                painter,
+                Glyph::ChevronDown,
+                egui::Rect::from_center_size(
+                    egui::pos2(right - chevron * 0.5, rect.center().y),
+                    egui::vec2(chevron, chevron),
+                ),
+                color(s.info_ink),
+                &t,
+            );
+            let show_left = right - chevron - t.nav_icon_gap - show.size().x;
+            painter.galley(
+                egui::pos2(show_left, rect.center().y - show.size().y * 0.5),
+                show,
+                color(s.info_ink),
+            );
+            // The line itself, cut where Show begins.
+            let mut job = egui::text::LayoutJob::default();
+            job.append(
+                &lead,
+                0.0,
+                egui::TextFormat::simple(kit.medium_font(ui), color(s.text)),
+            );
+            job.append(
+                &tail,
+                0.0,
+                egui::TextFormat::simple(kit.font(), color(s.text_dim)),
+            );
+            job.wrap = egui::text::TextWrapping::truncate_at_width(
+                (show_left - x - t.nav_icon_gap).max(1.0),
+            );
+            let line = painter.layout_job(job);
+            painter.galley(
+                egui::pos2(x, rect.center().y - line.size().y * 0.5),
+                line,
+                color(s.text),
+            );
+        }
+        let label = format!("{lead}{tail}");
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, true, false, &label)
+        });
+        response.on_hover_text("Show what is new and which results may differ")
     }
 
     /// One entry: its title, with a chevron when there is more to read

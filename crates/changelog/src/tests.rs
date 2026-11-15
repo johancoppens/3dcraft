@@ -633,5 +633,157 @@ fn every_version_of_the_repositorys_changelog_has_a_release_section() {
         let alone = Changelog::parse(&format!("## [{name}]\n{notes}")).unwrap();
         assert_eq!(alone.sections()[0].entries, section.entries, "{name}");
         assert_eq!(alone.sections()[0].summary, section.summary, "{name}");
+        assert_eq!(alone.sections()[0].notes, section.notes, "{name}");
     }
+}
+
+/// Nothing under a group is dropped without a word: what is not an entry
+/// (a paragraph before or after the entries, a numbered list, a table) is
+/// the group's own note, in the file's order, without markup; an entry
+/// still goes on only with an indented line.
+#[test]
+fn what_stands_under_a_group_and_is_no_entry_is_the_groups_note() {
+    let text = "\
+## [1.0.0] - 2026-01-01
+
+The release in a sentence.
+
+### Results that changed
+
+What was answered before can *differ* now.
+Check [it](https://example.org) again.
+
+- **A measure was wrong.** By a little,
+  on a second line.
+
+A paragraph after the entries.
+
+### Fixed
+
+- **A fix.**
+
+1. A numbered list
+2. is no entry
+
+| a | table |
+|---|-------|
+
+### Added
+
+- **Only entries here.**
+";
+    let changelog = Changelog::parse(text).unwrap();
+    let section = &changelog.sections()[0];
+    assert_eq!(section.summary, "The release in a sentence.");
+    let said: Vec<(Kind, &str, &str)> = section
+        .notes
+        .iter()
+        .map(|note| (note.kind, note.heading.as_str(), note.text.as_str()))
+        .collect();
+    assert_eq!(
+        said,
+        [
+            (
+                Kind::Results,
+                "Results that changed",
+                "What was answered before can differ now. Check it again.\nA paragraph after the entries."
+            ),
+            (
+                Kind::Fixed,
+                "Fixed",
+                "1. A numbered list 2. is no entry\n| a | table | |---|-------|"
+            ),
+        ]
+    );
+    assert_eq!(
+        section.notes_of(Kind::Results).count(),
+        1,
+        "by kind, as the entries"
+    );
+    assert_eq!(section.notes_of(Kind::Added).count(), 0);
+    // The entries are what they were.
+    let titles: Vec<&str> = section.entries.iter().map(|e| e.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        ["A measure was wrong.", "A fix.", "Only entries here."]
+    );
+    assert_eq!(section.entries[0].text, "By a little, on a second line.");
+    // A group that only says something makes its section say something.
+    let only = Changelog::parse("## [1.0.0]\n\n### Fixed\n\nNothing to list.\n").unwrap();
+    assert!(!only.sections()[0].is_blank());
+    assert_eq!(only.sections()[0].notes[0].text, "Nothing to list.");
+    // The repository's own: the sentence under the results of what is not
+    // released yet is carried, word for word.
+    let real = Changelog::parse(&real()).unwrap();
+    for section in real.sections() {
+        for note in &section.notes {
+            assert!(!note.text.is_empty());
+            assert!(!note.text.contains("**"), "{}", note.text);
+        }
+    }
+}
+
+/// The reader's time grows with the text's length, not with its square:
+/// text that opens a link, an address or a code span over and over
+/// without closing it is not looked through once per opening. Before
+/// 2026-11-15 an entry of 800 000 `<` took 18 s in a release build (four
+/// times as long per doubling); every pattern here now reads in well
+/// under a second, and the bound is generous for a loaded machine.
+#[test]
+fn hostile_markup_reads_in_time_in_proportion_to_its_length() {
+    let falling: String = (1..1200usize)
+        .rev()
+        .map(|n| format!("{}x", "`".repeat(n)))
+        .collect();
+    let patterns: Vec<(&str, String)> = vec![
+        ("<", "<".repeat(800_000)),
+        ("<http://", "<http://".repeat(100_000)),
+        ("<a<>", "<a<>".repeat(200_000)),
+        ("<https://a b>", "<https://a b>".repeat(60_000)),
+        ("[", "[".repeat(800_000)),
+        ("[ then ] far off", format!("{}]", "[".repeat(800_000))),
+        ("[a][", "[a][".repeat(200_000)),
+        ("[a](", "[a](".repeat(200_000)),
+        ("falling runs of backticks", falling),
+        ("` alone", "` ".repeat(400_000)),
+        ("&", "&".repeat(800_000)),
+        ("\\", "\\".repeat(800_000)),
+        ("*", "* ".repeat(400_000)),
+    ];
+    for (name, text) in &patterns {
+        let start = std::time::Instant::now();
+        let read = plain(text);
+        let took = start.elapsed();
+        assert!(
+            took < std::time::Duration::from_secs(5),
+            "{name}: {} bytes took {took:?}",
+            text.len()
+        );
+        // Nothing of it was markup: it is all still there, but for the
+        // white space.
+        let kept = |text: &str| text.chars().filter(|c| !c.is_whitespace()).count();
+        if !matches!(*name, "<a<>" | "[a][" | "` alone" | "\\" | "*") {
+            assert_eq!(kept(&read), kept(text), "{name}");
+        }
+        // And as an entry of a changelog, read whole.
+        let start = std::time::Instant::now();
+        let _ = Changelog::parse(&format!("## [1.0.0]\n\n### Fixed\n\n- {text}\n"));
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "{name}: as an entry, {:?}",
+            start.elapsed()
+        );
+    }
+    // What is found once is still found: an address far behind many `<`,
+    // and a link behind many `[`.
+    let text = format!("{}<https://example.org/x> [w](y)", "< [ ".repeat(50_000));
+    assert!(plain(&text).ends_with("https://example.org/x w"));
+    // An address longer than an address is, is not one.
+    let long = format!("<https://{}>", "a".repeat(5000));
+    assert_eq!(plain(&long), long);
+    // A code span longer than a code span is, is not one: its ticks stay.
+    let span = format!("`{}`", "c".repeat(5000));
+    assert_eq!(plain(&span), span);
+    let short = format!("`{}`", "c".repeat(4000));
+    assert_eq!(plain(&short), "c".repeat(4000));
 }

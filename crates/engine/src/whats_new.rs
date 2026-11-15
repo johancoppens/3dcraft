@@ -27,7 +27,7 @@ use std::sync::OnceLock;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("session.whatsNew", "What's New", r#"{"since": string = the version before this one}"#,
-        "Returns what changed in this 3DCraft since a version, from the release notes the program carries (its changelog at build time; nothing is fetched): version (this program's), since (as given, else null), versions, newest first: [{version (\"unreleased\" for what a build between two releases has that no release has yet), date, summary, changesAnswers: how many of its entries change an answer, entries: [{kind: results|added|changed|deprecated|removed|fixed|security|limitations|other, heading: its group in the changelog, changesAnswer, title, text}], those that change an answer first}], changesAnswers (the total) and note. An entry with changesAnswer true (kind results) says that a result 3DCraft gave before can differ now: a measure, a proof, a check, or a body that was built wrong while it looked right; what was measured or checked with a version before it is worth checking again. since is a version as 0.1.1 (v0.1.1 too); without it the answer is this version's own notes. A since that is this version gives no versions (but what is not released yet, in a build between two releases); a since that is not a version, or that is newer than this program, is an error. A since older than the first release gives everything the program carries (the first release's own notes are not carried: nothing is older; note says so). Running it changes nothing.", doc: false, session_whats_new),
+        "Returns what changed in this 3DCraft since a version, from the release notes the program carries (its changelog at build time; nothing is fetched): version (this program's), since (as given, else null), versions, newest first: [{version (\"unreleased\" for what a build between two releases has that no release has yet), date, summary, changesAnswers: how many of its entries change an answer, entries: [{kind: results|added|changed|deprecated|removed|fixed|security|limitations|other, heading: its group in the changelog, changesAnswer, title, text}], those that change an answer first, notes: [{kind, heading, text}]: what a group says of itself, the text under its heading that is not an entry (the sentence under Results that changed)}], changesAnswers (the total) and note. The texts are the changelog's without its markup; a link keeps its words and loses its address. An entry with changesAnswer true (kind results) says that a result 3DCraft gave before can differ now: a measure, a proof, a check, or a body that was built wrong while it looked right; what was measured or checked with a version before it is worth checking again. since is a version as 0.1.1 (v0.1.1 too); without it the answer is this version's own notes. A since that is this version gives no versions (but what is not released yet, in a build between two releases); a since that is not a version, or that is newer than this program, is an error. A since older than the first release gives everything the program carries (the first release's own notes are not carried: nothing is older; note says so). Running it changes nothing.", doc: false, session_whats_new),
 ];
 
 /// The notes the running program was built with, as its `main` gave them
@@ -78,12 +78,25 @@ fn section_json(section: &Section) -> Value {
             })
         })
         .collect();
+    // What a group says of itself, in the same order as the entries.
+    let notes: Vec<Value> = Kind::ALL
+        .into_iter()
+        .flat_map(|kind| section.notes_of(kind))
+        .map(|note| {
+            json!({
+                "kind": note.kind.word(),
+                "heading": note.heading,
+                "text": note.text,
+            })
+        })
+        .collect();
     json!({
         "version": section.version.map_or_else(|| "unreleased".to_string(), |v| v.to_string()),
         "date": section.date,
         "summary": section.summary,
         "changesAnswers": section.changing_answers(),
         "entries": entries,
+        "notes": notes,
     })
 }
 
@@ -264,6 +277,27 @@ Three things.
         let answer = whats_new(&sample(), "0.2.1", None).unwrap();
         assert_eq!(answer["since"], Value::Null);
         assert_eq!(versions(&answer), ["unreleased", "0.2.1"]);
+    }
+
+    /// What stands under a group and is no entry is not dropped: it is
+    /// the group's note in the answer, what changes an answer first.
+    #[test]
+    fn what_a_group_says_of_itself_is_in_the_answer() {
+        let notes = Changelog::parse(
+            "## [0.3.0]\n\n### Fixed\n\nTwo fixes of the *window*.\n\n- **A fix.**\n\n### Results that changed\n\nCheck [again](https://example.org) what you measured.\n\n- **A measure was wrong.**\n\n## [0.2.0]\n\n- x\n",
+        )
+        .unwrap();
+        let answer = whats_new(&notes, "0.3.0", Some("0.2.0")).unwrap();
+        assert_eq!(
+            answer["versions"][0]["notes"],
+            json!([
+                {"kind": "results", "heading": "Results that changed", "text": "Check again what you measured."},
+                {"kind": "fixed", "heading": "Fixed", "text": "Two fixes of the window."},
+            ])
+        );
+        // A version whose groups have entries only has none.
+        let answer = whats_new(&sample(), "0.3.0", Some("0.2.1")).unwrap();
+        assert_eq!(answer["versions"][1]["notes"], json!([]));
     }
 
     #[test]

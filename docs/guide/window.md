@@ -101,16 +101,23 @@ version since your last visit. It says:
 A click on a line unfolds what the release notes say about it. When you skipped versions, the card
 holds them all, the newest first, and each line says which version it is of.
 
+In a low window the card starts as its title and one line, such as *14 results may differ from before,
+6 new, 20 changed and fixed*, so that the first row of examples stays in sight. A click on that line
+(**Show**) unfolds the card.
+
 The **×** closes the card, and 3DCraft remembers that you have seen this version. Until you close it,
-the card comes back with the start screen. It is never over a document: when you open a file by
-double-clicking it, or an agent is at work, the card waits until the start screen shows.
+the card comes back with the start screen. **Esc** does not close the card; it closes the window that
+**Help › What's new** opens over a document. The card is never over a document: when you open a file
+by double-clicking it, or an agent is at work, the card waits until the start screen shows.
 
 **Help › What's new** shows the notes again at any time: as the card on the start screen, and in a
 window while a document is open.
 
 3DCraft does not look anything up for this. The notes are part of the program: they are the text of
 its [changelog](https://github.com/johancoppens/3dcraft/blob/main/CHANGELOG.md) for your version. On a
-first start of a fresh installation there is no card, since nothing is old there. An agent gets the same
+first start of a fresh installation there is no card, since nothing is old there. If you start 3DCraft
+with a recovery folder of your own (`--recovery-dir`), the card never comes up by itself: **Help ›
+What's new** has the notes. An agent gets the same
 notes as data from the command `session.whatsNew`
 ([Programs › What a command answers](programs.md#what-a-command-answers)).
 

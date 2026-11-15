@@ -288,14 +288,14 @@ fn after_an_update_the_start_screen_shows_the_card_with_what_changes_an_answer_f
     assert_eq!(
         got["whatsNew"],
         json!({
-            "version": "0.3.0", "offered": true, "shown": "card",
+            "version": "0.3.0", "offered": true, "shown": "card", "low": false,
             "versions": ["unreleased", "0.3.0"],
             "changesAnswers": 2, "new": 2, "rest": 2,
         })
     );
     assert_eq!(
         got["state"]["whatsNew"],
-        json!({"card": true, "window": false, "rest": false})
+        json!({"card": true, "window": false, "rest": false, "expanded": false})
     );
     // A click on the fold shows the rest, each kind under its name.
     window.click(
@@ -331,7 +331,7 @@ fn after_an_update_the_start_screen_shows_the_card_with_what_changes_an_answer_f
     // The fold is what is left of the state, until it is folded again.
     assert_eq!(
         got["state"]["whatsNew"],
-        json!({"card": false, "window": false, "rest": true})
+        json!({"card": false, "window": false, "rest": true, "expanded": false})
     );
 }
 
@@ -580,11 +580,26 @@ fn a_presentation_other_than_the_whole_window_shows_no_notes() {
     }
 }
 
+/// The examples of the first row, by where the start screen drew them.
+fn first_row(shell: &Shell) -> Vec<Rect> {
+    let cards = examples(shell);
+    let top = cards.iter().map(Rect::top).fold(f32::MAX, f32::min);
+    cards
+        .into_iter()
+        .filter(|card| card.top() < top + 1.0)
+        .collect()
+}
+
 /// What a person who last saw 0.1.1 is shown when the next release starts
-/// today, with the repository's own changelog: the card and the start
-/// screen at the sizes the start screen was fitted to.
+/// today, with the repository's own changelog, at the sizes the start
+/// screen was fitted to. The card is never in the way of the examples: it
+/// and the first row of examples are wholly in sight at every size. Where
+/// the window is too low for the whole card and that row (1024 x 700), the
+/// card starts low, its title and one line that says how many results may
+/// differ; a click on the line unfolds it. Closed, the start screen is the
+/// one from before.
 #[test]
-fn the_card_of_the_next_release_fits_the_window_and_the_start_screen_is_as_before_once_closed() {
+fn the_card_and_the_first_row_of_examples_are_in_sight_and_the_card_starts_low_in_a_low_window() {
     let real = next_release();
     assert!(real.offered);
     // Everything after 0.1.1, newest first.
@@ -595,17 +610,22 @@ fn the_card_of_the_next_release_fits_the_window_and_the_start_screen_is_as_befor
             .all(|pair| pair[0].version > pair[1].version)
     );
     assert!(real.sections.iter().all(|s| s.version > Some(v("0.1.1"))));
-    for (width, height) in [
-        (1024.0, 700.0),
-        (1280.0, 800.0),
-        (1366.0, 768.0),
-        (1600.0, 1000.0),
-        (390.0, 844.0),
+    let (lead, tail) = real.low_line();
+    for (width, height, low) in [
+        (1024.0, 700.0, Some(true)),
+        (1280.0, 800.0, None),
+        (1366.0, 768.0, None),
+        (1600.0, 1000.0, Some(false)),
+        (1920.0, 1080.0, Some(false)),
+        (390.0, 844.0, None),
     ] {
         let at = format!("{width} x {height}");
         let (plain, _, _) = started(None, width, height);
         let (mut shell, mut session, mut window) = started(Some(real.clone()), width, height);
         assert_eq!(shell.whats_new_shown(), Some("card"), "{at}");
+        if let Some(low) = low {
+            assert_eq!(shell.whats_new_low(), low, "{at}");
+        }
         let viewport = shell.viewport_rect().unwrap();
         let card = hit(&shell, "card").unwrap();
         let column = start_hit(&shell, "card");
@@ -626,21 +646,56 @@ fn the_card_of_the_next_release_fits_the_window_and_the_start_screen_is_as_befor
         }
         let close = hit(&shell, "close").unwrap();
         assert!(card.contains_rect(close), "{at}");
-        // Its list keeps to its share of the height: the examples begin
-        // in the window, however long the notes are.
-        let list = hit(&shell, "list").unwrap();
-        assert!(list.height() <= height * 0.4, "{at}: {list:?}");
-        if width >= 1024.0 {
-            let first = examples(&shell)
-                .iter()
-                .map(Rect::top)
-                .fold(f32::MAX, f32::min);
+        // The first row of examples, each card with its name and its
+        // summary, is wholly in sight under it.
+        let row = first_row(&shell);
+        assert!(!row.is_empty(), "{at}");
+        println!(
+            "{at}: the card {} ({:.0} points high, to {:.0}); the first row of examples to {:.0}; in sight to {:.0}",
+            if shell.whats_new_low() {
+                "low"
+            } else {
+                "whole"
+            },
+            card.height(),
+            card.bottom(),
+            row.iter().map(Rect::bottom).fold(f32::MIN, f32::max),
+            viewport.bottom()
+        );
+        for example in &row {
             assert!(
-                first < viewport.bottom(),
-                "{at}: the examples begin at {first}"
+                viewport.contains_rect(*example),
+                "{at}: the example {example:?} is not wholly in {viewport:?} (low: {})",
+                shell.whats_new_low()
             );
+            assert!(example.top() >= card.bottom(), "{at}");
         }
-        // What changes an answer is the first thing in it.
+        let got = call(&mut shell, &mut session, "ui.get", json!({}));
+        assert_eq!(got["whatsNew"]["low"], shell.whats_new_low(), "{at}");
+        if shell.whats_new_low() {
+            // Low: the title, the ×, and the one line; no list yet.
+            let line = hit(&shell, "summary").unwrap();
+            assert!(card.contains_rect(line), "{at}");
+            assert!(hit(&shell, "list").is_none() && hit(&shell, "results").is_none());
+            // (Higher with touch sizes, on a phone.)
+            assert!(card.height() < 120.0, "{at}: {card:?}");
+            assert!(!shell.state.whats_new.expanded);
+            // A click on the line unfolds the card: what changes an
+            // answer first, in a list that keeps to its share.
+            window.click(&mut shell, &mut session, line.center());
+            window.frames(&mut shell, &mut session, 2);
+            assert!(shell.state.whats_new.expanded, "{at}");
+            assert!(!shell.whats_new_low(), "{at}");
+            assert!(hit(&shell, "summary").is_none(), "{at}");
+        } else {
+            assert!(hit(&shell, "summary").is_none(), "{at}");
+        }
+        // Whole: what changes an answer is the first thing in its list,
+        // which keeps to its share of the height.
+        let card = hit(&shell, "card").unwrap();
+        let list = hit(&shell, "list").unwrap();
+        assert!(viewport.contains_rect(card), "{at}: {card:?}");
+        assert!(list.height() <= height * 0.4, "{at}: {list:?}");
         if let (Some(results), Some(new)) = (hit(&shell, "results"), hit(&shell, "new")) {
             assert!(results.top() < new.top(), "{at}");
             assert!(
@@ -648,12 +703,160 @@ fn the_card_of_the_next_release_fits_the_window_and_the_start_screen_is_as_befor
                 "{at}: {results:?} in {list:?}"
             );
         }
+        // Unfolding its rest or an entry does not make it low again.
+        call(
+            &mut shell,
+            &mut session,
+            "ui.set",
+            json!({"whatsNew": {"rest": true, "expanded": false}}),
+        );
+        window.frames(&mut shell, &mut session, 3);
+        assert!(!shell.whats_new_low(), "{at}: whole while it is shown");
         // Closed, the start screen is exactly the one without notes: its
         // ten examples where they were.
+        let close = hit(&shell, "close").unwrap();
         window.click(&mut shell, &mut session, close.center());
         window.frames(&mut shell, &mut session, 3);
         assert_eq!(shell.whats_new_shown(), None, "{at}");
+        assert!(!shell.state.whats_new.expanded, "{at}");
         assert_eq!(shell.start_hits(), plain.start_hits(), "{at}");
+    }
+    // The low card's line, in words: the results first.
+    if !real.results().is_empty() {
+        assert!(lead.ends_with("may differ from before"), "{lead}");
+        assert!(
+            lead.starts_with(&real.results().len().to_string()),
+            "{lead}"
+        );
+    }
+    assert!(
+        tail.contains("new") || tail.contains("changed and fixed"),
+        "{tail}"
+    );
+}
+
+/// The low card's one line, for every shape of notes.
+#[test]
+fn the_low_cards_line_says_how_many_results_may_differ() {
+    let all = notes(Seen::Version(v("0.1.0")));
+    assert_eq!(
+        all.low_line(),
+        (
+            "3 results may differ from before".to_string(),
+            ", 3 new, 4 changed and fixed".to_string()
+        )
+    );
+    let one = |text: &str| {
+        WhatsNew::for_start(&Changelog::parse(text).unwrap(), v("0.2.0"), Seen::Earlier).unwrap()
+    };
+    assert_eq!(
+        one("## [0.2.0]\n\n### Results that changed\n\n- **x.**\n\n## [0.1.0]\n").low_line(),
+        ("1 result may differ from before".to_string(), String::new())
+    );
+    assert_eq!(
+        one("## [0.2.0]\n\n### Fixed\n\n- **x.**\n- **y.**\n\n## [0.1.0]\n").low_line(),
+        (String::new(), "2 changed and fixed".to_string())
+    );
+    assert_eq!(
+        one("## [0.2.0]\n\n### Added\n\n- **x.**\n\n### Fixed\n\n- **y.**\n\n## [0.1.0]\n")
+            .low_line(),
+        (String::new(), "1 new, 1 changed and fixed".to_string())
+    );
+    // Short notes are whole even in a low window: they fit.
+    let short = one("## [0.2.0]\n\n### Fixed\n\n- **x.**\n- **y.**\n\n## [0.1.0]\n");
+    let (shell, _, _) = started(Some(short), 1024.0, 700.0);
+    assert_eq!(shell.whats_new_shown(), Some("card"));
+    assert!(!shell.whats_new_low());
+    for example in first_row(&shell) {
+        assert!(shell.viewport_rect().unwrap().contains_rect(example));
+    }
+}
+
+/// What a group says of itself in the changelog (the text under its
+/// heading that is not an entry) stands under the group's heading on the
+/// card: the changelog's own sentence under the results, in place of the
+/// window's; under a group of the rest; and for a group that has no entry
+/// at all. Nothing under a group is dropped.
+#[test]
+fn what_a_group_says_of_itself_stands_under_its_heading() {
+    let text = "\
+## [0.2.0] - 2026-12-01
+
+### Results that changed
+
+What was answered before can differ now. Check it again.
+
+- **A measure was wrong.**
+
+### Fixed
+
+Two fixes of the window.
+
+- **A fix.**
+
+### Known limitations
+
+None that we know of.
+
+## [0.1.0] - 2026-11-11
+";
+    let said =
+        WhatsNew::for_start(&Changelog::parse(text).unwrap(), v("0.2.0"), Seen::Earlier).unwrap();
+    assert_eq!(
+        said.said(|_| true),
+        [
+            (
+                "Results that changed",
+                "What was answered before can differ now. Check it again."
+            ),
+            ("Fixed", "Two fixes of the window."),
+            ("Known limitations", "None that we know of."),
+        ]
+    );
+    // Drawn: with the notes the results' block and the unfolded rest are
+    // higher than the same notes without them, by the lines they take.
+    let bare = text
+        .replace(
+            "What was answered before can differ now. Check it again.\n\n",
+            "",
+        )
+        .replace("Two fixes of the window.\n\n", "")
+        .replace("### Known limitations\n\nNone that we know of.\n\n", "");
+    let without =
+        WhatsNew::for_start(&Changelog::parse(&bare).unwrap(), v("0.2.0"), Seen::Earlier).unwrap();
+    assert!(without.said(|_| true).is_empty());
+    let drawn = |notes: WhatsNew| {
+        let mut session = Session::new(Workspace::none());
+        let mut shell = Shell::new();
+        shell.set_whats_new(Some(notes));
+        shell.state.whats_new.rest = true;
+        let mut window = Window::sized(1100.0, 900.0);
+        window.frames(&mut shell, &mut session, 4);
+        assert!(!shell.whats_new_low());
+        (
+            hit(&shell, "results").unwrap().height(),
+            hit(&shell, "rest").unwrap().height(),
+        )
+    };
+    let (results_with, rest_with) = drawn(said);
+    let (results_without, rest_without) = drawn(without);
+    // The results: the changelog's sentence (one line) stands where the
+    // window's own hint (two lines) would; never both.
+    assert!(
+        results_with < results_without && results_with > results_without - 40.0,
+        "{results_with} and {results_without}"
+    );
+    // The rest: a line under Fixed, and a group of its own with a line.
+    assert!(
+        rest_with > rest_without + 40.0,
+        "{rest_with} and {rest_without}"
+    );
+    // The repository's own notes carry their sentence under the results.
+    let real = next_release();
+    if !real.results().is_empty() {
+        let own = real.said(|kind| kind == craft3d_engine::changelog::Kind::Results);
+        assert_eq!(own.len(), 1, "{own:?}");
+        assert!(own[0].1.ends_with("check it again."), "{own:?}");
     }
 }
 

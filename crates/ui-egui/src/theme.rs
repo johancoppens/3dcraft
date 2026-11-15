@@ -654,6 +654,9 @@ pub struct Tokens {
     pub whats_new_width: f32,
     pub whats_new_share: f32,
     pub whats_new_least: f32,
+    /// The most of the window's height the list of the notes' window
+    /// takes before it scrolls.
+    pub whats_new_window_share: f32,
     pub details_width: f32,
     pub details_height: f32,
     /// The menu bar's menus' widths: File, Edit, View, Help (board s4).
@@ -1138,6 +1141,7 @@ impl Tokens {
             whats_new_width: 640.0,
             whats_new_share: 0.36,
             whats_new_least: 96.0,
+            whats_new_window_share: 0.6,
             details_width: 560.0,
             details_height: 320.0,
             menu_widths: [250.0, 250.0, 230.0, 240.0],

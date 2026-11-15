@@ -1050,6 +1050,11 @@ pub struct WhatsNewView {
     /// What else changed and what was fixed, unfolded (folded away
     /// until asked for).
     pub rest: bool,
+    /// The card unfolded in a window too low to show it and the first
+    /// row of examples whole: there it starts low (its title and one
+    /// line), and a click on that line sets this. Without meaning in a
+    /// window with the room; cleared when the person closes the notes.
+    pub expanded: bool,
 }
 
 impl WhatsNewView {
@@ -2058,7 +2063,7 @@ mod tests {
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(
             json["whatsNew"],
-            json!({"card": true, "window": false, "rest": false})
+            json!({"card": true, "window": false, "rest": false, "expanded": false})
         );
         assert_eq!(serde_json::from_value::<UiState>(json).unwrap(), state);
         // A patch changes the fields it names and leaves the others.
@@ -2074,7 +2079,8 @@ mod tests {
             WhatsNewView {
                 card: false,
                 window: true,
-                rest: true
+                rest: true,
+                expanded: false,
             }
         );
         state

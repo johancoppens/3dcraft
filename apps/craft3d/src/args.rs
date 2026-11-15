@@ -50,9 +50,12 @@ Options:
                               remembered switch, the default recovery
                               directory and recent files, and the version
                               whose release notes you have seen (What's
-                              new; kept only with the default recovery
-                              directory). Default: 3dcraft in your state
-                              directory (see --recovery-dir).
+                              new; kept only by a window that keeps its
+                              autosaves or its recent files there, so with
+                              --recovery-dir given the start screen never
+                              offers what is new by itself; Help has it).
+                              Default: 3dcraft in your state directory
+                              (see --recovery-dir).
   --renderer auto|cpu         What shades the model in the viewport: auto
                               (the GPU when there is one, else the CPU; the
                               default) or cpu (the reference renderer, to
@@ -124,10 +127,10 @@ pub struct Options {
     pub agent_port: Option<u16>,
     /// Where the newest version whose release notes were seen is kept
     /// (`notes.rs`): `whats-new.json` in the state folder, for a window
-    /// that keeps its autosaves in its default place; `None` for one
-    /// given a recovery directory of its own (a test's, an agent's, or
-    /// none), which then offers no notes and writes nothing, as it keeps
-    /// no recent files.
+    /// that keeps its autosaves or its recent files there; `None` for
+    /// one that keeps both elsewhere or not at all (a test's, an
+    /// agent's: `--recovery-dir DIR` or `none`), which then offers no
+    /// notes and writes nothing.
     pub seen_file: Option<PathBuf>,
 }
 
@@ -335,15 +338,9 @@ pub fn parse(
         None => None,
     };
     // What's new: remembered only by a window that is the person's own,
-    // by the same rule as the recent files.
-    options.seen_file = if own_recovery && options.recovery_dir.is_some() {
-        options
-            .state_dir
-            .as_ref()
-            .map(|state| state.join(crate::notes::SEEN_FILE))
-    } else {
-        None
-    };
+    // one that keeps its autosaves or its recent files in the state
+    // folder (`notes.rs`, *Who keeps the note*).
+    options.seen_file = crate::notes::seen_file_for(&options);
     if options.control.is_some() && options.token_file.is_none() && options.state_dir.is_none() {
         return Err(
             "`--control` needs `--control-token-file FILE` here: there is no state folder for the default one (give `--state-dir DIR`), and the token is never given on the command line"

@@ -27,10 +27,21 @@
 //! built wrong while it looked right. Someone who relied on such an answer
 //! must look again, so those come first wherever notes are shown.
 //!
+//! **Nothing under a group is dropped without a word.** What stands under
+//! a group and is not an entry `- …` (a paragraph, a numbered list, a
+//! table) is the group's own note ([`Note`]): the command's answer carries
+//! it and the card shows it under the group's heading. Today that is the
+//! sentence under [`RESULTS_HEADING`] that says what such an entry means.
+//!
 //! Everything is read as text a person can read: the Markdown markup
-//! (bold, code, links) is taken off ([`plain`]). Nothing here panics,
-//! whatever the file holds; a file that is not in this form is an error
-//! that names the line.
+//! (bold, code, links) is taken off ([`plain`]). **A link keeps its words
+//! and loses its address**: the notes are read in a window and by an
+//! agent, neither of which follows a link from them, and an entry whose
+//! point is an address should say the address in words (the full notes
+//! with their links are the changelog on the website). Nothing here
+//! panics, whatever the file holds, and the reading takes time in
+//! proportion to the file's length; a file that is not in this form is an
+//! error that names the line.
 
 use std::fmt;
 
@@ -49,6 +60,11 @@ const MAX_VERSION_CHARS: usize = 40;
 const MAX_VERSION_PART: u32 = 999_999;
 /// Most characters between a link's brackets or parentheses.
 const MAX_BRACKETED_CHARS: usize = 1024;
+/// Most bytes of a code span, of a reference link's name and of an
+/// address between angle brackets: what closes them is looked for no
+/// further, so text that opens such a thing over and over without closing
+/// it is not looked through once per opening.
+const MAX_SPAN_BYTES: usize = 4096;
 /// How deep markup inside a link's text is followed.
 const MAX_MARKUP_DEPTH: u8 = 4;
 
@@ -230,6 +246,17 @@ impl Entry {
     }
 }
 
+/// What a group says of itself: the text under its heading that is not an
+/// entry (a paragraph, a numbered list, a table), without markup, its
+/// paragraphs joined by a line break.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Note {
+    pub kind: Kind,
+    /// The heading of the group as the file writes it.
+    pub heading: String,
+    pub text: String,
+}
+
 /// The notes of one version, or of what is not released yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Section {
@@ -240,12 +267,21 @@ pub struct Section {
     /// The paragraphs before the first group, joined by a line break.
     pub summary: String,
     pub entries: Vec<Entry>,
+    /// What its groups say of themselves, in the file's order; a group
+    /// with entries only has none.
+    pub notes: Vec<Note>,
 }
 
 impl Section {
-    /// True when the section says nothing: no summary and no entry.
+    /// True when the section says nothing: no summary, no entry and no
+    /// group's note.
     pub fn is_blank(&self) -> bool {
-        self.summary.is_empty() && self.entries.is_empty()
+        self.summary.is_empty() && self.entries.is_empty() && self.notes.is_empty()
+    }
+
+    /// What its groups of one kind say of themselves.
+    pub fn notes_of(&self, kind: Kind) -> impl Iterator<Item = &Note> {
+        self.notes.iter().filter(move |note| note.kind == kind)
     }
 
     /// How people name it: the version, or *Not yet released*.
@@ -464,9 +500,13 @@ impl Changelog {
         raw: &Raw<'_>,
         count: &mut usize,
     ) -> Result<Section, Error> {
-        let mut summary: Vec<String> = Vec::new();
+        // The paragraphs of what is being read: the section's summary
+        // above the first group, then each group's own note.
+        let mut paragraphs: Vec<String> = Vec::new();
         let mut paragraph = String::new();
+        let mut summary = String::new();
         let mut entries: Vec<Entry> = Vec::new();
+        let mut notes: Vec<Note> = Vec::new();
         // The group being read, and the entry being gathered in it.
         let mut group: Option<(Kind, String)> = None;
         let mut entry: Option<String> = None;
@@ -497,13 +537,39 @@ impl Changelog {
             }
             Ok(())
         };
+        // The paragraphs gathered so far, as text: the summary before the
+        // first group, a group's note after it.
+        let said = |paragraphs: &mut Vec<String>, paragraph: &mut String| -> String {
+            if !paragraph.is_empty() {
+                paragraphs.push(std::mem::take(paragraph));
+            }
+            std::mem::take(paragraphs)
+                .iter()
+                .map(|paragraph| plain(paragraph))
+                .filter(|paragraph| !paragraph.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let end_group = |group: &mut Option<(Kind, String)>,
+                         text: String,
+                         summary: &mut String,
+                         notes: &mut Vec<Note>| {
+            match group.take() {
+                None => *summary = text,
+                Some((kind, heading)) if !text.is_empty() => notes.push(Note {
+                    kind,
+                    heading,
+                    text,
+                }),
+                Some(_) => {}
+            }
+        };
         for line in &raw.lines {
             let line = line.trim_end();
             if let Some(heading) = line.strip_prefix("### ") {
                 close(&mut entry, &group, &mut entries)?;
-                if !paragraph.is_empty() {
-                    summary.push(std::mem::take(&mut paragraph));
-                }
+                let text = said(&mut paragraphs, &mut paragraph);
+                end_group(&mut group, text, &mut summary, &mut notes);
                 let heading = plain(heading);
                 group = Some((Kind::of_heading(&heading), heading));
             } else if let Some(item) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
@@ -515,24 +581,28 @@ impl Changelog {
                     }
                     paragraph.push_str(item);
                 } else {
+                    if !paragraph.is_empty() {
+                        paragraphs.push(std::mem::take(&mut paragraph));
+                    }
                     entry = Some(item.to_string());
                 }
             } else if line.trim().is_empty() {
                 // An empty line ends a paragraph; an entry goes on only
                 // with an indented line.
-                if group.is_none() && !paragraph.is_empty() {
-                    summary.push(std::mem::take(&mut paragraph));
+                if !paragraph.is_empty() {
+                    paragraphs.push(std::mem::take(&mut paragraph));
                 }
-            } else if let Some(open) = entry.as_mut() {
-                if line.starts_with([' ', '\t']) {
-                    open.push(' ');
-                    open.push_str(line.trim());
-                } else {
-                    // A paragraph under a group, after its entries: said
-                    // of the group, not an entry.
-                    close(&mut entry, &group, &mut entries)?;
-                }
-            } else if group.is_none() {
+            } else if let Some(open) = entry.as_mut()
+                && line.starts_with([' ', '\t'])
+            {
+                open.push(' ');
+                open.push_str(line.trim());
+            } else {
+                // Not an entry and not the rest of one: above the first
+                // group it is the section's summary; under a group it is
+                // what the group says of itself (a paragraph, a numbered
+                // list, a table), kept as the group's note.
+                close(&mut entry, &group, &mut entries)?;
                 if !paragraph.is_empty() {
                     paragraph.push(' ');
                 }
@@ -540,20 +610,14 @@ impl Changelog {
             }
         }
         close(&mut entry, &group, &mut entries)?;
-        if !paragraph.is_empty() {
-            summary.push(paragraph);
-        }
-        let summary = summary
-            .iter()
-            .map(|paragraph| plain(paragraph))
-            .filter(|paragraph| !paragraph.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n");
+        let text = said(&mut paragraphs, &mut paragraph);
+        end_group(&mut group, text, &mut summary, &mut notes);
         Ok(Section {
             version,
             date,
             summary,
             entries,
+            notes,
         })
     }
 
@@ -714,20 +778,72 @@ fn closing(text: &str, open: char, close: char) -> Option<usize> {
     None
 }
 
+/// The longest start of `text` of at most `max` bytes that ends between
+/// two characters.
+fn head(text: &str, max: usize) -> &str {
+    let mut end = text.len().min(max);
+    while end > 0 && !text.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    text.get(..end).unwrap_or("")
+}
+
+/// Where a character next stands in a text that is read from its start
+/// to its end, looked for once and remembered: asked again further on,
+/// the answer is the one found before for as long as it lies ahead. So
+/// asking at every position costs the text's length once, where a search
+/// of the rest at every position would cost its square (a text of nothing
+/// but `<`, each looking for its `>`).
+struct Ahead {
+    wanted: char,
+    /// What the last search found: `None` before the first; `Some(None)`
+    /// when there is none from there to the end.
+    found: Option<Option<usize>>,
+}
+
+impl Ahead {
+    fn new(wanted: char) -> Self {
+        Self {
+            wanted,
+            found: None,
+        }
+    }
+
+    /// The byte offset in `markup` of the next `wanted` at or after
+    /// `from`, where `rest` is `markup` from `from` on.
+    fn next(&mut self, rest: &str, from: usize) -> Option<usize> {
+        match self.found {
+            Some(None) => None,
+            Some(Some(at)) if at >= from => Some(at),
+            _ => {
+                let found = rest.find(self.wanted).map(|at| from.saturating_add(at));
+                self.found = Some(found);
+                found
+            }
+        }
+    }
+}
+
 fn plain_into(markup: &str, out: &mut String, depth: u8) {
     let mut rest = markup;
     let mut previous: Option<char> = None;
+    let mut closing_angle = Ahead::new('>');
+    let mut closing_bracket = Ahead::new(']');
     while let Some(c) = rest.chars().next() {
         let after = rest.get(c.len_utf8()..).unwrap_or("");
+        // Where `after` begins in `markup`.
+        let at = markup.len().saturating_sub(after.len());
         match c {
             '`' => {
-                // A code span: as many backticks close it as open it.
+                // A code span: as many backticks close it as open it,
+                // within the length a code span has.
                 let ticks = rest
                     .len()
                     .saturating_sub(rest.trim_start_matches('`').len());
                 let inside = rest.get(ticks..).unwrap_or("");
                 let fence = "`".repeat(ticks);
-                match inside.find(&fence) {
+                let reach = MAX_SPAN_BYTES.saturating_add(ticks);
+                match head(inside, reach).find(&fence) {
                     Some(end) => {
                         out.push_str(inside.get(..end).unwrap_or(""));
                         rest = inside.get(end.saturating_add(ticks)..).unwrap_or("");
@@ -768,14 +884,20 @@ fn plain_into(markup: &str, out: &mut String, depth: u8) {
                 continue;
             }
             '[' => {
-                if let Some(end) = closing(after, '[', ']') {
+                // Without a `]` ahead within the length of a link's words
+                // (a character is at most four bytes) it is no link: not
+                // looked into at all.
+                if closing_bracket.next(after, at).is_some_and(|close| {
+                    close.saturating_sub(at) <= MAX_BRACKETED_CHARS.saturating_mul(4)
+                }) && let Some(end) = closing(after, '[', ']')
+                {
                     let words = after.get(..end).unwrap_or("");
                     let tail = after.get(end.saturating_add(1)..).unwrap_or("");
                     let target = if let Some(inner) = tail.strip_prefix('(') {
                         closing(inner, '(', ')')
                             .map(|close| inner.get(close.saturating_add(1)..).unwrap_or(""))
                     } else if let Some(inner) = tail.strip_prefix('[') {
-                        inner
+                        head(inner, MAX_SPAN_BYTES)
                             .find(']')
                             .map(|close| inner.get(close.saturating_add(1)..).unwrap_or(""))
                     } else {
@@ -796,7 +918,13 @@ fn plain_into(markup: &str, out: &mut String, depth: u8) {
             }
             '<' => {
                 // An address between angle brackets stands for itself.
-                if let Some(end) = after.find('>') {
+                // Its `>` is found once for every `<` before it, and an
+                // address is no longer than a span.
+                if let Some(end) = closing_angle
+                    .next(after, at)
+                    .map(|close| close.saturating_sub(at))
+                    .filter(|end| *end <= MAX_SPAN_BYTES)
+                {
                     let inside = after.get(..end).unwrap_or("");
                     let address = (inside.starts_with("http://") || inside.starts_with("https://"))
                         && !inside.contains(char::is_whitespace);
