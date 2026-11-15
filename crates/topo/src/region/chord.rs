@@ -1,98 +1,167 @@
-//! Verify before refusing (since 2026-11-15; `docs/design/topology.md` ›
-//! *What lies between an edge and its chord*).
+//! Verify before refusing, on a plane (since 2026-11-15;
+//! `docs/design/topology.md` › *What lies between an edge and its chord*,
+//! which has the theorem below with its proof in full).
 //!
 //! The walk of the loop rules ([`super::follow`]) reads each step of an
 //! edge at its two ends and its middle and takes the chord of the step for
 //! the edge; how far the edge lies from that chord is measured at the
 //! step's middle, never bounded. So the walk can see a fault that is not
 //! there (a wavy side whose steps end, and are measured, where it crosses
-//! its middle line reads as straight, and its chords cross the other side),
-//! and can miss one that is. Here a face the walk is about to refuse is
-//! walked again, on a plane, a cylinder, a cone or a sphere, in stretches
-//! each of which is shown to keep to a bound, and the fault is dropped only
-//! where the bounds show it is not there; a face the walk passes is never
-//! walked here, so what this adds is only ever a pass where the walk
-//! refused, and only one shown.
+//! its middle line reads as straight, and its chords cross the other side).
+//! Here a face on a plane that the walk is about to refuse is walked again
+//! in stretches, and the walk's fault is dropped only where the whole face
+//! is *cleared*: where the conditions C0 to C6 below, each computed, all
+//! hold. A face the walk passes is never walked here, and a face on any
+//! other surface is not walked again at all ([`asked`]): its fault stands
+//! as the walk found it.
 //!
-//! **What is shown of a stretch.** A stretch of an edge, from the
-//! parameter `s` to `e`, its image in the chart running from `A` to `B`:
+//! **The setting.** The chart of a plane is `(u, v) = ((p − o)·x, (p −
+//! o)·y)`, `o`, `x`, `y` its frame's origin and axes: an affine map, with
+//! no period and no pole, one to one on the plane, and an isometry of it
+//! where `x` and `y` are unit vectors square to each other, which
+//! [`flat`] checks to 1e-9: lengths in the chart are the model's, and the
+//! *reach* `R` is ten of the body's working tolerances in both. An edge's
+//! *image* is its curve over its range taken through the chart, also where
+//! the curve lies off the plane. A *stretch* is a part of one coedge's
+//! edge between two parameters; the stretches of a loop, in the order the
+//! loop runs, take every coedge's whole range ([`Walked::new`],
+//! [`Walked::halve`]). A stretch `i` runs from `Aᵢ` to `Bᵢ` (both placed,
+//! [`Walked::place_at`]); the *gap* `gᵢ = |Bᵢ − Aᵢ₊₁|` is nothing inside
+//! an edge and what two edges' ends miss each other by at a vertex; the
+//! loop's *curve* `Γ` is its stretches' images in order, each joined to the
+//! next by the straight segment across its gap; its *polyline* `Π` is `A₀
+//! A₁ … Aₙ₋₁`, its segment `Sᵢ = Aᵢ Aᵢ₊₁`; the *piece* `πᵢ` is the image
+//! of stretch `i` with the segment across its gap.
 //!
-//! - (1) the image runs one way: its direction keeps within a fan
-//!   narrower than a half turn (the legs of points whose convex hull holds
-//!   the curve and whose legs' sums with weights that are not negative hold
-//!   its direction: the cut Bézier pieces of a spline, the three points of a
-//!   rational quadratic for an arc of a conic, the two ends of a line; on a
-//!   plane each leg read along the plane, about an axis each leg's box of
-//!   directions over every place the stretch can be, [`super::AboutMap`],
-//!   widened by what rounding can have moved the leg). The image and the
-//!   chord `AB` are then each crossed once by every line square to the
-//!   fan's middle, so together they wind about no point more than once,
-//!   and only about points between them.
-//! - (2) the image lies within `bound` of the chord `AB`: on a plane, the
-//!   farthest of those points from the chord (the plane's chart is linear,
-//!   so the image lies in their hull, and a hull lies as far from a segment
-//!   as its farthest corner); about an axis, from the fan alone: a curve
-//!   from `A` to `B` whose direction keeps within the cone of the fan's two
-//!   ends `d1`, `d2` lies in the parallelogram `(A + cone) ∩ (B − cone)`,
-//!   whose other two corners lie `α β |d1 × d2| / |AB|` from the chord
-//!   (`B − A = α d1 + β d2`, both not negative: else the stretch is not
-//!   shown). Each bound has what rounding can have moved the points added.
+//! **What is shown of a stretch** ([`Walked::bound_of`],
+//! [`Walked::hull_bound`]). Points in runs are made for it (a line's two
+//! ends; the three points of the rational quadratic of an arc of a circle
+//! or an ellipse of at most a quarter turn; the control points of a
+//! spline's Bézier pieces cut to the stretch, a run each, or over more than
+//! [`super::MANY_SPANS`] spans the control points of the spans it meets,
+//! one run) such that (H) the curve over each run's part of the stretch
+//! lies within the run's *clear* (what rounding can have moved the points,
+//! [`super::hull_rounding`] times [`super::HULL_CLEAR`], [`rounding_of`])
+//! of the convex hull of the run's points, and (D) the curve's direction
+//! at each of its points is a sum, with weights that are not negative, of
+//! the legs from each point of its run to the next (a spline's with
+//! positive weights by the total positivity of its basis,
+//! [`super::one_way`]); a spline is held to being one curve over the
+//! stretch, its two ends included: each of its pieces starting where the
+//! one before ends ([`Walked::hull_bound`]) and, where the spans' control
+//! points are read, no knot of theirs inside the domain repeated more often
+//! than the degree ([`jumps`]).
+//! The chart being affine, the image lies in the hulls of the points'
+//! images and its direction is such a sum of the legs' images. Then:
 //!
-//! **What is claimed of a loop.** The polyline of the stretches' starts,
-//! each segment with its margin (its stretch's bound and the gap from the
-//! stretch's end to the next one's start, where two edges meet at a vertex
-//! within its tolerance): the loop's true boundary lies within a margin of
-//! each segment, and with each segment winds about no point outside that
-//! margin. So (a) its area is the polyline's within `Σ 2 m (L + m) + π m²`
-//! over the segments (length `L`, margin `m`), and a loop's sense is
-//! claimed only where its area is farther from nothing than that; (b) a
-//! point farther from every segment than its margin and ten tolerances is
-//! wound by the loop as by the polyline; (c) two segments that cross
-//! properly, each one's ends on either side of the other's line by more
-//! than both margins and ten tolerances, are crossed by the loop's true
-//! boundary: each boundary stretch lies in the band of its segment's
-//! margin, and runs from one side of the other band to its other side,
-//! so within the parallelogram where the two bands meet one joins one pair
-//! of its opposite sides and the other the other pair, and two such paths
-//! meet; (d) two segments that do not meet at a point of their loop and lie
-//! farther apart than both margins and ten tolerances hold pieces of the
-//! boundary that do not meet; (e) two neighbouring stretches whose cones
-//! fit together in a fan narrower than a half turn (by an angle the gap
-//! between them asks) meet only within ten tolerances of their shared point
-//! ([`neighbours_apart`]). The region rule's faults (a sense, a hole
-//! outside, a crossing) and the rule of simple loops' third (a point wound
-//! neither 0 times nor once its own way) are claimed again with (a) to (c),
-//! and the walk's message is kept where the same kind of fault is shown.
+//! - (S1) *the bound* `bᵢ`: the farthest of the points' images from the
+//!   chord `Aᵢ Bᵢ`, with the clears and the rounding of the two placed
+//!   ends added: the image lies within `bᵢ` of its chord (a hull lies no
+//!   farther from a segment than its farthest corner).
+//! - (S2) *the aim*: a cone `Kᵢ` narrower than a half turn that holds every
+//!   leg's image, each widened by the angle rounding can have turned it
+//!   (`asin(2 clear / |leg|)`, a leg shorter than ten clears giving none):
+//!   every move along the stretch, from one of its points to a later one,
+//!   is a direction of `Kᵢ`. So the stretch is a simple arc (its points
+//!   move strictly forward along the cone's middle), and its image and its
+//!   chord are each crossed at most once by every line square to that
+//!   middle.
 //!
-//! **When a fault is dropped, and when it stands.** A fault is dropped only
-//! where the bounds show it is not there: every sense told and as a face's
-//! must be, every hole point told (but where the rule does not ask it: on a
-//! plane, and on a sphere whose loops all run clockwise), no loop a band,
-//! and every two pieces of the boundary apart by (d) or (e). Then each loop
-//! is a simple closed curve that goes round no period (but for touches
-//! within ten tolerances of a vertex, which the rule passes too) and no two
-//! loops meet, so neither the faults the region rule asks nor those of the
-//! rule of simple loops' second, third and fourth rules within one loop can
-//! hold. Where that is not shown, stretches are halved (the widest margins,
-//! the stretches of the pairs not shown apart) and the loops judged again;
-//! where it is still not shown when halving cannot part a pair (two lines
-//! whose cones do not fit, a pair within ten tolerances, a stretch with no
-//! aim), a loop reads as a band, a point cannot be placed, or the work of a
-//! face ([`super::MOST_PROOF_WORK`] for the whole of its second walk, every
-//! read of its loops, pair of segments and point of a hole counted),
-//! [`MOST_ROUNDS`] rounds or [`MOST_STRETCHES`] stretches of an edge are
-//! spent, the walk's fault stands. Not looked at here, the walk's finding
-//! kept as it is: a face on a torus (whose chart is not shown,
-//! [`Rise::Unshown`]) or on a spline surface (whose chart's map is not
-//! known), and the faults of the other rules (an edge round its circle
-//! twice, a loop round a period too often, two stretches on each other).
+//! **The lemmas** (`mᵢ = bᵢ + gᵢ` the *margin* of segment `i`; `N(S, m)`
+//! the points within `m` of a segment `S`, a convex set):
+//!
+//! - (L1) `πᵢ ⊂ N(Sᵢ, mᵢ)`: the image lies within `bᵢ` of `Aᵢ Bᵢ`, every
+//!   point of which lies within `gᵢ` of `Sᵢ`, and the segment across the
+//!   gap lies within `gᵢ` of `Aᵢ₊₁`.
+//! - (L2) a point farther than `mᵢ` from every `Sᵢ` of a loop is wound by
+//!   `Γ` as by `Π`: `Γ − Π` is the sum of the closed curves `πᵢ − Sᵢ`,
+//!   each inside the convex `N(Sᵢ, mᵢ)`, which winds about no point
+//!   outside it.
+//! - (L3) the area `Γ` bounds (the integral of its winding number) is
+//!   `Π`'s within `Σ 2 mᵢ (Lᵢ + mᵢ) + π mᵢ²`, `Lᵢ` the length of `Sᵢ`
+//!   ([`area_error`]): `πᵢ − Sᵢ` is the image closed by its chord, which by
+//!   (S2) winds at most once about any point and only inside `N(Aᵢ Bᵢ,
+//!   bᵢ)`, an area of `2 bᵢ |Aᵢ Bᵢ| + π bᵢ²` at the most, and the triangle
+//!   `Aᵢ Bᵢ Aᵢ₊₁`, of at most `gᵢ |Aᵢ Bᵢ| / 2`, with `|Aᵢ Bᵢ| ≤ Lᵢ + gᵢ`.
+//! - (L4) two segments farther apart than `mᵢ + mⱼ + R` hold pieces
+//!   farther apart than `R` (L1).
+//! - (L5) two stretches of which the second starts where the first ends
+//!   but for the gap `g` (and slacks), whose cones both fit in a fan
+//!   narrower than a half turn by `2 asin(2 g / R)`, meet only within `R /
+//!   2` of the first's end, and only at that point where `g` is nothing
+//!   ([`neighbours_apart`], with its proof).
+//!
+//! **Cleared** ([`judge`]) is all of:
+//!
+//! - (C0) every stretch is shown with an aim ([`Walked::rings`] gives no
+//!   loops otherwise; [`neighbours`] takes a stretch without an aim for
+//!   not apart);
+//! - (C1) every loop has three stretches or more (so two stretches that
+//!   follow each other share one joint only);
+//! - (C2) every two segments that do not follow each other in one loop,
+//!   of the same loop or of two, are farther apart than both margins and
+//!   `R` ([`crossing`]: every such pair whose boxes come within that is
+//!   looked at, [`super::pairs_of_steps`]; one not looked at, past
+//!   [`super::MOST_PAIRS`], clears nothing);
+//! - (C3) every two stretches that follow each other in a loop are apart
+//!   by (L5), every gap under `R / 4` ([`neighbours`]);
+//! - (C4) every loop's polyline bounds more area than its error (L3);
+//! - (C5) exactly one loop runs counter-clockwise about the face's normal,
+//!   and its area less its error is more than any other's with its error;
+//! - (C6) a point `A₀` of every other loop is wound once by that loop's
+//!   polyline and by no other hole's.
+//!
+//! **Theorem.** If a face on a plane is cleared, then (i) every stretch is
+//! a simple arc (S2); (ii) two pieces that do not follow each other in one
+//! loop, and any two pieces of two loops, lie more than `R` apart (C2,
+//! L4); (iii) two stretches that follow each other meet only within `R /
+//! 2` of their joint, and only at the joint where it has no gap (C3, L5):
+//! so no two loops meet, and each loop's curve is a closed curve that
+//! meets itself nowhere but, at the most, within `R / 2` of a vertex where
+//! two edges' ends miss each other (by less than `R / 4`); with every
+//! edge's end on the next one's start it is a simple closed curve; (iv)
+//! each loop's curve bounds an area of the sign of its polyline's (C4,
+//! L3), so exactly one runs counter-clockwise about the face's normal,
+//! bounding more than any other, and the others run clockwise (C5); (v)
+//! every other loop lies inside that one and inside no other hole (C6:
+//! `A₀` lies farther than `mᵢ + R` from every segment of every other loop
+//! by C2, so each winds about it as its polyline does, L2, and a loop that
+//! meets no other lies wholly on the side of it its point `A₀` is on). So
+//! the loops bound a region, and none of the faults the walk can claim on
+//! a plane holds (a sense, an outer loop smaller than a hole, a crossing,
+//! a point wound other than once): which is why such a fault is dropped.
+//!
+//! **Where nothing is dropped.** Every step above that cannot be taken
+//! leaves the walk's fault standing: a point not placed, a stretch not
+//! shown or with no aim once it cannot be halved further, a spline that
+//! jumps, a pair of segments within their margins and `R`
+//! whose margins are within `R` already, two lines whose cones do not
+//! fit, a gap of `R / 4` or more, an area not told, a frame that is not
+//! orthonormal, a tolerance that is no number, [`MOST_ROUNDS`] rounds,
+//! [`MOST_STRETCHES`] stretches of an edge, and the work of a face
+//! ([`super::MOST_PROOF_WORK`], every point placed, leg read, pair of
+//! segments and winding counted, [`super::spend`]: running out returns
+//! `None` all the way up, which [`Verifier::region_shown`] and
+//! [`Verifier::winding_shown`] read as "the fault stands"). Where the
+//! bounds show a fault instead (a sense, a hole outside, a crossing by the
+//! band lemma of [`crossing`]) the face is refused with the walk's message
+//! where it is of the same kind, else with the fault shown.
+//!
+//! **The two faults found in this family, and why a plane has neither.**
+//! (1) Two stretches that meet at a point were never held to each other:
+//! here every pair of two different stretches is of exactly one of two
+//! kinds, following each other in one loop (C3) or not (C2), and both are
+//! asked of every pair (C1 makes the kinds exclusive). (2) Pieces a period
+//! apart in the chart lie on one place of a closed surface: a plane's
+//! chart has no period and is one to one, so two points of the plane are
+//! one where, and only where, their chart points are.
 
 use super::{
-    AboutMap, Fan, Held, Lay, ONE_WAY, Pieces, QUARTER_TURN, Ring, Rise, Sweep, Wedge,
-    hull_rounding, one_way, pairs_of_steps, shift_holes, signed_area, spend, to_segment, winding,
+    Fan, Held, Lay, ONE_WAY, Pieces, QUARTER_TURN, Ring, Sweep, hull_rounding, one_way,
+    pairs_of_steps, signed_area, spend, to_segment, winding,
 };
 use crate::{Body, Coedge, EdgeId, Face};
-use craft3d_geom::{Curve3, Surface};
+use craft3d_geom::{Curve3, NurbsCurve, Surface};
 use craft3d_math::{Portable, Tolerance, Vec3};
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
@@ -105,9 +174,9 @@ const MOST_STRETCHES: usize = 1 << 13;
 /// evaluation of the curve and its place on the surface, half a step of
 /// the walk.
 const POINT_UNITS: usize = 16;
-/// How far a fan's two ends are turned outward (radians) before the
-/// parallelogram is made, so that a cross product rounded on a direction
-/// of the fan cannot leave it outside.
+/// How far a cone's two ends are turned outward (radians) past what
+/// rounding can have turned its legs, so that a cross product rounded on a
+/// direction of the cone cannot leave it outside.
 const WIDEN: f64 = 1e-9;
 /// Pairs looked at between two charges of their work, so that the work of
 /// a face is passed by no more than a charge.
@@ -115,6 +184,9 @@ const CHARGE: usize = 64;
 /// Units in the last place of a chart point's largest coordinate by which
 /// it may be off: the curve's point and its place on the surface.
 const PLACE_ROUNDING: f64 = 64.0 * f64::EPSILON;
+/// How far a plane's frame may be from unit axes square to each other for
+/// its chart to be taken for an isometry ([`flat`]).
+const FRAME_ROUNDING: f64 = 1e-9;
 
 /// While it lives, this thread's work of showing goes to
 /// [`super::chord_proofs`], not to [`super::step_proofs`]: the walk again
@@ -134,13 +206,50 @@ impl Drop for Verifying {
     }
 }
 
-/// The surfaces whose chart takes a direction by a map that is known
-/// ([`Lay`]): a plane, a cylinder, a cone, a sphere.
+/// The surfaces a face is walked again on: a plane, whose chart is affine,
+/// one to one, and has no period and no pole. On every other surface the
+/// walk's fault stands as it is.
 fn asked(surface: &Surface) -> bool {
-    matches!(
-        surface,
-        Surface::Plane(_) | Surface::Cylinder(_) | Surface::Cone(_) | Surface::Sphere(_)
-    )
+    matches!(surface, Surface::Plane(_))
+}
+
+/// The axes of a plane's chart, where they are unit vectors square to each
+/// other to [`FRAME_ROUNDING`]: the chart is then an isometry of the plane
+/// to that, and a length in it is the model's. `None` for any other
+/// surface or frame.
+fn flat(surface: &Surface) -> Option<(Vec3, Vec3)> {
+    let Surface::Plane(plane) = surface else {
+        return None;
+    };
+    let (x, y) = (plane.frame().x(), plane.frame().y());
+    let unit = |v: Vec3| (v.length_squared() - 1.0).abs() <= FRAME_ROUNDING;
+    (unit(x) && unit(y) && x.dot(y).abs() <= FRAME_ROUNDING).then_some((x, y))
+}
+
+/// Whether a spline jumps over the knots `from..=to` (indices, cut to the
+/// knots there are): some knot value inside its domain stands there more
+/// often than its degree. At such a knot the curve jumps from one control
+/// point to the next, and it is not one curve: no hull holds what lies
+/// between, since nothing does.
+fn jumps(curve: &NurbsCurve, from: usize, to: usize) -> bool {
+    let (d0, d1) = curve.domain();
+    let degree = curve.degree();
+    let knots = curve.knots();
+    let to = to.min(knots.len().saturating_sub(1));
+    let mut run = 0_usize;
+    let mut before = f64::NAN;
+    for k in knots.get(from..=to).unwrap_or(&[]) {
+        if *k == before {
+            run += 1;
+        } else {
+            run = 1;
+            before = *k;
+        }
+        if run > degree && *k > d0 && *k < d1 {
+            return true;
+        }
+    }
+    false
 }
 
 /// A cone of directions in the chart: its two ends, the second
@@ -162,12 +271,12 @@ struct Aim {
 enum Bound {
     /// Not looked at yet.
     Unknown,
-    /// Shown: the image lies within this of its chord, and where it heads,
-    /// in the order of the edge's parameter ([`Aim`]). No aim: the stretch
-    /// is a point, its legs do not keep within [`ONE_WAY`] on a plane, or a
-    /// leg is too short against what rounding can have moved its ends to
-    /// give its direction within a fifth of a radian (a leg of no length
-    /// among other points not all one among them).
+    /// Shown: the image lies within this of its chord (S1 of the module),
+    /// and where it heads, in the order of the edge's parameter ([`Aim`],
+    /// S2). No aim: the stretch is a point, or a leg is too short against
+    /// what rounding can have moved its ends to give its direction within
+    /// a fifth of a radian (a leg of no length among other points not all
+    /// one among them); a face with such a stretch is not cleared.
     Shown(f64, Option<Aim>),
     /// Not shown at this length: to be halved.
     Not,
@@ -182,8 +291,7 @@ struct Stretch {
     /// where the coedge runs against its edge).
     s: f64,
     e: f64,
-    /// Their places in the chart, as the surface's projection gives them
-    /// (not moved by periods).
+    /// Their places in the chart.
     start: [f64; 2],
     end: [f64; 2],
     bound: Bound,
@@ -206,11 +314,12 @@ struct Margined {
 struct Walked<'a> {
     body: &'a Body,
     surface: &'a Surface,
+    /// The plane's chart ([`Lay::Flat`], its axes checked by [`flat`]).
     lay: Lay,
-    periods: [Option<f64>; 2],
     near: f64,
-    /// The shortest of `∂u`, `∂v` at the points placed.
-    scale: f64,
+    /// Ten working tolerances in the chart, which are ten in the model
+    /// ([`flat`]).
+    reach: f64,
     loops: Vec<(Vec<Coedge>, Vec<Stretch>)>,
     pieces: BTreeMap<EdgeId, Pieces<'a>>,
     /// What rounding can have moved a spline edge's hull points
@@ -219,46 +328,42 @@ struct Walked<'a> {
     work: usize,
 }
 
-/// The place of `p` on `surface`, as the walk's chart takes it
-/// ([`super::Chart::at`], an analytic surface): `None` off the surface by
-/// more than `near`, at a sphere's pole or a cone's apex, or for numbers
-/// that are none; and the shortest of `∂u`, `∂v` there.
-fn place(surface: &Surface, near: f64, p: Vec3) -> Option<([f64; 2], f64)> {
+/// The place of `p` in the chart of the plane `surface`: `None` off the
+/// plane by more than `near`, or for numbers that are none.
+fn place(surface: &Surface, near: f64, p: Vec3) -> Option<[f64; 2]> {
     let (u, v) = surface.project(p).ok()?;
-    let (at, du, dv) = surface.derivatives(u, v);
-    let off = at.distance(p);
+    let off = surface.eval(u, v).distance(p);
     if off.is_nan() || off > near {
         return None;
     }
-    match surface {
-        Surface::Sphere(s) if s.radius() * v.pcos() <= near => return None,
-        Surface::Cone(c) if surface.eval(0.0, c.apex_v()).distance(p) <= near => return None,
-        _ => {}
-    }
-    (u.is_finite() && v.is_finite()).then(|| ([u, v], du.length().min(dv.length())))
+    (u.is_finite() && v.is_finite()).then_some([u, v])
 }
 
 impl<'a> Walked<'a> {
-    /// The loops of `face` in stretches: the halves of the walk's steps
-    /// (a line in one on a plane, a conic's steps of at most π/8, a
-    /// spline's shown steps), each end placed. `None` where a loop cannot
-    /// be walked so (a point off the surface or at a pole, the work spent).
+    /// The loops of `face`, on a plane, in stretches: a line in one, an
+    /// arc of a circle or an ellipse in quarter turns at the most, a
+    /// spline in two, each end placed. `None` where the face cannot be
+    /// walked so: not on a plane whose frame is orthonormal ([`flat`]), a
+    /// tolerance that is no positive number, a range that is none, a point
+    /// off the plane, the work spent.
     fn new(body: &'a Body, face: &'a Face, tol: &Tolerance) -> Option<Walked<'a>> {
         let surface = &face.surface;
+        let (x, y) = flat(surface)?;
         let near = 10.0 * body.working_tolerance(tol.linear);
+        if !(near.is_finite() && near > 0.0) {
+            return None;
+        }
         let mut walked = Walked {
             body,
             surface,
-            lay: Lay::of(surface),
-            periods: [surface.period_u(), surface.period_v()],
+            lay: Lay::Flat { x, y },
             near,
-            scale: f64::INFINITY,
+            reach: near,
             loops: Vec::with_capacity(face.loops.len()),
             pieces: BTreeMap::new(),
             roundings: BTreeMap::new(),
             work: 0,
         };
-        let planar = matches!(surface, Surface::Plane(_));
         for id in &face.loops {
             let lp = body.loop_(*id)?;
             let mut stretches = Vec::new();
@@ -269,12 +374,12 @@ impl<'a> Walked<'a> {
                     return None;
                 }
                 // Few stretches to begin with, halved where a stretch is
-                // not shown or its bound is too wide: a line in one on a
-                // plane, else in two; an arc in quarter turns at the most
-                // (a rational quadratic holds it); a spline in two.
+                // not shown or its bound is too wide: a line in one; an arc
+                // in quarter turns at the most (a rational quadratic holds
+                // it); a spline in two.
                 let count = match &edge.curve {
-                    Curve3::Line(_) if planar => 1,
-                    Curve3::Line(_) | Curve3::Nurbs(_) => 2,
+                    Curve3::Line(_) => 1,
+                    Curve3::Nurbs(_) => 2,
                     Curve3::Circle(_) | Curve3::Ellipse(_) => {
                         let n = ((t1 - t0) / QUARTER_TURN).ceil();
                         if !n.is_finite() {
@@ -316,17 +421,7 @@ impl<'a> Walked<'a> {
     /// The edge's point at `t` placed (and counted).
     fn place_at(&mut self, curve: &Curve3, t: f64) -> Option<[f64; 2]> {
         spend(&mut self.work, POINT_UNITS)?;
-        let (uv, scale) = place(self.surface, self.near, curve.eval(t))?;
-        if scale.is_finite() {
-            self.scale = self.scale.min(scale);
-        }
-        Some(uv)
-    }
-
-    /// Ten tolerances in parameters at the surface's smallest scale over
-    /// the points placed.
-    fn reach(&self) -> f64 {
-        self.near / self.scale.max(f64::MIN_POSITIVE)
+        place(self.surface, self.near, curve.eval(t))
     }
 
     /// Shows the bound of every stretch not looked at, and halves every
@@ -416,7 +511,8 @@ impl<'a> Walked<'a> {
     }
 
     /// The bound of a stretch ([`Bound::Shown`]) or that it is not shown
-    /// ([`Bound::Not`]); `None` where the work is spent.
+    /// ([`Bound::Not`]); `None` where the work is spent. The points made
+    /// for it are those of the module's (H) and (D).
     fn bound_of(&mut self, l: usize, k: usize) -> Option<Bound> {
         let body = self.body;
         let (coedges, stretches) = self.loops.get(l)?;
@@ -430,18 +526,12 @@ impl<'a> Walked<'a> {
         } else {
             (stretch.end, stretch.start)
         };
-        let mut chord = [b[0] - a[0], b[1] - a[1]];
-        for (d, period) in self.periods.iter().enumerate() {
-            if let (Some(p), Some(x)) = (period, chord.get_mut(d)) {
-                *x -= (*x / p).round() * p;
-            }
-        }
         let mut held = Held::default();
         match &edge.curve {
             Curve3::Line(_) => {
                 let ends = [edge.curve.eval(lo), edge.curve.eval(hi)];
                 held.take(&ends, rounding_of(&ends));
-                self.hull_bound(&held, a, b, chord)
+                self.hull_bound(&held, a, b)
             }
             Curve3::Circle(_) | Curve3::Ellipse(_) => {
                 let (frame, ra, rb) = match &edge.curve {
@@ -453,8 +543,8 @@ impl<'a> Walked<'a> {
                     Curve3::Line(_) | Curve3::Nurbs(_) => return Some(Bound::Not),
                 };
                 let half = 0.5 * (hi - lo);
-                // A rational quadratic holds an arc of up to a half turn;
-                // the walk's arcs are a sixteenth of one.
+                // A rational quadratic with positive weights holds an arc
+                // of less than a half turn; taken up to a quarter.
                 if !(half > 0.0 && half <= 0.25 * PI) {
                     return Some(Bound::Not);
                 }
@@ -466,7 +556,7 @@ impl<'a> Walked<'a> {
                     edge.curve.eval(hi),
                 ];
                 held.take(&points, rounding_of(&points));
-                self.hull_bound(&held, a, b, chord)
+                self.hull_bound(&held, a, b)
             }
             Curve3::Nurbs(n) => {
                 let rounding = match self.roundings.get(&edge_id) {
@@ -474,8 +564,7 @@ impl<'a> Walked<'a> {
                     None => {
                         // A look at each control point and weight, once an
                         // edge, not counted (as in the walk, which looks
-                        // once a step): the work counted is what it was
-                        // when it was looked at each stretch.
+                        // once a step).
                         let r = hull_rounding(n);
                         self.roundings.insert(edge_id, r);
                         r
@@ -504,8 +593,15 @@ impl<'a> Walked<'a> {
                     let Some(points) = ctrl.get(first..=span(hi)) else {
                         return Some(Bound::Not);
                     };
+                    // One curve over those spans: no knot of theirs, the
+                    // stretch's two ends included, at which it jumps (the
+                    // knots are as many as the points looked at, and are
+                    // counted with them).
+                    if jumps(n, first, span(hi).saturating_add(degree + 1)) {
+                        return Some(Bound::Not);
+                    }
                     held.take(points, clear);
-                    return self.hull_bound(&held, a, b, chord);
+                    return self.hull_bound(&held, a, b);
                 }
                 // Then the Bézier pieces cut to the stretch.
                 let pieces = self.pieces.entry(edge_id).or_insert_with(|| Pieces::of(n));
@@ -516,224 +612,126 @@ impl<'a> Walked<'a> {
                 if !taken {
                     return Some(Bound::Not);
                 }
-                self.hull_bound(&held, a, b, chord)
+                self.hull_bound(&held, a, b)
             }
         }
     }
 
-    /// The bound shown by points `held` whose hull holds the stretch and
-    /// whose legs hold its direction, the stretch's chart points at its
-    /// lower and higher parameter `a`, `b` and the chord between them (`u`
-    /// moved by whole periods to the nearest).
-    fn hull_bound(
-        &mut self,
-        held: &Held,
-        a: [f64; 2],
-        b: [f64; 2],
-        chord: [f64; 2],
-    ) -> Option<Bound> {
+    /// The bound and the aim shown by points `held` whose hulls hold the
+    /// stretch run by run and whose legs hold its direction ((H) and (D) of
+    /// the module), `a` and `b` the stretch's chart points at its lower and
+    /// its higher parameter.
+    fn hull_bound(&mut self, held: &Held, a: [f64; 2], b: [f64; 2]) -> Option<Bound> {
+        let Lay::Flat { x, y } = self.lay else {
+            return Some(Bound::Not);
+        };
+        // One curve: each run starts where the one before ends, to their
+        // clears (the Bézier pieces of a spline at a knot; a spline that
+        // jumps there is not shown).
+        let mut starts = 0_usize;
+        let mut before: Option<(Vec3, f64)> = None;
+        for &(end, clear) in &held.runs {
+            let run = held.points.get(starts..end).unwrap_or(&[]);
+            starts = end;
+            let (Some(first), Some(last)) = (run.first(), run.last()) else {
+                continue;
+            };
+            if let Some((point, cleared)) = before
+                && point.distance(*first).partial_cmp(&(clear + cleared))
+                    != Some(std::cmp::Ordering::Less)
+                && point != *first
+            {
+                return Some(Bound::Not);
+            }
+            before = Some((*last, clear));
+        }
+        let (one, legs) = one_way(&self.lay, &held.points, &held.runs, None);
+        spend(&mut self.work, legs)?;
+        if !one {
+            return Some(Bound::Not);
+        }
         let widest_clear = held.runs.iter().map(|r| r.1).fold(0.0_f64, f64::max);
         let size = a
             .iter()
             .chain(b.iter())
             .fold(0.0_f64, |m, x| m.max(x.abs()));
         let rounded = PLACE_ROUNDING * size;
-        match self.lay {
-            Lay::Flat { .. } => {
-                let (one, legs) = one_way(&self.lay, &held.points, &held.runs, None);
-                spend(&mut self.work, legs)?;
-                if !one {
-                    return Some(Bound::Not);
-                }
-                // The plane's chart is the plane's frame: the image of the
-                // hull is the hull of the points' images.
-                let mut far = 0.0_f64;
-                let mut starts = 0_usize;
-                for &(end, clear) in &held.runs {
-                    for p in held.points.get(starts..end).unwrap_or(&[]) {
-                        let Some((q, _)) = place(self.surface, f64::INFINITY, *p) else {
-                            return Some(Bound::Not);
-                        };
-                        far = far.max(to_segment(q, a, b) + clear);
-                    }
-                    starts = end;
-                }
-                spend(&mut self.work, held.points.len())?;
-                let bound = far + 2.0 * widest_clear + rounded;
-                // The cone of the legs' directions along the plane (the
-                // chart's), each widened by the angle by which rounding can
-                // have turned it: its ends may each be `clear` off, the leg
-                // twice that, a turn of at most `asin(2 clear / |leg|)`.
-                let Lay::Flat { x, y } = self.lay else {
+        // (S1). The plane's chart is affine: the image of a hull is the
+        // hull of the points' images, and a hull lies no farther from the
+        // chord than its farthest corner.
+        let mut far = 0.0_f64;
+        let mut starts = 0_usize;
+        for &(end, clear) in &held.runs {
+            for p in held.points.get(starts..end).unwrap_or(&[]) {
+                let Some(q) = place(self.surface, f64::INFINITY, *p) else {
                     return Some(Bound::Not);
                 };
-                let mut fan = Fan::within(ONE_WAY);
-                let mut widest = 0.0_f64;
-                let mut slack = 0.0_f64;
-                let mut starts = 0_usize;
-                let mut fits = true;
-                for &(end, clear) in &held.runs {
-                    let run = held.points.get(starts..end).unwrap_or(&[]);
-                    starts = end;
-                    // Points all one (a piece of no width, where a stretch
-                    // ends on a knot): the curve there lies within `clear`
-                    // of that point, and moves by twice it at the most.
-                    if run.windows(2).all(|w| matches!(w, [p, q] if p == q)) {
-                        slack += 2.0 * clear;
-                        continue;
-                    }
-                    for pair in run.windows(2) {
-                        let [p, q] = pair else { continue };
-                        let w = *q - *p;
-                        let t = (w.dot(x), w.dot(y));
-                        let size = t.0 * t.0 + t.1 * t.1;
-                        if size == 0.0 {
-                            // A leg of no length among others is none where
-                            // the points are exact; else it may point
-                            // anywhere.
-                            if clear > 0.0 {
-                                fits = false;
-                            }
-                            continue;
-                        }
-                        // The square of twice `clear` over the leg's
-                        // length: under a twenty-fifth, a fifth of a radian.
-                        let share = 4.0 * clear * clear / size;
-                        if share.partial_cmp(&0.04) != Some(std::cmp::Ordering::Less) || !fan.add(t)
-                        {
-                            fits = false;
-                        }
-                        widest = widest.max(share);
-                    }
-                }
-                let turned = widest.sqrt().min(1.0).pasin();
-                let cone = match (fits, fan.ends) {
-                    (true, Some((low, high))) => Some(Aim {
-                        cone: widened((low, high), turned + WIDEN),
-                        slack,
-                    }),
-                    _ => None,
-                };
-                Some(if bound.is_finite() {
-                    Bound::Shown(bound, cone)
-                } else {
-                    Bound::Not
-                })
+                far = far.max(to_segment(q, a, b) + clear);
             }
-            Lay::About {
-                rise: Rise::Unshown,
-                ..
+            starts = end;
+        }
+        spend(&mut self.work, held.points.len())?;
+        let bound = far + 2.0 * widest_clear + rounded;
+        // (S2). The cone of the legs' directions along the plane (the
+        // chart's), each widened by the angle by which rounding can have
+        // turned it: its ends may each be `clear` off, the leg twice that,
+        // a turn of at most `asin(2 clear / |leg|)`.
+        let mut fan = Fan::within(ONE_WAY);
+        let mut widest = 0.0_f64;
+        let mut slack = 0.0_f64;
+        let mut starts = 0_usize;
+        let mut fits = true;
+        for &(end, clear) in &held.runs {
+            let run = held.points.get(starts..end).unwrap_or(&[]);
+            starts = end;
+            // Points all one (a piece of no width, where a stretch ends on
+            // a knot): the curve there lies within `clear` of that point,
+            // and moves by twice it at the most.
+            if run.windows(2).all(|w| matches!(w, [p, q] if p == q)) {
+                slack += 2.0 * clear;
+                continue;
             }
-            | Lay::Space => Some(Bound::Not),
-            Lay::About { origin, z, rise } => {
-                let mut wedge = Wedge::about((origin, z), QUARTER_TURN);
-                let mut starts = 0_usize;
-                for &(end, clear) in &held.runs {
-                    for p in held.points.get(starts..end).unwrap_or(&[]) {
-                        if !wedge.add(*p, clear) {
-                            return Some(Bound::Not);
-                        }
+            for pair in run.windows(2) {
+                let [p, q] = pair else { continue };
+                let w = *q - *p;
+                let t = (w.dot(x), w.dot(y));
+                let size = t.0 * t.0 + t.1 * t.1;
+                if size == 0.0 {
+                    // A leg of no length among others is none where the
+                    // points are exact; else it may point anywhere.
+                    if clear > 0.0 {
+                        fits = false;
                     }
-                    starts = end;
+                    continue;
                 }
-                spend(&mut self.work, held.points.len())?;
-                let Some(reach) = wedge.reach() else {
-                    return Some(Bound::Not);
-                };
-                let Some(map) = AboutMap::new(z, rise, &reach) else {
-                    return Some(Bound::Not);
-                };
-                let (rate_u, rate_v) = map.rate();
-                let mut fan = Fan::within(ONE_WAY);
-                let mut legs = 0_usize;
-                let mut starts = 0_usize;
-                let mut fits = true;
-                let mut aimless = false;
-                let mut slack = 0.0_f64;
-                'runs: for &(end, clear) in &held.runs {
-                    let run = held.points.get(starts..end).unwrap_or(&[]);
-                    starts = end;
-                    // As on a plane: points all one move by twice their
-                    // clear in space at the most (taken to the chart
-                    // below).
-                    if run.windows(2).all(|w| matches!(w, [p, q] if p == q)) {
-                        slack += 2.0 * clear;
-                        continue;
-                    }
-                    for pair in run.windows(2) {
-                        let [p, q] = pair else { continue };
-                        legs += 1;
-                        let w = *q - *p;
-                        if w.x == 0.0 && w.y == 0.0 && w.z == 0.0 {
-                            // As on a plane: a leg of no length among
-                            // others rounded may point anywhere, which the
-                            // bound does not ask but the cone does.
-                            aimless |= clear > 0.0;
-                            continue;
-                        }
-                        // Each end may be `clear` off: the leg twice that.
-                        let moved = 2.0 * clear;
-                        if w.length().partial_cmp(&moved) != Some(std::cmp::Ordering::Greater) {
-                            fits = false;
-                            break 'runs;
-                        }
-                        let (u, v) = map.ranges(w);
-                        let (du, dv) = (moved * rate_u, moved * rate_v);
-                        let (u, v) = ((u.0 - du, u.1 + du), (v.0 - dv, v.1 + dv));
-                        for t in [(u.0, v.0), (u.0, v.1), (u.1, v.0), (u.1, v.1)] {
-                            if !fan.add(t) {
-                                fits = false;
-                                break 'runs;
-                            }
-                        }
-                    }
+                // The square of twice `clear` over the leg's length:
+                // under a twenty-fifth, a fifth of a radian.
+                let share = 4.0 * clear * clear / size;
+                if share.partial_cmp(&0.04) != Some(std::cmp::Ordering::Less) || !fan.add(t) {
+                    fits = false;
                 }
-                spend(&mut self.work, legs * super::ABOUT_UNITS)?;
-                if !fits {
-                    return Some(Bound::Not);
-                }
-                let Some((low, high)) = fan.ends else {
-                    // Every leg of no length: the stretch is a point.
-                    return Some(if chord == [0.0, 0.0] {
-                        Bound::Shown(rounded, None)
-                    } else {
-                        Bound::Not
-                    });
-                };
-                let (su, sv) = map.scale();
-                let (l, h) = widened((low, high), WIDEN);
-                let d1 = (l.0 / su, l.1 / sv);
-                let d2 = (h.0 / su, h.1 / sv);
-                let Some(off) = parallelogram(d1, d2, (chord[0], chord[1])) else {
-                    return Some(Bound::Not);
-                };
-                // A point of the curve may be `widest_clear` off in space:
-                // in the chart that over the least distance from the axis
-                // (`u`), and as much again or over it (`v`).
-                let near = reach.off.0;
-                let moved = widest_clear * (2.0 / near + 1.0);
-                let bound = off + 2.0 * moved + rounded;
-                // The cone of the chart's directions: the fan's, its
-                // corners widened by what rounding can have moved a leg
-                // (above), taken to the chart by the reach's scales.
-                let aim = Aim {
-                    cone: (d1, d2),
-                    slack: slack * (2.0 / near + 1.0),
-                };
-                Some(if bound.is_finite() {
-                    Bound::Shown(bound, (!aimless && aim.slack.is_finite()).then_some(aim))
-                } else {
-                    Bound::Not
-                })
+                widest = widest.max(share);
             }
         }
+        let turned = widest.sqrt().min(1.0).pasin();
+        let aim = match (fits, fan.ends) {
+            (true, Some((low, high))) if slack.is_finite() => Some(Aim {
+                cone: widened((low, high), turned + WIDEN),
+                slack,
+            }),
+            _ => None,
+        };
+        Some(if bound.is_finite() {
+            Bound::Shown(bound, aim)
+        } else {
+            Bound::Not
+        })
     }
 
-    /// The loops as polylines of their stretches' starts, each point moved
-    /// by whole periods to the one before (as the walk does), with each
+    /// The loops as polylines of their stretches' starts, with each
     /// segment's margin, cone, gap and kind ([`Margined`]). `None` where a
-    /// stretch is not shown; `Some(None)` where a loop goes round a period.
-    fn rings(&self) -> Option<Option<Vec<Margined>>> {
+    /// stretch is not shown.
+    fn rings(&self) -> Option<Vec<Margined>> {
         let mut out = Vec::with_capacity(self.loops.len());
         for (coedges, stretches) in &self.loops {
             let n = stretches.len();
@@ -743,20 +741,17 @@ impl<'a> Walked<'a> {
             let mut cones = Vec::with_capacity(n);
             let mut straight = Vec::with_capacity(n);
             let mut starts = Vec::new();
-            let mut before: Option<[f64; 2]> = None;
             let mut coedge = usize::MAX;
             for st in stretches {
                 let Bound::Shown(bound, cone) = st.bound else {
                     return None;
                 };
-                let a = self.unwrapped(st.start, before);
-                let b = self.unwrapped(st.end, Some(a));
                 if st.coedge != coedge {
                     starts.push(points.len());
                     coedge = st.coedge;
                 }
-                points.push(a);
-                ends.push(b);
+                points.push(st.start);
+                ends.push(st.end);
                 bounds.push(bound);
                 // In the order the loop runs: against the edge's parameter
                 // the directions are the cone's turned a half turn.
@@ -773,18 +768,12 @@ impl<'a> Walked<'a> {
                 }));
                 let edge = coedges.get(st.coedge).and_then(|c| self.body.edge(c.edge));
                 straight.push(edge.is_some_and(|e| matches!(e.curve, Curve3::Line(_))));
-                before = Some(b);
             }
-            let (Some(first), Some(last)) = (points.first(), ends.last()) else {
+            if points.is_empty() {
                 return None;
-            };
-            for (d, period) in self.periods.iter().enumerate() {
-                if let (Some(p), Some(x), Some(y)) = (period, first.get(d), last.get(d))
-                    && (x - y).abs() > 0.5 * p
-                {
-                    return Some(None);
-                }
             }
+            // The gap from each stretch's end to the next one's start, the
+            // last one's to the first's.
             let gaps: Vec<f64> = (0..n)
                 .map(|i| {
                     let (Some(b), Some(next)) = (ends.get(i), points.get((i + 1) % n)) else {
@@ -822,20 +811,7 @@ impl<'a> Walked<'a> {
                 straight,
             });
         }
-        Some(Some(out))
-    }
-
-    /// `p` moved by whole periods to lie nearest `before`.
-    fn unwrapped(&self, p: [f64; 2], before: Option<[f64; 2]>) -> [f64; 2] {
-        let mut p = p;
-        if let Some(b) = before {
-            for (d, period) in self.periods.iter().enumerate() {
-                if let (Some(per), Some(x), Some(y)) = (period, p.get_mut(d), b.get(d)) {
-                    *x += ((y - *x) / per).round() * per;
-                }
-            }
-        }
-        p
+        Some(out)
     }
 }
 
@@ -859,46 +835,14 @@ fn rounding_of(points: &[Vec3]) -> f64 {
     64.0 * f64::EPSILON * size
 }
 
-/// How far a curve from `(0, 0)` to `chord` whose direction keeps within
-/// the cone of `d1` and `d2` (`d2` anticlockwise of `d1`, less than a half
-/// turn) lies from the chord at most: the curve lies in the parallelogram
-/// `cone ∩ (chord − cone)`, the hull of its four corners `0`, `α d1`,
-/// `chord`, `β d2` (`chord = α d1 + β d2`), so no farther from the segment
-/// than the farther of `α d1` and `β d2` (a distance from a segment is
-/// largest over a hull at a corner). `None` where the chord is not in the
-/// cone (`α` or `β` negative: the curve does not keep within it), or a
-/// number is none. A chord of no length: the curve is a point, 0.
-fn parallelogram(d1: (f64, f64), d2: (f64, f64), chord: (f64, f64)) -> Option<f64> {
-    let cross = |p: (f64, f64), q: (f64, f64)| p.0 * q.1 - p.1 * q.0;
-    let det = cross(d1, d2);
-    if !(det > 0.0 && det.is_finite()) {
-        return None;
-    }
-    let alpha = cross(chord, d2) / det;
-    let beta = cross(d1, chord) / det;
-    if !(alpha >= 0.0 && beta >= 0.0) {
-        return None;
-    }
-    if chord == (0.0, 0.0) {
-        return Some(0.0);
-    }
-    let (o, c) = ([0.0, 0.0], [chord.0, chord.1]);
-    let off = to_segment([alpha * d1.0, alpha * d1.1], o, c).max(to_segment(
-        [beta * d2.0, beta * d2.1],
-        o,
-        c,
-    ));
-    off.is_finite().then_some(off)
-}
-
-/// What the bounds show of a fault.
+/// What the bounds show of a face.
 #[derive(Clone, Debug, PartialEq)]
 enum Judged {
-    /// Shown: of this kind, with this message.
+    /// A fault is shown: of this kind, with this message.
     Shown(Kind, String),
-    /// Nothing can be shown by halving further.
+    /// Cleared: C0 to C6 of the module hold.
     Clear,
-    /// Not shown at these lengths: the stretches to halve (loop, place);
+    /// Neither at these lengths: the stretches to halve (loop, place);
     /// none where halving cannot tell more.
     Unsure(Vec<(usize, usize)>),
 }
@@ -912,8 +856,6 @@ enum Kind {
     Hole,
     CrossesItself,
     Cross,
-    /// The rule of simple loops' third: a point wound wrongly.
-    Wound,
 }
 
 /// The kind of a message of the region rule ([`super::region_followed`]).
@@ -936,64 +878,68 @@ fn kind_of(message: &str) -> Option<Kind> {
 }
 
 /// Whether two segments come within `margin` of each other (meeting
-/// included).
+/// included). Two segments that do not cross properly, each one's ends
+/// strictly on either side of the other's line, are as far apart as the
+/// nearest of their four ends is from the other segment (nothing where they
+/// touch or lie over each other: then an end of one lies on the other). A
+/// number that is none counts as near.
 fn near(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2], margin: f64) -> bool {
     let orient = |p: [f64; 2], q: [f64; 2], r: [f64; 2]| {
         (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
     };
-    let meet = orient(a, b, c) * orient(a, b, d) <= 0.0 && orient(c, d, a) * orient(c, d, b) <= 0.0;
-    meet || to_segment(a, c, d) <= margin
-        || to_segment(b, c, d) <= margin
-        || to_segment(c, a, b) <= margin
-        || to_segment(d, a, b) <= margin
+    let cross = orient(a, b, c) * orient(a, b, d) < 0.0 && orient(c, d, a) * orient(c, d, b) < 0.0;
+    let within = |d: f64| d.partial_cmp(&margin) != Some(std::cmp::Ordering::Greater);
+    cross
+        || within(to_segment(a, c, d))
+        || within(to_segment(b, c, d))
+        || within(to_segment(c, a, b))
+        || within(to_segment(d, a, b))
 }
 
-/// What [`crossing`] found of the pairs of segments that do not meet at a
-/// point of their loop.
+/// What [`crossing`] found of the pairs of segments that do not follow each
+/// other in one loop.
 #[derive(Clone, Debug, PartialEq)]
 enum Crossing {
     /// Two loops (or one and itself) cross.
     Crossed(usize, usize),
-    /// Every such pair was looked at, and none comes within its margins.
+    /// Every such pair was looked at, and none comes within its margins
+    /// and the reach (C2 of the module).
     Apart,
     /// Some do: these stretches to halve (none: halving cannot tell, or not
     /// every pair was looked at).
     Near(Vec<(usize, usize)>),
 }
 
-/// The pairs of segments of `rings` (only of `only`, where given) that do
-/// not meet at a point of their loop: the first that cross by more than
-/// their margins and ten tolerances (`reach`), shown by the band lemma of
-/// the module; or else the stretches of the pairs that come within those
-/// (the wider of each, and the other where its margin is half as wide or
-/// more, each wider than `reach`), none where a pair that does has both
-/// margins within `reach` (halving cannot tell it from touching). Each pair
-/// looked at counts half a unit of `work`; `None` where the work is spent.
-fn crossing(
-    rings: &[Margined],
-    only: Option<usize>,
-    reach: f64,
-    work: &mut usize,
-) -> Option<Crossing> {
-    let picked: Vec<&Margined> = rings
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| only.is_none_or(|o| o == *i))
-        .map(|(_, m)| m)
-        .collect();
-    let plain: Vec<Ring> = picked.iter().map(|m| copy(&m.ring)).collect();
-    let widest = picked
+/// The pairs of segments of `rings` that do not follow each other in one
+/// loop: the first that cross by more than their margins and ten tolerances
+/// (`reach`): each one's ends lie on either side of the other's line by
+/// more than that, so each piece of the boundary, within its margin of its
+/// segment (L1), runs from one side of the other's band to its other side,
+/// and within the parallelogram where the two bands meet the two join
+/// opposite pairs of its sides, and meet; or else the stretches of the
+/// pairs that come within those (the wider of each, and the other where its
+/// margin is half as wide or more, each wider than `reach`), none where a
+/// pair that does has both margins within `reach` (halving cannot tell it
+/// from touching). Each pair looked at counts half a unit of `work`; `None`
+/// where the work is spent.
+fn crossing(rings: &[Margined], reach: f64, work: &mut usize) -> Option<Crossing> {
+    let plain: Vec<Ring> = rings.iter().map(|m| copy(&m.ring)).collect();
+    let widest = rings
         .iter()
         .flat_map(|m| m.margins.iter())
         .copied()
         .fold(0.0_f64, f64::max);
+    // Past twice the widest margin and the reach no pair is within its
+    // own margins and the reach; twice that, for the sweep's bands.
     let grow = 2.0 * (2.0 * widest + reach);
-    let index = |r: usize| only.unwrap_or(r);
+    if !grow.is_finite() {
+        return Some(Crossing::Near(Vec::new()));
+    }
     let mut near_ones: Vec<(usize, usize)> = Vec::new();
     let mut stuck = false;
     let mut visits = 0_usize;
     let margin = |r: usize, i: usize| {
-        picked
+        rings
             .get(r)
             .and_then(|m| m.margins.get(i))
             .copied()
@@ -1016,10 +962,10 @@ fn crossing(
         if near(a, b, c, d, m) {
             let before = near_ones.len();
             if mi > reach && 2.0 * mi >= mj {
-                near_ones.push((index(r), i));
+                near_ones.push((r, i));
             }
             if mj > reach && 2.0 * mj >= mi {
-                near_ones.push((index(s), j));
+                near_ones.push((s, j));
             }
             if near_ones.len() == before {
                 stuck = true;
@@ -1034,7 +980,7 @@ fn crossing(
     near_ones.sort_unstable();
     near_ones.dedup();
     Some(match swept {
-        Sweep::Found(r, _, s, _) => Crossing::Crossed(index(r.min(s)), index(r.max(s))),
+        Sweep::Found(r, _, s, _) => Crossing::Crossed(r.min(s), r.max(s)),
         // Not every pair looked at (past `MOST_PAIRS`): nothing told.
         Sweep::Cut => Crossing::Near(Vec::new()),
         Sweep::Done if stuck => Crossing::Near(Vec::new()),
@@ -1046,25 +992,26 @@ fn crossing(
 /// Whether two neighbouring stretches, the first `a` ending where the
 /// second `b` starts but for a gap `gap` (two edges meeting at a vertex
 /// within its tolerance; nothing inside an edge), are shown to meet only
-/// within ten tolerances (`reach`) of that point: where the cones of their
-/// aims ([`Aim`]), in the order the loop runs, both fit in a fan narrower
-/// than a half turn by `θ = 2 asin(2 g / reach)`, `g` the gap and both
-/// slacks. *Proof*: then the fan's middle `n` has `n·d ≥ sin(θ/2) |d|` for
-/// every direction `d` of either cone; a point `x` of the first stretch is
-/// `E − a − e`, `E` its end, `a` in its cone and `|e|` within its slack,
-/// and one of the second `P + b + f` alike, `P` its start; where they meet,
-/// `n·(E − P) − n·(e + f) = n·a + n·b ≥ sin(θ/2) (|a| + |b|)`, so `|a| + |b|
-/// ≤ g / sin(θ/2) = reach / 2`, and `x` lies within half the reach and the
-/// slack, `g` being under a quarter of the reach, so within the reach, of
-/// `E`. With no gap and no slack they meet only at the point they share.
-/// Not shown (false): a stretch with no aim, `g` of a quarter of the reach
-/// or more, cones that do not fit.
+/// within half of ten tolerances (`reach`) of the first's end ((L5) of the
+/// module): where the cones of their aims ([`Aim`]), in the order the loop
+/// runs, both fit in a fan narrower than a half turn by `θ = 2 asin(2 g /
+/// reach)`, `g` the gap and both slacks. *Proof*: then the fan's middle `n`
+/// has `n·d ≥ sin(θ/2) |d|` for every direction `d` of either cone; a point
+/// `x` of the first stretch is `E − a − e`, `E` its end, `a` in its cone
+/// and `|e|` within its slack, and one of the second `P + b + f` alike, `P`
+/// its start; where they meet, `n·(E − P) − n·(e + f) = n·a + n·b ≥
+/// sin(θ/2) (|a| + |b|)`, so `|a| + |b| ≤ g / sin(θ/2) = reach / 2`, and
+/// `x` lies within half the reach (and the slack) of `E`. With no gap and
+/// no slack the fan is still narrower than a half turn (by 1e-9), `|a| +
+/// |b| ≤ 0`, and they meet only at the point they share. Not shown
+/// (false): a stretch with no aim, `g` of a quarter of the reach or more,
+/// cones that do not fit, a number that is none.
 fn neighbours_apart(a: Option<Aim>, b: Option<Aim>, gap: f64, reach: f64) -> bool {
     let (Some(a), Some(b)) = (a, b) else {
         return false;
     };
     let g = gap + a.slack + b.slack;
-    if !(g >= 0.0 && reach > 0.0 && g < 0.25 * reach) {
+    if !(g >= 0.0 && reach > 0.0 && reach.is_finite() && g < 0.25 * reach) {
         return false;
     }
     let theta = 2.0 * (2.0 * g / reach).pasin();
@@ -1073,14 +1020,14 @@ fn neighbours_apart(a: Option<Aim>, b: Option<Aim>, gap: f64, reach: f64) -> boo
     [ca.0, ca.1, cb.0, cb.1].into_iter().all(|t| fan.add(t))
 }
 
-/// The neighbouring stretches of `rings` (of `only`, where given) not shown
-/// apart ([`neighbours_apart`]), the two of each pair that are not both
-/// lines (a line's cone does not narrow when it is halved); and whether
-/// some pair not shown apart is two lines (halving cannot part them). Each
-/// pair counts a quarter unit of `work`; `None` where the work is spent.
+/// The neighbouring stretches of `rings` not shown apart
+/// ([`neighbours_apart`]: C3 of the module), the two of each pair that are
+/// not both lines (a line's cone does not narrow when it is halved); and
+/// whether some pair not shown apart is two lines (halving cannot part
+/// them). Each pair counts a quarter unit of `work`; `None` where the work
+/// is spent.
 fn neighbours(
     rings: &[Margined],
-    only: Option<usize>,
     reach: f64,
     work: &mut usize,
 ) -> Option<(Vec<(usize, usize)>, bool)> {
@@ -1088,9 +1035,6 @@ fn neighbours(
     let mut stuck = false;
     let mut pairs = 0_usize;
     for (l, m) in rings.iter().enumerate() {
-        if only.is_some_and(|o| o != l) {
-            continue;
-        }
         let n = m.cones.len();
         for i in 0..n {
             pairs += 1;
@@ -1125,9 +1069,9 @@ fn neighbours(
     Some((halve, stuck))
 }
 
-/// The stretches of `rings` (of `only`, where given) whose margins are the
-/// widest: wider than ten tolerances (`reach`) and than a quarter of the
-/// widest.
+/// The stretches of `rings` (of the loop `only`, where given) whose
+/// margins are the widest: wider than ten tolerances (`reach`) and than a
+/// quarter of the widest.
 fn widest_of(rings: &[Margined], only: Option<usize>, reach: f64) -> Vec<(usize, usize)> {
     let picked = |l: usize| only.is_none_or(|o| o == l);
     let widest = rings
@@ -1152,33 +1096,19 @@ fn widest_of(rings: &[Margined], only: Option<usize>, reach: f64) -> Vec<(usize,
     out
 }
 
-/// What the bounds show of the loops of `walked` (of the loop `only`,
-/// where given) before their senses and holes are judged: every loop's
-/// polyline with its margins ([`Walked::rings`]), and its pairs of pieces
-/// ([`crossing`], [`neighbours`]). The rest is in [`judge_region`] and
-/// [`judge_simple`].
-enum Parts {
-    /// The loops; what is shown of their pairs that do not meet at a point
-    /// of their loop; the stretches to halve (none: halving cannot part
-    /// some pair, or there is none to halve); and whether every pair,
-    /// neighbouring or not, is shown apart.
-    Read(Vec<Margined>, Crossing, Vec<(usize, usize)>, bool),
-    /// A loop goes round a period in the chart: not judged here, and so
-    /// never clear (the walk's fault stands).
-    Band,
-}
-
-/// [`Parts`] of `walked`; `None` where a stretch is not shown or the work is
-/// spent.
-fn parts(walked: &mut Walked<'_>, only: Option<usize>) -> Option<Parts> {
-    let Some(rings) = walked.rings()? else {
-        return Some(Parts::Band);
-    };
+/// What the bounds show of the face walked ([`Judged`]): a fault, that it
+/// is cleared (C0 to C6 of the module, each at its place below), or
+/// neither, with the stretches to halve. `None` where a stretch is not
+/// shown or the work is spent.
+fn judge(walked: &mut Walked<'_>, reversed: bool) -> Option<Judged> {
+    // C0: every stretch shown (and, with C3 below, with an aim).
+    let rings = walked.rings()?;
     let segments: usize = rings.iter().map(|m| m.margins.len()).sum();
     spend(&mut walked.work, segments.div_ceil(4))?;
-    let reach = walked.reach();
-    let crossed = crossing(&rings, only, reach, &mut walked.work)?;
-    let (mut halve, stuck) = neighbours(&rings, only, reach, &mut walked.work)?;
+    let reach = walked.reach;
+    let crossed = crossing(&rings, reach, &mut walked.work)?;
+    let (mut halve, stuck) = neighbours(&rings, reach, &mut walked.work)?;
+    // C2 and C3: every pair of pieces apart.
     let apart = matches!(crossed, Crossing::Apart) && halve.is_empty() && !stuck;
     if let Crossing::Near(more) = &crossed {
         halve.extend(more.iter().copied());
@@ -1190,20 +1120,11 @@ fn parts(walked: &mut Walked<'_>, only: Option<usize>) -> Option<Parts> {
     }
     halve.sort_unstable();
     halve.dedup();
-    Some(Parts::Read(rings, crossed, halve, apart))
-}
-
-/// The region rule's faults again, with the bounds ([`super::region_followed`]).
-fn judge_region(walked: &mut Walked<'_>, reversed: bool) -> Option<Judged> {
-    let Parts::Read(mut rings, crossed, halve_pairs, apart) = parts(walked, None)? else {
-        return Some(Judged::Unsure(Vec::new()));
-    };
-    let reach = walked.reach();
+    // C4: every loop's area told ((L3) of the module).
     let sense = if reversed { -1.0 } else { 1.0 };
     let mut areas = Vec::with_capacity(rings.len());
     let mut errors = Vec::with_capacity(rings.len());
     for (l, m) in rings.iter().enumerate() {
-        // (a) of the module: the loop's area is its polyline's within this.
         let area = signed_area(&m.ring.points) * sense;
         let error = area_error(&m.ring.points, &m.margins);
         if !(area.is_finite() && error.is_finite() && area.abs() > error) {
@@ -1212,6 +1133,7 @@ fn judge_region(walked: &mut Walked<'_>, reversed: bool) -> Option<Judged> {
         areas.push(area);
         errors.push(error);
     }
+    // C5: one loop counter-clockwise, bounding more than any other.
     let list = |areas: &[f64]| super::list(areas);
     let outer: Vec<usize> = (0..areas.len())
         .filter(|i| areas.get(*i).is_some_and(|a| *a > 0.0))
@@ -1225,10 +1147,7 @@ fn judge_region(walked: &mut Walked<'_>, reversed: bool) -> Option<Judged> {
             })
             .fold(f64::NEG_INFINITY, f64::max)
     };
-    match outer.as_slice() {
-        // Shown: every sense is told, and a sphere less some caps is a
-        // region.
-        [] if matches!(walked.surface, Surface::Sphere(_)) => {}
+    let o = match outer.as_slice() {
         // Shown: every sense is told (above), and none runs
         // counter-clockwise.
         [] => {
@@ -1244,8 +1163,9 @@ fn judge_region(walked: &mut Walked<'_>, reversed: bool) -> Option<Judged> {
             let o = *o;
             let (a, e) = (areas.get(o)?.abs(), *errors.get(o)?);
             if a - e > others(o, true) {
-                // Shown: the outer loop encloses more than any hole, for
-                // every area within the errors.
+                // The outer loop bounds more than any hole, for every area
+                // within the errors.
+                o
             } else if a + e < others(o, false) {
                 let largest = (0..areas.len()).filter(|k| *k != o).max_by(|x, y| {
                     let (Some(x), Some(y)) = (areas.get(*x), areas.get(*y)) else {
@@ -1253,7 +1173,7 @@ fn judge_region(walked: &mut Walked<'_>, reversed: bool) -> Option<Judged> {
                     };
                     x.abs().total_cmp(&y.abs())
                 })?;
-                // Shown: some hole encloses more than the outer loop, for
+                // Shown: some hole bounds more than the outer loop, for
                 // every area within the errors.
                 return Some(Judged::Shown(
                     Kind::LessThanHole,
@@ -1277,82 +1197,9 @@ fn judge_region(walked: &mut Walked<'_>, reversed: bool) -> Option<Judged> {
                 ),
             ));
         }
-    }
-    let mut every_point_told = true;
-    if let ([o], false) = (
-        outer.as_slice(),
-        matches!(walked.surface, Surface::Plane(_)),
-    ) {
-        let o = *o;
-        let mut plain: Vec<Ring> = rings.iter().map(|m| copy(&m.ring)).collect();
-        shift_holes(&mut plain, o, walked.periods)?;
-        for (k, ring) in plain.into_iter().enumerate() {
-            if let Some(slot) = rings.get_mut(k) {
-                slot.ring = ring;
-            }
-        }
-        let widest: Vec<f64> = rings.iter().map(|m| m.ring.error).collect();
-        for (k, m) in rings.iter().enumerate() {
-            if k == o {
-                continue;
-            }
-            for point in &m.ring.points {
-                // (b) of the module: a point of the hole's own curve, clear
-                // of every other loop by its widest margin and ten
-                // tolerances, is wound by each as by its polyline.
-                let mut clear = true;
-                for (j, other) in rings.iter().enumerate() {
-                    if j == k {
-                        continue;
-                    }
-                    let margin = widest.get(j).copied().unwrap_or(f64::INFINITY)
-                        + widest.get(k).copied().unwrap_or(f64::INFINITY)
-                        + reach;
-                    if other.ring.box_distance(*point) > margin {
-                        continue;
-                    }
-                    spend(&mut walked.work, other.ring.points.len().div_ceil(2))?;
-                    if super::distance(*point, &other.ring.points) <= margin {
-                        clear = false;
-                        break;
-                    }
-                }
-                if !clear {
-                    every_point_told = false;
-                    continue;
-                }
-                let around: usize = rings.iter().map(|m| m.ring.points.len()).sum();
-                spend(&mut walked.work, around.div_ceil(2))?;
-                let wound: i64 = rings
-                    .iter()
-                    .enumerate()
-                    .filter(|(j, _)| *j != k)
-                    .map(|(_, other)| winding(*point, &other.ring.points))
-                    .sum::<i64>()
-                    * if reversed { -1 } else { 1 };
-                if wound != 1 {
-                    let each: Vec<String> = rings
-                        .iter()
-                        .map(|other| winding(*point, &other.ring.points).to_string())
-                        .collect();
-                    // Shown: a point of the hole is wound other than once.
-                    return Some(Judged::Shown(
-                        Kind::Hole,
-                        format!(
-                            "its hole, loop {k}, lies outside its outer loop {o} or inside another hole (wound {wound} times at ({:.6}, {:.6}) of the {}; by each loop {}; areas {})",
-                            point[0],
-                            point[1],
-                            walked.surface.kind(),
-                            each.join(", "),
-                            list(&areas),
-                        ),
-                    ));
-                }
-            }
-        }
-    }
+    };
     if let Crossing::Crossed(i, j) = crossed {
-        // Shown: (c) of the module, two pieces of the boundary cross.
+        // Shown: two pieces of the boundary cross ([`crossing`]).
         return Some(Judged::Shown(
             if i == j {
                 Kind::CrossesItself
@@ -1366,78 +1213,60 @@ fn judge_region(walked: &mut Walked<'_>, reversed: bool) -> Option<Judged> {
             },
         ));
     }
-    if apart && every_point_told {
-        // Clear, shown: (a) every loop's sense is told and the senses are a
-        // face's (one outer loop enclosing more than any hole, for every
-        // area within the errors; or, on a sphere, every loop clockwise);
-        // (b) with an outer loop, on every surface but a plane, every point
-        // of every hole is told wound once by the others (where the rule does
-        // not ask where a hole lies, on a plane or on a sphere whose loops
-        // all run clockwise, nor is it shown here); (c) no two pieces of the
-        // boundary meet beyond ten tolerances of a vertex: pieces whose
-        // segments do not meet at a point of their loop lie within their
-        // margins of segments farther apart than both margins and ten
-        // tolerances ((d) of the module), and neighbouring pieces are shown
-        // apart by their cones ((e), [`neighbours_apart`]); and no loop
-        // reads as a band ([`parts`]). So each loop is a simple closed curve
-        // that goes round no period (but for touches within ten tolerances
-        // of its vertices, which the rule passes too), no two loops meet,
-        // and none of the faults the region rule asks holds.
-        return Some(Judged::Clear);
+    if !apart {
+        // Some pair of pieces is not shown apart: its stretches, or none
+        // where halving cannot part it.
+        return Some(Judged::Unsure(halve));
     }
-    // Not shown either way: the stretches of the pairs not shown apart,
-    // or, where those are all told and a hole's point is not, the widest.
-    Some(Judged::Unsure(if halve_pairs.is_empty() && apart {
-        widest_of(&rings, None, reach)
-    } else {
-        halve_pairs
-    }))
-}
-
-/// The rule of simple loops' third rule of the loop `k` again, with the
-/// bounds: shown (a point clear of the loop by its widest margin, twice, and
-/// ten tolerances, wound by its polyline neither 0 times nor once its own
-/// way, its sense told: (a) and (b) of the module), clear (its sense told,
-/// and every pair of its pieces apart: a simple closed curve, which winds
-/// once about every point inside it and 0 times outside), or neither.
-fn judge_simple(walked: &mut Walked<'_>, k: usize) -> Option<Judged> {
-    let Parts::Read(rings, crossed, halve, apart) = parts(walked, Some(k))? else {
+    // C6: every hole inside the outer loop and inside no other hole. Every
+    // pair of pieces being apart (C2), a point of a hole's polyline lies
+    // farther than its margin and the reach from every segment of every
+    // other loop, so each winds about it as its polyline does (L2); a
+    // polyline winds about no point outside its box.
+    for (k, m) in rings.iter().enumerate() {
+        if k == o {
+            continue;
+        }
+        let Some(point) = m.ring.points.first().copied() else {
+            return Some(Judged::Unsure(Vec::new()));
+        };
+        let mut each = Vec::with_capacity(rings.len());
+        for (j, other) in rings.iter().enumerate() {
+            each.push(if j == k || other.ring.box_distance(point) > 0.0 {
+                0
+            } else {
+                spend(&mut walked.work, other.ring.points.len().div_ceil(2))?;
+                winding(point, &other.ring.points)
+            });
+        }
+        let wound = each.iter().sum::<i64>() * if reversed { -1 } else { 1 };
+        if wound != 1 {
+            // Shown: the hole lies outside the outer loop or inside
+            // another hole.
+            return Some(Judged::Shown(
+                Kind::Hole,
+                format!(
+                    "its hole, loop {k}, lies outside its outer loop {o} or inside another hole (wound {wound} times at ({:.6}, {:.6}) of the {}; by each loop {}; areas {})",
+                    point[0],
+                    point[1],
+                    walked.surface.kind(),
+                    each.iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    list(&areas),
+                ),
+            ));
+        }
+    }
+    // C1: three stretches a loop or more (an area that is told has them;
+    // asked outright, since C2 and C3 between them take every pair of
+    // stretches only then).
+    if rings.iter().any(|m| m.ring.points.len() < 3) {
         return Some(Judged::Unsure(Vec::new()));
-    };
-    let reach = walked.reach();
-    let Some(m) = rings.get(k) else {
-        return Some(Judged::Unsure(Vec::new()));
-    };
-    let area = signed_area(&m.ring.points);
-    if !(area.is_finite() && area.abs() > area_error(&m.ring.points, &m.margins)) {
-        return Some(Judged::Unsure(widest_of(&rings, Some(k), reach)));
     }
-    let margin = 2.0 * m.ring.error + reach;
-    spend(&mut walked.work, m.ring.points.len())?;
-    if let Some((at, wound)) =
-        crate::simple::wound_within(&m.ring, margin, crate::simple::MOST_WINDING_WORK)
-    {
-        return Some(Judged::Shown(
-            Kind::Wound,
-            format!(
-                "it winds {wound} times about the point ({:.6}, {:.6})",
-                at[0], at[1]
-            ),
-        ));
-    }
-    if let Crossing::Crossed(..) = crossed {
-        // Shown: two pieces of the loop cross, so it is no simple closed
-        // curve; rule 3 itself is not shown, and the walk's finding stands.
-        return Some(Judged::Shown(Kind::CrossesItself, String::new()));
-    }
-    if apart {
-        // Clear, shown: the loop's sense is told and every pair of its
-        // pieces is apart (as in [`judge_region`]), so it is a simple
-        // closed curve, which winds about no point other than once its own
-        // way or not at all.
-        return Some(Judged::Clear);
-    }
-    Some(Judged::Unsure(halve))
+    // Cleared: C0 to C6 hold, and with them the module's theorem.
+    Some(Judged::Clear)
 }
 
 /// A copy of a ring.
@@ -1453,10 +1282,10 @@ fn copy(r: &Ring) -> Ring {
     }
 }
 
-/// How far a loop's area can be from its polyline's: each segment's
-/// stretch of the boundary, with the segment, winds about no point more
-/// than once and only within its margin `m` of the segment (length `L`), a
-/// region of no more than `2 m (L + m) + π m²`.
+/// How far a loop's area can be from its polyline's ((L3) of the module):
+/// each segment's piece of the boundary, with the segment, winds about no
+/// point more than once and only within its margin `m` of the segment
+/// (length `L`), a region of no more than `2 m (L + m) + π m²`.
 fn area_error(points: &[[f64; 2]], margins: &[f64]) -> f64 {
     let n = points.len();
     (0..n)
@@ -1473,21 +1302,22 @@ fn area_error(points: &[[f64; 2]], margins: &[f64]) -> f64 {
 }
 
 /// The second walk of one face, made when its first fault is to be
-/// verified and kept for every other fault of the face: one
+/// verified, its verdict kept for every other fault of the face: one
 /// [`super::MOST_PROOF_WORK`] of work and [`MOST_ROUNDS`] rounds of halving
-/// for the whole face, every read of its loops, pair of segments and point
-/// of a hole counted (in [`super::chord_proofs`], apart from the walk's
-/// own; a face whose second walk passes the bound is counted there once).
-/// Where any step of it cannot be taken (a point not placed, a stretch not
-/// shown within the stretches of an edge, the work or the rounds spent),
-/// the walk's faults stand, for this one and every later fault of the face.
+/// for the whole face, every point placed, leg read, pair of segments and
+/// winding counted (in [`super::chord_proofs`], apart from the walk's own;
+/// a face whose second walk passes the bound is counted there once). The
+/// verdict is of the whole face: a fault of any loop is dropped only where
+/// every loop is cleared ([`judge`]). Where any step of it cannot be taken
+/// (a point not placed, a stretch not shown within the stretches of an
+/// edge, the work or the rounds spent), the walk's faults stand.
 pub(super) struct Verifier<'a> {
     body: &'a Body,
     face: &'a Face,
     tol: &'a Tolerance,
-    walked: Option<Walked<'a>>,
-    built: bool,
-    rounds: usize,
+    /// The verdict, once made: `Some(None)` where a step could not be
+    /// taken.
+    verdict: Option<Option<Judged>>,
 }
 
 impl<'a> Verifier<'a> {
@@ -1496,544 +1326,71 @@ impl<'a> Verifier<'a> {
             body,
             face,
             tol,
-            walked: None,
-            built: false,
-            rounds: 0,
+            verdict: None,
         }
     }
 
-    /// Rounds of `judge`, halving what it asks between them, until it says
-    /// shown, clear, or that halving cannot tell more; `None` where a step
-    /// cannot be taken (and nothing more is asked of this face).
-    fn settle(&mut self, judge: &dyn Fn(&mut Walked<'a>) -> Option<Judged>) -> Option<Judged> {
+    /// Rounds of [`judge`], halving what it asks between them, until it
+    /// says shown, cleared, or that halving cannot tell more; `None` where
+    /// a step cannot be taken.
+    fn settle(&self) -> Option<Judged> {
         let _counted = Verifying::begin();
-        if !self.built {
-            self.built = true;
-            self.walked = Walked::new(self.body, self.face, self.tol);
-        }
-        let mut walked = self.walked.take()?;
-        while self.rounds < MOST_ROUNDS {
-            self.rounds += 1;
+        let mut walked = Walked::new(self.body, self.face, self.tol)?;
+        for _ in 0..MOST_ROUNDS {
             walked.show_all()?;
-            let judged = judge(&mut walked);
-            match judged? {
+            match judge(&mut walked, self.face.reversed)? {
                 Judged::Unsure(halve) if !halve.is_empty() => walked.halve(&halve)?,
-                other => {
-                    self.walked = Some(walked);
-                    return Some(other);
-                }
+                other => return Some(other),
             }
         }
         None
     }
 
-    /// The region rule's fault `original` of the face, verified: the
-    /// message to refuse with, or `None` where the bounds show the loops
-    /// bound a region ([`judge_region`]'s clear: a statement shown, step by
-    /// step), so that the walk's fault was its reading of a step. Where the
-    /// bounds show a fault, the walk's message where it is of the same kind
-    /// ([`kind_of`]), else the fault shown. Where they show neither (halving
-    /// cannot part two stretches, a loop reads as a band, the work, the
-    /// rounds or the stretches of an edge are spent, a point is not placed)
-    /// the walk's fault stands: a fault is dropped only where it is shown
-    /// not to be there. On a surface not [`asked`], `original`.
-    pub(super) fn region_shown(&mut self, original: &str) -> Option<String> {
-        let kept = Some(original.to_string());
+    /// The face's verdict, made once: `None` where a step could not be
+    /// taken, or on a surface not [`asked`] (no second walk at all).
+    fn verdict(&mut self) -> Option<&Judged> {
         if !asked(&self.face.surface) {
-            return kept;
+            return None;
         }
-        let reversed = self.face.reversed;
-        match self.settle(&|w| judge_region(w, reversed)) {
-            Some(Judged::Shown(kind, message)) => Some(if kind_of(original) == Some(kind) {
+        if self.verdict.is_none() {
+            self.verdict = Some(self.settle());
+        }
+        self.verdict.as_ref().and_then(Option::as_ref)
+    }
+
+    /// The region rule's fault `original` of the face, verified: the
+    /// message to refuse with, or `None` where the face is cleared
+    /// ([`judge`]: the module's theorem holds of it), so that the walk's
+    /// fault was its reading of a step. Where the bounds show a fault, the
+    /// walk's message where it is of the same kind ([`kind_of`]), else the
+    /// fault shown. Where they show neither (halving cannot part two
+    /// stretches, the work, the rounds or the stretches of an edge are
+    /// spent, a point is not placed) the walk's fault stands: a fault is
+    /// dropped only where the face is cleared. On a surface not [`asked`],
+    /// `original`.
+    pub(super) fn region_shown(&mut self, original: &str) -> Option<String> {
+        match self.verdict() {
+            Some(Judged::Shown(kind, message)) => Some(if kind_of(original) == Some(*kind) {
                 original.to_string()
             } else {
-                message
+                message.clone()
             }),
             Some(Judged::Clear) => None,
-            Some(Judged::Unsure(_)) | None => kept,
+            Some(Judged::Unsure(_)) | None => Some(original.to_string()),
         }
     }
 
-    /// Whether the rule of simple loops' third fault of the loop `k` (a
-    /// point it winds about neither 0 times nor once its own way) stands:
-    /// false only where the bounds show the loop is a simple closed curve
-    /// ([`judge_simple`]'s clear), else true, the walk's finding kept. On a
-    /// surface not [`asked`], true.
-    pub(crate) fn winding_shown(&mut self, k: usize) -> bool {
-        if !asked(&self.face.surface) {
-            return true;
-        }
-        !matches!(self.settle(&|w| judge_simple(w, k)), Some(Judged::Clear))
+    /// Whether a fault the rule of simple loops' third rule found in a
+    /// loop of the face (a point it winds about neither 0 times nor once
+    /// its own way) stands: false only where the whole face is cleared
+    /// ([`judge`]), every loop of it a simple closed curve of the sense a
+    /// face's must have, no two meeting; else true, the walk's finding
+    /// kept. (Not where that loop alone is one: the walk can have misread
+    /// its sense, or another loop.) On a surface not [`asked`], true.
+    pub(crate) fn winding_shown(&mut self) -> bool {
+        !matches!(self.verdict(), Some(Judged::Clear))
     }
 }
 
 #[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
-
-    use super::*;
-
-    /// The parallelogram's corners against a curve's points: a quarter
-    /// circle from (1, 0) to (0, 1) keeps its direction between (0, 1)
-    /// and (-1, 0), and lies within `(√2 − 1)·…` of its chord: the bound is
-    /// the corner (1, 1)'s distance from the chord, `1 / √2`, and the
-    /// circle's own, `1 − 1 / √2`, is within it.
-    #[test]
-    fn a_parallelogram_holds_a_quarter_circle() {
-        let off = parallelogram((0.0, 1.0), (-1.0, 0.0), (-1.0, 1.0)).unwrap();
-        assert!((off - 0.5_f64.sqrt()).abs() < 1e-15, "{off}");
-        // A cone nearly a half turn wide: the corners lie far past the
-        // chord's ends, and are measured from the segment, not its line.
-        let off = parallelogram((1.0, 0.01), (-1.0, 0.01), (0.0, 0.02)).unwrap();
-        assert!((off - 1.0).abs() < 1e-12, "{off}");
-        assert!(1.0 - 0.5_f64.sqrt() <= off);
-        // A chord outside the cone: no bound.
-        assert_eq!(parallelogram((0.0, 1.0), (-1.0, 0.0), (1.0, 1.0)), None);
-        // A cone of no width, a cone over a half turn: none.
-        assert_eq!(parallelogram((1.0, 0.0), (1.0, 0.0), (1.0, 0.0)), None);
-        assert_eq!(parallelogram((1.0, 0.0), (0.0, -1.0), (1.0, -1.0)), None);
-        assert_eq!(parallelogram((1.0, 0.0), (0.0, 1.0), (0.0, 0.0)), Some(0.0));
-    }
-
-    use crate::{BodyKind, Coedge};
-    use craft3d_geom::{Cone, Cylinder, NurbsCurve, Plane, Sphere};
-    use craft3d_math::Frame;
-    use std::f64::consts::TAU;
-
-    /// Neighbouring stretches are shown apart only where their cones fit
-    /// in a fan narrower than a half turn by what the gap and the slacks
-    /// ask: a corner and a tangent join are; a hairpin, a stretch with no
-    /// aim, a gap or slack of a quarter of the reach are not. And the claim
-    /// itself, sampled: two rays from either end of a gap, each in its
-    /// cone, meet (where they do) within the reach of the first's end.
-    #[test]
-    fn neighbours_are_apart_only_where_their_cones_fit() {
-        let aim = |a: f64, b: f64, slack: f64| {
-            let (sa, ca) = a.psin_cos();
-            let (sb, cb) = b.psin_cos();
-            Some(Aim {
-                cone: ((ca, sa), (cb, sb)),
-                slack,
-            })
-        };
-        let reach = 1e-5;
-        let deg = PI / 180.0;
-        let east = aim(-deg, deg, 0.0);
-        // A corner, a tangent join, a sharp corner: apart with no gap.
-        assert!(neighbours_apart(
-            east,
-            aim(89.0 * deg, 91.0 * deg, 0.0),
-            0.0,
-            reach
-        ));
-        assert!(neighbours_apart(east, east, 0.0, reach));
-        assert!(neighbours_apart(
-            east,
-            aim(170.0 * deg, 178.0 * deg, 0.0),
-            0.0,
-            reach
-        ));
-        // A hairpin: the second heads back over the first.
-        assert!(!neighbours_apart(
-            east,
-            aim(179.5 * deg, 181.0 * deg, 0.0),
-            0.0,
-            reach
-        ));
-        // With a gap of an eighth of the reach the fan must be narrower by
-        // 2 asin(1/4), 29 degrees: a corner fits, a sharp one does not.
-        let gap = reach / 8.0;
-        assert!(neighbours_apart(
-            east,
-            aim(89.0 * deg, 91.0 * deg, 0.0),
-            gap,
-            reach
-        ));
-        assert!(!neighbours_apart(
-            east,
-            aim(150.0 * deg, 160.0 * deg, 0.0),
-            gap,
-            reach
-        ));
-        // A slack counts as the gap does.
-        assert!(!neighbours_apart(
-            east,
-            aim(150.0 * deg, 160.0 * deg, gap),
-            0.0,
-            reach
-        ));
-        // A gap or slack of a quarter of the reach or more, no aim, a gap
-        // not a number: never apart.
-        assert!(!neighbours_apart(east, east, 0.25 * reach, reach));
-        assert!(!neighbours_apart(
-            east,
-            aim(0.0, 0.0, 0.25 * reach),
-            0.0,
-            reach
-        ));
-        assert!(!neighbours_apart(None, east, 0.0, reach));
-        assert!(!neighbours_apart(east, east, f64::NAN, reach));
-        // Sampled: the first stretch runs into `E` along a direction of its
-        // cone, the second out of `P = E + gap` along one of its own; where
-        // two such straight stretches cross, they do within the reach of E.
-        let (mut checked, mut met) = (0, 0);
-        for i in 0..40 {
-            let angle_a = -3.0 + 0.15 * f64::from(i);
-            for j in 0..40 {
-                let angle_b = -3.0 + 0.15 * f64::from(j);
-                for g in [0.0, 0.05, 0.2] {
-                    for turn in 0..8 {
-                        let gap_dir = f64::from(turn) * PI / 4.0;
-                        let (sg, cg) = gap_dir.psin_cos();
-                        let gap = g * reach;
-                        let a = aim(angle_a, angle_a, 0.0);
-                        let b = aim(angle_b, angle_b, 0.0);
-                        if !neighbours_apart(a, b, gap, reach) {
-                            continue;
-                        }
-                        checked += 1;
-                        // E at the origin, P at the gap; the first comes in
-                        // from E − 1·da, the second goes to P + 1·db.
-                        let (sa, ca) = angle_a.psin_cos();
-                        let (sb, cb) = angle_b.psin_cos();
-                        let (p, q) = ((-ca, -sa), (0.0, 0.0));
-                        let (r, t) = ((gap * cg, gap * sg), (gap * cg + cb, gap * sg + sb));
-                        // Where the segments p q and r t meet, if they do.
-                        let d1 = (q.0 - p.0, q.1 - p.1);
-                        let d2 = (t.0 - r.0, t.1 - r.1);
-                        let den = d1.0 * d2.1 - d1.1 * d2.0;
-                        if den.abs() < 1e-12 {
-                            continue;
-                        }
-                        let w = (r.0 - p.0, r.1 - p.1);
-                        let u = (w.0 * d2.1 - w.1 * d2.0) / den;
-                        let v = (w.0 * d1.1 - w.1 * d1.0) / den;
-                        if (0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v) {
-                            let x = (p.0 + u * d1.0, p.1 + u * d1.1);
-                            met += usize::from(gap > 0.0);
-                            assert!(
-                                x.0.phypot(x.1) <= reach * (1.0 + 1e-9),
-                                "angles {angle_a}, {angle_b}, gap {gap}: they meet {} from E",
-                                x.0.phypot(x.1)
-                            );
-                        }
-                    }
-                }
-            }
-        }
-        assert!(
-            checked > 1000 && met > 10,
-            "{checked} pairs apart, {met} meeting"
-        );
-    }
-
-    /// A band of a cylinder (two circles round it) is not judged by the
-    /// bounds: a fault of its region rule stands, whatever it says.
-    #[test]
-    fn a_band_is_never_cleared() {
-        let frame = Frame::WORLD;
-        let cylinder = Surface::Cylinder(Cylinder::new(frame, 2.0).unwrap());
-        let mut body = Body::new(BodyKind::Sheet);
-        let mut loops = Vec::new();
-        for (z, reversed) in [(0.0, false), (3.0, true)] {
-            let circle = craft3d_geom::Circle::new(
-                Frame::new(Vec3::new(0.0, 0.0, z), Vec3::Z, Vec3::X).unwrap(),
-                2.0,
-            )
-            .unwrap();
-            let v = body.add_vertex(Vec3::new(2.0, 0.0, z));
-            let edge = body.add_edge(Curve3::Circle(circle), (0.0, TAU), v, v);
-            loops.push(body.add_loop(vec![Coedge { edge, reversed }]));
-        }
-        let face = body.add_face(cylinder, false, loops);
-        body.add_shell(vec![face]);
-        let tol = Tolerance::new(1e-6, 1e-9).unwrap();
-        let face = &body.faces[0];
-        let mut walked = Walked::new(&body, face, &tol).unwrap();
-        walked.show_all().unwrap();
-        assert!(matches!(walked.rings(), Some(None)), "read as a band");
-        let original = "its loops 0 and 1 cross";
-        let mut verifier = Verifier::new(&body, face, &tol);
-        assert_eq!(verifier.region_shown(original).as_deref(), Some(original));
-        assert!(verifier.winding_shown(0));
-    }
-
-    fn tilted(k: f64) -> Frame {
-        Frame::new(
-            Vec3::new(1.3, -2.1, 0.7) * (10.0 * k),
-            Vec3::new(-0.3, 0.8, 0.52),
-            Vec3::new(0.6, 0.1, 0.4),
-        )
-        .unwrap()
-    }
-
-    fn about(frame: &Frame, rho: f64, angle: f64, h: f64) -> Vec3 {
-        let (s, c) = angle.psin_cos();
-        frame.point(rho * c, rho * s, h)
-    }
-
-    /// A plane, a cylinder, a cone and a sphere of size `k` in `frame`,
-    /// each with the map from its chart to it.
-    #[allow(clippy::type_complexity)]
-    fn grounds(frame: Frame, k: f64) -> Vec<(Surface, Box<dyn Fn(f64, f64) -> Vec3>)> {
-        let slope = 0.4_f64.ptan();
-        vec![
-            (
-                Surface::Plane(Plane::new(frame)),
-                Box::new(move |x, y| frame.point(k * x, k * y, 0.0)),
-            ),
-            (
-                Surface::Cylinder(Cylinder::new(frame, k).unwrap()),
-                Box::new(move |x, y| about(&frame, k, x, k * y)),
-            ),
-            (
-                Surface::Cone(Cone::new(frame, 2.0 * k, 0.4).unwrap()),
-                Box::new(move |x, y| about(&frame, 2.0 * k + k * y * slope, x, k * y)),
-            ),
-            (
-                Surface::Sphere(Sphere::new(frame, 2.0 * k).unwrap()),
-                Box::new(move |x, y| {
-                    let (s, c) = y.psin_cos();
-                    about(&frame, 2.0 * k * c, x, 2.0 * k * s)
-                }),
-            ),
-        ]
-    }
-
-    /// A closed curve of degree `degree` through `count + 1` points of the
-    /// chart's wavy ring `(0.4 + a sin(waves θ)) (cos θ, sin θ) + (0, 0.1)`
-    /// taken to the surface; with `rational`, through them with weights
-    /// that swing between 0.6 and 1.4.
-    fn ring_curve(
-        at: &dyn Fn(f64, f64) -> Vec3,
-        waves: f64,
-        a: f64,
-        count: usize,
-        degree: usize,
-        rational: bool,
-    ) -> Option<NurbsCurve> {
-        let params: Vec<f64> = (0..=count).map(|i| i as f64 / count as f64).collect();
-        let point = |s: f64| {
-            let theta = TAU * s;
-            let r = 0.4 + a * (waves * theta).psin();
-            let (sn, cs) = theta.psin_cos();
-            at(r * cs, 0.1 + r * sn)
-        };
-        let weight = |s: f64| {
-            if rational {
-                1.0 + 0.4 * (3.0 * TAU * s).psin()
-            } else {
-                1.0
-            }
-        };
-        let values: Vec<Vec<f64>> = params
-            .iter()
-            .map(|s| {
-                let (p, w) = (point(*s), weight(*s));
-                vec![p.x * w, p.y * w, p.z * w, w]
-            })
-            .collect();
-        let (knots, ctrl) = craft3d_geom::refine::interpolate(&params, degree, &values).ok()?;
-        let weights: Vec<f64> = ctrl.iter().map(|c| c[3]).collect();
-        let points: Vec<Vec3> = ctrl
-            .iter()
-            .map(|c| Vec3::new(c[0] / c[3], c[1] / c[3], c[2] / c[3]))
-            .collect();
-        NurbsCurve::new(degree, knots, points, weights).ok()
-    }
-
-    /// Every stretch shown holds what it says, against 64 points of its
-    /// image placed on the surface: within its bound of its chord, and
-    /// running one way (its directions within a half turn). Closed wavy
-    /// splines of degrees 2 to 7, through many points or as few as one
-    /// span (bulging far from their chords), rational and not, on a plane,
-    /// a cylinder, a cone and a sphere, turned and moved, at three scales.
-    #[test]
-    fn a_stretch_shown_lies_within_its_bound_and_runs_one_way() {
-        let (mut shown, mut walked_faces, mut stretches) = (0, 0, 0_usize);
-        let mut coned = 0_usize;
-        for k in [1e-3, 1.0, 1e6] {
-            for frame in [Frame::WORLD, tilted(k)] {
-                for (surface, at) in grounds(frame, k) {
-                    for (degree, count, waves, a, rational) in [
-                        (3, 96, 7.0, 0.08, false),
-                        (5, 64, 5.0, 0.12, true),
-                        (7, 7, 3.0, 0.15, false),
-                        (7, 7, 2.0, 0.2, true),
-                        (2, 40, 9.0, 0.05, false),
-                        (4, 12, 3.0, 0.25, false),
-                    ] {
-                        // A rational fit through few points can have a
-                        // weight that is not positive: no such curve.
-                        let Some(curve) =
-                            ring_curve(at.as_ref(), waves, a, count, degree, rational)
-                        else {
-                            assert!(rational, "{} degree {degree}", surface.kind());
-                            continue;
-                        };
-                        let mut body = Body::new(BodyKind::Sheet);
-                        let v = body.add_vertex(curve.eval(0.0));
-                        let edge = body.add_edge(Curve3::Nurbs(curve.clone()), (0.0, 1.0), v, v);
-                        let lp = body.add_loop(vec![Coedge {
-                            edge,
-                            reversed: false,
-                        }]);
-                        let face = body.add_face(surface.clone(), false, vec![lp]);
-                        body.add_shell(vec![face]);
-                        // A loose tolerance, so that a curve through few
-                        // points of the surface is placed between them too
-                        // (the bounds are of the curve's image, on the
-                        // surface or not).
-                        let tol = Tolerance::new(1e-3 * k, 1e-9).unwrap();
-                        let face = &body.faces[0];
-                        let Some(mut walked) = Walked::new(&body, face, &tol) else {
-                            eprintln!(
-                                "not walked: {} at {k}, degree {degree} through {count}",
-                                surface.kind()
-                            );
-                            continue;
-                        };
-                        let shown_all = walked.show_all();
-                        // A point of a curve through few points of a curved
-                        // surface may lie off it by more than the tolerance
-                        // where a stretch is halved: not walked.
-                        if shown_all.is_none() && walked.loops[0].1.is_empty() {
-                            continue;
-                        }
-                        walked_faces += 1;
-                        if shown_all.is_none() {
-                            eprintln!(
-                                "not shown: {} at {k}, degree {degree} through {count}, rational {rational}, work {}",
-                                surface.kind(),
-                                walked.work
-                            );
-                            continue;
-                        }
-                        shown += 1;
-                        let kind = surface.kind();
-                        // As walked, and halved three times over.
-                        for level in 0..4 {
-                            if level > 0 {
-                                let every: Vec<(usize, usize)> =
-                                    (0..walked.loops[0].1.len()).map(|k| (0, k)).collect();
-                                if walked.halve(&every).is_none() || walked.show_all().is_none() {
-                                    break;
-                                }
-                            }
-                            let all = walked.loops[0].1.clone();
-                            for st in &all {
-                                let Bound::Shown(bound, _) = st.bound else {
-                                    panic!("{kind}: a stretch not shown after show_all");
-                                };
-                                stretches += 1;
-                                let start = st.start;
-                                let end = walked.unwrapped(st.end, Some(start));
-                                let mut before = start;
-                                let mut far = 0.0_f64;
-                                let mut turned: Vec<f64> = Vec::new();
-                                let mut secants: Vec<(f64, f64)> = Vec::new();
-                                for i in 0..=64 {
-                                    let t = st.s + (st.e - st.s) * i as f64 / 64.0;
-                                    let (u, v) = surface.project(curve.eval(t)).unwrap();
-                                    let q = [u, v];
-                                    let q = walked.unwrapped(q, Some(before));
-                                    far = far.max(to_segment(q, start, end));
-                                    let d = (q[0] - before[0], q[1] - before[1]);
-                                    if i > 0 && (d.0 != 0.0 || d.1 != 0.0) {
-                                        secants.push(d);
-                                        let mut angle = d.1.patan2(d.0);
-                                        if let Some(first) = turned.first() {
-                                            angle += ((first - angle) / TAU).round() * TAU;
-                                        }
-                                        turned.push(angle);
-                                    }
-                                    before = q;
-                                }
-                                let size = start[0].abs().max(start[1].abs()).max(1.0);
-                                assert!(
-                                    far <= bound + 1e-12 * size,
-                                    "{kind} at {k}, degree {degree} through {count}: {far} off its chord, bound {bound}"
-                                );
-                                // Every secant, an average of the curve's
-                                // directions over its stretch, lies in the
-                                // cone (to the rounding of its ends).
-                                if let Bound::Shown(
-                                    _,
-                                    Some(Aim {
-                                        cone: (c0, c1),
-                                        slack,
-                                    }),
-                                ) = st.bound
-                                {
-                                    coned += 1;
-                                    let unit = |c: (f64, f64)| {
-                                        let n = c.0.phypot(c.1);
-                                        (c.0 / n, c.1 / n)
-                                    };
-                                    let (c0, c1) = (unit(c0), unit(c1));
-                                    assert!(
-                                        c0.0 * c1.1 - c0.1 * c1.0 > -1e-12
-                                            || c0.0 * c1.0 + c0.1 * c1.1 > 0.0,
-                                        "{kind}: a cone of a half turn or more"
-                                    );
-                                    for d in &secants {
-                                        let slack = 1e-9 * d.0.phypot(d.1) + 1e-12 * size + slack;
-                                        assert!(
-                                            c0.0 * d.1 - c0.1 * d.0 >= -slack
-                                                && d.0 * c1.1 - d.1 * c1.0 >= -slack,
-                                            "{kind} at {k}, degree {degree} through {count}: secant {d:?} outside the cone {c0:?} to {c1:?}"
-                                        );
-                                    }
-                                }
-                                let low = turned.iter().copied().fold(f64::INFINITY, f64::min);
-                                let high = turned.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-                                assert!(
-                                    turned.is_empty() || high - low < PI,
-                                    "{kind} at {k}, degree {degree} through {count}: turns {}",
-                                    high - low
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // Every face walked has every stretch shown, the few-span ones
-        // included.
-        assert_eq!(shown, walked_faces, "of {walked_faces}");
-        eprintln!("{walked_faces} faces walked, {stretches} stretches, {coned} with a cone");
-        assert!(walked_faces >= 80, "{walked_faces} faces walked");
-        assert!(stretches > 10_000, "{stretches} stretches");
-        assert!(
-            coned * 10 > stretches * 9,
-            "{coned} of {stretches} with a cone"
-        );
-    }
-
-    #[test]
-    fn faults_are_known_by_their_messages() {
-        for (message, kind) in [
-            (
-                "every loop runs clockwise about the outward normal (areas -1.000e0): the face would be everything outside them",
-                Kind::Clockwise,
-            ),
-            (
-                "its counter-clockwise loop 0 encloses less than its hole 1 (areas 1, -2)",
-                Kind::LessThanHole,
-            ),
-            (
-                "2 of its loops run counter-clockwise about the outward normal (areas 1, 2): a face has one outer loop",
-                Kind::ManyOuter,
-            ),
-            (
-                "its hole, loop 1, lies outside its outer loop 0 or inside another hole (wound 0 times)",
-                Kind::Hole,
-            ),
-            ("its loop 0 crosses itself", Kind::CrossesItself),
-            ("its loops 0 and 1 cross", Kind::Cross),
-        ] {
-            assert_eq!(kind_of(message), Some(kind), "{message}");
-        }
-        assert_eq!(kind_of("something else"), None);
-    }
-}
+mod tests;

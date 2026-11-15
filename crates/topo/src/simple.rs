@@ -151,7 +151,9 @@ const ROUNDING: f64 = 64.0 * f64::EPSILON;
 /// The first loop of `face` that is not a simple closed curve, with why;
 /// `None` when every loop is one or this test cannot tell. `followed` is
 /// what the region rule followed of the face (`crate::region`), so the face
-/// is followed once for both.
+/// is followed once for both. `verified(k)` says whether a fault rule 3
+/// finds in the loop `k` stands: not where the face, on a plane, is walked
+/// again and cleared (`crate::region`'s `chord`: verify before refusing).
 pub(crate) fn loop_fault(
     body: &Body,
     face: &Face,
@@ -379,7 +381,7 @@ fn wound_wrongly(ring: &Ring, margin: f64) -> Option<([f64; 2], i64)> {
 }
 
 /// [`wound_wrongly`] within `most` points looked at.
-pub(crate) fn wound_within(ring: &Ring, margin: f64, most: usize) -> Option<([f64; 2], i64)> {
+fn wound_within(ring: &Ring, margin: f64, most: usize) -> Option<([f64; 2], i64)> {
     let points = &ring.points;
     let n = points.len();
     let area = signed_area(points);

@@ -590,31 +590,34 @@ pub(crate) enum Fault {
 }
 
 /// Both rules on one face, the loops followed once for both. A fault the
-/// walk finds is claimed only where it is shown again with a bound on how
-/// far each edge lies from its chord ([`chord`]: verify before refusing);
-/// a face the walk finds nothing wrong with is not walked again, so its
-/// verdict and its cost are the walk's alone. A region fault that is not
-/// shown leaves the face as one the region rule cannot tell: the rule of
-/// simple loops is asked without the walk.
+/// walk finds on a plane is dropped only where the face is walked again
+/// with a bound on how far each edge lies from its chord and is cleared by
+/// it ([`chord`]: verify before refusing, with the theorem that a cleared
+/// face's loops bound a region); a face the walk finds nothing wrong with
+/// is not walked again, so its verdict and its cost are the walk's alone,
+/// and on every other surface the walk's fault stands as it is. A region
+/// fault that is dropped leaves the face as one the region rule cannot
+/// tell: the rule of simple loops is asked without the walk.
 fn face_fault(body: &Body, face: &Face, tol: &Tolerance) -> Option<Fault> {
     // One second walk for the face, made only when a fault is to be
-    // verified, and kept for every later one.
+    // verified, its verdict kept for every later one: a verdict of the
+    // whole face, whichever loop the fault was found in.
     let verifier = std::cell::RefCell::new(chord::Verifier::new(body, face, tol));
-    let verified = |k: usize| verifier.borrow_mut().winding_shown(k);
+    let verified = |_loop: usize| verifier.borrow_mut().winding_shown();
     let (region, followed) = region_followed(body, face, tol);
     if let Some(why) = region {
         let shown = verifier.borrow_mut().region_shown(&why);
         return match shown {
             Some(why) => Some(Fault::Region(why)),
-            // Dropped: the bounds show each loop is a simple closed curve
-            // that goes round no period, no two pieces of the boundary
-            // meeting beyond ten tolerances of a vertex
-            // (`chord::judge_region`'s clear). Without the walk the rule of
-            // simple loops asks rule 1 and rule 4 between loops (and, on a
-            // plane, within one); what it does not ask, rule 2 (a loop round
-            // a period too often), rule 3 (a loop wound about a point other
-            // than once) and rule 4 within a loop on a curved surface (two
-            // of its stretches on each other), cannot hold of such loops.
+            // Dropped: the face, on a plane, is cleared (`chord::judge`):
+            // each loop a simple closed curve but, at the most, within five
+            // tolerances of a vertex where two edges' ends miss each other,
+            // no two loops meeting, one counter-clockwise loop that holds
+            // every other. Without the walk the rule of simple loops asks
+            // rule 1 and rule 4; what it does not ask, rule 2 (a loop round
+            // a period too often: a plane has none) and rule 3 (a loop
+            // wound about a point other than once), cannot hold of such
+            // loops.
             None => crate::simple::loop_fault(body, face, tol, None, &verified)
                 .map(|(loop_, why)| Fault::Loop(loop_, why)),
         };
@@ -1828,34 +1831,6 @@ impl AboutMap {
             }
         };
         (u, v)
-    }
-
-    /// The factors [`AboutMap::ranges`] gives `u'` and `v'` in: the most
-    /// distance from the axis, and 1 (a cylinder's height), `√(slope² +
-    /// 1)` (a cone's ruling) or the most distance from the sphere's centre
-    /// (a latitude).
-    fn scale(&self) -> (f64, f64) {
-        let v = match self.rise {
-            Rise::Height | Rise::Unshown => 1.0,
-            Rise::Slant { .. } => 1.0 / self.norm,
-            Rise::Latitude => self.outer.sqrt(),
-        };
-        (self.far, v)
-    }
-
-    /// How far each range of [`AboutMap::ranges`] can move for a leg moved
-    /// by a unit: every product of the leg is with a unit vector, `u'`'s
-    /// times up to the ratio of the most to the least distance from the
-    /// axis, `v'`'s as its form has it.
-    fn rate(&self) -> (f64, f64) {
-        let most = self.below.abs().max(self.above.abs());
-        let v = match self.rise {
-            Rise::Height | Rise::Unshown => 1.0,
-            Rise::Slant { slope, .. } => (slope.abs() + 1.0) * self.norm,
-            Rise::Latitude => (self.far + most) / self.inner * self.outer.sqrt(),
-        };
-        // `across` moves no more than the leg does: within the same.
-        (self.widest, v)
     }
 }
 
