@@ -216,8 +216,9 @@ fn cone_curves(apex: &Frame, alpha: f64, d: f64, size: f64) -> Vec<(String, Curv
 /// hundred-thousandth of their size from the apex, as one or two long
 /// rational spans: proven within a millionth of the size at the scales
 /// 1e-3, 1 and 1e6, in the world and turned a thousand sizes from it,
-/// the bound above every place's closed-form distance. Most were not
-/// proven by the first proof (counted: the test is of the second).
+/// the bound above every place's closed-form distance. More than a
+/// quarter of them are not proven by the first proof (counted: the test
+/// is of the second).
 #[test]
 fn sections_of_a_cone_that_pass_by_its_apex_are_proven() {
     let (mut cases, mut first_failed) = (0, 0);
@@ -401,7 +402,8 @@ fn dome(frame: &Frame, r: f64) -> Surface {
 /// that section as one and as two rational spans; proven within a
 /// millionth of the size at three scales, in the world and turned a
 /// thousand sizes from it, the bound above every place's closed-form
-/// distance. The first proof proved none of them.
+/// distance. More than half of them are not proven by the first proof
+/// (counted).
 #[test]
 fn arcs_that_pass_by_a_pole_are_proven() {
     let (mut cases, mut first_failed) = (0, 0);
