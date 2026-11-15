@@ -6124,37 +6124,41 @@ fn fold_search(positions: &[Vec3], boundary: usize) -> (Option<Vec3>, u64) {
     if positions.len() <= boundary {
         return (None, 0);
     }
-    // (−0 as 0; a point that is not finite is the triangles' to refuse.)
-    let points: Vec<Vec3> = positions
-        .iter()
-        .map(|p| Vec3::new(p.x + 0.0, p.y + 0.0, p.z + 0.0))
-        .collect();
+    // (A point that is not finite is the triangles' to refuse; −0 and 0
+    // fall in one cell and are no distance apart.)
     let finite = |p: &Vec3| p.x.is_finite() && p.y.is_finite() && p.z.is_finite();
-    let reach = points.iter().filter(|p| finite(p)).fold(0.0_f64, |m, p| {
-        m.max(p.x.abs()).max(p.y.abs()).max(p.z.abs())
-    });
+    let reach = positions
+        .iter()
+        .filter(|p| finite(p))
+        .fold(0.0_f64, |m, p| {
+            m.max(p.x.abs()).max(p.y.abs()).max(p.z.abs())
+        });
     if !positive(reach) {
         // Every finite point on the origin: one place.
         let at_origin = || {
-            points
+            positions
                 .iter()
                 .enumerate()
                 .filter(|(_, p)| finite(p))
                 .map(|(i, _)| i)
         };
         let fold = at_origin().nth(1).is_some() && at_origin().any(|i| i >= boundary);
-        return (fold.then_some(Vec3::ZERO), points.len() as u64);
+        return (fold.then_some(Vec3::ZERO), positions.len() as u64);
     }
     let cell = 2.0 * ROUNDED_AWAY * reach;
+    // (A product by the inverse is rounded once more than the quotient: a
+    // few units in the last place of numbers below 2³⁹, still far less
+    // than the half cell to spare.)
+    let per_cell = 1.0 / cell;
     let half = 1_i64 << (CELL_BITS - 1);
     let quantize = |c: f64| -> u128 {
         // Within ±2³⁹ by the size of a cell; clamped all the same.
-        let q = (c / cell)
+        let q = (c * per_cell)
             .floor()
             .clamp(-(half as f64) + 1.0, half as f64 - 1.0) as i64;
         u128::from((q + half).unsigned_abs())
     };
-    let mut keys: Vec<u128> = points
+    let mut keys: Vec<u128> = positions
         .iter()
         .enumerate()
         .filter(|(_, p)| finite(p))
@@ -6173,46 +6177,29 @@ fn fold_search(positions: &[Vec3], boundary: usize) -> (Option<Vec3>, u64) {
     let at = |k: u128| -> (usize, Vec3) {
         // The low 32 bits are the index (`u32` above).
         let i = (k & 0xffff_ffff) as usize;
-        (i, points.get(i).copied().unwrap_or(Vec3::ZERO))
+        (i, positions.get(i).copied().unwrap_or(Vec3::ZERO))
+    };
+    // Where the run of keys from `from` with one `part` ends (or `to`).
+    let run_end = |keys: &[u128], from: usize, to: usize, part: &dyn Fn(u128) -> u128| -> usize {
+        let Some(&head) = keys.get(from) else {
+            return from;
+        };
+        let length = keys.get(from..to).map_or(0, |rest| {
+            rest.iter().take_while(|&&k| part(k) == part(head)).count()
+        });
+        from + length.max(1)
     };
     // A column of more than one point, by `z` (then by key: one order).
     let mut first = 0;
     while first < n {
-        let Some(&head) = keys.get(first) else { break };
-        let length = keys.get(first..).map_or(0, |rest| {
-            rest.iter()
-                .take_while(|&&k| column(k) == column(head))
-                .count()
-        });
-        if length > 1
-            && let Some(run) = keys.get_mut(first..first + length)
+        let end = run_end(&keys, first, n, &column);
+        if end - first > 1
+            && let Some(run) = keys.get_mut(first..end)
         {
             run.sort_unstable_by(|&a, &b| at(a).1.z.total_cmp(&at(b).1.z).then(a.cmp(&b)));
-            steps = steps.saturating_add((length as u64).saturating_mul(bits(length)));
+            steps = steps.saturating_add(((end - first) as u64).saturating_mul(bits(end - first)));
         }
-        first += length.max(1);
-    }
-    // Where each point's column and slab (one cell in `x`) end.
-    let mut column_end = vec![n; n];
-    let mut slab_end = vec![n; n];
-    for k in (0..n.saturating_sub(1)).rev() {
-        let (Some(&a), Some(&b)) = (keys.get(k), keys.get(k + 1)) else {
-            continue;
-        };
-        let (next_column, next_slab) = (
-            column_end.get(k + 1).copied().unwrap_or(n),
-            slab_end.get(k + 1).copied().unwrap_or(n),
-        );
-        if let Some(slot) = column_end.get_mut(k) {
-            *slot = if column(a) == column(b) {
-                next_column
-            } else {
-                k + 1
-            };
-        }
-        if let Some(slot) = slab_end.get_mut(k) {
-            *slot = if slab(a) == slab(b) { next_slab } else { k + 1 };
-        }
+        first = end;
     }
     let one_place = |(a, p): (usize, Vec3), (b, q): (usize, Vec3)| {
         // Within the rounding of the two points' own coordinates, not of
@@ -6247,58 +6234,79 @@ fn fold_search(positions: &[Vec3], boundary: usize) -> (Option<Vec3>, u64) {
         }
         false
     };
-    for k in 0..n {
-        let (Some(&key), Some(&own_end), Some(&own_slab_end)) =
-            (keys.get(k), column_end.get(k), slab_end.get(k))
-        else {
-            continue;
+    // Slab by slab (one cell in `x`), column by column within it.
+    let mut slab_from = 0;
+    while slab_from < n {
+        let Some(&slab_key) = keys.get(slab_from) else {
+            break;
         };
-        let p = at(key);
-        // The rest of its own column.
-        for m in k + 1..own_end {
-            steps = steps.saturating_add(1);
-            let Some(&other) = keys.get(m) else { break };
-            let q = at(other);
-            if q.1.z - p.1.z > cell {
+        let slab_to = run_end(&keys, slab_from, n, &slab);
+        // The next slab, where it is the next cell in `x`.
+        let next_slab = keys
+            .get(slab_to)
+            .filter(|&&k| slab(k) == slab(slab_key) + 1)
+            .map(|_| (slab_to, run_end(&keys, slab_to, n, &slab)));
+        let mut column_from = slab_from;
+        while column_from < slab_to {
+            let Some(&column_key) = keys.get(column_from) else {
                 break;
-            }
-            if one_place(p, q) {
-                return (Some(p.1), steps);
-            }
-        }
-        // The next column in `y`, in its slab.
-        if own_end < own_slab_end
-            && keys
-                .get(own_end)
-                .is_some_and(|&next| column(next) == column(key) + 1)
-        {
-            let to = column_end.get(own_end).copied().unwrap_or(n);
-            if in_column(own_end, to, p, &mut steps) {
-                return (Some(p.1), steps);
-            }
-        }
-        // The three columns beside it in the next slab in `x`.
-        if keys
-            .get(own_slab_end)
-            .is_some_and(|&next| slab(next) == slab(key) + 1)
-        {
-            let to = slab_end.get(own_slab_end).copied().unwrap_or(n);
-            let Some(run) = keys.get(own_slab_end..to) else {
-                continue;
             };
-            let y = column(key) & ((1 << CELL_BITS) - 1);
-            for dy in [y.saturating_sub(1), y, y + 1] {
-                let wanted = ((slab(key) + 1) << CELL_BITS) | dy;
-                let from = own_slab_end + run.partition_point(|&k| column(k) < wanted);
-                steps = steps.saturating_add(bits(run.len()));
-                if keys.get(from).is_some_and(|&k| column(k) == wanted) {
-                    let end = column_end.get(from).copied().unwrap_or(n);
-                    if in_column(from, end, p, &mut steps) {
+            let column_to = run_end(&keys, column_from, slab_to, &column);
+            // The next column, where it is the next cell in `y`.
+            let next_column = keys
+                .get(column_to)
+                .filter(|&&k| column_to < slab_to && column(k) == column(column_key) + 1)
+                .map(|_| (column_to, run_end(&keys, column_to, slab_to, &column)));
+            // A point alone in its column, with no column beside it to
+            // look in: nothing to compare (most points of most faces).
+            if column_to - column_from == 1 && next_column.is_none() && next_slab.is_none() {
+                column_from = column_to;
+                continue;
+            }
+            for k in column_from..column_to {
+                let Some(&key) = keys.get(k) else { break };
+                let p = at(key);
+                // The rest of its own column.
+                for m in k + 1..column_to {
+                    steps = steps.saturating_add(1);
+                    let Some(&other) = keys.get(m) else { break };
+                    let q = at(other);
+                    if q.1.z - p.1.z > cell {
+                        break;
+                    }
+                    if one_place(p, q) {
                         return (Some(p.1), steps);
                     }
                 }
+                // The next column in `y`.
+                if let Some((from, to)) = next_column
+                    && in_column(from, to, p, &mut steps)
+                {
+                    return (Some(p.1), steps);
+                }
+                // The three columns beside it in the next slab in `x`.
+                let Some((from, to)) = next_slab else {
+                    continue;
+                };
+                let Some(run) = keys.get(from..to) else {
+                    continue;
+                };
+                let y = column(key) & ((1 << CELL_BITS) - 1);
+                for dy in [y.saturating_sub(1), y, y + 1] {
+                    let wanted = ((slab(key) + 1) << CELL_BITS) | dy;
+                    let start = from + run.partition_point(|&k| column(k) < wanted);
+                    steps = steps.saturating_add(bits(run.len()));
+                    if keys.get(start).is_some_and(|&k| column(k) == wanted) {
+                        let end = run_end(&keys, start, to, &column);
+                        if in_column(start, end, p, &mut steps) {
+                            return (Some(p.1), steps);
+                        }
+                    }
+                }
             }
+            column_from = column_to;
         }
+        slab_from = slab_to;
     }
     (None, steps)
 }
