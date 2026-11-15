@@ -694,7 +694,7 @@ STEP files read into the document as bodies (an `Import` feature), a pinned publ
 - [ ] The measure of a boundary through both poles of a spline surface that also crosses its seam (declined by `topo`)
 - [ ] The triangles round a pole of a spline face made as a fan, so that long pointed ends, ends near a corner and thin blades are meshed and imported ("the surface turns away from the chords", [`design/tessellator.md`](design/tessellator.md) › *The rails of a squeezed pole*)
 - [ ] `topo::check` finds the edges of a face beside a squeezed pole off it where its surface runs on past them or is cut along a meridian (its own feet, pinned in `crates/kernel/tests/pole_measure.rs`)
-- [ ] A dome a hundred times as long as wide closed across a seam is meshed with a crack and no error, and the normal at a tip of fullness 0.01 or less is off (pinned in `crates/kernel/tests/pole_measure.rs`)
+- [ ] A dome a hundred times as long as wide closed across a seam is meshed as no manifold and without an error (reached today through `file.import` of STEP and `file.export` to STL), and the normal at a tip of fullness 0.01 or less is off (pinned in `crates/kernel/tests/pole_measure.rs`)
 - [ ] The tessellator on an egg without loops that closes in v and on a NURBS torus around a window across both seams (ignored reproducer `closed_freeform.rs` › `what_the_tessellator_declines_on_closed_freeform`)
 - [ ] A period for spline surfaces in `craft3d-geom`, so that knots that are not clamped are covered (`geom::closure` reads clamped knots only)
 - [ ] The STEP reader, next slices: faces' own colours and names, mirrored placements, the kinds still refused, one read per part placed many times ([`design/step-import.md`](design/step-import.md) › *Second slice*)

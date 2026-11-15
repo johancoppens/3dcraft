@@ -464,14 +464,21 @@ fn seamed_dome(frame: &Frame, (a, b): (f64, f64), flip: bool, foot: [f64; 2], le
 }
 
 #[test]
-fn a_dome_closed_across_a_seam_is_known_to_mesh_with_a_crack() {
+fn a_dome_closed_across_a_seam_is_known_to_mesh_as_no_manifold() {
     // KNOWN, owed (docs/design/tessellator.md › *The rails of a squeezed
-    // pole*, found by the review of 2026-11-14, on the commit before as
-    // well): a dome a hundred times as long as wide, closed across a seam
-    // in a tip near one end, is meshed without an error and the mesh is
-    // not closed. The body is valid and measures as its closed form,
-    // eleven fifteenths of its base times its length. When this fails
-    // because the mesh is closed or refused, the pin goes.
+    // pole*; found by the review of 2026-11-14, its shape by the review
+    // of 2026-11-15; on the commit before as well, so on 0.1.x): a dome a
+    // hundred times as long as wide, closed across a seam in a tip near
+    // one end, is meshed without an error, and the mesh is no manifold.
+    // Not a gap: every directed edge has its reverse. At 0.002 three
+    // vertices within 1e-14 of each other by the tip have edges used
+    // twice each way; at 0.02 one edge 0.3 to 0.45 from the tip is shared
+    // by four triangles. A user reaches it today: such a dome in a STEP
+    // file is read by `file.import`, measures right, and `file.export` to
+    // STL writes the mesh without a word. The body is valid and measures
+    // as its closed form, eleven fifteenths of its base times its length.
+    // When this fails because the mesh is a closed manifold or refused,
+    // the pin goes.
     let frame = Frame::new(
         Vec3::new(3.0, -2.0, 5.0),
         Vec3::new(2.0, -3.0, 6.0),
@@ -496,11 +503,27 @@ fn a_dome_closed_across_a_seam_is_known_to_mesh_with_a_crack() {
             chordal_tolerance: chord,
             ..TessParams::default()
         };
-        let made = tessellate_body(&body, &params).map(|mesh| mesh.weld().map(|w| w.is_closed()));
-        println!("{what}: {made:?}");
+        let welded = tessellate_body(&body, &params)
+            .unwrap_or_else(|e| panic!("{what}: refused now, take the pin off: {e}"))
+            .weld()
+            .unwrap();
+        // Each directed edge, and how many triangles use it.
+        let mut uses = std::collections::BTreeMap::new();
+        for &[a, b, c] in &welded.triangles {
+            for edge in [(a, b), (b, c), (c, a)] {
+                *uses.entry(edge).or_insert(0) += 1;
+            }
+        }
+        let twins = uses.keys().all(|&(a, b)| uses.contains_key(&(b, a)));
+        let shared = uses.values().filter(|&&n| n > 1).count();
+        println!(
+            "{what}: {} triangles, {shared} directed edges used more than once, every edge with its twin: {twins}",
+            welded.triangles.len()
+        );
+        assert!(twins, "{what}: a gap now");
         assert!(
-            matches!(made, Ok(Ok(false) | Err(_))),
-            "{what}: closed or refused now, take the pin off: {made:?}"
+            shared > 0 && !welded.is_closed(),
+            "{what}: a closed manifold now, take the pin off"
         );
     }
 }
@@ -816,4 +839,197 @@ fn a_spline_turned_onto_its_axis_is_measured_to_a_bound_that_says_so() {
         "splines turned onto their axis: within {worst:e} of the closed form, bounds up to {widest:e}; the search in both parameters ends up to {beside:e} of the size beside a point of a meridian"
     );
     assert!(worst <= 1e-12, "{worst:e}");
+}
+
+/// The double-exponential (tanh–sinh) rule on [0, 1] with the step
+/// `2^-level`: per node how far it is from the nearer end (so that a node
+/// next to an end keeps its digits), whether that is the upper end, and
+/// its weight. A rule of its own, apart from the kernel's Gauss–Legendre
+/// panels (the review of 2026-11-15).
+fn tanh_sinh(level: u32) -> Vec<(f64, bool, f64)> {
+    let h = 0.5_f64.ppowi(level as i32);
+    let n = (3.3 / h).ceil() as i64;
+    let mut out = Vec::new();
+    for k in -n..=n {
+        let t = k as f64 * h;
+        let e = t.pexp();
+        let (sinh, cosh) = (0.5 * (e - 1.0 / e), 0.5 * (e + 1.0 / e));
+        let s = 0.5 * PI * sinh;
+        let small = 1.0 / (1.0 + (2.0 * s.abs()).pexp());
+        let weight = h * PI * cosh * small * (1.0 - small);
+        if weight >= 1e-300 && small > 0.0 {
+            out.push((small, t > 0.0, weight));
+        }
+    }
+    out
+}
+
+/// `∬ |Sᵤ × Sᵥ| du dv` over the whole of a NURBS surface, span by span, by
+/// [`tanh_sinh`] in both parameters.
+fn area_by_tanh_sinh(surface: &Surface, level: u32) -> f64 {
+    let Surface::Nurbs(s) = surface else {
+        return f64::NAN;
+    };
+    let spans = |knots: &[f64]| -> Vec<(f64, f64)> {
+        knots
+            .windows(2)
+            .filter(|w| w[1] > w[0])
+            .map(|w| (w[0], w[1]))
+            .collect()
+    };
+    let rule = tanh_sinh(level);
+    let place = |(a, b): (f64, f64), &(small, high, _): &(f64, bool, f64)| {
+        if high {
+            b - (b - a) * small
+        } else {
+            a + (b - a) * small
+        }
+    };
+    let mut sum = 0.0;
+    for su in spans(s.knots_u()) {
+        for sv in spans(s.knots_v()) {
+            for nu in &rule {
+                let u = place(su, nu);
+                let mut inner = 0.0;
+                for nv in &rule {
+                    let (_, a, b) = surface.derivatives(u, place(sv, nv));
+                    inner += a.cross(b).length() * nv.2 * (sv.1 - sv.0);
+                }
+                sum += inner * nu.2 * (su.1 - su.0);
+            }
+        }
+    }
+    sum
+}
+
+/// A tip's name, the corners of its section, its foot, its length and
+/// its fullness.
+type Tip<'a> = (&'a str, &'a [[f64; 2]], [f64; 2], f64, f64);
+
+#[test]
+fn the_area_of_a_thin_blade_s_tip_is_within_its_bound() {
+    // The review of 2026-11-15, by a tanh–sinh rule face by face: a blade
+    // 1e-4 thick with a tip 0.3 long measured 1.87e-12 (quarter ellipses)
+    // and 6.90e-12 (parabolas) of its area off within a bound of 1.0e-12,
+    // the L with its tip 1e-3 inside its kernel's edge, three long,
+    // 1.59e-12 within 1.0e-12. The inner integrals along the faces into
+    // the pole have a feature narrower than their panels, and two sums
+    // agreed on the plateau before it (docs/design/topology.md › *A rail
+    // beside its border*). Before the feet were taken along the borders
+    // the bound held by accident (9.57e-8, 6.55e-7, 1.20e-8 off within as
+    // much). Now the inner integrals of such a face are shown to converge.
+    let blade = blade(1e-4);
+    let cases: [Tip; 4] = [
+        (
+            "the blade 1e-4, quarter ellipses",
+            &blade,
+            [0.0, 0.0],
+            0.3,
+            ROUND.0,
+        ),
+        (
+            "the blade 1e-4, parabolas",
+            &blade,
+            [0.0, 0.0],
+            0.3,
+            PARABOLA.0,
+        ),
+        ("the blade 1e-4, fullness 0.9", &blade, [0.0, 0.0], 0.3, 0.9),
+        (
+            "the L, tip 1e-3 inside its kernel's edge",
+            &L,
+            [1.999, 1.0],
+            3.0,
+            ROUND.0,
+        ),
+    ];
+    for (name, corners, foot, length, fullness) in cases {
+        for k in SCALES {
+            let what = format!("{name} at {k}");
+            let (_, body) =
+                section_tip(&Frame::WORLD, k, &polygon(corners), foot, length, fullness)
+                    .unwrap_or_else(|e| panic!("{what}: {e}"));
+            let (mass, bound) = mass_bound(&body).unwrap_or_else(|e| panic!("{what}: {e}"));
+            let (mut truth, mut apart) = (0.0, 0.0_f64);
+            for face in &body.faces {
+                truth += match &face.surface {
+                    Surface::Plane(_) => polygon_area(corners) * k * k,
+                    surface => {
+                        let (five, six) =
+                            (area_by_tanh_sinh(surface, 5), area_by_tanh_sinh(surface, 6));
+                        apart = apart.max((five - six).abs() / six);
+                        six
+                    }
+                };
+            }
+            let off = (mass.area - truth).abs();
+            println!(
+                "{what}: the area {:e} of itself off the rule (its two steps {apart:.1e} apart), bound {:e}",
+                off / truth,
+                bound.area / truth
+            );
+            assert!(
+                apart <= 1e-14,
+                "{what}: the rule has not settled: {apart:e}"
+            );
+            assert!(
+                off <= bound.area + 1e-14 * truth,
+                "{what}: {:e} of the area off, outside its bound of {:e}",
+                off / truth,
+                bound.area / truth
+            );
+        }
+    }
+}
+
+#[test]
+fn the_volume_of_a_tip_is_the_same_with_or_without_its_inertia() {
+    // `mass_properties` and `mass_and_inertia` give one volume: the sums
+    // without the second moments are those the first gives, also where a
+    // face is measured once more with the search's feet because its
+    // second moments did not settle with feet along its borders (the
+    // review of 2026-11-15; on the commit before the feet the L with its
+    // tip 0.01 from the corner at fullness 0.9 was 8.9e-15 apart).
+    for (corners, foot, fullness) in [
+        (&L[..], [0.01, 0.01], 0.9),
+        (&L[..], [0.01, 0.01], PARABOLA.0),
+        (&TRIANGLE[..], [0.003, 0.003], 0.95),
+        (&blade(1e-4)[..], [0.0, 0.0], ROUND.0),
+    ] {
+        let (_, body) =
+            section_tip(&Frame::WORLD, 1.0, &polygon(corners), foot, 0.5, fullness).unwrap();
+        let alone = craft3d_topo::mass_properties(&body).map(|m| m.volume.to_bits());
+        let with = craft3d_topo::mass_and_inertia(&body)
+            .0
+            .map(|m| m.volume.to_bits());
+        assert_eq!(
+            alone, with,
+            "{corners:?}, tip over {foot:?}, fullness {fullness}"
+        );
+    }
+}
+
+#[test]
+fn a_face_refused_as_the_search_places_it_is_not_tried_again_under_a_bound() {
+    // Under a bound on its work (an operation's own look at what it made,
+    // as `file.import`'s search for crossings) the tessellator meshes a
+    // body as the search places its loops and tries nothing more
+    // (docs/design/tessellator.md › *The rails of a squeezed pole*): a
+    // body it meshes plainly is refused there. Pinned: the L with a blunt
+    // tip a hundredth of its size from its corner, at the finer tolerance.
+    let (_, body) = section_tip(&Frame::WORLD, 1.0, &polygon(&L), [1.99, 1.99], 0.5, 0.95).unwrap();
+    let params = TessParams {
+        chordal_tolerance: 2e-3 * 12.0,
+        ..TessParams::default()
+    };
+    assert!(tessellate_body(&body, &params).is_ok());
+    let bounded = craft3d_geom::allowance::within(u64::MAX / 4, || tessellate_body(&body, &params));
+    println!(
+        "under a bound: {:?}",
+        bounded.as_ref().map(|mesh| mesh.triangles.len())
+    );
+    assert!(
+        bounded.is_err(),
+        "meshed under a bound now: say so in tessellator.md and take the pin off"
+    );
 }

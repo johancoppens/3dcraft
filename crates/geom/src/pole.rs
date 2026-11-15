@@ -599,15 +599,26 @@ pub struct LineFoot {
 pub struct BorderFeet<'a> {
     surface: &'a Surface,
     open: Vec<Border>,
+    rounding: f64,
     last: Option<(Border, f64)>,
     /// Evaluations of the surface so far ([`BorderFeet::evaluations`]).
     evaluations: std::cell::Cell<u64>,
 }
 
-impl<'a> BorderFeet<'a> {
+/// What [`BorderFeet`] knows of a surface before any point is asked: its
+/// open borders and its rounding, each a pass over the whole control net.
+/// Found once for a surface ([`BorderPlan::of`]), it makes the feet of
+/// every run along it ([`BorderFeet::with`]) without those passes.
+#[derive(Clone, Debug)]
+pub struct BorderPlan {
+    open: Vec<Border>,
+    rounding: f64,
+}
+
+impl BorderPlan {
     /// For a Bézier or NURBS surface with a finite domain; `None` for
     /// any other, and for one whose borders are all points.
-    pub fn new(surface: &'a Surface) -> Option<Self> {
+    pub fn of(surface: &Surface) -> Option<Self> {
         if !matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
             return None;
         }
@@ -620,12 +631,55 @@ impl<'a> BorderFeet<'a> {
             .into_iter()
             .filter(|border| poles.iter().all(|pole| pole.border != *border))
             .collect();
-        (!open.is_empty()).then_some(BorderFeet {
-            surface,
+        (!open.is_empty()).then(|| BorderPlan {
             open,
+            rounding: rounding_of(surface),
+        })
+    }
+
+    /// [`BorderFeet::rounding`] of the surface.
+    pub fn rounding(&self) -> f64 {
+        self.rounding
+    }
+}
+
+/// 16 units in the last place of the size of the control net of a
+/// freeform surface, across it and as far as it lies from the origin
+/// ([`BorderFeet::rounding`]); nothing for any other surface.
+fn rounding_of(surface: &Surface) -> f64 {
+    let points = match surface {
+        Surface::Bezier(patch) => patch.control_points(),
+        Surface::Nurbs(s) => s.control_points(),
+        _ => return 0.0,
+    };
+    let across = Bbox3::from_points(points.iter().copied()).diagonal();
+    let far = points.iter().map(|p| p.length()).fold(0.0, f64::max);
+    let size = across.max(far);
+    if size.is_finite() {
+        16.0 * f64::EPSILON * size
+    } else {
+        0.0
+    }
+}
+
+impl<'a> BorderFeet<'a> {
+    /// For a Bézier or NURBS surface with a finite domain; `None` for
+    /// any other, and for one whose borders are all points.
+    pub fn new(surface: &'a Surface) -> Option<Self> {
+        BorderPlan::of(surface).map(|plan| Self::with(surface, &plan))
+    }
+
+    /// For `surface`, from what [`BorderPlan::of`] found of it: nothing
+    /// asked yet, no pass over its control net. `plan` must be the
+    /// surface's own.
+    pub fn with(surface: &'a Surface, plan: &BorderPlan) -> Self {
+        BorderFeet {
+            surface,
+            open: plan.open.clone(),
+            rounding: plan.rounding,
             last: None,
             evaluations: std::cell::Cell::new(0),
-        })
+        }
     }
 
     /// How often the surface was evaluated for the feet asked so far: what
@@ -640,19 +694,7 @@ impl<'a> BorderFeet<'a> {
     /// surface, or 16 units in the last place of its own coordinates
     /// where that is more, is on it.
     pub fn rounding(&self) -> f64 {
-        let points = match self.surface {
-            Surface::Bezier(patch) => patch.control_points(),
-            Surface::Nurbs(s) => s.control_points(),
-            _ => return 0.0,
-        };
-        let across = Bbox3::from_points(points.iter().copied()).diagonal();
-        let far = points.iter().map(|p| p.length()).fold(0.0, f64::max);
-        let size = across.max(far);
-        if size.is_finite() {
-            16.0 * f64::EPSILON * size
-        } else {
-            0.0
-        }
+        self.rounding
     }
 
     /// The range of the parameter along `border`.
