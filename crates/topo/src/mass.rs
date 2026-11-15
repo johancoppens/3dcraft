@@ -4695,7 +4695,10 @@ fn cell_by_cell(
         // On a face with a sample whose foot was taken along its surface's
         // borders or lines, the inner integrals of what was taken are
         // shown to have converged (2026-11-15).
-        if parts == FIRST_SUMS && BORDERS.with(|borders| borders.get().2) {
+        if parts == FIRST_SUMS
+            && BORDERS.with(|borders| borders.get().2)
+            && inner_spans(surface, plan) <= PROOF_SPANS
+        {
             // Its sums are work of their own, as much again as the face
             // may take: a face that settled within its budget is not
             // given up for showing that it did.
@@ -4736,6 +4739,31 @@ fn cell_by_cell(
         (sum_of(&taken), plan.up_to_whole_surfaces()),
         work,
     )
+}
+
+/// The most knot spans a spline surface has along the direction of its
+/// inner integrals for a face of it to have them proven ([`inner_proven`]).
+/// Each doubling sums every span's panels again: on a tip whose surface
+/// has 2000 spans along the rails, the proof took thirteen times what the
+/// measure took (the first review's cost test, 2026-11-15), where a span
+/// is too short a stretch for the plateau the proof is for; the faces it
+/// was shown on have one.
+const PROOF_SPANS: usize = 8;
+
+/// The knot spans of `surface` along the direction its inner integrals
+/// run in by `plan`; for a plan without one direction, the more of the
+/// two.
+fn inner_spans(surface: &Surface, plan: &Plan) -> usize {
+    let (lines_u, lines_v) = knot_lines(surface);
+    let along = match plan {
+        Plan::From { along, .. } | Plan::Unrolled { along, .. } => Some(*along),
+        Plan::Poles(poled) => Some(poled.along),
+    };
+    match along {
+        Some(Along::U) => lines_u.len() + 1,
+        Some(Along::V) => lines_v.len() + 1,
+        None => lines_u.len().max(lines_v.len()) + 1,
+    }
 }
 
 /// How far the sums of [`inner_proven`] may move with more inner panels
