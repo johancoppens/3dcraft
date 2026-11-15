@@ -425,9 +425,9 @@ fn wave_ribbon(
 /// - Right, slopes up to 5.7, on a plane: passes (the lower side's halves
 ///   are not one way at eight steps, so it is followed in more).
 /// - Wrong, slopes up to 5.7, both sides single edges, turned over:
-///   **known misses** on a plane, passed unjudged (both sides followed in
-///   more steps, the area cannot be told from their error), where until
-///   2026-11-14 they were refused by their area, rightly.
+///   **known misses** on a plane, passed unjudged (both sides are now
+///   followed in more steps than eight), where until 2026-11-14 they were
+///   refused by their area, rightly.
 #[test]
 fn wavy_ribbons_whose_steps_end_on_their_middle_line() {
     /// A surface, the map from the chart to it, and the factor from the
