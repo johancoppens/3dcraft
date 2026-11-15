@@ -8,7 +8,7 @@ The full description of any command, with every value it takes and what it refus
 
 ## Commands
 
-3DCraft 0.1.2 has 176 commands. A command's id is its family and its name: `feature.fillet`.
+3DCraft 0.1.2 has 177 commands. A command's id is its family and its name: `feature.fillet`.
 
 ### Documents and files
 
@@ -72,6 +72,7 @@ The full description of any command, with every value it takes and what it refus
 | `feature.fillet`, `feature.chamfer` | Round and bevel edges |
 | `feature.shell`, `feature.offsetFace`, `feature.moveFace`, `feature.draft`, `feature.deleteFace` | Operations on faces |
 | `feature.thread` | An ISO metric thread |
+| `feature.tip` | A flat end closed in one rounded point |
 | `feature.edit`, `feature.rename`, `feature.move`, `feature.delete` | Change the history |
 | `feature.suppress`, `feature.when` | Switch a feature off by hand or by a condition |
 | `feature.visible` | Hide a feature in the view |

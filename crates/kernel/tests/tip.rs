@@ -304,7 +304,11 @@ fn a_tip_on_an_elliptic_prism_is_the_half_ellipsoid() {
 
 /// Sections of the prisms: a square, a triangle, an L, a lens of two
 /// parabolas (corners) and an oval of two cubic arcs (no corners).
-fn sections() -> Vec<(&'static str, Vec<Piece>, Option<[f64; 2]>)> {
+/// A section: its name, its pieces, and where its tip is placed when
+/// not over its centre of area.
+type Section = (&'static str, Vec<Piece>, Option<[f64; 2]>);
+
+fn sections() -> Vec<Section> {
     let lens = vec![
         (2, vec![[-3.0, 0.0], [0.0, -2.0], [3.0, 0.0]], vec![1.0; 3]),
         (2, vec![[3.0, 0.0], [0.0, 2.0], [-3.0, 0.0]], vec![1.0; 3]),
