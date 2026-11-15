@@ -23,22 +23,26 @@
 //! that does not project back onto the surface, a loop whose area is not
 //! larger than its polyline's error allows to be told from nothing, a
 //! face with more than [`MOST_PER_FACE`] points, and a face with a spline
-//! edge whose steps are not shown to hide no turn (below) within
-//! [`MOST_SPLINE_STEPS`] and [`MOST_PROOF_WORK`]. On a sphere loops that
-//! all run clockwise are the sphere less some caps, which is a region.
+//! edge whose half steps are not shown to keep to what the walk can follow
+//! (below) within [`MOST_SPLINE_STEPS`] and [`MOST_PROOF_WORK`]. On a
+//! sphere loops that all run clockwise are the sphere less some caps,
+//! which is a region.
 //!
 //! **How.** Each edge is followed in a few steps (a line in one on a
 //! plane, else in two; a circle or an ellipse in steps of at most π/8; a
 //! spline in eight per edge, or in as many more as it takes for every half
-//! step to be shown to hide no turn from the walk, [`spline_steps`]: about
-//! the axis of a cylinder, a cone, a sphere or a torus it moves less than a
-//! quarter turn, about a torus's tube as well, so that a helix of many
-//! turns as one edge is followed round every turn; and in the chart of a
-//! plane or of one of those it runs one way, so that the chord from one
-//! point to the next goes round no point the edge does not, and a spiral
-//! of many turns about a point of the chart is followed round every one;
-//! a step that is not shown is not taken, and the face passes), each point
-//! projected onto the surface
+//! step to be shown to keep to what the walk can follow, [`spline_steps`]:
+//! about the axis of a cylinder, a cone, a sphere or a torus it moves less
+//! than a quarter turn, so that a helix of many turns as one edge is
+//! followed round every turn; and in the chart of a plane, a cylinder, a
+//! cone or a sphere it runs one way, so that the chord of a half step goes
+//! round no point the edge does not, and a spiral of many turns about a
+//! point of the chart is followed round every one; a step that is not
+//! shown is not taken, and the face passes). The walk takes the chord of
+//! the whole step, not of its halves, and reads the edge only at the
+//! step's middle: two halves that each run one way can still go round a
+//! point together, and what lies between a half step and its chord is not
+//! measured. Each point is projected onto the surface
 //! (from the one before on a freeform surface, checked against the point,
 //! else from nothing) and moved by whole periods to the one before it.
 //! The middle of every step is projected too: how far it is from the
@@ -153,13 +157,17 @@ pub(crate) struct Ring {
     pub(crate) high: [f64; 2],
     /// Where each coedge's points begin in `points`, in the loop's order.
     pub(crate) starts: Vec<usize>,
-    /// Whether a half step moved more than a quarter period: the step may
-    /// have gone round by more than the chart shows, so how often the loop
-    /// goes round, and where along it a point lies, are not to be read off
-    /// it (the region rule reads it as before). A spline edge is followed
-    /// in steps shown to move less than that about its surface's axis, and
-    /// about a torus's tube ([`spline_steps`]); what is left is a conic near
-    /// a pole, read by this flag.
+    /// Whether a half step moved more than a quarter period, or the loop
+    /// has a spline edge on a torus: the step may have gone round by more
+    /// than the chart shows, so how often the loop goes round, and where
+    /// along it a point lies, are not to be read off it (the region rule
+    /// reads it as before). A spline edge on a surface that closes about
+    /// an axis is followed in steps shown to move less than that about it
+    /// ([`spline_steps`]); what is left is a conic near a pole, read by
+    /// this flag, and the angle about a torus's tube, which nothing shows
+    /// for a spline edge (a curve going round the tube 13 times in 16 half
+    /// steps moves 292.5° a half step, which reads as 67.5° back and
+    /// raises no flag).
     pub(crate) aliased: bool,
 }
 
@@ -840,9 +848,10 @@ pub(crate) fn follow(
             }
             Curve3::Nurbs(_) => SPLINE_STEPS,
         };
-        // The steps of a spline edge are shown to hide no turn, about the
-        // axis of a surface that closes and about any point of the chart,
-        // or the loop is not followed.
+        // Each half step of a spline edge is shown to move less than a
+        // quarter turn about the axis of a surface that closes and to run
+        // one way in the chart (not on a torus), or the loop is not
+        // followed.
         let steps = match &edge.curve {
             Curve3::Nurbs(n) => {
                 let shown = spline_steps(n, (t0, t1), &lay, &mut chart.work)?;
@@ -854,6 +863,11 @@ pub(crate) fn follow(
             }
             _ => steps,
         };
+        // The angle about a torus's tube is not shown for a spline edge:
+        // nothing is read off how often its loop goes round.
+        if matches!(chart.surface, Surface::Torus(_)) && matches!(edge.curve, Curve3::Nurbs(_)) {
+            aliased = true;
+        }
         *total = total.saturating_add(2 * steps);
         if *total > MOST_PER_FACE {
             return None;
@@ -940,10 +954,6 @@ enum Lay {
     /// A spline surface: nothing is known of how its chart takes a
     /// direction in space.
     Space,
-    /// For the tests of the proof about an axis alone: only the angle
-    /// about the axis through `origin` along `z` is shown.
-    #[cfg(test)]
-    Turning { origin: Vec3, z: Vec3 },
 }
 
 /// How `v` is read off a point about an axis ([`Lay::About`]), at the
@@ -958,43 +968,10 @@ enum Rise {
     Slant { slope: f64, radius: f64 },
     /// A sphere: the latitude, `v = atan2(h, ρ)`.
     Latitude,
-    /// A torus whose tube's centre circle has the radius `major`: the
-    /// angle about the tube, `v = atan2(h, ρ − major)`, whose period is a
-    /// turn as well.
-    Tube { major: f64 },
-}
-
-impl Rise {
-    /// Whether a stretch within `reach` keeps to where `v` is read off it
-    /// as this says and can be followed: on a cone, to the cone's own side
-    /// of its apex, where `v` is the ruling's and not stopped; on a torus,
-    /// within less than a quarter turn about the tube, so that the chart,
-    /// which moves each point by whole periods to the one before, follows
-    /// the edge round the tube as it does round the axis (the box of the
-    /// stretch's distances from the axis and its heights lies in a fan
-    /// about the tube's centre narrower than that, and so clear of it).
-    fn keeps(&self, reach: &Reach) -> bool {
-        let (near, far) = reach.off;
-        let (below, above) = reach.height;
-        match self {
-            Rise::Height | Rise::Latitude => true,
-            Rise::Slant { slope, radius } => {
-                let ruling = if *slope > 0.0 { below } else { above };
-                (near * slope + ruling) * slope + radius > 0.0
-            }
-            Rise::Tube { major } => {
-                let mut fan = Fan::within(QUARTER_TURN);
-                [
-                    (near - major, below),
-                    (near - major, above),
-                    (far - major, below),
-                    (far - major, above),
-                ]
-                .into_iter()
-                .all(|corner| fan.add(corner))
-            }
-        }
-    }
+    /// A torus: the angle about its tube, which nothing here shows. Only
+    /// the angle about the axis is shown, and nothing is read off how often
+    /// a loop with a spline edge goes round ([`Ring::aliased`]).
+    Unshown,
 }
 
 impl Lay {
@@ -1018,20 +995,21 @@ impl Lay {
                 },
             ),
             Surface::Sphere(s) => about(s.frame(), Rise::Latitude),
-            Surface::Torus(t) => about(t.frame(), Rise::Tube { major: t.radii().0 }),
+            Surface::Torus(t) => about(t.frame(), Rise::Unshown),
             Surface::Bezier(_) | Surface::Nurbs(_) => Lay::Space,
         }
     }
 
-    /// Whether a stretch within `reach` about the axis can be followed in
-    /// this chart ([`Rise::keeps`]).
-    fn keeps(&self, reach: &Reach) -> bool {
-        match self {
-            Lay::About { rise, .. } => rise.keeps(reach),
-            Lay::Flat { .. } | Lay::Space => true,
-            #[cfg(test)]
-            Lay::Turning { .. } => true,
-        }
+    /// Whether an edge is held to running one way in this chart
+    /// ([`one_way`]): not on a torus, where nothing is read off it.
+    fn asks(&self) -> bool {
+        !matches!(
+            self,
+            Lay::About {
+                rise: Rise::Unshown,
+                ..
+            }
+        )
     }
 
     /// The axis the surface closes about, as a point on it and its unit
@@ -1040,8 +1018,6 @@ impl Lay {
         match self {
             Lay::About { origin, z, .. } => Some((*origin, *z)),
             Lay::Flat { .. } | Lay::Space => None,
-            #[cfg(test)]
-            Lay::Turning { origin, z } => Some((*origin, *z)),
         }
     }
 }
@@ -1049,7 +1025,8 @@ impl Lay {
 /// The steps an edge over `(t0, t1)` is followed in: the fewest
 /// `base · 2^k`, `most` at the most, such that `shown` holds of every half
 /// step, `shown(a, b, work)` saying whether the edge over `(a, b)` is shown
-/// to hide no turn there (`None`: the face's work is spent, [`spend`]).
+/// to keep to what the walk can follow there ([`spline_steps`]; `None`: the
+/// face's work is spent, [`spend`]).
 /// What `shown` holds of a stretch it holds of every part of it, so each of
 /// the `2 · base` half steps is halved only until it is shown, and the
 /// deepest it needed sets the steps. `None` where a half step cannot be
@@ -1089,10 +1066,10 @@ fn steps_shown(
 
 /// The steps a spline edge over `(t0, t1)` is followed in on a surface
 /// whose chart is `lay`: the fewest `SPLINE_STEPS · 2^k` such that over
-/// each half step the edge is shown to hide no turn from the walk
-/// ([`steps_shown`]), which reads the edge at the ends and the middle of
-/// each step and takes the chord between them for it. Two things are shown
-/// of a half step.
+/// each half step the edge is shown to keep to what the walk can follow
+/// ([`steps_shown`]); the walk reads the edge at the ends and the middle of
+/// each step and takes the chord of the whole step for it. Two things are
+/// shown of a half step.
 ///
 /// **About an axis** ([`Lay::About`]) the curve's angle about it moves by
 /// less than a quarter turn, so the chart, which moves each point by whole
@@ -1118,11 +1095,19 @@ fn steps_shown(
 /// points, a sum of the legs between the control points of its span with
 /// weights that are not negative, and the chart takes directions in space
 /// to directions of its own by a linear map at each point ([`Lay`]). The
-/// image and its chord then cross every line square to the fan's middle
-/// once each, so together they go round no point more than once, and only
-/// round points that lie between them: the chord hides no turn about any
-/// point of the chart, and what lies between the two is what the walk
-/// measures at the step's middle. On a spline surface ([`Lay::Space`]),
+/// image over the half step and the half step's chord then cross every
+/// line square to the fan's middle once each, so together they go round no
+/// point more than once, and only round points that lie between them: the
+/// chord of a half step hides no turn about any point of the chart. That
+/// is all that is shown. The walk takes the chord of the whole step, and
+/// reads the edge only at the step's middle, where the chords of its two
+/// halves meet: two halves that each run one way may together, with the
+/// whole step's chord, go round a point twice while the middle lies on
+/// that chord, and what lies between a half step and its own chord is not
+/// measured at all (`docs/design/topology.md` › *A strip that spirals about
+/// a point of the chart*, Owed). Not on a torus ([`Rise::Unshown`]): there
+/// nothing is read off a loop with a spline edge ([`Ring::aliased`]), and
+/// its edges are shown about the axis alone. On a spline surface ([`Lay::Space`]),
 /// whose chart is not known, the edge is held to running one way along its
 /// stretch's own chord in space, and only as a reason not to follow it: an
 /// edge so shown within `SPLINE_STEPS` is followed in them, as every spline
@@ -1228,18 +1213,20 @@ fn spline_steps(
         // the axis can take from that as the point goes round by up to
         // half the angle, and what the direction itself can change by
         // over half the stretch (its second derivative's bound).
-        let within = Reach {
-            low: middle * cos - on * sin,
-            high: middle * cos + on * sin,
-            off: (low, off + 0.5 * reach),
-            height: (height - 0.5 * reach, height + 0.5 * reach),
-        };
-        let round = lay.keeps(&within)
+        let round = lay.asks()
             && bend_over(a, b, made).is_some_and(|bend| {
                 let lost = going.dot(middle).abs() * sin + bend * 0.5 * (b - a);
                 going.dot(on).abs() * cos - lost > ROUND_CLEAR * speed
             });
-        Some((within, round))
+        Some((
+            Reach {
+                low: middle * cos - on * sin,
+                high: middle * cos + on * sin,
+                off: (low, off + 0.5 * reach),
+                height: (height - 0.5 * reach, height + 0.5 * reach),
+            },
+            round,
+        ))
     };
     // (3) The Bézier pieces, each made once where (1) and (2) do not show
     // it, and the points of a stretch's cut pieces.
@@ -1361,8 +1348,6 @@ fn spline_steps(
     let most = match lay {
         Lay::Space => SPLINE_STEPS,
         Lay::Flat { .. } | Lay::About { .. } => MOST_SPLINE_STEPS,
-        #[cfg(test)]
-        Lay::Turning { .. } => MOST_SPLINE_STEPS,
     };
     steps_shown(SPLINE_STEPS, most, range, work, |a, b, work| {
         shown(a, b, false, work)
@@ -1521,7 +1506,8 @@ impl Fan {
 /// nothing and is passed over; a shorter one than [`LEG_CLEAR`] times its
 /// clearance has no direction that can be read, and the stretch is not
 /// shown. On a spline surface ([`Lay::Space`]) the legs are held to running
-/// forward along the chord from the first point to the last, in space.
+/// forward along the chord from the first point to the last, in space. On a
+/// torus ([`Rise::Unshown`]) nothing is asked.
 fn one_way(
     lay: &Lay,
     points: &[Vec3],
@@ -1558,6 +1544,10 @@ fn one_way(
             }
             (true, looked)
         }
+        Lay::About {
+            rise: Rise::Unshown,
+            ..
+        } => (true, 0),
         Lay::About { z, rise, .. } => {
             let Some(reach) = reach else {
                 return (false, 0);
@@ -1567,14 +1557,17 @@ fn one_way(
             if !(near > 0.0 && far.is_finite() && below.is_finite() && above.is_finite()) {
                 return (false, 0);
             }
-            // Where `v` cannot be read off the stretch (past a cone's
-            // apex, too far round a torus's tube) nothing is shown.
-            if !rise.keeps(reach) {
-                return (false, 0);
-            }
+            // A cone's `v` stops at the apex: the stretch must keep to the
+            // cone's own side of it, where `v` is the ruling's.
             let norm = match rise {
-                Rise::Slant { slope, .. } => 1.0 / (slope * slope + 1.0).sqrt(),
-                Rise::Height | Rise::Latitude | Rise::Tube { .. } => 1.0,
+                Rise::Slant { slope, radius } => {
+                    let ruling = if *slope > 0.0 { below } else { above };
+                    if !longer((near * slope + ruling) * slope + radius, 0.0) {
+                        return (false, 0);
+                    }
+                    1.0 / (slope * slope + 1.0).sqrt()
+                }
+                Rise::Height | Rise::Latitude | Rise::Unshown => 1.0,
             };
             let (round_low, round_high) = (z.cross(reach.low), z.cross(reach.high));
             // First the angle about the axis alone, which is what a helix
@@ -1610,28 +1603,15 @@ fn one_way(
                 return (true, looked);
             }
             let widest = far / near;
-            // The rate of a latitude, or of the angle about a tube, is over
-            // the square of the distance from the centre it is taken about
-            // (the sphere's, the tube's): between these, over the box of the
-            // stretch's distances from the axis and its heights.
-            let (inside, outside) = match rise {
-                Rise::Tube { major } => (near - major, far - major),
-                Rise::Height | Rise::Slant { .. } | Rise::Latitude => (near, far),
+            // The latitude's rate is over the square of the distance from
+            // the centre: between these.
+            let least = if below <= 0.0 && above >= 0.0 {
+                0.0
+            } else {
+                below.abs().min(above.abs())
             };
-            let span = |low: f64, high: f64| {
-                let least = if low <= 0.0 && high >= 0.0 {
-                    0.0
-                } else {
-                    low.abs().min(high.abs())
-                };
-                (least, low.abs().max(high.abs()))
-            };
-            let ((least_off, most_off), (least, most)) =
-                (span(inside, outside), span(below, above));
-            let (inner, outer) = (
-                least_off * least_off + least * least,
-                most_off * most_off + most * most,
-            );
+            let most = below.abs().max(above.abs());
+            let (inner, outer) = (near * near + least * least, far * far + most * most);
             let mut fan = Fan::within(ONE_WAY);
             for (w, clear) in legs() {
                 looked += ABOUT_UNITS;
@@ -1666,15 +1646,14 @@ fn one_way(
                 let u = (round.0.min(round.0 * widest), round.1.max(round.1 * widest));
                 // `v'`, as a length as well.
                 let v = match rise {
-                    Rise::Height => (along, along),
+                    Rise::Height | Rise::Unshown => (along, along),
                     Rise::Slant { slope, .. } => {
                         let (a, b) = (slope * away.0, slope * away.1);
                         ((a.min(b) + along) * norm, (a.max(b) + along) * norm)
                     }
-                    Rise::Latitude | Rise::Tube { .. } => {
-                        // `(ρ w·z − h w·r) / (ρ² + h²)`, `ρ` from the axis
-                        // or, about a tube, from its centre circle.
-                        let (a, b) = (inside * along, outside * along);
+                    Rise::Latitude => {
+                        // `(ρ w·z − h w·r) / (ρ² + h²)`.
+                        let (a, b) = (near * along, far * along);
                         let lifts = [
                             below * away.0,
                             below * away.1,
@@ -1699,8 +1678,6 @@ fn one_way(
             }
             (true, looked)
         }
-        #[cfg(test)]
-        Lay::Turning { .. } => (true, 0),
         Lay::Space => {
             let (Some(first), Some(last)) = (points.first(), points.last()) else {
                 return (false, 0);
@@ -2393,7 +2370,11 @@ mod tests {
     /// A chart of which only the angle about `axis` is shown, for the tests
     /// of that proof alone.
     fn turning((origin, z): (Vec3, Vec3)) -> Lay {
-        Lay::Turning { origin, z }
+        Lay::About {
+            origin,
+            z,
+            rise: Rise::Unshown,
+        }
     }
 
     fn tilted() -> Frame {
@@ -3176,12 +3157,14 @@ mod tests {
         NurbsCurve::polynomial(3, knots, points).unwrap()
     }
 
-    /// A plane, a cylinder, a cone, a sphere and a torus of size `k` in
-    /// `frame`, each with the map from a chart about `(0, 0)` to it, and
-    /// the lengths a unit of its `u` and of its `v` are on it there.
+    /// A plane, a cylinder, a cone and a sphere of size `k` in `frame`,
+    /// each with the map from a chart about `(0, 0)` to it, and the lengths
+    /// a unit of its `u` and of its `v` are on it there. (Not a torus: there
+    /// nothing is read off a loop with a spline edge, and an edge is not
+    /// held to running one way.)
     #[allow(clippy::type_complexity)]
     fn charted(frame: Frame, k: f64) -> Vec<(Surface, Box<dyn Fn(f64, f64) -> Vec3>, (f64, f64))> {
-        use craft3d_geom::{Cone, Cylinder, Plane, Sphere, Torus};
+        use craft3d_geom::{Cone, Cylinder, Plane, Sphere};
         let slope = 0.4_f64.ptan();
         vec![
             (
@@ -3207,14 +3190,6 @@ mod tests {
                 }),
                 (2.0 * k, 2.0 * k),
             ),
-            (
-                Surface::Torus(Torus::new(frame, 3.0 * k, k).unwrap()),
-                Box::new(move |x, y| {
-                    let (s, c) = y.psin_cos();
-                    about(&frame, 3.0 * k + k * c, 0.5 * x, k * s)
-                }),
-                (4.0 * k, k),
-            ),
         ]
     }
 
@@ -3231,16 +3206,12 @@ mod tests {
         let mut last: Option<(f64, f64)> = None;
         let mut out = Vec::new();
         for k in 0..=64 {
-            let (u, v) = surface
+            let (mut u, v) = surface
                 .project(curve.eval(a + (b - a) * k as f64 / 64.0))
                 .unwrap();
-            let (mut u, mut v) = (u, v);
             if let Some((lu, lv)) = last {
                 if let Some(period) = surface.period_u() {
                     u += ((lu - u) / period).round() * period;
-                }
-                if let Some(period) = surface.period_v() {
-                    v += ((lv - v) / period).round() * period;
                 }
                 out.push(((u - lu) * scale.0, (v - lv) * scale.1));
             }
@@ -3250,12 +3221,11 @@ mod tests {
     }
 
     /// A spline edge that spirals about a point of the chart, on a plane, a
-    /// cylinder, a cone, a sphere and a torus, turned and moved, at three
-    /// scales, is
+    /// cylinder, a cone and a sphere, turned and moved, at three scales, is
     /// followed in steps over each half of which its image in the chart
     /// runs one way (sampled finely, its directions lie in less than a half
-    /// turn), so no chord of the walk hides a turn: 16 turns in 32 steps or
-    /// more, where eight read it as a straight line. Up to four turns it
+    /// turn), so no chord of a half step hides a turn: 16 turns in 32 steps
+    /// or more, where eight read it as a straight line. Up to four turns it
     /// keeps the eight steps it always had. Through 64 points a turn, which
     /// the control points show, and through 8, whose spans are too wide for
     /// that: shown by the speed and by the cut pieces.
@@ -3273,7 +3243,7 @@ mod tests {
                     // A half step of three eighths of a turn at the most,
                     // so more than four thirds of a step a turn.
                     let least = (turns * 4.0 / 3.0) as usize;
-                    if a_turn < 64.0 || kind == "torus" {
+                    if a_turn < 64.0 {
                         assert!(steps >= least, "{kind}, {turns} turns: {steps} steps");
                     } else if turns <= 4.0 {
                         assert_eq!(steps, SPLINE_STEPS, "{kind} at {k}, {turns} turns");
@@ -3293,70 +3263,6 @@ mod tests {
                             fanned(&directions, 0.999 * PI),
                             "{kind} at {k}, {turns} turns: half step {h} of {halves} turns back"
                         );
-                    }
-                }
-            }
-        }
-    }
-
-    /// A curve that winds about a torus's tube as it goes round its axis
-    /// (`p` times round the axis and `q` about the tube, a cubic through 64
-    /// points a turn of the faster) is followed in steps each half of
-    /// which moves less than a quarter turn about the axis and about the
-    /// tube (sampled finely, each unwrapped from point to point): what the
-    /// walk needs to follow it round both ways. Three scales, two tori.
-    #[test]
-    fn a_spline_on_a_torus_moves_less_than_a_quarter_turn_about_its_tube_a_half_step() {
-        let f = tilted();
-        for k in [1e-3, 1.0, 1e6] {
-            for (major, minor) in [(3.0 * k, k), (2.0 * k, 0.5 * k)] {
-                let torus = Surface::Torus(craft3d_geom::Torus::new(f, major, minor).unwrap());
-                let lay = Lay::of(&torus);
-                for (p, q) in [
-                    (1.0_f64, 0.0_f64),
-                    (0.0, 1.0),
-                    (3.0, 13.0),
-                    (13.0, 3.0),
-                    (2.0, 2.0),
-                    (1.0, 40.0),
-                ] {
-                    let count = 64 * (p.max(q) as usize) + 1;
-                    let params: Vec<f64> =
-                        (0..count).map(|i| i as f64 / (count - 1) as f64).collect();
-                    let values: Vec<Vec<f64>> = params
-                        .iter()
-                        .map(|s| {
-                            let (sv, cv) = (TAU * q * s + 0.3).psin_cos();
-                            let at = about(&f, major + minor * cv, TAU * p * s, minor * sv);
-                            vec![at.x, at.y, at.z]
-                        })
-                        .collect();
-                    let (knots, ctrl) =
-                        craft3d_geom::refine::interpolate(&params, 3, &values).unwrap();
-                    let points = ctrl.iter().map(|c| Vec3::new(c[0], c[1], c[2])).collect();
-                    let curve = NurbsCurve::polynomial(3, knots, points).unwrap();
-                    let range = curve.domain();
-                    let steps = spline_steps(&curve, range, &lay, &mut 0).unwrap();
-                    let halves = 2 * steps;
-                    for h in 0..halves {
-                        let end =
-                            |j: usize| range.0 + (range.1 - range.0) * (j as f64 / halves as f64);
-                        let moved =
-                            chart_directions(&torus, (1.0, 1.0), &curve, (end(h), end(h + 1)));
-                        for d in 0..2 {
-                            let (mut at, mut low, mut high) = (0.0_f64, 0.0_f64, 0.0_f64);
-                            for step in &moved {
-                                at += if d == 0 { step.0 } else { step.1 };
-                                low = low.min(at);
-                                high = high.max(at);
-                            }
-                            assert!(
-                                high - low < QUARTER_TURN,
-                                "({p}, {q}) at {k}, radii {major} and {minor}: half step {h} of {halves} moves {} about {}",
-                                high - low,
-                                if d == 0 { "the axis" } else { "the tube" }
-                            );
-                        }
                     }
                 }
             }
