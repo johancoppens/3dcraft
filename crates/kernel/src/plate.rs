@@ -2212,6 +2212,32 @@ fn trace_boundary(
     // Which skins face the neighbour's material, from the middle.
     let middle = station(edge, 0.5 * (a + b), boundary.along, face)
         .ok_or_else(|| refuse(Some(edge_id), "the face has no normal along the edge"))?;
+    // A bevel moves the rim at the level `h` across the face by `h tan α`,
+    // out of the material; along an arc of a flat face that is toward its
+    // centre on the one side (a hole's at the front for a positive angle,
+    // a disc's at the back), and where it reaches the centre the rim's cone
+    // passes through its apex between the skins: the hole closes there, or
+    // the disc turns inside out, and no plate is left to build.
+    if let (Joint::Bevel(angle), Curve3::Circle(circle), Surface::Plane(_)) =
+        (&boundary.joint, &edge.curve, &face.face.surface)
+        && let Some(to_centre) = (circle.frame().origin() - middle.point).normalized()
+    {
+        let toward = -middle.inward.dot(to_centre);
+        for (level, skin) in [(face.levels[0], "back"), (face.levels[1], "front")] {
+            let shift = level * angle.ptan() * toward;
+            if !(shift < circle.radius() - tol) {
+                return Err(refuse(
+                    Some(edge_id),
+                    format!(
+                        "the bevel of {}° moves the rim along the arc of radius {} by {} toward its centre at the {skin} skin: the rim reaches the arc's centre there, so the hole closes (or the disc turns inside out) inside the plate; a smaller bevel, a thinner plate or a larger radius",
+                        short(angle.to_degrees()),
+                        short(circle.radius()),
+                        short(shift)
+                    ),
+                ));
+            }
+        }
+    }
     let sides = match &boundary.near {
         None => None,
         Some(near) => Some(sides(edge_id, near, &middle, tolerance)?),

@@ -777,7 +777,10 @@ fn bend_case(tally: &mut Tally, n: usize, c: &BendCase) {
             let want = Want {
                 volume: want,
                 feature: f64::INFINITY,
-                vertices: Some(square_vertices(&part.sheet, (0.0, t))),
+                // A sharp bend is joined in apart, its inner skin the axis
+                // itself, where the two flats' inner corners are one: the
+                // sheet's vertices give no closed form for it.
+                vertices: (c.r > 0.0).then(|| square_vertices(&part.sheet, (0.0, t))),
                 lines_across: None,
             };
             judge(tally, n, &what, &part.solid.body, &want, &tol)
@@ -885,26 +888,21 @@ fn held(tally: &Tally, name: &str, known: &[usize], refused: &[usize]) {
     assert_eq!(got, refused, "{name}: refused {:#?}", tally.refusals);
 }
 
-/// Holes of arcs of one circle in a square, and a whole circle. Known,
-/// the same before the run was kept within a turn (owed, the
-/// tessellator): a hole of three arcs of radius 3 t bevelled by 0.41 rad
-/// in a turned frame (case 388) measures as its closed form to the bit,
-/// but one of its cones cannot be tessellated ("the boundary crosses
-/// itself in parameter space"; its square twin, cylinders, is meshed).
+/// Holes of arcs of one circle in a square, and a whole circle. (Case
+/// 388, a hole of three arcs of radius 3 t bevelled by 0.41 rad in a
+/// turned frame, measured as its closed form but one of its cones could
+/// not be tessellated before its corners were taken from the rows; it is
+/// right now.)
 #[test]
 fn holes_of_arcs_at_whole_turns_are_their_closed_forms() {
     let cases = plate_cases(&HOLES, 0x9A7E_0001);
-    held(&tally_of(&cases, plate_case), "holes", &[388], &[]);
+    held(&tally_of(&cases, plate_case), "holes", &[], &[]);
 }
 
-/// Discs, rounded corners, slots and segments. Refused (owed, as before
-/// the run was kept within a turn): a disc of two half circles bevelled
-/// by 0.38 rad at `r/t` 1.27 about its middle (case 2; the edge across a
-/// corner between two bevelled rims of one cone, traced where they meet,
-/// does not settle: docs/design/plates.md › *Corners*, smooth vertices
-/// between bevelled rims), and one of radius 10 bevelled by −0.31 rad
-/// at 1e6 in a far frame (case 64; the rims there do not meet across the
-/// plate). Known (owed, the tessellator): plates far thinner across than
+/// Discs, rounded corners, slots and segments. (Cases 2 and 64, discs of
+/// two half circles bevelled by 0.38 and −0.31 rad, were refused before
+/// their corners were taken from the rows, the corners solved on the two
+/// rims of one cone; they are right now.) Known (owed, the tessellator): plates far thinner across than
 /// they are thick, a disc of radius 3e-3 t (case 57) and segments of 10
 /// degrees 1e-5 to 5e-4 t wide (cases 345, 364, 365, 375, 379), measure
 /// as their closed forms (to 1e-9), but their meshes, at chords from 1e-2
@@ -918,7 +916,7 @@ fn discs_corners_slots_and_segments_at_whole_turns_are_their_closed_forms() {
         &tally_of(&cases, plate_case),
         "outlines",
         &[57, 345, 364, 365, 375, 379],
-        &[2, 64],
+        &[],
     );
 }
 
@@ -1305,6 +1303,57 @@ fn a_rational_spline_ellipse_hole_is_refused_or_not_meshed() {
         assert!(
             got == 'R' || got == 'M',
             "{n} (b/a {ratio}, b/t {b}): known refused or not meshed, now {got}: take this off"
+        );
+    }
+}
+
+/// A bevel that moves an arc's rim past its centre between the skins is
+/// refused, saying so: a hole of radius 0.2 in a plate 1 thick bevelled by
+/// 0.3 rad closes 0.65 above its back skin (`0.2 − h tan 0.3`), a disc of
+/// radius 0.2 bevelled by −0.3 rad turns inside out there, on every side
+/// where it does (with `Mid` at 0.5 from the middle, the same); before
+/// (round 2 of 2026-11-15) such plates were built as bodies the checker
+/// passes that pass through themselves or cannot be measured, or refused
+/// for other reasons.
+#[test]
+fn a_bevel_past_an_arcs_centre_is_refused_saying_so() {
+    let tol = tolerance(1.0);
+    for (n, (outline, alpha, side)) in [
+        (Outline::Hole { s: PI, n: 2 }, 0.3, Side::Out),
+        (Outline::Hole { s: PI, n: 2 }, -0.3, Side::In),
+        (Outline::Disc { s: PI }, -0.3, Side::Out),
+        (Outline::Disc { s: PI }, 0.3, Side::In),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let c = PlateCase {
+            outline,
+            r: 0.2,
+            side,
+            rims: Rims::Bevel(alpha),
+            k: 1.0,
+            frame: Frame::WORLD,
+            turn: 0.0,
+        };
+        let shape = shape_of(&c);
+        let placing = Placing {
+            turn: 0.0,
+            k: 1.0,
+            at: [0.0, 0.0],
+            flip_lines: false,
+        };
+        let profiles = detect_profiles(&sketch(&shape, &placing, 1), &tol).unwrap();
+        let sheet = fill(&profiles, &Frame::WORLD, &tol).unwrap().body;
+        let joints: BTreeMap<EdgeId, Joint<'_>> = (0..sheet.edges.len())
+            .filter(|i| matches!(sheet.edges[*i].curve, Curve3::Circle(_)))
+            .map(|i| (EdgeId(i as u32), Joint::Bevel(alpha)))
+            .collect();
+        let e = plate(&sheet, &[FaceId(0)], 1.0, side, &joints, &tol).expect_err("refused");
+        assert!(
+            e.to_string()
+                .contains("the rim reaches the arc's centre there"),
+            "{n}: another reason: {e}"
         );
     }
 }
