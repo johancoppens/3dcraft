@@ -341,25 +341,26 @@ fn an_imported_dome_closed_across_a_seam_is_written_as_a_closed_surface() {
 }
 
 #[test]
-fn a_dome_s_export_with_the_angle_in_a_turned_frame_is_known_to_fold_in_single_precision() {
+fn a_turned_dome_s_stl_with_the_angle_is_known_to_hold_triangles_of_no_area() {
     // KNOWN, owed (docs/design/tessellator.md › *Sideways at a seam*, on
     // 0.1.x as well): with the angles of the export's qualities, along a
     // nose far sharper than the tolerance, the angle asks for points about
     // 1e-7 from the seam: two places to the mesh (a closed manifold), one
-    // to an STL file's single precision, where triangles have two corners
-    // at one point and, with those left out as a reader's repair drops
-    // them, sides are used twice each way. Of the fifteen exports of the
+    // to an STL file's single precision. Of the fifteen exports of the
     // five turned domes of the test above at `coarse`, `normal` and `fine`
     // (2026-11-15, a triangle with two corners at one point counted as a
     // fault): before, 14 so and 1 a closed surface; now 10 so, 1 a closed
     // surface and 4 refused ("the surface turns away from the chords …"),
-    // each of the four one that folded before. The export says so since
-    // 2026-11-15 (`closed` counted as the file holds the mesh, those
-    // triangles left out; `mergedPoints`, `foldedTriangles` and a
-    // warning): before, it counted the mesh closed and said nothing. When
-    // this fails because the file is a closed surface once the triangles
-    // of no area are left out (or the export is refused with a reason),
-    // the pin goes.
+    // each of the four one that folded before. This one at `normal`
+    // (2026-11-15): 6 points fall on others, each the end of a side whose
+    // two triangles become lines, 12 triangles of no area; with those left
+    // out, as a reader's repair drops them, the file is a closed surface,
+    // and the export counts it so and says why (`mergedPoints`,
+    // `foldedTriangles`, a warning). On 0.1.x its file had 226 such
+    // triangles and, with them left out, 16 sides not used once each way,
+    // counted closed without a word. When this fails because the file has
+    // no triangle of no area (or the export is refused with a reason), the
+    // pin goes.
     let dir = workdir("pole-fan", "angle");
     let what = "the dome 1 x 0.01 with its tip over 0.9, its seam on -x, turned";
     let mut s = imported(&dir, 0, (&turned(), (1.0, 0.01), true, 0.9), what);
@@ -368,22 +369,35 @@ fn a_dome_s_export_with_the_angle_in_a_turned_frame_is_known_to_fold_in_single_p
         .execute("file.export", &params)
         .unwrap_or_else(|e| panic!("{what}: refused now, take the pin off: {}", e.message()));
     let triangles = stl_triangles(&std::fs::read(dir.join("dome.stl")).unwrap());
-    let fault = not_closed(&triangles, true);
-    println!("{what}: {} triangles, {fault:?}, {result}", triangles.len());
-    assert!(
-        fault.is_some(),
-        "{what}: a closed surface now, take the pin off"
+    let (as_written, repaired) = (not_closed(&triangles, false), not_closed(&triangles, true));
+    println!(
+        "{what}: {} triangles, {as_written:?}, {repaired:?}, {result}",
+        triangles.len()
     );
-    // What the export says of it: not closed, and why.
-    assert_eq!(result["closed"], 0, "{result}");
+    // The file as the test reads it (corners the same bits, the same point):
+    // triangles of no area, and a closed surface without them.
+    assert!(
+        as_written
+            .as_ref()
+            .is_some_and(|fault| fault.contains("two corners at one point")),
+        "{what}: no triangle of no area now, take the pin off: {as_written:?}"
+    );
+    assert_eq!(repaired, None, "{what}: {result}");
+    // What the export says of it: closed, and what the file holds.
+    assert_eq!(result["closed"], 1, "{result}");
     assert!(
         result["mergedPoints"].as_u64().is_some_and(|n| n > 0),
         "{result}"
     );
-    assert!(result["foldedTriangles"].as_u64().is_some(), "{result}");
+    assert!(
+        result["foldedTriangles"].as_u64().is_some_and(|n| n > 0),
+        "{result}"
+    );
     let said = result["warnings"][0].as_str().unwrap_or_default();
     assert!(
-        said.contains("single precision") && said.contains("no closed surface"),
+        said.contains("single precision")
+            && said.contains("is a closed surface with")
+            && said.contains("triangles of no area"),
         "{result}"
     );
     // The same mesh written in full (ASCII STL): every point as it is,
