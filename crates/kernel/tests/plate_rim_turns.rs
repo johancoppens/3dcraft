@@ -873,3 +873,67 @@ fn elliptic_holes_at_whole_turns_are_their_closed_forms() {
     }
     held(&tally, "elliptic holes", &[], &[]);
 }
+
+/// Hostile numbers about a tight arc: a thickness that is not a number,
+/// zero, negative, infinite or within the tolerance is refused; a
+/// thickness of 1e300 or a hundred million times the hole's radius, and a
+/// bevel near square, are built or refused, never a panic; a bend's
+/// inner radius that is not a number, negative or infinite is refused,
+/// and one of 1e-300 or 1e300 is built or refused, never a panic.
+#[test]
+fn hostile_numbers_about_a_tight_arc_are_refused_or_built_never_a_panic() {
+    let tol = tolerance(1.0);
+    let hole = reversed(&split_circle([0.0, 0.0], 1e-3, &[0.3, 0.3 + PI]));
+    let shape = Shape {
+        what: String::new(),
+        outer: polygon_loop(&[[-10.0, -10.0], [10.0, -10.0], [10.0, 10.0], [-10.0, 10.0]]),
+        holes: vec![hole],
+        inner: ([5.0, 5.0], 3.0),
+        hole_discs: vec![([0.0, 0.0], 1e-3)],
+        feature: 1e-3,
+    };
+    let placing = Placing {
+        turn: 0.0,
+        k: 1.0,
+        at: [0.0, 0.0],
+        flip_lines: false,
+    };
+    let profiles = detect_profiles(&sketch(&shape, &placing, 1), &tol).unwrap();
+    let sheet = fill(&profiles, &Frame::WORLD, &tol).unwrap().body;
+    for t in [f64::NAN, 0.0, -1.0, f64::INFINITY, 1e-7] {
+        let made = guarded(|| plate(&sheet, &[FaceId(0)], t, Side::Out, &BTreeMap::new(), &tol));
+        assert!(matches!(made, Ok(Err(_))), "{t}: {made:?}");
+    }
+    let arcs: Vec<EdgeId> = (0..sheet.edges.len())
+        .filter(|i| matches!(sheet.edges[*i].curve, Curve3::Circle(_)))
+        .map(|i| EdgeId(i as u32))
+        .collect();
+    for (t, joint) in [
+        (1e300, Joint::Square),
+        (1e5, Joint::Square),
+        (1.0, Joint::Bevel(FRAC_PI_2 - 1e-4)),
+        (1.0, Joint::Bevel(1e-4 - FRAC_PI_2)),
+    ] {
+        let joints: BTreeMap<EdgeId, Joint<'_>> = arcs.iter().map(|e| (*e, joint)).collect();
+        let made = guarded(|| plate(&sheet, &[FaceId(0)], t, Side::Mid, &joints, &tol));
+        assert!(made.is_ok(), "{t} {joint:?}: a panic: {made:?}");
+    }
+    for r in [f64::NAN, -1.0, f64::INFINITY, 1e-300, 1e300] {
+        let c = BendCase {
+            angle: FRAC_PI_2,
+            direction: Direction::Down,
+            r,
+            kk: 0.4,
+            k: 1.0,
+            plane: Frame::WORLD,
+            hole: None,
+        };
+        let mut tally = Tally::new();
+        bend_case(&mut tally, 0, &c);
+        let got = tally.outcomes.chars().next().unwrap();
+        assert!(got != 'P', "R {r}: a panic: {:?}", tally.wrong);
+        if !(r >= 0.0 && r.is_finite()) {
+            assert_eq!(got, 'R', "R {r}: {:?}", tally.wrong);
+        }
+    }
+}
