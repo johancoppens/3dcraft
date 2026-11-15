@@ -26,6 +26,7 @@ use craft3d_geom::Surface;
 use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::{BooleanOp, boolean};
 use craft3d_kernel::extrude::extrude;
+use craft3d_kernel::move_face::{Motion, move_faces};
 use craft3d_kernel::offset_face::{FaceOffset, offset_faces};
 use craft3d_kernel::primitives;
 use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
@@ -324,5 +325,100 @@ fn the_same_answer_on_every_run_and_on_every_thread() {
     });
     for other in together {
         assert_eq!(other, first);
+    }
+}
+
+/// What the bottom of the plate of 240 spline faces (below), moved up to
+/// 0.05 under the lowest of them and built, counted on `main` before
+/// straight edges were looked at between their ends (ae5d56f2,
+/// 2026-11-15; the review of the freeform faces asked again).
+const DIPS_UNDER_BEFORE: u64 = 1_356_894;
+
+/// A plate 120 wide and 30 long whose top is 240 spline faces side by
+/// side, each a cubic from 20 down by 0.75 to 1.125 and back (the review's
+/// case of many freeform faces over a moved bottom), and its bottom.
+fn dipped(tol: &Tolerance) -> (Body, FaceId) {
+    let (w, n) = (120.0, 240);
+    let piece = w / n as f64;
+    let mut outlines = vec![line([0.0, 0.0], [w, 0.0]), line([w, 0.0], [w, 20.0])];
+    for i in 0..n {
+        let (x0, x1) = (w - piece * i as f64, w - piece * (i + 1) as f64);
+        let dip = 1.0 + 0.5 * ((i * 7) % 5) as f64 / 4.0;
+        outlines.push(Curve2::Spline(Spline2 {
+            degree: 3,
+            knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            control: vec![
+                [x0, 20.0],
+                [x0 + (x1 - x0) / 3.0, 20.0 - dip],
+                [x0 + 2.0 * (x1 - x0) / 3.0, 20.0 - dip],
+                [x1, 20.0],
+            ],
+        }));
+    }
+    outlines.push(line([0.0, 20.0], [0.0, 0.0]));
+    let body = prism(outlines, 30.0, tol);
+    let bottom = (0..body.faces.len() as u32)
+        .map(FaceId)
+        .find(|f| match &body.face(*f).unwrap().surface {
+            Surface::Plane(p) => p.frame().z().y.abs() > 0.99 && p.frame().origin().y.abs() < 1e-9,
+            _ => false,
+        })
+        .unwrap();
+    (body, bottom)
+}
+
+/// The plate of 240 spline faces, its bottom moved up to 0.05 under the
+/// lowest of them (18.875) and to 0.05 past it. Under them it is built,
+/// the plate that much thinner, counting no more than a fifth over what
+/// it counted before (each of the bottom's two long straight edges is
+/// followed under every spline face whose spans' boxes hold it). Past
+/// them it is refused, with a largest distance that fits that is the
+/// truth or below it; before, the refusal said 18.8751, 31 tolerances
+/// above the truth, for a body that is not right there.
+#[test]
+fn a_bottom_moved_under_and_through_240_spline_faces() {
+    let tol = tolerance(1.0);
+    let (body, bottom) = dipped(&tol);
+    let volume = measured(&body).unwrap().volume;
+    let up = |d: f64| {
+        craft3d_geom::allowance::measured(|| {
+            move_faces(
+                &body,
+                &[bottom],
+                &Motion {
+                    translate: Vec3::new(0.0, d, 0.0),
+                    pivot: Vec3::new(0.0, 0.0, 0.0),
+                    axis: Vec3::new(0.0, 0.0, 1.0),
+                    angle: 0.0,
+                },
+                &tol,
+            )
+            .map(|made| made.body)
+        })
+    };
+    let low = 18.875;
+    let (made, work) = up(low - 0.05);
+    println!("240 spline faces, the bottom moved under them: {work} units");
+    sound(
+        "under",
+        &made.unwrap(),
+        volume - 120.0 * 30.0 * (low - 0.05),
+        &tol,
+    );
+    assert!(
+        work <= DIPS_UNDER_BEFORE + DIPS_UNDER_BEFORE / 5,
+        "{work} units for {DIPS_UNDER_BEFORE} before"
+    );
+    let (made, work) = up(low + 0.05);
+    println!("240 spline faces, the bottom moved through them: {work} units");
+    match made {
+        Err(KernelError::FaceOpTooFar { largest, .. }) => {
+            println!("refused, {largest} fits");
+            assert!(
+                largest <= low + 8.0 * tol.linear && largest >= low * (1.0 - 1e-5),
+                "{largest}"
+            );
+        }
+        other => panic!("{:?}", other.map(|made| digest(&made))),
     }
 }

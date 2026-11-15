@@ -430,6 +430,85 @@ fn a_pockets_rim_raised_out_through_a_spline_wall_is_refused() {
     assert!(unexpected.is_empty(), "{unexpected:#?}");
 }
 
+/// The lowest the wall's spline comes over `x` from `a` to `b` (scale 1),
+/// by thirds (it has one dip there).
+fn wall_lowest(a: f64, b: f64) -> (f64, f64) {
+    let (mut lo, mut hi) = (a, b);
+    for _ in 0..200 {
+        let (p, q) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
+        if wall_y(p) < wall_y(q) {
+            hi = q;
+        } else {
+            lo = p;
+        }
+    }
+    let x = 0.5 * (lo + hi);
+    (x, wall_y(x))
+}
+
+/// A box from `lo` (scale 1) of `size`.
+fn boxed(lo: [f64; 3], size: [f64; 3], k: f64) -> Body {
+    let at = Frame::WORLD.at(Vec3::new(lo[0], lo[1], lo[2]) * k).unwrap();
+    primitives::block(&at, size[0] * k, size[1] * k, size[2] * k).unwrap()
+}
+
+/// A slot through the walled block from its bottom up to y 12, x from 17
+/// to 24 and z from 1 to 39, under the wall's dip; its floor (a rectangle
+/// of four straight edges) raised to `past` over the wall's lowest point
+/// over the slot (18.38, at x 20.41). The two edges along x leave through
+/// the wall between their ends, which stay under it. With what the floor
+/// did, how far it goes to reach the wall (scale 1).
+fn slot_through_wall(k: f64, past: f64) -> (Result<(Did, String), String>, f64) {
+    let tol = tolerance(k);
+    let solid = walled(40.0, k, &tol);
+    let slot = |height: f64| boxed([17.0, -5.0, 1.0], [7.0, height + 5.0, 38.0], k);
+    let body = cut(&solid, &slot(12.0), &tol);
+    let floor = flat(&body, 1, 12.0, k);
+    let (x, low) = wall_lowest(17.0, 24.0);
+    let to = low + past;
+    let direct = boolean(&solid, &slot(to), BooleanOp::Subtract, &tol)
+        .ok()
+        .and_then(|made| volume(&made.body));
+    // Half way between the wall and the raised floor over the wall's
+    // lowest point, half way along the slot: air over the wall.
+    let outside = (to > low + 0.01).then(|| Vec3::new(x, 0.5 * (low + to), 20.0) * k);
+    (
+        judged(
+            offset(&body, floor, -(to - 12.0) * k, &tol),
+            direct,
+            outside,
+            &tol,
+        ),
+        low - 12.0,
+    )
+}
+
+/// Until 2026-11-15 (the review of the freeform faces asked again) the
+/// floor 0.0005 and 0.002 over the wall's lowest point was built, and from
+/// 0.02 refused with a largest distance that fits up to where the middle
+/// of its straight edges reaches the wall (6.3838 of 6.3802): a straight
+/// edge was followed in one step and not looked at between its ends.
+#[test]
+fn a_slots_straight_edges_raised_out_through_a_spline_wall_are_refused() {
+    let mut unexpected = Vec::new();
+    for k in SCALES {
+        let tol = tolerance(k);
+        let (_, low) = wall_lowest(17.0, 24.0);
+        let limit = low - 12.0;
+        for past in [-0.3, -1e-4 * limit, 1e-4 * limit, 0.0005, 0.002, 0.02, 0.3] {
+            let (found, limit) = slot_through_wall(k, past);
+            hold(
+                format!("scale {k}, the slot's floor {past} over the wall's lowest"),
+                expected(past, limit * k),
+                found,
+                &tol,
+                &mut unexpected,
+            );
+        }
+    }
+    assert!(unexpected.is_empty(), "{unexpected:#?}");
+}
+
 /// The height at which the vase is 9 wide (scale 1).
 fn vase_nine() -> f64 {
     let (mut lo, mut hi) = (0.0_f64, 10.0_f64);

@@ -146,6 +146,22 @@ fn path(edge: &Edge) -> Option<Path> {
             .saturating_mul(SPAN_STEPS)
             .clamp(8, MOST_STEPS),
     };
+    follow(edge, steps)
+}
+
+/// `edge` followed in `steps` equal steps of its parameter (at least one).
+fn follow(edge: &Edge, steps: usize) -> Option<Path> {
+    follow_over(edge, edge.range, steps)
+}
+
+/// `edge` followed from `range.0` to `range.1` of its parameter in `steps`
+/// equal steps (at least one).
+fn follow_over(edge: &Edge, range: (f64, f64), steps: usize) -> Option<Path> {
+    let (a, b) = range;
+    if !(a.is_finite() && b.is_finite() && b > a) {
+        return None;
+    }
+    let steps = steps.max(1);
     let mut params = Vec::with_capacity(steps + 1);
     let mut points = Vec::with_capacity(steps + 1);
     for k in 0..=steps {
@@ -709,6 +725,9 @@ type Rank = (f64, f64);
 /// Parameters on a surface: where a walk starts.
 type Params = (f64, f64);
 
+/// Where the walks of each step of a path start ([`starts`]).
+type Starts = Vec<Option<Params>>;
+
 /// Whether the rank `a` is nearer than `b`.
 fn nearer(a: Rank, b: Rank) -> bool {
     a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)).is_lt()
@@ -936,6 +955,70 @@ fn walked(surface: &Surface, point: Vec3, start: (f64, f64)) -> Option<(f64, (f6
 /// Halvings of the search for where an edge crosses a surface.
 const CUT_STEPS: usize = 48;
 
+/// Most steps a stretch of a straight edge is followed in against a
+/// freeform face ([`pierced`]).
+const LINE_STEPS: usize = 64;
+
+/// The stretches of the straight edge `edge` that lie in the boxes of
+/// `spans` grown by `reach` (where alone the surface can be), each
+/// followed in two steps for every span whose box holds it (at most
+/// [`LINE_STEPS`]); stretches that overlap or touch are one. Each span is
+/// held against the edge by the box's slabs, and counted against the
+/// operation's work bound, a unit per 64 spans.
+fn line_stretches(edge: &Edge, spans: &[Span], reach: f64) -> Vec<Path> {
+    let (a, b) = edge.range;
+    let (p, q) = (edge.curve.eval(a), edge.curve.eval(b));
+    craft3d_geom::allowance::charge((spans.len() / 64) as u64 + 1);
+    if !(p.is_finite() && q.is_finite() && a.is_finite() && b.is_finite() && b > a) {
+        return Vec::new();
+    }
+    let along = q - p;
+    // The part of [0, 1] along the edge inside a box, by its three slabs.
+    let clip = |lo: Vec3, hi: Vec3| -> Option<(f64, f64)> {
+        let (mut from, mut to) = (0.0_f64, 1.0_f64);
+        for (o, d, l, h) in [
+            (p.x, along.x, lo.x - reach, hi.x + reach),
+            (p.y, along.y, lo.y - reach, hi.y + reach),
+            (p.z, along.z, lo.z - reach, hi.z + reach),
+        ] {
+            if d == 0.0 {
+                if o < l || o > h {
+                    return None;
+                }
+                continue;
+            }
+            let (s0, s1) = ((l - o) / d, (h - o) / d);
+            let (s0, s1) = if s0 <= s1 { (s0, s1) } else { (s1, s0) };
+            from = from.max(s0);
+            to = to.min(s1);
+            if from > to || from.is_nan() || to.is_nan() {
+                return None;
+            }
+        }
+        Some((from, to))
+    };
+    let mut held: Vec<(f64, f64)> = spans.iter().filter_map(|s| clip(s.lo, s.hi)).collect();
+    held.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.total_cmp(&y.1)));
+    // Merged, with how many spans' boxes each holds.
+    let mut merged: Vec<(f64, f64, usize)> = Vec::new();
+    for (from, to) in held {
+        match merged.last_mut() {
+            Some(last) if from <= last.1 => {
+                last.1 = last.1.max(to);
+                last.2 = last.2.saturating_add(1);
+            }
+            _ => merged.push((from, to, 1)),
+        }
+    }
+    merged
+        .into_iter()
+        .filter_map(|(from, to, count)| {
+            let steps = count.saturating_mul(2).clamp(2, LINE_STEPS);
+            follow_over(edge, (a + (b - a) * from, a + (b - a) * to), steps)
+        })
+        .collect()
+}
+
 /// Whether the distance from a point to `surface` is a closed form (a
 /// plane, a cylinder, a cone, a sphere, a torus). [`swept`] and [`pierced`]
 /// ask it of every vertex and every step of an edge near a face, which a
@@ -987,6 +1070,7 @@ pub(super) fn pierced(
         let around = Bbox3::from_corners(followed.lo - grow, followed.hi + grow);
         let own = uses.get(id.0 as usize).map_or(&[][..], Vec::as_slice);
         let mut cuts: Vec<f64> = Vec::new();
+        let mut deepest: Vec<f64> = Vec::new();
         let mut through = None;
         for (index, bounds) in layout.boxes.iter().enumerate() {
             let face = FaceId(super::index_u32(index));
@@ -1001,167 +1085,329 @@ pub(super) fn pierced(
                 continue;
             }
             // Of a freeform face: where each step of the edge may start
-            // its walk, for the steps that come near a span of the face.
-            let starts = if analytic(&data.surface) {
-                None
+            // its walk, for the steps that come near a span of the face. A
+            // straight edge is one step, and a curved surface can come
+            // through it between its ends with both ends on one side (the
+            // floor of a slot under a spline wall that dips over its
+            // middle): against a freeform face it is followed only along
+            // the stretches of it that lie in the boxes of the face's
+            // spans (grown by the tolerance), in steps of its own, two for
+            // every span whose box holds the stretch (at most
+            // [`LINE_STEPS`]), and looked at between them.
+            let freeform = !analytic(&data.surface);
+            // Each piece: the stretch followed (none for the whole edge as
+            // `followed`), and where its steps start their walks.
+            let pieces: Vec<(Option<Path>, Option<Starts>)> = if !freeform {
+                vec![(None, None)]
             } else {
                 let Some(spans) = layout.spans(made, face) else {
                     continue;
                 };
-                let near = starts(&spans, &followed, reach);
-                if craft3d_geom::allowance::exhausted() {
-                    return Err(Spent);
+                let paths: Vec<Option<Path>> = if matches!(edge.curve, Curve3::Line(_)) {
+                    line_stretches(edge, &spans, reach)
+                        .into_iter()
+                        .map(Some)
+                        .collect()
+                } else {
+                    vec![None]
+                };
+                let mut pieces = Vec::with_capacity(paths.len());
+                for here in paths {
+                    let near = starts(&spans, here.as_ref().unwrap_or(&followed), reach);
+                    if craft3d_geom::allowance::exhausted() {
+                        return Err(Spent);
+                    }
+                    if let Some(near) = near {
+                        pieces.push((here, Some(near)));
+                    }
                 }
-                match near {
-                    Some(starts) => Some(starts),
-                    None => continue,
+                if pieces.is_empty() {
+                    continue;
                 }
+                pieces
             };
+            let lined = freeform && matches!(edge.curve, Curve3::Line(_));
             craft3d_geom::allowance::charge(1);
             if craft3d_geom::allowance::exhausted() {
                 return Err(Spent);
             }
-            // The edge's distance from the surface at `t`. From a freeform
-            // surface by a walk, from the foot of the point asked about
-            // before or else from `start` (the middle of a span the edge
-            // is near there); a walk that does not end square to the
-            // surface says nothing, and where the edge is near no span
-            // nothing is asked.
-            let foot: Cell<Option<(f64, f64)>> = Cell::new(None);
-            let off = |t: f64, start: Option<(f64, f64)>| -> Option<f64> {
-                let point = edge.curve.eval(t);
-                if starts.is_none() {
-                    return distance(&data.surface, point).map(|(d, _)| d);
-                }
-                let Some(start) = start else {
-                    foot.set(None);
-                    return None;
-                };
-                let found = foot
-                    .get()
-                    .and_then(|from| walked(&data.surface, point, from))
-                    .or_else(|| walked(&data.surface, point, start));
-                foot.set(found.map(|(_, at, _)| at));
-                found.map(|(d, _, _)| d)
-            };
-            let start_of = |k: usize| starts.as_ref().and_then(|s| s.get(k).copied().flatten());
-            let mut sides: Vec<Option<f64>> = Vec::with_capacity(followed.params.len());
-            let mut feet: Vec<Option<(f64, f64)>> = Vec::with_capacity(followed.params.len());
-            for (k, t) in followed.params.iter().enumerate() {
-                sides.push(off(*t, start_of(k)));
-                feet.push(foot.get());
-            }
-            if starts.is_some() && craft3d_geom::allowance::exhausted() {
-                return Err(Spent);
-            }
-            // Where the edge crosses the surface between two parameters on
-            // either side of it, by halving.
-            let crossing = |from: f64, to: f64, below: bool, start: Option<(f64, f64)>| {
-                let (mut lo, mut hi) = (from, to);
-                for _ in 0..CUT_STEPS {
-                    let middle = 0.5 * (lo + hi);
-                    match off(middle, start) {
-                        Some(d) if (d < 0.0) == below => lo = middle,
-                        Some(_) => hi = middle,
-                        None => break,
-                    }
-                }
-                0.5 * (lo + hi)
-            };
             let mut places: Vec<f64> = Vec::new();
-            for (k, (ts, ds)) in followed.params.windows(2).zip(sides.windows(2)).enumerate() {
-                let ([t0, t1], [first, second]) = (ts, ds) else {
-                    continue;
+            // The dips of a straight edge through the surface between its
+            // steps, each with where it crosses the surface on either side.
+            let mut dips: Vec<(f64, Vec<f64>)> = Vec::new();
+            for (here, starts) in &pieces {
+                let here: &Path = here.as_ref().unwrap_or(&followed);
+                // The edge's distance from the surface at `t`. From a freeform
+                // surface by a walk, from the foot of the point asked about
+                // before or else from `start` (the middle of a span the edge
+                // is near there); a walk that does not end square to the
+                // surface says nothing, and where the edge is near no span
+                // nothing is asked.
+                let foot: Cell<Option<(f64, f64)>> = Cell::new(None);
+                let off = |t: f64, start: Option<(f64, f64)>| -> Option<f64> {
+                    let point = edge.curve.eval(t);
+                    if !freeform {
+                        return distance(&data.surface, point).map(|(d, _)| d);
+                    }
+                    let Some(start) = start else {
+                        foot.set(None);
+                        return None;
+                    };
+                    let found = foot
+                        .get()
+                        .and_then(|from| walked(&data.surface, point, from))
+                        .or_else(|| walked(&data.surface, point, start));
+                    foot.set(found.map(|(_, at, _)| at));
+                    found.map(|(d, _, _)| d)
                 };
-                // The walks between these two steps start where the first
-                // of them ended.
-                let start = start_of(k).or(start_of(k + 1));
-                foot.set(feet.get(k).copied().flatten());
-                let mut cuts: Vec<f64> = Vec::new();
-                let (d0, d1) = match (first, second) {
-                    (Some(d0), Some(d1)) => (d0, d1),
-                    // On a freeform surface a walk says nothing where the
-                    // foot it looks for lies past the surface's border (a
-                    // point beside a round, beyond where it meets the face
-                    // it runs into); between such a step and one that has
-                    // a distance the surface can still lie. Looked for
-                    // from the step that has one: the last place towards
-                    // the other whose walk ends square (by halving), and
-                    // the crossing between the two where their sides
-                    // differ.
-                    (Some(d), None) | (None, Some(d)) if starts.is_some() && *d != 0.0 => {
-                        let (known, unknown) = if first.is_some() {
-                            (*t0, *t1)
-                        } else {
-                            (*t1, *t0)
-                        };
-                        let (mut lo, mut hi) = (known, unknown);
-                        let mut last = None;
-                        for _ in 0..CUT_STEPS {
-                            let middle = 0.5 * (lo + hi);
-                            match off(middle, start) {
-                                Some(at) => {
-                                    lo = middle;
-                                    last = Some(at);
+                let start_of = |k: usize| starts.as_ref().and_then(|s| s.get(k).copied().flatten());
+                let mut sides: Vec<Option<f64>> = Vec::with_capacity(here.params.len());
+                let mut feet: Vec<Option<(f64, f64)>> = Vec::with_capacity(here.params.len());
+                for (k, t) in here.params.iter().enumerate() {
+                    sides.push(off(*t, start_of(k)));
+                    feet.push(foot.get());
+                }
+                if freeform && craft3d_geom::allowance::exhausted() {
+                    return Err(Spent);
+                }
+                // Where the edge crosses the surface between two parameters on
+                // either side of it, by halving.
+                let crossing = |from: f64, to: f64, below: bool, start: Option<(f64, f64)>| {
+                    let (mut lo, mut hi) = (from, to);
+                    for _ in 0..CUT_STEPS {
+                        let middle = 0.5 * (lo + hi);
+                        match off(middle, start) {
+                            Some(d) if (d < 0.0) == below => lo = middle,
+                            Some(_) => hi = middle,
+                            None => break,
+                        }
+                    }
+                    0.5 * (lo + hi)
+                };
+                for (k, (ts, ds)) in here.params.windows(2).zip(sides.windows(2)).enumerate() {
+                    let ([t0, t1], [first, second]) = (ts, ds) else {
+                        continue;
+                    };
+                    // The walks between these two steps start where the first
+                    // of them ended.
+                    let start = start_of(k).or(start_of(k + 1));
+                    foot.set(feet.get(k).copied().flatten());
+                    let mut cuts: Vec<f64> = Vec::new();
+                    let (d0, d1) = match (first, second) {
+                        (Some(d0), Some(d1)) => (d0, d1),
+                        // On a freeform surface a walk says nothing where the
+                        // foot it looks for lies past the surface's border (a
+                        // point beside a round, beyond where it meets the face
+                        // it runs into); between such a step and one that has
+                        // a distance the surface can still lie. Looked for
+                        // from the step that has one: the last place towards
+                        // the other whose walk ends square (by halving), and
+                        // the crossing between the two where their sides
+                        // differ.
+                        (Some(d), None) | (None, Some(d)) if freeform && *d != 0.0 => {
+                            let (known, unknown) = if first.is_some() {
+                                (*t0, *t1)
+                            } else {
+                                (*t1, *t0)
+                            };
+                            let (mut lo, mut hi) = (known, unknown);
+                            let mut last = None;
+                            for _ in 0..CUT_STEPS {
+                                let middle = 0.5 * (lo + hi);
+                                match off(middle, start) {
+                                    Some(at) => {
+                                        lo = middle;
+                                        last = Some(at);
+                                    }
+                                    None => hi = middle,
                                 }
-                                None => hi = middle,
+                            }
+                            if last.is_some_and(|at| at != 0.0 && (at < 0.0) != (*d < 0.0)) {
+                                foot.set(feet.get(k).copied().flatten());
+                                cuts.push(crossing(known, lo, *d < 0.0, start));
+                                cuts.retain(|at| off(*at, start).is_some_and(|d| d.abs() <= tol));
+                            }
+                            if craft3d_geom::allowance::exhausted() {
+                                return Err(Spent);
+                            }
+                            places.extend(cuts);
+                            continue;
+                        }
+                        _ => continue,
+                    };
+                    if (*d0 < 0.0 && *d1 > 0.0) || (*d0 > 0.0 && *d1 < 0.0) {
+                        cuts.push(crossing(*t0, *t1, *d0 < 0.0, start));
+                    } else if here.slack > 0.0 && *d0 != 0.0 && d0.abs().min(d1.abs()) <= reach {
+                        // Both steps on one side and near the surface: a bend
+                        // between them may dip through it and come back. Where
+                        // it comes nearest (or goes farthest through), by
+                        // thirds.
+                        let side = d0.signum();
+                        let depth = |t: f64| off(t, start).map(|d| side * d);
+                        let (mut lo, mut hi) = (*t0, *t1);
+                        for _ in 0..CUT_STEPS {
+                            let (a, b) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
+                            match (depth(a), depth(b)) {
+                                (Some(da), Some(db)) if da < db => hi = b,
+                                (Some(_), Some(_)) => lo = a,
+                                _ => break,
                             }
                         }
-                        if last.is_some_and(|at| at != 0.0 && (at < 0.0) != (*d < 0.0)) {
-                            foot.set(feet.get(k).copied().flatten());
-                            cuts.push(crossing(known, lo, *d < 0.0, start));
-                            cuts.retain(|at| off(*at, start).is_some_and(|d| d.abs() <= tol));
+                        let dip = 0.5 * (lo + hi);
+                        if depth(dip).is_some_and(|d| d < 0.0) {
+                            cuts.push(crossing(*t0, dip, *d0 < 0.0, start));
+                            cuts.push(crossing(dip, *t1, *d0 > 0.0, start));
+                        }
+                    }
+                    // On a freeform surface a place counts only where the edge
+                    // is found on the surface there: two walks that settled on
+                    // different folds of it differ in sign with nothing
+                    // between them.
+                    if freeform {
+                        cuts.retain(|at| off(*at, start).is_some_and(|d| d.abs() <= tol));
+                        if craft3d_geom::allowance::exhausted() {
+                            return Err(Spent);
+                        }
+                    }
+                    places.extend(cuts);
+                }
+                // A straight edge against a freeform face: where the surface
+                // can bulge through it between two of its steps, all on one
+                // side. Looked for about each step that is nearer the surface
+                // than the steps beside it (a sampled least distance) by no
+                // more than the distance changes from it to them, and the
+                // tolerance: there a smooth surface can come through between
+                // them, and the least distance about it is found, by golden
+                // section, from the step before to the step after; where it
+                // is through, the two places it crosses are found by halving.
+                // Elsewhere the steps say the surface is too far for it.
+                if lined {
+                    let last = sides.len().saturating_sub(1);
+                    for k in 0..=last {
+                        let Some(Some(d)) = sides.get(k).copied() else {
+                            continue;
+                        };
+                        if d == 0.0 {
+                            continue;
+                        }
+                        let side = d.signum();
+                        // The distance at a neighbour, on the same side.
+                        let beside = |j: Option<usize>| -> Option<Option<f64>> {
+                            let Some(j) = j else {
+                                return Some(None);
+                            };
+                            match sides.get(j).copied().flatten() {
+                                Some(e) if e.signum() == side => Some(Some(e.abs())),
+                                _ => None,
+                            }
+                        };
+                        let (Some(before), Some(after)) = (
+                            beside(k.checked_sub(1)),
+                            beside((k < last).then_some(k + 1)),
+                        ) else {
+                            continue;
+                        };
+                        let here_off = d.abs();
+                        if before.is_some_and(|b| b < here_off)
+                            || after.is_some_and(|a| a < here_off)
+                        {
+                            continue;
+                        }
+                        let change = before
+                            .map_or(0.0, |b| b - here_off)
+                            .max(after.map_or(0.0, |a| a - here_off));
+                        if here_off > change + tol {
+                            continue;
+                        }
+                        let (Some(&lo_t), Some(&hi_t)) = (
+                            here.params.get(k.saturating_sub(1)),
+                            here.params.get((k + 1).min(last)),
+                        ) else {
+                            continue;
+                        };
+                        let start = start_of(k);
+                        foot.set(feet.get(k).copied().flatten());
+                        let depth = |t: f64| off(t, start).map(|e| side * e);
+                        // Golden section for the least of `depth`, until it is
+                        // found through, the bracket is tight, or the least
+                        // found is further from the surface than the distance
+                        // changes from it to the bracket's ends (by the same
+                        // rule as the steps: the surface cannot come through
+                        // there).
+                        const GOLD: f64 = 0.618_033_988_749_894_9;
+                        let (mut a, mut b) = (lo_t, hi_t);
+                        let (mut fa, mut fb) =
+                            (before.unwrap_or(here_off), after.unwrap_or(here_off));
+                        let mut p = b - GOLD * (b - a);
+                        let mut q = a + GOLD * (b - a);
+                        let (mut fp, mut fq) = (depth(p), depth(q));
+                        let mut through = None;
+                        for _ in 0..CUT_STEPS {
+                            let (Some(vp), Some(vq)) = (fp, fq) else {
+                                break;
+                            };
+                            if vp < 0.0 {
+                                through = Some(p);
+                                break;
+                            }
+                            if vq < 0.0 {
+                                through = Some(q);
+                                break;
+                            }
+                            let least = vp.min(vq);
+                            let tight = b - a <= 1e-12 * (hi_t - lo_t) || (b - a).is_nan();
+                            if least > fa.max(fb) - least + tol || tight {
+                                break;
+                            }
+                            if vp < vq {
+                                b = q;
+                                fb = vq;
+                                q = p;
+                                fq = fp;
+                                p = b - GOLD * (b - a);
+                                fp = depth(p);
+                            } else {
+                                a = p;
+                                fa = vp;
+                                p = q;
+                                fp = fq;
+                                q = a + GOLD * (b - a);
+                                fq = depth(q);
+                            }
+                        }
+                        // Asked about at the dip itself, the deepest place
+                        // found through, where the edge is found on the
+                        // surface on either side of it.
+                        if let Some(dip) = through {
+                            let mut cuts = vec![
+                                crossing(lo_t, dip, d < 0.0, start),
+                                crossing(dip, hi_t, d > 0.0, start),
+                            ];
+                            cuts.retain(|at| off(*at, start).is_some_and(|e| e.abs() <= tol));
+                            if !cuts.is_empty() {
+                                dips.push((dip, cuts));
+                            }
                         }
                         if craft3d_geom::allowance::exhausted() {
                             return Err(Spent);
                         }
-                        places.extend(cuts);
-                        continue;
-                    }
-                    _ => continue,
-                };
-                if (*d0 < 0.0 && *d1 > 0.0) || (*d0 > 0.0 && *d1 < 0.0) {
-                    cuts.push(crossing(*t0, *t1, *d0 < 0.0, start));
-                } else if followed.slack > 0.0 && *d0 != 0.0 && d0.abs().min(d1.abs()) <= reach {
-                    // Both steps on one side and near the surface: a bend
-                    // between them may dip through it and come back. Where
-                    // it comes nearest (or goes farthest through), by
-                    // thirds.
-                    let side = d0.signum();
-                    let depth = |t: f64| off(t, start).map(|d| side * d);
-                    let (mut lo, mut hi) = (*t0, *t1);
-                    for _ in 0..CUT_STEPS {
-                        let (a, b) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
-                        match (depth(a), depth(b)) {
-                            (Some(da), Some(db)) if da < db => hi = b,
-                            (Some(_), Some(_)) => lo = a,
-                            _ => break,
-                        }
-                    }
-                    let dip = 0.5 * (lo + hi);
-                    if depth(dip).is_some_and(|d| d < 0.0) {
-                        cuts.push(crossing(*t0, dip, *d0 < 0.0, start));
-                        cuts.push(crossing(dip, *t1, *d0 > 0.0, start));
                     }
                 }
-                // On a freeform surface a place counts only where the edge
-                // is found on the surface there: two walks that settled on
-                // different folds of it differ in sign with nothing
-                // between them.
-                if starts.is_some() {
-                    cuts.retain(|at| off(*at, start).is_some_and(|d| d.abs() <= tol));
-                    if craft3d_geom::allowance::exhausted() {
-                        return Err(Spent);
-                    }
-                }
-                places.extend(cuts);
             }
-            for at in places {
-                let on = craft3d_topo::face_holds(made, data, tolerance, &[edge.curve.eval(at)])
+            let on = |at: f64| {
+                craft3d_topo::face_holds(made, data, tolerance, &[edge.curve.eval(at)])
                     .and_then(|held| held.first().copied())
-                    .unwrap_or(true);
-                if on {
+                    .unwrap_or(true)
+            };
+            for at in places {
+                if on(at) {
                     cuts.push(at);
+                    through.get_or_insert(face);
+                }
+            }
+            for (dip, crossings) in dips {
+                if crossings.iter().any(|at| on(*at)) {
+                    deepest.push(dip);
                     through.get_or_insert(face);
                 }
             }
@@ -1169,17 +1415,22 @@ pub(super) fn pierced(
         let Some(through) = through else {
             continue;
         };
+        // The middles of the stretches the crossings cut the edge into (an
+        // edge not cut is asked about at its middle already, `buried`),
+        // and the dips.
         cuts.sort_by(f64::total_cmp);
-        let mut ends = vec![edge.range.0];
-        ends.extend(cuts);
-        ends.push(edge.range.1);
-        let middles: Vec<f64> = ends
-            .windows(2)
-            .filter_map(|w| match w {
+        let mut middles: Vec<f64> = Vec::new();
+        if !cuts.is_empty() {
+            let mut ends = vec![edge.range.0];
+            ends.extend(cuts);
+            ends.push(edge.range.1);
+            middles.extend(ends.windows(2).filter_map(|w| match w {
                 [a, b] if b > a => Some(0.5 * (a + b)),
                 _ => None,
-            })
-            .collect();
+            }));
+        }
+        middles.extend(deepest);
+        middles.sort_by(f64::total_cmp);
         found.insert(*id, (middles, through));
     }
     Ok(found)
@@ -1734,6 +1985,63 @@ mod freeform_tests {
         assert!(starts(&spans, &over, 1e-6).is_none());
         let beside = straight(Vec3::new(7.5, 1.5, -3.0), Vec3::new(7.5, 1.5, 3.0));
         assert!(starts(&spans, &beside, 1e-6).is_none());
+    }
+
+    /// A straight edge is followed against a freeform face only along the
+    /// stretch of it that lies in the spans' boxes, in two steps for every
+    /// span whose box holds it: a line across the sheet and beyond its
+    /// ends is followed over the sheet alone; a line over it, or beside
+    /// it, not at all.
+    #[test]
+    fn a_straight_edge_is_followed_where_the_spans_boxes_hold_it() {
+        let surface = sheet(6, 4, 0.0, false);
+        let spans = spans_of(&surface).unwrap();
+        let across = Edge {
+            curve: Curve3::Line(
+                Line::through(Vec3::new(-2.0, 1.5, 0.5), Vec3::new(8.0, 1.5, 0.5)).unwrap(),
+            ),
+            range: (0.0, 10.0),
+            start: VertexId(0),
+            end: VertexId(1),
+        };
+        let found = line_stretches(&across, &spans, 1e-6);
+        assert_eq!(found.len(), 1);
+        let stretch = &found[0];
+        let held = spans
+            .iter()
+            .filter(|s| s.reaches(Vec3::new(-2.0, 1.5, 0.5), Vec3::new(8.0, 1.5, 0.5)))
+            .count();
+        assert!(held >= 6, "{held}");
+        assert_eq!(stretch.params.len(), (2 * held).clamp(2, LINE_STEPS) + 1);
+        let (first, last) = (stretch.points[0], *stretch.points.last().unwrap());
+        assert!(
+            (first.x - 0.0).abs() < 1e-5 && (last.x - 6.0).abs() < 1e-5,
+            "{first:?} {last:?}"
+        );
+        // The walks from those steps find the sheet under them.
+        let starts = starts(&spans, stretch, 1e-6).unwrap();
+        assert!(starts.iter().all(Option::is_some));
+        for z in [5.0, -3.0] {
+            let over = Edge {
+                curve: Curve3::Line(
+                    Line::through(Vec3::new(-2.0, 1.5, z), Vec3::new(8.0, 1.5, z)).unwrap(),
+                ),
+                ..across.clone()
+            };
+            assert!(line_stretches(&over, &spans, 1e-6).is_empty());
+        }
+        let beside = Edge {
+            curve: Curve3::Line(
+                Line::through(Vec3::new(-2.0, 9.0, 0.5), Vec3::new(8.0, 9.0, 0.5)).unwrap(),
+            ),
+            ..across.clone()
+        };
+        assert!(line_stretches(&beside, &spans, 1e-6).is_empty());
+        let nowhere = Edge {
+            range: (0.0, f64::NAN),
+            ..across.clone()
+        };
+        assert!(line_stretches(&nowhere, &spans, 1e-6).is_empty());
     }
 
     /// A vertex is asked about a freeform face that moved where a span of
