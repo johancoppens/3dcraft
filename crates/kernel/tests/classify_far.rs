@@ -1609,3 +1609,350 @@ fn the_booleans_of_solids_with_ruled_sides_wide() {
     println!("{tables}");
     assert_eq!(wrong, 0, "\n{tables}");
 }
+
+// ---------------------------------------------------------------------
+// What the repair still ends short on: owed (the review of 2026-11-15)
+// ---------------------------------------------------------------------
+
+/// The circle of radius 1 as a rational quadratic B-spline: nine control
+/// points `(x, y, weight)` on [`RING_KNOTS`].
+const RING: [(f64, f64, f64); 9] = [
+    (1.0, 0.0, 1.0),
+    (1.0, 1.0, std::f64::consts::FRAC_1_SQRT_2),
+    (0.0, 1.0, 1.0),
+    (-1.0, 1.0, std::f64::consts::FRAC_1_SQRT_2),
+    (-1.0, 0.0, 1.0),
+    (-1.0, -1.0, std::f64::consts::FRAC_1_SQRT_2),
+    (0.0, -1.0, 1.0),
+    (1.0, -1.0, std::f64::consts::FRAC_1_SQRT_2),
+    (1.0, 0.0, 1.0),
+];
+const RING_KNOTS: [f64; 12] = [
+    0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+];
+
+/// A cone of radius `r` and height `h` on the xy plane of `frame`, its
+/// side the exact rational NURBS of it (`u` around, `v` up the slant on
+/// knots times `pv`), and the analytic cone it stands for.
+fn nurbs_cone(frame: &Frame, r: f64, h: f64, pv: f64) -> (Body, Body) {
+    let twin = primitives::cone(frame, r, h).unwrap();
+    let mut ctrl = Vec::new();
+    let mut weights = Vec::new();
+    for (x, y, weight) in RING {
+        for (rho, z) in [(r, 0.0), (0.0, h)] {
+            ctrl.push(frame.point(rho * x, rho * y, z));
+            weights.push(weight);
+        }
+    }
+    let side = Surface::Nurbs(
+        NurbsSurface::new(
+            2,
+            1,
+            RING_KNOTS.to_vec(),
+            vec![0.0, 0.0, pv, pv],
+            9,
+            2,
+            ctrl,
+            weights,
+        )
+        .unwrap(),
+    );
+    let mut body = twin.clone();
+    for face in &mut body.faces {
+        if face.surface.kind() == "cone" {
+            face.surface = side.clone();
+        }
+    }
+    (body, twin)
+}
+
+/// A boolean of a cone and a block: the frame, the cone (radius,
+/// height), the block (its levels as parts of the height) and the
+/// operation.
+type ConeCase = (&'static str, f64, f64, (f64, f64), BooleanOp);
+
+/// The booleans of a cone whose side is on knots of `v` stretched by 3e7
+/// whose volume is not measured today.
+const CONE_NOT_MEASURED: [ConeCase; 6] = [
+    ("world", 10.561, 37.486, (0.6, 1.4), BooleanOp::Intersect),
+    ("world", 10.561, 37.486, (0.2, 0.55), BooleanOp::Union),
+    ("world", 10.561, 37.486, (0.2, 0.55), BooleanOp::Subtract),
+    ("far", 10.0, 37.5, (0.6, 1.4), BooleanOp::Intersect),
+    ("far", 10.0, 37.5, (0.2, 0.55), BooleanOp::Union),
+    ("far", 10.0, 37.5, (0.2, 0.55), BooleanOp::Subtract),
+];
+
+/// **Owed** (the review of 2026-11-15): booleans of a cone whose side is
+/// the exact NURBS of it on knots of `v` stretched 3e7 times, with a
+/// block over its tip or through its middle, build a body that passes
+/// the checker and has as many faces as the analytic cone's boolean, but
+/// whose volume cannot be measured: the mass integration says a face "is
+/// not bounded by its loops", and the tessellator would need some 13 000
+/// segments a side of a patch at a chord of 1e-3 (its limit is 1024), so
+/// neither tells whether the body is right. The other booleans of the
+/// same pairs, and all of them on even knots, are their closed forms. 12
+/// of the review's 972 booleans were so (cones on knots of `v` times 3e7,
+/// or at unit speed at scale 1e6), refused on the base too. When
+/// one of [`CONE_NOT_MEASURED`] is measured (or refused), this test fails:
+/// hold it to its closed form and take it off the list.
+#[test]
+fn booleans_of_a_cone_on_stretched_knots_whose_volume_is_not_measured_owed() {
+    use std::f64::consts::PI;
+    let tol = tolerance(1.0);
+    let far = Frame::new(
+        Vec3::new(0.61, -0.52, 0.6) * 260.0,
+        Vec3::new(-0.5, 0.2, 0.84),
+        Vec3::new(0.2, 1.0, 0.1),
+    )
+    .unwrap();
+    let mut owed = 0;
+    for (name, frame, r, h) in [
+        ("world", Frame::WORLD, 10.561, 37.486),
+        ("far", far, 10.0, 37.5),
+    ] {
+        for pv in [1.0, 3e7] {
+            let (cone, twin) = nurbs_cone(&frame, r, h, pv);
+            assert!(check(&cone, &tol).is_empty());
+            for (low, high) in [(0.6, 1.4), (0.2, 0.55)] {
+                let (z0, z1) = (low * h, high * h);
+                let at = frame.at(frame.point(-2.0 * r, -2.0 * r, z0)).unwrap();
+                let block = primitives::block(&at, 4.0 * r, 4.0 * r, z1 - z0).unwrap();
+                let rho = |z: f64| r * (1.0 - z.min(h) / h);
+                let (r0, r1) = (rho(z0), rho(z1));
+                let shared = PI / 3.0 * (z1.min(h) - z0) * (r0 * r0 + r0 * r1 + r1 * r1);
+                let (va, vb) = (PI / 3.0 * r * r * h, 16.0 * r * r * (z1 - z0));
+                for (op, closed) in [
+                    (BooleanOp::Union, va + vb - shared),
+                    (BooleanOp::Intersect, shared),
+                    (BooleanOp::Subtract, va - shared),
+                ] {
+                    let what = format!(
+                        "{op:?} of the cone in {name} on knots of v times {pv:e} and the block {low} to {high}"
+                    );
+                    let result =
+                        boolean(&cone, &block, op, &tol).unwrap_or_else(|e| panic!("{what}: {e}"));
+                    let analytic = boolean(&twin, &block, op, &tol).unwrap();
+                    assert!(check(&result.body, &tol).is_empty(), "{what}");
+                    assert_eq!(result.body.faces.len(), analytic.body.faces.len(), "{what}");
+                    let listed = pv > 1.0
+                        && CONE_NOT_MEASURED
+                            .iter()
+                            .any(|c| (c.0, c.1, c.3, c.4) == (name, r, (low, high), op));
+                    match mass_bound(&result.body) {
+                        Err(e) if listed => {
+                            assert!(
+                                e.to_string().contains("is not bounded by its loops"),
+                                "{what}: {e}"
+                            );
+                            owed += 1;
+                        }
+                        Err(e) => panic!("{what}: {e}"),
+                        Ok((mass, _)) if listed => panic!(
+                            "{what} is measured now ({:e} for the closed form {closed:e}): hold it to that and take it off the list",
+                            mass.volume
+                        ),
+                        Ok((mass, bound)) => assert!(
+                            (mass.volume - closed).abs() <= 1e-8 * (va + vb) + 4.0 * bound.volume,
+                            "{what}: {:e} for {closed:e}",
+                            mass.volume
+                        ),
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(owed, CONE_NOT_MEASURED.len());
+}
+
+/// A block of `size` in `frame` whose bottom is a ruled NURBS face whose
+/// speed along `u` rises from `2 slow` of its width to twice it (a
+/// quadratic whose middle control point is `slow` of the way along), or
+/// the bilinear face of the plane at even speed (`slow` 0).
+fn block_with_a_ruled_bottom(frame: &Frame, size: Vec3, slow: f64) -> Body {
+    let mut body = primitives::block(frame, size.x, size.y, size.z).unwrap();
+    let bottom = body
+        .faces
+        .iter()
+        .position(|face| match &face.surface {
+            Surface::Plane(plane) => {
+                let (_, _, z) = frame.local(plane.frame().origin());
+                plane.frame().z().dot(frame.z()).abs() > 0.99 && z.abs() <= 1e-9 * size.length()
+            }
+            _ => false,
+        })
+        .unwrap();
+    let Surface::Plane(plane) = &body.faces[bottom].surface else {
+        panic!("the bottom is not a plane")
+    };
+    let f = *plane.frame();
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for vertex in &body.vertices {
+        let (x, y, z) = f.local(vertex.point);
+        if z.abs() <= 1e-9 * size.length() {
+            lo = [lo[0].min(x), lo[1].min(y)];
+            hi = [hi[0].max(x), hi[1].max(y)];
+        }
+    }
+    let at = |x: f64, y: f64| {
+        f.point(
+            lo[0] + x * (hi[0] - lo[0]),
+            lo[1] + y * (hi[1] - lo[1]),
+            0.0,
+        )
+    };
+    let line = vec![0.0, 0.0, 1.0, 1.0];
+    let surface = if slow > 0.0 {
+        NurbsSurface::new(
+            2,
+            1,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            line,
+            3,
+            2,
+            vec![
+                at(0.0, 0.0),
+                at(0.0, 1.0),
+                at(slow, 0.0),
+                at(slow, 1.0),
+                at(1.0, 0.0),
+                at(1.0, 1.0),
+            ],
+            vec![1.0; 6],
+        )
+    } else {
+        NurbsSurface::new(
+            1,
+            1,
+            line.clone(),
+            line,
+            2,
+            2,
+            vec![at(0.0, 0.0), at(0.0, 1.0), at(1.0, 0.0), at(1.0, 1.0)],
+            vec![1.0; 4],
+        )
+    };
+    body.faces[bottom].surface = Surface::Nurbs(surface.unwrap());
+    body
+}
+
+/// **Owed, a cost** (the review of 2026-11-15): a point three tolerances
+/// below a block whose bottom is a ruled face whose speed along `u` rises
+/// from 2e-4 of its width to twice it is placed outside, as it is, but
+/// costs some 18.6 million units of work (`craft3d_geom::allowance`; 3 s
+/// on a laptop), where beside the same bottom at even speed it costs a
+/// few ten thousand. From 2e-6 of the width (the review's slabs) a point
+/// costs 1.6 to 2.6 s on the build server, many are left unknown (4 of
+/// 8), and a boolean with such a block was refused or not done in 150 s.
+/// The count is the work's, not the clock's, and the same on every
+/// machine. When the point costs less than a million units, this test
+/// fails: the cost is repaired, take it off.
+#[test]
+fn a_point_beside_a_ruled_face_whose_speed_rises_ten_thousandfold_costs_millions_owed() {
+    let tol = tolerance(1.0);
+    let size = Vec3::new(30.0, 20.0, 12.0);
+    let p = Vec3::new(15.0, 10.0, -3e-6);
+    for (slow, owed) in [(0.0, false), (1e-4, true)] {
+        let body = block_with_a_ruled_bottom(&Frame::WORLD, size, slow);
+        assert!(check(&body, &tol).is_empty(), "{slow}");
+        let (places, units) =
+            craft3d_geom::allowance::measured(|| classify_points(&body, &[p], &tol));
+        assert_eq!(places.unwrap(), vec![Place::Outside], "{slow}");
+        if owed {
+            assert!(
+                units > 5_000_000,
+                "a point beside the bottom rising from {slow} of its width costs {units} units now: the cost is repaired, take this test off"
+            );
+        } else {
+            assert!(units < 1_000_000, "at even speed: {units}");
+        }
+    }
+}
+
+/// A block of `size` in the world's frame whose faces facing +z, +x and
+/// +y are flat bicubic NURBS of six by six control points whose weights
+/// run from 1e-3 to 1e3 (seeded by `seed`): the planes, drawn at speeds
+/// that change a millionfold over them.
+fn block_with_weighted_sides(size: Vec3, seed: u64) -> Body {
+    let mut body = primitives::block(&Frame::WORLD, size.x, size.y, size.z).unwrap();
+    let mut state = seed;
+    let mut next = || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (state >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 1.0, 1.0];
+    for index in 0..body.faces.len() {
+        let Surface::Plane(plane) = &body.faces[index].surface else {
+            continue;
+        };
+        let f = *plane.frame();
+        if !(f.z().x > 0.99 || f.z().y > 0.99 || f.z().z > 0.99) {
+            continue;
+        }
+        let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+        for vertex in &body.vertices {
+            let (x, y, z) = f.local(vertex.point);
+            if z.abs() <= 1e-9 * size.length() {
+                lo = [lo[0].min(x), lo[1].min(y)];
+                hi = [hi[0].max(x), hi[1].max(y)];
+            }
+        }
+        let mut ctrl = Vec::new();
+        let mut weights = Vec::new();
+        for i in 0..6 {
+            for j in 0..6 {
+                ctrl.push(f.point(
+                    lo[0] + (hi[0] - lo[0]) * i as f64 / 5.0,
+                    lo[1] + (hi[1] - lo[1]) * j as f64 / 5.0,
+                    0.0,
+                ));
+                weights.push((6.0 * (next() - 0.5) * std::f64::consts::LN_10).pexp());
+            }
+        }
+        body.faces[index].surface = Surface::Nurbs(
+            NurbsSurface::new(3, 3, knots.clone(), knots.clone(), 6, 6, ctrl, weights).unwrap(),
+        );
+    }
+    body
+}
+
+/// **Owed** (the review of 2026-11-15): a block 30 by 900 by 20 whose
+/// sides facing +x, +y and +z are the planes drawn as weighted NURBS
+/// (weights from 1e-3 to 1e3) is valid, but the checker reads an edge of
+/// it as 1.65 from the face it bounds, so a boolean with it is refused
+/// ("the first operand of a boolean produced an invalid body"): the edge
+/// is a side of the face's rectangle, which the face's border runs along
+/// (its control points lie on it), and the projection the checker asks
+/// (`Surface::project`, not the boolean's patch tree) ends short on such
+/// a face, as the boolean's nearest point did on a face whose tangents
+/// differ millions of times. The block 30 by 30 passes. Booleans of
+/// blocks whose weighted sides pass the checker (30 by 30 and 30 by 90,
+/// eight seeds, a block over a corner) were built with the faces and the
+/// vertices of the plain blocks' booleans or refused ("a freeform face
+/// whose parametrisation stalls or folds"), none wrong as far as can be
+/// told; their volumes are not measured (the mass integration takes
+/// weights at most 1e4 apart within a span). When the long block passes
+/// the checker, this test fails: hold its booleans to their closed forms.
+#[test]
+fn a_block_whose_long_side_is_a_weighted_sheet_is_read_as_invalid_owed() {
+    let tol = tolerance(1.0);
+    let square = block_with_weighted_sides(Vec3::new(30.0, 30.0, 20.0), 1);
+    assert!(check(&square, &tol).is_empty());
+    let long = block_with_weighted_sides(Vec3::new(30.0, 900.0, 20.0), 1);
+    let defects = check(&long, &tol);
+    assert!(
+        defects
+            .iter()
+            .any(|d| d.to_string().contains("away from the surface of face")),
+        "the long block passes the checker now: {defects:?}; hold its booleans to their closed forms"
+    );
+    let at = Frame::WORLD.at(Vec3::new(12.0, 315.0, 9.0)).unwrap();
+    let tool = primitives::block(&at, 27.0, 765.0, 16.0).unwrap();
+    let refused = boolean(&long, &tool, BooleanOp::Intersect, &tol);
+    assert!(
+        refused.is_err(),
+        "{:?}",
+        refused.map(|r| r.body.faces.len())
+    );
+}

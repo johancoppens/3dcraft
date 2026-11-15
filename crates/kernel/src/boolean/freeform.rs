@@ -5036,7 +5036,15 @@ mod tests {
     /// steps taken on where the first end short change nothing but for
     /// the better: of 5280 searches (points on each surface, a little off
     /// it and a size away) every one gives the first steps' own foot bit
-    /// for bit, or a nearer one, and the nearer ones are few. At a pole
+    /// for bit, or a nearer one, and the nearer ones are few. That is so
+    /// of these surfaces, not of every search: one descent can only end
+    /// nearer than its first steps, but [`PatchTree::search`] stops at the
+    /// first leaf whose box is no nearer than the best foot so far, so a
+    /// foot that came nearer can leave a later leaf undescended from which
+    /// the first steps would have ended nearer still (47 of 450 360
+    /// searches of the review of 2026-11-15 ended farther, 22 by less than
+    /// 0.03 tolerances, 25 on weighted sheets where both answers were
+    /// wrong; docs/design/booleans.md › *A crossing left out*). At a pole
     /// itself the tangent along the border that is one point is rounding
     /// alone and counts for no direction to go on in; beside a corner
     /// pole, where the two tangents are nearly parallel, the first steps
@@ -5826,5 +5834,153 @@ mod tests {
             std::mem::size_of::<Option<Kids>>(),
             std::mem::size_of::<Option<[usize; 4]>>()
         );
+    }
+
+    /// A flat bicubic sheet of six by six control points over `a` by `b`
+    /// in the xy plane of `frame`, whose weights run from 1e-3 to 1e3
+    /// (seeded by `seed`), the knots of `u` times `pu`: the plane, drawn
+    /// at speeds that change a millionfold over it.
+    fn weighted_sheet(a: f64, b: f64, pu: f64, frame: &Frame, seed: u64) -> Surface {
+        let mut state = 0xA11CE + seed * 7919;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 1.0, 1.0];
+        let mut ctrl = Vec::new();
+        let mut weights = Vec::new();
+        for i in 0..6 {
+            for j in 0..6 {
+                ctrl.push(frame.point(a * i as f64 / 5.0, b * j as f64 / 5.0, 0.0));
+                weights.push((6.0 * (next() - 0.5) * std::f64::consts::LN_10).pexp());
+            }
+        }
+        Surface::Nurbs(
+            NurbsSurface::new(
+                3,
+                3,
+                knots.iter().map(|t| t * pu).collect(),
+                knots,
+                6,
+                6,
+                ctrl,
+                weights,
+            )
+            .unwrap(),
+        )
+    }
+
+    /// A flat parallelogram in the xy plane of `frame`: one side `a` along
+    /// x, the other leaning `shear` times `a` along x for `a` along y; the
+    /// knots of `u` (along the first side) times `pu`.
+    fn sheared_sheet(a: f64, shear: f64, pu: f64, frame: &Frame) -> Surface {
+        let lean = shear * a;
+        Surface::Nurbs(
+            NurbsSurface::new(
+                1,
+                1,
+                vec![0.0, 0.0, pu, pu],
+                vec![0.0, 0.0, 1.0, 1.0],
+                2,
+                2,
+                vec![
+                    frame.point(0.0, 0.0, 0.0),
+                    frame.point(lean, a, 0.0),
+                    frame.point(a, 0.0, 0.0),
+                    frame.point(a + lean, a, 0.0),
+                ],
+                vec![1.0; 4],
+            )
+            .unwrap(),
+        )
+    }
+
+    /// Points of the surface on a grid of nine by nine (from 0.05 to 0.95
+    /// of each parameter's range): how many of them the nearest point
+    /// found is further than `tol` from, of how many, and the furthest.
+    fn missed_on(surface: &Surface, tol: f64) -> (usize, usize, f64) {
+        let tree = PatchTree::new(surface).unwrap();
+        let ((u0, u1), (v0, v1)) = surface.domain();
+        let (mut missed, mut asked, mut worst) = (0, 0, 0.0_f64);
+        for i in 0..9 {
+            for j in 0..9 {
+                let (s, t) = (0.05 + 0.1125 * i as f64, 0.05 + 0.1125 * j as f64);
+                let p = surface.eval(u0 + s * (u1 - u0), v0 + t * (v1 - v0));
+                let distance = tree.nearest(p).unwrap().distance;
+                asked += 1;
+                worst = worst.max(distance);
+                if distance > tol {
+                    missed += 1;
+                }
+            }
+        }
+        (missed, asked, worst)
+    }
+
+    /// **Owed** (the review of 2026-11-15): the nearest point of a long
+    /// sheet whose weights run from 1e-3 to 1e3 is still missed, by up to
+    /// millions of tolerances, also for points that lie on it, where the
+    /// speed of its parameters changes a millionfold over a span. The
+    /// review's sweep met it on sheets 30 to 1 and longer in space (7169
+    /// of 35 280 searches, worst 6e6 tolerances; 22 266 before the repair):
+    /// here a flat one 1000 to 1 on knots of `u` stretched a thousand
+    /// times (8 of 81 points on it missed, the furthest by 9377
+    /// tolerances) and one a million to 1 (all 81, by up to 6.1e5), in the
+    /// world's frame. The same sheet square is found everywhere. When the long ones are found, this
+    /// test fails: hold them to the tolerance and take off the pin.
+    #[test]
+    fn the_nearest_point_of_a_long_weighted_sheet_is_missed_owed() {
+        let tol = 1e-6;
+        let (missed, asked, worst) =
+            missed_on(&weighted_sheet(30.0, 30.0, 1.0, &Frame::WORLD, 1), tol);
+        assert_eq!(missed, 0, "square: {missed} of {asked}, worst {worst:e}");
+        for (aspect, pu) in [(1e3, 1e3), (1e6, 1.0)] {
+            let surface = weighted_sheet(30.0, 30.0 * aspect, pu, &Frame::WORLD, 1);
+            let (missed, asked, worst) = missed_on(&surface, tol);
+            assert!(
+                missed > 0 && worst > 1e3 * tol,
+                "{aspect:e} to 1, knots of u times {pu:e}: {missed} of {asked} missed, the furthest by {worst:e}: repaired? take off the pin"
+            );
+        }
+    }
+
+    /// **Owed** (the review of 2026-11-15): on a parallelogram whose sides
+    /// lean a millionfold, with the knots of its short side shrunk a
+    /// millionfold so that its two tangents are of one length and a
+    /// millionth of a radian apart, the nearest point of points on it is
+    /// still missed by tens of tolerances in a turned frame (37 of 81
+    /// points on it, the furthest by 28.5 tolerances; the review: 500 of
+    /// 2520 searches, as many before the repair); in the world's frame,
+    /// and with the knots as they were, it is found. When it is found in the turned frame, this test fails:
+    /// take off the pin.
+    #[test]
+    fn the_nearest_point_of_a_sheet_whose_tangents_are_a_millionth_apart_is_missed_owed() {
+        let tol = 1e-6;
+        let turned = Frame::new(
+            Vec3::ZERO,
+            Vec3::new(-0.5, 0.2, 0.84),
+            Vec3::new(0.2, 1.0, 0.1),
+        )
+        .unwrap();
+        for (frame, pu, owed) in [
+            (Frame::WORLD, 1e-6, false),
+            (turned, 1.0, false),
+            (turned, 1e-6, true),
+        ] {
+            let (missed, asked, worst) = missed_on(&sheared_sheet(30.0, 1e6, pu, &frame), tol);
+            if owed {
+                assert!(
+                    missed > 0 && worst > 5.0 * tol,
+                    "{missed} of {asked} missed, the furthest by {worst:e}: repaired? take off the pin"
+                );
+            } else {
+                assert_eq!(
+                    missed, 0,
+                    "knots times {pu:e}: {missed} of {asked}, worst {worst:e}"
+                );
+            }
+        }
     }
 }
