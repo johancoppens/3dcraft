@@ -131,11 +131,12 @@ pub fn to_object(mesh: &Mesh, name: &str) -> Result<Object, IoError> {
 pub struct SinglePrecision {
     /// Points that fall on another point of the object once rounded.
     pub merged: usize,
-    /// Triangles with two corners on one point once rounded: a line.
+    /// Triangles with two corners on one point once rounded: a line, of
+    /// no area.
     pub folded: usize,
-    /// Whether the rounded triangles are still a closed surface: every
-    /// side used once each way, the triangles round every corner one fan,
-    /// none folded.
+    /// Whether the rounded triangles, those folded to a line left out, are
+    /// still a closed surface: every side used once each way, the
+    /// triangles round every corner one fan, and some triangle left.
     pub closed: bool,
 }
 
@@ -145,8 +146,13 @@ pub struct SinglePrecision {
 /// mesh closed in double precision (`ObjectKind::Solid`) can have points
 /// closer than single precision tells apart (a part far from the origin,
 /// or a surface that turns more sharply than the angle of the mesh can
-/// follow with points as far apart as that): its file is then no closed
-/// surface, which this says.
+/// follow with points as far apart as that). Where two such points are
+/// the ends of a side, the side shrinks to a point and its two triangles
+/// to lines: those bound nothing (each one's two other sides cancel), a
+/// reader's repair drops them first, and the rest can still be a closed
+/// surface, which is counted without them. Where they are not (two points
+/// with no side between them, the two sides of a seam), the file is no
+/// closed surface; this says which.
 pub fn in_single_precision(object: &Object) -> SinglePrecision {
     let rounded: Vec<[u32; 3]> = object
         .positions
@@ -215,7 +221,10 @@ pub fn in_single_precision(object: &Object) -> SinglePrecision {
         }
         count == steps.len() && here == start
     };
-    let closed = closed_before && folded == 0 && once && fans.values().all(one_fan);
+    // The triangles folded to a line left out, as a reader's repair drops
+    // them: the rest closed, and something left.
+    let closed =
+        closed_before && folded < object.triangles.len() && once && fans.values().all(one_fan);
     SinglePrecision {
         merged,
         folded,
@@ -325,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn a_closed_mesh_with_points_single_precision_cannot_tell_apart_is_open_in_a_file() {
+    fn points_single_precision_cannot_tell_apart_fold_triangles_or_open_the_file() {
         // The cube a thousand units from the origin, closed both ways.
         let mut far = cube(2.0);
         for p in &mut far.positions {
@@ -344,11 +353,14 @@ mod tests {
         // Its top made a fan round a point just inside one corner:
         // closed in double precision; in single precision, where a unit in
         // the last place is 6e-5 in x and 2e-7 in y there, that point is
-        // the corner, and the two triangles of the fan on it are lines.
+        // the corner, and the two triangles of the fan on it are lines, of
+        // no area: left out, the rest is the cube's top in two triangles,
+        // and the file a closed surface.
         let mut cut = object.clone();
         cut.triangles
             .retain(|t| !t.iter().all(|&k| cut.positions[k as usize][2] == 2.0));
         assert_eq!(cut.triangles.len(), 10);
+        let open = cut.clone();
         let corner = |x: f64, y: f64| {
             cut.positions
                 .iter()
@@ -371,10 +383,47 @@ mod tests {
             triangles: cut.triangles.clone(),
         };
         assert!(welded.is_closed(), "the fan in double precision");
-        let single = in_single_precision(&cut);
-        assert_eq!(single.merged, 1, "{single:?}");
-        assert_eq!(single.folded, 2, "{single:?}");
-        assert!(!single.closed, "{single:?}");
+        assert_eq!(
+            in_single_precision(&cut),
+            SinglePrecision {
+                merged: 1,
+                folded: 2,
+                closed: true
+            }
+        );
+        // Its top made of two fans instead, round two points either side
+        // of its diagonal from (1000, 0) to (1002, 2), closer together than
+        // single precision tells apart there (6e-5 in x, 6e-8 in y at
+        // (1001, 1)), with no side between them: in a file one point, from
+        // which the sides to the diagonal's ends are used twice each way.
+        // No triangle folds, and the file is no closed surface.
+        let mut two = open;
+        let [s0, s1, s2, s3] = square;
+        let below = two.positions.len() as u32;
+        let above = below + 1;
+        two.positions.push([1001.0 + 1e-6, 1.0 - 1e-9, 2.0]);
+        two.positions.push([1001.0 - 1e-6, 1.0 + 1e-9, 2.0]);
+        two.triangles.extend([
+            [s0, s1, below],
+            [s1, s2, below],
+            [s2, s0, below],
+            [s2, s3, above],
+            [s3, s0, above],
+            [s0, s2, above],
+        ]);
+        let welded = craft3d_tess::Welded {
+            positions: two.positions.clone(),
+            triangles: two.triangles.clone(),
+        };
+        assert!(welded.is_closed(), "the two fans in double precision");
+        assert_eq!(
+            in_single_precision(&two),
+            SinglePrecision {
+                merged: 1,
+                folded: 0,
+                closed: false
+            }
+        );
     }
 
     #[test]

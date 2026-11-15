@@ -6093,10 +6093,18 @@ pub fn fold_work() -> u64 {
 static FOLD_WORK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The bits each of a cell's two coordinates keeps in a key of
-/// [`fold_search`] (above the point's index, in the 32 below): a cell is
-/// `2 ROUNDED_AWAY` times the face's largest coordinate, so no coordinate
-/// lies more than `0.5e12 < 2³⁹` cells from the origin.
+/// [`fold_search`] (above the [`Z_BITS`] and the point's index, in the 32
+/// below): a cell is `2 ROUNDED_AWAY` times the face's largest
+/// coordinate, so no coordinate lies more than `0.5e12 < 2³⁹` cells from
+/// the origin.
 const CELL_BITS: u32 = 40;
+
+/// The low bits of a point's cell in `z` that a key of [`fold_search`]
+/// keeps, between its cells in `x` and `y` and its index: two points of
+/// one column whose bits there are not the same or one apart (round the
+/// end) lie two cells or more apart in `z`, more than a pair can that is
+/// one place, and are passed over without reading where they are.
+const Z_BITS: u32 = 16;
 
 /// [`folded_at`]'s search, and the comparisons it made.
 ///
@@ -6108,18 +6116,26 @@ const CELL_BITS: u32 = 40;
 /// cell is rounded by a few units in the last place of numbers below
 /// `2³⁹`, far less than the half cell to spare). The points are sorted by
 /// their cell in `x`, then in `y` (one key of 128 bits each, with the
-/// point's index), and a column of more than one point (one cell in `x`
-/// and one in `y`) by `z` as well. Each point is held against the points
-/// after it in its own column up to a cell further in `z`, then, by
-/// binary search, against those of the next column in `y` and of the
-/// three columns beside it in the next cell in `x`, where those cells
-/// hold points at all: every pair that can be near once, nothing more
-/// than a cell away. So the work is the sort's and a few comparisons a
-/// point, however the points lie: a face turned a quarter, whose points
-/// stand in rows that agree in `x` to a few units in the last place,
-/// costs what any face does (the sweep in `x` alone that came first
-/// compared every pair of such a row: a torus of two million triangles
-/// turned so took three times as long to mesh, 2026-11-15).
+/// low bits of the cell in `z` and the point's index), and a column of
+/// more than two points (one cell in `x` and one in `y`) by `z` as well.
+/// Each point is held against the points after it in its own column up
+/// to a cell further in `z`, then, by binary search, against those of the
+/// next column in `y` and of the three columns beside it in the next cell
+/// in `x`, where those cells hold points at all: every pair that can be
+/// near once, nothing more than a cell away. So the work is the sort's
+/// and a few comparisons a point, however the points lie: a face turned a
+/// quarter, whose points stand in rows that agree in `x` to a few units
+/// in the last place, costs what any face does (the sweep in `x` alone
+/// that came first compared every pair of such a row: a torus of two
+/// million triangles turned so took three times as long to mesh,
+/// 2026-11-15). Most points are alone in their column with no column
+/// beside it, and are passed over unread; a column of two (a symmetric
+/// body's points mirrored in `z`, x and y the same) with none beside it
+/// is one comparison of the bits of its keys, and its points are read
+/// only where those cannot tell them apart (a sort of every such pair by
+/// `z` cost a symmetric torus of two million triangles a third more
+/// than the check had cost before, 2026-11-15). What is found, and which
+/// point of a pair is said, is the same as in the order of the sweep.
 fn fold_search(positions: &[Vec3], boundary: usize) -> (Option<Vec3>, u64) {
     if positions.len() <= boundary {
         return (None, 0);
@@ -6127,12 +6143,14 @@ fn fold_search(positions: &[Vec3], boundary: usize) -> (Option<Vec3>, u64) {
     // (A point that is not finite is the triangles' to refuse; −0 and 0
     // fall in one cell and are no distance apart.)
     let finite = |p: &Vec3| p.x.is_finite() && p.y.is_finite() && p.z.is_finite();
-    let reach = positions
-        .iter()
-        .filter(|p| finite(p))
-        .fold(0.0_f64, |m, p| {
-            m.max(p.x.abs()).max(p.y.abs()).max(p.z.abs())
-        });
+    let mut reach = 0.0_f64;
+    for p in positions {
+        // (One comparison with the running largest a point, not three.)
+        let own = p.x.abs().max(p.y.abs()).max(p.z.abs());
+        if own > reach && finite(p) {
+            reach = own;
+        }
+    }
     if !positive(reach) {
         // Every finite point on the origin: one place.
         let at_origin = || {
@@ -6152,33 +6170,50 @@ fn fold_search(positions: &[Vec3], boundary: usize) -> (Option<Vec3>, u64) {
     let per_cell = 1.0 / cell;
     let half = 1_i64 << (CELL_BITS - 1);
     let quantize = |c: f64| -> u128 {
-        // Within ±2³⁹ by the size of a cell; clamped all the same.
-        let q = (c * per_cell)
-            .floor()
-            .clamp(-(half as f64) + 1.0, half as f64 - 1.0) as i64;
-        u128::from((q + half).unsigned_abs())
+        // Within ±2³⁹ by the size of a cell; clamped all the same (to
+        // whole numbers, so the floor of the clamped is the clamped floor).
+        // The floor as the cast's truncation, one less where that went
+        // up: exact below 2⁵³, and no call into the platform's library as
+        // `f64::floor` is where the processor has no instruction for it.
+        let q = (c * per_cell).clamp(-(half as f64) + 1.0, half as f64 - 1.0);
+        let whole = q as i64;
+        let floor = if (whole as f64) > q { whole - 1 } else { whole };
+        u128::from((floor + half).unsigned_abs())
     };
-    let mut keys: Vec<u128> = positions
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| finite(p))
-        .filter_map(|(i, p)| {
-            let i = u32::try_from(i).ok()?;
-            Some((quantize(p.x) << 72) | (quantize(p.y) << 32) | u128::from(i))
-        })
-        .collect();
+    let mut keys: Vec<u128> = Vec::with_capacity(positions.len());
+    for (i, p) in positions.iter().enumerate() {
+        let Ok(i) = u32::try_from(i) else { break };
+        if finite(p) {
+            let z = quantize(p.z) & ((1 << Z_BITS) - 1);
+            keys.push(
+                (quantize(p.x) << (CELL_BITS + Z_BITS + 32))
+                    | (quantize(p.y) << (Z_BITS + 32))
+                    | (z << 32)
+                    | u128::from(i),
+            );
+        }
+    }
     // The bits of `m`: a sort's comparisons per point, a search's steps.
     let bits = |m: usize| u64::from(usize::BITS - m.leading_zeros());
     let n = keys.len();
-    keys.sort_unstable();
+    let mut keys = sorted_keys(keys);
     let mut steps = (n as u64).saturating_mul(bits(n));
-    let column = |k: u128| k >> 32;
-    let slab = |k: u128| k >> 72;
+    let column = |k: u128| k >> (Z_BITS + 32);
+    let slab = |k: u128| k >> (CELL_BITS + Z_BITS + 32);
+    // Whether two keys' cells in `z` may be neighbours: the same or one
+    // apart in their low bits, round the end.
+    let near_in_z = |a: u128, b: u128| {
+        let low = |k: u128| (k >> 32) & ((1 << Z_BITS) - 1);
+        let apart = low(a).wrapping_sub(low(b)) & ((1 << Z_BITS) - 1);
+        apart <= 1 || apart == (1 << Z_BITS) - 1
+    };
     let at = |k: u128| -> (usize, Vec3) {
         // The low 32 bits are the index (`u32` above).
         let i = (k & 0xffff_ffff) as usize;
         (i, positions.get(i).copied().unwrap_or(Vec3::ZERO))
     };
+    // By `z`, then by key: the order of a column's points.
+    let by_z = |a: u128, b: u128| at(a).1.z.total_cmp(&at(b).1.z).then(a.cmp(&b));
     // Where the run of keys from `from` with one `part` ends (or `to`).
     let run_end = |keys: &[u128], from: usize, to: usize, part: &dyn Fn(u128) -> u128| -> usize {
         let Some(&head) = keys.get(from) else {
@@ -6189,14 +6224,16 @@ fn fold_search(positions: &[Vec3], boundary: usize) -> (Option<Vec3>, u64) {
         });
         from + length.max(1)
     };
-    // A column of more than one point, by `z` (then by key: one order).
+    // A column of more than two points, by `z` (then by key: one order).
+    // A column of two is put in that order only where the sweep walks it
+    // (below); one looked in is searched whole.
     let mut first = 0;
     while first < n {
         let end = run_end(&keys, first, n, &column);
-        if end - first > 1
+        if end - first > 2
             && let Some(run) = keys.get_mut(first..end)
         {
-            run.sort_unstable_by(|&a, &b| at(a).1.z.total_cmp(&at(b).1.z).then(a.cmp(&b)));
+            run.sort_unstable_by(|&a, &b| by_z(a, b));
             steps = steps.saturating_add(((end - first) as u64).saturating_mul(bits(end - first)));
         }
         first = end;
@@ -6213,27 +6250,35 @@ fn fold_search(positions: &[Vec3], boundary: usize) -> (Option<Vec3>, u64) {
             .fold(0.0_f64, |m, x| m.max(x.abs()));
         (a >= boundary || b >= boundary) && p.distance(q) <= ROUNDED_AWAY * own
     };
-    // The points of the column `from..to` within a cell of `p` in `z`,
-    // held against it.
-    let in_column = |from: usize, to: usize, p: (usize, Vec3), steps: &mut u64| -> bool {
-        let Some(run) = keys.get(from..to) else {
-            return false;
+    // The points of the column `from..to` within a cell of `p` (whose key
+    // is `key`) in `z`, held against it.
+    let in_column =
+        |from: usize, to: usize, p: (usize, Vec3), key: u128, steps: &mut u64| -> bool {
+            let Some(run) = keys.get(from..to) else {
+                return false;
+            };
+            if run.len() <= 2 {
+                // Not sorted by `z`: each, where its key does not tell it apart.
+                return run.iter().any(|&k| {
+                    *steps = steps.saturating_add(1);
+                    near_in_z(key, k) && one_place(p, at(k))
+                });
+            }
+            let low = p.1.z - cell;
+            let start = run.partition_point(|&k| at(k).1.z < low);
+            *steps = steps.saturating_add(bits(run.len()));
+            for &k in run.iter().skip(start) {
+                *steps = steps.saturating_add(1);
+                let q = at(k);
+                if q.1.z - p.1.z > cell {
+                    break;
+                }
+                if one_place(p, q) {
+                    return true;
+                }
+            }
+            false
         };
-        let low = p.1.z - cell;
-        let start = run.partition_point(|&k| at(k).1.z < low);
-        *steps = steps.saturating_add(bits(run.len()));
-        for &k in run.iter().skip(start) {
-            *steps = steps.saturating_add(1);
-            let q = at(k);
-            if q.1.z - p.1.z > cell {
-                break;
-            }
-            if one_place(p, q) {
-                return true;
-            }
-        }
-        false
-    };
     // Slab by slab (one cell in `x`), column by column within it.
     let mut slab_from = 0;
     while slab_from < n {
@@ -6257,19 +6302,43 @@ fn fold_search(positions: &[Vec3], boundary: usize) -> (Option<Vec3>, u64) {
                 .get(column_to)
                 .filter(|&&k| column_to < slab_to && column(k) == column(column_key) + 1)
                 .map(|_| (column_to, run_end(&keys, column_to, slab_to, &column)));
-            // A point alone in its column, with no column beside it to
-            // look in: nothing to compare (most points of most faces).
-            if column_to - column_from == 1 && next_column.is_none() && next_slab.is_none() {
-                column_from = column_to;
-                continue;
+            let Some(members) = keys.get(column_from..column_to) else {
+                break;
+            };
+            if next_column.is_none() && next_slab.is_none() {
+                // No column beside it to look in: a point alone in its
+                // column has nothing to compare (most points of most
+                // faces), a pair only each other, unread where their keys
+                // tell them apart in `z`.
+                if let &[a, b] = members {
+                    steps = steps.saturating_add(1);
+                    if near_in_z(a, b) {
+                        let (low, high) = if by_z(a, b).is_le() { (a, b) } else { (b, a) };
+                        let (p, q) = (at(low), at(high));
+                        if one_place(p, q) {
+                            return (Some(p.1), steps);
+                        }
+                    }
+                }
+                if members.len() <= 2 {
+                    column_from = column_to;
+                    continue;
+                }
             }
-            for k in column_from..column_to {
-                let Some(&key) = keys.get(k) else { break };
+            // A pair by `z`, as the longer columns are.
+            let pair;
+            let members = if let &[a, b] = members {
+                steps = steps.saturating_add(2 * bits(2));
+                pair = if by_z(a, b).is_le() { [a, b] } else { [b, a] };
+                &pair[..]
+            } else {
+                members
+            };
+            for (j, &key) in members.iter().enumerate() {
                 let p = at(key);
                 // The rest of its own column.
-                for m in k + 1..column_to {
+                for &other in members.iter().skip(j + 1) {
                     steps = steps.saturating_add(1);
-                    let Some(&other) = keys.get(m) else { break };
                     let q = at(other);
                     if q.1.z - p.1.z > cell {
                         break;
@@ -6280,7 +6349,7 @@ fn fold_search(positions: &[Vec3], boundary: usize) -> (Option<Vec3>, u64) {
                 }
                 // The next column in `y`.
                 if let Some((from, to)) = next_column
-                    && in_column(from, to, p, &mut steps)
+                    && in_column(from, to, p, key, &mut steps)
                 {
                     return (Some(p.1), steps);
                 }
@@ -6298,7 +6367,7 @@ fn fold_search(positions: &[Vec3], boundary: usize) -> (Option<Vec3>, u64) {
                     steps = steps.saturating_add(bits(run.len()));
                     if keys.get(start).is_some_and(|&k| column(k) == wanted) {
                         let end = run_end(&keys, start, to, &column);
-                        if in_column(start, end, p, &mut steps) {
+                        if in_column(start, end, p, key, &mut steps) {
                             return (Some(p.1), steps);
                         }
                     }
@@ -6309,6 +6378,60 @@ fn fold_search(positions: &[Vec3], boundary: usize) -> (Option<Vec3>, u64) {
         slab_from = slab_to;
     }
     (None, steps)
+}
+
+/// `keys` in increasing order: dealt into about one bucket for every 256
+/// of them by their distance from the least (the bits that set them apart
+/// most), each bucket then sorted on its own. The keys are distinct (each
+/// holds its point's index), so the order is the one a sort of them all
+/// gives, in a fraction of its time: a bucket's sort stays in the cache,
+/// and its comparisons per key are the bits of 256, not of a million.
+fn sorted_keys(mut keys: Vec<u128>) -> Vec<u128> {
+    let n = keys.len();
+    if n < 1 << 12 {
+        keys.sort_unstable();
+        return keys;
+    }
+    let (least, most) = keys
+        .iter()
+        .fold((u128::MAX, 0), |(l, m), &k| (l.min(k), m.max(k)));
+    let wide = u128::BITS - (most - least).leading_zeros();
+    // About n / 256 buckets, as a power of two.
+    let bucket_bits = (usize::BITS - n.leading_zeros())
+        .saturating_sub(8)
+        .clamp(1, 16);
+    let shift = wide.saturating_sub(bucket_bits);
+    let bucket = |k: u128| ((k - least) >> shift) as usize;
+    let mut starts = vec![0_usize; (1 << bucket_bits) + 1];
+    for &k in &keys {
+        if let Some(count) = starts.get_mut(bucket(k) + 1) {
+            *count += 1;
+        }
+    }
+    for b in 1..starts.len() {
+        let before = starts.get(b - 1).copied().unwrap_or(0);
+        if let Some(start) = starts.get_mut(b) {
+            *start += before;
+        }
+    }
+    let mut dealt = vec![0_u128; n];
+    let mut next = starts.clone();
+    for &k in &keys {
+        if let Some(at) = next.get_mut(bucket(k))
+            && let Some(slot) = dealt.get_mut(*at)
+        {
+            *slot = k;
+            *at += 1;
+        }
+    }
+    for pair in starts.windows(2) {
+        if let [from, to] = *pair
+            && let Some(run) = dealt.get_mut(from..to)
+        {
+            run.sort_unstable();
+        }
+    }
+    dealt
 }
 
 #[cfg(test)]
@@ -6445,6 +6568,61 @@ mod tests {
             // Two hundred thousandths of the face apart: two places.
             let q = Vec3::new(0.5 + 1e-5, 0.25, 0.125);
             assert_eq!(fold_search(&[far, p, q], 1).0, None);
+        }
+    }
+
+    #[test]
+    fn a_pair_alone_in_its_column_is_found_across_the_wrap_of_its_bits_in_z() {
+        // With the largest coordinate 1, a cell is 2e-12 across: these two
+        // lie in the cells 65,535 and 65,536 in z (the low bits of their
+        // keys 0xffff and 0, one apart round the end), 0.35 of a cell
+        // apart, x and y the same: a column of two with none beside it.
+        let p = Vec3::new(1.0, 0.0, 65_535.75 * 2e-12);
+        let q = Vec3::new(1.0, 0.0, 65_536.1 * 2e-12);
+        assert_eq!(fold_search(&[p, q], 0).0, Some(p));
+        // Said as the lower in z, whichever comes first.
+        assert_eq!(fold_search(&[q, p], 0).0, Some(p));
+        // A boundary point and an added one, as well; two boundary points
+        // are the topology's to share.
+        assert_eq!(fold_search(&[q, p], 1).0, Some(p));
+        assert_eq!(fold_search(&[q, p], 2).0, None);
+        // A mirrored pair (z and -z) on one place, and one apart.
+        let (up, down) = (Vec3::new(0.25, 0.5, 1e-13), Vec3::new(0.25, 0.5, -1e-13));
+        assert_eq!(fold_search(&[p, up, down], 1).0, Some(down));
+        let (up, down) = (Vec3::new(0.25, 0.5, 0.125), Vec3::new(0.25, 0.5, -0.125));
+        assert_eq!(fold_search(&[p, up, down], 1).0, None);
+        // Three cells apart in z: two places.
+        let r = Vec3::new(1.0, 0.0, 65_538.6 * 2e-12);
+        assert_eq!(fold_search(&[p, r], 0).0, None);
+    }
+
+    #[test]
+    fn keys_dealt_into_buckets_come_out_as_a_sort_puts_them() {
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut random = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            u128::from(state)
+        };
+        // Spread over all the bits; sharing all but the index; in two
+        // clusters far apart (nearly every key in two buckets); sharing
+        // the cell in x, apart in y (a face turned a quarter).
+        let families: [&dyn Fn(u128) -> u128; 4] = [
+            &|r| r << 64 | (r & 0xffff_0000_0000),
+            &|_| 7 << 100,
+            &|r| (if r % 2 == 0 { r & 0xff } else { u128::MAX >> 1 }) << 32,
+            &|r| (3 << 100) | ((r & 0xff_ffff) << 48),
+        ];
+        for n in [0_usize, 1, 4095, 4096, 70_000] {
+            for (f, family) in families.iter().enumerate() {
+                let keys: Vec<u128> = (0..n)
+                    .map(|i| (family(random()) & !0xffff_ffff) | i as u128)
+                    .collect();
+                let mut sorted = keys.clone();
+                sorted.sort_unstable();
+                assert!(sorted_keys(keys) == sorted, "family {f}, {n} keys");
+            }
         }
     }
 

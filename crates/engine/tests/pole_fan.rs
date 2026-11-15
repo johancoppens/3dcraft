@@ -92,9 +92,10 @@ fn seamed_dome(frame: &Frame, (a, b): (f64, f64), flip: bool, foot: [f64; 2], le
 
 /// What keeps the triangles from being the closed surface of a solid,
 /// their corners taken as the same point where they are the same bits:
-/// a triangle with two corners at one point, a side not used once each
-/// way, a corner whose triangles make more than one fan.
-fn not_closed(triangles: &[[[u32; 3]; 3]]) -> Option<String> {
+/// a triangle with two corners at one point (or, with `drop_lines`, none:
+/// such triangles left out, as a reader's repair drops them), a side not
+/// used once each way, a corner whose triangles make more than one fan.
+fn not_closed(triangles: &[[[u32; 3]; 3]], drop_lines: bool) -> Option<String> {
     let mut index: BTreeMap<[u32; 3], u32> = BTreeMap::new();
     let mut corners = Vec::with_capacity(triangles.len());
     for t in triangles {
@@ -104,9 +105,15 @@ fn not_closed(triangles: &[[[u32; 3]; 3]]) -> Option<String> {
             *slot = *index.entry(*p).or_insert(next);
         }
         if c[0] == c[1] || c[1] == c[2] || c[2] == c[0] {
+            if drop_lines {
+                continue;
+            }
             return Some(format!("a triangle with two corners at one point: {t:?}"));
         }
         corners.push(c);
+    }
+    if corners.is_empty() {
+        return Some("no triangle".to_string());
     }
     let mut sides: BTreeMap<(u32, u32), u32> = BTreeMap::new();
     let mut round: BTreeMap<u32, BTreeMap<u32, u32>> = BTreeMap::new();
@@ -318,7 +325,7 @@ fn an_imported_dome_closed_across_a_seam_is_written_as_a_closed_surface() {
                 }
                 Err(error) => made.push(format!("{out} at {params}: refused ({error})")),
                 Ok((triangles, closed)) => {
-                    if let Some(fault) = not_closed(&triangles) {
+                    if let Some(fault) = not_closed(&triangles, false) {
                         faults.push(format!("{what}, {out} at {params}: {fault}"));
                     }
                     if closed != 1 {
@@ -339,17 +346,20 @@ fn a_dome_s_export_with_the_angle_in_a_turned_frame_is_known_to_fold_in_single_p
     // 0.1.x as well): with the angles of the export's qualities, along a
     // nose far sharper than the tolerance, the angle asks for points about
     // 1e-7 from the seam: two places to the mesh (a closed manifold), one
-    // to an STL file's single precision, which a slicer reads as
-    // triangles with two corners at one point. Of the fifteen exports of
-    // the five turned domes of the test above at `coarse`, `normal` and
-    // `fine` (2026-11-15): before, 14 so and 1 a closed surface; now 10
-    // so, 1 a closed surface and 4 refused ("the surface turns away from
-    // the chords …"), each of the four one that folded before. The export
-    // says so since 2026-11-15 (`closed` counted as the file holds the
-    // mesh, `mergedPoints` and a warning): before, it counted the mesh
-    // closed and said nothing. When this fails because the file is a
-    // closed surface (or the export is refused with a reason), the pin
-    // goes.
+    // to an STL file's single precision, where triangles have two corners
+    // at one point and, with those left out as a reader's repair drops
+    // them, sides are used twice each way. Of the fifteen exports of the
+    // five turned domes of the test above at `coarse`, `normal` and `fine`
+    // (2026-11-15, a triangle with two corners at one point counted as a
+    // fault): before, 14 so and 1 a closed surface; now 10 so, 1 a closed
+    // surface and 4 refused ("the surface turns away from the chords …"),
+    // each of the four one that folded before. The export says so since
+    // 2026-11-15 (`closed` counted as the file holds the mesh, those
+    // triangles left out; `mergedPoints`, `foldedTriangles` and a
+    // warning): before, it counted the mesh closed and said nothing. When
+    // this fails because the file is a closed surface once the triangles
+    // of no area are left out (or the export is refused with a reason),
+    // the pin goes.
     let dir = workdir("pole-fan", "angle");
     let what = "the dome 1 x 0.01 with its tip over 0.9, its seam on -x, turned";
     let mut s = imported(&dir, 0, (&turned(), (1.0, 0.01), true, 0.9), what);
@@ -358,7 +368,7 @@ fn a_dome_s_export_with_the_angle_in_a_turned_frame_is_known_to_fold_in_single_p
         .execute("file.export", &params)
         .unwrap_or_else(|e| panic!("{what}: refused now, take the pin off: {}", e.message()));
     let triangles = stl_triangles(&std::fs::read(dir.join("dome.stl")).unwrap());
-    let fault = not_closed(&triangles);
+    let fault = not_closed(&triangles, true);
     println!("{what}: {} triangles, {fault:?}, {result}", triangles.len());
     assert!(
         fault.is_some(),
@@ -370,6 +380,7 @@ fn a_dome_s_export_with_the_angle_in_a_turned_frame_is_known_to_fold_in_single_p
         result["mergedPoints"].as_u64().is_some_and(|n| n > 0),
         "{result}"
     );
+    assert!(result["foldedTriangles"].as_u64().is_some(), "{result}");
     let said = result["warnings"][0].as_str().unwrap_or_default();
     assert!(
         said.contains("single precision") && said.contains("no closed surface"),
@@ -401,7 +412,7 @@ fn a_dome_s_export_with_the_angle_in_a_turned_frame_is_known_to_be_refused() {
         Ok((triangles, closed)) => panic!(
             "{what}: made now ({} triangles, closed {closed}, {:?}): take the pin off",
             triangles.len(),
-            not_closed(&triangles)
+            not_closed(&triangles, false)
         ),
     };
     println!("{what}: {error}");
