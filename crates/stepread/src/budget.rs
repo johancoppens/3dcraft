@@ -65,11 +65,33 @@ fn points(parsed: &Parsed, id: u64, depth: usize, memo: &mut BTreeMap<u64, usize
         list_len(list).max(1)
     } else if entity.is("POLYLINE") {
         list_len(first_record().and_then(|r| r.params.get(1))).max(1)
+    } else if entity.is("HYPERBOLA") || entity.is("PARABOLA") {
+        // An arc of at most `MAX_PIECES` quadratic pieces.
+        2 * crate::conic::MAX_PIECES + 1
+    } else if depth < DEPTH && entity.is("COMPOSITE_CURVE") {
+        // Its segments joined, each Bézier piece raised to the highest
+        // degree (at most 32): at most 32 points per point of a segment.
+        let segments = first_record()
+            .and_then(|r| r.params.get(1))
+            .and_then(Param::as_list)
+            .unwrap_or(&[]);
+        let mut total: usize = 0;
+        for segment in segments.iter().filter_map(Param::as_ref) {
+            let parent = parsed
+                .instance(segment)
+                .ok()
+                .and_then(|i| i.entity.records().first().and_then(|r| r.params.get(2)))
+                .and_then(Param::as_ref);
+            let n = parent.map_or(1, |p| points(parsed, p, depth + 1, memo));
+            total = total.saturating_add(n.saturating_mul(32));
+        }
+        total.max(1)
     } else if depth < DEPTH
         && any(&[
             "SURFACE_CURVE",
             "SEAM_CURVE",
             "INTERSECTION_CURVE",
+            "TRIMMED_CURVE",
             "SURFACE_OF_LINEAR_EXTRUSION",
             "SURFACE_OF_REVOLUTION",
             "OFFSET_SURFACE",

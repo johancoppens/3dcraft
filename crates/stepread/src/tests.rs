@@ -71,15 +71,47 @@ fn a_closed_circle_reads_and_stays_a_circle() {
     assert!(e.contains("edge #16 bounds only one face"), "{e}");
 }
 
+/// Expectation changed on 2026-11-15 (step-conics): until then this test
+/// named `HYPERBOLA` and `PARABOLA` as the kinds not read. Both are read
+/// now (`conic`), so two kinds that still are not stand in for them, and
+/// what the two old files are refused for now is held by
+/// `a_closed_edge_on_a_hyperbola_or_a_parabola_is_refused`.
 #[test]
 fn what_is_not_read_is_named() {
+    let e = error(&file(
+        "#30=OFFSET_CURVE_3D('',#31,1.,.F.,#32);\n#31=CIRCLE('',#21,1.);\n#32=DIRECTION('',(0.,0.,1.));\n",
+        true,
+    ));
+    assert!(
+        e.contains("#30 OFFSET_CURVE_3D") && e.contains("not read"),
+        "{e}"
+    );
+    let e = error(&file(
+        "#30=SURFACE_CURVE('',#31,(),.CURVE_3D.);\n#31=CURVE_REPLICA('',#32,#33);\n#32=CIRCLE('',#21,1.);\n#33=CARTESIAN_TRANSFORMATION_OPERATOR_3D('','',$,$,#19,$,$);\n",
+        true,
+    ));
+    assert!(e.contains("#31 CURVE_REPLICA"), "{e}");
+}
+
+/// The two files `what_is_not_read_is_named` held to "not read" before
+/// 2026-11-15: one edge from vertex #17 back to itself, on a hyperbola and
+/// (through a surface curve) on a parabola. Both curves are read now and
+/// neither closes, so the edge is refused, naming it and the curve.
+#[test]
+fn a_closed_edge_on_a_hyperbola_or_a_parabola_is_refused() {
     let e = error(&file("#30=HYPERBOLA('',#21,1.,2.);\n", true));
-    assert!(e.contains("#30 HYPERBOLA") && e.contains("not read"), "{e}");
+    assert!(
+        e.contains("#16 EDGE_CURVE") && e.contains("on a hyperbola that does not close"),
+        "{e}"
+    );
     let e = error(&file(
         "#30=SURFACE_CURVE('',#31,(),.CURVE_3D.);\n#31=PARABOLA('',#21,1.);\n",
         true,
     ));
-    assert!(e.contains("#31 PARABOLA"), "{e}");
+    assert!(
+        e.contains("#16 EDGE_CURVE") && e.contains("on a parabola that does not close"),
+        "{e}"
+    );
 }
 
 #[test]
@@ -173,7 +205,7 @@ fn a_mapped_item_of_the_wrong_kinds_is_named() {
 fn implied_knots_follow_the_types() {
     let text = file("#30=CIRCLE('',#21,1.);\n", true);
     let parsed = parse(text.as_bytes()).unwrap();
-    let reader = geometry::Reader::new(&parsed, 1.0, 1.0);
+    let reader = geometry::Reader::new(&parsed, 1.0, 1.0, 1e-9);
     let knots = |form, count, degree| reader.implied_knots(1, form, count, degree);
     use geometry::Implicit::*;
     assert_eq!(
@@ -202,8 +234,10 @@ fn implied_knots_follow_the_types() {
         true,
     );
     let parsed = parse(text.as_bytes()).unwrap();
-    let reader = geometry::Reader::new(&parsed, 1.0, 1.0);
-    let curve = reader.curve(30).unwrap();
+    let reader = geometry::Reader::new(&parsed, 1.0, 1.0, 1e-9);
+    let geometry::CurveRead::Curve(curve) = reader.curve(30).unwrap() else {
+        panic!("not a curve")
+    };
     assert_eq!(curve.domain(), (0.0, 2.0));
     assert!(
         curve
@@ -221,7 +255,7 @@ fn implied_knots_follow_the_types() {
             true,
         );
         let parsed = parse(text.as_bytes()).unwrap();
-        let reader = geometry::Reader::new(&parsed, 1.0, 1.0);
+        let reader = geometry::Reader::new(&parsed, 1.0, 1.0, 1e-9);
         match reader.surface(40).unwrap() {
             geometry::Read::Done(craft3d_geom::Surface::Nurbs(n), false) => {
                 assert_eq!(n.counts(), (2, 2), "{keyword}");
@@ -244,7 +278,7 @@ fn swept_and_offset_surfaces_that_are_not_read_are_named() {
         true,
     );
     let parsed = parse(text.as_bytes()).unwrap();
-    let reader = geometry::Reader::new(&parsed, 1.0, 1.0);
+    let reader = geometry::Reader::new(&parsed, 1.0, 1.0, 1e-9);
     let e = reader.surface(40).unwrap_err().to_string();
     assert!(e.contains("more than"), "{e}");
     // A line that does not meet the axis: a hyperboloid.
@@ -261,7 +295,7 @@ fn swept_and_offset_surfaces_that_are_not_read_are_named() {
         true,
     );
     let parsed = parse(text.as_bytes()).unwrap();
-    let reader = geometry::Reader::new(&parsed, 1.0, 1.0);
+    let reader = geometry::Reader::new(&parsed, 1.0, 1.0, 1e-9);
     match reader.surface(51).unwrap() {
         geometry::Read::Done(craft3d_geom::Surface::Cone(c), false) => {
             assert!(

@@ -4,15 +4,19 @@
 //! document is the same; undo and redo; names that a second import of the
 //! same file keeps; refusals.
 //!
-//! Two opt-in tests run in release with `cargo xtask freecad` (the
-//! Strix's gate):
+//! Opt-in tests run in release with `cargo xtask freecad` (the Strix's
+//! gate), among them:
 //! - `every_body_of_the_showcase_reads_back` exports every body of every
 //!   showcase model and reads it back, in three units;
 //! - `freecad_files_read_with_freecads_volume` lets FreeCAD (an
 //!   independent kernel, `CRAFT3D_FREECAD`) make solids of its own
 //!   (primitives, booleans, fillets, chamfers, revolutions, lofts), write
 //!   them as STEP and measure them; each must read here with FreeCAD's
-//!   volume and area, or be refused with a reason, never read wrong.
+//!   volume and area, or be refused with a reason, never read wrong;
+//! - `freecad_cone_sections_read_and_go_back` lets FreeCAD cut cones by
+//!   planes (hyperbolas and parabolas in its files): each must read here
+//!   with FreeCAD's volume and area, and what 3DCraft exports of it must
+//!   read in FreeCAD as a valid solid of the same volume.
 
 #![allow(
     clippy::unwrap_used,
@@ -1153,6 +1157,185 @@ fn freecad_assemblies_read_where_freecad_places_them() {
         }
     }
     println!("said: {said:#?}\nwrong: {wrong:#?}");
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// The FreeCAD script for cones cut by planes (`CRAFT3D_FC_STAGE` `make`):
+/// a frustum cut parallel to its axis (a hyperbola) and parallel to a
+/// ruling (a parabola), and a plate with a countersunk hole cut by a flat
+/// through the countersink; each written as STEP by FreeCAD, measured,
+/// and the conic kinds its file holds recorded. Stage `back` reads the
+/// files ours wrote of them (`ours.json` names them) and measures those.
+const FREECAD_CONE_SCRIPT: &str = r#"
+import os, json, traceback, math
+import FreeCAD, Part
+from FreeCAD import Vector as V
+out = os.environ["CRAFT3D_FC_DIR"]
+stage = os.environ.get("CRAFT3D_FC_STAGE", "make")
+cases = {}
+def measured(shape):
+    return {"volume": shape.Volume, "area": shape.Area,
+            "solids": len(shape.Solids), "valid": shape.isValid()}
+if stage == "make":
+    def add(name, make):
+        try:
+            shape = make()
+            path = os.path.join(out, name + ".step")
+            shape.exportStep(path)
+            text = open(path).read()
+            cases[name] = measured(shape)
+            cases[name]["kinds"] = [k for k in ("HYPERBOLA", "PARABOLA", "TRIMMED_CURVE", "B_SPLINE_CURVE") if k in text]
+        except Exception:
+            cases[name] = {"error": traceback.format_exc()}
+    frustum = lambda: Part.makeCone(10, 2, 15)
+    add("frustum_cut_along_its_axis", lambda: frustum().cut(Part.makeBox(30, 40, 40, V(4, -20, -10))))
+    def along_a_ruling():
+        box = Part.makeBox(80, 80, 80, V(-40, -40, -80))
+        box.rotate(V(0, 0, 0), V(0, 1, 0), math.degrees(math.atan2(15, 8)))
+        box.translate(V(4, 0, 0))
+        return frustum().common(box)
+    add("frustum_cut_along_a_ruling", along_a_ruling)
+    def countersink():
+        plate = Part.makeBox(20, 20, 6)
+        hole = Part.makeCylinder(1.5, 10, V(10, 10, -2))
+        sink = Part.makeCone(1.5, 4.5, 3, V(10, 10, 3))
+        return plate.cut(hole).cut(sink).cut(Part.makeBox(10, 30, 10, V(12.5, -5, -2)))
+    add("countersink_cut_by_a_flat", countersink)
+    with open(os.path.join(out, "cases.json"), "w") as f:
+        json.dump(cases, f)
+else:
+    for name in json.load(open(os.path.join(out, "ours.json"))):
+        try:
+            shape = Part.Shape()
+            shape.read(os.path.join(out, name + "-ours.step"))
+            cases[name] = measured(shape)
+        except Exception:
+            cases[name] = {"error": traceback.format_exc()}
+    with open(os.path.join(out, "back.json"), "w") as f:
+        json.dump(cases, f)
+"#;
+
+/// Runs [`FREECAD_CONE_SCRIPT`] at `stage` in `dir` and returns the JSON it
+/// wrote to `file`.
+fn freecad_cones(freecad: &str, dir: &Path, stage: &str, file: &str) -> Value {
+    let script = dir.join("cone_sections.py");
+    std::fs::write(&script, FREECAD_CONE_SCRIPT).unwrap();
+    let mut command = std::process::Command::new(freecad);
+    if freecad.ends_with(".AppImage") {
+        command.arg("freecadcmd");
+    }
+    let output = command
+        .arg(&script)
+        .env("CRAFT3D_FC_DIR", dir)
+        .env("CRAFT3D_FC_STAGE", stage)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap_or_else(|e| panic!("cannot run {freecad}: {e}"));
+    serde_json::from_str(
+        &std::fs::read_to_string(dir.join(file)).unwrap_or_else(|_| {
+            panic!(
+                "FreeCAD wrote no {file} ({}):\n{}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        }),
+    )
+    .unwrap()
+}
+
+/// Cones cut by planes as FreeCAD (an independent kernel) writes them,
+/// with `HYPERBOLA` and `PARABOLA` edges (refused before 2026-11-15):
+/// each must read here with FreeCAD's volume and area to 1e-6, and the
+/// file 3DCraft exports of what it read (its conic edges as rational
+/// B-splines) must read in FreeCAD as a valid solid of the same volume.
+#[test]
+#[ignore = "needs FreeCAD (CRAFT3D_FREECAD): cargo xtask freecad"]
+fn freecad_cone_sections_read_and_go_back() {
+    let freecad = std::env::var("CRAFT3D_FREECAD").expect(
+        "set CRAFT3D_FREECAD to a FreeCAD AppImage or FreeCADCmd executable to run this test",
+    );
+    let dir = workdir("step-import", "freecad-cones");
+    let cases = freecad_cones(&freecad, &dir, "make", "cases.json");
+    let mut wrong = Vec::new();
+    let mut ours = Vec::new();
+    for (name, case) in cases.as_object().unwrap() {
+        if let Some(e) = case.get("error") {
+            panic!("FreeCAD could not make {name}: {e}");
+        }
+        let kinds = case["kinds"].to_string();
+        println!("{name}: FreeCAD's file holds {kinds}");
+        let conic = if name.contains("ruling") {
+            "PARABOLA"
+        } else {
+            "HYPERBOLA"
+        };
+        if !kinds.contains(conic) {
+            wrong.push(format!("{name}: FreeCAD wrote no {conic} ({kinds})"));
+        }
+        let mut s = session_in(&dir);
+        run(
+            &mut s,
+            "file.new",
+            json!({"units": "mm", "tolerance": 1e-6}),
+        );
+        let result = match s.execute("file.import", &json!({"path": format!("{name}.step")})) {
+            Ok(result) => result,
+            Err(e) => {
+                wrong.push(format!("{name}: refused: {e}"));
+                continue;
+            }
+        };
+        let made = result["bodies"].as_array().unwrap();
+        if let Some(failed) = made.iter().find(|b| b["status"] != "ok") {
+            wrong.push(format!("{name}: failed: {}", failed["error"]));
+            continue;
+        }
+        let all = bodies(&mut s);
+        let volume: f64 = all.iter().map(|b| b["volume"].as_f64().unwrap()).sum();
+        let area: f64 = all.iter().map(|b| b["area"].as_f64().unwrap()).sum();
+        let (ev, ea) = (
+            case["volume"].as_f64().unwrap(),
+            case["area"].as_f64().unwrap(),
+        );
+        println!("{name}: ours {volume} / {area}, FreeCAD's {ev} / {ea}");
+        if all.len() as u64 != case["solids"].as_u64().unwrap()
+            || (volume - ev).abs() > 1e-6 * ev
+            || (area - ea).abs() > 1e-6 * ea
+        {
+            wrong.push(format!(
+                "{name}: FreeCAD {ev} / {ea} in {} solids, ours {volume} / {area} in {}",
+                case["solids"],
+                all.len()
+            ));
+            continue;
+        }
+        run(
+            &mut s,
+            "file.export",
+            json!({"path": format!("{name}-ours.step")}),
+        );
+        ours.push((name.clone(), volume));
+    }
+    let names: Vec<&String> = ours.iter().map(|(n, _)| n).collect();
+    std::fs::write(
+        dir.join("ours.json"),
+        serde_json::to_string(&names).unwrap(),
+    )
+    .unwrap();
+    let back = freecad_cones(&freecad, &dir, "back", "back.json");
+    for (name, volume) in &ours {
+        let case = &back[name.as_str()];
+        println!("{name}-ours.step in FreeCAD: {case}");
+        if case.get("error").is_some()
+            || case["valid"] != true
+            || case["solids"] != 1
+            || (case["volume"].as_f64().unwrap_or(0.0) - volume).abs() > 1e-6 * volume
+        {
+            wrong.push(format!("{name}: FreeCAD reads ours as {case}"));
+        }
+    }
+    println!("wrong: {wrong:#?}");
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
 

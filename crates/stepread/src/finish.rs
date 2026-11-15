@@ -282,12 +282,21 @@ impl Finisher<'_> {
 /// Points along an edge, per face that uses it, all within `tolerance` of
 /// the face's surface: 1025 places along the edge (the ends included).
 fn densely_within(body: &Body, edge: EdgeId, tolerance: f64) -> bool {
+    dense_gap(body, edge) <= tolerance
+}
+
+/// The largest distance from the surfaces of `edge`'s faces at 1025
+/// places along it, each by its projection (what [`densely_within`]
+/// holds to the tolerance): infinite when a projection fails or no face
+/// uses the edge.
+fn dense_gap(body: &Body, edge: EdgeId) -> f64 {
     const PLACES: u32 = 1024;
     let Some(e) = body.edge(edge) else {
-        return false;
+        return f64::INFINITY;
     };
     let (t0, t1) = e.range;
     let mut any = false;
+    let mut worst = 0.0_f64;
     for face in &body.faces {
         let uses = face.loops.iter().any(|l| {
             body.loop_(*l)
@@ -306,12 +315,13 @@ fn densely_within(body: &Body, edge: EdgeId, tolerance: f64) -> bool {
                 .project(p)
                 .ok()
                 .map(|(u, v)| face.surface.eval(u, v).distance(p));
-            if !near.is_some_and(|d| d <= tolerance) {
-                return false;
+            match near {
+                Some(d) if d.is_finite() => worst = worst.max(d),
+                _ => return f64::INFINITY,
             }
         }
     }
-    any
+    if any { worst } else { f64::INFINITY }
 }
 
 /// The worst distance among the defects that say an entity lies off
@@ -518,7 +528,18 @@ pub(crate) fn finish_described(
                         )
                     }
                     craft3d_topo::ToleranceError::EdgeNotMeasured { .. } => {
-                        "could not be proven within the cap of its faces' surfaces".to_string()
+                        // What the user can do: the prover gave out on an
+                        // edge whose places all lie within the cap. A
+                        // document tolerance of at least the gap they show
+                        // accepts it on them, counted as unproven.
+                        let gap = dense_gap(&finisher.body, edge);
+                        if gap.is_finite() && gap <= cap {
+                            format!(
+                                "could not be proven within the cap of its faces' surfaces, though at 1025 places it lies at most {gap:.3e} off them (a document tolerance of at least that, `document.setTolerance`, accepts it on those places, counted as unproven)"
+                            )
+                        } else {
+                            "could not be proven within the cap of its faces' surfaces".to_string()
+                        }
                     }
                     other => other.to_string(),
                 };

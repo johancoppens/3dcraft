@@ -11,6 +11,7 @@
 
 // `!(x > 0.0)` is deliberate: unlike `x <= 0.0` it is also true for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
+use crate::conic::Conic;
 use crate::geometry::{as_nurbs, extruded, revolved};
 use crate::spindle::{Normal, Sheet, Spindle, flipped};
 use craft3d_geom::{Cone, Curve3, Cylinder, NurbsCurve, Plane, Sphere, Surface, Torus};
@@ -257,7 +258,12 @@ pub fn offset(surface: &Surface, opposite: bool, distance: f64) -> Result<Swept,
             .ok_or_else(|| "the basis has no normal".to_string())?;
         Ok(if opposite { -ours } else { ours })
     };
-    let gone = || "the offset goes through the basis's axis or centre; it is not read".to_string();
+    let gone = || {
+        format!(
+            "the offset by {distance} goes through the {} basis's axis or centre (nothing of the surface is left on its side of it): not read; a file that gives the face's surface as the plain surface it is (or as a B-spline) reads",
+            surface.kind()
+        )
+    };
     let moved = match surface {
         Surface::Plane(plane) => {
             let n = file_normal(0.0, 0.0)?;
@@ -326,11 +332,30 @@ pub fn offset(surface: &Surface, opposite: bool, distance: f64) -> Result<Swept,
             let o = c.frame().origin();
             let radial = p - o - c.frame().z() * (p - o).dot(c.frame().z());
             let sign = file_normal(0.0, v)?.dot(radial).signum();
-            let radius = c.radius() + sign * distance / c.half_angle().pcos();
-            if !(radius >= 0.0) {
+            let alpha = c.half_angle();
+            let radius = c.radius() + sign * distance / alpha.pcos();
+            if !radius.is_finite() {
                 return Err(gone());
             }
-            Surface::Cone(Cone::new(*c.frame(), radius, c.half_angle()).map_err(geom)?)
+            if radius >= 0.0 {
+                Surface::Cone(Cone::new(*c.frame(), radius, alpha).map_err(geom)?)
+            } else {
+                // The offset's apex lies past the frame, where the
+                // radius `radius + v tan α` is zero: an offset towards
+                // the axis larger than the radius at v = 0 (any such
+                // offset of a cone whose frame is at its apex, as a
+                // line turned about an axis it meets is read). It is
+                // the same cone with its frame there: the part of the
+                // offset that lies past its apex is no face's (the
+                // offsets of points near the basis's apex, which cross
+                // the axis), and an edge there is not proven on it.
+                let apex = -radius / alpha.ptan();
+                let frame = c
+                    .frame()
+                    .at(c.frame().point(0.0, 0.0, apex))
+                    .ok_or_else(gone)?;
+                Surface::Cone(Cone::new(frame, 0.0, alpha).map_err(geom)?)
+            }
         }
         Surface::Bezier(_) | Surface::Nurbs(_) => {
             return Err(
@@ -425,4 +450,193 @@ pub fn spindle_part(
     spindle
         .sheet_of(&points, tolerance)
         .and_then(|outer| spindle.surface(outer))
+}
+
+/// How an untrimmed hyperbola or parabola is swept: along a vector, or
+/// round an axis through a point (a unit direction).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ConicSweep {
+    Extrusion(Vec3),
+    Revolution { at: Vec3, axis: Vec3 },
+}
+
+/// Whether `conic` swept as `sweep` is read, asked before any face is.
+/// Refused: an extrusion along a direction in the conic's own plane (it
+/// sweeps no surface, only a region of the plane), and a turn about an
+/// axis in its plane that the conic crosses or touches (a paraboloid, a
+/// hyperboloid of two sheets), which sweeps its surface twice, once with
+/// each normal: which half a face is on, and so which way its normal
+/// points, is in the face's parameter-space curves, which are not read.
+pub fn conic_sweep_check(conic: &Conic, sweep: &ConicSweep) -> Result<(), String> {
+    let frame = conic.frame();
+    let n = frame.z();
+    let centre = frame.origin();
+    match *sweep {
+        ConicSweep::Extrusion(along) => {
+            if !(along.dot(n).abs() > 1e-9 * along.length()) {
+                return Err(format!(
+                    "a {} extruded along a direction in its own plane sweeps no surface (only a region of the plane): not read",
+                    conic.kind()
+                ));
+            }
+        }
+        ConicSweep::Revolution { at, axis } => {
+            let size = (at - centre).length()
+                + match *conic {
+                    Conic::Hyperbola { a, b, .. } => a.max(b),
+                    Conic::Parabola { focal, .. } => focal.abs(),
+                };
+            let in_plane = axis.dot(n).abs() <= 1e-9 && (at - centre).dot(n).abs() <= 1e-9 * size;
+            if !in_plane {
+                return Ok(());
+            }
+            let Some(across) = n.cross(axis).normalized() else {
+                return Err("the axis of the surface of revolution has no direction".to_string());
+            };
+            // `(λ(u) − at)·across`, the signed distance from the axis in
+            // the plane, as a quadratic: in `e^u` for a hyperbola (times
+            // `2 e^u`), in `u` for a parabola.
+            let alpha = (centre - at).dot(across);
+            let crosses = match *conic {
+                Conic::Hyperbola { a, b, .. } => {
+                    let (beta, gamma) = (a * frame.x().dot(across), b * frame.y().dot(across));
+                    has_root(beta + gamma, 2.0 * alpha, beta - gamma, true)
+                }
+                Conic::Parabola { focal, .. } => has_root(
+                    focal * frame.x().dot(across),
+                    2.0 * focal * frame.y().dot(across),
+                    alpha,
+                    false,
+                ),
+            };
+            if crosses {
+                return Err(format!(
+                    "a {} turned about an axis in its plane that it crosses sweeps its surface twice, once with each normal, and which half a face is on is in its parameter-space curves, which are not read: not read (a file that gives the profile as a trimmed curve on one side of the axis, or the surface as a B-spline, reads)",
+                    conic.kind()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether `a2 t² + a1 t + a0` has a real root (a positive one when
+/// `positive`), a double root counting.
+fn has_root(a2: f64, a1: f64, a0: f64, positive: bool) -> bool {
+    let size = a2.abs().max(a1.abs()).max(a0.abs());
+    if !(size > 0.0) {
+        return true;
+    }
+    if a2.abs() <= 1e-12 * size {
+        if a1.abs() <= 1e-12 * size {
+            return a0.abs() <= 1e-12 * size;
+        }
+        return !positive || -a0 / a1 > 0.0;
+    }
+    let d = a1 * a1 - 4.0 * a2 * a0;
+    if d < -1e-12 * (a1 * a1).max((4.0 * a2 * a0).abs()) {
+        return false;
+    }
+    let s = d.max(0.0).sqrt();
+    let (t1, t2) = ((-a1 - s) / (2.0 * a2), (-a1 + s) / (2.0 * a2));
+    !positive || t1 > 0.0 || t2 > 0.0
+}
+
+/// Points along every edge of `loops`, `per_edge + 1` each.
+fn edge_points(body: &Body, loops: &[LoopId], per_edge: u32) -> Vec<Vec3> {
+    let mut points = Vec::new();
+    for l in loops {
+        let Some(l) = body.loop_(*l) else {
+            continue;
+        };
+        for c in &l.coedges {
+            let Some(edge) = body.edge(c.edge) else {
+                continue;
+            };
+            let (t0, t1) = edge.range;
+            for k in 0..=per_edge {
+                points.push(
+                    edge.curve
+                        .eval(t0 + (t1 - t0) * f64::from(k) / f64::from(per_edge)),
+                );
+            }
+        }
+    }
+    points
+}
+
+/// The exact B-spline surface of `conic` swept as `sweep` (checked by
+/// [`conic_sweep_check`]), over as much of the conic as the faces' edges
+/// in `loops` reach, its parameters running as the file's do (`u` along
+/// the conic and `v` along the direction for an extrusion, `u` round the
+/// axis and `v` along the conic for a revolution), so its normal is the
+/// file's.
+///
+/// *Extruded:* a point `X = λ(u) + vV` of the surface is moved along `V`
+/// into the conic's plane, where its `u` is its foot's; the range of `u`
+/// over 33 points per edge, widened by a quarter (at most one unit, at
+/// least a thousandth), is the arc, extruded as a spline is
+/// ([`bounded_extrusion`]). *Turned:* a turn keeps the distance from a
+/// point `L` of the axis, so a face whose edges lie within `R` of `L`
+/// lies on the turn of the part of the conic within `R` of `L`, which lies
+/// within `|u| ≤ U`: on a hyperbola `a cosh u ≤ |λ(u) − C| ≤ R + |C − L|`
+/// and `b |sinh u| ≤ R + |C − L|`, on a parabola `|F| u² ≤ …` and
+/// `2 |F u| ≤ …` (`R` taken a quarter larger than the points show).
+pub fn conic_surface(
+    body: &Body,
+    conic: &Conic,
+    sweep: &ConicSweep,
+    loops: &[LoopId],
+) -> Result<Surface, String> {
+    let points = edge_points(body, loops, 32);
+    if points.is_empty() {
+        return Err(format!(
+            "a face on a swept {} without edges to bound it",
+            conic.kind()
+        ));
+    }
+    let frame = conic.frame();
+    let centre = frame.origin();
+    match *sweep {
+        ConicSweep::Extrusion(along) => {
+            let n = frame.z();
+            let across = along.dot(n);
+            let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+            for x in &points {
+                let flat = *x - along * ((*x - centre).dot(n) / across);
+                let u = conic
+                    .parameter(flat)
+                    .ok_or_else(|| "an edge of a face on it is not finite".to_string())?;
+                (lo, hi) = (lo.min(u), hi.max(u));
+            }
+            let margin = (0.25 * (hi - lo)).clamp(1e-3, 1.0);
+            let arc = conic.arc(lo - margin, hi + margin)?;
+            bounded_extrusion(body, &arc, along, loops)
+        }
+        ConicSweep::Revolution { at, axis } => {
+            let reach = points
+                .iter()
+                .map(|x| x.distance(at))
+                .fold(0.0_f64, f64::max)
+                * 1.25
+                + centre.distance(at);
+            let bound = match *conic {
+                Conic::Hyperbola { a, b, .. } => {
+                    (reach / a).max(1.0).pacosh().min((reach / b).pasinh())
+                }
+                Conic::Parabola { focal, .. } => {
+                    let f = focal.abs();
+                    (reach / f).sqrt().min(reach / (2.0 * f))
+                }
+            };
+            if !bound.is_finite() {
+                return Err("its faces' edges are not finite".to_string());
+            }
+            let bound = bound.max(1e-3);
+            let arc = conic.arc(-bound, bound)?;
+            revolved(&arc, at, axis)
+                .map(Surface::Nurbs)
+                .map_err(|e| e.to_string())
+        }
+    }
 }

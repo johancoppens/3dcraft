@@ -12,8 +12,9 @@
 //! start vertex, used the other way round by every loop. An oriented face
 //! or shell with `.F.` turns its faces over (the normal and every loop).
 
+use crate::conic::Conic;
 use crate::finish::reverse;
-use crate::geometry::{Read, Reader};
+use crate::geometry::{CurveRead, Read, Reader};
 use crate::{ImportError, Imported, Item, ItemKind, Options, Report, boolean, err, keywords};
 use craft3d_geom::{Curve3, Surface};
 use craft3d_math::Vec3;
@@ -43,7 +44,7 @@ struct Builder<'a, 'r> {
     faces: BTreeMap<u64, FaceId>,
     /// Curves and surfaces read, by instance id: read once however many
     /// edges and faces use them (`crate::budget` bounds the copies).
-    curves: BTreeMap<u64, Curve3>,
+    curves: BTreeMap<u64, CurveRead>,
     surfaces: BTreeMap<u64, Read>,
     face_ids: Vec<u64>,
     edge_ids: Vec<u64>,
@@ -195,6 +196,53 @@ impl Builder<'_, '_> {
         }
     }
 
+    /// The part of a hyperbola or parabola an edge from `a` to `b` is (a
+    /// trimmed one's trims do not bound its edges, its vertices do), as
+    /// the exact B-spline of the arc between the feet of its vertices
+    /// (`conic::Conic::arc`), with that arc's whole domain as its range.
+    /// A vertex off the conic is where the file puts it; how far it lies
+    /// from the arc's end is measured with every other vertex.
+    fn conic_arc(
+        &self,
+        id: u64,
+        geometry: u64,
+        conic: &Conic,
+        a: VertexId,
+        b: VertexId,
+    ) -> Result<(Curve3, (f64, f64)), ImportError> {
+        if a == b {
+            return self.bad(
+                id,
+                &format!(
+                    "an edge that starts where it ends, on a {} that does not close",
+                    conic.kind()
+                ),
+            );
+        }
+        let foot = |v: VertexId| {
+            self.body
+                .vertex(v)
+                .and_then(|v| conic.parameter(v.point))
+                .ok_or_else(|| {
+                    ImportError(format!(
+                        "{}: a vertex has no foot on its {}",
+                        self.describe(id),
+                        conic.kind()
+                    ))
+                })
+        };
+        let (ua, ub) = (foot(a)?, foot(b)?);
+        if ua.partial_cmp(&ub) != Some(std::cmp::Ordering::Less) {
+            return self.bad(
+                id,
+                "the edge runs against its curve although same_sense says it runs with it",
+            );
+        }
+        let arc = conic.arc(ua, ub).or_else(|e| self.bad(geometry, &e))?;
+        let range = arc.domain();
+        Ok((Curve3::Nurbs(arc), range))
+    }
+
     fn edge(&mut self, id: u64) -> Result<EdgeOf, ImportError> {
         if let Some(&found) = self.edges.get(&id) {
             return Ok(found);
@@ -207,12 +255,12 @@ impl Builder<'_, '_> {
         let end = self.reference(id, record.params.get(2), "edge_end")?;
         let geometry = self.reference(id, record.params.get(3), "edge_geometry")?;
         let same_sense = self.flag(id, record.params.get(4), "same_sense")?;
-        let curve = match self.curves.get(&geometry) {
-            Some(curve) => curve.clone(),
+        let read = match self.curves.get(&geometry) {
+            Some(read) => read.clone(),
             None => {
-                let curve = self.reader.curve(geometry)?;
-                self.curves.insert(geometry, curve.clone());
-                curve
+                let read = self.reader.curve(geometry)?;
+                self.curves.insert(geometry, read.clone());
+                read
             }
         };
         let (start, end) = (self.vertex(start)?, self.vertex(end)?);
@@ -221,7 +269,13 @@ impl Builder<'_, '_> {
         } else {
             (end, start)
         };
-        let range = self.range(id, &curve, a, b)?;
+        let (curve, range) = match read {
+            CurveRead::Curve(curve) => {
+                let range = self.range(id, &curve, a, b)?;
+                (curve, range)
+            }
+            CurveRead::Conic(conic, _) => self.conic_arc(id, geometry, &conic, a, b)?,
+        };
         let edge = self.body.add_edge(curve, range, a, b);
         self.edge_ids.push(id);
         let found = EdgeOf {
@@ -352,6 +406,15 @@ impl Builder<'_, '_> {
                 crate::swept::spindle_part(&self.body, &spindle, &loops, self.tolerance)
                     .or_else(|e| self.bad(surface_id, &e))?
             }
+            Read::Conic {
+                id: swept,
+                conic,
+                sweep,
+            } => (
+                crate::swept::conic_surface(&self.body, &conic, &sweep, &loops)
+                    .or_else(|e| self.bad(swept, &e))?,
+                false,
+            ),
         };
         // A face without an edge loop is its whole surface: only a surface
         // that closes all around is one (a sphere, a torus, a spline
@@ -472,6 +535,16 @@ fn shells_of(reader: &Reader<'_>, item: &Item) -> Result<Vec<(u64, bool, bool)>,
     }
 }
 
+/// The distance within which two points of the file are one: its
+/// uncertainty, within the tolerance and the document's cap on an
+/// entity's tolerance (docs/decisions.md, 2026-10-18).
+pub(crate) fn merge_distance(uncertainty: Option<f64>, options: &Options) -> f64 {
+    let tolerance = options.tolerance.linear;
+    uncertainty
+        .unwrap_or(tolerance)
+        .clamp(tolerance, options.loosest.max(tolerance))
+}
+
 pub(crate) fn build(
     reader: &Reader<'_>,
     item: &Item,
@@ -479,13 +552,7 @@ pub(crate) fn build(
     report: &mut Report,
 ) -> Result<Imported, ImportError> {
     let tolerance = options.tolerance.linear;
-    // The file's uncertainty, within the tolerance and the document's cap
-    // on an entity's tolerance (docs/decisions.md, 2026-10-18).
-    let cap = options.loosest;
-    let merge = report
-        .uncertainty
-        .unwrap_or(tolerance)
-        .clamp(tolerance, cap.max(tolerance));
+    let merge = merge_distance(report.uncertainty, options);
     let kind = match item.kind {
         ItemKind::Solid => BodyKind::Solid,
         ItemKind::Sheet => BodyKind::Sheet,
