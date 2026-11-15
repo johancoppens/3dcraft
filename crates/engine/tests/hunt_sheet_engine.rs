@@ -561,11 +561,14 @@ fn discs_of_arcs_plated_by_command_are_their_closed_form() {
 }
 
 /// The kernel's finding by command (crates/kernel/tests/hunt_sheet_repro.rs
-/// › `a_bend_down_at_one_radius_is_an_invalid_body`): a base 50 × 40, 1
+/// › `a_bend_down_at_one_radius_is_its_closed_form`): a base 50 × 40, 1
 /// thick, with a flange 20 long bent down 140 degrees about the inner
 /// radius 0.1762914118095948 (K 0.4). What the user gets there, and a
 /// thousandth either side: each built part held to the
-/// closed form `2000 + 40 (θ (R + ½) + 20)`, each failure printed.
+/// closed form `2000 + 40 (θ (R + ½) + 20)`, each failure printed. Until
+/// 2026-11-15 the value itself failed the feature (the regeneration's own
+/// check meshed the part and found the face it could not, an edge round
+/// its circle 2.4 times), never a wrong body.
 #[test]
 fn a_bend_down_at_one_radius_by_command() {
     let mut seen = Vec::new();
@@ -611,10 +614,5 @@ fn a_bend_down_at_one_radius_by_command() {
             seen.push((false, false));
         }
     }
-    // Pinned as found: the neighbours build right; the value itself is
-    // refused (the regeneration's own check meshes the part and finds
-    // the face it cannot), never a wrong body.
-    assert_eq!(seen[0], (true, true), "{seen:?}");
-    assert_eq!(seen[2], (true, true), "{seen:?}");
-    assert_eq!(seen[1], (false, false), "known refused: {seen:?}");
+    assert_eq!(seen, vec![(true, true); 3], "{seen:?}");
 }

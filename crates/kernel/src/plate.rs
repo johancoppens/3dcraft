@@ -57,7 +57,9 @@
 //! rims and the edges of each boundary edge are traced past its ends by
 //! enough to reach those corners (the edge's curve continued, its points
 //! put on the faces' surface continued), and the reach is doubled while a
-//! corner lies past it.
+//! corner lies past it. On a curve that closes (a circle, an ellipse) the
+//! run stays within a turn, where every corner a rim can have lies
+//! (`within_a_turn`).
 //!
 //! **Curves and surfaces kept simple.** Each edge is the simplest of a
 //! line, a circle and a cubic spline through its traced points that holds
@@ -522,6 +524,9 @@ struct Traced {
     fitted: [NurbsCurve; 2],
     /// The parameter range of the edge itself (without the reach).
     own: (f64, f64),
+    /// Whether the reach past the edge's ends was cut to keep the run
+    /// within a turn of the curve it lies on ([`within_a_turn`]).
+    kept: bool,
 }
 
 pub(crate) fn fit(params: &[f64], points: &[Vec3]) -> Result<NurbsCurve, KernelError> {
@@ -1268,6 +1273,7 @@ fn build(
         }
     }
     let reaches = reaches(&boundaries, &layered, thickness, tolerance)?;
+    let margin = margin(&boundaries, thickness);
     let furthest = reaches
         .values()
         .flat_map(|(a, b)| [*a, *b])
@@ -1325,7 +1331,7 @@ fn build(
             .get(&boundary.edge_id)
             .copied()
             .unwrap_or((0.0, 0.0));
-        let (made, rim) = trace_boundary(boundary, face, reach, tolerance)?;
+        let (made, rim) = trace_boundary(boundary, face, reach, margin, tolerance)?;
         rims.insert(boundary.edge_id, rim);
         traced.insert(boundary.edge_id, made);
     }
@@ -1466,11 +1472,13 @@ fn build(
             .edge(*edge_id)
             .ok_or_else(|| refuse(Some(*edge_id), "the edge is missing"))?;
         let closed = edge.start == edge.end;
+        let mut kept = false;
         let rows: [(Curve3, Vec<Vec3>); 2] = match kind {
             Use::Boundary(..) => {
                 let t = traced
                     .get(edge_id)
                     .ok_or_else(|| refuse(Some(*edge_id), "an edge was not traced"))?;
+                kept = t.kept;
                 let [lo, hi] = &t.fitted;
                 let [rlo, rhi] = &t.rows;
                 [
@@ -1496,10 +1504,15 @@ fn build(
                 return Err(refuse(Some(*edge_id), "a vertex of the plate is missing"));
             };
             let range = range_between(&curve, ps.point, pe.point, closed, tol).ok_or_else(|| {
+                let why = if kept {
+                    "the edge lies on a curve that closes, which is traced less than a turn (past its ends by at most seven eighths of what is left of the turn), and a corner lies further round it than that: the plate's corners past the two ends of the edge leave less than an eighth of the turn between them, or the joints turn the rims further round than their tangent planes put them"
+                } else {
+                    "the corner lies further past the edge's end than its tangent planes put it, by more than the margin the edge is traced beyond"
+                };
                 refuse(
                     Some(*edge_id),
                     format!(
-                        "the {} edge along the edge from {} does not reach the corners of the plate: the corner lies further past the edge's end than its tangent planes put it, by more than the margin the edge is traced beyond",
+                        "the {} edge along the edge from {} does not reach the corners of the plate: {why}",
                         if level == 0 { "back" } else { "front" },
                         at(edge.curve.eval(edge.range.0))
                     ),
@@ -1996,6 +2009,64 @@ fn continued_past(curve: &Curve3, reach: (f64, f64)) -> Option<Curve3> {
     spline.extended(reach).ok().map(Curve3::Nurbs)
 }
 
+/// The share of what is left of a turn past an edge on a curve that closes
+/// that a run kept within a turn leaves untraced ([`within_a_turn`]).
+const UNTRACED: f64 = 0.125;
+
+/// The reach past the ends of the open edge over `(a, b)` of `curve`, in
+/// its parameter, kept within a turn where the curve closes after a period
+/// (a circle, an ellipse), and whether it was cut so. Along such a curve
+/// the stations repeat after a period (each is a function of the curve's
+/// point alone), so every corner a rim can have lies within a turn, and a
+/// run past a turn traces its own points again: its rows and rim then go
+/// round the curve more than once, and an edge cut from a row that is not
+/// taken for its circle (one of an even number of turns, where the points
+/// [`simplest`] fits the circle through lie on each other; or a row that
+/// is no circle) runs round it at the wrong passes. That happened wherever
+/// twice the thicknesses past each end (the margin of [`reaches`]) is more
+/// than what is left of the turn: a radius below about the thickness.
+/// When `reach` (the parameters of where the tangent planes put the
+/// corners plus `margins`, per end) is a turn or more with the edge, the
+/// corners' reach is kept and the margins share what is left of the turn
+/// but [`UNTRACED`] of it, so the run's two ends stay apart; where the
+/// corners' reach alone takes more than that share (the tangent planes
+/// read far past a small circle's end), each reach is cut in proportion to
+/// it. Any other run, and every run on a curve that does not close, is as
+/// asked (traced as it always was).
+fn within_a_turn(
+    curve: &Curve3,
+    (a, b): (f64, f64),
+    (before, after): (f64, f64),
+    (margin_before, margin_after): (f64, f64),
+) -> ((f64, f64), bool) {
+    let Some(period) = curve.period() else {
+        return ((before, after), false);
+    };
+    let room = period - (b - a);
+    // A comparison with NaN is false: such a reach is left as asked.
+    if !(before + after >= room) {
+        return ((before, after), false);
+    }
+    let most = (room * (1.0 - UNTRACED)).max(0.0);
+    let (mb, ma) = (
+        margin_before.min(before).max(0.0),
+        margin_after.min(after).max(0.0),
+    );
+    let (eb, ea) = (before - mb, after - ma);
+    let kept = if eb + ea <= most {
+        let share = if mb + ma > 0.0 {
+            (most - eb - ea) / (mb + ma)
+        } else {
+            0.0
+        };
+        (eb + mb * share, ea + ma * share)
+    } else {
+        let share = most / (eb + ea);
+        (eb * share, ea * share)
+    };
+    (kept, true)
+}
+
 /// The curve to evaluate an edge at `t` on: its own inside its domain
 /// (every point there as it always was), `longer` past it.
 fn curve_at<'c>(own: &'c Curve3, longer: Option<&'c Curve3>, t: f64) -> &'c Curve3 {
@@ -2015,6 +2086,7 @@ fn trace_boundary(
     boundary: &Boundary<'_, '_>,
     face: &Layered<'_>,
     (reach_before, reach_after): (f64, f64),
+    margin: f64,
     tolerance: &Tolerance,
 ) -> Result<(Traced, (Surface, bool)), KernelError> {
     let tol = tolerance.linear;
@@ -2032,10 +2104,15 @@ fn trace_boundary(
             0.0
         }
     };
-    let (before, after) = if closed {
-        (0.0, 0.0)
+    let ((before, after), kept) = if closed {
+        ((0.0, 0.0), false)
     } else {
-        (past(a, reach_before), past(b, reach_after))
+        within_a_turn(
+            &edge.curve,
+            (a, b),
+            (past(a, reach_before), past(b, reach_after)),
+            (past(a, margin), past(b, margin)),
+        )
     };
     // Past its ends the edge's curve goes on as itself, evaluated where
     // that is well conditioned.
@@ -2146,6 +2223,7 @@ fn trace_boundary(
             rows: [lo_row, hi_row],
             fitted: [lo_fit, hi_fit],
             own: (a, b),
+            kept,
         },
         (surface, reversed),
     ))
@@ -2272,6 +2350,16 @@ fn three_planes(planes: [(Vec3, Vec3); 3], angular: f64) -> Option<Vec3> {
     point.is_finite().then_some(point)
 }
 
+/// The margin each boundary edge is traced beyond where the tangent planes
+/// put its corners ([`reaches`]): twice the thicknesses.
+fn margin(boundaries: &[Boundary<'_, '_>], thickness: f64) -> f64 {
+    2.0 * (thickness
+        + boundaries
+            .iter()
+            .filter_map(|b| b.joint.neighbour().map(|n| n.thickness))
+            .fold(0.0_f64, f64::max))
+}
+
 /// How far each boundary edge is traced past its start and its end, as
 /// lengths: per corner of the faces where two rims meet, how far past the
 /// edge's end the plate's corner lies by the tangent planes (each skin's,
@@ -2285,12 +2373,7 @@ fn reaches(
     thickness: f64,
     tolerance: &Tolerance,
 ) -> Result<BTreeMap<EdgeId, (f64, f64)>, KernelError> {
-    let margin = 2.0
-        * (thickness
-            + boundaries
-                .iter()
-                .filter_map(|b| b.joint.neighbour().map(|n| n.thickness))
-                .fold(0.0_f64, f64::max));
+    let margin = margin(boundaries, thickness);
     // An end on a surface starts on it: the edge must lie within the
     // margin of it (a wrong datum is said, not traced into).
     for b in boundaries {
@@ -2799,4 +2882,48 @@ mod tests {
             }
         }
     }
+
+    /// A run along a circle is kept within a turn: as asked while it is
+    /// less than a turn with the edge (to the bit), else the corners'
+    /// reach kept and the margins sharing seven eighths of what is left
+    /// of the turn, or (the corners' reach alone too long) both cut in
+    /// their proportion to that; as asked on a line, and for a reach that
+    /// is not a number.
+    #[test]
+    fn a_run_along_a_circle_is_kept_within_a_turn() {
+        let circle = Curve3::Circle(Circle::new(Frame::WORLD, 0.25).unwrap());
+        let line = Curve3::Line(Line::through(Vec3::ZERO, Vec3::X).unwrap());
+        let edge = (0.3, 0.3 + PI_HALF_TURN);
+        let room = std::f64::consts::TAU - PI_HALF_TURN;
+        // Less than a turn: as asked, bit for bit.
+        let asked = (1.2, 0.9);
+        assert_eq!(
+            within_a_turn(&circle, edge, asked, (1.0, 0.9)),
+            (asked, false)
+        );
+        // Margins of 8 each way (twice a thickness of 1 over r = 0.25):
+        // the corners' reach (0.1 and 0) kept, the margins share the rest.
+        let ((before, after), kept) = within_a_turn(&circle, edge, (8.1, 8.0), (8.0, 8.0));
+        assert!(kept);
+        assert!((before + after - 0.875 * room).abs() < 1e-12);
+        assert!(
+            (before - 0.1 - (after - 0.0)).abs() < 1e-12,
+            "{before} {after}"
+        );
+        // The corners' reach alone longer than the share: cut in its own
+        // proportion, the margins left out.
+        let ((before, after), kept) = within_a_turn(&circle, edge, (4.0, 3.0), (1.0, 1.0));
+        assert!(kept);
+        assert!((before / after - 1.5).abs() < 1e-12);
+        assert!((before + after - 0.875 * room).abs() < 1e-12);
+        // Not on a curve that closes, or not a number: as asked.
+        assert_eq!(
+            within_a_turn(&line, edge, (8.1, 8.0), (8.0, 8.0)),
+            ((8.1, 8.0), false)
+        );
+        let ((b, a), kept) = within_a_turn(&circle, edge, (f64::NAN, 1.0), (1.0, 1.0));
+        assert!(b.is_nan() && a == 1.0 && !kept);
+    }
+
+    const PI_HALF_TURN: f64 = std::f64::consts::PI;
 }

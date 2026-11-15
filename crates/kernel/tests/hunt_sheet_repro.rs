@@ -71,19 +71,19 @@ fn flange(on: u64, angle: f64, dir: Direction, r: f64, kk: f64, l: f64) -> Flang
 // The rays' finding (case 123 of the seeded plates) is pinned in
 // `hunt_sheet_plates.rs`, where the case is built bit for bit.
 
-/// REFUSED, owed (the plate's trace): a bend **down** whose inner radius
-/// is below about a fiftieth of the thickness. The bend's arcs on the
-/// folded bottom skin (the inner skin of a bend down) have the radius `R`,
-/// and the plate traces every arc twice the thickness past its ends,
-/// `2T/R` radians each way (`docs/design/plates.md` › *Corners*), which
-/// past 4096 points is refused: "the rim could not be traced within a
-/// quarter of the tolerance". The same bend up (its bottom skin is the
-/// outer one, radius `R + T`) and the same bend down with `R = 0` (a
-/// sharp bend, joined in apart) build, so nothing real refuses it. The
-/// sweep in `hunt_sheet_sizes.rs` puts the change at about `R = 0.02 T`
-/// for a bend of 90 degrees.
+/// FIXED (was refused, the plate's trace): a bend **down** whose inner
+/// radius is below about a fiftieth of the thickness. The bend's arcs on
+/// the folded bottom skin (the inner skin of a bend down) have the radius
+/// `R`, and the plate traced every arc twice the thickness past its ends,
+/// `2T/R` radians each way, hundreds of turns here, which past 4096
+/// points was refused: "the rim could not be traced within a quarter of
+/// the tolerance". A run on a circle is now kept within a turn
+/// (`docs/design/plates.md` › *Corners*), and the part is its closed form
+/// as the same bend up (its bottom skin is the outer one, radius `R + T`)
+/// and the same bend down with `R = 0` (a sharp bend, joined in apart)
+/// were.
 #[test]
-fn a_bend_down_tighter_than_a_fiftieth_of_the_thickness_is_refused() {
+fn a_bend_down_tighter_than_a_fiftieth_of_the_thickness_is_its_closed_form() {
     for k in [1e-3, 1.0, 1e6] {
         let tol = tolerance(k);
         let t = 0.326 * k;
@@ -103,114 +103,98 @@ fn a_bend_down_tighter_than_a_fiftieth_of_the_thickness_is_refused() {
         let v = |r: f64| {
             65.4 * 59.4 * k * k * t + 59.4 * k * (FRAC_PI_2 * t * (r + 0.5 * t) + 24.9 * k * t)
         };
-        for (dir, rr) in [(Direction::Up, r), (Direction::Down, 0.0)] {
+        for (dir, rr) in [
+            (Direction::Up, r),
+            (Direction::Down, 0.0),
+            (Direction::Down, r),
+        ] {
             let p = part(dir, rr).unwrap_or_else(|e| panic!("{k} {dir:?} {rr}: {e}"));
-            assert!(check(&p.solid.body, &tol).is_empty());
-            let got = mass_properties(&p.solid.body).unwrap().volume;
+            let b = &p.solid.body;
+            assert!(check(b, &tol).is_empty());
+            let got = mass_properties(b).unwrap().volume;
             assert!(
                 (got / v(rr) - 1.0).abs() < 1e-9,
                 "{k} {dir:?}: {got} for {}",
                 v(rr)
             );
+            assert!(mesh_volume(b, 1e-3 * size_of(b)).is_ok(), "{k} {dir:?}");
         }
-        let e = part(Direction::Down, r).expect_err("known refused: a bend down at R = T / 326");
-        assert!(
-            e.to_string().contains("could not be traced"),
-            "{k}: refused for another reason: {e}"
-        );
     }
 }
 
-/// KNOWN INVALID (the plate, in a sheet-metal part): a base 50 × 40,
-/// 1 thick, with a flange 20 long on its right edge bent **down** 140
-/// degrees about the inner radius 0.1762914118095948 (K 0.4), is a body
-/// that `topo::check` passes, whose volume measures 3213.85 where the
-/// closed form `2000 + 40 (θ (R + ½) + 20)` is 2866.10 (12 % over), and
-/// which cannot be meshed ("face 12 cannot be tessellated: its loops do
-/// not bound a region: the boundary crosses itself in parameter space";
-/// face 12 is the rim along the bend's outer arc at its end, a plane).
-/// Its edges along that arc at both ends (17, 19) are splines over a
-/// parameter range of 15 where every neighbour's are circles over the
-/// bend's 2.44 rad: the traced run was not taken for its circle. The
-/// bottom skin of a bend down has the inner radius `R`, whose arcs are
-/// traced `2T/R` past each end; here the run, `θ + 4T/R`, is 8π (four
-/// turns): the cause of
-/// `a_hole_whose_rims_run_an_even_number_of_turns_is_an_invalid_body`. At
-/// radii a few parts in a hundred thousand about it the part is refused
-/// or, at some values, this body (also a hundredth of a billionth smaller,
-/// while that much larger builds right); at 90 degrees and two turns
-/// (R ≈ 0.36378) it is refused over a like band. Found by the radius sweep of
-/// `hunt_sheet_sizes.rs` (200 values from 1e-5 to 1 T, log-spaced). The
-/// regeneration refuses it (its self-intersection check meshes the part),
-/// so by command it is a refusal a billionth from values that build
-/// (`crates/engine/tests/hunt_sheet_engine.rs`). When it is fixed this
-/// test fails: take it off.
+/// FIXED (was an invalid body, the plate in a sheet-metal part): a base
+/// 50 × 40, 1 thick, with a flange 20 long on its right edge bent
+/// **down** 140 degrees about the inner radius 0.1762914118095948 (K 0.4)
+/// was a body that `topo::check` passed, whose volume measured 3213.85
+/// where the closed form `2000 + 40 (θ (R + ½) + 20)` is 2866.10 (12 %
+/// over), and which could not be meshed: its edges along the bend's outer
+/// arc at both ends (17, 19) were splines over a parameter range of 15,
+/// round the arc's circle 2.39 times, where every neighbour's were
+/// circles over the bend's 2.44 rad. The bottom skin of a bend down has
+/// the inner radius `R`, whose arcs were traced `2T/R` past each end; here
+/// the run, `θ + 4T/R`, was 8π (four turns): the cause of
+/// `a_hole_whose_rims_ran_an_even_number_of_turns_is_its_closed_form`. The
+/// run is kept within a turn now (`docs/design/plates.md` › *Corners*).
+/// Held here at that radius, a part in 1e12 and in 1e3 either side, and
+/// at 90 degrees about the radius of two turns there, `4T / (3.5 π)`,
+/// which was refused over a like band: each the closed form to 1e-10, its
+/// mesh closed, edge 17 a circle.
 #[test]
-fn a_bend_down_at_one_radius_is_an_invalid_body() {
+fn a_bend_down_at_one_radius_is_its_closed_form() {
     use craft3d_geom::Curve3;
     let tol = tolerance(1.0);
-    let th = 140f64.to_radians();
-    let make = |r: f64| {
-        build(
-            &rect_spec(
-                50.0,
-                40.0,
-                1.0,
-                1.0,
-                vec![flange(2, th, Direction::Down, r, 0.4, 20.0)],
-            ),
-            &tol,
-        )
-        .unwrap()
-    };
-    let want = |r: f64| 2000.0 + 40.0 * (th * (r + 0.5) + 20.0);
-    let r0 = 0.1762914118095948;
-    for r in [r0 * (1.0 - 1e-3), r0 * (1.0 + 1e-12), r0 * (1.0 + 1e-3)] {
-        let p = make(r);
-        let b = &p.solid.body;
-        assert!(check(b, &tol).is_empty());
-        let v = mass_properties(b).unwrap().volume;
-        assert!((v / want(r) - 1.0).abs() < 1e-10, "{r}: {v}");
-        assert!(mesh_volume(b, 1e-3 * size_of(b)).is_ok());
-        assert!(matches!(b.edges[17].curve, Curve3::Circle(_)));
+    for (th, r0) in [
+        (140f64.to_radians(), 0.1762914118095948),
+        (FRAC_PI_2, 4.0 / (3.5 * PI)),
+    ] {
+        let make = |r: f64| {
+            build(
+                &rect_spec(
+                    50.0,
+                    40.0,
+                    1.0,
+                    1.0,
+                    vec![flange(2, th, Direction::Down, r, 0.4, 20.0)],
+                ),
+                &tol,
+            )
+            .unwrap_or_else(|e| panic!("{th} {r}: {e}"))
+        };
+        let want = |r: f64| 2000.0 + 40.0 * (th * (r + 0.5) + 20.0);
+        for f in [1.0 - 1e-3, 1.0 - 1e-12, 1.0, 1.0 + 1e-12, 1.0 + 1e-3] {
+            let r = r0 * f;
+            let p = make(r);
+            let b = &p.solid.body;
+            assert!(check(b, &tol).is_empty(), "{th} {r}");
+            let v = mass_properties(b).unwrap().volume;
+            assert!((v / want(r) - 1.0).abs() < 1e-10, "{th} {r}: {v}");
+            assert!(mesh_volume(b, 1e-3 * size_of(b)).is_ok(), "{th} {r}");
+            assert!(matches!(b.edges[17].curve, Curve3::Circle(_)), "{th} {r}");
+        }
     }
-    let p = make(r0);
-    let b = &p.solid.body;
-    assert!(check(b, &tol).is_empty(), "known: the checker passes it");
-    let v = mass_properties(b).unwrap().volume;
-    assert!(
-        (v / want(r0) - 1.12133).abs() < 1e-4,
-        "known: 12 % over: {v} for {}",
-        want(r0)
-    );
-    assert!(
-        mesh_volume(b, 1e-3 * size_of(b)).is_err(),
-        "known: it cannot be meshed"
-    );
-    assert!(matches!(b.edges[17].curve, Curve3::Nurbs(_)));
 }
 
-/// KNOWN INVALID (the plate): a plate 1 thick of a square 20 × 20 with a
-/// round hole drawn as two half circles of radius `r = 4t/(7π)`
-/// (0.18189136353359467) is a body that `topo::check` passes but that
-/// cannot be measured or meshed ("face … cannot be tessellated: its loops
-/// do not bound a region"); at `r = 4t/(3π)` (0.4244131815783876) the
-/// plate is refused. A billionth larger or smaller, both build right. The
-/// cause, found by measuring and confirmed by reading: each arc's rim is
-/// traced past both ends by twice the thickness, `2t/r` radians, so the
-/// traced run is the arc's sweep plus `4t/r`; at these radii it is an
-/// even number of whole turns (4 and 2), its first and last points meet,
-/// and `plate::simplest` takes the run as closed and fits the circle
-/// through its first point, the point a quarter along and the middle one
-/// by index (`crates/kernel/src/plate.rs`, `simplest`), which for an even
-/// number of turns lie (nearly) on top of each other; the circle is not
-/// found and the edge is the spline through the whole run, round its
-/// circle several times. The same in sheet metal (bends down, whose
-/// bottom skin's arcs have the inner radius:
-/// `a_bend_down_at_one_radius_is_an_invalid_body`). When it is fixed this
-/// test fails: take it off.
+/// FIXED (was an invalid body or refused, the plate): a plate 1 thick of
+/// a square 20 × 20 with a round hole drawn as two half circles of radius
+/// `r = 4t/(7π)` (0.18189136353359467) was a body that `topo::check`
+/// passed but that could not be measured or meshed ("face … cannot be
+/// tessellated: its loops do not bound a region"); at `r = 4t/(3π)`
+/// (0.4244131815783876) the plate was refused; a billionth larger or
+/// smaller, both built right. Each arc's rim was traced past both ends by
+/// twice the thickness, `2t/r` radians, so the traced run was the arc's
+/// sweep plus `4t/r`; at these radii an even number of whole turns (4 and
+/// 2), whose first and last points meet, and `plate::simplest` took the
+/// run as closed and fitted the circle through its first point, the point
+/// a quarter along and the middle one by index, which then lie on top of
+/// each other; the circle was not found and each hole edge was cut from
+/// the spline through the whole run, round its circle 2.5 times. Every
+/// station along a circle is a function of the circle's point, so a run
+/// past a turn traced its own points again: it is kept within a turn now
+/// (`docs/design/plates.md` › *Corners*). Held at both radii and a
+/// billionth either side: the closed form `(400 − π r²) t` to 1e-12, its
+/// mesh closed, the hole's edges circles.
 #[test]
-fn a_hole_whose_rims_run_an_even_number_of_turns_is_an_invalid_body() {
+fn a_hole_whose_rims_ran_an_even_number_of_turns_is_its_closed_form() {
     use craft3d_kernel::extrude::fill;
     use craft3d_kernel::plate::{Side, plate};
     use std::collections::BTreeMap;
@@ -240,25 +224,26 @@ fn a_hole_whose_rims_run_an_even_number_of_turns_is_an_invalid_body() {
         )
     };
     for r0 in [4.0 / (7.0 * PI), 4.0 / (3.0 * PI)] {
-        for r in [r0 * (1.0 - 1e-9), r0 * (1.0 + 1e-9)] {
+        for r in [r0 * (1.0 - 1e-9), r0, r0 * (1.0 + 1e-9)] {
             let (made, want) = plated(r);
-            let b = made.unwrap().body;
-            assert!(check(&b, &tol).is_empty());
+            let b = made.unwrap_or_else(|e| panic!("{r}: {e}")).body;
+            assert!(check(&b, &tol).is_empty(), "{r}");
             let v = mass_properties(&b).unwrap().volume;
-            assert!((v / want - 1.0).abs() < 1e-9, "{r}: {v} for {want}");
-            assert!(mesh_volume(&b, 1e-3 * size_of(&b)).is_ok());
+            assert!((v / want - 1.0).abs() < 1e-12, "{r}: {v} for {want}");
+            assert!(mesh_volume(&b, 1e-3 * size_of(&b)).is_ok(), "{r}");
+            let circles = b
+                .edges
+                .iter()
+                .filter(|e| matches!(e.curve, craft3d_geom::Curve3::Circle(_)))
+                .count();
+            let splines = b
+                .edges
+                .iter()
+                .filter(|e| matches!(e.curve, craft3d_geom::Curve3::Nurbs(_)))
+                .count();
+            assert_eq!((circles, splines), (4, 0), "{r}");
         }
     }
-    let (made, _) = plated(4.0 / (7.0 * PI));
-    let b = made.expect("known: built").body;
-    assert!(check(&b, &tol).is_empty(), "known: the checker passes it");
-    assert!(mass_properties(&b).is_err(), "known: it cannot be measured");
-    assert!(
-        mesh_volume(&b, 1e-3 * size_of(&b)).is_err(),
-        "known: it cannot be meshed"
-    );
-    let (made, _) = plated(4.0 / (3.0 * PI));
-    assert!(made.is_err(), "known: refused");
 }
 
 /// REFUSED by the regeneration, owed (a hole across a tight bend): a base
@@ -273,8 +258,20 @@ fn a_hole_whose_rims_run_an_even_number_of_turns_is_an_invalid_body() {
 /// refuses the part. The same hole with the radius 0.1, or a hole on the
 /// base's tangent line with the radius 0.001, is meshed. Found by the
 /// wide sweep of `hunt_sheet_metal.rs` (cases 3150 and 3348, at 1e6 and
-/// 1; case 525, at 1e-3, could not be measured, though meshed). When it
-/// is fixed this test fails: take it off.
+/// 1; case 525, at 1e-3, could not be measured, though meshed). Not the
+/// traced run of
+/// `a_hole_whose_rims_ran_an_even_number_of_turns_is_its_closed_form`:
+/// the hole's edges on the bend are splines, traced as before. The face
+/// the tessellator refuses is the hole's rim on the bend, whose rulings
+/// at the inner skin (radius `R`) come in from both sides of the hole at
+/// one height, so that its two sides lie about `R √2` apart there; meshed
+/// at a chord of 2e-6 of the part's size it is its closed form, at 1e-5
+/// and coarser (the self-intersection check's chords) the tessellator
+/// finds its boundary crossing itself in parameter space, where its
+/// edges' points, projected onto it, make the rectangle `[0, 1]²` of its
+/// parameters. Owed: the tessellator (and, in other such parts, the
+/// measure) on a face whose sides lie closer than its chord. When it is
+/// fixed this test fails: take it off.
 #[test]
 fn a_hole_across_a_tight_bend_cannot_be_meshed() {
     use craft3d_kernel::sheetmetal::Cutout;
@@ -434,9 +431,15 @@ fn a_turned_cylinder_unrolls_at_one_scale_and_not_at_another() {
 /// 2.811, times 1e6, has one freeform face (a rim) among its planes and
 /// cylinders, where the design says a sheet-metal part's ends are planes
 /// (docs/design/sheetmetal.md › *The part*); so `Body::bbox`, which adds a
-/// freeform face's whole control net, reaches 5.17e6 below the part,
+/// freeform face's whole control net, reaches 4.86e6 below the part,
 /// whose lowest point is 715 below the base. The volume is the closed
-/// form.
+/// form. The face is the rim along one of the bend's arcs (radius `R`,
+/// the thickness 2.4 times it), traced over most of its circle: the
+/// control points of its rows' splines lie up to 0.31 off the part's side
+/// plane (the tolerance is 1), so the rim is not taken for the plane (its
+/// stations lie 3.5e-6 rad apart over the arc and 0.1 rad apart past it;
+/// owed: a plane read from the traced points). Until the run on a circle was kept within a turn
+/// (2026-11-15) it ran 1.52 turns and the box reached 5.17e6 below.
 #[test]
 fn a_bend_of_a_tiny_angle_has_a_freeform_rim() {
     let k = 1e6;
@@ -470,5 +473,5 @@ fn a_bend_of_a_tiny_angle_has_a_freeform_rim() {
     let (lo, _) = body.bbox().unwrap().corners().unwrap();
     let (slo, _) = bounds(body);
     assert!(slo.z > -716.0 && slo.z < -714.0, "{slo:?}");
-    assert!(lo.z < -5e6, "known: the box reaches {lo:?}");
+    assert!(lo.z < -4.5e6, "known: the box reaches {lo:?}");
 }

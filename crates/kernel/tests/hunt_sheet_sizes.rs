@@ -33,13 +33,11 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 /// The sweeps known to build wrong or invalid bodies at some of their
 /// values, by name: each a finding, reduced in
 /// crates/kernel/tests/hunt_sheet_repro.rs; a fix has to take it off.
-/// The bend down at 140 degrees about `R = 0.1763 T`: the traced run of
-/// its bottom skin's arcs is four whole turns there
-/// (`a_bend_down_at_one_radius_is_an_invalid_body`).
-const KNOWN_WRONG: &[&str] = &[
-    "L at 140 degrees down, radius about 0.1763 T by 1e-11",
-    "L at 140 degrees Down, radius 1e-5 to 1 times the thickness",
-];
+/// None since 2026-11-15: the bend down at 140 degrees about
+/// `R = 0.1763 T`, where the traced run of its bottom skin's arcs was
+/// four whole turns, and the bends down below `R = 0.02 T`, refused, are
+/// their closed forms (`a_bend_down_at_one_radius_is_its_closed_form`).
+const KNOWN_WRONG: &[&str] = &[];
 
 /// A body built (with its flat area and the closed form's, for a sheet-
 /// metal part) or why not, or a panic's message.
@@ -545,12 +543,6 @@ fn sheet_metal_stepped_by_billionths_changes_only_at_real_limits() {
     for s in &sweeps {
         s.hold(3);
     }
-    let about = sweeps.iter().find(|s| s.name == KNOWN_WRONG[0]).unwrap();
-    assert!(
-        !about.wrong.is_empty(),
-        "{}: known wrong, now nothing wrong: take it off KNOWN_WRONG",
-        about.name
-    );
 }
 
 #[test]
