@@ -466,21 +466,27 @@ fn seeded(range: std::ops::Range<usize>, points: usize) -> Tally {
     tally
 }
 
-/// KNOWN WRONG (the rays, not the plate): case 123 of the seeded sweep.
-/// A plate of a rounded rectangle 54.667 × 20.261 with corners of radius
-/// 10.126 (its short sides 0.0086 long), 6.286 thick about the middle,
-/// all times 1e6, drawn turned by 3.1035 rad in a frame turned and some
-/// 2.6e8 from the origin. The point 29 of the case, 6600 (as many
-/// tolerances) outside the middle of a short side at mid-level, is placed
-/// **inside** by `classify_points`; the mesh's winding number about it is
-/// 0, and its distance outside the outline worked out here is 6.6e-3 at
-/// scale 1. The same plate (with or without its two holes) and point in
-/// the world, with the frame's axes at the origin, or with the world's
-/// axes at the frame's origin, are placed outside. The plate is right
-/// (its volume is the closed form). When the rays are fixed this test
-/// fails: take the case off.
+/// Case 123 of the seeded sweep, where the rays were wrong (not the
+/// plate). A plate of a rounded rectangle 54.667 × 20.261 with corners of
+/// radius 10.126 (its short sides 0.0086 long), 6.286 thick about the
+/// middle, all times 1e6, drawn turned by 3.1035 rad in a frame turned
+/// and some 2.6e8 from the origin. The point 29 of the case, 6600 (as
+/// many tolerances) outside the middle of a short side at mid-level, was
+/// placed **inside** by `classify_points` until 2026-11-14; the mesh's
+/// winding number about it is 0, and its distance outside the outline
+/// worked out here is 6.6e-3 at scale 1. In that frame the short side's
+/// rim is a ruled spline (in the other frames a plane), one parameter
+/// the length along it and the other from 0 to 1 across the 6.3e6 of the
+/// plate: the search for the nearest point of such a surface ended
+/// hundreds of lengths short, and the crossing of the first ray with the
+/// rim was left out (`boolean/freeform.rs` › `descend`;
+/// docs/design/booleans.md › *A crossing left out*). The plate (with or
+/// without its two holes) and the point are placed outside in that frame
+/// as in the world, with the frame's axes at the origin, and with the
+/// world's axes at the frame's origin. The plate is right (its volume is
+/// the closed form).
 #[test]
-fn case_123_a_point_beside_the_plate_is_placed_inside_by_the_rays() {
+fn case_123_a_point_beside_the_plate_is_placed_outside_in_every_frame() {
     use craft3d_kernel::boolean::{Place, classify_points};
     let n = 123;
     let mut rng = Rng(case_seed(0x5EED_5EE7, n));
@@ -559,13 +565,12 @@ fn case_123_a_point_beside_the_plate_is_placed_inside_by_the_rays() {
     assert_eq!(
         seen,
         vec![
-            ("as found", Place::Inside),
-            ("without holes", Place::Inside),
+            ("as found", Place::Outside),
+            ("without holes", Place::Outside),
             ("in the world", Place::Outside),
             ("axes at the origin", Place::Outside),
             ("world axes far", Place::Outside),
-        ],
-        "known wrong: the rays place the point inside in the frame as found"
+        ]
     );
 }
 
