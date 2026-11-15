@@ -3749,7 +3749,16 @@ fn face_integrals(
     sums: Wanted,
 ) -> FaceSums {
     let second = sums != Wanted::First;
-    if let Some(ratio) = uneven_weights(&face.surface).filter(|&r| r > MAX_UNEVEN || r.is_nan()) {
+    // A spline face whose weights are further apart than its own
+    // parameters are measured in is measured in its plane, where it is one
+    // ([`own_plane`]); else refused.
+    let uneven = uneven_weights(&face.surface).filter(|&r| r > MAX_UNEVEN || r.is_nan());
+    let whole = face.loops.is_empty() || seams_only(body, face);
+    let flat = match uneven {
+        Some(_) if !whole => own_plane(&face.surface),
+        _ => None,
+    };
+    if let (Some(ratio), None) = (uneven, &flat) {
         let error = MassError::UnevenWeights { face: index, ratio };
         return FaceSums {
             first: (sums == Wanted::Both).then(|| Err(error.clone())),
@@ -3757,7 +3766,7 @@ fn face_integrals(
             held: [0.0; 2],
         };
     }
-    if face.loops.is_empty() || seams_only(body, face) {
+    if whole {
         let mut work = Work::about(&face.surface, middle, second);
         let all = whole_surface(&face.surface, index, rule, &mut work);
         counted(&work);
@@ -3772,7 +3781,7 @@ fn face_integrals(
     }
     let own = match &face.surface {
         Surface::Sphere(sphere) => own_sphere(body, face, sphere),
-        _ => None,
+        _ => flat,
     };
     let surface = own.as_ref().unwrap_or(&face.surface);
     let mut work = Work::about(surface, middle, second);
@@ -3820,6 +3829,30 @@ fn face_integrals(
             work.held = again.held;
         }
     }
+    // A spline face whose sums do not settle in its own parameters (a
+    // boundary that gathers at a corner where the weights are heavy) is
+    // measured in its plane, where it is one ([`own_plane`]): what
+    // settled before is as it was.
+    if own.is_none()
+        && all.as_ref().err() == Some(&unsettled(index))
+        && let Some(plane) = own_plane(&face.surface)
+    {
+        let mut again = Work::about(&plane, middle, second);
+        let mut first_again = None;
+        let in_plane = integrals_in(
+            (body, face, &plane, index),
+            rule,
+            size,
+            &mut again,
+            (sums == Wanted::Both).then_some(&mut first_again),
+        );
+        WORK_SPENT.fetch_add(again.spent, Ordering::Relaxed);
+        if in_plane.is_ok() {
+            all = in_plane;
+            first = first_again;
+            work.held = again.held;
+        }
+    }
     counted(&work);
     // Without first-order sums that agreed, the sums without the second
     // moments ended where these did, with the same error.
@@ -3829,6 +3862,62 @@ fn face_integrals(
         all,
         held: work.held,
     }
+}
+
+/// How far, in units in the last place of its largest coordinate, the
+/// control points of a spline surface may lie from one plane for the
+/// surface to be that plane ([`own_plane`]): the rounding of points
+/// written in a plane and moved or turned with their body.
+const IN_ONE_PLANE: f64 = 64.0;
+
+/// The plane a spline surface is, when it is one: every control point in
+/// the plane through the first, square to the cross product of the net's
+/// diagonals, to [`IN_ONE_PLANE`] units in the last place of the largest
+/// coordinate. A rational surface lies in the hull of its control points
+/// whatever its weights, so such a surface is a piece of that plane
+/// however unevenly it is drawn, and a face on it is measured there by
+/// its edges alone: the parameters of the plane are lengths. Its normal
+/// is the surface's `∂u × ∂v` at the middle of its parameters, so that
+/// the face's sense holds. `None` for any other surface, and for a net
+/// without a plane or a normal.
+fn own_plane(surface: &Surface) -> Option<Surface> {
+    let Surface::Nurbs(spline) = surface else {
+        return None;
+    };
+    let (count_u, count_v) = spline.counts();
+    let points = spline.control_points();
+    let at = |i: usize, j: usize| points.get(i.checked_mul(count_v)?.checked_add(j)?).copied();
+    let (last_u, last_v) = (count_u.checked_sub(1)?, count_v.checked_sub(1)?);
+    let (p00, p0n, pm0, pmn) = (
+        at(0, 0)?,
+        at(0, last_v)?,
+        at(last_u, 0)?,
+        at(last_u, last_v)?,
+    );
+    let across = (pmn - p00).cross(p0n - pm0).normalized()?;
+    let reach = points.iter().fold(0.0_f64, |m, p| {
+        m.max(p.x.abs()).max(p.y.abs()).max(p.z.abs())
+    });
+    // (Negated: a height that is not a number is out of the plane.)
+    if !points
+        .iter()
+        .all(|p| (*p - p00).dot(across).abs() <= IN_ONE_PLANE * f64::EPSILON * reach)
+    {
+        return None;
+    }
+    let ((u0, u1), (v0, v1)) = spline.domain();
+    let normal = surface.normal(0.5 * (u0 + u1), 0.5 * (v0 + v1))?;
+    let side = normal.dot(across);
+    // (A side that is not a number is neither.)
+    let z = if side > 0.5 {
+        across
+    } else if side < -0.5 {
+        -across
+    } else {
+        return None;
+    };
+    let frame = Frame::new(p00, z, pmn - p00)?;
+    Some(Surface::Plane(craft3d_geom::Plane::new(frame)))
 }
 
 /// How far apart the weights within one span of a rational surface may be
@@ -6687,6 +6776,87 @@ mod tests {
             assert!((ratio / h - 1.0).abs() < 1e-9, "{h}: {ratio}");
         }
         assert_eq!(uneven_weights(&weighted_square([2.0; 4])), None);
+    }
+
+    /// A spline surface whose control points lie in one plane is that
+    /// plane whatever its weights, with the surface's own normal, at any
+    /// scale and far from the origin; with a control point out of the
+    /// plane by more than the rounding of its coordinates it is none, nor
+    /// is a net without a plane, or another kind of surface.
+    #[test]
+    fn a_flat_spline_surface_is_its_plane_whatever_its_weights() {
+        let sheet = |points: [Vec3; 4], weights: [f64; 4]| {
+            let knots = vec![0.0, 0.0, 1.0, 1.0];
+            Surface::Nurbs(
+                craft3d_geom::NurbsSurface::new(
+                    1,
+                    1,
+                    knots.clone(),
+                    knots,
+                    2,
+                    2,
+                    points.to_vec(),
+                    weights.to_vec(),
+                )
+                .unwrap(),
+            )
+        };
+        let turned = Frame::new(
+            Vec3::new(3.0, -2.0, 5.0),
+            Vec3::new(0.3, -0.5, 0.8),
+            Vec3::new(1.0, 0.2, 0.0),
+        )
+        .unwrap();
+        for k in [1e-3, 1.0, 1e6] {
+            for far in [0.0, 1e3, 1e6] {
+                let frame = Frame::new(
+                    turned.origin() * k + Vec3::new(far, far, -far) * k,
+                    turned.z(),
+                    turned.x(),
+                )
+                .unwrap();
+                let corners = [
+                    frame.point(0.0, 0.0, 0.0),
+                    frame.point(0.0, 3.0 * k, 0.0),
+                    frame.point(4.0 * k, 0.0, 0.0),
+                    frame.point(4.0 * k, 3.0 * k, 0.0),
+                ];
+                for weights in [[1.0; 4], [1.0, 1e6, 1e-3, 1e9], [1.0, 1e4, 1e4, 1.0]] {
+                    let what = format!("{k} {far} {weights:?}");
+                    let surface = sheet(corners, weights);
+                    let Some(Surface::Plane(plane)) = own_plane(&surface) else {
+                        panic!("{what}: no plane");
+                    };
+                    // u runs along the frame's x, v along its y.
+                    assert!(plane.frame().z().distance(frame.z()) <= 1e-9, "{what}");
+                    for corner in corners {
+                        let (_, _, height) = plane.frame().local(corner);
+                        assert!(height.abs() <= 1e-9 * k.max(far * k), "{what}: {height}");
+                    }
+                    // The other way round: the plane's normal turns with it.
+                    let [a, b, c, d] = corners;
+                    let Some(Surface::Plane(flipped)) = own_plane(&sheet([a, c, b, d], weights))
+                    else {
+                        panic!("{what}: no plane");
+                    };
+                    assert!(flipped.frame().z().distance(-frame.z()) <= 1e-9, "{what}");
+                    // A corner out of the plane, a millionth of the size.
+                    let mut bent = corners;
+                    bent[3] = frame.point(4.0 * k, 3.0 * k, 1e-6 * k.max(far * k));
+                    assert!(own_plane(&sheet(bent, weights)).is_none(), "{what}");
+                }
+            }
+        }
+        // No plane: a net on one line, one in one point.
+        let on_a_line = [0.0, 1.0, 2.0, 3.0].map(|x| Vec3::new(x, 2.0 * x, -x));
+        assert!(own_plane(&sheet(on_a_line, [1.0, 2.0, 3.0, 4.0])).is_none());
+        assert!(own_plane(&sheet([Vec3::X; 4], [1.0; 4])).is_none());
+        assert!(
+            own_plane(&Surface::Cylinder(
+                Cylinder::new(Frame::WORLD, 1.0).unwrap()
+            ))
+            .is_none()
+        );
     }
 
     /// The rates of a sample of a boundary that lies off its surface are

@@ -781,6 +781,7 @@ fn ring_jumps(param: &Param, ring: &Ring, tolerance: f64) -> bool {
 /// ([`follow_along_the_loop`]) within that tolerance; asked for only of
 /// a loop that jumps across its surface as the search placed it
 /// ([`ring_jumps`]).
+#[allow(clippy::too_many_arguments)]
 fn build_ring(
     param: &Param,
     points: &[(Vec3, Chord)],
@@ -789,6 +790,7 @@ fn build_ring(
     number: usize,
     walk: Option<f64>,
     borders: bool,
+    paced: bool,
 ) -> Result<Ring, TessError> {
     let periods = param.periods();
     let domain = param.domain();
@@ -849,12 +851,18 @@ fn build_ring(
                 .fold(size, f64::max)
         })
     };
+    // (`paced`, for a face whose grid is graded to its shape,
+    // `graded.rs`: its surface is drawn at an uneven pace, and where that
+    // pace is slow the surface still moves with the parameter; a billion
+    // times slower at one end of a span than at the other is weights a
+    // few ten thousand apart, no pole. There a parameter is free at a
+    // pole alone, whether the surface has one or not.)
     let on_pole: Vec<bool> = raw
         .iter()
         .zip(points)
         .map(|(&uv, &(pos, _))| {
             let (u, v) = param.raw(uv);
-            poles.is_empty()
+            (poles.is_empty() && !paced)
                 || poles.iter().any(|pole| {
                     pole.holds(param.surface, u, v)
                         || !exceeds(pole.point.distance(pos), 1e-9 * size)
@@ -886,7 +894,7 @@ fn build_ring(
     // from the pole, where the parameter is known: from there the descent
     // moves it only as far as the point asks. (Where the analytic kinds
     // have a pole their parameters are in closed form.)
-    if param.is_freeform() {
+    if param.is_freeform() && !(paced && poles.is_empty()) {
         let near_pole = |i: usize| -> bool {
             let [sa, sb] = sizes.get(i).copied().unwrap_or([1.0, 1.0]);
             let [la, lb] = largest;
@@ -3176,7 +3184,11 @@ fn spline_cells(
 }
 
 /// The cells of [`spline_cells`] before the limit.
-fn spline_counts((a, b): (f64, f64), (span_u, span_v): (f64, f64), tolerance: f64) -> (f64, f64) {
+pub(crate) fn spline_counts(
+    (a, b): (f64, f64),
+    (span_u, span_v): (f64, f64),
+    tolerance: f64,
+) -> (f64, f64) {
     let cells = |bound: f64, span: f64, share: f64| (bound / share).sqrt() * span;
     let even = 4.0 * tolerance;
     (cells(a, span_u, even).ceil(), cells(b, span_v, even).ceil())
@@ -3277,7 +3289,7 @@ const HALVINGS: u32 = 4;
 /// cut around its axis, where its weights vary, and nothing along it),
 /// and the bound is the largest over the pieces. Every round bounds the
 /// same patch, so the smallest bound of all rounds stands.
-fn patch_second_bounds(
+pub(crate) fn patch_second_bounds(
     patch: craft3d_geom::RationalBezierPatch,
     width: (f64, f64),
 ) -> Option<(f64, f64, f64)> {
@@ -3869,6 +3881,11 @@ struct Work<'a> {
     /// (see [`Work::assess`]); only where the face's mesh made without
     /// it put a point on another ([`mesh_face`]).
     strict: bool,
+    /// The face has a graded grid (`graded.rs`): its parameters run
+    /// unevenly, and a point of a triangle that the few steps from its
+    /// mean parameters leave off the surface is looked for by the
+    /// surface's own search ([`Work::off_surface`]).
+    graded: bool,
 }
 
 impl Work<'_> {
@@ -3943,9 +3960,18 @@ impl Work<'_> {
     fn off_surface(&self, uv: Uv, target: Vec3) -> f64 {
         let off = self.param.eval(uv).distance(target);
         if off <= self.tolerance {
-            off
-        } else {
-            distance_to_surface(&self.param, uv, target)
+            return off;
+        }
+        let near = distance_to_surface(&self.param, uv, target);
+        if !self.graded || near <= self.tolerance {
+            return near;
+        }
+        // Where the parameters race, the mean parameters are nowhere near
+        // the foot and a few steps from them end short of it: the
+        // surface's own search, which goes on where its walks end short.
+        match self.param.project(target) {
+            Ok(foot) => near.min(self.param.eval(foot).distance(target)),
+            Err(_) => near,
         }
     }
 
@@ -4697,6 +4723,27 @@ fn angle_warp(
     Some(([wa, wb], [la, lb]))
 }
 
+/// The plane a face with a graded grid (`graded.rs`) is triangulated in,
+/// with that grid: along each parameter the count of cells so far, linear
+/// between the grid's lines and zero at the centre of the face, so that
+/// every cell is a unit square of the plane, as with [`angle_warp`].
+fn graded_warp(lines: [Vec<f64>; 2], centre: Uv) -> ([Warp; 2], [Vec<f64>; 2]) {
+    let plane = |lines: &[f64], centre: f64| {
+        let mut warp = Warp {
+            at: lines.to_vec(),
+            level: (0..lines.len()).map(|i| i as f64).collect(),
+        };
+        let middle = warp.map(centre);
+        for level in &mut warp.level {
+            *level -= middle;
+        }
+        warp
+    };
+    let [along_a, along_b] = &lines;
+    let [centre_a, centre_b] = centre;
+    ([plane(along_a, centre_a), plane(along_b, centre_b)], lines)
+}
+
 /// The grid nodes `(i, j)`, `0 < i < columns`, `0 < j < rows`, coarse
 /// levels first: points arrive spread out, as a Delaunay triangulation
 /// likes them, and each next to one that is already there.
@@ -4744,6 +4791,10 @@ pub(crate) struct Boundary<'a> {
     /// lines of its grid ([`angle_warp`]). Tried first; the face is
     /// triangulated as without them where that fails.
     warp: Option<([Warp; 2], [Vec<f64>; 2])>,
+    /// The warp is the grid of a spline face whose even grid is refused
+    /// as too fine, graded to its shape (`graded.rs`): the face has no
+    /// other grid, and is triangulated in that plane alone.
+    graded: bool,
     scale: Uv,
     /// How much further than lengths in space the plane is scaled, per
     /// parameter: 1 but where it is the plane of the grid (see
@@ -4939,7 +4990,20 @@ impl Boundary<'_> {
                 let ([pa, pb], [qa, qb]) = (p.uv, q.uv);
                 let middle = [0.5 * (pa + qa), 0.5 * (pb + qb)];
                 let image = self.param.eval(middle);
-                let off = distance_to_chord(image, p.pos, q.pos);
+                // (Not on a face with a graded grid, `graded.rs`: where
+                // the parameters race, the surface over the middle of a
+                // chord's parameters lies anywhere along the surface, far
+                // from the chord and in it all the same (a straight cut
+                // across a plane drawn unevenly), and halving the chord
+                // brings its halves no nearer. What the chord is held to
+                // there is its own curve, by its edge; a triangle that
+                // cannot stand on it asks for it, as on any face,
+                // `mesh_face`'s `ask`.)
+                let off = if self.graded {
+                    0.0
+                } else {
+                    distance_to_chord(image, p.pos, q.pos)
+                };
                 if exceeds(off, 2.0 * tolerance) {
                     wanted.push(chord);
                 } else if let Some(angle) = params.angle_for(p.pos.distance(q.pos)) {
@@ -4961,7 +5025,9 @@ impl Boundary<'_> {
                 // sag, towards the axis, and beside nothing; one that
                 // cuts the corner of a curve in the surface is beside it.
                 let (_, [da, db]) = self.param.derivatives(middle);
-                if let Some(normal) = da.cross(db).normalized() {
+                if !self.graded
+                    && let Some(normal) = da.cross(db).normalized()
+                {
                     let along = |v: Vec3| (v - normal * v.dot(normal)).length();
                     let aside = along(image - nearest_on_chord(image, p.pos, q.pos));
                     if aside.is_finite() && aside > SIDE_NOISE * p.pos.distance(q.pos) {
@@ -5130,7 +5196,11 @@ pub(crate) fn curved_chords(body: &Body, edges: &[Vec<Vec3>], face: &Face) -> Ve
 /// its surface where the search did not find them on it
 /// ([`along_the_borders`]); asked for only of a face that was refused as
 /// the search placed it ([`borders_would_move`]).
-pub(crate) fn face_boundary<'a>(
+/// The loops of face `index` in the parameters of its surface, as a
+/// region, with the box it lies in (`low`, `high`) and how wide that is.
+/// `paced`: see [`build_ring`].
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn placed<'a>(
     body: &Body,
     edges: &[Vec<Vec3>],
     face: &'a Face,
@@ -5138,7 +5208,8 @@ pub(crate) fn face_boundary<'a>(
     params: &TessParams,
     starved: &mut bool,
     borders: bool,
-) -> Result<Boundary<'a>, TessError> {
+    paced: bool,
+) -> Result<(Param<'a>, Region, Uv, Uv, Uv), TessError> {
     let loops = loop_points(body, edges, face, index)?;
     let tolerance = params.chordal_tolerance;
 
@@ -5157,7 +5228,7 @@ pub(crate) fn face_boundary<'a>(
         let sense = if swapped != face.reversed { -1.0 } else { 1.0 };
         let mut rings = Vec::with_capacity(loops.len());
         for (number, points) in loops.iter().enumerate() {
-            let mut ring = build_ring(&param, points, sense, index, number, None, borders)?;
+            let mut ring = build_ring(&param, points, sense, index, number, None, borders, paced)?;
             // A loop on a spline surface that the search placed a turn
             // away in places (a surface that folds more finely than the
             // search's grid): found again along the loop. Any other loop
@@ -5171,6 +5242,7 @@ pub(crate) fn face_boundary<'a>(
                     number,
                     Some(tolerance),
                     borders,
+                    paced,
                 )?;
             }
             rings.push(ring);
@@ -5211,7 +5283,7 @@ pub(crate) fn face_boundary<'a>(
             .iter()
             .all(|r| positive(-r.twice_area(periods) * sense))
         && (closes_to_points(&param) || periods.iter().all(Option::is_some));
-    let mut region = if rings.is_empty() || winding > 0 || around_holes {
+    let region = if rings.is_empty() || winding > 0 || around_holes {
         if winding > 2 {
             return fail(
                 index,
@@ -5258,12 +5330,91 @@ pub(crate) fn face_boundary<'a>(
             "its loops do not bound a region: they enclose no area on the surface",
         );
     }
+    Ok((param, region, low, high, span))
+}
+
+pub(crate) fn face_boundary<'a>(
+    body: &Body,
+    edges: &[Vec<Vec3>],
+    face: &'a Face,
+    index: usize,
+    params: &TessParams,
+    starved: &mut bool,
+    borders: bool,
+) -> Result<Boundary<'a>, TessError> {
+    let tolerance = params.chordal_tolerance;
+    let (mut param, mut region, mut low, mut high, mut span) =
+        placed(body, edges, face, index, params, starved, borders, false)?;
+    let mut graded: Option<[Vec<f64>; 2]> = None;
     let cells = if param.is_plane() {
         [1, 1]
     } else {
-        let (low, high) = (param.raw(low), param.raw(high));
-        let (nu, nv) = seed_cells(&face.surface, &param.closure, low, high, params, index)?;
-        param.order(nu, nv)
+        let (raw_low, raw_high) = (param.raw(low), param.raw(high));
+        match seed_cells(
+            &face.surface,
+            &param.closure,
+            raw_low,
+            raw_high,
+            params,
+            index,
+        ) {
+            Ok((nu, nv)) => param.order(nu, nv),
+            // Too fine for one step a parameter: a grid graded to the
+            // shape, where the surface has one (`graded.rs`). A face whose
+            // even grid is made keeps it, and its mesh.
+            Err(too_fine @ TessError::TooFine { .. }) => {
+                let lines = match &face.surface {
+                    Surface::Nurbs(spline) => crate::graded::lines(
+                        spline,
+                        param.closure.wrap.iter().any(Option::is_some),
+                        raw_low,
+                        raw_high,
+                        tolerance,
+                        f64::from(params.max_segments),
+                    ),
+                    _ => None,
+                };
+                let Some(mut lines) = lines else {
+                    return Err(too_fine);
+                };
+                // Its loops once more, with a parameter free at a pole
+                // alone (`build_ring`'s `paced`), and the grid over the
+                // box they then lie in; as they were where that fails.
+                let mut scratch = false;
+                if let Ok(again) = placed(
+                    body,
+                    edges,
+                    face,
+                    index,
+                    params,
+                    &mut scratch,
+                    borders,
+                    true,
+                ) && let Surface::Nurbs(spline) = &face.surface
+                    && let Some(paced) = crate::graded::lines(
+                        spline,
+                        again.0.closure.wrap.iter().any(Option::is_some),
+                        again.0.raw(again.2),
+                        again.0.raw(again.3),
+                        tolerance,
+                        f64::from(params.max_segments),
+                    )
+                {
+                    (param, region, low, high, span) = again;
+                    lines = paced;
+                }
+                let [along_u, along_v] = lines;
+                let count = |lines: &[f64]| {
+                    u32::try_from(lines.len().saturating_sub(1))
+                        .unwrap_or(u32::MAX)
+                        .max(1)
+                };
+                let cells = param.order(count(&along_u), count(&along_v));
+                graded = Some(param.order(along_u, along_v));
+                cells
+            }
+            Err(other) => return Err(other),
+        }
     };
     let step = [
         get2(span, 0) / f64::from(get2(cells, 0)),
@@ -5348,10 +5499,11 @@ pub(crate) fn face_boundary<'a>(
         0.5 * (get2(low, 0) + get2(high, 0)),
         0.5 * (get2(low, 1) + get2(high, 1)),
     ];
-    let warp = if param.is_freeform() {
-        angle_warp(&param, low, high, centre, cells, params)
-    } else {
-        None
+    let is_graded = graded.is_some();
+    let warp = match graded {
+        Some(lines) => Some(graded_warp(lines, centre)),
+        None if param.is_freeform() => angle_warp(&param, low, high, centre, cells, params),
+        None => None,
     };
     Ok(Boundary {
         param,
@@ -5361,6 +5513,7 @@ pub(crate) fn face_boundary<'a>(
         cells,
         step,
         warp,
+        graded: is_graded,
         scale,
         stretch,
         centre,
@@ -5443,6 +5596,10 @@ fn mesh_face_planes(
     if boundary.warp.is_none() {
         return mesh_face_in(boundary, face, index, params, splits, ask, false, strict);
     }
+    if boundary.graded {
+        // The graded grid is the face's only one.
+        return mesh_face_in(boundary, face, index, params, splits, ask, true, strict);
+    }
     // The plane of the warp first. Where it fails for chords of the edges
     // that its triangles cannot follow (along a nose that turns within a
     // few cells), those chords are asked for when the caller can cut them
@@ -5493,8 +5650,10 @@ fn mesh_face_in(
     // does over the seam of a surface that closes on itself without a
     // period known here. What is triangulated then is not the face.
     // (Chords the parameters merely distort were cut finer before this,
-    // `Boundary::chords_to_refine`; they end up shorter than they stray.)
-    if !param.is_plane() {
+    // `Boundary::chords_to_refine`; they end up shorter than they stray.
+    // Not on a face with a graded grid, whose parameters race: its
+    // surface is one that does not close, `graded.rs`.)
+    if !param.is_plane() && !boundary.graded {
         for (n, &(i, j)) in region.segs.iter().enumerate() {
             let Some((edge, _)) = region.chords.get(n).copied().flatten() else {
                 continue;
@@ -5582,6 +5741,7 @@ fn mesh_face_in(
         angle_floor: crate::ANGLE_FLOOR * tolerance,
         normals: Vec::new(),
         strict,
+        graded: boundary.graded,
     };
     // With a triangle budget, the face stops as soon as it is certain to
     // have more triangles than that on its own. The count it gives is
@@ -7065,11 +7225,12 @@ mod tests {
         };
         // The search alone puts points of the rims a turn away: the loop
         // jumps across the surface (what refused the field test's band).
-        let searched = build_ring(&param, &points, 1.0, 0, 0, None, false).unwrap();
+        let searched = build_ring(&param, &points, 1.0, 0, 0, None, false, false).unwrap();
         assert!(off(&searched) > 0.01, "{}", off(&searched));
         assert!(ring_jumps(&param, &searched, tolerance));
         // Followed along the loop, every point is on the surface.
-        let followed = build_ring(&param, &points, 1.0, 0, 0, Some(tolerance), false).unwrap();
+        let followed =
+            build_ring(&param, &points, 1.0, 0, 0, Some(tolerance), false, false).unwrap();
         assert!(off(&followed) <= 1e-9, "{}", off(&followed));
         assert!(!ring_jumps(&param, &followed, tolerance));
     }

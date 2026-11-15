@@ -1885,6 +1885,78 @@ impl RationalBezierPatch {
         }
     }
 
+    /// The same patch drawn at another pace: the point at `(s, t)` is this
+    /// patch's at `(m(s), n(t))`, with the Möbius maps `m(s) = a s / ((1 −
+    /// s) + a s)` for `a = along_u` and `n` likewise for `along_v` (each
+    /// maps `[0, 1]` onto itself and keeps its ends). The control points
+    /// stay; the weight of point `(i, j)` is multiplied by `along_u^i
+    /// along_v^j` (*The NURBS Book* §6.4, a rational linear change of
+    /// parameter), and then every weight by one factor that brings their
+    /// geometric mean to one, which changes no point. `None` unless both
+    /// factors are positive and finite and every weight comes out so.
+    pub fn redrawn(&self, along_u: f64, along_v: f64) -> Option<Self> {
+        let usable = |x: f64| x.is_finite() && x > 0.0;
+        if !(usable(along_u) && usable(along_v)) {
+            return None;
+        }
+        let (m, n) = (self.degree_u, self.degree_v);
+        let (log_u, log_v) = (along_u.pln(), along_v.pln());
+        // In logarithms: `along^i` for a factor far from one would leave
+        // the range of the weights long before their ratios do.
+        let mut logs = Vec::with_capacity(self.homogeneous.len());
+        for i in 0..=m {
+            for (j, h) in self.row(i).iter().enumerate() {
+                if !usable(h.w) {
+                    return None;
+                }
+                logs.push(h.w.pln() + log_u * i as f64 + log_v * j as f64);
+            }
+        }
+        if logs.len() != self.homogeneous.len() {
+            return None;
+        }
+        let mean = logs.iter().sum::<f64>() / logs.len().max(1) as f64;
+        let mut homogeneous = Vec::with_capacity(self.homogeneous.len());
+        for (h, log) in self.homogeneous.iter().zip(&logs) {
+            let w = (log - mean).pexp();
+            if !usable(w) {
+                return None;
+            }
+            homogeneous.push(H {
+                p: h.p * (w / h.w),
+                w,
+            });
+        }
+        Some(Self {
+            degree_u: m,
+            degree_v: n,
+            homogeneous,
+        })
+    }
+
+    /// The Möbius factor along u (see [`Self::redrawn`]) that brings the
+    /// weights at the two ends of u together: the geometric mean, over the
+    /// rows of the net along u, of the ratio of a row's first weight to its
+    /// last, to the power one over the degree. One for a patch whose end
+    /// weights already agree on average. `None` for a degree of zero or a
+    /// weight that is not positive and finite.
+    pub fn evening_u(&self) -> Option<f64> {
+        let (m, n) = (self.degree_u, self.degree_v);
+        if m == 0 {
+            return None;
+        }
+        let mut log_ratio = 0.0_f64;
+        for j in 0..=n {
+            let (first, last) = (self.row(0).get(j)?.w, self.row(m).get(j)?.w);
+            if !(first.is_finite() && last.is_finite() && first > 0.0 && last > 0.0) {
+                return None;
+            }
+            log_ratio += first.pln() - last.pln();
+        }
+        let factor = (log_ratio / ((n + 1) as f64 * m as f64)).pexp();
+        (factor.is_finite() && factor > 0.0).then_some(factor)
+    }
+
     /// The Bézier nets of `w² ∂u` (degrees `(2 degree_u − 1, 2
     /// degree_v)`) and `w² ∂v` (degrees `(2 degree_u, 2 degree_v − 1)`):
     /// the partial derivatives of the patch times the square of its
@@ -3322,6 +3394,53 @@ mod tests {
         )
         .unwrap();
         assert!(plain.evened().is_none());
+    }
+
+    /// A patch redrawn by Möbius maps is the same patch at the mapped
+    /// parameters, with the same control points; the map `evening_u` gives
+    /// brings its end weights together on average; and factors or weights
+    /// that are no positive numbers give no patch, not a wrong one.
+    #[test]
+    fn a_patch_redrawn_by_moebius_maps_is_the_same_patch_at_another_pace() {
+        let spans = lumpy().bezier_spans().unwrap();
+        let moebius = |b: f64, s: f64| b * s / ((1.0 - s) + b * s);
+        for span in &spans {
+            let patch = &span.patch;
+            for (a, b) in [(1.0, 1.0), (3.0, 1.0), (1.0, 0.2), (1e3, 1e-3), (1e-6, 1e6)] {
+                let drawn = patch.redrawn(a, b).unwrap();
+                assert_eq!(drawn.degrees(), patch.degrees());
+                for (p, q) in drawn.points().zip(patch.points()) {
+                    assert!(p.distance(q) <= 1e-12, "{p:?} {q:?}");
+                }
+                for i in 0..=8 {
+                    for j in 0..=8 {
+                        let (s, t) = (i as f64 / 8.0, j as f64 / 8.0);
+                        let (p, q) = (drawn.eval(s, t), patch.eval(moebius(a, s), moebius(b, t)));
+                        assert!(p.distance(q) <= 1e-9, "{a} {b} at {s} {t}: {p:?} {q:?}");
+                    }
+                }
+            }
+            // Evened along u, the end weights agree on average: nothing
+            // is left to even; and the same along v, by the transpose.
+            let along = patch.evening_u().unwrap();
+            let even = patch.redrawn(along, 1.0).unwrap();
+            assert!((even.evening_u().unwrap() - 1.0).abs() <= 1e-12);
+            let across = patch.transposed().evening_u().unwrap();
+            let even = patch.redrawn(1.0, across).unwrap();
+            assert!((even.transposed().evening_u().unwrap() - 1.0).abs() <= 1e-12);
+            for hostile in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                assert!(patch.redrawn(hostile, 1.0).is_none(), "{hostile}");
+                assert!(patch.redrawn(1.0, hostile).is_none(), "{hostile}");
+            }
+            // Factors beyond what weights can hold: no patch.
+            assert!(patch.redrawn(1e300, 1e-300).is_none());
+        }
+        for weight in [0.0, -2.0, f64::NAN, f64::INFINITY] {
+            let mut broken = spans[0].patch.clone();
+            broken.homogeneous[0].w = weight;
+            assert!(broken.redrawn(2.0, 2.0).is_none(), "{weight}");
+            assert!(broken.evening_u().is_none(), "{weight}");
+        }
     }
 
     #[test]
