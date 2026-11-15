@@ -1228,6 +1228,359 @@ fn a_spline_that_jumps_is_not_one_curve() {
     }
 }
 
+/// A plate (three lines) whose upper side, from `(4, 3)` to `(0, 3)`, is a
+/// rational spline of degree `degree` in two Bézier halves that meet at
+/// the parameter 0.3, its weights `ratio` apart: one curve with a corner
+/// there (`jump` nothing: the knot stands `degree` times) or one that stops
+/// there and starts again `jump` further on along the side or, with
+/// `sideways`, into the plate (the knot stands once more). In the frame
+/// given, the chart times `k`, the plate moved by `off` within its plane.
+fn plate_with_a_spline_side(
+    (frame, off): (Frame, (f64, f64)),
+    k: f64,
+    degree: usize,
+    ratio: f64,
+    jump: f64,
+    sideways: bool,
+    short: f64,
+) -> Body {
+    let at = |x: f64, y: f64| frame.point(k * (x + off.0), k * (y + off.1), 0.0);
+    let middle = 4.0 - 4.0 * 0.3;
+    let (dx, dy) = if sideways { (0.0, -jump) } else { (-jump, 0.0) };
+    let mut ctrl = Vec::new();
+    let mut weights = Vec::new();
+    let heavy = ratio.sqrt();
+    for i in 0..=degree {
+        let t = i as f64 / degree as f64;
+        ctrl.push(at(4.0 + (middle - 4.0) * t, 3.0));
+        weights.push(if i == 0 || i == degree {
+            1.0
+        } else if i % 2 == 1 {
+            heavy
+        } else {
+            1.0 / heavy
+        });
+    }
+    let from = if jump == 0.0 { 1 } else { 0 };
+    for i in from..=degree {
+        let t = i as f64 / degree as f64;
+        let (x0, y0) = (middle + dx / k, 3.0 + dy / k);
+        ctrl.push(at(x0 + (0.0 - x0) * t, y0 + (3.0 - y0) * t));
+        weights.push(if i == 0 || i == degree {
+            1.0
+        } else if i % 2 == 1 {
+            1.0 / heavy
+        } else {
+            heavy
+        });
+    }
+    let mut knots = vec![0.0; degree + 1];
+    knots.extend(std::iter::repeat_n(
+        0.3,
+        if jump == 0.0 { degree } else { degree + 1 },
+    ));
+    knots.extend(std::iter::repeat_n(1.0, degree + 1));
+    let side = NurbsCurve::new(degree, knots, ctrl, weights).unwrap();
+    let corners = [at(0.0, 0.0), at(4.0, 0.0), at(4.0, 3.0), at(0.0, 3.0)];
+    let mut body = Body::new(BodyKind::Sheet);
+    let vs: Vec<_> = corners.iter().map(|p| body.add_vertex(*p)).collect();
+    let line = |body: &mut Body, i: usize, j: usize, cut: f64| {
+        body.add_edge(
+            Curve3::Line(Line::through(corners[i], corners[j]).unwrap()),
+            (0.0, corners[i].distance(corners[j]) - cut),
+            vs[i],
+            vs[j],
+        )
+    };
+    let edges = [
+        line(&mut body, 0, 1, 0.0),
+        line(&mut body, 1, 2, short),
+        body.add_edge(Curve3::Nurbs(side), (0.0, 1.0), vs[2], vs[3]),
+        line(&mut body, 3, 0, 0.0),
+    ];
+    let lp = body.add_loop(
+        edges
+            .iter()
+            .map(|edge| Coedge {
+                edge: *edge,
+                reversed: false,
+            })
+            .collect(),
+    );
+    let face = body.add_face(Surface::Plane(Plane::new(frame)), false, vec![lp]);
+    body.add_shell(vec![face]);
+    body
+}
+
+/// Allowances far from the origin (the review of the plane's theorem,
+/// 2026-11-15: an edge that jumped by less than its hull's rounding
+/// allowance, which grows with the coordinates, the degree and the weights,
+/// was cleared; `main` refused such a face). Plates with a rational spline
+/// side of degrees 2 to 9, weights up to a thousand apart, turned and a
+/// thousand to a hundred million sizes off: with a side that jumps, by 3
+/// tolerances to a thousand, along itself or sideways, never cleared (the
+/// knots say it jumps, whatever the rounding); with a vertex open by 0.3 of
+/// the reach, never; right, cleared near the origin, and not at all from
+/// where the rounding of a point passes a share of the reach: far off, not
+/// shown is the answer.
+#[test]
+fn allowances_far_from_the_origin_are_held_under_the_reach() {
+    let k = 1.0;
+    let tolerances = 1e-6 * k;
+    let mut cleared = std::collections::BTreeMap::new();
+    let turned = |origin: Vec3| {
+        Frame::new(origin, Vec3::new(-0.3, 0.8, 0.52), Vec3::new(0.6, 0.1, 0.4)).unwrap()
+    };
+    for far in [0.0, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8] {
+        // Far off with its plane's frame (the chart's coordinates stay
+        // small), and far off within its plane (they do not).
+        for (place, frame, off) in [
+            (
+                "frame",
+                if far == 0.0 {
+                    Frame::WORLD
+                } else {
+                    turned(Vec3::new(1.3, -2.1, 0.7) * (k * far))
+                },
+                (0.0, 0.0),
+            ),
+            ("chart", turned(Vec3::ZERO), (1.3 * far, -2.1 * far)),
+        ] {
+            for degree in [2_usize, 3, 5, 9] {
+                for ratio in [1.0, 10.0, 50.0, 1000.0] {
+                    let plate = |jump: f64, sideways: bool, short: f64| {
+                        plate_with_a_spline_side(
+                            (frame, off),
+                            k,
+                            degree,
+                            ratio,
+                            jump * tolerances,
+                            sideways,
+                            short * tolerances,
+                        )
+                    };
+                    // A side that jumps is never cleared.
+                    for jump in [3.0, 15.0, 60.0, 1000.0] {
+                        for sideways in [false, true] {
+                            assert_ne!(
+                                verdict(&plate(jump, sideways, 0.0), k),
+                                Some(Judged::Clear),
+                                "{far:e} sizes off by its {place}, degree {degree}, weights {ratio} apart: a jump of {jump} tolerances, sideways {sideways}"
+                            );
+                        }
+                    }
+                    // A vertex open by 0.3 of the reach is never cleared.
+                    assert_ne!(
+                        verdict(&plate(0.0, false, 3.0), k),
+                        Some(Judged::Clear),
+                        "{far:e} sizes off by its {place}, degree {degree}, weights {ratio} apart: a vertex open by 3 tolerances"
+                    );
+                    // The right plate: cleared or not, counted.
+                    let judged = verdict(&plate(0.0, false, 0.0), k);
+                    assert!(
+                        !matches!(judged, Some(Judged::Shown(..))),
+                        "{far:e} sizes off by its {place}, degree {degree}, weights {ratio} apart: a right plate shown wrong: {judged:?}"
+                    );
+                    let slot = cleared.entry(format!("{place} {far:e}")).or_insert((0, 0));
+                    slot.1 += 1;
+                    slot.0 += usize::from(judged == Some(Judged::Clear));
+                }
+            }
+        }
+    }
+    println!("right plates cleared, by how many sizes off: {cleared:?}");
+    for place in ["frame", "chart"] {
+        assert_eq!(
+            cleared[&format!("{place} 0e0")],
+            (16, 16),
+            "at the origin every right plate"
+        );
+        assert_eq!(
+            cleared[&format!("{place} 1e3")],
+            (16, 16),
+            "a thousand sizes off every one"
+        );
+        assert_eq!(
+            cleared[&format!("{place} 1e8")].0,
+            0,
+            "a hundred million sizes off none"
+        );
+    }
+}
+
+/// A rational spline of degree `degree` from `a` to `b` along their line,
+/// in two Bézier halves that meet at the parameter 0.3, its weights
+/// `ratio` apart: one curve with a corner there (`jump` nothing: the knot
+/// stands `degree` times), or one that stops there and starts again
+/// `jump` further on (the knot stands once more).
+fn heavy_side(a: Vec3, b: Vec3, degree: usize, ratio: f64, jump: f64) -> NurbsCurve {
+    let along = (b - a).normalized().unwrap();
+    let middle = a + (b - a) * 0.3;
+    let heavy = ratio.sqrt();
+    let weight = |i: usize, first: bool| {
+        if i == 0 || i == degree {
+            1.0
+        } else if (i % 2 == 1) == first {
+            heavy
+        } else {
+            1.0 / heavy
+        }
+    };
+    let mut ctrl = Vec::new();
+    let mut weights = Vec::new();
+    for i in 0..=degree {
+        ctrl.push(a + (middle - a) * (i as f64 / degree as f64));
+        weights.push(weight(i, true));
+    }
+    let again = middle + along * jump;
+    for i in usize::from(jump == 0.0)..=degree {
+        ctrl.push(again + (b - again) * (i as f64 / degree as f64));
+        weights.push(weight(i, false));
+    }
+    let mut knots = vec![0.0; degree + 1];
+    knots.extend(std::iter::repeat_n(
+        0.3,
+        if jump == 0.0 { degree } else { degree + 1 },
+    ));
+    knots.extend(std::iter::repeat_n(1.0, degree + 1));
+    NurbsCurve::new(degree, knots, ctrl, weights).unwrap()
+}
+
+/// Allowances far from the origin, about an axis (the repair of round 4
+/// carried to a cylinder and a cone, where the coordinates and the
+/// chart's scale both enter): a chart rectangle a sixth of a turn wide
+/// whose left ruling is a rational spline of degrees 2 to 9, weights up to
+/// a thousand apart, at three sizes, turned and a thousand to a hundred
+/// million sizes off. With a side that jumps along its ruling, by 3
+/// tolerances to a thousand, never cleared; with a vertex open by 0.3 of
+/// the reach, never; right, never shown wrong, cleared near the origin and
+/// not at all a hundred million sizes off.
+#[test]
+fn allowances_far_from_the_origin_are_held_under_the_reach_about_an_axis() {
+    let mut cleared = std::collections::BTreeMap::new();
+    for k in [1e-3, 1.0, 1e6] {
+        let tolerances = 1e-6 * k;
+        for far in [0.0, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8] {
+            let frame = Frame::new(
+                Vec3::new(1.3, -2.1, 0.7) * (k * far),
+                Vec3::new(-0.3, 0.8, 0.52),
+                Vec3::new(0.6, 0.1, 0.4),
+            )
+            .unwrap();
+            for (surface, heights) in about_grounds(frame, k).into_iter().take(2) {
+                let name = if matches!(surface, Surface::Cylinder(_)) {
+                    "cylinder"
+                } else {
+                    "cone"
+                };
+                for degree in [2_usize, 3, 5, 9] {
+                    for ratio in [1.0, 10.0, 50.0, 1000.0] {
+                        let face = |jump: f64, short: f64| {
+                            let mut body = rectangles(
+                                &surface,
+                                &frame,
+                                heights,
+                                &[((0.4, 0.4 + TAU / 6.0), (0.0, 1.0))],
+                                short * tolerances,
+                            );
+                            // The left ruling, from the lower corner up.
+                            let (a, b) = (body.vertices[0].point, body.vertices[3].point);
+                            let side = heavy_side(a, b, degree, ratio, jump * tolerances);
+                            body.edges[3].curve = Curve3::Nurbs(side);
+                            body.edges[3].range = (0.0, 1.0);
+                            body
+                        };
+                        let said = format!(
+                            "{name} of size {k:e}, {far:e} sizes off, degree {degree}, weights {ratio} apart"
+                        );
+                        for jump in [3.0, 15.0, 60.0, 1000.0] {
+                            assert_ne!(
+                                verdict(&face(jump, 0.0), k),
+                                Some(Judged::Clear),
+                                "{said}: a jump of {jump} tolerances"
+                            );
+                        }
+                        assert_ne!(
+                            verdict(&face(0.0, 3.0), k),
+                            Some(Judged::Clear),
+                            "{said}: a vertex open by 3 tolerances"
+                        );
+                        let judged = verdict(&face(0.0, 0.0), k);
+                        assert!(
+                            !matches!(judged, Some(Judged::Shown(..))),
+                            "{said}: a right face shown wrong: {judged:?}"
+                        );
+                        let slot = cleared
+                            .entry(format!("{name} {k:e} {far:e}"))
+                            .or_insert((0, 0));
+                        slot.1 += 1;
+                        slot.0 += usize::from(judged == Some(Judged::Clear));
+                    }
+                }
+            }
+        }
+    }
+    println!("right faces about an axis cleared, by size and sizes off: {cleared:?}");
+    for name in ["cylinder", "cone"] {
+        for k in ["1e-3", "1e0", "1e6"] {
+            assert_eq!(
+                cleared[&format!("{name} {k} 0e0")],
+                (16, 16),
+                "{name} of size {k} at the origin: every right face"
+            );
+            assert_eq!(
+                cleared[&format!("{name} {k} 1e8")].0,
+                0,
+                "{name} of size {k} a hundred million sizes off: none"
+            );
+        }
+    }
+}
+
+/// The review's smallest case of an edge that jumps within the rounding
+/// its hull is allowed: a rational quadratic of six points on a line, its
+/// weights 50 apart, that stops at 0.3 and starts again 15 tolerances on,
+/// the upper side of a plate turned and a million sizes off. Not cleared;
+/// nor is any stretch of that side shown that holds the jump or ends on it.
+#[test]
+fn a_jump_within_the_rounding_of_its_hull_is_not_cleared() {
+    let frame = Frame::new(
+        Vec3::new(1.3, -2.1, 0.7) * 1e6,
+        Vec3::new(-0.3, 0.8, 0.52),
+        Vec3::new(0.6, 0.1, 0.4),
+    )
+    .unwrap();
+    let body = plate_with_a_spline_side((frame, (0.0, 0.0)), 1.0, 2, 50.0, 15e-6, false, 0.0);
+    let Curve3::Nurbs(side) = &body.edges[2].curve else {
+        panic!("a spline side");
+    };
+    assert!(jumps(side, 0, usize::MAX));
+    assert_eq!(
+        verdict(&body, 1.0),
+        None,
+        "no verdict: the side is never shown"
+    );
+    let tol = tolerance(1.0);
+    let mut walked = Walked::new(&body, &body.faces[0], &tol).unwrap();
+    assert!(walked.show_all().is_none());
+    // The same side as one curve, with a corner where it jumped: never
+    // shown wrong; a million sizes off the rounding of its points (18
+    // tolerances) is past a quarter of the reach, and it is not cleared
+    // either; a thousand sizes off it is, and the one that jumps is not.
+    let whole = plate_with_a_spline_side((frame, (0.0, 0.0)), 1.0, 2, 50.0, 0.0, false, 0.0);
+    assert_eq!(verdict(&whole, 1.0), None);
+    let nearer = Frame::new(
+        Vec3::new(1.3, -2.1, 0.7) * 1e3,
+        Vec3::new(-0.3, 0.8, 0.52),
+        Vec3::new(0.6, 0.1, 0.4),
+    )
+    .unwrap();
+    let whole = plate_with_a_spline_side((nearer, (0.0, 0.0)), 1.0, 2, 50.0, 0.0, false, 0.0);
+    assert_eq!(verdict(&whole, 1.0), Some(Judged::Clear));
+    let jumping = plate_with_a_spline_side((nearer, (0.0, 0.0)), 1.0, 2, 50.0, 15e-6, false, 0.0);
+    assert_eq!(verdict(&jumping, 1.0), None);
+}
+
 /// C5 and C6 of the module on polygons, in the world and turned, at three
 /// scales: a square is cleared, with a hole inside it too; a hole beside
 /// the square, or inside another hole, is shown; so is a loop that runs
