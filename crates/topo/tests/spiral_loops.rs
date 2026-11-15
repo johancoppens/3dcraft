@@ -677,3 +677,182 @@ fn verifying_a_refused_face_costs_at_most_the_work_of_a_face() {
     );
     println!("the most a refused face cost: {most} units");
 }
+
+/// A one-face sheet on the plane (the chart scaled by two) between
+/// `y = low(x)` and `y = low(x) + lift(x)` over `x` from −0.6 to 0.6: each
+/// side one cubic through 64 points a unit of `count`, the upper one cut
+/// into `pieces` edges over equal parts of its range, short cubics across.
+fn ribbon_between(
+    low: &dyn Fn(f64) -> f64,
+    lift: &dyn Fn(f64) -> f64,
+    count: usize,
+    pieces: usize,
+) -> Body {
+    use craft3d_geom::{Curve3, Plane, Surface};
+    use craft3d_math::{Frame, Vec3};
+    use craft3d_topo::{BodyKind, Coedge};
+    let at = |x: f64, y: f64| Vec3::new(2.0 * x, 2.0 * y, 0.0);
+    let side = |up: bool| {
+        let f = |s: f64| {
+            let x = -0.6 + 1.2 * s;
+            at(x, low(x) + if up { lift(x) } else { 0.0 })
+        };
+        spirals::fitted(&f, (0.0, 1.0), count, 3, false, 0.05e-6).unwrap()
+    };
+    let (lower, upper) = (side(false), side(true));
+    let across = |x: f64, rising: bool| {
+        let f = |s: f64| at(x, low(x) + lift(x) * if rising { s } else { 1.0 - s });
+        spirals::fitted(&f, (0.0, 1.0), 8, 3, false, 0.05e-6).unwrap()
+    };
+    let mut body = Body::new(BodyKind::Sheet);
+    let (al, bl) = (
+        body.add_vertex(lower.eval(0.0)),
+        body.add_vertex(lower.eval(1.0)),
+    );
+    let ups: Vec<_> = (0..=pieces)
+        .map(|i| body.add_vertex(upper.eval(i as f64 / pieces as f64)))
+        .collect();
+    let bottom = body.add_edge(Curve3::Nurbs(lower), (0.0, 1.0), al, bl);
+    let right = body.add_edge(
+        Curve3::Nurbs(across(0.6, true)),
+        (0.0, 1.0),
+        bl,
+        ups[pieces],
+    );
+    let tops: Vec<_> = (0..pieces)
+        .map(|i| {
+            let range = (i as f64 / pieces as f64, (i + 1) as f64 / pieces as f64);
+            body.add_edge(Curve3::Nurbs(upper.clone()), range, ups[i], ups[i + 1])
+        })
+        .collect();
+    let left = body.add_edge(Curve3::Nurbs(across(-0.6, false)), (0.0, 1.0), ups[0], al);
+    let co = |edge, reversed| Coedge { edge, reversed };
+    let mut coedges = vec![co(bottom, false), co(right, false)];
+    coedges.extend(tops.iter().rev().map(|e| co(*e, true)));
+    coedges.push(co(left, false));
+    let lp = body.add_loop(coedges);
+    let face = body.add_face(Surface::Plane(Plane::new(Frame::WORLD)), false, vec![lp]);
+    body.add_shell(vec![face]);
+    body
+}
+
+/// Whether the loop of a plane sheet's one face, its edges sampled 512
+/// times each, crosses itself (two segments that are not neighbours
+/// crossing properly).
+fn sampled_loop_crosses_itself(body: &Body) -> bool {
+    let lp = body.loop_(body.faces[0].loops[0]).unwrap();
+    let mut ring: Vec<(f64, f64)> = Vec::new();
+    for co in &lp.coedges {
+        let e = body.edge(co.edge).unwrap();
+        let (t0, t1) = e.range;
+        for i in 0..512 {
+            let f = i as f64 / 512.0;
+            let t = if co.reversed {
+                t1 - (t1 - t0) * f
+            } else {
+                t0 + (t1 - t0) * f
+            };
+            let p = e.curve.eval(t);
+            ring.push((p.x, p.y));
+        }
+    }
+    let n = ring.len();
+    let side = |a: (f64, f64), b: (f64, f64), c: (f64, f64)| {
+        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+    };
+    for i in 0..n {
+        let (p, q) = (ring[i], ring[(i + 1) % n]);
+        for j in i + 2..n {
+            if (j + 1) % n == i {
+                continue;
+            }
+            let (s, t) = (ring[j], ring[(j + 1) % n]);
+            if side(s, t, p) * side(s, t, q) < 0.0 && side(p, q, s) * side(p, q, t) < 0.0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// **Known misses the verification does not reach**: wrong faces the walk
+/// passes, so they are not walked again, as on `main` (2026-11-15, the
+/// sweep aimed at the bound: 448 such ribbons dipped through themselves,
+/// 18 horseshoes whose arms pass through each other, on a plane, a
+/// cylinder, a cone or a sphere, all passed on `main` as on this head).
+/// A ribbon whose upper side dips through the lower one by twice their gap
+/// near `x = 0.1`; a horseshoe whose arms pass through each other by 30
+/// tolerances (a crossing shallower than ten tolerances and the walk's
+/// errors is not claimed: the Method). Each crosses itself, sampled; each
+/// passes.
+#[test]
+fn wrong_faces_the_walk_passes_are_not_walked_again_and_the_misses_are_known() {
+    use craft3d_math::Portable;
+    let rate = std::f64::consts::TAU * 8.0 / 1.2;
+    let a = (2.0 / rate).min(0.05);
+    let gap = 0.5 * a;
+    let low = move |x: f64| {
+        let phi = rate * (x + 0.6);
+        a * (phi.psin() + 0.5 * (2.0 * phi).psin())
+    };
+    let dip = move |x: f64| gap - 3.0 * gap * (-((x - 0.1) / 0.03).ppowi(2)).pexp();
+    let dipped = ribbon_between(&low, &dip, 512, 32);
+    assert!(
+        sampled_loop_crosses_itself(&dipped),
+        "the dipped ribbon is wrong"
+    );
+    assert_eq!(
+        loop_defects(&dipped, 1.0),
+        Vec::<String>::new(),
+        "a known miss now refused (take it off the list)"
+    );
+    // The horseshoe: a wavy band round the point (0, 0.1) of the chart from
+    // the angle a quarter turn on by half the overlap round to the same
+    // less it, its arms passing through each other by 30 tolerances, lines
+    // across its ends.
+    use craft3d_geom::{Curve3, NurbsCurve, Plane, Surface};
+    use craft3d_math::{Frame, Vec3};
+    use craft3d_topo::{BodyKind, Coedge};
+    let (r0, overlap) = (0.35, -30.0 * 1e-6 / 2.0);
+    let half = 0.5 * overlap / r0;
+    let arc = |off: f64| {
+        let f = move |s: f64| {
+            let t = 0.5 * std::f64::consts::PI + half + (std::f64::consts::TAU - 2.0 * half) * s;
+            let r = r0 + off + 0.01 * (5.0 * t).psin();
+            let (sn, cs) = t.psin_cos();
+            Vec3::new(2.0 * r * cs, 2.0 * (0.1 + r * sn), 0.0)
+        };
+        spirals::fitted(&f, (0.0, 1.0), 256, 3, false, 0.05e-6).unwrap()
+    };
+    let (outer, inner) = (arc(0.02), arc(-0.02));
+    let mut body = Body::new(BodyKind::Sheet);
+    let v = [
+        outer.eval(0.0),
+        outer.eval(1.0),
+        inner.eval(1.0),
+        inner.eval(0.0),
+    ];
+    let vs: Vec<_> = v.iter().map(|p| body.add_vertex(*p)).collect();
+    let line = |p: Vec3, q: Vec3| {
+        Curve3::Nurbs(NurbsCurve::polynomial(1, vec![0.0, 0.0, 1.0, 1.0], vec![p, q]).unwrap())
+    };
+    let e0 = body.add_edge(Curve3::Nurbs(outer), (0.0, 1.0), vs[0], vs[1]);
+    let e1 = body.add_edge(line(v[1], v[2]), (0.0, 1.0), vs[1], vs[2]);
+    let e2 = body.add_edge(Curve3::Nurbs(inner), (0.0, 1.0), vs[3], vs[2]);
+    let e3 = body.add_edge(line(v[3], v[0]), (0.0, 1.0), vs[3], vs[0]);
+    let co = |edge, reversed| Coedge { edge, reversed };
+    let lp = body.add_loop(vec![
+        co(e0, false),
+        co(e1, false),
+        co(e2, true),
+        co(e3, false),
+    ]);
+    let face = body.add_face(Surface::Plane(Plane::new(Frame::WORLD)), false, vec![lp]);
+    body.add_shell(vec![face]);
+    assert!(sampled_loop_crosses_itself(&body), "the horseshoe is wrong");
+    assert_eq!(
+        loop_defects(&body, 1.0),
+        Vec::<String>::new(),
+        "a known miss now refused (take it off the list)"
+    );
+}
