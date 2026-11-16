@@ -164,6 +164,62 @@ fn plates_in_an_l_meet_by_each_joint_without_overlap() {
     }
 }
 
+/// A plate of a whole sphere or torus (a face that closes on itself) is a
+/// hollow ball or ring: built by command (it was refused, the plate's two
+/// skins put in one shell), valid to the deep check (the mesh-level checks
+/// too), its volume the closed form `4/3 π ((r + t)³ − r³)` and
+/// `2π² R (a² − (a − t)²)`; a thickness that reaches the sphere's centre
+/// fails the feature, saying the offset vanishes.
+#[test]
+fn a_plate_of_a_whole_sphere_or_torus_is_a_hollow() {
+    use std::f64::consts::PI;
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        built(
+            &mut s,
+            "feature.sphere",
+            json!({"radius": format!("{} mm", 10.0 * k), "name": "Ball"}),
+        );
+        built(
+            &mut s,
+            "feature.torus",
+            json!({"major": format!("{} mm", 20.0 * k), "minor": format!("{} mm", 5.0 * k),
+                   "position": [format!("{} mm", 50.0 * k), "0 mm", "0 mm"], "name": "Ring"}),
+        );
+        let ball = body(&mut s, "Ball")["faceNames"][0].clone();
+        let ring = body(&mut s, "Ring")["faceNames"][0].clone();
+        built(
+            &mut s,
+            "feature.plate",
+            json!({"faces": [ball], "thickness": format!("{k} mm"), "side": "out", "name": "Shell"}),
+        );
+        built(
+            &mut s,
+            "feature.plate",
+            json!({"faces": [ring], "thickness": format!("{k} mm"), "side": "in", "name": "Tube"}),
+        );
+        let k3 = k * k * k;
+        near(
+            volume(&mut s, "Shell"),
+            4.0 / 3.0 * PI * (1331.0 - 1000.0) * k3,
+            "hollow ball",
+        );
+        near(
+            volume(&mut s, "Tube"),
+            2.0 * PI * PI * 20.0 * (25.0 - 16.0) * k3,
+            "hollow ring",
+        );
+        deep(&mut s);
+        let why = failed(
+            &mut s,
+            "feature.plate",
+            json!({"faces": [ball], "thickness": format!("{} mm", 10.0 * k), "side": "in", "name": "Solid"}),
+        );
+        assert!(why.contains("vanishes"), "{why}");
+    }
+}
+
 #[test]
 fn a_plate_follows_its_sheets_through_the_features_that_take_them() {
     // The sheets are moved after they were made; the plates name the

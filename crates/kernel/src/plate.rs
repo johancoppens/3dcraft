@@ -275,6 +275,43 @@ fn no_offset(why: NoOffset) -> &'static str {
     }
 }
 
+/// What of a skin of a hollow is within the tolerance `tol` of nothing:
+/// a sphere's or a cylinder's radius, a torus's tube, or the room left
+/// between its tube and its axis; `None` when nothing is, or the skin is
+/// another kind of surface (whose offset is refused where it vanishes, as
+/// before).
+fn vanishing(skin: &Surface, tol: f64) -> Option<String> {
+    // Not `size <= tol`: a NaN is no size either.
+    let small = |size: f64| !(size > tol);
+    match skin {
+        Surface::Sphere(s) if small(s.radius()) => Some(format!(
+            "a skin is a sphere of radius {}",
+            short(s.radius())
+        )),
+        Surface::Cylinder(c) if small(c.radius()) => Some(format!(
+            "a skin is a cylinder of radius {}",
+            short(c.radius())
+        )),
+        Surface::Torus(t) => {
+            let (major, minor) = t.radii();
+            if small(minor) {
+                Some(format!(
+                    "a skin is a torus whose tube's radius is {}",
+                    short(minor)
+                ))
+            } else if small(major - minor) {
+                Some(format!(
+                    "a skin is a torus whose tube comes within {} of its axis",
+                    short(major - minor)
+                ))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// A face with its surface continued past its borders and its two skins.
 struct Layered<'a> {
     face: &'a Face,
@@ -834,7 +871,41 @@ fn ruled_rim(rows: [&[Vec3]; 2], fits: [&NurbsCurve; 2], tol: f64) -> Result<Sur
     if matches!(surface, Surface::Plane(_)) {
         return Ok(surface);
     }
-    Ok(round_rim(rows, fits, tol).unwrap_or(surface))
+    if let Some(round) = round_rim(rows, fits, tol) {
+        return Ok(round);
+    }
+    Ok(traced_flat(rows, fits, tol).unwrap_or(surface))
+}
+
+/// The plane of [`ruled_rim`] read from the traced corners, where its
+/// splines' control points are not in one: every traced corner of both
+/// rows within the share of the tolerance of one plane (so the rim is,
+/// as [`round_rim`] holds a cylinder: each ruling's ends, and so the
+/// ruling, within the share, and the true rows between stations within
+/// the share of the splines through those corners), and the two splines'
+/// control points within half the tolerance of it (so every edge cut from
+/// them lies within half the tolerance of the plane, as every edge of the
+/// plate lies of its faces). The control points are a solve through the
+/// corners, and a solve through stations spaced very unevenly (a short
+/// arc traced far past its ends: stations 3.5e-6 rad apart over it and
+/// 0.1 rad past it) moves them off the corners' plane by the rounding of
+/// the corners' coordinates many million times over: a sheet-metal bend
+/// of 0.0032 degrees at 1e6 had the control points of its side's rim
+/// 0.62 apart across the side plane (the tolerance 1, the share 0.25)
+/// where its corners lie in it to 1.5e-8, and its rim was the spline,
+/// whose net spans the traced run, most of the bend's circle about its
+/// axis (2026-11-15).
+fn traced_flat(rows: [&[Vec3]; 2], fits: [&NurbsCurve; 2], tol: f64) -> Option<Surface> {
+    let corners: Vec<Vec3> = rows[0].iter().chain(rows[1]).copied().collect();
+    let surface = flat(&corners, tol)?;
+    let Surface::Plane(plane) = &surface else {
+        return None;
+    };
+    let (origin, normal) = (plane.frame().origin(), plane.frame().z());
+    fits.iter()
+        .flat_map(|f| f.control_points())
+        .all(|c| (*c - origin).dot(normal).abs() <= 0.5 * tol)
+        .then_some(surface)
 }
 
 /// The cylinder or cone of [`ruled_rim`], if the rows make one.
@@ -1291,6 +1362,22 @@ fn build(
             tolerance,
         )
         .map_err(|why| refuse(None, format!("face {}: {why}", id.0)))?;
+        // Faces that close on themselves make a hollow (below), whose
+        // skins must keep their size: one whose radius is within the
+        // tolerance of nothing (a cavity smaller than the tolerance, a
+        // tube that reaches its axis) is no shell the tolerance can tell
+        // from a point or from one that runs through itself.
+        if boundaries.is_empty()
+            && let Some(why) = made.skins.iter().find_map(|s| vanishing(s, tol))
+        {
+            return Err(refuse(
+                None,
+                format!(
+                    "face {}: {why}: the thickness reaches within the tolerance of where the offset of the face vanishes",
+                    id.0
+                ),
+            ));
+        }
     }
     for boundary in &mut boundaries {
         // A surface an end lies on is continued as the skins are: the
@@ -1700,7 +1787,26 @@ fn build(
         faces_out.push(out.add_face(surface, reversed, vec![loop_]));
         made.push(Made::Rim(boundary.edge_id));
     }
-    out.add_shell(faces_out);
+    if boundaries.is_empty() {
+        // Faces that close on themselves (a whole sphere or torus, a
+        // closed sheet of faces tangent along their edges) have no rim to
+        // join their two skins: the plate is a hollow, one closed shell
+        // per skin, one facing out of the material and the other, inside
+        // it, a cavity (`crate::lumps` tells which from where they lie).
+        let skin = |front: bool| -> Vec<FaceId> {
+            faces_out
+                .iter()
+                .zip(&made)
+                .filter(|(_, m)| matches!(m, Made::Front(_)) == front)
+                .map(|(f, _)| *f)
+                .collect()
+        };
+        let (front, back) = (skin(true), skin(false));
+        out.add_shell(front);
+        out.add_shell(back);
+    } else {
+        out.add_shell(faces_out);
+    }
     let defects = check(&out, tolerance);
     if !defects.is_empty() {
         return Err(KernelError::InvalidBody {
