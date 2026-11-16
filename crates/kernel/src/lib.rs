@@ -378,10 +378,12 @@ pub enum KernelError {
     /// found.
     /// A tip cannot close this face ([`tip`]): `faces` are the end face
     /// and, where it is about one, the side behind an edge of its loop;
-    /// `edge` that edge, when there is one.
+    /// `edge` that edge, when there is one; `blame` the input to change
+    /// (`face`, `length` or `at`).
     Tip {
         faces: Vec<craft3d_topo::FaceId>,
         edge: Option<craft3d_topo::EdgeId>,
+        blame: &'static str,
         reason: String,
     },
     /// A plate cannot be made of these faces with these joints
@@ -762,6 +764,7 @@ impl fmt::Display for KernelError {
                 faces,
                 edge,
                 reason,
+                ..
             } => {
                 write!(f, "tip")?;
                 face_op_entities(f, faces, *edge)?;

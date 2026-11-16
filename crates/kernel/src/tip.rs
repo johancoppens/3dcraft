@@ -32,8 +32,7 @@
 use crate::KernelError;
 use craft3d_geom::pole::Border;
 use craft3d_geom::tip::{
-    FULLNESS_RANGE, Tip, TipError, TipForm, TipRim, TipSpec, longest_tip_length, tip_nets,
-    tip_shoulder,
+    Tip, TipError, TipForm, TipRim, TipSpec, longest_tip_length, tip_nets, tip_shoulder,
 };
 use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::quadrature::Rule;
@@ -46,6 +45,15 @@ const OPERATION: &str = "tip";
 /// conic's weight `√½`): the half ball on a rod as long as its radius, a
 /// half ellipsoid on an elliptic prism. The default.
 pub const ROUND_FULLNESS: f64 = std::f64::consts::SQRT_2 - 1.0;
+
+/// The least and the largest fullness a tip takes: narrower than the
+/// nets' own range (`FULLNESS_RANGE`, 0.001 to 0.999), to what is built.
+/// Measured (2026-11-16) over lofted circles, ovals, a hull and a lens at
+/// a hundredth to twice the radius of the end's area: 0.99 was refused on
+/// every one (the self-intersection check cannot mesh it), 0.98 and
+/// 0.01 to 0.02 often; 0.05 to 0.95 built on all of them from a tenth of
+/// that radius.
+pub const FULLNESS: (f64, f64) = (0.01, 0.98);
 
 /// The most edges an end face's loop may have (the nets' own cap).
 pub const MAX_TIP_EDGES: usize = craft3d_geom::tip::MAX_TIP_RIMS;
@@ -62,7 +70,7 @@ pub struct TipAsk {
     /// frame of its plane: its x and y axes from its origin); `None` for
     /// the centre of area of the shoulder.
     pub at: Option<[f64; 2]>,
-    /// The conic's `ρ`, within [`FULLNESS_RANGE`]: [`ROUND_FULLNESS`]
+    /// The conic's `ρ`, within [`FULLNESS`]: [`ROUND_FULLNESS`]
     /// gives quarter ellipses, ½ parabolas, more is blunter.
     pub fullness: f64,
 }
@@ -107,9 +115,20 @@ pub struct Tipped {
 }
 
 fn refused(faces: Vec<FaceId>, edge: Option<EdgeId>, reason: impl Into<String>) -> KernelError {
+    refused_as("face", faces, edge, reason)
+}
+
+/// [`refused`], blaming another input than the face.
+fn refused_as(
+    blame: &'static str,
+    faces: Vec<FaceId>,
+    edge: Option<EdgeId>,
+    reason: impl Into<String>,
+) -> KernelError {
     KernelError::Tip {
         faces,
         edge,
+        blame,
         reason: reason.into(),
     }
 }
@@ -151,6 +170,11 @@ struct RimEdge {
     coedge: Coedge,
     side: FaceId,
     rim: TipRim,
+    /// The side's surface, the border the rim lies on, and whether the
+    /// rim runs against that border's parameter.
+    surface: NurbsSurface,
+    border: Border,
+    against: bool,
 }
 
 /// The operation itself, at the tolerance given.
@@ -162,7 +186,7 @@ fn tip_at(body: &Body, ask: &TipAsk, tolerance: &Tolerance) -> Result<Tipped, Ke
             value: tol,
         });
     }
-    let (least, most) = FULLNESS_RANGE;
+    let (least, most) = FULLNESS;
     if !(ask.fullness >= least && ask.fullness <= most) {
         return Err(KernelError::InvalidSize {
             name: "fullness",
@@ -261,7 +285,15 @@ fn tip_at(body: &Body, ask: &TipAsk, tolerance: &Tolerance) -> Result<Tipped, Ke
         None => centre,
     };
     let edge_of = |rim: usize| rims.get(rim).map(|r| r.coedge.edge);
-    let named = |error: TipError| tip_refusal(end, error, &edge_of);
+    // Whether the point's place sees the whole end: asked only when the
+    // nets refuse, to say what is true.
+    let in_the_plane = if frame.z().dot(outward) > 0.0 {
+        (frame.x(), frame.y())
+    } else {
+        (frame.x(), -frame.y())
+    };
+    let seen = || seen_whole(&tip_rims, in_the_plane, centre, foot);
+    let named = |error: TipError| tip_refusal(end, error, &edge_of, &seen, ask.at.is_some());
     let length = match ask.length {
         Some(length) => length,
         None => {
@@ -276,7 +308,8 @@ fn tip_at(body: &Body, ask: &TipAsk, tolerance: &Tolerance) -> Result<Tipped, Ke
                 tip_shoulder(&tip_rims, plane_point, outward, tol).map_err(named)?;
             let shoulder: Vec<&NurbsCurve> = shoulder.iter().collect();
             let (_, middle) = area_and_centre(&shoulder, outward).ok_or_else(|| {
-                refused(
+                refused_as(
+                    "length",
                     vec![end],
                     None,
                     "what the sides are carried on to in the tip's plane encloses no area: they close in before the tip; give a shorter length",
@@ -319,6 +352,25 @@ fn tip_at(body: &Body, ask: &TipAsk, tolerance: &Tolerance) -> Result<Tipped, Ke
             ));
         }
     }
+    // Tangent to the sides along the rim, held on the faces made: the
+    // nets' own condition evaluated on their stored control points, with
+    // what rounding can add.
+    for (index, (face, rim)) in made.faces.iter().zip(&rims).enumerate() {
+        let side_reversed = body.face(rim.side).is_some_and(|f| f.reversed);
+        let off = rim_angle(face, rim, side_reversed);
+        if off.is_nan() || off > tolerance.angular {
+            let at_least = "; give a longer length";
+            return Err(refused_as(
+                "length",
+                vec![end],
+                edge_of(index),
+                format!(
+                    "at this length the tip's face is not tangent to the side along this edge within the angular tolerance: it leaves it by {off:e} rad, against {:e} (a tip a few tolerances long, or very short against the size of the end and its distance from the origin){at_least}",
+                    tolerance.angular
+                ),
+            ));
+        }
+    }
     let sides: Vec<FaceId> = rims.iter().map(|r| r.side).collect();
     let (spliced, faces, edges, vertices) = splice(body, end, outer, &coedges, &sides, &made)?;
     let mut defects = craft3d_topo::check(&spliced, tolerance);
@@ -328,6 +380,19 @@ fn tip_at(body: &Body, ask: &TipAsk, tolerance: &Tolerance) -> Result<Tipped, Ke
             operation: OPERATION,
             defects,
         });
+    }
+    // Every face of the tip can be measured (the integrals a body's
+    // volume, area and centroid sum), or the tip is refused: a body that
+    // cannot be measured cannot be checked, exported or trusted.
+    if let Some((index, error)) = unmeasured(&spliced, &faces) {
+        return Err(refused_as(
+            "length",
+            vec![end],
+            edge_of(index),
+            format!(
+                "the tip's face along this edge cannot be measured ({error}); make the tip longer, or its fullness nearer the middle (0.4142, quarter ellipses)"
+            ),
+        ));
     }
     let crease = made
         .creases
@@ -348,12 +413,245 @@ fn tip_at(body: &Body, ask: &TipAsk, tolerance: &Tolerance) -> Result<Tipped, Ke
     })
 }
 
-/// A refusal of the nets, with the edge of the rim curve it names.
+/// Places along every knot span of a rim curve where the tip's face and
+/// its side are compared.
+const RIM_PLACES: u32 = 32;
+
+/// The largest angle between the outward normals of the tip's `face`
+/// and of its side (`rim`'s surface, `side_reversed` its face's flag) at
+/// the rim, from the two surfaces' own derivatives at the same point of
+/// the rim: at both ends and 31 places between of every knot span. What
+/// is measured on the faces made, at those places: tangency between them
+/// rests on the nets' construction (the face's row beside the rim is one
+/// multiple of the side's step), this check on what was stored and how it
+/// evaluates, rounding and all. Infinity where a normal cannot be had.
+fn rim_angle(face: &NurbsSurface, rim: &RimEdge, side_reversed: bool) -> f64 {
+    let ((_, _), (v0, _)) = face.domain();
+    let curve = &rim.rim.curve;
+    let knots = curve.knots();
+    let (Some(&first), Some(&last)) = (knots.first(), knots.last()) else {
+        return f64::INFINITY;
+    };
+    let ((su0, su1), (sv0, sv1)) = rim.surface.domain();
+    let mut worst = 0.0_f64;
+    for pair in knots.windows(2) {
+        let [lo, hi] = pair else { continue };
+        if hi <= lo {
+            continue;
+        }
+        for i in 0..=RIM_PLACES {
+            let t = lo + (hi - lo) * f64::from(i) / f64::from(RIM_PLACES);
+            // The rim's parameter is the border's, or runs against it.
+            let along = if rim.against { first + last - t } else { t };
+            let (su, sv) = match rim.border {
+                Border::UStart => (su0, along),
+                Border::UEnd => (su1, along),
+                Border::VStart => (along, sv0),
+                Border::VEnd => (along, sv1),
+            };
+            let (_, tu, tv) = face.derivatives(t, v0);
+            let (_, du, dv) = rim.surface.derivatives(su, sv);
+            let (Some(tip_normal), Some(side_normal)) =
+                (tu.cross(tv).normalized(), du.cross(dv).normalized())
+            else {
+                return f64::INFINITY;
+            };
+            let side_normal = if side_reversed {
+                -side_normal
+            } else {
+                side_normal
+            };
+            let angle = tip_normal.angle_to(side_normal);
+            if angle.is_nan() {
+                return f64::INFINITY;
+            }
+            worst = worst.max(angle);
+        }
+    }
+    worst
+}
+
+/// The first face of the tip (counted along the rim) that cannot be
+/// measured, with why: each face integrated as `topo::mass_properties`
+/// integrates it for the body's volume, area and centroid, about the same
+/// middle and to the same size (a sheet of that face alone with every
+/// vertex and edge of the body, which is what the size and the middle are
+/// taken from). One face at a time, stopping at the first that fails: a
+/// face whose integrals do not settle takes long to say so, and one is
+/// enough.
+fn unmeasured(body: &Body, faces: &[TipOrigin]) -> Option<(usize, String)> {
+    let mut sheet = Body::new(craft3d_topo::BodyKind::Sheet);
+    sheet.vertices = body.vertices.clone();
+    sheet.edges = body.edges.clone();
+    sheet.tolerances = body.tolerances.clone();
+    let mut counted = 0usize;
+    for (index, origin) in faces.iter().enumerate() {
+        if !matches!(origin, TipOrigin::Tip { .. }) {
+            continue;
+        }
+        let k = counted;
+        counted += 1;
+        let Some(face) = body.faces.get(index) else {
+            return Some((k, "the face is missing".to_string()));
+        };
+        sheet.loops.clear();
+        sheet.faces.clear();
+        sheet.shells.clear();
+        let mut loops = Vec::with_capacity(face.loops.len());
+        for l in &face.loops {
+            let Some(l) = body.loop_(*l) else {
+                return Some((k, "the face's loop is missing".to_string()));
+            };
+            loops.push(sheet.add_loop(l.coedges.clone()));
+        }
+        let only = sheet.add_face(face.surface.clone(), face.reversed, loops);
+        sheet.add_shell(vec![only]);
+        if let Some(Err(error)) = craft3d_topo::face_areas(&sheet).into_iter().next() {
+            return Some((k, error.to_string()));
+        }
+    }
+    None
+}
+
+/// Whether a place sees the whole outline of the end: no point does (the
+/// end is not star-shaped), the place does not, or it may.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Seen {
+    Nowhere,
+    NotFrom,
+    Maybe,
+}
+
+/// The most half-planes [`seen_whole`] clips by.
+const MAX_SIGHT_LINES: usize = 4096;
+
+/// Whether `foot` sees the whole outline of the end made of `rims`, read
+/// in the end's plane with the axes `axes` (counter-clockwise seen from
+/// outside) about `centre`. A point sees a closed curve whole only from
+/// the inner side of every tangent of it; the polygon of points on the
+/// inner side of the tangents at some places along the curve (a box cut
+/// by each, 32 places a knot span) holds every point that sees it whole.
+/// So where that polygon is empty no point sees the curve whole, and a
+/// foot outside it does not: both are proven by the places taken. A foot
+/// inside may or may not.
+fn seen_whole(rims: &[TipRim], axes: (Vec3, Vec3), centre: Vec3, foot: Vec3) -> Seen {
+    let (ex, ey) = axes;
+    let flat = |p: Vec3| [(p - centre).dot(ex), (p - centre).dot(ey)];
+    let mut lines: Vec<([f64; 2], [f64; 2])> = Vec::new();
+    let mut reach = 0.0_f64;
+    for rim in rims {
+        let curve = &rim.curve;
+        for p in curve.control_points() {
+            let [x, y] = flat(*p);
+            reach = reach.max(x.abs()).max(y.abs());
+        }
+        for pair in curve.knots().windows(2) {
+            let [lo, hi] = pair else { continue };
+            if hi <= lo {
+                continue;
+            }
+            for i in 0..=32u8 {
+                let t = lo + (hi - lo) * f64::from(i) / 32.0;
+                let (p, d) = curve.derivatives(t);
+                let along = [d.dot(ex), d.dot(ey)];
+                if along[0] != 0.0 || along[1] != 0.0 {
+                    lines.push((flat(p), along));
+                }
+            }
+        }
+    }
+    if !(reach.is_finite() && reach > 0.0) || lines.len() > MAX_SIGHT_LINES {
+        return Seen::Maybe;
+    }
+    let big = 4.0 * reach;
+    let mut polygon: Vec<[f64; 2]> = vec![[-big, -big], [big, -big], [big, big], [-big, big]];
+    // Inside: to the left of the direction of travel.
+    let side =
+        |q: [f64; 2], (p, d): ([f64; 2], [f64; 2])| d[0] * (q[1] - p[1]) - d[1] * (q[0] - p[0]);
+    for &line in &lines {
+        let mut next = Vec::with_capacity(polygon.len() + 1);
+        for (k, &a) in polygon.iter().enumerate() {
+            let Some(&b) = polygon.get((k + 1) % polygon.len()) else {
+                continue;
+            };
+            let (sa, sb) = (side(a, line), side(b, line));
+            if sa >= 0.0 {
+                next.push(a);
+            }
+            if (sa >= 0.0) != (sb >= 0.0) {
+                let t = sa / (sa - sb);
+                next.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+            }
+        }
+        polygon = next;
+        if polygon.len() < 3 {
+            return Seen::Nowhere;
+        }
+    }
+    let mut area = 0.0;
+    for (k, a) in polygon.iter().enumerate() {
+        if let Some(b) = polygon.get((k + 1) % polygon.len()) {
+            area += a[0] * b[1] - a[1] * b[0];
+        }
+    }
+    if area.abs() <= 1e-12 * reach * reach {
+        return Seen::Nowhere;
+    }
+    // Not inside by more than rounding: seen edge-on at best.
+    let f = flat(foot);
+    let margin = 1e-9 * reach;
+    if lines.iter().any(|&(p, d)| {
+        let length = (d[0] * d[0] + d[1] * d[1]).sqrt();
+        side(f, (p, d)) <= margin * length
+    }) {
+        return Seen::NotFrom;
+    }
+    Seen::Maybe
+}
+
+/// A refusal of the nets, with the edge of the rim curve it names, said
+/// as what is true of the end where the point's place is to blame.
 fn tip_refusal(
     end: FaceId,
     error: TipError,
     edge_of: &dyn Fn(usize) -> Option<EdgeId>,
+    seen: &dyn Fn() -> Seen,
+    at_given: bool,
 ) -> KernelError {
+    let sight = matches!(
+        error,
+        TipError::NotStarShaped { .. }
+            | TipError::ClosesIn { .. }
+            | TipError::NotProven { .. }
+            | TipError::NoLengthFits
+    );
+    if sight {
+        match seen() {
+            Seen::Nowhere => {
+                return refused(
+                    vec![end],
+                    None,
+                    "no point over this end sees its whole outline (the end is not star-shaped, as a crescent or a cambered blade section is not), and a tip that closes in one point needs a point that does: such an end needs a tip that closes in a ridge, or a blend, which is not built yet",
+                );
+            }
+            Seen::NotFrom if at_given => {
+                return refused_as(
+                    "at",
+                    vec![end],
+                    None,
+                    "the place given for the tip does not see the whole outline of the end: give a place from which all of it is in view",
+                );
+            }
+            Seen::NotFrom => {
+                return refused(
+                    vec![end],
+                    None,
+                    "the end's centre of area, where the tip stands unless at is given, does not see the whole outline of the end (an end that is not convex can have it so): give at, a place from which all of it is in view",
+                );
+            }
+            Seen::Maybe => {}
+        }
+    }
     let rim = match &error {
         TipError::RimOpen { rim, .. }
         | TipError::RimCrosses { rim, .. }
@@ -369,7 +667,7 @@ fn tip_refusal(
         | TipError::NoLengthFits => None,
     };
     let advice = match &error {
-        TipError::NotStarShaped { .. } | TipError::ClosesIn { .. } | TipError::NoLengthFits => {
+        TipError::NotStarShaped { .. } | TipError::ClosesIn { .. } => {
             "; give a shorter length, or a place for the tip further inside the end"
         }
         TipError::NotProven { .. } => {
@@ -381,7 +679,20 @@ fn tip_refusal(
         }
         _ => "",
     };
-    refused(vec![end], rim.and_then(edge_of), format!("{error}{advice}"))
+    let blame = match &error {
+        TipError::NotStarShaped { .. }
+        | TipError::ClosesIn { .. }
+        | TipError::NoLengthFits
+        | TipError::RimReachesPlane { .. } => "length",
+        TipError::NotProven { .. } if at_given => "at",
+        _ => "face",
+    };
+    let said = match &error {
+        // The search's own words say more than is known here.
+        TipError::NoLengthFits => "no length tried fits (from twice the radius of the circle of the end's area, halved again and again down to four tolerances): at each the faces round the end close in before the point, or are seen from it edge-on; give a length, or a place for the point (at)".to_string(),
+        _ => format!("{error}{advice}"),
+    };
+    refused_as(blame, vec![end], rim.and_then(edge_of), said)
 }
 
 /// The edge of `coedge` (a coedge of the end face's loop) and the side
@@ -431,7 +742,7 @@ fn rim_edge(
         .ok_or_else(|| here("the edge's vertices are missing"))?;
     let normal = frame.z();
     let origin = frame.origin();
-    let mut found: Option<TipRim> = None;
+    let mut found: Option<(TipRim, Border, bool)> = None;
     for border in [Border::UStart, Border::UEnd, Border::VStart, Border::VEnd] {
         let Ok(rim) = TipRim::of_border(&surface, border) else {
             continue;
@@ -446,11 +757,11 @@ fn rim_edge(
         if !in_plane {
             continue;
         }
-        let rim = if first.distance(start) <= tol && last.distance(finish) <= tol {
-            rim
+        let (rim, against) = if first.distance(start) <= tol && last.distance(finish) <= tol {
+            (rim, false)
         } else if first.distance(finish) <= tol && last.distance(start) <= tol {
             match rim.reversed() {
-                Ok(rim) => rim,
+                Ok(rim) => (rim, true),
                 Err(_) => continue,
             }
         } else {
@@ -464,14 +775,21 @@ fn rim_edge(
                 "two borders of the face behind this edge run along it: its surface is folded flat there".to_string(),
             ));
         }
-        found = Some(rim);
+        found = Some((rim, border, against));
     }
-    let rim = found.ok_or_else(|| {
+    let (rim, border, against) = found.ok_or_else(|| {
         at_side(
             "the edge is not a whole border of the spline surface of the face behind it (that face was cut there, or its surface runs on past the end): a tip over such a side is not built yet".to_string(),
         )
     })?;
-    Ok(RimEdge { coedge, side, rim })
+    Ok(RimEdge {
+        coedge,
+        side,
+        rim,
+        surface,
+        border,
+        against,
+    })
 }
 
 /// Whether `rim` runs along `edge`: points at a quarter, a half and three

@@ -80,10 +80,10 @@ pub(crate) fn build(
     let fullness = match &tipped.fullness {
         Some(expr) => {
             let fullness = crate::number(variables, "fullness", expr)?;
-            let (least, most) = craft3d_geom::tip::FULLNESS_RANGE;
+            let (least, most) = craft3d_kernel::tip::FULLNESS;
             if !(fullness >= least && fullness <= most) {
                 return Err(format!(
-                    "fullness: has to be from {least} to {most} (0.4142 quarter ellipses, 0.5 parabolas, more is blunter), got {fullness}"
+                    "fullness: has to be from {least} to {most} (0.4142 quarter ellipses, 0.5 parabolas, more is blunter; 0.05 to 0.95 builds on most ends), got {fullness}"
                 ));
             }
             fullness
@@ -102,6 +102,7 @@ pub(crate) fn build(
             KernelError::Tip {
                 faces,
                 edge,
+                blame,
                 reason,
             } => {
                 // The end itself is said by its name already.
@@ -109,12 +110,7 @@ pub(crate) fn build(
                 let at = about(source.body, source.names, &others, edge)
                     .map(|at| format!(" ({at})"))
                     .unwrap_or_default();
-                let param = if reason.contains("length") && tipped.length.is_some() {
-                    "length"
-                } else {
-                    "face"
-                };
-                format!("{param}: {reason}{at}")
+                format!("{blame}: {reason}{at}")
             }
             other => explain(other, "length", 1.0, unit, &source),
         },

@@ -650,3 +650,217 @@ fn a_huge_length_is_built_or_refused_never_wrong() {
         }
     }
 }
+
+/// The largest angle between a tip face's outward normal and its side's
+/// at the rim, sampled (17 places a face), measured here independently
+/// of the kernel's own check.
+fn rim_angle(made: &Tipped) -> f64 {
+    let users = craft3d_topo::edge_faces(&made.body);
+    let mut worst = 0.0_f64;
+    for (face, _) in tip_faces(made) {
+        let surface = nurbs(&made.body, face);
+        let rim = made
+            .body
+            .loop_(made.body.face(face).unwrap().loops[0])
+            .unwrap()
+            .coedges[0]
+            .edge;
+        let side = users[rim.0 as usize]
+            .iter()
+            .copied()
+            .find(|f| *f != face)
+            .unwrap();
+        let side_face = made.body.face(side).unwrap();
+        let ((u0, u1), (v0, _)) = surface.domain();
+        for i in 0..=16 {
+            let u = u0 + (u1 - u0) * f64::from(i) / 16.0;
+            let (p, du, dv) = surface.derivatives(u, v0);
+            let n1 = du.cross(dv).normalized().unwrap();
+            let (a, b) = side_face.surface.project(p).unwrap();
+            let n2 = side_face.surface.normal(a, b).unwrap();
+            let n2 = if side_face.reversed { -n2 } else { n2 };
+            worst = worst.max(n1.angle_to(n2));
+        }
+    }
+    worst
+}
+
+/// Very short tips, at a few tolerances, over sides whose steps differ
+/// in length (the general form; at such lengths the sides read as level
+/// within the tolerance): built only tangent to the sides within the
+/// angular tolerance and measurable, refused otherwise, never built
+/// creased.
+#[test]
+fn a_very_short_tip_is_tangent_and_measurable_or_refused() {
+    let frame = frames(1.0)[1];
+    let leaning = spline_frustum(&frame, 1.0, &ellipse(3.0, 2.0), DEPTH, 1.0, 0.2).unwrap();
+    let tol = tolerance(1.0);
+    let mut refused = 0;
+    let mut built = 0;
+    for length in [2e-7, 5e-7, 2e-6, 1e-5, 1e-4, 1e-3, 1e-2] {
+        match tip(
+            &leaning,
+            &ask(end_of(&leaning), Some(length), ROUND_FULLNESS),
+            &tol,
+            None,
+        ) {
+            Ok(made) => {
+                built += 1;
+                let angle = rim_angle(&made);
+                assert!(angle <= 1e-9, "{length}: built creased by {angle:e} rad");
+                assert!(
+                    mass_properties(&made.body).is_ok(),
+                    "{length}: not measurable"
+                );
+            }
+            Err(error) => {
+                refused += 1;
+                let text = error.to_string();
+                println!("{length:e}: refused: {text}");
+                assert!(!text.contains("internal error"), "{length}: {text}");
+            }
+        }
+    }
+    // The longest is built; shorter ones may be refused (a tip shorter
+    // than about a thousandth of its end cannot be measured yet).
+    assert!(built >= 1, "built {built}, refused {refused}");
+    assert!(
+        tip(
+            &leaning,
+            &ask(end_of(&leaning), Some(1e-2), ROUND_FULLNESS),
+            &tol,
+            None
+        )
+        .is_ok()
+    );
+}
+
+/// Across the fullness and the length, every tip built can be measured:
+/// one that cannot is refused, saying what to change.
+#[test]
+fn every_tip_built_can_be_measured() {
+    let frame = Frame::WORLD;
+    let r = 5.0;
+    let rod = spline_prism(&frame, 1.0, &ellipse(r, 2.0), DEPTH * r).unwrap();
+    let mut built = 0;
+    for fullness in [0.01, 0.05, 0.2, ROUND_FULLNESS, 0.7, 0.9, 0.99] {
+        for share in [0.01, 0.1, 1.0] {
+            match tip(
+                &rod,
+                &ask(end_of(&rod), Some(share * r), fullness),
+                &tolerance(1.0),
+                None,
+            ) {
+                Ok(made) => {
+                    built += 1;
+                    let measured = mass_properties(&made.body);
+                    assert!(measured.is_ok(), "{fullness} {share}: {measured:?}");
+                }
+                Err(error) => {
+                    let text = error.to_string();
+                    assert!(
+                        !text.contains("internal error"),
+                        "{fullness} {share}: {text}"
+                    );
+                    if text.contains("cannot be measured") {
+                        assert!(
+                            text.contains("longer") && text.contains("fullness"),
+                            "{text}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(built >= 12, "{built}");
+}
+
+/// What is said where the point's place is to blame: an end no point sees
+/// whole (a U), an end whose centre of area does not see it whole (an L),
+/// a place given that does not.
+#[test]
+fn where_no_point_or_not_this_one_sees_the_end_whole_the_refusal_says_so() {
+    let frame = Frame::WORLD;
+    let tol = tolerance(1.0);
+    let u = spline_prism(
+        &frame,
+        1.0,
+        &polygon(&[
+            [0.0, 0.0],
+            [3.0, 0.0],
+            [3.0, 3.0],
+            [2.0, 3.0],
+            [2.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 3.0],
+            [0.0, 3.0],
+        ]),
+        DEPTH,
+    )
+    .unwrap();
+    for length in [None, Some(0.5), Some(2.0)] {
+        let error = tip(&u, &ask(end_of(&u), length, ROUND_FULLNESS), &tol, None).unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.contains("no point over this end sees its whole outline"),
+            "{length:?}: {text}"
+        );
+        assert!(
+            matches!(error, KernelError::Tip { blame: "face", .. }),
+            "{error:?}"
+        );
+    }
+    let l = spline_prism(
+        &frame,
+        1.0,
+        &polygon(&[
+            [0.0, 0.0],
+            [4.0, 0.0],
+            [4.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 3.0],
+            [0.0, 3.0],
+        ]),
+        DEPTH,
+    )
+    .unwrap();
+    for length in [None, Some(1.0)] {
+        let text = tip(&l, &ask(end_of(&l), length, ROUND_FULLNESS), &tol, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            text.contains("centre of area") && text.contains("give at"),
+            "{length:?}: {text}"
+        );
+        assert!(!text.contains("close in at once"), "{text}");
+    }
+    // In the corner square the whole L is seen: built.
+    assert!(
+        tip(
+            &l,
+            &TipAsk {
+                at: Some([0.5, 0.5]),
+                ..ask(end_of(&l), Some(1.0), ROUND_FULLNESS)
+            },
+            &tol,
+            None
+        )
+        .is_ok()
+    );
+    // A place given outside the end is the place's fault.
+    let error = tip(
+        &l,
+        &TipAsk {
+            at: Some([3.0, 2.5]),
+            ..ask(end_of(&l), Some(1.0), ROUND_FULLNESS)
+        },
+        &tol,
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, KernelError::Tip { blame: "at", .. }),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("place given"), "{error}");
+}

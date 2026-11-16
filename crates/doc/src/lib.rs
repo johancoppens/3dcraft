@@ -1584,7 +1584,7 @@ pub struct Tip {
     /// centre of area of what the sides are carried on to.
     #[serde(default)]
     pub at: Option<[Expr; 2]>,
-    /// The conic's `ρ`, a plain number from 0.001 to 0.999; `None` for
+    /// The conic's `ρ`, a plain number from 0.01 to 0.98; `None` for
     /// `√2 − 1` (about 0.4142), quarter ellipses.
     #[serde(default)]
     pub fullness: Option<Expr>,
@@ -2799,6 +2799,7 @@ impl Document {
                 FeatureKind::Thread(thread) => vec![&thread.face, &thread.start],
                 FeatureKind::Sweep(sweep) => sweep.up.iter().flat_map(AxisRef::names).collect(),
                 FeatureKind::Split(split) => vec![&split.face],
+                FeatureKind::Tip(tip) => vec![&tip.face],
                 FeatureKind::SurfaceNetwork(n) => {
                     let mut names = Vec::new();
                     if n.u.len() > MAX_NETWORK_CURVES || n.v.len() > MAX_NETWORK_CURVES {
@@ -4264,5 +4265,32 @@ mod tests {
                 serde_json::json!(unit.symbol())
             );
         }
+    }
+
+    /// A tip's face is a name held to the rules of names when a document
+    /// is checked, as a thread's and a split's are.
+    #[test]
+    fn a_tip_s_face_is_held_to_the_rules_of_names() {
+        let mut doc = sample();
+        let tipped = |face: PersistentName| {
+            FeatureKind::Tip(Tip {
+                face,
+                length: None,
+                at: None,
+                fullness: None,
+            })
+        };
+        let good = PersistentName::new(FeatureId(1), NameRole::Face, vec![1]);
+        doc.add_feature(Some("Nose"), tipped(good)).unwrap();
+        assert!(doc.validate().is_ok());
+        // A tip role with no side after it is no name.
+        let bad = PersistentName::new(FeatureId(1), NameRole::Tip, vec![0]);
+        let mut wrong = sample();
+        wrong.add_feature(Some("Nose"), tipped(bad)).unwrap();
+        let error = wrong.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("Nose") && error.contains("not a name"),
+            "{error}"
+        );
     }
 }

@@ -138,8 +138,8 @@ it makes.
 
 ## Tip
 
-`feature.tip` closes a body in one rounded point over a flat end face: the nose of a hull, the tip of a
-propeller blade or a fan blade. The end face is replaced by faces that run on from the faces round it
+`feature.tip` closes a body in one rounded point over a flat end face: the nose of a hull, the end of a
+slender blade. The end face is replaced by faces that run on from the faces round it
 without a crease along the old edge, and all reach the point with one tangent plane, parallel to the end.
 An edge that ran into the end (a deck edge, a trailing edge) runs on to the point and fades out there.
 Nothing behind the end changes. A rod lofted through three equal circles, tipped as long as its radius,
@@ -169,10 +169,14 @@ ends in a half ball:
   plane's origin. Left out, the point stands over the middle (the centre of area) of what the faces round
   the end come to in the point's plane. On an end that is not convex (an L) that middle can lie on or
   beyond an edge; then give `at`, a place from which the whole end is in view.
-- **`fullness`** is how full the tip is across, from 0.001 to 0.999. The default, 0.4142 (√2 − 1), gives
+- **`fullness`** is how full the tip is across, from 0.01 to 0.98. The default, 0.4142 (√2 − 1), gives
   quarter ellipses: on any straight prism the tip adds two thirds of the end's area times the length, and
   on a rod as long as its radius it is a half ball. 0.5 gives parabolas (eleven fifteenths); more is
   blunter, less more pointed.
+- **What is built.** A fullness from 0.05 to 0.95, at a length of a tenth of the end's radius (the
+  radius of the circle with its area) or more. Nearer 0 or 1, and shorter tips, are often refused,
+  because their faces cannot yet be meshed or measured; below a hundredth of that radius nearly always.
+  A tip is never built creased at the old edge or unmeasurable: it is refused, saying what to change.
 - **Names.** The faces that stay keep their names with a prefix, `F9:copy(0)/...`; a face of the tip is
   named after the face it continues, `F9:tip(0)/F4:side(e2)`. The edges from the old corners to the
   point, and the point, are named by their faces.
@@ -181,9 +185,13 @@ ends in a half ball:
   turned spline's), an end with a hole or bounded by one closed edge, and a pointed tip (`shape`
   `"pointed"`). A tipped body cannot yet be hollowed or offset: `feature.shell`, `feature.offsetFace`,
   `feature.thicken` and `feature.plate` refuse a face that closes in a point, and say so.
-- **Refused** with the reason: faces round the end that do not go on toward the point, a point outside
-  what they come to, a length at which they close in before the point (give a shorter one), and a tip
-  that runs into another part of the body.
+- **Refused** with the reason: faces round the end that do not go on toward the point; an end whose
+  outline no point sees whole (a crescent, a cambered blade section such as a ship propeller's: a tip
+  that closes in one point needs a point that sees all of it; such an end needs a ridge or a blend,
+  which is not built); a point that does not see the whole end; a length at which the faces round the
+  end close in before the point (give a shorter one); a tip so short that it is not tangent to the
+  faces round it within the angular tolerance, or that cannot be measured (give a longer one, or a
+  fullness nearer the middle); and a tip that runs into another part of the body.
 
 ## Text
 

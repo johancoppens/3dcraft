@@ -326,6 +326,45 @@ fn the_tip_follows_an_edit_upstream_and_a_stale_name_fails() {
     );
     let want = PI * 9.0 * 20.0 + 11.0 / 15.0 * PI * 27.0;
     near(volume(&mut s, "Nose"), want, 1e-11, "edited");
+    // A null alone is a change: automatic again (the place, the fullness).
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Nose", "at": ["0 mm", "0 mm"]}),
+    );
+    let edited = run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Nose", "at": null}),
+    );
+    assert_eq!(edited["status"], "ok", "{edited}");
+    let edited = run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Nose", "fullness": null}),
+    );
+    assert_eq!(edited["status"], "ok", "{edited}");
+    let want = PI * 9.0 * 20.0 + 2.0 / 3.0 * PI * 27.0;
+    near(volume(&mut s, "Nose"), want, 1e-11, "fullness back");
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Nose", "length": 2}),
+    );
+    let edited = run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Nose", "length": null}),
+    );
+    assert_eq!(edited["status"], "ok", "{edited}");
+    near(volume(&mut s, "Nose"), want, 1e-11, "length back");
+    // The face by its feature's name, as feature.tip takes it.
+    let edited = run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Nose", "face": "Rod:endCap(e2)"}),
+    );
+    assert_eq!(edited["status"], "ok", "{edited}");
 }
 
 #[test]
