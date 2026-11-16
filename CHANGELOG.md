@@ -4,7 +4,7 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
-## [0.1.2] - 2026-11-13
+## [0.1.2] - 2026-11-17
 
 Fixes for the first things a new user meets: on Windows the window no longer closes at once on computers with Intel graphics, no console window opens beside 3DCraft any more, the web version's page says what it is, and the MCP server says more about itself to the tools that connect to it. Files of 0.1.0 and 0.1.1 open unchanged.
 
