@@ -63,7 +63,7 @@
 use crate::face::{patch_second_bounds, spline_counts};
 use craft3d_geom::closure::clamped;
 use craft3d_geom::{NurbsSurface, RationalBezierPatch};
-use craft3d_math::Portable;
+use craft3d_math::{Portable, Vec3};
 
 /// The part of the face's box, along a parameter, below which a stretch
 /// of a knot span that the box reaches into is the rounding of where the
@@ -93,10 +93,139 @@ const MOST_BOUNDED: usize = 1 << 13;
 /// a quarter).
 const EVEN_ENOUGH: f64 = 4.0;
 
+/// How far apart the weights of a surface may be for a graded grid, none
+/// of them below the smallest number that has all its digits. The pace of
+/// a strip and the bounds of a piece are products of two and three
+/// weights: further apart than this (the cube root of what a number
+/// holds, roughly) those overflow or lose their digits, and nothing they
+/// say of the surface is known. Such a face is refused as before; a
+/// surface drawn by a modeller is tens of decades within it.
+const HELD: f64 = 1e100;
+
 /// The most lines of the grid along one parameter (a square grid at the
 /// usual limit of 1024 a side has as many cells as one of this many by
 /// one).
 const MOST_LINES: f64 = 1_048_576.0;
+
+/// The graded grid of a face: its lines along u and along v, and the
+/// pieces it was made of, for the measure of the face's triangles
+/// ([`Grid::flat_over`], [`Grid::mate`]).
+#[derive(Clone, Debug)]
+pub(crate) struct Grid {
+    /// The lines along u and along v, each from the low to the high end
+    /// of the face's box, increasing.
+    pub(crate) lines: [Vec<f64>; 2],
+    /// The stretches the box was cut into, along u and along v, in order.
+    stretches: [Vec<Stretch>; 2],
+    /// Per piece (stretch `i` of u, `j` of v, at `i * columns + j`):
+    /// whether its control net lies in a slab thinner than the tolerance.
+    flat: Vec<bool>,
+    /// Whether the nets of all the pieces lie in one such slab: the whole
+    /// of the surface under the face's box is flat within the tolerance
+    /// (a plane, however many spans it is drawn in).
+    all_flat: bool,
+}
+
+impl Grid {
+    /// The first and the last of the stretches of parameter `k` that hold
+    /// `x`: one stretch, or two where `x` is the line between them. A
+    /// value before the first stretch or past the last (the box reaches
+    /// that far by the rounding of its boundary, [`SLIVER`]) is in that
+    /// stretch.
+    fn holding(&self, k: usize, x: f64) -> Option<(usize, usize)> {
+        let stretches = self.stretches.get(k)?;
+        let last = stretches.len().checked_sub(1)?;
+        if x.is_nan() {
+            return None;
+        }
+        // The first stretch that does not end before `x`.
+        let first = stretches
+            .partition_point(|stretch| stretch.to < x)
+            .min(last);
+        let also = match stretches.get(first + 1) {
+            Some(next) if next.from <= x => first + 1,
+            _ => first,
+        };
+        Some((first, also))
+    }
+
+    /// The stretches of parameter `k` that hold every one of `values`.
+    fn common(&self, k: usize, values: impl Iterator<Item = f64>) -> Option<(usize, usize)> {
+        let (mut from, mut to) = (0, usize::MAX);
+        for x in values {
+            let (first, last) = self.holding(k, x)?;
+            (from, to) = (from.max(first), to.min(last));
+        }
+        (from <= to && to != usize::MAX).then_some((from, to))
+    }
+
+    /// Whether the whole of the surface under the face's box is flat
+    /// within the tolerance the grid was made for.
+    pub(crate) fn flat(&self) -> bool {
+        self.all_flat
+    }
+
+    /// Whether the places `corners` (each `(u, v)`) all lie in one piece
+    /// that is flat within the tolerance the grid was made for, or the
+    /// whole of the box is. The patch of such a piece lies in a slab
+    /// thinner than that tolerance, and so does every segment and
+    /// triangle on points of it: what is between those corners is within
+    /// the tolerance of the surface, measured across the slab, without a
+    /// look at where on the surface.
+    pub(crate) fn flat_over(&self, corners: &[(f64, f64)]) -> bool {
+        if self.all_flat {
+            return true;
+        }
+        let columns = self.stretches.get(1).map_or(0, Vec::len);
+        let (Some((i0, i1)), Some((j0, j1))) = (
+            self.common(0, corners.iter().map(|c| c.0)),
+            self.common(1, corners.iter().map(|c| c.1)),
+        ) else {
+            return false;
+        };
+        (i0..=i1).any(|i| {
+            (j0..=j1).any(|j| {
+                i.checked_mul(columns)
+                    .and_then(|at| at.checked_add(j))
+                    .and_then(|at| self.flat.get(at))
+                    .copied()
+                    .unwrap_or(false)
+            })
+        })
+    }
+
+    /// The parameters at the middle of `corners` in the pace the grid
+    /// draws them at: per parameter, where they share a stretch, the mean
+    /// of their shares of its even pace, brought back through its Möbius
+    /// map; the plain mean where they do not. For the corners of a cell
+    /// of the grid this is the place the cell's bound speaks of: the
+    /// surface there is within the tolerance of the middle of the cell's
+    /// triangle, however unevenly the surface's own parameters run.
+    pub(crate) fn mate(&self, corners: &[(f64, f64)]) -> (f64, f64) {
+        let count = corners.len().max(1) as f64;
+        let middle = |k: usize, of: &dyn Fn(&(f64, f64)) -> f64| -> f64 {
+            let plain = corners.iter().map(of).sum::<f64>() / count;
+            let stretch = self
+                .common(k, corners.iter().map(of))
+                .and_then(|(first, _)| self.stretches.get(k)?.get(first).copied());
+            let Some(stretch) = stretch else {
+                return plain;
+            };
+            let width = stretch.to - stretch.from;
+            let shares: f64 = corners
+                .iter()
+                .map(|c| {
+                    let t = ((of(c) - stretch.from) / width).clamp(0.0, 1.0);
+                    moebius(1.0 / stretch.pace, t)
+                })
+                .sum();
+            let even = stretch.from + width * moebius(stretch.pace, shares / count);
+            // (A pace that gives no number: the plain middle.)
+            if even.is_finite() { even } else { plain }
+        };
+        (middle(0, &|c| c.0), middle(1, &|c| c.1))
+    }
+}
 
 /// A stretch of one parameter and the pace it is drawn at.
 #[derive(Clone, Copy, Debug)]
@@ -116,6 +245,23 @@ struct Stretch {
 struct Piece {
     patch: RationalBezierPatch,
     need: (f64, f64),
+    /// Whether it asks for one cell because it is flat ([`flat`]).
+    flat: bool,
+}
+
+impl Piece {
+    fn of(patch: RationalBezierPatch, tolerance: f64) -> Piece {
+        let flat = flat(&patch, tolerance);
+        Piece {
+            need: if flat {
+                (1.0, 1.0)
+            } else {
+                need(&patch, tolerance)
+            },
+            patch,
+            flat,
+        }
+    }
 }
 
 /// The Möbius map of [`Stretch::pace`].
@@ -123,24 +269,29 @@ fn moebius(pace: f64, s: f64) -> f64 {
     pace * s / ((1.0 - s) + pace * s)
 }
 
-/// Whether the net of `patch`, and so the patch, lies in a slab thinner
-/// than `tolerance`: between two planes square to the cross product of
-/// the diagonals of its corners.
-fn flat(patch: &RationalBezierPatch, tolerance: f64) -> bool {
+/// The four corners of the net of `patch`: at the start of both
+/// parameters, at the end of v, at the end of u, at the end of both.
+fn corners(patch: &RationalBezierPatch) -> Option<[Vec3; 4]> {
     let (m, n) = patch.degrees();
     let corner = |i: usize, j: usize| patch.control_point(i * (n + 1) + j);
-    let (Some(p00), Some(p0n), Some(pm0), Some(pmn)) =
-        (corner(0, 0), corner(0, n), corner(m, 0), corner(m, n))
-    else {
-        return false;
-    };
+    Some([corner(0, 0)?, corner(0, n)?, corner(m, 0)?, corner(m, n)?])
+}
+
+/// Whether `points` lie in a slab thinner than `tolerance`: between two
+/// planes square to the cross product of the diagonals of the quadrangle
+/// `[p00, p0n, pm0, pmn]`.
+fn in_a_slab(
+    [p00, p0n, pm0, pmn]: [Vec3; 4],
+    points: impl Iterator<Item = Vec3>,
+    tolerance: f64,
+) -> bool {
     let Some(normal) = (pmn - p00).cross(p0n - pm0).normalized() else {
         return false;
     };
     let (mut low, mut high) = (0.0_f64, 0.0_f64);
-    for point in patch.points() {
+    for point in points {
         let height = (point - p00).dot(normal);
-        // (Negated: a height that is not a number is not flat.)
+        // (A height that is not a number is not flat.)
         if !height.is_finite() {
             return false;
         }
@@ -150,13 +301,44 @@ fn flat(patch: &RationalBezierPatch, tolerance: f64) -> bool {
     high - low <= tolerance
 }
 
-/// The cells `patch` asks for along u and along v: one each where it is
-/// flat, else those of the bound on its second derivatives as it is
-/// drawn (infinite without a bound).
+/// Whether the net of `patch`, and so the patch, lies in a slab thinner
+/// than `tolerance`, square to the diagonals of its corners.
+fn flat(patch: &RationalBezierPatch, tolerance: f64) -> bool {
+    corners(patch).is_some_and(|quad| in_a_slab(quad, patch.points(), tolerance))
+}
+
+/// Whether the nets of all of `pieces` (rows along u) lie in one slab
+/// thinner than `tolerance`, square to the diagonals of the corners of
+/// the whole.
+fn all_flat(pieces: &[Vec<Piece>], tolerance: f64) -> bool {
+    let corner = |row: Option<&Vec<Piece>>, last: bool, which: usize| -> Option<Vec3> {
+        let row = row?;
+        let piece = if last { row.last()? } else { row.first()? };
+        corners(&piece.patch)?.get(which).copied()
+    };
+    let (Some(p00), Some(p0n), Some(pm0), Some(pmn)) = (
+        corner(pieces.first(), false, 0),
+        corner(pieces.first(), true, 1),
+        corner(pieces.last(), false, 2),
+        corner(pieces.last(), true, 3),
+    ) else {
+        return false;
+    };
+    pieces.iter().flatten().all(|piece| piece.flat)
+        && in_a_slab(
+            [p00, p0n, pm0, pmn],
+            pieces
+                .iter()
+                .flatten()
+                .flat_map(|piece| piece.patch.points()),
+            tolerance,
+        )
+}
+
+/// The cells a `patch` that is not flat asks for along u and along v:
+/// those of the bound on its second derivatives as it is drawn (infinite
+/// without a bound).
 fn need(patch: &RationalBezierPatch, tolerance: f64) -> (f64, f64) {
-    if flat(patch, tolerance) {
-        return (1.0, 1.0);
-    }
     let Some((uu, uv, vv)) = patch_second_bounds(patch.clone(), (1.0, 1.0)) else {
         return (f64::INFINITY, f64::INFINITY);
     };
@@ -236,9 +418,9 @@ fn covered(spans: &[(f64, f64)], low: f64, high: f64) -> Vec<Part> {
     out
 }
 
-/// The lines of a grid over the box `low..high` of `surface`'s own
-/// parameters, along u and along v, graded to the surface's shape (see
-/// the module documentation): each from `low` to `high`, increasing, with
+/// The grid over the box `low..high` of `surface`'s own parameters,
+/// graded to the surface's shape (see the module documentation): its
+/// lines along u and along v, each from `low` to `high`, increasing, with
 /// at most `limit²` cells between them. `None` where no such grid is
 /// found: a surface that is drawn evenly enough (no span with weights
 /// more than [`EVEN_ENOUGH`] apart: its even grid is the one it has, and
@@ -254,7 +436,7 @@ pub(crate) fn lines(
     high: (f64, f64),
     tolerance: f64,
     limit: f64,
-) -> Option<[Vec<f64>; 2]> {
+) -> Option<Grid> {
     let usable = |x: f64| x.is_finite();
     if closed
         || !(usable(low.0) && usable(low.1) && usable(high.0) && usable(high.1))
@@ -273,6 +455,16 @@ pub(crate) fn lines(
             .is_some_and(|(lightest, heaviest)| heaviest > EVEN_ENOUGH * lightest)
     };
     if !spans.iter().any(uneven) {
+        return None;
+    }
+    let (lightest, heaviest) = spans
+        .iter()
+        .filter_map(|span| span.patch.weight_range())
+        .fold((f64::INFINITY, 0.0_f64), |(low, high), (l, h)| {
+            (low.min(l), high.max(h))
+        });
+    // (Negated: weights that are no numbers are not held.)
+    if !(lightest >= f64::MIN_POSITIVE && heaviest <= HELD * lightest) {
         return None;
     }
     // The spans are a tensor grid of knot intervals.
@@ -344,10 +536,7 @@ pub(crate) fn lines(
         .into_iter()
         .map(|row| {
             row.into_iter()
-                .map(|patch| Piece {
-                    need: need(&patch, tolerance),
-                    patch,
-                })
+                .map(|patch| Piece::of(patch, tolerance))
                 .collect()
         })
         .collect();
@@ -397,10 +586,7 @@ pub(crate) fn lines(
             let with_needs = |patches: Vec<RationalBezierPatch>| -> Vec<Piece> {
                 patches
                     .into_iter()
-                    .map(|patch| Piece {
-                        need: need(&patch, tolerance),
-                        patch,
-                    })
+                    .map(|patch| Piece::of(patch, tolerance))
                     .collect()
             };
             Some((
@@ -511,10 +697,20 @@ pub(crate) fn lines(
             .all(|w| matches!(w, [a, b] if a < b))
             .then_some(lines)
     };
-    Some([
+    let lines = [
         laid(&along_u, &across_u, low.0, high.0)?,
         laid(&along_v, &across_v, low.1, high.1)?,
-    ])
+    ];
+    let flat = pieces
+        .iter()
+        .flat_map(|row| row.iter().map(|piece| piece.flat))
+        .collect();
+    Some(Grid {
+        lines,
+        all_flat: all_flat(&pieces, tolerance),
+        stretches: [along_u, along_v],
+        flat,
+    })
 }
 
 #[cfg(test)]
@@ -523,7 +719,6 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
     use super::*;
-    use craft3d_math::Vec3;
 
     /// A plane over `[0, a] × [0, b]`, one span of `degree` each way,
     /// with the weights `cu^i cv^j corner^(i j)` (to the powers over the
@@ -561,9 +756,15 @@ mod tests {
                     [(ratio, 1.0, 1.0), (1.0, ratio, 1.0), (ratio, ratio, ratio)]
                 {
                     let surface = sheet(degree, (cu, cv), corner, 0.0);
-                    let lines =
+                    let grid =
                         lines(&surface, false, (0.0, 0.0), (1.0, 1.0), 1e-3, 1024.0).unwrap();
-                    assert_eq!(lines, [vec![0.0, 1.0], vec![0.0, 1.0]], "{degree} {ratio}");
+                    assert_eq!(
+                        grid.lines,
+                        [vec![0.0, 1.0], vec![0.0, 1.0]],
+                        "{degree} {ratio}"
+                    );
+                    // Flat: nothing between any of its places is measured.
+                    assert!(grid.flat_over(&[(0.0, 0.0), (1.0, 0.3), (0.2, 1.0)]));
                 }
             }
         }
@@ -582,12 +783,15 @@ mod tests {
         let mild = sheet(3, (EVEN_ENOUGH, 1.0), 1.0, 0.8);
         assert!(lines(&mild, false, (0.0, 0.0), (1.0, 1.0), 1e-3, 1024.0).is_none());
         let barely = sheet(3, (EVEN_ENOUGH * 1.001, 1.0), 1.0, 0.8);
-        let plain = lines(&barely, false, (0.0, 0.0), (1.0, 1.0), 1e-3, 1024.0).unwrap();
+        let plain = lines(&barely, false, (0.0, 0.0), (1.0, 1.0), 1e-3, 1024.0)
+            .unwrap()
+            .lines;
         assert!(plain[0].len() > 3 && plain[1].len() > 3, "{plain:?}");
         for ratio in [30.0, 1e3, 1e6] {
             for (cu, cv) in [(ratio, 1.0), (1.0, ratio), (ratio, 1.0 / ratio)] {
                 let drawn = sheet(3, (cu, cv), 1.0, 0.8);
-                let graded = lines(&drawn, false, (0.0, 0.0), (1.0, 1.0), 1e-3, 1024.0).unwrap();
+                let grid = lines(&drawn, false, (0.0, 0.0), (1.0, 1.0), 1e-3, 1024.0).unwrap();
+                let graded = &grid.lines;
                 assert_eq!(
                     (graded[0].len(), graded[1].len()),
                     (plain[0].len(), plain[1].len()),
@@ -634,5 +838,83 @@ mod tests {
         assert!(lines(&surface, true, (0.0, 0.0), (1.0, 1.0), 1e-3, 1024.0).is_none());
         // More cells than the limit: none, not a coarser grid.
         assert!(lines(&surface, false, (0.0, 0.0), (1.0, 1.0), 1e-12, 4.0).is_none());
+    }
+
+    /// Weights further apart than the numbers hold, or below the smallest
+    /// number with all its digits: no grid (the face is refused as it was
+    /// before there was one); as far apart as they may be: one.
+    #[test]
+    fn weights_the_numbers_do_not_hold_give_no_grid() {
+        let grid = |surface: &NurbsSurface| {
+            lines(surface, false, (0.0, 0.0), (1.0, 1.0), 1e-3, 1024.0).is_some()
+        };
+        assert!(grid(&sheet(2, (1e45, 1e45), 1.0, 0.0)));
+        assert!(grid(&sheet(2, (1e99, 1.0), 1.0, 0.0)));
+        assert!(!grid(&sheet(2, (1e101, 1.0), 1.0, 0.0)));
+        assert!(!grid(&sheet(2, (1e60, 1e60), 1.0, 0.0)));
+        assert!(!grid(&sheet(1, (1e150, 1e-150), 1.0, 0.0)));
+        // One weight of a sheet set to a number without all its digits,
+        // to nought and to no number.
+        for hostile in [5e-324, 1e-310, 0.0, f64::NAN, f64::INFINITY] {
+            let even = sheet(2, (30.0, 1.0), 1.0, 0.0);
+            let mut weights = even.weights().to_vec();
+            weights[4] = hostile;
+            let made = NurbsSurface::new(
+                2,
+                2,
+                even.knots_u().to_vec(),
+                even.knots_v().to_vec(),
+                3,
+                3,
+                even.control_points().to_vec(),
+                weights,
+            );
+            // (A surface that cannot be made has no grid either.)
+            assert!(!made.is_ok_and(|surface| grid(&surface)), "{hostile}");
+        }
+    }
+
+    /// What lies between places of a bumped sheet is measured where the
+    /// grid's pace puts their middle: for two corners of a cell, the
+    /// point of the surface that an even sheet has at the middle of its
+    /// parameters, however far the parameters of the drawn one run from
+    /// it. And nothing between places that share no piece is taken for
+    /// flat on a sheet that is not.
+    #[test]
+    fn the_middle_of_places_is_where_the_even_sheet_has_it() {
+        let barely = sheet(3, (EVEN_ENOUGH * 1.001, 1.0), 1.0, 0.8);
+        let even = lines(&barely, false, (0.0, 0.0), (1.0, 1.0), 1e-3, 1024.0).unwrap();
+        for ratio in [1e3, 1e6, 1e9] {
+            let drawn = sheet(3, (ratio, 1.0 / ratio), 1.0, 0.8);
+            let grid = lines(&drawn, false, (0.0, 0.0), (1.0, 1.0), 1e-3, 1024.0).unwrap();
+            assert!(!grid.flat(), "{ratio}");
+            for (us, ss) in grid.lines[0].windows(2).zip(even.lines[0].windows(2)) {
+                for (vs, ts) in grid.lines[1].windows(2).zip(even.lines[1].windows(2)) {
+                    let cell = [(us[0], vs[0]), (us[1], vs[0]), (us[1], vs[1])];
+                    let same = [(ss[0], ts[0]), (ss[1], ts[0]), (ss[1], ts[1])];
+                    assert!(!grid.flat_over(&cell), "{ratio}: {cell:?}");
+                    let (u, v) = grid.mate(&cell);
+                    let (s, t) = even.mate(&same);
+                    let (p, q) = (drawn.eval(u, v), barely.eval(s, t));
+                    assert!(p.distance(q) <= 1e-8, "{ratio}: {p:?} {q:?}");
+                    // The plain mean of the parameters is elsewhere.
+                    let plain = (
+                        (cell[0].0 + cell[1].0 + cell[2].0) / 3.0,
+                        (cell[0].1 + cell[1].1 + cell[2].1) / 3.0,
+                    );
+                    assert!(
+                        ratio < 1e6
+                            || (u - plain.0).abs() > 1e-3 * (us[1] - us[0])
+                            || (v - plain.1).abs() > 1e-3 * (vs[1] - vs[0]),
+                        "{ratio}: {cell:?}"
+                    );
+                }
+            }
+            // Places with no number among them: the plain middle, no panic.
+            let (u, v) = grid.mate(&[(f64::NAN, 0.5), (0.5, 0.5)]);
+            assert!(u.is_nan() && (v - 0.5).abs() <= 1e-12, "{u} {v}");
+            assert!(!grid.flat_over(&[(f64::NAN, 0.5), (0.5, 0.5)]));
+            assert!(!grid.flat_over(&[]));
+        }
     }
 }

@@ -840,3 +840,146 @@ fn the_booleans_of_twins_drawn_unevenly_mesh_on_their_closed_forms() {
         }
     }
 }
+
+/// The mesh of `body` on one thread with the work it took, in
+/// `geom::allowance` units: a count, the same on every machine.
+fn counted(body: &Body, params: &TessParams) -> (Result<Mesh, TessError>, u64) {
+    craft3d_geom::allowance::measured(|| tessellate_body_with_threads(body, params, 1))
+}
+
+/// The most work the mesh of one body of
+/// [`twins_drawn_decades_apart_end_within_their_work`] may take, in
+/// `geom::allowance` units: ten times the most it takes (25 316 688, the
+/// ring slice drawn 1e30 apart both ways, refused).
+const MOST_WORK: u64 = 250_000_000;
+
+/// The solids' twins drawn with the end weights of every span a thousand
+/// million to 1e45 apart, either way and both (the weights of a surface
+/// then up to 1e90 apart, which the graded grid still takes: `HELD` in
+/// `tess/src/graded.rs`). Each ends within [`MOST_WORK`], counted, not
+/// timed; twelve are right by their closed forms (all four a thousand
+/// million apart, and the ball zone and the ring slice 1e15 apart), the
+/// others are refused, for loops whose points the parameters no longer
+/// tell apart or for a grid too fine; none is wrong.
+#[test]
+fn twins_drawn_decades_apart_end_within_their_work() {
+    let k = 1.0;
+    let (mut right, mut refused, mut most) = (0, 0, 0_u64);
+    for (name, plain, _, _) in solids(k) {
+        let (twin, _) = rationalized(&plain, 0.2, true);
+        let exact = mass(&plain);
+        let params = TessParams {
+            chordal_tolerance: 3e-3 * k,
+            ..TessParams::default()
+        };
+        let off = |face: usize, point: Vec3| off_surface(&plain.faces[face].surface, point);
+        let to = Held {
+            off: &off,
+            volume: exact.volume,
+            volume_within: exact.area * params.chordal_tolerance,
+            tolerance: params.chordal_tolerance,
+            most: usize::MAX,
+        };
+        for (along_u, along_v) in [
+            (1e9, 1e9),
+            (1e15, 1.0),
+            (1.0, 1e15),
+            (1e15, 1e15),
+            (1e30, 1e30),
+            (1e45, 1e-45),
+            (1e45, 1e45),
+        ] {
+            let what = format!("{name}, drawn {along_u:e} by {along_v:e}");
+            let body = skewed_apart(&twin, along_u, along_v);
+            let (_, units) = counted(&body, &params);
+            most = most.max(units);
+            let verdict = judged(&body, &params, &to);
+            let line = match &verdict {
+                Ok((triangles, _, _)) => format!("{triangles} triangles"),
+                Err(Judged::Refused(why)) => format!("refused: {why}"),
+                Err(Judged::Wrong(why)) => format!("WRONG: {why}"),
+            };
+            println!("decades apart, {what}: {line}; {units} units");
+            assert!(units <= MOST_WORK, "{what}: {units} units of work");
+            match verdict {
+                Ok(_) => right += 1,
+                Err(Judged::Refused(_)) => refused += 1,
+                Err(Judged::Wrong(why)) => panic!("{what}: {why}"),
+            }
+        }
+    }
+    println!("decades apart: {right} right, {refused} refused; the most work {most} units");
+    assert_eq!((right, refused), (12, 16));
+}
+
+/// A face that cannot be meshed within its tolerance, however it is
+/// cut: the solids' twins drawn a million apart both ways, with every
+/// spline surface then grown about the axis by a hundredth and by a
+/// tenth, so that the edges, left where they were, lie off it by many
+/// tolerances. Every triangle along the border fails its measure, and
+/// each failure is a search of the whole surface for a nearer point
+/// that is not there. The face has a graded grid (its even grid asks for
+/// hundreds of millions of cells a side) and ends when it has made the
+/// searches it may, a count of its own boundary (`GRADED_SEARCHES` in
+/// `tess/src/face.rs`): refused as its even grid was, with that grid's
+/// count, in a hundredth of the work a right body of this file takes at
+/// most. (The first graded grid measured such a face without a bound.)
+#[test]
+fn a_face_whose_edges_are_off_its_surface_ends_when_out_of_work() {
+    let k = 1.0;
+    for (name, plain, _, _) in solids(k) {
+        let (twin, _) = rationalized(&plain, 0.2, true);
+        for grown in [1.01, 1.1] {
+            let mut body = skewed_apart(&twin, 1e6, 1e6);
+            for face in &mut body.faces {
+                if let Surface::Nurbs(s) = &face.surface {
+                    let (count_u, count_v) = s.counts();
+                    let (degree_u, degree_v) = s.degrees();
+                    let points: Vec<Vec3> = s
+                        .control_points()
+                        .iter()
+                        .map(|p| Vec3::new(p.x * grown, p.y * grown, p.z))
+                        .collect();
+                    face.surface = Surface::Nurbs(
+                        NurbsSurface::new(
+                            degree_u,
+                            degree_v,
+                            s.knots_u().to_vec(),
+                            s.knots_v().to_vec(),
+                            count_u,
+                            count_v,
+                            points,
+                            s.weights().to_vec(),
+                        )
+                        .unwrap(),
+                    );
+                }
+            }
+            let params = TessParams {
+                chordal_tolerance: 3e-3 * k,
+                ..TessParams::default()
+            };
+            let before = craft3d_tess::graded_grids();
+            let (made, units) = counted(&body, &params);
+            let what = format!("{name} grown {grown}");
+            println!(
+                "off its surface, {what}: {:?}; {units} units",
+                made.as_ref()
+                    .map(|m| m.triangles.len())
+                    .map_err(|e| e.to_string())
+            );
+            assert!(
+                craft3d_tess::graded_grids() > before,
+                "{what}: no graded grid"
+            );
+            assert!(
+                matches!(
+                    made,
+                    Err(TessError::TooFine { needed_segments, .. }) if needed_segments > 1e6
+                ),
+                "{what}"
+            );
+            assert!(units <= 1_000_000, "{what}: {units} units of work");
+        }
+    }
+}

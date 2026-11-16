@@ -3882,11 +3882,54 @@ struct Work<'a> {
     /// it put a point on another ([`mesh_face`]).
     strict: bool,
     /// The face has a graded grid (`graded.rs`): its parameters run
-    /// unevenly, and a point of a triangle that the few steps from its
-    /// mean parameters leave off the surface is looked for by the
-    /// surface's own search ([`Work::off_surface`]).
-    graded: bool,
+    /// unevenly, and what lies between corners is measured by the grid's
+    /// own pieces first ([`Work::off`]).
+    graded: Option<&'a GradedFace>,
+    /// On a graded face: the triangles measured and the searches of the
+    /// whole surface made so far, and the most of each the face may take
+    /// ([`GRADED_MEASURES`], [`GRADED_SEARCHES`]); past either the face
+    /// is refused ([`Work::out_of_work`]).
+    measured: std::cell::Cell<u64>,
+    searched: std::cell::Cell<u64>,
+    most_measured: u64,
+    most_searched: u64,
 }
+
+/// A face with a graded grid: the grid, and the refusal of its even grid,
+/// which is what the face is refused with where its graded mesh is not
+/// made within its work.
+pub(crate) struct GradedFace {
+    grid: crate::graded::Grid,
+    refused: TessError,
+}
+
+/// How many triangles a graded face may have measured, per cell of its
+/// grid and point of its boundary ([`GRADED_MEASURES`]), and at least
+/// ([`GRADED_MEASURES_AT_LEAST`]); see [`Work::out_of_work`]. A graded
+/// grid is right as it is laid: its cells are within the tolerance by
+/// their own bound or by their slab, and the refinement after it mends
+/// the triangles along the boundary. Measured (2026-11-16) on the 2 096
+/// graded faces that the bodies of `crates/kernel/tests/rational_mesh.rs`
+/// and `rational_wild.rs` mesh right: at most 5.85 a cell and boundary
+/// point, 1 729 on one face. A face past it is one whose triangles do not
+/// come to face the surface's way between its chords, each cut making
+/// more of them (a quarter more a round, measured).
+const GRADED_MEASURES: u64 = 64;
+/// See [`GRADED_MEASURES`].
+const GRADED_MEASURES_AT_LEAST: u64 = 4096;
+
+/// How many searches of the whole surface for the nearest point a graded
+/// face may make, per point of its boundary ([`GRADED_SEARCHES`]), and at
+/// least ([`GRADED_SEARCHES_AT_LEAST`]). A search is made only for a
+/// point between corners that share no flat piece, whose place by the
+/// grid's pace and the steps from it are both off the surface: a triangle
+/// along a trimmed border, before it is cut. Measured on the same faces:
+/// none on 2 019 of them, and at most 24 on a face, one for every ten
+/// points of its boundary. A face past it is one whose edges do not lie
+/// on its surface.
+const GRADED_SEARCHES: u64 = 4;
+/// See [`GRADED_SEARCHES`].
+const GRADED_SEARCHES_AT_LEAST: u64 = 64;
 
 impl Work<'_> {
     fn plane(&self, uv: Uv) -> P2 {
@@ -3960,19 +4003,76 @@ impl Work<'_> {
     fn off_surface(&self, uv: Uv, target: Vec3) -> f64 {
         let off = self.param.eval(uv).distance(target);
         if off <= self.tolerance {
+            off
+        } else {
+            distance_to_surface(&self.param, uv, target)
+        }
+    }
+
+    /// How far `target`, the middle of the chord or of the triangle on
+    /// `corners`, is from the surface: [`Work::off_surface`] at the
+    /// corners' mean parameters, on every face but a graded one.
+    ///
+    /// On a graded face the parameters race, and their mean is nowhere
+    /// near the foot of `target`; what is known there is the grid. So, in
+    /// this order, each only where the one before does not settle it:
+    ///
+    /// 1. corners that share a piece that is flat within the tolerance:
+    ///    nothing to measure, the piece and everything between points of
+    ///    it lie in one slab thinner than the tolerance
+    ///    (`Grid::flat_over`). A plane, however it is drawn, is measured
+    ///    nowhere.
+    /// 2. the surface at the middle of the corners in the pace the grid
+    ///    draws them at (`Grid::mate`): for a cell of the grid, the place
+    ///    its bound speaks of.
+    /// 3. a few steps from there ([`distance_to_surface`]).
+    /// 4. the surface's own search for the nearest point
+    ///    (`Surface::project`), which goes on where its walks end short:
+    ///    for what the grid knows nothing of, a triangle along a border
+    ///    that crosses the pieces. Counted: past the face's allowance
+    ///    ([`GRADED_SEARCHES`]) none is made, and the face is out of work
+    ///    ([`Work::out_of_work`]).
+    fn off(&self, corners: &[(Uv, Vec3, Option<usize>)], target: Vec3) -> f64 {
+        let Some(graded) = self.graded else {
+            return self.off_surface(Self::mean(corners), target);
+        };
+        let places: Vec<(f64, f64)> = corners.iter().map(|c| self.param.raw(c.0)).collect();
+        if graded.grid.flat_over(&places) {
+            return 0.0;
+        }
+        let (u, v) = graded.grid.mate(&places);
+        let uv = self.param.order(u, v);
+        let off = self.param.eval(uv).distance(target);
+        if off <= self.tolerance {
             return off;
         }
         let near = distance_to_surface(&self.param, uv, target);
-        if !self.graded || near <= self.tolerance {
+        if near <= self.tolerance {
             return near;
         }
-        // Where the parameters race, the mean parameters are nowhere near
-        // the foot and a few steps from them end short of it: the
-        // surface's own search, which goes on where its walks end short.
+        if self.searched.get() >= self.most_searched {
+            // (One more than it may: out of work.)
+            self.searched.set(self.most_searched.saturating_add(1));
+            return near;
+        }
+        self.searched.set(self.searched.get().saturating_add(1));
         match self.param.project(target) {
             Ok(foot) => near.min(self.param.eval(foot).distance(target)),
             Err(_) => near,
         }
+    }
+
+    /// Whether a graded face has measured more triangles, or searched its
+    /// surface more often, than it may: its mesh is then not made, and
+    /// the face is refused as its even grid was. Counts of the face
+    /// alone, the same on every machine and thread: a surface whose
+    /// weights make every search dear and every measure fail (weights at
+    /// the ends of what a number holds) ends here, in the time a face of
+    /// its size takes.
+    fn out_of_work(&self) -> bool {
+        self.graded.is_some()
+            && (self.measured.get() > self.most_measured
+                || self.searched.get() > self.most_searched)
     }
 
     /// Measures triangle `t` (see the module documentation).
@@ -3980,6 +4080,7 @@ impl Work<'_> {
         let Some(view) = self.cdt.triangle(t).filter(|view| view.inside) else {
             return Action::Keep;
         };
+        self.measured.set(self.measured.get().saturating_add(1));
         let [Some(a), Some(b), Some(c)] = view.v.map(|v| self.vertex(v)) else {
             return Action::Keep;
         };
@@ -4005,7 +4106,7 @@ impl Work<'_> {
             }
             let ends = pair(i);
             let [p, q] = ends;
-            let off = self.off_surface(Self::mean(&ends), p.1.lerp(q.1, 0.5));
+            let off = self.off(&ends, p.1.lerp(q.1, 0.5));
             // NaN counts as failing: it ends in an error, not a bad mesh.
             if exceeds(off, self.tolerance) && worst.is_none_or(|(w, _)| exceeds(off, w)) {
                 worst = Some((off, i));
@@ -4016,7 +4117,7 @@ impl Work<'_> {
         }
         let middle = Self::mean(&corners);
         let centroid = (a.1 + b.1 + c.1) * (1.0 / 3.0);
-        let off = self.off_surface(middle, centroid);
+        let off = self.off(&corners, centroid);
         if exceeds(off, self.tolerance) {
             return Action::SplitTriangle;
         }
@@ -4794,7 +4895,7 @@ pub(crate) struct Boundary<'a> {
     /// The warp is the grid of a spline face whose even grid is refused
     /// as too fine, graded to its shape (`graded.rs`): the face has no
     /// other grid, and is triangulated in that plane alone.
-    graded: bool,
+    graded: Option<GradedFace>,
     scale: Uv,
     /// How much further than lengths in space the plane is scaled, per
     /// parameter: 1 but where it is the plane of the grid (see
@@ -4999,7 +5100,7 @@ impl Boundary<'_> {
                 // there is its own curve, by its edge; a triangle that
                 // cannot stand on it asks for it, as on any face,
                 // `mesh_face`'s `ask`.)
-                let off = if self.graded {
+                let off = if self.graded.is_some() {
                     0.0
                 } else {
                     distance_to_chord(image, p.pos, q.pos)
@@ -5025,7 +5126,7 @@ impl Boundary<'_> {
                 // sag, towards the axis, and beside nothing; one that
                 // cuts the corner of a curve in the surface is beside it.
                 let (_, [da, db]) = self.param.derivatives(middle);
-                if !self.graded
+                if self.graded.is_none()
                     && let Some(normal) = da.cross(db).normalized()
                 {
                     let along = |v: Vec3| (v - normal * v.dot(normal)).length();
@@ -5345,7 +5446,7 @@ pub(crate) fn face_boundary<'a>(
     let tolerance = params.chordal_tolerance;
     let (mut param, mut region, mut low, mut high, mut span) =
         placed(body, edges, face, index, params, starved, borders, false)?;
-    let mut graded: Option<[Vec<f64>; 2]> = None;
+    let mut graded: Option<GradedFace> = None;
     let cells = if param.is_plane() {
         [1, 1]
     } else {
@@ -5378,7 +5479,7 @@ pub(crate) fn face_boundary<'a>(
                     ),
                     _ => None,
                 };
-                let Some(mut lines) = lines else {
+                let Some(mut grid) = lines else {
                     return Err(too_fine);
                 };
                 // Its loops once more, with a parameter free at a pole
@@ -5394,28 +5495,51 @@ pub(crate) fn face_boundary<'a>(
                     &mut scratch,
                     borders,
                     true,
-                ) && let Surface::Nurbs(spline) = &face.surface
-                    && let Some(paced) = crate::graded::lines(
-                        spline,
-                        again.0.closure.wrap.iter().any(Option::is_some),
-                        again.0.raw(again.2),
-                        again.0.raw(again.3),
-                        tolerance,
-                        f64::from(params.max_segments),
-                    )
+                ) && again.1.doubt.is_none()
+                    && let Surface::Nurbs(spline) = &face.surface
                 {
-                    (param, region, low, high, span) = again;
-                    lines = paced;
+                    // (Over the same box, as the loops of a face without
+                    // a pole are: the grid made for it.)
+                    let (again_low, again_high) = (again.0.raw(again.2), again.0.raw(again.3));
+                    let closes = again.0.closure.wrap.iter().any(Option::is_some);
+                    let same = !closes && (again_low, again_high) == (raw_low, raw_high);
+                    let paced = if same {
+                        None
+                    } else {
+                        crate::graded::lines(
+                            spline,
+                            closes,
+                            again_low,
+                            again_high,
+                            tolerance,
+                            f64::from(params.max_segments),
+                        )
+                    };
+                    if let Some(paced) = paced {
+                        (param, region, low, high, span) = again;
+                        grid = paced;
+                    } else if same {
+                        (param, region, low, high, span) = again;
+                    }
                 }
-                let [along_u, along_v] = lines;
+                // (A region in doubt is refused when it is meshed, with
+                // what was doubted of it in a plane the even grid never
+                // came to: refused as before.)
+                if region.doubt.is_some() {
+                    return Err(too_fine);
+                }
                 let count = |lines: &[f64]| {
                     u32::try_from(lines.len().saturating_sub(1))
                         .unwrap_or(u32::MAX)
                         .max(1)
                 };
-                let cells = param.order(count(&along_u), count(&along_v));
+                let [along_u, along_v] = &grid.lines;
+                let cells = param.order(count(along_u), count(along_v));
                 GRADED_GRIDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                graded = Some(param.order(along_u, along_v));
+                graded = Some(GradedFace {
+                    grid,
+                    refused: too_fine,
+                });
                 cells
             }
             Err(other) => return Err(other),
@@ -5504,9 +5628,11 @@ pub(crate) fn face_boundary<'a>(
         0.5 * (get2(low, 0) + get2(high, 0)),
         0.5 * (get2(low, 1) + get2(high, 1)),
     ];
-    let is_graded = graded.is_some();
-    let warp = match graded {
-        Some(lines) => Some(graded_warp(lines, centre)),
+    let warp = match &graded {
+        Some(face) => {
+            let [along_u, along_v] = face.grid.lines.clone();
+            Some(graded_warp(param.order(along_u, along_v), centre))
+        }
         None if param.is_freeform() => angle_warp(&param, low, high, centre, cells, params),
         None => None,
     };
@@ -5518,7 +5644,7 @@ pub(crate) fn face_boundary<'a>(
         cells,
         step,
         warp,
-        graded: is_graded,
+        graded,
         scale,
         stretch,
         centre,
@@ -5601,9 +5727,18 @@ fn mesh_face_planes(
     if boundary.warp.is_none() {
         return mesh_face_in(boundary, face, index, params, splits, ask, false, strict);
     }
-    if boundary.graded {
-        // The graded grid is the face's only one.
-        return mesh_face_in(boundary, face, index, params, splits, ask, true, strict);
+    if let Some(graded) = &boundary.graded {
+        // The graded grid is the face's only one. Where the triangles of
+        // a face that is flat cannot follow its chords in the plane of
+        // that grid (a sheet whose weights no pace of either parameter
+        // evens out), the chords are asked for as on any face, but what
+        // is said of the face is not that its surface turns away from
+        // them, which a flat one does not: it is refused as its even
+        // grid was.
+        return match mesh_face_in(boundary, face, index, params, splits, ask, true, strict) {
+            Err(TessError::Face { .. }) if graded.grid.flat() => Err(graded.refused.clone()),
+            done => done,
+        };
     }
     // The plane of the warp first. Where it fails for chords of the edges
     // that its triangles cannot follow (along a nose that turns within a
@@ -5658,7 +5793,7 @@ fn mesh_face_in(
     // `Boundary::chords_to_refine`; they end up shorter than they stray.
     // Not on a face with a graded grid, whose parameters race: its
     // surface is one that does not close, `graded.rs`.)
-    if !param.is_plane() && !boundary.graded {
+    if !param.is_plane() && boundary.graded.is_none() {
         for (n, &(i, j)) in region.segs.iter().enumerate() {
             let Some((edge, _)) = region.chords.get(n).copied().flatten() else {
                 continue;
@@ -5710,6 +5845,13 @@ fn mesh_face_in(
             }
             CdtError::TooSlow => SLOW_TRIANGULATION,
         };
+        // On a graded face these are said of its boundary in the plane of
+        // the graded grid, where cells of no width on a surface whose
+        // weights the numbers do not hold bring two points to one place:
+        // not of the face, which is refused as its even grid was.
+        if let Some(graded) = &boundary.graded {
+            return graded.refused.clone();
+        }
         TessError::Face {
             face: index,
             reason: reason.into(),
@@ -5746,7 +5888,11 @@ fn mesh_face_in(
         angle_floor: crate::ANGLE_FLOOR * tolerance,
         normals: Vec::new(),
         strict,
-        graded: boundary.graded,
+        graded: boundary.graded.as_ref(),
+        measured: std::cell::Cell::new(0),
+        searched: std::cell::Cell::new(0),
+        most_measured: u64::MAX,
+        most_searched: u64::MAX,
     };
     // With a triangle budget, the face stops as soon as it is certain to
     // have more triangles than that on its own. The count it gives is
@@ -5799,6 +5945,10 @@ fn mesh_face_in(
             None => work.record(id, v.uv, v.pos, v.free).map_err(explain)?,
             Some((_, pos, _)) => {
                 if pos != v.pos {
+                    // (In the plane of a graded grid: see `explain`.)
+                    if let Some(graded) = &boundary.graded {
+                        return Err(graded.refused.clone());
+                    }
                     return fail(
                         index,
                         "its boundary passes twice through one place on the surface with \
@@ -5966,6 +6116,26 @@ fn mesh_face_in(
     }
     // What was added so far is the boundary.
     let boundary_vertices = work.uv.len();
+    // What a graded face may measure and search: by its own size.
+    let (across, along) = (
+        u64::from(get2(cells, 0).max(1)),
+        u64::from(get2(cells, 1).max(1)),
+    );
+    let points = across
+        .saturating_mul(along)
+        .saturating_add(boundary_vertices as u64);
+    work.most_measured = GRADED_MEASURES
+        .saturating_mul(points)
+        .max(GRADED_MEASURES_AT_LEAST);
+    work.most_searched = GRADED_SEARCHES
+        .saturating_mul(boundary_vertices as u64)
+        .max(GRADED_SEARCHES_AT_LEAST);
+    // A graded face out of work is refused as its even grid was (but see
+    // where it is asked: for chords of edges first).
+    let refused = |work: &Work| -> Option<TessError> {
+        let graded = work.graded.filter(|_| work.out_of_work())?;
+        Some(graded.refused.clone())
+    };
 
     if !work.param.is_plane() {
         // Seed with the grid, away from the boundary: a point just inside
@@ -6063,6 +6233,20 @@ fn mesh_face_in(
                         }
                     }
                     action => failing.push((t, view.generation, action)),
+                }
+                // A graded face out of work. As a face whose refinement
+                // ends on its own: where its failing triangles stand on
+                // or against chords of edges (too coarse for triangles
+                // to face the surface's way between them), those are
+                // asked for, and the face is meshed again on finer ones;
+                // else it is refused.
+                if let Some(refused) = refused(&work) {
+                    let stuck: Vec<usize> = failing
+                        .iter()
+                        .map(|&(t, ..)| t)
+                        .take(STUCK_LOOKED_AT)
+                        .collect();
+                    return Err(along_chords(&work, &stuck, ask).unwrap_or(refused));
                 }
             }
             if failing.is_empty() {
