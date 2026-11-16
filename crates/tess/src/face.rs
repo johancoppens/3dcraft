@@ -3887,8 +3887,8 @@ struct Work<'a> {
     graded: Option<&'a GradedFace>,
     /// On a graded face: the triangles measured and the searches of the
     /// whole surface made so far, and the most of each the face may take
-    /// ([`GRADED_MEASURES`], [`GRADED_SEARCHES`]); past either the face
-    /// is refused ([`Work::out_of_work`]).
+    /// ([`GRADED_MEASURES`], [`GRADED_SEARCHES`]); past either its mesh
+    /// is not made ([`Work::out_of_work`]).
     measured: std::cell::Cell<u64>,
     searched: std::cell::Cell<u64>,
     most_measured: u64,
@@ -4063,12 +4063,14 @@ impl Work<'_> {
     }
 
     /// Whether a graded face has measured more triangles, or searched its
-    /// surface more often, than it may: its mesh is then not made, and
-    /// the face is refused as its even grid was. Counts of the face
-    /// alone, the same on every machine and thread: a surface whose
-    /// weights make every search dear and every measure fail (weights at
-    /// the ends of what a number holds) ends here, in the time a face of
-    /// its size takes.
+    /// surface more often, than it may: its mesh is then not made. It
+    /// asks for the chords its failing triangles stand on, where there
+    /// are such, and else is refused as its even grid was
+    /// (`mesh_face_in`). Counts of the face alone, the same on every
+    /// machine and thread: a face whose every measure fails and whose
+    /// every search is dear (edges that do not lie on its surface;
+    /// triangles that do not come to face the surface's way) ends here,
+    /// in the time a face of its size takes.
     fn out_of_work(&self) -> bool {
         self.graded.is_some()
             && (self.measured.get() > self.most_measured
