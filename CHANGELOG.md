@@ -4,9 +4,18 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-16
+
+One fix: the window no longer closes when the graphics card cannot keep up with the studio look, which happened on Windows computers with older Intel graphics, the ones 0.1.2 draws through OpenGL on. Files of 0.1.0, 0.1.1 and 0.1.2 open unchanged.
+
 ### Fixed
 
-- **The window no longer closes when the graphics card cannot keep up with the studio look** (seen on Windows, with older Intel graphics drawing through OpenGL). There, a minute after the studio look was switched on for a large model, 3DCraft closed without a word. The graphics library stopped the program when the card did not finish a picture within two seconds; 3DCraft now catches such errors on every system and carries on. The studio look is then turned off for the rest of the session, a bar under the menu says so, and the window keeps working in the plain look. Where preparing the studio look takes long (OpenGL), the viewport says *Preparing the studio look…* before the window stops answering for that time.
+- **The window no longer closes when the graphics card cannot keep up with the studio look** (seen on Windows, with older Intel graphics drawing through OpenGL). There, a minute after the studio look was switched on for a large model, 3DCraft closed without a word: the graphics library stopped the program when the card did not finish a picture within about two seconds. 3DCraft now catches such errors on every system and carries on. When the graphics card reports an error while the studio look is on, the look is turned off for the rest of the session, a bar under the menu says so, and the window keeps working in the plain look. When 3DCraft draws through OpenGL, the viewport says *Preparing the studio look…* the first time the studio look is switched on, because preparing it can take a minute there and the window does not answer meanwhile.
+
+### Known limitations
+
+- On a computer whose graphics card cannot finish the studio look's pictures in time (measured: Intel UHD Graphics 615 with a driver of 2020, drawing through OpenGL), the studio look is not available for a large model: it is turned off for the session and the plain look is shown. A small model is drawn in the studio look there. Preparing the studio look still holds the window for up to a minute on such a computer, after the viewport said so.
+- The known limitations of [0.1.2](https://github.com/johancoppens/3dcraft/releases/tag/v0.1.2) and of [0.1.0](https://github.com/johancoppens/3dcraft/releases/tag/v0.1.0) still hold.
 
 ## [0.1.2] - 2026-11-16
 
@@ -156,7 +165,8 @@ The first release for people outside the project. 3DCraft is a parametric 3D CAD
 - An AI agent cannot drive the web version yet.
 - Some modelling cases are refused rather than built (the message says which): among them some booleans and freeform fillets, curved sheet-metal bends along a spline and some sharp ones, curved origami creases, and text wrapped onto a surface other than a cylinder or a cone. Text is laid out glyph by glyph with kerning; shaping for complex scripts (such as Arabic or the Indic scripts) is for a later version. Every refusal reported helps.
 
-[Unreleased]: https://github.com/johancoppens/3dcraft/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/johancoppens/3dcraft/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/johancoppens/3dcraft/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/johancoppens/3dcraft/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/johancoppens/3dcraft/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/johancoppens/3dcraft/releases/tag/v0.1.0
