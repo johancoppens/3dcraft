@@ -570,9 +570,16 @@ jobs:
       - uses: actions/checkout@v5
         with:
           path: src
+      # The packages only: the artifacts `3dcraft-linux`, `3dcraft-macos`,
+      # `3dcraft-windows` and `3dcraft-web`, not the Windows tour's trace
+      # (`tour-windows`, a folder with a trace, pictures and a state
+      # folder), which no release carries. Without a pattern every artifact
+      # of the run is downloaded: at the tag v0.1.2 the tour's `state`
+      # folder stopped the checksums and the draft was made by hand.
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: 3dcraft-*
           merge-multiple: true
       # The release notes are CHANGELOG.md's section for the tag: from its
       # `## [<version>]` heading to the next heading of that level or the
@@ -592,10 +599,54 @@ jobs:
           printf '\nThe installers are not signed yet; [the install guide](https://github.com/%s/blob/%s/docs/guide/install.md) says what your system shows and how to open them anyway.\n' \
             "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" >> notes.md
           cat notes.md
+      # dist/ must hold the seven packages of this version as regular files
+      # and nothing else (the web job's own SHA256SUMS.txt, over its zip, is
+      # replaced by the release's): a folder, a link, a file that is no
+      # package or a package that is missing stops the draft here, with
+      # what dist/ holds, rather than being attached to the release.
       - name: checksums
         run: |
+          version="${GITHUB_REF_NAME#v}"
           cd dist
           rm -f SHA256SUMS.txt
+          expected=(
+            "3dcraft-$version-x86_64-linux.tar.gz"
+            "3DCraft-$version-x86_64.AppImage"
+            "3DCraft-$version-x86_64.AppImage.zsync"
+            "3DCraft-$version-aarch64.dmg"
+            "3dcraft-$version-x86_64-windows.zip"
+            "3DCraft-$version-x86_64.msi"
+            "3dcraft-web-$version.zip"
+          )
+          bad=0
+          while IFS= read -r -d '' entry; do
+            name="${entry#./}"
+            if [ -L "$entry" ] || [ ! -f "$entry" ]; then
+              echo "::error::dist/$name is not a regular file: a downloaded artifact is no package"
+              bad=1
+              continue
+            fi
+            known=0
+            for want in "${expected[@]}"; do
+              if [ "$name" = "$want" ]; then known=1; fi
+            done
+            if [ "$known" = 0 ]; then
+              echo "::error::dist/$name is not one of the packages of $version"
+              bad=1
+            fi
+          done < <(find . -mindepth 1 -maxdepth 1 -print0 | LC_ALL=C sort -z)
+          for want in "${expected[@]}"; do
+            if [ ! -f "$want" ]; then
+              echo "::error::dist/$want is missing"
+              bad=1
+            fi
+          done
+          if [ "$bad" != 0 ]; then
+            echo "dist/ holds:" >&2
+            ls -la >&2
+            echo "the draft is not made: dist/ must hold the ${#expected[@]} packages of $version and nothing else" >&2
+            exit 1
+          fi
           sha256sum -- * > ../SHA256SUMS.txt
           mv ../SHA256SUMS.txt .
           cat SHA256SUMS.txt
