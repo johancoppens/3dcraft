@@ -364,6 +364,7 @@ fn hold(size: Vec3, seed: u64, refused: Option<&str>, deadline: u64) -> f64 {
             if let Err(why) = polygons_judge(&made, &box_sd, volume, 1e-6) {
                 panic!("block {size:?} seed {seed}: not the closed form: {why}");
             }
+            assert_eq!(remade, 0, "seed {seed}: pieces made again");
         }
         (Err(e), Some(text)) => assert!(e.contains(text), "seed {seed}: {e}"),
         (made, want) => panic!(
@@ -371,7 +372,6 @@ fn hold(size: Vec3, seed: u64, refused: Option<&str>, deadline: u64) -> f64 {
             if made.is_ok() { "built" } else { "refused" }
         ),
     }
-    assert_eq!(remade, 0, "seed {seed}: pieces made again");
     took
 }
 
@@ -394,18 +394,23 @@ fn the_intersections_of_a_square_weighted_block_end_and_are_right() {
     }
 }
 
-/// The long block's seeds 1 and 3, built and the closed form, and the
-/// square block's and the long block's with a store of the old size, each
-/// in a process of its own that ends at its deadline: the seconds before
-/// and after. By hand, in release (see the top of this file).
+const TOO_MUCH: &str = "it needs more work than one operation is allowed";
+
+/// The long block's seeds 1 and 3, built and the closed form, its seed 4
+/// refused at the bound on an operation's work (it asks for more:
+/// counted work, the windings about the points of its long faces'
+/// covers), and the square block's and the long block's with a store of
+/// the old size, each in a process of its own that ends at its deadline:
+/// the seconds before and after. By hand, in release (see the top of
+/// this file).
 #[test]
 #[ignore = "minutes: the long blocks, and the old store in processes of their own"]
 fn the_long_weighted_blocks_and_the_old_store() {
     let long = Vec3::new(30.0, 900.0, 20.0);
     let square = Vec3::new(30.0, 30.0, 20.0);
     let mut after = Vec::new();
-    for seed in [1, 3] {
-        after.push((long, seed, hold(long, seed, None, 600)));
+    for (seed, refused) in [(1, None), (3, None), (4, Some(TOO_MUCH))] {
+        after.push((long, seed, hold(long, seed, refused, 900)));
     }
     let deadline = 120;
     for (size, seed) in [(square, 1), (square, 3), (square, 4), (long, 1), (long, 3)] {

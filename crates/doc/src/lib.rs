@@ -1565,6 +1565,38 @@ impl Thread {
     }
 }
 
+/// A flat end face of the body of an earlier feature replaced by faces
+/// that close the body in one point (docs/design/sweeps.md › *A tip on a
+/// body*): one per edge of the end face, each running on from the side
+/// behind that edge. The body goes into this feature.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tip {
+    /// The end face, by name.
+    pub face: PersistentName,
+    /// How far beyond the end the point lies, along the end's outward
+    /// normal; `None` for the length chosen at every regeneration: the
+    /// radius of the circle with the end's area, and never more than
+    /// half the length at which the sides close in.
+    #[serde(default)]
+    pub length: Option<Expr>,
+    /// Where the point stands over the end, as lengths along the end
+    /// face's own x and y axes from its plane's origin; `None` for the
+    /// centre of area of what the sides are carried on to.
+    #[serde(default)]
+    pub at: Option<[Expr; 2]>,
+    /// The conic's `ρ`, a plain number from 0.01 to 0.98; `None` for
+    /// `√2 − 1` (about 0.4142), quarter ellipses.
+    #[serde(default)]
+    pub fullness: Option<Expr>,
+}
+
+impl Tip {
+    /// The feature whose body the face is of: the one that made it.
+    pub fn source(&self) -> FeatureId {
+        self.face.feature
+    }
+}
+
 /// The size of a thread, when it is given.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -1608,6 +1640,7 @@ pub enum FeatureKind {
     Shell(Shell),
     DeleteFace(DeleteFace),
     Thread(Thread),
+    Tip(Tip),
     OffsetProfile(OffsetProfile),
     Fill(Fill),
     Split(Split),
@@ -1654,6 +1687,7 @@ impl FeatureKind {
             FeatureKind::Shell(_) => "shell",
             FeatureKind::DeleteFace(_) => "deleteFace",
             FeatureKind::Thread(_) => "thread",
+            FeatureKind::Tip(_) => "tip",
             FeatureKind::OffsetProfile(_) => "offsetProfile",
             FeatureKind::Fill(_) => "fill",
             FeatureKind::Split(_) => "split",
@@ -1785,6 +1819,7 @@ impl FeatureKind {
             FeatureKind::Shell(s) => Some((s.source, false)),
             FeatureKind::DeleteFace(d) => d.source().map(|id| (id, false)),
             FeatureKind::Thread(t) => Some((t.source(), false)),
+            FeatureKind::Tip(t) => Some((t.source(), false)),
             FeatureKind::Split(s) => Some((s.source, false)),
             // The faces' body stays: the pattern is a body of its own.
             FeatureKind::Unfold(u) => u.source().map(|id| (id, true)),
@@ -2071,6 +2106,22 @@ impl FeatureKind {
                 }
                 out.push(named("length", &t.length));
             }
+            FeatureKind::Tip(t) => {
+                out = Vec::new();
+                if let Some(length) = &t.length {
+                    out.push(named("length", length));
+                }
+                if let Some(at) = &t.at {
+                    out.extend(
+                        at.iter()
+                            .zip(["x", "y"])
+                            .map(|(e, axis)| (format!("at.{axis}"), e)),
+                    );
+                }
+                if let Some(fullness) = &t.fullness {
+                    out.push(named("fullness", fullness));
+                }
+            }
             FeatureKind::Chamfer(c) => {
                 out = match &c.size {
                     ChamferSize::Equal { distance } => vec![named("size.distance", distance)],
@@ -2239,6 +2290,12 @@ impl FeatureKind {
                 out.push(&mut t.length);
                 out
             }
+            FeatureKind::Tip(t) => t
+                .length
+                .iter_mut()
+                .chain(t.at.iter_mut().flat_map(|at| at.iter_mut()))
+                .chain(t.fullness.iter_mut())
+                .collect(),
             FeatureKind::Chamfer(c) => match &mut c.size {
                 ChamferSize::Equal { distance } => vec![distance],
                 ChamferSize::TwoDistances { distance, second } => vec![distance, second],
@@ -2742,6 +2799,7 @@ impl Document {
                 FeatureKind::Thread(thread) => vec![&thread.face, &thread.start],
                 FeatureKind::Sweep(sweep) => sweep.up.iter().flat_map(AxisRef::names).collect(),
                 FeatureKind::Split(split) => vec![&split.face],
+                FeatureKind::Tip(tip) => vec![&tip.face],
                 FeatureKind::SurfaceNetwork(n) => {
                     let mut names = Vec::new();
                     if n.u.len() > MAX_NETWORK_CURVES || n.v.len() > MAX_NETWORK_CURVES {
@@ -4207,5 +4265,32 @@ mod tests {
                 serde_json::json!(unit.symbol())
             );
         }
+    }
+
+    /// A tip's face is a name held to the rules of names when a document
+    /// is checked, as a thread's and a split's are.
+    #[test]
+    fn a_tip_s_face_is_held_to_the_rules_of_names() {
+        let mut doc = sample();
+        let tipped = |face: PersistentName| {
+            FeatureKind::Tip(Tip {
+                face,
+                length: None,
+                at: None,
+                fullness: None,
+            })
+        };
+        let good = PersistentName::new(FeatureId(1), NameRole::Face, vec![1]);
+        doc.add_feature(Some("Nose"), tipped(good)).unwrap();
+        assert!(doc.validate().is_ok());
+        // A tip role with no side after it is no name.
+        let bad = PersistentName::new(FeatureId(1), NameRole::Tip, vec![0]);
+        let mut wrong = sample();
+        wrong.add_feature(Some("Nose"), tipped(bad)).unwrap();
+        let error = wrong.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("Nose") && error.contains("not a name"),
+            "{error}"
+        );
     }
 }

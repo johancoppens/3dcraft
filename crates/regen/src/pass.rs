@@ -140,6 +140,7 @@ fn role(kind: &FeatureKind) -> &'static str {
         | FeatureKind::DeleteFace(_)
         | FeatureKind::Thicken(_)
         | FeatureKind::Plate(_) => "faces",
+        FeatureKind::Tip(_) => "face",
         _ => "source",
     }
 }
@@ -224,7 +225,8 @@ pub(crate) fn operand_absent(
         | FeatureKind::MoveFace(_)
         | FeatureKind::Draft(_)
         | FeatureKind::DeleteFace(_)
-        | FeatureKind::Thread(_) => {
+        | FeatureKind::Thread(_)
+        | FeatureKind::Tip(_) => {
             let why = nothing_left(doc, earlier, feature)?;
             Some(pass_stand_in(doc, feature, earlier, why))
         }
@@ -393,6 +395,7 @@ pub(crate) fn nothing_left(
             | FeatureKind::Draft(_)
             | FeatureKind::Shell(_)
             | FeatureKind::Thread(_)
+            | FeatureKind::Tip(_)
     ) || !any_off(earlier)
     {
         return None;
@@ -448,6 +451,7 @@ pub(crate) fn nothing_left(
         (FeatureKind::Shell(built), FeatureKind::Shell(given)) => faces(&built.open, &given.open),
         (FeatureKind::Thread(built), _) => absent_name(doc, earlier, &built.face)
             .or_else(|| absent_name(doc, earlier, &built.start)),
+        (FeatureKind::Tip(built), _) => absent_name(doc, earlier, &built.face),
         _ => None,
     }
 }
@@ -480,6 +484,7 @@ pub(crate) fn stand_in(
         FeatureKind::Plate(p) => p.faces.first(),
         FeatureKind::Draft(d) => d.faces.first(),
         FeatureKind::Thread(t) => Some(&t.face),
+        FeatureKind::Tip(t) => Some(&t.face),
         _ => None,
     };
     let start = match (&stated.kind, first) {
@@ -610,6 +615,7 @@ pub fn left_out(doc: &Document, results: &[FeatureResult], id: FeatureId) -> Vec
             }
         }
         FeatureKind::Thread(t) => faces(&[t.face.clone(), t.start.clone()], &mut out),
+        FeatureKind::Tip(t) => faces(std::slice::from_ref(&t.face), &mut out),
         _ => {}
     }
     out

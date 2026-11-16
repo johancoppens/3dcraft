@@ -128,6 +128,10 @@ const FROZEN: &[(u32, usize, u64)] = &[
     // table of heights times a variable at its default (even), cut into a
     // wedge, one given point by point with chord spacing.
     (72, 3819, 0xa940_8ffe_e049_d436),
+    // A rod lofted through three circles, tipped at both ends: one tip
+    // as long as a variable with the default fullness, one at the length
+    // chosen over a place given with parabolas.
+    (73, 4596, 0x92a7_c958_1a99_43b6),
 ];
 
 fn dir() -> PathBuf {

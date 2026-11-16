@@ -62,6 +62,8 @@ pub enum Glyph {
     Developable,
     Surface,
     OffsetProfile,
+    /// A flat end closed in one rounded point (`feature.tip`).
+    Tip,
     /// A feature of a kind without its own icon.
     Feature,
     // Controls.
@@ -138,6 +140,7 @@ impl Glyph {
             "surfaceNetwork" | "surfaceTrim" | "surfaceNsided" | "surfaceGrid" | "fill"
             | "plate" => Glyph::Surface,
             "offsetProfile" => Glyph::OffsetProfile,
+            "tip" => Glyph::Tip,
             _ => Glyph::Feature,
         }
     }
@@ -158,7 +161,7 @@ impl Glyph {
     }
 
     /// The feature icons, for the gallery and the tests.
-    pub const FEATURES: [Glyph; 38] = [
+    pub const FEATURES: [Glyph; 39] = [
         Glyph::Sketch,
         Glyph::Extrude,
         Glyph::Revolve,
@@ -196,6 +199,7 @@ impl Glyph {
         Glyph::Developable,
         Glyph::Surface,
         Glyph::OffsetProfile,
+        Glyph::Tip,
         Glyph::Feature,
     ];
 
@@ -551,6 +555,13 @@ pub fn paint(painter: &egui::Painter, glyph: Glyph, place: Rect, ink: Color32, t
             dashed(s, (11.0, 5.0), (11.0, 11.0));
             dashed(s, (11.0, 11.0), (5.0, 11.0));
             dashed(s, (5.0, 11.0), (5.0, 5.0));
+        }
+        // A rod whose end (dashed, where the flat end was) runs on into
+        // a rounded point.
+        Glyph::Tip => {
+            line(s, &[(4.5, 8.0), (4.5, 14.5), (11.5, 14.5), (11.5, 8.0)]);
+            arc(s, (8.0, 8.0), (3.5, 6.5), PI, 2.0 * PI);
+            dashed(s, (4.5, 8.0), (11.5, 8.0));
         }
         Glyph::Feature | Glyph::Square => {
             closed(s, &[(3.0, 3.0), (13.0, 3.0), (13.0, 13.0), (3.0, 13.0)]);

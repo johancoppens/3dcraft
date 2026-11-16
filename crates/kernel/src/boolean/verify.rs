@@ -286,7 +286,9 @@ pub fn verify(
     tolerance: &Tolerance,
     options: &VerifyOptions,
 ) -> Result<Verification, KernelError> {
-    super::freeform::holding(|| verify_held(a, b, op, result, tolerance, options))
+    super::freeform::holding_as("boolean check", || {
+        verify_held(a, b, op, result, tolerance, options)
+    })
 }
 
 /// [`verify`], its trees held to a budget ([`super::freeform::holding`]).

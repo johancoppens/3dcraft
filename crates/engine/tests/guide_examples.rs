@@ -1463,6 +1463,30 @@ fn the_spout_of_the_features_chapter_meets_its_volume() {
     assert_eq!(check["ok"], true, "{check}");
 }
 
+/// The tip of the features chapter (`features.md` › *Tip*) runs as
+/// written: the rod tipped as long as its radius meets the volume of a
+/// rod with a half ball on its end, and passes the deep check.
+#[test]
+fn the_tip_of_the_features_chapter_is_a_half_ball() {
+    let text = read_text(&docs().join("guide/features.md"));
+    let block = json_blocks(&text)
+        .into_iter()
+        .find(|b| b.contains("\"feature.tip\""))
+        .expect("the chapter has the tip");
+    let steps = steps(&serde_json::from_str(&block).unwrap()).unwrap();
+    let mut s = common::session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    for (id, params) in steps {
+        let out = run(&mut s, &id, params);
+        assert_ne!(out["status"], "failed", "{id}: {out}");
+    }
+    let assertions = run(&mut s, "assert.list", json!({}));
+    assert_eq!(assertions["ok"], true, "{assertions}");
+    assert_eq!(assertions["passed"], 1, "{assertions}");
+    let check = run(&mut s, "document.check", json!({"deep": true}));
+    assert_eq!(check["ok"], true, "{check}");
+}
+
 /// The rings and the up direction of the features chapter (`features.md`
 /// › *Sweep along two rails*) run as written: the torus round two rings
 /// meets its volume (Pappus), the wall with a leaning up direction its
