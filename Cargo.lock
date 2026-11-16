@@ -407,6 +407,7 @@ dependencies = [
  "craft3d-buildinfo",
  "craft3d-changelog",
  "craft3d-engine",
+ "craft3d-gpu",
  "craft3d-math",
  "craft3d-regen",
  "craft3d-ui-egui",

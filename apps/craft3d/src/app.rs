@@ -2203,6 +2203,10 @@ struct Viewer {
     desktop_theme: crate::desktop_theme::DesktopTheme,
     /// Whether the window had the focus in the last frame.
     focused: bool,
+    /// The start on the graphics interface: its first frames make it "ok"
+    /// in the journal, and its notice's buttons act on the journal
+    /// (`graphics_start`).
+    start: Rc<RefCell<crate::graphics_start::Start>>,
 }
 
 impl eframe::App for Viewer {
@@ -2217,6 +2221,18 @@ impl eframe::App for Viewer {
         if desk.turn().changed {
             // Show what changed, and look for more.
             ctx.request_repaint();
+        }
+        if let Ok(mut start) = self.start.try_borrow_mut() {
+            // The first frames are drawn at once, idle or not: they make
+            // the start "ok" in the graphics start journal.
+            if start.frame() {
+                ctx.request_repaint();
+            }
+            match desk.host.shell.take_graphics_notice_action() {
+                Some(craft3d_ui_egui::GraphicsNoticeAction::Retry) => start.retry(),
+                Some(craft3d_ui_egui::GraphicsNoticeAction::Dismiss) => start.dismiss(),
+                None => {}
+            }
         }
         desk.host.shell.set_desktop_theme(self.desktop_theme.get());
         let focused = ctx.input(|i| i.focused);
@@ -2480,6 +2496,15 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
     let title = window_title(host.session.document_status().as_ref());
     let picker = Picker::new(Arc::new(SystemDialogs), Arc::clone(&wake));
     let agents_picker = Picker::new(Arc::new(SystemDialogs), Arc::clone(&wake));
+    // `CRAFT3D_GPU_TOUR` (`tour.rs`), a diagnostic: the window drives
+    // itself through every kind of picture once, by its own requests.
+    let tour = crate::tour::from_env(&env).map(|mode| {
+        (
+            mode,
+            agents.request_sender(),
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        )
+    });
     let mut desk = Desk::new(host, requests, picker)
         .with_engine_thread(Arc::clone(&wake))
         .with_agents(agents)
@@ -2488,10 +2513,25 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
         desk.set_window_points([w as f32, h as f32]);
     }
     let desk = Rc::new(RefCell::new(desk));
-    let native = eframe::NativeOptions {
+    let mut native = eframe::NativeOptions {
         viewport: viewport(options, &title),
         ..Default::default()
     };
+    // The graphics interface: chosen by the order and by what the journal
+    // in the state folder says of earlier starts, which this start adds to
+    // (`graphics_start`); and the trace's first lines (`gpu_diag`).
+    let start = Rc::new(RefCell::new(crate::graphics_start::Start::new(
+        options.state_dir.as_deref(),
+        env!("CARGO_PKG_VERSION"),
+        options.reset_graphics,
+    )));
+    if let Ok(start) = start.try_borrow() {
+        crate::gpu_diag::prepare(&mut native.wgpu_options, &env, &start);
+    }
+    let trace = env(craft3d_gpu::diag::TRACE_VAR).filter(|t| !t.is_empty());
+    let for_start = Rc::clone(&start);
+    let present_mode = native.wgpu_options.surface.present_mode;
+    let frame_latency = native.wgpu_options.surface.desired_maximum_frame_latency;
     let renderer = options.renderer;
     let failure = failures();
     let (for_viewer, for_context) = (Rc::clone(&desk), Arc::clone(&context));
@@ -2505,6 +2545,11 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
             // `--renderer cpu` asks for outright. The window never waits
             // for the CPU renderer: its sharp images are made on the
             // shell's own thread.
+            crate::gpu_diag::render_state_ready(
+                creation.wgpu_render_state.as_ref(),
+                present_mode,
+                frame_latency,
+            );
             let mut shell = Shell::threaded_with_gpu(renderer, creation.wgpu_render_state.as_ref());
             shell.set_recent_files(recent);
             shell.set_data_folder(data_folder);
@@ -2512,6 +2557,7 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
             // Help menu has it always.
             shell.set_whats_new(notes);
             shell.set_agent_setup(agent);
+            craft3d_gpu::diag::note("viewport", &shell.renderer_report().describe());
             announce(&format!(
                 "viewport renderer: {}",
                 shell.renderer_report().describe()
@@ -2522,6 +2568,17 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
             if let Ok(mut desk) = for_viewer.try_borrow_mut() {
                 desk.attach_recorder(creation.wgpu_render_state.as_ref());
             }
+            if let (Ok(mut desk), Ok(start)) = (for_viewer.try_borrow_mut(), for_start.try_borrow())
+                && let Some((text, details, retry)) = start.notice(trace.as_deref())
+            {
+                desk.host
+                    .shell
+                    .set_graphics_notice(Some(craft3d_ui_egui::GraphicsNotice {
+                        text,
+                        details,
+                        retry,
+                    }));
+            }
             let viewer = Viewer {
                 mirror: None,
                 desk: for_viewer,
@@ -2530,7 +2587,14 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
                 desktop_theme: crate::desktop_theme::DesktopTheme::start(Some(
                     creation.egui_ctx.clone(),
                 )),
+                start: for_start,
             };
+            if let Some((mode, requests, errors)) = tour {
+                if let Some(state) = creation.wgpu_render_state.as_ref() {
+                    crate::tour::count_device_errors(&state.device, Arc::clone(&errors));
+                }
+                crate::tour::start(mode, requests, Arc::clone(&wake), errors, &env);
+            }
             // Requests that arrived before the window existed are waiting
             // in the channel; they are answered from here on.
             let _ = for_context.set(creation.egui_ctx.clone());
@@ -2548,6 +2612,13 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
     // The window goes at once, also when work is still running.
     let desk = Rc::clone(&driver.desk);
     drop(driver);
+    // A window that was made and closed before its first frames were
+    // drawn was closed on purpose: no failure of its graphics interface.
+    if context.get().is_some()
+        && let Ok(mut start) = start.try_borrow_mut()
+    {
+        start.closing();
+    }
     // The window was closed, or could not be made: either way the
     // application ends on purpose, and leaves no recovery files. (A crash
     // or a kill never gets here, and leaves them.) Work that is still

@@ -3,6 +3,7 @@
 
 use crate::GpuError;
 use crate::cut;
+use crate::diag::Traced;
 use crate::mesh::{GpuMesh, MeshPart};
 use crate::peel;
 use crate::readback;
@@ -354,7 +355,7 @@ impl CutPipelines {
         peel_layout: Option<&wgpu::BindGroupLayout>,
         two: bool,
     ) -> CutPipelines {
-        let module = cut::module(device, false, false);
+        let module = cut::module(device, false, false, crate::variant::PeelVariant::Masked);
         let cap_layout = cut::cap_layout(device, false, false);
         let frame = [target(COLOR_FORMAT), target(DATA_FORMAT)];
         let parity = cut::pipeline(
@@ -787,7 +788,7 @@ pub(crate) fn scene_pipeline_from(
         bind_group_layouts: groups,
         immediate_size: 0,
     });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    device.traced_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
@@ -816,7 +817,7 @@ pub(crate) fn scene_pipeline_from(
 
 impl SeeThrough {
     fn build(device: &wgpu::Device, scene_layout: &wgpu::BindGroupLayout, two: bool) -> SeeThrough {
-        let module = peel::scene_module(device, false);
+        let module = peel::scene_module(device, false, crate::variant::PeelVariant::Masked);
         let peel_layout = peel::peel_layout(device, false);
         let blend_layout = peel::blend_layout(device, false, true);
         let front = Drawing::build(two, |step| {
@@ -979,20 +980,20 @@ impl Renderer {
     }
 
     fn build(device: &wgpu::Device, queue: &wgpu::Queue, two: bool) -> Renderer {
-        let scene_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("craft3d scene"),
+        let scene_shader = device.traced_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("craft3d scene (scene.wgsl)"),
             source: wgpu::ShaderSource::Wgsl(scene_source(device, &[]).into()),
         });
-        let resolve_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("craft3d resolve"),
+        let resolve_shader = device.traced_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("craft3d resolve (resolve.wgsl)"),
             source: wgpu::ShaderSource::Wgsl(include_str!("resolve.wgsl").into()),
         });
-        let present_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("craft3d present"),
+        let present_shader = device.traced_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("craft3d present (present.wgsl)"),
             source: wgpu::ShaderSource::Wgsl(include_str!("present.wgsl").into()),
         });
 
-        let scene_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let scene_layout = device.traced_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("craft3d scene"),
             entries: &[uniform_entry(
                 0,
@@ -1028,7 +1029,7 @@ impl Renderer {
             )
         });
 
-        let resolve_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let resolve_layout = device.traced_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("craft3d resolve"),
             entries: &[
                 uniform_entry(0, wgpu::ShaderStages::FRAGMENT),
@@ -1048,7 +1049,7 @@ impl Renderer {
                 bind_group_layouts: &[Some(&resolve_layout)],
                 immediate_size: 0,
             });
-        let resolve_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let resolve_pipeline = device.traced_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("craft3d resolve"),
             layout: Some(&resolve_pipeline_layout),
             vertex: wgpu::VertexState {
@@ -1070,7 +1071,7 @@ impl Renderer {
             cache: None,
         });
 
-        let present_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let present_layout = device.traced_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("craft3d present"),
             entries: &[texture_entry(0, UNFILTERED)],
         });
@@ -1308,7 +1309,7 @@ impl Renderer {
                     immediate_size: 0,
                 });
             self.device
-                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                .traced_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some("craft3d present"),
                     layout: Some(&layout),
                     vertex: wgpu::VertexState {
@@ -2606,11 +2607,13 @@ pub(crate) mod template_tests {
 
     /// The compositions the renderers make of `scene.wgsl`
     /// (`Renderer`/`Onscreen`, the studio look, `peel::scene_module` and `cut::module`,
-    /// each for one sample per pixel or for several), with whether they
-    /// are the multisampled ones.
+    /// each for one sample per pixel or for several, the multisampled ones
+    /// masked and per sample, `variant.rs`), with whether they are the
+    /// multisampled ones. The last is the masked cut-open one.
     fn compositions() -> Vec<(&'static str, bool, Vec<&'static str>)> {
         let peel = include_str!("peel.wgsl");
         let peel_samples = include_str!("peel_samples.wgsl");
+        let peel_per_sample = include_str!("peel_samples_persample.wgsl");
         let cut = include_str!("cut.wgsl");
         vec![
             ("scene", false, vec![]),
@@ -2622,9 +2625,23 @@ pub(crate) mod template_tests {
             ("scene + peel", false, vec![peel]),
             ("scene + peel_samples", true, vec![peel_samples]),
             (
+                "scene + peel_samples_persample",
+                true,
+                vec![peel_per_sample],
+            ),
+            (
                 "scene + peel + cut + cut_flat",
                 false,
                 vec![peel, cut, include_str!("cut_flat.wgsl")],
+            ),
+            (
+                "scene + peel_samples_persample + cut + cut_samples_persample",
+                true,
+                vec![
+                    peel_per_sample,
+                    cut,
+                    include_str!("cut_samples_persample.wgsl"),
+                ],
             ),
             (
                 "scene + peel_samples + cut + cut_samples",
@@ -3012,9 +3029,11 @@ pub(crate) mod template_tests {
             "polish",
             "peel",
             "peel_samples",
+            "peel_samples_persample",
             "cut",
             "cut_flat",
             "cut_samples",
+            "cut_samples_persample",
             "depth_test",
             "lines",
             "fills",

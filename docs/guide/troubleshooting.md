@@ -12,6 +12,7 @@ you, ask it to read the reason to you.
 | Problem | Look at |
 |---|---|
 | The window does not start | [The window](#the-window) |
+| On Windows the window closes at once, or says it draws through another interface | [The window does not start or closes at once on Windows](#the-window-does-not-start-or-closes-at-once-on-windows) |
 | The agent's changes do not show in the window | [The agent](#the-agent) |
 | The agent cannot open or save a file | [The agent](#the-agent) |
 | A feature's row is red in the feature list | [A feature fails](#a-feature-fails) |
@@ -147,6 +148,66 @@ against: `"renderer": "cpu"` asks for it.
 - **A datum plane, axis or point does not show.** Datums are hidden until you switch **Datums** on in the
   display bar at the foot of the view; a double click on a datum's row in the feature list switches it on
   and flies there.
+
+## The window does not start or closes at once on Windows
+
+3DCraft's window is drawn through one of three graphics interfaces of Windows: Vulkan, OpenGL or DirectX 12,
+each of them a part of your graphics card's driver. A driver can fail so badly that it takes the program
+with it: the window opens and closes again at once, without a word. 3DCraft 0.1.0 and 0.1.1 did that on
+many computers, with Intel and with AMD graphics.
+
+**What 3DCraft does by itself, since 0.1.2:**
+
+- Through Vulkan it draws see-through bodies and cut-open models in another way: the old way handed the
+  driver a shader Vulkan's rules forbid, and the Vulkan drivers of Intel and AMD on Windows crashed on it
+  while the window started. The new way was measured with Intel and AMD graphics on Windows and with Mesa's
+  drivers on Linux.
+- When an interface ended a start, the next start passes over it and takes the next one: Vulkan first,
+  then OpenGL, then DirectX 12. `3DCraft.exe` (the Start menu entry, a double-clicked file) starts the
+  window again by itself, at most three times in a row, so you need not do anything. A bar under the menu
+  then says so, for example: *3DCraft draws through OpenGL on this computer: starting with Vulkan failed
+  here (Intel(R) UHD Graphics 615, driver …)*. **Details…** says more; **Try Vulkan next time** tries it
+  again at the next start; **Dismiss** hides the bar for good.
+- An interface is passed over for seven days, or until your graphics driver or 3DCraft is updated; then it
+  is tried again. If every interface failed, 3DCraft tries them again from the first: it never refuses to
+  start. Several windows can start at the same time (two files opened at once): a window that is still
+  starting is never taken for one that failed. Starting `craft3d.exe --reset-graphics` forgets what it learnt, so every interface is tried
+  again.
+- `3DCraft.exe` starts the window again only when it closed while it was still starting on its graphics
+  interface; a window that closes later is not started again. When every start fails, it says so in a
+  message box, with the error code.
+
+**Which interface 3DCraft draws through:** **Help › About 3DCraft** names the renderer in use, your
+graphics card and the interface, for example `gpu (Intel(R) UHD Graphics (Vulkan, IntegratedGpu, …);
+direct, 4 samples)`; **Copy system info** there copies it for a report.
+
+**Choosing the interface yourself.** Start 3DCraft from a terminal with `CRAFT3D_BACKEND_ORDER` set to
+the interfaces to try, in order (`vulkan`, `gl`, `dx12`); one you choose is never passed over. In the
+Command Prompt:
+
+```bat
+set CRAFT3D_BACKEND_ORDER=gl
+"C:\Program Files\3DCraft\craft3d.exe"
+```
+
+In PowerShell, `$env:CRAFT3D_BACKEND_ORDER = "gl"` and then the program. OpenGL draws without
+multisampling (edges look a little rougher); DirectX 12 can take minutes to show the studio look the first
+time.
+
+**Making a trace to send us.** When the window still closes at once, a trace says what the graphics card
+was asked to build when it closed: its last line names it. In the Command Prompt:
+
+```bat
+set CRAFT3D_GPU_TRACE=%USERPROFILE%\Desktop\3dcraft-trace.txt
+"C:\Program Files\3DCraft\craft3d.exe"
+```
+
+With `CRAFT3D_GPU_TOUR=1` set as well, the window shows a small model in every kind of picture (plain,
+see-through, cut open, the studio look), writes a picture of each beside the trace and closes by itself:
+one run that asks the driver for everything. Attach the trace (and the pictures) to your report
+([Reporting a problem](#reporting-a-problem)). Two more switches help when we ask for them:
+`CRAFT3D_SAMPLES=1` draws without multisampling, and `CRAFT3D_PEEL_VARIANT=persample` (or `today`) forces
+the way see-through and cut-open pictures are drawn.
 
 ## The agent
 
