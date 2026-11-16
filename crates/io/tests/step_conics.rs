@@ -1194,55 +1194,75 @@ fn a_cone_offset_past_its_apex_reads_as_the_cone_it_is() {
 /// The second finding, found with the files written here: an edge on a
 /// wide cone that passes close to its apex, given by the writer as a
 /// B-spline of few long spans (the exact parabola of a cone of 81.5°
-/// half-angle cut 0.015 from its apex, one rational quadratic span), is
-/// not proven on the cone by `geom::certify` within its 4096 pieces at
-/// any target up to 64 times the cap, while the same curve in spans of a
-/// unit of its parameter is. Exact, it is accepted on 1025 places within
-/// the tolerance (counted as unproven); lifted 1e-5 off the plane, it was
-/// refused "could not be proven within the cap", without saying what
-/// would read. The refusal now says how far the places lie and that a
-/// document tolerance of at least that accepts it, and it does.
+/// half-angle cut 0.015 from its apex, one rational quadratic span), was
+/// not proven on the cone by `geom::certify` at any target up to twice
+/// the cap: the feet the proof follows by Gauss-Newton steps crossed the
+/// apex and settled on the other nappe. Exact, it was accepted on 1025
+/// places within the tolerance and counted as unproven; lifted 1e-5 off
+/// the plane, it was refused "could not be proven within the cap". Since
+/// the careful second proof (2026-11-15, `docs/design/geometry.md` › *A
+/// second proof with careful feet*) the exact edge is proven, and the
+/// lifted one, off the cone by more than the tolerance and less than the
+/// cap, gets its own tolerance, at least its distance from the cone in
+/// closed form, as every edge so far off does.
 #[test]
-fn an_edge_the_prover_gives_out_on_is_refused_saying_what_reads() {
-    let (h, c) = (0.3, 1.9);
+fn a_long_span_by_a_wide_cones_apex_is_proven_and_one_lifted_off_gets_its_own_tolerance() {
+    let (r, h, c) = (2.0, 0.3, 1.9);
     let frame = frames(1.0)[1].1;
-    let exact = cut_cone(Cut::Parabola, 2.0, h, c, frame, 1.0, Form::Spline(1, 0.0));
+    let exact = cut_cone(Cut::Parabola, r, h, c, frame, 1.0, Form::Spline(1, 0.0));
     let read_exact = read(&exact, 1.0).unwrap();
     let (v, a) = measures(&read_exact.body);
-    let (ev, ea) = closed_form(Cut::Parabola, 2.0, h, c);
+    let (ev, ea) = closed_form(Cut::Parabola, r, h, c);
     assert!(
         relative(v, ev) < 1e-9 && relative(a, ea) < 1e-9,
         "{v} / {ev}, {a} / {ea}"
     );
-    assert!(read_exact.report.unproven_edges <= 1);
+    let rp = &read_exact.report;
+    assert_eq!(rp.unproven_edges + rp.loose_edges, 0, "{rp:?}");
     // The same curve as the reader makes a parabola (spans of at most a
     // unit of its parameter): proven.
-    let pieces = cut_cone(Cut::Parabola, 2.0, h, c, frame, 1.0, Form::Plain);
+    let pieces = cut_cone(Cut::Parabola, r, h, c, frame, 1.0, Form::Plain);
     assert_eq!(read(&pieces, 1.0).unwrap().report.unproven_edges, 0);
-    let lifted = cut_cone(Cut::Parabola, 2.0, h, c, frame, 1.0, Form::Spline(1, 1e-5));
-    let e = read(&lifted, 1.0).unwrap_err();
-    assert!(
-        e.contains("could not be proven within the cap")
-            && e.contains("document's own linear tolerance, now 1e-6")
-            && e.contains("document.setTolerance"),
-        "{e}"
-    );
-    let gap: f64 = e
-        .split("lies at most ")
-        .nth(1)
-        .and_then(|rest| rest.split(' ').next())
-        .and_then(|x| x.parse().ok())
-        .unwrap_or_else(|| panic!("no gap in {e}"));
-    assert!(gap > 1e-6 && gap < 1e-5, "{gap}");
-    // With the tolerance the message names, it reads.
-    let looser = Options {
-        tolerance: Tolerance::new(gap * 1.01, 1e-9).unwrap(),
-        loosest: 1e-3,
-        ..options(1.0)
+    let lifted = cut_cone(Cut::Parabola, r, h, c, frame, 1.0, Form::Spline(1, 1e-5));
+    let done = read(&lifted, 1.0).unwrap();
+    // The lifted edge's distance from the cone (apex (0, 0, h), radius r
+    // at z = 0, in the frame), in closed form at 4001 places.
+    let norm = r.phypot(h);
+    let off_cone = |p: Vec3| {
+        let (x, y, z) = frame.local(p);
+        let rho = x.phypot(y);
+        // The ruling from the apex outward in the half-plane (ρ, z).
+        let (wr, wz) = (r / norm, -h / norm);
+        let (qr, qz) = (rho, z - h);
+        if qr * wr + qz * wz >= 0.0 {
+            (qr * wz - qz * wr).abs()
+        } else {
+            qr.phypot(qz)
+        }
     };
-    let parsed = parse(lifted.as_bytes()).unwrap();
-    let done = parsed.build(0, &looser).unwrap();
-    let (v, _) = measures(&done.body);
+    let body = &done.body;
+    let conic = body
+        .edges
+        .iter()
+        .find(|e| matches!(e.curve, craft3d_geom::Curve3::Nurbs(_)))
+        .expect("the conic edge");
+    let (t0, t1) = conic.range;
+    let gap = (0..=4000)
+        .map(|k| off_cone(conic.curve.eval(t0 + (t1 - t0) * f64::from(k) / 4000.0)))
+        .fold(0.0, f64::max);
+    let rp = &done.report;
+    let cap = options(1.0).loosest;
+    println!(
+        "lifted: off the cone by {gap:e}, its own tolerance {:e}",
+        rp.largest_tolerance
+    );
+    assert!(gap > 1e-6 && gap < 1e-5, "{gap}");
+    assert_eq!((rp.unproven_edges, rp.loose_edges), (0, 1), "{rp:?}");
+    assert!(
+        rp.largest_tolerance >= gap && rp.largest_tolerance <= cap,
+        "{rp:?}: off by {gap:e}"
+    );
+    assert!(craft3d_topo::check(body, &tolerance(1.0)).is_empty());
+    let (v, _) = measures(body);
     assert!(relative(v, ev) < 1e-4, "{v} / {ev}");
-    assert!(done.report.unproven_edges <= 1);
 }
