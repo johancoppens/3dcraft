@@ -1693,7 +1693,7 @@ Windows runners, so a text rewrite that matches across `\n` silently did nothing
 pipeline's module by its id must not trust the id alone, since the ids of two wgpu instances can be the same.)
 The variants that drew a wrong picture, and the rewrites, are not in the release.
 
-*Found again, on another vendor* (2026-11-17). The developer's desktop: Windows 11 Pro build 22000, AMD Radeon
+*Found again, on another vendor* (2026-11-16). The developer's desktop: Windows 11 Pro build 22000, AMD Radeon
 RX 7800 XT, driver 31.0.22030.2 (Adrenalin 23.20.30, `amdvlk64.dll`, "AMD proprietary driver 23.20.30 (LLPC)").
 The package of the first rule (per-sample stages on Intel's Vulkan driver only) chose Vulkan with the masked
 stages and died; the trace's last line was `#32 begin render_pipeline "craft3d behind" … fs=fs_behind_samples …
