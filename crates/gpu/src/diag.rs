@@ -61,7 +61,7 @@ pub const BACKEND_ORDER_VAR: &str = "CRAFT3D_BACKEND_ORDER";
 /// masked stages) or `persample` ([`PeelSetting`], `variant.rs`).
 pub const PEEL_VARIANT_VAR: &str = "CRAFT3D_PEEL_VARIANT";
 
-pub use crate::variant::{PeelSetting, PeelVariant, auto_choice};
+pub use crate::variant::{PeelSetting, PeelVariant, Stages, auto_choice, stages};
 
 /// The setting [`PEEL_VARIANT_VAR`] asks for, read once: `auto` when it is
 /// not set, and a bad value is said once on standard error and ignored.

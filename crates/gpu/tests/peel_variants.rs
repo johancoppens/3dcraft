@@ -1,12 +1,13 @@
 //! The two forms of the multisampled see-through and section stages
-//! (`craft3d_gpu::diag::PeelVariant`: masked, and per sample, which a
-//! Vulkan driver on Windows gets; docs/design/rendering.md, *Per-sample
-//! stages on Vulkan drivers on Windows*) against each other, on every adapter
-//! of this machine: see-through, cut open, and both, of a hollow block and
-//! a drilled plate. The per-sample picture is held to the CPU renderer by
-//! `see_through.rs`, `section.rs`, `onscreen.rs` and `cap_specks.rs` run
-//! with `CRAFT3D_PEEL_VARIANT=persample`; here it must draw, and how far it
-//! is from the masked one, pixel for pixel, is written to
+//! (`craft3d_gpu::diag::PeelVariant`: masked, and per sample, which every
+//! Vulkan device gets; docs/design/rendering.md, *Per-sample stages on
+//! Vulkan*) against each other, on every adapter of this machine:
+//! see-through, cut open, and both, of a hollow block and a drilled plate.
+//! The picture of either form is held to the CPU renderer by
+//! `see_through.rs`, `section.rs`, `onscreen.rs` and `cap_specks.rs`: per
+//! sample as they run on Vulkan, masked with `CRAFT3D_PEEL_VARIANT=today`;
+//! here both must draw, and how far one is from the other, pixel for
+//! pixel, is written to
 //! `target/evidence/gpu/peel-variants.txt`. A second test, run by hand,
 //! times both forms on a model of a few hundred thousand triangles.
 //!

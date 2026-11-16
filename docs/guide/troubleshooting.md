@@ -154,8 +154,10 @@ many computers, with Intel and with AMD graphics.
 
 **What 3DCraft does by itself, since 0.1.2:**
 
-- Through Vulkan it draws see-through bodies and cut-open models in a way the drivers take (the old way
-  made the Vulkan drivers of Intel and AMD crash while the window started), whatever your graphics card.
+- Through Vulkan it draws see-through bodies and cut-open models in another way: the old way handed the
+  driver a shader Vulkan's rules forbid, and the Vulkan drivers of Intel and AMD on Windows crashed on it
+  while the window started. The new way was measured with Intel and AMD graphics on Windows and with Mesa's
+  drivers on Linux.
 - When an interface ended a start, the next start passes over it and takes the next one: Vulkan first,
   then OpenGL, then DirectX 12. `3DCraft.exe` (the Start menu entry, a double-clicked file) starts the
   window again by itself, at most three times in a row, so you need not do anything. A bar under the menu

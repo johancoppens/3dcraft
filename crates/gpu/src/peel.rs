@@ -103,17 +103,13 @@ impl Table {
 /// one sample per pixel (`peel.wgsl`: `fs_front`, `fs_front_color`,
 /// `fs_behind`) or for several (`peel_samples.wgsl`: `fs_front_samples`,
 /// `fs_behind_samples`) in the form `variant` (`variant.rs`: masked, or per
-/// sample where the driver needs it).
+/// sample on Vulkan).
 pub(crate) fn scene_module(
     device: &wgpu::Device,
     multisampled: bool,
     variant: PeelVariant,
 ) -> wgpu::ShaderModule {
-    let (peel, file) = if multisampled {
-        crate::variant::peel_samples(variant)
-    } else {
-        (include_str!("peel.wgsl"), "peel.wgsl")
-    };
+    let (peel, file) = scene_part(multisampled, variant);
     // The label names the files, for the trace (`diag`).
     let label = format!("craft3d scene, see-through (scene.wgsl + {file})");
     let source = scene_source(device, &[peel]);
@@ -121,6 +117,15 @@ pub(crate) fn scene_module(
         label: Some(&label),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     })
+}
+
+/// What [`scene_module`] appends to `scene.wgsl`, and its file's name.
+pub(crate) fn scene_part(multisampled: bool, variant: PeelVariant) -> (&'static str, &'static str) {
+    if multisampled {
+        crate::variant::peel_samples(variant)
+    } else {
+        (include_str!("peel.wgsl"), "peel.wgsl")
+    }
 }
 
 /// `blend.wgsl` for layers with several samples per pixel or with one.

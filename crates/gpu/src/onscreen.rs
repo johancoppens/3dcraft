@@ -830,7 +830,7 @@ pub struct Onscreen {
     /// How many frames were noted in the trace (`diag`; [`TRACED_DRAWS`]).
     traced_draws: u32,
     /// The form of the multisampled see-through and section stages
-    /// (`variant.rs`: masked, or per sample where the driver needs it).
+    /// (`variant.rs`: masked, or per sample on Vulkan).
     variant: PeelVariant,
 }
 
@@ -1003,7 +1003,7 @@ impl Density {
 }
 
 /// The pass over the tiles of the edge density (no template).
-const EDGE_TILES_SOURCE: &str = include_str!("edge_tiles.wgsl");
+pub(crate) const EDGE_TILES_SOURCE: &str = include_str!("edge_tiles.wgsl");
 
 /// The shaders over the picture, filled in for a depth buffer of
 /// `samples` samples per pixel: the lines, the fills, the distances the
@@ -1104,9 +1104,11 @@ impl Onscreen {
 
     /// [`Onscreen::new`] with the multisampled stages of a see-through and
     /// a cut-open picture as `setting` says ([`PeelSetting`]: chosen for
-    /// the adapter by [`crate::diag::auto_choice`], or forced). The
-    /// per-sample stages need a device that shades per sample; without
-    /// one, the masked stages are taken.
+    /// the backend by [`crate::diag::auto_choice`], or forced;
+    /// [`crate::diag::stages`]). The per-sample stages need a device that
+    /// shades per sample; without one, a Vulkan device draws the viewport
+    /// with one sample per pixel (the masked stages are invalid SPIR-V
+    /// there) and any other takes the masked stages.
     pub fn with_peel_setting(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -1140,35 +1142,39 @@ impl Onscreen {
                 if gl { " (OpenGL)" } else { "" }
             ));
         }
-        let per_sample = samples > 1
-            && adapter
-                .get_downlevel_capabilities()
-                .flags
-                .contains(wgpu::DownlevelFlags::MULTISAMPLED_SHADING);
-        let (variant, why) = match setting {
-            PeelSetting::Auto => crate::variant::auto_choice(
-                info.vendor,
-                info.backend,
-                cfg!(target_os = "windows"),
-                per_sample,
-            ),
-            PeelSetting::Fixed(variant) => (variant, "as CRAFT3D_PEEL_VARIANT says"),
-        };
-        let (variant, why) = if variant == PeelVariant::PerSample && !per_sample {
-            if samples > 1 {
-                crate::diag::say(&format!(
-                    "{}: the per-sample stages need per-sample shading, which this adapter does \
-                     not have; the masked stages are used",
-                    crate::diag::PEEL_VARIANT_VAR
-                ));
-            }
-            (
-                PeelVariant::Masked,
-                "the masked stages: no per-sample shading",
-            )
-        } else {
-            (variant, why)
-        };
+        let shades_per_sample = adapter
+            .get_downlevel_capabilities()
+            .flags
+            .contains(wgpu::DownlevelFlags::MULTISAMPLED_SHADING);
+        // The see-through and section stages (`variant::stages`): on Vulkan
+        // the per-sample ones, and on a Vulkan device that cannot shade per
+        // sample one sample per pixel, since the masked ones are invalid
+        // SPIR-V there.
+        let chosen = crate::variant::stages(
+            setting,
+            info.backend,
+            samples,
+            samples > 1 && shades_per_sample,
+        );
+        if chosen.samples != samples {
+            crate::diag::say(&format!(
+                "the viewport draws with {} (the adapter takes {samples})",
+                chosen.why
+            ));
+        } else if setting == PeelSetting::Fixed(PeelVariant::PerSample)
+            && chosen.variant == PeelVariant::Masked
+            && samples > 1
+        {
+            crate::diag::say(&format!(
+                "{}: the per-sample stages need per-sample shading, which this adapter does \
+                 not have; the masked stages are used",
+                crate::diag::PEEL_VARIANT_VAR
+            ));
+        }
+        let asked = samples;
+        let samples = chosen.samples;
+        let (variant, why) = (chosen.variant, chosen.why);
+        let per_sample = samples > 1 && shades_per_sample;
         if crate::diag::enabled() {
             let counts = |format| {
                 [1, 2, 4, 8, 16]
@@ -1181,12 +1187,17 @@ impl Onscreen {
             crate::diag::note(
                 "onscreen",
                 &format!(
-                    "samples {samples} ({}; {COLOR_FORMAT:?} takes [{}], {DEPTH_FORMAT:?} \
-                     [{}]); per-sample shading {per_sample}; see-through and section stages \
-                     {variant} ({why}{}); next: the viewport's pipelines",
+                    "samples {samples} ({}{}; {COLOR_FORMAT:?} takes [{}], {DEPTH_FORMAT:?} \
+                     [{}]); per-sample shading {shades_per_sample}; see-through and section \
+                     stages {variant} ({why}{}); next: the viewport's pipelines",
                     match forced {
                         Some(n) => format!("{} asks {n}", crate::diag::SAMPLES_VAR),
                         None => format!("the default {WANTED_SAMPLES}"),
+                    },
+                    if asked == samples {
+                        String::new()
+                    } else {
+                        format!("; the adapter takes {asked}, the stages one")
                     },
                     counts(COLOR_FORMAT),
                     counts(DEPTH_FORMAT),
@@ -1229,13 +1240,21 @@ impl Onscreen {
     /// device must support them for `Rgba8Unorm` and `Depth32Float`, and
     /// with several it is taken to shade per sample, which
     /// [`Onscreen::new`] checks on the adapter: a device that cannot
-    /// refuses a cut-open picture then).
+    /// refuses a cut-open picture then). The see-through and section
+    /// stages are the default's for the device's backend
+    /// ([`crate::diag::stages`]): per sample on Vulkan, masked elsewhere.
     pub fn with_samples(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         samples: u32,
     ) -> Result<Onscreen, GpuError> {
-        Self::shaded(device, queue, samples, samples > 1, PeelVariant::Masked)
+        let chosen = crate::variant::stages(
+            PeelSetting::Auto,
+            device.adapter_info().backend,
+            samples,
+            samples > 1,
+        );
+        Self::shaded(device, queue, samples, samples > 1, chosen.variant)
     }
 
     /// [`Onscreen::with_samples`], with whether the count of a section is

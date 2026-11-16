@@ -156,32 +156,16 @@ pub(crate) fn cap_buffer(device: &wgpu::Device) -> wgpu::Buffer {
 /// cut-open one, for one sample per pixel or for several; with several,
 /// the count per sample where the device shades per sample
 /// (`per_sample`, `Onscreen::new`); the multisampled stages in the form
-/// `variant` (`variant.rs`: masked, or per sample where the driver needs
-/// it).
+/// `variant` (`variant.rs`: masked, or per sample on Vulkan).
 pub(crate) fn module(
     device: &wgpu::Device,
     multisampled: bool,
     per_sample: bool,
     variant: PeelVariant,
 ) -> wgpu::ShaderModule {
-    let ((peel, peel_file), (cap, cap_file)) = if multisampled {
-        (
-            crate::variant::peel_samples(variant),
-            crate::variant::cut_samples(variant),
-        )
-    } else {
-        (
-            (include_str!("peel.wgsl"), "peel.wgsl"),
-            (include_str!("cut_flat.wgsl"), "cut_flat.wgsl"),
-        )
-    };
+    let [(_, peel_file), _, (_, cap_file)] = parts(multisampled, variant);
     let depth = fragment_depth(device);
-    let source = scene_source_for(
-        depth,
-        multisampled,
-        per_sample,
-        &[peel, include_str!("cut.wgsl"), cap],
-    );
+    let source = source(depth, multisampled, per_sample, variant);
     // The label names the files and the variant, for the trace (`diag`).
     let label = format!(
         "craft3d scene, cut open (scene.wgsl + {peel_file} + cut.wgsl + {cap_file}{}{}{})",
@@ -197,6 +181,42 @@ pub(crate) fn module(
         label: Some(&label),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     })
+}
+
+/// The files [`module`] appends to `scene.wgsl`, with their names: the
+/// passes of a see-through picture, `cut.wgsl` and the cap's passes.
+pub(crate) fn parts(multisampled: bool, variant: PeelVariant) -> [(&'static str, &'static str); 3] {
+    let cut = (include_str!("cut.wgsl"), "cut.wgsl");
+    if multisampled {
+        [
+            crate::variant::peel_samples(variant),
+            cut,
+            crate::variant::cut_samples(variant),
+        ]
+    } else {
+        [
+            (include_str!("peel.wgsl"), "peel.wgsl"),
+            cut,
+            (include_str!("cut_flat.wgsl"), "cut_flat.wgsl"),
+        ]
+    }
+}
+
+/// The source of [`module`], with the depth written by the fragment
+/// (`fragment_depth`: OpenGL) or not.
+pub(crate) fn source(
+    fragment_depth: bool,
+    multisampled: bool,
+    per_sample: bool,
+    variant: PeelVariant,
+) -> String {
+    let [peel, cut, cap] = parts(multisampled, variant);
+    scene_source_for(
+        fragment_depth,
+        multisampled,
+        per_sample,
+        &[peel.0, cut.0, cap.0],
+    )
 }
 
 fn texture_entry(binding: u32, multisampled: bool) -> wgpu::BindGroupLayoutEntry {
