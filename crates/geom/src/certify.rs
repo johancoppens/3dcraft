@@ -48,6 +48,17 @@
 //!   halved, in a fixed order, until every bound is within it, or the
 //!   number of pieces allowed is spent and the answer is "not proven"
 //!   (with the place), never a guess.
+//! - **A second proof with careful feet.** Where the halving ends on a
+//!   piece that cannot be halved further and the curve is not seen off
+//!   the surface, the proof is made once more with every foot the nearest
+//!   of the steps' and the surface's own projection (one within the
+//!   surface's range before one past a pole or an apex), and each piece's
+//!   end named near its start and a turn either way round the axis. By a
+//!   pole or an apex the steps cross the singular point and settle on a
+//!   point named past it (a cone's other nappe, the same point of a
+//!   sphere named across its pole) or a turn away, and a piece between
+//!   such feet is never proven however short. A curve the first proof
+//!   proves is proven by it alone, as before.
 //!
 //! **The surface continued.** Distances are to the surface as it
 //! evaluates, continued past its domain: the analytic kinds are unbounded,
@@ -1198,13 +1209,22 @@ impl<'a> SurfaceBound<'a> {
 
     /// A bound on the distance from the surface of the curve over `[a, b]`
     /// (one piece of it), from the feet `fa` and `fb` of its ends.
+    ///
+    /// With careful feet a point is singular for the path's tangent where
+    /// `∂u` and `∂v` are parallel to a billionth (`|∂u × ∂v|² ≤ SINGULAR
+    /// |∂u|² |∂v|²`, which holds at a pole or an apex, where one of them
+    /// is nought); the first proof compares `|∂u × ∂v|²` with
+    /// `(|∂u|² + |∂v|²)²`, which also holds wherever one is a billion
+    /// times longer than the other (a cone or a cylinder a billion times
+    /// its speed along the axis from it), so that the path leaves every
+    /// end straight there and a proof takes tens of thousands of pieces.
     fn piece_bound(
         &self,
         curve: &CurveBound<'_>,
-        a: f64,
-        b: f64,
+        (a, b): (f64, f64),
         fa: (f64, f64),
         fb: (f64, f64),
+        feet: Feet,
     ) -> Option<f64> {
         let h = b - a;
         let (ca, da) = curve.derivatives(a);
@@ -1223,7 +1243,11 @@ impl<'a> SurfaceBound<'a> {
             // At a singular point (a pole) the tangent plane's
             // parameters are not unique and the solution is all rounding:
             // the path goes straight from that end.
-            if det > SINGULAR * (p + r) * (p + r) && t.0.is_finite() && t.1.is_finite() {
+            let regular = match feet {
+                Feet::Followed => det > SINGULAR * (p + r) * (p + r),
+                Feet::Careful => det > SINGULAR * p * r,
+            };
+            if regular && t.0.is_finite() && t.1.is_finite() {
                 t
             } else {
                 straight
@@ -1271,6 +1295,19 @@ impl<'a> SurfaceBound<'a> {
     /// points it was fitted through), and are halved where their bound is
     /// over the target, at most `most` pieces in all. `start` is the
     /// parameters of the surface near the curve's point at `range.0`.
+    ///
+    /// Where the halving ends on a piece that cannot be halved further,
+    /// on a surface other than a plane, and the curve is not seen off the
+    /// surface ([`SurfaceBound::seen_off`]), the proof is tried once more
+    /// with the feet found carefully ([`Feet::Careful`]): near a pole or an
+    /// apex the feet followed by Gauss-Newton steps alone may land across
+    /// the singular point, or be named a turn apart round the axis, and a
+    /// piece between two such feet is never proven, however short. What
+    /// the first proof proves is the answer as before, bit for bit and at
+    /// the same cost; what it does not is proven only by a proof of its
+    /// own, and otherwise refused at the place the first proof stopped,
+    /// as before. Where the pieces allowed or the work
+    /// (`crate::allowance`) run out, nothing is tried again.
     pub fn curve_within(
         &self,
         curve: &CurveBound<'_>,
@@ -1284,6 +1321,202 @@ impl<'a> SurfaceBound<'a> {
         if !(lo.is_finite() && hi.is_finite() && hi > lo && target.is_finite()) {
             return Err(NotProven { at: lo });
         }
+        let stop = match self.prove(curve, range, start, breaks, target, most, Feet::Followed) {
+            Ok(proven) => return Ok(proven),
+            Err(stop) => stop,
+        };
+        let refused = NotProven { at: stop.at };
+        // On a plane the steps find the foot in closed form: careful feet
+        // would be the same.
+        if !stop.again
+            || matches!(self.surface, Surface::Plane(_))
+            || self.seen_off(curve, range, stop.piece, target)
+        {
+            return Err(refused);
+        }
+        self.prove(curve, range, start, breaks, target, most, Feet::Careful)
+            .map_err(|_| refused)
+    }
+
+    /// Whether a point of the curve is seen farther than `target` from the
+    /// surface's point at its projection: the curve is off there, and no
+    /// feet would prove it within. Looked at are the ends and the middle
+    /// of the piece the proof stopped on, places on either side of it at
+    /// distances that double from a 2⁻²⁴ of the range (the proof of a
+    /// curve that is off stops where its distance comes to the target,
+    /// beside a stretch where it is farther), and 17 places spread over
+    /// the range. The projection is in closed form for the analytic kinds;
+    /// for a spline it is a search, which may miss the nearest point: then
+    /// a proof that could have been is not tried again, never one that
+    /// could not.
+    fn seen_off(
+        &self,
+        curve: &CurveBound<'_>,
+        (lo, hi): (f64, f64),
+        (a, b, _, _): Piece,
+        target: f64,
+    ) -> bool {
+        let off = |t: f64| {
+            let p = curve.eval(t);
+            self.surface.project(p).is_ok_and(|f| {
+                let gap = self.surface.eval(f.0, f.1).distance(p);
+                gap - (curve.rounding(t) + self.rounding(f)) > target
+            })
+        };
+        let width = hi - lo;
+        let middle = 0.5 * (a + b);
+        let beside = (0..24).rev().flat_map(|k| {
+            let step = width * 0.5_f64.ppowi(k + 1);
+            [middle - step, middle + step]
+        });
+        let spread = (0..=16).map(|k| lo + width * f64::from(k) / 16.0);
+        [a, middle, b]
+            .into_iter()
+            .chain(beside)
+            .chain(spread)
+            .filter(|t| *t >= lo && *t <= hi)
+            .any(off)
+    }
+
+    /// Whether `(u, v)` lies within the surface's parameter range in the
+    /// directions it does not close round (as far as a billionth of the
+    /// range's width, or of its finite end's size, past it): a foot past a
+    /// pole, an apex or a spline's border names a point by the surface
+    /// continued.
+    fn inside(&self, (u, v): (f64, f64)) -> bool {
+        let ((u0, u1), (v0, v1)) = self.surface.domain();
+        let within = |x: f64, lo: f64, hi: f64, closed: bool| {
+            if closed {
+                return true;
+            }
+            let width = hi - lo;
+            let slack = if width.is_finite() {
+                1e-9 * width
+            } else {
+                let end = if lo.is_finite() { lo } else { hi };
+                1e-9 * (1.0 + if end.is_finite() { end.abs() } else { 0.0 })
+            };
+            x >= lo - slack && x <= hi + slack
+        };
+        within(u, u0, u1, self.surface.period_u().is_some())
+            && within(v, v0, v1, self.surface.period_v().is_some())
+    }
+
+    /// `f` named by the parameters nearest `start` round each direction
+    /// the surface closes round.
+    fn named_near(&self, (u, v): (f64, f64), start: (f64, f64)) -> (f64, f64) {
+        let near = |x: f64, from: f64, period: Option<f64>| match period {
+            Some(p) if p > 0.0 && p.is_finite() && (x - from).abs() > 0.5 * p => {
+                let moved = x + ((from - x) / p).round() * p;
+                if moved.is_finite() { moved } else { x }
+            }
+            _ => x,
+        };
+        (
+            near(u, start.0, self.surface.period_u()),
+            near(v, start.1, self.surface.period_v()),
+        )
+    }
+
+    /// The foot of `p` found carefully from `start` (and `also`): the ones
+    /// Gauss-Newton steps find from them ([`SurfaceBound::foot`]), the
+    /// surface's own projection named near `start`, and that projection's
+    /// foot by the steps; the nearest of them to `p`, and of those as near
+    /// to rounding one within the surface's range (past a pole or an apex
+    /// the surface continued names the same point of a sphere or of a
+    /// revolved spline again, and a point of a cone's other nappe), the
+    /// first of those. Steps from a start far round the axis cross a pole
+    /// or an apex and settle there: on a cone at the point across the
+    /// axis on the other nappe (twice the distance from the axis off), on
+    /// a sphere at the same point named past the pole.
+    fn careful_foot(&self, p: Vec3, start: (f64, f64), also: (f64, f64)) -> (f64, f64) {
+        let followed = self.foot(p, start);
+        // On the surface to rounding and within its range: none nearer
+        // (and a spline's projection, a search, is dear).
+        if self.inside(followed)
+            && self.surface.eval(followed.0, followed.1).distance(p)
+                <= 8.0 * self.rounding(followed)
+        {
+            return followed;
+        }
+        let mut candidates = vec![followed];
+        if also != start {
+            candidates.push(self.foot(p, also));
+        }
+        if let Ok(projected) = self.surface.project(p) {
+            let named = self.named_near(projected, start);
+            candidates.push(named);
+            candidates.push(self.foot(p, named));
+        }
+        let scored: Vec<(f64, (f64, f64))> = candidates
+            .into_iter()
+            .map(|f| (self.surface.eval(f.0, f.1).distance(p), f))
+            .filter(|(d, _)| d.is_finite())
+            .collect();
+        let Some(nearest) = scored.iter().map(|(d, _)| *d).reduce(f64::min) else {
+            return followed;
+        };
+        let near_enough = |(d, f): &(f64, (f64, f64))| *d <= nearest + 8.0 * self.rounding(*f);
+        scored
+            .iter()
+            .filter(|c| near_enough(c) && self.inside(c.1))
+            .chain(scored.iter().filter(|c| near_enough(c)))
+            .map(|(_, f)| *f)
+            .next()
+            .unwrap_or(followed)
+    }
+
+    /// [`SurfaceBound::piece_bound`] with the end's foot `fb` named by the
+    /// parameters nearest `fa` round each direction the surface closes
+    /// round, and, where that bound is over `target`, with it a turn
+    /// further either way: the least of these. Any path gives a true
+    /// bound; near a pole or an apex the curve goes half round the axis
+    /// in a short stretch and the feet of a piece's two ends may be named
+    /// a turn apart, so that the path between them goes round the axis
+    /// the other way (or once more) and no halving would prove it.
+    fn piece_bound_round(
+        &self,
+        curve: &CurveBound<'_>,
+        (a, b, fa, fb): Piece,
+        target: f64,
+    ) -> Option<f64> {
+        let named = self.named_near(fb, fa);
+        let first = self.piece_bound(curve, (a, b), fa, named, Feet::Careful);
+        if first.is_some_and(|x| x <= target) {
+            return first;
+        }
+        let turns = [
+            self.surface.period_u().map(|p| (p, 0.0)),
+            self.surface.period_u().map(|p| (-p, 0.0)),
+            self.surface.period_v().map(|p| (0.0, p)),
+            self.surface.period_v().map(|p| (0.0, -p)),
+        ];
+        turns
+            .into_iter()
+            .flatten()
+            .filter_map(|(du, dv)| {
+                let turned = (named.0 + du, named.1 + dv);
+                self.piece_bound(curve, (a, b), fa, turned, Feet::Careful)
+            })
+            .chain(first)
+            .reduce(f64::min)
+    }
+
+    /// The proof of [`SurfaceBound::curve_within`] with the feet found as
+    /// `feet` says; `Err` with where it stopped and why.
+    #[allow(clippy::too_many_arguments)]
+    fn prove(
+        &self,
+        curve: &CurveBound<'_>,
+        range: (f64, f64),
+        start: (f64, f64),
+        breaks: &[f64],
+        target: f64,
+        most: usize,
+        feet: Feet,
+    ) -> Result<Proven, Stop> {
+        let (lo, hi) = range;
+        let careful = feet == Feet::Careful;
         let mut points: Vec<f64> = vec![lo, hi];
         points.extend(curve.breaks(lo, hi));
         // Analytic curves have no knots: eight pieces to start from, so
@@ -1305,7 +1538,11 @@ impl<'a> SurfaceBound<'a> {
                 let between = last + (t - last) * k as f64 / FOLLOW as f64;
                 hint = self.foot(curve.eval(between), hint);
             }
-            hint = self.foot(curve.eval(*t), hint);
+            hint = if careful {
+                self.careful_foot(curve.eval(*t), hint, hint)
+            } else {
+                self.foot(curve.eval(*t), hint)
+            };
             feet.push(hint);
             last = *t;
         }
@@ -1328,9 +1565,18 @@ impl<'a> SurfaceBound<'a> {
             // spent, no more pieces: not proven (an import refuses then,
             // naming the work).
             if crate::allowance::exhausted() {
-                return Err(NotProven { at: middle });
+                return Err(Stop {
+                    at: middle,
+                    piece: (a, b, fa, fb),
+                    again: false,
+                });
             }
-            match self.piece_bound(curve, a, b, fa, fb) {
+            let bound = if careful {
+                self.piece_bound_round(curve, (a, b, fa, fb), target)
+            } else {
+                self.piece_bound(curve, (a, b), fa, fb, Feet::Followed)
+            };
+            match bound {
                 Some(bound) if bound <= target => {
                     proven.bound = proven.bound.max(bound);
                     proven.pieces += 1;
@@ -1338,23 +1584,58 @@ impl<'a> SurfaceBound<'a> {
                 }
                 _ => {}
             }
-            if proven.pieces + stack.len() + 2 > most || !(middle > a && middle < b) {
-                return Err(NotProven { at: middle });
+            let narrowest = !(middle > a && middle < b);
+            if proven.pieces + stack.len() + 2 > most || narrowest {
+                // A piece that cannot be halved is held by a term of its
+                // bound that does not fall with its width: an end's
+                // distance from its foot, or a path between two feet
+                // named apart (where the pieces allowed run out first,
+                // nothing is tried again: the work is spent).
+                return Err(Stop {
+                    at: middle,
+                    piece: (a, b, fa, fb),
+                    again: !careful && narrowest,
+                });
             }
-            // From both ends' feet: one poor foot would spoil every
-            // halving below it.
             let p = curve.eval(middle);
-            let fm = [fa, fb]
-                .map(|f| self.foot(p, f))
-                .into_iter()
-                .map(|f| (self.surface.eval(f.0, f.1).distance(p), f))
-                .min_by(|x, y| x.0.total_cmp(&y.0))
-                .map_or(fa, |(_, f)| f);
+            let fm = if careful {
+                self.careful_foot(p, fa, fb)
+            } else {
+                // From both ends' feet: one poor foot would spoil every
+                // halving below it.
+                [fa, fb]
+                    .map(|f| self.foot(p, f))
+                    .into_iter()
+                    .map(|f| (self.surface.eval(f.0, f.1).distance(p), f))
+                    .min_by(|x, y| x.0.total_cmp(&y.0))
+                    .map_or(fa, |(_, f)| f)
+            };
             stack.push((middle, b, fm, fb));
             stack.push((a, middle, fa, fm));
         }
         Ok(proven)
     }
+}
+
+/// How the feet of a proof are found: followed from one to the next by
+/// Gauss-Newton steps alone (every proof first), or carefully (once more,
+/// where that proof stopped where the feet may be at fault): the nearest
+/// of those steps and the surface's projection, one within the surface's
+/// range before one past a pole or an apex
+/// ([`SurfaceBound::careful_foot`]), each piece's end named near its
+/// start and a turn either way ([`SurfaceBound::piece_bound_round`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Feet {
+    Followed,
+    Careful,
+}
+
+/// Where a proof stopped: the middle of the piece it stopped on, the
+/// piece, and whether careful feet may prove what it did not.
+struct Stop {
+    at: f64,
+    piece: Piece,
+    again: bool,
 }
 
 /// How a proof that a curve lies on a surface is held: every point within
@@ -2040,7 +2321,7 @@ mod tests {
     /// A cubic through points of `surface` at `params`, lifted off it by
     /// `bump` times a bump that is zero at every fit point and at every
     /// middle between them.
-    fn curve_on(
+    pub(super) fn curve_on(
         surface: &Surface,
         path: impl Fn(f64) -> (f64, f64),
         count: usize,
@@ -2073,9 +2354,9 @@ mod tests {
     }
 
     /// A path in a surface's parameters, over `t` from 0 to 1.
-    type Along = Box<dyn Fn(f64) -> (f64, f64)>;
+    pub(super) type Along = Box<dyn Fn(f64) -> (f64, f64)>;
 
-    fn surfaces(k: f64) -> Vec<(Surface, Along)> {
+    pub(super) fn surfaces(k: f64) -> Vec<(Surface, Along)> {
         let f = frame(k);
         let wavy = {
             let mut ctrl = Vec::new();
@@ -3082,3 +3363,7 @@ mod tests {
         assert!(proven.is_err(), "{proven:?}");
     }
 }
+
+#[cfg(test)]
+#[path = "certify_apex_tests.rs"]
+mod apex_tests;
