@@ -1030,7 +1030,10 @@ fn choose_and_record(
     remove_stale_locks(state, pid);
     let path = journal_path(state);
     let mut book = read(&path);
-    let is_starting = |other: u32| other == pid || starting(state, other);
+    // No record can be this process's yet (its lock is taken below): one
+    // with its process id is a crashed window's whose id the system gave
+    // again, and counts as any other.
+    let is_starting = |other: u32| other != pid && starting(state, other);
     let choice = match choose(offered, rule, &book, power, now, &is_starting) {
         Ok(choice) => choice,
         Err(why) => {
@@ -1280,6 +1283,41 @@ mod tests {
         b.closing();
         let book = read(&path);
         assert_eq!(book.records.len(), 2, "{book:?}");
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    /// A crashed window's record whose process id the system gave again to
+    /// this start (a restart by the launcher): still a crash, and passed
+    /// over.
+    #[test]
+    fn a_crash_under_this_process_id_is_still_a_crash() {
+        let folder = std::env::temp_dir().join(format!(
+            "craft3d-graphics-reused-{}-{}",
+            std::process::id(),
+            now()
+        ));
+        let offered = pc2();
+        let path = journal_path(&folder);
+        // The crashed window of process 4545 left its record and its lock
+        // file, unlocked.
+        drop(hold(&folder, 4545).unwrap());
+        let mut book = Journal::default();
+        book.set(&offered[0].attempt, Outcome::Attempting, now(), 4545);
+        write(&path, &book).unwrap();
+        let lock = std::sync::Mutex::new(None);
+        let (choice, attempt) =
+            choose_and_record(Some(&folder), 4545, &offered, &windows(), HIGH, &lock).unwrap();
+        assert_eq!(choice.index, 3, "OpenGL: Vulkan ended the start");
+        assert_eq!(choice.skipped.len(), 1);
+        assert_eq!(attempt.backend, Gl);
+        // This start holds its lock now, and its "attempting" is written.
+        assert!(lock.lock().unwrap().is_some());
+        let book = read(&path);
+        assert!(
+            book.records
+                .iter()
+                .any(|r| r.attempt.backend == Gl && r.pid == 4545)
+        );
         let _ = std::fs::remove_dir_all(&folder);
     }
 
