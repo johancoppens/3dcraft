@@ -98,18 +98,188 @@ const MAX_WEIGHT_RATIO: f64 = 2e6;
 /// over a piece is within a small factor of the truth wherever the
 /// Jacobian changes little over it, and four leaves room for that.
 const SIGMA_SLACK: f64 = 4.0;
-/// How often a leaf is halved for it at most, and how many pieces one
-/// surface keeps (16,384: at most about 11 MB for a bicubic surface, the
-/// store emptied when full; [`PatchTree::finer`]'s answers do not depend
-/// on it): next to a heavy corner the Jacobian settles within
-/// a piece about the weights' ratio smaller than the corner's leaf, and
-/// `2^-FINE_DEPTH` of a leaf (`2^-21` of a span) covers ratios to the cap
-/// of a span ([`MAX_WEIGHT_RATIO`]).
+/// How often a leaf is halved for [`PatchTree::finer`] at most: next to a
+/// heavy corner the Jacobian settles within a piece about the weights'
+/// ratio smaller than the corner's leaf, and `2^-FINE_DEPTH` of a leaf
+/// (`2^-21` of a span) covers ratios to the cap of a span
+/// ([`MAX_WEIGHT_RATIO`]).
 const FINE_DEPTH: usize = 16;
 /// How many pieces a leaf's bound is settled from at most when the tree
 /// is built ([`PatchTree::settled_sigma`]).
 const LEAF_PIECES: usize = 1 << 8;
-const FINE_PIECES: usize = 1 << 14;
+/// How many fine pieces one surface keeps at most ([`PatchTree::finer`],
+/// whose answers do not depend on what it keeps; past it the leaves asked
+/// about longest ago are let go), and no more than the room the process
+/// has for them ([`fine_room`]). A piece takes some 270 bytes (a quarter
+/// keeps no patch, [`patch_of`]; a leaf's own piece keeps its own):
+/// 524 288 pieces some 140 MB, counted in the tree's bytes on the shelf
+/// and in the room of what the operations hold together.
+///
+/// One search of a leaf whose weights are far apart adds up to
+/// `4 FINE_LOOKS + 1` pieces, and the searches along a face's boundary
+/// look into a few such leaves: on a block whose flat sides are bicubic
+/// NURBS with weights from 1e-3 to 1e3, some 30 000 pieces a search. With
+/// 16 384 pieces a surface (until 2026-11-15), shared by the section and
+/// the helper meeting its pairs ahead, each let go of what the other and
+/// the next search needed, and it was made again, uncounted: the
+/// intersection of such a block 30 × 30 × 20 with a block through three
+/// of its sides ran for most of an hour; with this store it is built in
+/// seconds (docs/design/booleans.md › *A boolean that runs for most of an
+/// hour*). In a browser twice as many pieces as before, in less memory.
+#[cfg(not(target_arch = "wasm32"))]
+const FINE_PIECES: usize = 1 << 19;
+#[cfg(target_arch = "wasm32")]
+const FINE_PIECES: usize = 1 << 15;
+
+/// The patch of the piece at `at` of a leaf's store (`nodes`, the leaf's
+/// own piece first, which keeps its patch): cut out of the nearest piece
+/// above it that keeps one by the same splits, in the same order, that
+/// made its quarters ([`PatchTree::quartered`]: across u at the middle,
+/// then across v), so the same patch, bit for bit, as the one it was made
+/// from. `None` where the chain is broken or longer than a store's pieces
+/// can be deep.
+fn patch_of(nodes: &[FinePiece], at: usize) -> Option<RationalBezierPatch> {
+    let mut path = Vec::new();
+    let mut k = at;
+    let start = loop {
+        let piece = nodes.get(k)?;
+        if let Some(patch) = &piece.patch {
+            break patch.clone();
+        }
+        if path.len() > FINE_DEPTH || piece.parent == k {
+            return None;
+        }
+        path.push(piece.quarter);
+        k = piece.parent;
+    };
+    let mut patch = start;
+    for &quarter in path.iter().rev() {
+        let (left, right) = patch.split_u(0.5);
+        let half = if quarter < 2 { left } else { right };
+        let (low, high) = half.split_v(0.5);
+        patch = if quarter % 2 == 0 { low } else { high };
+    }
+    Some(patch)
+}
+
+/// What the control points of a patch take.
+fn patch_bytes(patch: &RationalBezierPatch) -> usize {
+    let (du, dv) = patch.degrees();
+    (du + 1)
+        .saturating_mul(dv + 1)
+        .saturating_mul(4 * std::mem::size_of::<f64>())
+}
+
+/// In place of [`FINE_PIECES`] for the trees made from now on, when not
+/// zero ([`set_fine_pieces`]).
+static FINE_PIECES_SET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Makes the trees built from now on keep at most `pieces` fine pieces,
+/// or [`FINE_PIECES`] (`None`): for the tests that compare a store of the
+/// old size with the store as it is. Their answers are the same either
+/// way; only what is made again differs.
+#[doc(hidden)]
+pub fn set_fine_pieces(pieces: Option<usize>) {
+    FINE_PIECES_SET.store(pieces.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The cap of a tree's store of fine pieces, as [`set_fine_pieces`] left it.
+fn fine_pieces() -> usize {
+    match FINE_PIECES_SET.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => FINE_PIECES,
+        set => set,
+    }
+}
+
+/// What the fine pieces of every tree of the process take together, in
+/// bytes ([`PatchTree::finer`]).
+static FINE_TOGETHER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// The most [`FINE_TOGETHER`] was since [`take_fine_most`] last read it.
+static FINE_MOST: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// What the trees the operations hold together take ([`Together`]'s
+/// bytes), read without its lock.
+static HELD_NOW: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many bytes of fine pieces a tree whose store takes `mine` may
+/// keep, as far as the process is concerned: the budget of what the
+/// operations hold together ([`HELD_TOGETHER`]) less the trees they hold
+/// and less the fine pieces of every other tree. A store at it lets go of
+/// its own oldest leaves, as at its own cap; nothing is refused.
+fn fine_room(mine: usize) -> usize {
+    use std::sync::atomic::Ordering::Relaxed;
+    let others = FINE_TOGETHER.load(Relaxed).saturating_sub(mine);
+    HELD_TOGETHER
+        .saturating_sub(HELD_NOW.load(Relaxed))
+        .saturating_sub(others)
+}
+
+/// Adds `added` and takes `gone` bytes from [`FINE_TOGETHER`], and keeps
+/// its most.
+fn fine_together(added: usize, gone: usize) {
+    use std::sync::atomic::Ordering::Relaxed;
+    if gone > 0 {
+        let _ = FINE_TOGETHER.try_update(Relaxed, Relaxed, |b| Some(b.saturating_sub(gone)));
+    }
+    if added > 0 {
+        let now = FINE_TOGETHER
+            .fetch_add(added, Relaxed)
+            .saturating_add(added);
+        FINE_MOST.fetch_max(now, Relaxed);
+    }
+}
+
+/// The most the fine pieces of every tree took together since this was
+/// last asked (in bytes), and starts counting afresh: for the benchmark's
+/// report of what its models held.
+#[doc(hidden)]
+pub fn take_fine_most() -> usize {
+    use std::sync::atomic::Ordering::Relaxed;
+    FINE_MOST.swap(FINE_TOGETHER.load(Relaxed), Relaxed)
+}
+
+/// What [`PatchTree::finer`] did on this thread since the thread started:
+/// fine pieces made, pieces let go of, and pieces made under a leaf let go
+/// of before while [`count_fine_remakes`] was on (every piece made under
+/// such a leaf counts, so this is at least the number made a second
+/// time).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct FineWork {
+    pub made: u64,
+    pub let_go: u64,
+    pub remade: u64,
+}
+
+thread_local! {
+    static FINE_WORK: std::cell::Cell<FineWork> = const {
+        std::cell::Cell::new(FineWork { made: 0, let_go: 0, remade: 0 })
+    };
+    static COUNT_REMAKES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// [`FineWork`] of this thread.
+#[doc(hidden)]
+pub fn fine_work() -> FineWork {
+    FINE_WORK.try_with(std::cell::Cell::get).unwrap_or_default()
+}
+
+/// Whether the stores this thread asks from now on keep which leaves they
+/// let go of, so that a piece made again under one is counted
+/// ([`FineWork::remade`]): for tests that hold the searches to making
+/// each piece once.
+#[doc(hidden)]
+pub fn count_fine_remakes(on: bool) {
+    let _ = COUNT_REMAKES.try_with(|count| count.set(on));
+}
+
+fn add_fine_work(made: usize, let_go: usize, remade: usize) {
+    let _ = FINE_WORK.try_with(|work| {
+        let mut w = work.get();
+        w.made = w.made.saturating_add(made as u64);
+        w.let_go = w.let_go.saturating_add(let_go as u64);
+        w.remade = w.remade.saturating_add(remade as u64);
+        work.set(w);
+    });
+}
 /// How many pieces one query of [`PatchTree::finer`] takes before it
 /// answers with the lowest bound left, which holds as well.
 const FINE_LOOKS: usize = 1 << 10;
@@ -266,16 +436,25 @@ struct Fine {
     /// The pieces under each leaf asked about, by the leaf's index (the
     /// leaf's own piece first).
     roots: BTreeMap<usize, FineRoot>,
-    /// How many pieces all of them hold.
+    /// How many pieces all of them hold, and what they take.
     pieces: usize,
+    bytes: usize,
     /// Counts the queries, to tell which leaf was asked about last.
     clock: u64,
+    /// The leaves let go of, once a thread that counts remakes asked
+    /// ([`count_fine_remakes`]).
+    let_go: Option<std::collections::BTreeSet<usize>>,
 }
 
 #[derive(Debug, Default)]
 struct FineRoot {
     nodes: Vec<FinePiece>,
     used: u64,
+    /// Made again after the store let go of the leaf (counted only once
+    /// [`Fine::let_go`] is kept).
+    remade: bool,
+    /// What its pieces take: each piece, and the leaf's own patch.
+    bytes: usize,
 }
 
 #[derive(Debug)]
@@ -292,9 +471,16 @@ struct FinePiece {
     /// are among its corners and middle, and are not worked out again.
     at: [f64; 5],
     depth: usize,
-    /// Kept until the piece is split.
+    /// Its patch: kept by a piece made on its own (a leaf's first piece,
+    /// a piece of the tree's building); a quarter kept in a store has
+    /// none, and its patch is cut out of the leaf's ([`patch_of`]).
     patch: Option<RationalBezierPatch>,
     children: Option<[usize; 4]>,
+    /// In a store, the piece it is a quarter of (itself for the leaf's
+    /// own) and which quarter, in the order [`PatchTree::quartered`]
+    /// makes them.
+    parent: usize,
+    quarter: u8,
     /// The work making it took ([`craft3d_geom::allowance::cost_of`]),
     /// charged once per operation that goes into it, made then or kept.
     units: u64,
@@ -2155,6 +2341,7 @@ impl Share {
             FREED.notify_all();
         }
         t.bytes = t.bytes.saturating_add(size);
+        HELD_NOW.store(t.bytes, std::sync::atomic::Ordering::Relaxed);
         self.bytes = self.bytes.saturating_add(size);
     }
 }
@@ -2163,6 +2350,7 @@ impl Drop for Share {
     fn drop(&mut self) {
         let mut t = together();
         t.bytes = t.bytes.saturating_sub(self.bytes);
+        HELD_NOW.store(t.bytes, std::sync::atomic::Ordering::Relaxed);
         t.holders = t.holders.saturating_sub(1);
         drop(t);
         FREED.notify_all();
@@ -2329,6 +2517,17 @@ pub(super) fn trees_built() -> usize {
     BUILT.with(std::cell::Cell::get)
 }
 
+impl Drop for PatchTree {
+    /// What its fine pieces took is the process's again ([`fine_room`]).
+    fn drop(&mut self) {
+        let bytes = match self.fine.get_mut() {
+            Ok(fine) => fine.bytes,
+            Err(poisoned) => poisoned.into_inner().bytes,
+        };
+        fine_together(0, bytes);
+    }
+}
+
 impl PatchTree {
     /// The tree of `surface`, shared with the booleans before that asked
     /// for the same surface. A tree is a function of its surface alone, so
@@ -2382,6 +2581,11 @@ impl PatchTree {
     /// its leaves keep, and what it remembers (its memos and the fine
     /// pieces of its leaves), which grows as it is used, up to their caps.
     fn bytes(&self) -> usize {
+        // Counted on the shelf as before 2026-11-15, each piece with a
+        // patch of its own (its quarters keep none now and take less,
+        // which the room of the process counts, [`fine_room`]), so that
+        // the shelf keeps and lets go of the same trees where the store
+        // holds as many pieces as before.
         let fine = self
             .fine_pieces
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -2489,7 +2693,7 @@ impl PatchTree {
             fine_pieces: std::sync::atomic::AtomicUsize::new(0),
             base_bytes: 0,
             fine_piece_bytes: 0,
-            fine_cap: FINE_PIECES,
+            fine_cap: fine_pieces(),
             halves: spans.len().saturating_mul(1 << (2 * depth)) > HALVED_FROM,
             fine: Mutex::new(Fine::default()),
             evened: std::sync::OnceLock::new(),
@@ -2825,8 +3029,33 @@ impl PatchTree {
         // ago, a leaf's all at once: the queries come along the curves of
         // a boundary, near the last ones, and emptying the whole store
         // made the same pieces again and again (36.7 million of them in
-        // one boolean of the helmet, for a store of 16,384).
-        while fine.pieces.saturating_add(4 * FINE_LOOKS + 1) > self.fine_cap {
+        // one boolean of the helmet, for a store of 16,384). The store
+        // holds what the searches along a boundary look into ([`FINE_PIECES`]),
+        // so a search keeps what it made, and the threads that ask the
+        // same tree at once (the section and the helpers meeting its pairs
+        // ahead) let go of each other's pieces only at the cap, or where
+        // the process has no more room for them ([`fine_room`]): there the
+        // old leaves go as before, and nothing is refused. Whatever is let
+        // go of, every answer and what is charged for it are the same.
+        // What a piece takes in the store (a quarter keeps no patch) and
+        // what the leaf's own piece takes besides (its patch).
+        let piece_bytes = std::mem::size_of::<FinePiece>();
+        let patch_bytes = patch_bytes(patch);
+        let room = 4 * FINE_LOOKS + 1;
+        let counting = COUNT_REMAKES
+            .try_with(std::cell::Cell::get)
+            .unwrap_or(false);
+        if counting && fine.let_go.is_none() {
+            fine.let_go = Some(std::collections::BTreeSet::new());
+        }
+        let mut let_go = 0_usize;
+        while fine.pieces.saturating_add(room) > self.fine_cap
+            || fine
+                .bytes
+                .saturating_add(room.saturating_mul(piece_bytes))
+                .saturating_add(patch_bytes)
+                > fine_room(fine.bytes)
+        {
             let oldest = fine
                 .roots
                 .iter()
@@ -2835,14 +3064,29 @@ impl PatchTree {
                 .map(|(leaf, _)| *leaf)
                 .or_else(|| fine.roots.contains_key(&index).then_some(index));
             let Some(oldest) = oldest else {
+                fine_together(0, fine.bytes);
                 fine.pieces = 0;
+                fine.bytes = 0;
                 break;
             };
             if let Some(gone) = fine.roots.remove(&oldest) {
-                fine.pieces = fine.pieces.saturating_sub(gone.nodes.len());
+                let pieces = gone.nodes.len();
+                fine.pieces = fine.pieces.saturating_sub(pieces);
+                fine.bytes = fine.bytes.saturating_sub(gone.bytes);
+                fine_together(0, gone.bytes);
+                let_go = let_go.saturating_add(pieces);
+                if let Some(gone) = fine.let_go.as_mut() {
+                    gone.insert(oldest);
+                }
             }
         }
+        let again = fine
+            .let_go
+            .as_ref()
+            .is_some_and(|gone| gone.contains(&index));
         let clock = fine.clock;
+        let mut made = 0_usize;
+        let mut added_bytes = 0_usize;
         let root = match fine.roots.entry(index) {
             std::collections::btree_map::Entry::Occupied(found) => found.into_mut(),
             std::collections::btree_map::Entry::Vacant(free) => {
@@ -2852,10 +3096,13 @@ impl PatchTree {
                     })
                 });
                 piece.units = units;
-                fine.pieces = fine.pieces.saturating_add(1);
+                made = 1;
+                added_bytes = piece_bytes.saturating_add(patch_bytes);
                 free.insert(FineRoot {
                     nodes: vec![piece],
                     used: clock,
+                    remade: again,
+                    bytes: added_bytes,
                 })
             }
         };
@@ -2865,8 +3112,17 @@ impl PatchTree {
         root.used = clock;
         let before = root.nodes.len();
         let answer = self.finer_in(&mut root.nodes, p, reach, cutoff);
-        let added = root.nodes.len().saturating_sub(before);
-        fine.pieces = fine.pieces.saturating_add(added);
+        let quarters = root.nodes.len().saturating_sub(before);
+        root.bytes = root
+            .bytes
+            .saturating_add(quarters.saturating_mul(piece_bytes));
+        made = made.saturating_add(quarters);
+        added_bytes = added_bytes.saturating_add(quarters.saturating_mul(piece_bytes));
+        let remade = if root.remade { made } else { 0 };
+        fine.pieces = fine.pieces.saturating_add(made);
+        fine.bytes = fine.bytes.saturating_add(added_bytes);
+        fine_together(added_bytes, 0);
+        add_fine_work(made, let_go, remade);
         self.fine_pieces
             .store(fine.pieces, std::sync::atomic::Ordering::Relaxed);
         answer
@@ -2958,14 +3214,24 @@ impl PatchTree {
                 }
                 continue;
             }
-            let Some(patch) = piece.patch.clone() else {
+            // A piece below the leaf's own keeps no patch (most of what a
+            // piece takes): it is cut out of the leaf's again, the same
+            // splits in the same order, so the same bits ([`patch_of`]).
+            let Some(patch) = piece
+                .patch
+                .clone()
+                .or_else(|| craft3d_geom::allowance::uncounted(|| patch_of(nodes, at)))
+            else {
                 return Some(sigma);
             };
             let (mut made, units) = craft3d_geom::allowance::uncounted(|| {
                 craft3d_geom::allowance::cost_of(|| self.quartered(piece, &patch, sigma))
             });
-            for kid in &mut made {
+            for (quarter, kid) in (0_u8..).zip(&mut made) {
                 kid.units = units / 4;
+                kid.parent = at;
+                kid.quarter = quarter;
+                kid.patch = None;
                 self.charge_piece(kid);
             }
             let mut kids = [0_usize; 4];
@@ -2978,7 +3244,11 @@ impl PatchTree {
             }
             if let Some(piece) = nodes.get_mut(at) {
                 piece.children = Some(kids);
-                piece.patch = None;
+                // The leaf's own piece keeps its patch: the others are
+                // cut out of it.
+                if at != root {
+                    piece.patch = None;
+                }
             }
         }
         // Nothing of the leaf within reach: it has nothing to add.
@@ -3172,6 +3442,8 @@ impl PatchTree {
             depth,
             patch: Some(patch),
             children: None,
+            parent: 0,
+            quarter: 0,
             units: 0,
         }
     }
@@ -4625,6 +4897,129 @@ mod tests {
         }
         // The queries need more than the small stores hold.
         assert!(most > room + 300, "{most}");
+    }
+
+    /// The plane 30 × 30 drawn as a bicubic NURBS of six by six control
+    /// points on knots 0, 1/3, 2/3, 1, whose weights run from 1e-3 to 1e3
+    /// (seeded by `seed`): a side of the blocks whose booleans ran for most
+    /// of an hour (docs/design/booleans.md › *A boolean that runs for most
+    /// of an hour*).
+    fn weighted_plane(seed: u64) -> Surface {
+        let mut state = seed;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 1.0, 1.0];
+        let mut ctrl = Vec::new();
+        let mut weights = Vec::new();
+        for i in 0..6 {
+            for j in 0..6 {
+                ctrl.push(Vec3::new(6.0 * f64::from(i), 6.0 * f64::from(j), 0.0));
+                weights.push((6.0 * (next() - 0.5) * std::f64::consts::LN_10).pexp());
+            }
+        }
+        Surface::Nurbs(NurbsSurface::new(3, 3, knots.clone(), knots, 6, 6, ctrl, weights).unwrap())
+    }
+
+    /// The searches along the boundary of a weighted sheet, as the steps
+    /// of a winding ask them, look into more pieces than a store of
+    /// 16 384 (the cap until 2026-11-15) holds: it let go of what the next
+    /// search needed and made it again (measured: 62 461 pieces made, 51 327
+    /// let go, 3066 made again). The store as it is now makes each piece
+    /// once (59 395) and lets go of nothing; the answers and the work
+    /// charged are the same, bit for bit, either way. Counted, not timed.
+    #[test]
+    fn a_store_that_holds_the_searches_along_a_boundary_makes_each_piece_once() {
+        let sheet = weighted_plane(3);
+        let n = 8;
+        let ((u0, u1), (v0, v1)) = sheet.domain();
+        let questions: Vec<(Vec3, f64)> = (0..n)
+            .flat_map(|k| {
+                let t = f64::from(k) / f64::from(n - 1);
+                let (u, v) = (u0 + t * (u1 - u0), v0 + t * (v1 - v0));
+                [
+                    (sheet.eval(u, v0), 3.66e-3),
+                    (sheet.eval(u1, v), 3.66e-3),
+                    (sheet.eval(u, v1), 1.83e-3),
+                    (sheet.eval(u0, v), 1.83e-3),
+                ]
+            })
+            .collect();
+        count_fine_remakes(true);
+        let mut seen = Vec::new();
+        for cap in [16_384, FINE_PIECES] {
+            let mut tree = PatchTree::new(&sheet).unwrap();
+            tree.fine_cap = cap;
+            let before = fine_work();
+            let (answers, units) = craft3d_geom::allowance::measured(|| {
+                questions
+                    .iter()
+                    .map(|&(p, r)| tree.sigma_search(p, r).map(f64::to_bits))
+                    .collect::<Vec<_>>()
+            });
+            let after = fine_work();
+            let (made, let_go, remade) = (
+                after.made - before.made,
+                after.let_go - before.let_go,
+                after.remade - before.remade,
+            );
+            seen.push((cap, answers, units, made, let_go, remade));
+        }
+        count_fine_remakes(false);
+        let [
+            (_, old, old_units, old_made, old_let_go, old_remade),
+            (_, new, new_units, new_made, new_let_go, new_remade),
+        ] = seen.as_slice()
+        else {
+            panic!("two stores");
+        };
+        assert_eq!(old, new);
+        assert_eq!(old_units, new_units);
+        assert!(
+            *old_let_go > 0 && *old_remade > 0,
+            "the old store kept it all"
+        );
+        assert!(old_made > new_made, "{old_made} {new_made}");
+        assert_eq!((*new_let_go, *new_remade), (0, 0));
+    }
+
+    /// The patch of a quarter kept without one, cut out of its leaf's
+    /// ([`patch_of`]), is the patch it was made from, bit for bit, five
+    /// quarters down, on a weighted sheet.
+    #[test]
+    fn a_quarter_s_patch_cut_out_of_its_leaf_is_the_one_it_was_made_from() {
+        let tree = PatchTree::new(&weighted_plane(4)).unwrap();
+        let leaf = tree
+            .nodes
+            .iter()
+            .find(|n| n.children.is_none() && n.patch.is_some())
+            .unwrap();
+        let patch = leaf.patch.clone().unwrap();
+        let first = tree.fine_piece(patch.clone(), leaf.u, leaf.v, leaf.sigma, 0);
+        let mut nodes = vec![first];
+        let mut made = vec![(0_usize, patch)];
+        for _ in 0..5 {
+            let mut next = Vec::new();
+            for (at, patch) in &made {
+                let quarters = tree.quartered(&nodes[*at], patch, nodes[*at].sigma);
+                for (quarter, mut kid) in (0_u8..).zip(quarters) {
+                    let own = kid.patch.take().unwrap();
+                    kid.parent = *at;
+                    kid.quarter = quarter;
+                    nodes.push(kid);
+                    next.push((nodes.len() - 1, own));
+                }
+            }
+            made = next.into_iter().step_by(2).collect();
+        }
+        for (at, own) in &made {
+            let cut = patch_of(&nodes, *at).unwrap();
+            assert_eq!(format!("{cut:?}"), format!("{own:?}"), "{at}");
+        }
+        assert_eq!(made.len(), 32);
     }
 
     #[test]

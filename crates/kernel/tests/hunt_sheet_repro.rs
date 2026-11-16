@@ -335,25 +335,34 @@ fn a_hole_across_a_tight_bend_cannot_be_meshed() {
     );
 }
 
-/// REFUSED, owed (the plate): a plate of a whole sphere or torus (a face
-/// without boundary) is a hollow ball or ring, two shells; the plate puts
-/// both skins in one shell and refuses its own result ("plate produced an
+/// FIXED (was refused, the plate): a plate of a whole sphere or torus (a
+/// face without boundary) is a hollow ball or ring: two closed shells, one
+/// facing out of the material and a cavity inside it. The plate put both
+/// skins in one shell and refused its own result ("plate produced an
 /// invalid body: ... the faces of shell 0 fall into 2 pieces that share
-/// no edge"). The side of a cylinder (a face closing on itself across its
-/// seam, with two boundaries) is plated to its closed form.
+/// no edge"); with no rim to join them each skin is a shell of its own now
+/// (`docs/design/plates.md` › *The plate*). Held: the closed forms
+/// `4/3 π ((r + t)³ − r³)` and `2π² R ((a + t)² − a²)` to 1e-12, the
+/// checker, one lump with one cavity, the mesh closed and of the volume.
+/// The side of a cylinder (a face closing on itself across its seam, with
+/// two boundaries) is plated to its closed form, one shell, as before.
 #[test]
-fn plates_of_a_whole_sphere_and_torus_are_refused() {
+fn plates_of_a_whole_sphere_and_torus_are_hollows() {
+    use craft3d_kernel::lumps::{Lump, lumps};
+    use craft3d_topo::ShellId;
     let k = 1.0;
     let tol = tolerance(k);
     let ball = primitives::sphere(&Frame::WORLD, 10.0).unwrap();
     let ring = primitives::torus(&Frame::WORLD, 20.0, 5.0).unwrap();
-    for (name, body) in [("sphere", ball), ("torus", ring)] {
+    let ball_volume = 4.0 / 3.0 * PI * (1331.0 - 1000.0);
+    let ring_volume = 2.0 * PI * PI * 20.0 * (36.0 - 25.0);
+    for (name, body, want) in [("sphere", ball, ball_volume), ("torus", ring, ring_volume)] {
         let face = body
             .faces
             .iter()
             .position(|f| f.surface.kind() == name)
             .unwrap();
-        let e = plate(
+        let made = plate(
             &body,
             &[FaceId(face as u32)],
             1.0,
@@ -361,11 +370,22 @@ fn plates_of_a_whole_sphere_and_torus_are_refused() {
             &BTreeMap::new(),
             &tol,
         )
-        .expect_err("known refused");
-        assert!(
-            e.to_string().contains("plate produced an invalid body"),
-            "{name}: {e}"
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let b = &made.body;
+        assert!(check(b, &tol).is_empty(), "{name}");
+        assert_eq!(b.shells.len(), 2, "{name}");
+        let got = mass_properties(b).unwrap().volume;
+        assert!((got / want - 1.0).abs() < 1e-12, "{name}: {got} for {want}");
+        assert_eq!(
+            lumps(b, &tol).unwrap(),
+            vec![Lump {
+                outer: ShellId(0),
+                cavities: vec![ShellId(1)]
+            }],
+            "{name}"
         );
+        let mesh = mesh_volume(b, 0.05).unwrap();
+        assert!((mesh / want - 1.0).abs() < 1e-2, "{name}: mesh {mesh}");
     }
     let can = primitives::cylinder(&Frame::WORLD, 10.0, 20.0).unwrap();
     let face = can
@@ -382,27 +402,33 @@ fn plates_of_a_whole_sphere_and_torus_are_refused() {
         &tol,
     )
     .unwrap();
+    assert_eq!(made.body.shells.len(), 1);
     let v = PI * 20.0 * (11.0 * 11.0 - 100.0);
     let got = mass_properties(&made.body).unwrap().volume;
     assert!((got / v - 1.0).abs() < 1e-9, "{got} for {v}");
 }
 
-/// REFUSED, owed (the unfold): the side of a cylinder of radius 31.437
-/// and height 12.025, times 1e6, whose axis is turned off the world's
-/// axes, is refused by `develop` ("face 0 has a boundary that does not
-/// close in the surface's parameters"), wherever it stands; the same
-/// cylinder at scale 1 (its tolerance scaled with it), or with the
-/// world's axes at 1e6, is developed. A refusal that changes with the
-/// scale alone.
+/// FIXED (was refused, the unfold): the side of a cylinder of radius
+/// 31.437 and height 12.025, times 1e6, whose axis is turned off the
+/// world's axes, was refused by `develop` ("face 0 has a boundary that
+/// does not close in the surface's parameters"), wherever it stood; the
+/// same cylinder at scale 1 (its tolerance scaled with it), or with the
+/// world's axes at 1e6, was developed. A loop's ends were held to close in
+/// the parameters within `1e-9 (1 + |u| + |v|)`, and `v` of a cylinder is
+/// a length along its axis: here the ends of its loops were apart in `v`
+/// by the rounding of coordinates of 3e7 (about 1e-8), against a
+/// tolerance of 1. A gap in the parameters is nothing now also where its
+/// length on the part is within the tolerance
+/// (`docs/design/developable.md` › *The region*). All three are
+/// developed, each its area `2π r h` to 1e-7.
 #[test]
-fn a_turned_cylinder_unrolls_at_one_scale_and_not_at_another() {
+fn a_turned_cylinder_unrolls_at_every_scale() {
     let x = Vec3::new(0.6897164377873604, 0.42849178879240324, -0.5836831523895482);
     let z = Vec3::new(
         -0.40679339275755244,
         -0.4375582154097686,
         -0.8019114313539981,
     );
-    let mut seen = Vec::new();
     for (k, zz, xx) in [(1e6, z, x), (1.0, z, x), (1e6, Vec3::Z, Vec3::X)] {
         let f = Frame::new(Vec3::new(0.0, 0.0, 0.0), zz, xx).unwrap();
         let body = primitives::cylinder(&f, 31.43694550814996 * k, 12.025057614637177 * k).unwrap();
@@ -411,38 +437,37 @@ fn a_turned_cylinder_unrolls_at_one_scale_and_not_at_another() {
             .iter()
             .position(|f| matches!(f.surface, Surface::Cylinder(_)))
             .unwrap();
-        let made = develop(&body, &[FaceId(face as u32)], &tolerance(k));
-        if let Ok(d) = &made {
-            let flat = d.flat_body(&Frame::WORLD, &tolerance(k)).unwrap();
-            let a = mass_properties(&flat.body).unwrap().area;
-            let want = 2.0 * PI * 31.43694550814996 * 12.025057614637177 * k * k;
-            assert!((a / want - 1.0).abs() < 1e-7, "{k}: {a} for {want}");
-        }
-        seen.push(made.is_ok());
+        let d = develop(&body, &[FaceId(face as u32)], &tolerance(k))
+            .unwrap_or_else(|e| panic!("{k}: {e}"));
+        let flat = d.flat_body(&Frame::WORLD, &tolerance(k)).unwrap();
+        let a = mass_properties(&flat.body).unwrap().area;
+        let want = 2.0 * PI * 31.43694550814996 * 12.025057614637177 * k * k;
+        assert!((a / want - 1.0).abs() < 1e-7, "{k}: {a} for {want}");
     }
-    assert_eq!(
-        seen,
-        vec![false, true, true],
-        "known refused at 1e6 with turned axes only"
-    );
 }
 
-/// A representation, not a wrong body: a flange bent down by 0.00324
-/// degrees (5.65e-5 rad) about the inner radius 1.178 with the thickness
-/// 2.811, times 1e6, has one freeform face (a rim) among its planes and
+/// FIXED (a representation, not a wrong body): a flange bent down by
+/// 0.00324 degrees (5.65e-5 rad) about the inner radius 1.178 with the
+/// thickness 2.811, times 1e6, had one freeform face among its planes and
 /// cylinders, where the design says a sheet-metal part's ends are planes
-/// (docs/design/sheetmetal.md › *The part*); so `Body::bbox`, which adds a
-/// freeform face's whole control net, reaches 4.86e6 below the part,
-/// whose lowest point is 715 below the base. The volume is the closed
-/// form. The face is the rim along one of the bend's arcs (radius `R`,
-/// the thickness 2.4 times it), traced over most of its circle: the
-/// control points of its rows' splines lie up to 0.31 off the part's side
-/// plane (the tolerance is 1), so the rim is not taken for the plane (its
-/// stations lie 3.5e-6 rad apart over the arc and 0.1 rad apart past it;
-/// owed: a plane read from the traced points). Until the run on a circle was kept within a turn
-/// (2026-11-15) it ran 1.52 turns and the box reached 5.17e6 below.
+/// (docs/design/sheetmetal.md › *The part*): the rim along one of the
+/// bend's arcs, the ruled spline over the whole traced run (most of the
+/// circle about the bend's axis, from radius `R` to `R + T`), so
+/// `Body::bbox`, which adds a freeform face's whole control net, reached
+/// 4.86e6 below the part, whose lowest point is 715 below the base. No
+/// arc was written with a far control point: the net is the run's. The
+/// rim's traced corners lie in the side plane to the rounding of their
+/// coordinates (1.5e-8), but its splines' control points, a solve through
+/// stations 3.5e-6 rad apart over the arc and 0.05 to 0.1 rad past it,
+/// lay up to 0.38 off it (the tolerance 1, the share 0.25), and the plane
+/// was read from the control points alone. It is read from the traced
+/// corners too now (`docs/design/plates.md` › *Simplest curves and
+/// surfaces*): the rim is the side plane, the part is planes and
+/// cylinders, its box the sampled one, its volume the closed form as
+/// before. Until the run on a circle was kept within a turn (2026-11-15)
+/// the run went 1.52 turns and the box reached 5.17e6 below.
 #[test]
-fn a_bend_of_a_tiny_angle_has_a_freeform_rim() {
+fn a_bend_of_a_tiny_angle_is_planes_and_cylinders() {
     let k = 1e6;
     let tol = tolerance(k);
     let (w, d, t) = (
@@ -462,19 +487,27 @@ fn a_bend_of_a_tiny_angle_has_a_freeform_rim() {
     )
     .unwrap();
     let body = &part.solid.body;
+    assert!(check(body, &tol).is_empty());
     let v = w * d * t + d * (th * t * (r + 0.5 * t) + l * t);
     let got = mass_properties(body).unwrap().volume;
     assert!((got / v - 1.0).abs() < 1e-8, "{got} for {v}");
-    let freeform = body
-        .faces
-        .iter()
-        .filter(|f| matches!(f.surface, Surface::Nurbs(_)))
-        .count();
-    assert_eq!(freeform, 1, "known: one freeform rim");
-    let (lo, _) = body.bbox().unwrap().corners().unwrap();
-    let (slo, _) = bounds(body);
+    assert!(
+        body.faces
+            .iter()
+            .all(|f| matches!(f.surface, Surface::Plane(_) | Surface::Cylinder(_))),
+        "{:?}",
+        body.faces
+            .iter()
+            .map(|f| f.surface.kind())
+            .collect::<Vec<_>>()
+    );
+    let (lo, hi) = body.bbox().unwrap().corners().unwrap();
+    let (slo, shi) = bounds(body);
     assert!(slo.z > -716.0 && slo.z < -714.0, "{slo:?}");
-    assert!(lo.z < -4.5e6, "known: the box reaches {lo:?}");
+    for (a, b) in [(lo, slo), (hi, shi)] {
+        assert!((a - b).length() <= tol.linear, "{a:?} against {b:?}");
+    }
+    assert!(mesh_volume(body, 1e-3 * size_of(body)).is_ok());
 }
 
 /// KNOWN, owed (docs/design/sheetmetal.md › *Limits*): a bend of

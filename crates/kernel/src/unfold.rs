@@ -1346,17 +1346,47 @@ fn lay_face(
         };
         let gap = sub2(last.1, first.1);
         let size = 1.0 + first.1[0].abs() + first.1[1].abs();
+        // How long a step in the parameters is on the part at the loop's
+        // start, to first order: a gap in the parameters is nothing where
+        // it is within the tolerance there. A parameter compared with a
+        // fixed number alone is a length on one surface and an angle on
+        // another (`v` of a cylinder is a length along its axis), so it
+        // holds at one scale and not at another: the side of a cylinder of
+        // radius 3e7 in a turned frame, its loops' ends apart in `v` by
+        // the rounding of its coordinates (about 1e-8, against a tolerance
+        // of 1), was refused as a boundary that does not close, and at
+        // scale 1 developed (2026-11-15).
+        let (_, du, dv) = surface.derivatives(first.1[0], first.1[1]);
+        let on_part = |g: P2| (du * g[0] + dv * g[1]).length();
+        let nothing = |g: P2| on_part(g) <= tol;
+        // The parameters' own test is kept beside it, so that every loop it
+        // took is taken as before, but where it would take a whole turn for
+        // nothing: past `|v|` of about 3e9 its bound was more than half a
+        // turn of `u`, and a loop that goes round a cylinder there passed
+        // for closed.
+        let less_than_half_a_turn = per_u.is_none_or(|p| gap[0].abs() < 0.5 * p);
+        let in_parameters = gap[0].abs() + gap[1].abs() <= 1e-9 * size && less_than_half_a_turn;
         // Closed in parameters, or into a pole: the loop's two ends are one
         // point of the part and the region closes along the collapsed row.
+        // The row through them is one point of the part between them (a
+        // sphere's pole, a cone's apex): the speeds alone (`collapsed_at`)
+        // compare a speed per radian about a cylinder's axis with one per
+        // length along it, and a cylinder of radius 1e9 (1e9 against 1)
+        // passed for collapsed everywhere, its loops for loops into poles.
         let at = |uv: P2| surface.eval(uv[0], uv[1]);
+        let row_is_a_point = [0.25, 0.5, 0.75]
+            .iter()
+            .all(|s| at([first.1[0] + s * gap[0], first.1[1]]).distance(at(first.1)) <= tol);
         let pole = collapsed_at(&surface, first.1, 1e-9)
+            && row_is_a_point
             && at(first.1).distance(at(last.1)) <= tol
-            && gap[1].abs() <= 1e-9 * size;
-        if pole || gap[0].abs() + gap[1].abs() <= 1e-9 * size {
+            && (gap[1].abs() <= 1e-9 * size || nothing([0.0, gap[1]]));
+        if pole || in_parameters || nothing(gap) {
             closed.push(index);
-        } else if per_u
-            .is_some_and(|p| (gap[0].abs() - p).abs() < 1e-6 * p && gap[1].abs() <= 1e-9 * size)
-        {
+        } else if per_u.is_some_and(|p| {
+            (gap[0].abs() - p).abs() < 1e-6 * p
+                && (gap[1].abs() <= 1e-9 * size || nothing([0.0, gap[1]]))
+        }) {
             round.push(index);
         } else {
             return Err(refused(format!(

@@ -35,7 +35,9 @@
 //! Changing an expectation), with the counts before and after and why.
 //!
 //! The CPU time of each model is printed beside the counts, for
-//! information only: it never fails the test.
+//! information only: it never fails the test; so is the most the stores
+//! of fine pieces of the patch trees took together while it ran
+//! (`craft3d_kernel::boolean::take_fine_most`).
 //!
 //! The models are copies of showcase scripts (`target/work/*`, which are
 //! not in the repository), pinned here so that the counts mean the same
@@ -367,13 +369,15 @@ fn work_stays_within_the_baseline() {
             continue;
         }
         let started = Instant::now();
+        let _ = craft3d_kernel::boolean::take_fine_most();
         let (counts, cpu) = measure(&model);
         let _ = writeln!(
             report,
-            "{}: {:.1} s wall, {} CPU (information only)",
+            "{}: {:.1} s wall, {} CPU, the fine pieces of the patch trees at most {:.1} MB together (information only)",
             model.name,
             started.elapsed().as_secs_f64(),
-            cpu.map_or("unknown".to_string(), |s| format!("{s:.1} s"))
+            cpu.map_or("unknown".to_string(), |s| format!("{s:.1} s")),
+            craft3d_kernel::boolean::take_fine_most() as f64 / f64::from(1u32 << 20)
         );
         for (counter, &value) in &counts {
             let base = baseline
