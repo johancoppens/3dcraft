@@ -124,6 +124,65 @@ fn the_last_message_is_the_windows_last_one() {
     );
 }
 
+/// A window that crashed at start is started again, at most three times
+/// in a row; one that chose its exit code, ran for a minute or was started
+/// again three times is not.
+#[test]
+fn a_window_that_crashed_at_start_is_started_again() {
+    // STATUS_ACCESS_VIOLATION (the Intel driver of 2026-11-16), a stack
+    // overrun, a missing DLL: exceptions. 1 (End task), 2 (a usage error),
+    // 0xC0000000 - 1 and the warning and information codes: not.
+    for code in [
+        0xC000_0005_u32,
+        0xC000_0409,
+        0xC000_0135,
+        0xC000_0000,
+        0xFFFF_FFFF,
+    ] {
+        assert!(
+            is_exception_code(i32::from_ne_bytes(code.to_ne_bytes())),
+            "{code:#x}"
+        );
+    }
+    for code in [0_u32, 1, 2, 255, 0xBFFF_FFFF, 0x8000_0005, 0x4000_0000] {
+        assert!(
+            !is_exception_code(i32::from_ne_bytes(code.to_ne_bytes())),
+            "{code:#x}"
+        );
+    }
+    let quick = Duration::from_secs(3);
+    assert!(restart(true, quick, 0));
+    assert!(restart(true, quick, RESTARTS - 1));
+    assert!(!restart(true, quick, RESTARTS));
+    assert!(!restart(true, START_UP, 0));
+    assert!(!restart(false, quick, 0));
+    // A window that ended with a code of its own did not crash.
+    assert!(!crashed(status(0)));
+    assert!(!crashed(status(1)));
+    #[cfg(windows)]
+    assert!(crashed(status(i32::from_ne_bytes(
+        0xC000_0005_u32.to_ne_bytes()
+    ))));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        // Killed by SIGSEGV, SIGABRT: crashed; by SIGKILL, SIGTERM: not.
+        assert!(crashed(ExitStatus::from_raw(11)));
+        assert!(crashed(ExitStatus::from_raw(6)));
+        assert!(!crashed(ExitStatus::from_raw(9)));
+        assert!(!crashed(ExitStatus::from_raw(15)));
+    }
+    let said = restarts_text(4, None);
+    assert!(said.starts_with("3DCraft was started 4 times"), "{said}");
+    assert!(said.contains("graphics-start.json"), "{said}");
+    let traced = restarts_text(2, Some(OsStr::new("C:\\trace.txt")));
+    assert!(traced.contains("C:\\trace.txt"), "{traced}");
+    assert_eq!(
+        restarts_text(2, Some(OsStr::new(""))),
+        restarts_text(2, None)
+    );
+}
+
 #[test]
 fn exit_codes_read_as_windows_people_read_them() {
     assert_eq!(exit_code_text(Some(1)), "1");
@@ -363,6 +422,59 @@ fn the_launcher_starts_the_window_beside_it() {
             code: Some(3),
             say: Some("3DCraft ended unexpectedly (exit code 3).".to_string())
         }
+    );
+    std::fs::remove_dir_all(&folder).unwrap();
+
+    // A window that crashes at its first two starts and then comes up:
+    // started again with the same arguments, and nothing is said.
+    let (launcher, folder) = stand_in(
+        "crashes twice",
+        "dir=\"$(dirname \"$0\")\"\n\
+         n=$(cat \"$dir/count\" 2>/dev/null || echo 0)\n\
+         echo $((n + 1)) > \"$dir/count\"\n\
+         printf '%s\\n' \"$@\" >> \"$dir/args\"\n\
+         if [ \"$n\" -lt 2 ]; then kill -SEGV $$; fi\n\
+         exit 0",
+    );
+    let args = vec![OsString::from("part.3dcraft")];
+    assert_eq!(
+        launch(&launcher, args),
+        Ended {
+            code: Some(0),
+            say: None
+        }
+    );
+    assert_eq!(
+        std::fs::read_to_string(folder.join("count")).unwrap(),
+        "3\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(folder.join("args")).unwrap(),
+        "part.3dcraft\npart.3dcraft\npart.3dcraft\n"
+    );
+    std::fs::remove_dir_all(&folder).unwrap();
+
+    // One that crashes every time: four starts, then the failure, with how
+    // often and where the journal is.
+    let (launcher, folder) = stand_in(
+        "always crashes",
+        "dir=\"$(dirname \"$0\")\"\n\
+         n=$(cat \"$dir/count\" 2>/dev/null || echo 0)\n\
+         echo $((n + 1)) > \"$dir/count\"\n\
+         echo 'craft3d: starting' >&2\n\
+         kill -SEGV $$",
+    );
+    let ended = launch(&launcher, Vec::new());
+    assert_eq!(ended.code, None);
+    let say = ended.say.unwrap();
+    assert!(
+        say.starts_with("3DCraft could not start (exit code none"),
+        "{say}"
+    );
+    assert!(say.contains("3DCraft was started 4 times"), "{say}");
+    assert_eq!(
+        std::fs::read_to_string(folder.join("count")).unwrap(),
+        "4\n"
     );
     std::fs::remove_dir_all(&folder).unwrap();
 

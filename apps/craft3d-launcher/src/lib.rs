@@ -26,6 +26,16 @@
 //! smoke test, which reads `3DCraft.exe --version`), the window answers
 //! there.
 //!
+//! A window that crashes within [`START_UP`] (on Windows an exception's
+//! exit code, such as an access violation inside a graphics driver) is
+//! started again, with the same arguments, at most [`RESTARTS`] times in a
+//! row ([`restart`]): the window keeps a journal of its graphics starts and
+//! passes over an interface that ended the one before
+//! (`apps/craft3d/src/graphics_start.rs`), so the next start takes the next
+//! interface without the person doing anything. Only when every start
+//! failed is the failure said, with the last exit code and where the
+//! journal is.
+//!
 //! Everything but the start itself and the box is in portable functions
 //! with tests here; `main.rs` only joins them.
 
@@ -51,6 +61,10 @@ pub const LOG_SWITCH: &str = "CRAFT3D_LAUNCHER_LOG";
 /// was killed or crashed after work, and leaves its recovery files, which
 /// the next start offers.
 pub const START_UP: Duration = Duration::from_secs(60);
+
+/// How often in a row a window that crashed at start is started again
+/// ([`restart`]).
+pub const RESTARTS: u32 = 3;
 
 /// The most of the window's error output read back: its last message is
 /// at its end.
@@ -239,6 +253,59 @@ pub fn exit_code_text(code: Option<i32>) -> String {
     }
 }
 
+/// Whether `code` is a Windows exception's NTSTATUS (severity error,
+/// 0xC0000000 and above as an unsigned number): an access violation, a
+/// stack overrun, a missing DLL; a crash, not an exit the window chose.
+pub fn is_exception_code(code: i32) -> bool {
+    u32::from_ne_bytes(code.to_ne_bytes()) >= 0xC000_0000
+}
+
+/// Whether the window ended with `status` by crashing: on Windows with an
+/// exception's code ([`is_exception_code`]), elsewhere by the signal of a
+/// crash (SIGILL, SIGABRT, SIGBUS, SIGFPE, SIGSEGV).
+pub fn crashed(status: ExitStatus) -> bool {
+    #[cfg(windows)]
+    {
+        status.code().is_some_and(is_exception_code)
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        // SIGBUS is 7 on Linux and 10 on macOS.
+        matches!(status.signal(), Some(4 | 6 | 7 | 8 | 10 | 11))
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = status;
+        false
+    }
+}
+
+/// Whether the launcher starts the window again: it crashed
+/// ([`crashed`]) within [`START_UP`] (`ran`), and was started again fewer
+/// than [`RESTARTS`] times in a row so far (`restarts`).
+pub fn restart(crashed: bool, ran: Duration, restarts: u32) -> bool {
+    crashed && ran < START_UP && restarts < RESTARTS
+}
+
+/// What is added to the failure said after `starts` starts that crashed:
+/// how often, and where the window's graphics start journal and the trace
+/// (`trace`, `CRAFT3D_GPU_TRACE`) are.
+pub fn restarts_text(starts: u32, trace: Option<&OsStr>) -> String {
+    let mut text = format!(
+        "3DCraft was started {starts} times; each start passes over a graphics interface that \
+         ended the one before. What it learnt is in graphics-start.json in 3DCraft's state \
+         folder (%LOCALAPPDATA%\\3dcraft unless --state-dir says otherwise)."
+    );
+    if let Some(trace) = trace.filter(|t| !t.is_empty()) {
+        text.push_str(&format!(
+            " The trace of what the graphics card was asked to build: {}.",
+            Path::new(trace).display()
+        ));
+    }
+    text
+}
+
 /// What the launcher says when the window it started ended with `status`
 /// after `ran`, having written `errors`: `None` when there is nothing to
 /// say (it ended well, or ran for longer than [`START_UP`]). Always with
@@ -307,36 +374,52 @@ pub fn launch(launcher: &Path, args: Vec<OsString>) -> Ended {
             launcher.display()
         ));
     }
-    let errors = error_file();
-    let (errors_path, errors_file) = match errors {
-        Some((path, file)) => (Some(path), Some(file)),
-        None => (None, None),
-    };
-    let started = Instant::now();
-    let spawned = window_command(&window, args, errors_file).spawn();
-    let result = match spawned {
-        Err(error) => Ended::said(format!(
-            "3DCraft could not start {}: {error}",
-            window.display()
-        )),
-        Ok(mut child) => match child.wait() {
-            Err(error) => Ended::said(format!(
-                "3DCraft could not wait for {}: {error}",
+    let mut restarts = 0;
+    loop {
+        let errors = error_file();
+        let (errors_path, errors_file) = match errors {
+            Some((path, file)) => (Some(path), Some(file)),
+            None => (None, None),
+        };
+        let started = Instant::now();
+        let spawned = window_command(&window, args.iter().cloned(), errors_file).spawn();
+        let waited = match spawned {
+            Err(error) => Err(format!(
+                "3DCraft could not start {}: {error}",
                 window.display()
             )),
-            Ok(status) => {
-                let said = errors_path.as_deref().map(tail_of).unwrap_or_default();
-                Ended {
-                    code: status.code(),
-                    say: start_up_failure(status, started.elapsed(), &said),
-                }
-            }
-        },
-    };
-    if let Some(path) = errors_path {
-        let _ = std::fs::remove_file(path);
+            Ok(mut child) => child.wait().map_err(|error| {
+                format!("3DCraft could not wait for {}: {error}", window.display())
+            }),
+        };
+        let said = errors_path.as_deref().map(tail_of).unwrap_or_default();
+        if let Some(path) = errors_path {
+            let _ = std::fs::remove_file(path);
+        }
+        let status = match waited {
+            Err(say) => return Ended::said(say),
+            Ok(status) => status,
+        };
+        let ran = started.elapsed();
+        if restart(crashed(status), ran, restarts) {
+            restarts += 1;
+            continue;
+        }
+        let mut say = start_up_failure(status, ran, &said);
+        if restarts > 0
+            && let Some(text) = say.as_mut()
+        {
+            text.push_str("\n\n");
+            text.push_str(&restarts_text(
+                restarts.saturating_add(1),
+                std::env::var_os("CRAFT3D_GPU_TRACE").as_deref(),
+            ));
+        }
+        return Ended {
+            code: status.code(),
+            say,
+        };
     }
-    result
 }
 
 /// Says `message`: with the switch (`log`, the value of [`LOG_SWITCH`])

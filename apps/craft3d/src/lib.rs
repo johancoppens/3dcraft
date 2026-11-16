@@ -36,12 +36,15 @@ pub mod consent;
 pub mod control;
 pub mod desktop_theme;
 pub mod files;
+pub mod gpu_diag;
+pub mod graphics_start;
 pub mod host;
 pub mod places;
 pub mod recording;
 pub mod refine;
 pub mod tabs;
 pub mod token;
+pub mod tour;
 pub mod worker;
 
 #[cfg(test)]

@@ -6,16 +6,18 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [0.1.2] - 2026-11-13
 
-Fixes for the first things a new user meets: on Windows no console window opens beside 3DCraft any more, the web version's page says what it is, and the MCP server says more about itself to the tools that connect to it. Files of 0.1.0 and 0.1.1 open unchanged.
+Fixes for the first things a new user meets: on Windows the window no longer closes at once on computers with Intel graphics, no console window opens beside 3DCraft any more, the web version's page says what it is, and the MCP server says more about itself to the tools that connect to it. Files of 0.1.0 and 0.1.1 open unchanged.
 
 ### Fixed
 
+- **Windows: the window no longer closes at once on computers with Intel graphics.** On many of them 3DCraft 0.1.0 and 0.1.1 opened and closed again without a word. There were two causes. On recent Intel graphics, Intel's Vulkan driver crashed while it prepared the way 3DCraft draws see-through bodies and cut-open models: 3DCraft now draws those in a way that driver takes, on that driver only; everywhere else the pictures are drawn as before. On older Intel graphics with an older driver, the Vulkan driver itself crashed while 3DCraft started, before anything was drawn: 3DCraft now notices that and starts through OpenGL instead (below).
 - **Windows: no console window beside 3DCraft any more.** The Start menu entry and a double-clicked `.3dcraft`, `.3dcraftjig` or `.3dcraftasm` file start 3DCraft through a small launcher, `3DCraft.exe`, which opens no console window, so there is none to close 3DCraft by. If the window cannot start, a message box says why. In the zip, double-click `3DCraft.exe`. `craft3d.exe` and `craft3d-cli.exe` are unchanged for terminals and AI agents.
 - **Linux: a 3DCraft window that is killed or crashes no longer leaves a `gsettings monitor` process behind.** The window follows the desktop's light or dark setting through that program, which now ends with the window however the window ends.
 - **The web version's page says what it is**: its title, *3DCraft in your browser: parametric 3D CAD*, stays while no document is open, and it has a description for search engines.
 
 ### Changed
 
+- **Windows: when a graphics interface fails at start, 3DCraft tries the next and says so.** The window draws through Vulkan, OpenGL or DirectX 12. When one of them ends a start (a driver that crashes), the next start passes over it and takes the next in that order, and `3DCraft.exe` starts the window again by itself, at most three times in a row, so you need not do anything. A bar under the menu says which interface 3DCraft draws through and why, with **Details…**, a button to try the other interface again next time, and **Dismiss**. An interface is tried again after seven days or when your graphics driver or 3DCraft is updated; `craft3d.exe --reset-graphics` tries every interface again at once. When no Vulkan driver is there, the window now prefers OpenGL to DirectX 12, which can take minutes to show the studio look. The guide's [*The window does not start or closes at once on Windows*](https://github.com/johancoppens/3dcraft/blob/v0.1.2/docs/guide/troubleshooting.md#the-window-does-not-start-or-closes-at-once-on-windows) says how to choose an interface yourself and how to make a trace of what the graphics card was asked to do, to send with a report (`CRAFT3D_GPU_TRACE`, `CRAFT3D_GPU_TOUR`).
 - **The MCP server says more about itself.** It gives its display name, *3DCraft*, to clients that speak protocol version 2025-06-18 or later; its tools carry annotations, so a client knows that `command_list`, `doc_inspect` and `doc_render_preview` only read and that none of the tools reaches beyond your computer; and `command_run`'s description says that opening, saving, importing and exporting files are commands. The tools, their names and their inputs are unchanged.
 
 ### Known limitations

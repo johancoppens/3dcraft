@@ -12,6 +12,8 @@ Pictures: the CPU reference renderer (`craft3d-render`, the display oracle), the
 
 **The viewport.** The window draws on the GPU through `ui_egui::direct::Direct` on its own device, only when something the frame depends on changed; edges, sketches, axes and datums are lines drawn over it and tested against its depth. Where that cannot run, the shell falls back to the GPU on a device of its own read back, or to the CPU renderer (`--renderer cpu`), and says why. `ui.screenshot` always renders on the CPU: it is the oracle. The model's truth is the B-rep, not the picture: geometry is tested geometrically ([`../testing.md`](../testing.md)).
 
+**Drivers that fail** (2026-11-16). A graphics driver can end the process while the window starts (an access violation inside the driver: no panic, nothing to catch), so three answers sit around the renderer. (1) A stage a known driver cannot compile is drawn in another form on that driver only: the see-through's and the section's multisampled stages per sample, without a sample mask, on Intel's Vulkan driver on Windows (`craft3d_gpu::diag::auto_choice`, `variant.rs`), the masked stages everywhere else, byte for byte. (2) On Windows the window keeps a journal of its graphics starts in its state folder and passes over an interface that ended one, in the order Vulkan, OpenGL, DirectX 12, and the launcher starts it again by itself (`apps/craft3d/src/graphics_start.rs`, `apps/craft3d-launcher`); on Linux and macOS the window chooses as it always did. (3) `CRAFT3D_GPU_TRACE` writes, synced, what the driver is asked to build, so the last line of the file names what it was building when the process died, and `CRAFT3D_GPU_TOUR` makes one start ask for every pipeline (`craft3d_gpu::diag`, `apps/craft3d/src/tour.rs`). See the three findings of 2026-11-16.
+
 **Surface analysis** (2026-10-30, class-A stage 1; `craft3d_render::analysis`, on the GPU `scene.wgsl` › `analysis_of`). Zebra stripes, highlight lines, a curvature map with values per vertex from the exact surfaces, and draft, drawn in place of the plain shading by both renderers, with combs as overlay lines; view state only. The stripes are filtered over each sample's footprint in phase (2026-10-31), so where they are finer than a pixel they fade to their mean instead of a moiré. Method, tolerance and tests in [`surfacing.md`](surfacing.md) › *Stage 1: analysis*.
 
 **The studio look** (2026-10-29, layer 1 of the rendering plan in [`../decisions.md`](../decisions.md); `craft3d_render::studio`, on the GPU
@@ -1666,3 +1668,142 @@ more, and the difference stays owed. What is not known: whether it is the sketch
 or hidden differently by the two (the tile is inside the viewport, not at its border, so a line cut at the
 view's edge is unlikely), an edge of the bodies at a grazing angle there, or a real difference in how the direct
 path inks the edges; it was not looked into.
+
+
+### Per-sample stages on Intel's Vulkan driver (2026-11-16)
+
+*Found.* The window of 0.1.1 and 0.1.2 died within seconds of its start on a Windows 11 laptop with a Core
+i3-1215U and Intel UHD Graphics (driver 32.0.101.7077): exception 0xC0000005 in `igc64.dll`, Intel's shader
+compiler inside the driver, at the same offset every time. With `WGPU_BACKEND=dx12` or `gl`, and with
+`--renderer cpu`, it ran; the off-screen renderer on Vulkan ran too (`craft3d-cli render --renderer gpu`, plain
+and studio look). So the fault was in a pipeline only the viewport's renderer builds on Vulkan.
+
+*How it was found.* A diagnostic build wrote what the driver was asked to build (`CRAFT3D_GPU_TRACE`, *Diagnostics
+of the graphics driver*, below). Its last line on that laptop was `#30 begin render_pipeline "craft3d behind" …
+fs=fs_behind_samples … samples=4`: the pass behind the front of a see-through picture at four samples, which
+`Onscreen::new` builds at the start although nothing is see-through yet; the front's pipeline before it
+(`fs_front_samples`) took 4.1 ms. With `CRAFT3D_SAMPLES=1` the window ran. A second build carried variants of
+that stage, chosen by `CRAFT3D_PEEL_VARIANT`, so one Windows package tried them all: the loop over the samples
+unrolled, its bound a constant, no `discard`, the loop in a function of its own, the mask written as a constant
+(a wrong picture), the mask from one `textureLoad` (a wrong picture): every variant whose stage writes
+`@builtin(sample_mask)` crashed at `craft3d behind`; the two without that output ran (no mask at all, a wrong
+picture; and the per-sample stages). The cause is the sample-mask output of that stage, whatever feeds it. (Two
+lessons of that build: `include_str!` embeds a `.wgsl` file with the line ends of the checkout, CRLF on GitHub's
+Windows runners, so a text rewrite that matches across `\n` silently did nothing there; and a trace that names a
+pipeline's module by its id must not trust the id alone, since the ids of two wgpu instances can be the same.)
+The variants that drew a wrong picture, and the rewrites, are not in the release.
+
+*The fix.* `peel_samples_persample.wgsl` and `cut_samples_persample.wgsl` have the entry points of
+`peel_samples.wgsl` and `cut_samples.wgsl` without a mask: each stage that wrote one runs once per sample
+(`@builtin(sample_index)`, which makes the stage per sample), reads its own sample's texel of the front's keys
+(and, for the section, of the count) and discards itself. The front's key is the depth at the sample in the front
+pass and in the pass behind it alike, so the comparison holds as before, also for a face that coincides with the
+front. It needs per-sample shading (`DownlevelFlags::MULTISAMPLED_SHADING`). On the laptop the window started
+with them, and the tour (every kind of picture, below) ran its six steps on Intel's Vulkan driver at four
+samples without an error, in 8.2 s from a cold start; the pictures of the see-through section and the studio
+look cut open were right.
+
+*Why by vendor, interface and platform, and not everywhere* (`craft3d_gpu::diag::auto_choice`: vendor 0x8086,
+Vulkan, Windows, per-sample shading; the masked stages everywhere else, byte for byte, which
+`variant::tests` pins). The per-sample picture is not the masked one on every driver: `tests/peel_variants.rs`
+draws a hollow block and a drilled plate see-through, cut open and both at 320 × 240; on Mesa's Intel driver
+(Meteor Lake, Vulkan) the two forms are identical in every scene, on llvmpipe the two see-through cut-open scenes
+differ in 243 and 93 of 76 800 pixels, by at most 93 levels (a sample along the cut decided at its own point,
+where the masked stage decides the fragment's at its centroid). Both forms pass the parity tests against the CPU
+renderer, within the documented tolerances (`see_through.rs`, the cut-open tests of `section.rs`, `onscreen.rs`'s
+see-through test and `cap_specks.rs`, run with `CRAFT3D_PEEL_VARIANT=today` and `=persample`). And they cost
+differently by driver. A block with a spherical cavity of 246 524 triangles at 1280 × 800 and four samples, the
+median of 20 frames (the draw and the wait for the GPU, `tests/peel_variants.rs` ›
+`what_the_per_sample_stages_cost`, by hand): on Mesa's Intel driver the per-sample stages are faster (see-through
+8.7 ms against 9.9, cut open 7.1 against 10.4, both 12.1 against 16.8); on llvmpipe, which shades every sample on
+the CPU, slower (see-through 1125 ms against 403, cut open 214 against 209, both 878 against 412). Nothing says
+they are right or cheaper on every other driver, so they go where they are needed.
+
+*Forcing a form:* `CRAFT3D_PEEL_VARIANT=today` (the masked stages), `persample`, or `auto` (the default). The
+trace's `onscreen` line says which form the renderer took and why.
+
+### A graphics interface that kills the start (2026-11-16)
+
+*Found.* On a second laptop (Pentium 4425Y, Intel UHD Graphics 615, driver 27.20.100.8681 of 2020, Windows 10
+1909) 0.1.1 and the diagnostic build died in `igvk64.dll`, the Vulkan driver itself, right after the device was
+asked for (the trace's `#4 info device asked …`), before the surface and before any pipeline of ours: nothing
+the window draws matters there. With `CRAFT3D_BACKEND_ORDER=dx12` it ran, but DirectX 12 compiles with FXC by
+default, and the studio look's `craft3d studio bodies post` alone took 143.7 s to build and `studio bodies` 13.2
+s; with `gl` the whole tour took 49.6 s, at one sample, with two `ui.screenshot` timeouts in the studio steps. On
+the first laptop, for comparison: the tour on Vulkan with the per-sample stages 8.2 s, on OpenGL 13.2 s, on
+DirectX 12 with FXC 92.3 s; to the first picture of the studio look off screen, DirectX 12 took 243.7 s with FXC
+and 19.8 s with a `dxcompiler.dll` beside the program (which 3DCraft does not ship, `../decisions.md`,
+2026-11-16).
+
+*Method* (`apps/craft3d/src/graphics_start.rs`; Windows only in 0.1.x). A crash inside a driver cannot be caught,
+so the window remembers. Its journal, `graphics-start.json` in the state folder (`--state-dir`), holds the last
+record per app version, adapter (vendor and device ids), driver (wgpu's `driver` and `driver_info`) and
+interface. The window chooses its adapter itself (egui-wgpu's `native_adapter_selector`): in the order Vulkan,
+OpenGL, DirectX 12 (Vulkan, DirectX 12, OpenGL when a `dxcompiler.dll` lies beside the program), within one
+interface by wgpu's own preference (discrete before integrated), only adapters that can present to the window.
+Before the device is made it records "attempting", written to a file beside the journal, synced and renamed over
+it; once the window has drawn three frames (it asks for them at once, so an idle window gets there too) it
+records "ok"; on an orderly exit before that, "closing". At the next start an adapter's interface whose last
+record is "attempting" ended a start and is passed over for the next in the order; a record counts for seven
+days and only for its app version and driver. When every interface in the order is marked, the first is tried
+again: the window never refuses to start. The launcher, `3DCraft.exe`, starts a window that crashed within a
+minute (an exception's exit code, 0xC0000000 and above) again with the same arguments, at most three times in a
+row, so the skip takes effect without the person doing anything; when every start crashed it says so in its box,
+with how often and where the journal is. The window says what it passed over on standard error, and in a bar
+under the menu (the recovery bar's kind): *3DCraft draws through OpenGL on this computer: starting with Vulkan
+failed here (…)*, with **Details…** (the adapters, the journal, the trace, how to choose), **Try Vulkan next
+time** (forgets the records it passed over) and **Dismiss** (not shown again while that interface ends the start
+the same way). `--reset-graphics` forgets the whole journal. An order the person gives
+(`CRAFT3D_BACKEND_ORDER`, or `WGPU_BACKEND`) is followed as it is and never skipped; the journal still records
+it. Without a state folder there is no journal and no skip. The journal is read through hostile input's rules: a
+file that is not JSON, of another format version, over 256 KiB, with records that cannot be read, is written anew
+or those records left out, never a panic (unit tests of each).
+
+*What a person sees.* On the second laptop: a double-click on `3DCraft.exe`, a window that dies inside Vulkan, a
+second start by the launcher, the window on OpenGL with the bar. On a computer whose start was cut by a power
+failure or a kill: the next start passes over the interface that was starting (one wrong skip), draws through
+the next and shows the bar; **Try Vulkan next time** or `--reset-graphics` brings it back at once, and after
+seven days it is tried again by itself. A person who closes the window before its third frame records
+"closing", no failure.
+
+*Limits.* A crash while the instance enumerates the adapters, before the choice, is not recorded (none was seen).
+Intel's older Vulkan drivers give a generic `driver_info` ("Intel driver"), so a driver update there is not seen
+as one: the seven days bring Vulkan back, and if it still crashes, the launcher's restart passes over it again.
+
+*Owed.* The self-healing on Linux and macOS (on Linux: Vulkan to OpenGL), for 0.2, after it has been tried
+there; 0.1.x leaves their choice as it was (`self_healing_enabled`; `CRAFT3D_GRAPHICS_JOURNAL=on` turns it on in
+a build with debug assertions, to try it). The launcher's restart and the bar seen on Windows by a person.
+
+### Diagnostics of the graphics driver (2026-11-16)
+
+`craft3d_gpu::diag`, each switch an environment variable read once; none set, nothing costs more than one
+cached check.
+
+- **`CRAFT3D_GPU_TRACE=<file>`.** Every shader module, render pipeline and bind group layout the GPU crate makes
+  goes through `diag::Traced` (a unit test holds every source file of the crate to it): a numbered `begin` line
+  is appended and synced to disk before the call, an `end` line with the time it took after. A pipeline's line
+  names the modules of its stages (by their number and label, and by the entry point), the entry points, the
+  sample count, the colour targets and the depth state, as the descriptor has them; a module's line its size, a
+  hash of its source, its entry points, builtins and interpolation; module labels name their files. The window
+  adds `info` lines: its version and commit, the graphics variables set, the order and the adapter chosen, the
+  adapter's driver and downlevel flags, the features and limits asked for (egui-wgpu's own pipelines are built
+  between that line and the surface's: not traced), the surface, the viewport renderer's samples and form, the
+  first three frames. The same lines go to standard error. A file that cannot be opened is said once; the trace
+  then goes to standard error only.
+- **`CRAFT3D_GPU_TOUR=1|stay|quick`** (`apps/craft3d/src/tour.rs`). The window drives itself through its own
+  request channel (no port, no token): it builds a block with a bore and a sphere by commands, then shows it
+  plain, see-through, cut open, both, in the studio look and in the studio look cut open, each step's picture
+  (`ui.screenshot {window: true}`) beside the trace and the renderer checked (`ui.get`: still direct, no fallback);
+  device errors no scope caught are counted in place of wgpu's default handler, which panics. The last line is
+  `tour: done, N errors`. `1` closes the window after it (exit 0), `stay` leaves it open, `quick` leaves out the
+  studio look. The Release workflow's Windows job runs `quick` on its runner's adapter (WARP through DirectX 12:
+  the hosted runner has no GPU) with a trace, and needs `done, 0 errors`: every Windows build compiles and draws
+  every pipeline of the viewport but the studio look's, whose shaders FXC takes minutes over (the existing smoke
+  test took about a second in the runs 43870411650 and 43876585270). The trace and the pictures are the job's
+  artifact `tour-windows`.
+- **`CRAFT3D_SAMPLES=1|4`.** The viewport's samples per pixel. 2 is refused: WebGPU guarantees 1 and 4 for the
+  formats, and on Intel UHD under Vulkan every pipeline of two samples failed wgpu's validation without
+  `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`, so the window fell back to the renderer that reads back.
+- **`CRAFT3D_PEEL_VARIANT=auto|today|persample`.** The form of the see-through and section stages (above).
+- **`CRAFT3D_BACKEND_ORDER=dx12,vulkan,gl`.** The interfaces to try, in order (*A graphics interface that kills the
+  start*, above).
