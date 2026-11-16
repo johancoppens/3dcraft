@@ -2526,8 +2526,6 @@ fn holding_within_as<T>(
         let done = work();
         (done, craft3d_geom::allowance::asked_reached())
     });
-    #[cfg(test)]
-    LEDGER_REACHED.with(|r| r.set(reached));
     let refused = HELD.with(|held| {
         held.try_borrow()
             .ok()
@@ -2606,12 +2604,6 @@ pub(super) fn operation_work() -> u64 {
         0 => OPERATION_WORK,
         set => set,
     }
-}
-
-#[cfg(test)]
-thread_local! {
-    /// Whether the last operation of this thread reached its bound.
-    pub(super) static LEDGER_REACHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Inside [`holding`]: counts the tree `tree` (its number and bytes) when
@@ -5171,6 +5163,43 @@ mod tests {
             assert_eq!(format!("{cut:?}"), format!("{own:?}"), "{at}");
         }
         assert_eq!(made.len(), 32);
+    }
+
+    /// An answer an operation searches again because the shared memo let
+    /// go of it while the operation's own memo (as the ledger counts it)
+    /// still holds it is searched where the ledger does not grow; what it
+    /// keeps with the answer is still what the search asked, so a later
+    /// operation asking it first pays as much as one that found the memo
+    /// cold (until 2026-11-16 it kept nothing: 238 units cold, 0 after; the
+    /// review's case).
+    #[test]
+    fn an_answer_searched_again_where_the_ledger_does_not_grow_keeps_what_it_asked() {
+        use craft3d_geom::allowance::{asked_within, measured_asked};
+        let sheet = weighted_plane(3);
+        let p0 = Vec3::new(13.0, 11.0, 2.0);
+        let other = |k: u32| Vec3::new(1.0 + 1e-3 * f64::from(k), 17.0, 3.0);
+        let fresh = PatchTree::new(&sheet).unwrap();
+        let cold = asked_within(u64::MAX, || measured_asked(|| fresh.nearest(p0)).1);
+        let tree = PatchTree::new(&sheet).unwrap();
+        // Another operation leaves 100 answers in the tree's memo.
+        asked_within(u64::MAX, || {
+            for k in 0..100 {
+                let _ = tree.nearest(other(k));
+            }
+        });
+        // One operation: p0, then 16 300 others (the shared memo, 100
+        // ahead, lets go of p0; the operation's own of 16 384 would not),
+        // then p0 again: searched where the ledger does not grow.
+        asked_within(u64::MAX, || {
+            let _ = tree.nearest(p0);
+            for k in 100..16_400 {
+                let _ = tree.nearest(other(k));
+            }
+            let _ = tree.nearest(p0);
+        });
+        let later = asked_within(u64::MAX, || measured_asked(|| tree.nearest(p0)).1);
+        assert!(cold > 0);
+        assert_eq!(later, cold, "the ledger of the same question moved");
     }
 
     #[test]

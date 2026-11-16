@@ -1497,8 +1497,10 @@ pub(super) fn section(
             // met itself, nothing more: its panic does not reach the
             // scope (which would panic in its place, the section's
             // result lost). A helper in the middle of a meeting is
-            // waited for (a march cannot be stopped part way): after a
-            // refusal the answer can come that much later.
+            // called off (`Ahead::help`) and waited for until its pair
+            // next asks for a bound, or its march ends (a march cannot be
+            // stopped part way, and asks for none): after a refusal the
+            // answer can come that much later.
             for helper in helpers {
                 if helper.join().is_err() {
                     // Not lost: counted, for the fuzzer and the health
@@ -1847,7 +1849,7 @@ struct Ahead {
     /// Pairs a helper may run ahead.
     lead: usize,
     /// The section is done.
-    done: std::sync::atomic::AtomicBool,
+    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The helpers' covers, A's and B's.
     covers: (Covers, Covers),
     /// Pairs the helpers met.
@@ -1926,7 +1928,7 @@ impl Ahead {
             prepared: AtomicUsize::new(0),
             frontier: AtomicUsize::new(0),
             lead,
-            done: AtomicBool::new(false),
+            done: std::sync::Arc::new(AtomicBool::new(false)),
             covers: (a.fresh_covers(), b.fresh_covers()),
             warmed: AtomicUsize::new(0),
         }
@@ -2029,17 +2031,30 @@ impl Ahead {
             // more stops (its windings refuse, a march ends short), and what
             // it found then is put on no shelf (nothing is kept once a bound
             // is reached), so the section meets that pair itself, under its
-            // own bound.
-            craft3d_geom::allowance::asked_within(super::freeform::operation_work(), || {
-                if let Ok(Some(pair)) =
-                    to_meet((a, fa, box_a), (b, fb), covers, Outlines::Made, tol)
-                    && (is_freeform(&pair.oa.surface) || is_freeform(&pair.ob.surface))
-                {
-                    // Kept on the shelf; the section takes it from there.
-                    let _ =
-                        meet_surfaces(&pair.oa.surface, &pair.ob.surface, &pair.within, tolerance);
-                    self.warmed.fetch_add(1, Ordering::Relaxed);
-                }
+            // own bound. And called off once the section is done (refused
+            // or built: `Ending`): what a helper would meet after that only
+            // fills caches, so its pair stops at the next place it asks for
+            // a bound (a winding, a search of a patch tree) as at its own
+            // bound, keeping nothing, and the section's answer does not
+            // wait for a pair that may take as long again as the
+            // section's (until 2026-11-16 a refusal at the bound could
+            // take up to twice as long, the review's).
+            craft3d_geom::allowance::stopping_when(&self.done, || {
+                craft3d_geom::allowance::asked_within(super::freeform::operation_work(), || {
+                    if let Ok(Some(pair)) =
+                        to_meet((a, fa, box_a), (b, fb), covers, Outlines::Made, tol)
+                        && (is_freeform(&pair.oa.surface) || is_freeform(&pair.ob.surface))
+                    {
+                        // Kept on the shelf; the section takes it from there.
+                        let _ = meet_surfaces(
+                            &pair.oa.surface,
+                            &pair.ob.surface,
+                            &pair.within,
+                            tolerance,
+                        );
+                        self.warmed.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
             });
         }
     }

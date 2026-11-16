@@ -91,6 +91,10 @@ thread_local! {
     /// How many regions this thread is in where the ledger does not grow
     /// ([`unasked`]).
     static UNASKED: Cell<u32> = const { Cell::new(0) };
+    /// What calls off the work this thread does for someone else
+    /// ([`stopping_when`]).
+    static STOP: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> =
+        const { std::cell::RefCell::new(None) };
     /// What the operation under the outermost bound on the ledger asked
     /// for already ([`asked_first_time`]); `None` outside one.
     // Asked whether it holds a thing, never walked: its order is no part
@@ -373,7 +377,56 @@ pub fn spent() -> u64 {
 /// or on the ledger ([`asked_within`]).
 pub fn exhausted() -> bool {
     let limit = LIMIT.try_with(Cell::get).unwrap_or(u64::MAX);
-    spent() >= limit || asked_reached()
+    spent() >= limit || asked_reached() || stopped()
+}
+
+/// Whether the work this thread does for someone else was called off
+/// ([`stopping_when`]).
+fn stopped() -> bool {
+    STOP.try_with(|stop| {
+        stop.try_borrow()
+            .ok()
+            .and_then(|s| {
+                s.as_ref()
+                    .map(|f| f.load(std::sync::atomic::Ordering::Acquire))
+            })
+            .unwrap_or(false)
+    })
+    .unwrap_or(false)
+}
+
+/// Runs `work` as work this thread does for someone else that `stop`
+/// calls off: once it is set, [`exhausted`] says so here, so the loops
+/// that ask for a bound stop as they would at one, and the caches keep
+/// nothing found after it ([`counting`]). For helper threads whose work
+/// only fills caches (`craft3d_kernel`'s section meets pairs ahead on
+/// them): what they would have found is found by whoever asks for it
+/// next, the same, so calling them off changes no answer.
+pub fn stopping_when<R>(
+    stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    work: impl FnOnce() -> R,
+) -> R {
+    struct Restore(Option<std::sync::Arc<std::sync::atomic::AtomicBool>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let earlier = self.0.take();
+            let _ = STOP.try_with(|stop| {
+                if let Ok(mut stop) = stop.try_borrow_mut() {
+                    *stop = earlier;
+                }
+            });
+        }
+    }
+    let earlier = STOP
+        .try_with(|s| {
+            s.try_borrow_mut()
+                .ok()
+                .and_then(|mut s| s.replace(std::sync::Arc::clone(stop)))
+        })
+        .ok()
+        .flatten();
+    let _restore = Restore(earlier);
+    work()
 }
 
 /// One pass of a loop that asks for the bound: charges a unit for it and
@@ -426,19 +479,61 @@ pub fn cost_of<R>(work: impl FnOnce() -> R) -> (R, u64) {
 
 /// [`cost_of`], with what it asked of the ledger ([`asked`]) besides: for
 /// a cache that keeps both and charges both on a hit ([`once_asked`]).
+///
+/// What the work takes is measured as if counted and asked, through every
+/// region that suspends either: an [`uncounted`] one (neither grows) and
+/// an [`unasked`] one (the ledger does not grow). There are no others: the
+/// count and the ledger grow only through [`charge`] and [`replay`], which
+/// those two regions alone hold back. What the region held back stays
+/// held back: the count and the ledger are put back where it would not
+/// have let them grow. So what a cache keeps with what it made is the same
+/// wherever it was made: a memo's answer searched again inside an
+/// [`unasked`] region (an operation's own question asked again) keeps what
+/// the search asked, not nothing, and a later operation that asks it first
+/// pays that (until 2026-11-16 it kept 0: the ledger of the same question
+/// was 238 cold and 0 after such a search, the review's).
+///
+/// While it measures through such a region the ledger's bound
+/// ([`asked_within`]) stands where it stood: reached inside if it was
+/// reached on entry, not reached otherwise. The ledger grows there only to
+/// be put back, so a loop inside that asks for the bound sees what the
+/// region would show it, not a bound crossed by work that is not asked
+/// (and a search done again only because a shared cache let go of its
+/// answer is not cut short where the cold one was not).
 pub fn costs_of<R>(work: impl FnOnce() -> R) -> (R, u64, u64) {
+    struct Restore(u32, u32, Option<u64>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = FROZEN.try_with(|f| f.set(self.0));
+            let _ = UNASKED.try_with(|u| u.set(self.1));
+            if let Some(limit) = self.2 {
+                let _ = ASKED_LIMIT.try_with(|l| l.set(limit));
+            }
+        }
+    }
     let frozen = FROZEN.try_with(Cell::get).unwrap_or(0);
+    let unasked_here = UNASKED.try_with(Cell::get).unwrap_or(0);
     let (before, asked_before) = (spent(), asked());
+    let held = (frozen > 0 || unasked_here > 0).then(|| {
+        let limit = ASKED_LIMIT.try_with(Cell::get).unwrap_or(u64::MAX);
+        let inside = if asked_before >= limit { 0 } else { u64::MAX };
+        let _ = ASKED_LIMIT.try_with(|l| l.set(inside));
+        limit
+    });
+    let _restore = Restore(frozen, unasked_here, held);
     let _ = FROZEN.try_with(|f| f.set(0));
+    let _ = UNASKED.try_with(|u| u.set(0));
     let made = work();
     let units = spent().saturating_sub(before);
     let asked_units = asked().saturating_sub(asked_before);
     if frozen > 0 {
         // Not counted where it ran.
         let _ = SPENT.try_with(|spent| spent.set(before));
+    }
+    if frozen > 0 || unasked_here > 0 {
+        // Not asked where it ran.
         let _ = ASKED.try_with(|asked| asked.set(asked_before));
     }
-    let _ = FROZEN.try_with(|f| f.set(frozen));
     (made, units, asked_units)
 }
 
@@ -573,6 +668,54 @@ mod tests {
         });
         assert_eq!((units, asked_units), (4, 10));
         assert_eq!((spent() - spent0, asked() - asked0), (6, 17));
+        // Inside a region that leaves the ledger alone: measured the same,
+        // the count charged, the ledger not.
+        let (_, units, asked_units) = unasked(|| {
+            costs_of(|| {
+                charge(4);
+                replay(6);
+            })
+        });
+        assert_eq!((units, asked_units), (4, 10));
+        assert_eq!((spent() - spent0, asked() - asked0), (10, 17));
+        // Both, nested either way: the same measure, nothing kept.
+        for nested in [0, 1] {
+            let measure = || {
+                costs_of(|| {
+                    charge(4);
+                    replay(6);
+                })
+            };
+            let (_, units, asked_units) = if nested == 0 {
+                uncounted(|| unasked(measure))
+            } else {
+                unasked(|| uncounted(measure))
+            };
+            assert_eq!((units, asked_units), (4, 10));
+        }
+        assert_eq!((spent() - spent0, asked() - asked0), (10, 17));
+        // The regions come back as they were.
+        unasked(|| {
+            let _ = costs_of(|| ());
+            replay(5);
+        });
+        assert_eq!(asked() - asked0, 17);
+        // Measured through a region, the ledger's bound stands where it
+        // stood: not crossed by what is put back, reached if it was.
+        asked_within(3, || {
+            unasked(|| {
+                let (crossed, _, asked_units) = costs_of(|| {
+                    replay(10);
+                    asked_reached()
+                });
+                assert!(!crossed && asked_units == 10);
+            });
+            assert!(!asked_reached());
+            replay(3);
+            assert!(asked_reached());
+            let (still, ..) = uncounted(|| costs_of(asked_reached));
+            assert!(still && asked_reached());
+        });
     }
 
     #[test]
@@ -613,5 +756,32 @@ mod tests {
         assert_eq!(spent(), before);
         charge(theirs);
         assert_eq!(spent(), before + 5);
+    }
+
+    #[test]
+    fn work_called_off_is_exhausted_from_then_on_and_keeps_nothing() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stop = Arc::new(AtomicBool::new(false));
+        assert!(!exhausted());
+        stopping_when(&stop, || {
+            assert!(!exhausted() && counting() && !pass());
+            // Set from another thread, seen here at the next question.
+            std::thread::scope(|s| {
+                let _ = s.spawn(|| stop.store(true, Ordering::Release)).join();
+            });
+            assert!(exhausted() && !counting() && pass());
+            // Nested: the inner one's flag, then the outer one's again.
+            let other = Arc::new(AtomicBool::new(false));
+            stopping_when(&other, || assert!(!exhausted()));
+            assert!(exhausted());
+        });
+        // Not called off outside it, also when its work panicked.
+        assert!(!exhausted() && counting());
+        let fresh = Arc::new(AtomicBool::new(true));
+        let caught =
+            std::panic::catch_unwind(|| stopping_when(&fresh, || -> u8 { panic!("on purpose") }));
+        assert!(caught.is_err());
+        assert!(!exhausted());
     }
 }

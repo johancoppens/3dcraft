@@ -232,6 +232,58 @@ fn the_ledger_of_a_boolean_does_not_depend_on_caches_or_threads() {
     }
 }
 
+/// The ledger of a boolean after a different boolean on the same
+/// surfaces, and of the two interleaved: the same as each cold. The
+/// review's case (2026-11-16): the long block with weighted sides, whose
+/// intersection asks so many questions of its trees that their shared
+/// memos let go of answers the operation asks again; searched again where
+/// the ledger does not grow, those were kept with nothing on it, and the
+/// intersection after the subtraction counted 971 883 155 against
+/// 1 103 978 774 cold (the subtraction 543 256 296 and 480 578 418
+/// against 546 165 204).
+#[test]
+fn the_ledger_of_a_boolean_does_not_depend_on_the_operations_before_it() {
+    let long = || block_with_weighted_sides(Vec3::new(30.0, 900.0, 20.0), 1);
+    let block_at = |at: Vec3, size: Vec3| {
+        primitives::block(&Frame::WORLD.at(at).unwrap(), size.x, size.y, size.z).unwrap()
+    };
+    let through = block_at(Vec3::new(12.0, 315.0, 9.0), Vec3::new(27.0, 765.0, 16.0));
+    let across = block_at(Vec3::new(5.0, 100.0, 12.0), Vec3::new(30.0, 500.0, 10.0));
+    let one = (&through, BooleanOp::Intersect);
+    let other = (&across, BooleanOp::Subtract);
+    let run = |(tool, op): (&Body, BooleanOp)| ledger_of(&long, tool, op);
+    cold();
+    let one_cold = run(one);
+    cold();
+    let other_cold = run(other);
+    let mut seen = vec![("intersection", "cold", one_cold.clone())];
+    seen.push(("subtraction", "cold", other_cold.clone()));
+    cold();
+    let _ = run(other);
+    seen.push(("intersection", "after the subtraction", run(one)));
+    cold();
+    let _ = run(one);
+    seen.push(("subtraction", "after the intersection", run(other)));
+    cold();
+    for round in ["interleaved, first", "interleaved, second"] {
+        seen.push(("intersection", round, run(one)));
+        seen.push(("subtraction", round, run(other)));
+    }
+    for (name, how, (made, spent, asked)) in &seen {
+        println!("long block, {name}, {how}: {made}; counted {spent}, ledger {asked}");
+    }
+    assert!(one_cold.2 > 0 && other_cold.2 > 0);
+    for (name, how, (made, _, asked)) in &seen {
+        let (cold_made, _, cold_asked) = if *name == "intersection" {
+            &one_cold
+        } else {
+            &other_cold
+        };
+        assert_eq!(made, cold_made, "{name}, {how}");
+        assert_eq!(asked, cold_asked, "{name}, {how}: the ledger moved");
+    }
+}
+
 /// The block whose bottom is a ruled spline whose speed rises a
 /// hundred thousandfold or a millionfold (no weights), intersected with a
 /// block through the bottom: what it gives, in how long, and its ledger.
