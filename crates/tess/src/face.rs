@@ -3924,7 +3924,7 @@ const GRADED_MEASURES_AT_LEAST: u64 = 4096;
 /// point between corners that share no flat piece, whose place by the
 /// grid's pace and the steps from it are both off the surface: a triangle
 /// along a trimmed border, before it is cut. Measured on the same faces:
-/// none on 2 019 of them, and at most 24 on a face, one for every ten
+/// none on 2 079 of them, and at most 24 on a face, one for every ten
 /// points of its boundary. A face past it is one whose edges do not lie
 /// on its surface.
 const GRADED_SEARCHES: u64 = 4;

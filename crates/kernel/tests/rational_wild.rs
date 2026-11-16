@@ -624,12 +624,11 @@ const MOST_TRIANGLES: usize = 20_000;
 /// A block with a tool through or onto its sides, each side then on a
 /// sheet drawn wildly, as the review drew them. Each ends within
 /// [`MOST_WORK`]; each is right by the closed form, refused, or over
-/// [`MOST_TRIANGLES`]; none is wrong. On 2026-11-16, of 220: 84 right,
-/// 71 over the triangles, 10 refused (seven as their even grid was, three
-/// for chords their triangles cannot follow), 55 not bodies (a tool the
-/// kernel refuses, a sheet that folds, a twin the check refuses); 106 of
-/// the bodies meshed have a face with a graded grid. `WILD_ONLY`, by
-/// hand: the one case to mesh.
+/// [`MOST_TRIANGLES`]; none is wrong. On 2026-11-16, of 220: 84 right
+/// (73 of them with a face on a graded grid), 71 over the triangles, 10
+/// refused as their even grids were, 55 not bodies (a tool the kernel
+/// refuses, a sheet that folds, a twin the check refuses). `WILD_ONLY`,
+/// by hand: the one case to mesh.
 #[test]
 fn planes_with_holes_and_neighbours_on_wild_sheets_end_and_are_right() {
     let _alone = alone();

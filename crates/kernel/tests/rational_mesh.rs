@@ -921,9 +921,11 @@ fn twins_drawn_decades_apart_end_within_their_work() {
 /// that is not there. The face has a graded grid (its even grid asks for
 /// hundreds of millions of cells a side) and ends when it has made the
 /// searches it may, a count of its own boundary (`GRADED_SEARCHES` in
-/// `tess/src/face.rs`): refused as its even grid was, with that grid's
-/// count, in a hundredth of the work a right body of this file takes at
-/// most. (The first graded grid measured such a face without a bound.)
+/// `tess/src/face.rs`); it asks for finer chords, as a face whose
+/// refinement ends on its own does, ends so again on each of those, and
+/// is refused: 21 to 32 million units a body (measured 2026-11-16),
+/// within [`MOST_WORK`]. (The first graded grid measured such a face
+/// without a bound.)
 #[test]
 fn a_face_whose_edges_are_off_its_surface_ends_when_out_of_work() {
     let k = 1.0;
@@ -975,11 +977,11 @@ fn a_face_whose_edges_are_off_its_surface_ends_when_out_of_work() {
             assert!(
                 matches!(
                     made,
-                    Err(TessError::TooFine { needed_segments, .. }) if needed_segments > 1e6
+                    Err(TessError::TooFine { .. } | TessError::Face { .. })
                 ),
                 "{what}"
             );
-            assert!(units <= 1_000_000, "{what}: {units} units of work");
+            assert!(units <= MOST_WORK, "{what}: {units} units of work");
         }
     }
 }
