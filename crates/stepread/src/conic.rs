@@ -25,10 +25,11 @@
 //! [`MAX_PIECES`], beyond that that many equal pieces), the knots at the
 //! piece ends being the standard's `u` there; each piece runs from
 //! `λ(lo)` to `λ(hi)`. Pieces of a unit: an exact curve in one long span
-//! near the apex of a wide cone is not proven on it by `geom::certify`
-//! within its pieces, in a few unit spans it is (`crates/io/tests/
-//! step_conics.rs`). A parabola's piece has its middle control point at
-//! the polar form of `λ`, `C + F (lo hi x + (lo + hi) y)`, weight 1: `λ`
+//! near the apex of a wide cone was not proven on it by `geom::certify`
+//! (until its careful second proof, 2026-11-15), in a few unit spans it
+//! was; both are now, and the pieces stay as they were
+//! (`crates/io/tests/step_conics.rs`). A parabola's piece has its middle
+//! control point at the polar form of `λ`, `C + F (lo hi x + (lo + hi) y)`, weight 1: `λ`
 //! is a quadratic polynomial in `u`, so the B-spline is `λ` itself,
 //! parameter for parameter. A hyperbola's piece of half width `d` about
 //! `m` has the middle control point `C + E(m) / cosh d` where
