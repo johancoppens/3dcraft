@@ -40,6 +40,7 @@ Persistent names of faces, edges and vertices: how they are made (`regen` from t
 - A glyph of a text (`glyph(i,U+…)`): `i` is the glyph's place in the string, so taking out a character before it gives its name to the next glyph of the same character. Needs a glyph named by something an edit of the string does not shift.
 - `piece(k)/`: the place among the pieces of one curve (a spline cut at its corners, a full turn in halves, a thread's half turns); a spline piece shorter than the tolerance merged renumbers the rest. Needs a piece named by where it starts along its curve.
 - `rim(h)/`: `h` hashes the name of the sheet's edge, which may be numbered by place and cannot be read back. Needs the edge's name itself in the rim's name, held to this list.
+- `tip(0)/` (2026-11-15): a face of a tip, after the side face it continues. One face of the tip per side face, so its number is always 0, and the side after `/` is looked at in turn; whether that makes it proven is the developer's word on stable names, and until then it is refused like the others here (it costs nothing yet: a blend of the tip's rails is refused anyway).
 - A split on the way told by a number (or by a face not proven): the lump is chosen by where the lumps lie in space. It is looked for among the bodies the name's features grew from (`FeatureKind::sources`), and in the name the edge is followed to, since a copy of instance 0 of a copy of instance 0 is one link and need not show the split. Needs a face of the lump's own, which `body.split` chooses when there is one.
 
 ## Findings and history

@@ -1048,6 +1048,20 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         modeled: bool,
     },
+    /// The flat end face `face` of the body of an earlier feature
+    /// replaced by faces that close the body in one point (format version
+    /// 73). Absent `length`: the length chosen at every regeneration;
+    /// absent `at`: over the centre of area of the shoulder; absent
+    /// `fullness`: `√2 − 1`, quarter ellipses.
+    Tip {
+        face: Name,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        length: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<[String; 2]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fullness: Option<String>,
+    },
     /// The body of `source` made hollow, with walls of `thickness` behind
     /// every face except those of `open`, which are taken away.
     Shell {
@@ -2007,6 +2021,9 @@ pub enum NameRole {
     /// one plain number (the hash of the edge's name), followed by the
     /// sheet's face.
     Rim,
+    /// A face of a tip; `sources` is one plain number, 0, followed by the
+    /// side face it continues (format version 73).
+    Tip,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

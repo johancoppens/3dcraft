@@ -432,6 +432,13 @@ fn key_value(shown: &Shown<'_>, kind: &FeatureKind) -> (String, Option<KeyEdit>)
             format!("Thread {}", shown.length(&t.length)),
             edit("length", "Length", &t.length),
         ),
+        FeatureKind::Tip(t) => match &t.length {
+            Some(length) => (
+                format!("Tip {}", shown.length(length)),
+                edit("length", "Length", length),
+            ),
+            None => ("Tip".to_string(), None),
+        },
         FeatureKind::Loft(l) => (format!("{} sections", l.sections.len()), None),
         FeatureKind::Sweep(s) => match s.rail {
             Some(rail) => (

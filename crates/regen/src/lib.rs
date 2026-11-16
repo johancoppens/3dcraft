@@ -62,6 +62,7 @@ mod sweep;
 pub mod text;
 mod thicken;
 mod thread;
+mod tip;
 pub mod work;
 
 pub use cache::{DEFAULT_BODY_BUDGET, Need, RegenCache};
@@ -1305,6 +1306,7 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         | FeatureKind::Shell(_)
         | FeatureKind::DeleteFace(_)
         | FeatureKind::Thread(_)
+        | FeatureKind::Tip(_)
         | FeatureKind::Split(_)
         | FeatureKind::Unfold(_) => {
             return Err(format!(
@@ -2009,6 +2011,19 @@ fn build_feature(
                 threaded = Some(report);
                 // Neither the body nor the groove moves.
                 instances = Some(Arc::new(vec![Transform::IDENTITY; 2]));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::Tip(tipped) = &feature.kind {
+        match tip::build(doc, variables, feature.id, tipped, earlier)
+            .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
+        {
+            Ok((body, made_names)) => {
+                names = made_names.map(Arc::new);
+                // The body as a whole does not move; the faces that stay
+                // lie where they lay.
+                instances = Some(Arc::new(vec![Transform::IDENTITY]));
                 (Status::Ok, Some(Arc::new(body)))
             }
             Err(reason) => (Status::Failed(reason), None),

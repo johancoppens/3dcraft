@@ -888,6 +888,16 @@ pub(crate) fn feature(
             }
             changed
         }
+        FeatureKind::Tip(tipped) => {
+            if crate::pass::absent_name(doc, earlier, &tipped.face).is_some() {
+                false
+            } else if let Some(followed) = face(doc, earlier, &tipped.face, "face")? {
+                tipped.face = followed;
+                true
+            } else {
+                false
+            }
+        }
         _ => return Ok(None),
     };
     Ok((changed || pruned).then(|| Feature {

@@ -1,0 +1,261 @@
+{
+  "format_version": 73,
+  "written_by": "d6e85e8bc6aed4df3778b7378e64a59b35cd049a",
+  "how": "craft3d-cli of that commit (a debug build, on the developer's laptop): craft3d-cli run --new '{\"units\": \"mm\"}' --script v73.steps.json --out v73.3dcraft, then craft3d-cli run v73.3dcraft --cmd document.inspect for the features and bodies; format 73: a rod lofted through three circles of radius r = 5 mm at 0, 10 and 20 mm (its side a spline surface that is the cylinder exactly), its end tipped as long as r with the default fullness (a half ball, 2/3 pi r^3) and its start tipped at the length chosen (the radius of the circle of the end's area, r) over at [0, 0] with fullness 0.5 (parabolas, 11/15 pi r^3): 500 pi + 250 pi / 3 + 275 pi / 3 = 2120.575041173 mm3 in closed form",
+  "rollback": null,
+  "features": [
+    {
+      "dof": 2,
+      "id": "F1",
+      "name": "S0",
+      "params": {
+        "constraints": [
+          {
+            "id": 1,
+            "kind": {
+              "curve": 2,
+              "type": "radius",
+              "value": "r"
+            }
+          }
+        ],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "center": 1,
+              "radius": 5.0,
+              "type": "circle"
+            },
+            "id": 2
+          }
+        ],
+        "next_constraint_id": 2,
+        "next_entity_id": 3,
+        "plane": {
+          "offset": "0",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 2,
+      "id": "F2",
+      "name": "S1",
+      "params": {
+        "constraints": [
+          {
+            "id": 1,
+            "kind": {
+              "curve": 2,
+              "type": "radius",
+              "value": "r"
+            }
+          }
+        ],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "center": 1,
+              "radius": 5.0,
+              "type": "circle"
+            },
+            "id": 2
+          }
+        ],
+        "next_constraint_id": 2,
+        "next_entity_id": 3,
+        "plane": {
+          "offset": "10 mm",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 2,
+      "id": "F3",
+      "name": "S2",
+      "params": {
+        "constraints": [
+          {
+            "id": 1,
+            "kind": {
+              "curve": 2,
+              "type": "radius",
+              "value": "r"
+            }
+          }
+        ],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "center": 1,
+              "radius": 5.0,
+              "type": "circle"
+            },
+            "id": 2
+          }
+        ],
+        "next_constraint_id": 2,
+        "next_entity_id": 3,
+        "plane": {
+          "offset": "20 mm",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "bodyUsedBy": "F5",
+      "id": "F4",
+      "name": "Rod",
+      "params": {
+        "closed": false,
+        "ruled": false,
+        "sections": [
+          {
+            "sketch": 1,
+            "start": null
+          },
+          {
+            "sketch": 2,
+            "start": null
+          },
+          {
+            "sketch": 3,
+            "start": null
+          }
+        ],
+        "type": "loft"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "bodyUsedBy": "F6",
+      "id": "F5",
+      "name": "Nose",
+      "params": {
+        "at": null,
+        "face": "F4:endCap(e2)",
+        "fullness": null,
+        "length": "r",
+        "type": "tip"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "followed": {
+        "at": [
+          "0 mm",
+          "0 mm"
+        ],
+        "face": "F5:copy(0)/F4:startCap(e2)",
+        "fullness": "0.5",
+        "length": null,
+        "type": "tip"
+      },
+      "id": "F6",
+      "name": "Tail",
+      "params": {
+        "at": [
+          "0 mm",
+          "0 mm"
+        ],
+        "face": "F4:startCap(e2)",
+        "fullness": "0.5",
+        "length": null,
+        "type": "tip"
+      },
+      "status": "ok",
+      "suppressed": false
+    }
+  ],
+  "bodies": [
+    {
+      "area": 953.2959501153855,
+      "bbox": [
+        [
+          -5.0,
+          -5.0,
+          -5.000000000000002
+        ],
+        [
+          5.0,
+          5.0,
+          25.0
+        ]
+      ],
+      "bboxTolerance": 0.030875491091080405,
+      "centroid": [
+        -2.9486228750621436e-16,
+        -1.6083397500338965e-16,
+        9.836860670194003
+      ],
+      "edges": 20,
+      "faceNames": [
+        "F6:copy(0)/F4:side(e2,e2,e2)",
+        "F6:copy(0)/F4:side(e2,e2,e2)",
+        "F6:copy(0)/F4:side(e2,e2,e2)",
+        "F6:copy(0)/F4:side(e2,e2,e2)",
+        "F6:copy(0)/F5:tip(0)/F4:side(e2,e2,e2)",
+        "F6:copy(0)/F5:tip(0)/F4:side(e2,e2,e2)",
+        "F6:copy(0)/F5:tip(0)/F4:side(e2,e2,e2)",
+        "F6:copy(0)/F5:tip(0)/F4:side(e2,e2,e2)",
+        "F6:tip(0)/F5:copy(0)/F4:side(e2,e2,e2)",
+        "F6:tip(0)/F5:copy(0)/F4:side(e2,e2,e2)",
+        "F6:tip(0)/F5:copy(0)/F4:side(e2,e2,e2)",
+        "F6:tip(0)/F5:copy(0)/F4:side(e2,e2,e2)"
+      ],
+      "faces": 12,
+      "feature": "F6",
+      "kind": "solid",
+      "name": "Tail",
+      "shells": 1,
+      "valid": true,
+      "vertices": 10,
+      "volume": 2120.575041173111
+    }
+  ]
+}

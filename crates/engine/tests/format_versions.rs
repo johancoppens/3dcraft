@@ -463,3 +463,41 @@ fn the_v72_wedge_under_a_grid_is_its_closed_form() {
     let volume = body(&mut s, "Wedge")["volume"].as_f64().unwrap();
     assert!((volume - 6800.0).abs() <= 1e-9 * 6800.0, "{volume}");
 }
+
+/// What pins v73's tips besides their fixture: the rod of radius `r`
+/// lofted 20 mm long through equal circles, its end tipped as long as `r`
+/// at the default fullness (a half ball, ⅔ π r³) and its start at the
+/// length chosen (the radius of the circle of its area, `r`) with
+/// parabolas (11/15 π r³), follows `r`.
+#[test]
+fn the_v73_rod_tipped_at_both_ends_is_its_closed_form() {
+    let dir = workdir("format-versions", "v73-tip");
+    std::fs::copy(fixtures().join("v73.3dcraft"), dir.join("v73.3dcraft")).unwrap();
+    let mut s = session_in(&dir);
+    run(&mut s, "file.open", json!({"path": "v73.3dcraft"}));
+    let volume = |s: &mut craft3d_engine::Session| -> f64 {
+        let inspect = run(s, "document.inspect", json!({}));
+        inspect["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["name"] == "Tail")
+            .unwrap_or_else(|| panic!("no Tail in {inspect}"))["volume"]
+            .as_f64()
+            .unwrap()
+    };
+    for r in [5.0_f64, 4.0] {
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "r", "expr": format!("{r} mm")}),
+        );
+        let pi = std::f64::consts::PI;
+        let want = pi * r * r * 20.0 + (2.0 / 3.0 + 11.0 / 15.0) * pi * r * r * r;
+        let got = volume(&mut s);
+        assert!(
+            (got - want).abs() <= 1e-11 * want,
+            "r {r}: {got} against {want}"
+        );
+    }
+}

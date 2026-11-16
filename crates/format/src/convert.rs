@@ -1777,6 +1777,19 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 left_handed: *left_handed,
                 modeled: *modeled,
             },
+            doc::FeatureKind::Tip(doc::Tip {
+                face,
+                length,
+                at,
+                fullness,
+            }) => manifest::FeatureKind::Tip {
+                face: name_to_manifest(face),
+                length: length.as_ref().map(expr_to_manifest),
+                at: at
+                    .as_ref()
+                    .map(|[x, y]| [expr_to_manifest(x), expr_to_manifest(y)]),
+                fullness: fullness.as_ref().map(expr_to_manifest),
+            },
             doc::FeatureKind::Shell(doc::Shell {
                 source: doc::FeatureId(source),
                 thickness,
@@ -2061,6 +2074,7 @@ fn role_to_manifest(role: doc::NameRole) -> manifest::NameRole {
         D::FilletCorner => M::FilletCorner,
         D::Thread => M::Thread,
         D::Rim => M::Rim,
+        D::Tip => M::Tip,
     }
 }
 
@@ -2089,6 +2103,7 @@ fn role_to_doc(role: manifest::NameRole) -> doc::NameRole {
         M::FilletCorner => D::FilletCorner,
         M::Thread => D::Thread,
         M::Rim => D::Rim,
+        M::Tip => D::Tip,
     }
 }
 
@@ -3897,6 +3912,17 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 length: doc::Expr(length),
                 left_handed,
                 modeled,
+            }),
+            manifest::FeatureKind::Tip {
+                face,
+                length,
+                at,
+                fullness,
+            } => doc::FeatureKind::Tip(doc::Tip {
+                face: name_to_doc(face),
+                length: length.map(doc::Expr),
+                at: at.map(|[x, y]| [doc::Expr(x), doc::Expr(y)]),
+                fullness: fullness.map(doc::Expr),
             }),
             manifest::FeatureKind::Shell {
                 source,

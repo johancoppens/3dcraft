@@ -136,6 +136,63 @@ its volume is its section times its run times cos 30°:
 An up direction along the rails would lay the profile into their course; that is refused as the fold
 it makes.
 
+## Tip
+
+`feature.tip` closes a body in one rounded point over a flat end face: the nose of a hull, the end of a
+slender blade. The end face is replaced by faces that run on from the faces round it
+without a crease along the old edge, and all reach the point with one tangent plane, parallel to the end.
+An edge that ran into the end (a deck edge, a trailing edge) runs on to the point and fades out there.
+Nothing behind the end changes. A rod lofted through three equal circles, tipped as long as its radius,
+ends in a half ball:
+
+```json
+[
+ ["variable.set", {"name": "r", "expr": "10 mm"}],
+ ["variable.set", {"name": "len", "expr": "60 mm"}],
+ ["sketch.create", {"name": "Base", "plane": "xy"}],
+ ["sketch.circle", {"sketch": "Base", "center": [0, 0], "radius": "r"}],
+ ["sketch.create", {"name": "Middle", "plane": "xy", "offset": "len / 2"}],
+ ["sketch.circle", {"sketch": "Middle", "center": [0, 0], "radius": "r"}],
+ ["sketch.create", {"name": "End", "plane": "xy", "offset": "len"}],
+ ["sketch.circle", {"sketch": "End", "center": [0, 0], "radius": "r"}],
+ ["feature.loft", {"sections": ["Base", "Middle", "End"], "name": "Rod"}],
+ ["feature.tip", {"face": "Rod:endCap(e2)", "length": "r", "name": "Nose"}],
+ ["assert.add", {"name": "half ball", "measure": "volume", "of": "Nose", "eq": "pi * r^2 * len + 2 / 3 * pi * r^3"}]
+]
+```
+
+- **`face`** is the end face by its name, which may be named as an earlier body of the same chain had it.
+- **`length`** is how far beyond the end the point lies, along the end's outward normal. Left out, it is
+  the radius of the circle with the end's area, and never more than half the length at which the faces
+  round the end, carried on, would meet.
+- **`at`** is where the point stands over the end: lengths along the end face's own x and y axes from its
+  plane's origin. Left out, the point stands over the middle (the centre of area) of what the faces round
+  the end come to in the point's plane. On an end that is not convex (an L) that middle can lie on or
+  beyond an edge; then give `at`, a place from which the whole end is in view.
+- **`fullness`** is how full the tip is across, from 0.01 to 0.98. The default, 0.4142 (√2 − 1), gives
+  quarter ellipses: on any straight prism the tip adds two thirds of the end's area times the length, and
+  on a rod as long as its radius it is a half ball. 0.5 gives parabolas (eleven fifteenths); more is
+  blunter, less more pointed.
+- **What is built.** A fullness from 0.05 to 0.95, at a length of a tenth of the end's radius (the
+  radius of the circle with its area) or more. Nearer 0 or 1, and shorter tips, are often refused,
+  because their faces cannot yet be meshed or measured; below a hundredth of that radius nearly always.
+  A tip is never built creased at the old edge or unmeasurable: it is refused, saying what to change.
+- **Names.** The faces that stay keep their names with a prefix, `F9:copy(0)/...`; a face of the tip is
+  named after the face it continues, `F9:tip(0)/F4:side(e2)`. The edges from the old corners to the
+  point, and the point, are named by their faces.
+- **Not built yet**, and refused with the face or the edge: an end whose neighbours are planes,
+  cylinders, cones, spheres or tori (only spline faces round the end are taken: a loft's, a swept or
+  turned spline's), an end with a hole or bounded by one closed edge, and a pointed tip (`shape`
+  `"pointed"`). A tipped body cannot yet be hollowed or offset: `feature.shell`, `feature.offsetFace`,
+  `feature.thicken` and `feature.plate` refuse a face that closes in a point, and say so.
+- **Refused** with the reason: faces round the end that do not go on toward the point; an end whose
+  outline no point sees whole (a crescent, a cambered blade section such as a ship propeller's: a tip
+  that closes in one point needs a point that sees all of it; such an end needs a ridge or a blend,
+  which is not built); a point that does not see the whole end; a length at which the faces round the
+  end close in before the point (give a shorter one); a tip so short that it is not tangent to the
+  faces round it within the angular tolerance, or that cannot be measured (give a longer one, or a
+  fullness nearer the middle); and a tip that runs into another part of the body.
+
 ## Text
 
 `sketch.text` puts a text in a sketch: the outlines of its letters, closed profiles that extrude, cut and

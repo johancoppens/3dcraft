@@ -13,7 +13,7 @@
 
 use craft3d_geom::pole::Border;
 use craft3d_geom::tip::{Tip, TipRim, TipSpec, tip_nets};
-use craft3d_geom::{Curve3, NurbsSurface, Plane, Surface};
+use craft3d_geom::{Curve3, Line, NurbsCurve, NurbsSurface, Plane, Surface};
 use craft3d_math::{Frame, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId};
 
@@ -217,6 +217,152 @@ pub fn pod(tip: &Tip, frame: &Frame) -> Result<Body, String> {
     }
     let outline = body.add_loop(coedges);
     faces.push(body.add_face(Surface::Plane(Plane::new(down)), false, vec![outline]));
+    body.add_shell(faces);
+    Ok(body)
+}
+
+/// A solid prism on `section` (counter-clockwise, in the xy plane of
+/// `frame`, times `k`) from `depth` (times `k`) behind the plane up to
+/// it, its sides spline surfaces (each piece's own degree along, 1 up),
+/// so that its flat face in the plane, the *end*, is a face a tip takes:
+/// the sides first, in the order of the pieces, then the base, then the
+/// end. The end's plane is `frame`'s xy plane, its outward normal
+/// `frame`'s z.
+pub fn spline_prism(frame: &Frame, k: f64, section: &[Piece], depth: f64) -> Result<Body, String> {
+    spline_frustum(frame, k, section, depth, 1.0, 0.0)
+}
+
+/// [`spline_prism`] with the section at the end scaled by `scale` about
+/// the frame's origin (the base keeps it as it is): below 1 the sides
+/// lean in and would meet `depth · scale / (1 − scale)` beyond the end.
+/// The base is tilted by `lean` (it lies at `z = −depth + lean · x`): the
+/// sides' steps across the end are then of different lengths, and they
+/// reach a plane beyond it each at its own factor (the tip's general
+/// form).
+pub fn spline_frustum(
+    frame: &Frame,
+    k: f64,
+    section: &[Piece],
+    depth: f64,
+    scale: f64,
+    lean: f64,
+) -> Result<Body, String> {
+    let count = section.len();
+    if count < 2 {
+        return Err("a prism needs two pieces at least".to_string());
+    }
+    let at = |[x, y]: [f64; 2], z: f64| {
+        if z == 0.0 {
+            frame.point(x * k * scale, y * k * scale, 0.0)
+        } else {
+            frame.point(x * k, y * k, (z + lean * x) * k)
+        }
+    };
+    let clamped = |degree: usize| {
+        let mut knots = vec![0.0; degree + 1];
+        knots.extend(std::iter::repeat_n(1.0, degree + 1));
+        knots
+    };
+    let mut body = Body::new(BodyKind::Solid);
+    let mut low = Vec::with_capacity(count);
+    let mut high = Vec::with_capacity(count);
+    for (_, points, _) in section {
+        let first = *points.first().ok_or("an empty piece")?;
+        low.push(body.add_vertex(at(first, -depth)));
+        high.push(body.add_vertex(at(first, 0.0)));
+    }
+    let corner = |list: &Vec<craft3d_topo::VertexId>, k: usize| {
+        list.get(k % count).copied().ok_or("no such corner")
+    };
+    let mut bottoms = Vec::with_capacity(count);
+    let mut tops = Vec::with_capacity(count);
+    let mut laterals = Vec::with_capacity(count);
+    let mut surfaces = Vec::with_capacity(count);
+    for (index, (degree, points, weights)) in section.iter().enumerate() {
+        let row = |z: f64| points.iter().map(|&p| at(p, z)).collect::<Vec<_>>();
+        let curve = |z: f64| {
+            NurbsCurve::new(*degree, clamped(*degree), row(z), weights.clone())
+                .map_err(|e| e.to_string())
+        };
+        let (bottom, top) = (curve(-depth)?, curve(0.0)?);
+        bottoms.push(body.add_edge(
+            Curve3::Nurbs(bottom.clone()),
+            bottom.domain(),
+            corner(&low, index)?,
+            corner(&low, index + 1)?,
+        ));
+        tops.push(body.add_edge(
+            Curve3::Nurbs(top.clone()),
+            top.domain(),
+            corner(&high, index)?,
+            corner(&high, index + 1)?,
+        ));
+        let first = *points.first().ok_or("an empty piece")?;
+        let (a, b) = (at(first, -depth), at(first, 0.0));
+        let line = Line::through(a, b).map_err(|e| e.to_string())?;
+        laterals.push(body.add_edge(
+            Curve3::Line(line),
+            (0.0, a.distance(b)),
+            corner(&low, index)?,
+            corner(&high, index)?,
+        ));
+        let mut net = Vec::with_capacity(2 * points.len());
+        let mut net_weights = Vec::with_capacity(2 * points.len());
+        for (&point, &weight) in points.iter().zip(weights) {
+            net.extend([at(point, -depth), at(point, 0.0)]);
+            net_weights.extend([weight, weight]);
+        }
+        surfaces.push(
+            NurbsSurface::new(
+                *degree,
+                1,
+                clamped(*degree),
+                clamped(1),
+                points.len(),
+                2,
+                net,
+                net_weights,
+            )
+            .map_err(|e| e.to_string())?,
+        );
+    }
+    let forward = |edge: EdgeId| Coedge {
+        edge,
+        reversed: false,
+    };
+    let backward = |edge: EdgeId| Coedge {
+        edge,
+        reversed: true,
+    };
+    let pick = |list: &Vec<EdgeId>, k: usize| list.get(k % count).copied().ok_or("no such edge");
+    let mut faces = Vec::with_capacity(count + 2);
+    for (index, surface) in surfaces.into_iter().enumerate() {
+        let outline = body.add_loop(vec![
+            forward(pick(&bottoms, index)?),
+            forward(pick(&laterals, index + 1)?),
+            backward(pick(&tops, index)?),
+            backward(pick(&laterals, index)?),
+        ]);
+        faces.push(body.add_face(Surface::Nurbs(surface), false, vec![outline]));
+    }
+    let mut base = Vec::with_capacity(count);
+    for index in (0..count).rev() {
+        base.push(backward(pick(&bottoms, index)?));
+    }
+    let outline = body.add_loop(base);
+    let down = Frame::new(
+        frame.point(0.0, 0.0, -depth * k),
+        frame.vector(lean, 0.0, -1.0),
+        frame.x(),
+    )
+    .ok_or("a base that cannot be tilted so")?;
+    faces.push(body.add_face(Surface::Plane(Plane::new(down)), false, vec![outline]));
+    let mut end = Vec::with_capacity(count);
+    for index in 0..count {
+        end.push(forward(pick(&tops, index)?));
+    }
+    let outline = body.add_loop(end);
+    faces.push(body.add_face(Surface::Plane(Plane::new(*frame)), false, vec![outline]));
     body.add_shell(faces);
     Ok(body)
 }

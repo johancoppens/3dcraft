@@ -393,6 +393,12 @@ fn explain(error: KernelError, made: &Plate, source: &Source<'_>) -> String {
             }
         }
         KernelError::InvalidSize { name, value } => format!("{name}: {value} is not a size"),
+        KernelError::Plate { edge: None, reason } => {
+            // Only where the refusal is the pole's.
+            let pole = reason.contains("drawn into a point");
+            let note = crate::face_ops::tip_note(made.faces.iter().filter(|_| pole));
+            format!("faces: {error}{note}")
+        }
         _ => format!("faces: {error}"),
     }
 }
