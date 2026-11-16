@@ -17,6 +17,7 @@ Usage: craft3d [FILE] [--control PORT] [--control-token-file FILE]
                [--renderer auto|cpu]
                [--recovery-dir DIR|none] [--autosave-interval SECONDS]
                [--recent-file FILE|none] [--window-size WIDTHxHEIGHT]
+               [--reset-graphics]
        craft3d --version | --help
 
 Opens FILE when one is given (a .3dcraft document, a .3dcraftjig Jig,
@@ -72,6 +73,19 @@ Options:
   --window-size WIDTHxHEIGHT  The window's size when it opens, in points
                               (e.g. 1920x1080; at least 480x320).
                               Default: 1280x800
+  --reset-graphics            Windows: forget which graphics interfaces
+                              ended an earlier start (the journal in the
+                              state folder), so each is tried again.
+
+Graphics: the window draws through Vulkan, OpenGL or DirectX 12 (Metal on
+macOS). On Windows the order is Vulkan, OpenGL, DirectX 12, and when one
+ends the start (a graphics driver that crashes), the next start takes the
+next and says so. CRAFT3D_BACKEND_ORDER=dx12,vulkan,gl sets the order
+(never skipped), as WGPU_BACKEND=vulkan|gl|dx12 picks one. CRAFT3D_GPU_TRACE=FILE
+writes what the graphics card is asked to build to FILE, to send with a
+report; CRAFT3D_GPU_TOUR=1 draws every kind of picture once and exits.
+CRAFT3D_SAMPLES=1|4 and CRAFT3D_PEEL_VARIANT=auto|today|persample are for
+tracking down a driver's fault (docs/guide/troubleshooting.md).
 
 Environment: CRAFT3D_CONTROL_PORT, CRAFT3D_CONTROL_TOKEN_FILE, CRAFT3D_STATE_DIR,
 CRAFT3D_AUTOMATION_READ_ROOT, CRAFT3D_AUTOMATION_WRITE_ROOT,
@@ -119,6 +133,9 @@ pub struct Options {
     /// (`CRAFT3D_AGENT_PORT`; 7878 when not given): a test's or an agent's
     /// window keeps off the person's port with it. 0 takes any free port.
     pub agent_port: Option<u16>,
+    /// Forget the graphics start journal (`--reset-graphics`,
+    /// `graphics_start`).
+    pub reset_graphics: bool,
 }
 
 /// What the command line asked for. Made once per start and taken apart
@@ -203,6 +220,12 @@ pub fn parse(
                 } else {
                     Parsed::Version
                 });
+            }
+            "--reset-graphics" => {
+                if inline.is_some() {
+                    return Err(format!("`{name}` takes no value"));
+                }
+                options.reset_graphics = true;
             }
             "--control"
             | "--control-token-file"
@@ -411,6 +434,7 @@ mod tests {
                 window_size: None,
                 state_dir: None,
                 agent_port: None,
+                reset_graphics: false,
             }
         );
         // Port 0 asks for a free one.
@@ -715,5 +739,17 @@ mod tests {
         let bad = |name: &str| (name == "CRAFT3D_CONTROL_PORT").then(|| "soon".to_string());
         let error = super::parse(Vec::new(), &bad).unwrap_err();
         assert!(error.contains("CRAFT3D_CONTROL_PORT"), "{error}");
+    }
+
+    /// `--reset-graphics` takes no value; without it the journal is kept.
+    #[test]
+    fn reset_graphics_is_a_switch() {
+        assert!(options(&["--reset-graphics"]).reset_graphics);
+        assert!(options(&["part.3dcraft", "--reset-graphics"]).reset_graphics);
+        assert!(!options(&[]).reset_graphics);
+        let error = run(&["--reset-graphics=yes"]).unwrap_err();
+        assert!(error.contains("takes no value"), "{error}");
+        assert!(HELP.contains("--reset-graphics") && HELP.contains("CRAFT3D_BACKEND_ORDER"));
+        assert!(HELP.contains("CRAFT3D_GPU_TRACE") && HELP.contains("CRAFT3D_GPU_TOUR"));
     }
 }

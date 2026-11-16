@@ -717,6 +717,40 @@ pub enum RecoveryAction {
 /// Most recoverable documents the bar lists; `recovery.list` has them all.
 pub const RECOVERY_ROWS: usize = 6;
 
+/// A notice about the graphics interface the window draws through: one
+/// passed over because it ended an earlier start (the desktop app's
+/// graphics start journal, `apps/craft3d/src/graphics_start.rs`). Shown in
+/// a bar under the menu, the recovery bar's kind, until dismissed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GraphicsNotice {
+    /// The line the bar says.
+    pub text: String,
+    /// What Details shows: the adapters, the journal, how to choose.
+    pub details: String,
+    /// The label of the button that tries the interface passed over again
+    /// at the next start; empty for none.
+    pub retry: String,
+}
+
+/// What a button of the graphics notice asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraphicsNoticeAction {
+    /// Try the interface passed over again at the next start.
+    Retry,
+    /// Hide the notice, and do not show it again for that interface.
+    Dismiss,
+}
+
+/// A button of the graphics notice's bar, where it was drawn
+/// ([`Shell::graphics_hits`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraphicsButton {
+    /// Opens or closes the details under the line.
+    Details,
+    Retry,
+    Dismiss,
+}
+
 /// What the status bar says about autosave: the text, and whether it is a
 /// problem. Why autosave fails, whichever document it failed for; else
 /// when the recovery file of `document` (the one shown, by its
@@ -835,6 +869,13 @@ pub struct Shell {
     recovery_hits: Vec<(RecoveryAction, egui::Rect)>,
     /// The discard that was clicked once and waits for its second click.
     discard_armed: Option<RecoveryAction>,
+    /// The graphics notice and whether its details are open.
+    graphics_notice: Option<GraphicsNotice>,
+    graphics_details: bool,
+    /// The graphics notice's button clicked, for the host to act on.
+    graphics_action: Option<GraphicsNoticeAction>,
+    /// Where the graphics notice's buttons were drawn in the last frame.
+    graphics_hits: Vec<(GraphicsButton, egui::Rect)>,
     /// How many picks were made in the viewport ([`Picked::serial`]).
     picks: u64,
     /// Viewport size in pixels, and pixels per point.
@@ -1440,6 +1481,10 @@ impl Shell {
             recovery: RecoveryOverview::default(),
             recovery_hits: Vec::new(),
             discard_armed: None,
+            graphics_notice: None,
+            graphics_details: false,
+            graphics_action: None,
+            graphics_hits: Vec::new(),
             picks: 0,
             size: DEFAULT_VIEWPORT,
             pixels_per_point: 1.0,
@@ -2991,6 +3036,25 @@ impl Shell {
             self.recovery_hits.clear();
             self.discard_armed = None;
         }
+        self.graphics_hits.clear();
+        if self.graphics_notice.is_some() {
+            egui::Panel::top("craft3d-graphics-notice")
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(color(tokens.attention_fill))
+                        .stroke(egui::Stroke::new(1.0, color(tokens.attention)))
+                        .inner_margin(egui::Margin::symmetric(
+                            tokens.inset.clamp(0.0, 32.0) as i8,
+                            tokens.nav_spacing.clamp(0.0, 16.0) as i8,
+                        )),
+                )
+                .show(ui, |ui| {
+                    ui.style_mut().visuals = tokens.panel_visuals();
+                    self.graphics_bar(ui);
+                });
+        }
         if self.narrow {
             // The top bar names the document and lists the others (its
             // ▾), or 3DCraft on the start screen: no tab row on a phone or
@@ -3365,6 +3429,110 @@ impl Shell {
             text: text.chars().take(160).collect(),
         });
         self.sync(session);
+    }
+
+    /// Shows `notice` in a bar under the menu from the next frame on, or
+    /// none.
+    pub fn set_graphics_notice(&mut self, notice: Option<GraphicsNotice>) {
+        self.graphics_notice = notice;
+        self.graphics_details = false;
+    }
+
+    /// The graphics notice shown, if any.
+    pub fn graphics_notice(&self) -> Option<&GraphicsNotice> {
+        self.graphics_notice.as_ref()
+    }
+
+    /// Where the graphics notice's buttons were drawn in the last frame;
+    /// none while it is not shown.
+    pub fn graphics_hits(&self) -> &[(GraphicsButton, egui::Rect)] {
+        &self.graphics_hits
+    }
+
+    /// Whether the graphics notice's details are open.
+    pub fn graphics_details_open(&self) -> bool {
+        self.graphics_details
+    }
+
+    /// The graphics notice's button clicked since the last call, for the
+    /// host to act on (the bar is gone by then).
+    pub fn take_graphics_notice_action(&mut self) -> Option<GraphicsNoticeAction> {
+        self.graphics_action.take()
+    }
+
+    /// The bar of the graphics notice: the warning, the line, Details
+    /// (which opens the details under it), the retry and Dismiss.
+    fn graphics_bar(&mut self, ui: &mut egui::Ui) {
+        use crate::kit::{Button, Glyph, Kit};
+        let Some(notice) = self.graphics_notice.clone() else {
+            return;
+        };
+        let tokens = self.tokens;
+        let kit = Kit::panel(&tokens);
+        let mut clicked = None;
+        let mut hits = Vec::new();
+        ui.add_space(tokens.inset * 0.2);
+        ui.horizontal(|ui| {
+            let side = tokens.nav_icon_size;
+            let (icon, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+            crate::kit::glyphs::paint(
+                ui.painter(),
+                Glyph::Warning,
+                icon,
+                color(tokens.attention),
+                &tokens,
+            );
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(&notice.text)
+                        .font(kit.medium_font(ui))
+                        .color(color(tokens.text)),
+                )
+                .truncate(),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let dismiss = kit.button(ui, Button::quiet("Dismiss"));
+                hits.push((GraphicsButton::Dismiss, dismiss.rect));
+                if dismiss.clicked() {
+                    clicked = Some(GraphicsNoticeAction::Dismiss);
+                }
+                if !notice.retry.is_empty() {
+                    let retry = kit.button(ui, Button::quiet(&notice.retry));
+                    hits.push((GraphicsButton::Retry, retry.rect));
+                    if retry.clicked() {
+                        clicked = Some(GraphicsNoticeAction::Retry);
+                    }
+                }
+                let label = if self.graphics_details {
+                    "Hide details"
+                } else {
+                    "Details…"
+                };
+                let details = kit.button(ui, Button::quiet(label));
+                hits.push((GraphicsButton::Details, details.rect));
+                if details.clicked() {
+                    self.graphics_details = !self.graphics_details;
+                }
+            });
+        });
+        if self.graphics_details {
+            ui.horizontal(|ui| {
+                ui.add_space(tokens.nav_icon_size + ui.spacing().item_spacing.x);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&notice.details).color(color(tokens.text_dim)),
+                    )
+                    .wrap(),
+                );
+            });
+        }
+        ui.add_space(tokens.inset * 0.2);
+        self.graphics_hits = hits;
+        if let Some(action) = clicked {
+            self.graphics_action = Some(action);
+            self.graphics_notice = None;
+            ui.ctx().request_repaint();
+        }
     }
 
     /// The bar under the menu that offers what a crashed 3DCraft left
