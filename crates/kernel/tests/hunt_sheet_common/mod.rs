@@ -804,6 +804,16 @@ pub fn bounds(body: &Body) -> (Vec3, Vec3) {
                 .eval(e.range.0 + (e.range.1 - e.range.0) * f64::from(i) / 8.0));
         }
     }
+    // A body without edges (a hollow ball or ring: whole spheres and tori,
+    // built since 2026-11-15) has nothing to sample: its box, which for
+    // whole spheres and tori is theirs exactly.
+    if body.edges.is_empty()
+        && let Ok(b) = body.bbox()
+        && let Some((blo, bhi)) = b.corners()
+    {
+        add(blo);
+        add(bhi);
+    }
     (lo, hi)
 }
 
