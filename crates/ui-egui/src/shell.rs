@@ -717,6 +717,23 @@ pub enum RecoveryAction {
 /// Most recoverable documents the bar lists; `recovery.list` has them all.
 pub const RECOVERY_ROWS: usize = 6;
 
+/// The frame that says the studio look is being prepared
+/// ([`Shell::direct_frame`]): from its count so far (0 not yet said, 1 said
+/// in the last frame, 2 done), whether the studio look is to be drawn now
+/// and whether the device makes pipelines slowly (OpenGL), the next count
+/// and whether this frame says it, drawn in the plain look, instead of
+/// drawing the studio look. Said once, on a slow device only; a look that
+/// is no longer asked for before it was drawn takes the saying back, so the
+/// plate never stays over the plain look.
+fn announce_step(count: u8, studio: bool, slow: bool) -> (u8, bool) {
+    match (count, studio, slow) {
+        (2.., _, _) | (_, _, false) => (count, false),
+        (0, true, true) => (1, true),
+        (1, true, true) => (2, false),
+        (_, false, true) => (0, false),
+    }
+}
+
 /// A notice about the graphics interface the window draws through: one
 /// passed over because it ended an earlier start (the desktop app's
 /// graphics start journal, `apps/craft3d/src/graphics_start.rs`). Shown in
@@ -5420,12 +5437,12 @@ impl Shell {
         // Where making the studio look's pipelines holds the window (a
         // minute through OpenGL on an older Intel card), one frame of the
         // plain look first says so; the next makes them.
-        if studio.is_some() && self.studio_announcing() {
-            self.studio_announce = self.studio_announce.saturating_add(1);
-            if self.studio_announce == 1 {
-                craft3d_gpu::diag::note("look", "preparing the studio look: said first");
-                studio = None;
-            }
+        let slow = self.direct.as_ref().is_some_and(Direct::slow_pipelines);
+        let (count, say) = announce_step(self.studio_announce, studio.is_some(), slow);
+        self.studio_announce = count;
+        if say {
+            craft3d_gpu::diag::note("look", "preparing the studio look: said first");
+            studio = None;
         }
         let drawn_studio = studio.is_some();
         let marks = self.frame_marks(scene, key);
@@ -5966,5 +5983,33 @@ fn paint_overlay(
             viewport::opacity(point.hidden, tokens),
         );
         painter.circle_filled(place(point.at), point.kind.dot_radius(tokens), tint);
+    }
+}
+
+#[cfg(test)]
+mod announce_tests {
+    use super::announce_step;
+
+    #[test]
+    fn the_studio_look_is_announced_once_on_a_slow_device_only() {
+        // A fast device: never said, the studio look drawn at once.
+        assert_eq!(announce_step(0, true, false), (0, false));
+        // A slow one: said in one frame, the studio look made in the next,
+        // and never said again.
+        assert_eq!(announce_step(0, true, true), (1, true));
+        assert_eq!(announce_step(1, true, true), (2, false));
+        assert_eq!(announce_step(2, true, true), (2, false));
+        assert_eq!(announce_step(2, false, true), (2, false));
+        // Nothing to say while the studio look is not asked for.
+        assert_eq!(announce_step(0, false, true), (0, false));
+    }
+
+    #[test]
+    fn a_studio_look_taken_back_before_it_was_drawn_takes_the_plate_back() {
+        // Said, then the plain look asked for at once: the plate goes, and
+        // the studio look asked for later is said again.
+        assert_eq!(announce_step(0, true, true), (1, true));
+        assert_eq!(announce_step(1, false, true), (0, false));
+        assert_eq!(announce_step(0, true, true), (1, true));
     }
 }

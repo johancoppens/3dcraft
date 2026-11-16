@@ -2576,8 +2576,10 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
                 present_mode,
                 frame_latency,
             );
-            // Before anything is made on the device: an error no scope
-            // catches is the handler's from here on.
+            // Before the shell makes anything on the device: an error no
+            // scope catches is the handler's from here on. egui-wgpu has
+            // made its renderer and configured the surface once already;
+            // an error there still meets wgpu's default handler (owed).
             if let Some(state) = creation.wgpu_render_state.as_ref() {
                 crate::device_errors::install(&state.device, Arc::clone(&for_errors));
                 let _ = for_device.set(state.device.clone());

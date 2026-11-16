@@ -1912,9 +1912,11 @@ after the look was switched on, right after the last pipeline, with no resize by
 
 **The method** (for 0.1.3; `apps/craft3d/src/device_errors.rs`, `Shell::device_errors`).
 
-- The window's device gets the window's handler when it is made, on every system: an error no scope caught is
-  counted and kept (its text on one line) and said on standard error and in the trace (the first 20, then every
-  hundredth). The GPU tour counts with the same counter.
+- The window's device gets the window's handler in eframe's creation of the app, on every system, before the
+  shell makes anything on it: an error no scope caught is counted and kept (its text on one line) and said on
+  standard error and in the trace (the first 20, then every hundredth). The GPU tour counts with the same counter.
+  egui-wgpu has made its renderer and configured the surface once before that: an error there still meets wgpu's
+  default handler, as in 0.1.2.
 - The event loop's driver (`app.rs`, `Driver`) knows when it hands a resize to eframe. An error raised meanwhile
   means the painter's configure failed and the surface kept its old size, so a configure is owed
   (`device_errors::Recovery`): at the next `about_to_wait` the driver waits at most 1 s for the device to come
@@ -1929,8 +1931,10 @@ after the look was switched on, right after the last pipeline, with no resize by
   cannot finish. On Windows eframe paints at once inside a resize, so the frame right after the error is plain.
 - Through OpenGL, whose driver compiles and links every program as it is made, the first studio frame of a
   session is preceded by one frame of the plain look with "Preparing the studio look… this can take a minute"
-  over the viewport, so a window that then stops answering shows why. Every other interface draws as before; a
-  picture of the window (`ui.screenshot {window: true}`) waits until that frame has passed.
+  over the viewport, on every OpenGL device, fast or slow, so a window that then stops answering shows why. A
+  studio look taken back before it was drawn takes the plate back (`announce_step`, unit-tested). Every other
+  interface draws as before; a picture of the window (`ui.screenshot {window: true}`) waits until that frame has
+  passed.
 - Trace lines (`CRAFT3D_GPU_TRACE`): `device` (an error taken; the surface owed; each try; configured again),
   `window` (each resize handed on: the first 20, then every hundredth) and `look` (preparing said first; the first
   studio frame drawn, with its time, and presented; the look giving way).
@@ -1951,3 +1955,12 @@ after the look was switched on, right after the last pipeline, with no resize by
   through this path. Making a new device is owed.
 - egui-wgpu panics of its own remain: `configure_surface`'s `expect("The surface isn't supported by this
   adapter")`, and `get_current_texture` on a surface never configured (`handle_error_fatal`). Neither was seen.
+- The handler is installed after egui-wgpu made its renderer and configured the surface the first time: an error
+  there still meets wgpu's default handler. Installing it earlier needs a hook eframe 0.36 does not have.
+- `Recovery::due`'s `Device::poll(Wait)` (`device_errors.rs`) panics inside wgpu when the backend reports a lost
+  device (not on OpenGL, whose wait cannot report one).
+- The look withdrawn for the session and the device error's bar are kept in the shell, not in `state.rs`, so
+  `ui.get` does not show them (rule 9); `ui.get` shows only `look.mode` turned plain.
+- The window test is skipped where there is no compositor (the build server), and its injected fault is a buffer
+  validation error raised inside the resize, not a configure that failed: the path from the error to the look and
+  the surface is the same, the error is not.
