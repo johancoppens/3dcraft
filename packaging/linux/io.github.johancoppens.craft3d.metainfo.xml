@@ -28,7 +28,7 @@
     <release version="0.1.2" date="2026-11-17">
       <url type="details">https://github.com/johancoppens/3dcraft/releases/tag/v0.1.2</url>
       <description>
-        <p>A killed or crashed window no longer leaves a helper process behind, the MCP server says more about itself, and on Windows no console window opens beside 3DCraft and the window no longer closes at once on many computers (measured: Intel and AMD graphics). Through Vulkan, see-through bodies and cut-open models are now drawn in a way Vulkan's rules allow, on every system; on Linux nothing visible changes.</p>
+        <p>A killed or crashed window no longer leaves a helper process behind, the MCP server says more about itself, and on Windows no console window opens beside 3DCraft and the window no longer closes at once on many computers (measured: Intel and AMD graphics). Through Vulkan, see-through bodies and cut-open models are now drawn in a way Vulkan's rules allow, on every system; on Linux the picture stays the same on the graphics it was measured with.</p>
       </description>
     </release>
     <release version="0.1.1" date="2026-11-12">
