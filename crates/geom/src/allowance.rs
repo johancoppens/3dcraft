@@ -241,7 +241,36 @@ pub fn unasked<R>(work: impl FnOnce() -> R) -> R {
 
 /// What the operation under the outermost bound on the ledger asked for
 /// already, by group ([`asked_first_time_in`]).
-type AskedOnce = std::collections::HashMap<u64, std::collections::HashSet<u64>>;
+type AskedOnce = std::collections::HashMap<u64, Things, Mixed>;
+
+/// The things of one group the operation asked for ([`AskedOnce`]).
+type Things = std::collections::HashSet<u64, Mixed>;
+
+/// Hashes a number that is a hash already (a thing's or a group's number,
+/// FNV-1a of what it stands for) as itself: asked about once per question
+/// to a memo, on the hot path of a boolean, where the default hasher's
+/// rounds cost more than the question answered from memory.
+type Mixed = std::hash::BuildHasherDefault<AsIs>;
+
+/// The hasher of [`Mixed`]: the number itself (a `u64` only).
+#[derive(Default)]
+struct AsIs(u64);
+
+impl std::hash::Hasher for AsIs {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.0 = n;
+    }
+}
 
 /// Whether the operation under the outermost bound on the ledger
 /// ([`asked_within`]) asks for the thing numbered `thing` (a question to a
@@ -325,7 +354,7 @@ pub fn asked_within<R>(units: u64, work: impl FnOnce() -> R) -> R {
     let outermost = ASKED_ONCE
         .try_with(|once| match once.try_borrow_mut() {
             Ok(mut once) if once.is_none() => {
-                *once = Some(AskedOnce::new());
+                *once = Some(AskedOnce::default());
                 true
             }
             _ => false,
