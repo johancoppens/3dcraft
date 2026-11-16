@@ -2024,13 +2024,23 @@ impl Ahead {
             let Some(box_a) = a.boxes.get(fa) else {
                 continue;
             };
-            if let Ok(Some(pair)) = to_meet((a, fa, box_a), (b, fb), covers, Outlines::Made, tol)
-                && (is_freeform(&pair.oa.surface) || is_freeform(&pair.ob.surface))
-            {
-                // Kept on the shelf; the section takes it from there.
-                let _ = meet_surfaces(&pair.oa.surface, &pair.ob.surface, &pair.within, tolerance);
-                self.warmed.fetch_add(1, Ordering::Relaxed);
-            }
+            // Each pair within the bound of the operation's work on the
+            // ledger, as the section is held to it: a pair that would need
+            // more stops (its windings refuse, a march ends short), and what
+            // it found then is put on no shelf (nothing is kept once a bound
+            // is reached), so the section meets that pair itself, under its
+            // own bound.
+            craft3d_geom::allowance::asked_within(super::freeform::operation_work(), || {
+                if let Ok(Some(pair)) =
+                    to_meet((a, fa, box_a), (b, fb), covers, Outlines::Made, tol)
+                    && (is_freeform(&pair.oa.surface) || is_freeform(&pair.ob.surface))
+                {
+                    // Kept on the shelf; the section takes it from there.
+                    let _ =
+                        meet_surfaces(&pair.oa.surface, &pair.ob.surface, &pair.within, tolerance);
+                    self.warmed.fetch_add(1, Ordering::Relaxed);
+                }
+            });
         }
     }
 }

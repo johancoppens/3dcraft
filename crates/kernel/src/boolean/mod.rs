@@ -75,8 +75,8 @@ pub use contact::{
 };
 pub use freeform::{
     FineWork, HELD_TOGETHER, MAX_LEAVES as MAX_FREEFORM_SPANS, count_fine_remakes, fine_work,
-    held_keys, held_together, release_unheld, release_unused, set_fine_pieces, shelf_keys,
-    shelf_size, take_fine_most,
+    held_keys, held_together, release_unheld, release_unused, set_fine_pieces, set_operation_work,
+    shelf_keys, shelf_size, take_fine_most,
 };
 pub(crate) use hits::speed_bound;
 pub use knit::sew_sheets;
@@ -2070,7 +2070,9 @@ pub fn contains_points(
     points: &[Vec3],
     tolerance: &Tolerance,
 ) -> Result<Vec<Option<bool>>, KernelError> {
-    freeform::holding(|| contains_points_held(body, points, tolerance))
+    freeform::holding_as("point classification", || {
+        contains_points_held(body, points, tolerance)
+    })
 }
 
 /// [`contains_points`], its trees held to a budget ([`freeform::holding`]).
@@ -2142,7 +2144,9 @@ pub fn classify_points(
     points: &[Vec3],
     tolerance: &Tolerance,
 ) -> Result<Vec<Place>, KernelError> {
-    freeform::holding(|| classify_points_held(body, points, tolerance))
+    freeform::holding_as("point classification", || {
+        classify_points_held(body, points, tolerance)
+    })
 }
 
 /// [`classify_points`], its trees held to a budget ([`freeform::holding`]).

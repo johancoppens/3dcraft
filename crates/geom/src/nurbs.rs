@@ -1804,6 +1804,27 @@ impl RationalBezierPatch {
     pub fn weighted_normal_net(&self) -> Option<Vec<Vec3>> {
         let (m, n) = (self.degree_u, self.degree_v);
         self.weight_range()?;
+        // Its products of coefficients, as `normal_net` counts its own, in
+        // the ledger alone (`crate::allowance::replay`): the count has
+        // never priced this net, and what it decides must not move. Three
+        // terms, each a product of the derivative nets and that times the
+        // weights' net.
+        let (mu, nu) = (m as u64, n as u64);
+        let pairs = mu
+            .saturating_mul(nu + 1)
+            .saturating_mul(mu + 1)
+            .saturating_mul(nu)
+            .saturating_add(
+                (mu + 1)
+                    .saturating_mul(nu + 1)
+                    .saturating_mul(4)
+                    .saturating_mul(mu)
+                    .saturating_mul(nu),
+            )
+            .saturating_mul(3);
+        crate::allowance::replay(
+            pairs.saturating_mul(16) / crate::allowance::ARITHMETIC_PER_UNIT + 1,
+        );
         let first = self.homogeneous.first()?;
         let origin = first.p * (1.0 / first.w);
         let local: Vec<H> = self

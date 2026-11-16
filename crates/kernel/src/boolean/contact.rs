@@ -81,7 +81,7 @@ pub fn interference(
     b: &Body,
     tolerance: &Tolerance,
 ) -> Result<Interference, KernelError> {
-    super::freeform::holding(|| interference_held(a, b, tolerance, true))
+    super::freeform::holding_as("interference", || interference_held(a, b, tolerance, true))
 }
 
 /// The common volume of `a` and `b`, if they have one: the first step of
@@ -99,7 +99,7 @@ pub fn common_volume(
     b: &Body,
     tolerance: &Tolerance,
 ) -> Result<Option<BooleanResult>, KernelError> {
-    super::freeform::holding(|| common_volume_held(a, b, tolerance))
+    super::freeform::holding_as("interference", || common_volume_held(a, b, tolerance))
 }
 
 /// [`common_volume`], its trees held to a budget (by the caller).
@@ -148,7 +148,7 @@ fn touching() -> BooleanOptions {
 /// touch aside; a touch whose shared area only that union could measure,
 /// and which the union refuses, is a touch here rather than an error.
 pub fn contact(a: &Body, b: &Body, tolerance: &Tolerance) -> Result<Contact, KernelError> {
-    super::freeform::holding(|| {
+    super::freeform::holding_as("interference", || {
         Ok(match interference_held(a, b, tolerance, false)? {
             Interference::Clear => Contact::Clear,
             Interference::Touch { .. } => Contact::Touch,

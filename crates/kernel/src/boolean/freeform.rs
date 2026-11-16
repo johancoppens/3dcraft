@@ -162,6 +162,18 @@ fn patch_of(nodes: &[FinePiece], at: usize) -> Option<RationalBezierPatch> {
     Some(patch)
 }
 
+/// The group (a memo: the tree of the surface numbered `tree`,
+/// [`PatchTree::id`], and the kind of question `kind`) and the number of
+/// a question (`key`) to it, for the ledger's first questions of an
+/// operation (`craft3d_geom::allowance::asked_first_time_in`).
+fn question(tree: u64, kind: u64, key: &[u64]) -> (u64, u64) {
+    let group = tree ^ kind.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let thing = key
+        .iter()
+        .fold(group, |h, w| (h ^ w).wrapping_mul(0x0100_0000_01b3));
+    (group, thing)
+}
+
 /// What the control points of a patch take.
 fn patch_bytes(patch: &RationalBezierPatch) -> usize {
     let (du, dv) = patch.degrees();
@@ -482,8 +494,11 @@ struct FinePiece {
     parent: usize,
     quarter: u8,
     /// The work making it took ([`craft3d_geom::allowance::cost_of`]),
-    /// charged once per operation that goes into it, made then or kept.
+    /// charged once per operation that goes into it, made then or kept,
+    /// and what it asked of the ledger ([`craft3d_geom::allowance::costs_of`]),
+    /// charged every time it is looked into.
     units: u64,
+    asked: u64,
 }
 
 /// A surface with a tree of boxes around pieces of it.
@@ -548,8 +563,10 @@ pub(super) struct PatchTree {
     /// its numbers written out), for what an operation remembers of it
     /// ([`ScopedMemos`]).
     id: u64,
-    /// The work building the tree took ([`craft3d_geom::allowance::cost_of`]).
+    /// The work building the tree took ([`craft3d_geom::allowance::cost_of`]),
+    /// and what it asked of the ledger ([`craft3d_geom::allowance::costs_of`]).
     units: u64,
+    asked: u64,
 }
 
 /// The nearest point of the surface to a point.
@@ -1912,7 +1929,9 @@ fn refine(
 /// count what the tree takes without taking its lock.
 #[derive(Debug)]
 struct Memo<K, V> {
-    map: Mutex<BTreeMap<K, V>>,
+    /// Each answer with what finding it asked of the ledger
+    /// ([`Memo::answer`]).
+    map: Mutex<BTreeMap<K, (V, u64)>>,
     len: std::sync::atomic::AtomicUsize,
 }
 
@@ -1926,7 +1945,7 @@ impl<K, V> Default for Memo<K, V> {
 }
 
 impl<K: Ord, V: Copy> Memo<K, V> {
-    fn get(&self, key: &K) -> Option<V> {
+    fn get(&self, key: &K) -> Option<(V, u64)> {
         self.map
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -1934,18 +1953,51 @@ impl<K: Ord, V: Copy> Memo<K, V> {
             .copied()
     }
 
-    fn put(&self, key: K, value: V) {
+    fn put(&self, key: K, value: V, asked: u64) {
         let mut map = self.map.lock().unwrap_or_else(PoisonError::into_inner);
         if map.len() >= MAX_MEMO {
             map.clear();
         }
-        map.insert(key, value);
+        map.insert(key, (value, asked));
         self.len
             .store(map.len(), std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// The answer to `key` (the question numbered `thing`): remembered, or
+    /// found by `search` and remembered. In the ledger an operation pays
+    /// for a question once, at its first asking, what finding the answer
+    /// asked (`craft3d_geom::allowance::replay` where it is remembered; the
+    /// count, as before, only where it is searched), and nothing when it
+    /// asks again, whether the answer is still remembered then or was let
+    /// go of and searched again (`unasked`): so the ledger of an operation
+    /// is the same whoever found the answer first (it, an earlier
+    /// operation, a helper on another thread) and whatever the memo let
+    /// go of. What a search asked is measured as if counted (`costs_of`),
+    /// also inside an uncounted region. An answer found while a bound in
+    /// force was reached is not kept (a search cut short by it may answer
+    /// less sharply).
+    fn answer(&self, key: K, (group, thing): (u64, u64), search: impl FnOnce() -> V) -> V {
+        let first = craft3d_geom::allowance::asked_first_time_in(group, thing, MAX_MEMO);
+        if let Some((found, asked)) = self.get(&key) {
+            if first {
+                craft3d_geom::allowance::replay(asked);
+            }
+            return found;
+        }
+        let (found, _, asked) = if first {
+            craft3d_geom::allowance::costs_of(search)
+        } else {
+            craft3d_geom::allowance::unasked(|| craft3d_geom::allowance::costs_of(search))
+        };
+        if !craft3d_geom::allowance::exhausted() {
+            self.put(key, found, asked);
+        }
+        found
+    }
+
     /// About what the answers take: each key and answer, and as much
-    /// again for the map's own nodes.
+    /// again for the map's own nodes (what each asked of the ledger, a
+    /// number beside it, left out: the shelf counts the trees as before).
     fn bytes(&self) -> usize {
         self.len
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -2381,7 +2433,16 @@ thread_local! {
 pub(super) fn holding<T>(
     work: impl FnOnce() -> Result<T, crate::KernelError>,
 ) -> Result<T, crate::KernelError> {
-    holding_within(HELD_BYTES, work)
+    holding_as(super::OPERATION, work)
+}
+
+/// [`holding`] for the operation named `operation` (what its refusal at
+/// the bound of its work says it was: [`OPERATION_WORK`]).
+pub(super) fn holding_as<T>(
+    operation: &'static str,
+    work: impl FnOnce() -> Result<T, crate::KernelError>,
+) -> Result<T, crate::KernelError> {
+    holding_within_as(HELD_BYTES, operation, work)
 }
 
 /// The trees an operation asked for ([`holding`]).
@@ -2404,8 +2465,18 @@ struct Held {
 /// face they cannot outline as one that holds nothing (`.ok()`,
 /// `is_ok_and`), which would turn the refusal into fewer contacts or a
 /// wrong side.
+#[cfg(test)]
 fn holding_within<T>(
     limit: usize,
+    work: impl FnOnce() -> Result<T, crate::KernelError>,
+) -> Result<T, crate::KernelError> {
+    holding_within_as(limit, super::OPERATION, work)
+}
+
+/// [`holding_within`] for the operation named `operation`.
+fn holding_within_as<T>(
+    limit: usize,
+    operation: &'static str,
     work: impl FnOnce() -> Result<T, crate::KernelError>,
 ) -> Result<T, crate::KernelError> {
     struct Leave;
@@ -2446,10 +2517,17 @@ fn holding_within<T>(
             }
         });
     }
-    let done = work();
     if depth > 0 {
-        return done;
+        return work();
     }
+    // The operation's work, held to its bound ([`OPERATION_WORK`]), on the
+    // ledger: the same whatever its caches kept and whoever filled them.
+    let (done, reached) = craft3d_geom::allowance::asked_within(operation_work(), || {
+        let done = work();
+        (done, craft3d_geom::allowance::asked_reached())
+    });
+    #[cfg(test)]
+    LEDGER_REACHED.with(|r| r.set(reached));
     let refused = HELD.with(|held| {
         held.try_borrow()
             .ok()
@@ -2462,8 +2540,78 @@ fn holding_within<T>(
             reason: TOO_MUCH_HELD,
             faces: Vec::new(),
         }),
+        // Whatever it gave: a check cut short by the bound may have let a
+        // wrong answer through, so a try that reached it is not believed.
+        _ if reached => Err(too_much_work(operation, done)),
         other => other,
     }
+}
+
+/// The refusal of the operation `operation` that reached
+/// [`OPERATION_WORK`], with the faces it named where it stopped (the step
+/// that reached the bound refused, saying where).
+fn too_much_work<T>(
+    operation: &'static str,
+    done: Result<T, crate::KernelError>,
+) -> crate::KernelError {
+    let faces = match done {
+        Err(crate::KernelError::Unsupported { faces, .. }) => faces,
+        _ => Vec::new(),
+    };
+    crate::KernelError::Unsupported {
+        operation,
+        reason: TOO_MUCH_WORK,
+        faces,
+    }
+}
+
+/// Why an operation that reached [`OPERATION_WORK`] is refused.
+pub(super) const TOO_MUCH_WORK: Reason = "it needs more work than one operation is allowed: the freeform faces named are dear to place points on and to follow edges across (weights far apart, parameters that race, many pieces), and what it asked of them passed the bound before it was done; a coarser tolerance, faces drawn more evenly (fewer orders between their weights) or the operation split into smaller ones may fit";
+
+/// The work the operations that hold trees ([`holding`]: a boolean,
+/// interference, a classification of points) may ask for, on the ledger
+/// (`craft3d_geom::allowance::asked`: what they count, what their caches
+/// answer from memory and the arithmetic of rational nets): ten billion
+/// units. Measured on 2026-11-16 over the 98 452 operations of the boolean
+/// corpus, the hunts, the benchmark's models, the examples and the 65
+/// documents of the side repositories (debug, on the build server): half
+/// below 8 units, 99 % below 5.2e5, 99.9 % below 1.7e7, the largest
+/// 54 349 180 (the fuel tank's shell, the hollow taken away: 13 to 15 s
+/// in debug, cold); the bound is a hundred and eighty times that, and
+/// above what a face operation allows itself (`FACE_OP_WORK`, 450
+/// million of the count). Of the kernel's own tests the dearest operation
+/// that ends asks 2.9e9 (a block 30 × 900 × 20 whose sides are weighted
+/// sheets, intersected: 8 s in release). In release it is some 20 to 30 s
+/// of work on such weighted faces (their fine pieces are put in the
+/// ledger at every look) and some 10 minutes to an hour of other freeform
+/// work (docs/design/booleans.md › *A boolean that runs for most of an
+/// hour*).
+pub(super) const OPERATION_WORK: u64 = 10_000_000_000;
+
+/// In place of [`OPERATION_WORK`] when not zero ([`set_operation_work`]).
+static OPERATION_WORK_SET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Holds the operations that start from now on to `units` of work on the
+/// ledger, or to [`OPERATION_WORK`] (`None`): for the tests that hold a
+/// boolean which would run long to a small bound, so that it ends in
+/// seconds with the refusal it would give at the bound.
+#[doc(hidden)]
+pub fn set_operation_work(units: Option<u64>) {
+    OPERATION_WORK_SET.store(units.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The bound of an operation's work, as [`set_operation_work`] left it.
+pub(super) fn operation_work() -> u64 {
+    match OPERATION_WORK_SET.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => OPERATION_WORK,
+        set => set,
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Whether the last operation of this thread reached its bound.
+    pub(super) static LEDGER_REACHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Inside [`holding`]: counts the tree `tree` (its number and bytes) when
@@ -2542,7 +2690,7 @@ impl PatchTree {
         // nodes, the same either way (`craft3d_geom::allowance::uncounted`).
         let tree = craft3d_geom::allowance::uncounted(|| PatchTree::shelved(surface))?;
         held_within_budget(Some((tree.id, tree.base_bytes)))?;
-        craft3d_geom::allowance::once(tree.id, tree.units);
+        craft3d_geom::allowance::once_asked(tree.id, tree.units, tree.asked);
         Ok(tree)
     }
 
@@ -2630,9 +2778,10 @@ impl PatchTree {
     pub fn new(surface: &Surface) -> Result<PatchTree, Reason> {
         // What building it took, kept with it, charged once per operation
         // that asks for it, built then or found on the shelf.
-        let (made, units) = craft3d_geom::allowance::cost_of(|| PatchTree::built(surface));
+        let (made, units, asked) = craft3d_geom::allowance::costs_of(|| PatchTree::built(surface));
         made.map(|mut tree| {
             tree.units = units;
+            tree.asked = asked;
             tree
         })
     }
@@ -2699,6 +2848,7 @@ impl PatchTree {
             evened: std::sync::OnceLock::new(),
             id: craft3d_geom::allowance::number_of(&format!("{surface:?}")),
             units: 0,
+            asked: 0,
         };
         let whole = spans
             .iter()
@@ -2905,7 +3055,7 @@ impl PatchTree {
         });
         let even = made.as_ref().map_or_else(|| Arc::clone(tree), Arc::clone);
         // Charged as asking for a tree is, made now or before.
-        craft3d_geom::allowance::once(even.id, even.units);
+        craft3d_geom::allowance::once_asked(even.id, even.units, even.asked);
         even
     }
 
@@ -2934,12 +3084,9 @@ impl PatchTree {
                 },
             );
         }
-        if let Some(found) = self.sigma_memo.get(&key) {
-            return found;
-        }
-        let found = self.sigma_search(p, reach);
-        self.sigma_memo.put(key, found);
-        found
+        self.sigma_memo.answer(key, question(self.id, 2, &key), || {
+            self.sigma_search(p, reach)
+        })
     }
 
     /// [`Self::sigma_near`]: the search.
@@ -3090,12 +3237,13 @@ impl PatchTree {
         let root = match fine.roots.entry(index) {
             std::collections::btree_map::Entry::Occupied(found) => found.into_mut(),
             std::collections::btree_map::Entry::Vacant(free) => {
-                let (mut piece, units) = craft3d_geom::allowance::uncounted(|| {
-                    craft3d_geom::allowance::cost_of(|| {
+                let (mut piece, units, asked) = craft3d_geom::allowance::uncounted(|| {
+                    craft3d_geom::allowance::costs_of(|| {
                         self.fine_piece(patch.clone(), node.u, node.v, node.sigma, 0)
                     })
                 });
                 piece.units = units;
+                piece.asked = asked;
                 made = 1;
                 added_bytes = piece_bytes.saturating_add(patch_bytes);
                 free.insert(FineRoot {
@@ -3133,12 +3281,21 @@ impl PatchTree {
     /// pieces a query splits are kept for the next, of this operation or
     /// another: what a query costs depends on what was kept, so the making
     /// is not counted, and each piece the operation goes into is, once).
+    /// The ledger gets what making it asked every time it is looked into,
+    /// under a bound or not, so a piece a store let go of and made again
+    /// is in it (the count charges it once an operation under a bound),
+    /// and the ledger does not depend on what was kept either.
     fn charge_piece(&self, piece: &FinePiece) {
         let (u, v) = (piece.u, piece.v);
         let thing = [u.0, u.1, v.0, v.1].iter().fold(self.id, |h, x| {
             (h ^ x.to_bits()).wrapping_mul(0x0100_0000_01b3)
         });
-        craft3d_geom::allowance::once(thing, piece.units);
+        if craft3d_geom::allowance::first_time(thing) {
+            craft3d_geom::allowance::charge(piece.units);
+            craft3d_geom::allowance::replay(piece.asked.saturating_sub(piece.units));
+        } else {
+            craft3d_geom::allowance::replay(piece.asked);
+        }
     }
 
     /// [`Self::finer`] in the pieces kept under one leaf, `nodes` (the
@@ -3224,11 +3381,12 @@ impl PatchTree {
             else {
                 return Some(sigma);
             };
-            let (mut made, units) = craft3d_geom::allowance::uncounted(|| {
-                craft3d_geom::allowance::cost_of(|| self.quartered(piece, &patch, sigma))
+            let (mut made, units, asked) = craft3d_geom::allowance::uncounted(|| {
+                craft3d_geom::allowance::costs_of(|| self.quartered(piece, &patch, sigma))
             });
             for (quarter, kid) in (0_u8..).zip(&mut made) {
                 kid.units = units / 4;
+                kid.asked = asked / 4;
                 kid.parent = at;
                 kid.quarter = quarter;
                 kid.patch = None;
@@ -3445,6 +3603,7 @@ impl PatchTree {
             parent: 0,
             quarter: 0,
             units: 0,
+            asked: 0,
         }
     }
 
@@ -3644,12 +3803,8 @@ impl PatchTree {
                 },
             );
         }
-        if let Some(found) = self.bound_memo.get(&key) {
-            return found;
-        }
-        let found = search();
-        self.bound_memo.put(key, found);
-        found
+        self.bound_memo
+            .answer(key, question(self.id, 3, &key), search)
     }
 
     /// A distance no larger than the distance from any point of the
@@ -3956,12 +4111,8 @@ impl PatchTree {
                 },
             );
         }
-        if let Some(found) = self.memo.get(&key) {
-            return found;
-        }
-        let found = self.search(p);
-        self.memo.put(key, found);
-        found
+        self.memo
+            .answer(key, question(self.id, 1, &key), || self.search(p))
     }
 
     /// The point of the surface nearest to `p`: the search.

@@ -48,10 +48,29 @@
 //! under a bound ([`scope`]). Held by the tests that count the same
 //! operation on fresh bodies cold, warm and after others.
 //!
-//! **What is bounded.** The face operations' search (`craft3d_kernel::
-//! offset_face`) and the self-check (`craft3d_tess`). Not booleans,
-//! blends, sweeps, lofts, delete face or pattern joins: they set no bound,
-//! and what polls for one does nothing outside it.
+//! **What is bounded.** On the count: the face operations' search
+//! (`craft3d_kernel::offset_face`), the plate's tries, a STEP body read
+//! and the self-check (`craft3d_tess`). On the ledger (below): what enters
+//! `craft3d_kernel`'s budget of held trees (booleans, interference, the
+//! classification of points). Not blends, sweeps, lofts, delete face or
+//! pattern joins: they set no bound, and what polls for one does nothing
+//! outside it.
+//!
+//! **The ledger** ([`asked`]). Beside the count, each thread keeps what its
+//! operations asked for: every unit charged, and what the count leaves out
+//! ([`replay`]): the work a cache answers from memory where finding it is
+//! counted only when the cache is missed (the memos of a patch tree,
+//! shared by every operation and thread), and arithmetic the count does
+//! not price (the normal net of a rational patch). So the ledger of an
+//! operation is a function of what it asks alone, the same whatever was
+//! kept before, by whom, and on however many threads, also outside a bound
+//! (where the count is not: `craft3d_kernel`'s section meets pairs ahead
+//! on helper threads that fill those memos). A bound on the ledger
+//! ([`asked_within`]) opens no scope: the operation's caches, its helpers
+//! and its count stay what they are without it, and only [`exhausted`]
+//! says when it is reached. The operations of `craft3d_kernel` that enter
+//! through its budget of held trees (the boolean, interference, and the
+//! classification of points) are held to it.
 
 use std::cell::Cell;
 
@@ -64,6 +83,20 @@ thread_local! {
     static SPENT: Cell<u64> = const { Cell::new(0) };
     /// The count at which the innermost bound on this thread ends.
     static LIMIT: Cell<u64> = const { Cell::new(u64::MAX) };
+    /// The ledger of this thread since it started ([`asked`]).
+    static ASKED: Cell<u64> = const { Cell::new(0) };
+    /// The ledger at which the innermost bound on it ends
+    /// ([`asked_within`]).
+    static ASKED_LIMIT: Cell<u64> = const { Cell::new(u64::MAX) };
+    /// How many regions this thread is in where the ledger does not grow
+    /// ([`unasked`]).
+    static UNASKED: Cell<u32> = const { Cell::new(0) };
+    /// What the operation under the outermost bound on the ledger asked
+    /// for already ([`asked_first_time`]); `None` outside one.
+    // Asked whether it holds a thing, never walked: its order is no part
+    // of any result.
+    static ASKED_ONCE: std::cell::RefCell<Option<AskedOnce>> =
+        const { std::cell::RefCell::new(None) };
     /// How many [`uncounted`] regions this thread is in: none counts.
     static FROZEN: Cell<u32> = const { Cell::new(0) };
     /// The outermost bound in force on this thread, by a number no other
@@ -89,6 +122,23 @@ thread_local! {
 pub fn once(thing: u64, units: u64) {
     if first_time(thing) {
         charge(units);
+    }
+}
+
+/// [`once`], and in the ledger what making the thing asked beyond its
+/// count (`asked`, at least `units`: [`costs_of`]) at the operation's first
+/// question for it ([`asked_first_time`]).
+pub fn once_asked(thing: u64, units: u64, asked: u64) {
+    let first = first_time(thing);
+    if asked_first_time(thing) {
+        if first {
+            charge(units);
+        } else {
+            replay(units);
+        }
+        replay(asked.saturating_sub(units));
+    } else if first {
+        unasked(|| charge(units));
     }
 }
 
@@ -150,13 +200,139 @@ pub fn scope() -> Option<u64> {
     SCOPE.try_with(Cell::get).ok().flatten()
 }
 
-/// Adds `units` to this thread's work.
+/// Adds `units` to this thread's work (and to its ledger, [`asked`]).
 #[inline]
 pub fn charge(units: u64) {
     if FROZEN.try_with(Cell::get).unwrap_or(0) > 0 {
         return;
     }
     let _ = SPENT.try_with(|spent| spent.set(spent.get().saturating_add(units)));
+    if UNASKED.try_with(Cell::get).unwrap_or(0) == 0 {
+        let _ = ASKED.try_with(|asked| asked.set(asked.get().saturating_add(units)));
+    }
+}
+
+/// Adds `units` to this thread's ledger alone ([`asked`]): what a cache
+/// answered from memory, or arithmetic the count does not price. Not
+/// inside an [`uncounted`] region.
+#[inline]
+pub fn replay(units: u64) {
+    if FROZEN.try_with(Cell::get).unwrap_or(0) > 0 || UNASKED.try_with(Cell::get).unwrap_or(0) > 0 {
+        return;
+    }
+    let _ = ASKED.try_with(|asked| asked.set(asked.get().saturating_add(units)));
+}
+
+/// Runs `work` with the ledger left as it is ([`asked`]; the count is
+/// charged as ever): for a question the operation under the bound on the
+/// ledger asked already and paid for in the ledger then, worked out again
+/// because the cache that held its answer let go of it.
+pub fn unasked<R>(work: impl FnOnce() -> R) -> R {
+    struct Thaw;
+    impl Drop for Thaw {
+        fn drop(&mut self) {
+            let _ = UNASKED.try_with(|u| u.set(u.get().saturating_sub(1)));
+        }
+    }
+    let _ = UNASKED.try_with(|u| u.set(u.get().saturating_add(1)));
+    let _thaw = Thaw;
+    work()
+}
+
+/// What the operation under the outermost bound on the ledger asked for
+/// already, by group ([`asked_first_time_in`]).
+type AskedOnce = std::collections::HashMap<u64, std::collections::HashSet<u64>>;
+
+/// Whether the operation under the outermost bound on the ledger
+/// ([`asked_within`]) asks for the thing numbered `thing` (a question to a
+/// cache, a tree) for the first time, which it is then marked as having
+/// done; outside such a bound, always ([`asked_first_time_in`]).
+pub fn asked_first_time(thing: u64) -> bool {
+    asked_first_time_in(0, thing, usize::MAX)
+}
+
+/// [`asked_first_time`] among the things of `group`, of which the
+/// operation remembers at most `most`: past that it forgets all of the
+/// group's and starts again. What a cache answers from memory is put in
+/// the ledger at an operation's first question for it, as a memo of the
+/// operation's own of `most` answers would answer it (the cache's own
+/// size: a memo of a patch tree forgets all its answers when full), and
+/// a question asked again while that memo would still hold it is free,
+/// whoever answers it and whatever the shared cache kept. So the ledger
+/// is a function of the questions the operation asks, in their order, as
+/// the count is under a bound (`scope`); and work done again where a
+/// memo of that size would have forgotten is in it. Inside an
+/// [`uncounted`] region nothing is marked.
+pub fn asked_first_time_in(group: u64, thing: u64, most: usize) -> bool {
+    if FROZEN.try_with(Cell::get).unwrap_or(0) > 0 {
+        return true;
+    }
+    ASKED_ONCE
+        .try_with(|once| match once.try_borrow_mut() {
+            Ok(mut once) => once.as_mut().is_none_or(|groups| {
+                let set = groups.entry(group).or_default();
+                if set.len() >= most && !set.contains(&thing) {
+                    set.clear();
+                }
+                set.insert(thing)
+            }),
+            Err(_) => true,
+        })
+        .unwrap_or(true)
+}
+
+/// This thread's ledger so far (only ever grows): every unit charged and
+/// every unit replayed ([`replay`]).
+pub fn asked() -> u64 {
+    ASKED.try_with(Cell::get).unwrap_or(0)
+}
+
+/// Whether the innermost bound on this thread's ledger has been reached
+/// ([`asked_within`]).
+pub fn asked_reached() -> bool {
+    asked() >= ASKED_LIMIT.try_with(Cell::get).unwrap_or(u64::MAX)
+}
+
+/// Runs `work` with this thread's ledger bounded to `units` more (or the
+/// bound already in force on it, when that ends sooner), and puts back the
+/// bound there was before, also when `work` panics. It opens no scope
+/// ([`scope`]): what the work counts, keeps and hands to other threads is
+/// what it would be without it; only [`exhausted`] (and [`pass`]) say when
+/// it is reached, as they do for the count's bound.
+pub fn asked_within<R>(units: u64, work: impl FnOnce() -> R) -> R {
+    struct Restore(u64);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = ASKED_LIMIT.try_with(|limit| limit.set(self.0));
+        }
+    }
+    struct Forget(bool);
+    impl Drop for Forget {
+        fn drop(&mut self) {
+            if self.0 {
+                let _ = ASKED_ONCE.try_with(|once| {
+                    if let Ok(mut once) = once.try_borrow_mut() {
+                        *once = None;
+                    }
+                });
+            }
+        }
+    }
+    let earlier = ASKED_LIMIT.try_with(Cell::get).unwrap_or(u64::MAX);
+    let ends = asked().saturating_add(units).min(earlier);
+    let _ = ASKED_LIMIT.try_with(|limit| limit.set(ends));
+    let _restore = Restore(earlier);
+    let outermost = ASKED_ONCE
+        .try_with(|once| match once.try_borrow_mut() {
+            Ok(mut once) if once.is_none() => {
+                *once = Some(AskedOnce::new());
+                true
+            }
+            _ => false,
+        })
+        .unwrap_or(false);
+    let _forget = Forget(outermost);
+    work()
 }
 
 /// The units this thread has done so far (only ever grows).
@@ -164,10 +340,11 @@ pub fn spent() -> u64 {
     SPENT.try_with(Cell::get).unwrap_or(0)
 }
 
-/// True when this thread's innermost bound has been reached.
+/// True when this thread's innermost bound has been reached, on the count
+/// or on the ledger ([`asked_within`]).
 pub fn exhausted() -> bool {
     let limit = LIMIT.try_with(Cell::get).unwrap_or(u64::MAX);
-    spent() >= limit
+    spent() >= limit || asked_reached()
 }
 
 /// One pass of a loop that asks for the bound: charges a unit for it and
@@ -214,17 +391,26 @@ pub fn uncounted<R>(work: impl FnOnce() -> R) -> R {
 /// then not charged): for what a cache makes and keeps with its cost, so
 /// that the cost kept does not depend on where it was first made.
 pub fn cost_of<R>(work: impl FnOnce() -> R) -> (R, u64) {
+    let (made, units, _) = costs_of(work);
+    (made, units)
+}
+
+/// [`cost_of`], with what it asked of the ledger ([`asked`]) besides: for
+/// a cache that keeps both and charges both on a hit ([`once_asked`]).
+pub fn costs_of<R>(work: impl FnOnce() -> R) -> (R, u64, u64) {
     let frozen = FROZEN.try_with(Cell::get).unwrap_or(0);
-    let before = spent();
+    let (before, asked_before) = (spent(), asked());
     let _ = FROZEN.try_with(|f| f.set(0));
     let made = work();
     let units = spent().saturating_sub(before);
+    let asked_units = asked().saturating_sub(asked_before);
     if frozen > 0 {
         // Not counted where it ran.
         let _ = SPENT.try_with(|spent| spent.set(before));
+        let _ = ASKED.try_with(|asked| asked.set(asked_before));
     }
     let _ = FROZEN.try_with(|f| f.set(frozen));
-    (made, units)
+    (made, units, asked_units)
 }
 
 /// Whether this thread counts its work now (not in an [`uncounted`]
@@ -233,6 +419,14 @@ pub fn cost_of<R>(work: impl FnOnce() -> R) -> (R, u64) {
 /// the bound in force was reached (a search it cut short).
 pub fn counting() -> bool {
     FROZEN.try_with(Cell::get).unwrap_or(0) == 0 && !exhausted()
+}
+
+/// Runs `work` and gives back what it returned with what it added to this
+/// thread's ledger ([`asked`]).
+pub fn measured_asked<R>(work: impl FnOnce() -> R) -> (R, u64) {
+    let before = asked();
+    let made = work();
+    (made, asked().saturating_sub(before))
 }
 
 /// Runs `work` and gives back what it returned with the units it charged
@@ -312,6 +506,66 @@ mod tests {
             assert!(exhausted());
         });
         assert!(!exhausted());
+    }
+
+    #[test]
+    fn the_ledger_holds_what_is_charged_and_replayed_and_its_bound_opens_no_scope() {
+        let (spent0, asked0) = (spent(), asked());
+        charge(3);
+        replay(4);
+        assert_eq!((spent() - spent0, asked() - asked0), (3, 7));
+        // Not inside an uncounted region, nor where the ledger is left as
+        // it is.
+        uncounted(|| {
+            charge(5);
+            replay(5);
+        });
+        unasked(|| {
+            charge(2);
+            replay(9);
+        });
+        assert_eq!((spent() - spent0, asked() - asked0), (5, 7));
+        // A bound on the ledger: no scope, reached by the ledger alone.
+        asked_within(10, || {
+            assert!(scope().is_none());
+            assert!(!exhausted());
+            replay(9);
+            assert!(!exhausted());
+            assert!(pass(), "a pass reaches it");
+            assert!(asked_reached());
+        });
+        assert!(!exhausted() && !asked_reached());
+        // What it took inside an uncounted region is measured and not kept.
+        let (_, units, asked_units) = uncounted(|| {
+            costs_of(|| {
+                charge(4);
+                replay(6);
+            })
+        });
+        assert_eq!((units, asked_units), (4, 10));
+        assert_eq!((spent() - spent0, asked() - asked0), (6, 17));
+    }
+
+    #[test]
+    fn an_operation_asks_for_a_thing_for_the_first_time_once() {
+        assert!(
+            asked_first_time(7) && asked_first_time(7),
+            "outside a bound"
+        );
+        asked_within(u64::MAX, || {
+            assert!(asked_first_time(7));
+            assert!(!asked_first_time(7));
+            // Not marked inside an uncounted region.
+            assert!(uncounted(|| asked_first_time(8)));
+            asked_within(5, || assert!(!asked_first_time(7), "nested: the outermost"));
+            assert!(asked_first_time(8));
+            // `once_asked`: the ledger at the first question only.
+            let before = asked();
+            once_asked(9, 2, 5);
+            once_asked(9, 2, 5);
+            assert_eq!(asked() - before, 5);
+        });
+        asked_within(u64::MAX, || assert!(asked_first_time(7), "a new operation"));
     }
 
     #[test]
