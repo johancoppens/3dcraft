@@ -13,9 +13,11 @@
 //! that the first pass stored per sample (`peel_samples.wgsl`). Both files
 //! say why; docs/design/rendering.md has the measurements.
 
+use crate::diag::Traced;
 use crate::renderer::{
     COLOR_FORMAT, DATA_FORMAT, fragment_depth, scene_source, texture_entry, uniform_entry,
 };
+use crate::variant::PeelVariant;
 use std::cell::Cell;
 
 /// Levels of a colour channel.
@@ -100,16 +102,23 @@ impl Table {
 /// `scene.wgsl` followed by the two passes of a see-through picture: for
 /// one sample per pixel (`peel.wgsl`: `fs_front`, `fs_front_color`,
 /// `fs_behind`) or for several (`peel_samples.wgsl`: `fs_front_samples`,
-/// `fs_behind_samples`).
-pub(crate) fn scene_module(device: &wgpu::Device, multisampled: bool) -> wgpu::ShaderModule {
-    let peel = if multisampled {
-        include_str!("peel_samples.wgsl")
+/// `fs_behind_samples`) in the form `variant` (`variant.rs`: masked, or per
+/// sample where the driver needs it).
+pub(crate) fn scene_module(
+    device: &wgpu::Device,
+    multisampled: bool,
+    variant: PeelVariant,
+) -> wgpu::ShaderModule {
+    let (peel, file) = if multisampled {
+        crate::variant::peel_samples(variant)
     } else {
-        include_str!("peel.wgsl")
+        (include_str!("peel.wgsl"), "peel.wgsl")
     };
+    // The label names the files, for the trace (`diag`).
+    let label = format!("craft3d scene, see-through (scene.wgsl + {file})");
     let source = scene_source(device, &[peel]);
-    device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("craft3d scene, see-through"),
+    device.traced_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(&label),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     })
 }
@@ -129,8 +138,12 @@ pub(crate) fn blend_source(multisampled: bool) -> String {
 /// [`blend_source`] as a module of `device`.
 pub(crate) fn blend_module(device: &wgpu::Device, multisampled: bool) -> wgpu::ShaderModule {
     let source = blend_source(multisampled);
-    device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("craft3d blend"),
+    device.traced_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(if multisampled {
+            "craft3d blend (blend.wgsl, multisampled layers)"
+        } else {
+            "craft3d blend (blend.wgsl, one sample)"
+        }),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     })
 }
@@ -200,7 +213,7 @@ pub(crate) fn peel_layout(device: &wgpu::Device, multisampled: bool) -> wgpu::Bi
     if sampled_front(device, multisampled) {
         entries.push(front_sampler_entry());
     }
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    device.traced_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("craft3d front"),
         entries: &entries,
     })
@@ -249,7 +262,7 @@ pub(crate) fn blend_layout(
     if data {
         entries.push(texture_entry(4, wgpu::TextureSampleType::Uint));
     }
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    device.traced_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("craft3d blend"),
         entries: &entries,
     })
@@ -282,7 +295,7 @@ pub(crate) fn blend_pipeline(
         }),
     ];
     let only_color = [color];
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    device.traced_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("craft3d blend"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {

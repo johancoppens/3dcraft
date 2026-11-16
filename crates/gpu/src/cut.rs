@@ -29,11 +29,13 @@
 //! section none of this runs, and none of it is built before the first
 //! cut-open frame.
 
+use crate::diag::Traced;
 use crate::mesh::{GpuMesh, VERTEX_BYTES};
 use crate::peel;
 use crate::renderer::{
     MESH_ATTRIBUTES, Step, float_bytes, fragment_depth, scene_primitive, scene_source_for,
 };
+use crate::variant::PeelVariant;
 use craft3d_math::Vec3;
 use craft3d_render::{Cut, RenderParams, SECTION_FACE};
 
@@ -153,28 +155,46 @@ pub(crate) fn cap_buffer(device: &wgpu::Device) -> wgpu::Buffer {
 /// `scene.wgsl`, the passes of a see-through picture and the passes of a
 /// cut-open one, for one sample per pixel or for several; with several,
 /// the count per sample where the device shades per sample
-/// (`per_sample`, `Onscreen::new`).
+/// (`per_sample`, `Onscreen::new`); the multisampled stages in the form
+/// `variant` (`variant.rs`: masked, or per sample where the driver needs
+/// it).
 pub(crate) fn module(
     device: &wgpu::Device,
     multisampled: bool,
     per_sample: bool,
+    variant: PeelVariant,
 ) -> wgpu::ShaderModule {
-    let (peel, cap) = if multisampled {
+    let ((peel, peel_file), (cap, cap_file)) = if multisampled {
         (
-            include_str!("peel_samples.wgsl"),
-            include_str!("cut_samples.wgsl"),
+            crate::variant::peel_samples(variant),
+            crate::variant::cut_samples(variant),
         )
     } else {
-        (include_str!("peel.wgsl"), include_str!("cut_flat.wgsl"))
+        (
+            (include_str!("peel.wgsl"), "peel.wgsl"),
+            (include_str!("cut_flat.wgsl"), "cut_flat.wgsl"),
+        )
     };
+    let depth = fragment_depth(device);
     let source = scene_source_for(
-        fragment_depth(device),
+        depth,
         multisampled,
         per_sample,
         &[peel, include_str!("cut.wgsl"), cap],
     );
-    device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("craft3d scene, cut open"),
+    // The label names the files and the variant, for the trace (`diag`).
+    let label = format!(
+        "craft3d scene, cut open (scene.wgsl + {peel_file} + cut.wgsl + {cap_file}{}{}{})",
+        if multisampled { ", centroid" } else { "" },
+        if multisampled && per_sample {
+            ", per sample"
+        } else {
+            ""
+        },
+        if depth { ", fragment depth" } else { "" },
+    );
+    device.traced_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(&label),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     })
 }
@@ -208,7 +228,7 @@ pub(crate) fn cap_layout(
         }
     }
     entries.push(texture_entry(1, multisampled));
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    device.traced_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("craft3d section cap"),
         entries: &entries,
     })
@@ -318,7 +338,7 @@ pub(crate) fn pipeline_in(
         bind_group_layouts: groups,
         immediate_size: 0,
     });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    device.traced_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(&label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
