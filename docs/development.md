@@ -363,7 +363,7 @@ There is no log file and no `RUST_LOG` (as of 0.1.0). The desktop app prints wha
 | `CRAFT3D_BACKEND_ORDER` | Desktop app only: the graphics interfaces to try, in order (`dx12,vulkan,gl`); never passed over; ignored when `WGPU_BACKEND` is set |
 | `CRAFT3D_GRAPHICS_JOURNAL` | Desktop app, builds with debug assertions only (never the packages): `on` turns the graphics start journal on outside Windows, where 0.1.x keeps it off, so a start that passes over an interface can be tried on Linux (`apps/craft3d/src/graphics_start.rs`) |
 | `CRAFT3D_SAMPLES` | `1` or `4`: the viewport's samples per pixel instead of 4, where the adapter has them |
-| `CRAFT3D_PEEL_VARIANT` | `auto` (the default), `today` or `persample`: how the multisampled see-through and section stages are drawn; `auto` takes `persample` on Intel's Vulkan driver on Windows only |
+| `CRAFT3D_PEEL_VARIANT` | `auto` (the default), `today` or `persample`: how the multisampled see-through and section stages are drawn; `auto` takes `persample` on Vulkan on Windows (any vendor) and `today` everywhere else |
 | `CRAFT3D_FFMPEG` | Path to `ffmpeg`, used only by `craft3d-cli replay` and by `view.replay`'s `video` in the CLI's sessions to make an MP4, a WebM or a GIF; default: the first `ffmpeg` on `PATH` |
 | `CRAFT3D_FREECAD` | Path to a FreeCAD executable or AppImage, used only by opt-in export-validation tests |
 | `CRAFT3D_EXAMPLE_REPOS` | `cargo xtask bundle-examples` only: the folder that holds the clones `3dcraft-examples`, `3dcraft-jigs` and `3dcraft-assemblies-examples` the bundled examples are copied from, when `--from` is not given ([Bundled examples](#bundled-examples)) |

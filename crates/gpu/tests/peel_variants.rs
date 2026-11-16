@@ -1,7 +1,7 @@
 //! The two forms of the multisampled see-through and section stages
-//! (`craft3d_gpu::diag::PeelVariant`: masked, and per sample, which Intel's
+//! (`craft3d_gpu::diag::PeelVariant`: masked, and per sample, which a
 //! Vulkan driver on Windows gets; docs/design/rendering.md, *Per-sample
-//! stages on Intel's Vulkan driver*) against each other, on every adapter
+//! stages on Vulkan drivers on Windows*) against each other, on every adapter
 //! of this machine: see-through, cut open, and both, of a hollow block and
 //! a drilled plate. The per-sample picture is held to the CPU renderer by
 //! `see_through.rs`, `section.rs`, `onscreen.rs` and `cap_specks.rs` run

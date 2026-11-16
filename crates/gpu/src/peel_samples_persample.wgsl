@@ -1,7 +1,7 @@
 // `peel_samples.wgsl` run per sample, for the drivers that cannot take a
-// stage that writes the sample mask (`variant.rs`: Intel's Vulkan driver on
-// Windows crashes in its shader compiler on one; docs/design/rendering.md,
-// *Per-sample stages on Intel's Vulkan driver*). No sample mask, no loop
+// stage that writes the sample mask (`variant.rs`: Intel's and AMD's Vulkan
+// drivers on Windows crash on one; docs/design/rendering.md, *Per-sample
+// stages on Vulkan drivers on Windows*). No sample mask, no loop
 // over the samples: both passes are shaded once per sample
 // (`@builtin(sample_index)`), the front writes the key of its triangle at
 // the sample, and the pass behind it reads the key of its own sample only

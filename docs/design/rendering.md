@@ -12,7 +12,7 @@ Pictures: the CPU reference renderer (`craft3d-render`, the display oracle), the
 
 **The viewport.** The window draws on the GPU through `ui_egui::direct::Direct` on its own device, only when something the frame depends on changed; edges, sketches, axes and datums are lines drawn over it and tested against its depth. Where that cannot run, the shell falls back to the GPU on a device of its own read back, or to the CPU renderer (`--renderer cpu`), and says why. `ui.screenshot` always renders on the CPU: it is the oracle. The model's truth is the B-rep, not the picture: geometry is tested geometrically ([`../testing.md`](../testing.md)).
 
-**Drivers that fail** (2026-11-16). A graphics driver can end the process while the window starts (an access violation inside the driver: no panic, nothing to catch), so three answers sit around the renderer. (1) A stage a known driver cannot compile is drawn in another form on that driver only: the see-through's and the section's multisampled stages per sample, without a sample mask, on Intel's Vulkan driver on Windows (`craft3d_gpu::diag::auto_choice`, `variant.rs`), the masked stages everywhere else, byte for byte. (2) On Windows the window keeps a journal of its graphics starts in its state folder and passes over an interface that ended one, in the order Vulkan, OpenGL, DirectX 12, and the launcher starts it again by itself (`apps/craft3d/src/graphics_start.rs`, `apps/craft3d-launcher`); on Linux and macOS the window chooses as it always did. (3) `CRAFT3D_GPU_TRACE` writes, synced, what the driver is asked to build, so the last line of the file names what it was building when the process died, and `CRAFT3D_GPU_TOUR` makes one start ask for every pipeline (`craft3d_gpu::diag`, `apps/craft3d/src/tour.rs`). See the three findings of 2026-11-16.
+**Drivers that fail** (2026-11-16). A graphics driver can end the process while the window starts (an access violation inside the driver: no panic, nothing to catch), so three answers sit around the renderer. (1) A stage known drivers cannot compile is drawn in another form where they are: the see-through's and the section's multisampled stages per sample, without a sample mask, on Vulkan on Windows, any vendor (Intel's and AMD's drivers crash on the masked form; `craft3d_gpu::diag::auto_choice`, `variant.rs`), the masked stages everywhere else, byte for byte. (2) On Windows the window keeps a journal of its graphics starts in its state folder and passes over an interface that ended one, in the order Vulkan, OpenGL, DirectX 12, and the launcher starts it again by itself (`apps/craft3d/src/graphics_start.rs`, `apps/craft3d-launcher`); on Linux and macOS the window chooses as it always did. (3) `CRAFT3D_GPU_TRACE` writes, synced, what the driver is asked to build, so the last line of the file names what it was building when the process died, and `CRAFT3D_GPU_TOUR` makes one start ask for every pipeline (`craft3d_gpu::diag`, `apps/craft3d/src/tour.rs`). See the three findings of 2026-11-16.
 
 **Surface analysis** (2026-10-30, class-A stage 1; `craft3d_render::analysis`, on the GPU `scene.wgsl` › `analysis_of`). Zebra stripes, highlight lines, a curvature map with values per vertex from the exact surfaces, and draft, drawn in place of the plain shading by both renderers, with combs as overlay lines; view state only. The stripes are filtered over each sample's footprint in phase (2026-10-31), so where they are finer than a pixel they fade to their mean instead of a moiré. Method, tolerance and tests in [`surfacing.md`](surfacing.md) › *Stage 1: analysis*.
 
@@ -1670,7 +1670,7 @@ view's edge is unlikely), an edge of the bodies at a grazing angle there, or a r
 path inks the edges; it was not looked into.
 
 
-### Per-sample stages on Intel's Vulkan driver (2026-11-16)
+### Per-sample stages on Vulkan drivers on Windows (2026-11-16)
 
 *Found.* The window of 0.1.1 and 0.1.2 died within seconds of its start on a Windows 11 laptop with a Core
 i3-1215U and Intel UHD Graphics (driver 32.0.101.7077): exception 0xC0000005 in `igc64.dll`, Intel's shader
@@ -1693,19 +1693,31 @@ Windows runners, so a text rewrite that matches across `\n` silently did nothing
 pipeline's module by its id must not trust the id alone, since the ids of two wgpu instances can be the same.)
 The variants that drew a wrong picture, and the rewrites, are not in the release.
 
+*Found again, on another vendor* (2026-11-17). The developer's desktop: Windows 11 Pro build 22000, AMD Radeon
+RX 7800 XT, driver 31.0.22030.2 (Adrenalin 23.20.30, `amdvlk64.dll`, "AMD proprietary driver 23.20.30 (LLPC)").
+The package of the first rule (per-sample stages on Intel's Vulkan driver only) chose Vulkan with the masked
+stages and died; the trace's last line was `#32 begin render_pipeline "craft3d behind" … fs=fs_behind_samples …
+samples=4`, the same pipeline, and the system logged an access violation in `amdvlk64.dll`. The launcher started
+the window again, which came up on OpenGL at one sample and ran the tour without an error: the self-healing (below)
+saved it. With `CRAFT3D_PEEL_VARIANT=persample` on Vulkan the tour ran all its steps at four samples without an
+error, in 8.7 s, and the see-through section was right. Two unrelated vendors' compilers on Windows (Intel's
+`igc64.dll`, AMD's LLPC in `amdvlk64.dll`) die on that stage, while Mesa on Linux takes it: this points at what
+the driver is handed (the SPIR-V naga 30 writes for a fragment stage with a `sample_mask` output, a depth-tested
+pass and multisampled loads) more than at one vendor. The rule became: the per-sample stages on Vulkan on Windows
+for any vendor.
+
 *The fix.* `peel_samples_persample.wgsl` and `cut_samples_persample.wgsl` have the entry points of
 `peel_samples.wgsl` and `cut_samples.wgsl` without a mask: each stage that wrote one runs once per sample
 (`@builtin(sample_index)`, which makes the stage per sample), reads its own sample's texel of the front's keys
 (and, for the section, of the count) and discards itself. The front's key is the depth at the sample in the front
 pass and in the pass behind it alike, so the comparison holds as before, also for a face that coincides with the
-front. It needs per-sample shading (`DownlevelFlags::MULTISAMPLED_SHADING`). On the laptop the window started
-with them, and the tour (every kind of picture, below) ran its six steps on Intel's Vulkan driver at four
-samples without an error, in 8.2 s from a cold start; the pictures of the see-through section and the studio
-look cut open were right.
+front. It needs per-sample shading (`DownlevelFlags::MULTISAMPLED_SHADING`). On the Intel laptop the window
+started with them, and the tour (every kind of picture, below) ran its six steps on Intel's Vulkan driver at four
+samples without an error, in 8.2 s from a cold start (5.9 s with the final package); the pictures of the
+see-through section and the studio look cut open were right; on the AMD desktop, above.
 
-*Why by vendor, interface and platform, and not everywhere* (`craft3d_gpu::diag::auto_choice`: vendor 0x8086,
-Vulkan, Windows, per-sample shading; the masked stages everywhere else, byte for byte, which
-`variant::tests` pins). The per-sample picture is not the masked one on every driver: `tests/peel_variants.rs`
+*Why by interface and platform, and not everywhere* (`craft3d_gpu::diag::auto_choice`: Vulkan, Windows,
+per-sample shading, any vendor; the masked stages everywhere else, byte for byte, which `variant::tests` pins). The per-sample picture is not the masked one on every driver: `tests/peel_variants.rs`
 draws a hollow block and a drilled plate see-through, cut open and both at 320 × 240; on Mesa's Intel driver
 (Meteor Lake, Vulkan) the two forms are identical in every scene, on llvmpipe the two see-through cut-open scenes
 differ in 243 and 93 of 76 800 pixels, by at most 93 levels (a sample along the cut decided at its own point,
@@ -1717,10 +1729,20 @@ median of 20 frames (the draw and the wait for the GPU, `tests/peel_variants.rs`
 `what_the_per_sample_stages_cost`, by hand): on Mesa's Intel driver the per-sample stages are faster (see-through
 8.7 ms against 9.9, cut open 7.1 against 10.4, both 12.1 against 16.8); on llvmpipe, which shades every sample on
 the CPU, slower (see-through 1125 ms against 403, cut open 214 against 209, both 878 against 412). Nothing says
-they are right or cheaper on every other driver, so they go where they are needed.
+they are right or cheaper on every other driver, so they go where the masked form crashes: Vulkan on Windows, the
+interface of the two drivers that crash on it, for every vendor there since two unrelated ones did; DirectX 12 and
+OpenGL on Windows took the masked form on both computers, and Mesa takes it on Linux.
+
+*Owed.* Whether NVIDIA's Windows driver and the proprietary Linux drivers (NVIDIA's, AMD's) take the masked stage
+(not measured; NVIDIA on Windows gets the per-sample stages by the rule). A minimal reproduction of the crashing
+SPIR-V, to see whether what naga emits for `fs_behind_samples` is valid (`spirv-val`), and if it is not, a report
+to naga.
 
 *Forcing a form:* `CRAFT3D_PEEL_VARIANT=today` (the masked stages), `persample`, or `auto` (the default). The
-trace's `onscreen` line says which form the renderer took and why.
+trace's `onscreen` line says which form the renderer took and why. Where the per-sample stages are taken, the
+masked see-through and section pipelines are never built: `Onscreen` builds its see-through stages, and its
+section's at the first cut-open picture, from one module of the form it took (seen in the trace with
+`persample` forced on Linux: no module of `peel_samples.wgsl` or `cut_samples.wgsl` is made).
 
 ### A graphics interface that kills the start (2026-11-16)
 

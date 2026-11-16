@@ -1,6 +1,6 @@
 //! The multisampled stages of a see-through and of a cut-open picture in
-//! two forms (docs/design/rendering.md, *Per-sample stages on Intel's
-//! Vulkan driver*):
+//! two forms (docs/design/rendering.md, *Per-sample stages on Vulkan
+//! drivers on Windows*):
 //!
 //! - **masked** (`peel_samples.wgsl`, `cut_samples.wgsl`): a fragment is
 //!   shaded once per pixel and decides with the sample mask on which of
@@ -10,16 +10,20 @@
 //! - **per sample** (`peel_samples_persample.wgsl`,
 //!   `cut_samples_persample.wgsl`): no sample mask; the stages that wrote
 //!   one run once per sample (`@builtin(sample_index)`), each sample reading
-//!   its own texel and discarding itself. Intel's Vulkan driver on Windows
-//!   crashes in its shader compiler (`igc64.dll`) on every stage that writes
-//!   the sample mask, whatever feeds it (measured 2026-11-16 on UHD
-//!   Graphics, driver 32.0.101.7077), and draws these right. It needs
-//!   per-sample shading (`DownlevelFlags::MULTISAMPLED_SHADING`).
+//!   its own texel and discarding itself. Vulkan drivers of two unrelated
+//!   vendors on Windows crash on the stage of the masked form that writes
+//!   the sample mask, whatever feeds it, and draw these right: Intel's in
+//!   its shader compiler (`igc64.dll`; UHD Graphics, driver 32.0.101.7077,
+//!   2026-11-16) and AMD's (`amdvlk64.dll`; Radeon RX 7800 XT, driver
+//!   31.0.22030.2, 2026-11-17). It needs per-sample shading
+//!   (`DownlevelFlags::MULTISAMPLED_SHADING`).
 //!
-//! Which form an adapter gets is [`auto_choice`]'s: by vendor, backend
-//! and platform, not everywhere, since the per-sample picture is not bit
-//! for bit the masked one on every driver (it is on Mesa's Intel driver;
-//! llvmpipe differs in a few pixels). `CRAFT3D_PEEL_VARIANT`
+//! Which form an adapter gets is [`auto_choice`]'s: by backend and
+//! platform, Vulkan on Windows for any vendor, not everywhere, since the
+//! per-sample picture is not bit for bit the masked one on every driver
+//! (it is on Mesa's Intel driver; llvmpipe differs in a few pixels), and
+//! the drivers elsewhere take the masked form (Mesa's on Linux; DirectX 12
+//! and OpenGL on Windows). `CRAFT3D_PEEL_VARIANT`
 //! (`diag::PEEL_VARIANT_VAR`) forces either: `today` (masked), `persample`,
 //! or `auto`, the default.
 
@@ -72,36 +76,45 @@ impl PeelSetting {
 
 /// What [`PeelSetting::Auto`] takes on an adapter of `vendor` on `backend`,
 /// on Windows or not (`windows`), with per-sample shading or not, and why:
-/// the per-sample stages on Intel's Vulkan driver on Windows, whose shader
-/// compiler crashes on a stage that writes the sample mask; the masked ones
-/// everywhere else.
+/// the per-sample stages on a Vulkan driver on Windows of any vendor (Intel's
+/// and AMD's crash on a stage that writes the sample mask; the others' were
+/// not measured, and the per-sample stages draw the same picture within the
+/// tolerances); the masked ones everywhere else. The vendor only changes
+/// what the reason says.
 pub fn auto_choice(
     vendor: u32,
     backend: wgpu::Backend,
     windows: bool,
     per_sample: bool,
 ) -> (PeelVariant, &'static str) {
-    if !(vendor == INTEL && backend == wgpu::Backend::Vulkan && windows) {
+    if !(backend == wgpu::Backend::Vulkan && windows) {
         (
             PeelVariant::Masked,
-            "the masked stages: not Intel's Vulkan driver on Windows",
+            "the masked stages: not a Vulkan driver on Windows",
         )
     } else if !per_sample {
         (
             PeelVariant::Masked,
-            "the masked stages: Intel's Vulkan driver on Windows, but no per-sample shading",
+            "the masked stages: a Vulkan driver on Windows, but no per-sample shading",
+        )
+    } else if vendor == INTEL || vendor == AMD {
+        (
+            PeelVariant::PerSample,
+            "the per-sample stages: Vulkan drivers on Windows crash on a stage that writes the \
+             sample mask (Intel and AMD measured; this is one of them)",
         )
     } else {
         (
             PeelVariant::PerSample,
-            "the per-sample stages: Intel's Vulkan driver on Windows crashes on a stage that \
-             writes the sample mask",
+            "the per-sample stages: Vulkan drivers on Windows crash on a stage that writes the \
+             sample mask (Intel and AMD measured; this vendor's driver was not)",
         )
     }
 }
 
-/// Intel's PCI vendor id.
+/// Intel's and AMD's PCI vendor ids.
 const INTEL: u32 = 0x8086;
+const AMD: u32 = 0x1002;
 
 /// The see-through's multisampled stages in the form `variant`, with the
 /// file it is.
@@ -160,25 +173,49 @@ mod tests {
         assert_eq!(PeelVariant::PerSample.to_string(), "persample");
     }
 
-    /// The default draws today's stages, byte for byte, on every adapter
-    /// but Intel's Vulkan driver on Windows with per-sample shading.
+    /// The default draws the per-sample stages on a Vulkan driver on
+    /// Windows of any vendor with per-sample shading, and today's stages,
+    /// byte for byte, everywhere else.
     #[test]
-    fn auto_takes_the_per_sample_stages_on_intels_vulkan_driver_on_windows_only() {
+    fn auto_takes_the_per_sample_stages_on_vulkan_on_windows_only() {
         use wgpu::Backend::{BrowserWebGpu, Dx12, Gl, Metal, Vulkan};
-        let (chosen, why) = auto_choice(0x8086, Vulkan, true, true);
-        assert_eq!(chosen, PeelVariant::PerSample, "{why}");
-        assert_eq!(peel_samples(chosen).1, "peel_samples_persample.wgsl");
+        // Intel, AMD (both measured), NVIDIA and an unknown vendor.
+        for vendor in [0x8086, 0x1002, 0x10de, 0x1234, 0] {
+            let (chosen, why) = auto_choice(vendor, Vulkan, true, true);
+            assert_eq!(chosen, PeelVariant::PerSample, "{vendor:#x}: {why}");
+            assert!(why.contains("Intel and AMD measured"), "{why}");
+            assert_eq!(peel_samples(chosen).1, "peel_samples_persample.wgsl");
+            assert_eq!(cut_samples(chosen).1, "cut_samples_persample.wgsl");
+        }
+        assert!(
+            auto_choice(0x1002, Vulkan, true, true)
+                .1
+                .contains("one of them")
+        );
+        assert!(
+            auto_choice(0x10de, Vulkan, true, true)
+                .1
+                .contains("was not")
+        );
         for (vendor, backend, windows, per_sample) in [
+            // Vulkan on Windows without per-sample shading.
             (0x8086, Vulkan, true, false),
+            (0x1002, Vulkan, true, false),
+            // Vulkan elsewhere: Linux (Mesa takes the masked stages).
             (0x8086, Vulkan, false, true),
+            (0x1002, Vulkan, false, true),
+            (0x10de, Vulkan, false, true),
+            // Any vendor on DirectX 12 or OpenGL on Windows.
             (0x8086, Dx12, true, true),
+            (0x1002, Dx12, true, true),
+            (0x10de, Dx12, true, true),
             (0x8086, Gl, true, true),
+            (0x1002, Gl, true, true),
+            (0x10de, Gl, true, true),
+            // macOS, the browser.
             (0x8086, Metal, false, true),
-            (0x8086, BrowserWebGpu, true, true),
-            (0x10de, Vulkan, true, true),
-            (0x1002, Vulkan, true, true),
             (0x106b, Metal, false, true),
-            (0, Vulkan, true, true),
+            (0x8086, BrowserWebGpu, true, true),
         ] {
             let (chosen, why) = auto_choice(vendor, backend, windows, per_sample);
             assert_eq!(

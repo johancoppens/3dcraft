@@ -3,7 +3,7 @@
 //! that kills the start*).
 //!
 //! A graphics driver can end the process while the window starts (an
-//! access violation inside Intel's Vulkan driver on Windows, 2026-11-16):
+//! access violation inside an Intel Vulkan driver on Windows, 2026-11-16):
 //! nothing can catch that, so the window keeps a journal in its state
 //! folder ([`JOURNAL_FILE`]). Before the device is made on an adapter it
 //! records the attempt ("attempting", synced to disk); once

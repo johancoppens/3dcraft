@@ -150,12 +150,12 @@ against: `"renderer": "cpu"` asks for it.
 3DCraft's window is drawn through one of three graphics interfaces of Windows: Vulkan, OpenGL or DirectX 12,
 each of them a part of your graphics card's driver. A driver can fail so badly that it takes the program
 with it: the window opens and closes again at once, without a word. 3DCraft 0.1.0 and 0.1.1 did that on
-many computers with Intel graphics.
+many computers, with Intel and with AMD graphics.
 
 **What 3DCraft does by itself, since 0.1.2:**
 
-- On Intel graphics through Vulkan it draws see-through bodies and cut-open models in a way Intel's driver
-  takes (the old way made the driver crash while the window started).
+- Through Vulkan it draws see-through bodies and cut-open models in a way the drivers take (the old way
+  made the Vulkan drivers of Intel and AMD crash while the window started), whatever your graphics card.
 - When an interface ended a start, the next start passes over it and takes the next one: Vulkan first,
   then OpenGL, then DirectX 12. `3DCraft.exe` (the Start menu entry, a double-clicked file) starts the
   window again by itself, at most three times in a row, so you need not do anything. A bar under the menu
