@@ -1741,15 +1741,25 @@ record per app version, adapter (vendor and device ids), driver (wgpu's `driver`
 interface. The window chooses its adapter itself (egui-wgpu's `native_adapter_selector`): in the order Vulkan,
 OpenGL, DirectX 12 (Vulkan, DirectX 12, OpenGL when a `dxcompiler.dll` lies beside the program), within one
 interface by wgpu's own preference (discrete before integrated), only adapters that can present to the window.
-Before the device is made it records "attempting", written to a file beside the journal, synced and renamed over
-it; once the window has drawn three frames (it asks for them at once, so an idle window gets there too) it
-records "ok"; on an orderly exit before that, "closing". At the next start an adapter's interface whose last
-record is "attempting" ended a start and is passed over for the next in the order; a record counts for seven
-days and only for its app version and driver. When every interface in the order is marked, the first is tried
+Before the device is made it makes and locks a lock file of its own, `graphics-start.<pid>.lock` (an exclusive
+`File::try_lock`, which the system releases when the process ends, however it ends), and records "attempting"
+with its process id, written to a file beside the journal, synced and renamed over it; once the window has drawn
+three frames (it asks for them at once, so an idle window gets there too) it records "ok" (tried four times, so
+a journal held a moment by another program does not leave the interface marked for seven days), unlocks and
+removes its lock file; on an orderly exit before that, "closing". At the next start an interface is passed over
+when an "attempting" for it was written since its last "ok" or "closing", within seven days, for its app
+version and driver, by a window that is no longer starting: its lock file is gone or can be locked. A window
+that starts at the same moment (two files opened together, 0.6 s from "attempting" to "ok" on Vulkan, 2.3 s on
+OpenGL, over 4 s on DirectX 12) holds its lock and is no crash (found by the review of 2026-11-16, before the
+release). Every read, change and write of the journal is made under the lock `graphics-start.lock`, so two
+windows never lose each other's records; lock files of windows that are gone are removed at the next start. When every interface in the order is marked, the first is tried
 again: the window never refuses to start. The launcher, `3DCraft.exe`, starts a window that crashed within a
-minute (an exception's exit code, 0xC0000000 and above) again with the same arguments, at most three times in a
-row, so the skip takes effect without the person doing anything; when every start crashed it says so in its box,
-with how often and where the journal is. The window says what it passed over on standard error, and in a bar
+minute (an exception's exit code, 0xC0000000 and above, but `0xC000013A`, a window ended at log-off or by
+Ctrl+C) while it was still starting on its graphics interface (its lock file is still there) again, with the same
+arguments but `--reset-graphics`, at most three times in a row, so the skip takes effect without the person doing
+anything; a window that crashed after its start, or after the person closed it, is not started again nor
+blamed on graphics. When every start crashed it says so in its box, with how often and where the journal is
+(`--state-dir`, `CRAFT3D_STATE_DIR`). The window says what it passed over on standard error, and in a bar
 under the menu (the recovery bar's kind): *3DCraft draws through OpenGL on this computer: starting with Vulkan
 failed here (…)*, with **Details…** (the adapters, the journal, the trace, how to choose), **Try Vulkan next
 time** (forgets the records it passed over) and **Dismiss** (not shown again while that interface ends the start
@@ -1772,7 +1782,8 @@ as one: the seven days bring Vulkan back, and if it still crashes, the launcher'
 
 *Owed.* The self-healing on Linux and macOS (on Linux: Vulkan to OpenGL), for 0.2, after it has been tried
 there; 0.1.x leaves their choice as it was (`self_healing_enabled`; `CRAFT3D_GRAPHICS_JOURNAL=on` turns it on in
-a build with debug assertions, to try it). The launcher's restart and the bar seen on Windows by a person.
+a build with debug assertions, to try it). The notice bar's state lives in `Shell`, so `ui.get` cannot see it
+(rule 9: UI state in `state.rs`), for 0.2. The launcher's restart and the bar seen on Windows by a person.
 
 ### Diagnostics of the graphics driver (2026-11-16)
 

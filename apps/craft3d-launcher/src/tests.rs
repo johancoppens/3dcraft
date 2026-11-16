@@ -124,9 +124,11 @@ fn the_last_message_is_the_windows_last_one() {
     );
 }
 
-/// A window that crashed at start is started again, at most three times
-/// in a row; one that chose its exit code, ran for a minute or was started
-/// again three times is not.
+/// A window that crashed while it was still starting on its graphics
+/// interface is started again, at most three times in a row; one that
+/// chose its exit code, crashed after its start (a crash that is not a
+/// graphics start's, or one after the person closed it), ran for a minute
+/// or was started again three times is not.
 #[test]
 fn a_window_that_crashed_at_start_is_started_again() {
     // STATUS_ACCESS_VIOLATION (the Intel driver of 2026-11-16), a stack
@@ -144,18 +146,32 @@ fn a_window_that_crashed_at_start_is_started_again() {
             "{code:#x}"
         );
     }
-    for code in [0_u32, 1, 2, 255, 0xBFFF_FFFF, 0x8000_0005, 0x4000_0000] {
+    // STATUS_CONTROL_C_EXIT: ended at log-off or by Ctrl+C, no crash.
+    for code in [
+        0_u32,
+        1,
+        2,
+        255,
+        0xBFFF_FFFF,
+        0x8000_0005,
+        0x4000_0000,
+        0xC000_013A,
+    ] {
         assert!(
             !is_exception_code(i32::from_ne_bytes(code.to_ne_bytes())),
             "{code:#x}"
         );
     }
     let quick = Duration::from_secs(3);
-    assert!(restart(true, quick, 0));
-    assert!(restart(true, quick, RESTARTS - 1));
-    assert!(!restart(true, quick, RESTARTS));
-    assert!(!restart(true, START_UP, 0));
-    assert!(!restart(false, quick, 0));
+    assert!(restart(true, true, quick, 0));
+    assert!(restart(true, true, quick, RESTARTS - 1));
+    assert!(!restart(true, true, quick, RESTARTS));
+    assert!(!restart(true, true, START_UP, 0));
+    assert!(!restart(false, true, quick, 0));
+    assert!(
+        !restart(true, false, quick, 0),
+        "not a graphics start's crash"
+    );
     // A window that ended with a code of its own did not crash.
     assert!(!crashed(status(0)));
     assert!(!crashed(status(1)));
@@ -175,12 +191,79 @@ fn a_window_that_crashed_at_start_is_started_again() {
     let said = restarts_text(4, None);
     assert!(said.starts_with("3DCraft was started 4 times"), "{said}");
     assert!(said.contains("graphics-start.json"), "{said}");
+    assert!(said.contains("--state-dir or CRAFT3D_STATE_DIR"), "{said}");
     let traced = restarts_text(2, Some(OsStr::new("C:\\trace.txt")));
     assert!(traced.contains("C:\\trace.txt"), "{traced}");
     assert_eq!(
         restarts_text(2, Some(OsStr::new(""))),
         restarts_text(2, None)
     );
+}
+
+/// The state folder is found as the window finds it, and a restart drops
+/// `--reset-graphics`.
+#[test]
+fn the_state_folder_and_the_arguments_of_a_restart() {
+    let args = |list: &[&str]| -> Vec<OsString> { list.iter().map(OsString::from).collect() };
+    let none = |_: &str| None;
+    assert_eq!(
+        state_folder(&args(&["--state-dir", "/s", "a.3dcraft"]), &none),
+        Some(PathBuf::from("/s"))
+    );
+    assert_eq!(
+        state_folder(&args(&["--state-dir=/t"]), &none),
+        Some(PathBuf::from("/t"))
+    );
+    // After `--` a file named so is a file.
+    assert_eq!(
+        state_folder(&args(&["--", "--state-dir", "/s"]), &none),
+        state_folder(&[], &none)
+    );
+    let env = |name: &str| match name {
+        "CRAFT3D_STATE_DIR" => Some(OsString::from("/e")),
+        _ => None,
+    };
+    assert_eq!(state_folder(&[], &env), Some(PathBuf::from("/e")));
+    assert_eq!(
+        state_folder(&args(&["--state-dir", "/s"]), &env),
+        Some(PathBuf::from("/s"))
+    );
+    let platform = |name: &str| match name {
+        "LOCALAPPDATA" => Some(OsString::from("C:\\Users\\a\\AppData\\Local")),
+        "HOME" => Some(OsString::from("/home/a")),
+        _ => None,
+    };
+    let found = state_folder(&[], &platform);
+    if cfg!(windows) {
+        assert_eq!(
+            found,
+            Some(PathBuf::from("C:\\Users\\a\\AppData\\Local").join("3dcraft"))
+        );
+    } else if cfg!(target_os = "macos") {
+        assert_eq!(
+            found,
+            Some(PathBuf::from("/home/a/Library/Application Support/3dcraft"))
+        );
+    } else {
+        assert_eq!(found, Some(PathBuf::from("/home/a/.local/state/3dcraft")));
+    }
+    assert_eq!(state_folder(&[], &none), None);
+    // A restart keeps every argument but --reset-graphics.
+    assert_eq!(
+        restart_args(&args(&["--reset-graphics", "a b.3dcraft", "--x=1"])),
+        args(&["a b.3dcraft", "--x=1"])
+    );
+    assert_eq!(
+        restart_args(&args(&["--", "--reset-graphics"])),
+        args(&["--", "--reset-graphics"])
+    );
+    // The lock file says whether the window was still starting.
+    let dir = folder("was starting");
+    assert!(!was_starting(Some(&dir), 42));
+    std::fs::write(dir.join("graphics-start.42.lock"), "").unwrap();
+    assert!(was_starting(Some(&dir), 42));
+    assert!(!was_starting(None, 42));
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -425,18 +508,27 @@ fn the_launcher_starts_the_window_beside_it() {
     );
     std::fs::remove_dir_all(&folder).unwrap();
 
-    // A window that crashes at its first two starts and then comes up:
-    // started again with the same arguments, and nothing is said.
+    // A window that crashes at its first two starts while still starting
+    // on its graphics interface (its lock file left in the state folder)
+    // and then comes up: started again with the same arguments but
+    // --reset-graphics, and nothing is said.
     let (launcher, folder) = stand_in(
         "crashes twice",
         "dir=\"$(dirname \"$0\")\"\n\
          n=$(cat \"$dir/count\" 2>/dev/null || echo 0)\n\
          echo $((n + 1)) > \"$dir/count\"\n\
          printf '%s\\n' \"$@\" >> \"$dir/args\"\n\
-         if [ \"$n\" -lt 2 ]; then kill -SEGV $$; fi\n\
+         mkdir -p \"$dir/state\"\n\
+         if [ \"$n\" -lt 2 ]; then touch \"$dir/state/graphics-start.$$.lock\"; kill -SEGV $$; fi\n\
          exit 0",
     );
-    let args = vec![OsString::from("part.3dcraft")];
+    let state = folder.join("state").into_os_string();
+    let args = vec![
+        OsString::from("--reset-graphics"),
+        OsString::from("--state-dir"),
+        state.clone(),
+        OsString::from("part.3dcraft"),
+    ];
     assert_eq!(
         launch(&launcher, args),
         Ended {
@@ -448,23 +540,50 @@ fn the_launcher_starts_the_window_beside_it() {
         std::fs::read_to_string(folder.join("count")).unwrap(),
         "3\n"
     );
+    let state = state.to_string_lossy().to_string();
     assert_eq!(
         std::fs::read_to_string(folder.join("args")).unwrap(),
-        "part.3dcraft\npart.3dcraft\npart.3dcraft\n"
+        format!(
+            "--reset-graphics\n--state-dir\n{state}\npart.3dcraft\n\
+             --state-dir\n{state}\npart.3dcraft\n\
+             --state-dir\n{state}\npart.3dcraft\n"
+        )
     );
     std::fs::remove_dir_all(&folder).unwrap();
 
-    // One that crashes every time: four starts, then the failure, with how
-    // often and where the journal is.
+    // A crash after the start (no lock file: the window came up, or was
+    // closed): not started again, and said as any crash, not as graphics.
+    let (launcher, folder) = stand_in(
+        "crashes later",
+        "dir=\"$(dirname \"$0\")\"\n\
+         n=$(cat \"$dir/count\" 2>/dev/null || echo 0)\n\
+         echo $((n + 1)) > \"$dir/count\"\n\
+         kill -SEGV $$",
+    );
+    let state = folder.join("state").into_os_string();
+    let ended = launch(&launcher, vec![OsString::from("--state-dir"), state]);
+    assert_eq!(
+        std::fs::read_to_string(folder.join("count")).unwrap(),
+        "1\n"
+    );
+    let say = ended.say.unwrap();
+    assert!(!say.contains("was started"), "{say}");
+    std::fs::remove_dir_all(&folder).unwrap();
+
+    // One that crashes every time while starting: four starts, then the
+    // failure, with how often and where the journal is.
     let (launcher, folder) = stand_in(
         "always crashes",
         "dir=\"$(dirname \"$0\")\"\n\
          n=$(cat \"$dir/count\" 2>/dev/null || echo 0)\n\
          echo $((n + 1)) > \"$dir/count\"\n\
          echo 'craft3d: starting' >&2\n\
+         mkdir -p \"$dir/state\"\n\
+         touch \"$dir/state/graphics-start.$$.lock\"\n\
          kill -SEGV $$",
     );
-    let ended = launch(&launcher, Vec::new());
+    let state = folder.join("state").into_os_string();
+    let ended = launch(&launcher, vec![OsString::from("--state-dir"), state]);
     assert_eq!(ended.code, None);
     let say = ended.say.unwrap();
     assert!(

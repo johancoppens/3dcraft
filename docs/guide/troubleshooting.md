@@ -164,9 +164,12 @@ many computers with Intel graphics.
   again at the next start; **Dismiss** hides the bar for good.
 - An interface is passed over for seven days, or until your graphics driver or 3DCraft is updated; then it
   is tried again. If every interface failed, 3DCraft tries them again from the first: it never refuses to
-  start. Starting `craft3d.exe --reset-graphics` forgets what it learnt, so every interface is tried
+  start. Several windows can start at the same time (two files opened at once): a window that is still
+  starting is never taken for one that failed. Starting `craft3d.exe --reset-graphics` forgets what it learnt, so every interface is tried
   again.
-- When every start fails, `3DCraft.exe` says so in a message box, with the error code.
+- `3DCraft.exe` starts the window again only when it closed while it was still starting on its graphics
+  interface; a window that closes later is not started again. When every start fails, it says so in a
+  message box, with the error code.
 
 **Which interface 3DCraft draws through:** **Help › About 3DCraft** names the renderer in use, your
 graphics card and the interface, for example `gpu (Intel(R) UHD Graphics (Vulkan, IntegratedGpu, …);

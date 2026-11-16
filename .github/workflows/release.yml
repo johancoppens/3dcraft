@@ -217,9 +217,14 @@ jobs:
       # ends by itself; its last line must count no error. The trace
       # (`CRAFT3D_GPU_TRACE`: what the driver was asked to build, the last
       # line naming it if the window dies) and the pictures of the steps are
-      # kept as an artifact, also when the step fails.
+      # kept as an artifact, also when the step fails. The step cannot hold
+      # back a release (it runs before the packages are uploaded, and the
+      # draft needs every package job): a failure or a timeout is marked on
+      # the run, and its trace is read by hand before a tag
+      # (docs/development.md, Releasing a version).
       - name: tour (windows)
         if: runner.os == 'Windows'
+        continue-on-error: true
         timeout-minutes: 15
         env:
           CRAFT3D_GPU_TOUR: quick
