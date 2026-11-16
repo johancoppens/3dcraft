@@ -4,6 +4,10 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Fixed
+
+- **The window no longer closes when the graphics card cannot keep up with the studio look** (seen on Windows, with older Intel graphics drawing through OpenGL). There, a minute after the studio look was switched on for a large model, 3DCraft closed without a word. The graphics library stopped the program when the card did not finish a picture within two seconds; 3DCraft now catches such errors on every system and carries on. The studio look is then turned off for the rest of the session, a bar under the menu says so, and the window keeps working in the plain look. Where preparing the studio look takes long (OpenGL), the viewport says *Preparing the studio look…* before the window stops answering for that time.
+
 ## [0.1.2] - 2026-11-16
 
 Fixes for the first things a new user meets: on many Windows computers the window no longer closes at once (measured: Intel and AMD graphics), no console window opens beside 3DCraft any more, the web version's page says what it is, and the MCP server says more about itself to the tools that connect to it. Files of 0.1.0 and 0.1.1 open unchanged.

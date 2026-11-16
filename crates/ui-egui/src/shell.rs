@@ -876,6 +876,23 @@ pub struct Shell {
     graphics_action: Option<GraphicsNoticeAction>,
     /// Where the graphics notice's buttons were drawn in the last frame.
     graphics_hits: Vec<(GraphicsButton, egui::Rect)>,
+    /// The device errors the window's handler took, as last told
+    /// ([`Shell::device_errors`]).
+    device_errors_seen: u64,
+    /// The studio look gave way to the plain look after a device error,
+    /// for the rest of this session.
+    look_withdrawn: bool,
+    /// The graphics notice shown is the device error's: its Dismiss only
+    /// hides it.
+    device_notice: bool,
+    /// A device error's notice was shown once this session.
+    device_notice_said: bool,
+    /// The first studio frame on the window's device: 0 not yet drawn, 1
+    /// drawn (its presentation is noted at the next frame), 2 noted.
+    studio_first: u8,
+    /// The frame that says the studio look is being prepared, on a device
+    /// whose pipelines take long to make: 0 not yet, 1 this frame, 2 done.
+    studio_announce: u8,
     /// How many picks were made in the viewport ([`Picked::serial`]).
     picks: u64,
     /// Viewport size in pixels, and pixels per point.
@@ -1424,7 +1441,16 @@ impl Shell {
     /// look is drawn meanwhile), or something moving into place
     /// ([`Self::animating`]). A picture of the window waits for both.
     pub fn look_settling(&self, ctx: &egui::Context, now: f64) -> bool {
-        !self.look_ready() || self.animating(ctx, now)
+        !self.look_ready() || self.animating(ctx, now) || self.studio_announcing()
+    }
+
+    /// Whether the frame that says the studio look is being prepared is
+    /// still to come or shown ([`Self::direct_frame`]): the studio look
+    /// asked for on a device whose pipelines take long to make.
+    fn studio_announcing(&self) -> bool {
+        self.state.look.is_studio()
+            && self.direct.as_ref().is_some_and(Direct::slow_pipelines)
+            && self.studio_announce < 2
     }
 
     /// Whether the window's own animations are under way at egui's time
@@ -1485,6 +1511,12 @@ impl Shell {
             graphics_details: false,
             graphics_action: None,
             graphics_hits: Vec::new(),
+            device_errors_seen: 0,
+            look_withdrawn: false,
+            device_notice: false,
+            device_notice_said: false,
+            studio_first: 0,
+            studio_announce: 0,
             picks: 0,
             size: DEFAULT_VIEWPORT,
             pixels_per_point: 1.0,
@@ -3436,6 +3468,58 @@ impl Shell {
     pub fn set_graphics_notice(&mut self, notice: Option<GraphicsNotice>) {
         self.graphics_notice = notice;
         self.graphics_details = false;
+        self.device_notice = false;
+    }
+
+    /// The device errors the window's handler took so far (`count`; the
+    /// last one's text from `last`), told every frame. A new one while the
+    /// studio look is on makes it give way to the plain look for the rest
+    /// of this session, and a bar under the menu says so; the studio look
+    /// asked for again later gives way again. Any other error is said in
+    /// the bar once. True when something changed, for a repaint.
+    pub fn device_errors(&mut self, count: u64, last: impl FnOnce() -> String) -> bool {
+        let new = count > self.device_errors_seen;
+        self.device_errors_seen = self.device_errors_seen.max(count);
+        let studio = self.state.look.is_studio();
+        if !(studio && (new || self.look_withdrawn)) && !(new && !self.device_notice_said) {
+            return false;
+        }
+        let text = last();
+        let details = format!(
+            "The graphics driver reported: {text} 3DCraft caught it and carries on: nothing of \
+             your work is lost. Graphics errors in this session: {count}."
+        );
+        let line = if studio {
+            self.look_withdrawn = true;
+            self.state.look.mode = "plain".to_string();
+            craft3d_gpu::diag::note(
+                "look",
+                &format!(
+                    "the studio look gives way to the plain look for this session, after \
+                     device error {count}"
+                ),
+            );
+            "The studio look is off for this session: this computer's graphics could not \
+             finish its pictures in time. The plain look is shown."
+        } else {
+            "The graphics driver reported an error; 3DCraft caught it and carries on. If \
+             the view looks wrong, resize the window or start 3DCraft again."
+        };
+        self.graphics_notice = Some(GraphicsNotice {
+            text: line.to_string(),
+            details,
+            retry: String::new(),
+        });
+        self.graphics_details = false;
+        self.device_notice = true;
+        self.device_notice_said = true;
+        true
+    }
+
+    /// Whether the first studio frame on the window's device was drawn and
+    /// handed to the window to be presented.
+    pub fn studio_presented(&self) -> bool {
+        self.studio_first == 2
     }
 
     /// The graphics notice shown, if any.
@@ -3457,7 +3541,14 @@ impl Shell {
     /// The graphics notice's button clicked since the last call, for the
     /// host to act on (the bar is gone by then).
     pub fn take_graphics_notice_action(&mut self) -> Option<GraphicsNoticeAction> {
-        self.graphics_action.take()
+        let action = self.graphics_action.take();
+        // A device error's notice is only hidden: the start's journal is
+        // not its business.
+        if self.device_notice {
+            self.device_notice = self.graphics_notice.is_some();
+            return None;
+        }
+        action
     }
 
     /// The bar of the graphics notice: the warning, the line, Details
@@ -4873,6 +4964,10 @@ impl Shell {
         // window's device, every frame in full; the other paths make a
         // preview here and the sharp image elsewhere.
         self.direct_shown = self.direct_frame(scene, &key);
+        if self.studio_announce == 1 {
+            // The studio look is made in the next frame.
+            ui.ctx().request_repaint();
+        }
         if !self.direct_shown {
             self.refresh(ui.ctx(), shared, &key, moving);
         } else if self.direct.as_ref().is_some_and(Direct::converging) {
@@ -4889,6 +4984,18 @@ impl Shell {
         let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
         if let Some(id) = self.direct_texture() {
             painter.image(id, rect, uv, egui::Color32::WHITE);
+            if self.studio_announce == 1 {
+                let galley = painter.layout_no_wrap(
+                    "Preparing the studio look… this can take a minute".to_string(),
+                    egui::TextStyle::Heading.resolve(ui.style()),
+                    color(tokens.text),
+                );
+                let at = rect.center() - galley.size() * 0.5;
+                let plate = egui::Rect::from_min_size(at, galley.size())
+                    .expand(tokens.inset.clamp(0.0, 32.0));
+                painter.rect_filled(plate, tokens.radius, color(tokens.panel_fill));
+                painter.galley(at, galley, color(tokens.text));
+            }
         } else {
             if let Some(texture) = &self.texture {
                 painter.image(texture.id(), rect, uv, egui::Color32::WHITE);
@@ -5302,7 +5409,25 @@ impl Shell {
     /// when the picture on screen is now the direct path's; false when
     /// there is no direct path, or this frame has to be made another way.
     fn direct_frame(&mut self, scene: Option<&Scene>, key: &FrameKey) -> bool {
-        let studio = self.studio();
+        let mut studio = self.studio();
+        if self.studio_first == 1 {
+            self.studio_first = 2;
+            craft3d_gpu::diag::note(
+                "look",
+                "the first studio frame was presented (in the frame before this one)",
+            );
+        }
+        // Where making the studio look's pipelines holds the window (a
+        // minute through OpenGL on an older Intel card), one frame of the
+        // plain look first says so; the next makes them.
+        if studio.is_some() && self.studio_announcing() {
+            self.studio_announce = self.studio_announce.saturating_add(1);
+            if self.studio_announce == 1 {
+                craft3d_gpu::diag::note("look", "preparing the studio look: said first");
+                studio = None;
+            }
+        }
+        let drawn_studio = studio.is_some();
         let marks = self.frame_marks(scene, key);
         // Smaller while the camera moves, where the host asked for it.
         let divisor = if self.interacting_light() && studio.is_some() {
@@ -5334,6 +5459,16 @@ impl Shell {
             Ok(None) => true,
             Ok(Some(frame)) => {
                 self.renders = self.renders.saturating_add(1);
+                if drawn_studio && self.studio_first == 0 {
+                    self.studio_first = 1;
+                    craft3d_gpu::diag::note(
+                        "look",
+                        &format!(
+                            "the first studio frame was drawn in {:.1} ms",
+                            frame.milliseconds
+                        ),
+                    );
+                }
                 self.stats = Some(RenderStats {
                     width: frame.width,
                     height: frame.height,
