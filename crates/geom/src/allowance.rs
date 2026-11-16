@@ -61,14 +61,18 @@
 //! ([`replay`]): the work a cache answers from memory where finding it is
 //! counted only when the cache is missed (the memos of a patch tree,
 //! shared by every operation and thread), and arithmetic the count does
-//! not price (the normal net of a rational patch). So the ledger of an
-//! operation is a function of what it asks alone, the same whatever was
-//! kept before, by whom, and on however many threads, also outside a bound
+//! not price (the normal net of a rational patch). What a cache keeps with
+//! an answer is what finding it asked, measured through the regions where
+//! the count or the ledger does not grow ([`costs_of`]). So the ledger of
+//! an operation is a function of what it asks alone, the same whatever was
+//! kept before, by whom, after which operations, and on however many
+//! threads, also outside a bound
 //! (where the count is not: `craft3d_kernel`'s section meets pairs ahead
 //! on helper threads that fill those memos). A bound on the ledger
 //! ([`asked_within`]) opens no scope: the operation's caches, its helpers
 //! and its count stay what they are without it, and only [`exhausted`]
-//! says when it is reached. The operations of `craft3d_kernel` that enter
+//! says when it is reached (or that the work was called off,
+//! [`stopping_when`]). The operations of `craft3d_kernel` that enter
 //! through its budget of held trees (the boolean, interference, and the
 //! classification of points) are held to it.
 
