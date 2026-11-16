@@ -7063,8 +7063,12 @@ mod tests {
                 .map(|v| param.eval(v.uv).distance(v.pos))
                 .fold(0.0_f64, f64::max)
         };
-        // The search alone puts points of the rims a turn away: the loop
-        // jumps across the surface (what refused the field test's band).
+        // The search alone puts points of the rims a turn or more away
+        // (measured 2026-11-15, after `Surface::project` goes on where its
+        // walk ends short and repaired some of these feet: 6362 of the
+        // ring's 8008 points more than 0.04 off, the band's turns 0.05
+        // apart, the worst 1.34): the loop jumps across the surface (what
+        // refused the field test's band).
         let searched = build_ring(&param, &points, 1.0, 0, 0, None, false).unwrap();
         assert!(off(&searched) > 0.01, "{}", off(&searched));
         assert!(ring_jumps(&param, &searched, tolerance));
