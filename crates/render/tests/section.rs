@@ -573,7 +573,7 @@ fn the_slabs_find_the_whole_outline_among_a_few_triangles() {
         )
         .unwrap();
         let inner = primitives::block(
-            &at(-2.0 * scale, -1.0 * scale, -1.0 * scale),
+            &at(-2.0 * scale, -scale, -scale),
             4.0 * scale,
             2.0 * scale,
             2.0 * scale,
