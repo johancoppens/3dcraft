@@ -167,7 +167,7 @@ impl<'a> Ctx<'a> {
             .map_or_else(|| id.to_string(), |f| f.name.clone())
     }
 
-    fn body(&self, id: FeatureId) -> Result<&'a Arc<Body>, String> {
+    pub(crate) fn body(&self, id: FeatureId) -> Result<&'a Arc<Body>, String> {
         let outcome = self
             .regen
             .feature(id)
@@ -449,7 +449,7 @@ pub(crate) fn only(p: &Map<String, Value>, allowed: &[&str]) -> Result<(), Strin
 type Named = (FeatureId, Arc<Body>, Option<Vec<usize>>);
 
 /// The feature a name or id names.
-fn feature_of(doc: &Document, text: &str) -> Result<FeatureId, String> {
+pub(crate) fn feature_of(doc: &Document, text: &str) -> Result<FeatureId, String> {
     if let Some(f) = doc.feature_by_name(text) {
         return Ok(f.id);
     }
@@ -855,7 +855,7 @@ impl Outcome {
 }
 
 /// The measures, by name: what `assert.add` takes under `measure`.
-pub(crate) const MEASURES: [&str; 53] = [
+pub(crate) const MEASURES: [&str; 55] = [
     "volume",
     "cavity",
     "area",
@@ -909,6 +909,8 @@ pub(crate) const MEASURES: [&str; 53] = [
     "jointDistance",
     "position",
     "rotation",
+    "between",
+    "angleBetween",
 ];
 
 /// Takes the measure `name` with the parameters `p`.
@@ -936,6 +938,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
         "draft" => crate::analysis::draft_measure(ctx, p),
         "value" => value(ctx, p),
         "continuity" => crate::continuity_cmds::take(ctx, p),
+        "between" | "angleBetween" => crate::relation_cmds::take_measure(ctx, name, p),
         "textExtent" => crate::text_cmds::take(ctx, p),
         "jointAngle" | "jointDistance" | "position" | "rotation" => {
             crate::asm_measure::take(ctx, name, p)

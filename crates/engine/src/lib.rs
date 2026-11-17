@@ -87,6 +87,8 @@ mod recovery_cmds;
 #[cfg(not(target_arch = "wasm32"))]
 mod recovery_store;
 mod regen_elsewhere;
+mod relation_cmds;
+pub use relation_cmds::BetweenJob;
 mod replay_cmds;
 mod report;
 mod sample_cmds;
@@ -995,6 +997,7 @@ impl Session {
                 query_cmds::SPECS,
                 interference_cmds::SPECS,
                 verify_cmds::SPECS,
+                relation_cmds::SPECS,
                 below_cmds::SPECS,
                 assert_cmds::SPECS,
                 output_cmds::SPECS,

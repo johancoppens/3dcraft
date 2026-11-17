@@ -245,15 +245,38 @@ be and why under it ([Measuring and assertions › Assertions](measure.md#assert
 studio picture below has one. Click a check to fly to what it measures. The checks fold to their heading
 while something is selected, or when the panel is short, to make room.
 
-**What is selected** shows at the foot of the panel:
+**What is selected** shows at the foot of the panel, under whichever tab is open (under Features with the
+checks):
 
 - a face: its surface (plane, cylinder R …, cone, sphere, torus, spline), its area, and its normal or axis;
 - an edge: its curve, its length, the two faces it lies between and the angle there;
 - a body: its volume, mass, area and box.
 
 *Made by* links to the feature that made it, and *Name* is its persistent name, the name an agent uses.
-**Measure** measures a face's wall thickness, or the distance between the first two things selected;
-**Copy name** copies the name.
+**Measure** measures a face's wall thickness; **Copy name** copies the name.
+
+The view shows the measure of **one thing selected** beside it, in a thin dimension line in the accent: a
+straight edge its length along a line beside it, a whole circle (a hole's rim) its diameter **Ø**, an arc
+its radius **R**, a curved edge its length by its middle, a hole's or a boss's wall its diameter, part of a
+cylinder (a fillet's round) its radius. A flat face, a vertex and a body show nothing there: their facts are
+at the foot of the panel. Numbers are shown to the document's tolerance, without trailing zeros (`30 mm`,
+`0.006 mm`). Click the number to copy it with its unit, as shown. While two things are being measured the
+card says *Measuring…*; the window goes on meanwhile. In a short window the Features tab shows the card as one
+line, with **Keep as a check**.
+
+**Two things selected** (Shift-click the second) are measured by themselves: the foot of the panel shows
+their relation as one large number, what it is in a few words and, for a distance, its parts along X, Y and
+Z, and the view draws one thin dimension line between them in the accent (an arc for an angle). Two holes
+give their centre distance, two parallel faces the distance between them, two faces at an angle the angle
+(a 45° chamfer meets the top at 135°), a vertex and anything the least distance, two bodies the clearance
+([Measuring and assertions › Between two things](measure.md#between-two-things)). Click the number, in the
+panel or on the line, to copy it with its unit. Another selection, or Escape, takes it away.
+
+**Keep as a check** keeps that relation as a check of the document: named after the two things (*Centre
+distance Left face – Right face*), its value now, within the document's tolerance. It shows under
+**Checks**, is measured again after every change, and is one step to undo. A least distance shown as a
+range (*0.098 – 0.1 mm*: the least found between real places, and no less than the first number, proven)
+or as *about* a number (no bound could be had) is not proven within the tolerance; it is kept as that range.
 
 ![A hole selected: the foot of the side panel names its surface, its area and axis, the feature that made it and its name](images/selection.png)
 

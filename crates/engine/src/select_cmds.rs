@@ -340,8 +340,17 @@ fn glob_with_ids(doc: &Document, text: &str) -> String {
 impl Glob {
     fn new(text: &str, key: &str) -> Result<Self, String> {
         let chars: Vec<char> = text.chars().collect();
-        if chars.len() > MAX_GLOB {
-            return Err(format!("`{key}` is at most {MAX_GLOB} characters"));
+        // A name written out whole (no `*`) is matched in one pass, at any
+        // length a name can have (the review of 2026-11-17: a gear's faces
+        // have names of over 512 characters); a pattern with `*` is held
+        // to MAX_GLOB.
+        let most = if chars.contains(&'*') {
+            MAX_GLOB
+        } else {
+            crate::selection::MAX_NAME_BYTES
+        };
+        if chars.len() > most {
+            return Err(format!("`{key}` is at most {most} characters"));
         }
         Ok(Self(chars))
     }
@@ -1652,8 +1661,12 @@ fn square_within(v: Vec3, d: Vec3, tol: f64) -> bool {
     v.dot(d).abs() <= tol.max(ROUNDING_ANGLE).psin()
 }
 
-/// The length of an edge: exact for a line and a circular arc, the
-/// polygon through [`LENGTH_SAMPLES`] points otherwise.
+/// The length of an edge: exact for a line and a circular arc; otherwise
+/// the curve's speed integrated by adaptive Simpson's rule to a
+/// ten-billionth of the length (the review of 2026-11-17: the polygon
+/// through [`LENGTH_SAMPLES`] points printed to six decimals was a
+/// parabola's 29.578766 for 29.578857), in at most [`LENGTH_STEPS`]
+/// halvings; the polygon where the speed is not a number.
 fn edge_length(edge: &craft3d_topo::Edge) -> Option<f64> {
     let (t0, t1) = edge.range;
     let length = match &edge.curve {
@@ -1661,17 +1674,53 @@ fn edge_length(edge: &craft3d_topo::Edge) -> Option<f64> {
         Curve3::Circle(circle) => circle.radius() * (t1 - t0).abs(),
         _ => {
             let mut previous = edge.curve.eval(t0);
-            let mut total = 0.0;
+            let mut chords = 0.0;
             for i in 1..=LENGTH_SAMPLES {
                 let t = t0 + (t1 - t0) * f64::from(i) / f64::from(LENGTH_SAMPLES);
                 let point = edge.curve.eval(t);
-                total += (point - previous).length();
+                chords += (point - previous).length();
                 previous = point;
             }
-            total
+            integrated_length(&edge.curve, t0, t1, chords).unwrap_or(chords)
         }
     };
     length.is_finite().then_some(length)
+}
+
+/// Most halvings of [`integrated_length`].
+const LENGTH_STEPS: usize = 20_000;
+
+/// The length of `curve` from `t0` to `t1`, its speed integrated by
+/// adaptive Simpson's rule to a ten-billionth of `about` (an estimate of
+/// it); `None` where a speed is not a number.
+fn integrated_length(curve: &Curve3, t0: f64, t1: f64, about: f64) -> Option<f64> {
+    let speed = |t: f64| curve.derivatives(t).1.length();
+    let simpson = |fa: f64, fm: f64, fb: f64, h: f64| h / 6.0 * (fa + 4.0 * fm + fb);
+    let (fa, fm, fb) = (speed(t0), speed(0.5 * (t0 + t1)), speed(t1));
+    let whole = simpson(fa, fm, fb, t1 - t0);
+    let goal = (about.abs() * 1e-10).max(f64::MIN_POSITIVE);
+    // Each interval: its ends, its speeds at the ends and middle, its
+    // Simpson estimate and the error it may have.
+    let mut stack = vec![(t0, t1, fa, fm, fb, whole, goal)];
+    let mut total = 0.0;
+    let mut steps = 0_usize;
+    while let Some((a, b, fa, fm, fb, whole, goal)) = stack.pop() {
+        let m = 0.5 * (a + b);
+        let (fl, fr) = (speed(0.5 * (a + m)), speed(0.5 * (m + b)));
+        let (left, right) = (simpson(fa, fl, fm, m - a), simpson(fm, fr, fb, b - m));
+        let both = left + right;
+        if !both.is_finite() {
+            return None;
+        }
+        steps += 1;
+        if (both - whole).abs() <= 15.0 * goal || steps > LENGTH_STEPS || (b - a).abs() <= 1e-14 {
+            total += both + (both - whole) / 15.0;
+        } else {
+            stack.push((a, m, fa, fl, fm, left, 0.5 * goal));
+            stack.push((m, b, fm, fr, fb, right, 0.5 * goal));
+        }
+    }
+    total.is_finite().then_some(total.abs())
 }
 
 /// Every candidate of `kinds`, in document order.
@@ -2171,7 +2220,8 @@ impl Context<'_> {
     /// the sketch circle an extrusion swept, a fillet's radius), each with
     /// the edit that changes it; `copyOf`, the patterns and mirrors it is
     /// a copy made by, with the instance. A feature-like item gets its
-    /// `type`. Cheap: no measure is integrated.
+    /// `type`. Cheap: no area or volume is integrated (a curved edge's
+    /// length is, along the curve alone).
     fn describe(&mut self, c: &Candidate<'_>) -> Map<String, Value> {
         let mut map = Map::new();
         if !c.kind.is_entity() {

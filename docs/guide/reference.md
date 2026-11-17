@@ -8,7 +8,7 @@ The full description of any command, with every value it takes and what it refus
 
 ## Commands
 
-3DCraft 0.1.3 has 182 commands. A command's id is its family and its name: `feature.fillet`.
+3DCraft 0.1.3 has 183 commands. A command's id is its family and its name: `feature.fillet`.
 
 ### Documents and files
 
@@ -155,7 +155,8 @@ The history keys work while the pointer is over the view or the feature list.
 | Right or middle drag, Shift+drag | Pan |
 | Wheel, pinch | Zoom about the point under the pointer |
 | Click | Select a vertex, an edge or a face |
-| Shift+click | Add to or take from the selection |
+| Shift+click | Add to or take from the selection; two things selected are measured ([Between two things](measure.md#between-two-things)) |
+| Click a measurement's number | Copy it with its unit |
 | Click again, Alt+click | Select the next face behind |
 | Double-click in the viewport | Select the whole body |
 | Right click | List every face under the pointer |

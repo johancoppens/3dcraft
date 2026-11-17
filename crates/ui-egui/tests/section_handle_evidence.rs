@@ -627,3 +627,97 @@ fn pictures_of_the_section_handle_round_two() {
     }
     println!("pictures in {}", dir.display());
 }
+
+/// The plane from the selection (the developer's decision of
+/// 2026-11-17), on the drilled block with its top's edge chamfered: one
+/// flat face (along it), the two ends (midway), the top and the chamfer
+/// (the bisector through the material, then the other one), the pointer
+/// on the fourth button so its words show. In `$CRAFT3D_PICS/round2`.
+#[test]
+#[ignore = "writes pictures for a person to look at; run with --ignored"]
+fn pictures_of_the_plane_from_the_selection() {
+    let state = match headless_render_state() {
+        Ok(state) => state,
+        Err(e) => {
+            println!("no graphics adapter, no pictures: {e}");
+            return;
+        }
+    };
+    let dir = std::env::var("CRAFT3D_PICS")
+        .map_or_else(
+            |_| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target/evidence/section-handle")
+            },
+            PathBuf::from,
+        )
+        .join("round2");
+    std::fs::create_dir_all(&dir).unwrap();
+    let face = |session: &mut Session, along: Value| -> Value {
+        let found = run(
+            session,
+            "select.query",
+            json!({"kind": "face", "where": {"normal": {"along": along}}}),
+        );
+        let item = &found["items"][0];
+        json!({"kind": "face", "feature": item["feature"], "name": item["name"]})
+    };
+    for (name, faces, clicks) in [
+        ("plane-face", vec![json!([1, 0, 1])], 1),
+        ("plane-mid", vec![json!([-1, 0, 0]), json!([1, 0, 0])], 1),
+        (
+            "plane-bisector",
+            vec![json!([0, 0, 1]), json!([1, 0, 1])],
+            1,
+        ),
+        (
+            "plane-bisector-other",
+            vec![json!([0, 0, 1]), json!([1, 0, 1])],
+            2,
+        ),
+    ] {
+        let mut session = drilled();
+        run(
+            &mut session,
+            "feature.chamfer",
+            json!({"edges": [["F1:face(1)", "F1:face(5)"]], "distance": 8, "name": "Bevel"}),
+        );
+        let items: Vec<Value> = faces
+            .into_iter()
+            .map(|along| face(&mut session, along))
+            .collect();
+        run(&mut session, "select.set", json!({"items": items}));
+        let mut w = Window {
+            state: &state,
+            ctx: egui::Context::default(),
+            time: 0.0,
+            size: [1400, 900],
+            jobs: Vec::new(),
+            dir: dir.clone(),
+        };
+        let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+        w.frames(&mut shell, &mut session, 3);
+        set(
+            &mut shell,
+            &mut session,
+            json!({"view": "iso", "section": {"on": true, "plane": "yz", "offset": 20}}),
+        );
+        w.frames(&mut shell, &mut session, 6);
+        for _ in 0..clicks {
+            let Some(dot) = shell.section_handle().and_then(|p| p.dots.get(3).copied()) else {
+                break;
+            };
+            w.frame(&mut shell, &mut session, vec![Event::PointerMoved(dot)]);
+            w.press(&mut shell, &mut session, dot, true);
+            w.press(&mut shell, &mut session, dot, false);
+            w.frames(&mut shell, &mut session, 6);
+        }
+        if let Some(dot) = shell.section_handle().and_then(|p| p.dots.get(3).copied()) {
+            w.frame(&mut shell, &mut session, vec![Event::PointerMoved(dot)]);
+        }
+        w.frames(&mut shell, &mut session, 2);
+        println!("{name}: {:?}", shell.state.section);
+        w.save(name);
+    }
+    println!("pictures in {}", dir.display());
+}

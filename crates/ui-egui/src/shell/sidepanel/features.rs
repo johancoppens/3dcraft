@@ -528,13 +528,21 @@ impl Shell {
         } else {
             0.0
         };
+        // Where the card has no room, its one line (the review of
+        // 2026-11-17: in a short window the relation and Keep were out of
+        // reach).
+        let compact_h = if self.side.props.is_some() && props_h <= 0.0 {
+            self.props_compact_height()
+        } else {
+            0.0
+        };
         let open_h = self.checks_height(ui, false);
-        let short = room - props_h - open_h < least;
+        let short = room - props_h - compact_h - open_h < least;
         let selected = selected || short;
         // As high as what it holds, worked out before it is drawn: a panel
         // that measured itself would be a frame late. What does not fit
         // scrolls inside it.
-        let height = (self.checks_height(ui, selected) + props_h)
+        let height = (self.checks_height(ui, selected) + props_h + compact_h)
             .min(ui.available_height() * 0.6)
             .max(0.0);
         let show_props = props_h > 0.0;
@@ -552,6 +560,8 @@ impl Shell {
                         self.checks_ui(ui, selected);
                         if show_props {
                             self.props_ui(ui);
+                        } else if compact_h > 0.0 {
+                            self.props_compact_ui(ui);
                         }
                     });
             });
