@@ -784,7 +784,8 @@ mod tests {
         doc.add_note("x", Some(face(id, 1)), [0.0; 3], unknown(), 0)
             .unwrap();
         // As a file could hold it: each breaks validation.
-        let breaks: [fn(&mut Document); 7] = [
+        // (An empty agent's name is an agent that gave none, valid.)
+        let breaks: [fn(&mut Document); 8] = [
             |d| d.notes.next_id = 1,
             |d| d.notes.items[0].text = " x".into(),
             |d| d.notes.items[0].point[2] = f64::INFINITY,
@@ -793,8 +794,20 @@ mod tests {
             |d| d.notes.items[0].on.as_mut().unwrap().name = None,
             |d| {
                 d.notes.items[0].edited = Some(NoteStamp {
-                    by: NoteAuthor::Agent(String::new()),
+                    by: NoteAuthor::Agent(" padded".into()),
                     time_ms: 0,
+                })
+            },
+            |d| {
+                d.notes.items[0].done = Some(NoteDone {
+                    by: NoteAuthor::Person,
+                    time_ms: 0,
+                    reply: None,
+                    later: vec![NoteReply {
+                        by: NoteAuthor::Person,
+                        time_ms: 0,
+                        text: " x".into(),
+                    }],
                 })
             },
         ];
@@ -808,5 +821,30 @@ mod tests {
         }
         let e = doc.add_note("x", None, [0.0; 3], unknown(), 0).unwrap_err();
         assert!(e.to_string().contains("at most 1000"), "{e}");
+    }
+
+    /// A reply after the closing goes to a done note only, at most
+    /// `MAX_NOTE_REPLIES`, the closing kept; an agent without a name is a
+    /// valid author.
+    #[test]
+    fn replies_after_the_closing() {
+        let mut doc = document();
+        let unnamed = NoteAuthor::Agent(String::new());
+        let id = doc
+            .add_note("x", None, [0.0; 3], unnamed.clone(), 1)
+            .unwrap();
+        assert!(doc.reply_to_note(id, agent(), "y", 2).is_err(), "open");
+        doc.resolve_note(id, true, NoteAuthor::Person, None, 3)
+            .unwrap();
+        for k in 0..MAX_NOTE_REPLIES {
+            doc.reply_to_note(id, unnamed.clone(), &format!("reply {k}"), 4)
+                .unwrap();
+        }
+        assert!(doc.reply_to_note(id, agent(), "one more", 5).is_err());
+        assert!(doc.reply_to_note(99, agent(), "y", 5).is_err());
+        let done = doc.note(id).unwrap().done.clone().unwrap();
+        assert_eq!(done.by, NoteAuthor::Person, "the closing kept");
+        assert_eq!(done.later.len(), MAX_NOTE_REPLIES);
+        doc.validate().unwrap();
     }
 }
