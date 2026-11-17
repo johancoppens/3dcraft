@@ -225,7 +225,8 @@ pub struct Tokens {
     /// (notched by `section_head_notch`), its grip at the foot a ring of
     /// radius `section_grip` with a dot of radius `section_grip_dot`; all
     /// filled with `section_handle_fill` (near white) inside an edge of
-    /// `section_handle_edge`, `section_handle_edge_width` wide, so it reads
+    /// `section_handle_edge`, `section_handle_edge_width` wide (1.5: at 1
+    /// the white arrow read weakly on the light view, 2026-11-17), so it reads
     /// on the cap, a dark body and the background (the accent under the
     /// pointer and while dragged); its group (the number, X, Y, Z, Flip
     /// side) on a plate as high as the bar's controls. The arrow is hit
@@ -989,7 +990,7 @@ impl Tokens {
             section_grip_dot: 1.6,
             section_handle_fill: [250, 248, 244],
             section_handle_edge: [22, 21, 20],
-            section_handle_edge_width: 1.0,
+            section_handle_edge_width: 1.5,
             section_halo_opacity: 170,
             section_rest_opacity: 140,
             section_near: 56.0,

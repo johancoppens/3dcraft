@@ -1784,8 +1784,9 @@ whole here, and was on `main` too, so what he saw was not reproduced).
 
 *The arrow's shape* (2026-11-17, the developer's choice from five drawn variants, "pijl misschien iets
 eleganter?": variant B, slim like a dimension arrow; it replaces the shape of round two above, not its
-colours, sizes in length or place). A shaft 2 points of the light fill with a 1 point dark edge each side and
-round ends, into the notch of a small sharp head: a notched dart 16 points long and 11 wide, notched 3 back
+colours, sizes in length or place). A shaft 2 points of the light fill with a dark edge each side and
+round ends (1 point at first; 1.5 since the pictures of 2026-11-17 showed the white arrow reading weakly on
+the light view: 5 points across in all, still slim), into the notch of a small sharp head: a notched dart 16 points long and 11 wide, notched 3 back
 from its base (`section_head`, `section_head_width`, `section_head_notch`); at the foot a ring of radius 4.5
 with a dark dot of 1.6 to take it by (`section_grip`, `section_grip_dot`); 64 points long seen side on, as
 before. At touch sizes the whole shape is scaled as one (by the touch arrow's length over 64). It is hit as

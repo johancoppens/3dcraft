@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("select.get", "Selection", r#"{"context": boolean = true, "measures": boolean = false}"#,
-        "Returns what is selected in the active document: items (each {kind, name, feature}: kind body, face, edge, vertex, feature, sketch or datum; name the feature's name, or the persistent name of a face, edge or vertex; feature the feature's id, or the feature whose body has the face, edge or vertex), count, summary (\"3 bodies, 2 faces\") and dropped: what dropped out since it was last set because it no longer exists, one line each. The selection is shared by the window (click, Shift+click, a box, the feature list) and agents; it is not saved and not undone. Items are checked against the document as it is now: a name stays selected as long as what it names exists; a face, an edge or a body a later feature took (a boolean, a fillet, a pattern) is followed to its image there (into every piece of a split; of a pattern's copies, the first), listed under followed ({kind, name, feature, from, copies, pieces}); what a suppressed, rolled-back or failed feature hides is listed under hidden ({kind, name, feature, why}) and comes back when the feature does. With context (the default) each item also has body and origin {feature, name, type}, for a face surface (type and its measure: a plane's outward normal, a cylinder's radius, axis, center and hole, ...), for an edge curve, for a vertex point, drivers (the parameters that set the measure: a primitive's radius or size, a fillet's radius, the diameter constraint of the sketch circle an extrusion swept, also through equal constraints as via; each with edit: {command, params}, the edit to make with the new value) and copyOf ([{feature, name, type, instance}]: the patterns and mirrors it is a copy made by). With measures (and context) each face also has area, integrated from its exact surface, in the document's length unit squared.", doc: true, select_get),
+        "Returns what is selected in the active document: items (each {kind, name, feature}: kind body, face, edge, vertex, feature, sketch or datum; name the feature's name, or the persistent name of a face, edge or vertex; feature the feature's id, or the feature whose body has the face, edge or vertex), count, summary (\"3 bodies, 2 faces\") and dropped: what dropped out since it was last set because it no longer exists, one line each. The selection is shared by the window (click, Shift+click, a box, the feature list) and agents; it is not saved and not undone. Items are checked against the document as it is now: a name stays selected as long as what it names exists; a face, an edge or a body a later feature took (a boolean, a fillet, a pattern) is followed to its image there (into every piece of a split; of a pattern's copies, the first), listed under followed ({kind, name, feature, from, copies, pieces}); what a suppressed, rolled-back or failed feature hides is listed under hidden ({kind, name, feature, why}) and comes back when the feature does. With context (the default) each item also has body and origin {feature, name, type}, for a face surface (type and its measure: a plane's outward normal, a cylinder's radius, axis, center and hole, ...), for an edge curve, for a vertex point, drivers (the parameters that set the measure: a primitive's radius or size, a fillet's radius, the diameter constraint of the sketch circle an extrusion swept, also through equal constraints as via; each with edit: {command, params}, the edit to make with the new value) and copyOf ([{feature, name, type, instance}]: the patterns and mirrors it is a copy made by). With measures (and context) each face also has area, integrated from its exact surface, in the document's length unit squared, and a cylindrical face opening: the centre of its rim at an end that meets the air past every body shown (the upper of two by Z, then Y, then X), where the window draws its diameter; none where it opens nowhere in view.", doc: true, select_get),
     spec!("select.set", "Select", r#"{"items": [{kind, name, feature}], "names": [string], "set": string, "mode": "replace|add|remove|toggle|clear" = "replace"}"#,
         "Sets the selection of the active document. items names each thing with its kind (optional: read from the name) and, for a face, an edge or a vertex, feature: the body that has it (optional: the first body in history order that has the name). names is the short form: a feature's name or id (a body when it has one, otherwise the sketch, datum or feature) or a persistent name of a face, edge or vertex (document.inspect faceNames or aliases, document.edges). replace makes them the selection, add adds what is not selected yet (in order), remove takes them out, toggle adds what is not selected and removes what is, clear empties it (no items needed). set is a named set (set.define): what it holds now, after the items and names. A name that means nothing is an error, and then nothing changes. At most 10000 items. Returns the selection as select.get does, with added and removed counts.", doc: true, names: ["items", "names"], select_set),
     spec!("select.query", "Select by Description", r#"{"kind": "body|face|edge|vertex|feature|sketch|datum" or [kind, ...] = every kind, "where": filter or [filter, ...], "then": "none|replace|add|remove" = "none", "limit": integer = 1000, "context": boolean = false}"#,
@@ -2101,7 +2101,8 @@ pub(crate) fn described(doc: &Document, regen: &Regen, items: &[SelectionItem]) 
 
 /// [`described`], and with `measures` each face's `area` too (in the
 /// document's length unit, squared), integrated as `select.query`'s area
-/// filter does: what `select.get {measures: true}` gives.
+/// filter does, and a round face's `opening`, the centre of its rim in
+/// view: what `select.get {measures: true}` gives.
 fn described_measured(
     doc: &Document,
     regen: &Regen,
@@ -2125,6 +2126,18 @@ fn described_measured(
                     && let Some(area) = cx.face_area(&c).filter(|a| a.is_finite())
                 {
                     map.insert("area".into(), area.into());
+                }
+                // A round face's rim in view: where the window draws its
+                // diameter.
+                if measures
+                    && c.kind == SelectionKind::Face
+                    && c.body
+                        .and_then(|b| b.faces.get(c.index))
+                        .is_some_and(|f| matches!(f.surface, Surface::Cylinder(_)))
+                    && let Some(open) =
+                        crate::relation_cmds::opening_of(doc, regen, c.feature, c.index)
+                {
+                    map.insert("opening".into(), point(open));
                 }
             }
             entry
