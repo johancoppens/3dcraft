@@ -228,8 +228,10 @@ Oracles 1 and 4 for all primitives at three scales; exported meshes closed and o
 - A spline surface's pole is shaded with its limit normal, and `view.render`, `view.pick` and `view.replay` mesh at a quarter to half a pixel of the picture within a total triangle budget, never finer than the display's floor, coarsening a body too fine for the tessellator instead of refusing ([`design/tessellator.md`](design/tessellator.md)) (2026-10-15)
 - `view.replay` and `craft3d-cli replay`: a showcase video (frames, MP4, GIF) of how a document is built, one fixed camera, an optional orbit, captions as subtitles; the document is not touched (2026-10-14)
 - What's new after an update (for 0.2): the start screen shows a card *New in <version>* once, what changes an answer first, from the changelog the program carries; Help › What's new; `session.whatsNew` for agents; in the web build too, never in the embedded stand ([`guide/window.md`](guide/window.md#whats-new), [`control-protocol.md`](control-protocol.md)) (2026-11-14)
+- Notes pinned to the model, the data and the commands: `note.add`, `note.list`, `note.resolve`, `note.edit`, `note.delete`, saved in the document (format 74), left out of a published Jig ([`design/document.md`](design/document.md) › *Notes pinned to the model*) (2026-11-17)
 
 #### Open
+- [ ] Notes in the window: the side panel's Notes tab, markers in the view, **N** on a selection, a click on a row flying to the note, the agent pill showing an agent's open questions
 - [ ] `ui.screenshot {"window": true}` once gave no answer for over 120 s (the protocol promises an error after 8 s), and `ui.set {"camera": {"autoFit": true}}` does not refit where `ui.fit` does (Perseverance, 2026-10-21).
 - [ ] The CPU viewport's quick preview while orbiting is slower since edges tell their outline (the pier ~95-138 → 152-222 ms on a loaded machine; also the future browser build): one outline test per pixel reusing the depth test's reads ([`design/rendering.md`](design/rendering.md), 2026-10-21)
 - [ ] A presentation path when no GPU adapter is found (eframe still needs one for the window)

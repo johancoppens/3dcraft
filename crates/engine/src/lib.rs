@@ -71,6 +71,7 @@ mod meshes;
 mod motion;
 mod motion_build;
 mod name_refs;
+mod note_cmds;
 mod offset_cmds;
 mod open_bytes;
 mod output_cmds;
@@ -985,6 +986,7 @@ impl Session {
                 pick_cmds::SPECS,
                 select_cmds::SPECS,
                 set_cmds::SPECS,
+                note_cmds::SPECS,
                 param_cmds::SPECS,
                 table_cmds::SPECS,
                 jig_cmds::SPECS,

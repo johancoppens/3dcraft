@@ -1028,6 +1028,7 @@ fn answered_elsewhere(id: &str) -> bool {
                 | "document.edges"
                 | "document.measure"
                 | "document.interference"
+                | "note.list"
         )
 }
 

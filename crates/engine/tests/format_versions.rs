@@ -209,6 +209,26 @@ fn differences(version: u32, inspect: &Value, want: &Value) -> Vec<String> {
     found
 }
 
+/// The notes as `note.list` lists them, without when each was written
+/// and closed (the clock of the build that wrote the file).
+fn noted(notes: &Value) -> Value {
+    let notes = notes.as_array().cloned().unwrap_or_default();
+    Value::Array(
+        notes
+            .iter()
+            .map(|n| {
+                json!({
+                    "id": n["id"], "text": n["text"], "state": n["state"],
+                    "author": n["author"], "agent": n["agent"],
+                    "on": {"kind": n["on"]["kind"], "name": n["on"]["name"], "feature": n["on"]["feature"]},
+                    "attachment": n["attachment"], "now": n.get("now").map(|now| now["name"].clone()),
+                    "point": n["point"], "reply": n["done"]["reply"], "closedBy": n["done"]["agent"],
+                })
+            })
+            .collect(),
+    )
+}
+
 /// The bodies as `document.inspect` lists them, without what says where
 /// the document is.
 fn bodies(inspect: &Value) -> Value {
@@ -239,6 +259,16 @@ fn the_file_of_every_format_version_regenerates_to_what_its_build_made() {
             let listed = run(&mut s, "set.list", json!({}));
             if &listed["sets"] != sets {
                 found.push(format!("v{version}: sets {} (were {sets})", listed["sets"]));
+            }
+        }
+        // The notes pinned to the model (format 74), each with what it is
+        // on and whether that is still there, found again against today's
+        // regeneration; who wrote and closed it, and the reply, as kept.
+        if let Some(notes) = want.get("notes") {
+            let listed = run(&mut s, "note.list", json!({}));
+            let got = noted(&listed["notes"]);
+            if got != *notes {
+                found.push(format!("v{version}: notes {got} (were {notes})"));
             }
         }
         // The public parameters and the document info (format 32): each

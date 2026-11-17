@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("jig.export", "Export as Jig", r#"{"path": string}"#,
-        "Publishes the active document as a Jig: writes it to path, which must end in .3dcraftjig, under the write root, with its document info and a thumbnail (thumb.png, as file.save draws it; thumbnailError says why there is none, and the file is written all the same). Refused for a document without a public parameter (variable.publish). The document itself is unchanged: its own path and its unsaved changes stay as they are. Opening the .3dcraftjig file (file.open) opens it as a Jig in use: read-only but for its parameters.", doc: true, jig_export),
+        "Publishes the active document as a Jig: writes it to path, which must end in .3dcraftjig, under the write root, with its document info and a thumbnail (thumb.png, as file.save draws it; thumbnailError says why there is none, and the file is written all the same), without its rollback marker (rollbackCleared) and without the notes pinned to the model (notesLeftOut: how many; a published Jig holds none). Refused for a document without a public parameter (variable.publish). The document itself is unchanged: its own path and its unsaved changes stay as they are. Opening the .3dcraftjig file (file.open) opens it as a Jig in use: read-only but for its parameters.", doc: true, jig_export),
     spec!("jig.edit", "Open for Editing", "{}",
         "Makes a new untitled document of the active one, as it is now (its parameters as set), and makes it active: the way to edit a Jig in use (opened from a .3dcraftjig file), which changes only through param.set. The original stays open, unchanged. Returns the new document's number.", doc: true, jig_edit),
 ];
@@ -68,11 +68,14 @@ fn jig_export(session: &mut Session, params: &Value) -> Run {
     }
     let in_memory = session.writes_to_memory();
     // The Jig is published whole: a rollback marker is the designer's
-    // view of the history, not part of what is handed out.
+    // view of the history, not part of what is handed out; nor are the
+    // notes pinned to the model, which are for whoever works on it
+    // (docs/decisions.md, 2026-11-17: a published Jig holds none).
     let current = session.document()?.history.current();
     let rolled_back = current.rollback.is_some();
-    let document = if rolled_back {
-        let mut whole = (**current).clone();
+    let notes_left_out = current.notes.items.len();
+    let document = if rolled_back || !current.notes.is_empty() {
+        let (mut whole, _) = current.without_notes();
         whole.rollback = None;
         std::sync::Arc::new(whole)
     } else {
@@ -100,6 +103,9 @@ fn jig_export(session: &mut Session, params: &Value) -> Run {
         }
         if rolled_back {
             map.insert("rollbackCleared".into(), true.into());
+        }
+        if notes_left_out > 0 {
+            map.insert("notesLeftOut".into(), notes_left_out.into());
         }
     }
     Ok(result)

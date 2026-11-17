@@ -26,7 +26,11 @@
 //! part packed in an assembly (`blobs/*.3dcraft`, also in a packed
 //! subassembly); a file this build of 3DCraft cannot open (a newer format
 //! version than it reads); a file of another kind than its section (a
-//! part, a Jig, an assembly); a `meta.json` without its id, title, summary
+//! part, a Jig, an assembly); a file that holds notes pinned to the model,
+//! or a part packed in an assembly that does (a published example holds
+//! none: docs/decisions.md, 2026-11-17; they are deleted where the file is
+//! built, `note.delete {"state": "all"}`, so that the file in its own
+//! repository holds none either); a `meta.json` without its id, title, summary
 //! or the `stats` the tests compare with; a missing preview; a repository
 //! without the `ATTRIBUTION.md` the licence links to; two entries whose
 //! files would have the same name; a file larger than the caps below,
@@ -688,6 +692,47 @@ fn packed_licences(document: &Document, licence: &str, depth: usize) -> Result<(
     Ok(())
 }
 
+/// Checks that `document` holds no notes pinned to the model, nor does a
+/// part or subassembly packed in it (`blobs/*.3dcraft`, and theirs in
+/// turn): a published example holds none (docs/decisions.md, 2026-11-17).
+/// The file is bundled as it was built, so its notes are not stripped
+/// here: they are deleted where it is built.
+pub fn check_no_notes(document: &Document) -> Result<(), String> {
+    no_notes(document, 0)
+}
+
+fn no_notes(document: &Document, depth: usize) -> Result<(), String> {
+    let count = document.notes.items.len();
+    if count > 0 {
+        let title = if document.info.title.is_empty() {
+            "it".to_string()
+        } else {
+            format!("\"{}\"", document.info.title)
+        };
+        let plural = if count == 1 { "" } else { "s" };
+        return Err(format!(
+            "{title} holds {count} note{plural} pinned to the model, which a published example never does: delete them where the file is built (note.delete with state all) and build it again"
+        ));
+    }
+    let Some(assembly) = &document.assembly else {
+        return Ok(());
+    };
+    if depth >= MAX_PACKED_DEPTH {
+        return Err(format!(
+            "its assemblies are packed in one another more than {MAX_PACKED_DEPTH} deep"
+        ));
+    }
+    for blob in &assembly.packed {
+        let hash = blob.sha256();
+        let short = hash.get(..12).unwrap_or(&hash);
+        let part = craft3d_format::from_bytes(blob.bytes())
+            .map_err(|e| format!("the part packed as blobs/{short}… cannot be read: {e}"))?;
+        no_notes(&part, depth + 1)
+            .map_err(|e| format!("the part packed as blobs/{short}…: {e}"))?;
+    }
+    Ok(())
+}
+
 /// Two entries whose files would have the same name in the folder (one
 /// would overwrite the other; told apart without case, as a file system
 /// may).
@@ -765,6 +810,7 @@ fn copy(entry: &Entry, clone: &Path, commit: &str) -> Result<Copied, String> {
         ));
     }
     check_packed_licences(&document, licence).map_err(|e| format!("{id}: {file}: {e}"))?;
+    check_no_notes(&document).map_err(|e| format!("{id}: {file}: {e}"))?;
     let preview = blob(
         clone,
         commit,
@@ -1501,6 +1547,40 @@ mod tests {
         // Bytes that are no document are refused, not skipped.
         let broken = assembly(vec![b"not a document".to_vec()]);
         assert!(check_packed_licences(&broken, by).is_err());
+    }
+
+    /// A file with notes pinned to the model is not bundled, nor an
+    /// assembly that packs a part with notes, at any depth: a published
+    /// example holds none.
+    #[test]
+    fn a_file_or_a_packed_part_with_notes_is_refused() {
+        let by = "CC-BY-4.0";
+        let noted = |title: &str| {
+            let mut part = Document::new(craft3d_doc::Units::default());
+            part.info.title = title.to_string();
+            part.info.licence = by.to_string();
+            part.add_note("2 mm thicker here", None, [0.0; 3], None, 0)
+                .unwrap();
+            part
+        };
+        let clean = assembly(vec![part_bytes("Jaw", by)]);
+        assert!(check_no_notes(&clean).is_ok());
+        let error = check_no_notes(&noted("Gear")).unwrap_err();
+        assert!(
+            error.contains("\"Gear\" holds 1 note ") && error.contains("note.delete"),
+            "{error}"
+        );
+        let packed = assembly(vec![
+            part_bytes("Jaw", by),
+            craft3d_format::to_bytes(&noted("Lever")).unwrap(),
+        ]);
+        let error = check_no_notes(&packed).unwrap_err();
+        assert!(
+            error.contains("blobs/") && error.contains("\"Lever\""),
+            "{error}"
+        );
+        let outer = assembly(vec![craft3d_format::to_bytes(&packed).unwrap()]);
+        assert!(check_no_notes(&outer).is_err());
     }
 
     #[test]

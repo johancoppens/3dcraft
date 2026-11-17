@@ -160,7 +160,7 @@ fn result_line(result: &Value) -> String {
         .unwrap_or_default()
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     #[cfg(not(target_arch = "wasm32"))]
     {
         // native clock: this block is cfg(not(wasm32)); the browser takes the 0 below.
@@ -178,7 +178,7 @@ fn now_ms() -> u64 {
 /// window itself runs some of them after every request (`param.list` for
 /// its Parameters tab), which are no agent's doing. Checks an agent runs
 /// (`document.check`, `assert.check`) are logged.
-const NOT_LOGGED: [&str; 11] = [
+const NOT_LOGGED: [&str; 12] = [
     "agent.log",
     "document.inspect",
     "select.get",
@@ -190,6 +190,7 @@ const NOT_LOGGED: [&str; 11] = [
     "variable.list",
     "set.list",
     "recovery.list",
+    "note.list",
 ];
 
 /// Commands that bring back a document as it was (undo, redo, opening,

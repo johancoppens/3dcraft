@@ -1,12 +1,20 @@
 # Decisions
 
-> **Last updated:** 2026-11-16
+> **Last updated:** 2026-11-17
 
 This is the record of the decisions taken while 3DCraft was built, written at the time and kept as it was. "The developer" is the project's maintainer; "an agent" and "the coordinator" are the AI agents that built it (the coordinator plans the others' work and merges it). A decision made by an agent "for the developer to overturn" (some of them overnight, while nobody could be asked) stood unless it was overturned, and a later entry says so where it was; dates are when a decision was taken, ids of runs and commits are the workshop's evidence of the day. From outside the project, an open decision is raised in an issue.
 
 Decisions that shape the project, newest first, each with its reason. An agent that needs something listed under *Open decisions* asks the developer; it does not pick silently. When one is settled, move it up with the date.
 
 ## Taken
+
+### 2026-11-17: Notes pinned to the model: in the document, written by agents too, never published (decided by the developer)
+
+The developer asked for notes on the model ("spelden"): a person writes at a place of the model what they want ("2 mm thicker here", "this hole can go"), an agent reads the notes, works through them and marks each done with a sentence of reply. The design was put to him with four questions, answered here.
+
+- **The decision.** Notes are saved in the document, so they travel with the file and whoever opens it sees them (a new field of the format, version 74). An agent may write notes of its own: a question to the person at the place it is about. Publishing removes every note: a published example and a Jig hold none. A note whose face or edge is gone stays at its point and says so.
+- **Why.** A note is for whoever works on the design next, the person or an agent, so it goes where the design goes; a question is clearest at its place; a published file is a finished thing for others, not a working copy.
+- **How it is built** ([`design/document.md`](design/document.md) › *Notes pinned to the model*): beside the history like the assertions and the named sets (no body, no regeneration, no cache key changes; every change one undo step); `jig.export` writes none, `cargo xtask bundle-examples` refuses a file that holds any (it bundles files as they were built), no export writes the document; `file.save` and `assembly.pack` keep them.
 
 ### 2026-11-16: The see-through and section stages are drawn per sample on Vulkan on every system (decided by the developer)
 

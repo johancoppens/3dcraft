@@ -459,6 +459,20 @@ fn session(dir: &std::path::Path, state: usize) -> Session {
                 "sketch.constrain",
                 json!({"sketch": "Rows", "type": "coincident", "entities": ["e3", "e1[last]"]}),
             );
+            // Notes pinned to the model: on a face, on a body (done), and
+            // one whose face is gone with its feature (detached).
+            run(
+                "note.add",
+                json!({"text": "2 mm thicker here", "on": "Plate:face(1)"}),
+            );
+            run("note.add", json!({"text": "this boss", "on": "Body"}));
+            run("note.resolve", json!({"id": 2, "reply": "kept as it is"}));
+            run("feature.block", json!({"name": "Gone", "size": [1, 1, 1]}));
+            run(
+                "note.add",
+                json!({"text": "this goes", "on": "Gone:face(0)"}),
+            );
+            run("feature.delete", json!({"feature": "Gone"}));
         }
         // An assembly (docs/design/assemblies.md): two instances of a
         // packed part, a picked body, a ground, a driven hinge, a mate on a
@@ -469,6 +483,11 @@ fn session(dir: &std::path::Path, state: usize) -> Session {
             run(
                 "feature.block",
                 json!({"name": "Peg", "size": [1, 1, 1], "position": [0, 5, 0]}),
+            );
+            // A packed part with a note of its own.
+            run(
+                "note.add",
+                json!({"text": "a packed part's note", "on": "Bar:face(1)"}),
             );
             run("file.save", json!({"path": "hunt-part.3dcraft"}));
             run("assembly.new", json!({}));

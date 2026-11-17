@@ -183,6 +183,11 @@ fn initialize_describes_the_server() {
         instructions.contains("command_list") && instructions.contains("command_run"),
         "{instructions}"
     );
+    // The notes the person pins to the model, and what an agent does
+    // with them (2026-11-17).
+    for word in ["note.list", "note.resolve", "note.add"] {
+        assert!(instructions.contains(word), "{word}: {instructions}");
+    }
     assert!(
         instructions.len() < 1000,
         "short enough to sit in every context"

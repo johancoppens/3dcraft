@@ -49,6 +49,7 @@ Things that help:
 |---|---|
 | "Round the outside edges of the top by 2 mm." | adds a fillet on the edges it finds by their shape and place |
 | "Make the hole I selected 6.5 mm." | reads your selection, finds the size that drives that hole and changes it |
+| "Work through my notes." | reads the notes you pinned to the model, does what each asks and closes each with a reply ([Notes on the model](#notes-on-the-model)) |
 | "Why did the fillet fail?" | reads the reason 3DCraft gave (often with the largest size that fits) and proposes a fix |
 | "Show me the history step by step." | plays the history in your window |
 | "Make this a Jig with width, depth and height between 50 and 200 mm." | publishes those variables as parameters and exports a `.3dcraftjig` ([Making Jigs](making-jigs.md)) |
@@ -184,6 +185,39 @@ Do not take "done" on trust. 3DCraft gives you the means to check, without readi
 6. **Reopen the file** (`file.open`): a `.3dcraft` file rebuilds bit for bit to the same bodies.
 7. **Play the history** (the player under the feature list, or ask the agent to play it): each step
    should make sense on its own.
+
+## Notes on the model
+
+*Write what you want at the place it is about; the agent works through the list.*
+
+A note is one sentence pinned to a place of the model: a face, an edge, a vertex or a whole body. "2 mm
+thicker here", "this hole can go", "round this edge". Leave as many as you like, then say to the agent:
+*work through the notes*. It reads the open ones (`note.list`), does what each asks, and closes each with
+a sentence of reply (`note.resolve`) that stays with the note: what it did, or why it did not.
+
+The agent writes notes too. When it has a question about a place ("this rib touches the hole: is that
+meant?"), it pins the question there with `note.add` instead of guessing; answer it, and ask it to go on.
+
+What one round looks like, as the agent runs it (`Plate:face(1)` is the plate's top face):
+
+```json
+[
+  ["note.add", {"text": "2 mm thicker here", "on": "Plate:face(1)"}],
+  ["note.list", {"state": "open"}],
+  ["note.resolve", {"id": 1, "reply": "Done: the plate is 7 mm thick now."}]
+]
+```
+
+- **A note stays where you put it.** It is pinned to the face by the face's persistent name, so it stays
+  on that face when sizes change or a later feature (a hole, a fillet) takes the body. If the face itself
+  is gone (its feature was deleted), the note stays at its point and `note.list` says it is *detached*
+  and why; nothing is lost, and an undo pins it again.
+- **Notes are part of the document.** They are saved in the `.3dcraft` file, so whoever opens it sees
+  them; each change is one step that `edit.undo` takes back. They never change the model.
+- **Published files hold none.** A Jig exported with `jig.export` leaves them out (it says how many), and
+  no export (STEP, STL, 3MF, OBJ, DXF, SVG) carries them.
+- `note.edit` changes a note's text or moves it; `note.delete` takes away one, several, the done ones
+  (`state: done`) or all. A document holds at most 1000 notes of at most 2000 characters each.
 
 ## Tips for a good session
 

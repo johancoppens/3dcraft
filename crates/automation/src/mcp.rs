@@ -64,6 +64,8 @@ const INSTRUCTIONS: &str = "3DCraft is a parametric CAD modeller. Every action i
 Start with the tool command_list with brief: true to see the commands and their params (then with id for the full entry of a command), \
 and run them with command_run or command_batch (first file.new or file.open, then variable.set and feature.* to model). \
 Check your work with doc_inspect (volumes, areas, feature status) and doc_render_preview (a picture). \
+The person may pin notes to places of the model: read the open ones (note.list), do what each asks and close it with note.resolve \
+and a one-sentence reply; for a question about a place, leave a note there (note.add) rather than guess. \
 Lengths are expressions such as \"40 mm\" or \"width / 2\". File paths resolve beneath the folders agents may use: \
 the roots craft3d-cli serve or mcp was started with, or, through a 3DCraft window, the work folder the person gave agents there \
 (Help, Connect an AI agent).";
@@ -501,7 +503,7 @@ fn tools() -> Value {
         },
         {
             "name": "command_run",
-            "description": "Runs one command by id and returns its JSON result (its wall-clock milliseconds in the tool result's _meta.ms; a command_batch step has them in its entry); several commands in order go in one command_batch. Start with file.new or file.open; files are commands too: file.save, file.import (STEP, FreeCAD), file.export (STEP, STL, 3MF, OBJ, DXF, SVG). A failed command returns isError with a message that names the command and the parameter.",
+            "description": "Runs one command by id and returns its JSON result (its wall-clock milliseconds in the tool result's _meta.ms; a command_batch step has them in its entry); several commands in order go in one command_batch. Start with file.new or file.open; files are commands too: file.save, file.import (STEP, FreeCAD), file.export (STEP, STL, 3MF, OBJ, DXF, SVG). The notes the person pinned to places of the model are commands too: note.list (the open ones, each with the entity it is on and the feature that made it), note.resolve (done, with a one-sentence reply) and note.add (your own question at a place). A failed command returns isError with a message that names the command and the parameter.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -569,7 +571,7 @@ fn tools() -> Value {
         },
         {
             "name": "doc_inspect",
-            "description": "Returns the active document: units, variables with values, features with status, bodies with face/edge/vertex counts, volume, area and centroid, and the undo history. Returns {\"document\": null} when no document is open.",
+            "description": "Returns the active document: units, variables with values, features with status, bodies with face/edge/vertex counts, volume, area and centroid, the notes pinned to the model counted (notes: count, open, fromAgents; note.list lists them) when there are any, and the undo history. Returns {\"document\": null} when no document is open.",
             "inputSchema": {
                 "type": "object",
                 "properties": {},

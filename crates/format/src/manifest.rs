@@ -99,6 +99,80 @@ pub struct Document {
     /// a document to keep them (`embedded`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fonts: Vec<Font>,
+    /// Notes pinned to the model, in the order they were written, and the
+    /// id the next one gets (format version 74). Absent when there are
+    /// none and no id was given out (and in files before version 74).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<Notes>,
+}
+
+/// The notes of a document (format version 74): `{"next": 4, "items":
+/// [...]}`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Notes {
+    /// The id the next note gets; never one a note had.
+    pub next: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<Note>,
+}
+
+/// One note pinned to the model: `{"id": 1, "text": "2 mm thicker
+/// here", "on": {"kind": "face", "feature": 3, "name": name}, "point":
+/// [x, y, z], "by": "Claude Code", "timeMs": 1763380000000, "done": {"by":
+/// ..., "timeMs": ..., "reply": "..."}}`. `by` is the agent that wrote it
+/// (absent: the person), `done` absent while it is open.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Note {
+    pub id: u64,
+    pub text: String,
+    /// What it is pinned to; absent for a note at its point alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<NoteOn>,
+    /// Where it was put, in the document's length unit.
+    pub point: [f64; 3],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+    /// Milliseconds since the Unix epoch; 0 where there was no clock.
+    #[serde(default)]
+    pub time_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done: Option<NoteDone>,
+}
+
+/// What a note is pinned to: a body by the feature that makes it, or a
+/// face, an edge or a vertex by the feature whose body has it and its
+/// name there.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NoteOn {
+    pub kind: NoteKind,
+    pub feature: u64,
+    /// Absent for a body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<Name>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteKind {
+    Body,
+    Face,
+    Edge,
+    Vertex,
+}
+
+/// Who closed a note (absent: the person), when, and the reply.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NoteDone {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+    #[serde(default)]
+    pub time_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<String>,
 }
 
 /// A font of the document (format version 55).
