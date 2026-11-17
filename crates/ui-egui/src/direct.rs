@@ -117,6 +117,10 @@ pub struct Direct {
     device: wgpu::Device,
     egui: Arc<egui::mutex::RwLock<egui_wgpu::Renderer>>,
     adapter: String,
+    /// The device makes pipelines slowly: OpenGL, whose driver compiles
+    /// and links each program as it is made (the studio look's took over a
+    /// minute on an older Intel card).
+    slow_pipelines: bool,
     uploaded: Option<Uploaded>,
     /// The parts uploaded before the current ones, of an assembly: while a
     /// motion plays the quick first picture and the display scene of each
@@ -516,6 +520,7 @@ impl Direct {
             device: state.device.clone(),
             egui: Arc::clone(&state.renderer),
             adapter,
+            slow_pipelines: info.backend == wgpu::Backend::Gl,
             uploaded: None,
             spare: None,
             texture: None,
@@ -532,6 +537,11 @@ impl Direct {
 
     pub fn samples(&self) -> u32 {
         self.onscreen.samples()
+    }
+
+    /// Whether the device makes pipelines slowly (OpenGL).
+    pub fn slow_pipelines(&self) -> bool {
+        self.slow_pipelines
     }
 
     pub fn report(&self) -> RendererReport {
