@@ -304,14 +304,16 @@ face's middle when you chose it in a list).
 
 Once a document has notes, the side panel has a **Notes** tab, its open notes counted on the tab. It lists
 them with their number, their text, where each is (*face of Rib*; *by place* for a face whose name may
-move to another, held near the feature that made it; *detached* for one whose face is gone), who wrote it
+move to another, held near the feature that made it; *place gone* when that feature no longer makes
+anything there, a note that needs a look; *detached* for one whose face is gone), who wrote it
 and when. An agent's questions come first, marked with **?**; the done notes fold away under the open ones,
 each with its reply. A click on a row flies to the note and selects what it is on; the chosen row offers
 **Edit**, **Done** (or **Open again**) and **Delete**, each one step that **Ctrl+Z** takes back. **Hide in
 view** at the top hides the markers.
 
 In the view each note is a small numbered pin in the accent colour; an agent's question is a ring with
-**?**, a done note a small green tick, a detached one a grey ring at the place it was put. A pin behind the
+**?**, a done note a small green tick, a detached one (or one whose place is gone) a grey ring at the place
+it was put. A pin behind the
 model is drawn faint and cannot be clicked. A click on a pin chooses its note and shows its text beside it.
 Many notes close together on screen share one pin, which says how many more it stands for.
 

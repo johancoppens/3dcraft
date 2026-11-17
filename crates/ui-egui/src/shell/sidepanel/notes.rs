@@ -2,7 +2,7 @@
 //! pinned to the model, an agent's open questions first, then the other
 //! open notes, then the done ones folded away under them. Each row: its
 //! number, its text, where it is in words (the feature that made its
-//! entity; "by place" and "detached" said), who wrote it and when, small;
+//! entity; "by place", "place gone" and "detached" said), who wrote it and when, small;
 //! a done note with its reply. A click on a row chooses the note and flies
 //! to what it is on; the chosen row offers Edit, Done (or Open again) and
 //! Delete, each a command and one undo step. The eye at the top hides or

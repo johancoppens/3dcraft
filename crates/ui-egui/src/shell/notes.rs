@@ -52,16 +52,16 @@ pub struct NoteRow {
     pub author: String,
     pub agent: Option<String>,
     pub time_ms: u64,
-    /// `attached`, `byPlace`, `hidden`, `detached`, or empty where the
-    /// places were not read (the bodies are built elsewhere).
+    /// `attached`, `byPlace`, `lost`, `hidden`, `detached`, or empty
+    /// where the places were not read (the bodies are built elsewhere).
     pub attachment: String,
     /// Where it is, in words: "face of Rib", "by place, near Round",
-    /// "detached".
+    /// "place gone, near Round", "detached".
     pub place: String,
     /// What a click flies to: the entity now (kind, name, feature).
     pub entity: Option<(String, String, String)>,
     /// Where its marker goes: `at`, else the stored point of a detached
-    /// note; `None` while it is hidden.
+    /// note or one whose place is gone; `None` while it is hidden.
     pub marker: Option<[f64; 3]>,
     pub reply: Option<String>,
     /// Who closed it: `person`, `agent` (with the name) or `unknown`.
@@ -72,6 +72,12 @@ impl NoteRow {
     /// An open note an agent wrote: its question for the person.
     pub fn question(&self) -> bool {
         !self.done && self.author == "agent"
+    }
+
+    /// Off its entity: detached, or held by place where nothing is any
+    /// more. Drawn grey at its own point.
+    pub fn astray(&self) -> bool {
+        matches!(self.attachment.as_str(), "detached" | "lost")
     }
 
     /// Who, in a few words: "you", "Claude Code", "unknown".
@@ -110,6 +116,7 @@ pub fn rows_of(listed: &Value) -> Vec<NoteRow> {
                 .unwrap_or_default();
             let place = match attachment.as_str() {
                 "byPlace" => format!("by place, near {made}"),
+                "lost" => format!("place gone, near {made}"),
                 "detached" => "detached".to_string(),
                 "hidden" => format!("{kind} of {made}, hidden for now"),
                 _ if kind == "body" => format!("body {made}"),
@@ -128,7 +135,7 @@ pub fn rows_of(listed: &Value) -> Vec<NoteRow> {
             };
             let marker = match attachment.as_str() {
                 "attached" | "byPlace" => point(n.get("at")),
-                "detached" => point(n.get("point")),
+                "detached" | "lost" => point(n.get("point")),
                 _ => None,
             };
             let done = n.get("done").filter(|d| d.is_object());
@@ -531,7 +538,7 @@ impl Shell {
             stood_for += count;
             let behind = seen.get(&row.id).copied().unwrap_or(false);
             let alpha = if behind { 70 } else { 255 };
-            let detached = row.attachment == "detached";
+            let detached = row.astray();
             let ink = if row.done {
                 tokens.ok
             } else if detached {
@@ -715,10 +722,18 @@ mod tests {
             {"id": 3, "text": "gone", "state": "done", "author": "unknown", "attachment": "detached",
              "on": {"kind": "face", "name": "F4:face(5)", "feature": "F4"}, "point": [9.0, 9.0, 9.0],
              "done": {"author": "agent", "agent": "Claude Code", "reply": "removed"}},
+            {"id": 4, "text": "this corner", "state": "open", "author": "person", "attachment": "lost",
+             "on": {"kind": "edge", "name": null, "pinnedAs": "F2:fillet(1)", "feature": "F2",
+                    "origin": {"feature": "F2", "name": "Round"}},
+             "point": [4.0, 5.0, 6.0]},
             "nonsense"
         ]});
         let rows = rows_of(&listed);
-        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[3].place, "place gone, near Round");
+        assert_eq!(rows[3].marker, Some([4.0, 5.0, 6.0]), "at its own point");
+        assert!(rows[3].astray() && rows[2].astray() && !rows[1].astray());
+        assert_eq!(rows[3].entity, None);
         assert_eq!(rows[0].place, "face of Plate");
         assert_eq!(rows[0].who(), "you");
         assert_eq!(

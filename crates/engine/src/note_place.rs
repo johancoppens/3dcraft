@@ -6,13 +6,15 @@
 //! else the nearest point of its edges, so every face of a valid solid
 //! takes a note whatever a mesh of it would do; an edge's from its curve,
 //! a vertex is its point. A sheet, which the probe does not take (it has
-//! no inside), is placed on a mesh of it.
+//! no inside), is placed by its surfaces too: a face's point is the foot
+//! on its surface where that lies within the face's box, else the nearest
+//! point of its edges; no mesh is made (a grid sheet of 33 000 spans took
+//! 6.8 s to mesh for its first note).
 
 use crate::verify;
 use craft3d_kernel::boolean::probe::{OnFace, Probe};
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_topo::{Body, FaceId};
-use std::cell::OnceCell;
 
 /// What on a body: every face of it, some faces (the pieces of one name,
 /// or what one feature made), some edges, some vertices.
@@ -24,10 +26,6 @@ pub(crate) enum Entity {
     Vertices(Vec<usize>),
 }
 
-/// A sheet's mesh: within this share of the body's size, at most this
-/// many triangles.
-const MESH_SHARE: f64 = 1e-3;
-const MESH_TRIANGLES: usize = 200_000;
 /// Points along each edge of a face whose boundary gives its middle.
 const BOUNDARY_SAMPLES: u32 = 16;
 
@@ -35,8 +33,6 @@ const BOUNDARY_SAMPLES: u32 = 16;
 pub(crate) struct Geometry<'a> {
     body: &'a Body,
     probe: Option<Probe<'a>>,
-    /// For a sheet: its mesh, made when first asked for.
-    mesh: OnceCell<Option<craft3d_tess::Mesh>>,
     linear: f64,
     size: f64,
 }
@@ -54,7 +50,6 @@ impl<'a> Geometry<'a> {
         Geometry {
             body,
             probe,
-            mesh: OnceCell::new(),
             linear,
             size,
         }
@@ -65,14 +60,10 @@ impl<'a> Geometry<'a> {
         self.size
     }
 
-    /// How far a mesh of a sheet may be off its surface (0 for a solid,
-    /// which is placed on its exact geometry).
+    /// How far a point placed may be off the exact geometry: none, every
+    /// point is placed on it (the document's tolerance aside).
     pub(crate) fn slack(&self) -> f64 {
-        if self.probe.is_some() {
-            0.0
-        } else {
-            (self.size * MESH_SHARE).max(10.0 * self.linear)
-        }
+        self.linear
     }
 
     /// The point of `what` nearest `p`; `None` when it has none.
@@ -165,11 +156,36 @@ impl<'a> Geometry<'a> {
             Some(probe) => verify::nearest_on_face(probe, face, p)
                 .ok()
                 .filter(|q| q.is_finite()),
-            None => {
-                let tris = self.triangles(Some(face));
-                nearest_on_triangles(&tris, p).map(|(q, _)| q)
-            }
+            None => self.nearest_on_sheet_face(face, p),
         }
+    }
+
+    /// The point of a sheet's face nearest `p`: the foot on its surface
+    /// where it lies within the face's box, else the nearest point of its
+    /// edges, whichever is nearer.
+    fn nearest_on_sheet_face(&self, face: usize, p: Vec3) -> Option<Vec3> {
+        let f = self.body.faces.get(face)?;
+        let foot = f
+            .surface
+            .project(p)
+            .ok()
+            .map(|(u, v)| f.surface.eval(u, v))
+            .filter(|q| q.is_finite())
+            .filter(|q| {
+                self.face_box(face)
+                    .is_none_or(|b| verify::box_distance(&b, *q) <= self.linear.max(1e-9))
+            });
+        let edge = self
+            .face_edges(face)
+            .iter()
+            .filter_map(|e| self.body.edges.get(*e))
+            .filter_map(|edge| verify::nearest_on_edge(edge, p).map(|(q, _)| q))
+            .filter(|q| q.is_finite())
+            .min_by(|a, b| a.distance(p).total_cmp(&b.distance(p)));
+        [foot, edge]
+            .into_iter()
+            .flatten()
+            .min_by(|a, b| a.distance(p).total_cmp(&b.distance(p)))
     }
 
     /// The edges of `face`, once each.
@@ -191,9 +207,6 @@ impl<'a> Geometry<'a> {
 
     /// A point of `face` in its middle ([`Geometry::middle`]).
     fn face_middle(&self, face: usize) -> Option<Vec3> {
-        let Some(probe) = &self.probe else {
-            return middle_of_triangles(&self.triangles(Some(face)));
-        };
         let f = self.body.faces.get(face)?;
         let edges = self.face_edges(face);
         // The centre of the boundary: its points weighted by the length
@@ -248,7 +261,14 @@ impl<'a> Geometry<'a> {
                 continue;
             };
             let foot = f.surface.eval(u, v);
-            if foot.is_finite() && probe.on_face(face, foot).ok() == Some(OnFace::In) {
+            let inside = match &self.probe {
+                Some(probe) => probe.on_face(face, foot).ok() == Some(OnFace::In),
+                // A sheet: within its face's box.
+                None => self
+                    .face_box(face)
+                    .is_none_or(|b| verify::box_distance(&b, foot) <= self.linear.max(1e-9)),
+            };
+            if foot.is_finite() && inside {
                 return Some(foot);
             }
         }
@@ -263,91 +283,5 @@ impl<'a> Geometry<'a> {
             return None;
         }
         Some(edge.curve.eval(mid)).filter(|p| p.is_finite())
-    }
-
-    /// The triangles of `face` (every face when `None`) of a sheet's
-    /// mesh.
-    fn triangles(&self, face: Option<usize>) -> Vec<[Vec3; 3]> {
-        let mesh = self.mesh.get_or_init(|| {
-            let params = craft3d_tess::TessParams {
-                chordal_tolerance: self.slack().max(f64::MIN_POSITIVE),
-                max_triangles: Some(MESH_TRIANGLES),
-                max_angle: Some(15f64.to_radians()),
-                ..craft3d_tess::TessParams::default()
-            };
-            craft3d_tess::tessellate_within_budget(self.body, &params)
-                .ok()
-                .map(|made| made.mesh)
-        });
-        let Some(mesh) = mesh else {
-            return Vec::new();
-        };
-        mesh.face_ids
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| face.is_none_or(|face| usize::try_from(**f).ok() == Some(face)))
-            .filter_map(|(t, _)| mesh.corners(t))
-            .collect()
-    }
-}
-
-/// The point of `tris` nearest `p`, and its distance; `None` for none.
-pub(crate) fn nearest_on_triangles(tris: &[[Vec3; 3]], p: Vec3) -> Option<(Vec3, f64)> {
-    tris.iter()
-        .map(|[a, b, c]| {
-            let q = crate::analysis::closest_on_triangle(p, *a, *b, *c);
-            (q, q.distance(p))
-        })
-        .filter(|(_, d)| !d.is_nan())
-        .min_by(|x, y| x.1.total_cmp(&y.1))
-}
-
-/// The point of the triangles nearest their centre of area.
-pub(crate) fn middle_of_triangles(tris: &[[Vec3; 3]]) -> Option<Vec3> {
-    let mut total = 0.0;
-    let mut sum = Vec3::new(0.0, 0.0, 0.0);
-    for [a, b, c] in tris {
-        let area = (*b - *a).cross(*c - *a).length() * 0.5;
-        if area.is_finite() && area > 0.0 {
-            total += area;
-            sum += (*a + *b + *c) * (area / 3.0);
-        }
-    }
-    let centre = if total > 0.0 {
-        sum * (1.0 / total)
-    } else {
-        let [a, b, c] = tris.first()?;
-        (*a + *b + *c) * (1.0 / 3.0)
-    };
-    nearest_on_triangles(tris, centre).map(|(q, _)| q)
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
-    use super::*;
-
-    #[test]
-    fn triangles_give_their_nearest_points_and_middles() {
-        let tri = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
-            [
-                Vec3::new(a[0], a[1], a[2]),
-                Vec3::new(b[0], b[1], b[2]),
-                Vec3::new(c[0], c[1], c[2]),
-            ]
-        };
-        // A square ring of two triangles each side: its middle lies on it.
-        let ring = [
-            tri([0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [3.0, 1.0, 0.0]),
-            tri([0.0, 0.0, 0.0], [3.0, 1.0, 0.0], [0.0, 1.0, 0.0]),
-            tri([0.0, 2.0, 0.0], [3.0, 2.0, 0.0], [3.0, 3.0, 0.0]),
-            tri([0.0, 2.0, 0.0], [3.0, 3.0, 0.0], [0.0, 3.0, 0.0]),
-        ];
-        let middle = middle_of_triangles(&ring).unwrap();
-        let (_, d) = nearest_on_triangles(&ring, middle).unwrap();
-        assert!(d < 1e-12, "{middle:?}");
-        assert!(middle_of_triangles(&[]).is_none());
-        let far = nearest_on_triangles(&ring, Vec3::new(1e300, 0.0, 0.0)).unwrap();
-        assert!(far.1.is_infinite() || far.1 > 1e299);
     }
 }

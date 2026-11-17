@@ -708,11 +708,13 @@ fn a_note_on_an_unproven_name_is_held_by_place() {
         json!({"feature": "Round", "edges": ["F1:edge(8)"]}),
     );
     let n = note(&mut s, 1);
-    assert_eq!(n["attachment"], "byPlace", "{n}");
+    // The fillet's one face left is the other corner, 36 mm off: not the
+    // note's place (the coordinator's decision of round 1c): its place is
+    // lost, no marker on another corner, no entity named.
+    assert_eq!(n["attachment"], "lost", "{n}");
     assert!(n.get("now").is_none(), "{n}");
-    // The marker on the nearest face the fillet makes now: never
-    // reported as the face the note was put on.
-    assert!(n["at"].is_array(), "{n}");
+    assert!(n.get("at").is_none(), "{n}");
+    assert_eq!(xyz(&n["point"]), point, "it keeps its point");
     // The fillet deleted: nothing it made is there; detached.
     run(&mut s, "feature.delete", json!({"feature": "Round"}));
     assert_eq!(note(&mut s, 1)["attachment"], "detached");
@@ -878,4 +880,135 @@ fn view_render_draws_the_notes_markers() {
         "not asked for, not drawn"
     );
     assert_ne!(picture(&mut s, true, "noted-notes.png"), plain);
+}
+
+/// Review-pins 1b-R1 (rule 4): a vertex is followed by its name, never by
+/// where something lies. The plate moved 40 mm in −x, or mirrored in its
+/// middle plane, brings another corner to where the note's corner was:
+/// the note follows its own corner (`F2:copy(0)/F1:vertex(0)`), at its
+/// new place.
+#[test]
+fn a_vertex_note_follows_its_own_corner_through_a_move_and_a_mirror() {
+    for (id, params) in [
+        (
+            "feature.transform",
+            json!({"source": "Plate", "translate": [-40, 0, 0]}),
+        ),
+        (
+            "feature.mirror",
+            json!({"source": "Plate", "normal": [1, 0, 0], "point": [20, 0, 0]}),
+        ),
+    ] {
+        let mut s = session();
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": "Plate", "size": [40, 20, 5]}),
+        );
+        run(
+            &mut s,
+            "note.add",
+            json!({"text": "corner", "on": "F1:vertex(0)"}),
+        );
+        let put = point(&note(&mut s, 1));
+        run(&mut s, id, params);
+        let n = note(&mut s, 1);
+        assert_eq!(n["attachment"], "attached", "{id}: {n}");
+        for now in n["now"].as_array().unwrap() {
+            assert!(
+                now["name"].as_str().unwrap().ends_with("F1:vertex(0)"),
+                "{id}: another corner: {n}"
+            );
+        }
+        // Where the corner went: moved 40 in −x, or mirrored to x = 40.
+        let at = xyz(&n["at"]);
+        let want = if id == "feature.transform" {
+            [put[0] - 40.0, put[1], put[2]]
+        } else {
+            [40.0 - put[0], put[1], put[2]]
+        };
+        assert!(distance(at, want) < 1e-9, "{id}: {n}");
+    }
+}
+
+/// Review-pins 1b-R2: a note held by place is drawn on what its feature
+/// makes only near its point; a fillet given one edge fewer makes nothing
+/// there, so the note has no `at`, says its place is lost, and keeps its
+/// point.
+#[test]
+fn a_note_held_by_place_whose_place_is_gone_says_so() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Plate", "size": [40, 20, 10]}),
+    );
+    run(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": ["F1:edge(9)", "F1:edge(8)"], "radius": 3, "name": "Round"}),
+    );
+    let added = run(
+        &mut s,
+        "note.add",
+        json!({"text": "this corner smaller", "on": "F2:fillet(0)"}),
+    );
+    assert_eq!(added["attachment"], "byPlace", "{added}");
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Round", "edges": ["F1:edge(8)"]}),
+    );
+    let n = note(&mut s, 1);
+    let size = (40.0f64 * 40.0 + 20.0 * 20.0 + 10.0 * 10.0).sqrt();
+    match n.get("at") {
+        Some(at) => assert!(
+            distance(xyz(at), point(&n)) <= 0.02 * size + 1e-6,
+            "drawn on another corner: {n}"
+        ),
+        None => {
+            assert_eq!(n["attachment"], "lost", "{n}");
+            assert!(
+                n["why"].as_str().unwrap().contains("its place is gone"),
+                "{n}"
+            );
+        }
+    }
+    assert_eq!(point(&n), point(&added), "the note keeps its point");
+}
+
+/// A note on a sheet of tens of thousands of spans costs what placing on
+/// its surface costs, no mesh of it (review-pins 1b: 6.8 s for the first
+/// note on a 185 × 185 grid, its mesh).
+#[test]
+fn a_note_on_a_large_grid_sheet_needs_no_mesh() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    let n = 185;
+    let points: Vec<Vec<[f64; 3]>> = (0..n)
+        .map(|i| {
+            (0..n)
+                .map(|j| {
+                    let (x, y) = (f64::from(i), f64::from(j));
+                    [x, y, 0.3 * f64::from((i * 7 + j * 5) % 11) / 11.0]
+                })
+                .collect()
+        })
+        .collect();
+    run(
+        &mut s,
+        "feature.surface.grid",
+        json!({"points": points, "name": "G"}),
+    );
+    run(&mut s, "document.inspect", json!({"measures": false}));
+    let started = std::time::Instant::now();
+    let added = run(&mut s, "note.add", json!({"text": "sheet", "on": "G"}));
+    let took = started.elapsed();
+    println!("the first note on a 185 x 185 grid sheet: {took:?}");
+    assert!(added["point"].is_array(), "{added}");
+    let started = std::time::Instant::now();
+    run(&mut s, "note.list", json!({}));
+    println!("note.list after it: {:?}", started.elapsed());
 }
