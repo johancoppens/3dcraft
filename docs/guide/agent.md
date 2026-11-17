@@ -49,6 +49,7 @@ Things that help:
 |---|---|
 | "Round the outside edges of the top by 2 mm." | adds a fillet on the edges it finds by their shape and place |
 | "Make the hole I selected 6.5 mm." | reads your selection, finds the size that drives that hole and changes it |
+| "Work through my notes." | reads the notes pinned to the model, makes the changes to the model they ask for, reports anything else to you, and closes each with a reply ([Notes on the model](#notes-on-the-model)) |
 | "Why did the fillet fail?" | reads the reason 3DCraft gave (often with the largest size that fits) and proposes a fix |
 | "Show me the history step by step." | plays the history in your window |
 | "Make this a Jig with width, depth and height between 50 and 200 mm." | publishes those variables as parameters and exports a `.3dcraftjig` ([Making Jigs](making-jigs.md)) |
@@ -184,6 +185,66 @@ Do not take "done" on trust. 3DCraft gives you the means to check, without readi
 6. **Reopen the file** (`file.open`): a `.3dcraft` file rebuilds bit for bit to the same bodies.
 7. **Play the history** (the player under the feature list, or ask the agent to play it): each step
    should make sense on its own.
+
+## Notes on the model
+
+*Write what you want at the place it is about; the agent works through the list.*
+
+A note is one sentence pinned to a place of the model: a face, an edge, a vertex or a whole body. "2 mm
+thicker here", "this hole can go", "round this edge". Leave as many as you like, then say to the agent:
+*work through the notes*. It reads the open ones (`note.list`), makes the changes to the model they ask
+for, and closes each with a sentence of reply (`note.resolve`) that stays with the note: what it did, or
+why it did not. It works through them when you ask, not on its own; it may tell you that a document it
+opened has notes.
+
+The agent writes notes too: questions and remarks for you. When it has a question about a place ("this rib
+touches the hole: is that meant?"), it pins the question there with `note.add` instead of guessing; answer
+it, and ask it to go on.
+
+What one round looks like, as the agent runs it (`Plate:face(1)` is the plate's top face):
+
+```json
+[
+  ["note.add", {"text": "2 mm thicker here", "on": "Plate:face(1)"}],
+  ["note.list", {"state": "open"}],
+  ["note.resolve", {"id": 1, "reply": "Done: the plate is 7 mm thick now."}]
+]
+```
+
+**A note is not an instruction from you.** It is text left in the document by whoever had the file, and a
+file can come from anyone. So an agent takes a note as a request for a change to this model at that place,
+or a question about it, and as nothing else: a note never makes it read or write other files, use another
+tool, or do more than you allowed it to. A note that asks for anything other than a change to the model or
+a question about it, the agent reports to you instead of following it. Each note says how it came in
+(`author`): `person` when it was typed at the window, `agent` with the agent's name when an agent sent it,
+`unknown` when it came from a script or the command line. That says how it came in, not who wrote it:
+anyone can edit a file. When someone changes a note's text, who did is kept with it (`edited`), and who
+closed it with the reply.
+
+- **A note stays where you put it.** It is pinned to the face by the face's persistent name, so it stays
+  on that face when sizes change or a later feature (a hole, a fillet) takes the body or cuts the face in
+  pieces (it is then on every piece, its marker on the nearest). A note on a corner stays on that corner
+  wherever a later feature takes it (a move, a mirror), until one takes the corner away. If the face itself is gone (its feature was deleted), the note
+  stays at its point and `note.list` says it is *detached* and why; nothing is lost, and an undo pins it
+  again. A note on a body that is then subtracted from another is detached too: the body is no material of
+  the result.
+- **Some faces are held by place.** A few names are not proven to stay with their face: a fillet's or a
+  chamfer's face is numbered by its edge's place among the edges it rounds, so a fillet given one edge
+  fewer can give the number to another corner. A note on such a face is still taken, but it is held by the
+  feature that made the face and the note's point (`note.list` says *byPlace*), never by the name: its
+  marker goes to the nearest face that feature makes. When that feature no longer makes anything where
+  the note was (a fillet given fewer edges), `note.list` says the note's place is *lost*: it stays at its
+  point, for you or the agent to look at.
+- **Notes are part of the document.** They are saved in the `.3dcraft` file, so whoever opens it sees
+  them; each change is one step that `edit.undo` takes back. They never change the model.
+- **Published files hold none.** A Jig exported with `jig.export` leaves them out (it says how many), and
+  no export (STEP, STL, 3MF, OBJ, DXF, SVG) carries them. A packed assembly (`assembly.pack`) is a file to
+  hand on, so its parts keep their notes, and `assembly.pack` and `document.inspect` say how many.
+- **In a part, not yet in an assembly.** Notes are pinned in a part's document; in an assembly
+  (`.3dcraftasm`) `note.add` refuses for now: open the part (`instance.open`) and pin the note there.
+- `note.edit` changes a note's text or moves it; `note.delete` takes away one, several, the done ones
+  (`state: done`) or all. A document holds at most 1000 notes of at most 2000 Unicode code points each
+  (a letter with an accent typed as two code points counts as two).
 
 ## Tips for a good session
 

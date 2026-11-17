@@ -31,7 +31,7 @@ pub use nurbs::{
     NurbsCurve, NurbsSurface, RationalBezierPatch, hull_points_in, piece_points_over,
 };
 pub use surface::{
-    Cone, Cylinder, Plane, Sphere, Surface, Torus, forget_projections, kept_projections,
+    Cone, Cylinder, Plane, Sphere, Surface, SurfaceKey, Torus, forget_projections, kept_projections,
 };
 pub use transform::{ISOMETRY_EPSILON, MirrorRule};
 

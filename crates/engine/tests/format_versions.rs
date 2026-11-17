@@ -209,6 +209,29 @@ fn differences(version: u32, inspect: &Value, want: &Value) -> Vec<String> {
     found
 }
 
+/// The notes as `note.list` lists them, without when each was written
+/// and closed (the clock of the build that wrote the file).
+fn noted(notes: &Value) -> Value {
+    let notes = notes.as_array().cloned().unwrap_or_default();
+    Value::Array(
+        notes
+            .iter()
+            .map(|n| {
+                json!({
+                    "id": n["id"], "text": n["text"], "state": n["state"],
+                    "author": n["author"], "agent": n["agent"],
+                    "on": {"kind": n["on"]["kind"], "name": n["on"]["name"], "feature": n["on"]["feature"]},
+                    "attachment": n["attachment"],
+                    "now": n.get("now").and_then(Value::as_array).map(|now| {
+                        now.iter().map(|item| item["name"].clone()).collect::<Vec<_>>()
+                    }),
+                    "point": n["point"], "reply": n["done"]["reply"], "closedBy": n["done"]["agent"],
+                })
+            })
+            .collect(),
+    )
+}
+
 /// The bodies as `document.inspect` lists them, without what says where
 /// the document is.
 fn bodies(inspect: &Value) -> Value {
@@ -239,6 +262,16 @@ fn the_file_of_every_format_version_regenerates_to_what_its_build_made() {
             let listed = run(&mut s, "set.list", json!({}));
             if &listed["sets"] != sets {
                 found.push(format!("v{version}: sets {} (were {sets})", listed["sets"]));
+            }
+        }
+        // The notes pinned to the model (format 75), each with what it is
+        // on and whether that is still there, found again against today's
+        // regeneration; who wrote and closed it, and the reply, as kept.
+        if let Some(notes) = want.get("notes") {
+            let listed = run(&mut s, "note.list", json!({}));
+            let got = noted(&listed["notes"]);
+            if got != *notes {
+                found.push(format!("v{version}: notes {got} (were {notes})"));
             }
         }
         // The public parameters and the document info (format 32): each
@@ -548,4 +581,55 @@ fn the_v73_rod_tipped_at_both_ends_is_its_closed_form() {
             "r {r}: {got} against {want}"
         );
     }
+}
+
+/// What pins v75's notes besides their fixture: the plate they are pinned
+/// to is its closed form (40 × 20 × t less a hole of radius 3, t = 7 mm),
+/// and the notes follow an edit after opening: the top's note stays on
+/// the top at t = 9 mm, the detached one stays detached at its point, and
+/// one more note takes id 6 (5 was given out and deleted).
+#[test]
+fn the_v75_notes_follow_the_plate_they_are_pinned_to() {
+    let dir = workdir("format-versions", "v75-notes");
+    std::fs::copy(fixtures().join("v75.3dcraft"), dir.join("v75.3dcraft")).unwrap();
+    let mut s = session_in(&dir);
+    run(&mut s, "file.open", json!({"path": "v75.3dcraft"}));
+    let pi = std::f64::consts::PI;
+    for t in [7.0_f64, 9.0] {
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "t", "expr": format!("{t} mm")}),
+        );
+        let inspect = run(&mut s, "document.inspect", json!({}));
+        let got = inspect["bodies"][0]["volume"].as_f64().unwrap();
+        let want = 40.0 * 20.0 * t - pi * 9.0 * t;
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "t {t}: {got} against {want}"
+        );
+        let notes = run(&mut s, "note.list", json!({}));
+        let states: Vec<(Value, Value)> = notes["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| (n["id"].clone(), n["attachment"].clone()))
+            .collect();
+        assert_eq!(
+            states,
+            [
+                (json!(1), json!("attached")),
+                (json!(2), json!("attached")),
+                (json!(3), json!("detached")),
+                (json!(4), json!("attached")),
+            ],
+            "t {t}"
+        );
+    }
+    let added = run(
+        &mut s,
+        "note.add",
+        json!({"text": "one more", "on": "Drilled"}),
+    );
+    assert_eq!(added["id"], 6);
 }

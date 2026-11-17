@@ -389,7 +389,16 @@ fn remembered(
     within: &Bbox3,
     tol: &Tolerance,
 ) -> Result<SurfaceMeeting, GeomError> {
-    let key = format!("{a:?}|{b:?}|{within:?}|{tol:?}");
+    // `format!("{a:?}|{b:?}|{within:?}|{tol:?}")`, with the surfaces'
+    // texts as they keep them.
+    let key = [
+        &*a.key().text,
+        "|",
+        &*b.key().text,
+        "|",
+        &format!("{within:?}|{tol:?}"),
+    ]
+    .concat();
     // Charged by the work the march took, once per operation under a
     // bound, whether it is marched now or found on the shelf
     // (`crate::allowance::first_time`): the march is counted the first
