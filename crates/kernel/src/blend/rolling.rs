@@ -1798,15 +1798,7 @@ fn blend_open(
         let surface = exact::swept(motion, &seed, shape).ok_or_else(unsolvable)?;
         exact::make_exact(body, blend_face, surface, tolerance)?;
     }
-    tangent_along(
-        body,
-        edge,
-        &borders,
-        blend_face,
-        shape,
-        law.map(|law| (law, convex)),
-        tolerance,
-    )?;
+    tangent_along(body, edge, &borders, blend_face, shape, law, tolerance)?;
     Ok(blend_face)
 }
 
@@ -2376,7 +2368,7 @@ fn tangent_along(
     borders: &[(EdgeId, FaceId)],
     blend_face: FaceId,
     shape: Shape,
-    law: Option<(&law::Along<'_>, bool)>,
+    law: Option<&law::Along<'_>>,
     tolerance: &Tolerance,
 ) -> Result<(), BlendError> {
     for (border, face) in borders {
@@ -2397,16 +2389,11 @@ fn tangent_along(
                     return Err(refuse(edge, Some(face), Reason::NoNormal));
                 };
                 // A radius that varies: as closely as the face was
-                // refined here, by the radius of the ball that rests on
-                // this point.
-                let limit = match law {
-                    Some((law, convex)) => {
-                        let towards = if convex { -b } else { b };
-                        let here = law
-                            .radius_on(p, towards)
-                            .ok_or_else(|| refuse(edge, Some(face), Reason::NoNormal))?;
-                        10.0 * bend(tolerance, here)
-                    }
+                // refined here, by the radius of this place (a border of
+                // such a fillet is its surface's own curve along the
+                // edge, so its parameter is the place).
+                let limit = match law.and_then(|law| law.radius(t)) {
+                    Some(here) => 10.0 * bend(tolerance, here),
                     None => limit,
                 };
                 if !(a.cross(b).length() <= limit && a.dot(b) > 0.0) {
@@ -3843,8 +3830,24 @@ fn blend_items(
     let mut seen = std::collections::BTreeSet::new();
     for request in requests {
         if let Some(data) = body.edge(request.edge) {
-            seen.insert(data.start);
-            seen.insert(data.end);
+            // (At an end where the fillet closes in a point, in the
+            // edge's vertex or short of it, nothing is cut: the vertex
+            // stays what it was.)
+            let stays = |end: usize| match request.size {
+                Size::Law(law) => law
+                    .fades
+                    .get(end)
+                    .copied()
+                    .flatten()
+                    .is_some_and(|fade| fade.is_tip()),
+                _ => false,
+            };
+            if !stays(0) {
+                seen.insert(data.start);
+            }
+            if !stays(1) {
+                seen.insert(data.end);
+            }
         }
     }
     // A face the blends used up exactly goes; the edges on its two sides

@@ -173,6 +173,12 @@ pub fn fillet_capped(
 /// Fillets `edges` of the solid `body`, each with its radius as a law
 /// along the edge ([`RadiusLaw`]): one radius along it, running to another
 /// at an end that has a [`Fade`], over the fade's length along the edge.
+/// A fade to nothing ([`Fade::tip`]) ends the fillet in a point: the face
+/// closes in a vertex on the edge, at the edge's end or `back` short of
+/// it, tangent to both faces all the way, and the edge beyond that vertex
+/// and whatever meets the edge's end stay as they are. Such an end asks
+/// nothing of the vertex there: the edge may run on into another edge
+/// between the same two faces, or end where four or more faces meet.
 ///
 /// An edge whose law is one radius all along is filleted as [`fillet`]
 /// fillets it. An edge whose radius varies is built in place by the
@@ -180,13 +186,14 @@ pub fn fillet_capped(
 /// the fillet face is the arcs between the points where those balls touch
 /// the two faces, tangent to both faces along its borders. It is built
 /// along an open edge on its own whose ends are corners of exactly three
-/// faces; round a closed edge, in a chain, where another requested edge
+/// faces or tips; round a closed edge, in a chain, where another requested edge
 /// ends in one of its vertices and where its border would cross a smooth
 /// edge of a face beside it, it is refused ([`KernelError::Fillet`]).
 ///
 /// **Errors.** Those of [`fillet`], and [`KernelError::InvalidSize`] for
 /// a radius or a length in a law that is not a size (finite and above
-/// zero: a radius that runs to nothing at an end is not built yet).
+/// zero; a fade's `to` may be zero, a tip, and only then its `back` more
+/// than zero).
 pub fn fillet_by_law(
     body: &Body,
     edges: &[FilletLawEdge],

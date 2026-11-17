@@ -403,7 +403,7 @@ impl Reason {
                 "a fillet whose radius varies along its edge cannot be built together with these edges yet: fillet it in a feature of its own"
             }
             Reason::LawAlone => {
-                "a fillet whose radius varies along its edge is built only along an open edge on its own, each end a corner of exactly three faces: not yet round a closed edge, in a chain, where another blended edge ends in one of its vertices, or where its border crosses a smooth edge of a face beside it; give it one radius, or leave the other edges out"
+                "a fillet whose radius varies along its edge is built only along an open edge on its own, each end a corner of exactly three faces or a point in which its radius runs to nothing: not yet round a closed edge, in a chain, where another blended edge ends in one of its vertices, or where its border crosses a smooth edge of a face beside it; give it one radius, or leave the other edges out"
             }
             Reason::LawTooLong => {
                 "the lengths over which the fillet's radius changes are together longer than the edge: give shorter ones"

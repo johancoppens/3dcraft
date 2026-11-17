@@ -54,6 +54,9 @@ struct Law {
     radius: f64,
     low: Option<(f64, f64)>,
     high: Option<(f64, f64)>,
+    /// How far short of the low and of the high end a fade to nothing
+    /// ends: the fillet closes in a point there.
+    back: [f64; 2],
 }
 
 impl Law {
@@ -61,10 +64,16 @@ impl Law {
     /// long, and its derivative there: the law's definition, written out.
     fn at(&self, a: f64, length: f64) -> (f64, f64) {
         let mut out = (self.radius, 0.0);
-        for (fade, from_end, sign) in [(self.low, a, 1.0), (self.high, length - a, -1.0)] {
+        for (fade, back, from_end, sign) in [
+            (self.low, self.back[0], a, 1.0),
+            (self.high, self.back[1], length - a, -1.0),
+        ] {
             let Some((to, over)) = fade else { continue };
-            let tau = from_end / over;
-            if tau < 1.0 {
+            let tau = (from_end - back) / over;
+            if to == 0.0 && tau <= 0.0 {
+                // At the tip and beyond it there is no fillet.
+                out = (0.0, 0.0);
+            } else if tau < 1.0 {
                 let m = 1.0 - tau;
                 out = (
                     to + (self.radius - to) * (1.0 - m * m * m),
@@ -88,7 +97,7 @@ impl Law {
     /// `∫₀¹ f = 3/4`, `∫₀¹ f² = 9/14`, they are `L (to + 3Δ/4)` and
     /// `L (to² + 3 to Δ/2 + 9Δ²/14)`.
     fn integrals(&self, length: f64) -> (f64, f64) {
-        let mut plain = length;
+        let mut plain = length - self.back[0] - self.back[1];
         let (mut first, mut second) = (0.0, 0.0);
         for (to, over) in [self.low, self.high].into_iter().flatten() {
             let d = self.radius - to;
@@ -106,10 +115,10 @@ impl Law {
     fn breaks(&self, length: f64) -> Vec<f64> {
         let mut out = vec![0.0];
         if let Some((_, over)) = self.low {
-            out.push(over);
+            out.extend([self.back[0], self.back[0] + over]);
         }
         if let Some((_, over)) = self.high {
-            out.push(length - over);
+            out.extend([length - self.back[1], length - self.back[1] - over]);
         }
         out.push(length);
         out.sort_by(f64::total_cmp);
@@ -122,11 +131,18 @@ impl Law {
     fn on(&self, body: &Body, edge: EdgeId, up: Vec3, k: f64) -> RadiusLaw {
         let data = body.edge(edge).unwrap();
         let (start, end) = (data.curve.eval(data.range.0), data.curve.eval(data.range.1));
-        let fade = |f: Option<(f64, f64)>| f.map(|(to, over)| Fade::to(to * k, over * k));
+        let fade = |f: Option<(f64, f64)>, back: f64| {
+            f.map(|(to, over)| Fade {
+                to: to * k,
+                over: over * k,
+                back: back * k,
+            })
+        };
+        let (low, high) = (fade(self.low, self.back[0]), fade(self.high, self.back[1]));
         let fades = if (end - start).dot(up) > 0.0 {
-            [fade(self.low), fade(self.high)]
+            [low, high]
         } else {
-            [fade(self.high), fade(self.low)]
+            [high, low]
         };
         RadiusLaw {
             radius: self.radius * k,
@@ -441,6 +457,7 @@ fn a_law_between_two_planes_at_a_right_angle_is_the_arc_of_each_height() {
             radius: 3.0,
             low: Some((1.0, 15.0)),
             high: Some((4.5, 10.0)),
+            back: [0.0, 0.0],
         },
     );
 }
@@ -454,6 +471,7 @@ fn a_law_between_two_planes_at_sixty_degrees_is_the_arc_of_each_height() {
             radius: 2.0,
             low: Some((3.0, 12.0)),
             high: Some((0.8, 20.0)),
+            back: [0.0, 0.0],
         },
     );
 }
@@ -468,6 +486,7 @@ fn a_law_between_two_planes_at_a_hundred_and_twenty_degrees_is_the_arc_of_each_h
             radius: 5.0,
             low: None,
             high: Some((1.5, 40.0)),
+            back: [0.0, 0.0],
         },
     );
 }
@@ -481,6 +500,7 @@ fn a_law_along_an_inside_corner_adds_the_arc_of_each_height() {
             radius: 4.0,
             low: Some((1.0, 18.0)),
             high: Some((2.5, 22.0)),
+            back: [0.0, 0.0],
         },
     );
 }
@@ -495,6 +515,7 @@ fn a_law_that_nearly_runs_to_nothing_is_still_the_arc_of_each_height() {
             radius: 3.0,
             low: None,
             high: Some((0.03, 15.0)),
+            back: [0.0, 0.0],
         },
     );
 }
@@ -511,6 +532,7 @@ fn a_law_that_changes_fast_is_still_the_arc_of_each_height() {
             radius: 3.0,
             low: Some((1.0, 3.0)),
             high: Some((4.0, 1.0)),
+            back: [0.0, 0.0],
         },
     );
 }
@@ -611,6 +633,7 @@ fn a_law_between_two_spline_walls_is_the_fillet_of_the_curves_at_each_height() {
         radius: 0.3,
         low: Some((0.15, 2.0)),
         high: Some((0.45, 1.5)),
+        back: [0.0, 0.0],
     };
     // What the fillet of radius `r` takes from the section.
     let taken = |r: f64| -> f64 {
@@ -661,6 +684,7 @@ fn a_law_between_two_spline_walls_is_the_fillet_of_the_curves_at_each_height() {
         radius: 0.3,
         low: None,
         high: None,
+        back: [0.0, 0.0],
     };
     assert!(
         (simpson(|z| taken(flat.at(z, height).0), 0.0, height, 4) - taken(0.3) * height).abs()
@@ -736,6 +760,17 @@ fn a_law_between_two_spline_walls_is_the_fillet_of_the_curves_at_each_height() {
 /// `C + r (1 − sin α) m − r (1 − cos α) z`.
 #[test]
 fn a_law_along_a_spline_rim_is_a_quarter_circle_across_it() {
+    along_a_spline_rim(Law {
+        radius: 1.5,
+        low: Some((0.6, 9.0)),
+        high: Some((2.2, 7.0)),
+        back: [0.0, 0.0],
+    });
+}
+
+/// The rim's fillet by `law` (its low end where the rim starts, at
+/// x = 30), held to the quarter circles across it.
+fn along_a_spline_rim(law: Law) {
     use craft3d_geom::curvature::curve_second_derivative;
     use craft3d_geom::{Curve3, NurbsCurve};
     let control = [
@@ -748,11 +783,6 @@ fn a_law_along_a_spline_rim_is_a_quarter_circle_across_it() {
     ];
     let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 1.0, 1.0];
     let height = 8.0;
-    let law = Law {
-        radius: 1.5,
-        low: Some((0.6, 9.0)),
-        high: Some((2.2, 7.0)),
-    };
     // The rim at scale 1, in the plane: its points, speed and curvature
     // towards the material on a fine grid, and the length to each.
     let rim = Curve3::Nurbs(
@@ -939,7 +969,7 @@ fn a_law_along_a_spline_rim_is_a_quarter_circle_across_it() {
                 after.area
             );
             assert!(
-                worst <= tol.linear / (law.ends()[0] * k),
+                worst <= tol.linear / (0.5 * k),
                 "{what}: a crease of {worst:e}"
             );
         }
@@ -967,11 +997,17 @@ fn half_frustum(k: f64) -> Body {
 /// plane holds it, found here, and on that ball.
 #[test]
 fn a_law_between_a_plane_and_a_cone_is_the_arc_between_the_feet_of_each_ball() {
-    let law = Law {
+    between_a_plane_and_a_cone(Law {
         radius: 0.15,
         low: Some((0.08, 0.4)),
         high: Some((0.2, 0.3)),
-    };
+        back: [0.0, 0.0],
+    });
+}
+
+/// The fillet by `law` of the half frustum's cut edge (its low end at the
+/// wide end, z = 0), held to the arcs between the feet of its balls.
+fn between_a_plane_and_a_cone(law: Law) {
     let root = 10f64.sqrt();
     let length = root / 3.0;
     let along = Vec3::new(-1.0, 0.0, 3.0) * (1.0 / root);
@@ -985,6 +1021,10 @@ fn a_law_between_a_plane_and_a_cone_is_the_arc_between_the_feet_of_each_ball() {
     let ball = |a: f64| -> (f64, Vec3, Vec3) {
         let (r, _) = law.at(a, length);
         let on_edge = Vec3::new(1.0, 0.0, 0.0) + along * a;
+        // At a tip and beyond it: the edge's own point, across the edge.
+        if r <= 0.0 {
+            return (0.0, on_edge, along);
+        }
         let centre = |b: f64| on_edge + Vec3::new(0.0, r, 0.0) + into * b;
         let (mut lo, mut hi) = (0.0, 5.0 * r);
         assert!(behind(centre(lo)) < r && behind(centre(hi)) > r);
@@ -1063,7 +1103,7 @@ fn a_law_between_a_plane_and_a_cone_is_the_arc_between_the_feet_of_each_ball() {
         let worst = crease(&made);
         println!("{what}: points within {furthest:.3} tolerances, crease {worst:.1e}");
         assert!(
-            worst <= tol.linear / (law.ends()[0] * k),
+            worst <= tol.linear / (0.05 * k),
             "{what}: a crease of {worst:e}"
         );
     }
@@ -1228,4 +1268,87 @@ fn a_law_that_is_not_one_or_not_alone_is_refused() {
     let whole = mass(&block).volume;
     let took = |made: &FilletResult| whole - mass(&made.body).volume;
     assert!((took(&both) - took(&alone) - took(&round)).abs() <= 1e-9 * took(&both));
+}
+
+/// A fillet that ends in a point: the radius runs to nothing at the top of
+/// the edge, or short of it, and nothing is taken from there on. The
+/// closed forms are the law's: over a fade to nothing `∫ r = 3RL/4` and
+/// `∫ r² = 9R²L/14`, and no end face loses anything at a tip.
+#[test]
+fn a_fillet_that_ends_in_a_point_between_two_planes_is_the_arc_of_each_height() {
+    for corner in [60.0, 90.0, 120.0] {
+        for back in [0.0, 6.0] {
+            between_planes(
+                corner,
+                false,
+                Law {
+                    radius: 3.0,
+                    low: Some((1.5, 8.0)),
+                    high: Some((0.0, 15.0)),
+                    back: [0.0, back],
+                },
+            );
+        }
+    }
+}
+
+#[test]
+fn a_fillet_that_ends_in_a_point_along_an_inside_corner_adds_the_arc_of_each_height() {
+    for back in [0.0, 4.0] {
+        between_planes(
+            90.0,
+            true,
+            Law {
+                radius: 4.0,
+                low: None,
+                high: Some((0.0, 20.0)),
+                back: [0.0, back],
+            },
+        );
+    }
+}
+
+/// Both ends in a point: one at the bottom vertex, one short of the top.
+/// The face has two sides, its two borders.
+#[test]
+fn a_fillet_that_ends_in_a_point_at_both_ends_is_the_arc_of_each_height() {
+    between_planes(
+        90.0,
+        false,
+        Law {
+            radius: 2.5,
+            low: Some((0.0, 10.0)),
+            high: Some((0.0, 12.0)),
+            back: [0.0, 3.0],
+        },
+    );
+}
+
+#[test]
+fn a_fillet_that_ends_in_a_point_along_a_spline_rim_is_a_quarter_circle_across_it() {
+    for back in [0.0, 2.5] {
+        along_a_spline_rim(Law {
+            radius: 1.5,
+            low: Some((0.6, 9.0)),
+            high: Some((0.0, 8.0)),
+            back: [0.0, back],
+        });
+    }
+}
+
+#[test]
+fn a_fillet_that_ends_in_a_point_between_a_plane_and_a_cone_is_the_arc_between_the_feet() {
+    // At the narrow end, at the wide end short of it, and at both.
+    for (low, high, back) in [
+        (Some((0.08, 0.4)), Some((0.0, 0.5)), [0.0, 0.0]),
+        (Some((0.0, 0.4)), None, [0.1, 0.0]),
+        (Some((0.0, 0.3)), Some((0.0, 0.4)), [0.0, 0.05]),
+    ] {
+        between_a_plane_and_a_cone(Law {
+            radius: 0.15,
+            low,
+            high,
+            back,
+        });
+    }
 }
