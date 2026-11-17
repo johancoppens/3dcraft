@@ -1587,16 +1587,26 @@ fn blend_open(
         ) else {
             return Err(lost());
         };
-        // Past an end the steps are by the radius there: what the blend
-        // has to get past the third face is as wide as its ball at that
-        // end.
+        // A radius that varies: to the end itself in even steps, and past
+        // it in steps that start at four tolerances and double (how far
+        // by the radius there: what the blend has to get past the third
+        // face is as wide as its ball at that end).
         let steps = match law {
-            Some(law) => steps.past(law.at_end(index) / length),
+            Some(law) => {
+                let relative = law.at_end(index) / length;
+                steps.past(relative, (0.05 * relative).max(4.0 * tol / length))
+            }
             None => steps,
         };
         let allowed = end_data.steps(steps);
         let mut piece = home;
         let mut at = (centre, seed);
+        if law.is_some() {
+            let solver = solvers.get(home).ok_or_else(lost)?;
+            let more = march_to(solver, at, end, steps.inside).ok_or_else(unsolvable)?;
+            at = *more.last().ok_or_else(lost)?;
+            tagged.extend(more.into_iter().map(|(s, x)| (s, home, x)));
+        }
         loop {
             let (next, bound) = if index == 1 {
                 (piece + 1, bounds.get(piece + 1))
@@ -1997,6 +2007,10 @@ struct Steps {
     inside: f64,
     outside: f64,
     most_out: f64,
+    /// Past an end each step is as long as all before it together, from
+    /// `outside`: a blend whose radius varies is followed past an end no
+    /// further than it has to be.
+    doubling: bool,
 }
 
 impl Steps {
@@ -2006,15 +2020,24 @@ impl Steps {
             inside,
             outside: inside.min(0.5 * size / length),
             most_out: 8.0 * size / length,
+            doubling: false,
         }
     }
 
     /// These steps past an end where the blend's size over the edge's
-    /// length is `relative` (a radius that varies along the edge).
-    fn past(self, relative: f64) -> Steps {
+    /// length is `relative` (a radius that varies along the edge): from
+    /// `first` on, doubling the way gone with each. Past an end the law
+    /// is a continuation of this construction's choosing, and where the
+    /// third face is square to the edge nothing of it is kept: so the
+    /// face is followed no further than where a whole section has left
+    /// the third face, which a first step of a few tolerances finds there
+    /// and the doubling finds, in a few steps more, where the face is at
+    /// a slant.
+    fn past(self, relative: f64, first: f64) -> Steps {
         Steps {
-            outside: self.inside.min(0.5 * relative),
+            outside: first,
             most_out: 8.0 * relative,
+            doubling: true,
             ..self
         }
     }
@@ -2146,7 +2169,11 @@ fn march_out(
     loop {
         let past = (s - end) * direction;
         let step = if past >= -1e-12 {
-            steps.outside
+            if steps.doubling {
+                steps.outside.max(past)
+            } else {
+                steps.outside
+            }
         } else {
             steps.inside
         };
@@ -3970,6 +3997,7 @@ mod tests {
             inside: 0.01,
             outside: 0.01,
             most_out: f64::INFINITY,
+            doubling: false,
         };
         let third = Side {
             surface: &away,

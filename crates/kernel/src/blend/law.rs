@@ -22,21 +22,39 @@
 //! the law goes on as
 //!
 //! ```text
-//! r = to + (radius − to) · g(τ),   g(τ) = 3τ / (1 + τ + d τ²)
+//! r = to + A · (1 − exp(a τ + b τ²)),   a = −3 (radius − to) / A,
+//!                                       b = (6 (radius − to) / A − a²) / 2
 //! ```
 //!
 //! which joins the cubic with its value, its first and its second
-//! derivative (`g(0) = 0`, `g′(0) = 3`, `g″(0) = −6`), turns back at
-//! `τ = −1/√d` and levels off at `to`: past the end the radius never
-//! differs from `to` by more than `3 |radius − to| / (2√d − 1)`. With
-//! `d = max(4, ((6 |radius − to| / to + 1) / 2)²)` that is no more than
-//! `|radius − to|` and no more than half of `to`, so the radius neither
-//! runs to nothing nor grows without bound however far the blend is
-//! followed. (The cubic itself, continued, does both within a few of its
-//! lengths: along a cone's cut edge a radius growing from 0.15 to 0.2 over
-//! 0.3 reached 0.38 two steps past the end and no ball was found.) The
-//! continuation is this file's choice: the design of the fade gives the
-//! law up to the end only.
+//! derivative, and runs on one way only (`b` is below zero, so the
+//! exponent falls all the way): towards `to + A` and never past it. `A`
+//! is `−to` where the radius falls towards the end (past it the radius
+//! goes on falling towards nothing and never reaches it) and
+//! `to − radius` where it grows (past it the radius goes on growing by no
+//! more than it grew over the fade). So the radius neither runs to
+//! nothing nor grows without bound however far the blend is followed, and
+//! the borders past the end go on the way they came. (The cubic itself,
+//! continued, does both within a few of its lengths: along a cone's cut
+//! edge a radius growing from 0.15 to 0.2 over 0.3 reached 0.38 two steps
+//! past the end and no ball was found. A continuation that turned back to
+//! `to`, tried first, left a notch in the surface just past the end that
+//! the validity check's nearest points fell into: a fade from 3 to 1 over
+//! 1 was refused as an invalid body, its borders half a unit off its own
+//! surface.) The continuation is this file's choice: the design of the
+//! fade gives the law up to the end only.
+//!
+//! **A fade to nothing** (`to` zero: [`Fade::tip`]) ends the fillet in a
+//! point of the edge: at the end of the edge, or `back` short of it, the
+//! distance `τ` then counted from that point. The radius is nothing at
+//! the point and beyond it, where there is no ball and no section: the
+//! blend is followed up to the point and not past it, nothing is cut
+//! there, and the continuation above has no part (it is a fade to a
+//! radius, cut by a third face, that is followed past its end). At the
+//! point `r ≈ 3 · radius · τ`: the borders of the fillet leave it at an
+//! angle, the one whose tangent is `3 · radius / over` times how far a
+//! foot lies from the edge per radius (`tan(φ/2)` between faces whose
+//! normals turn by `φ`).
 //!
 //! **Along the edge** is by arc length: the law is a statement about the
 //! edge, not about how its curve happens to be parametrised. The length of
@@ -59,7 +77,7 @@
 use super::{BlendError, Reason, refused};
 use crate::KernelError;
 use craft3d_geom::Curve3;
-use craft3d_math::Vec3;
+use craft3d_math::{Portable, Vec3};
 use craft3d_topo::EdgeId;
 
 /// How a fillet's radius runs to another radius at one end of its edge,
@@ -448,11 +466,15 @@ impl<'a> Along<'a> {
                 (r, rate) = (0.0, 0.0);
             } else if tau < 0.0 {
                 // Past the end: levelling off (the module documentation).
-                let reach = 0.5 * (6.0 * change.abs() / fade.to + 1.0);
-                let d = (reach * reach).max(4.0);
-                let bottom = 1.0 + tau + d * tau * tau;
-                r = fade.to + change * 3.0 * tau / bottom;
-                rate = sign * change * 3.0 * (1.0 - d * tau * tau) / (bottom * bottom) / fade.over;
+                let room = if change > 0.0 { -fade.to } else { -change };
+                if room == 0.0 {
+                    continue;
+                }
+                let a = -3.0 * change / room;
+                let b = 0.5 * (6.0 * change / room - a * a);
+                let left = (a * tau + b * tau * tau).pexp();
+                r = fade.to + room * (1.0 - left);
+                rate = sign * -room * (a + 2.0 * b * tau) * left / fade.over;
             } else if tau < 1.0 {
                 let m = 1.0 - tau;
                 r = fade.to + change * (1.0 - m * m * m);
@@ -626,12 +648,15 @@ mod tests {
             let off = r(x + way * h) - 3.0;
             assert!(off.abs() <= 2.0 * h * h * h, "{x}: {off}");
         }
-        // Past an end it levels off: never further from the radius at the
-        // end than half of it, however far.
-        for past in [0.01, 0.1, 0.5, 1.0, 3.0, 10.0, 30.0] {
-            let (low, high) = (r(-past), r(40.0 + past));
-            assert!((0.5..1.0).contains(&low), "{past}: {low}");
-            assert!(high > 5.0 && high <= 7.0 + 1e-12, "{past}: {high}");
+        // Past an end it goes on the way it came and levels off: falling
+        // towards nothing and never there, growing by no more than it
+        // grew over the fade, however far.
+        let (mut low, mut high) = (1.0, 5.0);
+        for past in [0.01, 0.1, 0.5, 1.0, 2.0, 3.0] {
+            let (lower, higher) = (r(-past), r(40.0 + past));
+            assert!(lower < low && lower > 0.0, "{past}: {lower}");
+            assert!(higher > high && higher <= 7.0, "{past}: {higher}");
+            (low, high) = (lower, higher);
         }
         // And joins the cubic with no jump to the second derivative.
         for (x, way, to) in [(0.0, -1.0, 1.0), (40.0, 1.0, 5.0)] {
