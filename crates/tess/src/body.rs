@@ -1054,7 +1054,10 @@ pub fn tessellate_body_with_threads(
     } else {
         threads
     };
+    let clock = craft3d_math::clock::clock("tess.body.faces");
     let (_, patches) = tessellate(body, params, threads, true)?;
+    drop(clock);
+    let _clock = craft3d_math::clock::clock("tess.body.assemble");
     assemble(patches)
 }
 

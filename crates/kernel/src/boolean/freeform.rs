@@ -2688,7 +2688,10 @@ impl PatchTree {
 
     /// [`Self::shared`]: from the shelf, or built and put there.
     fn shelved(surface: &Surface) -> Result<Arc<PatchTree>, Reason> {
+        let clock = craft3d_math::clock::clock("kernel.tree.key");
         let key = format!("{surface:?}");
+        drop(clock);
+        let _clock = craft3d_math::clock::clock("kernel.tree.shelved");
         {
             let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(at) = shelf.iter().position(|(k, _, _)| *k == key) {
@@ -2703,7 +2706,9 @@ impl PatchTree {
         }
         // Built outside the lock: another thread may build the same tree
         // meanwhile, which is only work done twice.
+        let clock = craft3d_math::clock::clock("kernel.tree.built");
         let tree = Arc::new(PatchTree::new(surface)?);
+        drop(clock);
         BUILT.with(|built| built.set(built.get().saturating_add(1)));
         crate::work::patch_tree();
         if tree.bytes() <= SHELF_BYTES {
