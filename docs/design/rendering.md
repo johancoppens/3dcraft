@@ -1795,7 +1795,8 @@ its point nearest the middle of the two faces' points (near the model, never the
 parallel faces meet on) and its unit normal, in `state.section` as `point` and `normal` with `made` (`face`,
 `mid`, `bisector`), which the handle's number shows in place of an axis and `ui.get` reports; the plane stays
 when the selection changes. Anything else greys the button with why on hover. In the narrow layout the bar's
-choice is four cells wide (X, Y, Z, ∥), so each keeps a finger's width.
+four cells (X, Y, Z, ∥) share the room three had, as they did while a face was selected (open: whether a
+phone wants them a finger's width each, which makes the bar wider).
 
 ### Per-sample stages on Vulkan (2026-11-16)
 
