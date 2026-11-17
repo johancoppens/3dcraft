@@ -66,15 +66,25 @@ Two things selected are measured by themselves (the developer's design, steps B 
 what their relation is (`relation_cmds.rs`, `measure.between`, the same command an agent sends): on the
 exact geometry, from what the two are. Two flat faces: parallel, the distance between their planes; at an
 angle, the angle between the half-planes from the line the planes meet in toward each face (0 to 180°, so a
-45° chamfer meets the top at 135°). Axes (of cylinders, cones and tori, straight edges) and centres (circular
-edges, spheres): the centre distance, with its parts along X, Y and Z. An axis and a flat face: their
-distance when parallel, else their angle. A vertex, or a centre with anything else: the least distance. Two
-bodies: the clearance (`measure.clearance`). Anything else: the least distance (`measure.distance`). Each
+45° chamfer meets the top at 135°). Axes (of cylinders and cones) and centres (circular edges, spheres):
+the centre distance, with its parts along X, Y and Z; two parallel axes drawn at the end both reach, where
+holes open. Two straight edges: parallel, the distance between them; meeting, or their lines crossing within
+the tolerance, the angle from where they meet toward each; skew, the least distance between the segments
+(their closest points, clamped). An axis and a flat face: their distance when parallel, else their angle.
+Two vertices: the distance between them. A vertex, a circular edge or a sphere with anything else: the
+least distance between the two as they are, never from a centre (the review of 2026-11-17 found a rim
+measured from its centre under the words "Least distance"): from a vertex exactly (the curve's or the
+face's nearest point); along an edge, sampled at 96 points and narrowed about the best by golden sections,
+to the faces or the edge of the other. Two bodies: the clearance (`measure.clearance`). Anything else: the
+least distance (`measure.distance`). Each
 answer carries the two ends of a dimension line (for an angle its corner and a point toward each side) and
 the document's tolerance, linear or angular. As an assertion it is the measure `between`, or
 `angleBetween`, whose dimension is an angle (`dim_of` reads a measure's dimension by its name).
 
-The window asks once per selection (the side panel's card, `sidepanel/props.rs`), shows one large number
+The window asks once per selection and revision, on a thread of its own (`Session::between_later`, a
+`BetweenJob` the side panel polls; the card says *Measuring…* meanwhile: on the window's thread two gear
+bodies held a frame up about 180 ms), prints numbers to the document's tolerance without trailing zeros
+(the same text shown and copied), and shows one large number
 at the panel's foot in place of the first thing's rows, and draws the dimension line with egui over the
 picture (`shell/dimension.rs`, as the section's handle is drawn; neither renderer draws it): the accent over
 a dark hairline, heads at its ends, its number on a small plate beside its middle; an angle as an arc about

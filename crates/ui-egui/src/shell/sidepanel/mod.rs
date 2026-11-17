@@ -150,8 +150,12 @@ pub(crate) struct SideMemory {
     pub(crate) props: Option<Props>,
     pub(crate) props_for: Option<(u64, u64, u64)>,
     /// The selection whose relation was kept as a check last, by its
-    /// document and selection serial ([`SideMemory::kept_key`]).
-    pub(crate) kept: Option<(u64, u64)>,
+    /// document and selection serial ([`SideMemory::kept_key`]), and the
+    /// check's name.
+    pub(crate) kept: Option<((u64, u64), String)>,
+    /// The relation of the two things selected, being measured on a
+    /// thread of its own.
+    pub(crate) between: Option<craft3d_engine::BetweenJob>,
     /// Commands waiting for the session.
     pending: Vec<SideRequest>,
     /// Errors at fields, by their key.
@@ -435,11 +439,32 @@ impl Shell {
             self.side.props_for = Some(props_key);
             self.side.measured = None;
             self.side.checks_asked = false;
+            // A new selection or revision: what was being measured for the
+            // last one is left to finish and forgotten.
+            self.side.between = None;
             self.side.props = if self.selection().items.is_empty() {
                 None
             } else {
-                props::read(session, scene, bodies_here)
+                props::read(session, scene, bodies_here, &mut self.side.between)
             };
+        }
+        // The relation being measured: its answer, once it is there.
+        if let Some(answer) = self
+            .side
+            .between
+            .as_ref()
+            .and_then(craft3d_engine::BetweenJob::answer)
+        {
+            self.side.between = None;
+            if let Some(m) = self
+                .side
+                .props
+                .as_mut()
+                .and_then(|p| p.measurement.as_mut())
+                && m.measuring
+            {
+                *m = m.settled(answer);
+            }
         }
     }
 

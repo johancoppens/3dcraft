@@ -4,8 +4,9 @@
 //! arc about its corner): the side panel's measurement
 //! (`measure.between`) drawn. With one thing selected, its measure beside
 //! it: a straight edge's length along a line beside it, a whole circle's
-//! diameter and a cylinder's across it (⌀), an arc's radius from its
-//! centre (R), a curved edge's length by its middle. One thin line in the
+//! diameter and a whole cylinder's across it (Ø), an arc's and a part
+//! cylinder's radius from its centre (R), a curved edge's length by its
+//! middle. One thin line in the
 //! accent, drawn as the section's arrow is (a core with a dark edge each
 //! side, the same dart for a head: one family), one number on a small
 //! plate; gone with the selection, and with Escape, which clears it. A
@@ -131,6 +132,11 @@ impl Shell {
     /// when it has one: the relation of two things, or the measure of one.
     pub(super) fn paint_dimension(&mut self, ui: &egui::Ui, rect: Rect) {
         self.dimension = None;
+        // Being measured on its own thread: look again soon.
+        if self.measuring() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(30));
+        }
         let Some(projector) = Projector::new(
             &self.state.camera.to_render(),
             f64::from(rect.width()),

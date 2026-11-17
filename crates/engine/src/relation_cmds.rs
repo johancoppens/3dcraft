@@ -7,13 +7,19 @@
 //! - two flat faces: parallel, the distance between their planes; at an
 //!   angle, the angle between them, measured from the line their planes
 //!   meet in toward each face;
-//! - two axes (of cylindrical, conical and toroidal faces, and straight
-//!   edges), or the centres of circular edges and spheres: the centre
-//!   distance, with its parts along X, Y and Z;
+//! - two axes (of cylindrical and conical faces), or the centres of
+//!   circular edges and spheres: the centre distance, with its parts along
+//!   X, Y and Z, drawn for two parallel axes where they open (at the end
+//!   both reach);
+//! - two straight edges: parallel, the distance between them; meeting (or
+//!   they would, their lines crossing), the angle between them; skew, the
+//!   least distance between the edges as they are, segments;
 //! - an axis and a flat face: parallel, the distance between them; else
 //!   the angle between them;
-//! - a point (a vertex, or a centre with what is not an axis or a centre)
-//!   and anything: the least distance;
+//! - two vertices: the distance between them;
+//! - a vertex, a circular edge or a sphere and anything else: the least
+//!   distance between the two as they are (the rim's curve, the sphere's
+//!   surface; never from a centre: the review of 2026-11-17);
 //! - two bodies: the least clearance (`measure.clearance`'s);
 //! - anything else of faces and bodies: the least distance between them
 //!   (`measure.distance`'s).
@@ -39,7 +45,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "measure.between",
     "Between Two",
     r#"{"from": item, "to": item, "relation": "distance|angle|centerDistance|leastDistance|clearance" = the one the two call for}"#,
-    "The relation of two things, as the window shows it when two are selected: each an item {kind: face|edge|vertex|body, name, feature} as select.get lists the selection (a body also by its feature's name or id). Without relation it is chosen from what the two are, on the exact geometry: two flat faces, parallel: distance (between their planes; from and to are the ends of the dimension line, square to them, between their middles); at an angle: angle (between the half-planes from the line the two planes meet in toward each face, 0 to 180 degrees: two sides of a block meet at 90, a 45 degree chamfer meets the top at 135); two axes (of cylindrical, conical and toroidal faces: holes, bosses; straight edges) or the centres of circular edges and spheres: centerDistance (between the axes, or from a centre to an axis or a centre; parallel says whether two axes are); an axis and a flat face: distance when parallel, else angle (between the axis and the plane, 0 to 90); a vertex, or a centre with anything else: leastDistance (to the face, the edge or the body); two bodies: clearance (as measure.clearance: null with overlap: true when they overlap); anything else of faces and bodies: leastDistance (as measure.distance). Returns relation, value (in the document's length unit; an angle in radians, with degrees), words (what it is, in a few words), from and to (the two ends of the dimension line; for an angle the points toward each side, with at, its corner), parts ([x, y, z], to less from, for a distance between points), parallel (two planes or axes), tolerance (the document's: linear, or angular in radians for an angle), atLeast (proven, where the least was searched for) and lengthUnit. With relation that one is measured, or refused when the two cannot have it (distance between faces that are not parallel). Read-only. As an assertion or output: measure between (from, to, relation), the value in the document's length unit or radians.",
+    "The relation of two things, as the window shows it when two are selected: each an item {kind: face|edge|vertex|body, name, feature} as select.get lists the selection (a body also by its feature's name or id). Without relation it is chosen from what the two are, on the exact geometry: two flat faces, parallel: distance (between their planes; from and to are the ends of the dimension line, square to them, between their middles); at an angle: angle (between the half-planes from the line the two planes meet in toward each face, 0 to 180 degrees: two sides of a block meet at 90, a 45 degree chamfer meets the top at 135); two axes (of cylindrical and conical faces: holes, bosses) or the centres of circular edges and spheres: centerDistance (between the axes, or from a centre to an axis or a centre; parallel says whether two axes are; two parallel axes drawn at the end both reach, where the holes open); two straight edges: parallel, centerDistance (the distance between them); meeting, or their lines crossing, angle (between them, from where they meet toward each); skew, leastDistance (between the edges as segments); an axis and a flat face: distance when parallel, else angle (between the axis and the plane, 0 to 90); two vertices: distance; a vertex, a circular edge or a sphere with anything else: leastDistance (between the two as they are: the rim, the sphere's surface, never their centres); two bodies: clearance (as measure.clearance: null with overlap: true when they overlap); anything else of faces and bodies: leastDistance (as measure.distance). Returns relation, value (in the document's length unit; an angle in radians, with degrees), words (what it is, in a few words), from and to (the two ends of the dimension line; for an angle the points toward each side, with at, its corner), parts ([x, y, z], to less from, for a distance between points), parallel (two planes or axes), tolerance (the document's: linear, or angular in radians for an angle), atLeast (proven, where the least was searched for) and lengthUnit. With relation that one is measured, or refused when the two cannot have it (distance between faces that are not parallel). Read-only. As an assertion or output: measure between (from, to, relation), the value in the document's length unit or radians.",
     doc: true,
     measure_between
 )];
@@ -111,6 +117,10 @@ enum Shape {
         direction: Vec3,
         middle: Vec3,
         edge: bool,
+        /// How far the thing reaches along `direction`, as `x · direction`
+        /// from its least to its most (a hole from end to end, an edge
+        /// from end to end).
+        ends: (f64, f64),
     },
     /// A vertex, or the centre of a circular edge or a sphere.
     Point { at: Vec3, centre: bool },
@@ -181,6 +191,65 @@ fn foot(point: Vec3, direction: Vec3, p: Vec3) -> Vec3 {
     point + direction * (p - point).dot(direction)
 }
 
+/// From the least to the most of `x · d` over `points`; `(0, 0)` for none.
+fn reach_along(points: &[Vec3], d: Vec3) -> (f64, f64) {
+    let along = points.iter().map(|p| p.dot(d)).filter(|x| x.is_finite());
+    let lo = along.clone().fold(f64::INFINITY, f64::min);
+    let hi = along.fold(f64::NEG_INFINITY, f64::max);
+    if lo <= hi { (lo, hi) } else { (0.0, 0.0) }
+}
+
+/// The two ends of a straight edge `t`, when it is one.
+fn segment(t: &Thing) -> Option<(Vec3, Vec3)> {
+    if t.kind != SelectionKind::Edge {
+        return None;
+    }
+    let edge = t.indices.first().and_then(|&e| t.body.edges.get(e))?;
+    let Curve3::Line(_) = &edge.curve else {
+        return None;
+    };
+    let (t0, t1) = edge.range;
+    let (a, b) = (edge.curve.eval(t0), edge.curve.eval(t1));
+    (a.is_finite() && b.is_finite()).then_some((a, b))
+}
+
+/// The closest points of the segments from `a0` to `a1` and from `b0` to
+/// `b1` (any lengths, a point among them).
+fn closest_segments(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> (Vec3, Vec3) {
+    let (u, v, w) = (a1 - a0, b1 - b0, a0 - b0);
+    let (a, b, c, d, e) = (u.dot(u), u.dot(v), v.dot(v), u.dot(w), v.dot(w));
+    let clamp = |x: f64| {
+        if x.is_finite() {
+            x.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    };
+    let denominator = a * c - b * b;
+    // The parameter along the first, then the second's for it, then the
+    // first's again for that (the textbook's clamped solution).
+    let mut s = if denominator > 1e-300 * (a * c).max(1e-300) {
+        clamp((b * e - c * d) / denominator)
+    } else {
+        0.0
+    };
+    let mut t = if c > 0.0 { (b * s + e) / c } else { 0.0 };
+    if !(0.0..=1.0).contains(&t) {
+        t = clamp(t);
+        s = if a > 0.0 { clamp((b * t - d) / a) } else { 0.0 };
+    }
+    (a0 + u * s, b0 + v * t)
+}
+
+/// How two straight edges lie: parallel, meeting (their lines crossing,
+/// within the tolerance), or skew.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EdgePair {
+    Parallel,
+    Meeting,
+    Skew,
+}
+
 /// What the thing `t` is.
 fn shape_of(t: &Thing) -> Shape {
     let body = &t.body;
@@ -217,13 +286,14 @@ fn shape_of(t: &Thing) -> Shape {
                         _ => Shape::Faces,
                     }
                 }
-                Surface::Cylinder(_) | Surface::Cone(_) | Surface::Torus(_) => {
+                Surface::Cylinder(_) | Surface::Cone(_) => {
                     match (verify::axis_of(&first.surface), middle) {
                         (Some((point, direction)), Some(m)) => match direction.normalized() {
                             Some(d) => Shape::Line {
                                 direction: d,
                                 middle: foot(point, d, m),
                                 edge: false,
+                                ends: reach_along(&edge_points, d),
                             },
                             None => Shape::Faces,
                         },
@@ -250,6 +320,7 @@ fn shape_of(t: &Thing) -> Shape {
                             direction: d,
                             middle: a.lerp(b, 0.5),
                             edge: true,
+                            ends: reach_along(&[a, b], d),
                         },
                         _ => Shape::Curve,
                     }
@@ -272,8 +343,15 @@ fn shape_of(t: &Thing) -> Shape {
     }
 }
 
-/// The relation two shapes call for.
-fn chosen(a: &Shape, b: &Shape, parallel_planes: bool, parallel_axis_plane: bool) -> Relation {
+/// The relation two shapes call for (`edges`: how two straight edges
+/// lie, when both are).
+fn chosen(
+    a: &Shape,
+    b: &Shape,
+    parallel_planes: bool,
+    parallel_axis_plane: bool,
+    edges: Option<EdgePair>,
+) -> Relation {
     use Shape::{Body, Line, Plane, Point};
     match (a, b) {
         (Plane { .. }, Plane { .. }) => {
@@ -283,12 +361,19 @@ fn chosen(a: &Shape, b: &Shape, parallel_planes: bool, parallel_axis_plane: bool
                 Relation::Angle
             }
         }
+        (Line { edge: true, .. }, Line { edge: true, .. }) => match edges {
+            Some(EdgePair::Meeting) => Relation::Angle,
+            Some(EdgePair::Skew) => Relation::LeastDistance,
+            _ => Relation::CenterDistance,
+        },
         (Line { .. }, Line { .. }) => Relation::CenterDistance,
         (Point { centre: true, .. }, Point { centre: true, .. })
         | (Point { centre: true, .. }, Line { edge: false, .. })
         | (Line { edge: false, .. }, Point { centre: true, .. }) => Relation::CenterDistance,
-        (Point { centre: false, .. }, Point { .. })
-        | (Point { .. }, Point { centre: false, .. }) => Relation::Distance,
+        // Two vertices: the distance between them. A vertex and a rim or
+        // a ball: the least distance to the rim or the ball, not to its
+        // centre.
+        (Point { centre: false, .. }, Point { centre: false, .. }) => Relation::Distance,
         (Line { .. }, Plane { .. }) | (Plane { .. }, Line { .. }) => {
             if parallel_axis_plane {
                 Relation::Distance
@@ -475,7 +560,24 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
         }
         _ => false,
     };
-    let relation = wanted.unwrap_or_else(|| chosen(&sa, &sb, parallel_planes, parallel_axis_plane));
+    let edges = match ((&sa, segment(a)), (&sb, segment(b))) {
+        (
+            (Line { direction: da, .. }, Some((a0, _))),
+            (Line { direction: db, .. }, Some((b0, _))),
+        ) => Some(if along(*da, *db, angular) {
+            EdgePair::Parallel
+        } else {
+            let (p, q) = closest(a0, *da, b0, *db);
+            if p.distance(q) <= ctx.tolerance.linear {
+                EdgePair::Meeting
+            } else {
+                EdgePair::Skew
+            }
+        }),
+        _ => None,
+    };
+    let relation =
+        wanted.unwrap_or_else(|| chosen(&sa, &sb, parallel_planes, parallel_axis_plane, edges));
     match relation {
         Relation::Distance => match (&sa, &sb) {
             (
@@ -623,7 +725,15 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
                 ) => {
                     let (p, q) = closest(*ma, *da, *mb, *db);
                     let corner = p.lerp(q, 0.5);
-                    (corner, *da, *db, "Angle between the axes")
+                    if edges.is_some() {
+                        // Edges: from where they meet toward each one's
+                        // middle, so the angle is the one between them.
+                        let ua = (*ma - corner).normalized().unwrap_or(*da);
+                        let ub = (*mb - corner).normalized().unwrap_or(*db);
+                        (corner, ua, ub, "Angle between the edges")
+                    } else {
+                        (corner, *da, *db, "Angle between the axes")
+                    }
                 }
                 _ => {
                     return Err(refused(
@@ -660,17 +770,45 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
                     Line {
                         direction: da,
                         middle: ma,
-                        ..
+                        edge: ea,
+                        ends: (lo_a, hi_a),
                     },
                     Line {
                         direction: db,
                         middle: mb,
+                        ends: (lo_b, hi_b),
                         ..
                     },
                 ) => {
                     if along(*da, *db, angular) {
-                        let m = ma.lerp(*mb, 0.5);
-                        (foot(*ma, *da, m), foot(*mb, *db, m), Some(true))
+                        // The second's reach along the first's direction.
+                        let (lo_b, hi_b) = if da.dot(*db) >= 0.0 {
+                            (*lo_b, *hi_b)
+                        } else {
+                            (-*hi_b, -*lo_b)
+                        };
+                        // Two holes: where they open, at the end both
+                        // reach (the review of 2026-11-17: at mid-depth
+                        // the line floated inside the block). Two edges:
+                        // the middle of where they run side by side.
+                        let level = if *ea {
+                            let (from, to) = (lo_a.max(lo_b), hi_a.min(hi_b));
+                            if from <= to {
+                                (from + to) * 0.5
+                            } else {
+                                ma.lerp(*mb, 0.5).dot(*da)
+                            }
+                        } else {
+                            hi_a.min(hi_b)
+                        };
+                        let at = |m: Vec3| m + *da * (level - m.dot(*da));
+                        let (from, to) = (at(*ma), at(*mb));
+                        if from.is_finite() && to.is_finite() {
+                            (from, to, Some(true))
+                        } else {
+                            let m = ma.lerp(*mb, 0.5);
+                            (foot(*ma, *da, m), foot(*mb, *db, m), Some(true))
+                        }
                     } else {
                         let (p, q) = closest(*ma, *da, *mb, *db);
                         (p, q, Some(false))
@@ -696,7 +834,12 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
                     ));
                 }
             };
-            let mut found = Found::exact(relation, from.distance(to), "Centre distance", from, to);
+            let words = if edges == Some(EdgePair::Parallel) {
+                "Distance between the parallel edges"
+            } else {
+                "Centre distance"
+            };
+            let mut found = Found::exact(relation, from.distance(to), words, from, to);
             found.parallel = parallel;
             Ok(found)
         }
@@ -750,48 +893,176 @@ fn closest(pa: Vec3, da: Vec3, pb: Vec3, db: Vec3) -> (Vec3, Vec3) {
     (pa + da * s, pb + db * t)
 }
 
-/// The least distance between two things: from a point, or between their
-/// faces.
+/// The least distance between two things as they are: from a vertex;
+/// between two straight edges' segments; between faces (or bodies);
+/// along an edge (a rim, a curve, a straight edge) to the other thing.
+/// Never from a centre (the review of 2026-11-17: a rim measured from its
+/// centre said 15 where it is 12).
 fn least(ctx: &Ctx<'_>, a: &Thing, b: &Thing, sa: &Shape, sb: &Shape) -> Result<Found, String> {
     let words = "Least distance";
-    let point_of = |s: &Shape| -> Option<Vec3> {
-        match s {
-            Shape::Point { at, .. } => Some(*at),
+    let vertex = |t: &Thing, s: &Shape| -> Option<Vec3> {
+        match (t.kind, s) {
+            (SelectionKind::Vertex, Shape::Point { at, .. }) => Some(*at),
             _ => None,
         }
     };
-    if let Some(p) = point_of(sa) {
+    if let Some(p) = vertex(a, sa) {
         let (d, q, freeform) = from_point(ctx, p, b)?
             .ok_or_else(|| refused(Relation::LeastDistance, "nothing to measure to"))?;
         let mut found = Found::exact(Relation::LeastDistance, d, words, p, q);
         found.sampled = freeform;
         return Ok(found);
     }
-    if let Some(p) = point_of(sb) {
+    if let Some(p) = vertex(b, sb) {
         let (d, q, freeform) = from_point(ctx, p, a)?
             .ok_or_else(|| refused(Relation::LeastDistance, "nothing to measure from"))?;
         let mut found = Found::exact(Relation::LeastDistance, d, words, q, p);
         found.sampled = freeform;
         return Ok(found);
     }
-    let (Some(fa), Some(fb)) = (faces_of(a), faces_of(b)) else {
-        return Err(refused(
+    if let (Some((a0, a1)), Some((b0, b1))) = (segment(a), segment(b)) {
+        let (p, q) = closest_segments(a0, a1, b0, b1);
+        return Ok(Found::exact(
             Relation::LeastDistance,
-            "an edge is measured from a point, an axis or another edge here; select a face or a vertex",
+            p.distance(q),
+            "Least distance between the edges",
+            p,
+            q,
         ));
+    }
+    if let (Some(fa), Some(fb)) = (faces_of(a), faces_of(b)) {
+        let pa = Part::new(&a.body, Some(&fa), &ctx.tolerance)?;
+        let pb = Part::new(&b.body, Some(&fb), &ctx.tolerance)?;
+        let near = verify::distance_to(&[pa], &[pb], ctx.stop)?;
+        let mut found = Found::exact(
+            Relation::LeastDistance,
+            near.distance,
+            words,
+            near.a,
+            near.b,
+        );
+        found.at_least = Some(near.lower);
+        return Ok(found);
+    }
+    // An edge and something else: the least, along the edge, of the
+    // distance to the other.
+    let (edge, other, flipped) = if a.kind == SelectionKind::Edge {
+        (a, b, false)
+    } else if b.kind == SelectionKind::Edge {
+        (b, a, true)
+    } else {
+        return Err(refused(Relation::LeastDistance, "nothing to measure"));
     };
-    let pa = Part::new(&a.body, Some(&fa), &ctx.tolerance)?;
-    let pb = Part::new(&b.body, Some(&fb), &ctx.tolerance)?;
-    let near = verify::distance_to(&[pa], &[pb], ctx.stop)?;
-    let mut found = Found::exact(
-        Relation::LeastDistance,
-        near.distance,
-        words,
-        near.a,
-        near.b,
-    );
-    found.at_least = Some(near.lower);
+    let (d, p, q, freeform) = along_edge(ctx, edge, other)?
+        .ok_or_else(|| refused(Relation::LeastDistance, "nothing to measure to"))?;
+    let (from, to) = if flipped { (q, p) } else { (p, q) };
+    let mut found = Found::exact(Relation::LeastDistance, d, words, from, to);
+    found.sampled = freeform;
     Ok(found)
+}
+
+/// How finely an edge is looked along for the least distance from it:
+/// samples, then halvings of the step about the best.
+const ALONG_SAMPLES: u32 = 96;
+const ALONG_REFINE: u32 = 60;
+
+/// The least distance from the edge `edge` to `other` (faces, a body or
+/// an edge): sampled along the edge, then narrowed about the best sample
+/// by golden sections; the distance, the point of the edge, the point of
+/// the other, and whether either is freeform (then a least that may lie
+/// between the samples).
+fn along_edge(
+    ctx: &Ctx<'_>,
+    edge: &Thing,
+    other: &Thing,
+) -> Result<Option<(f64, Vec3, Vec3, bool)>, String> {
+    let Some(curve) = edge.indices.first().and_then(|&e| edge.body.edges.get(e)) else {
+        return Ok(None);
+    };
+    let probe = match faces_of(other) {
+        Some(_) => Some(
+            craft3d_kernel::boolean::probe::Probe::new(&other.body, &ctx.tolerance)
+                .map_err(|e| e.to_string())?,
+        ),
+        None => None,
+    };
+    let faces = faces_of(other).unwrap_or_default();
+    let other_edge = (other.kind == SelectionKind::Edge)
+        .then(|| other.indices.first().and_then(|&e| other.body.edges.get(e)))
+        .flatten();
+    let mut freeform = matches!(curve.curve, Curve3::Nurbs(_));
+    if let Some(e) = other_edge {
+        freeform |= matches!(e.curve, Curve3::Nurbs(_));
+    }
+    for &f in &faces {
+        if let Some(face) = other.body.faces.get(f) {
+            freeform |= matches!(face.surface, Surface::Bezier(_) | Surface::Nurbs(_));
+        }
+    }
+    // The nearest point of the other to `p`.
+    let nearest = |p: Vec3| -> Result<Option<(f64, Vec3)>, String> {
+        let mut best: Option<(f64, Vec3)> = None;
+        if let Some(probe) = &probe {
+            for &f in &faces {
+                let q = verify::nearest_on_face(probe, f, p)?;
+                let d = q.distance(p);
+                if d.is_finite() && best.is_none_or(|(b, _)| d < b) {
+                    best = Some((d, q));
+                }
+            }
+        }
+        if let Some(e) = other_edge
+            && let Some((q, _)) = verify::nearest_on_edge(e, p)
+        {
+            let d = q.distance(p);
+            if d.is_finite() && best.is_none_or(|(b, _)| d < b) {
+                best = Some((d, q));
+            }
+        }
+        Ok(best)
+    };
+    let (t0, t1) = curve.range;
+    if !(t0.is_finite() && t1.is_finite()) {
+        return Ok(None);
+    }
+    let at = |t: f64| curve.curve.eval(t);
+    let mut best: Option<(f64, f64, Vec3, Vec3)> = None;
+    for k in 0..=ALONG_SAMPLES {
+        let t = t0 + (t1 - t0) * f64::from(k) / f64::from(ALONG_SAMPLES);
+        let p = at(t);
+        if let Some((d, q)) = nearest(p)?
+            && best.is_none_or(|(b, ..)| d < b)
+        {
+            best = Some((d, t, p, q));
+        }
+    }
+    let Some((mut d, t, mut p, mut q)) = best else {
+        return Ok(None);
+    };
+    // Golden sections about the best sample, a step either side.
+    let step = (t1 - t0) / f64::from(ALONG_SAMPLES);
+    let (mut lo, mut hi) = ((t - step).max(t0.min(t1)), (t + step).min(t0.max(t1)));
+    // The golden section, (√5 − 1) / 2.
+    let g = 0.618_033_988_749_894_9;
+    for _ in 0..ALONG_REFINE {
+        let (x1, x2) = (hi - (hi - lo) * g, lo + (hi - lo) * g);
+        let f = |x: f64| -> Result<f64, String> {
+            Ok(nearest(at(x))?.map_or(f64::INFINITY, |(d, _)| d))
+        };
+        if f(x1)? < f(x2)? {
+            hi = x2;
+        } else {
+            lo = x1;
+        }
+    }
+    let t = 0.5 * (lo + hi);
+    let point = at(t);
+    if let Some((dd, qq)) = nearest(point)?
+        && dd < d
+    {
+        (d, p, q) = (dd, point, qq);
+    }
+    Ok(Some((d, p, q, freeform)))
 }
 
 /// The measure `name` of an assertion or an output: `between`, a length
@@ -887,8 +1158,26 @@ pub(crate) fn take(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, Str
     Ok(out)
 }
 
+const ID: &str = "measure.between";
+
+/// What `measure.between` answers for `map`, from the document `doc` and
+/// what was derived from it.
+fn answered(
+    doc: &craft3d_doc::Document,
+    regen: &craft3d_regen::Regen,
+    placed: Option<&Arc<crate::asm::Placed>>,
+    map: &Map<String, Value>,
+) -> Result<Value, String> {
+    let mut ctx = Ctx::new(doc, regen).map_err(|e| format!("{ID}: {e}"))?;
+    ctx.placed = placed;
+    let out = take(&ctx, map).map_err(|e| format!("{ID}: {e}"))?;
+    let mut result = out.detail;
+    result.insert("value".into(), out.number.into());
+    result.insert("lengthUnit".into(), length_unit(doc).into());
+    Ok(Value::Object(result))
+}
+
 fn measure_between(session: &mut Session, params: &Value) -> Run {
-    const ID: &str = "measure.between";
     Params::new(ID, params, &["from", "to", "relation"])?;
     let map = match params {
         Value::Object(map) => map.clone(),
@@ -897,12 +1186,107 @@ fn measure_between(session: &mut Session, params: &Value) -> Run {
     let open = session.document_mut()?;
     let regen = open.regen();
     let (doc, placed) = measured_document(open);
-    let doc = &*doc;
-    let mut ctx = Ctx::new(doc, &regen).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
-    ctx.placed = placed.as_ref();
-    let out = take(&ctx, &map).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
-    let mut result = out.detail;
-    result.insert("value".into(), out.number.into());
-    result.insert("lengthUnit".into(), length_unit(doc).into());
-    Ok(Value::Object(result))
+    answered(&doc, &regen, placed.as_ref(), &map).map_err(CommandError::new)
+}
+
+/// What a [`BetweenJob`] measures, and its answer once it is measured.
+struct Asked {
+    doc: Arc<craft3d_doc::Document>,
+    regen: Arc<craft3d_regen::Regen>,
+    placed: Option<Arc<crate::asm::Placed>>,
+    map: Map<String, Value>,
+    answer: std::sync::Mutex<Option<Result<Value, String>>>,
+    done: std::sync::atomic::AtomicBool,
+}
+
+impl Asked {
+    fn run(&self) {
+        let answer = answered(&self.doc, &self.regen, self.placed.as_ref(), &self.map);
+        *self
+            .answer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(answer);
+        self.done.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// `measure.between` measured on a thread of its own, for the window (the
+/// review of 2026-11-17: on the window's thread two gear bodies held each
+/// new revision up about 180 ms): the document and its bodies as they
+/// were when it was asked. Inline where there are no threads.
+pub struct BetweenJob {
+    asked: Arc<Asked>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl BetweenJob {
+    /// The answer, `measure.between`'s or its error, once measured; `None`
+    /// while it is being measured.
+    pub fn answer(&self) -> Option<Result<Value, String>> {
+        if !self.asked.done.load(std::sync::atomic::Ordering::Acquire) {
+            // A thread that ended without an answer (it cannot, but a
+            // window must never wait for one forever).
+            if self.thread.as_ref().is_some_and(|t| t.is_finished()) {
+                return Some(Err(format!("{ID}: not measured")));
+            }
+            return None;
+        }
+        self.asked
+            .answer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl Session {
+    /// `measure.between` with `params` on a thread of its own: refused at
+    /// once for params it does not take or without a document, else
+    /// measured while the caller goes on ([`BetweenJob::answer`]).
+    pub fn between_later(&mut self, params: &Value) -> Result<BetweenJob, CommandError> {
+        Params::new(ID, params, &["from", "to", "relation"])?;
+        let map = match params {
+            Value::Object(map) => map.clone(),
+            _ => Map::new(),
+        };
+        let open = self.document_mut()?;
+        let regen = open.regen();
+        let (doc, placed) = measured_document(open);
+        let asked = Arc::new(Asked {
+            doc,
+            regen,
+            placed,
+            map,
+            answer: std::sync::Mutex::new(None),
+            done: std::sync::atomic::AtomicBool::new(false),
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let for_thread = Arc::clone(&asked);
+            if let Ok(thread) = std::thread::Builder::new()
+                .name("craft3d-between".into())
+                .spawn(move || {
+                    craft3d_math::pool::mark_background();
+                    for_thread.run();
+                })
+            {
+                return Ok(BetweenJob {
+                    asked,
+                    thread: Some(thread),
+                });
+            }
+        }
+        asked.run();
+        Ok(BetweenJob {
+            asked,
+            thread: None,
+        })
+    }
+
+    /// The active document's linear tolerance, in its length unit: what a
+    /// length is shown to. `None` without a document.
+    pub fn linear_tolerance(&self) -> Option<f64> {
+        let doc = self.document().ok()?.history.current();
+        Some(doc.tolerance.linear).filter(|t| t.is_finite() && *t > 0.0)
+    }
 }

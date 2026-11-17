@@ -102,8 +102,18 @@ impl Window {
         output.textures_delta.clear();
     }
 
+    /// `n` frames, then more while the relation is measured on its own
+    /// thread (the window does not wait for it; a test does, ten seconds
+    /// at most).
     fn frames(&mut self, shell: &mut Shell, session: &mut Session, n: usize) {
         for _ in 0..n {
+            self.frame(shell, session, Vec::new());
+        }
+        for _ in 0..5000 {
+            if !shell.measuring() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
             self.frame(shell, session, Vec::new());
         }
     }
@@ -184,11 +194,11 @@ fn two_holes_show_their_centre_distance_by_themselves_and_escape_takes_it_away()
         .expect("the hole's diameter");
     assert_eq!(
         (single.measure, single.text.as_str()),
-        ("diameter", "⌀ 6.00 mm")
+        ("diameter", "Ø 6 mm")
     );
     assert_eq!(
         shell.dimension_place().map(|p| p.text.as_str()),
-        Some("⌀ 6.00 mm")
+        Some("Ø 6 mm")
     );
     // Both holes: the centre distance, the same as measure.between's.
     select(
@@ -200,10 +210,10 @@ fn two_holes_show_their_centre_distance_by_themselves_and_escape_takes_it_away()
     window.frames(&mut shell, &mut session, 3);
     let m = shell.measurement().cloned().expect("their relation");
     assert_eq!(m.relation, "centerDistance");
-    assert_eq!(m.text, "30.00 mm");
+    assert_eq!(m.text, "30 mm");
     assert_eq!(m.words, "Centre distance · axes parallel");
     assert_eq!(m.title, "2 faces");
-    assert_eq!(m.parts.as_deref(), Some("X 30.00 · Y 0.00 · Z 0.00 mm"));
+    assert_eq!(m.parts.as_deref(), Some("X 30 · Y 0 · Z 0 mm"));
     let agent = run(
         &mut session,
         "measure.between",
@@ -211,7 +221,7 @@ fn two_holes_show_their_centre_distance_by_themselves_and_escape_takes_it_away()
     );
     assert_eq!(agent["value"].as_f64(), m.value);
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
-    assert_eq!(got["measurement"]["text"], "30.00 mm");
+    assert_eq!(got["measurement"]["text"], "30 mm");
     assert_eq!(got["measurement"]["relation"], "centerDistance");
     // The line in the view, its number on it; a click on the number copies
     // it and selects nothing else.
@@ -224,14 +234,14 @@ fn two_holes_show_their_centre_distance_by_themselves_and_escape_takes_it_away()
     assert!(viewport.contains_rect(place.number));
     let selection = got["selection"].clone();
     window.click(&mut shell, &mut session, place.number.center());
-    assert_eq!(window.copied.as_deref(), Some("30.00 mm"));
+    assert_eq!(window.copied.as_deref(), Some("30 mm"));
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     assert_eq!(got["selection"], selection);
     // The panel's large number copies too.
     window.copied = None;
     let value = target(&shell, "copy value").center();
     window.click(&mut shell, &mut session, value);
-    assert_eq!(window.copied.as_deref(), Some("30.00 mm"));
+    assert_eq!(window.copied.as_deref(), Some("30 mm"));
     // Escape over the view: the selection, the number and the line go.
     window.frame(
         &mut shell,
@@ -273,10 +283,7 @@ fn one_thing_shows_its_measure_in_the_view_and_its_card_under_every_tab() {
     );
     window.frames(&mut shell, &mut session, 3);
     let single = shell.single_measure().cloned().expect("its length");
-    assert_eq!(
-        (single.measure, single.text.as_str()),
-        ("length", "60.00 mm")
-    );
+    assert_eq!((single.measure, single.text.as_str()), ("length", "60 mm"));
     assert_eq!(single.points.len(), 2, "{single:?}");
     let place = shell.dimension_place().cloned().expect("a line beside it");
     assert!(place.from.distance(place.to) > 20.0, "{place:?}");
@@ -285,14 +292,14 @@ fn one_thing_shows_its_measure_in_the_view_and_its_card_under_every_tab() {
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     assert_eq!(got["state"]["panels"]["sideTab"], "variables");
     assert_eq!(got["measurement"]["measure"], "length");
-    assert_eq!(got["measurement"]["text"], "60.00 mm");
+    assert_eq!(got["measurement"]["text"], "60 mm");
     // The card is under the Variables tab too.
     let name = target(&shell, "copy name");
     assert!(name.width() > 0.0);
     // A click on the number copies it and selects nothing else.
     let selection = got["selection"].clone();
     window.click(&mut shell, &mut session, place.number.center());
-    assert_eq!(window.copied.as_deref(), Some("60.00 mm"));
+    assert_eq!(window.copied.as_deref(), Some("60 mm"));
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     assert_eq!(got["selection"], selection);
     // A hole's rim, a whole circle: its diameter.
@@ -305,7 +312,7 @@ fn one_thing_shows_its_measure_in_the_view_and_its_card_under_every_tab() {
     let single = shell.single_measure().cloned().expect("the rim's diameter");
     assert_eq!(
         (single.measure, single.text.as_str()),
-        ("diameter", "⌀ 6.00 mm")
+        ("diameter", "Ø 6 mm")
     );
     assert!(shell.dimension_place().is_some());
     // A flat face: nothing in the view, its card all the same, under
@@ -364,7 +371,7 @@ fn faces_at_an_angle_show_it_on_an_arc_and_parallel_faces_their_distance() {
     window.frames(&mut shell, &mut session, 3);
     let m = shell.measurement().cloned().unwrap();
     assert_eq!(m.relation, "angle");
-    assert_eq!(m.text, "135.00°");
+    assert_eq!(m.text, "135°");
     let place = shell.dimension_place().cloned().unwrap();
     assert!(place.at.is_some(), "an arc about its corner");
     select(
@@ -377,7 +384,7 @@ fn faces_at_an_angle_show_it_on_an_arc_and_parallel_faces_their_distance() {
     let m = shell.measurement().cloned().unwrap();
     assert_eq!(
         (m.relation.as_str(), m.text.as_str()),
-        ("distance", "20.00 mm")
+        ("distance", "20 mm")
     );
     assert!(shell.dimension_place().unwrap().at.is_none());
 }
@@ -527,4 +534,125 @@ fn what_has_no_relation_shows_none_and_nothing_panics() {
     let mut shell = Shell::with_renderer(RendererChoice::Cpu);
     window.frames(&mut shell, &mut empty, 3);
     assert!(shell.measurement().is_none());
+}
+
+/// The review of 2026-11-17: the diameter sign ⌀ (U+2300) is in neither
+/// font the window ships and drew as a box. Every character the measuring
+/// can print, numbers, units, signs and words, is in the fonts the window
+/// has once it has drawn.
+#[test]
+fn every_character_the_measuring_prints_is_in_the_windows_fonts() {
+    let mut session = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    window.frames(&mut shell, &mut session, 3);
+    let printed = [
+        "0123456789.-? Ø R ° · – … mm cm m in ft µm um",
+        "X Y Z Overlap Measuring… Not measured",
+        "Centre distance · axes parallel",
+        "Distance between parallel faces",
+        "Distance between the parallel edges",
+        "Distance from the axis to the face",
+        "Distance between the points",
+        "Angle between the faces Angle between the edges",
+        "Angle between the axes Angle between the axis and the face",
+        "Least distance Least distance between the edges Clearance",
+        "Keep as a check Kept as a check Copy",
+    ];
+    for text in printed {
+        let font = egui::FontId::proportional(14.0);
+        let missing: Vec<char> = text
+            .chars()
+            .filter(|c| !window.ctx.fonts_mut(|f| f.has_glyph(&font, *c)))
+            .collect();
+        assert!(missing.is_empty(), "{text}: no glyph for {missing:?}");
+    }
+    // The sign that drew as a box is not printed.
+    let one = run(
+        &mut session,
+        "select.query",
+        json!({"kind": "face", "where": {"in": "Bevel", "hole": true}, "limit": 1, "then": "replace"}),
+    );
+    assert_eq!(one["count"].as_u64().map(|n| n >= 1), Some(true));
+    window.frames(&mut shell, &mut session, 3);
+    let single = shell
+        .single_measure()
+        .cloned()
+        .expect("the hole's diameter");
+    assert!(
+        single.text.starts_with('Ø') && !single.text.contains('⌀'),
+        "{}",
+        single.text
+    );
+}
+
+/// The review of 2026-11-17: in a short window (1024 × 420) the Features
+/// tab showed no card, so the relation and Keep were out of reach; and
+/// after the kept check was undone the button still said it was kept. Now
+/// the card is a line there, with Keep, and a check undone can be kept
+/// again.
+#[test]
+fn in_a_short_window_the_relation_and_keep_stay_in_reach_and_undone_can_be_kept_again() {
+    let mut session = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1024.0, 420.0);
+    window.frames(&mut shell, &mut session, 3);
+    select(
+        &mut session,
+        "face",
+        json!({"in": "Bevel", "hole": true}),
+        2,
+    );
+    window.frames(&mut shell, &mut session, 3);
+    let m = shell.measurement().cloned().expect("their relation");
+    assert_eq!(m.text, "30 mm");
+    let count = |s: &mut Session| {
+        run(s, "assert.list", json!({}))["assertions"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    let keep = target(&shell, "keep").center();
+    window.click(&mut shell, &mut session, keep);
+    window.frames(&mut shell, &mut session, 3);
+    assert_eq!(count(&mut session), 1);
+    run(&mut session, "edit.undo", json!({}));
+    window.frames(&mut shell, &mut session, 3);
+    assert_eq!(count(&mut session), 0);
+    // The same selection: it can be kept again.
+    let keep = target(&shell, "keep").center();
+    window.click(&mut shell, &mut session, keep);
+    window.frames(&mut shell, &mut session, 3);
+    assert_eq!(count(&mut session), 1);
+}
+
+/// The review of 2026-11-17: the card's Measure button failed on every
+/// face ("there is no feature named `F6:copy(0)/F1:face(1)`": it passed
+/// the face's bare name). It asks for the face by its body and name, and
+/// the measure answers; the button, clicked, says the wall.
+#[test]
+fn the_cards_measure_button_measures_a_faces_wall() {
+    let mut session = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    window.frames(&mut shell, &mut session, 3);
+    let found = run(
+        &mut session,
+        "select.query",
+        json!({"kind": "face", "where": {"in": "Bevel", "normal": {"along": "z"}}, "then": "replace"}),
+    );
+    let it = &found["items"][0];
+    let answer = run(
+        &mut session,
+        "measure.thickness",
+        json!({"of": {"kind": "face", "where": {"in": it["feature"], "name": it["name"]}}}),
+    );
+    assert!(answer.is_object(), "{answer}");
+    window.frames(&mut shell, &mut session, 3);
+    let measure = target(&shell, "measure").center();
+    window.click(&mut shell, &mut session, measure);
+    window.frames(&mut shell, &mut session, 3);
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    let text = got.to_string();
+    assert!(!text.contains("there is no feature named"), "{text}");
 }

@@ -88,6 +88,7 @@ mod recovery_cmds;
 mod recovery_store;
 mod regen_elsewhere;
 mod relation_cmds;
+pub use relation_cmds::BetweenJob;
 mod replay_cmds;
 mod report;
 mod sample_cmds;

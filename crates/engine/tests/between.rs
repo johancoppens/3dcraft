@@ -352,3 +352,226 @@ fn a_relation_the_two_cannot_have_is_refused_and_an_assertion_keeps_one() {
         "{listed}"
     );
 }
+
+/// The review of 2026-11-17 (`review-view-measure`): every pair of kinds
+/// against closed forms, at three scales, on the part with a ball over it
+/// and a cone beside it. Its 18 failures are here: a rim or a ball was
+/// measured from its centre under the words "Least distance" (a rim to a
+/// side face 15, true 12; to the face it lies on 3, true 0; a ball to the
+/// top 25, true 20; a vertex to a rim 61.85, true 59.02), and two straight
+/// edges got the centre distance of the lines through them (meeting at a
+/// corner 0, their angle 90; skew 20, the edges 28.28 apart).
+#[test]
+fn every_pair_of_kinds_is_measured_as_the_things_are() {
+    for k in [1e-3, 1.0, 1e6] {
+        let mut s = part(k);
+        run(
+            &mut s,
+            "feature.sphere",
+            json!({"radius": 5.0 * k, "position": [30.0 * k, 20.0 * k, 45.0 * k], "name": "Ball"}),
+        );
+        run(
+            &mut s,
+            "feature.cone",
+            json!({"radius": 5.0 * k, "height": 10.0 * k, "position": [100.0 * k, 100.0 * k, 0], "name": "Cone"}),
+        );
+        let b = |x0: f64, y0: f64, z0: f64, x1: f64, y1: f64, z1: f64| {
+            json!([[x0 * k, y0 * k, z0 * k], [x1 * k, y1 * k, z1 * k]])
+        };
+        let mut t = std::collections::BTreeMap::new();
+        let mut put = |name: &'static str, s: &mut Session, kind: &str, filter: Value| {
+            t.insert(name, item(s, kind, filter));
+        };
+        put(
+            "top",
+            &mut s,
+            "face",
+            json!({"in": "Bevel", "normal": {"along": "z"}}),
+        );
+        put(
+            "bottom",
+            &mut s,
+            "face",
+            json!({"in": "Bevel", "normal": {"along": "-z"}}),
+        );
+        put(
+            "minusx",
+            &mut s,
+            "face",
+            json!({"in": "Bevel", "normal": {"along": "-x"}}),
+        );
+        put(
+            "plusx",
+            &mut s,
+            "face",
+            json!({"in": "Bevel", "normal": {"along": "x"}}),
+        );
+        put(
+            "holeL",
+            &mut s,
+            "face",
+            json!({"in": "Bevel", "hole": true, "inside": b(0.0, 0.0, -10.0, 30.0, 40.0, 30.0)}),
+        );
+        put(
+            "holeR",
+            &mut s,
+            "face",
+            json!({"in": "Bevel", "hole": true, "inside": b(30.0, 0.0, -10.0, 60.0, 40.0, 30.0)}),
+        );
+        put(
+            "besideTop",
+            &mut s,
+            "face",
+            json!({"in": "Beside", "normal": {"along": "z"}}),
+        );
+        put(
+            "ball",
+            &mut s,
+            "face",
+            json!({"in": "Ball", "surface": "sphere"}),
+        );
+        put(
+            "cone",
+            &mut s,
+            "face",
+            json!({"in": "Cone", "surface": "cone"}),
+        );
+        put(
+            "E1",
+            &mut s,
+            "edge",
+            json!({"in": "Bevel", "inside": b(-1.0, -1.0, -1.0, 61.0, 1.0, 1.0)}),
+        );
+        put(
+            "E2",
+            &mut s,
+            "edge",
+            json!({"in": "Bevel", "inside": b(-1.0, -1.0, -1.0, 1.0, 41.0, 1.0)}),
+        );
+        put(
+            "E3",
+            &mut s,
+            "edge",
+            json!({"in": "Bevel", "inside": b(-1.0, 39.0, -1.0, 61.0, 41.0, 1.0)}),
+        );
+        put(
+            "E60",
+            &mut s,
+            "edge",
+            json!({"in": "Bevel", "inside": b(59.0, -1.0, -1.0, 61.0, 41.0, 1.0)}),
+        );
+        put(
+            "F",
+            &mut s,
+            "edge",
+            json!({"in": "Beside", "inside": b(79.0, -1.0, 19.0, 81.0, 41.0, 21.0)}),
+        );
+        put(
+            "rimTop",
+            &mut s,
+            "edge",
+            json!({"in": "Bevel", "radius": 3.0 * k, "inside": b(0.0, 0.0, 19.0, 30.0, 40.0, 21.0)}),
+        );
+        put(
+            "rimBottom",
+            &mut s,
+            "edge",
+            json!({"in": "Bevel", "radius": 3.0 * k, "inside": b(0.0, 0.0, -1.0, 30.0, 40.0, 1.0)}),
+        );
+        put(
+            "V",
+            &mut s,
+            "vertex",
+            json!({"in": "Beside", "inside": b(69.0, -1.0, -1.0, 71.0, 1.0, 1.0)}),
+        );
+        put(
+            "W",
+            &mut s,
+            "vertex",
+            json!({"in": "Beside", "inside": b(79.0, 39.0, 19.0, 81.0, 41.0, 21.0)}),
+        );
+        t.insert("Bevel", json!("Bevel"));
+        t.insert("Beside", json!("Beside"));
+        t.insert("BesideBody", json!({"kind": "body", "feature": "Beside"}));
+        let root = f64::sqrt;
+        let rim = root(3425.0);
+        let cases: Vec<(&str, &str, &str, f64)> = vec![
+            ("top", "bottom", "distance", 20.0),
+            ("minusx", "top", "angle", 90.0),
+            ("holeL", "holeR", "centerDistance", 30.0),
+            ("rimTop", "rimBottom", "centerDistance", 20.0),
+            ("holeL", "ball", "centerDistance", 15.0),
+            (
+                "holeL",
+                "cone",
+                "centerDistance",
+                root(85.0 * 85.0 + 80.0 * 80.0),
+            ),
+            ("holeL", "minusx", "distance", 15.0),
+            ("holeL", "top", "angle", 90.0),
+            ("V", "W", "distance", root(2100.0)),
+            ("V", "top", "leastDistance", root(724.0)),
+            ("V", "plusx", "leastDistance", 10.0),
+            ("V", "E60", "leastDistance", 10.0),
+            ("V", "Bevel", "leastDistance", 10.0),
+            ("E1", "E3", "centerDistance", 40.0),
+            ("E1", "top", "distance", 20.0),
+            ("E1", "minusx", "angle", 90.0),
+            ("plusx", "BesideBody", "leastDistance", 10.0),
+            ("Bevel", "Beside", "clearance", 10.0),
+            ("top", "besideTop", "distance", 0.0),
+            ("top", "top", "distance", 0.0),
+            // The things as they are, never their centres.
+            (
+                "V",
+                "rimTop",
+                "leastDistance",
+                root((rim - 3.0) * (rim - 3.0) + 400.0),
+            ),
+            ("rimTop", "minusx", "leastDistance", 12.0),
+            ("rimTop", "top", "leastDistance", 0.0),
+            ("ball", "top", "leastDistance", 20.0),
+            // Two straight edges: meeting, their angle; skew, the edges'
+            // least distance.
+            ("E1", "E2", "angle", 90.0),
+            ("E1", "F", "leastDistance", root(800.0)),
+        ];
+        for (a, b, relation, want) in cases {
+            let got = between(&mut s, &t[a], &t[b]);
+            let rel = got["relation"].as_str().unwrap_or("?");
+            assert_eq!(rel, relation, "k={k} {a}-{b}: {got}");
+            let (value, want) = if rel == "angle" {
+                (got["degrees"].as_f64().unwrap(), want)
+            } else {
+                (got["value"].as_f64().unwrap(), want * k)
+            };
+            let tol = if rel == "angle" {
+                1e-9
+            } else {
+                got["tolerance"].as_f64().unwrap().max(1e-9 * want.abs())
+            };
+            assert!(
+                (value - want).abs() <= tol,
+                "k={k} {a}-{b}: {value} against {want}: {got}"
+            );
+        }
+        // The skew edges' line is drawn between the points of the edges.
+        let got = between(&mut s, &t["E1"], &t["F"]);
+        let from: Vec<f64> = got["from"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+        assert!(
+            close(from[0], 60.0 * k, k) && close(from[2], 0.0, k),
+            "{got}"
+        );
+        // Two holes: the line where they open (z = 20), not at mid-depth.
+        let got = between(&mut s, &t["holeL"], &t["holeR"]);
+        for end in ["from", "to"] {
+            let z = got[end][2].as_f64().unwrap();
+            assert!(close(z, 20.0 * k, k), "{end}: {got}");
+        }
+    }
+}

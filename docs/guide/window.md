@@ -256,10 +256,13 @@ checks):
 **Measure** measures a face's wall thickness; **Copy name** copies the name.
 
 The view shows the measure of **one thing selected** beside it, in a thin dimension line in the accent: a
-straight edge its length along a line beside it, a whole circle (a hole's rim) its diameter **⌀**, an arc
-its radius **R**, a curved edge its length by its middle, a hole's or a boss's wall its diameter. A flat
-face, a vertex and a body show nothing there: their facts are at the foot of the panel. Click the number to
-copy it with its unit.
+straight edge its length along a line beside it, a whole circle (a hole's rim) its diameter **Ø**, an arc
+its radius **R**, a curved edge its length by its middle, a hole's or a boss's wall its diameter, part of a
+cylinder (a fillet's round) its radius. A flat face, a vertex and a body show nothing there: their facts are
+at the foot of the panel. Numbers are shown to the document's tolerance, without trailing zeros (`30 mm`,
+`0.006 mm`). Click the number to copy it with its unit, as shown. While two things are being measured the
+card says *Measuring…*; the window goes on meanwhile. In a short window the Features tab shows the card as one
+line, with **Keep as a check**.
 
 **Two things selected** (Shift-click the second) are measured by themselves: the foot of the panel shows
 their relation as one large number, what it is in a few words and, for a distance, its parts along X, Y and

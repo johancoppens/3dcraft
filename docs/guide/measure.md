@@ -58,9 +58,11 @@ by itself when two things are selected ([The window › Features](window.md#feat
 |---|---|
 | Two flat faces, parallel | `distance` between their planes |
 | Two flat faces at an angle | `angle` between them, 0 to 180 degrees: a 45 degree chamfer meets the top at 135 |
-| Two axes (holes, bosses, straight edges) or centres (circular edges, spheres) | `centerDistance`, with its parts along X, Y and Z, and whether two axes are `parallel` |
+| Two axes (holes, bosses) or centres (circular edges, spheres) | `centerDistance`, with its parts along X, Y and Z, and whether two axes are `parallel`; two holes' line where they open |
+| Two straight edges | Parallel: `centerDistance`, the distance between them; meeting (or their lines crossing): the `angle` between them; skew: `leastDistance` between the edges themselves |
 | An axis and a flat face | `distance` when parallel, else the `angle` between them |
-| A vertex, or a centre with anything else | `leastDistance` |
+| Two vertices | `distance` |
+| A vertex, a circular edge or a ball with anything else | `leastDistance` between the two as they are: the rim itself, the ball's surface, never their centres |
 | Two bodies | `clearance`, as `measure.clearance` |
 | Anything else of faces and bodies | `leastDistance`, as `measure.distance` |
 

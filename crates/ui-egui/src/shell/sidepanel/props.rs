@@ -20,7 +20,7 @@ use crate::kit::{Button, Glyph, Kit, ValueStyle};
 use crate::shell::views::FlyTo;
 use craft3d_engine::history_view::number;
 use craft3d_engine::{Scene, SelectionKind, Session};
-use craft3d_math::Vec3;
+use craft3d_math::{Portable, Vec3};
 use egui::{Sense, pos2, vec2};
 use serde_json::{Value, json};
 
@@ -81,7 +81,7 @@ pub struct Single {
     pub measure: &'static str,
     /// In the document's length unit.
     pub value: f64,
-    /// As shown and copied: `48.00 mm`, `⌀ 8.00 mm`, `R 4.00 mm`.
+    /// As shown and copied: `48 mm`, `Ø 8 mm`, `R 4.5 mm`.
     pub text: String,
     /// The edge's points in space (a straight edge's two ends), along
     /// which a length is drawn; empty for a face.
@@ -123,14 +123,9 @@ fn single_of(
     first: &craft3d_engine::SelectionItem,
     scene: Option<&Scene>,
     unit: &str,
+    tolerance: f64,
 ) -> Option<Single> {
-    let with_unit = |v: f64| {
-        if unit.is_empty() {
-            decimals(v, 2)
-        } else {
-            format!("{} {unit}", decimals(v, 2))
-        }
-    };
+    let with_unit = |v: f64| length_text(v, tolerance, unit);
     let positive = |v: Option<f64>| v.filter(|v| v.is_finite() && *v > 0.0);
     match first.kind {
         SelectionKind::Edge => {
@@ -152,11 +147,19 @@ fn single_of(
                     let r = positive(curve.get("radius").and_then(Value::as_f64))?;
                     let center = triple(curve.get("center")?)?;
                     let axis = triple(curve.get("axis")?)?;
-                    // Whole: as long as its circle, within a millionth.
-                    let whole =
-                        length.is_some_and(|l| (l - std::f64::consts::TAU * r).abs() <= 1e-6 * l);
+                    // Whole: the edge closed, its ends one point (the review
+                    // of 2026-11-17: an arc of 359.9999 degrees is an arc);
+                    // without the scene's line, as long as its circle.
+                    let whole = match (points.first(), points.last()) {
+                        (Some(a), Some(b)) if points.len() > 2 => {
+                            let ([ax, ay, az], [bx, by, bz]) = (*a, *b);
+                            Vec3::new(ax, ay, az).distance(Vec3::new(bx, by, bz)) <= 1e-9 * r
+                        }
+                        _ => length
+                            .is_some_and(|l| (l - std::f64::consts::TAU * r).abs() <= 1e-12 * l),
+                    };
                     let (measure, value, text) = if whole {
-                        ("diameter", 2.0 * r, format!("⌀ {}", with_unit(2.0 * r)))
+                        ("diameter", 2.0 * r, format!("Ø {}", with_unit(2.0 * r)))
                     } else {
                         ("radius", r, format!("R {}", with_unit(r)))
                     };
@@ -212,16 +215,79 @@ fn single_of(
             if !at.is_finite() {
                 return None;
             }
+            // A part of a cylinder (a fillet's round): its radius, drawn
+            // to the middle of its arc (the review of 2026-11-17).
+            if let Some(middle) =
+                scene.and_then(|scene| partial_arc(scene, &first.feature, &first.name, at, a))
+            {
+                let rim = at + middle * r;
+                return Some(Single {
+                    measure: "radius",
+                    value: r,
+                    text: format!("R {}", with_unit(r)),
+                    points: vec![[rim.x, rim.y, rim.z]],
+                    round: Some(([at.x, at.y, at.z], [a.x, a.y, a.z], r)),
+                });
+            }
             Some(Single {
                 measure: "diameter",
                 value: 2.0 * r,
-                text: format!("⌀ {}", with_unit(2.0 * r)),
+                text: format!("Ø {}", with_unit(2.0 * r)),
                 points: Vec::new(),
                 round: Some(([at.x, at.y, at.z], [a.x, a.y, a.z], r)),
             })
         }
         _ => None,
     }
+}
+
+/// Where the face `name` of the body of `feature` in `scene`, round the
+/// unit `axis` through `at`, leaves a gap of more than a quarter turn (a
+/// part of a cylinder): the unit direction from the axis to the middle of
+/// the arc it covers. `None` for a whole cylinder.
+fn partial_arc(scene: &Scene, feature: &str, name: &str, at: Vec3, axis: Vec3) -> Option<Vec3> {
+    let found = scene.faces_named(Some(feature), name).ok()?;
+    let side = if axis.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+    let u = axis.cross(side).normalized()?;
+    let w = axis.cross(u);
+    let mut angles: Vec<f64> = Vec::new();
+    for (t, id) in scene.mesh.face_ids.iter().enumerate() {
+        if found.ids.binary_search(id).is_err() {
+            continue;
+        }
+        if let Some(corners) = scene.mesh.corners(t) {
+            for q in corners {
+                let v = q - at;
+                let angle = v.dot(w).patan2(v.dot(u));
+                if angle.is_finite() {
+                    angles.push(angle);
+                }
+            }
+        }
+        if angles.len() > 100_000 {
+            break;
+        }
+    }
+    angles.sort_by(f64::total_cmp);
+    let (first, last) = (*angles.first()?, *angles.last()?);
+    // The widest gap between angles in order, the one round the back
+    // included.
+    let mut gap = (first + std::f64::consts::TAU - last, last);
+    for pair in angles.windows(2) {
+        if let [a, b] = *pair
+            && b - a > gap.0
+        {
+            gap = (b - a, a);
+        }
+    }
+    let (width, starts) = gap;
+    if width <= std::f64::consts::FRAC_PI_2 {
+        return None;
+    }
+    // The arc runs from the gap's far end round to its near end.
+    let middle = starts + width + (std::f64::consts::TAU - width) * 0.5;
+    let direction = u * middle.pcos() + w * middle.psin();
+    direction.is_finite().then_some(direction)
 }
 
 /// The middle of the face `name` of the body of `feature` in `scene`: the
@@ -275,12 +341,72 @@ pub struct Measurement {
     /// kept of it takes (`Centre distance Left face – Right face`).
     pub title: String,
     pub check_name: String,
+    /// Being measured, on a thread of its own (`Session::between_later`):
+    /// the card says so and nothing is drawn or kept yet.
+    pub measuring: bool,
+    /// The document's length unit, and the two things in a few words.
+    pub unit: String,
+    pub things: [String; 2],
 }
 
 impl Measurement {
+    /// The two things `items` being measured.
+    fn measuring(items: [Value; 2], unit: &str, things: [String; 2]) -> Self {
+        Measurement {
+            relation: String::new(),
+            value: None,
+            text: "…".to_string(),
+            words: "Measuring…".to_string(),
+            parts: None,
+            from: [0.0; 3],
+            to: [0.0; 3],
+            at: None,
+            refused: None,
+            items,
+            tolerance: 0.0,
+            answer: Value::Null,
+            title: String::new(),
+            check_name: String::new(),
+            measuring: true,
+            unit: unit.to_string(),
+            things,
+        }
+    }
+
+    /// This, measured: the engine's answer, or why it gave none.
+    pub fn settled(&self, answer: Result<Value, String>) -> Self {
+        match answer {
+            Ok(answer) => {
+                let mut m = measurement_of(&answer, self.items.clone(), &self.unit);
+                m.title = self.title.clone();
+                m.things = self.things.clone();
+                m.check_name = format!(
+                    "{} {} – {}",
+                    relation_words(&m.relation),
+                    self.things[0],
+                    self.things[1]
+                );
+                m
+            }
+            Err(why) => {
+                let mut m = self.clone();
+                m.measuring = false;
+                m.text = "—".to_string();
+                m.words = "Not measured".to_string();
+                m.refused = Some(
+                    why.strip_prefix("measure.between: ")
+                        .unwrap_or(&why)
+                        .to_string(),
+                );
+                m
+            }
+        }
+    }
+
     /// What `ui.get` says under `measurement`.
     pub fn json(&self) -> Value {
         json!({
+            "measuring": self.measuring,
             "relation": if self.relation.is_empty() { Value::Null } else { self.relation.clone().into() },
             "value": self.value,
             "text": self.text,
@@ -332,13 +458,16 @@ fn item_json(item: &craft3d_engine::SelectionItem) -> Value {
 }
 
 /// The relation of `a` and `b` (`measure.between`), in the document's
-/// `unit`; `None` for kinds it does not take (a feature, a sketch, a
-/// datum).
+/// `unit`, started on a thread of its own (`job`; the review of
+/// 2026-11-17: on the window's thread it held a frame up); `None` for
+/// kinds it does not take (a feature, a sketch, a datum).
 pub(crate) fn relation(
     session: &mut Session,
     a: &craft3d_engine::SelectionItem,
     b: &craft3d_engine::SelectionItem,
     unit: &str,
+    things: [String; 2],
+    job: &mut Option<craft3d_engine::BetweenJob>,
 ) -> Option<Measurement> {
     let measured = |kind: SelectionKind| {
         matches!(
@@ -350,34 +479,48 @@ pub(crate) fn relation(
         return None;
     }
     let items = [item_json(a), item_json(b)];
-    let answer = session.execute(
-        "measure.between",
-        &json!({"from": items[0], "to": items[1]}),
-    );
-    Some(match answer {
-        Ok(answer) => measurement_of(&answer, items, unit),
-        Err(e) => Measurement {
-            relation: String::new(),
-            value: None,
-            text: "—".to_string(),
-            words: "Not measured".to_string(),
-            parts: None,
-            from: [0.0; 3],
-            to: [0.0; 3],
-            at: None,
-            refused: Some(
-                e.message()
-                    .strip_prefix("measure.between: ")
-                    .unwrap_or(e.message())
-                    .to_string(),
-            ),
-            items,
-            tolerance: 0.0,
-            answer: Value::Null,
-            title: String::new(),
-            check_name: String::new(),
+    let waiting = Measurement::measuring(items.clone(), unit, things);
+    Some(
+        match session.between_later(&json!({"from": items[0], "to": items[1]})) {
+            Ok(started) => {
+                *job = Some(started);
+                waiting
+            }
+            Err(e) => waiting.settled(Err(e.message().to_string())),
         },
-    })
+    )
+}
+
+/// `v` as the window prints a measure: to the decimals `tolerance` holds
+/// (a length's own, an angle's in degrees), no trailing zeros (the review
+/// of 2026-11-17: two fixed decimals showed a 0.006 diameter as 0.01).
+/// What is copied is what is shown.
+pub fn number_to(v: f64, tolerance: f64) -> String {
+    if !v.is_finite() {
+        return "?".to_string();
+    }
+    let decimals = if tolerance.is_finite() && tolerance > 0.0 {
+        (-tolerance.plog10()).ceil().clamp(0.0, 12.0) as usize
+    } else {
+        6
+    };
+    let text = format!("{v:.decimals$}");
+    let text = if text.contains('.') {
+        text.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        text
+    };
+    if text == "-0" { "0".to_string() } else { text }
+}
+
+/// A length to `tolerance`, with the document's `unit`.
+pub fn length_text(v: f64, tolerance: f64, unit: &str) -> String {
+    let n = number_to(v, tolerance);
+    if unit.is_empty() {
+        n
+    } else {
+        format!("{n} {unit}")
+    }
 }
 
 /// The engine's answer as the window shows it.
@@ -401,10 +544,13 @@ pub fn measurement_of(answer: &Value, items: [Value; 2], unit: &str) -> Measurem
     } else {
         answer.get("value").and_then(Value::as_f64)
     };
+    let tolerance = answer
+        .get("tolerance")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
     let text = match value {
-        Some(v) if angle => format!("{}°", decimals(v, 2)),
-        Some(v) if unit.is_empty() => decimals(v, 2),
-        Some(v) => format!("{} {unit}", decimals(v, 2)),
+        Some(v) if angle => format!("{}°", number_to(v, tolerance.to_degrees())),
+        Some(v) => length_text(v, tolerance, unit),
         None if answer.get("overlap").and_then(Value::as_bool) == Some(true) => {
             "Overlap".to_string()
         }
@@ -415,8 +561,7 @@ pub fn measurement_of(answer: &Value, items: [Value; 2], unit: &str) -> Measurem
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    if relation == "centerDistance" && answer.get("parallel").and_then(Value::as_bool) == Some(true)
-    {
+    if words == "Centre distance" && answer.get("parallel").and_then(Value::as_bool) == Some(true) {
         words.push_str(" · axes parallel");
     }
     let parts = matches!(
@@ -426,7 +571,7 @@ pub fn measurement_of(answer: &Value, items: [Value; 2], unit: &str) -> Measurem
     .then(|| point("parts"))
     .flatten()
     .map(|[x, y, z]| {
-        let [x, y, z] = [x, y, z].map(|c| decimals(if c.abs() < 5e-13 { 0.0 } else { c }, 2));
+        let [x, y, z] = [x, y, z].map(|c| number_to(c, tolerance));
         format!("X {x} · Y {y} · Z {z} {unit}")
             .trim_end()
             .to_string()
@@ -442,13 +587,13 @@ pub fn measurement_of(answer: &Value, items: [Value; 2], unit: &str) -> Measurem
         at: point("at"),
         refused: None,
         items,
-        tolerance: answer
-            .get("tolerance")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0),
+        tolerance,
         answer: answer.clone(),
         title: String::new(),
         check_name: String::new(),
+        measuring: false,
+        unit: unit.to_string(),
+        things: [String::new(), String::new()],
     }
 }
 
@@ -504,6 +649,7 @@ pub(crate) fn read(
     session: &mut Session,
     scene: Option<&Scene>,
     bodies_here: bool,
+    job: &mut Option<craft3d_engine::BetweenJob>,
 ) -> Option<Props> {
     let view = session.selection();
     let first = view.items.first()?.clone();
@@ -531,16 +677,13 @@ pub(crate) fn read(
     // Two things: their relation, by itself (the Measure button stays
     // for one face's wall thickness).
     let measurement = match (&second, view.items.len()) {
-        (Some(other), 2) if bodies_here => relation(session, &first, other, &unit).map(|mut m| {
-            m.title = craft3d_engine::selection_summary(&view.items);
-            m.check_name = format!(
-                "{} {} – {}",
-                relation_words(&m.relation),
-                thing_words(&first, scene),
-                thing_words(other, scene)
-            );
-            m
-        }),
+        (Some(other), 2) if bodies_here => {
+            let things = [thing_words(&first, scene), thing_words(other, scene)];
+            relation(session, &first, other, &unit, things, job).map(|mut m| {
+                m.title = craft3d_engine::selection_summary(&view.items);
+                m
+            })
+        }
         _ => None,
     };
     if first.kind == SelectionKind::Body {
@@ -593,7 +736,13 @@ pub(crate) fn read(
     };
     // One thing: the measure the view shows beside it.
     let single = match (&described, view.items.len()) {
-        (Some(item), 1) => single_of(item, &first, scene, &unit),
+        (Some(item), 1) => single_of(
+            item,
+            &first,
+            scene,
+            &unit,
+            session.linear_tolerance().unwrap_or(1e-6),
+        ),
         _ => None,
     };
     let local = local_name(&first.name);
@@ -664,7 +813,12 @@ pub(crate) fn read(
     // Measure runs here: not while the bodies are built elsewhere (a
     // command there would answer later, deferred).
     let measure = (first.kind == SelectionKind::Face && second.is_none())
-        .then(|| ("measure.thickness", json!({"of": first.name})))
+        .then(|| {
+            (
+                "measure.thickness",
+                json!({"of": {"kind": "face", "where": {"in": first.feature, "name": first.name}}}),
+            )
+        })
         .filter(|_| bodies_here);
     let shape = described.as_ref().and_then(|item| {
         item.get("surface")
@@ -990,6 +1144,10 @@ impl Shell {
     /// words, its parts along the axes, why it was not measured; and
     /// "Keep as a check".
     fn measurement_ui(&mut self, ui: &mut egui::Ui, m: &Measurement) -> bool {
+        if m.measuring {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(30));
+        }
         let kit = Kit::panel(&self.tokens);
         let t = kit.t;
         let sk = kit.skin;
@@ -1053,6 +1211,97 @@ impl Shell {
             small(ui, why);
         }
         m.check("").is_some()
+    }
+
+    /// Whether the relation of the two things selected is kept as a check
+    /// already: for this document and selection (the check changes the
+    /// revision, not that), while the check is there (undone, it can be
+    /// kept again: the review of 2026-11-17).
+    fn kept_now(&self) -> bool {
+        self.side.kept.as_ref().is_some_and(|(key, name)| {
+            Some(*key) == self.side.kept_key()
+                && self.assertion_rows().iter().any(|a| a.name == *name)
+        })
+    }
+
+    /// "Keep as a check" (or that it is kept); true when it was clicked.
+    fn keep_button(&mut self, ui: &mut egui::Ui, keepable: bool) -> bool {
+        let kit = Kit::panel(&self.tokens);
+        let kept = self.kept_now();
+        let k = kit.button(
+            ui,
+            Button::primary(if kept {
+                "Kept as a check"
+            } else {
+                "Keep as a check"
+            })
+            .enabled(keepable && !kept),
+        );
+        self.side.hits.targets.push(("keep".to_string(), k.rect));
+        k.clicked()
+    }
+
+    /// Keeps the relation `m` as a check of the document, under a name of
+    /// its own.
+    fn keep(&mut self, m: &Measurement) {
+        let name = self.free_check_name(&m.check_name);
+        if let (Some(params), Some(key)) = (m.check(&name), self.side.kept_key()) {
+            self.side_queue("assert.add", params, None);
+            self.side.kept = Some((key, name));
+        }
+    }
+
+    /// The card in one line, where the Features tab has no room for it (a
+    /// short window: the review of 2026-11-17 found the relation and Keep
+    /// out of reach there): what is selected and its number, and Keep as a
+    /// check for two things.
+    pub(super) fn props_compact_ui(&mut self, ui: &mut egui::Ui) {
+        let Some(props) = self.side.props.clone() else {
+            return;
+        };
+        let kit = Kit::panel(&self.tokens);
+        let t = kit.t;
+        let (text, keepable) = match (&props.measurement, &props.single) {
+            (Some(m), _) => (format!("{} {}", m.words, m.text), m.check("").is_some()),
+            (None, Some(single)) => (format!("{} {}", props.kind, single.text), false),
+            (None, None) => (format!("{} · {}", props.kind, props.subtitle), false),
+        };
+        if props.measurement.as_ref().is_some_and(|m| m.measuring) {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(30));
+        }
+        let mut keep = false;
+        ui.horizontal(|ui| {
+            let button = if props.measurement.is_some() {
+                120.0
+            } else {
+                0.0
+            };
+            let room = (ui.available_width() - button).max(40.0);
+            let shown = clip(ui, &kit, &text, ValueStyle::Plain, room);
+            let (rect, line) =
+                ui.allocate_exact_size(vec2(room, kit.hit(t.control_height)), Sense::click());
+            let galley = kit.galley(ui, shown, kit.font(), kit.skin.text);
+            ui.painter().galley(
+                pos2(rect.left(), rect.center().y - galley.size().y * 0.5),
+                galley,
+                kit.c(kit.skin.text),
+            );
+            self.side.hits.targets.push(("compact".to_string(), rect));
+            line.on_hover_text(text.clone());
+            if props.measurement.is_some() {
+                keep = self.keep_button(ui, keepable);
+            }
+        });
+        if keep && let Some(m) = &props.measurement {
+            self.keep(m);
+        }
+    }
+
+    /// How high the one-line card is.
+    pub(super) fn props_compact_height(&self) -> f32 {
+        let kit = Kit::panel(&self.tokens);
+        kit.hit(kit.t.control_height) + 2.0 * kit.t.nav_spacing
     }
 
     /// The card of what is selected.
@@ -1199,22 +1448,7 @@ impl Shell {
         let mut keep = false;
         ui.horizontal(|ui| {
             if props.measurement.is_some() {
-                // Two things: their relation kept as a check of the
-                // document, once.
-                // Keyed by the document and the selection: the check
-                // added changes the document's revision, not that.
-                let kept = self.side.kept.is_some() && self.side.kept == self.side.kept_key();
-                let k = kit.button(
-                    ui,
-                    Button::primary(if kept {
-                        "Kept as a check"
-                    } else {
-                        "Keep as a check"
-                    })
-                    .enabled(keepable && !kept),
-                );
-                self.side.hits.targets.push(("keep".to_string(), k.rect));
-                keep = k.clicked();
+                keep = self.keep_button(ui, keepable);
                 return;
             }
             let m = kit.button(
@@ -1230,12 +1464,8 @@ impl Shell {
                 .push(("copy name".to_string(), c.rect));
             copy = c.clicked();
         });
-        if keep
-            && let Some(m) = &props.measurement
-            && let Some(params) = m.check(&self.free_check_name(&m.check_name))
-        {
-            self.side_queue("assert.add", params, None);
-            self.side.kept = self.side.kept_key();
+        if keep && let Some(m) = &props.measurement {
+            self.keep(m);
         }
         ui.add_space(t.nav_spacing * 2.0);
         if measure && let Some((command, params)) = props.measure.clone() {
@@ -1283,6 +1513,12 @@ impl Shell {
     /// The relation of the two things selected, when there is one.
     pub fn measurement(&self) -> Option<&Measurement> {
         self.side.props.as_ref()?.measurement.as_ref()
+    }
+
+    /// Whether the relation of the two things selected is being measured
+    /// still, on its own thread.
+    pub fn measuring(&self) -> bool {
+        self.measurement().is_some_and(|m| m.measuring)
     }
 
     /// The measure of the one thing selected the view shows, when it has
