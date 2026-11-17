@@ -737,6 +737,23 @@ fn the_grid_of_the_surfaces_chapter_is_as_it_says() {
         ),
         (7, 5)
     );
+    // The feature's row says the grid's size, and where it is thinned.
+    for said in [
+        "`29 rows of 37`",
+        "`every 5th row,",
+        "· 300 rows of 400`",
+        "left out",
+    ] {
+        assert!(text.contains(said), "the page says {said}");
+    }
+    let row = s
+        .history_view()
+        .unwrap()
+        .features
+        .iter()
+        .find(|f| f.name == "Hill")
+        .map(|f| f.key.clone());
+    assert_eq!(row.as_deref(), Some("4 rows of 5"));
     run(&mut s, "variable.set", json!({"name": "lift", "expr": "3"}));
     let (_, higher) = base(&mut s);
     assert!(

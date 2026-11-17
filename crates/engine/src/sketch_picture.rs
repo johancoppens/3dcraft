@@ -10,8 +10,8 @@
 //! dimmed) where a body is in front.
 
 use crate::scene::{Scene, SceneSketch};
-use craft3d_math::Bbox3;
-use craft3d_render::{Camera, Frame, RenderError};
+use craft3d_math::{Bbox3, Vec3};
+use craft3d_render::{Camera, Cut, Frame, RenderError};
 use serde_json::{Value, json};
 
 /// The colour of a sketch's lines and points in pictures without a
@@ -35,12 +35,16 @@ const SLACK: f64 = 1e-3;
 
 /// Draws the sketches of `scene` over `frame`, seen with `camera`, framed
 /// on `model`; what it drew, for the result: how many sketches, and the
-/// grids among them ([`grids_json`]).
+/// grids among them ([`grids_json`]). With a section (`cut`, the plane the
+/// bodies were cut with) a grid is drawn on the kept side only, its lines
+/// ending at the plane ([`SceneSketch::cut_by_section`]); a sketch and a
+/// helix whole.
 pub(crate) fn draw(
     frame: &mut Frame,
     camera: &Camera,
     scene: &Scene,
     model: &Bbox3,
+    cut: Option<&Cut>,
 ) -> Result<Value, RenderError> {
     let base = model.diagonal() * SLACK;
     let base = if base.is_finite() && base > 0.0 {
@@ -50,30 +54,86 @@ pub(crate) fn draw(
     };
     for sketch in &scene.sketches {
         let slack = base + sketch.lift(scene.tolerance);
+        let cut = cut.filter(|_| sketch.cut_by_section());
         for polyline in &sketch.polylines {
             let color = if polyline.construction {
                 CONSTRUCTION_COLOR
             } else {
                 SKETCH_COLOR
             };
-            craft3d_render::analysis::draw_lines(
+            match cut {
+                None => craft3d_render::analysis::draw_lines(
+                    frame,
+                    camera,
+                    std::slice::from_ref(&polyline.points),
+                    color,
+                    slack,
+                )?,
+                Some(cut) => craft3d_render::analysis::draw_lines(
+                    frame,
+                    camera,
+                    &kept_pieces(&polyline.points, cut),
+                    color,
+                    slack,
+                )?,
+            }
+        }
+        match cut {
+            None => craft3d_render::analysis::draw_dots(
                 frame,
                 camera,
-                std::slice::from_ref(&polyline.points),
-                color,
+                &sketch.points,
+                SKETCH_COLOR,
+                POINT_RADIUS,
                 slack,
-            )?;
+            )?,
+            Some(cut) => {
+                let kept: Vec<Vec3> = sketch
+                    .points
+                    .iter()
+                    .copied()
+                    .filter(|p| cut.clip_segment(*p, *p).is_some())
+                    .collect();
+                craft3d_render::analysis::draw_dots(
+                    frame,
+                    camera,
+                    &kept,
+                    SKETCH_COLOR,
+                    POINT_RADIUS,
+                    slack,
+                )?;
+            }
         }
-        craft3d_render::analysis::draw_dots(
-            frame,
-            camera,
-            &sketch.points,
-            SKETCH_COLOR,
-            POINT_RADIUS,
-            slack,
-        )?;
     }
     Ok(json!({ "sketches": scene.sketches.len(), "grids": grids_json(scene) }))
+}
+
+/// The parts of the polyline `points` on the kept side of `cut`, each a
+/// polyline of its own: every segment clipped at the plane
+/// (`Cut::clip_segment`, as the window's overlay clips it), the pieces
+/// that follow on from each other joined.
+fn kept_pieces(points: &[Vec3], cut: &Cut) -> Vec<Vec<Vec3>> {
+    let mut out: Vec<Vec<Vec3>> = Vec::new();
+    let mut joined = false;
+    for pair in points.windows(2) {
+        let [a, b] = [pair.first(), pair.get(1)];
+        let (Some(&a), Some(&b)) = (a, b) else {
+            continue;
+        };
+        match cut.clip_segment(a, b) {
+            Some([from, to]) => {
+                match out.last_mut() {
+                    Some(piece) if joined && from == a => piece.push(to),
+                    _ => out.push(vec![from, to]),
+                }
+                // The next segment goes on from this one where this one
+                // was kept to its end.
+                joined = to == b;
+            }
+            None => joined = false,
+        }
+    }
+    out
 }
 
 /// The grids of grid surfaces among the sketches of `scene`, in history

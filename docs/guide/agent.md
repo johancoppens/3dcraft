@@ -194,7 +194,8 @@ A note is one sentence pinned to a place of the model: a face, an edge, a vertex
 thicker here", "this hole can go", "round this edge". Leave as many as you like, then say to the agent:
 *work through the notes*. It reads the open ones (`note.list`), makes the changes to the model they ask
 for, and closes each with a sentence of reply (`note.resolve`) that stays with the note: what it did, or
-why it did not.
+why it did not. It works through them when you ask, not on its own; it may tell you that a document it
+opened has notes.
 
 The agent writes notes too: questions and remarks for you. When it has a question about a place ("this rib
 touches the hole: is that meant?"), it pins the question there with `note.add` instead of guessing; answer
@@ -222,8 +223,8 @@ closed it with the reply.
 
 - **A note stays where you put it.** It is pinned to the face by the face's persistent name, so it stays
   on that face when sizes change or a later feature (a hole, a fillet) takes the body or cuts the face in
-  pieces (it is then on every piece, its marker on the nearest). A note on a corner stays on the corner as
-  long as a vertex of the body is there. If the face itself is gone (its feature was deleted), the note
+  pieces (it is then on every piece, its marker on the nearest). A note on a corner stays on that corner
+  wherever a later feature takes it (a move, a mirror), until one takes the corner away. If the face itself is gone (its feature was deleted), the note
   stays at its point and `note.list` says it is *detached* and why; nothing is lost, and an undo pins it
   again. A note on a body that is then subtracted from another is detached too: the body is no material of
   the result.
@@ -231,7 +232,9 @@ closed it with the reply.
   chamfer's face is numbered by its edge's place among the edges it rounds, so a fillet given one edge
   fewer can give the number to another corner. A note on such a face is still taken, but it is held by the
   feature that made the face and the note's point (`note.list` says *byPlace*), never by the name: its
-  marker goes to the nearest face that feature makes.
+  marker goes to the nearest face that feature makes. When that feature no longer makes anything where
+  the note was (a fillet given fewer edges), `note.list` says the note's place is *lost*: it stays at its
+  point, for you or the agent to look at.
 - **Notes are part of the document.** They are saved in the `.3dcraft` file, so whoever opens it sees
   them; each change is one step that `edit.undo` takes back. They never change the model.
 - **Published files hold none.** A Jig exported with `jig.export` leaves them out (it says how many), and

@@ -392,6 +392,32 @@ impl SceneSketch {
             _ => 0.0,
         }
     }
+
+    /// Whether a viewer draws what of this sketch lies behind a body
+    /// dimmed (true) or leaves it out (false). A sketch and a helix are
+    /// drawn dimmed there, so a profile inside a part still reads. A
+    /// grid's stretches and points behind a body are left out, as a
+    /// body's hidden edges are, unless the bodies are drawn see-through
+    /// (`see_through`), when they show dimmed through them (the developer,
+    /// 2026-11-17: the net of a terrain's back slope drawn dimmed through
+    /// its summit read as a second sheet). Behind a body means: a surface
+    /// of the picture lies nearer than the point by more than the depth
+    /// test's allowances and the grid's [`Self::lift`]; the grid's own
+    /// sheet counts as any body, so the part of a grid on a slope turned
+    /// away behind a ridge of the same sheet is left out.
+    pub fn dims_hidden(&self, see_through: bool) -> bool {
+        self.grid.is_none() || see_through
+    }
+
+    /// Whether a section plane cuts this sketch where it cuts the bodies:
+    /// a viewer then draws only what lies on the kept side, its lines
+    /// ending at the plane exactly and its points beyond it left out. A
+    /// grid is cut, as the sheet it lies on is (the developer,
+    /// 2026-11-17: the grid of the half cut away floated beside the cut
+    /// and over its cap). A sketch and a helix are drawn whole, as ever.
+    pub fn cut_by_section(&self) -> bool {
+        self.grid.is_some()
+    }
 }
 
 /// How far in front of the surface under them the lines and points of a

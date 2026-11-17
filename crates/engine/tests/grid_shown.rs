@@ -62,6 +62,18 @@ fn height(r: usize, c: usize) -> f64 {
     ][r][c]
 }
 
+/// The key value of the row of the feature `name` (the side panel's,
+/// from the document alone).
+fn key(s: &Session, name: &str) -> String {
+    s.history_view()
+        .unwrap()
+        .features
+        .iter()
+        .find(|f| f.name == name)
+        .map(|f| f.key.clone())
+        .unwrap_or_else(|| panic!("no {name}"))
+}
+
 fn scene(s: &mut Session) -> Arc<Scene> {
     s.scene_with(SceneQuality::display()).unwrap().unwrap()
 }
@@ -144,8 +156,11 @@ fn a_tables_grid_is_drawn_through_its_points_and_switched_with_its_feature() {
     assert!(row.first().unwrap().distance(grid.points[6]) < 1e-9);
     assert!(row.last().unwrap().distance(grid.points[11]) < 1e-9);
     // Lifted against the depth: a grid lies on its sheet, a sketch on its
-    // plane.
+    // plane. What lies behind a body is left out, unless see-through.
     assert_eq!(grid.lift(0.5), SURFACE_LIFT * 0.5);
+    assert!(!grid.dims_hidden(false) && grid.dims_hidden(true));
+    // The feature's row says its size (nothing thinned).
+    assert_eq!(key(&s, "Hill"), "4 rows of 6");
 
     // Hidden with its feature, shown again with it.
     run(
@@ -193,6 +208,8 @@ fn a_tables_grid_is_drawn_through_its_points_and_switched_with_its_feature() {
     );
     let failed = scene(&mut s);
     assert!(grid_of(&failed, "Hill").is_none());
+    // Its row says what it is, without a size.
+    assert_eq!(key(&s, "Hill"), "SurfaceGrid");
     assert!(
         failed
             .features
@@ -306,7 +323,11 @@ fn a_large_grid_is_drawn_every_kth_line_within_its_caps() {
         let given = Vec3::new(x, y, (x / 9.0).psin() + (y / 7.0).pcos());
         assert!(at(r, c).distance(given) < 1e-9, "({r}, {c})");
     }
-    // ui.get and view.render say so.
+    // The feature's row says so, as do ui.get and view.render.
+    assert_eq!(
+        key(&s, "Wave"),
+        "every 2nd row, 4th column · 70 rows of 200"
+    );
     let said = craft3d_engine::grids_json(&shown);
     assert_eq!(
         said,
@@ -430,4 +451,87 @@ fn view_render_draws_the_grid_with_its_points_on_the_rendered_sheet() {
         .execute("view.render", &json!({"sketches": "yes"}))
         .unwrap_err();
     assert!(refused.message().contains("sketches"), "{refused:?}");
+}
+
+/// `view.render` with a section cuts the grid where it cuts the bodies:
+/// seen from straight above, the grid's ink (what the picture with the
+/// sketches has that the one without has not) lies on the kept side of
+/// the plane, within the width of a line and a point, and its lines reach
+/// the plane; for a plane across y, the other half, and a plane at a
+/// slant.
+#[test]
+fn view_render_cuts_the_grid_with_its_section() {
+    let mut s = session();
+    hill(&mut s);
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Base", "size": [50, 24, 20], "position": [0, 0, -10]}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "intersect", "target": "Base", "tool": "Hill", "name": "Terrain"}),
+    );
+    let (width, height, seen) = (500_u32, 300_u32, 30.0);
+    // Pixel (column, row) shows model (x, y): orthographic, from above.
+    let at = |c: usize, r: usize| {
+        let per = seen / f64::from(height);
+        (
+            25.0 + (c as f64 + 0.5 - f64::from(width) / 2.0) * per,
+            12.0 - (r as f64 + 0.5 - f64::from(height) / 2.0) * per,
+        )
+    };
+    let pixel = seen / f64::from(height);
+    for (name, normal, kept) in [
+        ("across y", [0.0, 1.0, 0.0], [0.0, -1.0]),
+        ("flipped", [0.0, -1.0, 0.0], [0.0, 1.0]),
+        ("slanted", [1.0, 1.0, 0.0], [-1.0, -1.0]),
+    ] {
+        let picture = |s: &mut Session, sketches: bool| {
+            let shot = run(
+                s,
+                "view.render",
+                json!({"width": width, "height": height, "renderer": "cpu", "background": "dark",
+                       "camera": {"eye": [25, 12, 100], "target": [25, 12, 0], "up": [0, 1, 0],
+                                  "projection": "orthographic", "height": seen},
+                       "section": {"point": [25, 11, 0], "normal": normal}, "sketches": sketches}),
+            );
+            pixels(&shot).1
+        };
+        let (with, without) = (picture(&mut s, true), picture(&mut s, false));
+        // How far a pixel's model point lies on the kept side of the plane.
+        let squared: f64 = kept[0] * kept[0] + kept[1] * kept[1];
+        let length = squared.sqrt();
+        let inside = |c: usize, r: usize| {
+            let (x, y) = at(c, r);
+            ((x - 25.0) * kept[0] + (y - 11.0) * kept[1]) / length
+        };
+        let mut ink = 0;
+        let mut at_plane = 0;
+        for r in 0..height as usize {
+            for c in 0..width as usize {
+                let i = 3 * (r * width as usize + c);
+                if with[i..i + 3] == without[i..i + 3] {
+                    continue;
+                }
+                ink += 1;
+                let depth = inside(c, r);
+                // Nothing beyond the plane but the reach of a point's dot.
+                assert!(
+                    depth >= -3.0 * pixel,
+                    "{name}: grid ink {depth} beyond the plane at ({c}, {r})"
+                );
+                if depth.abs() <= 1.5 * pixel {
+                    at_plane += 1;
+                }
+            }
+        }
+        assert!(ink > 500, "{name}: {ink} pixels of the grid");
+        // The lines that cross the plane reach it.
+        assert!(
+            at_plane >= 4,
+            "{name}: {at_plane} pixels of the grid at the plane"
+        );
+    }
 }
