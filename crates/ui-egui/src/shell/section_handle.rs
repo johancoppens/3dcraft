@@ -1805,11 +1805,11 @@ mod tests {
                 "{point:?}"
             );
         }
-        // A point inside the block, as far from both faces, is on the
-        // first; one above the top and beside the right face is on the
-        // other.
+        // A point inside the block, as far behind the one face as behind
+        // the other, is on the first; one as far outside the right face
+        // as below the top's level is on the other.
         assert!((Vec3::new(55.0, 3.0, 15.0) - *p).dot(*n).abs() < 1e-9);
-        assert!((Vec3::new(65.0, 3.0, 25.0) - *q).dot(*m).abs() < 1e-9);
+        assert!((Vec3::new(65.0, 3.0, 15.0) - *q).dot(*m).abs() < 1e-9);
         // In the other order the first is still through the material.
         let (_, swapped) = planes_of(top, right).unwrap();
         let first = swapped.first().unwrap();
