@@ -41,7 +41,7 @@ use super::controls::{SECTION_PLANES, choose_axis, chosen_axis};
 use crate::camera::Projector;
 use crate::kit::Kit;
 use crate::kit::slider::{Typing, nice_step, shown, snapped};
-use crate::state::CameraState;
+use crate::state::{CameraState, SectionMade, SectionState};
 use crate::theme::{Tokens, color, color_alpha};
 use craft3d_engine::{Scene, SectionPlane, SectionSnap, SnapKind};
 use craft3d_math::{Bbox3, Portable, Vec3};
@@ -90,40 +90,162 @@ pub enum HandlePart {
     Flip,
 }
 
-/// The fourth dot's place among the dots, and the bar's fourth cell's
-/// among X, Y, Z: the plane parallel to a face.
+/// The fourth button's place among the buttons, and the bar's fourth
+/// cell's among X, Y, Z: the plane from the selection.
 pub const FACE_DOT: usize = 3;
 
-/// The face the fourth dot would lay the plane on: the one face selected,
-/// by its body's feature (`F3`) and its persistent name, and why it
-/// cannot when it is not flat.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FaceChoice {
-    pub feature: String,
-    pub face: String,
+/// What the fourth button says while the selection gives no plane.
+pub const TAKES_FACES: &str = "Takes one or two flat faces: select them first";
+
+/// Two faces' normals closer than this (the sine of the angle between
+/// them, or between one and the other's opposite) are parallel.
+const PARALLEL: f64 = 1e-9;
+
+/// What the fourth button would make of the selection
+/// ([`Shell::sync_face_choice`]): the plane along the one flat face
+/// selected, midway between two parallel flat faces, or halving the angle
+/// of two that are not; or why it cannot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlaneChoice {
+    /// How the plane is made; `None` when the selection gives none (then
+    /// `refused` says why).
+    pub made: Option<SectionMade>,
+    /// The faces selected, by their body's feature (`F3`) and persistent
+    /// name, in the selection's order.
+    pub faces: Vec<(String, String)>,
+    /// The planes two faces give, each a point near the faces and a unit
+    /// normal: the one midway, or the bisector through the material and
+    /// then the other one, square to it ([`planes_of`]).
+    pub planes: Vec<([f64; 3], [f64; 3])>,
     pub refused: Option<String>,
 }
 
-/// The section across the face of `choice`, through it: the face's plane
-/// with its outward normal, offset 0, nothing kept flipped (what lies
-/// outside the face is cut away, so nothing is yet: the arrow, dragged
-/// in, cuts into the body). A face that is not flat leaves the section
-/// as it is.
-pub fn choose_face(section: &mut crate::state::SectionState, choice: &FaceChoice) {
+impl PlaneChoice {
+    fn refused(faces: Vec<(String, String)>, why: &str) -> Self {
+        PlaneChoice {
+            made: None,
+            faces,
+            planes: Vec::new(),
+            refused: Some(why.to_string()),
+        }
+    }
+
+    /// Which of `planes` a click takes for `section` as it is: the other
+    /// bisector when the section lies on the first one already.
+    fn next(&self, section: &SectionState) -> usize {
+        match (self.made, self.planes.first()) {
+            (Some(SectionMade::Bisector), Some((point, normal)))
+                if section.made == Some(SectionMade::Bisector)
+                    && section.point == Some(*point)
+                    && section.normal == Some(*normal) =>
+            {
+                1
+            }
+            _ => 0,
+        }
+    }
+
+    /// What a click on the fourth button does, for `section` as it is; or
+    /// why it does nothing.
+    pub fn words(&self, section: &SectionState) -> String {
+        if let Some(why) = &self.refused {
+            return why.clone();
+        }
+        match self.made {
+            Some(SectionMade::Face) => "Along the selected face, through it",
+            Some(SectionMade::Mid) => "Midway between the two parallel faces",
+            Some(SectionMade::Bisector) if self.next(section) == 1 => {
+                "The other bisector of the two faces, square to this one"
+            }
+            Some(SectionMade::Bisector) => {
+                "Halving the angle of the two faces, through the material"
+            }
+            None => TAKES_FACES,
+        }
+        .to_string()
+    }
+}
+
+/// The plane `choice` makes, set on `section`, offset 0, nothing kept
+/// flipped: along the one face, through it, with its outward normal
+/// (what lies outside the face is cut away, so nothing is yet: the arrow,
+/// dragged in, cuts into the body); midway between two; or the bisector
+/// through the material, and at a second click the other one. The plane
+/// it lies on already (but a bisector) keeps its offset; a choice that
+/// gives no plane leaves the section as it is.
+pub fn choose_plane(section: &mut SectionState, choice: &PlaneChoice) {
     if choice.refused.is_some() {
         return;
     }
-    if section.plane.as_deref() == Some(choice.face.as_str())
-        && section.feature.as_deref() == Some(choice.feature.as_str())
-    {
-        return;
+    match choice.made {
+        Some(SectionMade::Face) => {
+            let Some((feature, face)) = choice.faces.first() else {
+                return;
+            };
+            section.made = Some(SectionMade::Face);
+            if section.plane.as_deref() == Some(face.as_str())
+                && section.feature.as_deref() == Some(feature.as_str())
+            {
+                return;
+            }
+            section.plane = Some(face.clone());
+            section.feature = Some(feature.clone());
+            section.point = None;
+            section.normal = None;
+        }
+        Some(made @ (SectionMade::Mid | SectionMade::Bisector)) => {
+            let Some(&(point, normal)) = choice.planes.get(choice.next(section)) else {
+                return;
+            };
+            if made == SectionMade::Mid
+                && section.made == Some(made)
+                && section.point == Some(point)
+                && section.normal == Some(normal)
+            {
+                return;
+            }
+            section.plane = None;
+            section.feature = None;
+            section.point = Some(point);
+            section.normal = Some(normal);
+            section.made = Some(made);
+        }
+        None => return,
     }
-    section.plane = Some(choice.face.clone());
-    section.feature = Some(choice.feature.clone());
-    section.point = None;
-    section.normal = None;
     section.offset = 0.0;
     section.flip = false;
+}
+
+/// The planes two flat faces give, each face by a point of its plane and
+/// its unit outward normal. Parallel (their normals the same or opposite,
+/// within [`PARALLEL`]): the plane midway between them, along the first's
+/// normal. Else the two bisectors of the angle of their planes, through
+/// the line where these meet: first the one through the material (where
+/// both faces' bodies are, behind both faces: normal `n - m`), then the
+/// other (normal `n + m`). Each by its point nearest the middle of the
+/// two points given, so near the faces, and its unit normal; `None` when
+/// a number is not one.
+pub fn planes_of(a: (Vec3, Vec3), b: (Vec3, Vec3)) -> Option<(SectionMade, Vec<(Vec3, Vec3)>)> {
+    let ((p, n), (q, m)) = (a, b);
+    let middle = p.lerp(q, 0.5);
+    // The point of the plane `x . w = c` nearest the middle.
+    let nearest = |w: Vec3, c: f64| {
+        let length = w.length_squared();
+        let point = middle + w * ((c - middle.dot(w)) / length);
+        let normal = w.normalized()?;
+        (length > 0.0 && point.is_finite() && normal.is_finite()).then_some((point, normal))
+    };
+    let unit = |v: Vec3| (v.length() - 1.0).abs() < 1e-6;
+    if !(middle.is_finite() && unit(n) && unit(m)) {
+        return None;
+    }
+    if n.cross(m).length() <= PARALLEL {
+        let mid = nearest(n, (p.dot(n) + q.dot(n)) * 0.5)?;
+        return Some((SectionMade::Mid, vec![mid]));
+    }
+    let through = nearest(n - m, p.dot(n) - q.dot(m))?;
+    let other = nearest(n + m, p.dot(n) + q.dot(m))?;
+    Some((SectionMade::Bisector, vec![through, other]))
 }
 
 /// What a drag snapped to.
@@ -728,9 +850,9 @@ pub(crate) struct HandleView {
     snapped: Option<Snapped>,
     /// The typing into the number began this frame.
     fresh: bool,
-    /// The face the fourth dot lays the plane on, and the selection and
-    /// scene it was found for (`Shell::sync_face_choice`).
-    pub(crate) face: Option<FaceChoice>,
+    /// The plane the fourth button makes of the selection, and the
+    /// selection and scene it was found for (`Shell::sync_face_choice`).
+    pub(crate) face: Option<PlaneChoice>,
     face_for: Option<(u64, u64, (u64, Option<u64>))>,
 }
 
@@ -742,11 +864,21 @@ impl Shell {
         self.section_handle.place.as_ref()
     }
 
-    /// The face the plane would be laid on (the display bar's fourth
-    /// cell, the handle's fourth dot): the one face selected, with why
-    /// it cannot be when it is not flat.
-    pub fn section_face_choice(&self) -> Option<&FaceChoice> {
+    /// The plane the fourth button (the handle's, and the display bar's
+    /// cell in the narrow layout) makes of the selection, with why it
+    /// cannot when it does not give one. `None` before a scene is drawn.
+    pub fn section_face_choice(&self) -> Option<&PlaneChoice> {
         self.section_handle.face.as_ref()
+    }
+
+    /// Whether the section's plane is the one the selection made (the
+    /// fourth button chosen): on a face, midway or a bisector.
+    pub(super) fn section_from_selection(&self) -> bool {
+        self.section_on_face()
+            || matches!(
+                self.state.section.made,
+                Some(SectionMade::Mid | SectionMade::Bisector)
+            )
     }
 
     /// Whether the section's plane is that of a face (laid on it by the
@@ -755,15 +887,10 @@ impl Shell {
         self.section_cache.as_ref().is_some_and(|cache| cache.face)
     }
 
-    /// Whether the fourth dot and the bar's fourth cell are shown: one
-    /// face selected, or the plane a face's already.
-    pub(super) fn face_option(&self) -> bool {
-        self.section_handle.face.is_some() || self.section_on_face()
-    }
-
-    /// Finds again, when the selection or the scene changed, the face the
-    /// fourth dot would lay the plane on: the one face selected, flat or
-    /// with why not (the engine's own test, `Session::section_plane`).
+    /// Finds again, when the selection or the scene changed, the plane the
+    /// fourth button would make: of one flat face selected, or two (each
+    /// face's plane by the engine's own test, `Session::section_plane`);
+    /// anything else gives none, with why.
     pub(crate) fn sync_face_choice(
         &mut self,
         session: &mut craft3d_engine::Session,
@@ -779,30 +906,58 @@ impl Shell {
             return;
         }
         self.section_handle.face_for = Some(key);
-        let one = match self.selection().items.as_slice() {
-            [one] if one.kind == craft3d_engine::SelectionKind::Face => one.clone(),
-            _ => {
-                self.section_handle.face = None;
-                return;
+        let items = &self.selection().items;
+        let faces: Vec<(String, String)> = items
+            .iter()
+            .filter(|item| item.kind == craft3d_engine::SelectionKind::Face)
+            .map(|item| (item.feature.clone(), item.name.clone()))
+            .collect();
+        if faces.is_empty() || faces.len() > 2 || faces.len() != items.len() {
+            self.section_handle.face = Some(PlaneChoice::refused(faces, TAKES_FACES));
+            return;
+        }
+        let mut planes = Vec::new();
+        for (feature, face) in &faces {
+            let spec = craft3d_engine::SectionSpec {
+                plane: Some(face.clone()),
+                feature: Some(feature.clone()),
+                ..craft3d_engine::SectionSpec::default()
+            };
+            match session.section_plane(scene, &spec) {
+                Ok(plane) => planes.push((plane.base, plane.along)),
+                Err(why) => {
+                    let why = if why.contains("not flat") {
+                        "Not a flat face: the plane takes one or two flat faces".to_string()
+                    } else {
+                        why
+                    };
+                    self.section_handle.face = Some(PlaneChoice::refused(faces, &why));
+                    return;
+                }
             }
+        }
+        let choice = match planes.as_slice() {
+            [_] => PlaneChoice {
+                made: Some(SectionMade::Face),
+                faces,
+                planes: Vec::new(),
+                refused: None,
+            },
+            [a, b] => match planes_of(*a, *b) {
+                Some((made, two)) => PlaneChoice {
+                    made: Some(made),
+                    faces,
+                    planes: two
+                        .into_iter()
+                        .map(|(p, n)| ([p.x, p.y, p.z], [n.x, n.y, n.z]))
+                        .collect(),
+                    refused: None,
+                },
+                None => PlaneChoice::refused(faces, "The two faces give no plane"),
+            },
+            _ => PlaneChoice::refused(faces, TAKES_FACES),
         };
-        let spec = craft3d_engine::SectionSpec {
-            plane: Some(one.name.clone()),
-            feature: Some(one.feature.clone()),
-            ..craft3d_engine::SectionSpec::default()
-        };
-        let refused = session.section_plane(scene, &spec).err().map(|why| {
-            if why.contains("not flat") {
-                "Not a flat face: the plane lies along a flat face".to_string()
-            } else {
-                why
-            }
-        });
-        self.section_handle.face = Some(FaceChoice {
-            feature: one.feature,
-            face: one.name,
-            refused,
-        });
+        self.section_handle.face = Some(choice);
     }
 
     /// What the drag of the section's arrow under way snapped to last.
@@ -972,7 +1127,7 @@ impl Shell {
             }
             HandlePart::Dot(FACE_DOT) => {
                 if let Some(choice) = self.section_handle.face.clone() {
-                    choose_face(&mut section, &choice);
+                    choose_plane(&mut section, &choice);
                 }
             }
             HandlePart::Dot(axis) => choose_axis(&mut section, axis, scene),
@@ -1026,10 +1181,19 @@ impl Shell {
             .as_ref()
             .is_some_and(|t| t.field == NUMBER_FIELD);
         let pointer = ui.input(|i| i.pointer.hover_pos());
-        // The axis's letter and the offset in the document's unit.
+        // The axis's letter (or what the plane is: along a face, midway,
+        // a bisector) and the offset in the document's unit.
         let letter = chosen_axis(&self.state.section)
             .and_then(|k| SECTION_PLANES.get(k))
-            .map(|(name, _)| name.to_uppercase());
+            .map(|(name, _)| name.to_uppercase())
+            .or_else(|| {
+                let made = if self.section_on_face() {
+                    Some(SectionMade::Face)
+                } else {
+                    self.state.section.made
+                };
+                made.map(|made| made.label().to_string())
+            });
         let number = shown(self.state.section.offset, 1.0, 2, self.length_unit);
         let font = kit.font();
         let letter_galley = letter.map(|l| {
@@ -1046,12 +1210,12 @@ impl Shell {
         if typing {
             text_width = text_width.max(96.0);
         }
-        // The group: the number, then the buttons X, Y, Z (and ∥), then
+        // The group: the number, then the buttons X, Y, Z and ∥, then
         // Flip side, on one plate as high as the controls on the bar.
         let height = tokens.nav_height;
         let inset = 2.0;
         let side = height - 2.0 * inset;
-        let buttons = if self.face_option() { 5 } else { 4 };
+        let buttons = 5;
         let number_width = text_width + PAD.x * 2.0;
         let size = vec2(
             number_width + buttons as f32 * (side + inset) + inset,
@@ -1210,19 +1374,19 @@ impl Shell {
             }
             painter.galley(pos2(x, y), number_galley, color(tokens.plate_text));
         }
-        // The buttons: the axis the plane is across, and Flip side while it
-        // is flipped, filled with the accent; ∥ greyed when the face
-        // selected is not flat.
-        let chosen = if self.section_on_face() {
+        // The buttons: the axis the plane is across (or ∥ while the plane
+        // is the selection's), and Flip side while it is flipped, filled
+        // with the accent; ∥ greyed while the selection gives no plane.
+        let chosen = if self.section_from_selection() {
             Some(FACE_DOT)
         } else {
             chosen_axis(&self.state.section)
         };
-        let refused = self
-            .section_handle
-            .face
-            .as_ref()
-            .and_then(|f| f.refused.clone());
+        let choice = self.section_handle.face.clone();
+        let refused = match &choice {
+            Some(choice) => choice.refused.clone(),
+            None => Some(TAKES_FACES.to_string()),
+        };
         let segment = egui::CornerRadius::same(tokens.nav_segment_radius);
         let letters = egui::FontId::proportional(tokens.control_font);
         let mut cells: Vec<(HandlePart, Pos2, bool)> = place
@@ -1294,11 +1458,10 @@ impl Shell {
                 HandlePart::Dot(_) | HandlePart::Flip => egui::CursorIcon::PointingHand,
             });
             let words = match part {
-                HandlePart::Dot(FACE_DOT) => Some(
-                    refused
-                        .clone()
-                        .unwrap_or_else(|| "Parallel to the selected face".to_string()),
-                ),
+                HandlePart::Dot(FACE_DOT) => Some(match &choice {
+                    Some(choice) => choice.words(&self.state.section),
+                    None => TAKES_FACES.to_string(),
+                }),
                 HandlePart::Flip => Some("Keep the other half".to_string()),
                 _ => None,
             };
@@ -1610,6 +1773,159 @@ mod tests {
         assert_eq!(
             plane_frame(&camera, viewport, &[], &none, &bounds, &tokens),
             None
+        );
+    }
+
+    fn near(a: Vec3, b: Vec3) -> bool {
+        a.distance(b) < 1e-9
+    }
+
+    #[test]
+    fn two_faces_give_the_plane_midway_or_the_bisectors_through_the_material_first() {
+        // A block 60 x 40 x 20 at the origin: its right face (x = 60) and
+        // its top (z = 20), each by a point of it and its outward normal.
+        let right = (Vec3::new(60.0, 0.0, 0.0), Vec3::X);
+        let top = (Vec3::new(0.0, 40.0, 20.0), Vec3::Z);
+        let (made, planes) = planes_of(right, top).unwrap();
+        assert_eq!(made, SectionMade::Bisector);
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        let [(p, n), (q, m)] = planes.as_slice() else {
+            panic!("two bisectors: {planes:?}");
+        };
+        // Through the material: down and in from the edge at x = 60,
+        // z = 20, along (1, 0, -1); the other square to it, up and out.
+        assert!(near(*n, Vec3::new(h, 0.0, -h)), "{n:?}");
+        assert!(near(*m, Vec3::new(h, 0.0, h)), "{m:?}");
+        for (point, normal) in [(*p, *n), (*q, *m)] {
+            // Through the edge's line, and near the faces' middle.
+            let on_edge = Vec3::new(60.0, 17.0, 20.0);
+            assert!((on_edge - point).dot(normal).abs() < 1e-9);
+            assert!(
+                point.distance(Vec3::new(30.0, 20.0, 10.0)) < 40.0,
+                "{point:?}"
+            );
+        }
+        // A point inside the block, as far from both faces, is on the
+        // first; one above the top and beside the right face is on the
+        // other.
+        assert!((Vec3::new(55.0, 3.0, 15.0) - *p).dot(*n).abs() < 1e-9);
+        assert!((Vec3::new(65.0, 3.0, 25.0) - *q).dot(*m).abs() < 1e-9);
+        // In the other order the first is still through the material.
+        let (_, swapped) = planes_of(top, right).unwrap();
+        let first = swapped.first().unwrap();
+        assert!((Vec3::new(55.0, 3.0, 15.0) - first.0).dot(first.1).abs() < 1e-9);
+
+        // Two parallel faces, facing apart (the block's left and right)
+        // or the same way: the plane midway, along the first's normal.
+        let left = (Vec3::new(0.0, 5.0, 5.0), Vec3::ZERO - Vec3::X);
+        let (made, planes) = planes_of(right, left).unwrap();
+        assert_eq!(made, SectionMade::Mid);
+        let [(p, n)] = planes.as_slice() else {
+            panic!("one plane: {planes:?}");
+        };
+        assert!(
+            near(*n, Vec3::X) && (p.x - 30.0).abs() < 1e-9,
+            "{p:?} {n:?}"
+        );
+        let ledge = (Vec3::new(20.0, 0.0, 0.0), Vec3::X);
+        let (made, planes) = planes_of(ledge, right).unwrap();
+        assert_eq!(made, SectionMade::Mid);
+        assert!((planes[0].0.x - 40.0).abs() < 1e-9);
+        // At every scale, and a slant a billionth off parallel is not.
+        for k in [1e-3, 1.0, 1e6] {
+            let (made, planes) = planes_of(
+                (Vec3::new(60.0 * k, 0.0, 0.0), Vec3::X),
+                (Vec3::new(0.0, 0.0, 20.0 * k), Vec3::Z),
+            )
+            .unwrap();
+            assert_eq!(made, SectionMade::Bisector);
+            let on_edge = Vec3::new(60.0 * k, 1.0, 20.0 * k);
+            for (point, normal) in planes {
+                assert!((on_edge - point).dot(normal).abs() < 1e-9 * k.max(1.0));
+            }
+        }
+        let tilted = Vec3::new(1.0, 0.0, 1e-6).normalized().unwrap();
+        assert_eq!(
+            planes_of(right, (Vec3::ZERO, tilted)).unwrap().0,
+            SectionMade::Bisector
+        );
+        // Numbers that are not numbers: none.
+        assert_eq!(
+            planes_of((Vec3::new(f64::NAN, 0.0, 0.0), Vec3::X), top),
+            None
+        );
+        assert_eq!(planes_of(right, (Vec3::ZERO, Vec3::ZERO)), None);
+    }
+
+    #[test]
+    fn the_fourth_button_lays_the_plane_and_a_second_click_takes_the_other_bisector() {
+        let face = |made, planes: Vec<([f64; 3], [f64; 3])>| PlaneChoice {
+            made: Some(made),
+            faces: vec![("F1".to_string(), "F1:face(1)".to_string())],
+            planes,
+            refused: None,
+        };
+        let mut section = SectionState {
+            on: true,
+            plane: Some("xy".to_string()),
+            offset: 7.0,
+            flip: true,
+            ..SectionState::default()
+        };
+        // Along one face: its name, offset 0, not flipped; again: kept.
+        choose_plane(&mut section, &face(SectionMade::Face, Vec::new()));
+        assert_eq!(section.plane.as_deref(), Some("F1:face(1)"));
+        assert_eq!(section.feature.as_deref(), Some("F1"));
+        assert_eq!(section.made, Some(SectionMade::Face));
+        assert_eq!((section.offset, section.flip), (0.0, false));
+        section.offset = -3.0;
+        choose_plane(&mut section, &face(SectionMade::Face, Vec::new()));
+        assert_eq!(section.offset, -3.0);
+        // Midway: point and normal, no name.
+        let mid = ([30.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        choose_plane(&mut section, &face(SectionMade::Mid, vec![mid]));
+        assert_eq!(
+            (section.plane.clone(), section.point, section.normal),
+            (None, Some(mid.0), Some(mid.1))
+        );
+        assert_eq!(
+            (section.made, section.offset),
+            (Some(SectionMade::Mid), 0.0)
+        );
+        // Bisectors: the first, then at each click the other.
+        let through = ([1.0, 2.0, 3.0], [0.6, 0.0, -0.8]);
+        let other = ([1.0, 2.0, 3.0], [0.8, 0.0, 0.6]);
+        let bisectors = face(SectionMade::Bisector, vec![through, other]);
+        assert_eq!(
+            bisectors.words(&section),
+            "Halving the angle of the two faces, through the material"
+        );
+        choose_plane(&mut section, &bisectors);
+        assert_eq!(section.normal, Some(through.1));
+        assert_eq!(
+            bisectors.words(&section),
+            "The other bisector of the two faces, square to this one"
+        );
+        choose_plane(&mut section, &bisectors);
+        assert_eq!(section.normal, Some(other.1));
+        assert_eq!(section.made, Some(SectionMade::Bisector));
+        choose_plane(&mut section, &bisectors);
+        assert_eq!(section.normal, Some(through.1));
+        // A selection that gives no plane changes nothing, and says why.
+        let before = section.clone();
+        let none = PlaneChoice::refused(Vec::new(), TAKES_FACES);
+        choose_plane(&mut section, &none);
+        assert_eq!(section, before);
+        assert_eq!(none.words(&section), TAKES_FACES);
+        // The state keeps `made` only with a plane it fits.
+        let mut odd = section.clone();
+        odd.plane = Some("xy".to_string());
+        odd.point = None;
+        odd.normal = None;
+        assert_eq!(odd.validated().unwrap().made, None);
+        assert_eq!(
+            section.clone().validated().unwrap().made,
+            Some(SectionMade::Bisector)
         );
     }
 }

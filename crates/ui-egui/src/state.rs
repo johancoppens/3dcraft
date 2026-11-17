@@ -837,6 +837,38 @@ pub struct SectionState {
     pub offset: f64,
     /// Keep the other half.
     pub flip: bool,
+    /// How the plane was made from the selection, when it was: `face`
+    /// (along one flat face, `plane` its name), `mid` (midway between two
+    /// parallel flat faces) or `bisector` (halving the angle of two flat
+    /// faces that are not), these two by `point` and `normal`. What the
+    /// handle's number says in place of an axis; `null` for a plane
+    /// chosen otherwise. Given with a plane it does not fit, it is dropped.
+    pub made: Option<SectionMade>,
+}
+
+/// How the section's plane was made from the selection (the fourth
+/// button of its handle and of the display bar).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SectionMade {
+    /// Along a flat face, through it.
+    Face,
+    /// Midway between two parallel flat faces, along them.
+    Mid,
+    /// Through the line where the planes of two flat faces meet, halving
+    /// their angle.
+    Bisector,
+}
+
+impl SectionMade {
+    /// The words the handle's number shows in place of an axis.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Face => "\u{2225} face",
+            Self::Mid => "mid",
+            Self::Bisector => "bisector",
+        }
+    }
 }
 
 impl SectionState {
@@ -867,6 +899,11 @@ impl SectionState {
             self.plane = Some("xy".to_string());
             self.point = None;
         }
+        let (named, given) = (self.plane.is_some(), self.normal.is_some());
+        self.made = self.made.filter(|made| match made {
+            SectionMade::Face => named,
+            SectionMade::Mid | SectionMade::Bisector => !named && given,
+        });
         Ok(self)
     }
 
@@ -1649,7 +1686,7 @@ impl UiState {
                 // `feature` is looked for in every body.
                 let names = |key: &str| given.contains_key(key);
                 if names("plane") {
-                    for other in ["point", "normal", "feature"] {
+                    for other in ["point", "normal", "feature", "made"] {
                         if !names(other) {
                             section.insert(other.to_string(), Value::Null);
                         }
@@ -1657,6 +1694,9 @@ impl UiState {
                 } else if names("point") || names("normal") {
                     for other in ["plane", "feature"] {
                         section.insert(other.to_string(), Value::Null);
+                    }
+                    if !names("made") {
+                        section.insert("made".to_string(), Value::Null);
                     }
                 }
             }
@@ -1860,6 +1900,7 @@ mod tests {
                 normal: None,
                 offset: -2.5,
                 flip: true,
+                made: Some(SectionMade::Face),
             },
             picked: Some(Picked {
                 serial: 4,

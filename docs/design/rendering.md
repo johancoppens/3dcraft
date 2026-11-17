@@ -1782,6 +1782,21 @@ refused `ui.set` leaves the state as it was, every field (`a_refused_section_cha
 the_planes`: the coordinator saw the section on after a refusal in the desktop window; the state is put back
 whole here, and was on `main` too, so what he saw was not reproduced).
 
+*The plane from the selection* (2026-11-17, the developer: "2 vlakken selecteren = snijden onder 45 graden?").
+The fourth button (∥) is always there and takes its plane from what is selected
+(`Shell::sync_face_choice`, once per selection and scene): one flat face, the plane along it as before; two
+flat faces, each face's plane by the engine's own test (`Session::section_plane`: a point of it and its
+outward normal, refused in words when the face is not flat), then `planes_of`. Parallel (the sine of their
+angle at most 1e-9, facing the same way or apart): the plane midway, along the first's normal. Otherwise the two
+bisectors of their angle, through the line where the planes meet: `x · (n1 − n2) = p1 · n1 − p2 · n2`, the
+points as far behind the one face as behind the other, so the one through the material (behind both, where
+both bodies are), first; `x · (n1 + n2) = p1 · n1 + p2 · n2`, square to it, at the next click. Each is kept as
+its point nearest the middle of the two faces' points (near the model, never the far end of a line two nearly
+parallel faces meet on) and its unit normal, in `state.section` as `point` and `normal` with `made` (`face`,
+`mid`, `bisector`), which the handle's number shows in place of an axis and `ui.get` reports; the plane stays
+when the selection changes. Anything else greys the button with why on hover. In the narrow layout the bar's
+choice is four cells wide (X, Y, Z, ∥), so each keeps a finger's width.
+
 ### Per-sample stages on Vulkan (2026-11-16)
 
 *Found.* The window of 0.1.1 and 0.1.2 died within seconds of its start on a Windows 11 laptop with a Core
