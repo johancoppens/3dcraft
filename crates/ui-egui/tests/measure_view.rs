@@ -279,7 +279,6 @@ fn keep_as_a_check_adds_the_relation_now_as_an_assertion_one_step_to_undo() {
         2,
     );
     window.frames(&mut shell, &mut session, 3);
-    let revision = session.document_revision();
     let keep = target(&shell, "keep").center();
     window.click(&mut shell, &mut session, keep);
     window.frames(&mut shell, &mut session, 3);
@@ -305,9 +304,13 @@ fn keep_as_a_check_adds_the_relation_now_as_an_assertion_one_step_to_undo() {
             .len(),
         1
     );
-    // One step to undo.
-    run(&mut session, "edit.undo", json!({}));
-    assert_eq!(session.document_revision(), revision);
+    // One step to undo, the check's own (the revision counts on through
+    // an undo, so it is not compared).
+    let undone = run(&mut session, "edit.undo", json!({}));
+    assert_eq!(
+        undone["undone"], "Add assertion Centre distance Left face – Right face",
+        "{undone}"
+    );
     assert!(
         run(&mut session, "assert.list", json!({}))["assertions"]
             .as_array()
