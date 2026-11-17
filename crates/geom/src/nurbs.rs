@@ -1457,13 +1457,13 @@ fn make_bezier(knots: &mut Vec<f64>, degree: usize, rows: &mut [Vec<H>]) {
         && rows.iter().all(|row| {
             row.len() == count && row.iter().all(|h| h.p.is_finite() && h.w.is_finite())
         });
-    let Some((plan, inserted)) = fits.then(|| insertions(knots, degree)).flatten() else {
+    let Some(plan) = fits.then(|| insertions(knots, degree)).flatten() else {
         make_bezier_one_at_a_time(knots, degree, rows);
         return;
     };
     let mut made = Vec::with_capacity(rows.len());
     for row in rows.iter() {
-        match all_inserted(row, &plan, degree) {
+        match all_inserted(row, &plan) {
             Some(new) => made.push(new),
             None => {
                 make_bezier_one_at_a_time(knots, degree, rows);
@@ -1474,24 +1474,71 @@ fn make_bezier(knots: &mut Vec<f64>, degree: usize, rows: &mut [Vec<H>]) {
     for (row, new) in rows.iter_mut().zip(made) {
         *row = new;
     }
-    *knots = inserted;
+    *knots = plan.after;
 }
 
 /// One insertion of [`make_bezier_one_at_a_time`]: the knot span `k` it
-/// is inserted in (the index of the last knot not above it) and Boehm's
-/// factors `α_i` of the points `i` it computes, `k + 1 − p ..= k` (from
-/// 0): every other point is copied ([`all_inserted`]).
+/// is inserted in (the index of the last knot not above it, in the knots
+/// as they are then) and `ahead`, the index in the knots as given of the
+/// first knot above it. The knots as they are then are the result's up to
+/// `k` (each insertion puts its copy after the knots not above it, and
+/// the result is made by adding at the end) and the given ones from
+/// `ahead` on; the value inserted is the result's knot `k + 1`.
 struct Insertion {
     k: usize,
-    alpha: Vec<f64>,
+    ahead: usize,
 }
 
-/// The insertions [`make_bezier_one_at_a_time`] makes in `knots`, each
-/// with the knots as they are when it is made, and the knots after the
-/// last; `None` for knots out of order or not numbers, which go the old
-/// way. Linear in the knots: the knots not above the one inserted are
-/// `done` (the inserted copies among them), the rest still `ahead`.
-fn insertions(knots: &[f64], degree: usize) -> Option<(Vec<Insertion>, Vec<f64>)> {
+/// The insertions of [`make_bezier_one_at_a_time`] with the knots they
+/// are made in: Boehm's factors are worked out from these as each row
+/// takes the insertions ([`Plan::alpha`]), so that what is kept is two
+/// numbers an insertion and the knots, not the factors (`p` an
+/// insertion: 585 MB for a curve of degree 32 and 65 536 points, against
+/// 67 MB for the row it makes).
+struct Plan {
+    degree: usize,
+    /// The knots as given.
+    given: Vec<f64>,
+    /// The knots after the last insertion.
+    after: Vec<f64>,
+    steps: Vec<Insertion>,
+}
+
+impl Plan {
+    /// Boehm's factor `α_i` of `step` for the point `i` it computes
+    /// (`k + 1 − p ≤ i ≤ k`), as `insert_knot` works it out from the knots
+    /// as they are then: the same numbers, the same operations.
+    fn alpha(&self, step: &Insertion, i: usize) -> f64 {
+        let knot = |x: usize| {
+            if x <= step.k {
+                self.after.get(x).copied()
+            } else {
+                self.given
+                    .get(step.ahead.checked_add(x - step.k - 1)?)
+                    .copied()
+            }
+        };
+        let (Some(value), Some(lo), Some(hi)) = (
+            self.after.get(step.k + 1).copied(),
+            knot(i),
+            knot(i + self.degree),
+        ) else {
+            return 0.0;
+        };
+        if hi > lo {
+            (value - lo) / (hi - lo)
+        } else {
+            0.0
+        }
+    }
+}
+
+/// The insertions [`make_bezier_one_at_a_time`] makes in `knots`, and the
+/// knots after the last; `None` for knots out of order or not numbers,
+/// which go the old way. Linear in the knots: the knots not above the one
+/// inserted are `done` (the inserted copies among them), the rest still
+/// `ahead`.
+fn insertions(knots: &[f64], degree: usize) -> Option<Plan> {
     if knots.iter().any(|k| k.is_nan()) || knots.windows(2).any(|w| matches!(w, [a, b] if a > b)) {
         return None;
     }
@@ -1503,43 +1550,28 @@ fn insertions(knots: &[f64], degree: usize) -> Option<(Vec<Insertion>, Vec<f64>)
         .collect();
     distinct.dedup();
     let mut done: Vec<f64> = Vec::with_capacity(knots.len() + distinct.len() * degree);
-    let mut ahead = knots;
-    let mut plan = Vec::new();
+    let mut ahead = 0_usize;
+    let mut steps = Vec::new();
     for value in distinct {
-        let take = ahead.partition_point(|&x| x <= value);
-        let (now, rest) = ahead.split_at(take);
-        done.extend_from_slice(now);
-        ahead = rest;
+        let rest = knots.get(ahead..)?;
+        let take = rest.partition_point(|&x| x <= value);
+        done.extend_from_slice(rest.get(..take)?);
+        ahead += take;
         let multiplicity = done.iter().rev().take_while(|&&x| x == value).count();
         for _ in multiplicity..degree {
-            // As `insert_knot`: the last knot not above `value`, and the
-            // factors from the knots as they are now (`done` then
-            // `ahead`).
+            // As `insert_knot`: the last knot not above `value`.
             let k = done.len().checked_sub(1)?;
-            let knot = |i: usize| {
-                done.get(i)
-                    .or_else(|| ahead.get(i.checked_sub(done.len())?))
-                    .copied()
-            };
-            let first = (k + 1).saturating_sub(degree);
-            let alpha = (first..=k)
-                .map(|i| {
-                    let (Some(lo), Some(hi)) = (knot(i), knot(i + degree)) else {
-                        return 0.0;
-                    };
-                    if hi > lo {
-                        (value - lo) / (hi - lo)
-                    } else {
-                        0.0
-                    }
-                })
-                .collect();
-            plan.push(Insertion { k, alpha });
+            steps.push(Insertion { k, ahead });
             done.push(value);
         }
     }
-    done.extend_from_slice(ahead);
-    Some((plan, done))
+    done.extend_from_slice(knots.get(ahead..)?);
+    Some(Plan {
+        degree,
+        given: knots.to_vec(),
+        after: done,
+        steps,
+    })
 }
 
 /// The bits of a homogeneous point that can be a zero of either sign.
@@ -1600,7 +1632,8 @@ const NEVER: usize = usize::MAX;
 ///   end.
 ///
 /// `None` where the row does not go as above (a bug), for the old way.
-fn all_inserted(init: &[H], plan: &[Insertion], p: usize) -> Option<Vec<H>> {
+fn all_inserted(init: &[H], whole: &Plan) -> Option<Vec<H>> {
+    let (plan, p) = (whole.steps.as_slice(), whole.degree);
     let n0 = init.len();
     let steps = plan.len();
     // Moved on: how many insertions move point m on, from the first.
@@ -1676,7 +1709,7 @@ fn all_inserted(init: &[H], plan: &[Insertion], p: usize) -> Option<Vec<H>> {
             } else if x + p <= k {
                 old(x)?
             } else {
-                let a = *step.alpha.get(x - first)?;
+                let a = whole.alpha(step, x);
                 old(x - 1)?.lerp(old(x)?, a)
             };
             fresh.push(q);
@@ -2875,9 +2908,9 @@ mod tests {
                 rows.push(row);
             }
             // The fast way is the one taken for such input.
-            let (plan, _) = insertions(&knots, degree).expect("knots in order");
+            let plan = insertions(&knots, degree).expect("knots in order");
             for row in &rows {
-                assert!(all_inserted(row, &plan, degree).is_some(), "case {case}");
+                assert!(all_inserted(row, &plan).is_some(), "case {case}");
             }
             let (mut k1, mut r1) = (knots.clone(), rows.clone());
             make_bezier(&mut k1, degree, &mut r1);
@@ -4032,3 +4065,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "nurbs_one_pass_tests.rs"]
+mod one_pass_tests;

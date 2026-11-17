@@ -19,6 +19,12 @@ use craft3d_topo::{Body, BodyKind, Coedge};
 pub struct Gridded {
     pub rows: usize,
     pub columns: usize,
+    /// The parameter of each column along the sheet's rows (`u`), and of
+    /// each row across them (`v`), from 0 to 1: where the sheet takes its
+    /// points, so its iso-curves there are the grid's rows and columns,
+    /// through the points (what a viewer draws of the grid).
+    pub u: Vec<f64>,
+    pub v: Vec<f64>,
     /// The largest distance found between a point and the sheet at the
     /// point's parameters.
     pub deviation: f64,
@@ -272,6 +278,7 @@ pub(crate) fn build(
     .map_err(|e| format!("points: {e}"))?;
     drop(pts);
     let (deviation, bound, reach) = (made.deviation, made.bound, made.reach);
+    let (u, v) = (made.u, made.v);
     let mut warnings = Vec::new();
     if bound > tol.linear {
         warnings.push(format!(
@@ -305,6 +312,8 @@ pub(crate) fn build(
         Gridded {
             rows,
             columns,
+            u,
+            v,
             deviation,
             bound,
             warnings,

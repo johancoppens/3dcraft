@@ -463,6 +463,7 @@ pub(crate) fn render(args: Args) -> Result<Parsed<()>, CliError> {
             "--accumulate",
             "--backdrop",
             "--renderer",
+            "--sketches",
         ],
         |name, value| {
             // The look's key of a layer-2 option (camelCase).
@@ -579,6 +580,18 @@ pub(crate) fn render(args: Args) -> Result<Parsed<()>, CliError> {
                 }
                 "--renderer" => {
                     params.insert("renderer".into(), value.into());
+                }
+                "--sketches" => {
+                    let on = match value.as_str() {
+                        "on" => true,
+                        "off" => false,
+                        _ => {
+                            return Err(CliError::Usage(format!(
+                                "`{name}` must be on or off, got `{value}`"
+                            )));
+                        }
+                    };
+                    params.insert("sketches".into(), on.into());
                 }
                 _ => {
                     params.insert("mode".into(), value.into());
