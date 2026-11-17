@@ -82,6 +82,18 @@ its corner. A click on either number copies it with its unit and selects nothing
 `assert.add` with the value now and the document's tolerance, named after the two things, once per
 selection (the button says so after).
 
+One thing selected shows its measure in the view too (the developer, the same day: "ik zou maten in de view
+willen zien"): from `select.get`'s description of it (its curve or surface, with measures) and the scene's
+lines of its edge (`Scene::edges_named`) or the middle of its face's triangles (`Scene::faces_named`). A
+straight edge's length is drawn along a line beside it, on the side away from the model's middle on the
+screen, with thin lines from its ends; a circle whole (its length its circle's, within a millionth) its
+diameter across it, square to the line of sight so it shows whole; an arc its radius from its centre to its
+middle; a cylinder its diameter across it on its axis by the middle of the face; a curved edge its length by
+its middle. A flat face, a vertex and a body have none in the view. Every dimension is drawn with the
+section arrow's line weights and head (`section_handle::dart`), so the two read as one family. The card with
+what is selected is drawn at the foot of every tab of the side panel (the Features tab has it with its
+checks), so what is selected stays in sight whichever tab is open.
+
 ### Not yet
 
 - **Relations and extremes**: neighbours of, the same size as, symmetric to, coaxial with, the highest or largest or nearest *n*; distance to an item; faces of an edge's body side. Spatial words relative to the camera are not built (B3); directions are world axes.

@@ -167,7 +167,9 @@ fn two_holes_show_their_centre_distance_by_themselves_and_escape_takes_it_away()
     let mut window = Window::new(1280.0, 800.0);
     window.frames(&mut shell, &mut session, 3);
     call(&mut shell, &mut session, "ui.fit", json!({"view": "iso"}));
-    // One face: its own properties, no relation, no line.
+    // One face: its own properties, no relation; a hole's wall shows its
+    // diameter in the view (the developer, 2026-11-17: "ik zou maten in
+    // de view willen zien"; before, one face drew nothing there).
     select(
         &mut session,
         "face",
@@ -176,7 +178,18 @@ fn two_holes_show_their_centre_distance_by_themselves_and_escape_takes_it_away()
     );
     window.frames(&mut shell, &mut session, 3);
     assert!(shell.measurement().is_none());
-    assert!(shell.dimension_place().is_none());
+    let single = shell
+        .single_measure()
+        .cloned()
+        .expect("the hole's diameter");
+    assert_eq!(
+        (single.measure, single.text.as_str()),
+        ("diameter", "⌀ 6.00 mm")
+    );
+    assert_eq!(
+        shell.dimension_place().map(|p| p.text.as_str()),
+        Some("⌀ 6.00 mm")
+    );
     // Both holes: the centre distance, the same as measure.between's.
     select(
         &mut session,
@@ -230,6 +243,109 @@ fn two_holes_show_their_centre_distance_by_themselves_and_escape_takes_it_away()
     assert!(shell.dimension_place().is_none());
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     assert_eq!(got["measurement"], Value::Null);
+}
+
+/// The developer's words of 2026-11-17: "ik zou maten in de view willen
+/// zien … als ik bijvoorbeeld de lengte van onderste pad selecteer moet ik
+/// eerst naar features gaan om de lengte te zien." One thing selected
+/// shows its measure in the view: a straight edge its length along a line
+/// beside it, a hole's rim its diameter, a flat face nothing; and what is
+/// selected shows under whichever tab of the side panel is open.
+#[test]
+fn one_thing_shows_its_measure_in_the_view_and_its_card_under_every_tab() {
+    let mut session = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    window.frames(&mut shell, &mut session, 3);
+    call(&mut shell, &mut session, "ui.fit", json!({"view": "iso"}));
+    // Another tab open, as the developer had.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"panels": {"sideTab": "variables"}}),
+    );
+    // A straight edge 60 long along the foot of the block.
+    run(
+        &mut session,
+        "select.query",
+        json!({"kind": "edge", "where": {"in": "Bevel", "length": 60}, "limit": 1, "then": "replace"}),
+    );
+    window.frames(&mut shell, &mut session, 3);
+    let single = shell.single_measure().cloned().expect("its length");
+    assert_eq!(
+        (single.measure, single.text.as_str()),
+        ("length", "60.00 mm")
+    );
+    assert_eq!(single.points.len(), 2, "{single:?}");
+    let place = shell.dimension_place().cloned().expect("a line beside it");
+    assert!(place.from.distance(place.to) > 20.0, "{place:?}");
+    let viewport = shell.viewport_rect().unwrap();
+    assert!(viewport.contains_rect(place.number), "{place:?}");
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(got["state"]["panels"]["sideTab"], "variables");
+    assert_eq!(got["measurement"]["measure"], "length");
+    assert_eq!(got["measurement"]["text"], "60.00 mm");
+    // The card is under the Variables tab too.
+    let name = target(&shell, "copy name");
+    assert!(name.width() > 0.0);
+    // A click on the number copies it and selects nothing else.
+    let selection = got["selection"].clone();
+    window.click(&mut shell, &mut session, place.number.center());
+    assert_eq!(window.copied.as_deref(), Some("60.00 mm"));
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(got["selection"], selection);
+    // A hole's rim, a whole circle: its diameter.
+    run(
+        &mut session,
+        "select.query",
+        json!({"kind": "edge", "where": {"in": "Bevel", "radius": 3}, "limit": 1, "then": "replace"}),
+    );
+    window.frames(&mut shell, &mut session, 3);
+    let single = shell.single_measure().cloned().expect("the rim's diameter");
+    assert_eq!(
+        (single.measure, single.text.as_str()),
+        ("diameter", "⌀ 6.00 mm")
+    );
+    assert!(shell.dimension_place().is_some());
+    // A flat face: nothing in the view, its card all the same, under
+    // every tab.
+    select(
+        &mut session,
+        "face",
+        json!({"in": "Bevel", "normal": {"along": "-z"}}),
+        1,
+    );
+    for tab in ["bodies", "features", "variables"] {
+        call(
+            &mut shell,
+            &mut session,
+            "ui.set",
+            json!({"panels": {"sideTab": tab}}),
+        );
+        window.frames(&mut shell, &mut session, 3);
+        assert!(shell.single_measure().is_none(), "{tab}");
+        assert!(shell.dimension_place().is_none(), "{tab}");
+        assert!(target(&shell, "copy name").width() > 0.0, "{tab}");
+    }
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(got["measurement"], Value::Null);
+    // Escape over the view: the selection, the card and the line go.
+    run(
+        &mut session,
+        "select.query",
+        json!({"kind": "edge", "where": {"in": "Bevel", "length": 60}, "limit": 1, "then": "replace"}),
+    );
+    window.frames(&mut shell, &mut session, 3);
+    assert!(shell.dimension_place().is_some());
+    window.frame(
+        &mut shell,
+        &mut session,
+        vec![Event::PointerMoved(viewport.center())],
+    );
+    window.key(&mut shell, &mut session, egui::Key::Escape);
+    assert!(shell.single_measure().is_none());
+    assert!(shell.dimension_place().is_none());
 }
 
 #[test]

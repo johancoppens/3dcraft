@@ -476,6 +476,31 @@ impl Shell {
         if tab != SideTab::Parameters {
             self.parameters_hidden();
         }
+        // What is selected shows under every tab, as at the foot of the
+        // Features tab, which has it there with the checks (the developer,
+        // 2026-11-17: with another tab open, the length of the edge he had
+        // selected was nowhere in sight).
+        if tab != SideTab::Features && self.side.props.is_some() {
+            let inset = f32::from(crate::shell::side_inset(&tokens));
+            let height = self
+                .props_height()
+                .min(ui.available_height() * 0.5)
+                .max(0.0);
+            egui::Panel::bottom("craft3d-side-selection")
+                .resizable(false)
+                .exact_size(height)
+                .frame(egui::Frame::new())
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("craft3d-side-selection-scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.set_max_width((ui.available_width() - inset).max(40.0));
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            self.props_ui(ui);
+                        });
+                });
+        }
         match tab {
             SideTab::Parameters => {
                 if joints {

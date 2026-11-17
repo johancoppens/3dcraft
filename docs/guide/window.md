@@ -245,7 +245,8 @@ be and why under it ([Measuring and assertions › Assertions](measure.md#assert
 studio picture below has one. Click a check to fly to what it measures. The checks fold to their heading
 while something is selected, or when the panel is short, to make room.
 
-**What is selected** shows at the foot of the panel:
+**What is selected** shows at the foot of the panel, under whichever tab is open (under Features with the
+checks):
 
 - a face: its surface (plane, cylinder R …, cone, sphere, torus, spline), its area, and its normal or axis;
 - an edge: its curve, its length, the two faces it lies between and the angle there;
@@ -253,6 +254,12 @@ while something is selected, or when the panel is short, to make room.
 
 *Made by* links to the feature that made it, and *Name* is its persistent name, the name an agent uses.
 **Measure** measures a face's wall thickness; **Copy name** copies the name.
+
+The view shows the measure of **one thing selected** beside it, in a thin dimension line in the accent: a
+straight edge its length along a line beside it, a whole circle (a hole's rim) its diameter **⌀**, an arc
+its radius **R**, a curved edge its length by its middle, a hole's or a boss's wall its diameter. A flat
+face, a vertex and a body show nothing there: their facts are at the foot of the panel. Click the number to
+copy it with its unit.
 
 **Two things selected** (Shift-click the second) are measured by themselves: the foot of the panel shows
 their relation as one large number, what it is in a few words and, for a distance, its parts along X, Y and

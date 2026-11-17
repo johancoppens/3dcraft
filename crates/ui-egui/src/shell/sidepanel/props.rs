@@ -20,6 +20,7 @@ use crate::kit::{Button, Glyph, Kit, ValueStyle};
 use crate::shell::views::FlyTo;
 use craft3d_engine::history_view::number;
 use craft3d_engine::{Scene, SelectionKind, Session};
+use craft3d_math::Vec3;
 use egui::{Sense, pos2, vec2};
 use serde_json::{Value, json};
 
@@ -65,6 +66,180 @@ pub struct Props {
     /// With two things selected, their relation (`measure.between`),
     /// shown in place of the first one's properties.
     pub measurement: Option<Measurement>,
+    /// With one thing selected, the measure the view shows beside it.
+    pub single: Option<Single>,
+}
+
+/// The measure of the one thing selected that the view shows beside it
+/// (the developer, 2026-11-17: "ik zou maten in de view willen zien"):
+/// an edge's length (a whole circle's diameter, an arc's radius), a
+/// cylindrical face's diameter. A flat face, a vertex and a body have
+/// none in the view (their facts are the card's).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Single {
+    /// `length`, `diameter` or `radius`.
+    pub measure: &'static str,
+    /// In the document's length unit.
+    pub value: f64,
+    /// As shown and copied: `48.00 mm`, `⌀ 8.00 mm`, `R 4.00 mm`.
+    pub text: String,
+    /// The edge's points in space (a straight edge's two ends), along
+    /// which a length is drawn; empty for a face.
+    pub points: Vec<[f64; 3]>,
+    /// A circle's or a cylinder's centre (on its axis, by the middle of
+    /// the face), its unit axis and its radius: what a diameter or a
+    /// radius is drawn across.
+    pub round: Option<([f64; 3], [f64; 3], f64)>,
+}
+
+impl Single {
+    /// What `ui.get` says under `measurement` for one thing.
+    pub fn json(&self) -> Value {
+        json!({
+            "relation": null,
+            "measure": self.measure,
+            "value": self.value,
+            "text": self.text,
+        })
+    }
+}
+
+/// The three numbers of `v`, an array `[x, y, z]`.
+fn triple(v: &Value) -> Option<[f64; 3]> {
+    let a = v.as_array()?;
+    let t = [
+        a.first()?.as_f64()?,
+        a.get(1)?.as_f64()?,
+        a.get(2)?.as_f64()?,
+    ];
+    t.iter().all(|c| c.is_finite()).then_some(t)
+}
+
+/// What the one thing `first` shows in the view, from its description
+/// (`item`, as `select.get` gives it with measures) and the scene's edge
+/// lines and mesh; in the document's `unit`.
+fn single_of(
+    item: &Value,
+    first: &craft3d_engine::SelectionItem,
+    scene: Option<&Scene>,
+    unit: &str,
+) -> Option<Single> {
+    let with_unit = |v: f64| {
+        if unit.is_empty() {
+            decimals(v, 2)
+        } else {
+            format!("{} {unit}", decimals(v, 2))
+        }
+    };
+    let positive = |v: Option<f64>| v.filter(|v| v.is_finite() && *v > 0.0);
+    match first.kind {
+        SelectionKind::Edge => {
+            let curve = item.get("curve")?;
+            // The edge's line as the view draws it.
+            let points: Vec<[f64; 3]> = scene
+                .and_then(|scene| {
+                    let found = scene
+                        .edges_named(Some(first.feature.as_str()), Some(first.name.as_str()), &[])
+                        .ok()?;
+                    let body = scene.bodies.get(found.body_index)?;
+                    let line = body.edges.get(*found.edges.first()?)?;
+                    Some(line.iter().map(|p| [p.x, p.y, p.z]).collect())
+                })
+                .unwrap_or_default();
+            let length = positive(curve.get("length").and_then(Value::as_f64));
+            match curve.get("type").and_then(Value::as_str) {
+                Some("circle") => {
+                    let r = positive(curve.get("radius").and_then(Value::as_f64))?;
+                    let center = triple(curve.get("center")?)?;
+                    let axis = triple(curve.get("axis")?)?;
+                    // Whole: as long as its circle, within a millionth.
+                    let whole =
+                        length.is_some_and(|l| (l - std::f64::consts::TAU * r).abs() <= 1e-6 * l);
+                    let (measure, value, text) = if whole {
+                        ("diameter", 2.0 * r, format!("⌀ {}", with_unit(2.0 * r)))
+                    } else {
+                        ("radius", r, format!("R {}", with_unit(r)))
+                    };
+                    Some(Single {
+                        measure,
+                        value,
+                        text,
+                        points,
+                        round: Some((center, axis, r)),
+                    })
+                }
+                Some("line") => {
+                    let length = length?;
+                    let ends = match (points.first(), points.last()) {
+                        (Some(a), Some(b)) => vec![*a, *b],
+                        _ => Vec::new(),
+                    };
+                    Some(Single {
+                        measure: "length",
+                        value: length,
+                        text: with_unit(length),
+                        points: ends,
+                        round: None,
+                    })
+                }
+                _ => {
+                    let length = length?;
+                    Some(Single {
+                        measure: "length",
+                        value: length,
+                        text: with_unit(length),
+                        points,
+                        round: None,
+                    })
+                }
+            }
+        }
+        SelectionKind::Face => {
+            let surface = item.get("surface")?;
+            if surface.get("type").and_then(Value::as_str) != Some("cylinder") {
+                return None;
+            }
+            let r = positive(surface.get("radius").and_then(Value::as_f64))?;
+            let center = triple(surface.get("center")?)?;
+            let axis = triple(surface.get("axis")?)?;
+            let ([cx, cy, cz], [ax, ay, az]) = (center, axis);
+            let (c, a) = (Vec3::new(cx, cy, cz), Vec3::new(ax, ay, az).normalized()?);
+            // On the axis by the middle of the face, not at the surface's
+            // own origin, which may lie far along it.
+            let at = scene
+                .and_then(|scene| face_middle(scene, &first.feature, &first.name))
+                .map_or(c, |m| c + a * (m - c).dot(a));
+            if !at.is_finite() {
+                return None;
+            }
+            Some(Single {
+                measure: "diameter",
+                value: 2.0 * r,
+                text: format!("⌀ {}", with_unit(2.0 * r)),
+                points: Vec::new(),
+                round: Some(([at.x, at.y, at.z], [a.x, a.y, a.z], r)),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The middle of the face `name` of the body of `feature` in `scene`: the
+/// mean of its triangles' corners.
+fn face_middle(scene: &Scene, feature: &str, name: &str) -> Option<Vec3> {
+    let found = scene.faces_named(Some(feature), name).ok()?;
+    let (mut sum, mut n) = (Vec3::ZERO, 0_u32);
+    for (t, id) in scene.mesh.face_ids.iter().enumerate() {
+        if found.ids.binary_search(id).is_err() {
+            continue;
+        }
+        if let Some([a, b, c]) = scene.mesh.corners(t) {
+            sum += a + b + c;
+            n = n.saturating_add(3);
+        }
+    }
+    let middle = sum * (1.0 / f64::from(n.max(1)));
+    (n > 0 && middle.is_finite()).then_some(middle)
 }
 
 /// The relation of the two things selected, as `measure.between` gives
@@ -405,6 +580,7 @@ pub(crate) fn read(
             measure: None,
             shape: None,
             measurement,
+            single: None,
         });
     }
     let described = if bodies_here {
@@ -414,6 +590,11 @@ pub(crate) fn read(
             .and_then(|v| v.get("items").and_then(Value::as_array)?.first().cloned())
     } else {
         None
+    };
+    // One thing: the measure the view shows beside it.
+    let single = match (&described, view.items.len()) {
+        (Some(item), 1) => single_of(item, &first, scene, &unit),
+        _ => None,
     };
     let local = local_name(&first.name);
     if let Some(item) = &described {
@@ -502,6 +683,7 @@ pub(crate) fn read(
         measure,
         shape,
         measurement,
+        single,
     })
 }
 
@@ -1088,14 +1270,25 @@ impl Shell {
 
     /// What `ui.get` says under `measurement`: the relation of the two
     /// things selected, as the foot of the side panel and the view show
-    /// it; `null` without one.
+    /// it, or the measure the view shows of the one selected; `null`
+    /// without either.
     pub fn measurement_json(&self) -> Value {
-        self.measurement().map_or(Value::Null, Measurement::json)
+        match (self.measurement(), self.single_measure()) {
+            (Some(m), _) => m.json(),
+            (None, Some(single)) => single.json(),
+            (None, None) => Value::Null,
+        }
     }
 
     /// The relation of the two things selected, when there is one.
     pub fn measurement(&self) -> Option<&Measurement> {
         self.side.props.as_ref()?.measurement.as_ref()
+    }
+
+    /// The measure of the one thing selected the view shows, when it has
+    /// one.
+    pub fn single_measure(&self) -> Option<&Single> {
+        self.side.props.as_ref()?.single.as_ref()
     }
 }
 
