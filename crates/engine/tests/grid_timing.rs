@@ -451,8 +451,8 @@ fn cut_stages(columns: usize, rows: usize, deadline: u64) {
             )
             .map_err(|e| e.to_string());
         let took = t.elapsed().as_secs_f64();
-        craft3d_math::clock::enable(false);
         let stages = craft3d_math::clock::take();
+        craft3d_math::clock::enable(false);
         done.store(true, std::sync::atomic::Ordering::Relaxed);
         let _ = watch.join();
         let status = cut.as_ref().map_or_else(
