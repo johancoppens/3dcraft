@@ -427,7 +427,7 @@ an **Offset** slider and **Flip side**.
 | Click **X**, **Y** or **Z** | Turn the plane across that axis, through the middle of the model |
 | Click **⇅** | Keep the other half |
 | Select a flat face, then click **∥** | Lay the plane on that face: along it, through it, the arrow pointing out of the body; drag the arrow in to cut |
-| Select two flat faces, then click **∥** | Two parallel faces (the two walls of a slot): the plane midway between them. Two faces at an angle: the plane that halves it, through the line where they meet and through the material; click again for the other one, square to it. Faces so nearly parallel that they would meet far outside the model count as parallel |
+| Select two flat faces, then click **∥** | Two parallel faces (the two walls of a slot): the plane midway between them. Two faces at an angle: the plane that halves it, between them, through the line where they meet; click again for the other one, square to it, where that one cuts the model |
 
 The number says what the plane is: **X**, **Y** or **Z**, **∥ face**, **mid** or **bisector**. A plane made
 with **∥** stays when you select something else, and where it is when you change the model (it is then no
