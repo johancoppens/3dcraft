@@ -14,7 +14,7 @@ use craft3d_kernel::boolean::{BooleanOp, boolean};
 use craft3d_kernel::primitives;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_render::{
-    Camera, Cut, Frame as Picture, NO_FACE, Projection, RenderParams, SECTION_FACE, Section,
+    Camera, Cut, Frame as Picture, NO_FACE, Projection, RenderParams, SECTION_FACE, Section, Slabs,
     cut_faces, pick_cut, render, section_bounds,
 };
 use craft3d_tess::{Mesh, TessParams, tessellate_body};
@@ -545,4 +545,99 @@ fn a_see_through_cap_is_blended_over_what_is_behind_it() {
         (seen as f64 - expected).abs() < expected * 0.05,
         "{seen} pixels show the cap behind the front, {expected} expected"
     );
+}
+
+/// The outline found among the triangles the slabs give is the outline,
+/// segment for segment and in the same order, for planes moved along the
+/// slabs' direction (both ways round) through a ball, a cylinder, a
+/// hollow block and the meshes together, at several scales: on faces in
+/// the plane, at the ends and beyond them. Slabs of another direction or
+/// another mesh fall back to the whole mesh, and slabs of nothing or of a
+/// direction that is none are none.
+#[test]
+fn the_slabs_find_the_whole_outline_among_a_few_triangles() {
+    for scale in [1e-3, 1.0, 1e3] {
+        let ball = mesh_of!(
+            &primitives::sphere(&at(0.3 * scale, -0.2 * scale, 0.1 * scale), 2.0 * scale).unwrap(),
+            2e-3 * scale
+        );
+        let cylinder = mesh_of!(
+            &primitives::cylinder(&at(0.0, 0.0, -2.0 * scale), 1.5 * scale, 4.0 * scale).unwrap(),
+            2e-3 * scale
+        );
+        let outer = primitives::block(
+            &at(-3.0 * scale, -2.0 * scale, -1.5 * scale),
+            6.0 * scale,
+            4.0 * scale,
+            3.0 * scale,
+        )
+        .unwrap();
+        let inner = primitives::block(
+            &at(-2.0 * scale, -scale, -scale),
+            4.0 * scale,
+            2.0 * scale,
+            2.0 * scale,
+        )
+        .unwrap();
+        let hollow = boolean(&outer, &inner, BooleanOp::Subtract, &Tolerance::default()).unwrap();
+        let block = mesh_of!(&hollow.body, 0.01 * scale);
+        for (name, mesh) in [("ball", &ball), ("cylinder", &cylinder), ("block", &block)] {
+            let bounds = section_bounds(mesh);
+            for along in [Vec3::Z, Vec3::X, Vec3::new(1.0, 2.0, -0.5)] {
+                let along = along.normalized().unwrap();
+                let base = Vec3::new(0.1, -0.3, 0.2) * scale;
+                let slabs = Slabs::new(mesh, base, along).unwrap();
+                let (mut crossed, mut checked) = (0, 0);
+                for k in (-45..=45).step_by(3) {
+                    // Through the ends of the box too, and onto the faces
+                    // of the block that lie in the plane (z = ±1, ±1.5).
+                    let at = f64::from(k) * 0.05 * scale;
+                    for normal in [along, Vec3::ZERO - along] {
+                        let origin = Vec3::ZERO + along * at;
+                        let cut = Cut::new(&section(origin, normal), &bounds).unwrap();
+                        let whole = cut.outline(mesh);
+                        assert_eq!(
+                            cut.outline_in(mesh, &slabs),
+                            whole,
+                            "{name} at {at} along {along:?}, scale {scale}"
+                        );
+                        crossed += whole.len();
+                        checked += 1;
+                    }
+                }
+                assert!(checked > 60 && crossed > 300, "{name}: {crossed} segments");
+                // Other slabs: the whole outline all the same; a cut a
+                // millionth of a radian off the slabs' direction too, with
+                // its point far beside the model (review of 2026-11-17).
+                let cut = Cut::new(&section(Vec3::ZERO, Vec3::Y), &bounds).unwrap();
+                assert_eq!(cut.outline_in(mesh, &slabs), cut.outline(mesh));
+                let aside = along.cross(Vec3::Z).normalized().unwrap_or(Vec3::Y);
+                let off = (along + aside * 1.2e-6).normalized().unwrap();
+                for beside in [0.0, 1e3 * scale, 1e7 * scale] {
+                    let origin = along * (0.3 * scale) + aside * beside;
+                    let cut = Cut::new(&section(origin, off), &bounds).unwrap();
+                    assert_eq!(cut.outline_in(mesh, &slabs), cut.outline(mesh), "{name}");
+                }
+                let other = Slabs::new(&ball, base, Vec3::Y).unwrap();
+                if !std::ptr::eq(mesh, &ball) {
+                    assert_eq!(cut.outline_in(mesh, &other), cut.outline(mesh), "{name}");
+                }
+            }
+        }
+    }
+    assert!(Slabs::new(&Mesh::default(), Vec3::ZERO, Vec3::Z).is_some());
+    let cylinder = mesh_of!(
+        &primitives::cylinder(&at(0.0, 0.0, -2.0), 1.5, 4.0).unwrap(),
+        1e-3
+    );
+    assert!(Slabs::new(&cylinder, Vec3::ZERO, Vec3::ZERO).is_none());
+    assert!(Slabs::new(&cylinder, Vec3::new(f64::NAN, 0.0, 0.0), Vec3::Z).is_none());
+    // A plane far beyond the mesh crosses nothing, found at once.
+    let slabs = Slabs::new(&cylinder, Vec3::ZERO, Vec3::Z).unwrap();
+    let cut = Cut::new(
+        &section(Vec3::Z * 50.0, Vec3::Z),
+        &section_bounds(&cylinder),
+    )
+    .unwrap();
+    assert!(cut.outline_in(&cylinder, &slabs).is_empty());
 }

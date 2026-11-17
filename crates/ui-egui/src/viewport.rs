@@ -449,11 +449,34 @@ pub struct SectionCut {
 impl SectionCut {
     /// `section` for the mesh of `scene`; `None` for a plane that is none.
     pub fn new(scene: &Scene, section: craft3d_render::Section) -> Option<Self> {
-        let cut = craft3d_render::Cut::new(&section, &craft3d_render::section_bounds(&scene.mesh))?;
+        Self::within(
+            scene,
+            section,
+            &craft3d_render::section_bounds(&scene.mesh),
+            None,
+        )
+    }
+
+    /// The same, with the mesh's bounds (`craft3d_render::section_bounds`)
+    /// known already, and the outline looked for among the triangles
+    /// `slabs` gives (`craft3d_render::Cut::outline_in`): a plane dragged
+    /// through a scene is cut each frame, its bounds and slabs are worked
+    /// out once.
+    pub fn within(
+        scene: &Scene,
+        section: craft3d_render::Section,
+        bounds: &craft3d_math::Bbox3,
+        slabs: Option<&craft3d_render::Slabs>,
+    ) -> Option<Self> {
+        let cut = craft3d_render::Cut::new(&section, bounds)?;
+        let outline = match slabs {
+            Some(slabs) => cut.outline_in(&scene.mesh, slabs),
+            None => cut.outline(&scene.mesh),
+        };
         Some(Self {
             section,
             cut,
-            outline: std::sync::Arc::new(cut.outline(&scene.mesh)),
+            outline: std::sync::Arc::new(outline),
         })
     }
 }

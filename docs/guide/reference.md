@@ -162,6 +162,8 @@ The history keys work while the pointer is over the view or the feature list.
 | Ctrl+drag | Select what lies inside a box |
 | Double-click a feature, or its ⌖ | Select the feature and fly to what it made |
 | Click the view cube | Turn to that view |
+| Drag the section's arrow | Move the section plane (Alt: without snapping) |
+| Double-click the section's arrow | Keep the other half |
 
 On a slider (a Jig's parameters, See-through, the section's Offset, the Studio and Analysis options): press
 the rail to put the knob there and drag it (Shift finer, Ctrl in whole steps); once clicked, the arrow keys or

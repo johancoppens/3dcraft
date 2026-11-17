@@ -147,7 +147,11 @@ fn started() -> (Session, Shell, Window) {
         ctx: egui::Context::default(),
         time: 0.0,
         modifiers: Modifiers::NONE,
-        size: vec2(1280.0, 760.0),
+        // Narrower than the narrow layout's 800 points: the section's
+        // Offset is a slider on the bar there only, since the handle's
+        // group in the view took it on wider windows (the developer's
+        // decision of 2026-11-17). Was 1280: the sliders are the same.
+        size: vec2(790.0, 760.0),
     };
     for _ in 0..4 {
         window.frame(&mut shell, &mut session, Vec::new());
@@ -506,7 +510,10 @@ fn the_arrows_step_a_focused_slider_only_under_the_pointer() {
 #[test]
 fn the_compact_bars_sliders_are_each_their_own() {
     let (mut session, mut shell, mut window) = started();
-    window.size = vec2(900.0, 700.0);
+    // Narrower than the narrow layout, where the bar has the section's
+    // Offset (the developer's decision of 2026-11-17); was 900, the
+    // compact bar then too.
+    window.size = vec2(640.0, 700.0);
     for _ in 0..3 {
         window.frame(&mut shell, &mut session, Vec::new());
     }

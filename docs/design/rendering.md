@@ -1669,6 +1669,173 @@ or hidden differently by the two (the tile is inside the viewport, not at its bo
 view's edge is unlikely), an edge of the bodies at a grazing angle there, or a real difference in how the direct
 path inks the edges; it was not looked into.
 
+### The section's handle in the view (2026-11-17)
+
+The developer's design of the morning (step A): the section plane is taken in the view itself, beside the
+display bar's Section, X | Y | Z, Offset and Flip side, which stay; both drive `state.section` and nothing
+else (`shell/section_handle.rs`). While the section is on the view shows the plane's outline (the model's box
+projected onto the plane, 4 % larger, thin and dashed), one arrow at its middle along the normal into the half
+that is cut away (`section_arrow_length`, 54 points, seen side on), the offset as a number with the axis's
+letter and the document's unit on a small plate past the arrow's tip, and three dots X, Y, Z beside it; all in
+the accent over a hairline of the plates' black, so they read on the light background, on a body and on the
+orange cap; faint (`section_rest_opacity`) until the pointer is within `section_near` of them. It is egui's
+painting over the picture, as the view cube is: neither renderer draws it, `ui.screenshot` (the oracle) does
+not show it, and a window without a section draws as before: fifteen whole-window pictures of five documents
+(iso, top, and the section switched on and off again; the CPU viewport, the window painted by egui's wgpu
+renderer) equal `main`'s byte for byte but for the status bar's milliseconds of the last picture, which differ
+from run to run.
+
+*Method.* The pointer is tested against the handle as the last frame drew it, before anything a press in the
+viewport does (orbit, a box, a part dragged, a selection): the number, then the nearest dot, then the arrow
+within `section_hit`; the plates over the viewport take it before the handle. A drag on the arrow keeps the
+line it lay on when the press came (its middle and the normal); every frame the pointer's ray is taken to the
+point of that line nearest to it (`nearest_on_line`, the closest points of two lines; no answer within a
+tenth of a degree of parallel), and the offset moves by as much, signed by `flip`, held to the range in which
+the plane passes through the model. So the arrow's foot stays under the pointer in either projection. Then it
+snaps lightly (`snap_offset`), within `section_snap_reach` (7 points) worth of model units along the arrow:
+first to the places the model gives (`craft3d_engine::SectionPlane::snaps`: the flat faces parallel to the
+plane, read off the scene's mesh in one pass as faces whose corners lie at one offset within 10⁻⁷ of the
+model's size, and the axes of circular edges lying parallel to it, a circle through three points of an edge's
+line that every point of it lies on; sorted, one per offset, at most 1024; `ui.get` › `section.snaps` lists the
+first 64), then to a round value of the range's size (`nice_step`, a twentieth of it, 1, 2 or 5 times a power
+of ten), else to a grid of about a point's worth, so the number stays clean; Alt: none of it. A short tick
+across the arrow's foot says it snapped. A double click on the arrow toggles `flip`; a click on the number types
+into it (the kit's typed field, `Kit::typed_field`, now shared with the slider's value; evaluated with the
+document's variables as the slider's is); a dot is the display bar's axis choice. Seen end on (the arrow shorter
+than 0.3 of its length) it is a ring with a dot (toward the viewer) or a cross, and does not drag: there the
+slider and the number move the plane. The narrow layout (a phone) leaves the handle out and keeps the slider,
+since a finger's drag in the middle of the model is the view's turn there; once a finger has touched the
+screen, `Tokens::touch` makes the arrow longer (72 points) and its reach and the dots' a finger's.
+
+*Cost of a drag.* The plane the handle moves is the same plane at another offset: the shell no longer resolves
+it again each time (`SectionPlane::at`), and keeps the mesh's box, the places and the slabs of the plane
+(`craft3d_render::Slabs`: the triangles sorted into slabs along the normal about as thick as nine in ten of them
+are long, the longer ones on a list of their own) while only the offset or the side changes. The outline of the
+cut, which was found over every triangle at each change of the offset, is found among the triangles of one or
+two slabs (`Cut::outline_in`: the same segments in the same order as `Cut::outline`, pinned by
+`crates/render/tests/section.rs` › `the_slabs_find_the_whole_outline_among_a_few_triangles`). The shell's work
+for a frame of a drag (`Shell::sync` after the offset moved; `crates/ui-egui/tests/section_handle.rs`, test
+profile, the laptop): the turbofan of the benchmark at the display quality, 130 820 triangles, 6.0 ms before,
+0.15 ms after; the wall of 400 drilled cubes, 54 400 triangles, 3.6 ms before, 0.06 ms after. Another plane
+(an axis chosen) costs once 18.7 ms on the turbofan (its places 7.5 ms, its slabs 8.2 ms, the box 2.0 ms). What
+a frame of a drag costs besides, as for the slider before: the direct path's lines are made again for the moved
+cut (1.2 ms on the turbofan: every edge clipped, `direct::segments_marked`) and uploaded, and the GPU draws the
+frame in full (16 to 18 ms for 665 104 triangles, *The viewport*); on the CPU renderer the quick picture while
+the plane moves (22 ms for the wall in the test profile).
+
+*A plane in any direction* (step E of the design, found out, not built): the state already takes one
+(`section.point` and `section.normal`, or `section.plane` naming a flat face, whose plane it then is with its
+normal out of the body), the engine resolves it (`Session::section_plane`), both renderers cut and cap it
+(`gpu_viewport`'s and `section.rs`'s oblique planes against the oracle), and the handle, the slabs and the
+places work for any normal (the places at a slant are tested). What "click a flat face while the section is on"
+needs is a gesture: a click on a face selects it, so the plane cannot take that click without a mode; a fourth
+dot ("∥ face", the plane through the selected flat face) would do it with what exists. Built so the same day: a
+fourth dot **∥** and a fourth cell after X | Y | Z, while one face is selected or the plane is a face's, lay the
+plane on the selected flat face (`plane` its name, offset 0, the arrow out of the body); the engine's own test of
+flatness refuses a face that is not (a hole's wall, whose normals cancel, now says "not flat" rather than "no
+area"), and the dot and the cell grey and say why on hover. `ui.get` › `section.direction` says `face`.
+
+*Review of 2026-11-17 and what changed* (`review-view-section`; its reproducers are in `section_handle.rs`).
+(1) In perspective the drag took the point of the arrow's line nearest to the pointer's ray also where that is
+behind the eye: past the point the line runs to on the screen the plane jumped from the far end to the near one
+(18.5 to 25 degrees between the normal and the line of sight). `nearest_on_line` now answers only where the
+ray's own parameter is positive, so the plane goes to the far end and holds there. (2) A `ui.set` of the
+section, or another tab shown, during a drag got the drag's value written over it; the drag now keeps the
+section it last wrote and the document it began in, and is over (the rest of the pointer's drag moves
+nothing, neither the plane nor the view) when either is not what it left. (3) The places were cut to the 1024
+lowest offsets (600 plates snapped up to 511 of 599): all are kept now up to 65536 (those nearest the plane past
+that), looked into by halving, and `ui.get` lists the 64 nearest the plane with `snapsTotal`. (4) Looks: across
+Z from the iso view (what the Section chip gives first) the arrow lay on the cap, accent on orange, and the plate
+over the cut's middle; the arrow and the ring now have a darker, wider hairline (`section_halo_opacity` 170,
+2.5 points wider) and rest a little less faint (`section_rest_opacity` 140), and the number and the dots stand at
+the edge of the plane's outline, at the height of the arrow's foot, on the side with room (past the arrow's tip,
+clear of its head, only where the outline leaves none in the viewport). The outline is where the plane passes
+through the model's box (a polygon of three to six corners; the box's cross-section across X, Y or Z, as before),
+so at a slant it rings the face it lies on rather than the box laid flat on it; it is drawn as one path in the
+accent alone, without the hairline, and seen edge on as one dashed line (its four sides overlapping in
+orthographic views showed grey on three sides). (5) `Slabs` answer only for a cut along their direction exactly
+(either way round); a direction a millionth of a radian off missed the outline for a cut whose point lay far
+beside the model, and now gets the outline of the whole mesh (`the_slabs_find_the_whole_outline_among_a_few_
+triangles`; the shell's planes, a face's included, give the same direction to both, bit for bit).
+
+*Round two, the developer's look* (2026-11-17, from his preview build on the Mont Ventoux relief cut across Y:
+"ik vind de gele pijl niet zo duidelijk"; it replaces (4) above). The arrow is no longer the accent: a near-white
+fill (`section_handle_fill`) inside a dark edge (`section_handle_edge`, 1.25 points), 64 points long seen side on,
+its shaft 5 and its head 16 points (72, 7 and 20 at touch sizes), so it reads on the orange cap, on a dark part
+and on the light background; it takes the accent under the pointer and while it is dragged. It stands at a
+corner of the cut, not its middle: the corner of the plane's outline furthest along x − y − z, a rule of the
+model's, so it stays put while the view turns; where that corner is out of the viewport (zoomed in) the arrow's
+foot is the point of the plane between that corner and the cut's middle furthest out that shows 56 points
+inside it and 56 points clear of the plates, the cube and the triad (`into_view`; the last frame's
+`ControlsLayout::parts`), so the line it drags along is still the plane's normal through a point of the plane,
+and a press on it never lands on the view cube (the hostile test's plane a billion millimetres out did). The arrow points into the half that
+is cut away, out of the material, so its shaft is mostly seen against the background. Beside its foot, away
+from the cut's middle and clear of the arrow and of the controls, one group on the controls' dark plate, as high as the bar's
+controls: the number (the axis's letter in the accent), X, Y, Z (and ∥) and ⇅ (Flip side, the bar's symbol);
+the double click on the arrow stays. The group is always drawn in full while the section is on; only the
+dashed outline is faint until the pointer is near. On a window at least as wide as the narrow layout's 800
+points the display bar shows *Section* alone while the section is on: the group has X, Y, Z, the offset and the
+side (`controls_layout` is given the options only when the window is narrow, the same rule that leaves the
+handle out); a wide touch screen gets the handle at touch sizes and the bar with *Section* alone. A `ui.set`
+of a plane named X, Y or Z is refused with the planes' names (across X `yz`, across Y `zx`, across Z `xy`); a
+refused `ui.set` leaves the state as it was, every field (`a_refused_section_changes_nothing_and_says_x_y_z_and_
+the_planes`: the coordinator saw the section on after a refusal in the desktop window; the state is put back
+whole here, and was on `main` too, so what he saw was not reproduced).
+
+*The arrow's shape* (2026-11-17, the developer's choice from five drawn variants, "pijl misschien iets
+eleganter?": variant B, slim like a dimension arrow; it replaces the shape of round two above, not its
+colours, sizes in length or place). A shaft 2 points of the light fill with a 1 point dark edge each side and
+round ends, into the notch of a small sharp head: a notched dart 16 points long and 11 wide, notched 3 back
+from its base (`section_head`, `section_head_width`, `section_head_notch`); at the foot a ring of radius 4.5
+with a dark dot of 1.6 to take it by (`section_grip`, `section_grip_dot`); 64 points long seen side on, as
+before. At touch sizes the whole shape is scaled as one (by the touch arrow's length over 64). It is hit as
+before, within `section_hit` (9 points, a finger's half target at touch sizes) of the line from the foot to
+the tip, whatever its drawn width: the test takes it 8.5 points off its shaft, its head and its ring. The
+head is `dart`, shared with the dimension lines of measuring by selecting, so the two read as one family.
+
+*The plane from the selection* (2026-11-17, the developer: "2 vlakken selecteren = snijden onder 45 graden?").
+The fourth button (∥) is always there and takes its plane from what is selected
+(`Shell::sync_face_choice`, once per selection and scene): one flat face, the plane along it as before; two
+flat faces, each face's plane by the engine's own test (`Session::section_plane`: a point of it and its
+outward normal, refused in words when the face is not flat), then `planes_of`. Parallel (the sine of their
+angle at most 1e-9, facing the same way or apart): the plane midway, along the first's normal. Otherwise the two
+bisectors of their angle, through the line where the planes meet: `x · (n1 − n2) = p1 · n1 − p2 · n2`, the
+points as far behind the one face as behind the other, so the one through the material (behind both, where
+both bodies are), first; `x · (n1 + n2) = p1 · n1 + p2 · n2`, square to it, at the next click. Each is kept as
+its point nearest the middle of the two faces' points (near the model, never the far end of a line two nearly
+parallel faces meet on) and its unit normal, in `state.section` as `point` and `normal` with `made` (`face`,
+`mid`, `bisector`), which the handle's number shows in place of an axis and `ui.get` reports; the plane stays
+when the selection changes. Anything else greys the button with why on hover. In the narrow layout the bar's
+four cells (X, Y, Z, ∥) share the room three had, as they did while a face was selected (open: whether a
+phone wants them a finger's width each, which makes the bar wider).
+
+*The review of the plane and the group* (2026-11-17, `review-view-section`). (1) Faces a hair off parallel
+(1.5e-9 to 1.7e-5 rad, the same way) gave a "bisector" through a line 3.4e6 to 6.9e10 away, which cut
+everything or nothing. A first fix counted two faces parallel when their planes met farther from the
+model's middle than its diagonal; the third round found it had no angle bound (a tray's sides 28 degrees
+apart got a plane tilted 14 degrees along one of them; the choice flipped at 36.2 degrees). Now
+`planes_of` always gives the two bisectors, `x · (n − m) = p · n − q · m` and `x · (n + m) = p · n + q · m`,
+the better conditioned first (the longer of `n − m` and `n + m`): the plane between the faces, which as the
+angle goes to zero turns continuously into the plane midway (its normal turns by half the faces' turn, a
+unit test sweeps 30 degrees to none in a thousand steps), and changes over only at faces square to each
+other: there `n − m` and `n + m` are as long, each bisector at 45 degrees to both faces, and the first turns
+from the one to the other, square to it. Where it does not cut the model and the other does (a convex edge's
+outer bisector touches the body along the edge only, as at the top and its chamfer), the other comes first.
+The second is offered only where it cuts the model (its mesh on both sides, beyond a billionth of its size).
+"The model" is the bodies the two faces belong to, not every body in the view (round four: a second block
+beyond the chamfered one made the outer bisector of its top and chamfer count as cutting),
+so two faces a hair off parallel get one plane, between them, cutting the model. "mid" is the word only
+where the faces are parallel within the document's angular tolerance (`Session::angular_tolerance`). (2) A `made` that does not fit its plane is refused by
+`ui.set`, not dropped. (3) After an edit the plane stays where it was, a view like the camera; the shell
+remembers the two faces it was made from, per open document as the section is (a tab shown and back keeps
+it), and once they no longer make it (`check_made`, when the scene changes), takes `made` away, so the
+number no longer says "mid". (4) A hidden body's face is refused in the
+window's words. (5) The group hopped sides 283 times in 4356 frames of a turning view, up to 237 points,
+twice under the bar and the triad: `group_place` now keeps the way it went last frame while that place stays
+clear (sliding along the viewport's edge rather than hopping), tries round the compass after its four ways,
+keeps `GAP` of air from the controls, and where no place is clear takes the one that covers them least; its
+plate has a hairline of the handle's light colour, so its edge shows on a dark body.
+
 ### Per-sample stages on Vulkan (2026-11-16)
 
 *Found.* The window of 0.1.1 and 0.1.2 died within seconds of its start on a Windows 11 laptop with a Core

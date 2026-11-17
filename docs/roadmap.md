@@ -380,12 +380,14 @@ What M9 needs before it starts. A feature that cannot be built is marked failed 
 - Every edge and vertex of every body has a name of its own, so a datum at a vertex of a body a boolean or a joined pattern made works ([`design/names.md`](design/names.md)) (2026-10-14)
 - Datums drawn in the viewport in both renderers, hidden with `ui.set {"show": {"datums": false}}` (2026-10-14)
 - Rows of features that each make their body from the one before have no length limit: a copy of a copy is one link per run of instance 0 or of other instances, so 1000 holes cut one after another regenerate; format 15 ([`design/names.md`](design/names.md), *Copies of copies*) (2026-10-14)
+- The section's handle in the view: the plane's outline, an arrow to drag (snapping to flat faces, holes' axes and round values; Alt: free), a typed number and the dots X, Y, Z, all `state.section`; a drag's outline found among a few triangles ([`design/rendering.md`](design/rendering.md) › *The section's handle in the view*) (2026-11-17)
+- The section from the selection: along one flat face, midway between two parallel ones, or the bisector of two at an angle, `state.section.made` saying which ([`design/rendering.md`](design/rendering.md) › *The plane from the selection*) (2026-11-17)
 
 #### Open
 - [ ] A way that switches between target and tool more than about 30 times in a row still hits the 32-link cap of a name
 - [ ] An extrude that ends at a cone face
 - [ ] Datums in `view.render`; picking a datum
-- [ ] The section plane: hatching, more than one plane, a cap where two bodies overlap
+- [ ] The section plane: hatching, more than one plane, a cap where two bodies overlap; from the window a plane through a hole's axis
 
 #### Acceptance
 A lost reference never stops the features that do not depend on it and never panics; repairing the reference gives the same body as building it that way from the start; reorder and roll back agree with a full regeneration; Oracle 1 for sketches on datum planes and for each extrude end; a click on a rendered face returns the name that `document.inspect` reports for it, checked on generated views.

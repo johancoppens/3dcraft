@@ -221,6 +221,13 @@ fn a_section_that_means_no_plane_is_an_error_that_says_why() {
     for (section, says) in [
         (json!({}), "needs `plane`"),
         (json!({"plane": "nowhere"}), "there is no plane"),
+        // The window's X, Y, Z are not the planes' names: the error says
+        // both.
+        (
+            json!({"plane": "Y"}),
+            "across X lies on the plane yz, across Y on zx, across Z on xy",
+        ),
+        (json!({"plane": "x"}), "across X lies on the plane yz"),
         (json!({"plane": "Block"}), "not a datumPlane"),
         (json!({"plane": "F1:face(99)"}), "no body has a face"),
         (
@@ -411,4 +418,138 @@ fn a_pick_on_a_cut_open_model_is_what_is_seen() {
     assert_eq!(picked["section"]["body"], "Pocketed");
     assert_eq!(picked["section"]["point"][1], json!(15.0));
     assert!(picked.get("face").is_none());
+}
+
+/// A block of 60 × 40 × 20 times `k` with a hole of radius 4 along y
+/// through (20, ·, 10) and one of radius 3 along z through (45, 20, ·).
+fn drilled(k: f64) -> Session {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [60.0 * k, 40.0 * k, 20.0 * k], "name": "Block"}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 4.0 * k, "height": 50.0 * k, "position": [20.0 * k, -5.0 * k, 10.0 * k],
+               "axis": [0, 1, 0], "name": "Across"}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 3.0 * k, "height": 30.0 * k, "position": [45.0 * k, 20.0 * k, -5.0 * k],
+               "name": "Down"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Block", "tool": "Across", "name": "Once"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Once", "tool": "Down", "name": "Drilled"}),
+    );
+    s
+}
+
+#[test]
+fn a_section_snaps_to_the_flat_faces_parallel_to_it_and_to_the_axes_of_holes_across_it() {
+    // At three scales: the places are found within rounding of each.
+    for k in [1e-3, 1.0, 1e3] {
+        let mut s = drilled(k);
+        let scene = s.scene(None).unwrap().unwrap();
+        let mut snaps = |spec: SectionSpec| -> Vec<(f64, &'static str)> {
+            let plane = s.section_plane(&scene, &spec).unwrap();
+            plane
+                .snaps(&scene)
+                .iter()
+                .map(|snap| {
+                    assert_eq!(snap.feature, "F5", "{snap:?}");
+                    (snap.offset / k, snap.kind.name())
+                })
+                .collect()
+        };
+        let base = |plane: &str| SectionSpec {
+            plane: Some(plane.to_string()),
+            ..SectionSpec::default()
+        };
+        let same = |got: Vec<(f64, &str)>, want: &[(f64, &str)]| {
+            assert_eq!(got.len(), want.len(), "{k}: {got:?} against {want:?}");
+            for ((g, gk), (w, wk)) in got.iter().zip(want) {
+                assert!((g - w).abs() < 1e-9, "{k}: {got:?} against {want:?}");
+                assert_eq!(gk, wk, "{k}: {got:?} against {want:?}");
+            }
+        };
+        // Across z: the bottom and the top, and the hole along y at its
+        // middle; the hole along z runs square to the plane.
+        same(
+            snaps(base("xy")),
+            &[(0.0, "face"), (10.0, "axis"), (20.0, "face")],
+        );
+        // Across x: both holes' axes lie parallel to the plane.
+        same(
+            snaps(base("yz")),
+            &[
+                (0.0, "face"),
+                (20.0, "axis"),
+                (45.0, "axis"),
+                (60.0, "face"),
+            ],
+        );
+        same(
+            snaps(base("zx")),
+            &[(0.0, "face"), (20.0, "axis"), (40.0, "face")],
+        );
+        // Flipped and moved, the same places: they are offsets along the
+        // plane's normal as given.
+        same(
+            snaps(SectionSpec {
+                offset: 7.0 * k,
+                flip: true,
+                ..base("zx")
+            }),
+            &[(0.0, "face"), (20.0, "axis"), (40.0, "face")],
+        );
+        // At a slant: no face is parallel, the hole along z is.
+        same(
+            snaps(SectionSpec {
+                point: Some([0.0, 0.0, 0.0]),
+                normal: Some([1.0, 1.0, 0.0]),
+                ..SectionSpec::default()
+            }),
+            &[(65.0 / std::f64::consts::SQRT_2, "axis")],
+        );
+    }
+    // A document without bodies: no places, and nothing panics.
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    let xy = SectionSpec {
+        plane: Some("xy".to_string()),
+        ..SectionSpec::default()
+    };
+    let scene = s.scene(None).unwrap().unwrap();
+    let plane = s.section_plane(&scene, &xy).unwrap();
+    assert!(plane.snaps(&scene).is_empty());
+    // Moved by `at`, the plane is the one the spec gives.
+    let mut s = drilled(1.0);
+    let scene = s.scene(None).unwrap().unwrap();
+    let yz = SectionSpec {
+        plane: Some("yz".to_string()),
+        ..SectionSpec::default()
+    };
+    let start = s.section_plane(&scene, &yz).unwrap();
+    let moved = SectionSpec {
+        offset: 12.5,
+        flip: true,
+        ..yz
+    };
+    assert_eq!(
+        start.at(12.5, true).unwrap(),
+        s.section_plane(&scene, &moved).unwrap()
+    );
+    assert!(start.at(f64::NAN, false).is_err());
+    assert!(start.at(1e300, false).is_err());
 }

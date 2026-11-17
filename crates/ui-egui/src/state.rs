@@ -837,6 +837,38 @@ pub struct SectionState {
     pub offset: f64,
     /// Keep the other half.
     pub flip: bool,
+    /// How the plane was made from the selection, when it was: `face`
+    /// (along one flat face, `plane` its name), `mid` (midway between two
+    /// parallel flat faces) or `bisector` (halving the angle of two flat
+    /// faces that are not), these two by `point` and `normal`. What the
+    /// handle's number says in place of an axis; `null` for a plane
+    /// chosen otherwise. Given with a plane it does not fit, it is dropped.
+    pub made: Option<SectionMade>,
+}
+
+/// How the section's plane was made from the selection (the fourth
+/// button of its handle and of the display bar).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SectionMade {
+    /// Along a flat face, through it.
+    Face,
+    /// Midway between two parallel flat faces, along them.
+    Mid,
+    /// Through the line where the planes of two flat faces meet, halving
+    /// their angle.
+    Bisector,
+}
+
+impl SectionMade {
+    /// The words the handle's number shows in place of an axis.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Face => "\u{2225} face",
+            Self::Mid => "mid",
+            Self::Bisector => "bisector",
+        }
+    }
 }
 
 impl SectionState {
@@ -867,6 +899,15 @@ impl SectionState {
             self.plane = Some("xy".to_string());
             self.point = None;
         }
+        let (named, given) = (self.plane.is_some(), self.normal.is_some());
+        let base = self
+            .plane
+            .as_deref()
+            .is_some_and(|p| ["xy", "yz", "zx"].contains(&p.trim()));
+        self.made = self.made.filter(|made| match made {
+            SectionMade::Face => named && !base,
+            SectionMade::Mid | SectionMade::Bisector => !named && given,
+        });
         Ok(self)
     }
 
@@ -1649,7 +1690,7 @@ impl UiState {
                 // `feature` is looked for in every body.
                 let names = |key: &str| given.contains_key(key);
                 if names("plane") {
-                    for other in ["point", "normal", "feature"] {
+                    for other in ["point", "normal", "feature", "made"] {
                         if !names(other) {
                             section.insert(other.to_string(), Value::Null);
                         }
@@ -1657,6 +1698,9 @@ impl UiState {
                 } else if names("point") || names("normal") {
                     for other in ["plane", "feature"] {
                         section.insert(other.to_string(), Value::Null);
+                    }
+                    if !names("made") {
+                        section.insert("made".to_string(), Value::Null);
                     }
                 }
             }
@@ -1699,7 +1743,20 @@ impl UiState {
             next.camera.auto_fit = false;
         }
         next.side_panel.bounded();
-        *self = next.validated()?;
+        let next = next.validated()?;
+        // How the plane was made, given with a plane it does not fit: said,
+        // not dropped behind the caller's back.
+        let made_given = patch
+            .get("section")
+            .and_then(|s| s.get("made"))
+            .is_some_and(|m| !m.is_null());
+        if made_given && next.section.made.is_none() {
+            return Err(
+                "`section.made` does not fit the plane: `face` goes with a face's `plane`, `mid` and `bisector` with `point` and `normal`"
+                    .to_string(),
+            );
+        }
+        *self = next;
         Ok(())
     }
 }
@@ -1860,6 +1917,8 @@ mod tests {
                 normal: None,
                 offset: -2.5,
                 flip: true,
+                // Added with the plane from the selection (2026-11-17).
+                made: Some(SectionMade::Face),
             },
             picked: Some(Picked {
                 serial: 4,
@@ -2016,7 +2075,7 @@ mod tests {
                 "highlightVertex": {"feature": null, "vertex": "F3:vertex(1)", "corner": []},
                 "transparency": 0.5,
                 "section": {"on": true, "plane": "F3:face(2)", "feature": "F3", "point": null,
-                            "normal": null, "offset": -2.5, "flip": true},
+                            "normal": null, "offset": -2.5, "flip": true, "made": "face"},
                 "picked": {"serial": 4, "x": 120.5, "y": 80.25, "feature": "F3",
                            "name": "Post", "face": "F3:face(2)", "faceIndex": 2,
                            "point": [1.0, 2.0, 3.5], "kind": "edge",

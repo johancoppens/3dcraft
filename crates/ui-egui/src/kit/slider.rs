@@ -1193,6 +1193,29 @@ impl Kit {
         typing: &mut Option<Typing>,
         fresh: bool,
     ) {
+        let unit = if slider.form == SliderForm::Row {
+            ""
+        } else {
+            slider.unit
+        };
+        self.typed_field(ui, id, rect, unit, typing, fresh);
+    }
+
+    /// A value typed into in `rect`, as a slider's value is (the field
+    /// with its focus ring, `unit` dim at its right, the text selected
+    /// when typing begins): Enter, or the field losing the keyboard, sets
+    /// `entered` for the caller to evaluate; Escape ends the typing. For a
+    /// number shown elsewhere than on a slider, such as the section's
+    /// offset in the view. `fresh`: the typing began this frame.
+    pub fn typed_field(
+        &self,
+        ui: &mut Ui,
+        id: Id,
+        rect: Rect,
+        unit: &str,
+        typing: &mut Option<Typing>,
+        fresh: bool,
+    ) {
         let t = &self.t;
         let s = &self.skin;
         let Some(state) = typing.as_mut() else {
@@ -1200,8 +1223,8 @@ impl Kit {
         };
         let back = ui.painter().add(Shape::Noop);
         let pad = t.field_text_pad;
-        let unit_galley = (!slider.unit.is_empty() && slider.form != SliderForm::Row)
-            .then(|| self.galley(ui, slider.unit, self.font(), s.text_dim));
+        let unit_galley =
+            (!unit.is_empty()).then(|| self.galley(ui, unit, self.font(), s.text_dim));
         let right = rect.right()
             - pad
             - unit_galley
