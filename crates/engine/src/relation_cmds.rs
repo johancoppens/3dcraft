@@ -350,6 +350,7 @@ fn chosen(
     parallel_planes: bool,
     parallel_axis_plane: bool,
     edges: Option<EdgePair>,
+    rims_parallel: bool,
 ) -> Relation {
     use Shape::{Body, Line, Plane, Point};
     match (a, b) {
@@ -366,9 +367,18 @@ fn chosen(
             _ => Relation::CenterDistance,
         },
         (Line { .. }, Line { .. }) => Relation::CenterDistance,
+        // Centres and axes: their centre distance (a hole's or a boss's
+        // pitch); a circle at an angle to the other's axis, the least
+        // distance as the things are (the review of 2026-11-17).
         (Point { centre: true, .. }, Point { centre: true, .. })
         | (Point { centre: true, .. }, Line { edge: false, .. })
-        | (Line { edge: false, .. }, Point { centre: true, .. }) => Relation::CenterDistance,
+        | (Line { edge: false, .. }, Point { centre: true, .. }) => {
+            if rims_parallel {
+                Relation::CenterDistance
+            } else {
+                Relation::LeastDistance
+            }
+        }
         // Two vertices: the distance between them. A vertex and a rim or
         // a ball: the least distance to the rim or the ball, not to its
         // centre.
@@ -572,6 +582,21 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
         (Plane { normal: na, .. }, Plane { normal: nb, .. }) => along(*na, *nb, angular),
         _ => false,
     };
+    // A circular edge's axis with the other's axis (a round face's, or
+    // another circular edge's): whether a centre distance means a pitch.
+    let axis_of = |t: &Thing, s: &Shape| match s {
+        Line {
+            direction,
+            edge: false,
+            ..
+        } => Some(*direction),
+        _ => circle_axis(t),
+    };
+    let rim_axes = match (circle_axis(a), circle_axis(b)) {
+        (Some(n), _) => axis_of(b, &sb).map(|m| (n, m)),
+        (None, Some(m)) => axis_of(a, &sa).map(|n| (n, m)),
+        (None, None) => None,
+    };
     let parallel_axis_plane = match (&sa, &sb) {
         (Line { direction, .. }, Plane { normal, .. })
         | (Plane { normal, .. }, Line { direction, .. }) => {
@@ -595,8 +620,16 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
         }),
         _ => None,
     };
-    let relation =
-        wanted.unwrap_or_else(|| chosen(&sa, &sb, parallel_planes, parallel_axis_plane, edges));
+    let relation = wanted.unwrap_or_else(|| {
+        chosen(
+            &sa,
+            &sb,
+            parallel_planes,
+            parallel_axis_plane,
+            edges,
+            rim_axes.is_none_or(|(n, m)| along(n, m, angular)),
+        )
+    });
     match relation {
         Relation::Distance => match (&sa, &sb) {
             (
@@ -885,14 +918,24 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
                     Line {
                         direction, middle, ..
                     },
-                ) => (*at, foot(*middle, *direction, *at), None),
+                ) => (
+                    *at,
+                    foot(*middle, *direction, *at),
+                    rim_axes.map(|(n, m)| along(n, m, angular)),
+                ),
                 (
                     Line {
                         direction, middle, ..
                     },
                     Point { at, .. },
-                ) => (foot(*middle, *direction, *at), *at, None),
-                (Point { at: p, .. }, Point { at: q, .. }) => (*p, *q, None),
+                ) => (
+                    foot(*middle, *direction, *at),
+                    *at,
+                    rim_axes.map(|(n, m)| along(n, m, angular)),
+                ),
+                (Point { at: p, .. }, Point { at: q, .. }) => {
+                    (*p, *q, rim_axes.map(|(n, m)| along(n, m, angular)))
+                }
                 _ => {
                     return Err(refused(
                         relation,
@@ -1037,6 +1080,18 @@ fn openings(
         outside(past) && outside(past + r * 0.95)
     };
     [(open(hi, 1.0), rim(true)), (open(lo, -1.0), rim(false))]
+}
+
+/// The unit axis of a circular edge (its circle's normal); `None` for
+/// anything else.
+fn circle_axis(t: &Thing) -> Option<Vec3> {
+    if t.kind != SelectionKind::Edge {
+        return None;
+    }
+    match &t.indices.first().and_then(|&e| t.body.edges.get(e))?.curve {
+        Curve3::Circle(circle) => circle.frame().z().normalized(),
+        _ => None,
+    }
 }
 
 /// The closest points of the line through `pa` along `da` and the one

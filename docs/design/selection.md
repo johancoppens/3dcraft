@@ -67,7 +67,11 @@ what their relation is (`relation_cmds.rs`, `measure.between`, the same command 
 exact geometry, from what the two are. Two flat faces: parallel, the distance between their planes; at an
 angle, the angle between the half-planes from the line the planes meet in toward each face (0 to 180°, so a
 45° chamfer meets the top at 135°). Axes (of cylinders and cones) and centres (circular edges, spheres):
-the centre distance, with its parts along X, Y and Z; two parallel axes drawn where the holes open (below). Two straight edges: parallel, the distance between them; meeting, or their lines crossing within
+the centre distance, with its parts along X, Y and Z; two parallel axes drawn where the holes open (below).
+A circular edge's centre goes with an axis or another circular edge only where their axes are parallel (a
+hole's or a boss's pitch, said `parallel: true`, *axes parallel* on the card); a circle at an angle to the
+other's axis is measured as the things are, the least distance (the review's last round: a rim under a bar
+lying across it gave the distance from its centre to the bar's axis). Two straight edges: parallel, the distance between them; meeting, or their lines crossing within
 the tolerance, the angle from where they meet toward each; skew, the least distance between the segments
 (their closest points, clamped). An axis and a flat face: their distance when parallel, else their angle.
 Two vertices: the distance between them. A vertex, a circular edge or a sphere with anything else: the

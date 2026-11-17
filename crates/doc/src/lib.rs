@@ -39,7 +39,7 @@ pub use assembly::{
     Assembly, Coupling, CouplingKind, CouplingTerm, Instance, InstanceMode, MAX_COUPLING_TERMS,
     MOTIONS, Mate, MateKind, MateRef, ParamOverride, Placement, Source, WORLD, WORLD_FRAMES,
 };
-pub use assertion::{Assertion, Expect, MAX_ASSERTION_TEXT, MAX_ASSERTIONS};
+pub use assertion::{Assertion, Expect, MAX_ASSERTION_TEXT, MAX_ASSERTIONS, MAX_ASSERTIONS_TEXT};
 pub use blob::{Blob, sha256};
 pub use datum::{
     AxisBy, AxisRef, DatumAxis, DatumHelix, DatumPlane, DatumPoint, HelixExtent, HelixStart,
