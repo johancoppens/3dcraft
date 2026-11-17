@@ -138,7 +138,7 @@ const FROZEN: &[(u32, usize, u64)] = &[
     // A plate drilled by a pin, with the notes pinned to it: one done by an
     // agent with a reply, an agent's open question on the hole's wall, one
     // whose face was deleted (detached), one on the body, one deleted.
-    (75, 3655, 0x9c49_686a_a159_6410),
+    (75, 3743, 0x0692_a2de_10e4_c97b),
 ];
 
 fn dir() -> PathBuf {
