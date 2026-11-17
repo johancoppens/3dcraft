@@ -1121,7 +1121,8 @@ pub(crate) fn opening_of(
     let at = |x: f64| middle + direction * (x - middle.dot(direction));
     openings(&ctx, &t, middle, direction, ends)
         .into_iter()
-        .filter_map(|(open, x)| open.then(|| at(x)))
+        .filter(|&(open, _)| open)
+        .map(|(_, x)| at(x))
         .filter(|p| p.is_finite())
         .max_by(|p, q| upper_order(*p, *q, tol))
 }
