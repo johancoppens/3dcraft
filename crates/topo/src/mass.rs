@@ -3963,14 +3963,7 @@ fn integrals_in(
     work: &mut Work,
     first: Option<&mut Option<Result<Sums, MassError>>>,
 ) -> Result<Sums, MassError> {
-    let clock = craft3d_math::clock::clock("topo.mass.outline");
     let outline = outline(body, face, surface, index, size)?;
-    drop(clock);
-    let _clock = craft3d_math::clock::clock(if matches!(surface, Surface::Plane(_)) {
-        "topo.mass.sums.plane"
-    } else {
-        "topo.mass.sums.curved"
-    });
     // The looks along the borders while the outline was found.
     work.add(outline.looked);
     // Loops run counter-clockwise around the face seen from outside, which
@@ -4155,10 +4148,7 @@ fn part_by_part(
         let (low, high) = (piece.start.min(piece.end), piece.start.max(piece.end));
         Some(panels(piece.curve, (low, high), &piece.crossings, 0))
     };
-    let clock = craft3d_math::clock::clock("topo.mass.sampled");
     let (mut first, panels_at) = sampled(outline, surface, index, (rule, coarse), &coarsest, work)?;
-    drop(clock);
-    let _clock = craft3d_math::clock::clock("topo.mass.plan_and_cells");
     let plan = match outline.poled {
         Some(poled) => Plan::Poles(poled),
         None => plan(
@@ -5461,7 +5451,6 @@ fn replay(
 /// time is bounded). A face that is outside its own loops is
 /// [`MassError::UnboundedFace`].
 pub fn mass_properties(body: &Body) -> Result<MassProperties, MassError> {
-    let _clock = craft3d_math::clock::clock("topo.mass_properties");
     let (all, _, middle, _) = integrate(body, Wanted::First);
     Ok(mass_from(body, all?, middle))
 }
@@ -5524,7 +5513,6 @@ pub fn mass_with_shells_each_while(
     bodies: &[&Body],
     go_on: impl Fn(&MassProperties) -> bool,
 ) -> Vec<Option<Measured>> {
-    let _clock = craft3d_math::clock::clock("topo.mass_with_shells_each");
     let rule = Rule::new(NODES);
     let mut out: Vec<Option<Measured>> = Vec::with_capacity(bodies.len());
     let mut failed = false;

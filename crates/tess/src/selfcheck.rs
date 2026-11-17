@@ -602,13 +602,8 @@ pub fn body_self_intersections_near(
         )));
     }
     let chord = first_chord(body, params)?;
-    let clock = craft3d_math::clock::clock("tess.selfcheck.scope");
     let scope = Scope::new(body, roles, chord, params.tolerance)?;
-    drop(clock);
-    let clock = craft3d_math::clock::clock("tess.selfcheck.refined");
     let mut check = refined(body, params, chord, Some(&scope))?;
-    drop(clock);
-    let _clock = craft3d_math::clock::clock("tess.selfcheck.touches_itself");
     check.touching = body_touches_itself(body, 2.0 * params.tolerance, params.limit)?;
     Ok(check)
 }

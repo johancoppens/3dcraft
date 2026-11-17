@@ -1554,7 +1554,6 @@ fn section_with(
             }
             at = at.saturating_add(1);
             let covers = (a.covers.as_slice(), b.covers.as_slice());
-            let clock = craft3d_math::clock::clock("section.to_meet");
             let Some(Pair {
                 box_b,
                 within,
@@ -1565,13 +1564,11 @@ fn section_with(
             else {
                 continue;
             };
-            drop(clock);
             let named = [a.name(fa), b.name(fb)];
             crate::work::face_pairs(1);
             #[cfg(test)]
             tests::PAIRS_MET.with(|n| n.set(n.get() + 1));
             let near = (a.near.get(fa), b.near.get(fb));
-            let clock = craft3d_math::clock::clock("section.meet_surfaces");
             let met = match meet_in((box_a, box_b), near, (&within, room), tol, |room| {
                 meet_surfaces(&oa.surface, &ob.surface, room, tolerance)
             }) {
@@ -1596,7 +1593,6 @@ fn section_with(
             // tolerance or more lies between them, and in between neither
             // (the result would be glued together or left apart by a
             // margin nobody asked for).
-            drop(clock);
             let alike = std::mem::discriminant(&oa.surface) == std::mem::discriminant(&ob.surface);
             let unsure = match &met {
                 SurfaceMeeting::Coincident { .. } => gap((oa, box_a), (ob, box_b), tol)
@@ -1663,12 +1659,9 @@ fn section_with(
                     let mut found = Vec::new();
                     // (Some: the boxes meet within twice the tolerance.)
                     let near = overlap(box_a, box_b, 2.0 * tol).unwrap_or(within);
-                    let clock = craft3d_math::clock::clock("section.edge_cuts");
                     let (ca, cb) = (a.cover(fa, tol), b.cover(fb, tol));
                     edge_cuts(a, fa, ob.sheet(), &near, cb, &named, tolerance, &mut found)?;
                     edge_cuts(b, fb, oa.sheet(), &near, ca, &named, tolerance, &mut found)?;
-                    drop(clock);
-                    let _clock = craft3d_math::clock::clock("section.clip");
                     sections
                         .edge_meets
                         .extend(found.iter().map(|cut| cut.point));
@@ -1689,7 +1682,6 @@ fn section_with(
             }
         }
     }
-    let _clock = craft3d_math::clock::clock("section.lying_edges");
     for (fa, fb) in touching {
         lying_edges(
             a,

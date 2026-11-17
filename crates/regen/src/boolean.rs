@@ -188,7 +188,6 @@ pub(crate) fn build(
     };
     let tolerance = Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
         .ok_or("the document's tolerance is not positive and finite".to_string())?;
-    let clock = craft3d_math::clock::clock("regen.boolean.combine");
     let made = combine(
         a,
         b,
@@ -205,8 +204,6 @@ pub(crate) fn build(
         };
         names.as_deref()
     };
-    drop(clock);
-    let clock = craft3d_math::clock::clock("regen.boolean.names");
     let mut names = Names::copied_faces(feature, &made.contributors, operand)?;
     if let Some(names) = &mut names {
         names.name_entities(
@@ -218,8 +215,6 @@ pub(crate) fn build(
             operand,
         )?;
     }
-    drop(clock);
-    let _clock = craft3d_math::clock::clock("regen.boolean.not_through_itself");
     not_through_itself(&made, names.as_ref(), tolerance.linear, &[])?;
     Ok((made.body, names))
 }

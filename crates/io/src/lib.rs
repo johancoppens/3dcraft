@@ -280,14 +280,11 @@ pub fn export_mesh(
     unit: Unit,
     format: MeshFormat,
 ) -> Result<Vec<u8>, IoError> {
-    let clock = craft3d_math::clock::clock("io.to_object");
     let model = Model {
         unit,
         objects: vec![to_object(mesh, name)?],
         materials: Vec::new(),
     };
-    drop(clock);
-    let _clock = craft3d_math::clock::clock("io.encode");
     encode(&model, format)
 }
 

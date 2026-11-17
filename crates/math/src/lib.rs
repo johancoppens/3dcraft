@@ -6,7 +6,6 @@
 
 mod bits;
 mod bug;
-pub mod clock;
 mod frame;
 pub mod pool;
 mod portable;
