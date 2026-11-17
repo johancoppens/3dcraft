@@ -56,7 +56,7 @@ const PROJECTOR_GRID: u32 = 24;
 /// Projectors made lately, by the surface they are of (written out in
 /// full, so that two surfaces are the same key only when every number of
 /// them is, bit for bit), the most recently used last.
-static SHELF: Mutex<Vec<(String, Arc<Projector>)>> = Mutex::new(Vec::new());
+static SHELF: Mutex<Vec<(Arc<str>, Arc<Projector>)>> = Mutex::new(Vec::new());
 /// How many projectors are kept.
 const SHELF_SIZE: usize = 32;
 
@@ -84,7 +84,7 @@ impl Projector {
     /// surface alone, and the faces of one body, intersected with each of
     /// the faces of another, ask for the same few many times over.
     pub(super) fn shared(surface: &Surface) -> Result<Arc<Self>, GeomError> {
-        let key = format!("{surface:?}");
+        let key = surface.key().text;
         {
             let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(at) = shelf.iter().position(|(k, _)| *k == key) {
@@ -699,6 +699,13 @@ impl Bounds {
 const PIECE_DEPTH: usize = 48;
 /// How many pieces the bounds of one surface keep at most.
 const PIECE_BUDGET: usize = 1 << 13;
+
+#[cfg(test)]
+thread_local! {
+    /// [`Pieces::new`] works out every span's split even where none can
+    /// be made, as before 2026-11-17: for a test to compare with.
+    static SPLITS_ALWAYS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 /// A piece is halved (the way that gains more) only where one of its
 /// halves has a bound on a first derivative more than this many times
 /// tighter than the piece's. A derivative that grows in proportion to the distance from a
@@ -763,7 +770,7 @@ struct PieceNode {
 
 /// The pieces of the surfaces charted lately, by the surface (written out
 /// in full, as for [`Projector::shared`]), the most recently used last.
-type PieceShelf = Vec<(String, Option<Arc<Pieces>>)>;
+type PieceShelf = Vec<(Arc<str>, Option<Arc<Pieces>>)>;
 static PIECE_SHELF: Mutex<PieceShelf> = Mutex::new(Vec::new());
 
 impl Pieces {
@@ -772,7 +779,7 @@ impl Pieces {
     /// again for every face it meets (measured on the benchmark's turbofan,
     /// 1312 charts took 0.9 s of pieces made anew).
     fn shared(surface: &Surface) -> Option<Arc<Pieces>> {
-        let key = format!("{surface:?}");
+        let key = surface.key().text;
         {
             let mut shelf = PIECE_SHELF.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(at) = shelf.iter().position(|(k, _)| *k == key) {
@@ -796,13 +803,15 @@ impl Pieces {
     /// The pieces of a Bézier or NURBS surface; `None` for another kind,
     /// or where a piece has no finite bound.
     fn new(surface: &Surface) -> Option<Pieces> {
-        let spans: Vec<BezierSpan> = match surface {
-            Surface::Bezier(b) => vec![BezierSpan {
+        // A spline's spans as it keeps them, not a copy (some 150 MB for
+        // the 259 081 spans of the largest grid surface).
+        let spans: std::sync::Arc<Vec<BezierSpan>> = match surface {
+            Surface::Bezier(b) => std::sync::Arc::new(vec![BezierSpan {
                 u: (0.0, 1.0),
                 v: (0.0, 1.0),
                 patch: crate::RationalBezierPatch::from_bezier(b),
-            }],
-            Surface::Nurbs(s) => s.bezier_spans_shared().ok()?.as_ref().clone(),
+            }]),
+            Surface::Nurbs(s) => s.bezier_spans_shared().ok()?,
             _ => return None,
         };
         let (u, v) = surface.domain();
@@ -886,7 +895,15 @@ impl Pieces {
         let mut heap = std::collections::BinaryHeap::new();
         let mut pending: std::collections::BTreeMap<usize, (Vec<Part>, usize)> =
             std::collections::BTreeMap::new();
-        for span in spans {
+        // With as many spans as the budget (and two), no piece is ever
+        // halved (the first split would take the budget over): the splits
+        // are not worked out at all, where they took ten nets' bounds a
+        // span (for the 259 081 spans of the largest grid surface, 1.9 s
+        // of the 2.1 s its pieces took, in release).
+        let splits = spans.len().saturating_add(2) <= PIECE_BUDGET;
+        #[cfg(test)]
+        let splits = splits || SPLITS_ALWAYS.get();
+        for span in spans.iter() {
             let b = bound(&span.patch, span.u, span.v)?;
             let index = pieces.nodes.len();
             pieces.roots.push(index);
@@ -896,6 +913,9 @@ impl Pieces {
                 bounds: b,
                 children: None,
             });
+            if !splits {
+                continue;
+            }
             if let Some((gain, halves)) = best_split(&span.patch, span.u, span.v, b) {
                 heap.push((Gain(gain), std::cmp::Reverse(index)));
                 pending.insert(index, (halves, 0));
@@ -1947,6 +1967,69 @@ mod tests {
             }
         }
         assert!(found > 3000, "{found}");
+    }
+
+    /// A surface of more spans than the pieces' budget keeps its spans as
+    /// they are, unsplit: the same pieces, bit for bit, whether the splits
+    /// of its spans are worked out (as before 2026-11-17) or not; and one
+    /// of fewer is split as before.
+    #[test]
+    fn a_surface_of_more_spans_than_the_budget_has_its_spans_for_pieces() {
+        let sheet = |n: usize| {
+            let mut knots = vec![0.0; 4];
+            for k in 1..n - 3 {
+                knots.push(k as f64 / (n - 3) as f64);
+            }
+            knots.extend([1.0; 4]);
+            let mut ctrl = Vec::new();
+            for i in 0..n {
+                for j in 0..n {
+                    let (x, y) = (i as f64, j as f64);
+                    ctrl.push(Vec3::new(x, y, (0.3 * x).psin() * (0.2 * y).pcos()));
+                }
+            }
+            Surface::Nurbs(
+                crate::NurbsSurface::new(3, 3, knots.clone(), knots, n, n, ctrl, vec![1.0; n * n])
+                    .unwrap(),
+            )
+        };
+        let same = |a: &Pieces, b: &Pieces| {
+            assert_eq!(a.roots, b.roots);
+            assert_eq!(a.nodes.len(), b.nodes.len());
+            for (x, y) in a.nodes.iter().zip(&b.nodes) {
+                let bits = |n: &PieceNode| {
+                    [
+                        n.u.0,
+                        n.u.1,
+                        n.v.0,
+                        n.v.1,
+                        n.bounds.lu,
+                        n.bounds.lv,
+                        n.bounds.muu,
+                        n.bounds.muv,
+                        n.bounds.mvv,
+                    ]
+                    .map(f64::to_bits)
+                };
+                assert_eq!(bits(x), bits(y));
+                assert_eq!(x.children, y.children);
+            }
+        };
+        // 91 × 91 spans: 8281, more than the budget less two.
+        let large = sheet(94);
+        let quick = Pieces::new(&large).unwrap();
+        SPLITS_ALWAYS.set(true);
+        let before = Pieces::new(&large).unwrap();
+        SPLITS_ALWAYS.set(false);
+        assert_eq!(quick.nodes.len(), 8281);
+        same(&quick, &before);
+        // 10 × 10 spans: split as before.
+        let small = sheet(13);
+        let quick = Pieces::new(&small).unwrap();
+        SPLITS_ALWAYS.set(true);
+        let before = Pieces::new(&small).unwrap();
+        SPLITS_ALWAYS.set(false);
+        same(&quick, &before);
     }
 
     /// A wavy bicubic patch; with `pole`, its first row is one point, so
