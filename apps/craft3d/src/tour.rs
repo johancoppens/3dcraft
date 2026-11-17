@@ -17,20 +17,20 @@
 //! by its renderer on its own device and read back, once the viewport has
 //! settled) and writes it as `tour-<step>.png` beside the trace file, and
 //! asks `ui.get` whether the viewport is still drawn by the GPU on the
-//! window's device. Device errors nothing else catches are counted (in a
-//! tour only, the window's device gets a handler that records them instead
-//! of wgpu's default, which panics). Every line of the tour goes to
-//! standard error and into the trace; the last is `tour: done, N errors`.
-//! With `1` the window then closes (`ui.quit {save: "discard"}`: the
-//! process exits 0, also with errors, which the last line counts); with
-//! `stay` it stays open for a person to look; `quick` is `1` without the
-//! studio look's steps, whose shaders DirectX 12's compiler (FXC) takes
-//! minutes over: what the Release workflow runs on its Windows runner.
+//! window's device. Device errors nothing else catches are counted by the
+//! window's own handler (`device_errors.rs`, in place of wgpu's default,
+//! which panics; until 0.1.2 the tour alone had one). Every line of the
+//! tour goes to standard error and into the trace; the last is
+//! `tour: done, N errors`. With `1` the window then closes (`ui.quit
+//! {save: "discard"}`: the process exits 0, also with errors, which the
+//! last line counts); with `stay` it stays open for a person to look;
+//! `quick` is `1` without the studio look's steps, whose shaders
+//! DirectX 12's compiler (FXC) takes minutes over: what the Release
+//! workflow runs on its Windows runner.
 
 use crate::control::Wake;
 use crate::host::Request;
 use craft3d_gpu::diag;
-use eframe::wgpu;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -99,23 +99,6 @@ fn say(text: &str) {
     diag::note("tour", text);
 }
 
-/// Counts and says the errors of `device` that no error scope caught, in
-/// place of wgpu's default handler (which panics). For the tour only.
-pub fn count_device_errors(device: &wgpu::Device, errors: Arc<AtomicU64>) {
-    device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
-        errors.fetch_add(1, Ordering::Relaxed);
-        let text = error.to_string();
-        let text: String = text
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .chars()
-            .take(2000)
-            .collect();
-        say(&format!("device error: {text}"));
-    }));
-}
-
 /// Where the pictures of the tour go: beside the trace file, or in the
 /// current directory without one.
 fn picture_folder(env: &dyn Fn(&str) -> Option<String>) -> PathBuf {
@@ -131,8 +114,8 @@ fn picture_folder(env: &dyn Fn(&str) -> Option<String>) -> PathBuf {
 }
 
 /// Starts the tour on a thread of its own: it sends its requests to
-/// `requests` and wakes the window with `wake`; `errors` is shared with
-/// [`count_device_errors`].
+/// `requests` and wakes the window with `wake`; `errors` is the count of
+/// the window's handler (`device_errors::DeviceErrors::counter`).
 pub fn start(
     mode: Mode,
     requests: Sender<Request>,
