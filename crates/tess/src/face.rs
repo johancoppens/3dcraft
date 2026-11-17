@@ -5446,9 +5446,12 @@ pub(crate) fn face_boundary<'a>(
     borders: bool,
 ) -> Result<Boundary<'a>, TessError> {
     let tolerance = params.chordal_tolerance;
+    let clock = craft3d_math::clock::clock("tess.fb.placed");
     let (mut param, mut region, mut low, mut high, mut span) =
         placed(body, edges, face, index, params, starved, borders, false)?;
+    drop(clock);
     let mut graded: Option<GradedFace> = None;
+    let clock = craft3d_math::clock::clock("tess.fb.cells");
     let cells = if param.is_plane() {
         [1, 1]
     } else {
@@ -5547,6 +5550,7 @@ pub(crate) fn face_boundary<'a>(
             Err(other) => return Err(other),
         }
     };
+    drop(clock);
     let step = [
         get2(span, 0) / f64::from(get2(cells, 0)),
         get2(span, 1) / f64::from(get2(cells, 1)),
@@ -5554,7 +5558,9 @@ pub(crate) fn face_boundary<'a>(
     // No face may grow beyond this many vertices.
     let side = (params.max_segments as usize).saturating_add(1);
     let limit = side.saturating_mul(side).saturating_mul(4);
+    let clock = craft3d_math::clock::clock("tess.fb.finish_boundary");
     finish_boundary(&param, &mut region, step, tolerance, limit, index)?;
+    drop(clock);
     if region.verts.len() > limit {
         return Err(TessError::TooFine {
             patch: index,
@@ -5630,6 +5636,7 @@ pub(crate) fn face_boundary<'a>(
         0.5 * (get2(low, 0) + get2(high, 0)),
         0.5 * (get2(low, 1) + get2(high, 1)),
     ];
+    let _clock = craft3d_math::clock::clock("tess.fb.warp");
     let warp = match &graded {
         Some(face) => {
             let [along_u, along_v] = face.grid.lines.clone();

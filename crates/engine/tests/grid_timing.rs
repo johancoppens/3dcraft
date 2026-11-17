@@ -163,19 +163,30 @@ fn synthetic(columns: usize) -> At {
 #[test]
 #[ignore]
 fn stages_of_a_large_grid() {
-    let heights = relief();
-    let cases: Vec<(&str, usize, usize, At)> = vec![
+    let heights = std::sync::Arc::new(relief());
+    let ventoux = |heights: std::sync::Arc<Vec<Vec<f64>>>| -> At {
+        Box::new(move |r, c| [c as f64 * 1.25, r as f64 * 1.25, heights[r][c] * 0.03])
+    };
+    let cases: Vec<(&str, &str, usize, usize, At)> = vec![
         (
-            "relief 145 x 113",
+            "relief 145 x 113 even",
+            "even",
             145,
             113,
-            Box::new(move |r, c| [c as f64 * 1.25, r as f64 * 1.25, heights[r][c] * 0.03]),
+            ventoux(heights.clone()),
         ),
-        ("synthetic 150 x 120", 150, 120, synthetic(150)),
-        ("synthetic 400 x 300", 400, 300, synthetic(400)),
+        (
+            "relief 145 x 113 greville",
+            "greville",
+            145,
+            113,
+            ventoux(heights),
+        ),
+        ("synthetic 150 x 120", "even", 150, 120, synthetic(150)),
+        ("synthetic 400 x 300", "even", 400, 300, synthetic(400)),
     ];
-    for (label, columns, rows, at) in cases {
-        let dir = workdir("grid-stages", &format!("{columns}x{rows}"));
+    for (label, spacing, columns, rows, at) in cases {
+        let dir = workdir("grid-stages", &format!("{columns}x{rows}-{spacing}"));
         let mut s = session_in(&dir);
         run(
             &mut s,
@@ -206,7 +217,7 @@ fn stages_of_a_large_grid() {
         let made = timed(
             &mut s,
             "feature.surface.grid",
-            json!({"points": points, "spacing": "even", "name": "Sheet"}),
+            json!({"points": points, "spacing": spacing, "name": "Sheet"}),
         );
         assert_eq!(made.as_ref().unwrap()["status"], "ok", "{made:?}");
         let block = timed(
