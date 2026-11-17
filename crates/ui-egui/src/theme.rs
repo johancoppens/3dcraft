@@ -214,6 +214,26 @@ pub struct Tokens {
     /// How near to an edge or a vertex a click counts as a click on it, in points
     /// (the pick radius of `view.pick`, which is in pixels).
     pub pick_radius: f32,
+    /// The section's handle in the view (`shell/section_handle.rs`), in
+    /// the accent over a hairline of `plate_fill` at
+    /// `section_halo_opacity` (0 to 255), so it reads on the background,
+    /// a body and the cap: the plane's outline, `section_outline_width`
+    /// wide in dashes of `section_dash` (on, off); the arrow,
+    /// `section_arrow_length` long seen side on and `section_arrow_width`
+    /// wide; the dots X, Y, Z of `section_dot_radius`. Faint
+    /// (`section_rest_opacity`, 0 to 255) until the pointer is within
+    /// `section_near` of it; the arrow is hit within `section_hit` of it,
+    /// and a drag snaps within `section_snap_reach`. In points.
+    pub section_outline_width: f32,
+    pub section_dash: [f32; 2],
+    pub section_arrow_length: f32,
+    pub section_arrow_width: f32,
+    pub section_halo_opacity: u8,
+    pub section_rest_opacity: u8,
+    pub section_near: f32,
+    pub section_hit: f32,
+    pub section_dot_radius: f32,
+    pub section_snap_reach: f32,
     /// The view cube's proportions, in units of its half side so that
     /// they scale with it: how deep its edges are cut (a capsule and a
     /// corner's circle are as wide as the cut less the gap), the one gap
@@ -936,6 +956,16 @@ impl Tokens {
             select_box_opacity: 31,
             select_box_width: 1.5,
             pick_radius: 4.0,
+            section_outline_width: 1.0,
+            section_dash: [5.0, 4.0],
+            section_arrow_length: 54.0,
+            section_arrow_width: 2.0,
+            section_halo_opacity: 110,
+            section_rest_opacity: 115,
+            section_near: 56.0,
+            section_hit: 9.0,
+            section_dot_radius: 8.0,
+            section_snap_reach: 7.0,
             view_cube_chamfer: 0.22,
             view_cube_gap: 0.062,
             view_cube_face_rounding: 0.9,
@@ -1199,6 +1229,10 @@ impl Tokens {
         t.menu_item_height = t.menu_item_height.max(t.touch_target);
         t.knob_size = t.knob_size.max(t.touch_knob);
         t.hit_min = t.hit_min.max(t.touch_target);
+        // The section's handle: a finger takes the arrow and the dots.
+        t.section_hit = t.section_hit.max(t.touch_target * 0.5);
+        t.section_dot_radius = t.section_dot_radius.max(t.touch_target * 0.3);
+        t.section_arrow_length = t.section_arrow_length.max(t.touch_target * 1.8);
         t
     }
 
